@@ -5491,31 +5491,45 @@ guard that neither a grant nor a denial exists. `Revoke` and `Unlink` record
 `client/peers/denial/<digest>` for a `main` to `main` pair and `Allow` and `Link`
 clear it, each in one `api.edit_reserved_facts` transaction. Default rows carry
 `default: true` in `Links`, `Grants` and `peers.inspect`; roster rows carry
-`running`. `peers.send` refuses a closed recipient with `peers.not_running`, and
-nothing opens a session. Default entries share the 64-link bound after the
-explicit ones. A new `[peers]` key means `peer_defaults` and its test.
+`running`. `peers.send` queues a send to a closed recipient that its owner holds
+(`peer_mail.NotOpen`, the next paragraph and the peer mail reach paragraph below)
+and refuses one that no catalogue holds with `peers.not_running`; nothing opens a
+session. Default entries share the 64-link bound after the explicit ones. A new `[peers]` key means `peer_defaults` and its test.
 
 Sender outbox (protocol-change/078 addendum). `peers.send` records each message
 in the sending session before it asks the recipient: `peer_mail.OutboxClaim`
 writes `client/peers/outbox/<digest(strand, session, id)>` `pending`
 (`put_reserved_fact_expecting`, expecting absent), the inline attempt runs, and
-`OutboxSettle` flips the row to `admitted` (receipt) or `refused` (reason). An
+`OutboxSettle` flips the row to `admitted` (receipt) or `refused` (reason), and
+rewrites a `pending` row only when its `wait` (`OnOwner` | `OnOpen`, stored as
+`wait: "owner" | "open"`, absent in an older row and read as `OnOwner`) changes. An
 unreachable owner is the typed failure `peer_mail.Unreachable` (`Endpoint.call`
 and `Directory.resolve` answer `Result(_, peer_mail.Failure)`, where `Refused(reason)`
 is a definitive answer), which a local endpoint never returns; `peers.send` then
 leaves the row `pending` and returns
 `{"state": "queued"}` (`peers.queued`, `peers.is_queued`), and the router
-answers a program with the denial `peer_queued` because `cap/peer.send` is typed
-to a receipt. `client/peer_outbox` is the pure module (row, `claim`, `room`,
+answers a program with the denial `peer_queued`, carrying the answer's own note,
+because `cap/peer.send` is typed to a receipt. `peer_mail.NotOpen` is the third
+failure: the owner holds the session and it is not resident. It is queued the same
+way, as `peer_outbox.NotOpen` and `peers.queued_unopened` with
+`peers.queued_unopened_note`. `client/peer_outbox` is the pure module (row, `claim`, `room`,
 `settle`, `expire`, codec); `client/internal/peer_outbox_store` applies it to the
 store inside the Agency actor; `OutboxDue` also refuses rows pending over an
-hour. `client/peer_outbox_drain` is a `weft/state_machine` (`Idle`/`Waiting`)
-with one named timeout `peer-outbox-drain`: a pass at session open, then every
-`retry_interval_ms` (5000) while any row is owed, no timer when none is. It is
+hour, with `peer_mail.unreachable_reason` for a row that last waited on its owner
+and `peer_mail.not_opened_in_time_reason` for one that last waited for an open
+(`peer_outbox.expiry_reason`). `client/peer_outbox_drain` is a
+`weft/state_machine` (`Idle`/`Waiting`) with one named timeout
+`peer-outbox-drain`: a pass at session open, then every `retry_interval_ms`
+(5000) while any row waits on an owner that did not answer, and a doubling
+interval up to `max_retry_interval_ms` (300000) while every owed row waits for an
+open (`backlog_of` decides from the list of outcomes, so the order of the rows
+does not matter; `State.interval_ms` is the interval in force), no timer when none
+is owed. The doorbell cannot say which row it announces, since the machine's own
+settles ring it, so a new row waits for the next tick. It is
 built from a `peers.Wiring` and an injected `after`, reads rows through
 `OutboxDue`, and attempts each through `peers.resend`, which resolves through
 `Directory.resolve` like `send`. `agency.Config.outbox_queued` rings it
-(`peer_outbox_drain.poke`) after an `OutboxSettle(Unanswered)`; `serve` wires the
+(`peer_outbox_drain.poke`) after an `OutboxSettle(Unanswered | NotOpen)`; `serve` wires the
 closure and adds the drainer beside the schedule scanner. Bounds: 64 rows per
 strand (`outbox_full` when all pending, else the oldest finished row is evicted),
 one hour pending, `Unlink` deletes the pending rows to the link,
@@ -5524,7 +5538,9 @@ by a repeat of its id. The drainer is not labelled with a `telemetry/owner` role
 (roles are frozen by the protocol), so an ownership inspector reports it as
 `unknown`. Tests: `peer_outbox_test` (pure), `peer_outbox_flow_test` and
 `peer_outbox_drain_test` over `support/peer_rig` (two real runtimes behind a
-scripted network, a fake timer wheel, a file-backed reopen).
+scripted network, a fake timer wheel, a file-backed reopen; the rig's directory
+answers `Resident`, `Saved` (`NotOpen`) or `Gone` (`Refused`), and any other
+session is saved).
 
 An owner's web page manages links through `daemon/ui_peers`: `run` executes a
 `web_view/peer_links.Request` against `peers.inspect`, `peers.link` and
@@ -6922,45 +6938,76 @@ so the work is a second kind of endpoint and a directory that returns it:
 
 - `orchestrator_port.PeerCommand(session, command, reply)` is a second `Message`
   beside `Owns`. `served` names every `peer_mail.Command` constructor and accepts
-  only `Allow`, `Revoke`, `Deliver` and `SentReceipt`; any other (`Inbox`,
-  `History`, `Link`, `Roster`, `Outbox*`, ...) is answered `Refused(peer_unserved)`
+  only `Allow`, `Revoke`, `Deliver`, `SentReceipt` and `Roster`; any other
+  (`Inbox`, `History`, `Link`, `Describe` (the write of the recipient's own
+  self-description), `Outbox*`, ...) is answered `Refused(peer_unserved)`
   without calling the handler, and a new `Command` constructor is a compile error
   there until someone decides. The handler is the `start_serving` argument;
   `start` keeps its signature and refuses every peer command.
   `daemon/main.peer_command` is the production handler: `manager.resolve`, then
-  the resident's own endpoint, so a session not resident here answers
-  `peers.not_running`. The command is plain data. The port runs a command in its
-  own loop, so a wedged session delays the next `Owns` by at most the Agency's
-  5 s holder timeout.
+  the resident's own endpoint. A session not resident here answers
+  `peer_mail.not_open_reason` when this catalogue holds it and
+  `peers.not_running` when it does not. The command is plain data. The port runs a
+  command in its own loop, so a wedged session delays the next `Owns` by at most
+  the Agency's 5 s holder timeout.
+- `orchestrator_port.Describe(session, reply)` is a third `Message`: what this
+  daemon's catalogue says about a session, answered in the port's own turn by the
+  `start_with` argument `Describer` (`server.local_description`, which is
+  `manager.get` and `view_json`, and `moved` for a tombstone). It never opens the
+  session, so a saved one is described. `start`, `start_serving` and
+  `start_importing` refuse every description with `peer_unserved`.
+  `orchestrator_port.ask_description` is the asking end.
 - `remote/remote_peer` builds the other end. `at(address, session, within_ms)` is
   an `Endpoint` whose `call` monitors the port (`address.watch`) before it sends,
   then waits for the answer, the `DOWN` or the deadline: an answer is `Ok` or
-  `Refused`; `noconnection`, `noproc` and the deadline are `Unreachable`.
+  `Refused`, except that the text `peer_mail.not_open_reason` is `NotOpen`
+  (`failure_of`, the one place the wire text becomes the variant);
+  `noconnection`, `noproc` and the deadline are `Unreachable`. `wait_ms` is the
+  bound: `read_ms` (2 s) for a `Roster`, `call_ms` (7 s) for everything else.
   `over_distribution(membership)` resolves the pinned peer, connects (1.5 s) and
   asks with `call_ms` (7 s). A reply after the deadline reaches nobody, which is
   the lost-reply case the outbox expects: the retry gets `same_receipt`.
 - `session_directory.Directory` has a second field, `reach(orchestrator, session)
-  -> Endpoint`. `none()` and `peers()` give an endpoint that is always
-  `Unreachable`; `with_reach` sets it, and `daemon/main.session_directory_of`
-  sets `remote_peer.over_distribution`.
+  -> Endpoint`, and a third, `describe(orchestrator, session) ->
+  Result(JsonValue, String)`. `none()` and `peers()` give an endpoint that is
+  always `Unreachable` and a description that is `owner unreachable`;
+  `with_reach` and `describing` set them, and `daemon/main.session_directory_of`
+  sets `remote_peer.over_distribution` and `session_directory.description_over`
+  (2 s once connected).
 - `peers.routed(local, sessions)` is the one `Directory.resolve` both
   `server.peer_directory` (control commands, the web page) and
   `main.peer_directory_across` (a session's tools and drainer) use. A session
   resident here is answered by `local` and the directory is not asked. Only a
   miss calls `lookup`: `Elsewhere` gives `reach`, `Unreachable` gives
-  `peer_mail.Unreachable`, and `Here` or `Unknown` keep the local refusal.
+  `peer_mail.Unreachable`, and `Here` or `Unknown` keep `local`'s failure. `local`
+  is `server.local_peer`, which knows the difference: `NotOpen` when this
+  catalogue holds the session and it is not resident, `Refused` when it does not.
   `main.peer_directory` keeps its two-argument form with `session_directory.none()`.
+  `peers.described(local, sessions)` is the same shape for `Directory.describe`:
+  this catalogue's row first (`server.local_description`), otherwise the owner's
+  through `sessions.describe`, `owner unreachable` when no owner could be asked.
 - `LinkPeers` resolves its target through the directory, so `peers.link` writes
   the grant on the recipient's orchestrator (`Allow`). `unlink_session` revokes
   there (`Revoke`), and an unreachable revoke is reported in `recipient_grant`.
   `peer.sent_receipt` asks the recipient's orchestrator (`SentReceipt`) when the
   sender's own row has no receipt.
-- What stays local. `Roster` and `Describe` are not served, so a remote
-  recipient's roster row has `running: true` and `exported_strands` set to an
-  `unavailable` object, and `describe` reads the local catalogue only, which has
-  no row for a remote session. `peers.inspect` shows `wake: null` for a link to a
-  remote recipient. Sending to a recipient that is saved on its owner is refused
-  `not_running` there and is not queued.
+- Peer mail reach (the peer mail reach addendum). A recipient on another
+  orchestrator lists as a local one does. `peers.roster` asks the owner's
+  `Roster` and reads `Error(NotOpen)` as `running: false` with `exported_strands`
+  null; an owner that does not answer leaves `running: true` and an `unavailable`
+  object, and metadata `unavailable` too, so one silent owner never fails a
+  listing. `peers.inspect` takes `wake` from the same `Roster`. The owner lists
+  only the strands the recipient granted the asking session, the sender asks only
+  about sessions its own links and grants name, and a default link
+  (`[peers] default_links`) joins the sessions of one daemon only.
+- A recipient its owner holds saved is `NotOpen` and is queued, not refused, here
+  and on another orchestrator alike: `peers.deliver` maps it to
+  `peer_outbox.NotOpen`, the row stays `pending` waiting for an open, and the
+  send answers `peers.queued_unopened`. Each attempt resolves the recipient
+  again, so a moved session is followed to its new owner and a deleted one is
+  refused `not_running`. protocol-change/077 refused this; its addendum in 078
+  records the change. The drainer's backoff and the two refusal texts are in the
+  sender outbox paragraph above.
 
 Tests: `orchestrators_test` (the table), `remote/orchestrator_port_test` (the
 answers and the silence), `session_directory_test` (the policy, the fan-out's
@@ -6970,10 +7017,16 @@ principals are redirected, what the refusals carry; and `catalogue_holds` agains
 a real registry including a reserved and an archived row),
 `daemon_shipped_directory_test` (two shipped daemons), `peer_remote_test` (two
 real ports in one VM: link, send, receipt and unlink across them, the refused
-commands, an unreachable then returning owner under the drainer, a lost reply),
-and `daemon_shipped_peer_mail_test` (two shipped daemons: a send to a stopped
-orchestrator is queued and delivered once, over the fixture in
-`support/remote_duo`).
+commands, an unreachable then returning owner under the drainer, a lost reply,
+the roster and description of a resident and a saved remote session, a hidden or
+unlinked one staying hidden, a send to a saved remote session waiting then
+delivered once, expiry, deletion and a move while waiting),
+`daemon_peer_lookup_test` (the real registry: `local_peer`, `peer_command` and
+`local_description` for a held, an unheld and a tombstoned session), and
+`daemon_shipped_peer_mail_test` (two shipped daemons: a send to a stopped
+orchestrator is queued and delivered once, and a session stopped on the other
+orchestrator is described, listed, queued to and delivered to once it is opened,
+over the fixture in `support/remote_duo`).
 
 ## Moving a session between orchestrators (protocol 078, phase 5)
 

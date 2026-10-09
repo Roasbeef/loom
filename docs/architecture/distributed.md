@@ -233,9 +233,9 @@ The messages between nodes are values of closed custom types: `HostMessage` to
 the executor host, `OwnerMessage` to the owner port, and `orchestrator_port`'s
 `Message` between orchestrators. They hold only plain data and subjects, and no
 function, port or atom built from a peer's input. The owner port serves only
-the two reserved fact prefixes, and the orchestrator port serves only four of
-peer mail's commands, so a peer cannot read a session's conversation through
-them. Those limits are scope hygiene: they keep each port to its job. They are
+the two reserved fact prefixes, and the orchestrator port serves only five of
+peer mail's commands and one read of the catalogue, so a peer cannot read a
+session's conversation through them. Those limits are scope hygiene: they keep each port to its job. They are
 not a security boundary, because a peer that wanted more could call any
 function on the node directly.
 
@@ -605,21 +605,46 @@ path; the parts that matter for failures are these.
 `peers.routed` answers a session resident on this orchestrator locally and asks
 the directory for any other. `Elsewhere` yields `remote_peer.at`, an endpoint
 that sends `PeerCommand(session, command, reply)` to the owner's
-`loom_orchestrator` port. The port serves four commands (`Allow`, `Revoke`,
-`Deliver`, `SentReceipt`) and refuses every other `peer_mail.Command`. It
-forwards a served command to the resident session's own endpoint, and admission
-runs in the recipient's Agency as it does within one daemon, so a repeated
-`Deliver` gets the stored receipt. A remote call is `Unreachable` on
-`noconnection`, on `noproc`, or after seven seconds with no answer.
+`loom_orchestrator` port. The port serves five commands (`Allow`, `Revoke`,
+`Deliver`, `SentReceipt`, `Roster`) and refuses every other `peer_mail.Command`.
+It forwards a served command to the resident session's own endpoint, and
+admission runs in the recipient's Agency as it does within one daemon, so a
+repeated `Deliver` gets the stored receipt and a `Roster` lists the strands the
+recipient granted the asking session. A remote call is `Unreachable` on
+`noconnection`, on `noproc`, or after seven seconds with no answer (two seconds
+for a `Roster`, which is a read for a listing).
+
+A listing also shows what the owner's catalogue says about a recipient, so the
+port has a sixth message, `Describe(session, reply)`. It is answered from the
+daemon's catalogue in the port's own turn and never opens the session, so a
+saved recipient is described as `saved`. `peers.described` asks the owner
+(`Directory.describe`) only when this daemon's catalogue has no row, and a
+session this catalogue gave away is not described from its tombstone. An owner
+that cannot be asked leaves the row `unavailable`, and the listing is whole.
+The roster row, `describe` and the `wake` of `peers.inspect` for a recipient on
+another orchestrator are therefore the owner's own answers, under the same rules
+a local recipient is held to: the sender lists only sessions its own links and
+grants name, and the owner lists only the strands the recipient granted the
+asking session.
 
 `peer_mail.Failure` separates `Refused(reason)`, a definitive answer, from
-`Unreachable`. Before it asks, `peers.send` writes an outbox row
-(`client/peers/outbox/<digest>`) in the sending session's store. When the first
-attempt finds the owner unreachable, the tool returns `queued`, and a weft state
-machine per resident session, `peer_outbox_drain`, retries the row every five
-seconds. A strand keeps at most 64 rows, and a row pending for an hour is
-refused as `owner unreachable`. A reply that arrives after the deadline reaches
-nobody; the drainer's next attempt gets the receipt the recipient stored.
+`Unreachable` and `NotOpen`. `NotOpen` is the owner's answer that its catalogue
+holds the session and it is not resident: the owner replies with the fixed text
+`peer_mail.not_open_reason`, and `remote_peer` turns it back into the variant. A
+session that no catalogue holds is `Refused`, because nothing will ever open it.
+Before it asks, `peers.send` writes an outbox row (`client/peers/outbox/<digest>`)
+in the sending session's store. When the first attempt finds the owner
+unreachable, or the recipient saved, the tool returns `queued`, and a weft state
+machine per resident session, `peer_outbox_drain`, retries the row. It waits five
+seconds between attempts while an owner does not answer. While the owner answers
+that the recipient is saved, nothing the sender does hurries the owner's decision
+to open it, so the wait doubles from five seconds to five minutes. Each attempt
+resolves the recipient again, so a session moved to another orchestrator is
+followed and one that was deleted ends the message. A strand keeps at most 64
+rows, and a row pending for an hour is refused: as `owner unreachable` if its last
+attempt found no owner, and as `recipient not opened in time` if it found the
+recipient saved. A reply that arrives after the deadline reaches nobody; the
+drainer's next attempt gets the receipt the recipient stored.
 
 ## Moving a session between orchestrators
 
@@ -739,6 +764,7 @@ the model sees. "Unknown" below always means the model reads
 | Owner port dies during a callback | The executor's call fails in-band. | The approval stands as refused, a fact operation fails with `owner unavailable`, a capability is denied; the tool reaches a terminal outcome. |
 | Peer orchestrator unreachable on lookup | The directory's two-second fan-out reports silence. | `owner_unreachable` naming the orchestrators that did not answer, unless another one answered `Owned`. |
 | Recipient's owner unreachable for peer mail | The outbox row stays pending and the drainer retries every 5 s for up to an hour. | `peer_send` returns `queued`; after an hour the row records `owner unreachable`. |
+| Recipient saved on its owner (here or on another orchestrator) | The outbox row stays pending; the drainer retries after 5 s, then 10 s, doubling to 5 min, for up to an hour. Nothing opens the session. | `peer_send` returns `queued` with a note that the session is saved; the message is delivered once, after the owner opens it; after an hour the row records `recipient not opened in time`. |
 | Source crashes during a move step | The `moving` row survives. The restarted daemon resumes the mover, which asks the receiver how far the move got and takes the remaining steps. | `daemon.move_finished` after the restart. The shipped test halts the source after each of the six steps. |
 | Receiver crashes or is unreachable during a move | The mover stalls and retries; it never abandons on silence. A receiver restarted mid-send holds only a `.part` file, never taken for a copy. | `daemon.move_stalled` with the reason, repeated until it clears. The session stays `moving` on the source, which is one owner. |
 | Executor does not answer the move's close | The mover stalls. An unproven cleanup aborts the move. | `daemon.move_stalled`, or `daemon.move_aborted` naming the cleanup. |
@@ -802,8 +828,11 @@ The directory holds no state of its own, so it has no model.
   and closed; there is no listing of them on the executor.
 - **Imported sessions whose origin is gone** (decommissioned, renamed or
   reinstalled) can never move on, and have no override yet.
-- **Peer mail across orchestrators** does not serve `Roster` or `Describe`, and
-  a message to a recipient that is saved on its owner is refused, not queued.
+- **Peer mail across orchestrators** has no push when a session opens: the
+  sender finds out on its next attempt, at most five minutes after the owner
+  opens it. A message queued while the drainer is backed off for older messages
+  waits for the same tick. Default links (`[peers] default_links`) join sessions
+  of one daemon only, so they do not reach a session on another orchestrator.
 - **Moves** do not resume inside a file, carry running processes, the memory
   domain, memberships or claims, or appear in the web view. The terminal does
   not render the `moving` and `moved` members of a session view.

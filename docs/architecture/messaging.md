@@ -448,13 +448,15 @@ answered from the stored receipt wherever the recipient is.
 3. If some orchestrator could not be asked, and none said it holds the session,
    the answer is `Unreachable`, because the session may be on the one that did
    not answer.
-4. If everybody answered that they do not hold it, or this orchestrator holds it
-   without running it, the refusal is the local one (`not_running`).
+4. If everybody answered that they do not hold it, the refusal is the local one
+   (`not_running`): nothing will ever open a session no catalogue holds. If this
+   orchestrator holds it without running it, the answer is `NotOpen`, which the
+   sender waits on (see the outbox below).
 
 The remote endpoint (`client/remote/remote_peer`) sends
 `orchestrator_port.PeerCommand(session, command, reply)` to the owner's
 `loom_orchestrator` and waits for the answer, the `DOWN` of the port, or a
-deadline. The port serves four commands, the ones `client/peers` sends to a
+deadline. The port serves five commands, the ones `client/peers` sends to a
 recipient, and refuses every other with a fixed text:
 
 | Command | Sent by | What it does on the owner |
@@ -463,23 +465,37 @@ recipient, and refuses every other with a fixed text:
 | `Revoke(grant)` | `peers.unlink`, `peers.unlink_session` | removes the grant |
 | `Deliver(source, target, id, text)` | `peers.send`, the drainer | admits the message and stores the receipt |
 | `SentReceipt(source, strand, id)` | `peer.sent_receipt` | reads the stored receipt |
+| `Roster(source session, source strand)` | `peer_roster`, `peers.inspect` | lists the strands the recipient granted that source, with their wake permission |
 
 The port forwards each command to the session's own endpoint, found with
-`manager.resolve`, so a session that is not running on the owner is refused
-exactly as a send within one daemon is. A remote call ends three ways. An
-answer is `Ok` or `Refused`. A `noconnection` or `noproc` `DOWN`, and a
-deadline, are `Unreachable`, which is what makes the sender record the message
-(see below). A reply that arrives after the deadline reaches nobody; the
+`manager.resolve`. A session that is not running on the owner is answered in one
+of two ways. If the owner's catalogue holds it, the answer is the fixed text
+`peer_mail.not_open_reason`, which the sender reads as `NotOpen`: the session is
+saved and only its owner can open it. If the catalogue does not hold it, the
+answer is `not_running`, a refusal. A remote call therefore ends four ways. An
+answer is `Ok` or `Refused`. `NotOpen` is the owner's report that the recipient
+is saved. A `noconnection` or `noproc` `DOWN`, and a deadline, are
+`Unreachable`. `Unreachable` and `NotOpen` are what make the sender record the
+message (see below). A reply that arrives after the deadline reaches nobody; the
 recipient may have committed the message, and the drainer's next attempt gets the
 stored receipt.
 
-Two things stay on the sender's orchestrator. The link index and the outbox are
-reserved facts in the sending session's store. And `Roster` and `Describe` are
-not served, so a remote recipient is listed with `running: true` and no
-exported strands, and its catalogue metadata is "unavailable". A recipient that
-the owner holds but has not opened is refused as `not_running` and the message
-is not queued. After the owner restarts, the recipient session has to be opened
-before the sender's next attempt, or the attempt is refused.
+A listing needs one read that is not a command: what the owner's catalogue says
+about a session. The port answers it with a separate message, `Describe`, which
+reads the catalogue and never the session, so it answers for a saved session.
+`peers.described` asks it of the owner (`Directory.describe`) only when the local
+catalogue has no row. With it, a remote recipient is listed as a local one is:
+`running` is false and `exported_strands` is null when the owner says the
+session is saved, `exported_strands` is the owner's `Roster` answer when it is
+open, and `metadata` is the owner's catalogue record. A sender asks only about
+sessions its own links and grants name, and the owner lists only what the
+recipient granted the asking session, so a listing reveals no more than a local
+one does. An owner that cannot be reached leaves its row `unavailable`, and the
+listing is whole. The model's `peer_describe` is a different thing: it writes the
+recipient's own self-description, and the port refuses it.
+
+The link index and the outbox are reserved facts in the sending session's store,
+and they stay on the sender's orchestrator.
 
 ### The sender outbox
 
@@ -493,15 +509,19 @@ recipient's owner does:
 | The recipient's owner | `peer_send` returns | The row becomes |
 |---|---|---|
 | answers with a receipt | the receipt, as before | `admitted`, holding the receipt |
-| answers with a refusal (not running, no grant, id reused with other content) | the refusal, as before | `refused`, holding the reason |
+| answers with a refusal (no catalogue holds the session, no grant, id reused with other content) | the refusal, as before | `refused`, holding the reason |
 | does not answer (`peer_mail.Unreachable`) | `{"state": "queued", ...}` | stays `pending`, holding the text |
+| holds the recipient saved, not open (`peer_mail.NotOpen`) | `{"state": "queued", ...}` with a note that the recipient is saved | stays `pending`, waiting for an open |
 
-A local recipient never produces the third case, so within one daemon
-`peer_send` behaves as it did before the outbox, apart from the row. The
+A local recipient never produces the third case, but a saved one produces the
+fourth: within one daemon a send to a session that is saved is queued and
+delivered once when its owner opens the session, not refused
+([protocol 077](../../protocol-change/077-web-peer-links.md) refused it, and
+its addendum in 078 records the change). Sending still never opens a session. The
 distinction is the type of `Endpoint.call`'s error, `peer_mail.Failure`:
-`Unreachable` means nobody answered, and `Refused(reason)` is the recipient's own
-refusal or one made on the sender's side. `peers.send` matches on it, and so
-does the drainer.
+`Unreachable` means nobody answered, `NotOpen` means the owner answered that
+the session is saved, and `Refused(reason)` is the recipient's own refusal or one
+made on the sender's side. `peers.send` matches on it, and so does the drainer.
 
 The rows are reserved facts in the sender's own store, one per message, under
 `client/peers/outbox/<digest(sending strand, recipient session, message id)>`.
@@ -518,11 +538,18 @@ serialized Agency actor.
 `client/peer_outbox_drain` delivers a queued message later. It is a
 `weft/state_machine` in the session's restartable service tier, with one named
 timeout. It makes one pass when the session opens, so a restart resumes
-delivery. After that it arms a pass every 5 seconds while any row is pending,
-and it holds no timer when none is. A pass reads the due rows from the Agency,
-resolves each recipient through the same `Directory.resolve` seam `peers.send`
-uses, and records the outcome. A recipient that does not answer is asked once
-per pass, so a pass over many rows to one dead node costs one deadline.
+delivery. After that it arms a pass every 5 seconds while any row waits on an
+owner that does not answer, and it holds no timer when no row is pending. While
+every pending row waits for a saved recipient to be opened, the wait doubles from
+5 seconds to 5 minutes after each pass, because the owner is up and only its
+decision ends the wait. The interval returns to 5 seconds when a pass finds an
+owner that does not answer, and when the machine goes idle. A pass reads the due
+rows from the Agency, resolves each recipient through the same
+`Directory.resolve` seam `peers.send` uses, and records the outcome. A recipient
+that does not answer is asked once per pass, so a pass over many rows to one dead
+node costs one deadline. Resolving again on each attempt is what follows a
+session that was moved to another orchestrator, and what ends the message when
+the session was deleted.
 
 If the recipient committed a message and its reply was lost, the row stays
 pending. The next attempt reaches `peer_mail.deliver`, which finds the stored
@@ -535,7 +562,8 @@ The outbox is bounded:
   oldest finished row, or is refused with `outbox_full` when all 64 are
   pending.
 - A row that has been pending for more than one hour becomes
-  `refused("owner unreachable")` and is not attempted again.
+  `refused("owner unreachable")`, or `refused("recipient not opened in time")`
+  when its last attempt found the recipient saved, and is not attempted again.
 - Removing a link deletes the pending rows to that target. Finished rows stay.
 - A refused row is not final. Sending the same message id again attempts it
   again, because nothing was admitted and the cause may have passed.
@@ -543,8 +571,8 @@ The outbox is bounded:
   and asks the recipient only when there is none.
 
 `cap/peer.send` returns a typed receipt, so a program that sends to an
-unreachable owner receives the denial `peer_queued` with the model-facing note
-rather than a receipt.
+unreachable owner, or to a saved recipient, receives the denial `peer_queued`
+with the model-facing note for that case rather than a receipt.
 
 ## What is durable, and what is ephemeral
 
@@ -563,7 +591,7 @@ rather than a receipt.
 | A model-created schedule | commit: a `schedule/config/…` cell claimed on its absence | never lost; a second claim of the name is told `NameTaken` rather than overwriting |
 | A schedule's observation instant | commit: a `schedule/seen/…` cell claimed once by the scanner | never lost; the expiry clock a restart re-derives is the one every incarnation agreed on |
 | A schedule's retirement | commit: its marks, then its seen cell, then its config cell deleted | a fault mid-way leaves a live schedule with a reset count, never an orphan clock for a reused name |
-| A queued peer message | commit: a `client/peers/outbox/…` row in the sender's session, `pending` | never lost; the drainer attempts it every 5 s for up to an hour, and a retry after a lost reply gets the recipient's stored receipt |
+| A queued peer message | commit: a `client/peers/outbox/…` row in the sender's session, `pending` | never lost; the drainer attempts it every 5 s for up to an hour while an owner is silent, and at doubling intervals up to 5 minutes while the recipient is saved; a retry after a lost reply gets the recipient's stored receipt |
 | The outbox drainer's timer | process timer | lost with the process; the restart's first pass reads the rows again |
 
 The rule reads straight down the table: if a row is a commit, a crash
