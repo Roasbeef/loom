@@ -9,6 +9,7 @@ import core/corruption
 import core/ids.{type OpId}
 import core/json.{type JsonValue}
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 
@@ -52,6 +53,24 @@ pub type Execution {
     seam: String,
     /// Current custody, rather than an inference from worker presence.
     phase: Phase,
+    /// The launching tool call's own step and source index. `step` above is
+    /// the execution's broker step, `async/<id>`, and `id` is a digest that
+    /// cannot be inverted, so this is the only durable record of the planner
+    /// step a launch came from. A durable child step is attributed to that
+    /// call, and an owner answering a program on another node rebuilds the
+    /// caller from here. `None` for a record an earlier build wrote.
+    launch: Option(Launch),
+  )
+}
+
+/// Where an execution was launched: the planner coordinates of the tool call
+/// that launched it.
+pub type Launch {
+  Launch(
+    /// The launching call's planner step.
+    step: String,
+    /// The launching call's position among its step's tool calls.
+    source_index: Int,
   )
 }
 
@@ -243,7 +262,40 @@ pub fn encode(record: Execution) -> JsonValue {
     #("seam", json.String(record.seam)),
     #("phase", json.String(phase)),
     #("result", result),
+    #("launch", encode_launch(record.launch)),
   ])
+}
+
+fn encode_launch(launch: Option(Launch)) -> JsonValue {
+  case launch {
+    None -> json.Null
+    Some(Launch(step:, source_index:)) ->
+      json.Object([
+        #("step", json.String(step)),
+        #("source_index", json.Int(source_index)),
+      ])
+  }
+}
+
+// The launching coordinates, which records written before the field existed
+// do not carry. An absent field and a null both read as `None`; anything else
+// must be the whole pair, so a damaged value is refused rather than guessed.
+fn decode_launch(
+  fields: List(#(String, JsonValue)),
+) -> Result(Option(Launch), String) {
+  case list.key_find(fields, "launch") {
+    Error(Nil) | Ok(json.Null) -> Ok(None)
+    Ok(json.Object(launch)) -> {
+      use step <- result.try(text(launch, "step"))
+      use index <- result.try(field(launch, "source_index"))
+      case index {
+        json.Int(source_index) if source_index >= 0 ->
+          Ok(Some(Launch(step:, source_index:)))
+        _ -> Error("a nonnegative launching source index")
+      }
+    }
+    Ok(_other) -> Error("a launching call or null")
+  }
 }
 
 /// Decodes all authority-bearing fields without guessing absent values.
@@ -313,6 +365,7 @@ fn decode_record(value: JsonValue) -> Result(Execution, String) {
     "lost", json.String(reason) -> Ok(Lost(reason))
     _, _ -> Error("a complete execution phase")
   })
+  use launch <- result.try(decode_launch(fields))
   Ok(Execution(
     id:,
     strand:,
@@ -322,6 +375,7 @@ fn decode_record(value: JsonValue) -> Result(Execution, String) {
     source:,
     seam:,
     phase:,
+    launch:,
   ))
 }
 
