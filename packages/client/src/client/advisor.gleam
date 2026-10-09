@@ -1751,7 +1751,7 @@ fn stored_if_moved(
 }
 
 // The facts one evaluation reads, with the one-commit lag disbelieved
-// for the run the occasion just ended.
+// for the runs this actor has been told ended.
 //
 // The driver resolves a run-end hook before the settlement that clears
 // `current_operation`, so for one commit the store still shows a
@@ -1760,6 +1760,14 @@ fn stored_if_moved(
 // so the operation the occasion names is disbelieved here — and nothing
 // else is, because any other open run means the strand is genuinely
 // busy.
+//
+// The advisor's last ended review is disbelieved too, on every occasion
+// rather than only the one that announced it. The end notice is a single
+// cast, and an evaluation that comes after it inside the same commit — a
+// goal pinned onto the idle session, a check result that releases the feed —
+// would otherwise find the cell still busy and rest until the periodic tick,
+// because nothing announces that end again. An operation id is never reused,
+// so remembering one that ended cannot hide a later review.
 fn observe(
   state: State,
   memory: Memory,
@@ -1768,8 +1776,12 @@ fn observe(
   let ended = ending(event)
 
   goalloop.Observed(
-    primary: open_run(state.wiring.session, primary, ended),
-    advisor: open_run(state.wiring.session, strand, ended),
+    primary: open_run(state.wiring.session, primary, option.values([ended])),
+    advisor: open_run(
+      state.wiring.session,
+      strand,
+      option.values([ended, memory.reviewed]),
+    ),
     progress: measured(state, memory),
     woken_ending: woken_ending(state, memory),
     event:,
@@ -1864,16 +1876,12 @@ fn ending(event: goalloop.Event) -> Option(OpId) {
   }
 }
 
-fn open_run(
-  opened: Session,
-  name: String,
-  ended: Option(OpId),
-) -> Option(OpId) {
+fn open_run(opened: Session, name: String, ended: List(OpId)) -> Option(OpId) {
   case running(opened, name) {
     None -> None
 
     Some(open) ->
-      case Some(open) == ended {
+      case list.contains(ended, open) {
         True -> None
         False -> Some(open)
       }
