@@ -190,9 +190,8 @@ pub fn refresh_render_cache(before: Model, after: Model) -> Model {
 
       // Reading history owns the viewport through the scroll offset, and a
       // strand or session switch replaced the rows rather than extending
-      // them: neither has a tail to walk toward. A change of attribution
-      // inserts its rows above every prompt rather than at the tail, so it
-      // has no tail to walk toward either. Otherwise the count only needs
+      // them: neither has a tail to walk toward, and neither does a change of
+      // attribution (`attribution_changed`). Otherwise the count only needs
       // clamping, since a shrunk projection must not leave the viewport
       // claiming rows that no longer exist.
       let revealed_rows = case

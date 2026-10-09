@@ -213,6 +213,8 @@ pub fn a_peer_joining_adds_label_rows_without_holding_back_the_tail_test() {
     as "the newest answer stays on screen through the join"
 }
 
+// A shrink was already adopted whole before attribution was considered, so
+// this guards that path against the new rule and does not exercise the rule.
 pub fn a_peer_leaving_keeps_the_tail_in_place_test() {
   let shared = settled([local(), remote()])
   assert tui_model.viewport_backlog(shared) == 0

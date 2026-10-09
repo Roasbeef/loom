@@ -427,7 +427,7 @@ which reads the model:
   not new output are never walked: a strand or session switch, and a peer
   joining or leaving, which adds or removes the author label above each owner
   prompt, are adopted whole, so another terminal or a browser page opening the
-  session does not pull the tail of this transcript back.
+  session does not hide the tail of this transcript.
 
 The poll timeout is `tick.terminal_poll_timeout`, and since socket traffic
 wakes the loop itself, the timeout is only for what a wake does not
