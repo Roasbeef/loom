@@ -2045,3 +2045,66 @@ fn has_leader(status: JsonValue) -> Bool {
   let assert json.Object(fields) = status as "a status body is an object"
   list.key_find(fields, "leader") != Error(Nil)
 }
+
+// --- peer mail ---------------------------------------------------------------
+
+/// `peers.link` from the strand `main` of `source` to the strand `main` of
+/// `target`, allowed to wake the target, sent to the daemon that holds `source`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_daemons.peers_link(control, 10, a, b)
+/// ```
+pub fn peers_link(
+  control: Control,
+  id: Int,
+  source: String,
+  target: String,
+) -> JsonValue {
+  command(
+    control,
+    id,
+    "peers.link",
+    json.Object([
+      #("source_session", json.String(source)),
+      #("source_strand", json.String("main")),
+      #("target_session", json.String(target)),
+      #("target_strand", json.String("main")),
+      #("wake", json.String("may_wake")),
+      #("epoch", json.String(control.epoch)),
+    ]),
+  )
+}
+
+/// `peers.send` of `text` under `message_id` from the strand `main` of `source`
+/// to the strand `main` of `target`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_daemons.peers_send(control, 11, a, b, "m1", "first message")
+/// ```
+pub fn peers_send(
+  control: Control,
+  id: Int,
+  source: String,
+  target: String,
+  message_id: String,
+  text: String,
+) -> JsonValue {
+  command(
+    control,
+    id,
+    "peers.send",
+    json.Object([
+      #("source_session", json.String(source)),
+      #("source_strand", json.String("main")),
+      #("target_session", json.String(target)),
+      #("target_strand", json.String("main")),
+      #("message_id", json.String(message_id)),
+      #("text", json.String(text)),
+      #("epoch", json.String(control.epoch)),
+    ]),
+  )
+}

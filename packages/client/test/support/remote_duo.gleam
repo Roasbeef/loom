@@ -27,6 +27,7 @@ import client/tui_e2e_test.{type EunitTest, Timeout}
 import core/codec
 import core/entry
 import core/json.{type JsonValue}
+import core/message
 import gleam/bit_array
 import gleam/dynamic/decode
 import gleam/int
@@ -43,6 +44,7 @@ import support/enforcement
 import support/internal/ffi_proc
 import support/remote_daemons.{Trust}
 import weft
+import weft/poll
 
 // The longest the body may run, and the EUnit timeout, which the runner scales
 // by ten.
@@ -550,4 +552,64 @@ fn signal(layout: remote_daemons.Layout, name: String) -> Nil {
       }
     Ok(None) | Error(_) -> Nil
   }
+}
+
+/// How many messages in `session`'s transcript on `daemon` come from a peer and
+/// carry `text`, read from a copy of the store as `session_messages` reads it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_duo.peer_messages(duo, duo.alpha, session, "first message")
+/// ```
+pub fn peer_messages(
+  duo: Duo,
+  daemon: remote_daemons.Layout,
+  session: String,
+  text: String,
+) -> Result(Int, String) {
+  use entries <- result.try(session_messages(duo, daemon, session))
+  Ok(
+    list.count(entries, fn(each) {
+      case each {
+        entry.MessageEntry(
+          message: message.UserMessage(
+            content: [message.UserText(body, _)],
+            origin: Some(message.PeerOrigin(..)),
+            ..,
+          ),
+          ..,
+        ) -> string.contains(body, text)
+        _ -> False
+      }
+    }),
+  )
+}
+
+/// Waits until `session`'s transcript on `daemon` holds exactly `want` peer
+/// messages carrying `text`, and fails at once if it holds more.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_duo.await_peer_messages(duo, duo.alpha, session, "hello", 1)
+/// ```
+pub fn await_peer_messages(
+  duo: Duo,
+  daemon: remote_daemons.Layout,
+  session: String,
+  text: String,
+  want: Int,
+) -> Nil {
+  let assert poll.Answered(Nil) =
+    poll.until(within: 40_000, every: 500, attempt: fn() {
+      case peer_messages(duo, daemon, session, text) {
+        Ok(found) if found == want -> poll.Done(Nil)
+        Ok(found) if found > want ->
+          poll.Fail("the transcript holds the message more than once")
+        _ -> poll.Retry
+      }
+    })
+    as { "the transcript holds the message " <> text }
+  Nil
 }

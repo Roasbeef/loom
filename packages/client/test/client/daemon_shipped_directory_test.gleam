@@ -38,8 +38,10 @@
 ////   configuration holds, for `alpha`'s session, and `alpha` answers the same
 ////   for `bravo`'s without an address. Each answer is read from the member's own
 ////   copy of the records; nobody is asked.
-//// - A local session is not recorded, so the other orchestrator answers
-////   `not_found` for it, as it does for an identity nobody holds.
+//// - A local session is recorded too, as a lookup hint written after it is
+////   created, so `bravo` answers `not_owner` naming `alpha` for `alpha`'s local
+////   session once the record lands, and a message from a session on `bravo`
+////   to it is delivered exactly once. An identity nobody holds is `not_found`.
 //// - `directory.status` on each member lists the three members as voters.
 //// - With `alpha` killed, `bravo` still answers `not_owner` naming `alpha`,
 ////   quickly, and `not_found` for an unknown identity: a lookup never needs the
@@ -72,6 +74,7 @@
 
 import client/tui_e2e_test.{type EunitTest}
 import core/json.{type JsonValue}
+import gleam/erlang/process
 import gleam/list
 import gleam/option.{Some}
 import host/bootstrap as native
@@ -252,17 +255,18 @@ pub fn a_remote_session_is_found_through_the_directory_test_() -> EunitTest {
     let on_bravo = remote_daemons.open_control(members.bravo)
 
     // A remote session is created on each orchestrator, which records itself as
-    // its owner, and a local one on `bravo`, which is not recorded.
+    // its owner before the session opens, and a local one on `alpha`, whose
+    // record follows within one movers tick.
     let #(session, settled) = remote(on_alpha, 1, "e2e-alpha")
     assert remote_daemons.settled_state(settled) == "resident"
     let #(bravos, settled) = remote(on_bravo, 1, "e2e-bravo")
     assert remote_daemons.settled_state(settled) == "resident"
     let #(local, settled) =
       remote_daemons.create_local_and_settle(
-        on_bravo,
+        on_alpha,
         400,
         "e2e-local",
-        duo.bravo.workspace,
+        duo.alpha.workspace,
       )
     assert remote_daemons.settled_state(settled) == "resident"
 
@@ -293,13 +297,32 @@ pub fn a_remote_session_is_found_through_the_directory_test_() -> EunitTest {
       == json.String("bravo")
     assert !has_member(read, "address")
 
-    // A local session has no record, so `alpha` does not know it, exactly as it
-    // does not know an identity nobody holds.
-    assert code_of(get(on_alpha, 813, local)) == json.String("not_found")
+    // `alpha`'s local session is recorded as a lookup hint, so `bravo` names
+    // `alpha` for it once the record lands. An identity nobody holds is still
+    // `not_found` on both, and the local session is `alpha`'s own to answer.
+    let read = await_redirect(on_bravo, 2000, local)
+    assert remote_daemons.field(body_of(read), "orchestrator")
+      == json.String("alpha")
+    assert remote_daemons.field(body_of(read), "address")
+      == json.String(alphas_address)
     assert code_of(get(on_alpha, 814, nobody_has)) == json.String("not_found")
     assert code_of(get(on_bravo, 814, nobody_has)) == json.String("not_found")
-    assert remote_daemons.field(get(on_bravo, 815, local), "event")
+    assert remote_daemons.field(get(on_alpha, 815, local), "event")
       == json.String("sessions.get")
+
+    // A session on `bravo` mails `alpha`'s local session: the route is the
+    // record, and the message lands once, however often it is sent.
+    let linked = remote_daemons.peers_link(on_bravo, 816, bravos, local)
+    assert remote_daemons.field(linked, "event") == json.String("peers.link")
+    let sent =
+      remote_daemons.peers_send(on_bravo, 817, bravos, local, "m1", "to local")
+    assert remote_daemons.field(sent, "event") == json.String("peers.send")
+    assert remote_daemons.field(body_of(sent), "admitted") == json.Bool(True)
+    remote_duo.await_peer_messages(duo, duo.alpha, local, "to local", 1)
+    let again =
+      remote_daemons.peers_send(on_bravo, 818, bravos, local, "m1", "to local")
+    assert remote_daemons.field(again, "event") == json.String("peers.send")
+    assert remote_duo.peer_messages(duo, duo.alpha, local, "to local") == Ok(1)
 
     // `alpha` goes away. `bravo` reads the record from its own copy, so the
     // answer is still `not_owner` and is quick, and an unknown identity is
@@ -311,6 +334,8 @@ pub fn a_remote_session_is_found_through_the_directory_test_() -> EunitTest {
       == json.String("alpha")
     let gone = timed(fn() { get(on_bravo, 821, nobody_has) })
     assert code_of(gone) == json.String("not_found")
+    let gone = timed(fn() { get(on_bravo, 822, local) })
+    assert code_of(gone) == json.String("not_owner")
 
     // `bravo` and the executor are two of three members, a majority, so a
     // remote session can still be created and recorded.
@@ -325,6 +350,42 @@ pub fn a_remote_session_is_found_through_the_directory_test_() -> EunitTest {
       == json.String("sessions.get")
     Nil
   })
+}
+
+// Polls `sessions.get` on a member until it redirects for `session`, which a
+// local session's record does within one movers tick of its creation, and
+// returns the refusal. Each poll is a new request, numbered from `first_id`.
+fn await_redirect(
+  control: remote_daemons.Control,
+  first_id: Int,
+  session: String,
+) -> JsonValue {
+  redirect_polls(control, first_id, session, 80)
+}
+
+fn redirect_polls(
+  control: remote_daemons.Control,
+  id: Int,
+  session: String,
+  remaining: Int,
+) -> JsonValue {
+  assert remaining > 0 as "the local session's record lands"
+  let read = get(control, id, session)
+  case code_of_any(read) == json.String("not_owner") {
+    True -> read
+    False -> {
+      process.sleep(250)
+      redirect_polls(control, id + 1, session, remaining - 1)
+    }
+  }
+}
+
+// The code of a reply that may not be an error yet.
+fn code_of_any(reply: JsonValue) -> JsonValue {
+  case remote_daemons.field(reply, "event") {
+    json.String("error") -> remote_daemons.field(body_of(reply), "code")
+    other -> other
+  }
 }
 
 // A remote session on the members' executor, created and settled.
