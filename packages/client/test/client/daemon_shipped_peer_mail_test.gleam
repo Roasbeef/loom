@@ -21,14 +21,31 @@
 //// 3. `bravo` is stopped. A send of `m2` answers `queued`, and `a`'s row is
 ////    `pending` with the text it must deliver.
 //// 4. `alpha` is frozen while `bravo` starts again and `b` is opened, and then
-////    runs again. The freeze orders the events: a retry that landed after
-////    `bravo` was up and before `b` was resident would be refused, as
-////    protocol-change/077 requires of a send to a session that is not running.
+////    runs again. The freeze orders the events, so that the test does not
+////    depend on where the drainer's retries fall. A retry between `bravo`
+////    starting and `b` opening would find `b` saved and wait, as the next test
+////    proves, and the wait would be longer than this test allows.
 //// 5. `b`'s transcript holds exactly one peer message for `m2`, and `a`'s row
 ////    is `admitted` with the recipient's receipt. The drainer did it with no
 ////    help from the test.
 //// 6. A send of `m2` again, with the same id and text, answers that receipt
 ////    and adds nothing to `b`'s transcript.
+////
+//// `a_session_stopped_on_the_other_orchestrator_is_listed_and_messaged_once_open_test_`
+////
+//// 1. `a` is linked to `b`, and `alpha` inspects the link: the wake permission
+////    and the metadata of the link are `bravo`'s own answers, from the
+////    recipient's grant and from `bravo`'s catalogue.
+//// 2. `b` is stopped on `bravo`, so it is saved there. `alpha` inspects the link
+////    again: no wake permission, because nothing is running to grant it, and
+////    the metadata still describes `b`, as `saved`, without opening it.
+//// 3. A send of `m1` answers `queued` with the words for a saved recipient, `a`'s
+////    row is `pending` and waiting for an open, and `b`'s transcript holds
+////    nothing.
+//// 4. `b` is opened on `bravo`. Nobody tells `alpha`; its drainer finds `b`
+////    open on a later attempt and the message is admitted.
+//// 5. `b`'s transcript holds exactly one peer message for `m1`, and sending `m1`
+////    again answers the stored receipt and adds nothing.
 ////
 //// `a_first_link_over_a_slow_handshake_still_links_test_`
 ////
@@ -70,6 +87,7 @@
 //// sockets below its state root.
 
 import client/peer_outbox
+import client/peers
 import client/tui_e2e_test.{type EunitTest}
 import core/entry
 import core/json.{type JsonValue}
@@ -88,6 +106,12 @@ const skip_label = "shipped remote peer mail"
 // How long the drainer may take to deliver once both sides are ready: one
 // retry interval and the directory's deadline, with room.
 const delivered_within_ms = 40_000
+
+// How long a message to a saved session may take to arrive after the session
+// is opened. The drainer attempts it 5, 15 and 35 seconds after it was queued
+// while the session stays saved, and the session opens within a few seconds, so
+// the attempt at 5 or at 15 seconds delivers it. The fixture itself ends at 60.
+const opened_delivery_ms = 40_000
 
 pub fn a_message_to_an_unreachable_orchestrator_is_delivered_once_it_returns_test_() -> EunitTest {
   remote_duo.shipped(skip_label, fn(duo) {
@@ -167,6 +191,89 @@ pub fn a_message_to_an_unreachable_orchestrator_is_delivered_once_it_returns_tes
     assert body_of(again) == receipt
       as { "the repeat answers the stored receipt: " <> json.to_string(again) }
     assert peer_messages(duo, b, "second message") == Ok(1)
+    Nil
+  })
+}
+
+pub fn a_session_stopped_on_the_other_orchestrator_is_listed_and_messaged_once_open_test_() -> EunitTest {
+  remote_duo.shipped(skip_label, fn(duo) {
+    let keys = remote_duo.provision(duo)
+    remote_duo.configure(duo, keys, None)
+    let alpha = remote_daemons.start(duo.alpha)
+    let bravo = remote_daemons.start(duo.bravo)
+    let on_alpha = remote_daemons.open_control(alpha)
+    let on_bravo = remote_daemons.open_control(bravo)
+    let #(a, settled) =
+      remote_daemons.create_local_and_settle(
+        on_alpha,
+        1,
+        "e2e-a",
+        duo.alpha.workspace,
+      )
+    assert remote_daemons.settled_state(settled) == "resident"
+      as { "a opens: " <> json.to_string(settled) }
+    let #(b, settled) =
+      remote_daemons.create_local_and_settle(
+        on_bravo,
+        1,
+        "e2e-b",
+        duo.bravo.workspace,
+      )
+    assert remote_daemons.settled_state(settled) == "resident"
+      as { "b opens: " <> json.to_string(settled) }
+    let linked = link(on_alpha, 10, a, b)
+    assert remote_daemons.field(linked, "event") == json.String("peers.link")
+      as { "the link answers peers.link: " <> json.to_string(linked) }
+
+    // `b` is open on `bravo`: its wake permission is the grant `bravo` holds,
+    // and its metadata is `bravo`'s catalogue's. `alpha` has no row for `b`.
+    let open = outgoing_row(inspect(on_alpha, 11, a), b)
+    assert remote_daemons.field(open, "wake") == json.String("may_wake")
+      as { "the owner's grant is shown: " <> json.to_string(open) }
+    assert remote_daemons.field(
+        remote_daemons.field(open, "metadata"),
+        "session_id",
+      )
+      == json.String(b)
+      as { "the owner describes the session: " <> json.to_string(open) }
+    assert catalogue_state(open) == json.String("resident")
+      as { "the session is open: " <> json.to_string(open) }
+
+    // Stopped, `b` is saved on `bravo`. It is still described, and no grant
+    // can be read from a session that is not running.
+    remote_daemons.stop_session(bravo, on_bravo, 20, b)
+    let saved = outgoing_row(inspect(on_alpha, 21, a), b)
+    assert remote_daemons.field(saved, "wake") == json.Null
+      as { "a saved session has no wake permission: " <> json.to_string(saved) }
+    assert catalogue_state(saved) == json.String("saved")
+      as { "the session is described as saved: " <> json.to_string(saved) }
+
+    // The send waits. It is not refused, and nothing reaches `b`.
+    let queued = send(on_alpha, 22, a, b, "m1", "waiting message")
+    assert remote_daemons.field(queued, "event") == json.String("peers.send")
+      as { "the send answers peers.send: " <> json.to_string(queued) }
+    assert remote_daemons.field(body_of(queued), "state")
+      == json.String("queued")
+      as { "the send is queued: " <> json.to_string(queued) }
+    assert remote_daemons.field(body_of(queued), "note")
+      == json.String(peers.queued_unopened_note)
+      as { "the words say why: " <> json.to_string(queued) }
+    await_row_within(duo, a, b, "m1", Pending, delivered_within_ms)
+    assert peer_messages(duo, b, "waiting message") == Ok(0)
+
+    // The owner opens `b`, and `alpha`'s drainer delivers on a later attempt.
+    let reopened = remote_daemons.reopen_session(on_bravo, 100, b)
+    assert remote_daemons.settled_state(reopened) == "resident"
+      as { "b opens again: " <> json.to_string(reopened) }
+    await_row_within(duo, a, b, "m1", Admitted, opened_delivery_ms)
+    await_peer_messages_within(duo, b, "waiting message", 1, opened_delivery_ms)
+
+    // The same id and text again is the stored receipt, and `b` gains nothing.
+    let receipt = row_receipt(duo, a, b, "m1")
+    let again = send(on_alpha, 23, a, b, "m1", "waiting message")
+    assert body_of(again) == receipt
+      as { "the repeat answers the stored receipt: " <> json.to_string(again) }
+    assert peer_messages(duo, b, "waiting message") == Ok(1)
     Nil
   })
 }
@@ -252,6 +359,48 @@ fn link(
   )
 }
 
+fn inspect(
+  control: remote_daemons.Control,
+  id: Int,
+  source: String,
+) -> JsonValue {
+  let inspected =
+    remote_daemons.command(
+      control,
+      id,
+      "peers.inspect",
+      json.Object([
+        #("source_session", json.String(source)),
+        #("source_strand", json.String("main")),
+        #("epoch", json.String(control.epoch)),
+      ]),
+    )
+  assert remote_daemons.field(inspected, "event")
+    == json.String("peers.inspect")
+    as { "the inspection answers: " <> json.to_string(inspected) }
+  body_of(inspected)
+}
+
+// The outgoing row of an inspection that names `target`.
+fn outgoing_row(inspected: JsonValue, target: String) -> JsonValue {
+  let assert json.Array(rows) = remote_daemons.field(inspected, "outgoing")
+    as "an inspection lists outgoing links"
+  let assert Ok(found) =
+    list.find(rows, fn(each) {
+      remote_daemons.field(each, "session") == json.String(target)
+    })
+    as "the link to the target is listed"
+  found
+}
+
+// What the recipient's owner's catalogue says the session is doing.
+fn catalogue_state(row: JsonValue) -> JsonValue {
+  remote_daemons.field(
+    remote_daemons.field(remote_daemons.field(row, "metadata"), "status"),
+    "state",
+  )
+}
+
 fn send(
   control: remote_daemons.Control,
   id: Int,
@@ -306,8 +455,19 @@ fn await_row(
   message_id: String,
   want: Standing,
 ) -> Nil {
+  await_row_within(duo, source, target, message_id, want, delivered_within_ms)
+}
+
+fn await_row_within(
+  duo: Duo,
+  source: String,
+  target: String,
+  message_id: String,
+  want: Standing,
+  within_ms: Int,
+) -> Nil {
   let assert poll.Answered(Nil) =
-    poll.until(within: delivered_within_ms, every: 500, attempt: fn() {
+    poll.until(within: within_ms, every: 500, attempt: fn() {
       case row(duo, source, target, message_id), want {
         Ok(peer_outbox.Row(state: peer_outbox.Pending(..), ..)), Pending
         | Ok(peer_outbox.Row(state: peer_outbox.Admitted(..), ..)), Admitted
@@ -364,8 +524,18 @@ fn await_peer_messages(
   text: String,
   want: Int,
 ) -> Nil {
+  await_peer_messages_within(duo, session, text, want, delivered_within_ms)
+}
+
+fn await_peer_messages_within(
+  duo: Duo,
+  session: String,
+  text: String,
+  want: Int,
+  within_ms: Int,
+) -> Nil {
   let assert poll.Answered(Nil) =
-    poll.until(within: delivered_within_ms, every: 500, attempt: fn() {
+    poll.until(within: within_ms, every: 500, attempt: fn() {
       case peer_messages(duo, session, text) {
         Ok(found) if found == want -> poll.Done(Nil)
         Ok(found) if found > want ->
