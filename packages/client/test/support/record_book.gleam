@@ -7,13 +7,14 @@
 //// records live in one actor both sides reach. The compare-and-set rules are
 //// the store's: a write commits only against the exact value it expects, and a
 //// refusal carries what the record holds. A switch makes every write refuse for
-//// want of a quorum.
+//// want of a quorum, and a node can be marked as not having seeded the store.
 
 import client/directory/ownership.{type Ownership, Ownership}
 import client/directory/record.{type Record, Moving, Record, Serving}
 import client/directory/store
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 
@@ -33,6 +34,8 @@ type Message {
   )
   Put(session: String, new: Option(Record))
   Starve(on: Starving)
+  Unseed(node: String)
+  Seeded(node: String, reply: Subject(Bool))
 }
 
 /// Whether the book refuses every write as if the store had no quorum.
@@ -42,7 +45,11 @@ pub type Starving {
 }
 
 type State {
-  State(records: Dict(String, Record), starving: Starving)
+  State(
+    records: Dict(String, Record),
+    starving: Starving,
+    unseeded: List(String),
+  )
 }
 
 /// The shared records.
@@ -53,7 +60,7 @@ pub opaque type Book {
 /// Starts an empty book.
 pub fn new() -> Book {
   let assert Ok(started) =
-    actor.new(State(records: dict.new(), starving: Fed))
+    actor.new(State(records: dict.new(), starving: Fed, unseeded: []))
     |> actor.on_message(handle)
     |> actor.start
     as "the record book starts"
@@ -68,6 +75,12 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     }
     Put(session:, new:) -> actor.continue(put(state, session, new))
     Starve(on:) -> actor.continue(State(..state, starving: on))
+    Unseed(node:) ->
+      actor.continue(State(..state, unseeded: [node, ..state.unseeded]))
+    Seeded(node:, reply:) -> {
+      process.send(reply, !list.contains(state.unseeded, node))
+      actor.continue(state)
+    }
     Swap(session:, expected:, new:, reply:) -> {
       let current = option.from_result(dict.get(state.records, session))
       case state.starving, current == expected {
@@ -111,6 +124,12 @@ pub fn starve(book: Book, on: Starving) -> Nil {
   process.send(book.inbox, Starve(on))
 }
 
+/// Marks `node` as not having seeded the store: its migration marker reads as
+/// absent until the book is thrown away.
+pub fn unseed(book: Book, node: String) -> Nil {
+  process.send(book.inbox, Unseed(node))
+}
+
 /// The ownership of `name`, whose moves go to and come from `peer`.
 pub fn ownership(book: Book, name: String, peer: String) -> Ownership {
   let swap = fn(session, expected, new) {
@@ -149,7 +168,7 @@ pub fn ownership(book: Book, name: String, peer: String) -> Ownership {
       )
     },
     release: fn(session) { swap(session, Some(serving), None) },
-    migrated: fn(_node) { Ok(True) },
+    migrated: fn(node) { Ok(process.call(book.inbox, 1000, Seeded(node, _))) },
     mark_migrated: fn() { Ok(Nil) },
     seed_moving: fn(session, op, _to) {
       swap(
