@@ -289,8 +289,9 @@ daemon's control. The masked entries are:
   secret but are what a launcher adopts a running daemon by.
 
 The `loom*.toml` catalogues, `extensions/`, `logs/` and `daemon.log` are
-left alone. The blob store is masked by the workspace policy itself rather
-than by this list.
+left alone. The blob store needs no entry of its own: it is `blobs/` inside
+the session's domain directory, under `workspaces/` or `domains/`, so the
+masks above already cover it (see "Where the blob store lives" below).
 
 A workspace that *is* one of those entries, or lies under one, is refused
 at boot and at session creation, with an error naming the entry.
@@ -300,6 +301,57 @@ every call.
 
 Confining one session's database from another session's jail is separate,
 open work (issue #242). This list covers only the daemon's own secrets.
+
+### Where the blob store lives
+
+Content-addressed artifacts (tool output past 64 KiB, `report.emit` and job
+output) are written by the harness only. They used to sit in
+`<workspace>/.blobs`, protected from every jail so that a jailed tool could
+not replace an artifact behind its hash. That put a harness directory in the
+user's checkout, and the protection had a visible cost. On macOS the Seatbelt
+profile renders a protected path as unreachable, so once an artifact existed
+a model's `ls -la` in the workspace exited 1 (`ls: .blobs: Operation not
+permitted`) and `git status` warned that it could not open `.blobs/`. Linux
+masked the directory with an empty tmpfs, which hid the symptom from `ls` and
+git but still created the mount point in the checkout.
+
+The store is now `blobs/` beside the session's domain files, in the daemon's
+state:
+
+| Domain | Blob store |
+|---|---|
+| workspace-private | `<state root>/workspaces/<sha256 of the canonical workspace path>/blobs` |
+| session-only | `<state root>/domains/sessions/<session id>/blobs` |
+| standalone host, no domain | `<session file directory>/blobs` |
+
+One function, `client/serve.session_blob_root`, computes the root, and the
+tool context, code-mode `report.emit` and the jobs spill all take that
+string. Sessions on one workspace share a store, and a different workspace
+has a different directory, so ids do not resolve across workspaces.
+
+The jail never reaches the store. `workspaces/` and `domains/` are on the
+masked list above, enforced by `serve.protecting_state_root` when a session
+is resolved, so the base policy carries no blob entry and the workspace holds
+no harness directory other than `.codemode`. A standalone host has no state
+root; there `serve.protecting_standalone_blobs` protects the store when a
+writable root reaches it, the way the memory files are protected.
+
+The harness's own `fs_read` still opens artifact paths. `tools/fs` adds
+`Ctx.blob_root` to the readable roots it authorizes against, so a session
+under `read_scope = "workspace"` does not ask for approval to read a ref. The
+tool does not grant writes there.
+
+A workspace used before the move holds artifacts that transcripts name by id.
+When a session's directories are prepared, `client/blobs.adopt_legacy` copies
+each `sha256-<64 hex>` file from `<workspace>/.blobs` into the new store. It
+hashes the bytes first and skips a file whose digest differs from its name,
+because the old directory is no longer protected and a jailed tool can write
+it. It also skips a symbolic link, a non-regular file and a file over 256 MiB,
+logs each skip, and stops after five seconds with the rest left for the next
+start. A name already in the new store is not read or rewritten, so a second
+run copies nothing. Nothing is deleted: the old directory stays as an ordinary
+directory, nothing reads it after the copy, and the worktree observer still
+excludes it from its untracked listing.
 
 ## Catalogue and ownership components
 
@@ -674,7 +726,7 @@ call:
 2. `rev-parse --show-prefix`, to resolve status paths against the
    workspace's place in the repository.
 3. `ls-files --others` for untracked files, excluding the code-mode work
-   directory and the blob directory before Git enumerates them.
+   directory and the legacy `.blobs` directory before Git enumerates them.
 4. `rev-parse HEAD`, to pin the comparison base.
 5. `log -p` over the range from the stored baseline to `HEAD`, capped at
    24 commits. The range is used only if `merge-base --is-ancestor`

@@ -63,7 +63,8 @@ explicitly.
 `Ctx` (`tools/tool.gleam:254`) carries everything a tool's `run` may
 touch. `client/wiring` builds a fresh one for every call. It holds:
 
-- the workspace root and the blob-overflow directory;
+- the workspace root and the blob-overflow directory, which is outside the
+  workspace, in the daemon's state;
 - the call's durable coordinates: `strand`, `op_id`, `step_id`, and
   `source_index`;
 - the session's base sandbox policy, the explicit directory additions,

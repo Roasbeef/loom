@@ -1385,7 +1385,7 @@ catalogue without opening runtimes. Explicit admission invokes
   hermetic test can hold still.
 - `client/codemode.{workspace_seam, workspace_seam_for, search_seam_for,
   over_scratch,
-  over_jobs, into_blobs, blob_directory}` — the harness-side capability
+  over_jobs, into_blobs, blob_directory, default_blob_root}` — the harness-side capability
   bridge (issue #16), and
   the half of it that lives on this side of the seam. `workspace_seam`
   builds the eight closures `codemode/workspace`'s router calls: `fs_read`
@@ -1412,10 +1412,17 @@ catalogue without opening runtimes. Explicit admission invokes
   `read_lines` resolves the whole path exactly as `fs_read` does, and
   `stat` resolves the path's **parent** and lstats the leaf beneath it,
   because a `stat` that resolved the leaf would follow the very link it
-  was asked to report. `blob_directory` is the one
-  place `.blobs` is written down, read by both this module and
-  `client/serve`, so an artifact a program emits and an oversized `bash`
-  output that overflowed land in one store under one address. Listing is
+  was asked to report. `blob_directory` (`blobs`) is the one
+  place the store's name is written down. `client/serve.session_blob_root`
+  computes the root once, in the session's state directory outside the
+  workspace, and hands the same string to the tool context, to
+  `into_blobs` and to the jobs spill, so an artifact a program emits and
+  an oversized `bash` output that overflowed land in one store under one
+  address. `default_blob_root` (`<workspace>/.codemode/blobs`) is for a
+  host with no state directory, which in practice means tests and the
+  demo; a daemon never uses it. `legacy_blob_directory` (`.blobs`) names
+  where earlier releases kept the store, for `client/blobs` and
+  `worktree_diff`. Listing is
   the one operation with no counterpart in the tool set — `tool.FileSystem`
   has no primitive for it — so the enumeration is `simplifile`'s, on a
   path `resolve_real` has already contained, bounded before it is
@@ -2889,9 +2896,10 @@ catalogue without opening runtimes. Explicit admission invokes
   its one directory (`client/codemode.reaching_socket`). Not masked: the
   `loom*.toml` catalogues, which name environment variables rather than
   holding secrets, `extensions/`, `logs/` and `daemon.log`. The blob store
-  is masked one layer up, by `base_policy`'s `<workspace>/.blobs`, so a
-  session whose workspace *is* the state root already has it and a second
-  entry would be a duplicate mask. Adding an entry that the daemon creates
+  needs no entry: it is `blobs/` inside the session's domain directory
+  (`workspaces/<digest>/` or `domains/sessions/<id>/`), so the `workspaces/`
+  and `domains/` masks already cover it, and the base policy protects
+  nothing inside the workspace. Adding an entry that the daemon creates
   lazily means adding it to `lazy_masks`, not `established_masks`: the
   jail refuses to mask a *missing* protected path under a read-only
   parent, and that refusal is a refusal of every jailed call. `lazy_masks`
@@ -2912,8 +2920,9 @@ catalogue without opening runtimes. Explicit admission invokes
   here, `established_masks` included, because an install may be the first
   thing that ever runs on a host and a mask over a path a daemon has not
   yet written, under a parent the narrowed build may not write, is the
-  refusal that took every jailed compile with it in #304. The blob mask is
-  still not constructed at all: an install has no content-addressed store.
+  refusal that took every jailed compile with it in #304. No blob mask is
+  constructed either: an install has no content-addressed store, and a
+  session's store is in the state root, not in a root the plane can write.
   `serve.start_build_plane` therefore takes a `state_root` argument, and
   `client/extension/cli` derives it as the parent of the extensions root,
   which is the inverse of `record.root_for`.
@@ -4029,6 +4038,33 @@ these forks because they define the same modules.
   Seatbelt system view grants `/Library` but not `/Applications`, so an
   Xcode.app toolchain's Git is unreadable there; it was already unreachable
   through the shim, which execs the same binary.
+- **The blob store lives in the daemon's state, not the workspace.**
+  Content-addressed artifacts (oversized tool output, `report.emit`, job
+  spill) used to be `<workspace>/.blobs`, protected from every jail. On
+  macOS Seatbelt renders `protected` as unreachable, so once an artifact
+  existed a model's `ls -la` in the workspace exited 1 (`ls: .blobs:
+  Operation not permitted`) and `git status` warned; Linux masked it with an
+  empty tmpfs and left a mount point in the checkout. `serve.session_blob_root`
+  now answers `blobs/` beside the session's domain files:
+  `<state root>/workspaces/<sha256 of the canonical workspace path>/blobs`
+  for a workspace-private domain (one store per workspace, so no other
+  workspace resolves its ids), `<state root>/domains/sessions/<id>/blobs`
+  for a session-only domain, and `<session dir>/blobs` for a standalone host
+  with no domain. The state-root masks `workspaces/` and `domains/` already
+  keep every jail out, so `base_policy` carries no `protected` entry and the
+  workspace holds no harness directory but `.codemode`. A standalone host
+  has no state root, so `protecting_standalone_blobs` protects the store the
+  way `protecting_memory` protects its files: when a writable root reaches
+  it. `tools/fs` treats `Ctx.blob_root` as a readable root for its
+  authorization, because the store is outside the workspace and `fs_read`
+  opens refs by path under `read_scope = "workspace"`; writing it is not
+  granted. `client/blobs.adopt_legacy` runs in `prepare_directories`: it
+  copies each `sha256-<64 hex>` file from a workspace's old `.blobs` into the
+  new store after checking that the bytes hash to the name, skips (and logs)
+  one that does not, a link, a non-file or one over 256 MiB, stops after 5 s
+  and continues at the next start, and never deletes anything. The old
+  directory is an ordinary directory afterwards, and nothing reads it:
+  `worktree_diff` still excludes it from the untracked listing.
 - **A jailed Go tool's caches live outside the checkout, per workspace.**
   `client/gocache` locates `<cache>/loom/workspace/<sha256 of the
   workspace path>` (`<cache>` as `lsp_places` resolves it) and
@@ -5313,14 +5349,15 @@ connects these paths to held queue projection and shared request ownership.
 
 The worktree observer enumerates tracked status separately from untracked
 files. Its untracked query excludes only Loom's canonical generated
-`.codemode` and `.blobs` directories before enumeration, so toolchain caches
-cannot consume the observation budget. Tracked changes under those directories
-still appear. Both outputs retain NUL-framed path identity and the existing
+`.codemode` directory and the legacy `.blobs` directory before enumeration,
+so toolchain caches cannot consume the observation budget. Nothing writes
+`.blobs` any more; the exclude covers workspaces an earlier release used.
+Tracked changes under those directories still appear. Both outputs retain NUL-framed path identity and the existing
 read-only broker, deadline and byte bounds; no repository ignore file is edited.
 
-Session assembly keeps the same two directories out of the operator's own
+Session assembly keeps `.codemode` out of the operator's own
 `git status` without editing a repository file either: `prepare_directories`
-writes `serve.ignore_everything` as `.gitignore` inside each, where none
+writes `serve.ignore_everything` as `.gitignore` inside it, where none
 exists. An ignore file inside an untracked directory hides the directory
 itself, so no git metadata is resolved, and a linked worktree needs nothing
 different. An operator's replacement file is left alone. `$TMPDIR` under
