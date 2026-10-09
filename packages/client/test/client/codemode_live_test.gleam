@@ -1721,7 +1721,7 @@ fn run_bridge(ready: Ready) -> Nil {
   // The artifact is a real file, at the address the program was told, in
   // the blob root this host derives from the workspace — the same one
   // `tool.Ctx.blob_root` names.
-  let path = blob.ref_path(rig.workspace <> "/" <> codemode.blob_directory, id)
+  let path = blob.ref_path(codemode.default_blob_root(rig.workspace), id)
   assert simplifile.read_bits(path) == Ok(<<bridged_artifact:utf8>>)
   // And the id really is the content address of those bytes rather than
   // a name the harness invented, which is what makes a re-emission free.
@@ -2070,7 +2070,7 @@ fn run_orchestration_emit(ready: Ready) -> Nil {
   // Same store, same address: an artifact minted from an orchestration
   // program and one minted from a workspace program are the same kind of
   // thing, which is what "one mechanism" has to mean to be worth saying.
-  let path = blob.ref_path(rig.workspace <> "/" <> codemode.blob_directory, id)
+  let path = blob.ref_path(codemode.default_blob_root(rig.workspace), id)
   assert simplifile.read_bits(path) == Ok(<<bridged_artifact:utf8>>)
   assert string.contains(text, id)
   io.println(

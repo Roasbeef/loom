@@ -106,16 +106,16 @@ pub fn the_build_plane_masks_the_daemon_state_root_test() {
   })
 }
 
-pub fn a_session_still_masks_its_blob_store_test() {
+pub fn a_session_base_masks_no_blob_store_in_its_workspace_test() {
   let workspace = fresh_dir("session")
 
-  // The posture the fix must not have cost. A session's blob store is
-  // created before its first jail and lives under the session's own
-  // writable root, so the mask is both buildable and load-bearing.
-  assert list.any(serve.base_policy(workspace).protected, fn(entry) {
-    string.ends_with(entry, "/.blobs")
-  })
-    as "a session still masks its blob store"
+  // The blob store used to be `<workspace>/.blobs`, protected by every
+  // session base. It now lives in the daemon's state, which the state-root
+  // masks already cover, so the workspace holds no store and the base
+  // carries no entry for one. A mask over a directory in the user's
+  // checkout is what made `ls` fail there on macOS.
+  assert serve.base_policy(workspace).protected == []
+    as "a session base masks nothing inside the workspace"
 }
 
 pub fn the_build_clearance_carries_no_unbuildable_mask_test() {

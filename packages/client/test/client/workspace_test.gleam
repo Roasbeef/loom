@@ -254,7 +254,7 @@ pub fn an_emit_writes_a_real_blob_at_its_content_address_test() {
     as "a well-formed emit is written"
   assert id == blob.ref_for(bytes)
   assert string.starts_with(id, "sha256-")
-  let path = blob.ref_path(root <> "/" <> codemode.blob_directory, id)
+  let path = blob.ref_path(codemode.default_blob_root(root), id)
   assert simplifile.read_bits(path) == Ok(bytes)
 }
 
@@ -276,7 +276,7 @@ pub fn an_emit_leaves_no_staging_file_behind_test() {
       bytes:,
     ))
     as "a well-formed emit is written"
-  let store = root <> "/" <> codemode.blob_directory
+  let store = codemode.default_blob_root(root)
   let assert Ok(written) = simplifile.get_files(in: store)
     as "the blob root must be listable"
   assert written == [blob.ref_path(store, id)]
@@ -309,7 +309,7 @@ pub fn re_emitting_identical_bytes_answers_the_same_id_test() {
     as "the second emit is written"
   assert first == second
   let assert Ok(written) =
-    simplifile.get_files(in: root <> "/" <> codemode.blob_directory)
+    simplifile.get_files(in: codemode.default_blob_root(root))
     as "the blob root must be listable"
   assert list.length(written) == 1
 }

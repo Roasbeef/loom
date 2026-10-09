@@ -11,7 +11,6 @@ import broker/exec
 import broker/executor
 import broker/policy
 import client/catalog
-import client/codemode
 import client/daemon/transfer
 import client/host_git
 import client/serve
@@ -503,15 +502,6 @@ fn serve_workspace(
   workspace: String,
   run: fn(worktree_diff.Wiring) -> Nil,
 ) -> Nil {
-  // Production boot creates the protected blob store before starting its
-  // effect plane. A read-only observation must find that mask mount point
-  // already present; bubblewrap cannot create it through a read-only root.
-  let assert Ok(Nil) =
-    bootstrap.ensure_private_directory(
-      workspace <> "/" <> codemode.blob_directory,
-    )
-    as "the fixture materializes the protected store as production boot does"
-
   // Keep ancestor repositories outside this fixture's readable scope.
   // Host reads would let the empty workspace discover the CI checkout.
   let base = serve.base_policy_for(workspace, catalog.WorkspaceReads)

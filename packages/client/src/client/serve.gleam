@@ -56,6 +56,7 @@ import client/advisor
 import client/agency
 import client/async_codemode
 import client/async_runs
+import client/blobs
 import client/blocksummary
 import client/blocksummarybook
 import client/catalog
@@ -2406,6 +2407,7 @@ fn code_mode_seam(
   scratch_seam: codemode_wiring.Scratch,
   schedule_door: Option(scheduleseam.Door),
   jobs_door: jobseam.Door,
+  blob_root: String,
   owner: Option(custody.Owner),
 ) -> Result(#(Option(codemode_wiring.Config), mcp_wiring.Layer), String) {
   case discovered {
@@ -2444,6 +2446,9 @@ fn code_mode_seam(
             workspace: settings.workspace,
             toolchain:,
           )
+          // `report.emit` artifacts land in the store the tool context
+          // names, which `session_blob_root` computed once for both.
+          |> codemode_wiring.into_blobs(blob_root)
           // Which seams this server offers is the operator's decision, and
           // the Agency the orchestration one routes onto is the same seam
           // the `agent_*` tools call — one messaging plane, reached two
@@ -3526,20 +3531,26 @@ fn assemble_in(
   let toolchain =
     codemode_wiring.discover(settings.codemode_seed)
     |> session_toolchain(settings, index_path, memory_store, memory_digest)
+
+  // The blob store is computed once, here, and every reader below takes
+  // this string: the tool context, the code-mode emitter and the jobs
+  // spill. See `session_blob_root` for where it is and why.
+  use blob_root <- result.try(session_blob_root(settings))
   let base_policy =
     session_base(settings, index_path, memory_store, memory_digest, toolchain)
+    |> protecting_standalone_blobs(settings, blob_root)
 
   // Before a directory is made, a lease is taken or a helper is spawned:
   // a base policy the sandbox cannot enforce is a boot failure, not a
   // surprise waiting in the first tool call. See `base_policy_fault`.
   use Nil <- result.try(base_policy_fault(base_policy))
   use Nil <- result.try(go_cache_fault(settings, base_policy))
-  let blob_root = settings.workspace <> "/" <> codemode_wiring.blob_directory
   let tmp_dir = settings.session_path <> ".tmp"
   let go_directories =
     option.map(settings.go_caches, gocache.directories) |> option.unwrap([])
   use Nil <- result.try(prepare_directories(
     settings,
+    logger,
     blob_root,
     tmp_dir,
     list.append(
@@ -3837,6 +3848,7 @@ fn assemble_in(
     scratch.seam(scratch_name, timeout_ms: scratch.default_timeout_ms),
     schedule_door,
     jobs_door,
+    blob_root,
     owner,
   ))
 
@@ -6217,6 +6229,7 @@ fn go_cache_fault(
 
 fn prepare_directories(
   settings: Settings,
+  logger: Logger,
   blob_root: String,
   tmp_dir: String,
   tool_dirs: List(String),
@@ -6230,17 +6243,19 @@ fn prepare_directories(
   let directories = list.append(option.values(wanted), tool_dirs)
   use Nil <- result.try(create_directories(directories))
 
-  // Both workspace directories are the harness's, not the operator's,
-  // and without this they sit in every `git status` of the repository a
-  // session works in, and every `rg` walks the module caches beneath
-  // the tool home.
-  list.each(
-    [
-      blob_root,
-      settings.workspace <> "/" <> codemode_wiring.work_directory,
-    ],
-    ignore_directory,
-  )
+  // A workspace used before the store moved still holds the artifacts its
+  // transcript names. They are copied once the new store exists and before
+  // any tool can run, so an id from an old session resolves on the first
+  // prompt. The pass stops at its own deadline rather than holding the
+  // boot.
+  blobs.adopt_legacy(workspace: settings.workspace, into: blob_root, logger:)
+
+  // The code-mode work directory is the harness's, not the operator's, and
+  // without this it sits in every `git status` of the repository a session
+  // works in, and every `rg` walks the module caches beneath the tool
+  // home. The blob store needs no such file: it is no longer in the
+  // workspace.
+  ignore_directory(settings.workspace <> "/" <> codemode_wiring.work_directory)
   Ok(Nil)
 }
 
@@ -6332,6 +6347,65 @@ fn beside_session_file(
         <> " has no absolute path: "
         <> string.inspect(error)
       })
+  }
+}
+
+/// Where this session keeps its content-addressed blobs: an absolute
+/// directory named `blobs` in the session's own state directory, never in
+/// the workspace.
+///
+/// Under the daemon the state directory is the session's domain
+/// (`resolve_managed`): `<state root>/workspaces/<digest of the canonical
+/// workspace path>` for a workspace-private domain, so every session on a
+/// workspace shares one store and no other workspace can resolve its ids,
+/// or `<state root>/domains/sessions/<id>` for a session-only domain. Both
+/// sit under entries `state_root_mask_candidates` names, so no jail can
+/// read or write the store, and the base policy needs no entry for it. A
+/// host with no domain (`domain_paths` is `None`) keeps it beside the
+/// session file, like its memory and index.
+///
+/// The one function computes the root for every reader (the tool context,
+/// code-mode `report.emit`, the jobs spill), so they cannot name different
+/// stores. The store used to be `<workspace>/.blobs`, which had to be
+/// masked from every jail: on macOS the mask made the directory
+/// unreachable, so `ls` in the workspace exited 1 and `git status` warned,
+/// and on Linux it left an empty mount in the user's checkout.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // With domain paths under "/state/workspaces/ab12":
+/// // serve.session_blob_root(settings) == Ok("/state/workspaces/ab12/blobs")
+/// ```
+///
+pub fn session_blob_root(settings: Settings) -> Result(String, String) {
+  beside_session(settings, codemode_wiring.blob_directory)
+}
+
+/// The base policy with a standalone host's blob store protected where a
+/// jail could write it.
+///
+/// Under the daemon the store sits in the state root, whose masks already
+/// keep every jail out, and this adds nothing. A host with no domain keeps
+/// the store beside its session file, outside any state root, so the
+/// protection is the one `protecting_memory` gives its files: present
+/// exactly when a writable root reaches the path or the path exists.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.protecting_standalone_blobs(base, settings, "/s/blobs").protected
+/// ```
+///
+@internal
+pub fn protecting_standalone_blobs(
+  base: policy.SandboxPolicy,
+  settings: Settings,
+  blob_root: String,
+) -> policy.SandboxPolicy {
+  case settings.domain_paths {
+    Some(_) -> base
+    None -> protecting(base, always: [], where_maskable: [blob_root])
   }
 }
 
@@ -6441,10 +6515,11 @@ pub fn protecting_memory(
 /// alone, because masking it buys nothing and costs the operator a
 /// directory they may want to work in.
 ///
-/// The blob store is masked too, one layer up rather than here:
-/// `base_policy` protects `<workspace>/.blobs` for every workspace, so a
-/// session whose workspace *is* the state root already has it, and a
-/// second entry naming the same path would be a duplicate mask.
+/// The blob store needs no entry of its own. It is `blobs` inside the
+/// session's domain directory (`session_blob_root`), which lives under
+/// `workspaces/` or `domains/`, so the masks below already cover it. It
+/// used to be `<workspace>/.blobs`, protected by `base_policy` for every
+/// workspace.
 ///
 /// ## Examples
 ///
@@ -6927,9 +7002,11 @@ pub fn base_policy_for(
       catalog.WorkspaceReads -> [workspace]
     },
     network: policy.NetworkFull,
-    // Content-addressed artifacts are written only by their harness owner.
-    // Broad reads must never let a jailed tool replace one behind its hash.
-    protected: [workspace <> "/" <> codemode_wiring.blob_directory],
+    // No blob entry: content-addressed artifacts live in the daemon's
+    // state, which no jail reaches (`session_blob_root`), so a jailed tool
+    // cannot replace one behind its hash and the workspace holds no
+    // directory that needs a mask.
+    protected: [],
   )
 }
 
@@ -6939,20 +7016,16 @@ pub fn base_policy_for(
 /// which `start_build_plane` admits once discovery has said where the
 /// toolchain is.
 ///
-/// Separate from `base_policy` because the blob mask is the one thing a
-/// build plane must not inherit. A session's blob store exists — `boot`
-/// creates it before it spawns a jail — and a session's jails are
-/// writable in the workspace that holds it, so the mask is both
-/// buildable and load-bearing there. An install has no blob store at
-/// all: nothing under the extensions root is content-addressed, no
-/// jailed step here emits a blob, and `codemode/build.build_requirements`
-/// narrows the one writable root down to the build directory. The
-/// inherited entry was therefore a mask over a path that did not exist,
-/// under a parent the composed policy no longer let anyone write, which
-/// is precisely the shape bwrap declines to build — and its refusal took
-/// every jailed compile with it. Not constructing the entry is what
-/// keeps that state out of reach; dropping it later would leave the same
-/// mistake one composition step away.
+/// Separate from `base_policy` because a build plane has different
+/// needs: its one writable root is the build directory, it has no network,
+/// and its reads are not widened to the host. It also carries no blob
+/// entry. An install has no blob store, nothing under the extensions root
+/// is content-addressed, and a session's store is in the daemon's state
+/// (`session_blob_root`), not in a root this plane can write. An entry
+/// naming a path that does not exist, under a parent the composed policy
+/// does not let anyone write, is the shape bwrap declines to build, and
+/// its refusal took every jailed compile with it. Not constructing such an
+/// entry is what keeps that state out of reach.
 ///
 /// The state root is the other half of that lesson applied the other
 /// way. A build step is a jailed compile of code an operator fetched

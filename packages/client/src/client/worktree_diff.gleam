@@ -494,6 +494,11 @@ fn commit_range(
 // only their untracked contents before Git enumerates them: filtering a huge
 // status afterwards would already have spent the observation's byte budget.
 // Tracked files still come from ordinary status, even under these directories.
+//
+// The blob store no longer lives in the workspace, so nothing writes
+// `.blobs/` now. The exclude stays for workspaces an earlier release used,
+// whose old store is still on disk and would otherwise list every artifact
+// as an untracked file.
 fn capture_untracked(capture: Capture, prefix: String) {
   use #(capture, output) <- result.try(run_git(
     capture,
@@ -504,7 +509,7 @@ fn capture_untracked(capture: Capture, prefix: String) {
       "--full-name",
       "-z",
       "--exclude=" <> codemode.work_directory <> "/",
-      "--exclude=" <> codemode.blob_directory <> "/",
+      "--exclude=" <> codemode.legacy_blob_directory <> "/",
       "--",
       ".",
     ],

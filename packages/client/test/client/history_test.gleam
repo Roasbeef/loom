@@ -58,8 +58,9 @@ pub fn the_index_is_protected_from_every_write_test() {
   let base = serve.base_policy("/work")
   let composed = serve.protecting_index(base, "/data/loom-search.db")
   assert list.contains(composed.protected, "/data/loom-search.db")
-  // The blob store's protection is not lost in the process.
-  assert list.contains(composed.protected, "/work/.blobs")
+  // The base protects nothing else, because the blob store is outside the
+  // workspace now. Only the index and its side files are added.
+  assert !list.contains(base.protected, "/work/.blobs")
   // And the composed policy is one the sandbox will actually accept, so
   // the boot's own validation cannot be what discovers the addition.
   assert serve.base_policy_fault(composed) == Ok(Nil)
