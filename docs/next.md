@@ -270,14 +270,19 @@ has a section, "The session directory in Khepri".
 
 #### Evidence
 
-All rows are for `cb69cd798` on a Mac (Darwin, macOS 15.5), each gate's own exit
-code captured directly. The machine was shared and heavily loaded (load average
-18 to 21) during this run.
+All rows are for `cb69cd798` and its successors, which change only this file
+and move one function in `session_movers` (the R15 fix below), on a Mac
+(Darwin, macOS 15.5), each gate's own exit code captured directly. The machine
+was shared and heavily loaded (load average 14 to 21) during these runs.
+`make check-gleam` names its packages, so it does not run the house-rule lint;
+that is `make lint`, run separately below.
 
 | Gate | Result |
 | --- | --- |
 | `make check-gleam`, first run | exit 2, 542 s: `client@codemode_live_test` timed out copying a directory, which ended the client package's run. The module passed when run alone (30 tests). |
 | `make check-gleam`, second run | exit 2, 228 s: `cap_test.parallel_map_worker_crash_is_reported_test` saw the exit reason `abnormal` for `killed`, a race in `cap`, which this branch does not touch. `cap` passed when run alone (191 tests). |
+| `make check-gleam`, third run, after the R15 fix | exit 2, 413 s: `client@codemode_live_test` timed out again, on another of its cases. The module passed when run alone and in the per-package `client` check below. |
+| `make lint` | exit 2 at first: R15 in `session_movers`, `no_upkeep` sat above the actor's message and state types (entered with the local-session work, unseen because `check-gleam` runs no lint). After the move, exit 0, 0 errors and 2300 warnings. |
 | `make check-<package>` for the packages the full gate did not reach (`ext`, `codemode`, `events`, `client`, `conformance`, `tui`, `lint`) | every one exit 0: `ext` 16 s, `codemode` 57 s, `events` 6 s, `client` 366 s (3697 tests), `conformance` 53 s, `tui` 21 s (1316 tests), `lint` 2 s. Together with the first run, which passed every package before `client`, each package's format, warning-free build, tests and lint passed on this head. |
 | `make doc-check`, `make prelude-check` | exit 0, exit 0 |
 | `make model-check` | exit 0, 260 s. `Move`: four mutants. `KhepriMove`: 332,902 states, 87,390 distinct, depth 34; every invariant, `MoveSettles`, `MoverEnds` and `OwnerCanServe` hold; nine mutants each violate their property. Both P models pass. |
