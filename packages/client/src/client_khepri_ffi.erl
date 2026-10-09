@@ -12,9 +12,11 @@
 %% join adds a voter. It builds the Ra server configuration Khepri builds for
 %% itself (khepri_cluster:complete_ra_server_config/1 in khepri 0.19.3) and then
 %% restarts the server through khepri:start/2 so Khepri records the store. A
-%% Khepri upgrade must re-check join/2 against that function.
+%% Khepri upgrade must re-check server_config/2 against that function.
 -module(client_khepri_ffi).
--export([start_system/1, stop_system/0, boot/1, join/2, forget_local/0,
+-export([start_system/1, stop_system/0, boot/1, forget_local/0,
+         join_start/0, join_remove/2, join_add/3, join_promoted/2,
+         join_finish/1,
          read/2, consistent/3, create/3, swap/4, delete_if/3, put/3,
          membership/1, applied_index/0, snapshot_index/0,
          store_running_on/2]).
@@ -64,70 +66,68 @@ boot(TimeoutMs) ->
     catch Class:Reason -> {error, describe({Class, Reason})}
     end.
 
-%% Joins the cluster through the member on Remote as a promotable non-voter,
-%% after asking the cluster to forget this member's old identity, and waits for
-%% Ra to promote it. On success the server is restarted through Khepri. On any
-%% failure the local server is deleted again, so the next attempt starts clean.
-join(Remote, TimeoutMs) ->
-    Deadline = erlang:monotonic_time(millisecond) + TimeoutMs,
-    Id = {?STORE, node()},
-    RemoteId = {?STORE, Remote},
+%% The non-voter join, one primitive per Ra call. client/directory/store
+%% sequences them and owns the retries and the deadline (weft/poll); each call
+%% here makes its request once and says whether it was taken, should be asked
+%% again (`again`), or was refused for good (`{failed, Reason}`).
+
+%% Starts a fresh local server as a promotable non-voter, after deleting any
+%% server left from an earlier attempt, and returns its new UId.
+join_start() ->
     _ = forget_local(),
     try
         UId = ra:new_uid(ra_lib:to_binary(?STORE)),
-        ok = ra:start_server(?SYSTEM, server_config(Id, UId)),
-        case join_steps(RemoteId, Id, UId, Deadline) of
-            ok ->
-                ok = ra:stop_server(?SYSTEM, Id),
-                case khepri:start(?SYSTEM, store_config(), remaining(Deadline)) of
-                    {ok, ?STORE} -> {ok, nil};
-                    Other -> _ = forget_local(), {error, describe(Other)}
-                end;
-            {error, Reason} -> _ = forget_local(), {error, Reason}
-        end
+        ok = ra:start_server(?SYSTEM, server_config({?STORE, node()}, UId)),
+        {ok, UId}
     catch Class:Why -> _ = forget_local(), {error, describe({Class, Why})}
     end.
 
-join_steps(RemoteId, Id, UId, Deadline) ->
-    case ra:remove_member(RemoteId, Id, remaining(Deadline)) of
-        {ok, _, _} -> add_promotable(RemoteId, Id, UId, Deadline);
-        {error, not_member} -> add_promotable(RemoteId, Id, UId, Deadline);
-        {error, cluster_change_not_permitted} ->
-            again(Deadline, fun() -> join_steps(RemoteId, Id, UId, Deadline) end);
-        Other -> {error, describe({remove_member, Other})}
+%% Asks the cluster, through the member on Remote, to forget this member's old
+%% identity. Not being a member is the same as being forgotten.
+join_remove(Remote, TimeoutMs) ->
+    case safe(fun() -> ra:remove_member({?STORE, Remote}, {?STORE, node()}, TimeoutMs) end) of
+        {ok, _, _} -> done;
+        {error, not_member} -> done;
+        {error, cluster_change_not_permitted} -> again;
+        Other -> {failed, describe({remove_member, Other})}
     end.
 
-add_promotable(RemoteId, Id, UId, Deadline) ->
-    New = #{id => Id, uid => UId, membership => promotable},
-    case ra:add_member(RemoteId, New, remaining(Deadline)) of
-        {ok, _, _} -> promoted(RemoteId, Id, Deadline);
-        {error, already_member} -> promoted(RemoteId, Id, Deadline);
-        {error, cluster_change_not_permitted} ->
-            again(Deadline, fun() -> add_promotable(RemoteId, Id, UId, Deadline) end);
-        Other -> {error, describe({add_member, Other})}
+%% Asks the cluster to add this member, under UId, as a promotable non-voter.
+join_add(Remote, UId, TimeoutMs) ->
+    New = #{id => {?STORE, node()}, uid => UId, membership => promotable},
+    case safe(fun() -> ra:add_member({?STORE, Remote}, New, TimeoutMs) end) of
+        {ok, _, _} -> done;
+        {error, already_member} -> done;
+        {error, cluster_change_not_permitted} -> again;
+        Other -> {failed, describe({add_member, Other})}
     end.
 
-%% Ra promotes a promotable member once its match index reaches the leader's
-%% index at the time it was added. The promotion is read from the cluster, not
-%% from the joining server, which learns it only through the log.
-promoted(RemoteId, Id, Deadline) ->
-    case safe(fun() -> ra:members_info(RemoteId, remaining(Deadline)) end) of
+%% Whether Ra has promoted this member to a voter. Ra promotes a promotable
+%% member once its match index reaches the leader's index at the time it was
+%% added, and the promotion is read from the cluster, not from the joining
+%% server, which learns it only through the log. An unanswered question is
+%% asked again.
+join_promoted(Remote, TimeoutMs) ->
+    Id = {?STORE, node()},
+    case safe(fun() -> ra:members_info({?STORE, Remote}, TimeoutMs) end) of
         {ok, Info, _Leader} ->
             case maps:get(Id, Info, undefined) of
-                #{voter_status := #{membership := voter}} -> ok;
-                _ -> again(Deadline, fun() -> promoted(RemoteId, Id, Deadline) end)
+                #{voter_status := #{membership := voter}} -> done;
+                _ -> again
             end;
-        _ -> again(Deadline, fun() -> promoted(RemoteId, Id, Deadline) end)
+        _ -> again
     end.
 
-again(Deadline, Next) ->
-    case remaining(Deadline) > 50 of
-        true -> timer:sleep(50), Next();
-        false -> {error, <<"the join did not finish in time">>}
+%% Restarts the promoted server through Khepri, so Khepri records the store.
+join_finish(TimeoutMs) ->
+    try
+        ok = ra:stop_server(?SYSTEM, {?STORE, node()}),
+        case khepri:start(?SYSTEM, store_config(), TimeoutMs) of
+            {ok, ?STORE} -> {ok, nil};
+            Other -> {error, describe(Other)}
+        end
+    catch Class:Why -> {error, describe({Class, Why})}
     end.
-
-remaining(Deadline) ->
-    max(1, Deadline - erlang:monotonic_time(millisecond)).
 
 %% Deletes this member's local server and its data, for a store that is not
 %% joined. Nothing is lost that the cluster does not hold.

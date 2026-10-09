@@ -31,11 +31,13 @@ import client/directory/record.{type Record}
 import client/internal/ffi_khepri
 import gleam/dynamic.{type Dynamic}
 import gleam/erlang/node.{type Node}
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import simplifile
 import weft
+import weft/poll
 
 /// How long a write may take before it is reported as no quorum.
 pub const write_ms = 3000
@@ -122,6 +124,14 @@ pub fn boot(within_ms: Int) -> Result(Nil, String) {
 /// Joins the cluster through the member on `remote` as a non-voter and returns
 /// once Ra has promoted this member.
 ///
+/// The join is four requests to the cluster in order: start a fresh local
+/// server, have the cluster forget this member's old identity (a member that
+/// lost its disk is still listed under it), add the server as a promotable
+/// non-voter, and wait for Ra to promote it once it has caught up. Ra refuses a
+/// membership change while an earlier one settles, so each step is repeated
+/// under one deadline for the whole join. Any failure deletes the local server
+/// again, so the next attempt starts clean.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -129,8 +139,48 @@ pub fn boot(within_ms: Int) -> Result(Nil, String) {
 /// ```
 pub fn join(remote: Node, within_ms: Int) -> Result(Nil, String) {
   bounded(within_ms + 2000, Error("the join did not finish in time"), fn() {
-    ffi_khepri.join(remote, within_ms)
+    let clock = poll.monotonic()
+    let deadline = clock.now() + within_ms
+    let left = fn() { int.max(1, deadline - clock.now()) }
+    use uid <- result.try(ffi_khepri.join_start())
+    let joined = {
+      use Nil <- result.try(
+        joining(left, fn(ms) { ffi_khepri.join_remove(remote, ms) }),
+      )
+      use Nil <- result.try(
+        joining(left, fn(ms) { ffi_khepri.join_add(remote, uid, ms) }),
+      )
+      use Nil <- result.try(
+        joining(left, fn(ms) { ffi_khepri.join_promoted(remote, ms) }),
+      )
+      ffi_khepri.join_finish(left())
+    }
+    result.map_error(joined, fn(reason) {
+      ffi_khepri.forget_local()
+      reason
+    })
   })
+}
+
+// One step of the join, asked again every 50 ms while the cluster says not
+// yet, until it is taken, refused, or the join's deadline passes.
+fn joining(
+  left: fn() -> Int,
+  step: fn(Int) -> ffi_khepri.JoinStep,
+) -> Result(Nil, String) {
+  let outcome =
+    poll.until(within: left(), every: 50, attempt: fn() {
+      case step(left()) {
+        ffi_khepri.Done -> poll.Done(Nil)
+        ffi_khepri.Again -> poll.Retry
+        ffi_khepri.Failed(reason:) -> poll.Fail(reason)
+      }
+    })
+  case outcome {
+    poll.Answered(Nil) -> Ok(Nil)
+    poll.Failed(reason) -> Error(reason)
+    poll.Expired -> Error("the join did not finish in time")
+  }
 }
 
 /// Stops the store and the Ra system.

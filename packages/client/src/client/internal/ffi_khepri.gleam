@@ -80,21 +80,83 @@ pub fn stop_system() -> Nil
 @external(erlang, "client_khepri_ffi", "boot")
 pub fn boot(timeout_ms: Int) -> Result(Nil, String)
 
-/// Joins the cluster through the member on `remote` as a promotable
-/// non-voter, after the cluster forgets this member's old identity, and
-/// returns once Ra has promoted it to a voter.
+/// What one step of the non-voter join reports. `client/directory/store`
+/// repeats a step that says `Again` under its own deadline.
+pub type JoinStep {
+  /// The cluster took the request, or already held its outcome.
+  Done
+
+  /// The cluster cannot take the request yet, as while an earlier membership
+  /// change settles or before the promotion: ask again.
+  Again
+
+  /// The cluster refused the request for good.
+  Failed(reason: String)
+}
+
+/// Starts a fresh local Ra server as a promotable non-voter, after deleting any
+/// server left from an earlier attempt, and returns its new UId. The first
+/// step of the non-voter join; Khepri's own join adds a voter at once.
 ///
-/// Ra `ra:start_server/2`, `ra:remove_member/3`, `ra:add_member/3` and
-/// `ra:members_info/2`, then Khepri `khepri:start/3`; Khepri's own join adds a
-/// voter at once.
+/// Ra `ra:force_delete_server/2`, `ra:new_uid/1` and `ra:start_server/2`.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// ffi_khepri.join(remote, 60_000) // -> Ok(Nil)
+/// ffi_khepri.join_start() // -> Ok(uid)
 /// ```
-@external(erlang, "client_khepri_ffi", "join")
-pub fn join(remote: Node, timeout_ms: Int) -> Result(Nil, String)
+@external(erlang, "client_khepri_ffi", "join_start")
+pub fn join_start() -> Result(Dynamic, String)
+
+/// Asks the cluster, through the member on `remote`, to forget this member's
+/// old identity, as a member that lost its disk must before it rejoins.
+///
+/// Ra `ra:remove_member/3`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// ffi_khepri.join_remove(remote, 5000) // -> Done
+/// ```
+@external(erlang, "client_khepri_ffi", "join_remove")
+pub fn join_remove(remote: Node, timeout_ms: Int) -> JoinStep
+
+/// Asks the cluster to add this member, under the UId `join_start` returned,
+/// as a promotable non-voter.
+///
+/// Ra `ra:add_member/3` with `membership => promotable`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// ffi_khepri.join_add(remote, uid, 5000) // -> Done
+/// ```
+@external(erlang, "client_khepri_ffi", "join_add")
+pub fn join_add(remote: Node, uid: Dynamic, timeout_ms: Int) -> JoinStep
+
+/// Whether Ra has promoted this member to a voter, read from the cluster.
+///
+/// Ra `ra:members_info/2`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// ffi_khepri.join_promoted(remote, 5000) // -> Again
+/// ```
+@external(erlang, "client_khepri_ffi", "join_promoted")
+pub fn join_promoted(remote: Node, timeout_ms: Int) -> JoinStep
+
+/// Restarts the promoted server through Khepri, so Khepri records the store.
+///
+/// Ra `ra:stop_server/2`, then Khepri `khepri:start/3`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// ffi_khepri.join_finish(5000) // -> Ok(Nil)
+/// ```
+@external(erlang, "client_khepri_ffi", "join_finish")
+pub fn join_finish(timeout_ms: Int) -> Result(Nil, String)
 
 /// Deletes this member's local server and its data. Only for a store that is
 /// not joined.
