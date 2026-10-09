@@ -47,7 +47,7 @@ import client/daemon/manager
 import client/orchestrators.{type Orchestrator}
 import client/remote/orchestrator_port.{type Ownership}
 import client/session_mover.{
-  type Environment, Aborted, Finished, Stalled, Unquorate,
+  type Environment, Aborted, Deferred, Finished, Stalled,
 }
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
@@ -292,7 +292,7 @@ fn handle(
           }
           actor.continue(waiting(state, move, since))
         }
-        Unquorate(..) -> actor.continue(waiting(state, move, None))
+        Deferred(..) -> actor.continue(waiting(state, move, None))
       }
   }
 }

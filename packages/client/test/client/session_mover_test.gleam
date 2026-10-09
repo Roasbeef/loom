@@ -1134,7 +1134,7 @@ pub fn a_receiver_that_cannot_be_reached_never_abandons_the_move_test() {
   // for, moving and stopped. The receiver might hold it.
   assert list.all([1, 2, 3], fn(_) {
     case session_mover.drive(env, move) {
-      Stalled(..) | session_mover.Unquorate(..) -> True
+      Stalled(..) | session_mover.Deferred(..) -> True
       Finished | Aborted(..) -> False
     }
   })
@@ -1560,10 +1560,32 @@ pub fn a_member_without_a_quorum_stalls_without_counting_it_test() {
   record_book.set(book, rig.session, serving(record_book.alpha))
   record_book.starve(book, record_book.Starved)
   let move = begin(rig)
-  let assert session_mover.Unquorate(_) =
+  let assert session_mover.Deferred(_) =
     session_mover.drive(by_record(rig, book, rig.wire), move)
     as "a write without a quorum is its own kind of stall"
   assert custody(rig.source, rig.session) == catalogue.Moving(op:, to: "bravo")
+  finish(rig)
+}
+
+pub fn a_member_that_has_not_seeded_neither_counts_the_stall_nor_gives_up_test() {
+  let #(rig, book) = recorded("recorded-unseeded", 69)
+
+  // The session was never recorded and this daemon has not seeded the store,
+  // so the missing record means "not copied yet", not "deleted by its owner".
+  record_book.unseed(book, record_book.alpha)
+  let move = begin(rig)
+  let assert session_mover.Deferred(_) =
+    session_mover.drive(by_record(rig, book, rig.wire), move)
+    as "waiting for the seed is a stall the movers do not count"
+
+  // Giving up waits for the seed too. Without that, the abandon finds no record
+  // and the move retires, setting aside a session nobody recorded.
+  let assert session_mover.Deferred(_) =
+    session_mover.give_up(by_record(rig, book, rig.wire), move)
+    as "an unseeded member does not give a move up"
+  assert custody(rig.source, rig.session) == catalogue.Moving(op:, to: "bravo")
+  assert file_exists(source_file(rig))
+  assert record_book.read(book, rig.session) == None
   finish(rig)
 }
 

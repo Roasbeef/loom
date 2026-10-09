@@ -84,9 +84,12 @@
 //// `moving` record and so fails once the receiver has activated; a failed
 //// abandon sends the mover to the retirement instead. The retirement happens
 //// only after the receiver answered and a consistent read of the record shows
-//// another owner, so a stale copy never sets aside a file. And a stall caused
-//// by the store having no quorum is reported as `Unquorate`, so the movers do
-//// not count it toward the time after which a silent receiver is given up.
+//// another owner, so a stale copy never sets aside a file. And a stall that
+//// giving the move up could not cure, because the store has no quorum or this
+//// daemon has not seeded it yet, is reported as `Deferred`, so the movers do not
+//// count it toward the time after which a silent receiver is given up. The
+//// give-up passes the same seed check as a run before it touches the record,
+//// since until the seed is done a missing record means "not copied yet".
 
 import client/daemon/manager
 import client/directory/ownership.{type Ownership}
@@ -229,9 +232,11 @@ pub type Outcome {
   /// run is retried later, with the reason it stopped.
   Stalled(reason: String)
 
-  /// As `Stalled`, because the directory store could not commit or be read.
-  /// The time a receiver has been silent is not counted while this lasts.
-  Unquorate(reason: String)
+  /// As `Stalled`, for a reason that giving the move up could not cure: the
+  /// directory store could not commit or be read, or this daemon has not
+  /// seeded it yet. The time a receiver has been silent is not counted while
+  /// this lasts.
+  Deferred(reason: String)
 }
 
 // Whether a send has already begun the file again. A receiver that loses its
@@ -258,8 +263,10 @@ type Halt {
   // The move may go on later.
   Stall(reason: String)
 
-  // The move may go on later, once the directory store has a quorum.
-  StallNoQuorum(reason: String)
+  // The move may go on later, once something a give-up could not cure has
+  // passed: the directory store has a quorum again, or this daemon has seeded
+  // it.
+  Defer(reason: String)
 
   // The directory holds no record for a session this daemon began moving, so
   // it was created before the store was seeded and migration did not reach it;
@@ -312,14 +319,17 @@ pub fn give_up(
         "a move can be abandoned on request only by a directory member; "
         <> "this daemon decides by its catalogue rows",
       )
+
+    // The give-up reads the record, so it waits for the seed exactly as a run
+    // does: before it, an abandon that finds no record would take the session
+    // for one a later owner deleted and set its file aside.
     Recorded(..) ->
-      ended(
-        environment,
-        move,
+      ended(environment, move, {
+        use Nil <- result.try(migrated(environment))
         Error(Abandon(
           "abandoned on request or after the receiver stayed silent",
-        )),
-      )
+        ))
+      })
   }
   note(environment, move, outcome)
   outcome
@@ -335,7 +345,7 @@ fn ended(
     Error(Over) -> Finished
     Error(Abandon(reason:)) -> abandon(environment, move, reason)
     Error(Stall(reason:)) -> Stalled(reason)
-    Error(StallNoQuorum(reason:)) -> Unquorate(reason)
+    Error(Defer(reason:)) -> Deferred(reason)
     Error(Unrecorded) ->
       revert(
         environment,
@@ -348,7 +358,7 @@ fn ended(
         Recorded(ownership:) ->
           case retire_recorded(environment, ownership, move) {
             Ok(Nil) | Error(Over) -> Finished
-            Error(StallNoQuorum(reason:)) -> Unquorate(reason)
+            Error(Defer(reason:)) -> Deferred(reason)
             Error(Stall(reason:)) -> Stalled(reason)
             Error(Abandon(reason:)) -> Aborted(reason)
             Error(Unrecorded) | Error(Decide) ->
@@ -390,8 +400,8 @@ fn migrated(environment: Environment(instance)) -> Result(Nil, Halt) {
       case ownership.migrated(ownership.node) {
         Ok(True) -> Ok(Nil)
         Ok(False) ->
-          Error(Stall("this daemon has not seeded the directory store yet"))
-        Error(store.Unavailable(reason:)) -> Error(StallNoQuorum(reason))
+          Error(Defer("this daemon has not seeded the directory store yet"))
+        Error(store.Unavailable(reason:)) -> Error(Defer(reason))
       }
   }
 }
@@ -418,7 +428,7 @@ fn intended(
           Error(Stall(
             "the directory record is in a state this move did not write",
           ))
-        Error(store.NoQuorum(reason:)) -> Error(StallNoQuorum(reason))
+        Error(store.NoQuorum(reason:)) -> Error(Defer(reason))
       }
     }
   }
@@ -924,7 +934,7 @@ fn retire_recorded(
 ) -> Result(Nil, Halt) {
   use registration <- result.try(registered(environment, move))
   case ownership.read_consistent(move.session) {
-    Error(store.Unavailable(reason:)) -> Error(StallNoQuorum(reason))
+    Error(store.Unavailable(reason:)) -> Error(Defer(reason))
     Ok(Some(found)) if found.owner == ownership.node ->
       case found.state {
         record.Serving -> {
@@ -1048,7 +1058,7 @@ fn abandon_recorded(
               Stalled("the directory record names another move of this session")
           }
         Error(store.Mismatch(..)) -> ended(environment, move, Error(Decide))
-        Error(store.NoQuorum(reason:)) -> Unquorate(reason)
+        Error(store.NoQuorum(reason:)) -> Deferred(reason)
       }
   }
 }
@@ -1141,7 +1151,7 @@ fn note(
         field.text("reason", reason),
         ..fields
       ])
-    Stalled(reason:) | Unquorate(reason:) ->
+    Stalled(reason:) | Deferred(reason:) ->
       log.warn(environment.logger, "daemon.move_stalled", [
         field.text("reason", reason),
         ..fields
