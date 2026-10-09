@@ -707,6 +707,36 @@ pub fn siblings() -> session_channel.Update {
   )
 }
 
+/// A capture of `main` holding a prompt and then one message from the strand
+/// `sub:main/x`, framed as the Agency frames it, whose words are `body`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.sibling_saying("done")
+/// ```
+pub fn sibling_saying(body: String) -> session_channel.Update {
+  capture_of(
+    [
+      item(1, 10_000, said("start", Some(message.Origin("p", "Alice")))),
+      item(
+        2,
+        11_000,
+        said(
+          strand_framing.message_head("sub:main/x")
+            <> body
+            <> "\n"
+            <> strand_framing.message_foot,
+          Some(message.StrandOrigin("sub:main/x")),
+        ),
+      ),
+    ],
+    None,
+    [],
+    [],
+  )
+}
+
 /// The records `from` to `to` of the same conversation as `conversation`,
 /// as the window of an older page of history.
 ///

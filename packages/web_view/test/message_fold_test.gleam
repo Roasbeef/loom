@@ -110,3 +110,33 @@ pub fn only_a_messages_own_paths_are_admitted_test() {
   assert !component.message_click("0\t2\t1\t1\t01.0\t1\t0\t0\t1")
   assert !component.message_click("0\t2\t1\t1\t1.0\t1\t0\t0\t1\t0")
 }
+
+// A strand's long message is the same case as a long paste, drawn on a card
+// of its own: the card shows the opening and the estimate, and opens in
+// place to the whole text, which the page held from the start.
+fn sibling(text: String) -> String {
+  component.new(page_fixture.start())
+  |> component.apply([lane_fixture.sibling_saying(text)])
+  |> component.view
+  |> element.to_string
+}
+
+pub fn a_long_strand_message_opens_in_place_to_its_whole_text_test() {
+  let html = sibling(paste())
+  assert string.contains(html, "sibling-card")
+  assert string.contains(html, "first line of the paste")
+  assert string.contains(html, " tokens]")
+  assert string.contains(html, "<loom-expand")
+  assert !string.contains(html, "Ctrl+G")
+
+  // The whole text is in the card's body, escaped, as text nodes.
+  assert string.contains(html, "the &lt;b&gt;tail&lt;/b&gt; of it")
+  assert !string.contains(html, "<b>tail")
+}
+
+pub fn a_short_strand_message_is_drawn_whole_without_an_opener_test() {
+  let html = sibling("found <two> issues")
+  assert string.contains(html, "found &lt;two&gt; issues")
+  assert !string.contains(html, "<loom-expand")
+  assert !string.contains(html, " tokens]")
+}

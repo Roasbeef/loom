@@ -732,7 +732,7 @@ fn piece_element(
           ]),
           html.span([attribute.class("receipt")], [html.text("stored")]),
         ]),
-        card_body(text),
+        message_body(text),
         ..peer_actions(replies, key, session)
       ])
 
@@ -747,9 +747,9 @@ fn piece_element(
             html.text("strand · " <> strand),
           ]),
         ]),
-        card_body(text),
+        message_body(text),
         ..case trailer {
-          Some(instruction) -> [card_body(instruction)]
+          Some(instruction) -> [message_body(instruction)]
           None -> []
         }
       ])
@@ -856,6 +856,34 @@ fn open_button(
 fn card_body(body: String) -> Element(message) {
   use <- element.memo([element.ref(body)])
   parsed_card_body(body)
+}
+
+// The words of a message another strand or session sent. One the composer
+// would shorten (a long paste, an injected note) is drawn as the line the
+// terminal shows for it, opened in place to the whole text; anything else is
+// its body. The opening is the page's own `<loom-expand>`, so it asks the
+// daemon for nothing: the piece holds the whole text (`turns.Sibling`), and
+// the body is cut as every expansion is, since the closed form still sits in
+// the page. Both reach the page as text nodes through the Markdown view.
+fn message_body(text: String) -> Element(message) {
+  use <- element.memo([element.ref(text)])
+  let shown =
+    composer.without_expand_hint(composer.transcript_text(text, False))
+  case shown == text {
+    True -> parsed_card_body(text)
+    False ->
+      fold_row.reading(markdown_view.line(shown, step_words.result_limit), [
+        parsed_card_body(cut(text)),
+      ])
+  }
+}
+
+// The text of a message cut to the page's bound for one expanded row, with
+// the line that says so at the end when anything was left out.
+fn cut(text: String) -> String {
+  expansion.capped([transcript_line.Line(transcript_line.User, text)])
+  |> list.map(fn(line) { line.text })
+  |> string.join("\n")
 }
 
 // A report keeps its preview and body in one leaf memo. Drawing the body
