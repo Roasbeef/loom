@@ -62,6 +62,8 @@ declared|linux|SKIP shipped remote move: platform enforcement unavailable|The or
 # both for real.
 declared|linux|SKIP shipped directory quorum loss: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the macOS gate and the local Linux sign-off gate run the lost-majority scenario for real.
 declared|linux|SKIP shipped directory rejoin: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the macOS gate and the local Linux sign-off gate run the disk-loss rejoin scenario for real.
+declared|linux|SKIP shipped remote directory with members: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the macOS gate and the local Linux sign-off gate run the directory-member redirect and rejoin scenario for real.
+declared|linux|SKIP shipped remote peer mail between directory members: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the macOS gate and the local Linux sign-off gate run the directory-member peer mail scenario for real.
 
 # The shipped confinement fixture reads the daemon's own credentials from a
 # jailed `bash` call and asserts the secret did not come back. Without a
