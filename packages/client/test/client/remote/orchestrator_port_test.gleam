@@ -6,6 +6,7 @@
 import client/remote/address.{type Address}
 import client/remote/orchestrator_port.{type Message, NotOwned, Owned}
 import client/session_move
+import core/json
 import gleam/erlang/node
 import gleam/erlang/process
 import gleam/int
@@ -54,6 +55,47 @@ pub fn a_catalogue_that_cannot_answer_produces_silence_and_the_port_serves_on_te
   assert orchestrator_port.ask(port, "unreadable", 100) == Error(Nil)
 
   // The failed question did not stop the port.
+  assert orchestrator_port.ask(port, "owned-1", answers_within_ms) == Ok(Owned)
+}
+
+// A port that serves descriptions from a fake catalogue holding `owned-1`.
+fn describing() -> Address(Message) {
+  let name = process.new_name("orchestrator_port")
+  let assert Ok(_) =
+    orchestrator_port.start_with(
+      name,
+      held,
+      fn(_session, _command) { Error(orchestrator_port.peer_unserved) },
+      fn(session) {
+        case session {
+          "owned-1" -> Ok(json.String("described " <> session))
+          _ -> Error("not_found")
+        }
+      },
+      orchestrator_port.declining(),
+    )
+    as "the port starts under its name"
+  address.Address(node: node.self(), name:)
+}
+
+pub fn a_description_is_the_describers_answer_or_its_reason_test() {
+  let port = describing()
+  assert orchestrator_port.ask_description(port, "owned-1", answers_within_ms)
+    == Ok(Ok(json.String("described owned-1")))
+  assert orchestrator_port.ask_description(
+      port,
+      "elsewhere-1",
+      answers_within_ms,
+    )
+    == Ok(Error("not_found"))
+}
+
+pub fn a_port_with_no_describer_refuses_every_description_test() {
+  let port = started()
+  assert orchestrator_port.ask_description(port, "owned-1", answers_within_ms)
+    == Ok(Error(orchestrator_port.peer_unserved))
+
+  // The refusal does not stop the question the port exists for.
   assert orchestrator_port.ask(port, "owned-1", answers_within_ms) == Ok(Owned)
 }
 

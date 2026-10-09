@@ -5,9 +5,9 @@
 //// Held by this catalogue but not resident, it is saved: a message to it waits
 //// for the owner to open it, and nothing here opens it. Held by no catalogue,
 //// it is refused, because nothing will ever open it. A session handed to
-//// another orchestrator leaves a tombstone, which this daemon redirects from.
-//// `peer_remote_test` proves what the senders do with each answer; this proves
-//// the daemon gives it.
+//// another orchestrator leaves a tombstone, which this daemon does not describe
+//// but redirects from. `peer_remote_test` proves what the senders do with each
+//// answer; this proves the daemon gives it.
 
 import client/daemon/main
 import client/daemon/server
@@ -16,6 +16,8 @@ import client/peer_mail
 import client/peers
 import core/clock
 import core/ids
+import core/json
+import gleam/list
 import gleam/option.{None}
 import storage/catalogue
 
@@ -25,6 +27,13 @@ const unheld = "0198c0de-0000-7000-8000-000000000001"
 
 // The id of a move that the tombstones here were made by.
 const move = "0192f3c1-7b0e-7d2a-9c11-4f5a6b7c8d9e"
+
+fn field(value, key) {
+  let assert json.Object(fields) = value as "the value is an object"
+  let assert Ok(found) = list.key_find(fields, key)
+    as "the expected field is present"
+  found
+}
 
 // A registration this catalogue holds and no runtime was ever opened for,
 // which is what a saved session is to a peer: held, and not resident.
@@ -93,6 +102,27 @@ pub fn the_owner_answers_a_saved_recipient_apart_from_one_it_does_not_hold_test(
     // The text a sender turns back into `NotOpen`, and the refusal it does not.
     assert serve(held, roster) == Error(peer_mail.not_open_reason)
     assert serve(unheld, roster) == Error(peers.not_running)
+    assert catalogue.close(store) == Ok(Nil)
+  })
+}
+
+pub fn a_description_is_the_catalogues_and_a_tombstone_is_not_one_test() {
+  wire.fixture(fn(_, ready, _port, _credential) {
+    let assert Ok(store) = catalogue.open(ready.state_root <> "/catalogue.db")
+      as "fixture administration opens the durable catalogue"
+    let held = saved(store, 823)
+    let describe = server.local_description(ready.registry)
+
+    // A saved session is described without being opened.
+    let assert Ok(view) = describe(held) as "a held session is described"
+    assert field(view, "session_id") == json.String(held)
+    assert field(field(view, "status"), "state") == json.String("saved")
+    let assert Error(_) = describe(unheld)
+      as "a session no catalogue holds has no description"
+
+    // One this catalogue gave away is the record of who has it, so its owner
+    // is asked and this daemon does not describe it from a stale row.
+    assert describe(tombstone(store, 824)) == Error("moved")
     assert catalogue.close(store) == Ok(Nil)
   })
 }

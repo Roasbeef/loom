@@ -3971,7 +3971,8 @@ fn unknown_row(id: String) -> JsonValue {
 // The daemon's peer lookups, which the control commands and an owner's web
 // page share so that both resolve a session the same way. A session resident
 // here resolves to its Agency, and one a configured orchestrator owns resolves
-// to that orchestrator's port (`peers.routed`); discovery is the catalogue's.
+// to that orchestrator's port (`peers.routed`); discovery is the catalogue's,
+// here or on the owner (`peers.described`).
 fn peer_directory(
   config: Config(instance),
   registry: manager.Manager(instance),
@@ -3984,11 +3985,7 @@ fn peer_directory(
       }),
       config.directory,
     ),
-    describe: fn(id) {
-      manager.get(registry, id)
-      |> result.map(view_json)
-      |> result.map_error(error_code)
-    },
+    describe: peers.described(local_description(registry), config.directory),
   )
 }
 
@@ -4019,6 +4016,32 @@ pub fn local_peer(
           Ok(_) -> Error(peer_mail.NotOpen)
           Error(_) -> Error(peer_mail.Refused(error_code(error)))
         }
+    }
+  }
+}
+
+/// What this daemon's catalogue says about a session, without opening it, as
+/// the metadata a peer listing shows. A session this catalogue handed to
+/// another orchestrator is not described here: its row is only the record of
+/// who owns it now, so the answer is `moved` and `peers.described` asks the
+/// owner.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // server.local_description(registry)("0198...")
+/// ```
+@internal
+pub fn local_description(
+  registry: manager.Manager(instance),
+) -> fn(String) -> Result(JsonValue, String) {
+  fn(id) {
+    use view <- result.try(
+      manager.get(registry, id) |> result.map_error(error_code),
+    )
+    case manager.custody(registry, id) {
+      Ok(catalogue.Moved(..)) -> Error("moved")
+      Ok(_) | Error(_) -> Ok(view_json(view))
     }
   }
 }

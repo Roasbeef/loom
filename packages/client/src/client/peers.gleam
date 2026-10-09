@@ -11,15 +11,17 @@
 ////
 //// `routed` → `link` → `send` → `record_attempt` → `attempt` → `deliver` → `roster`
 ////
-//// 1. `routed` turns a session identity into the recipient's endpoint, here or
-////    on the owning orchestrator.
+//// 1. `routed` and `described` turn a session identity into the recipient's
+////    endpoint and its catalogue description, here or on the owning
+////    orchestrator.
 //// 2. `link` and `unlink` change an exact directional link, the recipient's
 ////    grant first.
 //// 3. `send` records the message in the sender's outbox, then `record_attempt`
 ////    asks the recipient once through `attempt` and `deliver`, and writes down
 ////    whether it was admitted, refused, or has to wait. `resend` is the same
 ////    attempt for the drainer.
-//// 4. `roster` and `inspect` list what the sender may address.
+//// 4. `roster` and `inspect` list what the sender may address, asking each
+////    recipient's owner for its description and its strands.
 //// 5. `router` serves the same operations to a program, with the launching
 ////    strand's identity.
 
@@ -83,6 +85,42 @@ pub fn routed(
             Ok(sessions.reach(owner, session))
           Error(session_directory.Unreachable(..)) ->
             Error(peer_mail.Unreachable)
+          Ok(session_directory.Here) | Error(session_directory.Unknown) ->
+            Error(refusal)
+        }
+    }
+  }
+}
+
+/// A `Directory.describe` that finds a session on any orchestrator.
+///
+/// A session this catalogue describes is answered by `local`, with no question
+/// to anyone. Only a miss consults `sessions`, as `routed` does, and an owner
+/// that is another orchestrator describes the session from its own catalogue
+/// (`sessions.describe`), so a saved session on another orchestrator is
+/// described without being opened, exactly as a local one is. An owner that
+/// could not be asked is `owner unreachable`, which the roster shows as the
+/// row's `unavailable` metadata. `Here` and `Unknown` leave `local`'s error
+/// standing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // peers.Directory(resolve: resolve, describe: peers.described(local, sessions))
+/// ```
+pub fn described(
+  local: fn(String) -> Result(JsonValue, String),
+  sessions: session_directory.Directory,
+) -> fn(String) -> Result(JsonValue, String) {
+  fn(session) {
+    case local(session) {
+      Ok(view) -> Ok(view)
+      Error(refusal) ->
+        case sessions.lookup(session) {
+          Ok(session_directory.Elsewhere(orchestrator: owner)) ->
+            sessions.describe(owner, session)
+          Error(session_directory.Unreachable(..)) ->
+            Error(peer_mail.unreachable_reason)
           Ok(session_directory.Here) | Error(session_directory.Unknown) ->
             Error(refusal)
         }
@@ -441,6 +479,10 @@ fn recipient_failure(failure: peer_mail.Failure) -> peer_mail.Failure {
 
 /// Lists only explicitly linked sessions and exported strands. An unavailable
 /// recipient remains visible with catalogue lifecycle; discovery never opens it.
+/// A recipient on another orchestrator is listed as a local one is: its owner
+/// describes it from its catalogue and lists the strands it granted this
+/// session, and a recipient the owner holds saved is `running: false` with no
+/// strands.
 ///
 /// ## Examples
 ///
@@ -459,25 +501,28 @@ pub fn roster(wiring: Wiring, strand: String) -> Result(JsonValue, String) {
       }
 
       // The recipient is resolved once: for a session on another
-      // orchestrator, resolving asks that orchestrator's port.
-      let resolved = resolve(wiring, session)
-      let running = json.Bool(result.is_ok(resolved))
-      let strands = case resolved {
-        Error(_) -> json.Null
+      // orchestrator, resolving asks that orchestrator's port. Such a session
+      // resolves whether or not it is resident there, so the owner's answer
+      // to the roster command is what says that it is saved.
+      let #(running, strands) = case resolve(wiring, session) {
+        Error(_) -> #(False, json.Null)
         Ok(endpoint) ->
           case endpoint.call(peer_mail.Roster(wiring.own.session, strand)) {
-            Ok(rows) -> rows
-            Error(failure) ->
+            Ok(rows) -> #(True, rows)
+            Error(peer_mail.NotOpen) -> #(False, json.Null)
+            Error(failure) -> #(
+              True,
               json.Object([
                 #("unavailable", json.String(peer_mail.reason(failure))),
-              ])
+              ]),
+            )
           }
       }
       Ok(
         json.Object([
           #("session", json.String(session)),
           #("target_strand", json.String(target)),
-          #("running", running),
+          #("running", json.Bool(running)),
           #("metadata", metadata),
           #("exported_strands", strands),
         ]),
