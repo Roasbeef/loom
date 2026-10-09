@@ -1112,8 +1112,12 @@ fn abandon_recorded(
           }
         Error(store.Mismatch(found: Some(found))) ->
           taken_elsewhere(environment, move, cause, found.owner)
+
+        // No record at all, after the seed `run` and `give_up` check, means the
+        // session was deleted elsewhere: the same end, and the same log line,
+        // as `intended` finding it gone.
         Error(store.Mismatch(found: None)) ->
-          ended(environment, move, Error(Decide))
+          ended(environment, move, Error(Gone))
         Error(store.NoQuorum(reason:)) -> Deferred(reason)
       }
   }
