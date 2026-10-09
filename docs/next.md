@@ -241,8 +241,11 @@ sessions are recorded too, as lookup hints.
 
 The branch is **not pushed and has no PR**. An independent implementation review
 was done; its confirmed findings and the owner's ruling on local sessions were
-fixed in a second pass (ADR-019's addendum lists them). The coordinator
-publishes the branch.
+fixed in a second pass (ADR-019's addendum lists them), and a third pass made a
+missing record after the seed set the source's copy aside instead of reverting.
+The branch is rebased onto PR #923's head (`ee6402c8b`), and its proposal is
+protocol-change 080, since main took 079. The coordinator publishes the
+branch.
 
 Read [the session directory](architecture/directory.md) for the design,
 [ADR-019](adr/019-khepri-for-session-ownership.md) for the choice of Khepri and
@@ -261,27 +264,29 @@ has a section, "The session directory in Khepri".
 | Configuration and provisioning | `[directory] members` (3 to 7, every orchestrator a member). A plan's top-level `directory` list makes members peer with each other and writes the table into their bundles. |
 | The cluster | `client/directory/member` keeps the links and joins a member with no joined store as a Ra `promotable` non-voter after removing its stale identity; Ra promotes it once caught up. The join is sequenced in `client/directory/store` over `weft/poll`, one FFI primitive per Ra call. `loomd directory bootstrap` creates the cluster once and refuses where it would make a second; the Ra system's own files are not a store, and each refusal names its remedy. `directory.status` reports the member's view. |
 | The record | `{loom_owner, 1, Owner, serving \| {moving, Op, To}}` per remote session, and `{loom_owner, 1, Owner, local}` per local session. Remote creation reserves, writes the record, then opens; deletion marks (catalogue v13 `catalogue_session_deletions`), deletes the record conditionally, then the registration. A local session's record is written after it exists by the movers' upkeep (`migrate.cover_local`, at boot and after each local creation, again until a pass succeeds) and removed best-effort on delete. Lookups read the local copy. Opening makes no Khepri call. |
-| Moves | `session_mover` under `Recorded` authority: the row first, then the intent CAS, close, cut, send, the receiver's activation CAS before its import, and retirement on the receiver's answer and a consistent read. Abandon is a CAS that fails once the receiver activated; a give-up that finds the receiver owning the session asks it again rather than retiring. A silent receiver is given up after 30 minutes of stalls with a quorum (receiver's migration marker and this daemon's seed required; `Deferred` stalls are not counted); the owner can abandon with `sessions.move` `abandon: true`. No inbound hold on members. |
+| Moves | `session_mover` under `Recorded` authority: the row first, then the intent CAS (a record gone after the seed means the session was deleted elsewhere, and the move ends with the copy set aside, never served again), close, cut, send, the receiver's activation CAS before its import, and retirement on the receiver's answer and a consistent read. Abandon is a CAS that fails once the receiver activated; a give-up that finds the receiver owning the session asks it again rather than retiring. A silent receiver is given up after 30 minutes of stalls with a quorum (receiver's migration marker and this daemon's seed required; `Deferred` stalls are not counted); the owner can abandon with `sessions.move` `abandon: true`. No inbound hold on members. |
 | Migration | Each orchestrator seeds the store from its catalogue once, then writes `[loom, migrated, <node>]`. |
-| Model | `protocol/models/session-move/KhepriMove.tla`: two moves (there and back), content versions, crashes, a lost majority, late activations, receiver steps fair only while the source asks, eight mutants (one temporal), gated by `make model-check` beside `Move.tla`. |
+| Model | `protocol/models/session-move/KhepriMove.tla`: two moves (there and back), content versions, crashes, a lost majority, late activations, a receiver that deletes the session, receiver steps fair only while the source asks, nine mutants (one temporal), gated by `make model-check` beside `Move.tla`. |
 
 #### Evidence
 
-All rows are for `645502fe1` on a Mac (Darwin, macOS 15.5), each gate's own exit
+All rows are for `cb69cd798` on a Mac (Darwin, macOS 15.5), each gate's own exit
 code captured directly. The machine was shared and heavily loaded (load average
-20 to 27) during this run.
+18 to 21) during this run.
 
 | Gate | Result |
 | --- | --- |
-| `make check-gleam` (format, warning-free build, every package's tests, lint) | exit 0 on the second run, 1044 s; client 3685 tests. The first run, under the same load, exited 2 with four timing failures: two `session_mover_test` cases that check the moved file is set aside right after the row says `moved` (the rename follows the row, a race the shipped test already waits out), `tui_e2e_test` and `daemon_soak_test`'s latency budget. Each module passed when run alone (`session_mover_test` three times out of three). |
+| `make check-gleam`, first run | exit 2, 542 s: `client@codemode_live_test` timed out copying a directory, which ended the client package's run. The module passed when run alone (30 tests). |
+| `make check-gleam`, second run | exit 2, 228 s: `cap_test.parallel_map_worker_crash_is_reported_test` saw the exit reason `abnormal` for `killed`, a race in `cap`, which this branch does not touch. `cap` passed when run alone (191 tests). |
+| `make check-<package>` for the packages the full gate did not reach (`ext`, `codemode`, `events`, `client`, `conformance`, `tui`, `lint`) | every one exit 0: `ext` 16 s, `codemode` 57 s, `events` 6 s, `client` 366 s (3697 tests), `conformance` 53 s, `tui` 21 s (1316 tests), `lint` 2 s. Together with the first run, which passed every package before `client`, each package's format, warning-free build, tests and lint passed on this head. |
 | `make doc-check`, `make prelude-check` | exit 0, exit 0 |
-| `make model-check` | exit 0, 387 s. `Move`: four mutants. `KhepriMove`: 240,385 states, 61,686 distinct; `MoveSettles`, `MoverEnds` and `OwnerCanServe` hold; eight mutants each violate their property. Both P models pass. |
+| `make model-check` | exit 0, 260 s. `Move`: four mutants. `KhepriMove`: 332,902 states, 87,390 distinct, depth 34; every invariant, `MoveSettles`, `MoverEnds` and `OwnerCanServe` hold; nine mutants each violate their property. Both P models pass. |
 | `make server-shipment`, `make sandbox`, `bin/loom-exec` installed | exit 0, exit 0, exit 0 |
-| `daemon_shipped_remote_move_test` (4 tests: clean and crash, rows and members) | exit 0, 0 SKIP, 226 s |
+| `daemon_shipped_remote_move_test` (4 tests: clean and crash, rows and members) | exit 0, 0 SKIP, 174 s |
 | `daemon_shipped_directory_test` (2 tests; the member one with a local session redirected and mailed) | exit 0, 0 SKIP |
 | `daemon_shipped_directory_quorum_test` (quorum loss, disk-lost rejoin) | exit 0, 0 SKIP |
 | `daemon_shipped_peer_mail_test` (2 tests, one with members) | exit 0, 0 SKIP |
-| `daemon_shipped_remote_test` | exit 0, 0 SKIP |
+| `daemon_shipped_remote_test`, `daemon_shipped_remote_tools_test` | exit 0, exit 0, 0 SKIP |
 | Linux | not run on this branch |
 
 ### Rulings already made
