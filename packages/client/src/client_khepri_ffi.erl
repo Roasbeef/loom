@@ -210,7 +210,7 @@ written({timeout, _}) -> {error, no_quorum};
 written({error, noproc}) -> {error, not_running};
 written({error, {khepri, not_a_khepri_store, _}}) -> {error, not_running};
 written({'EXIT', _}) -> {error, not_running};
-written(_) -> {error, no_quorum}.
+written(Other) -> {error, {unexpected, describe(Other)}}.
 
 %% ---------------------------------------------------------------- membership
 

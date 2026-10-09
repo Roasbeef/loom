@@ -28,6 +28,11 @@ pub type Failure {
   /// The condition did not hold. Carries what the node holds now, or `None`
   /// when there is no node at the path.
   Mismatch(found: Option(Dynamic))
+
+  /// A write answered with a term the shim does not recognise, such as an
+  /// error a later Khepri adds. Carries the term as printed, so the log line
+  /// that reports the stall names it rather than claiming a lost quorum.
+  Unexpected(term: String)
 }
 
 /// Whether a member of the Ra cluster votes.
