@@ -295,7 +295,8 @@ pub type Stopping {
   /// it is `Fresh`.
   Barred
 
-  /// The key already had a settled row or a tombstone. Nothing was written.
+  /// The key already had a settled row or a tombstone, or a running row
+  /// admitted under another `tool` name. Nothing was written.
   Untouched(CallState)
 }
 
@@ -787,6 +788,11 @@ pub fn query_or_fence(
 /// for the key finds it taken and never answers `Fresh`. A settled row or a
 /// tombstone is left as it is and reported as `Untouched`.
 ///
+/// A running row is stopped only if it was admitted under `tool`. A stop is
+/// safe to apply without a token because it names work of one kind, a
+/// background execution, and a row of another kind under the same key, such as
+/// a live tool call, is reported `Untouched(Admitted)` and left running.
+///
 /// It is `query_or_fence` with a lost row in place of a "did not start" one,
 /// for the same race: a request still in flight from a process that died may
 /// arrive after this one, and either order must leave the key unable to start.
@@ -817,8 +823,23 @@ pub fn stop_or_fence(
     use existing <- result.try(find_call(connection, key))
     case existing {
       Some(Admitted) -> {
-        use Nil <- result.try(mark_call_unknown(connection, key))
-        Ok(Stopped)
+        use running <- result.try(rows(
+          connection,
+          sql.ledger_admitted_keys(session: key.session, tool:),
+        ))
+        case
+          list.any(running, fn(row) {
+            row.op == key.op
+            && row.step == key.step
+            && row.source_index == key.source_index
+          })
+        {
+          True -> {
+            use Nil <- result.try(mark_call_unknown(connection, key))
+            Ok(Stopped)
+          }
+          False -> Ok(Untouched(Admitted))
+        }
       }
       Some(state) -> Ok(Untouched(state))
 

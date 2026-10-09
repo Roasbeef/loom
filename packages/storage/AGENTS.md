@@ -701,7 +701,8 @@ with these forks: they define the same modules.
   `unknown` (`Stopped`) and its bytes are released; a key with no row is
   inserted `admitted` with no bytes and marked `unknown` at once (`Barred`), so a
   start that a dead worker sent before the record closed finds the key taken and
-  never runs the program; any other row is reported `Untouched`. It checks the
+  never runs the program; a running row admitted under another `tool`, such as
+  a live tool call, and any settled row are reported `Untouched`. It checks the
   incarnation, not the attach token, because the only thing it writes is that
   the program must not run. `admitted(ledger, session, tool)` lists the keys of
   the session's admitted rows for one tool, which is how the host reports the

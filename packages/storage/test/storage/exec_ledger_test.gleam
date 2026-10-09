@@ -1060,6 +1060,23 @@ pub fn a_stop_turns_a_running_call_lost_and_frees_its_bytes_test() {
     == Ok(exec_ledger.Untouched(Unknown))
 }
 
+pub fn a_stop_for_an_execution_leaves_a_running_tool_call_alone_test() {
+  let file = path("stop-other-kind")
+  let ledger = open_at(file)
+  attached(ledger)
+  assert exec_ledger.admit(ledger, call(0), 0, token(1), "bash", 4096, limits())
+    == Ok(Fresh)
+
+  // A stop names a background execution. The row under this key is a tool
+  // call that is still running, so the stop writes nothing and the call keeps
+  // its row and its reservation.
+  assert exec_ledger.stop_or_fence(ledger, call(0), 0, "execution")
+    == Ok(exec_ledger.Untouched(Admitted))
+  assert exec_ledger.query(ledger, call(0)) == Ok(Found(Admitted))
+  assert exec_ledger.admitted(ledger, "s", "bash") == Ok([call(0)])
+  assert count(file, "SELECT sum(outcome_bytes) FROM call") == 4096
+}
+
 pub fn a_stop_with_no_row_bars_the_key_from_a_later_start_test() {
   let file = path("stop-first")
   let ledger = open_at(file)
