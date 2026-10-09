@@ -30,7 +30,7 @@
 //// `a_remote_session_is_found_through_the_directory_test_`
 ////
 //// The same questions with the session directory's Khepri cluster
-//// (protocol-change/080): `alpha`, `bravo` and an executor are its members, and
+//// (protocol-change/081): `alpha`, `bravo` and an executor are its members, and
 //// the sessions are remote ones on that executor, each recorded with its owner
 //// by the orchestrator that created it.
 ////

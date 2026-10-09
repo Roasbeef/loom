@@ -975,7 +975,7 @@ pub fn the_unmutated_pair_still_connects_after_the_options_are_regenerated_test(
   discard(base)
 }
 
-// --- the directory (protocol-change/080) --------------------------------------
+// --- the directory (protocol-change/081) --------------------------------------
 
 fn directory_plan(base: String) -> String {
   "directory = [\"laptop\", \"desk\", \"devbox\"]\n\n" <> plan_toml(base)

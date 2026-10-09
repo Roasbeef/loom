@@ -12,7 +12,7 @@
 %% configuration, inside start/5.
 %%
 %% A node that is a member of the session directory's Khepri cluster
-%% (protocol-change/080) is started visible, because Ra reads `nodes()` to
+%% (protocol-change/081) is started visible, because Ra reads `nodes()` to
 %% decide where to send snapshots and heartbeats, and every connection it makes
 %% to another member is made with net_kernel:connect_node/1, because a
 %% connection made with hidden_connect_node/1 stays hidden even between two

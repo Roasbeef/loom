@@ -2,7 +2,7 @@
 
 **Status**: accepted (the owner's rulings of 2026-10-08), implemented · **Date**: 2026-10-08 · **Supersedes**: the phase 5 ruling
 that two catalogue rows are the move authority (protocol-change/078, the
-addendum on moving a session) · **Spec ref**: protocol-change/080 ·
+addendum on moving a session) · **Spec ref**: protocol-change/081 ·
 **Issue**: #697
 
 ## The question
@@ -35,7 +35,7 @@ That leaves five questions, and this record answers them:
 
 [`docs/architecture/directory.md`](../architecture/directory.md) describes the
 design that follows from these answers, and
-[protocol-change/080](../../protocol-change/080-khepri-session-ownership.md)
+[protocol-change/081](../../protocol-change/081-khepri-session-ownership.md)
 specifies the interface changes.
 
 ## Measured before deciding
@@ -190,7 +190,7 @@ ownership is one compare-and-set on the session's record. The catalogue's move
 rows, and a new deletion mark, stay as each daemon's local write-ahead memory,
 written in the registry turns that already order them against admission, so
 that a local change that stops serving precedes the record write and one that
-grants serving follows it. Protocol-change/080 has the rule.
+grants serving follows it. Protocol-change/081 has the rule.
 
 **The Erlang dependency is reached through one FFI module.** Khepri's functions
 return Erlang shapes (`ok`, `{ok, Value}`, `{error, Reason}` with nested
@@ -236,7 +236,7 @@ so lint R6 is unaffected.
 - **Automatic bootstrap of the cluster by the first configured member.** A
   member that loses its disk and is first in the list would start a second,
   empty cluster. Bootstrap is an explicit operator command run once
-  (protocol-change/080).
+  (protocol-change/081).
 
 ## What it costs
 

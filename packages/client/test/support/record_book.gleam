@@ -1,5 +1,5 @@
 //// An in-memory stand-in for the directory store's owner records, for tests
-//// that run two orchestrators in one VM (protocol-change/080).
+//// that run two orchestrators in one VM (protocol-change/081).
 ////
 //// The real store names owners by node, and two registries in one VM share one
 //// node, so their writes could not be told apart. Here each side's ownership

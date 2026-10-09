@@ -1,5 +1,5 @@
 //// Two orchestrators' ownership values over one directory store
-//// (protocol-change/080). Each write names the exact value it expects, so when
+//// (protocol-change/081). Each write names the exact value it expects, so when
 //// two daemons race for a session the second finds the record changed and its
 //// write fails. The store is a VM-wide singleton, so the module is serial.
 

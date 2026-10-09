@@ -1,5 +1,5 @@
 //// The session directory's Khepri cluster losing its majority and losing a
-//// member's disk, against the shipped daemon (protocol-change/080): three real
+//// member's disk, against the shipped daemon (protocol-change/081): three real
 //// `bin/loomd` processes, two orchestrators and one executor, that are the
 //// cluster's members and trust each other over TLS distribution.
 ////

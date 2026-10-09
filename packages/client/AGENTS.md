@@ -7545,7 +7545,7 @@ profile table name at load.
 `Settings` gained `profile_desk`, so every `serve.Settings` literal in the tests
 carries `profile_desk: None`.
 
-## The session directory in Khepri (protocol-change/080)
+## The session directory in Khepri (protocol-change/081)
 
 A deployment may add a `[directory]` table, which makes the listed orchestrators
 and executors the members of one Khepri cluster. Khepri then holds the single
@@ -7658,7 +7658,7 @@ ADR-019 the choice of Khepri and its measurements, and
   after `Control.cover`, and keep it wanted until a pass succeeds: a request
   count and the count the last successful pass covered, so a creation during a
   pass is covered by the next.
-- `directory/migrate.seed` copies a version 12 catalogue's remote registrations
+- `directory/migrate.seed` copies a version 13 catalogue's remote registrations
   into the store once: resident and imported become `serving` (or the activation
   for an imported session whose sender already wrote `moving`), moving becomes
   `moving` unless the receiver already owns it, moved writes nothing. A record

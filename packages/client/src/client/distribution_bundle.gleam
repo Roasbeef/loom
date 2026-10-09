@@ -63,7 +63,7 @@ pub type Bundle {
     /// An executor's `[workspaces.<name>]` rows.
     workspaces: List(Workspace),
     /// The Erlang node names of the session directory's members, this node's
-    /// included, when this node is one of them (protocol-change/080); empty
+    /// included, when this node is one of them (protocol-change/081); empty
     /// otherwise.
     directory: List(String),
     /// PEM of the deployment's CA certificate.

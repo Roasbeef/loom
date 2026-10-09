@@ -1,5 +1,5 @@
 //// The operator command that creates the session directory's Khepri cluster
-//// (protocol-change/080).
+//// (protocol-change/081).
 ////
 //// `loomd directory bootstrap` runs once per deployment, on one member, with
 //// that member's daemon stopped. It creates a store with that member as its

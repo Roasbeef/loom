@@ -249,7 +249,7 @@ pub type Refusal {
   /// This daemon does not accept sessions from other orchestrators.
   NotImporting
 
-  /// On a directory member (protocol-change/080): the owner record no longer
+  /// On a directory member (protocol-change/081): the owner record no longer
   /// says the sender is moving the session to this receiver, and does not name
   /// the receiver as owner, so the move ended without it. The source reads the
   /// record before it does anything else.

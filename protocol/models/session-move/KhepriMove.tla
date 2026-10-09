@@ -1,7 +1,7 @@
 ---------------------------- MODULE KhepriMove ----------------------------
 (***************************************************************************)
 (* A session's moves between two orchestrators A and B when the session    *)
-(* directory's owner record decides who owns it (protocol-change/080).     *)
+(* directory's owner record decides who owns it (protocol-change/081).     *)
 (* Move.tla is the same protocol where each node's catalogue row decides;  *)
 (* a deployment without a [directory] still runs that one, and both are    *)
 (* checked.                                                                *)

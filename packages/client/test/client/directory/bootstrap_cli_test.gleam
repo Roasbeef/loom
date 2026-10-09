@@ -1,6 +1,6 @@
 //// `loomd directory bootstrap` refuses before it reserves or starts anything
 //// when it would start a second cluster or has nothing to create
-//// (protocol-change/080). The emulator scenarios in `distribution_test` cover
+//// (protocol-change/081). The emulator scenarios in `distribution_test` cover
 //// the members it asks.
 
 import client/daemon/directory_cli

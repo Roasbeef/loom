@@ -1,5 +1,5 @@
 //// A daemon's membership in the session directory's Khepri cluster
-//// (protocol-change/080): it keeps this node connected to the other members,
+//// (protocol-change/081): it keeps this node connected to the other members,
 //// and it joins the cluster when this node's store has never joined.
 ////
 //// One actor per member daemon, started with the daemon's services and linked

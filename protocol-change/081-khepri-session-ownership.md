@@ -1,4 +1,4 @@
-# protocol-change/080: Khepri holds session ownership
+# protocol-change/081: Khepri holds session ownership
 
 **Status**: ACCEPTED 2026-10-08 on the owner's rulings, after an independent
 review of the first draft; implemented. The spellings below are the
@@ -11,7 +11,7 @@ beside it, the `loom_orchestrator` port (`Owns` is no longer asked, and the
 `sessions.move` command (one optional member, `abandon`, and the imported-session
 hold removed), one new control command, `directory.status`, `loom.toml` (a
 `[directory]` table), the distribution boot and connect path of member daemons,
-one `loomd` subcommand, and the catalogue (version 13 adds one table). A
+one `loomd` subcommand, and the catalogue (version 14 adds one table). A
 deployment without `[directory]` is unchanged in every respect.
 **Raised by**: issue #697 and the owner's rulings of 2026-10-08: Khepri holds
 move authority as well as the directory, with orchestrators and executors as
@@ -340,9 +340,9 @@ store is not joined joins through the first member that answers, as a
 `promotable` non-voter after removing its own stale identity, and marks itself
 joined once Ra has promoted it. A joined member restarts its server.
 
-### Catalogue (version 13)
+### Catalogue (version 14)
 
-The migration from version 12 adds
+The migration from version 13 adds
 `catalogue_session_deletions(session_id PRIMARY KEY REFERENCES
 catalogue_sessions(session_id))`. `catalogue_session_moves` is unchanged and
 keeps its rows on both kinds of daemon.
