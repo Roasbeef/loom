@@ -476,7 +476,7 @@ call that was `admitted` into `unknown`, as for any executor restart.
 reserves `default_max_result_bytes` for every call, 16 MiB, twice the largest
 file `fs_read` returns (`client/remote/host.gleam:229`). The daemon passes it as
 `max_result_bytes` (`client/daemon/main.gleam:495`) and the host hands it to
-`exec_ledger.admit` (`client/remote/host.gleam:883`). The ledger's byte budget
+`exec_ledger.admit` (`client/remote/host.gleam:901`). The ledger's byte budget
 is `default_max_ledger_bytes`, 512 MiB (`storage/exec_ledger.gleam:440`), and
 `require_budget` refuses a call when the bytes held by `admitted` and
 `terminal` rows plus the new reservation would pass it
