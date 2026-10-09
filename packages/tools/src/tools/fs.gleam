@@ -1723,7 +1723,8 @@ pub fn edit_tool() -> tool.Tool {
 pub fn edit_tool_with(observer: WriteObserver) -> tool.Tool {
   tool.Tool(
     name: "fs_edit",
-    description: "Apply anchored edit hunks to a file. Pass the digest from "
+    description: "Apply anchored edit hunks to a file. When you do not have "
+      <> "current anchors, call fs_read first. Pass the digest from "
       <> "fs_read's result text; each hunk references lines by the {line, anchor} "
       <> "pairs from fs_read. A stale anchor or a changed file rejects the "
       <> "whole edit and returns fresh anchors and the fresh digest. A "
@@ -1731,10 +1732,12 @@ pub fn edit_tool_with(observer: WriteObserver) -> tool.Tool {
       <> "the regions it changed, so a following edit of the same region "
       <> "needs no fs_read. A hunk's `lines` are file text: never copy "
       <> "fs_read's `N:anchor|` prefix into them, and an edit that does is "
-      <> "refused.",
+      <> "refused. Provide one or more hunks; an empty array is invalid.",
     prompt_snippet: Some(
       "`fs_edit` applies anchored hunks to a file, and rejects the patch "
-      <> "rather than corrupting a file that moved under you. A successful "
+      <> "rather than corrupting a file that moved under you. When you lack "
+      <> "current anchors, call `fs_read` first; use its digest and anchors "
+      <> "in one or more hunks. A successful "
       <> "edit returns the fresh digest and the changed regions' anchors, so "
       <> "chained edits of one file need one read.",
     ),
@@ -1762,16 +1765,17 @@ fn hunk_op_schema() -> JsonValue {
   ])
 }
 
-// The `hunks` array schema: the per-hunk item schema plus the note that
-// every hunk is checked before any is applied.
+// The `hunks` array schema: at least one per-hunk item, checked with the
+// digest before any hunk is applied.
 fn hunks_schema(hunk: JsonValue) -> JsonValue {
   json.Object([
     #("type", json.String("array")),
+    #("minItems", json.Int(1)),
     #("items", hunk),
     #(
       "description",
       json.String(
-        "edit hunks; all anchors and the digest are checked before "
+        "one or more edit hunks; all anchors and the digest are checked before "
         <> "any hunk is applied",
       ),
     ),

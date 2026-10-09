@@ -369,7 +369,21 @@ pub fn build_request_shape_test() {
         model.ToolSpec(
           name: "get_weather",
           description: "Weather lookup",
-          input_schema: json.Object([#("type", json.String("object"))]),
+          input_schema: json.Object([
+            #("type", json.String("object")),
+            #(
+              "properties",
+              json.Object([
+                #(
+                  "hunks",
+                  json.Object([
+                    #("type", json.String("array")),
+                    #("minItems", json.Int(1)),
+                  ]),
+                ),
+              ]),
+            ),
+          ]),
         ),
       ],
       max_output_tokens: Some(2000),
@@ -389,6 +403,7 @@ pub fn build_request_shape_test() {
   assert string.contains(built.body, "\"max_completion_tokens\":2000")
   assert string.contains(built.body, "\"role\":\"system\"")
   assert string.contains(built.body, "\"get_weather\"")
+  assert string.contains(built.body, "\"minItems\":1")
   assert !string.contains(built.body, "sk-test-key")
 }
 

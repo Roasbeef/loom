@@ -557,6 +557,19 @@ pub fn edit_lines_schema_forbids_the_display_prefix_test() {
   assert string.contains(schema, "never the `N:anchor|` prefix")
 }
 
+pub fn edit_schema_requires_at_least_one_hunk_test() {
+  let assert json.Object(fields) = fs.edit_tool().schema
+    as "fs_edit exposes an object schema"
+  let assert Ok(json.Object(properties)) = list.key_find(fields, "properties")
+    as "fs_edit schema has properties"
+  let assert Ok(json.Object(hunks)) = list.key_find(properties, "hunks")
+    as "fs_edit schema describes hunks"
+  assert list.key_find(hunks, "minItems") == Ok(json.Int(1))
+
+  let description = fs.edit_tool().description
+  assert string.contains(description, "call fs_read first")
+}
+
 pub fn edit_multi_hunk_test() {
   let #(ctx, _filesystem) = memory_ctx()
   let content = "a\nb\nc\nd\n"
@@ -660,16 +673,20 @@ pub fn edit_unknown_op_test() {
 
 pub fn edit_empty_hunks_test() {
   let #(ctx, _filesystem) = memory_ctx()
+  let content = "version = \"0.4.5\"\n"
+  write_file(ctx, "gleam.toml", content)
   let outcome =
     fs.edit_tool().run(
       ctx,
       args([
-        #("path", json.String("x.txt")),
-        #("digest", digest_of("")),
+        #("path", json.String("gleam.toml")),
+        #("digest", json.String("placeholder")),
         #("hunks", json.Array([])),
       ]),
     )
   assert outcome.is_error
+  assert first_text(outcome) == "invalid arguments: `hunks` must not be empty"
+  assert fs.read_text(ctx, "gleam.toml") == Ok(content)
 }
 
 pub fn edit_escape_rejected_test() {
