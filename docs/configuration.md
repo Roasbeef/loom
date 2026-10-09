@@ -105,16 +105,16 @@ rest of the file and the clients use: roles and profiles name entries by it, the
 `{provider, model_id}` identity that strands store durably. Choose a name once
 and keep it. Entries are sorted by name when read, so file order has no meaning.
 
-A `headers` key is refused with its own message: the adapters send only the
-bearer credential that `api_key_env` names. See
+A `headers` key is refused with its own message: credentials come from the
+selected adapter's authentication boundary. See
 [models](architecture/models.md) for the gateway, dialects and fallback.
 
 | Key | Type | Required, default | Allowed values | Meaning |
 | --- | --- | --- | --- | --- |
-| `dialect` | string | required | `anthropic`, `openai`, `gemini`, `openai-responses` | The wire adapter. `openai` is any OpenAI-compatible chat-completions endpoint. `codex-subscription` is refused by name. |
-| `auth` | string | required for `openai-responses`, refused otherwise | `api-key` | The authentication mode of the OpenAI Responses dialect. |
-| `base_url` | string | the dialect's default | a URL | The endpoint root. A trailing slash is dropped. Defaults: `https://api.anthropic.com` for `anthropic`, `https://api.openai.com/v1` for `openai` and `openai-responses`, `https://generativelanguage.googleapis.com/v1beta` for `gemini`. |
-| `api_key_env` | string | required | an environment variable name | The variable holding the API key, read at dispatch. A missing key does not stop the daemon; the request fails in-band. |
+| `dialect` | string | required | `anthropic`, `openai`, `gemini`, `openai-responses`, `codex-subscription` | The wire adapter. `openai` is any OpenAI-compatible chat-completions endpoint. `codex-subscription` uses native Sign in with ChatGPT and the public Responses API. |
+| `auth` | string | required for Responses and subscription, refused otherwise | `api-key` for `openai-responses`; `codex` for `codex-subscription` | The authentication mode. Platform API billing and ChatGPT plan usage are separate arrangements. |
+| `base_url` | string | the dialect's default; forbidden for `codex-subscription` | a URL | The endpoint root. A trailing slash is dropped. Defaults: `https://api.anthropic.com` for `anthropic`, `https://api.openai.com/v1` for `openai` and `openai-responses`, `https://generativelanguage.googleapis.com/v1beta` for `gemini`. |
+| `api_key_env` | string | required for API-key dialects; forbidden for `codex-subscription` | an environment variable name | The variable holding the API key, read at dispatch. A missing key does not stop the daemon; the request fails in-band. |
 | `model_id` | string | required | non-empty | The identifier the provider expects in the request body, verbatim. |
 | `context_window` | integer | required | positive | Tokens of context the model accepts. Drives overflow detection, so use the provider's figure. |
 | `max_output_tokens` | integer | required | positive | The default per-turn output ceiling. |
@@ -122,7 +122,8 @@ bearer credential that `api_key_env` names. See
 | `vision` | boolean | the known model default | `true`, `false` | Whether the endpoint reads image blocks. The default is `false` for `GLM-5.3` (`zai-org/GLM-5.3`) and `true` for every other model id, including `GLM-5.3-Flash`. An image-bearing run on a text-only entry uses the `vision` role or is refused. |
 | `max_images` | integer | `8` | positive | The most image blocks in one provider request, history included. The oldest historical images become placeholders to fit; stored images are never deleted. Each fallback entry uses its own limit. |
 | `pricing` | table | unpriced | see below | Turns the usage ledger's cost columns from zeros into amounts. |
-| `profile` | string | not usable | none | The key is known so that it can be refused with a clear message: it is not supported for API-key providers. |
+| `cyber_access` | string | omitted, server default | `standard`, `daybreak_blue`, `daybreak_red`; Responses dialects only | Selects `access_programs.cyber` per request. Approval and model compatibility are enforced by the provider; setting it does not grant access. |
+| `profile` | string | required for `codex-subscription`, forbidden otherwise | 1–64 ASCII letters, digits, `_` or `-`, starting with a letter or digit | A native credential profile created by `loomd codex login --profile NAME`. Several entries can share it. This is separate from the named role profiles below. |
 
 ## `[models.<name>.pricing]`
 
@@ -130,7 +131,9 @@ Optional. Every rate is US dollars per million tokens, the unit providers
 publish. `input` and `output` are required once the table exists. The two cache
 rates default to `input`, which can only over-report spend. A model without a
 pricing table is unpriced and its usage records keep a zero cost. Pricing is
-applied once, in the gateway ([models](architecture/models.md)).
+applied once, in the gateway ([models](architecture/models.md)). For subscription
+entries, these are API reference estimates, not ChatGPT plan credits or account
+charges. Missing usage or prices retain unknown or partial coverage.
 
 | Key | Type | Required, default | Allowed values | Meaning |
 | --- | --- | --- | --- | --- |

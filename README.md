@@ -74,6 +74,10 @@ in environment variables named by the catalogue, not in the file. Set those
 variables before starting the daemon. The [configuration reference](docs/configuration.md)
 lists every key the file accepts.
 
+The experimental [Codex subscription guide](docs/codex-subscription.md)
+explains `loomd codex login`, model discovery, and the separate catalogue
+entry for ChatGPT subscription sign-in.
+
 ```sh
 # Open the terminal without a provider or server.
 loom --demo

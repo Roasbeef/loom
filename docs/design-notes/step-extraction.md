@@ -517,7 +517,7 @@ they reach that it misses.
   `handle_connection_message`, `handle_presentation_message`,
   `apply_event` and everything under it: streams, tool tails, usage, the
   cache watch, summaries, schedules, skills and models
-  (`tui/inbound.gleam:388` (`drain_connection`),
+  (`tui/inbound.gleam:394` (`drain_connection`),
   `session_view/event_fold.gleam:106` (`apply_event`)).
 - Submission bookkeeping: `send_frame` (`session_view/outbound.gleam:58`),
   `send_via`, `apply_submission`, `discard_own_turn` and
@@ -583,7 +583,7 @@ The worst cases in the code, and the cut for each:
    and `active_strand` against `after`'s, so a switch from a strand key,
    the strip, a capture that renames the session or a replay's `Adopt`
    parks both halves. `restore_returned_draft`
-   (`session_view/event_fold.gleam:572` (`restore_returned_draft`)) is the one
+   (`session_view/event_fold.gleam:579` (`restore_returned_draft`)) is the one
    shared reducer that writes a parked editor: the returned text becomes a
    shared field, `returned_drafts: List(#(strand, text))`, and the shell
    appends it to the editor it owns.
@@ -647,7 +647,7 @@ The worst cases in the code, and the cut for each:
    `sync_advisor_nudges`, `sync_goal`. Six are terminal and stay:
    `request_visible_worktree` on a diff pane appearing, which becomes
    `Acted(RefreshWorktree)` because only the shell knows the pane appeared
-   (`tui/inbound.gleam:1078` (`request_visible_worktree`) reads
+   (`tui/inbound.gleam:1067` (`request_visible_worktree`) reads
    `layout.diff_shown`); `request_history_for_view`, which becomes
    `Acted(OlderHistory)` for the same reason
    (`tui/interaction.gleam:2092` (`request_history_for_view`) reads the
@@ -664,7 +664,7 @@ The worst cases in the code, and the cut for each:
    chain. The order is kept by having the terminal's tick call the shared
    `Ticked` at the point where the connection drain sits today, after the
    terminal's job drains and the candidate's poll. `tick_strip`
-   (`tui/inbound.gleam:1181` (`tick_strip`)) reads the strip's focus and
+   (`tui/inbound.gleam:1162` (`tick_strip`)) reads the strip's focus and
    stays; `advance_cache_outlook` (`tui/tick.gleam:290`
    (`advance_cache_outlook`)) writes the footer label and stays, reading
    `shared.cache` and the stamp. `settle_tick`'s quiet-time and backlog
@@ -696,7 +696,7 @@ no lines.
 | `reduce`, `drained`, `take_filed`, `received` | the shared `Ticked`: `drain_connection` then `tick_channel` | `session_view/inbound` |
 | `apply` | `apply_channel_update` | `session_view/inbound` |
 | `captured`, `fresh`, `recaptured` | `reconcile_cut`, `apply_cut`, `render_cut` | `session_view/inbound` |
-| `used`, `settle_cache`, `settle_pushed`, `noted` | `receive_usage` (`session_view/event_fold.gleam:952`), `settle_usage`, `settle_pending_cache`, `note_cache_miss` | `session_view/inbound` |
+| `used`, `settle_cache`, `settle_pushed`, `noted` | `receive_usage` (`session_view/event_fold.gleam:960`), `settle_usage`, `settle_pending_cache`, `note_cache_miss` | `session_view/inbound` |
 | `relaned`, `restripped`, `strip_of`, `outlook`, `running_ms`, `strands` | `derive(before, after)`: rebuild blocks, pieces and the strip when `shared.render_revision` moved | shell, view state |
 | `ticked` | the same per-chip label comparison over `shared.cache` and `shared.stamp` | shell |
 | `settled` | `apply_submission`; `drafts` bumps on the `pending_submission` edge | `session_view/outbound`, shell |

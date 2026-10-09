@@ -4,7 +4,7 @@ Loom holds no model constant in its source. A harness hard-wired to one
 vendor's endpoint stops when that vendor does: a rate limit stalls the
 session, a retired model id ends it, and a task better served by a cheaper
 or larger model has nowhere to go. So the model a request reaches is data.
-The operator writes a TOML file, the server reads it once at boot into the
+The operator writes a TOML file, each session reads it when built into the
 provider gateway's registry, and afterwards the session protocol and the
 terminal UI refer to each model by name.
 
@@ -58,7 +58,7 @@ summarize = ["anthropic-opus"]
 The entry fields:
 
 - `dialect` is `"anthropic"`, `"openai"`, `"gemini"`, or
-  `"openai-responses"`, and selects the wire adapter. `openai` remains Chat
+  `"openai-responses"` or `"codex-subscription"`, and selects the wire adapter. `openai` remains Chat
   Completions; it does not select Responses.
 - `base_url` is optional. Omitting it takes the dialect's conventional root
   (`https://api.anthropic.com`, `https://api.openai.com/v1`,
@@ -108,12 +108,25 @@ only in the transient request projection.
 Responses uses the same default API root as Chat Completions but posts to
 `/responses`. It requires `auth = "api-key"` and a nonempty `api_key_env`.
 The older dialects keep their existing configuration and reject an `auth`
-field. No dialect accepts arbitrary headers or authentication profiles.
+field. No dialect accepts arbitrary headers.
 
-`codex-subscription` is not implemented, because API usage is separate from
-a ChatGPT subscription.
-[ADR-012](../adr/012-responses-and-subscription-boundaries.md) records that
-support boundary and the evidence needed to revisit it.
+`codex-subscription` uses native Sign in with ChatGPT and the public
+Responses route with `store:false`. It requires `auth = "codex"` and a named
+`profile`, and rejects `api_key_env` and `base_url`. Its OAuth grant spends
+ChatGPT plan allowance; `openai-responses` uses Platform API-key billing.
+[The operator guide](../codex-subscription.md) covers login, account model
+discovery and configuration. [ADR-012](../adr/012-responses-and-subscription-boundaries.md)
+records the supported contract and the migration.
+
+Login profiles own credentials. Model entries own model IDs, context limits
+and reasoning settings, and role chains select model entry names. Several
+entries can share one login profile, or select different profiles. An
+operator can keep a Baseten entry at the head of `main`, route `subagent`
+to a ChatGPT worker entry and route `summarize` to another ChatGPT entry.
+The selected `summarize` route serves block summaries and activity
+descriptions. Shared workspace-domain maintenance uses the default roles,
+including its memory distillation route. Current compaction builds local note
+checkpoints without a summarizer request.
 
 ### Keys and the secret store
 
@@ -273,8 +286,8 @@ the argument and receipt contract.
 
 ## Roles and chains
 
-Five roles are routable: `main`, `subagent`, `plan`, `summarize`, and
-`vision`. Each row of `[roles]` is an ordered chain of entry names, best
+Six roles are routable: `main`, `subagent`, `plan`, `summarize`,
+`vision`, and `advisor`. Each row of `[roles]` is an ordered chain of entry names, best
 first. `gateway.resolve(role)` returns the first target in that chain whose
 provider is registered. For a gateway built from a catalogue that is always
 the head, since every name in a chain names a registered entry. The
@@ -710,11 +723,11 @@ because the gateway's `ProviderConfig` has no header slot to put one in.
 The bearer key from `api_key_env` is the only credential either adapter
 sends, which is all Baseten's OpenAI-compatible endpoints need.
 
-**Role chains are boot-time only, and the head is always tried first.** The
-`[roles]` routing is fixed in the registry that the wiring closures capture
-when the server starts. `model_name` moves a strand's (or the session's)
-identity, but re-routing a role's chain at runtime would need a mutable
-registry or a restart, and neither exists.
+**Role chains are fixed for a running session, and the head is tried first.**
+The session builder applies its saved role profile before creating the registry
+that the wiring closures capture. `model_name` moves a strand's identity.
+Editing a role chain takes effect when the session is stopped and reopened;
+there is no live routing reload.
 
 Nor does the gateway keep any state *within* a boot: no health tracking,
 no circuit breaker, no sticky chain position. A chain whose rate-limited

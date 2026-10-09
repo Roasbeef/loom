@@ -205,7 +205,7 @@ runtime writer's post-commit publication as `CommitHint`, a bus
 publication as `BusHint`, and streamed provider deltas as
 `ProviderDelta`.
 
-`handle_text` becomes `dispatch` (`client/gateway.gleam:4316`), which
+`handle_text` becomes `dispatch` (`client/gateway.gleam:4328`), which
 decodes strictly on the envelope and tolerantly on names — an
 unrecognized `cmd` survives as `UnknownCommand` so the hub can answer
 `unsupported` in band — then `run_command`
@@ -329,7 +329,7 @@ handle behind a suspended poll, the pending payloads for every queued id
 state exists to go stale, which is why a pass after a restart runs the
 same code as a pass mid-run.
 
-`plan` (`runtime/strand_runtime.gleam:1100`) then calls the one frozen
+`plan` (`runtime/strand_runtime.gleam:1117`) then calls the one frozen
 entry point:
 
 ```gleam
@@ -340,9 +340,9 @@ pub fn next_action(
 ) -> Action {
 ```
 
-`next_action` lives at `machine/planner.gleam:594`. It reads a durable
+`next_action` lives at `machine/planner.gleam:615`. It reads a durable
 state and a bundle of inputs and returns one of six actions, defined by
-`Action` (`machine/planner.gleam:552`):
+`Action` (`machine/planner.gleam:573`):
 
 | Action | What the driver does |
 |---|---|
@@ -417,7 +417,7 @@ and both are worth knowing by name. `threshold_checked` records the
 trigger whose compaction check already ran, so a boundary is never
 checked twice; `skip_inbox_once` is set by a drain on the checkpoint it
 produces, so a crash mid-drain cannot turn a one-at-a-time drain into an
-all-item drain (`checkpoint_action`, `machine/planner.gleam:780`).
+all-item drain (`checkpoint_action`, `machine/planner.gleam:801`).
 
 Large payloads never live inline in the state. Tool arguments go to
 `op.tool_args/{op}:{step}:{index}`, a summary's frozen input to
@@ -449,7 +449,7 @@ two:
                    in one atomic transaction
 ```
 
-`admit_generation` (`machine/planner.gleam:1122`) mints `R` and `U`, folds them into
+`admit_generation` (`machine/planner.gleam:1143`) mints `R` and `U`, folds them into
 `GenerationEffectPending`, and returns the intent transaction beside the
 next state. `runtime/strand_runtime.gleam:679` commits it and only then
 runs the continuation that starts the effect:
@@ -498,7 +498,7 @@ to rerun.
 
 ## 8. The request
 
-`start_effect` (`runtime/strand_runtime.gleam:1636`) projects the context
+`start_effect` (`runtime/strand_runtime.gleam:1656`) projects the context
 and hands a `RequestSpec` to the injected provider surface. The
 projection is a branch scan from the leaf that stops at the first
 compaction entry, run through `session.project_scan`
@@ -650,7 +650,7 @@ intermediate phase still converges, because phases are display labels and
 the snapshot carries live state.
 
 The client that issued the command gets its `entry` once, as the reply.
-`reply_with_matched` (`client/gateway.gleam:6181`) pulls, picks the last
+`reply_with_matched` (`client/gateway.gleam:6198`) pulls, picks the last
 emit the matcher accepts, broadcasts everything to everyone *except* that
 one copy to that one connection, and sends the matched emit back with
 both `reply_to` and its seq.
@@ -729,7 +729,7 @@ clearance proceeds under the base policy; a crash after consumption
 spends the approval without an execution. Both directions fail safe: one
 approval is worth at most one widened execution of exactly the call a
 human approved. What the clearance won then travels onto the dispatch it
-authorized — `take_cleared` (`runtime/strand_runtime.gleam:1693`) hands
+authorized — `take_cleared` (`runtime/strand_runtime.gleam:1713`) hands
 `ToolRun.grants` only the carry keyed to this call's own step and source
 index — and `client/wiring.tool_context` decodes it there onto
 `Ctx.grants` (`run_grants`, `client/wiring.gleam:2019`). That is the
@@ -740,7 +740,7 @@ Then `Dispatch` again — intent commit, then the effect — and the tool
 runs on its own spawned process. `client/wiring.run_tool` builds a fresh
 `Ctx` per call carrying the driver's own durable coordinates —
 `{strand, op_id, step_id, source_index}` — and dispatches through the
-registry (`run_tool`, `client/wiring.gleam:1745`). All four come from the driver, so a
+registry (`run_tool`, `client/wiring.gleam:1752`). All four come from the driver, so a
 model that names another strand in its arguments does not become it.
 
 `tool.dispatch` is total (`tools/tool.gleam:659`): an unknown name yields
@@ -965,7 +965,7 @@ a checkpoint. What happens next is the same code with three differences
 worth knowing.
 
 **The checkpoint drains first.** The procedure
-`checkpoint_action` (`machine/planner.gleam:780`) runs a fixed order:
+`checkpoint_action` (`machine/planner.gleam:801`) runs a fixed order:
 apply accepted deferred
 writes, drain steer input per the run's drain mode, check the compaction
 threshold, and only then start a generation step or, at a `MayFinish`
@@ -1213,7 +1213,7 @@ Collecting the result is a store read, not a message.
 `await_strand_result` (`runtime/api.gleam:1913`) keys on the *operation*,
 reading the reserved `operation-result/{op}` cell the child's terminal
 transaction wrote atomically beside the latest-wins `strand.last_result`
-register (`build.set_last_result`, `machine/planner.gleam:3773`). Keying
+register (`build.set_last_result`, `machine/planner.gleam:3799`). Keying
 on the strand register alone had a hole: a child that starts a second
 run overwrites it, and a parent still waiting on the first run's result
 would read the second's.
