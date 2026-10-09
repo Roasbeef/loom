@@ -10,15 +10,16 @@
 //// (`client/remote/orchestrator_port.PeerCommand`) and waits for the answer
 //// the owner's own Agency gave.
 ////
-//// ## Three outcomes
+//// ## Four outcomes
 ////
-//// A call ends in one of three ways, and the sender's outbox depends on telling
+//// A call ends in one of four ways, and the sender's outbox depends on telling
 //// them apart:
 ////
 //// | What happened | The call returns |
 //// | --- | --- |
 //// | The owner's Agency answered | `Ok(value)` |
 //// | The owner answered with a refusal, or its port refused the command | `Error(Refused(reason))` |
+//// | The owner holds the session saved and not resident | `Error(NotOpen)` |
 //// | The node is gone (`noconnection`), no port is registered, or no answer arrived in time | `Error(Unreachable)` |
 ////
 //// The monitor is taken before the request is sent, as `orchestrator_port.ask`
@@ -129,7 +130,18 @@ fn ask(
     |> process.selector_receive(within_ms)
   process.demonitor_process(watch)
   case heard {
-    Ok(Ok(answer)) -> peer_mail.refused(answer)
+    Ok(Ok(answer)) -> result.map_error(answer, failure_of)
     Ok(Error(Nil)) | Error(Nil) -> Error(peer_mail.Unreachable)
+  }
+}
+
+// The owner's refusal text as a failure. The one text that is not a refusal is
+// the owner's answer that it holds the session and has not opened it
+// (`peer_mail.not_open_reason`); it is a text because the port's reply type
+// carries one, and this is the only place it is turned back into a variant.
+fn failure_of(text: String) -> peer_mail.Failure {
+  case text == peer_mail.not_open_reason {
+    True -> peer_mail.NotOpen
+    False -> peer_mail.Refused(text)
   }
 }

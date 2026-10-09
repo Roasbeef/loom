@@ -1113,7 +1113,7 @@ pub fn peer_control_mutations_are_epoch_fenced_before_resolution_test() {
   })
 }
 
-pub fn peer_send_control_routes_bound_identity_and_refuses_unlinked_or_saved_test() {
+pub fn peer_send_control_routes_bound_identity_and_refuses_unlinked_and_queues_saved_test() {
   let generator = ids.generator(clock.fixed(0), 401)
   let #(target, _) = ids.mint_session(generator)
   let target_id = ids.session_id_to_string(target)
@@ -1238,8 +1238,13 @@ pub fn peer_send_control_routes_bound_identity_and_refuses_unlinked_or_saved_tes
         }
       })
       as "the recipient becomes saved"
-    let refused = send(socket, 4, "peers.send", body, within_ms: 1000)
-    assert field(refused, "event") == json.String("error")
+    // The recipient is saved, and opening it is the owner's decision. The send
+    // is queued and reaches nobody now.
+    let queued = send(socket, 4, "peers.send", body, within_ms: 1000)
+    assert field(queued, "event") == json.String("peers.send")
+    assert field(field(queued, "body"), "state") == json.String("queued")
+    assert field(field(queued, "body"), "note")
+      == json.String(peers.queued_unopened_note)
     assert result.is_error(manager.resolve(ready.registry, target_id))
     let _ = ffi_ws.tcp_close(socket)
     Nil
@@ -1484,8 +1489,12 @@ pub fn peer_cli_routes_inspect_link_send_and_partial_unlink_test() {
     assert field(saved_target, "wake") == json.Null
     assert field(field(field(saved_target, "metadata"), "status"), "state")
       == json.String("saved")
-    assert peer_cli.exchange(address, owner, ready.epoch, peer_send)
-      == Error(peers.not_running)
+    let assert Ok(queued) =
+      peer_cli.exchange(address, owner, ready.epoch, peer_send)
+      as "a send to a saved recipient is queued and opens nothing"
+    assert field(field(queued, "result"), "state") == json.String("queued")
+    assert field(field(queued, "result"), "note")
+      == json.String(peers.queued_unopened_note)
     assert result.is_error(manager.resolve(ready.registry, target_id))
     let assert Ok(unlink) =
       peer_cli.parse(["unlink", source_id, "main", target_id, "reviewer"])

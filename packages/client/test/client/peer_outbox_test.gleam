@@ -5,8 +5,8 @@
 //// against real runtimes in `peer_outbox_flow_test`.
 
 import client/peer_outbox.{
-  Admitted, Conflict, Evict, Free, Full, Insert, Receipt, Refused, Rejected,
-  Resume, Row, Settled, Unanswered,
+  Admitted, Conflict, Evict, Free, Full, Insert, NotOpen, OnOpen, Pending,
+  Receipt, Refused, Rejected, Resume, Row, Settled, Unanswered,
 }
 import core/json
 import gleam/int
@@ -191,6 +191,75 @@ pub fn a_row_key_names_strand_session_and_id_test() {
   assert base != peer_outbox.key("main", "peer", "m2")
   assert base != peer_outbox.key("main", "peerm", "1")
   assert string.starts_with(base, peer_outbox.key_prefix)
+}
+
+pub fn a_saved_recipient_changes_what_a_pending_row_waits_for_test() {
+  let sent = row("m1", "hello", 0)
+  let assert Some(for_open) = peer_outbox.settle(sent, NotOpen)
+    as "the first answer that the recipient is saved is written"
+  assert for_open.state == Pending("hello", OnOpen)
+  assert peer_outbox.waiting_for(for_open) == Some(OnOpen)
+
+  // The same answer again changes nothing, so a recipient that stays saved
+  // costs no write per attempt.
+  assert peer_outbox.settle(for_open, NotOpen) == None
+
+  // The next attempt may find the owner gone, and the row then waits on the
+  // owner again.
+  assert peer_outbox.settle(for_open, Unanswered) == Some(sent)
+
+  // A receipt or a refusal still ends a row that was waiting for an open.
+  let receipt = receipt_for("src", sent)
+  assert peer_outbox.settle(for_open, Receipt(receipt))
+    == Some(Row(..for_open, state: Admitted(receipt)))
+  assert peer_outbox.settle(for_open, Rejected("no grant"))
+    == Some(Row(..for_open, state: Refused("no grant")))
+}
+
+pub fn a_finished_row_does_not_wait_for_anything_test() {
+  let sent = row("m1", "hello", 0)
+  let admitted = Row(..sent, state: Admitted(receipt_for("src", sent)))
+  assert peer_outbox.waiting_for(admitted) == None
+  assert peer_outbox.waiting_for(finished("m2", 0)) == None
+  assert peer_outbox.settle(admitted, NotOpen) == None
+  assert peer_outbox.settle(finished("m2", 0), NotOpen) == None
+}
+
+pub fn an_expired_row_is_refused_in_words_that_name_what_it_waited_for_test() {
+  let sent = row("m1", "hello", 0)
+  let assert Some(for_open) = peer_outbox.settle(sent, NotOpen)
+  assert peer_outbox.expiry_reason(sent, "silent", "closed") == "silent"
+  assert peer_outbox.expiry_reason(for_open, "silent", "closed") == "closed"
+  assert peer_outbox.expire(
+      for_open,
+      peer_outbox.pending_ttl_ms + 1,
+      peer_outbox.expiry_reason(for_open, "silent", "closed"),
+    )
+    == Some(Row(..for_open, state: Refused("closed")))
+}
+
+pub fn the_wait_survives_a_round_trip_and_an_older_row_waits_for_its_owner_test() {
+  let sent = row("m1", "hello", 42)
+  let assert Some(for_open) = peer_outbox.settle(sent, NotOpen)
+  assert peer_outbox.decode(peer_outbox.encode(for_open)) == Ok(for_open)
+
+  // A row written before a recipient could be waited for has no `wait` field.
+  let assert json.Object(fields) = peer_outbox.encode(sent)
+    as "a row encodes as an object"
+  let older = json.Object(list.filter(fields, fn(pair) { pair.0 != "wait" }))
+  assert peer_outbox.decode(older) == Ok(sent)
+
+  // A field of any other shape is an error, not a guess.
+  let odd =
+    json.Object(
+      list.map(fields, fn(pair) {
+        case pair.0 {
+          "wait" -> #("wait", json.String("sideways"))
+          _ -> pair
+        }
+      }),
+    )
+  assert peer_outbox.decode(odd) == Error("unknown outbox wait")
 }
 
 fn upto(count: Int) -> List(Int) {

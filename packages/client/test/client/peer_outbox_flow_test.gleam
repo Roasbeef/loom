@@ -26,7 +26,7 @@ import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option.{Some}
-import support/peer_rig.{Down, Lose, Pass, Resident, Saved}
+import support/peer_rig.{Down, Gone, Lose, Pass, Resident, Saved}
 
 pub fn a_reachable_recipient_is_answered_as_before_and_the_row_is_admitted_test() {
   let rig = peer_rig.rig(1000, [], Pass)
@@ -77,7 +77,7 @@ pub fn an_unreachable_recipient_queues_the_message_test() {
   assert peer_rig.counts(rig) == #(1, 1)
   let assert [row] = peer_rig.due(rig)
   assert row.message_id == "m1"
-  assert row.state == peer_outbox.Pending("hello")
+  assert row.state == peer_outbox.Pending("hello", peer_outbox.OnOwner)
 }
 
 pub fn a_resend_delivers_exactly_one_message_after_the_owner_returns_test() {
@@ -113,7 +113,7 @@ pub fn a_lost_reply_is_retried_to_the_same_receipt_without_a_second_message_test
 
 pub fn a_definitive_refusal_is_returned_and_recorded_and_not_retried_test() {
   let rig = peer_rig.rig(1060, [], Pass)
-  peer_rig.set_resident(rig, Saved)
+  peer_rig.set_resident(rig, Gone)
   assert peer_rig.send(rig, "m1") == Error(peers.not_running)
   assert peer_rig.counts(rig) == #(0, 1)
 
@@ -125,7 +125,7 @@ pub fn a_definitive_refusal_is_returned_and_recorded_and_not_retried_test() {
 
 pub fn a_refused_message_may_be_sent_again_once_the_cause_passes_test() {
   let rig = peer_rig.rig(1070, [], Pass)
-  peer_rig.set_resident(rig, Saved)
+  peer_rig.set_resident(rig, Gone)
   assert peer_rig.send(rig, "m1") == Error(peers.not_running)
   peer_rig.set_resident(rig, Resident)
   let assert Ok(receipt) = peer_rig.send(rig, "m1")
@@ -334,7 +334,142 @@ pub fn sent_receipt_reads_the_local_row_before_asking_the_recipient_test() {
       #("session", rig.recipient_name),
       #("message_id", "never-sent"),
     ])
-  assert unknown == framing.CapErr("peer_refused", "session is saved, not open")
+  assert unknown == framing.CapErr("peer_refused", peer_mail.not_open_reason)
+}
+
+pub fn a_saved_recipient_is_queued_and_delivered_once_it_is_open_test() {
+  let rig = peer_rig.rig(1160, [], Pass)
+  peer_rig.set_resident(rig, Saved)
+  let assert Ok(queued) = peer_rig.send(rig, "m1")
+    as "a send to a saved session is queued, not refused"
+  assert peers.is_queued(queued)
+  assert peer_rig.field(queued, "note")
+    == json.String(peers.queued_unopened_note)
+  assert peer_rig.receipts(rig.recipient) == 0
+
+  // The recipient was looked up and never asked.
+  assert peer_rig.counts(rig) == #(0, 1)
+  let assert [row] = peer_rig.due(rig)
+  assert row.state == peer_outbox.Pending("hello", peer_outbox.OnOpen)
+
+  // Another attempt while it is still saved waits again.
+  assert peers.resend(rig.wiring, row) == peer_outbox.NotOpen
+  assert peer_rig.receipts(rig.recipient) == 0
+
+  // The owner opens it, and the next attempt is admitted.
+  peer_rig.set_resident(rig, Resident)
+  let assert [row] = peer_rig.due(rig)
+  let assert peer_outbox.Receipt(receipt) = peers.resend(rig.wiring, row)
+    as "the open recipient admits the message"
+  assert peer_rig.receipts(rig.recipient) == 1
+  assert peer_rig.stored_receipt(rig, "m1") == receipt
+  assert peer_rig.due(rig) == []
+
+  // Sending it again is the stored receipt and not a second message.
+  assert peer_rig.send(rig, "m1") == Ok(receipt)
+  assert peer_rig.receipts(rig.recipient) == 1
+}
+
+pub fn a_message_that_waits_an_hour_for_an_open_is_refused_in_those_words_test() {
+  let rig = peer_rig.rig_on(1170, [], Pass, clock.fixed(0))
+  peer_rig.set_resident(rig, Saved)
+  let assert Ok(queued) = peer_rig.send(rig, "m1")
+  assert peers.is_queued(queued)
+  let later =
+    peer_mail.Endpoint(rig.sender_name, fn(command) {
+      peer_mail.handle(
+        rig.sender,
+        clock.fixed(peer_outbox.pending_ttl_ms + 1),
+        command,
+      )
+      |> peer_mail.refused
+    })
+  let assert Ok(json.Array(items)) = later.call(peer_mail.OutboxDue)
+  assert items == []
+  let assert Some(peer_outbox.Row(state: peer_outbox.Refused(reason), ..)) =
+    peer_rig.row(rig, "m1")
+    as "the row is refused"
+  assert reason == peer_mail.not_opened_in_time_reason
+}
+
+pub fn a_row_that_stopped_waiting_for_an_open_is_refused_as_an_owner_that_was_silent_test() {
+  let rig = peer_rig.rig_on(1180, [], Down, clock.fixed(0))
+  peer_rig.set_resident(rig, Saved)
+  let assert Ok(_) = peer_rig.send(rig, "m1")
+  let assert Some(peer_outbox.Row(
+    state: peer_outbox.Pending(wait: peer_outbox.OnOpen, ..),
+    ..,
+  )) = peer_rig.row(rig, "m1")
+    as "the row waits for an open"
+
+  // The owner is found again but does not answer, so the row now waits on it.
+  peer_rig.set_resident(rig, Resident)
+  let assert [row] = peer_rig.due(rig)
+  assert peers.resend(rig.wiring, row) == peer_outbox.Unanswered
+  let assert Some(peer_outbox.Row(
+    state: peer_outbox.Pending(wait: peer_outbox.OnOwner, ..),
+    ..,
+  )) = peer_rig.row(rig, "m1")
+    as "the row waits for the owner"
+  let later =
+    peer_mail.Endpoint(rig.sender_name, fn(command) {
+      peer_mail.handle(
+        rig.sender,
+        clock.fixed(peer_outbox.pending_ttl_ms + 1),
+        command,
+      )
+      |> peer_mail.refused
+    })
+  let assert Ok(json.Array([])) = later.call(peer_mail.OutboxDue)
+  let assert Some(peer_outbox.Row(state: peer_outbox.Refused(reason), ..)) =
+    peer_rig.row(rig, "m1")
+  assert reason == peer_mail.unreachable_reason
+}
+
+pub fn a_recipient_deleted_while_a_message_waits_ends_the_message_refused_test() {
+  let rig = peer_rig.rig(1190, [], Pass)
+  peer_rig.set_resident(rig, Saved)
+  let assert Ok(queued) = peer_rig.send(rig, "m1")
+  assert peers.is_queued(queued)
+
+  // No catalogue holds the session any more: nothing will ever open it.
+  peer_rig.set_resident(rig, Gone)
+  let assert [row] = peer_rig.due(rig)
+  assert peers.resend(rig.wiring, row)
+    == peer_outbox.Rejected(peers.not_running)
+  assert peer_rig.due(rig) == []
+  let assert Some(peer_outbox.Row(state: peer_outbox.Refused(reason), ..)) =
+    peer_rig.row(rig, "m1")
+  assert reason == peers.not_running
+  assert peer_rig.receipts(rig.recipient) == 0
+}
+
+pub fn unlinking_deletes_a_message_waiting_for_an_open_test() {
+  let rig = peer_rig.rig(1200, [], Pass)
+  peer_rig.set_resident(rig, Saved)
+  let assert Ok(queued) = peer_rig.send(rig, "m1")
+  assert peers.is_queued(queued)
+  let assert Ok(_) = peers.unlink(rig.source, rig.target, "main", "main")
+    as "the owner removes the link"
+  assert peer_rig.due(rig) == []
+  assert peer_rig.row(rig, "m1") == option.None
+
+  // Opened later, nothing is delivered for the link that was removed.
+  peer_rig.set_resident(rig, Resident)
+  assert peer_rig.receipts(rig.recipient) == 0
+}
+
+pub fn a_program_is_told_a_saved_recipient_by_the_same_denial_code_test() {
+  let rig = peer_rig.rig(1210, [], Pass)
+  peer_rig.set_resident(rig, Saved)
+  let answer =
+    routed(rig, "peer.send", [
+      #("session", rig.recipient_name),
+      #("strand", "main"),
+      #("message_id", "m1"),
+      #("text", "hello"),
+    ])
+  assert answer == framing.CapErr("peer_queued", peers.queued_unopened_note)
 }
 
 fn upto(count: Int) -> List(Int) {
