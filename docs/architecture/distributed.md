@@ -139,7 +139,8 @@ yet, and a remote session refuses them rather than half running them: extension
 tools, operator-added directories, background code mode, and MCP façades inside
 code mode. Foreground `code_mode` works. A remote failure never falls back to a
 local path, because a remote session's orchestrator has no workspace path to
-fall back to.
+fall back to. Background code mode and MCP façades have a design that is not
+built yet; see "Background code mode and MCP on a remote session" below.
 
 ## Trust and transport
 
@@ -719,6 +720,149 @@ clean close, as it does on a stop. Memberships, claims and the memory domain
 stay on the source, and a client reconnects to the receiver and catches up from
 there.
 
+## Background code mode and MCP on a remote session
+
+**Status: designed, not built.** The rules are in the protocol-change/078
+addendum "background code mode and MCP façades on a remote session", together
+with the failure table for both paths. Until the change lands, a remote session
+refuses both features. This section shows how the parts are meant to fit.
+
+### A background execution
+
+The orchestrator keeps the execution's durable record in `async_runs`, exactly
+as a local session does: the record, the input journal, progress, the ceilings,
+the idle expiry, the completion notice and recovery. The executor only runs the
+program. A worker process on the orchestrator asks the executor to run it with
+`StartExecution` and waits for the result, the way an effect process waits on a
+`Run`. The execution has a row in the executor's ledger keyed
+`(session, op, "async/<id>", 0)`, so it is admitted once, committed before any
+reply, lost on an executor restart and fenced against a stale token like any
+tool call.
+
+The program's inputs and progress need no new message. `execution.receive`,
+`execution.receive_enveloped` and `execution.progress` are owner-bound
+capabilities, so they cross the owner port as `Capability` calls, and
+`async_runs` answers them from the journal and the progress snapshot it already
+keeps. The owner binds such a call to its execution by the step `async/<id>`
+that the executor's tool shell filled in, and refuses it once the record has
+closed.
+
+The diagram follows one execution from the launch through progress, an input,
+a link cut and the report.
+
+```mermaid
+sequenceDiagram
+    participant M as model (strand)
+    participant O as orchestrator<br/>runtime + owner port
+    participant A as async_runs + worker
+    participant H as executor host + ledger
+    participant P as program (satellite)
+    M->>O: code_mode mode=launch
+    O->>H: Run(launch call)
+    Note over H: code_mode tool loads the source,<br/>builds the terms
+    H-)O: LaunchExecution(terms)
+    O->>A: async_runs.launch
+    Note over A: claim the record (Running)<br/>before the worker starts
+    A-->>O: handle
+    O--)H: handle
+    H-->>O: RunFinished(handle)
+    O-->>M: handle
+    A->>H: StartExecution(key, incarnation, token, terms, remaining_ms)
+    Note over H: admit the key in one transaction<br/>row admitted
+    H->>P: codemode.execute under step async/id
+    P-)O: Capability execution.progress
+    O->>A: Progress
+    M->>O: code_mode mode=send
+    O->>H: Run(send call)
+    H-)O: InteractExecution(send)
+    O->>A: append to the input journal
+    P-)O: Capability execution.receive
+    O-->>P: the input
+    Note over A,H: link cut
+    Note over H: worker DOWN noconnection:<br/>waiter dropped, program runs on
+    Note over P: owner-bound calls denied<br/>owner_unavailable
+    Note over A,H: link back
+    A->>H: StartExecution (same key, re-sent)
+    Note over H: row admitted: join the waiters
+    P-->>H: program ends
+    Note over H: commit the row terminal
+    H-->>A: ExecutionFinished(value)
+    Note over A: save Finished(value),<br/>notify the strand
+    O->>H: Ack(key), once the record is terminal
+```
+
+A program is cancelled only on a decision the orchestrator recorded: an owner's
+cancel, an abort of the launching operation, a session stop, the deadline, the
+idle expiry or a restart. Each sends `StopExecution`, which in one ledger
+transaction marks a running row `unknown` before the program is stopped, and
+inserts a missing key as `unknown` so that a late start never runs it. A
+`noconnection` never cancels. A stop lost to a partition is repeated by the
+owner port's reconciler, which also stops programs left running by an
+orchestrator that restarted. The reconciler acknowledges an execution's row only
+once its record is terminal, so a result the worker has not read yet is never
+discarded.
+
+### An MCP call in each placement
+
+Each `[mcp.<name>]` table gains `runs_on`, `"orchestrator"` by default or
+`"executor"`. A local session ignores it. On a remote session an
+orchestrator-placed server runs on the orchestrator with the keys it holds, and
+the executor receives only the generated façade: the source it compiles into a
+program's build, the surface the model reads, and the module name vetting
+admits. The call goes back over the owner port, because `cap_placement` already
+places `mcp.<server>` on the owner.
+
+```mermaid
+sequenceDiagram
+    participant P as program (satellite, executor)
+    participant R as executor router<br/>(owner_codemode.sent_to)
+    participant OP as owner port (orchestrator)
+    participant C as mcp client actor (orchestrator)
+    participant S as server process (orchestrator)
+    Note over OP,S: before the attach: resolve api_key_env here,<br/>spawn, tools/list, generate the façade
+    Note over R: Attach carried the façade:<br/>allowlist, description, build source
+    P->>R: cap_call mcp.github (tool and arguments)
+    R->>OP: Capability(call) over distribution
+    OP->>C: client/mcp.routing arm
+    C->>S: tools/call
+    S-->>C: result
+    C-->>OP: cap_result
+    OP-->>R: cap_result
+    R-->>P: typed result, or an in-band error
+```
+
+An executor-placed server runs on the executor, beside the checkout. The
+orchestrator sends its name, its argv and the name of its `api_key_env`; the
+executor resolves the name from its own environment and `[secrets]` table, so no
+key crosses the wire. The server's client belongs to the scope's plane, starts
+when the plane is built and is retired when the scope closes. Its calls never
+leave the executor.
+
+```mermaid
+sequenceDiagram
+    participant O as orchestrator
+    participant H as executor host + plane
+    participant C as mcp client actor (executor)
+    participant S as server process (executor)
+    participant P as program (satellite, executor)
+    O->>H: Attach(..., mcp: spawn spec by name)
+    Note over H: plane build: resolve api_key_env<br/>from the executor's own secrets
+    H->>C: start client
+    C->>S: spawn argv, initialize, tools/list
+    Note over H: generate the façade here
+    H-->>O: Attached(census with mcp statuses)
+    P->>C: cap_call mcp.repo, answered on the executor
+    C->>S: tools/call
+    S-->>C: result
+    C-->>P: typed result, or an in-band error
+```
+
+One program may import façades of both placements. The executor's router sends
+`mcp.<server>` to the owner unless the scope's plan names that server as
+executor-placed. The plan is fixed when the plane is built, for one
+incarnation; a later open that rebinds the scope with a different plan logs
+`mcp.plan_stale` and the change waits for the next reopen.
+
 ## Failures
 
 This table lists each failure, what the system does, and what an operator or
@@ -795,7 +939,8 @@ The directory holds no state of its own, so it has no model.
   A replicated store behind `session_directory` (Khepri) is planned for a
   follow-up PR and is the prerequisite for failover.
 - **Remote sessions refuse** extension tools, operator-added directories,
-  background code mode and MCP façades in code mode.
+  background code mode and MCP façades in code mode. The last two are designed
+  (see above) and not built.
 - **After an executor restart**, an open session fails new calls until it is
   closed and reopened, and the reopen needs the operator's release. Runs left
   by an orchestrator that died hold their budget until the session is reopened

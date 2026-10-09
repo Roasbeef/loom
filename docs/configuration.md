@@ -222,6 +222,17 @@ decision. There is no flag, discovery or live reload. See
 | `command` | array of strings | required | non-empty, each element non-empty | The server's argv, executable first. Never a shell string. |
 | `api_key_env` | string | none | an environment variable name | A host variable read when the server process starts and injected into its environment under the same name. |
 
+**Planned, not accepted yet: `runs_on`.** The design in the protocol-change/078
+addendum on background code mode and MCP façades adds one key to this table,
+`runs_on`, a string that is `"orchestrator"` (the default) or `"executor"`. It
+places the server for a session whose workspace is on an executor: on the
+orchestrator, which holds the key and answers the calls, or on the executor,
+which resolves `api_key_env` from its own environment and `[secrets]` table and
+runs the server beside the checkout. A local session ignores it. Until that
+change lands the daemon refuses a table that sets `runs_on`, as it refuses any
+unknown key, and a remote session starts no MCP server. The key gets its row
+above when the daemon accepts it.
+
 ## `[lsp.<name>]`
 
 Optional, one table per language server. Language servers are configured, never

@@ -1364,7 +1364,15 @@ not yet do the following.
 - **No operator-added directories on remote sessions.** They are validated against
   the orchestrator's disk.
 - **No background code mode and no MCP facades in code mode on remote sessions.**
-  Foreground `code_mode` works, without those two features.
+  Foreground `code_mode` works, without those two features. Both are designed
+  and not built (the protocol-change/078 addendum on background code mode and
+  MCP façades). When they land, an `[mcp.<name>]` table on the orchestrator will
+  take `runs_on = "orchestrator"` (the default) or `runs_on = "executor"`. A
+  server on the orchestrator keeps its key there. A server on the executor runs
+  beside the checkout, and the executor reads its `api_key_env` variable from
+  its own environment or its own `[secrets]` table, so that variable has to be
+  set on the executor, not on the orchestrator. Its `command` has to name an
+  executable the executor can find.
 - **No automatic connection.** Nodes connect only to the peers you list, only when
   asked.
 - **Provisioning is one-shot.** `provision` discards the authority's key, so adding
