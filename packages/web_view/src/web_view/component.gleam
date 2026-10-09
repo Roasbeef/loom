@@ -2763,12 +2763,13 @@ fn completion_after(
 // hold everything up to `frontier`. The window is trimmed to the records after
 // them, but it is not the only source of blocks: the advisor's commentary is
 // projected from the capture's whole window on every capture, keyed by the
-// sequences of the advisor's own records, so a review written while a turn
+// sequences of the advisor's own records, so a review written after a turn
 // closed is still a block of the projection, older than the turns that close
-// after it. The page asks this of every block before it groups them, so a
-// block the closed turns cover is never part of a group. Which groups the
-// window closes, and which it keeps to draw, are then one prefix of one list,
-// and a turn cannot be drawn from its summary and from the window at once.
+// after it. The same holds when the trim could not be made, which is while the
+// scrollback is being read or a page request is out. The page asks this of
+// every block before it groups them, so a block the closed turns cover is never
+// part of a group, and a turn cannot be drawn from its summary and from the
+// window at once.
 fn uncovered(block: transcript_lines.Block, frontier: Int) -> Bool {
   case transcript_lines.block_seq(block) {
     Ok(seq) -> seq >= frontier
@@ -2852,9 +2853,9 @@ fn laid_out(
   // oldest to newest without a gap. They are drawn from the window meanwhile.
   //
   // The closed turns are the oldest of the groups, and the window keeps the rest
-  // by dropping as many groups as were closed, which is right only because
-  // `uncovered` has already kept every group the closed turns cover out of the
-  // list.
+  // by dropping as many groups as were closed. `uncovered` has already dropped
+  // every block the summaries hold, so no group here is one a summary already
+  // covers.
   let closed = case standing {
     Unfinished -> []
     NoLead | Whole -> closing(groups, latest)

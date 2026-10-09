@@ -614,9 +614,10 @@ page keys and nonces, and the relay into the session's gateway.
   strand's closed turns are dropped with its window. No block the closed
   turns cover reaches the window's groups (`uncovered`, in `laid_out`): the
   advisor's commentary is projected from the capture's whole window and keeps
-  blocks older than the newest closed turn's end, and a group left in the
-  window beside the turns closed from it drew the next turn twice
-  (`closed_turn_test`).
+  blocks older than the newest closed turn's end. Before this, such a block
+  stayed in the window as a group of its own, the count of closed groups no
+  longer matched the groups dropped, and the newest closed turn was drawn from
+  its summary and from the window again (`closed_turn_test`).
   `FoldToggled(fold)` opens or closes a fold (`folded_at`): it acts only on a
   `Connected` page with a cut and only on a number that is the id of a fold the
   page draws, as `OlderRequested` acts only on a page that is reading, and a

@@ -1,7 +1,7 @@
 //// A turn the page has closed is drawn from its summary and from nothing else.
 ////
 //// The page closes each settled turn into a summary and trims the records it
-//// summarizes from its window, so the window holds only what is still moving.
+//// summarizes from its window, so the window holds only the turns not yet closed.
 //// The advisor's commentary is not trimmed with them. It is projected from the
 //// capture's whole window on every capture, as blocks keyed by the advisor's
 //// own sequences, so a note the advisor wrote after a turn closed stays among
