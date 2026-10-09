@@ -115,19 +115,6 @@ pub type Upkeep {
   )
 }
 
-/// The upkeep of a daemon that keeps no directory records: nothing to do.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // session_movers.start_with(environment, retry_ms, holds, give_up_after_ms, session_movers.no_upkeep())
-/// ```
-pub fn no_upkeep() -> Upkeep {
-  Upkeep(every_tick: fn() { Nil }, cover: fn() { Ok(Nil) }, release: fn(_) {
-    Nil
-  })
-}
-
 // What the actor is told.
 type Message {
   Begin(move: catalogue.Pending)
@@ -174,6 +161,19 @@ type State(instance) {
     wanted: Int,
     covered: Int,
   )
+}
+
+/// The upkeep of a daemon that keeps no directory records: nothing to do.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // session_movers.start_with(environment, retry_ms, holds, give_up_after_ms, session_movers.no_upkeep())
+/// ```
+pub fn no_upkeep() -> Upkeep {
+  Upkeep(every_tick: fn() { Nil }, cover: fn() { Ok(Nil) }, release: fn(_) {
+    Nil
+  })
 }
 
 /// The control of a daemon that moves nothing: it lists no orchestrator, so every
