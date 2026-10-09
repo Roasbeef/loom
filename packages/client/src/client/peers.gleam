@@ -261,7 +261,7 @@ pub const not_running = "that session is not running; the owner has to open it"
 /// The message is recorded and will be delivered, so the model must not send
 /// it again under a new id.
 pub const queued_note =
-  "queued: the recipient's owner is not reachable. Delivery is retried about every 5 seconds for up to 1 hour. Do not send it again under a new message_id; sending it again with the same message_id returns the receipt once the message is admitted."
+  "queued: the recipient's owner is not reachable. Delivery is retried, at first about every 5 seconds, for up to 1 hour. Do not send it again under a new message_id; sending it again with the same message_id returns the receipt once the message is admitted."
 
 /// What the model is told when the recipient is saved and not open. Only the
 /// owner opens a session, so the message waits for that, and the attempts

@@ -71,7 +71,26 @@ const connect_ms = 1500
 pub fn wait_ms(command: peer_mail.Command) -> Int {
   case command {
     peer_mail.Roster(..) -> read_ms
-    _ -> call_ms
+    peer_mail.Allow(..)
+    | peer_mail.Revoke(..)
+    | peer_mail.Link(..)
+    | peer_mail.Unlink(..)
+    | peer_mail.Links(..)
+    | peer_mail.Grants(..)
+    | peer_mail.Deliver(..)
+    | peer_mail.Describe(..)
+    | peer_mail.Activity(..)
+    | peer_mail.Inbox(..)
+    | peer_mail.InboxGet(..)
+    | peer_mail.History(..)
+    | peer_mail.Received(..)
+    | peer_mail.ReceivedGet(..)
+    | peer_mail.SentReceipt(..)
+    | peer_mail.Overview
+    | peer_mail.OutboxClaim(..)
+    | peer_mail.OutboxSettle(..)
+    | peer_mail.OutboxDue
+    | peer_mail.OutboxReceipt(..) -> call_ms
   }
 }
 
