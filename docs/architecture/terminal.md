@@ -423,7 +423,11 @@ which reads the model:
   bottom-anchored viewport has shown, and `pacing.pace` advances it about one
   row per frame, faster once the backlog passes a threshold. An event that
   addresses the transcript (a wheel notch, a page key, Enter, a resize) reveals
-  the whole backlog at once. Typing into the composer does not.
+  the whole backlog at once. Typing into the composer does not. Rows that are
+  not new output are never walked: a strand or session switch, and a peer
+  joining or leaving, which adds or removes the author label above each owner
+  prompt, are adopted whole, so another terminal or a browser page opening the
+  session does not pull the tail of this transcript back.
 
 The poll timeout is `tick.terminal_poll_timeout`, and since socket traffic
 wakes the loop itself, the timeout is only for what a wake does not
