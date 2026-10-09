@@ -74,6 +74,11 @@ SELECT op, step, source_index, state FROM call
 WHERE session = ? AND state IN ('terminal', 'unknown')
 ORDER BY op, step, source_index;
 
+-- name: LedgerAdmittedKeys :many
+SELECT op, step, source_index FROM call
+WHERE session = ? AND tool = ? AND state = 'admitted'
+ORDER BY op, step, source_index;
+
 -- name: InsertLedgerRelease :exec
 INSERT INTO scope_release(session, workspace, incarnation, was, released_at_ms)
 VALUES (?, ?, ?, ?, ?);
