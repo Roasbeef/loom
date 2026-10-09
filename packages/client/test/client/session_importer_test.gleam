@@ -203,6 +203,7 @@ fn manifest() -> session_move.Manifest {
     workspace: "repo",
     name: "moved session",
     profile: None,
+    model: Some("fast"),
     executor: "box",
     pool: "",
     subtitle: Some("first words"),
@@ -441,6 +442,7 @@ pub fn a_verified_copy_becomes_the_session_and_a_repeat_answers_again_test() {
   assert view.registration.workspace == "repo"
   assert view.registration.name == "moved session"
   assert view.registration.executor == "box"
+  assert view.registration.model == Some("fast")
   assert view.registration.configuration == ""
   assert view.registration.subtitle == Some("first words")
   let placed = rig.directory <> "/sessions/" <> copy.session <> ".db"

@@ -283,6 +283,7 @@ pub fn a_directory_activates_nothing_until_it_is_given_the_question_test() {
         workspace: "repo",
         name: "n",
         profile: option.None,
+        model: option.None,
         executor: "box",
         pool: "",
         subtitle: option.None,

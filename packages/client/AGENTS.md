@@ -6117,7 +6117,8 @@ socket's admission is untouched: the form's existing submit carries the field.
 The model composes with a session's place (protocol 078): `manager.Creation` and
 the registration carry the model beside `executor` and `pool`, `reserve_creation`
 compares all of them on a retry (a pooled request still does not compare the
-executor). The web
+executor), and a session that moves keeps it because `session_move.Manifest`
+carries `model` and `session_importer` registers it on the receiver. The web
 form for a registered workspace draws no model select, so `create_for` passes
 `creations.default_roles` for that place; the control command can pin a model on
 an executor or pool session.

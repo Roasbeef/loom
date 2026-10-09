@@ -66,7 +66,8 @@ added catalogue version 10 (`catalogue_models`), so this branch's three
 migrations moved to 11 (executors), 12 (pools) and 13 (moves); main's version 10
 shipped first and keeps its number. `Registration` and `manager.Creation` now
 carry `model` beside `executor` and `pool`, the control command's `sessions.create`
-decodes all three. The web form for a registered workspace draws no model
+decodes all three, and `session_move.Manifest` carries the model so a moved
+session keeps the choice. The web form for a registered workspace draws no model
 select, so a registered session created from the page takes the configuration's
 roles. The proposal numbers collide: `078` is taken twice (this branch's
 distributed runtime and main's LSP diagnostics scope) and the Khepri branch's

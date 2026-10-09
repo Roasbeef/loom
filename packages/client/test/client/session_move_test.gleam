@@ -50,7 +50,7 @@ pub fn the_manifest_carries_what_the_receiver_registers_and_no_path_test() {
       name: "a name",
       configuration: "/source/loom.toml",
       profile: Some("fast"),
-      model: None,
+      model: Some("opus"),
       executor: "box",
       pool: "fleet",
       created_at: 1_700_000_000_000,
@@ -63,14 +63,22 @@ pub fn the_manifest_carries_what_the_receiver_registers_and_no_path_test() {
       workspace: "repo",
       name: "a name",
       profile: Some("fast"),
+      model: Some("opus"),
       executor: "box",
       pool: "fleet",
       subtitle: Some("first words"),
       created_at: 1_700_000_000_000,
     )
   let plain =
-    catalogue.Registration(..record, profile: None, subtitle: None, pool: "")
+    catalogue.Registration(
+      ..record,
+      profile: None,
+      model: None,
+      subtitle: None,
+      pool: "",
+    )
   assert session_move.manifest_of(plain).profile == None
+  assert session_move.manifest_of(plain).model == None
 }
 
 pub fn every_refusal_has_words_that_name_what_the_receiver_found_test() {
