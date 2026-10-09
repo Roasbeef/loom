@@ -80,6 +80,7 @@ def manifest(root, output, platform, version, epoch, artifacts):
                      root / 'scripts/go-build.sh', root / 'scripts/platform.sh',
                      root / 'scripts/codemode_seed.sh', root / 'scripts/codemode_seed_plugin.py',
                      root / 'scripts/codemode-seed-manifest.toml',
+                     root / 'scripts/codex_subscription_smoke.py',
                      root / 'scripts/dist.sh',
                      root / 'Makefile', root / 'packages/tui/priv/install.sh'})
     document = {

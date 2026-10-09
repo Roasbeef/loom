@@ -1,7 +1,8 @@
 //// The package entry point. `gleam run` on this package — and the
 //// erlang shipment's `entrypoint.sh run`, which is what `bin/loomd`
 //// execs, starts one daemon. Assembly lives in
-//// `client/daemon/main` and `client/extension/cli`; this module exists because
+//// `client/daemon/main`, while operator commands live in their own modules;
+//// this module exists because
 //// both runners call the module named after the package.
 ////
 //// ## Why the verb split is here and not in `client/serve`
@@ -13,11 +14,13 @@
 //// `client/serve`, and Gleam has no cyclic imports. The two-line
 //// dispatch therefore lives one module out, where both are importable.
 //// `loomd ext install …` reaches the installer, `loomd access …` reaches
-//// the one-shot owner control client, and other arguments reach the daemon.
+//// the one-shot owner control client, `loomd codex …` reaches the
+//// subscription helper, and other arguments reach the daemon.
 //// This note
 //// is here so the next reader does not "fix" it back into a cycle.
 
 import argv
+import client/codex/cli as codex_cli
 import client/daemon/admin
 import client/daemon/main as daemon
 import client/daemon/peer_cli
@@ -26,15 +29,16 @@ import gleam/io
 import gleam/list
 import gleam/option.{type Option, None, Some}
 
-/// Starts the single daemon, or runs `loom ext` or `loomd access`. See `client/daemon/main` for
-/// the flag and environment surface and `client/extension/cli` for the
-/// verbs.
+/// Starts the single daemon or an operator command. See
+/// `client/daemon/main` for the daemon flags and the command modules for
+/// their verbs.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// // bin/loomd --state-dir /private/loom
 /// // bin/loomd ext install ./my-extension
+/// // bin/loomd codex login --profile default
 /// ```
 ///
 pub fn main() -> Nil {
@@ -49,6 +53,7 @@ pub fn main() -> Nil {
       case arguments {
         ["access", ..rest] -> admin.main(rest)
         ["peer", ..rest] -> peer_cli.main(rest)
+        ["codex", ..rest] -> codex_cli.main(rest)
         ["ext", ..rest] -> cli.main(rest)
         _other -> daemon.main()
       }
@@ -73,6 +78,7 @@ fn help_for(arguments: List(String)) -> Option(String) {
       case list.find(arguments, is_topic) {
         Ok("access") -> Some(admin.usage)
         Ok("peer") -> Some(peer_cli.usage)
+        Ok("codex") -> Some(codex_cli.usage)
         Ok("ext") -> Some(cli.usage)
         Ok(_other) | Error(Nil) -> Some(usage)
       }
@@ -81,10 +87,10 @@ fn help_for(arguments: List(String)) -> Option(String) {
 
 fn is_topic(word: String) -> Bool {
   case word {
-    "access" | "peer" | "ext" -> True
+    "access" | "peer" | "codex" | "ext" -> True
     _ -> False
   }
 }
 
 const usage =
-  "usage: loomd [--state-dir PATH] [--bind ADDRESS] [--capacity N]\n       [--owner-name NAME] [--read-scope SCOPE] [--network NETWORK]\n       [--helper PATH] [--config PATH] [--codemode-seed PATH]\n       [--codemode-seams PATH] [--best-effort | --full-enforcement]\n       loomd <command> [options]\n\ncommands:\n  access <command>    Manage session access.\n  peer <command>      Inspect links, grant, revoke, or send.\n  ext <command>       Manage extensions.\n\nRun `loomd help <command>` for command usage."
+  "usage: loomd [--state-dir PATH] [--bind ADDRESS] [--capacity N]\n       [--owner-name NAME] [--read-scope SCOPE] [--network NETWORK]\n       [--helper PATH] [--config PATH] [--codemode-seed PATH]\n       [--codemode-seams PATH] [--best-effort | --full-enforcement]\n       loomd <command> [options]\n\ncommands:\n  access <command>    Manage session access.\n  peer <command>      Inspect links, grant, revoke, or send.\n  codex <command>     Manage Codex subscription profiles.\n  ext <command>       Manage extensions.\n\nRun `loomd help <command>` for command usage."

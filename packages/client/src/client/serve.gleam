@@ -61,6 +61,7 @@ import client/blocksummarybook
 import client/catalog
 import client/checkpoint
 import client/codemode as codemode_wiring
+import client/codex/transport as codex_transport
 import client/context_view
 import client/contributions
 import client/daemon/domain as domain_service
@@ -1262,6 +1263,7 @@ pub fn build_domain(
       secrets: secret_store,
       clock:,
     )
+    |> provider_gateway.with_codex_transport(codex_transport.transport())
   domain_service.build(
     domain_service.Config(
       history: history.SharedConfig(
@@ -1492,6 +1494,7 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
       secrets: secret_store,
       clock:,
     )
+    |> provider_gateway.with_codex_transport(codex_transport.transport())
 
   Ok(Settings(
     session_path:,
@@ -1724,6 +1727,7 @@ fn adapter_api(dialect: catalog.Dialect) -> String {
     catalog.Anthropic -> anthropic.api_name
     catalog.OpenAiCompatible -> openai.api_name
     catalog.OpenAiResponses -> responses.api_name
+    catalog.CodexSubscription(profile: _) -> responses.subscription_api_name
     catalog.Gemini -> gemini.api_name
   }
 }
@@ -2080,6 +2084,7 @@ fn env_catalog() -> catalog.Catalog {
         // `vision` key.
         vision: catalog.ReadsImages,
         max_images: 8,
+        cyber_access: None,
       ),
     ],
     roles: [#(model.Main, ["anthropic"])],

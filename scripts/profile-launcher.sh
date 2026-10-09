@@ -82,7 +82,7 @@ loom_profile_is_exit_only() {
     client:help | client:ui | client:ext | client:replay | client:sessions | client:version | client:--version | client:claim | client:enroll | client:access | client:update)
       return 0
       ;;
-    daemon:help | daemon:access | daemon:peer | daemon:ext)
+    daemon:help | daemon:access | daemon:peer | daemon:ext | daemon:codex)
       return 0
       ;;
     *)
@@ -181,8 +181,8 @@ loom_profile_consume() {
   LOOM_PROFILE_ORIGINAL_HOME="${HOME:-}"
 
   # These invocations own their complete argument tail. In particular,
-  # `loom ext` forwards every word to the server, so a server-side --profile
-  # must not be mistaken for a launcher option.
+  # `loomd codex` owns its credential --profile and `loom ext` forwards every
+  # word to the server, so neither is a launcher profiling option.
   if loom_profile_is_exit_only "$role" "$@"; then
     LOOM_PROFILE_ARGS=("$@")
     return 0
