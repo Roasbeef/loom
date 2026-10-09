@@ -1034,6 +1034,115 @@ pub fn a_fence_still_answers_in_a_closed_scope_test() {
     == Ok(Found(Terminal(bytes("did not run"))))
 }
 
+pub fn a_stop_turns_a_running_call_lost_and_frees_its_bytes_test() {
+  let file = path("stop-running")
+  let ledger = open_at(file)
+  attached(ledger)
+  assert exec_ledger.admit(
+      ledger,
+      call(0),
+      0,
+      token(1),
+      "execution",
+      4096,
+      limits(),
+    )
+    == Ok(Fresh)
+  assert exec_ledger.admitted(ledger, "s", "execution") == Ok([call(0)])
+  assert exec_ledger.stop_or_fence(ledger, call(0), 0, "execution")
+    == Ok(exec_ledger.Stopped)
+  assert exec_ledger.query(ledger, call(0)) == Ok(Found(Unknown))
+  assert count(file, "SELECT sum(outcome_bytes) FROM call") == 0
+  assert exec_ledger.admitted(ledger, "s", "execution") == Ok([])
+
+  // A second stop finds the lost row and writes nothing.
+  assert exec_ledger.stop_or_fence(ledger, call(0), 0, "execution")
+    == Ok(exec_ledger.Untouched(Unknown))
+}
+
+pub fn a_stop_with_no_row_bars_the_key_from_a_later_start_test() {
+  let file = path("stop-first")
+  let ledger = open_at(file)
+  attached(ledger)
+  assert exec_ledger.stop_or_fence(ledger, call(0), 0, "execution")
+    == Ok(exec_ledger.Barred)
+  assert count(file, "SELECT count(*) FROM call WHERE state = 'unknown'") == 1
+  assert count(file, "SELECT sum(outcome_bytes) FROM call") == 0
+
+  // A start still in flight from a dead worker arrives after the stop. It finds
+  // the key lost and is never told to start, whatever token it carries.
+  assert exec_ledger.admit(
+      ledger,
+      call(0),
+      0,
+      token(1),
+      "execution",
+      4096,
+      limits(),
+    )
+    == Ok(Existing(Unknown))
+
+  // The barred row is listed as lost, and the acknowledgement retires it into a
+  // tombstone like any other.
+  let assert Ok(unacked) = exec_ledger.unacked(ledger, "s")
+  assert unacked.unknown == [call(0)]
+  assert exec_ledger.ack(ledger, call(0)) == Ok(Nil)
+  assert exec_ledger.stop_or_fence(ledger, call(0), 0, "execution")
+    == Ok(exec_ledger.Untouched(exec_ledger.Acked))
+}
+
+pub fn a_stop_leaves_a_settled_call_alone_test() {
+  let ledger = open_at(path("stop-settled"))
+  attached(ledger)
+  assert admit(ledger, call(0), 64) == Ok(Fresh)
+  assert exec_ledger.finish(ledger, call(0), bytes("done")) == Ok(Nil)
+  assert exec_ledger.stop_or_fence(ledger, call(0), 0, "execution")
+    == Ok(exec_ledger.Untouched(Terminal(bytes("done"))))
+  assert exec_ledger.query(ledger, call(0))
+    == Ok(Found(Terminal(bytes("done"))))
+}
+
+pub fn a_stop_needs_the_scope_at_the_callers_incarnation_test() {
+  let file = path("stop-scope")
+  let ledger = open_at(file)
+  assert exec_ledger.stop_or_fence(ledger, call(0), 0, "execution")
+    == Error(exec_ledger.NoSuchScope)
+  attached(ledger)
+  assert exec_ledger.stop_or_fence(ledger, call(0), 1, "execution")
+    == Error(exec_ledger.StaleIncarnation(0))
+  assert count(file, "SELECT count(*) FROM call") == 0
+}
+
+pub fn admitted_lists_only_running_calls_of_the_named_kind_test() {
+  let ledger = open_at(path("admitted-kind"))
+  attached(ledger)
+  assert admit(ledger, call(0), 64) == Ok(Fresh)
+  assert exec_ledger.admit(
+      ledger,
+      call(1),
+      0,
+      token(1),
+      "execution",
+      64,
+      limits(),
+    )
+    == Ok(Fresh)
+  assert exec_ledger.admit(
+      ledger,
+      call(2),
+      0,
+      token(1),
+      "execution",
+      64,
+      limits(),
+    )
+    == Ok(Fresh)
+  assert exec_ledger.finish(ledger, call(2), bytes("done")) == Ok(Nil)
+  assert exec_ledger.admitted(ledger, "s", "execution") == Ok([call(1)])
+  assert exec_ledger.admitted(ledger, "s", "bash") == Ok([call(0)])
+  assert exec_ledger.admitted(ledger, "other", "execution") == Ok([])
+}
+
 pub fn two_connections_racing_a_fence_and_an_admit_agree_test() {
   let file = path("fence-race")
   let first = open_at(file)
