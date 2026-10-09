@@ -509,7 +509,7 @@ recipient's owner does:
 | The recipient's owner | `peer_send` returns | The row becomes |
 |---|---|---|
 | answers with a receipt | the receipt, as before | `admitted`, holding the receipt |
-| answers with a refusal (no catalogue holds the session, no grant, id reused with other content) | the refusal, as before | `refused`, holding the reason |
+| answers with a refusal (no catalogue holds the session, it is archived, no grant, id reused with other content) | the refusal, as before | `refused`, holding the reason |
 | does not answer (`peer_mail.Unreachable`) | `{"state": "queued", ...}` | stays `pending`, holding the text |
 | holds the recipient saved, not open (`peer_mail.NotOpen`) | `{"state": "queued", ...}` with a note that the recipient is saved | stays `pending`, waiting for an open |
 
@@ -546,8 +546,9 @@ decision ends the wait. The interval returns to 5 seconds when a pass finds an
 owner that does not answer, and when the machine goes idle. A pass reads the due
 rows from the Agency, resolves each recipient through the same
 `Directory.resolve` seam `peers.send` uses, and records the outcome. A recipient
-that does not answer is asked once per pass, so a pass over many rows to one dead
-node costs one deadline. Resolving again on each attempt is what follows a
+that does not answer, or that is saved, is asked once per pass, so a pass over many
+rows to one dead node costs one deadline and 64 rows to a saved session cost one
+round trip. Resolving again on each attempt is what follows a
 session that was moved to another orchestrator, and what ends the message when
 the session was deleted.
 

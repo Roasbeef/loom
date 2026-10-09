@@ -898,14 +898,37 @@ already show as the row's `unavailable` metadata, so one unreachable owner does
 not fail a listing. A `Roster` call waits two seconds, not the seven a delivery
 may, for the same reason.
 
-Nothing the listing reveals is new. The sender asks only about sessions its own
-links and grants name, and the owner lists only the strands the recipient granted
-the asking session, so a session with no grant for the asker, or a link the owner
-removed, shows nothing and is not asked about. The description is what a local
-listing shows for a local session, and the port already tells any pinned peer
-whether it holds a session at all (`Owns`). Default links
-(`[peers] default_links`) join the sessions of one daemon, so they do not reach
-across.
+The sender asks only about sessions its own links and grants name, and the owner
+lists only the strands the recipient granted the asking session, so a session with
+no grant for the asker, or a link the owner removed, shows nothing and is not
+asked about. That bounds what an honest sender asks. It does not bound what a
+pinned peer can ask: `Describe` answers for any session identity, archived ones
+and ones with members included, and returns the workspace path, the name, the
+subtitle, the creation time, the status, the executor and the pool, where `Owns`
+returned only whether the session exists. A `Roster` names the asking session in
+the command, so a peer can ask for the strands granted to a session it is not.
+The port does not defend against this and was never an access boundary. A pinned
+peer is a trusted Erlang node of the operator's choosing and already holds every
+privilege of the host, which is the trust model the rest of this protocol states.
+Default links (`[peers] default_links`) join the sessions of one daemon, so they
+do not reach across.
+
+#### Mixed builds
+
+`Describe` is a new constructor of the orchestrator port's message type. An older
+port has no clause for it, so its `answer` raises `case_clause` and the port
+actor exits. Carrying the read as a new `peer_mail.Command` instead would not
+help: the older port's `served` names every command it knew and has no catch-all,
+so it would raise the same error. Only a constructor the older build already has
+is safe, and no existing one means what a catalogue read means. The orchestrator
+port therefore assumes same-build peers, as the executor host does and as every
+earlier constructor added to this port assumed. Upgrade the orchestrator that
+owns the sessions before the one that lists them, or both together, and do not
+leave a link to a session on an older orchestrator open on a page or in a model's
+reach while they differ. An asker that gets no reply (the older port is already
+gone) shows the row as `owner unreachable`. The new `Roster` is a constructor an
+older port already serves-or-refuses, and a `wait` field in an outbox row is
+ignored by an older reader, so those two are safe across builds.
 
 #### A recipient that is saved
 
@@ -914,10 +937,14 @@ catalogue holds the session, and the session is not resident. The daemon's
 `peer_command` answers a command for such a session with the fixed text
 `peer_mail.not_open_reason`, and `remote_peer` turns that text back into
 `NotOpen`. A local directory returns `NotOpen` for the same case
-(`server.local_peer`). A session no catalogue holds is still `Refused`, with the
-text it had, so the model reads `that session is not running; the owner has to
-open it` for a recipient that is gone and a queue note for one that is only
-saved.
+(`server.local_peer`). A session no catalogue holds, and one the owner archived,
+is still `Refused`, because opening an archived session needs a restore and
+nothing a message does can ask for one. Both keep the text they had, so the
+model reads `that session is not running; the owner has to open it` for a
+recipient that is gone or archived and a queue note for one that is only saved. A
+session this catalogue handed to another orchestrator waits like a saved one,
+because the sender's next lookup follows the move where a refusal would end the
+message.
 
 The sender treats `NotOpen` as it treats `Unreachable`: the outbox row stays
 `pending` and the send returns `{"state": "queued", ...}`. The note differs:

@@ -107,6 +107,11 @@ pub type Message {
   /// opens the session, as the local description does, so a saved session
   /// answers. The answer is the description or the text of the reason there is
   /// none; nothing is sent when the port itself could not run.
+  ///
+  /// A port built before this constructor existed has no clause for it and
+  /// stops. A new `peer_mail.Command` would do the same, because `served` has no
+  /// catch-all, so this port assumes peers of the same build
+  /// (protocol-change/078, "Mixed builds").
   Describe(
     /// The canonical session identity.
     session: String,
