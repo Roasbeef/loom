@@ -862,7 +862,7 @@ fn card_body(body: String) -> Element(message) {
 // would shorten (a long paste, an injected note) is drawn as the line the
 // terminal shows for it, opened in place to the whole text; anything else is
 // its body. The opening is the page's own `<loom-expand>`, so it asks the
-// daemon for nothing: the piece holds the whole text (`turns.Sibling`), and
+// daemon for nothing: the piece holds the whole text (`turns.Peer`, `turns.Sibling`), and
 // the body is cut as every expansion is, since the closed form still sits in
 // the page. Both reach the page as text nodes through the Markdown view.
 fn message_body(text: String) -> Element(message) {
@@ -872,9 +872,18 @@ fn message_body(text: String) -> Element(message) {
   case shown == text {
     True -> parsed_card_body(text)
     False ->
-      fold_row.reading(markdown_view.line(shown, step_words.result_limit), [
-        parsed_card_body(cut(text)),
-      ])
+      fold_row.reading(preview_line(shown), [parsed_card_body(cut(text))])
+  }
+}
+
+// The line a shortened message is opened from. A preview whose first line
+// opens a code fence, a rule or a table parses to nothing as a one-line
+// Markdown, which would leave the fold a bare chevron, so the words are
+// drawn plain then.
+fn preview_line(shown: String) -> List(Element(message)) {
+  case markdown_view.line(shown, step_words.result_limit) {
+    [] -> [html.text(shown)]
+    line -> line
   }
 }
 

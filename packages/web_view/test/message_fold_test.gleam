@@ -13,6 +13,7 @@ import lustre/element.{type Element}
 import page_fixture
 import web_view/component
 import web_view/operator_page
+import web_view/view/expansion
 
 @external(erlang, "page_events_ffi", "handlers")
 fn every_handler(view: Element(message)) -> List(String)
@@ -139,4 +140,33 @@ pub fn a_short_strand_message_is_drawn_whole_without_an_opener_test() {
   assert string.contains(html, "found &lt;two&gt; issues")
   assert !string.contains(html, "<loom-expand")
   assert !string.contains(html, " tokens]")
+}
+
+// The opened body is cut to the page's bound for one expanded row, and the
+// whole of it sits inside the fold, after the head, not beside it.
+pub fn a_very_long_strand_message_is_cut_inside_the_fold_test() {
+  let html = sibling(string.repeat("x\n", 5000) <> "the end")
+  assert string.contains(html, expansion.notice())
+  assert !string.contains(html, "the end")
+
+  let assert Ok(#(_, body)) = string.split_once(html, "slot=\"body\"")
+    as "the card has a fold body"
+  assert string.contains(body, "x")
+}
+
+pub fn the_tail_of_a_long_strand_message_is_in_the_fold_body_test() {
+  let assert Ok(#(head, body)) =
+    string.split_once(sibling(paste()), "slot=\"body\"")
+    as "the card has a fold body"
+  assert !string.contains(head, "of it")
+  assert string.contains(body, "the &lt;b&gt;tail&lt;/b&gt; of it")
+}
+
+// A message whose opening is a code fence parses to nothing as one line of
+// Markdown; the fold still says what it opens.
+pub fn a_strand_message_that_opens_with_a_fence_still_has_a_head_test() {
+  let html = sibling("```gleam\n" <> string.repeat("let x = 1\n", 120) <> "```")
+  let assert Ok(#(head, _)) = string.split_once(html, "slot=\"body\"")
+    as "the card has a fold body"
+  assert string.contains(head, "gleam")
 }
