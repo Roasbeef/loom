@@ -54,6 +54,15 @@ declared|linux|SKIP shipped remote peer mail: platform enforcement unavailable|T
 declared|linux|SKIP shipped remote peer mail over a slow first handshake: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the macOS gate and the local Linux sign-off gate run the slow-handshake link scenario for real.
 declared|linux|SKIP shipped remote move: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the macOS gate and the local Linux sign-off gate run the session-move scenarios for real.
 
+# The session directory's quorum fixture (ADR-019, protocol-change/080) boots three
+# directory members around an executor that jails every call, then stops two of
+# them, and in a second scenario wipes one member's disk and lets it rejoin. Each
+# scenario declines on a runner whose helper cannot enforce a policy, like the
+# other remote fixtures; the macOS gate and the local Linux sign-off gate run
+# both for real.
+declared|linux|SKIP shipped directory quorum loss: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the macOS gate and the local Linux sign-off gate run the lost-majority scenario for real.
+declared|linux|SKIP shipped directory rejoin: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the macOS gate and the local Linux sign-off gate run the disk-loss rejoin scenario for real.
+
 # The shipped confinement fixture reads the daemon's own credentials from a
 # jailed `bash` call and asserts the secret did not come back. Without a
 # helper that enforces a policy the reads succeed, which measures the absence
