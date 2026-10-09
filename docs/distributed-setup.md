@@ -1259,20 +1259,25 @@ it yet.
 
 - A remote session is created only if its record can be written. Without a
   majority, `sessions.create` for an executor or a pool is refused `no_quorum`;
-  the reservation stays and the same request key completes it later. Local
-  sessions are created as before.
+  the reservation stays and the same request key completes it later. A local
+  session is created as before, without a majority; its record is written a few
+  seconds later, or once the majority returns.
 - Opening a session, running it, its tool calls and archive and restore never
   touch the cluster, so they work without a majority.
 - A daemon asked about a session it does not hold answers from its own copy of
   the records: `not_owner` with the owner, at once, even when the owner is down.
-  `owner_unreachable` is no longer sent. A local session has no record, so the
-  other orchestrator answers `not_found` for it, and peer mail to a local session
-  on another orchestrator is not delivered; use remote sessions for sessions that
-  mail each other across orchestrators.
+  `owner_unreachable` is no longer sent. Local sessions are recorded too, so
+  the other orchestrator redirects to a local session's owner and peer mail to
+  it is delivered; a local session created in the last few seconds, or while the
+  cluster had no majority, is `not_found` elsewhere until its record lands. A
+  deleted local session's record can be left behind (always, for a delete from
+  the web page); it names the right orchestrator, which answers `not_found`.
 - A move is decided by the record. If the receiver stays silent for thirty
   minutes while the cluster has a majority, the source abandons the move and
-  serves the session again. The owner can abandon a move at once with
-  `sessions.move` and `abandon: true`. A move that cannot write the record for
+  serves the session again, unless the receiver had already taken it, in which
+  case the source keeps asking and the move finishes when the receiver answers.
+  The owner can abandon a move at once with `sessions.move` and
+  `abandon: true`. A move that cannot write the record for
   want of a majority logs `daemon.move_stalled` with the cluster's reason, waits
   for the majority, and does not count toward the thirty minutes.
 - Deleting a remote session needs a majority, and is refused `no_quorum`
@@ -1287,7 +1292,11 @@ majority of members at once is not a rejoin; it is a restore from backup.
 
 **Adding the directory to a running deployment.** Let every move finish first.
 Then add `[directory]` and the pins between members to every member, bootstrap
-one member with its daemon stopped, and restart them all. Each orchestrator
+one member with its daemon stopped, and restart them all. A member that was
+started with `[directory]` before any cluster existed can still be the one you
+bootstrap: the files its daemon wrote are not a store. If the command says the
+member already holds a store and no cluster exists, it names the directory to
+remove. Each orchestrator
 copies its catalogue's remote sessions into the cluster the first time it has a
 majority, and logs `directory.migrated` with the count, or
 `directory.migration_conflict` for a session whose record already names another

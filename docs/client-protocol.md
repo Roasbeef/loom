@@ -601,12 +601,16 @@ owner to use it. `owner_unreachable` can be retried.
 On a daemon that is a member of a session directory (a `[directory]` table,
 [protocol-change/079](../protocol-change/079-khepri-session-ownership.md)), the
 answer comes from the daemon's own copy of the owner records and no other
-orchestrator is asked. `not_owner` carries the same members. `owner_unreachable`
-is never sent: a session with no record is `not_found`, and that includes a
-local session another orchestrator holds, because only sessions on an executor
-or a pool are recorded. When the daemon's copy cannot be read at all, because
-its store is not running, the answer is `no_quorum`, whose `message` carries
-the store's reason.
+orchestrator is asked. `not_owner` carries the same members, for a session on
+an executor or a pool and for a local session alike: every session on a member
+has a record. A local session's record is written a few seconds after it is
+created, without waiting for it, so a local session that new, or one created
+while the directory had no majority, is `not_found` elsewhere until the record
+lands. `owner_unreachable` is never sent: a session with no record is
+`not_found`. A deleted local session's record may be left behind, naming its
+former owner, which answers `not_found`. When the daemon's copy cannot be read
+at all, because its store is not running, the answer is `no_quorum`, whose
+`message` carries the store's reason.
 
 ### 3.6 `sessions.default` and `sessions.set_default`
 
@@ -1483,8 +1487,9 @@ owner record decides the move. Three things differ for a client:
 - `abandon: true` abandons a move now. The reply is
   `{"session_id": ..., "op": ..., "state": "abandoning"}`, and the abandon runs
   in the daemon's mover: when it commits, `sessions.get` drops the `moving`
-  member; when the destination took the session first, the move finishes
-  instead and `sessions.get` reports `moved`. A session with no move in flight
+  member; when the destination took the session first, the daemon keeps the
+  move, asks the destination again, and finishes the move on its answer, after
+  which `sessions.get` reports `moved`. A session with no move in flight
   is refused `conflict`, and a daemon that is not a member refuses `not_movable`,
   because without the record a move cannot be abandoned safely.
 

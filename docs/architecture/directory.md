@@ -49,13 +49,13 @@ consensus protocol. Every member of the cluster holds a full copy of the tree.
 A write goes to the cluster's leader, which commits it once a majority of
 members have it on disk, and every member then applies it to its copy.
 
-The store is named `loom_directory`, and it holds one record per remote session
-(a session created with an executor or a pool) at the path
-`[loom, sessions, <session id>]`:
+The store is named `loom_directory`, and it holds one record per session at the
+path `[loom, sessions, <session id>]`:
 
 ```erlang
 {loom_owner, 1, Owner, serving}
 {loom_owner, 1, Owner, {moving, Op, To}}
+{loom_owner, 1, Owner, local}
 ```
 
 - `Owner` is the owning orchestrator's distribution node name, such as
@@ -63,9 +63,13 @@ The store is named `loom_directory`, and it holds one record per remote session
   daemon picks its own names for its peers: alpha may call its peer `bravo`
   while a third daemon calls the same node `laptop`. A daemon translates the node
   name into its own row only when it answers a client.
-- `serving` means the owner serves the session, or will when a client opens it.
-- `{moving, Op, To}` means the owner has begun handing the session to the node
-  `To` under the move `Op`, and has stopped serving it.
+- `serving` means the owner serves a remote session (one created with an
+  executor or a pool), or will when a client opens it.
+- `{moving, Op, To}` means the owner has begun handing a remote session to the
+  node `To` under the move `Op`, and has stopped serving it.
+- `local` marks a local session, whose checkout is a directory on its
+  orchestrator. A local session never moves, so its record is only where to
+  find it: a lookup hint, never an authority.
 
 Every write names the exact value it expects to replace, so a write never
 depends on a read that came before it. These are all the transitions a record
@@ -73,22 +77,28 @@ makes:
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Serving: create (the creator)
+    [*] --> Serving: create a remote session (the creator)
     Serving --> Moving: begin a move (the owner)
     Moving --> Serving: activate (the receiver becomes owner)
     Moving --> Serving: abandon (the owner keeps it)
     Serving --> [*]: delete (the owner)
+    [*] --> Local: the upkeep, after a local session exists (best-effort)
+    Local --> [*]: delete a local session (best-effort)
     state "{Owner, serving}" as Serving
     state "{Owner, {moving, Op, To}}" as Moving
+    state "{Owner, local}" as Local
 ```
 
 The two arrows out of `Moving` expect the same value, so exactly one of them
-commits.
+commits. `Local` is a state of its own so that no move can take a local
+session's record as its base: every write of a move, and a remote delete,
+expects `serving` or `moving`, and finds `local` a mismatch.
 
-Local sessions, whose checkout is a directory on the orchestrator, have no
-record. A local session can never move, so its owner never changes, and the only
-use of a record would be to redirect a client that asked the wrong
-orchestrator. Without one, that client is told `not_found`.
+A local session's record is written after the session exists, by the movers'
+upkeep (see "Local sessions"), and nothing waits on it, so creating a local
+session needs no majority. Deleting one removes its record best-effort; a
+record left behind names the right owner, which answers `not_found`, and a
+client asking another member is redirected there and told the same.
 
 A second path, `[loom, migrated, <node>]`, records that an orchestrator has
 copied its catalogue's ownership into the store (see "Migrating an existing
@@ -209,9 +219,13 @@ the other node, hidden or visible.
 
 A cluster is created once. An operator runs `loomd directory bootstrap` on one
 member, with its daemon stopped. The command refuses when the member already has
-a store on disk, and when any configured member it can reach answers that it
-holds a joined store. Otherwise it creates a store with that member as its only
-member, marks it joined, and exits.
+a store on disk (its `joined` marker, or the directory Ra keeps for a server;
+the files the Ra system writes at every daemon boot do not count, so a member
+that booted before any cluster existed can still create it), and when any
+configured member it can reach answers that it holds a joined store. The
+refusal names the remedy: start the daemon if a cluster exists, or remove the
+store and run the command again if it is a leftover. Otherwise it creates a
+store with that member as its only member, marks it joined, and exits.
 
 Every other member joins on its own. When a member daemon boots and finds no
 joined store in its data directory, it joins the cluster through the first
@@ -272,6 +286,11 @@ path ignores its own timeout when the majority is gone (ADR-019).
 | Resume, finish or abandon a move | consistent, and the write itself | Each step that changes ownership is a compare-and-set |
 | Finish a deletion | the write itself, after a local `deleting` mark | Absence alone never decides a deletion |
 
+A copy can also lack a record the leader has: during a member's join, and on a
+member restarted after a long outage, until it has caught up. A lookup there
+answers `not_found` for a session created elsewhere meanwhile. The window closes
+on its own, in seconds or one snapshot transfer.
+
 ### A misdirected request
 
 A client asks bravo for a session alpha owns. Bravo's `sessions.get` misses in
@@ -307,7 +326,8 @@ create the session, which finds the reservation under the same request key and
 opens it. A reserved registration with no record is never served. Without a
 quorum the creation is refused `no_quorum`; the reservation stays, and a retry
 under the same request key repeats the record write, which accepts a record that
-already names this daemon. Local sessions are created exactly as before.
+already names this daemon. A local session is created exactly as before, with
+no store call; its record follows (see "Local sessions").
 
 ### A move
 
@@ -357,7 +377,8 @@ the mover goes on. A missing record means the session was never recorded (it
 was created before the daemon migrated, and migration did not reach it), so the
 mover reverts the row and the move is abandoned. A record that already names
 another owner means the receiver's activation committed and its reply was lost,
-and the mover goes straight to the retirement.
+and the mover carries on, so that the receiver is asked again and answers from
+what it holds.
 
 **Activate.** The receiver checks the copy (the sender's node, the digest, the
 scope cell's clean close, the executor row). Then it writes the record from the
@@ -375,9 +396,10 @@ store. When the record write fails, the receiver reads what the record holds:
 - **The write did not commit in time.** It answers `Failed`, which the source
   treats as silence.
 
-**Retire.** The source retires only after the receiver answered `Accepted` or
-`move_ended`, or its own abandon found the record changed, and only when a
-consistent read shows the record names another owner. It then writes `moved`, sets its file aside, and releases its lease and
+**Retire.** The source retires only on the receiver's answer (`Accepted`, a stage
+of `Activated`, `move_ended`, or a refusal or a refused close that its abandon
+followed), and only when a consistent read shows the record names another
+owner. It then writes `moved`, sets its file aside, and releases its lease and
 its cut copy. A consistent read that names the source itself means the move was
 abandoned, and the file stays where it is.
 
@@ -385,13 +407,24 @@ abandoned, and the file stays where it is.
 as owner, expecting `moving` under this operation, and only then reverts its row
 to `resident`. Because the receiver's activation expects the same `moving`
 record, exactly one of the two commits. If the abandon fails because the receiver
-already took the session, the source retires instead.
+already took the session, what happens depends on why the source abandoned:
+
+- After an answer (a refusal, or a close the executor refused because the
+  receiver holds the scope), the receiver has spoken, and the source retires.
+- After silence (the thirty-minute give-up, or the owner's request), the source
+  does not retire. The receiver may have crashed between its write and its
+  import, and it finishes the import only inside the source's activation
+  request. So the source keeps its `moving` row and its file, asks again, and
+  retires on the receiver's answer. The wait is not counted toward the give-up,
+  which could not take the session back anyway.
 
 That is why a source may now give up on a receiver that does not answer. It
 abandons on the answers phase 5 abandons on (an unproven cleanup, a corrupt or
 oversized file, a refusal from the receiver), and also after thirty minutes of
 stalls during which the store had a quorum, provided the receiver's
-`[loom, migrated, <node>]` marker exists. The marker condition covers an upgrade
+`[loom, migrated, <node>]` marker exists and this daemon has seeded the store
+itself. Before its own seed, a missing record means "not copied yet", so the
+give-up waits for the seed as a run does, and that wait is not counted either. The marker condition covers an upgrade
 in which the receiver still runs phase 5 code: such a receiver activates by
 writing its own catalogue and never writes the record, so abandoning against it
 would leave two owners. An operator can also abandon a move by hand with
@@ -419,6 +452,30 @@ record without the mark never deletes anything.
 Archive and restore change only whether a session is listed, so they write
 nothing to the store.
 
+### Local sessions
+
+Every session on a member has a record, local ones included, so a member asked
+about another orchestrator's local session answers `not_owner` naming it, and
+peer mail to the session is routed there, as for a remote session. A local
+session's record is a lookup hint: it never moves, and no move or delete of a
+remote session can use it as a compare-and-set base (it is `local`, not
+`serving`).
+
+Writing it is best-effort and never gates admission. The movers' upkeep runs a
+pass, `migrate.cover_local`, that writes `{self, local}` for every local
+session missing from this member's copy. It runs at boot and after each local
+creation, which asks for it and does not wait. A pass that fails, for want of a
+majority, leaves the work wanted, and the next tick (five seconds) runs it again,
+so a session created without a majority is recorded once the majority returns.
+A request made while a pass runs is covered by the next pass. Deleting a local
+session through the control socket removes its record best-effort; a record left
+behind, or one left by a delete from the web page, which does not remove it,
+names this daemon, and it answers `not_found`.
+
+An orchestrator member records local sessions if it lists executors, pools or
+other orchestrators. An executor member lists none of these, has no writes, and
+records nothing.
+
 ## Without a quorum
 
 When a majority of members cannot reach one another, Ra cannot commit, and
@@ -430,7 +487,7 @@ returning whatever the member last applied.
 | Lookups (`sessions.get` and `sessions.open` on a miss, peer mail routing) | Work, from the local copy |
 | A running session, its tool calls, its executor | Work; nothing on the tool path reads the store |
 | Opening any session | Works; opening makes no store call |
-| Creating or deleting a local session | Works |
+| Creating or deleting a local session | Works; the record follows once the majority returns |
 | Creating a remote session | Refused `no_quorum` |
 | Beginning a move | Accepted; the mover stalls at the intent write |
 | A move already under way | Stalls at its next write and retries; neither activation nor abandon can commit |
@@ -533,7 +590,7 @@ needs five more pieces:
 | `client/directory/settings` | The `[directory]` table |
 | `client/directory/ownership` | `Ownership`, the writes, each bound to this node |
 | `client/directory/deletion` | Finishing a remote delete under its `deleting` mark |
-| `client/directory/migrate` | Copying catalogue rows into the store once |
+| `client/directory/migrate` | Copying catalogue rows into the store once, and writing local sessions' records (`cover_local`) |
 | `client/daemon/directory_cli` | `loomd directory bootstrap` |
 | `client/session_directory` | `Directory`: the lookup, and on a member the writes and the status |
 | `client/session_mover`, `client/session_movers`, `client/session_importer` | The move, with the record deciding and the rows remembering; the give-up and the periodic pass |
@@ -544,11 +601,11 @@ needs five more pieces:
 | Test | What it proves |
 |---|---|
 | `client/directory/store_test`, `record_test`, `ownership_test` | The store's calls, the record's total decoder, and every compare-and-set's success and refusal, on a one-member store in the test VM |
-| `client/directory/daemon_record_test` | Creation, deletion, `directory.status` and abandon over the control socket of a member, and that opening needs no store |
-| `client/directory/migrate_test` | The migration table, conflicts left standing, the marker written last |
+| `client/directory/daemon_record_test` | Creation, deletion, `directory.status` and abandon over the control socket of a member, and that opening a session or creating a local one needs no store |
+| `client/directory/migrate_test` | The migration table, conflicts left standing, the marker written last, and a local session's record written by the movers once a stopped store returns |
 | `client/session_mover_test`, `client/session_importer_test` | Moves under `Recorded` authority, the give-up, and the receiver's compare-and-set |
 | `client/distribution_test` (`members_visible`, `members_not_transitive`, `member_needs_connect_all_off`, `directory_rejoin`) | Visible member links, no transitive connections, the boot refusal, and a member that lost its disk rejoining as a non-voter |
 | `client/daemon_shipped_remote_move_test` (`members` variants) | One clean move and a source halted after each of the six steps, among three shipped members |
-| `client/daemon_shipped_directory_test`, `client/daemon_shipped_peer_mail_test` (member variants) | Redirects and peer mail from each member's own copy, with an owner down |
+| `client/daemon_shipped_directory_test`, `client/daemon_shipped_peer_mail_test` (member variants) | Redirects and peer mail from each member's own copy, with an owner down, for remote sessions and for a local one |
 | `client/daemon_shipped_directory_quorum_test` | A member alone without a majority, and a member that lost its disk, against the shipped daemon |
-| `protocol/models/session-move/KhepriMove.tla` | The move and a move back under crashes, lost majorities and late activations, with seven mutants |
+| `protocol/models/session-move/KhepriMove.tla` | The move and a move back under crashes, lost majorities and late activations, with eight mutants |

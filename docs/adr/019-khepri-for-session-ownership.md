@@ -307,6 +307,52 @@ needs, which the decision left open:
   session its own row still holds `moving` before it writes the record, not
   after; the importer already did, from phase 5.
 
+## Addendum: after the implementation review (2026-10-08)
+
+An independent review of the implementation and an owner ruling changed five
+things. This addendum records them; the sections above are left as they were
+decided.
+
+**Local sessions are recorded** (owner ruling). This reverses "Recording local
+sessions" under "What was considered and refused". Every session on a member
+has a record, so another member redirects a client to a local session's owner
+and routes peer mail to it, as phase 3's fan-out did. The refusal's cost, that
+creating a local session would depend on a quorum, is avoided by not making the
+record an admission gate: the record is written after the session exists, by
+the movers' upkeep (`migrate.cover_local`), at boot and after each local
+creation, and a pass that fails for want of a majority runs again on the next
+tick. The record has a state of its own, `{loom_owner, 1, Owner, local}`, so no
+move or remote delete can use it as a compare-and-set base. Deleting a local
+session removes the record best-effort; a stale one names the right owner, who
+answers `not_found`.
+
+**The give-up waits for the seed.** The thirty-minute give-up now passes the
+same seed check as a mover's run. Without it, a member that had not seeded the
+store took an absent record for one a later owner deleted and set aside the
+file of a session nobody had recorded. Waiting for the seed, like waiting for a
+quorum, is not counted toward the thirty minutes.
+
+**A given-up move retires only on the receiver's answer.** The receiver's
+import runs inside the source's activation request, after its compare-and-set,
+so a receiver that crashed between the two owns the session by record and holds
+only the incoming copy until the source asks again. A give-up whose abandon
+finds the record naming the receiver now keeps the move and asks again, and the
+source retires on the answer. `KhepriMove.tla` models the receiver's steps as
+fair only while the source asks, adds `OwnerCanServe`, and the mutant
+`KhepriMutantRetireOnSilence` shows the old rule fails it.
+
+**Bootstrap ignores the Ra system's files.** A member daemon starts the Ra
+system at every boot, and the system writes its own files at once, so the old
+"any file is a store" check refused the documented upgrade path. A store is now
+the `joined` marker or a Ra server directory, and the refusal names the remedy.
+
+**The join is sequenced in Gleam, and unknown answers are named.** The shim's
+`join/2`, with its own retry loop, is replaced by one primitive per Ra call,
+and `client/directory/store` sequences them over `weft/poll` under one deadline.
+A write answer the shim does not recognise is reported as `Unexpected` with the
+term printed, rather than as a lost quorum, though the write is still treated as
+one whose outcome is unknown.
+
 ## Appendix: the spike
 
 The spike was a Gleam project at `<worktree>/build/khepri_spike` with three
