@@ -190,14 +190,17 @@ pub fn refresh_render_cache(before: Model, after: Model) -> Model {
 
       // Reading history owns the viewport through the scroll offset, and a
       // strand or session switch replaced the rows rather than extending
-      // them: neither has a tail to walk toward. Otherwise the count only
-      // needs clamping, since a shrunk projection must not leave the
-      // viewport claiming rows that no longer exist.
+      // them: neither has a tail to walk toward. A change of attribution
+      // inserts its rows above every prompt rather than at the tail, so it
+      // has no tail to walk toward either. Otherwise the count only needs
+      // clamping, since a shrunk projection must not leave the viewport
+      // claiming rows that no longer exist.
       let revealed_rows = case
         tui_model.reading_history(after)
         || after.view.notes_open
         || before.shared.active_strand != after.shared.active_strand
         || before.shared.session != after.shared.session
+        || attribution_changed(before, after)
       {
         True -> rendered_row_count
         False -> int.min(after.view.revealed_rows, rendered_row_count)
@@ -231,6 +234,20 @@ pub fn refresh_render_cache(before: Model, after: Model) -> Model {
     }
     False -> after
   }
+}
+
+// Whether a peer joining or leaving changed who the transcript labels as the
+// author of a prompt. A terminal alone in its session omits the label from its
+// owner's own prompts and draws it on all of them as soon as anyone else is
+// attached (`transcript_lines.solo_owner`), so the projection gains or loses a
+// row above each of those prompts. The records are the same and the tail is
+// the same: nothing new was said, and the pacing walk, which counts every row
+// beyond the revealed ones as output still arriving, would hide the last rows
+// of the transcript and bring them back one frame at a time. Another terminal
+// or a browser page switching sessions causes exactly this on every join.
+fn attribution_changed(before: Model, after: Model) -> Bool {
+  transcript_lines.solo_owner(before.shared.captured)
+  != transcript_lines.solo_owner(after.shared.captured)
 }
 
 // File selection and received observations invalidate the render revision even
