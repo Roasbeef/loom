@@ -1057,11 +1057,11 @@ fn goal(prepared: Pair) -> Nil {
   // The primary model takes no turn, so its provider has an empty script. The
   // reviewer's has the two reviews.
   let #(#(Nil, primary), advisor) =
-    provider.with_server_for(
+    provider.with_watched_server(
       advisor_script(),
       provider.OnlySuccessful,
       remote_pair.callback_ms,
-      fn(advisor_url) {
+      fn(advisor_url, advisor_watch) {
         provider.with_server_for(
           [],
           provider.OnlySuccessful,
@@ -1085,6 +1085,16 @@ fn goal(prepared: Pair) -> Nil {
             assert_check(second, failing_check, 1)
             assert remote_daemons.field(second, "objective")
               == json.String(second_objective)
+
+            // The board turns `complete` when the reviewer's `advise` call is
+            // judged, which is before the reviewer's turn is over: the tool
+            // result still has to reach it and it answers with a closing text.
+            // Stopping the session on the board alone races that last request
+            // and leaves the script unexhausted. The provider's own record is
+            // the barrier, since it has answered the closing text only once the
+            // request carrying the tool result has arrived.
+            let assert Ok(Nil) = provider.await_exhausted(advisor_watch, 30_000)
+              as "the reviewer's closing turn reached its provider"
             remote_pair.stop_and_close(prepared, opened, 1)
             remote_pair.close_daemons([opened.orchestrator])
           },
@@ -1120,12 +1130,15 @@ fn pin_goal(
   socket
 }
 
-// Reads the goal until it reaches `status`, and returns its board.
+// Reads the goal until it reaches `status`, and returns its board. A goal
+// that never gets there fails the test with the last board it was read as,
+// because "the goal did not reach complete" does not say which goal, nor
+// whether it was waiting on a check, a reviewer, or nothing at all.
 fn await_goal(
   socket: remote_pair.SessionSocket,
   status: String,
 ) -> json.JsonValue {
-  let #(board, _socket) = await_goal_from(socket, status, 600)
+  let #(board, _socket) = await_goal_from(socket, status, 600, json.Null)
   board
 }
 
@@ -1133,8 +1146,15 @@ fn await_goal_from(
   socket: remote_pair.SessionSocket,
   status: String,
   remaining: Int,
+  last: json.JsonValue,
 ) -> #(json.JsonValue, remote_pair.SessionSocket) {
-  assert remaining > 0 as { "the goal reaches " <> status }
+  assert remaining > 0
+    as {
+      "the goal reaches "
+      <> status
+      <> ", and the last board read was "
+      <> json.to_string(last)
+    }
   let #(reply, socket) =
     remote_pair.session_command(socket, "goal_get", json.Object([]))
   let board = remote_daemons.field(remote_daemons.field(reply, "body"), "board")
@@ -1142,7 +1162,7 @@ fn await_goal_from(
     True -> #(board, socket)
     False -> {
       process.sleep(100)
-      await_goal_from(socket, status, remaining - 1)
+      await_goal_from(socket, status, remaining - 1, board)
     }
   }
 }

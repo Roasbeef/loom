@@ -41,6 +41,7 @@ import gleam/string
 import mist
 import weft
 import weft/actor
+import weft/poll
 
 /// A deliberately public dummy credential, never a real provider secret.
 pub const dummy_key = "loom-provider-fixture-key"
@@ -241,6 +242,7 @@ type Message {
     process.Subject(Result(Scripted, String)),
   )
   Report(process.Subject(Result(List(ObservedRequest), String)))
+  Remaining(process.Subject(Int))
 }
 
 type Stream {
@@ -288,6 +290,37 @@ pub fn with_server_for(
   within_ms: Int,
   run: fn(String) -> a,
 ) -> #(a, Result(List(ObservedRequest), String)) {
+  with_watched_server(script, admission, within_ms, fn(url, _watch) { run(url) })
+}
+
+/// A handle on a running fixture's script, which lets the callback ask what
+/// the peer has consumed.
+///
+/// The peer's own record is the only evidence that a request reached it. A
+/// callback that stops the daemon as soon as the daemon's state looks final
+/// races the daemon's last request, and the script then ends unexhausted for
+/// a reason that has nothing to do with the code under test.
+pub opaque type Watch {
+  Watch(book: process.Subject(Message))
+}
+
+/// Runs as `with_server_for` does, and gives the callback a `Watch` on the
+/// script beside the URL.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // provider_http.with_watched_server(script, provider_http.OnlySuccessful, 300_000, fn(url, watch) {
+/// //   drive_shipped_daemon(url)
+/// //   let assert Ok(Nil) = provider_http.await_exhausted(watch, 30_000)
+/// // })
+/// ```
+pub fn with_watched_server(
+  script: List(Exchange),
+  admission: Admission,
+  within_ms: Int,
+  run: fn(String, Watch) -> a,
+) -> #(a, Result(List(ObservedRequest), String)) {
   assert list.length(script) <= 8 as "the provider script is finite and small"
   assert within_ms > 0 as "the callback budget is a positive duration"
   assert list.all(script, fn(step) {
@@ -334,7 +367,11 @@ pub fn with_server_for(
   let assert Ok(port) = process.receive(ports, 1000)
     as "the original listener publishes its selected port"
   let outcomes =
-    weft.new([fn() { Ok(run("http://127.0.0.1:" <> int.to_string(port))) }])
+    weft.new([
+      fn() {
+        Ok(run("http://127.0.0.1:" <> int.to_string(port), Watch(book.data)))
+      },
+    ])
     |> weft.deadline(within_ms)
     |> weft.start
 
@@ -347,6 +384,41 @@ pub fn with_server_for(
   let assert [weft.Completed(0, value)] = outcomes
     as "the HTTP fixture callback completes without crashing or timing out"
   #(value, report)
+}
+
+/// Waits until the peer has answered every step of its script.
+///
+/// The wait ends when the last step has been matched and answered, which is
+/// the peer's own record that the final request arrived. The error names how
+/// many steps were still unused when the budget ran out, so a stalled run
+/// reports how far the conversation got.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let assert Ok(Nil) = provider_http.await_exhausted(watch, 30_000)
+/// ```
+pub fn await_exhausted(watch: Watch, within_ms: Int) -> Result(Nil, String) {
+  let unused = fn() { actor.call(watch.book, 1000, Remaining) }
+
+  case
+    poll.until(within: within_ms, every: 25, attempt: fn() {
+      case unused() {
+        0 -> poll.Done(Nil)
+        _some -> poll.Retry
+      }
+    })
+  {
+    poll.Answered(value: Nil) -> Ok(Nil)
+    poll.Failed(error: reason) -> Error(reason)
+    poll.Expired ->
+      Error(
+        int.to_string(unused())
+        <> " scripted exchanges were still unused after "
+        <> int.to_string(within_ms)
+        <> " ms",
+      )
+  }
 }
 
 fn retire(pid: process.Pid, monitor: process.Monitor) -> Nil {
@@ -370,6 +442,11 @@ fn handle(book: Book, message: Message) -> actor.Next(Book, Message) {
         None, [_, ..] -> Error("provider script was not exhausted")
       }
       process.send(reply, report)
+      actor.continue(book)
+    }
+    Remaining(reply) -> {
+      let Book(remaining, ..) = book
+      process.send(reply, list.length(remaining))
       actor.continue(book)
     }
     Submit(incoming, reply) -> {
