@@ -5,8 +5,12 @@
 //// closure, and cumulative limits are proved independently of compilation.
 
 import client/agency
+import client/async_codemode
 import client/async_runs
 import client/notice
+import client/owner_services
+import client/remote/owner_port
+import client/remote/protocol
 import core/clock.{type Clock}
 import core/ids
 import core/json
@@ -24,6 +28,7 @@ import runtime/effects
 import session/session
 import support/addresses
 import support/owner_probe
+import tools/directory_access
 import weft/actor
 import weft/poll
 import weft/registry as address
@@ -352,6 +357,7 @@ pub fn the_service_labels_itself_with_its_session_test() {
         clock: harness.clock,
         abort: fn(_, _) { Nil },
         heartbeat_ms: 0,
+        surviving_value: async_runs.no_value_survives,
       ),
     )
   let session = ids.session_id_to_string(api.session_id(harness.runtime))
@@ -372,6 +378,7 @@ pub fn cumulative_launch_limit_survives_settlement_and_retry_test() {
         clock: harness.clock,
         abort: fn(_, _) { Nil },
         heartbeat_ms: 0,
+        surviving_value: async_runs.no_value_survives,
       ),
     )
   let #(operation, _) = ids.mint_op(ids.generator(harness.clock, seed: 23))
@@ -395,6 +402,7 @@ pub fn cumulative_launch_limit_survives_settlement_and_retry_test() {
         clock: harness.clock,
         abort: fn(_, _) { Nil },
         heartbeat_ms: 0,
+        surviving_value: async_runs.no_value_survives,
       ),
     )
   let assert Ok(first) = list.first(records)
@@ -481,6 +489,7 @@ fn start_execution_observed(
         clock: harness.clock,
         abort:,
         heartbeat_ms: 0,
+        surviving_value: async_runs.no_value_survives,
       ),
     )
   let #(operation, _) = ids.mint_op(ids.generator(harness.clock, seed: 19))
@@ -510,7 +519,8 @@ fn execution_record(
     deadline_ms: now(harness.time) + 60_000,
     source: "test program",
     seam: "workspace",
-    phase: async_execution.Starting, launch: option.None,
+    phase: async_execution.Starting,
+    launch: option.None,
   )
 }
 
@@ -609,6 +619,7 @@ fn launch(
         clock: harness.clock,
         abort: fn(_, _) { Nil },
         heartbeat_ms:,
+        surviving_value: async_runs.no_value_survives,
       ),
     )
   let #(operation, _) = ids.mint_op(ids.generator(harness.clock, seed: 23))
@@ -768,5 +779,318 @@ fn await_context(harness: Harness, needle: String, attempts: Int) -> String {
       process.sleep(150)
       await_context(harness, needle, attempts - 1)
     }
+  }
+}
+
+// --- executions whose program runs on another node ---------------------------------
+
+fn service_with(
+  harness: Harness,
+  abort: fn(ids.OpId, String) -> Nil,
+  surviving_value: fn(async_execution.Execution) -> Result(json.JsonValue, Nil),
+) -> #(address.Address(async_runs.Message), process.Pid) {
+  let name = addresses.new()
+  let assert Ok(service) =
+    async_runs.start(
+      name,
+      async_runs.Wiring(
+        runtime: harness.runtime,
+        clock: harness.clock,
+        abort:,
+        heartbeat_ms: 0,
+        surviving_value:,
+      ),
+    )
+  #(name, service.pid)
+}
+
+fn phase_of(harness: Harness, id: String) -> async_execution.Phase {
+  let assert Ok(Some(record)) = async_runs.record(harness.runtime, id)
+    as "the record is readable"
+  record.phase
+}
+
+fn settles(harness: Harness, id: String, phase: async_execution.Phase) -> Bool {
+  poll.until(within: 5000, every: 20, attempt: fn() {
+    case async_runs.record(harness.runtime, id) {
+      Ok(Some(record)) if record.phase == phase -> poll.Done(Nil)
+      _ -> poll.Retry
+    }
+  })
+  == poll.Answered(Nil)
+}
+
+pub fn a_worker_that_knows_why_it_failed_records_that_reason_test() {
+  let harness = start_harness()
+  let #(name, pid) =
+    service_with(harness, fn(_, _) { Nil }, async_runs.no_value_survives)
+  let #(operation, _) = ids.mint_op(ids.generator(harness.clock, seed: 41))
+  let record = execution_record(harness, operation, "c1")
+  let assert Ok(_) =
+    async_runs.launch_fallible(name, record, fn() {
+      Error("the executor restarted")
+    })
+  assert settles(harness, "c1", async_execution.Lost("the executor restarted"))
+  stop(pid)
+}
+
+pub fn recovery_keeps_a_value_that_outlived_the_service_test() {
+  let harness = start_harness()
+  let #(operation, _) = ids.mint_op(ids.generator(harness.clock, seed: 43))
+  let record =
+    async_execution.Execution(
+      ..execution_record(harness, operation, "c2"),
+      phase: async_execution.Running,
+    )
+  let assert Ok(_) =
+    api.put_reserved_fact(
+      harness.runtime,
+      async_execution.key(record.id),
+      async_execution.encode(record),
+    )
+  let aborted = process.new_subject()
+  let #(_name, pid) =
+    service_with(
+      harness,
+      fn(operation, step) { process.send(aborted, #(operation, step)) },
+      fn(found) {
+        case found.id {
+          "c2" -> Ok(json.String("finished on the executor"))
+          _ -> Error(Nil)
+        }
+      },
+    )
+
+  // The program finished on the executor before the old service could hear
+  // it. Its stored value is the result, and nothing is stopped.
+  assert settles(
+    harness,
+    "c2",
+    async_execution.Finished(json.String("finished on the executor")),
+  )
+  assert process.receive(aborted, 100) == Error(Nil)
+  stop(pid)
+}
+
+pub fn recovery_without_a_value_records_the_loss_and_stops_the_program_test() {
+  let harness = start_harness()
+  let #(operation, _) = ids.mint_op(ids.generator(harness.clock, seed: 47))
+  let record =
+    async_execution.Execution(
+      ..execution_record(harness, operation, "c3"),
+      phase: async_execution.Running,
+    )
+  let assert Ok(_) =
+    api.put_reserved_fact(
+      harness.runtime,
+      async_execution.key(record.id),
+      async_execution.encode(record),
+    )
+  let aborted = process.new_subject()
+  let #(_name, pid) =
+    service_with(
+      harness,
+      fn(operation, step) { process.send(aborted, #(operation, step)) },
+      async_runs.no_value_survives,
+    )
+  assert settles(
+    harness,
+    "c3",
+    async_execution.Lost("execution service restarted"),
+  )
+  assert process.receive(aborted, 1000) == Ok(#(operation, "async/c3"))
+  stop(pid)
+}
+
+pub fn a_draining_record_is_lost_on_recovery_even_if_a_value_survives_test() {
+  let harness = start_harness()
+  let #(operation, _) = ids.mint_op(ids.generator(harness.clock, seed: 53))
+  let record =
+    async_execution.Execution(
+      ..execution_record(harness, operation, "c4"),
+      phase: async_execution.Draining,
+    )
+  let assert Ok(_) =
+    api.put_reserved_fact(
+      harness.runtime,
+      async_execution.key(record.id),
+      async_execution.encode(record),
+    )
+
+  // A draining record had been told to stop; a value the program stored after
+  // that does not undo the decision.
+  let #(_name, pid) =
+    service_with(harness, fn(_, _) { Nil }, fn(_found) {
+      Ok(json.String("too late"))
+    })
+  assert settles(
+    harness,
+    "c4",
+    async_execution.Lost("execution service restarted"),
+  )
+  assert phase_of(harness, "c4")
+    == async_execution.Lost("execution service restarted")
+  stop(pid)
+}
+
+// A host link that answers a start as `answer` says, and records what it was
+// asked.
+fn link_answering(
+  answer: fn(protocol.Key, Int) -> protocol.ExecutionAnswer,
+  asked: Subject(#(protocol.Key, Int)),
+) -> owner_port.HostLink {
+  owner_port.HostLink(
+    list: fn() { Error("not asked") },
+    ack: fn(_key) { Nil },
+    start: fn(key, _terms, remaining_ms) {
+      process.send(asked, #(key, remaining_ms))
+      answer(key, remaining_ms)
+    },
+    stop: fn(_key) { Nil },
+    query: fn(_key) { Error("not asked") },
+  )
+}
+
+fn remote_terms(
+  harness: Harness,
+) -> #(ids.OpId, owner_services.ExecutionTerms) {
+  let #(operation, _) = ids.mint_op(ids.generator(harness.clock, seed: 59))
+  #(
+    operation,
+    owner_services.ExecutionTerms(
+      strand: "main",
+      op_id: operation,
+      launch_step: "turn-4:tools",
+      source_index: 1,
+      source: "pub fn main() { Nil }",
+      seam: "orchestration",
+      within_ms: 60_000,
+      access: directory_access.none(),
+      grants: [],
+    ),
+  )
+}
+
+pub fn a_remote_launch_claims_the_record_and_its_worker_starts_the_program_test() {
+  let harness = start_harness()
+  let #(name, pid) =
+    service_with(harness, fn(_, _) { Nil }, async_runs.no_value_survives)
+  let executions =
+    async_codemode.remote(
+      name,
+      runtime: fn() { Ok(harness.runtime) },
+      clock: harness.clock,
+      session: "s1",
+    )
+  let asked = process.new_subject()
+  let link =
+    link_answering(
+      fn(_key, _remaining) {
+        protocol.ExecutionFinished(json.String("the program's value"))
+      },
+      asked,
+    )
+  let #(operation, terms) = remote_terms(harness)
+  let assert Ok(handle) = executions.launch(terms, link)
+    as "the launch is claimed"
+  let assert Ok(json.String(id)) = field_of(handle, "id")
+    as "the handle names the execution"
+
+  // The record carries the launching call, and its worker started the program
+  // under the execution's own key with the time the record allows.
+  let assert Ok(Some(record)) = async_runs.record(harness.runtime, id)
+  assert record.launch
+    == Some(async_execution.Launch(step: "turn-4:tools", source_index: 1))
+  let assert Ok(#(key, remaining)) = process.receive(asked, 5000)
+    as "the worker sent the start"
+  assert key == protocol.execution_key("s1", operation, id)
+  assert remaining > 0 && remaining <= 60_000
+  assert settles(
+    harness,
+    id,
+    async_execution.Finished(json.String("the program's value")),
+  )
+
+  // The reconciler now reads the record as closed, so the row may go.
+  assert executions.standing(key) == owner_port.RecordClosed
+  stop(pid)
+}
+
+pub fn a_remote_execution_the_executor_lost_is_recorded_lost_test() {
+  let harness = start_harness()
+  let #(name, pid) =
+    service_with(harness, fn(_, _) { Nil }, async_runs.no_value_survives)
+  let executions =
+    async_codemode.remote(
+      name,
+      runtime: fn() { Ok(harness.runtime) },
+      clock: harness.clock,
+      session: "s1",
+    )
+  let link =
+    link_answering(
+      fn(_key, _remaining) { protocol.ExecutionLost },
+      process.new_subject(),
+    )
+  let #(_operation, terms) = remote_terms(harness)
+  let assert Ok(handle) = executions.launch(terms, link)
+  let assert Ok(json.String(id)) = field_of(handle, "id")
+  assert poll.until(within: 5000, every: 20, attempt: fn() {
+      case phase_of(harness, id) {
+        async_execution.Lost(reason) ->
+          case string.contains(reason, "may have done part of its work") {
+            True -> poll.Done(Nil)
+            False -> poll.Fail(reason)
+          }
+        _ -> poll.Retry
+      }
+    })
+    == poll.Answered(Nil)
+  stop(pid)
+}
+
+pub fn a_running_remote_execution_stands_live_and_an_unknown_key_closed_test() {
+  let harness = start_harness()
+  let #(name, pid) =
+    service_with(harness, fn(_, _) { Nil }, async_runs.no_value_survives)
+  let executions =
+    async_codemode.remote(
+      name,
+      runtime: fn() { Ok(harness.runtime) },
+      clock: harness.clock,
+      session: "s1",
+    )
+  let held = process.new_subject()
+  let link =
+    link_answering(
+      fn(_key, _remaining) {
+        let release = process.new_subject()
+        process.send(held, release)
+        let _waited = process.receive(release, 30_000)
+        protocol.ExecutionFinished(json.Null)
+      },
+      process.new_subject(),
+    )
+  let #(operation, terms) = remote_terms(harness)
+  let assert Ok(handle) = executions.launch(terms, link)
+  let assert Ok(json.String(id)) = field_of(handle, "id")
+  let assert Ok(release) = process.receive(held, 5000)
+  let key = protocol.execution_key("s1", operation, id)
+  assert executions.standing(key) == owner_port.RecordLive
+  assert executions.standing(protocol.execution_key("s1", operation, "ffff"))
+    == owner_port.RecordClosed
+  assert executions.standing(protocol.Key("s1", "op", "turn-1:tools", 0))
+    == owner_port.RecordClosed
+  process.send(release, Nil)
+  stop(pid)
+}
+
+fn field_of(
+  value: json.JsonValue,
+  name: String,
+) -> Result(json.JsonValue, Nil) {
+  case value {
+    json.Object(fields) -> list.key_find(fields, name)
+    _ -> Error(Nil)
   }
 }

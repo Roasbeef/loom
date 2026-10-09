@@ -12,6 +12,7 @@ import broker/token
 import client/executors
 import client/remote/address
 import client/remote/host
+import client/remote/owner_port
 import client/remote/protocol
 import client/remote/remote_census.{type RemoteCensus, RemoteCensus}
 import client/remote/workspace
@@ -85,6 +86,7 @@ pub fn census_over(
       helper: workspace_plane.Healthy,
     ),
     broker: executor_broker,
+    mcp: [],
   )
 }
 
@@ -138,6 +140,8 @@ pub fn factory(
           process.send(probe.subject, fixtures.Closed)
           close_outcome
         },
+        execute: fn(_start) { json.Null },
+        abort_step: fn(_op, _step) { Nil },
       ),
     )
   }
@@ -284,6 +288,7 @@ fn start_with(
       max_result_bytes: 65_536,
       clock: executor_clock,
       factory:,
+      execution_result_bytes: host.default_execution_result_bytes,
     ))
     as "the host starts"
   Executor(pid: started.pid, address: started.data)
@@ -388,6 +393,8 @@ pub fn registered_in(
     owner: quiet(),
     clock: local,
     reconcile_every_ms: 60_000,
+    executions: owner_port.no_executions(),
+    mcp: protocol.McpPlan(served: [], expected: []),
   )
 }
 
@@ -427,6 +434,7 @@ fn lose_first_attach(
       token:,
       owner_port:,
       reply: _,
+      mcp: protocol.McpPlan(served: [], expected: []),
     ) ->
       address.deliver(
         real.address,
@@ -438,6 +446,7 @@ fn lose_first_attach(
           token:,
           owner_port:,
           reply: process.new_subject(),
+          mcp: protocol.McpPlan(served: [], expected: []),
         ),
       )
     message -> {

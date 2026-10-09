@@ -177,6 +177,13 @@ pub type Registered {
     /// How often the owner port asks the executor which results it still
     /// holds.
     reconcile_every_ms: Int,
+    /// The session's background-execution service, which the owner port
+    /// serves to the executor's `code_mode` tool.
+    executions: owner_port.Executions,
+    /// The MCP servers the executor's code mode reaches: façades of the
+    /// servers this orchestrator runs, and the names it expects the executor
+    /// to run.
+    mcp: protocol.McpPlan,
   )
 }
 
@@ -200,6 +207,16 @@ pub type Hands {
     /// Unlinks the owner port from the process that started it. Custody calls
     /// this once it holds the cleanup, so the port outlives the builder.
     transfer: fn() -> Nil,
+    /// Tells the executor that a background execution's record has closed: the
+    /// launching operation and the execution's step. This is the session's
+    /// execution service's abort for a workspace on an executor.
+    stop_execution: fn(ids.OpId, String) -> Nil,
+    /// Reads what the executor's ledger holds for a background execution, by
+    /// its launching operation and step, waiting at most five seconds.
+    /// Recovery reads it before it marks a live record lost.
+    execution_lookup: fn(ids.OpId, String) -> Result(protocol.Lookup, String),
+    /// How the MCP servers the session expected the executor to run fared.
+    mcp: List(remote_census.McpStatus),
   )
 }
 
@@ -320,8 +337,9 @@ fn attach_to(
     owner_port.start(owner_port.Config(
       services: registered.owner,
       clock: registered.clock,
-      settled: fn(key) { settled(registered.opened, key) },
+      settled: settled_by_kind(registered.opened, registered.executions),
       reconcile_every_ms: registered.reconcile_every_ms,
+      executions: registered.executions,
     ))
     |> result.map_error(fn(reason) { Failed(unavailable(reason)) }),
   )
@@ -337,6 +355,7 @@ fn attach_to(
       remote_tools: tool_placement.workspace_names,
       attach_within_ms: reach.attach_within_ms,
       mint_token: surface.strong_token,
+      mcp: registered.mcp,
     ))
   let received = clock.read(registered.clock).0
   case attached {
@@ -391,7 +410,7 @@ fn attach_to(
             candidate,
             port,
             incarnation,
-            surface.functions(joined),
+            joined,
             reply,
             received,
           ))
@@ -462,10 +481,12 @@ fn build(
   candidate: Candidate,
   port: owner_port.Port,
   incarnation: Int,
-  functions: surface.Functions,
+  joined: surface.Surface(RemoteCensus),
   reply: protocol.Attached(RemoteCensus),
   received_at_ms: Int,
 ) -> Hands {
+  let functions = surface.functions(joined)
+  let session = registered.session
   let remote = reply.census
 
   // The reading comes from this reply and not from the census, because a
@@ -511,6 +532,32 @@ fn build(
         Error(Nil) -> Nil
       }
     },
+    stop_execution: fn(operation, step) {
+      surface.stop_execution(joined, execution_key(session, operation, step))
+    },
+    execution_lookup: fn(operation, step) {
+      surface.query(
+        joined,
+        execution_key(session, operation, step),
+        execution_lookup_ms,
+      )
+    },
+    mcp: remote.mcp,
+  )
+}
+
+// How long recovery waits for the executor to say what it holds for one
+// execution before it records the execution as lost.
+const execution_lookup_ms = 5000
+
+// The key of an execution named by its launching operation and its own step,
+// `async/<id>`, which is how the execution service names it.
+fn execution_key(session: String, operation: ids.OpId, step: String) -> Key {
+  protocol.Key(
+    session:,
+    op: ids.op_id_to_string(operation),
+    step:,
+    source_index: 0,
   )
 }
 
@@ -727,6 +774,25 @@ fn recover_by_placement(
 }
 
 // --- settled calls --------------------------------------------------------------
+
+// The reconciler's settled rule for both kinds of row. A background
+// execution's result is read by its record's worker, not staged by the planner,
+// so its row is settled only once the record is closed; the tool call rule
+// would call it settled at once, because no planner batch lists an `async/`
+// step, and acknowledging it before the worker read it would leave a tombstone
+// that answers the worker's re-send as lost.
+@internal
+pub fn settled_by_kind(
+  opened: Session,
+  executions: owner_port.Executions,
+) -> fn(Key) -> Bool {
+  fn(key) {
+    case protocol.execution_id(key) {
+      Ok(_id) -> executions.standing(key) == owner_port.RecordClosed
+      Error(Nil) -> settled(opened, key)
+    }
+  }
+}
 
 // Whether this session no longer holds the call pending, so the executor's row
 // for it may go. A call is pending only while the operation's batch for that

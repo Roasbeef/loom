@@ -237,6 +237,7 @@ fn linked(
       clock: clock.fixed(at: 5000),
       settled: fn(_key) { False },
       reconcile_every_ms: 60_000,
+      executions: owner_port.no_executions(),
     ))
     as "the owner port starts"
   let assert Ok(link) = owner_link.start(owner_port.inbox(port))
@@ -612,5 +613,39 @@ pub fn a_call_with_the_owner_gone_is_denied_at_once_test() {
   let assert Ok(framing.CapErr(..)) = process.receive(answered, 5000)
     as "a program's call to a gone owner must be refused, not hang"
   owner_link.stop(link)
+  broker.stop(broker_actor)
+}
+
+pub fn an_mcp_server_the_executor_runs_is_answered_beside_the_checkout_test() {
+  let broker_actor = idle_broker()
+  let sent = process.new_subject()
+  let owner =
+    owner_services.OwnerServices(
+      ..permissive(),
+      capability: fn(call: OwnerCapCall) {
+        process.send(sent, call.cap)
+        Ok(framing.CapOk(msgpack.NilValue))
+      },
+    )
+  let config =
+    owner_codemode.over_owner_serving(
+      config_for(broker_actor),
+      owner,
+      answered_here: [
+        "files",
+      ],
+    )
+  let call = msgpack.MapValue([pair("tool", string("read"))])
+
+  // A server the orchestrator runs is the owner's, so its call is sent.
+  let _ = routed(config, codemode_tool.WorkspaceSeam, "mcp.github", call)
+  assert process.receive(sent, 100) == Ok("mcp.github")
+
+  // A server this executor started from its own table is answered here: the
+  // owner is not asked. This fixture's layer holds no client for it, so the
+  // answer is the local router's own refusal.
+  let outcome = routed(config, codemode_tool.WorkspaceSeam, "mcp.files", call)
+  let assert framing.CapErr(code: "unsupported_cap", ..) = outcome
+  assert process.receive(sent, 50) == Error(Nil)
   broker.stop(broker_actor)
 }

@@ -34,23 +34,49 @@
 //// turns a missing row into a stored "did not start", so no late `Run` for the
 //// same key can start the call after the answer was given.
 ////
-//// There is no cancel message. The executor monitors the process that sent each
-//// `Run`, and the death of that process (an abort) cancels the call.
+//// There is no cancel message for a tool call. The executor monitors the
+//// process that sent each `Run`, and the death of that process (an abort)
+//// cancels the call.
+////
+//// ## Background executions
+////
+//// A background code-mode program on a remote session is a long-lived call
+//// with a key of its own, `execution_key`: the launching operation, the step
+//// `async/<id>` and source index 0. The orchestrator keeps the durable record
+//// and starts the program with `StartExecution`, which the host admits by key
+//// exactly as it admits a `Run`. `StopExecution` is the one stop message: it is
+//// sent when the orchestrator's record has closed, and in one ledger
+//// transaction it turns a running row lost or bars a key with no row, so a late
+//// start from a dead worker never runs. The executor reaches the record back
+//// through `LaunchExecution` and `InteractExecution`, and the program's inputs
+//// and progress travel as ordinary owner-bound `Capability` calls.
+////
+//// ## MCP façades
+////
+//// `Attach` carries an `McpPlan`: the façades of the MCP servers the
+//// orchestrator runs, which the executor compiles programs against without
+//// holding a client, and the names of the servers the orchestrator expects the
+//// executor to run from its own configuration. No command line and no secret
+//// crosses.
 
 import broker/framing.{type CapOutcome}
 import client/escalate
 import client/notice
-import client/owner_services.{type FactFault, type OwnerCapCall}
+import client/owner_services.{
+  type ExecutionTerms, type FactFault, type OwnerCapCall,
+}
 import client/wiring.{type Authority}
 import codemode/satellite.{type CapDenial}
-import core/ids.{type Seq}
+import core/ids.{type OpId, type Seq}
 import core/json.{type JsonValue}
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/option.{type Option}
+import gleam/string
 import runtime/api
 import runtime/effects.{type ToolOutcome, type ToolRun}
 import tools/agent
+import tools/codemode as codemode_tool
 import tools/tool
 
 /// The version of this vocabulary. Every `Attach` carries the sender's, and the
@@ -62,7 +88,20 @@ import tools/tool
 /// Version 2 added `Attached.executor_now_ms`, the executor's clock read when
 /// the reply is sent. Version 1 carried that reading inside the census, where
 /// it was as old as the scope.
-pub const version = 2
+///
+/// Version 3 added background executions (`StartExecution`, `StopExecution`,
+/// `LaunchExecution`, `InteractExecution`, `Unacked.executions` and
+/// `Lookup.Executed`) and the MCP plan an `Attach` carries.
+pub const version = 3
+
+/// The name an execution's ledger row is admitted under, in the column a tool
+/// call's row holds its tool name in. No tool is named this, so a row is known
+/// to be an execution's without reading its step.
+pub const execution_tool = "execution"
+
+/// The prefix of an execution's step: `async/<id>` is both the record's broker
+/// step and the step of its ledger key.
+pub const execution_step_prefix = "async/"
 
 /// A tool call's identity: the one the orchestrator's planner already uses and
 /// the executor's ledger keys its rows by.
@@ -100,6 +139,9 @@ pub type Unacked {
     terminal: List(Key),
     /// Calls whose outcome the executor lost.
     unknown: List(Key),
+    /// Background executions still running. The orchestrator stops the ones
+    /// whose record has closed.
+    executions: List(Key),
   )
 }
 
@@ -207,6 +249,51 @@ pub type Lookup {
   /// starts. Only `QueryOrFence` answers this; `Query` writes nothing and
   /// answers `Missing` instead, and `QueryOrFence` never answers `Missing`.
   Fenced
+
+  /// A background execution ended, and this is the execution value it
+  /// stored. A tool call's key never answers this.
+  Executed(value: JsonValue)
+}
+
+/// How a `StartExecution` ended.
+pub type ExecutionAnswer {
+  /// The program ended, and this is the execution value of its run.
+  ExecutionFinished(value: JsonValue)
+
+  /// The execution was admitted and its outcome is lost: the executor
+  /// restarted, the program was stopped, or its worker died. It may have run.
+  ExecutionLost
+
+  /// The execution was not admitted.
+  ExecutionRefused(refusal: Refusal)
+}
+
+/// One generated MCP façade, as the orchestrator that runs the server sends
+/// it: the `codegen.Generated` the server's listing produced, under the
+/// server's name.
+pub type Facade {
+  Facade(
+    /// The server's catalogue name, the `<name>` in `mcp.<name>`.
+    server: String,
+    /// The module a program imports, `cap/mcp/<name>`.
+    module_name: String,
+    /// The module's Gleam source, which the hermetic build compiles.
+    source: String,
+    /// The declaration surface the description and `cap://` reads render.
+    surface: String,
+  )
+}
+
+/// The MCP servers a session's code mode reaches, as an attach states them.
+pub type McpPlan {
+  McpPlan(
+    /// The façades of the servers the orchestrator runs. Calls to them are
+    /// sent back over the owner port.
+    served: List(Facade),
+    /// The names of the servers the orchestrator expects the executor to run
+    /// from the executor's own configuration.
+    expected: List(String),
+  )
 }
 
 /// What an orchestrator says to the executor's host.
@@ -226,6 +313,7 @@ pub type HostMessage(census) {
     incarnation: Int,
     token: BitArray,
     owner_port: Subject(OwnerMessage),
+    mcp: McpPlan,
     reply: Subject(Result(Attached(census), Refusal)),
   )
 
@@ -263,6 +351,29 @@ pub type HostMessage(census) {
   /// The orchestrator durably staged this call's result; the row may go. No
   /// reply: a lost `Ack` is found again by `ListUnacked`.
   Ack(key: Key)
+
+  /// Runs one background program, idempotently by `key`
+  /// (`execution_key`). It is admitted only if `incarnation` and `token` equal
+  /// the scope's, as a `Run` is, and the host watches the process that owns
+  /// `reply` the same way. `remaining_ms` is the time left before the
+  /// orchestrator's record expires, read on the orchestrator's clock when the
+  /// message is sent; the executor builds the program's deadline from it on
+  /// its own clock when it admits the key, and a re-send's smaller value is
+  /// ignored.
+  StartExecution(
+    key: Key,
+    incarnation: Int,
+    token: BitArray,
+    terms: ExecutionTerms,
+    remaining_ms: Int,
+    reply: Subject(ExecutionAnswer),
+  )
+
+  /// The orchestrator's record of this execution has closed. A running program
+  /// is stopped and its row turned lost; a key with no row is barred, so a
+  /// late `StartExecution` never starts. No reply: a lost stop is sent again by
+  /// the orchestrator's reconciler, which reads `Unacked.executions`.
+  StopExecution(key: Key, incarnation: Int)
 
   /// Closes the scope and reports how the cleanup ended.
   Close(
@@ -342,6 +453,23 @@ pub type OwnerMessage {
 
   /// An owner-bound code-mode capability call.
   Capability(call: OwnerCapCall, reply: Subject(Result(CapOutcome, CapDenial)))
+
+  /// The executor's `code_mode` tool was asked to launch a background
+  /// program. The owner claims the record and answers the handle.
+  LaunchExecution(
+    terms: ExecutionTerms,
+    reply: Subject(Result(JsonValue, String)),
+  )
+
+  /// The executor's `code_mode` tool was asked to check, join, cancel or send
+  /// to a background execution the strand owns.
+  InteractExecution(
+    strand: String,
+    handle: String,
+    interaction: codemode_tool.Interaction,
+    within_ms: Int,
+    reply: Subject(Result(JsonValue, String)),
+  )
 }
 
 /// The key of one call of a session's tool run.
@@ -358,6 +486,43 @@ pub fn key_of(session: String, run: ToolRun) -> Key {
     step: run.step_id,
     source_index: run.source_index,
   )
+}
+
+/// The ledger key of a background execution: the launching operation, the
+/// execution's own step `async/<id>`, and source index 0, since the step alone
+/// names one execution.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // protocol.execution_key("session-1", op, "a1b2").step == "async/a1b2"
+/// ```
+pub fn execution_key(session: String, op: OpId, id: String) -> Key {
+  Key(
+    session:,
+    op: ids.op_id_to_string(op),
+    step: execution_step_prefix <> id,
+    source_index: 0,
+  )
+}
+
+/// The execution identity in a key whose step is an execution's, or
+/// `Error(Nil)` for a tool call's key.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert protocol.execution_id(protocol.Key("s", "op", "async/ab", 0))
+///   == Ok("ab")
+/// assert protocol.execution_id(protocol.Key("s", "op", "turn-1", 0))
+///   == Error(Nil)
+/// ```
+pub fn execution_id(key: Key) -> Result(String, Nil) {
+  case string.starts_with(key.step, execution_step_prefix) {
+    True ->
+      Ok(string.drop_start(key.step, string.length(execution_step_prefix)))
+    False -> Error(Nil)
+  }
 }
 
 /// The sentence a model or an operator reads for a refusal.

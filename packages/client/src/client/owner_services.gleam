@@ -34,6 +34,12 @@
 //// - `notify`, `strand_activity` and `wake` are the three things the
 ////   background-jobs actor says to a strand: the completion notice, a read
 ////   of whether the strand has an open run, and the idle heartbeat.
+//// - `launch_execution` and `interact_execution` are what a workspace on
+////   another node's `code_mode` tool asks of a background execution: claim
+////   its record and answer the handle, or check, join, cancel or send to one.
+////   The record is the owner's, so a remote workspace has no other way to
+////   reach it. A local workspace composes the owner's execution service into
+////   its own tool and never calls either.
 ////
 //// ## Why facts are fenced to two prefixes
 ////
@@ -58,6 +64,7 @@
 //// the machine (`docs/design-notes/distributed-runtime.md`), not this record.
 
 import broker/framing.{type CapOutcome}
+import broker/policy.{type Grant}
 import client/escalate
 import client/jobstate
 import client/notice
@@ -73,6 +80,8 @@ import gleam/string
 import runtime/api
 import runtime/effects
 import tools/agent
+import tools/codemode as codemode_tool
+import tools/directory_access
 import tools/tool
 
 /// Everything the workspace reaches the owner for. Each field is a plain
@@ -97,6 +106,42 @@ pub type OwnerServices {
     strand_activity: fn(String) -> Result(notice.Activity, String),
     /// Starts a run on an idle strand with the given text.
     wake: fn(String, String) -> Result(Nil, String),
+    /// Claims a background execution's record for a launch, and answers its
+    /// handle or the refusal the execution service gave.
+    launch_execution: fn(ExecutionTerms) -> Result(JsonValue, String),
+    /// Checks, joins, cancels or sends to a background execution. Arguments
+    /// are the calling strand, the handle, the interaction and how long a
+    /// join may wait, in milliseconds.
+    interact_execution: fn(String, String, codemode_tool.Interaction, Int) ->
+      Result(JsonValue, String),
+  )
+}
+
+/// What a background program needs from the tool call that launched it,
+/// captured on the executor when the call ran. The executor rebuilds the rest
+/// of the program's request from its own plane when the execution starts, so
+/// nothing here names a path or a secret on either machine.
+pub type ExecutionTerms {
+  ExecutionTerms(
+    /// The strand that launched the execution and owns its handle.
+    strand: String,
+    /// The launching call's operation.
+    op_id: OpId,
+    /// The launching call's planner step.
+    launch_step: String,
+    /// The launching call's position in its step.
+    source_index: Int,
+    /// The program, already loaded: a `program_path` is read once, at launch,
+    /// beside the checkout.
+    source: String,
+    /// The program mode it is judged under, by name.
+    seam: String,
+    /// The wall budget the launch asked for, already clamped.
+    within_ms: Int,
+    /// The directory additions the launching call held.
+    access: directory_access.Access,
+    /// The grants the launching call held.
+    grants: List(Grant),
   )
 }
 
@@ -408,8 +453,44 @@ pub fn local(
     notify: jobs.notify,
     strand_activity: jobs.strand_activity,
     wake: jobs.wake,
+    launch_execution: no_launch,
+    interact_execution: no_interaction,
   )
 }
+
+/// The launch answer of an owner that serves no background execution to a
+/// workspace on another node. A local session's own `code_mode` tool reaches
+/// the execution service directly, so this is what its record holds.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // owner_services.no_launch(terms) -> Error("...")
+/// ```
+///
+pub fn no_launch(_terms: ExecutionTerms) -> Result(JsonValue, String) {
+  Error(no_execution_text)
+}
+
+/// The interaction answer that goes with `no_launch`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // owner_services.no_interaction("main", handle, codemode.Check, 0)
+/// ```
+///
+pub fn no_interaction(
+  _strand: String,
+  _handle: String,
+  _interaction: codemode_tool.Interaction,
+  _within_ms: Int,
+) -> Result(JsonValue, String) {
+  Error(no_execution_text)
+}
+
+const no_execution_text =
+  "this owner serves no background code mode to another node"
 
 /// The capability answer for a host which has none to give: every owner
 /// call is refused in band, naming why. Used where a session is assembled

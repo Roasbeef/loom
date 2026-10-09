@@ -72,10 +72,12 @@
 //// same key and admission deduplicates the replay against any stale `Run`.
 
 import broker/internal/ffi_crypto
+import client/owner_services.{type ExecutionTerms}
 import client/remote/address.{type Address}
 import client/remote/owner_port.{type Port}
 import client/remote/protocol.{
-  type Attached, type HostMessage, type Refusal, type RunAnswer,
+  type Attached, type ExecutionAnswer, type HostMessage, type Lookup,
+  type Refusal, type RunAnswer,
 }
 import client/wiring.{type Authority}
 import gleam/erlang/process.{type Subject}
@@ -112,6 +114,8 @@ pub type Config(census) {
     /// Mints an attach token: thirty-two bytes from a strong source in
     /// production (`strong_token`), a fixed value in a test.
     mint_token: fn() -> BitArray,
+    /// The MCP servers the executor's code mode reaches, sent with the attach.
+    mcp: protocol.McpPlan,
   )
 }
 
@@ -213,6 +217,7 @@ pub fn attach(config: Config(census)) -> Result(Attachment(census), Refusal) {
       incarnation: config.incarnation,
       token:,
       owner_port: owner,
+      mcp: config.mcp,
       reply:,
     )
   }
@@ -349,7 +354,86 @@ pub fn recover(surface: Surface(census), run: ToolRun) -> Recovery {
     Ok(Ok(protocol.Terminal(outcome:))) -> effects.Recovered(outcome:)
     Ok(Ok(protocol.Unknown)) -> effects.OutcomeUnknown
     Ok(Ok(protocol.Admitted)) -> await_live(surface, run)
+
+    // A tool call's key never holds an execution's value. A ledger that says
+    // it does is answered as an outcome nobody can vouch for.
+    Ok(Ok(protocol.Executed(..))) -> effects.OutcomeUnknown
     Ok(Error(_refusal)) | Error(Nil) -> effects.OutcomeUnknown
+  }
+}
+
+/// Starts a background execution on the executor and waits for how it ends.
+///
+/// It is the work of the record's worker, which the execution service runs and
+/// kills when the record closes. The wait has no deadline of its own: a
+/// dropped connection is repaired and the same `StartExecution` sent again,
+/// which the host admits by key, until an answer comes or the worker is killed.
+/// The kill is what the host's monitor turns into a stop.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // surface.start_execution(attached_surface, key, terms, 60_000)
+/// ```
+pub fn start_execution(
+  surface: Surface(census),
+  key: protocol.Key,
+  terms: ExecutionTerms,
+  remaining_ms: Int,
+) -> ExecutionAnswer {
+  let config = surface.config
+  let sent =
+    exchange(config, Forever, fn(reply) {
+      protocol.StartExecution(
+        key:,
+        incarnation: config.incarnation,
+        token: surface.token,
+        terms:,
+        remaining_ms:,
+        reply:,
+      )
+    })
+  case sent {
+    Ok(answer) -> answer
+    Error(Nil) ->
+      protocol.ExecutionRefused(protocol.Unreachable(
+        "the executor could not be reached",
+      ))
+  }
+}
+
+/// Tells the executor an execution's record has closed. A cast: a stop the
+/// network loses is sent again by the owner port's reconciler.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // surface.stop_execution(attached_surface, key)
+/// ```
+pub fn stop_execution(surface: Surface(census), key: protocol.Key) -> Nil {
+  address.deliver(
+    surface.config.address,
+    protocol.StopExecution(key:, incarnation: surface.config.incarnation),
+  )
+}
+
+/// Asks what the executor's ledger holds for a key, giving up after `within`
+/// milliseconds without an answer.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // surface.query(attached_surface, key, 5000)
+/// ```
+pub fn query(
+  surface: Surface(census),
+  key: protocol.Key,
+  within: Int,
+) -> Result(Lookup, String) {
+  case exchange(surface.config, Within(within), protocol.Query(key, _)) {
+    Ok(Ok(found)) -> Ok(found)
+    Ok(Error(refusal)) -> Error(protocol.describe(refusal))
+    Error(Nil) -> Error("the executor could not be reached")
   }
 }
 
@@ -414,6 +498,11 @@ fn host_link(surface: Surface(census)) -> owner_port.HostLink {
       }
     },
     ack: fn(key) { address.deliver(host, protocol.Ack(key)) },
+    start: fn(key, terms, remaining_ms) {
+      start_execution(surface, key, terms, remaining_ms)
+    },
+    stop: fn(key) { stop_execution(surface, key) },
+    query: fn(key) { query(surface, key, listing_ms) },
   )
 }
 

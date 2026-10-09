@@ -34,5 +34,20 @@ pub type RemoteCensus {
     /// (imported hooks, goal checks, Git observation). The orchestrator wraps
     /// it with `broker.over` and its own clock.
     broker: Subject(broker.Msg),
+    /// One entry for each MCP server the orchestrator expected this executor
+    /// to run: whether it started, and why not when it did not. The
+    /// orchestrator logs the refusals, which is where an operator learns that
+    /// the executor's own `[mcp.<name>]` table is missing or its key unset.
+    mcp: List(McpStatus),
   )
+}
+
+/// How one expected MCP server fared on the executor.
+pub type McpStatus {
+  /// The server started from the executor's own table and listed this many
+  /// tools. Its module is in the executor's code mode.
+  McpReady(server: String, tools: Int)
+
+  /// The server did not start, for the reason given, which names no secret.
+  McpRefused(server: String, reason: String)
 }

@@ -27,6 +27,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{None}
 import gleam/otp/actor
+import gleam/string
 import machine/operation
 import runtime/effects.{type ToolOutcome, type ToolRun}
 import simplifile
@@ -63,6 +64,8 @@ pub type ProbeMessage {
   HoldBuild(session: String)
   ReleaseBuild(session: String)
   BuildGate(session: String, reply: Subject(Nil))
+  Aborted(op: String, step: String)
+  Aborts(reply: Subject(List(#(String, String))))
 }
 
 type ProbeState {
@@ -74,6 +77,7 @@ type ProbeState {
     closes: Int,
     held_builds: List(String),
     build_waiters: List(#(String, Subject(Nil))),
+    aborts: List(#(String, String)),
   )
 }
 
@@ -109,6 +113,7 @@ fn probe_builder(
       closes: 0,
       held_builds: [],
       build_waiters: [],
+      aborts: [],
     )
   actor.new(state) |> actor.on_message(probe_loop)
 }
@@ -170,6 +175,14 @@ fn probe_loop(
         ),
       )
     }
+    Aborted(op:, step:) ->
+      actor.continue(
+        ProbeState(..state, aborts: list.append(state.aborts, [#(op, step)])),
+      )
+    Aborts(reply:) -> {
+      process.send(reply, state.aborts)
+      actor.continue(state)
+    }
     BuildGate(session:, reply:) ->
       case list.contains(state.held_builds, session) {
         True ->
@@ -220,6 +233,12 @@ pub fn builds(probe: Probe) -> List(OwnerServices) {
   process.call(probe.subject, 1000, Builds)
 }
 
+/// Every broker step the plane was told to abort, oldest first, as
+/// `#(operation, step)`.
+pub fn aborts(probe: Probe) -> List(#(String, String)) {
+  process.call(probe.subject, 1000, Aborts)
+}
+
 /// How many times a plane's `close` ran.
 pub fn closes(probe: Probe) -> Int {
   process.call(probe.subject, 1000, Closes)
@@ -259,6 +278,10 @@ pub fn factory(
     Ok(
       host.Plane(
         run: fn(run, _authority) { fake_tool(probe, spec.owner, asks, run) },
+        execute: fn(start) { fake_program(probe, start) },
+        abort_step: fn(op, step) {
+          process.send(probe.subject, Aborted(op, step))
+        },
         census: "census-" <> int.to_string(spec.incarnation),
         children: fn(builder) { builder },
         close: fn(retire_children) {
@@ -288,6 +311,65 @@ fn fake_tool(
   }
   process.call(probe.subject, 30_000, Wait)
   effects.ToolCompleted(result: text_result(run, verdict), terminate: False)
+}
+
+// The fake background program: it records its run under its step, waits on the
+// gate like the fake tool, and ends with a value that names its step and the
+// time it was given.
+// A program whose source is `big` adds a field large enough to pass any
+// reservation a test sets, so the replacement of an oversized value is
+// reachable.
+fn fake_program(probe: Probe, start: host.ExecutionStart) -> json.JsonValue {
+  process.send(probe.subject, Ran(pid: process.self(), call: start.step))
+  process.call(probe.subject, 30_000, Wait)
+  case start.terms.source, expected_value(start.step, start.remaining_ms) {
+    "big", json.Object(fields) ->
+      json.Object([#("pad", json.String(string.repeat("x", 4096))), ..fields])
+    _, value -> value
+  }
+}
+
+/// The value the fake program ends with.
+pub fn expected_value(step: String, remaining_ms: Int) -> json.JsonValue {
+  json.Object([
+    #("ran", json.String(step)),
+    #("remaining_ms", json.Int(remaining_ms)),
+  ])
+}
+
+/// What a launching call captured, for an execution test.
+pub fn execution_terms() -> owner_services.ExecutionTerms {
+  let #(operation, _generator) =
+    ids.mint_op(ids.generator(clock.fixed(at: 0), seed: 1))
+  owner_services.ExecutionTerms(
+    strand: "main",
+    op_id: operation,
+    launch_step: "turn-1:tools",
+    source_index: 0,
+    source: "pub fn main() { Nil }",
+    seam: "workspace",
+    within_ms: 60_000,
+    access: directory_access.Access(readable: [], writable: []),
+    grants: [],
+  )
+}
+
+/// The handle a launch with these terms is given: the digest of the launching
+/// call's coordinates.
+pub fn handle_of(terms: owner_services.ExecutionTerms) -> String {
+  agent.call_site_digest(agent.Caller(
+    strand: terms.strand,
+    operation: terms.op_id,
+    step_id: terms.launch_step,
+    source_index: terms.source_index,
+    minter: agent.ToolCall,
+  ))
+}
+
+/// The ledger key of the execution `id` of `session`, under the operation
+/// `execution_terms` uses.
+pub fn execution_key(session: String, id: String) -> protocol.Key {
+  protocol.execution_key(session, execution_terms().op_id, id)
 }
 
 fn refused_for(run: ToolRun) -> escalate.Refused {
@@ -389,6 +471,7 @@ pub fn host_config(
     ledger_path: path,
     limits: exec_ledger.default_limits(),
     max_result_bytes: 65_536,
+    execution_result_bytes: 4096,
     clock: clock.fixed(at: 1000),
     factory:,
   )
@@ -412,6 +495,8 @@ pub fn quiet_services() -> OwnerServices {
     notify: fn(_strand, _work, _text) { Error("quiet") },
     strand_activity: fn(_strand) { Error("quiet") },
     wake: fn(_strand, _text) { Error("quiet") },
+    launch_execution: owner_services.no_launch,
+    interact_execution: owner_services.no_interaction,
   )
 }
 

@@ -63,6 +63,13 @@ pub type Wiring {
     /// jobs actor reads, so one number governs every kind of background
     /// work.
     heartbeat_ms: Int,
+    /// What recovery may still learn about an execution a previous service
+    /// left starting or running: its value, when the program finished and the
+    /// value was stored somewhere that outlived the service. A local
+    /// execution's value lived only in the worker, so `no_value_survives`
+    /// answers nothing; an execution on an executor asks the executor's
+    /// ledger. Anything but a value records the execution as lost.
+    surviving_value: fn(execution.Execution) -> Result(JsonValue, Nil),
   )
 }
 
@@ -82,7 +89,7 @@ pub type Message {
   /// Claims an execution before starting its worker.
   Launch(
     record: execution.Execution,
-    work: fn() -> JsonValue,
+    work: fn() -> Result(JsonValue, String),
     reply: Subject(Result(JsonValue, String)),
   )
 
@@ -95,7 +102,7 @@ pub type Message {
   )
 
   /// A single worker's ordered outcome and scope drain proof.
-  Reported(id: String, report: weft.Pulled(JsonValue, Nil))
+  Reported(id: String, report: weft.Pulled(JsonValue, String))
 
   /// Reaps deadlines and observes pending child drains.
   Sweep
@@ -155,7 +162,7 @@ type Drain {
 type Held {
   Held(
     record: execution.Execution,
-    reports: Subject(weft.Pulled(JsonValue, Nil)),
+    reports: Subject(weft.Pulled(JsonValue, String)),
     cancel: weft.Cancel,
     outcome: Option(execution.Phase),
     drain: Drain,
@@ -194,6 +201,20 @@ type State {
     /// minutes.
     next_sample_ms: Int,
   )
+}
+
+/// The recovery answer for executions whose value cannot outlive the service
+/// that ran them, which is every local one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // async_runs.Wiring(.., surviving_value: async_runs.no_value_survives)
+/// ```
+pub fn no_value_survives(
+  _record: execution.Execution,
+) -> Result(JsonValue, Nil) {
+  Error(Nil)
 }
 
 /// Starts a named service under the session's supervision tree.
@@ -264,6 +285,24 @@ pub fn launch(
   name: address.Address(Message),
   record: execution.Execution,
   work: fn() -> JsonValue,
+) -> Result(JsonValue, String) {
+  launch_fallible(name, record, fn() { Ok(work()) })
+}
+
+/// `launch` for a worker that can know why it has no value. An `Error(reason)`
+/// from the work records the execution as `Lost(reason)` instead of the
+/// generic loss a crashed worker gets. A worker on another node uses it to say
+/// that the executor restarted or refused to start the program.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // async_runs.launch_fallible(name, record, fn() { Error("executor lost it") })
+/// ```
+pub fn launch_fallible(
+  name: address.Address(Message),
+  record: execution.Execution,
+  work: fn() -> Result(JsonValue, String),
 ) -> Result(JsonValue, String) {
   ask(name, fn(reply) { Launch(record:, work:, reply:) })
 }
@@ -407,7 +446,7 @@ fn resume(state: State) -> actor.Next(State, Message) {
 fn admit(
   state: State,
   record: execution.Execution,
-  work: fn() -> JsonValue,
+  work: fn() -> Result(JsonValue, String),
 ) -> Result(#(State, JsonValue), String) {
   use _decoded <- result.try(
     execution.decode(execution.encode(record))
@@ -445,7 +484,7 @@ fn admit(
 fn start_worker(
   state: State,
   record: execution.Execution,
-  work: fn() -> JsonValue,
+  work: fn() -> Result(JsonValue, String),
 ) -> Result(#(State, JsonValue), String) {
   let #(now, _) = clock.read(state.wiring.clock)
   let operation = ids.op_id_to_string(record.operation)
@@ -475,7 +514,7 @@ fn start_worker(
   let reports = process.new_subject()
   let cancel = weft.cancel_signal()
   let _scope =
-    weft.new([fn() { Ok(work()) }])
+    weft.new([work])
     |> weft.deadline(record.deadline_ms - now)
     |> weft.cancel_with(cancel)
     |> weft.start_relayed(reports)
@@ -519,6 +558,26 @@ fn load(
       |> result.map(Some)
       |> result.replace_error("corrupt execution record")
   }
+}
+
+/// Reads an execution's durable record by its handle, without asking the
+/// service. `Ok(None)` means there is no such record.
+///
+/// An owner answering a program on another node reads it on every owner-bound
+/// call the program makes, and the reconciler reads it for every execution the
+/// executor reports running. Neither may wait behind the service's mailbox, and
+/// neither needs its volatile state: the record decides.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // async_runs.record(runtime, handle)
+/// ```
+pub fn record(
+  runtime: api.Runtime,
+  id: String,
+) -> Result(Option(execution.Execution), String) {
+  load(runtime, id)
 }
 
 fn save(
@@ -959,15 +1018,18 @@ fn close(state: State, id: String, outcome: Option(execution.Phase)) -> State {
 fn reported(
   state: State,
   id: String,
-  report: weft.Pulled(JsonValue, Nil),
+  report: weft.Pulled(JsonValue, String),
 ) -> State {
   case report {
     weft.NotYet -> state
     weft.PulledOutcome(outcome) -> {
       let phase = case outcome {
         weft.Completed(value:, ..) -> execution.Finished(value)
-        weft.Failed(..)
-        | weft.Crashed(..)
+
+        // A worker that knows why it has no result says so, as a remote one
+        // does when the executor restarted or refused the start.
+        weft.Failed(error:, ..) -> execution.Lost(error)
+        weft.Crashed(..)
         | weft.Abandoned(..)
         | weft.NeverStarted(..)
         | weft.DrainProofLost(..)
@@ -1201,16 +1263,21 @@ fn recover(
         }
         execution.Starting | execution.Running | execution.Draining -> {
           let record =
-            execution.Execution(
-              ..record,
-              phase: execution.Lost("execution service restarted"),
-            )
+            execution.Execution(..record, phase: ended(wiring, record))
           use Nil <- result.try(save(wiring.runtime, record))
-          wiring.abort(record.operation, record.step)
+          case record.phase {
+            execution.Finished(_) -> Nil
+            execution.Lost(_)
+            | execution.Starting
+            | execution.Running
+            | execution.Draining -> wiring.abort(record.operation, record.step)
+          }
 
           // This recovery is what ended the execution, so nobody has been
           // told; one already terminal was told, or chose not to be, by
-          // the incarnation that wrote it.
+          // the incarnation that wrote it. An execution recovered as finished
+          // still has its owned children drained by the sweep, as a finished
+          // one always does.
           tell(wiring.runtime, record)
           Ok(#(record, Some(record)))
         }
@@ -1225,6 +1292,23 @@ fn recover(
     list.filter_map(records, fn(pair) { option.to_result(pair.1, Nil) }),
     launches,
   ))
+}
+
+// How recovery ends an execution a previous service left unfinished. A record
+// that was starting or running is asked about once: a value that outlived the
+// service is the program's result, as a tool call recovers a stored outcome.
+// A draining record had already been told to stop, and every other answer means
+// the program's end is unknown, so both are lost and never resumed.
+fn ended(wiring: Wiring, record: execution.Execution) -> execution.Phase {
+  let restarted = execution.Lost("execution service restarted")
+  case record.phase {
+    execution.Starting | execution.Running ->
+      case wiring.surviving_value(record) {
+        Ok(value) -> execution.Finished(value)
+        Error(Nil) -> restarted
+      }
+    execution.Draining | execution.Finished(_) | execution.Lost(_) -> restarted
+  }
 }
 
 fn increment_launch(

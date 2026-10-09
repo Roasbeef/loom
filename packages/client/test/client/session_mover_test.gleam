@@ -30,6 +30,7 @@ import client/internal/ffi_os
 import client/orchestrators
 import client/remote/address.{type Address}
 import client/remote/orchestrator_port
+import client/remote/owner_port
 import client/remote/protocol
 import client/remote/scope
 import client/remote/workspace
@@ -331,6 +332,8 @@ fn start(
       owner: host_rig.quiet(),
       clock: clock.fixed(at: 1000),
       reconcile_every_ms: 60_000,
+      executions: owner_port.no_executions(),
+      mcp: protocol.McpPlan(served: [], expected: []),
     ))
     as "the attach succeeds"
 
@@ -521,6 +524,8 @@ pub fn a_stopped_session_moves_and_runs_on_the_receiver_at_the_next_incarnation_
       owner: host_rig.quiet(),
       clock: clock.fixed(at: 6000),
       reconcile_every_ms: 60_000,
+      executions: owner_port.no_executions(),
+      mcp: protocol.McpPlan(served: [], expected: []),
     ))
     as "the receiver attaches to the executor"
   assert rig.hands.incarnation == 1
@@ -1274,6 +1279,8 @@ pub fn a_session_moves_there_and_back_test() {
       owner: host_rig.quiet(),
       clock: clock.fixed(at: 6000),
       reconcile_every_ms: 60_000,
+      executions: owner_port.no_executions(),
+      mcp: protocol.McpPlan(served: [], expected: []),
     ))
   assert arrived.incarnation == 2
   arrived.plane.close()

@@ -83,6 +83,7 @@ fn machine(state: String, seed: Option(String)) -> executor_plane.Machine {
     secrets: secret.env(),
     home: None,
     logger: log.discard(),
+    mcp_servers: [],
   )
 }
 
@@ -128,6 +129,7 @@ fn rig_over(
       max_result_bytes: host.default_max_result_bytes,
       clock: clock.from_function(ffi_os.system_time_ms),
       factory:,
+      execution_result_bytes: host.default_execution_result_bytes,
     ))
     as "the host starts"
   let assert Ok(port) =
@@ -136,6 +138,7 @@ fn rig_over(
       clock: clock.fixed(at: 1000),
       settled: fn(_key) { False },
       reconcile_every_ms: 60_000,
+      executions: owner_port.no_executions(),
     ))
     as "the owner port starts"
   Rig(host_pid: started.pid, address: started.data, checkout:, state:, port:)
@@ -182,6 +185,7 @@ fn config(
     remote_tools: ["fs_write", "fs_read", "bash", "code_mode"],
     attach_within_ms: 60_000,
     mint_token: surface.strong_token,
+    mcp: protocol.McpPlan(served: [], expected: []),
   )
 }
 
