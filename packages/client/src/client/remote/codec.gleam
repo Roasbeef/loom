@@ -11,6 +11,12 @@
 ////
 //// Nothing here is a closure or a pid, so the same bytes read back the same on
 //// any machine and in any later VM.
+////
+//// A background execution's row stores an execution value instead of a tool
+//// outcome, in an envelope of its own kind (`execution`). `decode_stored`
+//// reads either kind and says which it was; `decode_outcome` reads only a tool
+//// outcome and reports an execution's bytes as damaged, so a tool call can
+//// never be answered with a program's value.
 
 import core/codec
 import core/corruption.{type CorruptionReport}
@@ -45,21 +51,42 @@ pub fn encode_outcome(outcome: ToolOutcome) -> BitArray {
   bit_array.from_string(json.to_string(envelope))
 }
 
-/// Decodes stored bytes into the outcome they describe.
-///
-/// Anything that is not an envelope this module wrote is refused with a report
-/// naming what was expected, including bytes that are not UTF-8, JSON that is
-/// not an object, an unknown `kind`, and a result message `core/codec` rejects.
+/// What a ledger row's stored bytes hold.
+pub type Stored {
+  /// A tool call's outcome.
+  StoredOutcome(outcome: ToolOutcome)
+
+  /// A background execution's value, as `tools/codemode.execution_value`
+  /// rendered it.
+  StoredExecution(value: JsonValue)
+}
+
+/// Encodes a background execution's value as the bytes the ledger stores.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// let assert Error(_report) = codec.decode_outcome(<<"not json":utf8>>)
+/// let bytes = codec.encode_execution(json.Int(1))
+/// assert codec.decode_stored(bytes) == Ok(codec.StoredExecution(json.Int(1)))
 /// ```
-pub fn decode_outcome(
-  bytes: BitArray,
-) -> Result(ToolOutcome, CorruptionReport) {
-  let where = "client/remote/codec.outcome"
+pub fn encode_execution(value: JsonValue) -> BitArray {
+  json.Object([#("kind", json.String("execution")), #("value", value)])
+  |> json.to_string
+  |> bit_array.from_string
+}
+
+/// Decodes stored bytes of either kind, refusing anything this module did not
+/// write with a report naming what was expected.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let bytes = codec.encode_outcome(effects.ToolFailed(reason: "no"))
+/// assert codec.decode_stored(bytes)
+///   == Ok(codec.StoredOutcome(effects.ToolFailed(reason: "no")))
+/// ```
+pub fn decode_stored(bytes: BitArray) -> Result(Stored, CorruptionReport) {
+  let where = "client/remote/codec.stored"
   use text <- result.try(
     bit_array.to_string(bytes)
     |> result.map_error(fn(_not_text) {
@@ -79,18 +106,49 @@ pub fn decode_outcome(
       use message <- result.try(field(fields, "result", where))
       use terminate <- result.try(bool_field(fields, "terminate", where))
       use result <- result.try(codec.decode_message(message))
-      Ok(ToolCompleted(result:, terminate:))
+      Ok(StoredOutcome(ToolCompleted(result:, terminate:)))
     }
     "failed" -> {
       use reason <- result.try(string_field(fields, "reason", where))
-      Ok(ToolFailed(reason:))
+      Ok(StoredOutcome(ToolFailed(reason:)))
+    }
+    "execution" -> {
+      use value <- result.try(field(fields, "value", where))
+      Ok(StoredExecution(value))
     }
     other ->
       Error(corruption.report(
         at: where,
         on: "kind",
-        expected: "completed or failed",
+        expected: "completed, failed or execution",
         context: other,
+      ))
+  }
+}
+
+/// Decodes stored bytes into the outcome they describe.
+///
+/// Anything that is not an envelope this module wrote is refused with a report
+/// naming what was expected, including bytes that are not UTF-8, JSON that is
+/// not an object, an unknown `kind`, and a result message `core/codec` rejects.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Error(_report) = codec.decode_outcome(<<"not json":utf8>>)
+/// ```
+pub fn decode_outcome(
+  bytes: BitArray,
+) -> Result(ToolOutcome, CorruptionReport) {
+  use stored <- result.try(decode_stored(bytes))
+  case stored {
+    StoredOutcome(outcome:) -> Ok(outcome)
+    StoredExecution(..) ->
+      Error(corruption.report(
+        at: "client/remote/codec.outcome",
+        on: "kind",
+        expected: "completed or failed",
+        context: "execution",
       ))
   }
 }

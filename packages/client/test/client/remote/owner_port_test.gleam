@@ -11,9 +11,11 @@ import core/clock
 import core/json
 import gleam/dynamic
 import gleam/erlang/process
+import gleam/int
 import gleam/option.{None}
 import support/internal/ffi_proc
 import support/remote_fixtures as fixtures
+import tools/codemode as codemode_tool
 
 fn key(n: Int) -> Key {
   protocol.Key(session: "s1", op: "op", step: "step", source_index: n)
@@ -30,6 +32,7 @@ fn port_over(
       clock: clock.fixed(at: 5000),
       settled:,
       reconcile_every_ms: every_ms,
+      executions: owner_port.no_executions(),
     ))
     as "the port starts"
   port
@@ -186,16 +189,24 @@ pub fn an_attach_acknowledges_only_the_settled_keys_test() {
       60_000,
     )
   let link =
-    owner_port.HostLink(list: fn() { Error("not asked") }, ack: fn(candidate) {
-      fixtures.mark(acked, candidate)
-    })
+    owner_port.HostLink(
+      list: fn() { Error("not asked") },
+      ack: fn(candidate) { fixtures.mark(acked, candidate) },
+      start: fn(_key, _terms, _remaining) { protocol.ExecutionLost },
+      stop: fn(_key) { Nil },
+      query: fn(_key) { Error("not asked") },
+    )
 
   // Both a stored result and a lost one are acknowledged once the orchestrator
   // holds the call's result; a call still in flight is left alone.
   owner_port.bind(
     port,
     link,
-    protocol.Unacked(terminal: [key(0), key(1)], unknown: [key(2)]),
+    protocol.Unacked(
+      terminal: [key(0), key(1)],
+      unknown: [key(2)],
+      executions: [],
+    ),
   )
   assert fixtures.eventually(fn() { fixtures.marked(acked) == [key(0), key(2)] })
   process.sleep(50)
@@ -213,13 +224,22 @@ pub fn the_timer_lists_again_and_acknowledges_what_settled_since_test() {
     )
   let link =
     owner_port.HostLink(
-      list: fn() { Ok(protocol.Unacked(terminal: [key(7)], unknown: [])) },
+      list: fn() {
+        Ok(protocol.Unacked(terminal: [key(7)], unknown: [], executions: []))
+      },
       ack: fn(candidate) { fixtures.mark(acked, candidate) },
+      start: fn(_key, _terms, _remaining) { protocol.ExecutionLost },
+      stop: fn(_key) { Nil },
+      query: fn(_key) { Error("not asked") },
     )
 
   // The attach reported nothing, and the host lists key 7 on the timer. It is
   // not settled yet, so it is not acknowledged.
-  owner_port.bind(port, link, protocol.Unacked(terminal: [], unknown: []))
+  owner_port.bind(
+    port,
+    link,
+    protocol.Unacked(terminal: [], unknown: [], executions: []),
+  )
   process.sleep(150)
   assert fixtures.marked(acked) == []
 
@@ -272,4 +292,135 @@ pub fn a_requester_on_another_node_does_not_take_the_port_down_test() {
   process.sleep(300)
   assert process.is_alive(port)
   assert process.call(inbox, 2000, protocol.FactGet("job/1", _)) == Ok(None)
+}
+
+// --- background executions --------------------------------------------------------
+
+fn port_with_executions(
+  executions: owner_port.Executions,
+  settled: fn(Key) -> Bool,
+) -> owner_port.Port {
+  let assert Ok(port) =
+    owner_port.start(owner_port.Config(
+      services: fixtures.quiet_services(),
+      clock: clock.fixed(at: 5000),
+      settled:,
+      reconcile_every_ms: 60_000,
+      executions:,
+    ))
+    as "the port starts"
+  port
+}
+
+// A host link whose listing reports `running` as the executions still running,
+// and that records every stop and acknowledgement it is asked to send.
+fn listing_link(
+  running: List(Key),
+  stopped: process.Subject(Key),
+  acked: process.Subject(Key),
+) -> owner_port.HostLink {
+  owner_port.HostLink(
+    list: fn() {
+      Ok(protocol.Unacked(terminal: [], unknown: [], executions: running))
+    },
+    ack: fn(key) { process.send(acked, key) },
+    start: fn(_key, _terms, _remaining) { protocol.ExecutionLost },
+    stop: fn(key) { process.send(stopped, key) },
+    query: fn(_key) { Error("not asked") },
+  )
+}
+
+pub fn a_launch_is_served_with_the_link_the_session_attached_through_test() {
+  let used = process.new_subject()
+  let executions =
+    owner_port.Executions(
+      ..owner_port.no_executions(),
+      launch: fn(
+        terms: owner_services.ExecutionTerms,
+        link: owner_port.HostLink,
+      ) {
+        process.send(used, link.query(key(0)))
+        Ok(json.String(terms.strand))
+      },
+    )
+  let port = port_with_executions(executions, fn(_key) { False })
+  let inbox = owner_port.inbox(port)
+  let terms = fixtures.execution_terms()
+
+  // Before any attach there is no link, and the launch is refused.
+  let assert Error(_) =
+    process.call(inbox, 2000, protocol.LaunchExecution(terms, _))
+    as "a launch before the attach is refused"
+  let link =
+    owner_port.HostLink(
+      ..listing_link([], process.new_subject(), process.new_subject()),
+      query: fn(_key) { Error("the bound link") },
+    )
+  owner_port.bind(
+    port,
+    link,
+    protocol.Unacked(terminal: [], unknown: [], executions: []),
+  )
+  assert process.call(inbox, 2000, protocol.LaunchExecution(terms, _))
+    == Ok(json.String("main"))
+  assert process.receive(used, 1000) == Ok(Error("the bound link"))
+}
+
+pub fn an_interaction_is_served_by_the_execution_service_test() {
+  let executions =
+    owner_port.Executions(
+      ..owner_port.no_executions(),
+      interact: fn(strand, handle, _interaction, within) {
+        Ok(json.String(strand <> "/" <> handle <> "/" <> int.to_string(within)))
+      },
+    )
+  let inbox =
+    owner_port.inbox(port_with_executions(executions, fn(_key) { False }))
+  assert process.call(inbox, 2000, protocol.InteractExecution(
+      "main",
+      "ab12",
+      codemode_tool.Check,
+      0,
+      _,
+    ))
+    == Ok(json.String("main/ab12/0"))
+}
+
+pub fn the_reconciler_stops_running_programs_whose_record_closed_test() {
+  let live = fixtures.execution_key("s1", "aa01")
+  let closing = fixtures.execution_key("s1", "aa02")
+  let closed = fixtures.execution_key("s1", "aa03")
+  let executions =
+    owner_port.Executions(..owner_port.no_executions(), standing: fn(found) {
+      case found == live, found == closing {
+        True, _ -> owner_port.RecordLive
+        False, True -> owner_port.RecordClosing
+        False, False -> owner_port.RecordClosed
+      }
+    })
+  let port = port_with_executions(executions, fn(_key) { False })
+  let stopped = process.new_subject()
+  let acked = process.new_subject()
+  owner_port.bind(
+    port,
+    listing_link([live, closing, closed], stopped, acked),
+    protocol.Unacked(terminal: [], unknown: [], executions: [
+      live,
+      closing,
+      closed,
+    ]),
+  )
+
+  // The attach's own listing is reconciled at once: the two programs whose
+  // record is no longer live are stopped, the live one is left running.
+  let assert Ok(first) = process.receive(stopped, 2000)
+  let assert Ok(second) = process.receive(stopped, 2000)
+  assert [first, second] == [closing, closed]
+  assert process.receive(stopped, 200) == Error(Nil)
+
+  // A later pass sends the stops again, which is how a stop a partition lost
+  // is repeated.
+  owner_port.reconcile(port)
+  let assert Ok(again) = process.receive(stopped, 2000)
+  assert again == closing
 }

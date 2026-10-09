@@ -88,6 +88,7 @@ fn attach(
       token: attach_token,
       owner_port: process.new_subject(),
       reply:,
+      mcp: protocol.McpPlan(served: [], expected: []),
     ),
   )
   let assert Ok(answer) = process.receive(reply, 5000)
@@ -452,7 +453,8 @@ pub fn a_host_restart_turns_a_live_call_into_unknown_test() {
   // The attach is a rebind that rebuilds the plane, and lists the lost call.
   let assert Ok(protocol.Attached(unacked:, ..)) =
     attach(restarted, 0, token(2))
-  assert unacked == protocol.Unacked(terminal: [], unknown: [key_of(run)])
+  assert unacked
+    == protocol.Unacked(terminal: [], unknown: [key_of(run)], executions: [])
   assert heard(send_run(restarted, run, 0, token(2))) == protocol.RunLost
   assert fixtures.run_count(probe, "call_1") == 0
   stop(restarted)
@@ -493,13 +495,17 @@ pub fn an_ack_retires_the_row_and_a_listing_reports_what_waits_test() {
       as "the host answers a listing"
     answer
   }
-  assert listed() == Ok(protocol.Unacked(terminal: [key_of(run)], unknown: []))
+  assert listed()
+    == Ok(
+      protocol.Unacked(terminal: [key_of(run)], unknown: [], executions: []),
+    )
 
   // The acknowledgement is a cast, so the row goes when the host gets to it. A
   // tombstone keeps the key taken, and the ledger answers it as lost.
   address.deliver(rig.address, protocol.Ack(key_of(run)))
   assert fixtures.eventually(fn() { query(rig, run) == Ok(protocol.Unknown) })
-  assert listed() == Ok(protocol.Unacked(terminal: [], unknown: []))
+  assert listed()
+    == Ok(protocol.Unacked(terminal: [], unknown: [], executions: []))
   stop(rig)
 }
 
@@ -579,6 +585,7 @@ pub fn an_attach_from_another_protocol_version_is_refused_test() {
       token: token(1),
       owner_port: process.new_subject(),
       reply:,
+      mcp: protocol.McpPlan(served: [], expected: []),
     ),
   )
   let assert Ok(answer) = process.receive(reply, 5000)
@@ -613,6 +620,7 @@ fn attach_as(
       token: attach_token,
       owner_port: process.new_subject(),
       reply:,
+      mcp: protocol.McpPlan(served: [], expected: []),
     ),
   )
   reply

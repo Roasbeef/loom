@@ -36,6 +36,36 @@ pub fn router(
   launch: codemode.Request,
   fallback: satellite.CapRouter,
 ) -> satellite.CapRouter {
+  router_for(
+    agents,
+    custody,
+    agent.Caller(
+      launch.strand,
+      launch.op_id,
+      launch.step_id,
+      launch.source_index,
+      agent.ToolCall,
+    ),
+    fallback,
+  )
+}
+
+/// `router` with the launching call given by its coordinates rather than by
+/// its request. An owner answering a program that runs on another node has no
+/// request, only the record, which stores the launching step. Each child step
+/// is attributed to `launch` with the call's ordinal as its minter.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // workflows.router_for(agents, custody, launching_caller, fallback)
+/// ```
+pub fn router_for(
+  agents: agency.Config,
+  custody: api.AsyncCustody,
+  launch: agent.Caller,
+  fallback: satellite.CapRouter,
+) -> satellite.CapRouter {
   fn(request: satellite.CapRequest) {
     case request.cap {
       "workflow.step" if request.ordinal >= 32 ->
@@ -59,13 +89,7 @@ pub fn router(
         let step =
           workflow_ledger.Step(run, version, input, name, blob.ref_for(encoded))
         let caller =
-          agent.Caller(
-            launch.strand,
-            launch.op_id,
-            launch.step_id,
-            launch.source_index,
-            agent.Program(request.ordinal),
-          )
+          agent.Caller(..launch, minter: agent.Program(request.ordinal))
         Ok(
           satellite.ServedHere(fn() {
             case agency.workflow_child(agents, caller, step, decoded, custody) {

@@ -495,6 +495,7 @@ pub fn start_executor(
           ledger_path: config.state_root <> "/exec-ledger.db",
           limits: executor_plane.scope_limits(),
           max_result_bytes: executor_host.default_max_result_bytes,
+          execution_result_bytes: executor_host.default_execution_result_bytes,
           clock: clock.from_function(ffi_os.system_time_ms),
           factory: executor_plane.factory(machine, configured),
         ))

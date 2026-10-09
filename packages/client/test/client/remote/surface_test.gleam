@@ -45,6 +45,7 @@ fn rig(gate: fixtures.Gate, asks: fixtures.Asks) -> Rig {
       clock: clock.fixed(at: 1000),
       settled: fn(_key) { False },
       reconcile_every_ms: 60_000,
+      executions: owner_port.no_executions(),
     ))
     as "the port starts"
   Rig(host_pid: started.pid, address: started.data, probe:, port:, path:)
@@ -69,6 +70,7 @@ fn config(rig: Rig, token_n: Int) -> surface.Config(String) {
     mint_token: fn() {
       bit_array.from_string("token-" <> int.to_string(token_n))
     },
+    mcp: protocol.McpPlan(served: [], expected: []),
   )
 }
 
@@ -111,7 +113,7 @@ pub fn attach_reports_the_census_and_a_run_comes_back_complete_test() {
     == protocol.Attached(
       census: "census-0",
       executor_now_ms: 1000,
-      unacked: protocol.Unacked(terminal: [], unknown: []),
+      unacked: protocol.Unacked(terminal: [], unknown: [], executions: []),
     )
   let run = fixtures.tool_run("call_1", 0)
 
@@ -270,6 +272,7 @@ pub fn the_owner_port_dying_settles_a_parked_escalation_promptly_test() {
       clock: clock.fixed(at: 1000),
       settled: fn(_key) { False },
       reconcile_every_ms: 60_000,
+      executions: owner_port.no_executions(),
     ))
     as "the parked port starts"
   let remote = attached(Rig(..rig, port: parked_port), 1)
@@ -314,6 +317,7 @@ pub fn the_survivors_of_a_replaced_port_serve_the_new_one_test() {
       clock: clock.fixed(at: 1000),
       settled: fn(_key) { False },
       reconcile_every_ms: 60_000,
+      executions: owner_port.no_executions(),
     ))
     as "the second port starts"
   let second = attached(Rig(..rig, port: second_port), 2)
@@ -405,6 +409,7 @@ pub fn an_attach_that_meets_a_build_in_progress_waits_for_it_test() {
       token: bit_array.from_string("token-lost"),
       owner_port: owner_port.inbox(rig.port),
       reply: process.new_subject(),
+      mcp: protocol.McpPlan(served: [], expected: []),
     ),
   )
   assert fixtures.eventually(fn() {
@@ -442,6 +447,7 @@ pub fn an_attach_that_never_sees_the_build_finish_reports_it_building_test() {
       token: bit_array.from_string("token-lost"),
       owner_port: owner_port.inbox(rig.port),
       reply: process.new_subject(),
+      mcp: protocol.McpPlan(served: [], expected: []),
     ),
   )
   assert fixtures.eventually(fn() {

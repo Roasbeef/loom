@@ -369,7 +369,7 @@ There is no cancel message. The runtime aborts a call by killing its effect
 process, and the host monitors the process that owns each `Run`'s reply subject.
 A `DOWN` with any reason except `noconnection` means someone asked to stop, and
 when the run's last waiter is gone the host cancels it
-(`cancels_run`, `remote/host.gleam:328`). A `noconnection` `DOWN` means only
+(`cancels_run`, `remote/host.gleam:418`). A `noconnection` `DOWN` means only
 that the orchestrator is unreachable. The run continues to completion or to its
 own deadline, which is built on the executor's clock, and its outcome waits in
 the ledger. An abort issued during a partition arrives only as `noconnection`,
@@ -387,7 +387,7 @@ holds that call pending, that is, the operation's state is gone or its batch no
 longer lists the call as planned or running. A lost `Ack` is therefore found
 again on the next pass, and no row leaks.
 
-`exec_ledger.ack` (`storage/exec_ledger.gleam:765`) deletes a `terminal` or
+`exec_ledger.ack` (`storage/exec_ledger.gleam:729`) deletes a `terminal` or
 `unknown` row, releases its bytes, and writes a tombstone in `call_ack`. A key
 with a tombstone is never admitted again in that incarnation. The tombstone
 closes a race the P model found. When a runtime restarts inside one open, the

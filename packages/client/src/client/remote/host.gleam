@@ -82,7 +82,7 @@
 //// ## Flow
 ////
 //// `start` → `initialise` → `handle_event` → `handle_peer` → `attach`,
-//// `admit_run`, `fenced_lookup`, `close`
+//// `admit_call`, `stop_execution`, `fenced_lookup`, `close`
 ////
 //// 1. `initialise` registers the name and opens the ledger, which turns every
 ////    row the previous VM left `Admitted` into `Unknown`.
@@ -92,26 +92,31 @@
 //// 3. `attach` binds a runtime incarnation to its scope in the ledger and
 ////    starts a build, or re-points the scope's plane. `plane_built` completes
 ////    the attach when the build lands.
-//// 4. `admit_run` consults the ledger and either `start_run`s the tool,
-////    `join_run`s a live call, or answers from the stored row.
-//// 5. `job_finished` commits a tool's outcome with `commit_outcome` and answers
-////    every waiter, or settles the call as lost.
+//// 4. `admit_call` consults the ledger for a `Run` or a `StartExecution` and
+////    either `start_call`s the work, `join_run`s a live call, or answers from
+////    the stored row.
+//// 5. `job_finished` commits a tool's outcome or a program's value with
+////    `commit_outcome` and answers every waiter, or settles the call as lost.
 //// 6. `caller_down` applies `cancels_run` to an aborted or unreachable caller.
+////    `stop_execution` turns a background program's row unknown, or bars a
+////    key with no row, and `halt`s the program.
 //// 7. `fenced_lookup` answers a recovery query and, for a key with no row,
 ////    stores "did not start" so a late `Run` for it never starts.
 //// 8. `close` fences the scope, cancels its calls, and `finish_closed` records
 ////    how the plane's cleanup ended.
 
 import client/internal/ffi_os
-import client/owner_services.{type OwnerServices}
+import client/owner_services.{type ExecutionTerms, type OwnerServices}
 import client/remote/address.{type Address}
 import client/remote/codec
 import client/remote/owner_link
 import client/remote/protocol.{
-  type CloseOutcome, type HostMessage, type Key, type Refusal, type RunAnswer,
+  type CloseOutcome, type ExecutionAnswer, type HostMessage, type Key,
+  type Refusal, type RunAnswer,
 }
 import client/wiring.{type Authority}
 import core/clock.{type Clock}
+import core/json.{type JsonValue}
 import gleam/dict.{type Dict}
 import gleam/dynamic
 import gleam/erlang/atom
@@ -146,6 +151,23 @@ pub type AttachSpec {
     /// The executor's clock. Build the plane on it: an escalation's remaining
     /// time is read off a deadline on this clock.
     clock: Clock,
+    /// The MCP servers this scope's code mode reaches: the façades of the ones
+    /// the orchestrator runs, and the names of the ones it expects this
+    /// executor to run from its own configuration. Fixed for the plane's life.
+    mcp: protocol.McpPlan,
+  )
+}
+
+/// One background program to run, as the host hands it to the plane.
+pub type ExecutionStart {
+  ExecutionStart(
+    /// What the launching tool call captured.
+    terms: ExecutionTerms,
+    /// The execution's step, `async/<id>`: the broker step its effects run
+    /// under and the step its owner-bound calls carry.
+    step: String,
+    /// How long the program may run, from now, on the executor's clock.
+    remaining_ms: Int,
   )
 }
 
@@ -156,6 +178,13 @@ pub type Plane(census) {
     /// may cancel by killing it, so a caller watch in the plane's broker stops
     /// whatever the call started.
     run: fn(ToolRun, Authority) -> ToolOutcome,
+    /// Runs one background program to its end and answers its execution
+    /// value. It runs in a process the host owns and may kill, as `run` does.
+    execute: fn(ExecutionStart) -> JsonValue,
+    /// Aborts every effect under one broker step: the operation id as text and
+    /// the step. The host calls it when it stops a background program, so the
+    /// program's satellite and jailed calls end with it.
+    abort_step: fn(String, String) -> Nil,
     /// What the plane reports about its machine, returned with every attach.
     census: census,
     /// The plane's supervised children. The host starts them under a supervisor
@@ -188,6 +217,10 @@ pub type Config(census) {
     /// The most bytes one call's encoded outcome may take. Admission reserves
     /// it, and an outcome that does not fit is replaced by a failure.
     max_result_bytes: Int,
+    /// The same for one background execution's value. It is far smaller than
+    /// a call's, because an execution holds its reservation for as long as
+    /// the program runs and the ledger's budget is shared by every session.
+    execution_result_bytes: Int,
     /// The executor's clock, handed to every plane.
     clock: Clock,
     /// Builds a scope's plane.
@@ -201,6 +234,15 @@ pub type Config(census) {
 /// maximum-size read to succeed remotely exactly as it does locally.
 pub const default_max_result_bytes = 16_777_216
 
+/// The default reservation per background execution: one mebibyte. An
+/// execution may hold it for up to fifteen minutes, and the ledger's budget is
+/// the whole executor's, so sixteen mebibytes each would let thirty-two busy
+/// executions refuse every tool call on the machine. A larger value is replaced
+/// by an errored value that names both sizes, as an oversized tool outcome is.
+/// The completion notice quotes two kilobytes of a result, and a program with
+/// more to return writes it with `report.emit` and returns the reference.
+pub const default_execution_result_bytes = 1_048_576
+
 // One message the host handles. A peer's request arrives on the host's name, a
 // job's result on the sink of the weft run that produced it, and a monitored
 // caller's exit as a `DOWN`.
@@ -213,8 +255,65 @@ type Event(census) {
 // What a job's task returns when it completes.
 type JobResult(census) {
   ToolRan(outcome: ToolOutcome)
+  ProgramRan(value: JsonValue)
   ScopeClosed(outcome: CloseOutcome)
   PlaneBuilt(built: Result(Plane(census), String))
+}
+
+// What one attach binds: the scope's identity, where its workspace calls
+// back to, and the MCP servers its code mode reaches.
+type Binding {
+  Binding(
+    session: String,
+    workspace: String,
+    incarnation: Int,
+    owner_port: Subject(protocol.OwnerMessage),
+    mcp: protocol.McpPlan,
+  )
+}
+
+// The part of a keyed request that admission judges: the key, the attach it
+// claims to come from, and where its answer goes.
+type Admission {
+  Admission(key: Key, incarnation: Int, token: BitArray, reply: Reply)
+}
+
+// What admitted work is: its kind, the name its ledger row carries, the bytes
+// it reserves, and the task that runs it once a plane is in hand.
+type Work(census) {
+  Work(
+    kind: CallKind,
+    tool: String,
+    reservation: Int,
+    task: fn(Plane(census)) -> fn() -> Result(JobResult(census), Nil),
+  )
+}
+
+// The two kinds of keyed work the host admits. They share admission, waiters,
+// the commit before any reply and cancellation; they differ in what a waiter
+// is answered with and in what a stop must also abort.
+type CallKind {
+  ToolCall
+  Execution
+}
+
+// Where one waiter wants its answer. The two kinds of request carry reply
+// subjects of different types, and a waiter keeps the one it sent.
+type Reply {
+  RunReply(reply: Subject(RunAnswer))
+  ExecutionReply(reply: Subject(ExecutionAnswer))
+}
+
+// How a keyed call ended, before it is put in a waiter's own words.
+type Settled {
+  // The ledger holds these bytes as the call's terminal row.
+  SettledStored(stored: BitArray)
+
+  // The call was admitted and its outcome is lost.
+  SettledLost
+
+  // The call was not admitted.
+  SettledRefused(refusal: Refusal)
 }
 
 // What a job is for.
@@ -257,14 +356,15 @@ type Placement(census) {
   Placement(plane: Plane(census), link: owner_link.Link, children: Pid)
 }
 
-// A call that is running now: the job that runs it and everyone waiting on it.
+// A call that is running now: the job that runs it, what kind of call it is,
+// and everyone waiting on it.
 type Live {
-  Live(job: Int, waiters: List(Waiter))
+  Live(job: Int, kind: CallKind, waiters: List(Waiter))
 }
 
 // One process waiting on a live call, and the monitor that watches it.
 type Waiter {
-  Waiter(reply: Subject(RunAnswer), watch: Monitor)
+  Waiter(reply: Reply, watch: Monitor)
 }
 
 type State(census) {
@@ -397,17 +497,15 @@ fn handle_peer(
       incarnation:,
       token:,
       owner_port:,
+      mcp:,
       reply:,
     ) ->
       case version == protocol.version {
         True ->
           attach(
             state,
-            session,
-            workspace,
-            incarnation,
+            Binding(session:, workspace:, incarnation:, owner_port:, mcp:),
             token,
-            owner_port,
             reply,
           )
         False -> {
@@ -419,7 +517,48 @@ fn handle_peer(
         }
       }
     protocol.Run(key:, incarnation:, token:, run:, authority:, reply:) ->
-      admit_run(state, key, incarnation, token, run, authority, reply)
+      admit_call(
+        state,
+        Admission(key:, incarnation:, token:, reply: RunReply(reply)),
+        Work(
+          kind: ToolCall,
+          tool: run.call.name,
+          reservation: state.config.max_result_bytes,
+          task: fn(plane: Plane(census)) {
+            let run_tool = plane.run
+            fn() { Ok(ToolRan(run_tool(run, authority))) }
+          },
+        ),
+      )
+    protocol.StartExecution(
+      key:,
+      incarnation:,
+      token:,
+      terms:,
+      remaining_ms:,
+      reply:,
+    ) ->
+      admit_call(
+        state,
+        Admission(key:, incarnation:, token:, reply: ExecutionReply(reply)),
+        Work(
+          kind: Execution,
+          tool: protocol.execution_tool,
+          reservation: state.config.execution_result_bytes,
+          task: fn(plane: Plane(census)) {
+            let execute = plane.execute
+            let start =
+              ExecutionStart(
+                terms:,
+                step: key.step,
+                remaining_ms: int.max(0, remaining_ms),
+              )
+            fn() { Ok(ProgramRan(execute(start))) }
+          },
+        ),
+      )
+    protocol.StopExecution(key:, incarnation:) ->
+      stop_execution(state, key, incarnation)
     protocol.Query(key:, reply:) -> {
       process.send(reply, lookup(state, key))
       state
@@ -450,14 +589,11 @@ fn handle_peer(
 // built is refused before the ledger is asked, so the refusal changes no row.
 fn attach(
   state: State(census),
-  session: String,
-  workspace: String,
-  incarnation: Int,
+  binding: Binding,
   token: BitArray,
-  owner_port: Subject(protocol.OwnerMessage),
   reply: Subject(Result(protocol.Attached(census), Refusal)),
 ) -> State(census) {
-  case dict.get(state.placements, session) {
+  case dict.get(state.placements, binding.session) {
     Ok(Building(..)) -> {
       process.send(reply, Error(protocol.PlaneBuilding))
       state
@@ -466,9 +602,9 @@ fn attach(
       let attached =
         exec_ledger.attach(
           state.ledger,
-          session,
-          workspace,
-          incarnation,
+          binding.session,
+          binding.workspace,
+          binding.incarnation,
           token,
           state.config.limits,
         )
@@ -482,50 +618,38 @@ fn attach(
             protocol.Unacked(
               terminal: list.map(bound.terminal, from_ledger),
               unknown: list.map(bound.unknown, from_ledger),
+              executions: running_executions(state, binding.session),
             )
-          place(
-            state,
-            session,
-            workspace,
-            incarnation,
-            owner_port,
-            bound.how,
-            unacked,
-            reply,
-          )
+          place(state, binding, bound.how, unacked, reply)
         }
       }
     }
   }
 }
 
+// The session's background executions that are still running, by key. A read
+// that fails answers none: the orchestrator's reconciler asks again on its next
+// pass, and an attach must not fail because a listing did.
+fn running_executions(state: State(census), session: String) -> List(Key) {
+  exec_ledger.admitted(state.ledger, session, protocol.execution_tool)
+  |> result.map(list.map(_, from_ledger))
+  |> result.unwrap([])
+}
+
 // Gives the scope a plane. A rebind keeps the plane it has and re-points its
-// owner link, and answers at once. Every other case starts a build, retiring a
-// stale link first, and the answer is sent when the build lands.
+// owner link, and answers at once; the plane keeps the MCP plan it was built
+// with, which is fixed for its incarnation. Every other case starts a build,
+// retiring a stale link first, and the answer is sent when the build lands.
 fn place(
   state: State(census),
-  session: String,
-  workspace: String,
-  incarnation: Int,
-  owner_port: Subject(protocol.OwnerMessage),
+  binding: Binding,
   how: exec_ledger.Attachment,
   unacked: protocol.Unacked,
   reply: Subject(Result(protocol.Attached(census), Refusal)),
 ) -> State(census) {
-  let built = fn(state) {
-    build_plane(
-      state,
-      session,
-      workspace,
-      incarnation,
-      owner_port,
-      unacked,
-      reply,
-    )
-  }
-  case how, dict.get(state.placements, session) {
+  case how, dict.get(state.placements, binding.session) {
     exec_ledger.Rebound, Ok(Ready(placement)) -> {
-      owner_link.replace(placement.link, owner_port)
+      owner_link.replace(placement.link, binding.owner_port)
       process.send(
         reply,
         Ok(attached_reply(state, placement.plane.census, unacked)),
@@ -544,7 +668,7 @@ fn place(
     -> {
       let _outcome = stale.plane.close(fn() { retire_children(stale.children) })
       owner_link.stop(stale.link)
-      built(state)
+      build_plane(state, binding, unacked, reply)
     }
 
     exec_ledger.Rebound, Ok(Building(..))
@@ -558,7 +682,7 @@ fn place(
     exec_ledger.Rebound, Error(Nil)
     | exec_ledger.Created, Error(Nil)
     | exec_ledger.Reopened, Error(Nil)
-    -> built(state)
+    -> build_plane(state, binding, unacked, reply)
   }
 }
 
@@ -566,14 +690,12 @@ fn place(
 // reports, so no other request for the session can slip in between.
 fn build_plane(
   state: State(census),
-  session: String,
-  workspace: String,
-  incarnation: Int,
-  owner_port: Subject(protocol.OwnerMessage),
+  binding: Binding,
   unacked: protocol.Unacked,
   reply: Subject(Result(protocol.Attached(census), Refusal)),
 ) -> State(census) {
-  case owner_link.start(owner_port) {
+  let session = binding.session
+  case owner_link.start(binding.owner_port) {
     Error(reason) -> {
       process.send(reply, Error(protocol.NoPlane(reason)))
       state
@@ -582,10 +704,11 @@ fn build_plane(
       let spec =
         AttachSpec(
           session:,
-          workspace:,
-          incarnation:,
+          workspace: binding.workspace,
+          incarnation: binding.incarnation,
           owner: owner_link.services(link, state.config.clock),
           clock: state.config.clock,
+          mcp: binding.mcp,
         )
       let factory = state.config.factory
       let #(state, id, sink, cancel) =
@@ -734,52 +857,57 @@ const children_grace_ms = 5000
 
 // --- run ----------------------------------------------------------------------
 
-// Admits one call. The ledger's answer, not the request, decides what happens.
-// A scope with no plane in this VM still answers a key the ledger holds a row
-// for (`answer_without_plane`), before it refuses for the missing plane.
-fn admit_run(
+// Admits one keyed request, a tool call or a background execution. The
+// ledger's answer, not the request, decides what happens. A scope with no plane
+// in this VM still answers a key the ledger holds a row for
+// (`answer_without_plane`), before it refuses for the missing plane.
+fn admit_call(
   state: State(census),
-  key: Key,
-  incarnation: Int,
-  token: BitArray,
-  run: ToolRun,
-  authority: Authority,
-  reply: Subject(RunAnswer),
+  admission: Admission,
+  work: Work(census),
 ) -> State(census) {
-  case dict.get(state.placements, key.session), process.subject_owner(reply) {
+  let key = admission.key
+  let reply = admission.reply
+  case dict.get(state.placements, key.session), reply_owner(reply) {
     Error(Nil), _ -> answer_without_plane(state, key, reply, no_plane())
     Ok(Building(..)), _ ->
       answer_without_plane(state, key, reply, protocol.PlaneBuilding)
-    _, Error(Nil) ->
-      refuse_run(
-        state,
+    _, Error(Nil) -> {
+      deliver(
         reply,
-        protocol.Invalid("the reply subject has no owner to watch"),
+        SettledRefused(protocol.Invalid(
+          "the reply subject has no owner to watch",
+        )),
       )
+      state
+    }
     Ok(Ready(placement)), Ok(_owner) -> {
       let admitted =
         exec_ledger.admit(
           state.ledger,
           to_ledger(key),
-          incarnation,
-          token,
-          run.call.name,
-          state.config.max_result_bytes,
+          admission.incarnation,
+          admission.token,
+          work.tool,
+          work.reservation,
           state.config.limits,
         )
       case admitted {
-        Error(error) -> refuse_run(state, reply, refusal_of(error))
+        Error(error) -> {
+          deliver(reply, SettledRefused(refusal_of(error)))
+          state
+        }
         Ok(exec_ledger.Fresh) ->
-          start_run(state, placement, key, run, authority, reply)
+          start_call(state, key, work.kind, work.task(placement.plane), reply)
         Ok(exec_ledger.Existing(exec_ledger.Admitted)) ->
           join_run(state, key, reply)
         Ok(exec_ledger.Existing(exec_ledger.Terminal(stored))) -> {
-          process.send(reply, stored_answer(stored))
+          deliver(reply, SettledStored(stored))
           state
         }
         Ok(exec_ledger.Existing(exec_ledger.Unknown))
         | Ok(exec_ledger.Existing(exec_ledger.Acked)) -> {
-          process.send(reply, protocol.RunLost)
+          deliver(reply, SettledLost)
           state
         }
       }
@@ -787,27 +915,30 @@ fn admit_run(
   }
 }
 
-// A `Run` for a scope this VM holds no plane for. The ledger outlives the VM,
-// so a key it already holds a row for has an answer that does not need a plane:
-// the call may have run before the executor restarted, and a refusal for lack of
-// a workspace would tell the model it did not. A key with a stored outcome or a
-// lost one is answered as the ledger has it. Only a key with no row is refused
-// for the missing plane, because for that key nothing started.
+// A keyed request for a scope this VM holds no plane for. The ledger outlives
+// the VM, so a key it already holds a row for has an answer that does not need
+// a plane: the call may have run before the executor restarted, and a refusal
+// for lack of a workspace would tell the model it did not. A key with a stored
+// outcome or a lost one is answered as the ledger has it. Only a key with no row
+// is refused for the missing plane, because for that key nothing started.
 fn answer_without_plane(
   state: State(census),
   key: Key,
-  reply: Subject(RunAnswer),
+  reply: Reply,
   refusal: Refusal,
 ) -> State(census) {
   case exec_ledger.query(state.ledger, to_ledger(key)) {
-    Ok(exec_ledger.Missing) -> refuse_run(state, reply, refusal)
+    Ok(exec_ledger.Missing) -> {
+      deliver(reply, SettledRefused(refusal))
+      state
+    }
     Ok(exec_ledger.Found(exec_ledger.Terminal(stored))) -> {
-      process.send(reply, stored_answer(stored))
+      deliver(reply, SettledStored(stored))
       state
     }
     Ok(exec_ledger.Found(exec_ledger.Unknown))
     | Ok(exec_ledger.Found(exec_ledger.Acked)) -> {
-      process.send(reply, protocol.RunLost)
+      deliver(reply, SettledLost)
       state
     }
 
@@ -815,50 +946,44 @@ fn answer_without_plane(
     // write, as in `join_run`, and its outcome is lost.
     Ok(exec_ledger.Found(exec_ledger.Admitted)) ->
       case dict.get(state.live, key) {
-        Ok(_live) -> refuse_run(state, reply, refusal)
+        Ok(_live) -> {
+          deliver(reply, SettledRefused(refusal))
+          state
+        }
         Error(Nil) -> {
           let _marked = exec_ledger.mark_unknown(state.ledger, to_ledger(key))
-          process.send(reply, protocol.RunLost)
+          deliver(reply, SettledLost)
           state
         }
       }
-    Error(error) -> refuse_run(state, reply, refusal_of(error))
+    Error(error) -> {
+      deliver(reply, SettledRefused(refusal_of(error)))
+      state
+    }
   }
-}
-
-fn refuse_run(
-  state: State(census),
-  reply: Subject(RunAnswer),
-  refusal: Refusal,
-) -> State(census) {
-  process.send(reply, protocol.RunRefused(refusal))
-  state
 }
 
 fn no_plane() -> Refusal {
   protocol.NoPlane("the scope has no workspace plane; attach first")
 }
 
-// Starts the tool as a weft run. The run's cancel signal is the host's only
-// handle on it: killing the signal makes the scope kill the worker, and the
-// worker's death is what the plane's broker watches to stop a helper.
-fn start_run(
+// Starts admitted work as a weft run. The run's cancel signal is the host's
+// only handle on it: killing the signal makes the scope kill the worker, and
+// the worker's death is what the plane's broker watches to stop a helper.
+fn start_call(
   state: State(census),
-  placement: Placement(census),
   key: Key,
-  run: ToolRun,
-  authority: Authority,
-  reply: Subject(RunAnswer),
+  kind: CallKind,
+  task: fn() -> Result(JobResult(census), Nil),
+  reply: Reply,
 ) -> State(census) {
-  let run_tool = placement.plane.run
-  let #(state, id, sink, cancel) =
-    start_job(state, fn() { Ok(ToolRan(run_tool(run, authority))) })
+  let #(state, id, sink, cancel) = start_job(state, task)
   let tracked = Tracked(job: RunJob(key), sink:, cancel:)
   let state = State(..state, jobs: dict.insert(state.jobs, id, tracked))
   let state =
     State(
       ..state,
-      live: dict.insert(state.live, key, Live(job: id, waiters: [])),
+      live: dict.insert(state.live, key, Live(job: id, kind:, waiters: [])),
     )
   add_waiter(state, key, reply)
 }
@@ -866,16 +991,12 @@ fn start_run(
 // Joins a call that is already running. A row that says `Admitted` with no live
 // run behind it can only follow a failed write, and the honest answer is that
 // the outcome is lost.
-fn join_run(
-  state: State(census),
-  key: Key,
-  reply: Subject(RunAnswer),
-) -> State(census) {
+fn join_run(state: State(census), key: Key, reply: Reply) -> State(census) {
   case dict.get(state.live, key) {
     Ok(_live) -> add_waiter(state, key, reply)
     Error(Nil) -> {
       let _marked = exec_ledger.mark_unknown(state.ledger, to_ledger(key))
-      process.send(reply, protocol.RunLost)
+      deliver(reply, SettledLost)
       state
     }
   }
@@ -883,12 +1004,8 @@ fn join_run(
 
 // Watches the process that owns `reply` and records it as a waiter. The owner
 // was checked before admission, so the monitor always has a process to watch.
-fn add_waiter(
-  state: State(census),
-  key: Key,
-  reply: Subject(RunAnswer),
-) -> State(census) {
-  case dict.get(state.live, key), process.subject_owner(reply) {
+fn add_waiter(state: State(census), key: Key, reply: Reply) -> State(census) {
+  case dict.get(state.live, key), reply_owner(reply) {
     Ok(live), Ok(owner) -> {
       let watch = process.monitor(owner)
       let live = Live(..live, waiters: [Waiter(reply:, watch:), ..live.waiters])
@@ -899,6 +1016,80 @@ fn add_waiter(
       )
     }
     Error(Nil), _ | _, Error(Nil) -> state
+  }
+}
+
+fn reply_owner(reply: Reply) -> Result(Pid, Nil) {
+  case reply {
+    RunReply(reply:) -> process.subject_owner(reply)
+    ExecutionReply(reply:) -> process.subject_owner(reply)
+  }
+}
+
+// Puts a settled call in the words its waiter asked in. A tool call's waiter
+// gets a `RunAnswer` and an execution's an `ExecutionAnswer`; stored bytes that
+// do not decode as the kind the waiter asked for are a fault, never a
+// different result.
+fn deliver(reply: Reply, settled: Settled) -> Nil {
+  case reply {
+    RunReply(reply:) -> process.send(reply, run_answer(settled))
+    ExecutionReply(reply:) -> process.send(reply, execution_answer(settled))
+  }
+}
+
+fn run_answer(settled: Settled) -> RunAnswer {
+  case settled {
+    SettledStored(stored:) -> stored_answer(stored)
+    SettledLost -> protocol.RunLost
+    SettledRefused(refusal:) -> protocol.RunRefused(refusal)
+  }
+}
+
+fn execution_answer(settled: Settled) -> ExecutionAnswer {
+  case settled {
+    SettledStored(stored:) ->
+      case codec.decode_stored(stored) {
+        Ok(codec.StoredExecution(value:)) -> protocol.ExecutionFinished(value)
+        Ok(codec.StoredOutcome(..)) ->
+          protocol.ExecutionRefused(damaged("an execution value"))
+        Error(report) -> protocol.ExecutionRefused(damaged(report.expected))
+      }
+    SettledLost -> protocol.ExecutionLost
+    SettledRefused(refusal:) -> protocol.ExecutionRefused(refusal)
+  }
+}
+
+// --- stop -----------------------------------------------------------------------
+
+// The orchestrator's record of an execution closed. The ledger's
+// `stop_or_fence` decides in one transaction: a running row turns lost, and
+// then the program is stopped here; a key with no row is barred, so a start
+// still in flight from a dead worker never runs. Anything else, including a
+// refusal for another incarnation, changes nothing. There is no reply, because
+// the orchestrator's reconciler sends a stop again for a row it still sees
+// running.
+fn stop_execution(
+  state: State(census),
+  key: Key,
+  incarnation: Int,
+) -> State(census) {
+  let stopped =
+    exec_ledger.stop_or_fence(
+      state.ledger,
+      to_ledger(key),
+      incarnation,
+      protocol.execution_tool,
+    )
+  case stopped, dict.get(state.live, key) {
+    Ok(exec_ledger.Stopped), Ok(live) -> {
+      let state = answer_waiters(state, key, live, SettledLost)
+      halt(state, key, live)
+    }
+    Ok(exec_ledger.Stopped), Error(Nil)
+    | Ok(exec_ledger.Barred), _
+    | Ok(exec_ledger.Untouched(..)), _
+    | Error(_), _
+    -> state
   }
 }
 
@@ -953,7 +1144,30 @@ fn settle_job(
   case outcome {
     weft.Completed(index: _, value: ToolRan(outcome: finished)) ->
       case tracked.job {
-        RunJob(key:) -> run_finished(state, id, key, finished)
+        RunJob(key:) ->
+          run_finished(
+            state,
+            id,
+            key,
+            Finished(
+              stored: codec.encode_outcome(finished),
+              oversized: oversized_outcome,
+            ),
+          )
+        CloseJob(..) | BuildJob(..) -> job_lost(state, id, tracked)
+      }
+    weft.Completed(index: _, value: ProgramRan(value:)) ->
+      case tracked.job {
+        RunJob(key:) ->
+          run_finished(
+            state,
+            id,
+            key,
+            Finished(
+              stored: codec.encode_execution(value),
+              oversized: oversized_value,
+            ),
+          )
         CloseJob(..) | BuildJob(..) -> job_lost(state, id, tracked)
       }
     weft.Completed(index: _, value: ScopeClosed(outcome: closed)) ->
@@ -996,58 +1210,45 @@ fn drop_job(state: State(census), id: Int) -> State(census) {
   }
 }
 
-// A tool ended with an outcome. The row is made terminal before any waiter
-// hears of it, so a reply never promises what the ledger does not hold. An
-// outcome for a call that was cancelled meanwhile has no live entry and is
-// dropped.
+// What a finished task hands the commit: the bytes it wants stored, and how to
+// say "too large" in its own kind when they do not fit the reservation.
+type Finished {
+  Finished(stored: BitArray, oversized: fn(Int, Int) -> BitArray)
+}
+
+// A call ended with a result. The row is made terminal before any waiter hears
+// of it, so a reply never promises what the ledger does not hold. A result for
+// a call that was cancelled meanwhile has no live entry and is dropped.
 fn run_finished(
   state: State(census),
   id: Int,
   key: Key,
-  outcome: ToolOutcome,
+  finished: Finished,
 ) -> State(census) {
   case dict.get(state.live, key) {
     Ok(live) if live.job == id -> {
-      let answer = commit_outcome(state, key, outcome)
-      answer_waiters(state, key, live, answer)
+      let settled = commit_outcome(state, key, finished)
+      answer_waiters(state, key, live, settled)
     }
     Ok(_other) | Error(Nil) -> state
   }
 }
 
-// Stores the outcome and says what was stored. A result larger than the
-// reservation is replaced by a failure that fits, which is stored in its place;
-// a ledger that cannot take even that leaves the call lost.
+// Stores the result and says what was stored. A result larger than the
+// reservation is replaced by one of its own kind that says so and fits, which
+// is stored in its place; a ledger that cannot take even that leaves the call
+// lost.
 fn commit_outcome(
   state: State(census),
   key: Key,
-  outcome: ToolOutcome,
-) -> RunAnswer {
-  case
-    exec_ledger.finish(
-      state.ledger,
-      to_ledger(key),
-      codec.encode_outcome(outcome),
-    )
-  {
-    Ok(Nil) -> protocol.RunFinished(outcome)
+  finished: Finished,
+) -> Settled {
+  case exec_ledger.finish(state.ledger, to_ledger(key), finished.stored) {
+    Ok(Nil) -> SettledStored(finished.stored)
     Error(exec_ledger.OutcomeTooLarge(reserved:, size:)) -> {
-      let replaced =
-        ToolFailed(
-          reason: "the tool's result is "
-          <> int.to_string(size)
-          <> " bytes and the executor reserved "
-          <> int.to_string(reserved)
-          <> " for it",
-        )
-      case
-        exec_ledger.finish(
-          state.ledger,
-          to_ledger(key),
-          codec.encode_outcome(replaced),
-        )
-      {
-        Ok(Nil) -> protocol.RunFinished(replaced)
+      let replaced = finished.oversized(reserved, size)
+      case exec_ledger.finish(state.ledger, to_ledger(key), replaced) {
+        Ok(Nil) -> SettledStored(replaced)
         Error(_) -> lose(state, key)
       }
     }
@@ -1055,9 +1256,41 @@ fn commit_outcome(
   }
 }
 
-fn lose(state: State(census), key: Key) -> RunAnswer {
+// A tool outcome too large for its reservation, as the failure stored instead.
+fn oversized_outcome(reserved: Int, size: Int) -> BitArray {
+  codec.encode_outcome(
+    ToolFailed(reason: too_large("the tool's result", reserved, size)),
+  )
+}
+
+// An execution value too large for its reservation, as the errored value
+// stored instead. It has the shape `execution_value` gives a program that
+// returned an error, so a reader of the record sees an ordinary failed run.
+fn oversized_value(reserved: Int, size: Int) -> BitArray {
+  codec.encode_execution(
+    json.Object([
+      #("status", json.String("errored")),
+      #(
+        "message",
+        json.String(too_large("the program's result", reserved, size)),
+      ),
+      #("details", json.Null),
+    ]),
+  )
+}
+
+fn too_large(what: String, reserved: Int, size: Int) -> String {
+  what
+  <> " is "
+  <> int.to_string(size)
+  <> " bytes and the executor reserved "
+  <> int.to_string(reserved)
+  <> " for it"
+}
+
+fn lose(state: State(census), key: Key) -> Settled {
   let _marked = exec_ledger.mark_unknown(state.ledger, to_ledger(key))
-  protocol.RunLost
+  SettledLost
 }
 
 // A job ended without a result. For a call that is still live, that makes its
@@ -1103,11 +1336,11 @@ fn answer_waiters(
   state: State(census),
   key: Key,
   live: Live,
-  answer: RunAnswer,
+  settled: Settled,
 ) -> State(census) {
   let watches =
     list.fold(live.waiters, state.watches, fn(watches, waiter) {
-      process.send(waiter.reply, answer)
+      deliver(waiter.reply, settled)
       process.demonitor_process(waiter.watch)
       dict.delete(watches, waiter.watch)
     })
@@ -1153,12 +1386,25 @@ fn waiter_gone(
 }
 
 // Stops a call nobody is waiting for. The row becomes `Unknown` first, so no
-// later request can start it again, then the run's worker is killed.
+// later request can start it again, then the run is halted.
 fn cancel_run(state: State(census), key: Key, live: Live) -> State(census) {
   let _marked = exec_ledger.mark_unknown(state.ledger, to_ledger(key))
+  halt(state, key, live)
+}
+
+// Kills a live call's worker and forgets it; its row is already settled or
+// lost. A background program also has its broker step aborted, because its
+// satellite and jailed calls run under that step and are not children of the
+// worker, as a local execution service aborts the step when it stops one.
+fn halt(state: State(census), key: Key, live: Live) -> State(census) {
   case dict.get(state.jobs, live.job) {
     Ok(tracked) -> weft.cancel(tracked.cancel)
     Error(Nil) -> Nil
+  }
+  case live.kind, dict.get(state.placements, key.session) {
+    Execution, Ok(Ready(placement)) ->
+      placement.plane.abort_step(key.op, key.step)
+    Execution, Ok(Building(..)) | Execution, Error(Nil) | ToolCall, _ -> Nil
   }
   State(..state, live: dict.delete(state.live, key))
 }
@@ -1268,7 +1514,7 @@ fn cancel_session(state: State(census), session: String) -> State(census) {
   dict.fold(state.live, state, fn(state, key, live) {
     case key.session == session {
       True -> {
-        let state = answer_waiters(state, key, live, protocol.RunLost)
+        let state = answer_waiters(state, key, live, SettledLost)
         cancel_run(state, key, live)
       }
       False -> state
@@ -1340,9 +1586,14 @@ fn lookup_of(found: exec_ledger.CallState) -> Result(protocol.Lookup, Refusal) {
     // key. The outcome is not recoverable from here, which is what `Unknown`
     // says, and the key never starts again.
     exec_ledger.Acked -> Ok(protocol.Unknown)
+
+    // A terminal row holds either kind of result; the envelope says which, and
+    // the answer names it, so recovery of a tool call never reads a program's
+    // value as its outcome.
     exec_ledger.Terminal(stored) ->
-      case codec.decode_outcome(stored) {
-        Ok(outcome) -> Ok(protocol.Terminal(outcome))
+      case codec.decode_stored(stored) {
+        Ok(codec.StoredOutcome(outcome:)) -> Ok(protocol.Terminal(outcome))
+        Ok(codec.StoredExecution(value:)) -> Ok(protocol.Executed(value))
         Error(report) -> Error(damaged(report.expected))
       }
   }
@@ -1382,6 +1633,7 @@ fn unacked(
     protocol.Unacked(
       terminal: list.map(found.terminal, from_ledger),
       unknown: list.map(found.unknown, from_ledger),
+      executions: running_executions(state, session),
     )
   })
   |> result.map_error(refusal_of)

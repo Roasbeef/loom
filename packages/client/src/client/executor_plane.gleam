@@ -65,7 +65,9 @@ import client/internal/ffi_os
 import client/internal/instance_owner as custody
 import client/jobs
 import client/lsp/profile
+import client/mcp as mcp_wiring
 import client/owner_codemode
+import client/owner_services
 import client/remote/host
 import client/remote/protocol
 import client/remote/remote_census.{RemoteCensus}
@@ -74,6 +76,9 @@ import client/serve
 import client/workspace_plane
 import client/workspace_policy
 import client/workspaces.{type Workspace}
+import core/clock
+import core/ids
+import core/json
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
@@ -81,11 +86,13 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import host/bootstrap
+import mcp/codegen
 import provider/secret
 import simplifile
 import storage/exec_ledger
 import telemetry/field
 import telemetry/log.{type Logger}
+import tools/codemode as codemode_tool
 import weft/registry
 
 /// Everything the factory needs that names a path or a limit on this machine.
@@ -117,6 +124,9 @@ pub type Machine {
     secrets: secret.SecretStore,
     /// The operator's home directory on this machine.
     home: Option(String),
+    /// The `[mcp.<name>]` servers this executor can run. A session's attach
+    /// names the ones its orchestrator expects here, and only those start.
+    mcp_servers: List(catalog.McpServer),
     /// Where builds and closes report.
     logger: Logger,
   )
@@ -173,6 +183,9 @@ pub fn machine(
     jobs.parse_policy(text) |> result.map_error(named),
   )
   use entries <- result.try(secrets.parse(text) |> result.map_error(named))
+  use mcp_servers <- result.try(
+    catalog.parse_mcp(text) |> result.map_error(named),
+  )
   use helper_path <- result.try(find_helper(flags.helper))
 
   // Each failed entry is one warned line, never a refused start: a credential
@@ -211,6 +224,7 @@ pub fn machine(
     codemode_seed: flags.codemode_seed,
     secrets: secrets.store(resolved, beneath: secret.env()),
     home: workspace_policy.home_directory(),
+    mcp_servers:,
     logger:,
   ))
 }
@@ -321,14 +335,20 @@ fn start(
   // must outlive it.
   process.unlink(registry.owner(namespace))
   let filed = process.new_subject()
-  let attach = attach_of(machine, spec, namespace, filed)
+  let mcp = start_mcp(machine, spec.mcp, namespace, filed)
+  let configs = process.new_subject()
+  let attach = attach_of(machine, spec, namespace, filed, mcp.layer, configs)
   case workspace_plane.start(prepared, attach) {
     Ok(started) -> {
       let cleanups = [
         #(custody.Namespace, fn() { registry.stop(namespace) }),
         ..drain(filed, [])
       ]
-      plane_over(machine, scope, started, cleanups)
+      let code_mode = process.receive(configs, 0) |> option.from_result
+      plane_over(
+        Built(machine:, root:, scope:, started:, code_mode:, mcp: mcp.statuses),
+        cleanups,
+      )
     }
     Error(reason) -> {
       let _outcome = retire_all(drain(filed, []))
@@ -363,18 +383,122 @@ fn workspace_spec(
   )
 }
 
+// --- MCP servers ----------------------------------------------------------------
+
+// The MCP side of one scope: the layer its code mode is built over, and how
+// each server the orchestrator expected here fared.
+type Mcp {
+  Mcp(layer: mcp_wiring.Layer, statuses: List(remote_census.McpStatus))
+}
+
+// How long a scope's close waits for its MCP servers to exit after their kill
+// is requested.
+const mcp_close_ms = 5000
+
+// Starts the servers the orchestrator expects this executor to run, from this
+// executor's own `[mcp.<name>]` tables, and adds the façades of the servers the
+// orchestrator runs itself. A server this file does not declare is not started
+// and is reported, which is how a missing table is found at attach. A server
+// this file declares and the orchestrator does not expect is not started.
+//
+// The clients are owned by the namespace registry's process, which outlives
+// this build and is stopped last when the scope closes, so a client lives as
+// long as the plane. Their cleanup is filed under `Mcp` and never fails: the
+// transport has already sent the server its kill, and a server that does not
+// exit in time is a process leak the operator is told about, not a reason to
+// refuse the scope a clean close, because an MCP server is neither jailed nor
+// a helper child.
+fn start_mcp(
+  machine: Machine,
+  plan: protocol.McpPlan,
+  namespace: registry.Registry,
+  filed: Subject(Cleanup),
+) -> Mcp {
+  let declared =
+    list.filter(machine.mcp_servers, fn(server) {
+      list.contains(plan.expected, server.name)
+    })
+  let options =
+    mcp_wiring.Options(..mcp_wiring.default_options(), secrets: machine.secrets)
+  let prepared =
+    mcp_wiring.prepare_owned(
+      declared,
+      options,
+      custodian: registry.owner(namespace),
+    )
+  let logger = machine.logger
+  process.send(
+    filed,
+    #(custody.Mcp, fn() {
+      case mcp_wiring.close_prepared(prepared, within: mcp_close_ms) {
+        Ok(Nil) -> Nil
+        Error(reason) ->
+          log.warn(logger, "executor.mcp_retirement_unconfirmed", [
+            field.text(key: "reason", value: reason),
+          ])
+      }
+      Ok(Nil)
+    }),
+  )
+  let #(layer, refusals) = mcp_wiring.start_prepared(prepared)
+  let facades =
+    list.map(plan.served, fn(facade) {
+      mcp_wiring.Elsewhere(
+        server: facade.server,
+        generated: codegen.Generated(
+          module_name: facade.module_name,
+          source: facade.source,
+          surface: facade.surface,
+        ),
+      )
+    })
+  Mcp(
+    layer: mcp_wiring.answered_elsewhere(layer, facades),
+    statuses: list.map(plan.expected, status_of(_, declared, layer, refusals)),
+  )
+}
+
+// How one expected server fared, worded for the orchestrator's log line.
+fn status_of(
+  name: String,
+  declared: List(catalog.McpServer),
+  layer: mcp_wiring.Layer,
+  refusals: List(mcp_wiring.Refusal),
+) -> remote_census.McpStatus {
+  let listed = list.key_find(mcp_wiring.listings(layer), name)
+  let refused =
+    list.find(refusals, fn(refusal) { refusal.server == name })
+    |> result.map(fn(refusal) { refusal.reason })
+  let present = list.any(declared, fn(server) { server.name == name })
+  case listed, refused, present {
+    Ok(tools), _, _ -> remote_census.McpReady(server: name, tools:)
+    Error(Nil), Ok(reason), _ -> remote_census.McpRefused(server: name, reason:)
+    Error(Nil), Error(Nil), False ->
+      remote_census.McpRefused(
+        server: name,
+        reason: "this executor declares no [mcp." <> name <> "] table",
+      )
+    Error(Nil), Error(Nil), True ->
+      remote_census.McpRefused(server: name, reason: "it did not start")
+  }
+}
+
 // What the owner contributes to a start, on an executor: the owner services
 // the host built for this scope, a code mode whose owner-bound capabilities
 // are sent back through them, and a retain function that files each cleanup in
-// the build process.
+// the build process. The finished code-mode configuration is sent to
+// `configs`, because a background program the host starts later runs under it.
 fn attach_of(
   machine: Machine,
   spec: host.AttachSpec,
   namespace: registry.Registry,
   filed: Subject(Cleanup),
+  layer: mcp_wiring.Layer,
+  configs: Subject(codemode_wiring.Config),
 ) -> workspace_plane.Attach {
   let owner = spec.owner
   let session = spec.session
+  let answered_here = mcp_wiring.answered_here(layer)
   workspace_plane.Attach(
     logger: machine.logger,
     namespace:,
@@ -389,11 +513,53 @@ fn attach_of(
     owner:,
     session_label: fn() { Ok([#("session", session)]) },
     code_mode: workspace_plane.CodeModeAttach(
-      arms: owner_codemode.over_owner(_, owner),
+      arms: fn(config) {
+        config
+        |> codemode_wiring.over_mcp(layer)
+        |> owner_codemode.over_owner_serving(owner, answered_here:)
+      },
       tool: fn(config) {
-        codemode_wiring.seam(config) |> owner_codemode.advertising_peers
+        process.send(configs, config)
+        codemode_wiring.seam(config)
+        |> backgrounded(owner)
+        |> owner_codemode.advertising_peers
       },
     ),
+  )
+}
+
+// The `code_mode` tool's background modes on an executor. The record of an
+// execution is the owner's, so a launch is a claim sent to the owner and an
+// interaction a question to it; the owner then asks this executor's host to
+// run the program (`execute`).
+fn backgrounded(
+  mode: codemode_tool.CodeMode,
+  owner: owner_services.OwnerServices,
+) -> codemode_tool.CodeMode {
+  let launch = owner.launch_execution
+  codemode_tool.CodeMode(
+    ..mode,
+    background: Some(codemode_tool.Background(
+      launch: fn(request) { launch(terms_of(request)) },
+      interact: owner.interact_execution,
+    )),
+  )
+}
+
+// What a launch captured, as the owner is sent it. The parts that name this
+// machine (the workspace, the base policy, the demand and the environment) are
+// rebuilt here when the program starts, so they never cross the wire.
+fn terms_of(request: codemode_tool.Request) -> owner_services.ExecutionTerms {
+  owner_services.ExecutionTerms(
+    strand: request.strand,
+    op_id: request.op_id,
+    launch_step: request.step_id,
+    source_index: request.source_index,
+    source: request.source,
+    seam: codemode_tool.seam_name(request.seam),
+    within_ms: request.within_ms,
+    access: request.directory_access,
+    grants: request.grants,
   )
 }
 
@@ -406,31 +572,52 @@ fn drain(filed: Subject(Cleanup), found: List(Cleanup)) -> List(Cleanup) {
   }
 }
 
+// What a successful start leaves for `plane_over`.
+type Built {
+  Built(
+    machine: Machine,
+    root: String,
+    scope: String,
+    started: workspace_plane.Started,
+    code_mode: Option(codemode_wiring.Config),
+    mcp: List(remote_census.McpStatus),
+  )
+}
+
 // The host's view of a started plane. The prompt facts are read once, here,
 // beside the helpers: a local plane reads them when a prompt is rendered, but
 // that read borrows a helper, and a remote attach pays for it once.
 fn plane_over(
-  machine: Machine,
-  scope: String,
-  started: workspace_plane.Started,
+  built: Built,
   cleanups: List(Cleanup),
 ) -> Result(host.Plane(remote_census.RemoteCensus), String) {
-  let plane = started.plane
+  let plane = built.started.plane
+  let machine = built.machine
+  let scope = built.scope
   case plane.prompt_facts() {
     Error(reason) -> {
       let _outcome = retire_all(cleanups)
       Error(reason)
     }
     Ok(facts) -> {
-      let children = started.children
+      let children = built.started.children
+      let broker_actor = plane.broker
       Ok(
         host.Plane(
           run: plane.run,
+          execute: executing(built),
+          abort_step: fn(operation, step) {
+            case ids.parse_op_id(operation) {
+              Ok(op) -> broker.abort_step(broker_actor, op, step)
+              Error(_report) -> Nil
+            }
+          },
           census: RemoteCensus(
             census: plane.census,
-            tools: started.decls,
+            tools: built.started.decls,
             prompt: facts,
-            broker: broker.subject(plane.broker),
+            broker: broker.subject(broker_actor),
+            mcp: built.mcp,
           ),
           children: fn(builder) {
             builder
@@ -446,6 +633,67 @@ fn plane_over(
         ),
       )
     }
+  }
+}
+
+// How the host runs one background program on this plane. The request is
+// rebuilt here from what the launch captured and what this plane knows about
+// its own machine, and the deadline is the time the orchestrator says is left,
+// laid on this machine's clock. A plane with no code-mode toolchain answers an
+// errored value, which the record then holds.
+fn executing(built: Built) -> fn(host.ExecutionStart) -> json.JsonValue {
+  let census = built.started.plane.census
+  let root = built.root
+  let demand = built.machine.demand
+  let code_mode = built.code_mode
+  fn(start: host.ExecutionStart) {
+    case code_mode {
+      None ->
+        json.Object([
+          #("status", json.String("errored")),
+          #(
+            "message",
+            json.String("this executor offers no code mode to run the program"),
+          ),
+          #("details", json.Null),
+        ])
+      Some(config) -> {
+        let terms = start.terms
+        let #(now, _) = clock.read(config.clock)
+        let request =
+          codemode_tool.Request(
+            source: terms.source,
+            seam: seam_of(terms.seam),
+            strand: terms.strand,
+            op_id: terms.op_id,
+            step_id: start.step,
+            source_index: terms.source_index,
+            workspace: root,
+            base_policy: census.base_policy,
+            directory_access: terms.access,
+            demand:,
+            env: census.env,
+            within_ms: start.remaining_ms,
+            grants: terms.grants,
+            observe_output: fn(_tail) { Nil },
+          )
+        codemode_wiring.Config(
+          ..config,
+          fixed_deadline: Some(now + start.remaining_ms),
+        )
+        |> codemode_wiring.execute(request)
+        |> codemode_tool.execution_value
+      }
+    }
+  }
+}
+
+// The program mode a launch named. The owner built the record from the same
+// name and its decoder admits only these two, so anything else is the default.
+fn seam_of(name: String) -> codemode_tool.Seam {
+  case name {
+    "orchestration" -> codemode_tool.OrchestrationSeam
+    _ -> codemode_tool.WorkspaceSeam
   }
 }
 

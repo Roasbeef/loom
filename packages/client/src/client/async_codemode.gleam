@@ -3,12 +3,22 @@
 //// Launch captures the exact request, including policy and approvals. The
 //// worker receives a distinct broker step under the original operation and
 //// a fixed deadline. Later interactions cannot change any of those terms.
+////
+//// A session whose workspace is on an executor keeps the same record and
+//// service here, and runs the program there. `remote` is the service the
+//// owner port serves to the executor's `code_mode` tool: its worker asks the
+//// executor to run the program and waits for the value. `execution_routers`
+//// is how the owner answers that program's own capability calls, bound to its
+//// record as `launch` binds a local one.
 
 import broker/broker
 import broker/framing
 import client/agency
 import client/async_runs
 import client/codemode
+import client/owner_services.{type ExecutionTerms}
+import client/remote/owner_port
+import client/remote/protocol
 import client/workflows
 import codemode/internal/args
 import codemode/satellite
@@ -18,7 +28,7 @@ import core/json
 import core/msgpack
 import gleam/int
 import gleam/list
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import gleam/result
 import runtime/api
 import runtime/async_execution
@@ -44,18 +54,8 @@ pub fn seam(
     background: Some(
       tool.Background(
         launch: fn(request) { launch(config, service, agents, request) },
-        interact: fn(strand, handle, action, within) {
-          let #(action, wait) = case action {
-            tool.Check -> #(async_runs.Check, 0)
-            tool.Join -> #(async_runs.Check, int.max(0, within))
-            tool.Cancel -> #(async_runs.Cancel, 0)
-            tool.Send(value) -> #(async_runs.Send(value), 0)
-            tool.SendTo(endpoint, value) -> #(
-              async_runs.SendTo(endpoint, value),
-              0,
-            )
-          }
-          async_runs.interact(service, strand, handle, action, wait)
+        interact: fn(strand, handle, interaction, within) {
+          interact(service, strand, handle, interaction, within)
         },
       ),
     ),
@@ -121,6 +121,199 @@ fn launch(
   async_runs.launch(service, record, fn() {
     codemode.execute(config, request) |> tool.execution_value
   })
+}
+
+// One interaction with an execution the strand owns, in the service's terms.
+// A join is a check that waits; every other interaction answers at once.
+fn interact(
+  service: address.Address(async_runs.Message),
+  strand: String,
+  handle: String,
+  interaction: tool.Interaction,
+  within: Int,
+) -> Result(json.JsonValue, String) {
+  let #(action, wait) = case interaction {
+    tool.Check -> #(async_runs.Check, 0)
+    tool.Join -> #(async_runs.Check, int.max(0, within))
+    tool.Cancel -> #(async_runs.Cancel, 0)
+    tool.Send(value) -> #(async_runs.Send(value), 0)
+    tool.SendTo(endpoint, value) -> #(async_runs.SendTo(endpoint, value), 0)
+  }
+  async_runs.interact(service, strand, handle, action, wait)
+}
+
+// --- executions on another node ---------------------------------------------------
+
+/// The execution service a workspace on another node reaches through the
+/// session's owner port (protocol-change/078, the addendum on background code
+/// mode).
+///
+/// A launch claims the record here exactly as a local one does, with the
+/// deadline on this machine's clock, and its worker is the host link's
+/// `start`: the program runs on the executor while the worker waits for its
+/// value, sending the start again after a dropped connection. An answer that
+/// carries no value becomes the worker's failure, which the service records as
+/// the execution's loss with that reason. Interactions are the local ones.
+/// `standing` reads the record directly, for the owner port's reconciler.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // owner_port.Config(.., executions: async_codemode.remote(service,
+/// //   runtime: agency.runtime_supplier(agency_config), clock:, session:))
+/// ```
+pub fn remote(
+  service: address.Address(async_runs.Message),
+  runtime runtime: fn() -> Result(api.Runtime, Nil),
+  clock clock: clock.Clock,
+  session session: String,
+) -> owner_port.Executions {
+  owner_port.Executions(
+    launch: fn(terms, link) {
+      launch_remote(service, clock, session, terms, link)
+    },
+    interact: fn(strand, handle, interaction, within) {
+      interact(service, strand, handle, interaction, within)
+    },
+    standing: fn(key) { standing(runtime, key) },
+  )
+}
+
+fn launch_remote(
+  service: address.Address(async_runs.Message),
+  clock: clock.Clock,
+  session: String,
+  terms: ExecutionTerms,
+  link: owner_port.HostLink,
+) -> Result(json.JsonValue, String) {
+  let id =
+    agent.call_site_digest(agent.Caller(
+      strand: terms.strand,
+      operation: terms.op_id,
+      step_id: terms.launch_step,
+      source_index: terms.source_index,
+      minter: agent.ToolCall,
+    ))
+  let #(now, _) = clock.read(clock)
+  let deadline_ms = now + terms.within_ms
+  let record =
+    async_execution.Execution(
+      id:,
+      strand: terms.strand,
+      operation: terms.op_id,
+      step: protocol.execution_step_prefix <> id,
+      deadline_ms:,
+      source: terms.source,
+      seam: terms.seam,
+      phase: async_execution.Starting,
+      launch: Some(async_execution.Launch(
+        step: terms.launch_step,
+        source_index: terms.source_index,
+      )),
+    )
+  let key = protocol.execution_key(session, terms.op_id, id)
+  let start = link.start
+
+  // The worker reads the clock when it sends, not when the launch was
+  // claimed, so a start re-sent after a partition carries what is left.
+  async_runs.launch_fallible(service, record, fn() {
+    let #(sent_at, _) = clock.read(clock)
+    case start(key, terms, deadline_ms - sent_at) {
+      protocol.ExecutionFinished(value:) -> Ok(value)
+      protocol.ExecutionLost ->
+        Error(
+          "the executor lost the execution: it restarted or stopped the "
+          <> "program, which may have done part of its work",
+        )
+      protocol.ExecutionRefused(refusal:) ->
+        Error(
+          "the executor did not run the execution: "
+          <> protocol.describe(refusal),
+        )
+    }
+  })
+}
+
+// Where an execution's record stands. A record that cannot be read is taken
+// as live, because the two things the answer decides, stopping the program and
+// discarding its stored value, are both wrong to do on a guess; the next pass
+// asks again.
+fn standing(
+  runtime: fn() -> Result(api.Runtime, Nil),
+  key: protocol.Key,
+) -> owner_port.Standing {
+  let read = case protocol.execution_id(key) {
+    // A tool call's key names no execution, so there is no record to want.
+    Error(Nil) -> Ok(None)
+    Ok(id) -> {
+      use live <- result.try(runtime() |> result.replace_error(""))
+      async_runs.record(live, id)
+    }
+  }
+  case read {
+    Error(_unreadable) -> owner_port.RecordLive
+    Ok(None) -> owner_port.RecordClosed
+    Ok(Some(found)) ->
+      case found.phase {
+        async_execution.Starting | async_execution.Running ->
+          owner_port.RecordLive
+        async_execution.Draining -> owner_port.RecordClosing
+        async_execution.Finished(_) | async_execution.Lost(_) ->
+          owner_port.RecordClosed
+      }
+  }
+}
+
+/// The routers a background program's owner-bound calls are answered by when
+/// the program runs on another node: the execution's own mailbox and progress
+/// channel, then its durable workflow steps, over `fallback`.
+///
+/// They are the routers `launch` composes into a local execution, bound to the
+/// same record and custody, with the launching call's coordinates read from
+/// the record instead of from a captured request.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // async_codemode.execution_routers(service, agents, custody, record, router)
+/// ```
+pub fn execution_routers(
+  service: address.Address(async_runs.Message),
+  agents: agency.Config,
+  custody: api.AsyncCustody,
+  launch: Launching,
+  fallback: satellite.CapRouter,
+) -> satellite.CapRouter {
+  let stepped =
+    workflows.router_for(
+      agents,
+      custody,
+      agent.Caller(
+        strand: launch.strand,
+        operation: launch.operation,
+        step_id: launch.step,
+        source_index: launch.source_index,
+        minter: agent.ToolCall,
+      ),
+      fallback,
+    )
+  input_router(service, launch.strand, launch.id, stepped)
+}
+
+/// The launching call of an execution, as `execution_routers` needs it.
+pub type Launching {
+  Launching(
+    /// The execution's handle.
+    id: String,
+    /// The strand that launched it.
+    strand: String,
+    /// The launching operation.
+    operation: ids.OpId,
+    /// The launching call's planner step.
+    step: String,
+    /// The launching call's position in its step.
+    source_index: Int,
+  )
 }
 
 /// The broker cancellation closure used by the session service.

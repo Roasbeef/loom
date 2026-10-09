@@ -33,15 +33,34 @@
 //// is acknowledged only if the injected `settled` says the orchestrator already
 //// holds its result, whether the executor holds a stored outcome or reports it
 //// lost, so a row for a call whose result is still in flight is left alone.
+////
+//// The same pass stops background executions nobody wants any more. The
+//// listing names the executions still running on the executor, and a key whose
+//// record on this side is no longer live (`Executions.standing`) is sent
+//// `StopExecution`. That repeats a stop a partition lost, and it stops a
+//// program an orchestrator that restarted left running.
+////
+//// ## Background executions
+////
+//// An executor's `code_mode` tool launches and interacts with a background
+//// execution through this port (`LaunchExecution`, `InteractExecution`). The
+//// record is this side's, so the port hands both to the session's
+//// `Executions`, and a launch is given the host link the session attached
+//// through, which is how the record's worker reaches the executor to start the
+//// program.
 
 import client/escalate
-import client/owner_services.{type OwnerServices}
-import client/remote/protocol.{type Key, type OwnerMessage, type Unacked}
+import client/owner_services.{type ExecutionTerms, type OwnerServices}
+import client/remote/protocol.{
+  type ExecutionAnswer, type Key, type Lookup, type OwnerMessage, type Unacked,
+}
 import core/clock.{type Clock}
+import core/json.{type JsonValue}
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import tools/codemode as codemode_tool
 import weft
 import weft/actor
 
@@ -52,8 +71,70 @@ pub type HostLink {
     list: fn() -> Result(Unacked, String),
     /// Tells the host a call's result is durably staged. A cast.
     ack: fn(Key) -> Nil,
+    /// Starts a background execution and waits for how it ends, sending the
+    /// same request again after a dropped connection until it is answered or
+    /// the calling process is killed. Arguments are the key, the terms and
+    /// the time the program may still run, in milliseconds.
+    start: fn(Key, ExecutionTerms, Int) -> ExecutionAnswer,
+    /// Tells the host an execution's record has closed. A cast.
+    stop: fn(Key) -> Nil,
+    /// Asks the host what its ledger holds for a key, for a bounded time.
+    query: fn(Key) -> Result(Lookup, String),
   )
 }
+
+/// The session's background-execution service, as the port serves it to an
+/// executor.
+pub type Executions {
+  Executions(
+    /// Claims a launch's record and answers its handle. The host link is the
+    /// one the session attached through, for the record's worker.
+    launch: fn(ExecutionTerms, HostLink) -> Result(JsonValue, String),
+    /// Checks, joins, cancels or sends to an execution the strand owns.
+    /// Arguments are the strand, the handle, the interaction and the wait.
+    interact: fn(String, String, codemode_tool.Interaction, Int) ->
+      Result(JsonValue, String),
+    /// Where the record behind an execution's key stands. The reconciler
+    /// stops a running program whose record is not live, and acknowledges an
+    /// execution's row only once its record is closed.
+    standing: fn(Key) -> Standing,
+  )
+}
+
+/// Where an execution's record stands, as the reconciler needs to know it.
+pub type Standing {
+  /// The record is starting or running: its program is wanted.
+  RecordLive
+
+  /// The record is draining: its program is no longer wanted, and the
+  /// execution service has not settled it yet.
+  RecordClosing
+
+  /// The record is finished or lost, or there is none. The row's result is
+  /// no longer needed here.
+  RecordClosed
+}
+
+/// The execution service of a session that serves no background code mode to
+/// an executor: launches and interactions are refused, and every execution the
+/// executor reports running is taken as unwanted.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // owner_port.Config(.., executions: owner_port.no_executions())
+/// ```
+pub fn no_executions() -> Executions {
+  Executions(
+    launch: fn(_terms, _link) { Error(no_executions_text) },
+    interact: fn(_strand, _handle, _interaction, _within) {
+      Error(no_executions_text)
+    },
+    standing: fn(_key) { RecordClosed },
+  )
+}
+
+const no_executions_text = "this session serves no background code mode"
 
 /// How a port is configured.
 pub type Config {
@@ -67,6 +148,8 @@ pub type Config {
     settled: fn(Key) -> Bool,
     /// How often the reconciler asks the host for unacknowledged calls.
     reconcile_every_ms: Int,
+    /// The session's background-execution service.
+    executions: Executions,
   )
 }
 
@@ -188,7 +271,7 @@ fn result_of_start(
 fn handle_event(state: State, event: Event) -> actor.Next(State, Event) {
   case event {
     FromExecutor(message) -> {
-      serve(state.config, message)
+      serve(state.config, state.link, message)
       actor.continue(state)
     }
     Bind(link:, unacked:) -> {
@@ -207,8 +290,9 @@ fn handle_event(state: State, event: Event) -> actor.Next(State, Event) {
 
 // Each request runs beside the port, ending if its requester does. A `Tail` is
 // answered here because it has no reply to wait for.
-fn serve(config: Config, message: OwnerMessage) -> Nil {
+fn serve(config: Config, link: Option(HostLink), message: OwnerMessage) -> Nil {
   let services = config.services
+  let executions = config.executions
   case message {
     protocol.Escalate(refused:, remaining_ms:, reply:) -> {
       let #(now, _clock) = clock.read(config.clock)
@@ -236,6 +320,25 @@ fn serve(config: Config, message: OwnerMessage) -> Nil {
     protocol.Tail(run:, tail:) -> services.output(run)(tail)
     protocol.Capability(call:, reply:) ->
       answer(reply, fn() { services.capability(call) })
+
+    // A launch can only come from an executor the session attached to, and the
+    // attach binds the link before any tool runs there, so a missing link is a
+    // request from a workspace this port no longer serves.
+    protocol.LaunchExecution(terms:, reply:) ->
+      case link {
+        Some(bound) -> answer(reply, fn() { executions.launch(terms, bound) })
+        None -> process.send(reply, Error("the executor is not attached"))
+      }
+    protocol.InteractExecution(
+      strand:,
+      handle:,
+      interaction:,
+      within_ms:,
+      reply:,
+    ) ->
+      answer(reply, fn() {
+        executions.interact(strand, handle, interaction, within_ms)
+      })
   }
 }
 
@@ -309,7 +412,8 @@ fn acknowledge_listed(config: Config, link: HostLink) -> Nil {
 }
 
 // Acknowledges every listed key whose result the orchestrator already holds,
-// whether the executor stored an outcome or lost it.
+// whether the executor stored an outcome or lost it, and stops every running
+// execution whose record here has closed.
 fn acknowledge_settled(
   config: Config,
   link: HostLink,
@@ -319,6 +423,16 @@ fn acknowledge_settled(
     case config.settled(key) {
       True -> link.ack(key)
       False -> Nil
+    }
+  })
+
+  // A running execution whose record is closed was stopped by a message the
+  // network lost, or was left running by an orchestrator that restarted. The
+  // stop is idempotent on the executor, so sending it on every pass is safe.
+  list.each(unacked.executions, fn(key) {
+    case config.executions.standing(key) {
+      RecordLive -> Nil
+      RecordClosing | RecordClosed -> link.stop(key)
     }
   })
 }

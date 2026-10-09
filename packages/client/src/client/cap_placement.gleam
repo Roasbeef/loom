@@ -17,9 +17,11 @@
 //// fails on a name which is in neither group or in both.
 ////
 //// The classification follows where the state lives today. Background
-//// execution (`execution.*`, `workflow.step`) holds a runtime and keeps it
-//// on the owner, which is why those names are owner-bound even though a
-//// remote session does not offer background code mode yet.
+//// execution (`execution.*`, `workflow.step`) keeps its record on the owner,
+//// so a background program running beside the checkout reaches its own input
+//// journal and progress channel back over the owner port. An `mcp.<server>`
+//// name is the owner's here; a workspace that runs some servers itself
+//// answers those names locally (`owner_codemode.over_owner_serving`).
 
 import client/async_codemode
 import client/codemode

@@ -16,23 +16,29 @@
 //// exactly the shape production uses.
 
 import broker/exec
+import broker/framing
 import broker/token
 import client/agency
 import client/async_codemode
 import client/async_runs
 import client/codemode
 import client/internal/ffi_os
+import client/owner_codemode
+import client/owner_services
 import client/peer_mail
 import client/peer_outbox
 import client/peers
 import client/serve
 import client/workflow_ledger
+import codemode/satellite
+import codemode/vet/policy as vet_policy
 import core/clock.{type Clock}
 import core/codec
 import core/entry
 import core/ids
 import core/json
 import core/message
+import core/msgpack
 import core/register
 import core/todo_list
 import core/tx
@@ -2498,7 +2504,8 @@ fn async_record(id: String, clock: Clock) -> async_execution.Execution {
     deadline_ms: now + 60_000,
     source: "test program",
     seam: "workspace",
-    phase: async_execution.Starting, launch: option.None,
+    phase: async_execution.Starting,
+    launch: option.None,
   )
 }
 
@@ -2513,6 +2520,7 @@ pub fn async_inputs_survive_repeated_reads_and_enforce_handle_ownership_test() {
         clock: harness.config.clock,
         abort: fn(_, _) { Nil },
         heartbeat_ms: 0,
+        surviving_value: async_runs.no_value_survives,
       ),
     )
     as "the execution service must start"
@@ -2581,6 +2589,7 @@ pub fn async_cancellation_fences_new_children_before_reporting_terminal_test() {
         clock: harness.config.clock,
         abort: fn(operation, step) { process.send(aborted, #(operation, step)) },
         heartbeat_ms: 0,
+        surviving_value: async_runs.no_value_survives,
       ),
     )
     as "the execution service must start"
@@ -2640,6 +2649,7 @@ pub fn async_service_restart_records_loss_without_replaying_a_program_test() {
         clock: harness.config.clock,
         abort: fn(_, _) { Nil },
         heartbeat_ms: 0,
+        surviving_value: async_runs.no_value_survives,
       ),
     )
     as "the replacement must start"
@@ -2671,6 +2681,7 @@ pub fn async_operation_abort_also_refuses_a_delayed_launch_test() {
         clock: harness.config.clock,
         abort: fn(_, _) { Nil },
         heartbeat_ms: 0,
+        surviving_value: async_runs.no_value_survives,
       ),
     )
     as "the execution service must start"
@@ -2761,6 +2772,7 @@ fn async_satellite(
         clock: wall,
         abort: async_codemode.abort(plane.broker),
         heartbeat_ms: 0,
+        surviving_value: async_runs.no_value_survives,
       ),
     )
     as "the execution service must start"
@@ -3393,6 +3405,7 @@ fn specialist_mode(
         clock: wall,
         abort: async_codemode.abort(plane.broker),
         heartbeat_ms: 0,
+        surviving_value: async_runs.no_value_survives,
       ),
     )
   let config =
@@ -4304,6 +4317,7 @@ fn nested_background_cancellation(parent_custody: ParentCustody) {
         harness.config.clock,
         fn(_, _) { Nil },
         0,
+        async_runs.no_value_survives,
       ),
     )
     as "background execution service starts"
@@ -4397,6 +4411,7 @@ pub fn async_completed_value_cannot_override_a_lost_scope_proof_test() {
         harness.config.clock,
         fn(_, _) { Nil },
         0,
+        async_runs.no_value_survives,
       ),
     )
     as "the execution service starts"
@@ -4483,5 +4498,193 @@ pub fn joining_a_completed_child_preserves_blackboard_read_failure_test() {
     harness.seam.wait(caller, [child.handle], 200)
     as "a failed result-note read must not become ResultAbsent"
   assert string.contains(reason, "injected child notes failure")
+  close(harness)
+}
+
+// --- a background program on another node ---------------------------------------
+
+// The owner's answer to a background program running on an executor, built
+// over this harness's Agency as a remote session's assembly builds it.
+fn remote_background_answer(
+  harness: Harness,
+) -> fn(owner_services.OwnerCapCall) ->
+  Result(framing.CapOutcome, satellite.CapDenial) {
+  let side_over = fn(over) {
+    codemode.owner_serving(codemode.BothSeams, over:, schedules: None)
+  }
+  owner_codemode.answering_executions(
+    side_over(agency.seam(harness.config)),
+    peers: peers.Wiring(
+      own: peer_mail.Endpoint(session: "owner-session", call: fn(_command) {
+        Error(peer_mail.Refused("no peer mail in this test"))
+      }),
+      metadata: json.Null,
+      directory: None,
+    ),
+    background: owner_codemode.Background(
+      service: addresses.new(),
+      agents: harness.config,
+      runtime: fn() { Ok(harness.runtime) },
+      side_over:,
+    ),
+  )
+}
+
+// An execution launched by `parent`, written as the owner's execution service
+// writes one when an executor asks it to launch.
+fn remote_execution(
+  harness: Harness,
+  parent: Caller,
+  id: String,
+  phase: async_execution.Phase,
+) -> async_execution.Execution {
+  let record =
+    async_execution.Execution(
+      ..async_record(id, harness.config.clock),
+      operation: parent.operation,
+      phase:,
+      launch: Some(async_execution.Launch(
+        step: parent.step_id,
+        source_index: parent.source_index,
+      )),
+    )
+  let assert Ok(_) =
+    api.put_reserved_fact(
+      harness.runtime,
+      async_execution.key(id),
+      async_execution.encode(record),
+    )
+    as "the execution record is durable"
+  record
+}
+
+fn workflow_call(
+  parent: Caller,
+  record: async_execution.Execution,
+) -> owner_services.OwnerCapCall {
+  let text = fn(value) { msgpack.StringValue(value) }
+  owner_services.OwnerCapCall(
+    strand: "main",
+    op_id: parent.operation,
+    step_id: record.step,
+    source_index: parent.source_index,
+    seam: vet_policy.OrchestrationSeam,
+    cap: "workflow.step",
+    args: msgpack.MapValue([
+      #(text("run"), text("review-remote")),
+      #(text("version"), text("v1")),
+      #(text("input"), text("commit-a")),
+      #(text("name"), text("security")),
+      #(
+        text("assignment"),
+        msgpack.MapValue([
+          #(text("purpose"), text("security")),
+          #(text("brief"), text("read the diff")),
+          #(text("context"), text("fresh")),
+          #(text("detach"), msgpack.BoolValue(False)),
+        ]),
+      ),
+    ]),
+    ordinal: 0,
+  )
+}
+
+fn map_text(value: msgpack.MsgPackValue, key: String) -> Result(String, Nil) {
+  case value {
+    msgpack.MapValue(pairs) ->
+      list.find_map(pairs, fn(pair) {
+        case pair {
+          #(msgpack.StringValue(found), msgpack.StringValue(text))
+            if found == key
+          -> Ok(text)
+          _ -> Error(Nil)
+        }
+      })
+    _ -> Error(Nil)
+  }
+}
+
+pub fn a_remote_workflow_step_is_attributed_to_the_launching_call_test() {
+  let harness = start_harness(HoldsParent)
+  let parent = open_parent(harness, "remote workflow owner")
+  let record = remote_execution(harness, parent, "b1", async_execution.Running)
+
+  // The call carries the execution's own step, `async/b1`, as every call from
+  // a background program on an executor does. The owner rebuilds the
+  // launching caller from the record and admits the step in the execution's
+  // custody, so the child is the one a local background program would get:
+  // minted under the launching operation at the step's durable identity.
+  let assert Ok(framing.CapOk(answer)) =
+    remote_background_answer(harness)(workflow_call(parent, record))
+    as "the owner answers a remote workflow step"
+  let assert Ok(child) = map_text(answer, "strand")
+    as "the step names its child"
+  let assert Some(cell) = cell_for(harness, child) as "the child has lineage"
+  assert cell.minted_by.operation == parent.operation
+  assert string.starts_with(cell.minted_by.step_id, "client/workflow/step/")
+
+  // The same step asked again is the same child, as a local retry is.
+  let assert Ok(framing.CapOk(again)) =
+    remote_background_answer(harness)(workflow_call(parent, record))
+    as "a repeated step is answered"
+  assert map_text(again, "strand") == Ok(child)
+  close(harness)
+}
+
+pub fn a_remote_workflow_step_needs_the_launching_call_on_the_record_test() {
+  let harness = start_harness(HoldsParent)
+  let parent = open_parent(harness, "older remote owner")
+  let record = remote_execution(harness, parent, "b5", async_execution.Running)
+
+  // A record an earlier build wrote names no launching call. The owner has no
+  // caller to attribute the step to, and refuses rather than inventing one.
+  let older = async_execution.Execution(..record, launch: None)
+  let assert Ok(_) =
+    api.put_reserved_fact(
+      harness.runtime,
+      async_execution.key(older.id),
+      async_execution.encode(older),
+    )
+  let assert Error(denial) =
+    remote_background_answer(harness)(workflow_call(parent, older))
+    as "a record with no launching call is refused"
+  assert denial.code == owner_codemode.execution_unknown_code
+  close(harness)
+}
+
+pub fn a_closed_remote_execution_cannot_reach_the_owner_test() {
+  let harness = start_harness(HoldsParent)
+  let parent = open_parent(harness, "closed remote owner")
+  let record =
+    remote_execution(harness, parent, "b2", async_execution.Lost("cancelled"))
+  let assert Error(denial) =
+    remote_background_answer(harness)(workflow_call(parent, record))
+    as "a closed execution is refused"
+  assert denial.code == owner_codemode.execution_closed_code
+  close(harness)
+}
+
+pub fn a_remote_call_for_an_unknown_or_foreign_execution_is_refused_test() {
+  let harness = start_harness(HoldsParent)
+  let parent = open_parent(harness, "foreign remote owner")
+  let record = remote_execution(harness, parent, "b3", async_execution.Running)
+  let answer = remote_background_answer(harness)
+
+  // No record for the step's execution.
+  let missing = async_execution.Execution(..record, id: "b4", step: "async/b4")
+  let assert Error(unknown) = answer(workflow_call(parent, missing))
+    as "an execution with no record is refused"
+  assert unknown.code == owner_codemode.execution_unknown_code
+
+  // A record of another strand.
+  let assert Error(foreign) =
+    answer(
+      owner_services.OwnerCapCall(
+        ..workflow_call(parent, record),
+        strand: "sub:other",
+      ),
+    )
+    as "another strand's execution is refused"
+  assert foreign.code == owner_codemode.execution_unknown_code
   close(harness)
 }

@@ -108,6 +108,8 @@ import client/peer_mail
 import client/peer_outbox_drain
 import client/peers
 import client/remote/owner_port
+import client/remote/protocol
+import client/remote/remote_census
 import client/remote/workspace as remote_workspace
 import client/retryconf
 import client/rules
@@ -161,6 +163,7 @@ import provider/model
 import provider/secret
 import provider/stream
 import runtime/api
+import runtime/async_execution
 import runtime/effects
 import runtime/supervisor as runtime_supervisor
 import runtime/writer
@@ -3121,6 +3124,20 @@ type Half {
     blob_root: String,
     call_clock: Clock,
     recover: Option(fn(effects.ToolRun) -> effects.Recovery),
+    /// How the execution service stops and recovers a background execution
+    /// whose program runs on an executor; `None` for a local workspace, whose
+    /// programs run in this VM.
+    executions: Option(RemoteExecutions),
+  )
+}
+
+// The two things the execution service needs from a workspace on an executor:
+// the stop it sends when a record closes, and the read recovery makes before it
+// marks a live record lost.
+type RemoteExecutions {
+  RemoteExecutions(
+    stop: fn(ids.OpId, String) -> Nil,
+    lookup: fn(ids.OpId, String) -> Result(protocol.Lookup, String),
   )
 }
 
@@ -3141,6 +3158,7 @@ fn here(
     blob_root: prepared.blob_root,
     call_clock: clock,
     recover: None,
+    executions: None,
   )
 }
 
@@ -3149,8 +3167,10 @@ fn here(
 fn there(
   registered: remote_workspace.Registered,
   owner: Option(custody.Owner),
+  logger: Logger,
 ) -> Result(Half, String) {
   use hands <- result.try(remote_workspace.attach(registered))
+  log_remote_mcp(hands.mcp, logger)
   use Nil <- result.map(retain(
     owner,
     custody.Workspace,
@@ -3177,7 +3197,57 @@ fn there(
       <> codemode_wiring.blob_directory,
     call_clock: hands.clock,
     recover: Some(hands.recover),
+    executions: Some(RemoteExecutions(
+      stop: hands.stop_execution,
+      lookup: hands.execution_lookup,
+    )),
   )
+}
+
+// How the MCP servers this session expected the executor to run fared, in the
+// lines an operator already reads for a local server: `mcp.ready` for those
+// that started and `mcp.unavailable` for each that did not, both marked with
+// the placement so the two machines' lines are not confused.
+fn log_remote_mcp(
+  statuses: List(remote_census.McpStatus),
+  logger: Logger,
+) -> Nil {
+  list.each(statuses, fn(status) {
+    case status {
+      remote_census.McpReady(server:, tools:) ->
+        log.info(logger, "mcp.ready", [
+          field.text(key: "server", value: server),
+          field.count(key: "tools", value: tools),
+          field.text(key: "placement", value: "executor"),
+        ])
+      remote_census.McpRefused(server:, reason:) ->
+        log.warn(logger, "mcp.unavailable", [
+          field.text(key: "server", value: server),
+          field.text(key: "reason", value: reason),
+          field.text(key: "placement", value: "executor"),
+        ])
+    }
+  })
+}
+
+// The configured servers a remote session starts on this daemon.
+fn orchestrator_placed(
+  servers: List(catalog.McpServer),
+) -> List(catalog.McpServer) {
+  list.filter(servers, fn(server) {
+    server.runs_on == catalog.RunsOnOrchestrator
+  })
+}
+
+// The names of the configured servers a remote session expects its executor to
+// run.
+fn executor_placed(servers: List(catalog.McpServer)) -> List(String) {
+  list.filter_map(servers, fn(server) {
+    case server.runs_on {
+      catalog.RunsOnExecutor -> Ok(server.name)
+      catalog.RunsOnOrchestrator -> Error(Nil)
+    }
+  })
 }
 
 /// One notice for each extension installed on the executor, because none of
@@ -3483,21 +3553,35 @@ fn assemble_in(
   // the census: the second is unreachable without the first. The owner
   // starts the servers, so this happens between the workspace's two steps.
   //
-  // A workspace on an executor takes neither: its code mode omits the MCP
-  // façades until the MCP layer is split into the data an executor needs and
-  // the clients that stay here, so no server is started on its behalf.
+  // A workspace on an executor starts here only the servers placed on the
+  // orchestrator (`runs_on`), with the keys this daemon holds, before the
+  // attach that carries their façades. The servers placed on the executor
+  // run there from its own tables; the attach names them and nothing else.
+  // This side does not yet know whether the executor offers code mode, so a
+  // server started for an executor that does not is an accepted waste.
   use mcp_layer <- result.try(case home {
     Here(prepared) ->
       code_mode_mcp(settings, prepared.census.toolchain, logger, owner)
-    There(_) -> {
-      skipped_mcp(
-        settings.catalog.mcp_servers,
+    There(_) ->
+      started_mcp(
+        orchestrator_placed(settings.catalog.mcp_servers),
+        settings.secrets,
         logger,
-        "a workspace on an executor omits MCP servers from its code mode",
+        owner,
       )
-      Ok(mcp_wiring.none())
-    }
   })
+  let mcp_plan =
+    protocol.McpPlan(
+      served: list.map(mcp_wiring.facades(mcp_layer), fn(facade) {
+        protocol.Facade(
+          server: facade.server,
+          module_name: facade.generated.module_name,
+          source: facade.generated.source,
+          surface: facade.generated.surface,
+        )
+      }),
+      expected: executor_placed(settings.catalog.mcp_servers),
+    )
 
   // Everything the workspace half reaches back to the session for, as one
   // record of plain functions. Locally each is the call it replaced: the
@@ -3515,15 +3599,33 @@ fn assemble_in(
       output: hub.tool_output_observer(event_bus, opened),
       capability: case home {
         Here(_) -> owner_services.no_capability
-        There(_) ->
-          owner_codemode.answering(
-            codemode_wiring.owner_serving(
-              settings.codemode_seams,
-              over: agency_seam,
-              schedules: schedule_door,
-            ),
+        There(_) -> {
+          // The owner's side over a given Agency: the operator's seams, the
+          // scheduling door and the servers this daemon runs. A foreground
+          // program is answered over the session's Agency, and a background
+          // one over the Agency bound to its execution's custody.
+          let seams = settings.codemode_seams
+          let side_over = fn(over: Agency) {
+            codemode_wiring.OwnerSide(
+              ..codemode_wiring.owner_serving(
+                seams,
+                over:,
+                schedules: schedule_door,
+              ),
+              mcp: mcp_layer,
+            )
+          }
+          owner_codemode.answering_executions(
+            side_over(agency_seam),
             peers: peer_wiring,
+            background: owner_codemode.Background(
+              service: async_name,
+              agents: agency_config,
+              runtime: agency.runtime_supplier(agency_config),
+              side_over:,
+            ),
           )
+        }
       },
       holds: agency_seam.holds,
     )
@@ -3568,8 +3670,16 @@ fn assemble_in(
           owner: owner_api,
           clock:,
           reconcile_every_ms: owner_port.default_reconcile_every_ms,
+          executions: async_codemode.remote(
+            async_name,
+            runtime: agency.runtime_supplier(agency_config),
+            clock:,
+            session: settings.session_id,
+          ),
+          mcp: mcp_plan,
         ),
         owner,
+        logger,
       )
   })
   let plane = half.plane
@@ -4199,6 +4309,30 @@ fn assemble_in(
       }
   }
 
+  // How the execution service stops a background program and what recovery
+  // may still learn about one. A local program runs under this session's own
+  // broker, so stopping it aborts its step, and its value died with the
+  // service. A program on an executor is stopped by a message the executor's
+  // ledger records, and a value it committed before a restart is read back
+  // from that ledger instead of being called lost.
+  let #(async_abort, async_surviving) = case half.executions {
+    None -> #(async_codemode.abort(broker_actor), async_runs.no_value_survives)
+    Some(remote) -> {
+      let lookup = remote.lookup
+      #(remote.stop, fn(record: async_execution.Execution) {
+        case lookup(record.operation, record.step) {
+          Ok(protocol.Executed(value:)) -> Ok(value)
+          Ok(protocol.Missing)
+          | Ok(protocol.Admitted)
+          | Ok(protocol.Terminal(..))
+          | Ok(protocol.Unknown)
+          | Ok(protocol.Fenced)
+          | Error(_) -> Error(Nil)
+        }
+      })
+    }
+  }
+
   // The restartable half of the per-child policy. These children hold
   // no state a restart cannot rebuild and — crucially — none of them is
   // addressed by pid: each registers under a name and every caller
@@ -4227,8 +4361,9 @@ fn assemble_in(
           async_runs.Wiring(
             runtime:,
             clock:,
-            abort: async_codemode.abort(broker_actor),
+            abort: async_abort,
             heartbeat_ms: async_heartbeat_ms,
+            surviving_value: async_surviving,
           ),
         )
       }),
