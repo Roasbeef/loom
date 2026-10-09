@@ -2542,8 +2542,9 @@ catalogue without opening runtimes. Explicit admission invokes
   end, built in `serve` for a registered workspace from the session's own
   Agency, scheduling door and peer wiring. `advertising_peers` appends
   `peer.*` to every seam a tool offers, for `serve.code_mode_tool` and the
-  executor. Not offered on an executor: MCP façades, background code mode and
-  workflow steps (the owner names the refusal). An operator's narrower
+  executor. Background programs and MCP façades are offered (see "Background
+  code mode and MCP on a registered session" below); workflow steps of a
+  foreground program are not (the owner names the refusal). An operator's narrower
   `--codemode-seams` choice is enforced by the owner, since the executor is
   not told it.
   `owner_codemode_test` drives the capability router through a real owner port
@@ -6514,10 +6515,12 @@ below.
   `CloseOutcome`. The census is a type parameter the host never reads.
   `unknown_outcome_text` is the model's wording for a lost call and
   `did_not_run_text` the wording of a fenced one. `Attach` carries
-  `protocol.version` (2); the host refuses any other value with `VersionMismatch`.
+  `protocol.version` (3); the host refuses any other value with `VersionMismatch`.
   Change the version whenever a constructor or field changes. Version 2 moved
   the executor's clock reading out of the census and into `Attached`, so each
-  reply carries the time it was sent.
+  reply carries the time it was sent. Version 3 added background executions
+  (`StartExecution`, `StopExecution`, `LaunchExecution`, `InteractExecution`,
+  `Unacked.executions`, `Lookup.Executed`) and the MCP plan on `Attach`.
 - `remote/address` is `{registered name, node}`. `deliver` and `watch` go through
   `internal/ffi_remote`, three stock-OTP `@external`s (`erlang:send/2` and
   `erlang:monitor/2` on a `{Name, Node}` destination, and `gleam_stdlib`'s
@@ -6700,8 +6703,8 @@ local fixtures).
   and builds the board with `jobs.live_board_of`.
 - **Refused or omitted.** Extension tools (`tool_placement` answers `Error(Nil)`,
   so none are registered, with one notice per extension installed on the
-  executor), operator directory additions (`resolve_directory` refuses), MCP
-  servers and background code mode. Owner-bound code-mode capabilities
+  executor) and operator directory additions (`resolve_directory` refuses).
+  Owner-bound code-mode capabilities
   (`strand.*`, `notes.*`, `schedule.*`, `peer.*`) are answered:
   `OwnerServices.capability` is `owner_codemode.answering` over the session's
   own Agency, scheduling door and peer wiring, where a local session keeps
@@ -6712,7 +6715,9 @@ nothing touches the registered name: `workspace_plane.prepare` is skipped (it
 discovers the toolchain, composes the base, creates the workspace's blob, tool
 home, tmp and scratch directories); `start_local` is replaced by the attach (the
 helper pool, executor, broker, jobs, scratch, LSP and code-mode host live on the
-executor); `code_mode_mcp` is replaced by a skipped-MCP notice; extension
+executor); `code_mode_mcp` is replaced by `started_mcp` over only the
+orchestrator-placed servers, whose façades travel in the attach's `McpPlan`;
+extension
 discovery and registration are skipped; `resolve` skips `find_helper` and
 `gocache.locate`. The rest reads only the orchestrator's own files (session,
 index, memory, home, skills), the census, or the executor through the broker
@@ -6736,6 +6741,100 @@ drives a scripted model through a workspace tool and an owner tool.
 Routing a workspace tool to the owner path fails `a_workspace_call_runs_on_the_executor_...`,
 attaching at the stored incarnation after a clean close fails the reopen tests, and
 dropping the clock offset fails `the_non_tool_clock_reads_the_executors_timebase_test`.
+
+## Background code mode and MCP on a registered session (protocol 078 addendum)
+
+The protocol-change/078 addendum "background code mode and MCP façades on a
+remote session" is the rule book; `docs/architecture/distributed.md` has the
+diagrams. In one paragraph: the orchestrator keeps the execution's durable
+record in `async_runs` exactly as a local session does, and the executor only
+runs the program, under the ledger key `(session, op, "async/<id>", 0)` with
+tool `execution` (`protocol.execution_key`, `protocol.execution_id`).
+
+- **Launch.** `code_mode` with `mode: "launch"` runs on the executor as a tool
+  call. Its tool shell sends `OwnerMessage.LaunchExecution(terms)` over the
+  owner link; `owner_port.serve` hands it to `Executions.launch`, which is
+  `async_codemode.remote`: it claims the record (`Starting`, with
+  `Launch(step, source_index)` naming the launching call, F5) through
+  `async_runs.launch_fallible`, and the record's worker calls
+  `HostLink.start`, i.e. `surface.start_execution`, which sends
+  `StartExecution(key, incarnation, token, terms, remaining_ms)` and repairs a
+  dropped connection with the same start forever. The host admits the key
+  through the same `admit_call` a `Run` uses, runs `Plane.execute` (the
+  executor's `codemode.execute` under step `async/<id>`), commits the stored
+  value before any reply, and answers `ExecutionFinished`, `ExecutionLost` or
+  `ExecutionRefused`. A result larger than
+  `Config.execution_result_bytes` (1 MiB, the reservation per row, per
+  executor) is stored as an errored value naming its size.
+- **Interact.** `check`, `send`, `join` and `cancel` run on the executor as
+  tool calls too (`code_mode` is placed there by name) and cross as
+  `InteractExecution`, which `async_codemode.interact` answers from the
+  record. They wait out a link cut like any tool call; that is a documented
+  limit.
+- **Owner-bound calls from the program** carry step `async/<id>`.
+  `owner_codemode.answering_executions` binds them to the record (it must be
+  starting or running, the call's strand and operation, and name its launching
+  call) and answers with the arms a local background program gets; a closed
+  record is refused `execution_closed`, a missing one `execution_unknown`.
+  `owner_link.patience` (F1): `execution.receive*` waits out a cut within its
+  own `within_ms` and then answers "no input yet" (`CapOk(NilValue)`);
+  `execution.ready`, `progress` and `delivery` wait up to the 120-second
+  capability budget and then deny; every other owner-bound call is denied at
+  once as before. Waiting is safe only because each of those calls may be sent
+  twice.
+- **Stop.** A record closes on a recorded decision only (cancel, abort, stop,
+  deadline, idle, restart). `async_runs.Wiring.abort` is then
+  `Hands.stop_execution`, a `StopExecution` cast: `exec_ledger.stop_or_fence`
+  turns an admitted row unknown (`Stopped`) or bars a missing key (`Barred`) in
+  one transaction, and the host halts the program with `Plane.abort_step`.
+  `noconnection` never stops anything.
+- **Reconcile.** `owner_port`'s reconciler lists running executions with
+  `HostLink.list` (`Unacked.executions`) and stops each whose
+  `Executions.standing` is not `RecordLive`; it acknowledges an execution row
+  only when `workspace.settled_by_kind` finds the record `RecordClosed`, so a
+  value the worker has not read is never discarded.
+- **Recovery.** After an orchestrator restart `async_runs` asks
+  `Wiring.surviving_value` (`Hands.execution_lookup`, `surface.query`, 5 s) for
+  each record still starting or running: `Lookup.Executed(value)` keeps it
+  finished, anything else loses it and stops it.
+- **MCP placement.** `catalog.McpServer.runs_on` is `RunsOnOrchestrator`
+  (default) or `RunsOnExecutor`. For a registered session `serve` starts only
+  the orchestrator-placed servers, sends their façades as `McpPlan.served` and
+  the executor-placed names as `McpPlan.expected`, and logs each
+  `remote_census.McpStatus` as `mcp.ready` / `mcp.unavailable` with
+  `placement: executor`. The executor starts expected servers from its own
+  `[mcp.<name>]` table (`executor_plane.Machine.mcp_servers`,
+  `catalog.parse_mcp`), refusing a missing one with "this executor declares no
+  [mcp.<name>] table", and answers their calls locally
+  (`owner_codemode.over_owner_serving`). The executor's client is filed under
+  `custody.Mcp` and a server that does not exit within 5 s is killed and logged
+  `executor.mcp_retirement_unconfirmed`, never counted as `UnknownCleanup`. The
+  plan is fixed for an incarnation: a `Rebound` attach keeps the plane's plan
+  and census.
+
+Invariants that break things when violated:
+
+- The record is claimed before its worker starts, and every close decision is
+  durable before the stop is sent; a stop is always a cast that the reconciler
+  repeats.
+- Never acknowledge an execution row whose record is live
+  (`settled_by_kind`), and never stop a program on `noconnection`.
+- `StopExecution` must bar a key with no row, or a start a dead worker sent
+  before the record closed runs the program after it was cancelled.
+- Only the `execution.*` calls named in `owner_link.patience` may wait out a
+  cut; anything not idempotent or keyed keeps the immediate denial.
+
+Tests: `remote/host_execution_test` (admission, finish, stop and fence,
+oversized values, restart), `remote/owner_link_test` (F1 over a real link
+cut), `remote/owner_port_test`, `remote/workspace_test`
+(`settled_by_kind`), `async_runs_test`, `agency_test` (F5),
+`owner_codemode_test` (an executor-placed server answered locally),
+`catalog_test`, `mcp_test`, `remote/codec_test`; across two shipped daemons,
+`daemon_shipped_remote_background_test` (input, progress, a cut link, an
+executor restart, an orchestrator restart that keeps a finished value) and
+`daemon_shipped_remote_mcp_test` (each placement and a missing executor
+table). The P model `protocol/models/remote-execution` covers the execution
+path with mutants M8 to M12.
 
 ## The executor role (protocol 078)
 

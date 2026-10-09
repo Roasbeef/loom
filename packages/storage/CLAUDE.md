@@ -382,12 +382,13 @@ with these forks: they define the same modules.
   `ScopeState` is `Open | Closing | Closed(AllRetired | UnknownCleanup(n))`;
   `CallState` is `Admitted | Terminal(outcome) | Unknown | Acked`; `Lookup` is
   `Missing | Found(CallState)`; `Admission` is `Fresh | Existing(CallState)`;
-  `Fencing` is `Standing(CallState) | Fenced`;
+  `Fencing` is `Standing(CallState) | Fenced`; `Stopping` is
+  `Stopped | Barred | Untouched(CallState)`;
   `Error` is one closed type (`StaleIncarnation`, `StaleToken`,
   `ScopeNotOpen`, `ScopeClosing`, `UncleanClose`, `NotReleasable`, `CapacityExhausted`,
   `BudgetExhausted`, `DigestMismatch`, `MalformedRow`, ...). Operations:
   `open`, `close`, `attach`, `admit`, `finish`, `mark_unknown`, `query`,
-  `query_or_fence`, `ack`, `begin_close`, `finish_close`, `release` (with
+  `query_or_fence`, `stop_or_fence`, `admitted`, `ack`, `begin_close`, `finish_close`, `release` (with
   `Released`, and `releases` listing the `Release` rows), `scope`, and `unacked`, the attach reply's two
   key lists as a read that changes nothing (`Unacked(terminal, unknown)`), for
   a reconciler that must not replace the scope's token to look.
@@ -694,6 +695,20 @@ with these forks: they define the same modules.
   keys so a lost ack cannot leak a row forever. Deleting the row without the
   tombstone fails `an_acknowledged_key_is_never_admitted_again_in_its_incarnation_test`
   and the P model's `tcDefectLateRun`.
+- **`stop_or_fence` bars a missing key in the transaction that finds it.** It
+  is the ledger half of `StopExecution`, sent when a background execution's
+  record closes (protocol-change/078 addendum). An `admitted` row becomes
+  `unknown` (`Stopped`) and its bytes are released; a key with no row is
+  inserted `admitted` with no bytes and marked `unknown` at once (`Barred`), so a
+  start that a dead worker sent before the record closed finds the key taken and
+  never runs the program; any other row is reported `Untouched`. It checks the
+  incarnation, not the attach token, because the only thing it writes is that
+  the program must not run. `admitted(ledger, session, tool)` lists the keys of
+  the session's admitted rows for one tool, which is how the host reports the
+  executions still running to the owner port's reconciler. A stop that inserts
+  nothing for a missing key fails
+  `a_stop_with_no_row_bars_the_key_from_a_later_start_test`
+  and the P model's mutant `M8-stop-does-not-fence`.
 - **`exec_ledger.open` is restart recovery, so one opener per VM.** It turns
   every `admitted` row into `unknown` and nothing turns one back; a second
   `open` while runs are in flight would mark them lost. The node-level actor is
