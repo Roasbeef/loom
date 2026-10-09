@@ -860,6 +860,44 @@ pub fn a_member_whose_record_already_names_it_finishes_the_import_test() {
   finish(rig)
 }
 
+pub fn a_member_that_owns_the_record_never_refuses_the_import_test() {
+  let rig = rig("recorded-owned-config", box())
+  let book = record_book.new()
+  let copy = cut(rig, 45, clean())
+
+  // This daemon's write committed and it crashed before importing; it comes
+  // back with its executor row removed and the sender no longer listed.
+  record_book.set(
+    book,
+    copy.session,
+    Some(record.Record(owner: record_book.bravo, state: record.Serving)),
+  )
+  assert send(rig, copy, op, 4096) == session_move.Accepted
+  let changed =
+    session_importer.Context(
+      ..recorded(rig, book),
+      executors: [],
+      orchestrators: [],
+    )
+
+  // The session is its own by the record, so the import that cannot finish is
+  // a failure the source asks again about, not a refusal it would retire on,
+  // and the incoming copy stays.
+  let assert session_move.Failed(_) =
+    session_importer.activate(changed, activation(copy, op))
+    as "a receiver that owns the record does not refuse"
+  assert simplifile.is_file(waiting(rig, copy, op)) == Ok(True)
+  assert manager.get(rig.registry, copy.session)
+    == Error(manager.Catalogue(catalogue.Missing))
+
+  // With its configuration restored, the next ask finishes the import.
+  assert session_importer.activate(recorded(rig, book), activation(copy, op))
+    == session_move.Accepted
+  assert manager.custody(rig.registry, copy.session)
+    == Ok(catalogue.Imported(op:, from: "alpha"))
+  finish(rig)
+}
+
 pub fn a_member_never_removes_a_session_it_owns_on_a_failed_write_test() {
   let rig = rig("recorded-owned", box())
   let book = record_book.new()

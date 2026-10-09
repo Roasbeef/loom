@@ -1567,6 +1567,65 @@ pub fn a_receiver_lost_between_its_record_and_its_import_still_gets_the_session_
   finish(rig)
 }
 
+// The receiver's importer with its configuration as `listed` says, reached
+// directly, so a test can change the receiver's executors between two asks.
+fn receiver_listing(
+  rig: Rig,
+  book: record_book.Book,
+  listed: List(executors.Executor),
+) -> Wire {
+  let context =
+    session_importer.Context(
+      ownership: Some(record_book.ownership(
+        book,
+        record_book.bravo,
+        record_book.alpha,
+      )),
+      registry: rig.target.registry,
+      state_root: rig.target.directory,
+      sessions_directory: rig.target.directory <> "/sessions",
+      domain_configuration: "",
+      clock: clock.fixed(at: 5000),
+      orchestrators: [orchestrators.plain("alpha", node_name())],
+      executors: listed,
+      logger: log.discard(),
+    )
+  Wire(..rig.wire, activate: fn(activation) {
+    Ok(session_importer.activate(context, activation))
+  })
+}
+
+pub fn a_receiver_that_owns_the_record_is_asked_until_it_can_import_test() {
+  let #(rig, book) = recorded("recorded-owner-misconfigured", 72)
+  record_book.set(book, rig.session, serving(record_book.alpha))
+  let move = begin(rig)
+
+  // The copy is sent and the activation is lost.
+  let deaf = Wire(..rig.wire, activate: fn(_activation) { Error(Nil) })
+  let assert Stalled(_) = session_mover.drive(by_record(rig, book, deaf), move)
+    as "silence is a stall"
+
+  // The receiver's write committed and it crashed before importing; it comes
+  // back without the session's executor in its configuration.
+  record_book.set(book, rig.session, serving(record_book.bravo))
+  let assert Stalled(_) =
+    session_mover.drive(
+      by_record(rig, book, receiver_listing(rig, book, [])),
+      move,
+    )
+    as "a receiver that owns the record and cannot import is asked again"
+  assert custody(rig.source, rig.session) == catalogue.Moving(op:, to: "bravo")
+  assert file_exists(source_file(rig))
+
+  // Its configuration restored, the receiver imports and the source retires.
+  let restored = receiver_listing(rig, book, receiver_knows_box())
+  assert session_mover.drive(by_record(rig, book, restored), move) == Finished
+  assert custody(rig.target, rig.session)
+    == catalogue.Imported(op:, from: "alpha")
+  assert custody(rig.source, rig.session) == catalogue.Moved(op:, to: "bravo")
+  finish(rig)
+}
+
 pub fn a_member_that_gives_up_before_the_activation_takes_the_session_back_test() {
   let #(rig, book) = recorded("recorded-abandon", 62)
   record_book.set(book, rig.session, serving(record_book.alpha))
