@@ -53,6 +53,8 @@ import core/message.{
 }
 import core/origin
 import core/register.{type RegisterValue, RegisterValue}
+import core/usage_evidence
+import gleam/bool
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -66,7 +68,7 @@ import gleam/result
 ///
 /// ```gleam
 /// let usage =
-///   message.Usage(1, 2, 0, 0, None, None, 3, message.UsageCost(0.0, 0.0, 0.0, 0.0, 0.0))
+///   message.Usage(1, 2, 0, 0, None, None, 3, message.UsageCost(0.0, 0.0, 0.0, 0.0, 0.0), usage_evidence.reported(usage_evidence.Api))
 /// assert codec.decode_usage(codec.encode_usage(usage)) == Ok(usage)
 /// ```
 ///
@@ -80,6 +82,7 @@ pub fn encode_usage(usage: Usage) -> JsonValue {
     #("reasoning", option.map(usage.reasoning, json.Int)),
     #("totalTokens", Some(json.Int(usage.total_tokens))),
     #("cost", Some(encode_usage_cost(usage.cost))),
+    #("evidence", Some(usage_evidence.encode(usage.evidence))),
   ])
 }
 
@@ -101,8 +104,41 @@ pub fn decode_usage(value: JsonValue) -> Result(Usage, CorruptionReport) {
   use cache_write_1h <- result.try(optional_int(fields, "cacheWrite1h", where))
   use reasoning <- result.try(optional_int(fields, "reasoning", where))
   use total_tokens <- result.try(require_int(fields, "totalTokens", where))
+
   use cost_value <- result.try(require(fields, "cost", where))
   use cost <- result.try(decode_usage_cost(cost_value))
+
+  // An old record has no evidence claim. A present malformed claim must fail
+  // rather than silently becoming either no expense or unknown coverage.
+  use evidence <- result.try(case get(fields, "evidence") {
+    Error(Nil) -> Ok(usage_evidence.unknown(usage_evidence.Other))
+    Ok(value) -> usage_evidence.decode(value)
+  })
+  use <- bool.lazy_guard(
+    evidence == usage_evidence.NoProvider
+      && {
+      input != 0
+      || output != 0
+      || cache_read != 0
+      || cache_write != 0
+      || total_tokens != 0
+      || option.unwrap(cache_write_1h, 0) != 0
+      || option.unwrap(reasoning, 0) != 0
+      || cost.input != 0.0
+      || cost.output != 0.0
+      || cost.cache_read != 0.0
+      || cost.cache_write != 0.0
+      || cost.total != 0.0
+    },
+    fn() {
+      Error(corruption.report(
+        at: where,
+        on: "evidence",
+        expected: "zero quantities for local no consumption",
+        context: "nonzero no-expense claim",
+      ))
+    },
+  )
   Ok(Usage(
     input:,
     output:,
@@ -112,6 +148,7 @@ pub fn decode_usage(value: JsonValue) -> Result(Usage, CorruptionReport) {
     reasoning:,
     total_tokens:,
     cost:,
+    evidence:,
   ))
 }
 

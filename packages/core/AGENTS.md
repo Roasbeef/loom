@@ -196,3 +196,30 @@ wire boundary. WP-A, and the root of the dependency DAG — `core` depends on
 binary data, non-text or duplicate object keys, and excessive nesting on the
 msgpack-to-JSON path. The satellite report helpers and host note/orchestration
 routers share this pure conversion.
+
+## Request accounting (protocol 081)
+
+`message.Usage.evidence` is `usage_evidence.Evidence`: `NoProvider` (the
+local addition identity) or `Remote(billing, tokens)`, where `tokens` is
+`Unreported` or `Reported(coverage, cost)` and `cost` is `Unpriced` or
+`Priced(coverage, basis)`. Only reported tokens have a cost and only a remote
+observation has a billing arrangement, so an unknown observation cannot carry
+a price and a missing remote witness cannot read as the identity. `Other`
+covers both an unknown arrangement and observations from several. Configured
+zero rates establish an estimate; an absent rate card does not. The stored
+JSON keeps the earlier shape (`tokens`, `billing`, `cost`), which spells
+the local identity as a billing and as a cost; `decode` accepts exactly the
+combinations the types express, reads a stored `mixed` billing as `Other`, and
+reads usage without evidence as unknown. Present malformed evidence is
+corruption. `core/durable_usage_compat_test` pins the text earlier builds wrote.
+
+`accounting.RequestAccounting` is `NoAttempts` or
+`Attempts(total, last, count)`: the aggregate, the last attempt and an attempt
+count in constant space. `append` adds one attempt, while `combine` folds
+disjoint reports. `details(report, extra)` returns the ledger-details object
+with the caller's fields plus `loom.request-accounting.v1`; `decode_row`
+reads the row's aggregate and validates that bounded metadata. Historical
+signed reconciliation rows stay readable; present request metadata rejects
+negative consumption. `zero_usage` is the local identity and
+`unknown_usage(billing)` is a remote attempt that reported nothing; source
+packages call these rather than spelling the zero record again.

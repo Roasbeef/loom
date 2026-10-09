@@ -24,6 +24,7 @@
 ////   `Error` would shadow the `Result` constructor.
 
 import core/json.{type JsonValue}
+import core/usage_evidence
 import gleam/option.{type Option}
 import gleam/string
 
@@ -346,7 +347,7 @@ pub type DeferredHandle {
 }
 
 /// Token counts and cost for one provider response or tool execution.
-/// Mirrors pi's `Usage`.
+/// Retains pi's numeric vocabulary plus Loom's typed observation evidence.
 ///
 /// Constructor invariants: counts are non-negative; `reasoning`, when
 /// reported, is a subset of `output` (already included in it);
@@ -354,14 +355,24 @@ pub type DeferredHandle {
 /// with one-hour retention; `total_tokens` is the provider-reported total.
 pub type Usage {
   Usage(
+    /// Uncached input tokens, disjoint from the cache buckets.
     input: Int,
+    /// Generated tokens, including any reported reasoning subset.
     output: Int,
+    /// Input tokens served from the provider cache.
     cache_read: Int,
+    /// Input tokens written to the provider cache.
     cache_write: Int,
+    /// The reported one-hour subset of cache writes, when known.
     cache_write_1h: Option(Int),
+    /// The reported reasoning subset of output, when known.
     reasoning: Option(Int),
+    /// The provider's reported total, independent from bucket reconstruction.
     total_tokens: Int,
+    /// Dollar totals whose meaning is given by the evidence field.
     cost: UsageCost,
+    /// The coverage and rate basis behind the numeric observation.
+    evidence: usage_evidence.Evidence,
   )
 }
 
