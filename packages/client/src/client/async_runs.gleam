@@ -12,6 +12,9 @@
 ////
 //// 1. `start` runs the service actor and sends itself `Recover`, so `recover`
 ////    fences records a previous incarnation left behind before any request.
+////    A record left starting or running is asked about in `ask_survivors`, a
+////    run of its own whose answers arrive as `Recovered` messages, so the
+////    service keeps answering while the question waits on an executor.
 //// 2. `launch` and `interact` are bounded calls through `ask`; `handle`
 ////    serializes them with the managed-task reports and ends each turn in
 ////    `resume`, which rebuilds the selector over the live workers.
@@ -64,13 +67,24 @@ pub type Wiring {
     /// work.
     heartbeat_ms: Int,
     /// What recovery may still learn about an execution a previous service
-    /// left starting or running: its value, when the program finished and the
-    /// value was stored somewhere that outlived the service. A local
-    /// execution's value lived only in the worker, so `no_value_survives`
-    /// answers nothing; an execution on an executor asks the executor's
-    /// ledger. Anything but a value records the execution as lost.
-    surviving_value: fn(execution.Execution) -> Result(JsonValue, Nil),
+    /// left starting or running.
+    surviving_value: Survival,
   )
+}
+
+/// Whether an execution's value can outlive the service that ran it, and where
+/// recovery asks for it.
+pub type Survival {
+  /// A local execution's value lived only in the worker. Recovery records
+  /// every unfinished execution lost before it serves any request.
+  NothingSurvives
+
+  /// An execution on an executor stored its value in the executor's ledger.
+  /// Recovery asks `read` about each unfinished execution in a run of its
+  /// own, and records a value it finds as the result; anything but a value
+  /// records the execution lost. The service answers requests while the
+  /// questions wait.
+  AskWhere(read: fn(execution.Execution) -> Result(JsonValue, Nil))
 }
 
 // The three ends somebody chose. An owner's `cancel`, an operator's abort
@@ -109,6 +123,10 @@ pub type Message {
 
   /// Fences records left by a previous incarnation before serving requests.
   Recover
+
+  /// One answer from the run that asks where a previous service's executions
+  /// stand (`surviving_value`), by the record's place in that run.
+  Recovered(pulled: weft.Pulled(Result(JsonValue, Nil), Nil))
 
   /// Revokes one initiating operation before its broker sweep.
   AbortOperation(operation: ids.OpId, reply: Subject(Result(JsonValue, String)))
@@ -192,6 +210,11 @@ type State {
     live: Dict(String, Held),
     recovering: List(execution.Execution),
     launches: Dict(String, Int),
+    /// The records a previous service left starting or running whose fate
+    /// recovery is still asking about, by their place in the asking run.
+    asking: Dict(Int, execution.Execution),
+    /// Where the asking run's answers arrive, while it runs.
+    answers: Option(Subject(weft.Pulled(Result(JsonValue, Nil), Nil))),
     /// How long each owner of a live execution has been idle, for the
     /// heartbeat. Volatile, like the executions it counts.
     idle: notice.IdleClock,
@@ -201,20 +224,6 @@ type State {
     /// minutes.
     next_sample_ms: Int,
   )
-}
-
-/// The recovery answer for executions whose value cannot outlive the service
-/// that ran them, which is every local one.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // async_runs.Wiring(.., surviving_value: async_runs.no_value_survives)
-/// ```
-pub fn no_value_survives(
-  _record: execution.Execution,
-) -> Result(JsonValue, Nil) {
-  Error(Nil)
 }
 
 /// Starts a named service under the session's supervision tree.
@@ -239,6 +248,8 @@ pub fn start(
       live: dict.new(),
       recovering: [],
       launches: dict.new(),
+      asking: dict.new(),
+      answers: None,
       idle: notice.idle_clock(),
       next_sample_ms: 0,
     ))
@@ -378,8 +389,15 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   case message {
     Recover ->
       case recover(state.wiring) {
-        Ok(#(recovering, launches)) ->
-          resume(State(..state, recovering:, launches:))
+        Ok(#(recovering, launches, asking)) ->
+          State(..state, recovering:, launches:)
+          |> ask_survivors(asking)
+          |> resume
+        Error(reason) -> actor.stop_abnormal(reason)
+      }
+    Recovered(pulled:) ->
+      case recovered(state, pulled) {
+        Ok(state) -> resume(state)
         Error(reason) -> actor.stop_abnormal(reason)
       }
     AbortOperation(operation:, reply:) -> {
@@ -440,6 +458,10 @@ fn resume(state: State) -> actor.Next(State, Message) {
         })
       },
     )
+  let selector = case state.answers {
+    None -> selector
+    Some(answers) -> process.select_map(selector, answers, Recovered)
+  }
   actor.continue(state) |> actor.with_selector(selector)
 }
 
@@ -1244,70 +1266,188 @@ fn sweep(state: State) -> State {
 
 fn recover(
   wiring: Wiring,
-) -> Result(#(List(execution.Execution), Dict(String, Int)), String) {
+) -> Result(
+  #(List(execution.Execution), Dict(String, Int), List(execution.Execution)),
+  String,
+) {
   use cells <- result.try(
     api.reserved_facts(wiring.runtime, execution.prefix <> "record/")
     |> result.map_error(string.inspect),
   )
   use records <- result.try(
     list.try_map(cells, fn(pair) {
-      use record <- result.try(
-        execution.decode(pair.1)
-        |> result.replace_error("corrupt saved execution"),
-      )
+      execution.decode(pair.1)
+      |> result.replace_error("corrupt saved execution")
+    }),
+  )
+
+  // A record that was starting or running may have a value that outlived the
+  // service when it ran on an executor; asking takes a round trip per record
+  // to wherever the value is kept, so those are asked about in a run of their
+  // own (`ask_survivors`) and the service answers requests meanwhile. Every
+  // other record is settled here, before any request is served.
+  use settled <- result.try(
+    list.try_map(records, fn(record) {
       case record.phase {
-        execution.Finished(_) -> Ok(#(record, None))
+        execution.Finished(_) -> Ok(Settled(record))
         execution.Lost(_) -> {
           wiring.abort(record.operation, record.step)
-          Ok(#(record, Some(record)))
+          Ok(Drains(record))
         }
-        execution.Starting | execution.Running | execution.Draining -> {
-          let record =
-            execution.Execution(..record, phase: ended(wiring, record))
-          use Nil <- result.try(save(wiring.runtime, record))
-          case record.phase {
-            execution.Finished(_) -> Nil
-            execution.Lost(_)
-            | execution.Starting
-            | execution.Running
-            | execution.Draining -> wiring.abort(record.operation, record.step)
+        execution.Starting | execution.Running ->
+          case wiring.surviving_value {
+            AskWhere(..) -> Ok(Asked(record))
+            NothingSurvives -> {
+              use record <- result.try(conclude(
+                wiring,
+                record,
+                execution.Lost(restarted_reason),
+              ))
+              Ok(Drains(record))
+            }
           }
-
-          // This recovery is what ended the execution, so nobody has been
-          // told; one already terminal was told, or chose not to be, by
-          // the incarnation that wrote it. An execution recovered as finished
-          // still has its owned children drained by the sweep, as a finished
-          // one always does.
-          tell(wiring.runtime, record)
-          Ok(#(record, Some(record)))
+        execution.Draining -> {
+          use record <- result.try(conclude(
+            wiring,
+            record,
+            execution.Lost(restarted_reason),
+          ))
+          Ok(Drains(record))
         }
       }
     }),
   )
   let launches =
-    list.fold(records, dict.new(), fn(counts, pair) {
-      increment_launch(counts, pair.0.operation)
+    list.fold(records, dict.new(), fn(counts, record) {
+      increment_launch(counts, record.operation)
     })
   Ok(#(
-    list.filter_map(records, fn(pair) { option.to_result(pair.1, Nil) }),
+    list.filter_map(settled, fn(found) {
+      case found {
+        Drains(record) -> Ok(record)
+        Settled(..) | Asked(..) -> Error(Nil)
+      }
+    }),
     launches,
+    list.filter_map(settled, fn(found) {
+      case found {
+        Asked(record) -> Ok(record)
+        Settled(..) | Drains(..) -> Error(Nil)
+      }
+    }),
   ))
 }
 
-// How recovery ends an execution a previous service left unfinished. A record
-// that was starting or running is asked about once: a value that outlived the
-// service is the program's result, as a tool call recovers a stored outcome.
-// A draining record had already been told to stop, and every other answer means
-// the program's end is unknown, so both are lost and never resumed.
-fn ended(wiring: Wiring, record: execution.Execution) -> execution.Phase {
-  let restarted = execution.Lost("execution service restarted")
-  case record.phase {
-    execution.Starting | execution.Running ->
-      case wiring.surviving_value(record) {
-        Ok(value) -> execution.Finished(value)
-        Error(Nil) -> restarted
+// What recovery does with one saved record: nothing more, sweep its owned
+// children until they drain, or ask whether its value outlived the service.
+type Found {
+  Settled(record: execution.Execution)
+  Drains(record: execution.Execution)
+  Asked(record: execution.Execution)
+}
+
+const restarted_reason = "execution service restarted"
+
+// Saves the phase recovery decided for a record a previous service left
+// unfinished, stops what may still run, and tells the launcher. This recovery
+// is what ended the execution, so nobody has been told; one already terminal
+// was told, or chose not to be, by the incarnation that wrote it. An execution
+// recovered as finished still has its owned children drained by the sweep, as
+// a finished one always does.
+fn conclude(
+  wiring: Wiring,
+  record: execution.Execution,
+  phase: execution.Phase,
+) -> Result(execution.Execution, String) {
+  let record = execution.Execution(..record, phase:)
+  use Nil <- result.try(save(wiring.runtime, record))
+  case phase {
+    execution.Finished(_) -> Nil
+    execution.Lost(_)
+    | execution.Starting
+    | execution.Running
+    | execution.Draining -> wiring.abort(record.operation, record.step)
+  }
+  tell(wiring.runtime, record)
+  Ok(record)
+}
+
+// Starts the run that asks, for every record a previous service left starting
+// or running, whether its value outlived the service, all at once. Each
+// answer comes back as a `Recovered` message, so a store that is slow or an
+// executor that cannot be reached delays only these records and never the
+// service's other requests.
+fn ask_survivors(state: State, asking: List(execution.Execution)) -> State {
+  case asking, state.wiring.surviving_value {
+    [], _ | _, NothingSurvives -> state
+    _, AskWhere(read:) -> {
+      let answers = process.new_subject()
+      let _relay =
+        weft.new(list.map(asking, fn(record) { fn() { Ok(read(record)) } }))
+        |> weft.start_relayed(to: answers)
+      State(
+        ..state,
+        asking: dict.from_list(
+          list.index_map(asking, fn(record, index) { #(index, record) }),
+        ),
+        answers: Some(answers),
+      )
+    }
+  }
+}
+
+// One report from the asking run. A value that outlived the service is the
+// program's result, as a tool call recovers a stored outcome; any other
+// ending, including a question that crashed, means the program's end is
+// unknown, so the record is lost and never resumed.
+fn recovered(
+  state: State,
+  pulled: weft.Pulled(Result(JsonValue, Nil), Nil),
+) -> Result(State, String) {
+  case pulled {
+    weft.NotYet -> Ok(state)
+    weft.PulledOutcome(outcome:) ->
+      case outcome {
+        weft.Completed(index:, value: Ok(value)) ->
+          answered(state, index, execution.Finished(value))
+        weft.Completed(index:, value: Error(Nil))
+        | weft.Failed(index:, error: Nil)
+        | weft.Crashed(index:, reason: _)
+        | weft.Abandoned(index:)
+        | weft.NeverStarted(index:)
+        | weft.DrainProofLost(index:, reason: _)
+        | weft.CancellationUnconfirmed(index:) ->
+          answered(state, index, execution.Lost(restarted_reason))
       }
-    execution.Draining | execution.Finished(_) | execution.Lost(_) -> restarted
+
+    // The run is over. A record it never reported on is lost.
+    weft.AllDelivered | weft.RunLost(reason: _) -> {
+      use state <- result.try(
+        list.try_fold(dict.keys(state.asking), state, fn(state, index) {
+          answered(state, index, execution.Lost(restarted_reason))
+        }),
+      )
+      Ok(State(..state, answers: None))
+    }
+  }
+}
+
+fn answered(
+  state: State,
+  index: Int,
+  phase: execution.Phase,
+) -> Result(State, String) {
+  case dict.get(state.asking, index) {
+    Error(Nil) -> Ok(state)
+    Ok(record) -> {
+      use record <- result.try(conclude(state.wiring, record, phase))
+      Ok(
+        State(..state, asking: dict.delete(state.asking, index), recovering: [
+          record,
+          ..state.recovering
+        ]),
+      )
+    }
   }
 }
 
