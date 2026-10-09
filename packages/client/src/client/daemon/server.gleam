@@ -3989,11 +3989,54 @@ fn peer_directory(
   )
 }
 
+/// How a session that is not resident here stands for peer mail, read from
+/// the catalogue without opening it.
+@internal
+pub type Standing {
+  /// The catalogue holds it and its owner can open it: a message waits.
+  Unopened
+
+  /// The catalogue handed it to another orchestrator and holds only the record
+  /// of whom. The sender's lookup was stale. A message waits, because the next
+  /// attempt looks again and follows the move, where a refusal would end it.
+  Handed
+
+  /// The owner archived it. Opening it needs a restore first, which nothing a
+  /// message does can ask for, so a message is refused as for a session that
+  /// is gone.
+  Archived
+
+  /// The catalogue does not hold it, or could not say.
+  Unheld
+}
+
+/// Reads a non-resident session's standing in one visibility read and, for a
+/// session that is not archived, one custody read.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // server.standing(registry, "0198...") == server.Unopened
+/// ```
+@internal
+pub fn standing(registry: manager.Manager(instance), id: String) -> Standing {
+  case manager.visibility(registry, id) {
+    Error(_) -> Unheld
+    Ok(catalogue.Archived) -> Archived
+    Ok(catalogue.Active) ->
+      case manager.custody(registry, id) {
+        Ok(catalogue.Moved(..)) -> Handed
+        Ok(_) | Error(_) -> Unopened
+      }
+  }
+}
+
 /// Resolves a recipient on this daemon to the endpoint of its resident
 /// session, and says why it cannot. A session that is not resident but that
-/// this catalogue holds is `NotOpen`: its message can be admitted once the
-/// owner opens it, and nothing here opens it. A session this catalogue does
-/// not hold, and a resident whose endpoint is not available, are `Refused`.
+/// this catalogue holds and can open is `NotOpen`: its message can be admitted
+/// once the owner opens it, and nothing here opens it. A session this
+/// catalogue does not hold, an archived one, and a resident whose endpoint is
+/// not available, are `Refused`.
 ///
 /// `project` turns a resident into its endpoint, or into the failure that says
 /// it has none.
@@ -4012,9 +4055,10 @@ pub fn local_peer(
     case manager.resolve(registry, id) {
       Ok(resident) -> project(resident)
       Error(error) ->
-        case manager.get(registry, id) {
-          Ok(_) -> Error(peer_mail.NotOpen)
-          Error(_) -> Error(peer_mail.Refused(error_code(error)))
+        case standing(registry, id) {
+          Unopened | Handed -> Error(peer_mail.NotOpen)
+          Archived -> Error(peer_mail.Refused("session_archived"))
+          Unheld -> Error(peer_mail.Refused(error_code(error)))
         }
     }
   }

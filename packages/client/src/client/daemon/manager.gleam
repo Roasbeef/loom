@@ -626,6 +626,10 @@ type Message(instance) {
   /// Who serves a session, read without waking it.
   Custody(String, Subject(Result(catalogue.Custody, Error)))
 
+  /// Whether the owner archived a session, read without waking it. A session
+  /// this catalogue does not hold is `Catalogue(Missing)`.
+  Visibility(String, Subject(Result(catalogue.Visibility, Error)))
+
   /// The owner's request to hand a session to the orchestrator named, under the
   /// operation identity the caller minted: the caller, the epoch, the session,
   /// the destination and the identity.
@@ -1741,6 +1745,24 @@ pub fn custody(
   |> result.unwrap(Error(Unavailable))
 }
 
+/// Reads whether a session is archived without opening it. A session this
+/// catalogue does not hold is `Error(Catalogue(Missing))`, so one read tells
+/// absent from held.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.visibility(registry, session_id) == Ok(catalogue.Active)
+/// ```
+@internal
+pub fn visibility(
+  manager: Manager(instance),
+  id: String,
+) -> Result(catalogue.Visibility, Error) {
+  call.try_call(manager.commands, waiting: 5000, sending: Visibility(id, _))
+  |> result.unwrap(Error(Unavailable))
+}
+
 /// Begins handing a session to the orchestrator `to` under the move `op`, as
 /// the owner, in one registry turn: the intent is committed and the session's
 /// slot is stopped together, so no runtime can open the store after the intent
@@ -2411,6 +2433,13 @@ fn handle(
       process.send(
         reply,
         catalogue.custody(book.catalogue, id) |> result.map_error(Catalogue),
+      )
+      sm.keep(book)
+    }
+    Visibility(id, reply) -> {
+      process.send(
+        reply,
+        catalogue.visibility(book.catalogue, id) |> result.map_error(Catalogue),
       )
       sm.keep(book)
     }

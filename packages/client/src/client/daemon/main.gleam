@@ -577,9 +577,10 @@ pub fn start_orchestrator_port(
 /// resident here, the way the control commands reach the same session
 /// (`server.peer_endpoint`): resolve the identity with the manager and call the
 /// session's own endpoint. A session that is not resident but that this
-/// catalogue holds answers `peer_mail.not_open_reason`, which the sender turns
-/// back into `NotOpen` and waits on. One this catalogue does not hold answers
-/// `peers.not_running`, a refusal, because nothing here will ever open it.
+/// catalogue holds and can open answers `peer_mail.not_open_reason`, which the
+/// sender turns back into `NotOpen` and waits on. One this catalogue does not
+/// hold, or that its owner archived, answers `peers.not_running`, a refusal,
+/// because a message will never cause it to open.
 ///
 /// ## Examples
 ///
@@ -594,9 +595,9 @@ pub fn peer_command(
   fn(session, command) {
     case manager.resolve(registry, session) {
       Error(_) ->
-        case manager.get(registry, session) {
-          Ok(_) -> Error(peer_mail.not_open_reason)
-          Error(_) -> Error(peers.not_running)
+        case server.standing(registry, session) {
+          server.Unopened | server.Handed -> Error(peer_mail.not_open_reason)
+          server.Archived | server.Unheld -> Error(peers.not_running)
         }
       Ok(resident) ->
         case endpoint(resident) {
