@@ -2581,6 +2581,11 @@ fn blob_jail_fixture(name: String) -> BlobJail {
     )
   let state = root <> "/state"
   let workspace = root <> "/work"
+
+  // The counter in the name restarts with the VM, so a directory a failed
+  // run left behind can have this name. Stale files would be listed by the
+  // jail and change what the test asserts.
+  let _stale = simplifile.delete(root)
   make(workspace)
   make(state <> "/sessions")
   make(state <> "/run")
