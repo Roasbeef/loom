@@ -62,7 +62,7 @@ derived from. The *head* is a register naming the rows currently in force.
 The per-source cursors and the notes cursor are registers too.
 
 **The pipeline** on the managed path is
-`client/distill.gleam:634` (`prepare`). It runs in four steps:
+`client/distill.gleam:660` (`prepare`). It runs in four steps:
 
 1. Resolve explicit catalogue sources, after cleanup ownership is published.
 2. Extract candidates from each source on a cheap model.

@@ -163,12 +163,14 @@ import client/goalloop
 import client/goalstate
 import client/internal/session_owner
 import client/notes
+import core/accounting
 import core/clock.{type Clock}
 import core/entry.{type Entry}
 import core/ids.{type EntryId, type OpId, type Seq}
 import core/json.{type JsonValue}
 import core/message.{type AgentMessage}
 import core/register
+import core/usage_evidence
 import events/bus
 import gleam/bool
 import gleam/erlang/process.{type Subject}
@@ -2518,13 +2520,18 @@ fn summed(
   rows: List(entry.UsageRow),
   primaries: Set(EntryId),
 ) -> goalstate.Goal {
-  let #(tokens, cost, through) =
-    tally(rows, primaries, 0, 0.0, goal.accounted_through_seq)
+  let #(usage, through) =
+    tally(rows, primaries, accounting.zero_usage(), goal.accounted_through_seq)
 
   goalstate.Goal(
     ..goal,
-    tokens_used: goal.tokens_used + tokens,
-    cost_used: goal.cost_used +. cost,
+    // The delta a primary row adds is uncached input plus output. `input`
+      // already excludes cache reads and writes, so subtracting them here would
+      // discount the same tokens twice. `reasoning` is a subset of `output` and
+      // is not added again (protocol 044 §5).
+      tokens_used: goal.tokens_used + usage.input + usage.output,
+    cost_used: goal.cost_used +. usage.cost.total,
+    cost_evidence: usage_evidence.add(goal.cost_evidence, usage.evidence),
     accounted_through_seq: through,
   )
 }
@@ -2535,26 +2542,20 @@ fn summed(
 fn tally(
   rows: List(entry.UsageRow),
   primaries: Set(EntryId),
-  tokens: Int,
-  cost: Float,
+  usage: message.Usage,
   through: Int,
-) -> #(Int, Float, Int) {
+) -> #(message.Usage, Int) {
   case rows {
-    [] -> #(tokens, cost, through)
+    [] -> #(usage, through)
 
-    [row, ..rest] ->
-      case the_primarys(row, primaries) {
-        True ->
-          tally(
-            rest,
-            primaries,
-            tokens + non_cached(row),
-            cost +. row.usage.cost.total,
-            int.max(through, row.seq),
-          )
-
-        False -> tally(rest, primaries, tokens, cost, int.max(through, row.seq))
+    [row, ..rest] -> {
+      let usage = case the_primarys(row, primaries) {
+        True -> accounting.add_usage(usage, row.usage)
+        False -> usage
       }
+
+      tally(rest, primaries, usage, int.max(through, row.seq))
+    }
   }
 }
 
@@ -2896,15 +2897,6 @@ fn feed_slice(
           }
       }
   }
-}
-
-// The delta a primary row adds: non-cached input plus output, floored
-// at zero. `reasoning` is a subset of `output` and is not added on top
-// (the double-count the proposal's formula avoids); `cache_write_1h`
-// is a subset of `cache_write` and folds into it (protocol 044 §5).
-fn non_cached(row: entry.UsageRow) -> Int {
-  int.max(row.usage.input - row.usage.cache_read - row.usage.cache_write, 0)
-  + row.usage.output
 }
 
 fn decide(

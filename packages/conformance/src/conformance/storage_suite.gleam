@@ -53,6 +53,7 @@ import core/tx.{
   type Tx, Corruption, DeleteRegister, Expect, Faulted, InsertEntry, InsertUsage,
   SetRegister, StaleExpectation, Tx,
 }
+import core/usage_evidence
 import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -172,6 +173,7 @@ fn usage_of(input: Int) -> message.Usage {
       cache_write: 0.0,
       total: 0.002,
     ),
+    evidence: usage_evidence.priced_api(),
   )
 }
 

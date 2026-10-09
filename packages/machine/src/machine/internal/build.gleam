@@ -7,10 +7,11 @@
 //// register keys pi's spec derives from ids (`{op}:{step}:{index}`,
 //// `{op}:{task}`).
 
+import core/accounting
 import core/entry.{UsageRow}
 import core/ids.{type EntryId, type OpId, type Seq, type UsageId}
 import core/json.{type JsonValue}
-import core/message.{type AgentMessage, type Usage, Usage, UsageCost}
+import core/message.{type AgentMessage, type Usage}
 import core/register.{type RegisterNs}
 import core/tx.{type SeqExpectation, type Write, Expect}
 import gleam/int
@@ -290,22 +291,25 @@ pub fn usage_row(
   ))
 }
 
-/// A zero usage value, for synthetic settlements.
-pub fn zero_usage() -> Usage {
-  Usage(
-    input: 0,
-    output: 0,
-    cache_read: 0,
-    cache_write: 0,
-    cache_write_1h: None,
-    reasoning: None,
-    total_tokens: 0,
-    cost: UsageCost(
-      input: 0.0,
-      output: 0.0,
-      cache_read: 0.0,
-      cache_write: 0.0,
-      total: 0.0,
-    ),
-  )
+/// Builds the single ledger row for one provider request.
+/// The row owns the aggregate while its details retain the final observation.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // build.request_usage_row(id, Some(entry), report)
+/// ```
+pub fn request_usage_row(
+  id: UsageId,
+  entry_id: Option(EntryId),
+  report: accounting.RequestAccounting,
+) -> Write {
+  tx.InsertUsage(UsageRow(
+    id:,
+    seq: 0,
+    entry_id:,
+    adjustment: False,
+    usage: accounting.total(report),
+    details: Some(accounting.details(report, [])),
+  ))
 }

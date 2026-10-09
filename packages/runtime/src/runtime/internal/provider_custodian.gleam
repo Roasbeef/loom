@@ -75,6 +75,8 @@
 //// preserves the new drain evidence. They are separate because one PID cannot
 //// both propagate a provider crash and remain alive to witness its cleanup.
 
+import core/accounting
+import core/usage_evidence
 import gleam/erlang/process.{type Monitor, type Pid, type Subject}
 import gleam/option.{None, Some}
 import provider/custodian
@@ -298,9 +300,12 @@ fn published(
 fn unstarted(outer: Subject(stream.StreamEvent)) -> Prepared {
   process.send(
     outer,
-    stream.Failed(error: stream.TransportFailed(
-      reason: "the provider request worker did not start",
-    )),
+    stream.Failed(
+      error: stream.TransportFailed(
+        reason: "the provider request worker did not start",
+      ),
+      accounting: accounting.empty(),
+    ),
   )
   Prepared(
     handle: stream.immediate(events: outer, cancel: fn() { Nil }),
@@ -675,7 +680,12 @@ fn unconfirmed(request: Request, data: Data) -> sm.Next(Phase, Data, Msg) {
   deliver(
     request,
     stream.contextual_event(
-      stream.Failed(error: stream.CancellationUnconfirmed),
+      stream.Failed(
+        error: stream.CancellationUnconfirmed,
+        accounting: accounting.from_usage(accounting.unknown_usage(
+          usage_evidence.Other,
+        )),
+      ),
       request.context,
     ),
   )

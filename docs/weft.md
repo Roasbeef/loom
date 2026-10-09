@@ -236,7 +236,7 @@ graph), and is used here at once. One hex release is cut when the surface
 has settled, and the path dependencies switch back to a hex range in one
 commit before the branch merges; `docs/plan.md` in the weft repository is
 its handoff and records every ruling the engine has made. That range is
-currently an exact pin, `weft = "== 0.4.5"` in all ten direct consumers,
+currently an exact pin, `weft = "== 0.4.6"` in all ten direct consumers,
 because `e9b46e1f` ("build: lock daemon runtime dependencies") locked the
 whole shared host graph to the revisions the daemon work reviewed. Why an
 exact pin rather than `">= 0.4.5 and < 0.5.0"`, which would admit a patch
@@ -257,3 +257,11 @@ carries the periodic timeout kind and the injected clock for `weft/poll`,
 and 0.4.2 carries the injectable timer source that let the last
 hand-rolled generation tag in this tree
 (`client/schedulescan`'s) be deleted rather than documented.
+
+### Worker-custody fix in 0.4.6
+
+Weft 0.4.6 changes how an unreported managed worker crash cleans up its
+adopted owners: it now starts their cancellation before waiting for their
+drain proofs. Before, the engine could wait for a proof that only that
+cancellation could produce. Native ChatGPT HTTP exposed the ordering; the fix
+keeps the original drain witnesses and the existing public API.

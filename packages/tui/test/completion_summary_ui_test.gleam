@@ -5,6 +5,7 @@ import core/clock
 import core/entry
 import core/ids
 import core/message
+import core/usage_evidence
 import etui/backend
 import etui/geometry
 import etui/widgets/textarea
@@ -12,6 +13,7 @@ import gleam/option.{None, Some}
 import gleam/string
 import session_view/composer
 import session_view/live_jobs
+import session_view/model as session_model
 import session_view/protocol
 import session_view/session_channel
 import session_view/shared_set
@@ -51,6 +53,48 @@ fn painted(model) {
 
 fn key(model, value) {
   tui.update(backend.KeyPress(value), model)
+}
+
+pub fn usage_inspector_preserves_subscription_estimate_evidence_test() {
+  let initial = model()
+  let measured =
+    usage_evidence.with_price(
+      usage_evidence.reported(usage_evidence.ChatGptPlan),
+      usage_evidence.ChatGptReferenceRates,
+    )
+  let partial =
+    usage_evidence.add(
+      measured,
+      usage_evidence.unknown(usage_evidence.ChatGptPlan),
+    )
+  let usage =
+    message.Usage(
+      ..initial.shared.usage,
+      cost: message.UsageCost(..initial.shared.usage.cost, total: 0.42),
+      evidence: partial,
+    )
+  let priced =
+    tui_model.Model(
+      ..initial,
+      shared: session_model.Shared(..initial.shared, usage:),
+    )
+  let text = painted(side_surfaces.open_summary(priced) |> key("2"))
+  assert string.contains(text, "Cost API ref partial est $0.42")
+
+  // A request without price evidence cannot become a displayed zero charge.
+  let unknown =
+    tui_model.Model(
+      ..initial,
+      shared: session_model.Shared(
+        ..initial.shared,
+        usage: message.Usage(
+          ..initial.shared.usage,
+          evidence: usage_evidence.unknown(usage_evidence.ChatGptPlan),
+        ),
+      ),
+    )
+  let text = painted(side_surfaces.open_summary(unknown) |> key("2"))
+  assert string.contains(text, "Cost est —")
 }
 
 pub fn summary_without_captured_evidence_keeps_composer_and_reports_absence_test() {
@@ -148,6 +192,7 @@ pub fn summary_separates_current_context_from_cumulative_usage_test() {
       Some(20),
       680,
       initial.shared.usage.cost,
+      usage_evidence.priced_api(),
     )
   let cumulative =
     message.Usage(

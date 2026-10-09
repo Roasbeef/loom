@@ -701,6 +701,7 @@ fn entry(
     thinking: model.ThinkingOff,
     vision: catalog.TextOnly,
     max_images: 8,
+    cyber_access: None,
     pricing: None,
   )
 }
@@ -747,6 +748,7 @@ fn settings(root: String, script: Subject(ScriptMessage)) -> serve.Settings {
     peer_directory: None,
     peer_defaults: None,
     first_prompt: None,
+    profile_desk: None,
     codemode_sockets: None,
     secrets: secret.env(),
     secret_failures: [],

@@ -6,6 +6,7 @@ import core/ids
 import core/json
 import core/message
 import core/register
+import core/usage_evidence
 import gleam/list
 import gleam/option.{None, Some}
 import support/generate
@@ -117,6 +118,10 @@ fn sample_usage() -> message.Usage {
       cache_write: 0.02,
       total: 0.33,
     ),
+    evidence: usage_evidence.with_price(
+      usage_evidence.reported(usage_evidence.Api),
+      usage_evidence.ApiRates,
+    ),
   )
 }
 
@@ -132,6 +137,7 @@ pub fn usage_uses_pi_field_names_test() {
       "reasoning",
       "totalTokens",
       "cost",
+      "evidence",
     ]
 }
 
@@ -336,4 +342,65 @@ fn sample_usage_row() -> entry.UsageRow {
     usage: sample_usage(),
     details: None,
   )
+}
+
+// Historical quantities remain readable, but their zeros carry no new claim.
+pub fn usage_historical_absent_evidence_defaults_unknown_test() {
+  let current = sample_usage()
+  let assert json.Object(fields) = codec.encode_usage(current)
+    as "usage encodes an object"
+  let historical =
+    json.Object(list.filter(fields, fn(field) { field.0 != "evidence" }))
+  assert codec.decode_usage(historical)
+    == Ok(
+      message.Usage(
+        ..current,
+        evidence: usage_evidence.unknown(usage_evidence.Other),
+      ),
+    )
+}
+
+pub fn usage_evidence_is_strict_while_signed_adjustments_remain_readable_test() {
+  let current = sample_usage()
+  let assert json.Object(fields) = codec.encode_usage(current)
+    as "usage fixture encodes an object"
+  list.each([json.Null, json.Int(1), json.Object([])], fn(value) {
+    let assert Error(_) =
+      codec.decode_usage(json.Object(list.key_set(fields, "evidence", value)))
+      as "present malformed evidence cannot become historical unknown"
+  })
+  list.each(
+    [
+      "input",
+      "output",
+      "cacheRead",
+      "cacheWrite",
+      "cacheWrite1h",
+      "reasoning",
+      "totalTokens",
+    ],
+    fn(name) {
+      let historical =
+        json.Object(list.key_set(
+          list.filter(fields, fn(field) { field.0 != "evidence" }),
+          name,
+          json.Int(-1),
+        ))
+      let assert Ok(decoded) = codec.decode_usage(historical)
+        as "signed historical reconciliation counters remain readable"
+      assert decoded.evidence == usage_evidence.unknown(usage_evidence.Other)
+    },
+  )
+  let assert Error(_) =
+    codec.decode_usage(codec.encode_usage(
+      message.Usage(..current, evidence: usage_evidence.none()),
+    ))
+    as "nonzero quantities cannot claim local no expense"
+  let negative_cost = message.UsageCost(..current.cost, total: -0.1)
+  let signed = message.Usage(..current, input: -1, cost: negative_cost)
+  assert codec.decode_usage(codec.encode_usage(signed)) == Ok(signed)
+  let #(id, _) = ids.mint_usage(ids.generator(clock.fixed(at: 1), seed: 5))
+  let adjustment = entry.UsageRow(id, 1, None, True, signed, None)
+  assert codec.decode_usage_row(codec.encode_usage_row(adjustment))
+    == Ok(adjustment)
 }

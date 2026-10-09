@@ -24,9 +24,12 @@
 //// and `cache_write` counts the tokens written into it. Nothing is
 //// double-counted, so the cost is a plain weighted sum, and
 //// `reasoning`/`cache_write_1h` are subsets of buckets already priced and
-//// are not charged again.
+//// are not charged again. When the endpoint omits a cache partition, the
+//// adapter keeps partial evidence: the bucket allocation and its estimate
+//// are provisional even when the reported prompt total is available.
 
 import core/message.{type Usage, Usage, UsageCost}
+import core/usage_evidence
 import gleam/int
 
 /// One model's rate card, in US dollars per million tokens.
@@ -49,11 +52,8 @@ pub type Pricing {
   )
 }
 
-/// The zero rate card: a model with no `[models.<name>.pricing]` table.
-///
-/// Pricing an unpriced model is not an error, it costs nothing — which is
-/// exactly what the harness recorded before this layer existed, so an
-/// operator who annotates none of their models sees no change.
+/// An explicitly configured zero rate card. Absence of a rate card is
+/// unavailable pricing and must never be replaced by this value.
 ///
 /// ## Examples
 ///
@@ -91,9 +91,17 @@ pub fn price(usage: Usage, card: Pricing) -> Usage {
   // independently computed figure, so the breakdown always reconciles with
   // the headline the status bar shows.
   let total = input +. output +. cache_read +. cache_write
+  let basis = case usage.evidence {
+    usage_evidence.Remote(usage_evidence.ChatGptPlan, _) ->
+      usage_evidence.ChatGptReferenceRates
+    usage_evidence.Remote(usage_evidence.Api, _)
+    | usage_evidence.Remote(usage_evidence.Other, _)
+    | usage_evidence.NoProvider -> usage_evidence.ApiRates
+  }
   Usage(
     ..usage,
     cost: UsageCost(input:, output:, cache_read:, cache_write:, total:),
+    evidence: usage_evidence.with_price(usage.evidence, basis),
   )
 }
 

@@ -1,10 +1,13 @@
+import core/accounting
 import core/message
+import core/usage_evidence
 import gleam/bit_array
 import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import provider/adapter/anthropic
 import provider/adapter/openai
 import provider/fixture
 import provider/http
@@ -291,20 +294,8 @@ pub fn settle_accepts_settled_assistant_test() {
 
 fn zero_usage() -> message.Usage {
   message.Usage(
-    input: 0,
-    output: 0,
-    cache_read: 0,
-    cache_write: 0,
-    cache_write_1h: None,
-    reasoning: None,
-    total_tokens: 0,
-    cost: message.UsageCost(
-      input: 0.0,
-      output: 0.0,
-      cache_read: 0.0,
-      cache_write: 0.0,
-      total: 0.0,
-    ),
+    ..accounting.zero_usage(),
+    evidence: usage_evidence.reported(usage_evidence.Api),
   )
 }
 
@@ -315,16 +306,34 @@ fn echo_machine() -> stream.ResponseMachine(Int) {
   stream.ResponseMachine(
     init: 0,
     on_status: fn(count, _status, _headers) { count },
+    usage: fn(count) {
+      message.Usage(
+        ..zero_usage(),
+        input: count,
+        total_tokens: count,
+        evidence: usage_evidence.partial(usage_evidence.Api),
+      )
+    },
     on_chunk: fn(count, _chunk) {
       #(count + 1, [
         stream.Delta(stream.TextDelta(index: 0, text: "chunk")),
       ])
     },
     on_end: fn(_count) {
-      [stream.Failed(stream.StreamDisconnected(context: "echo done"))]
+      [
+        stream.Failed(
+          stream.StreamDisconnected(context: "echo done"),
+          accounting: accounting.empty(),
+        ),
+      ]
     },
     on_failure: fn(_count, reason) {
-      [stream.Failed(stream.TransportFailed(reason:))]
+      [
+        stream.Failed(
+          stream.TransportFailed(reason:),
+          accounting: accounting.empty(),
+        ),
+      ]
     },
   )
 }
@@ -360,9 +369,10 @@ pub fn run_delivers_deltas_and_returns_terminal_test() {
       within: 1000,
     )
   assert bare_terminal(terminal)
-    == stream.AttemptTerminal(
-      stream.Failed(stream.StreamDisconnected(context: "echo done")),
-    )
+    == stream.AttemptTerminal(stream.Failed(
+      stream.StreamDisconnected(context: "echo done"),
+      accounting: accounting.empty(),
+    ))
   assert receive_from(deltas, 100)
     == Ok(stream.TextDelta(index: 0, text: "chunk"))
 }
@@ -424,9 +434,10 @@ pub fn run_waits_for_normal_terminal_owner_without_cancellation_grace_test() {
   assert early == Error(Nil)
   let assert Ok(outcome) = receive_from(outcomes, 1000)
   assert bare_terminal(outcome)
-    == stream.AttemptTerminal(
-      stream.Failed(stream.StreamDisconnected(context: "echo done")),
-    )
+    == stream.AttemptTerminal(stream.Failed(
+      stream.StreamDisconnected(context: "echo done"),
+      accounting: accounting.empty(),
+    ))
 }
 
 pub fn run_chunk_terminal_waits_for_normal_owner_exit_test() {
@@ -503,11 +514,10 @@ pub fn run_times_out_in_band_test() {
       within: 50,
     )
   assert bare_terminal(terminal)
-    == stream.AttemptTerminal(
-      stream.Failed(stream.TransportFailed(
-        reason: "timed out waiting for the provider",
-      )),
-    )
+    == stream.AttemptTerminal(stream.Failed(
+      stream.TransportFailed(reason: "timed out waiting for the provider"),
+      accounting: accounting.empty(),
+    ))
   assert receive_from(cancelled, 100) == Ok(Nil)
 }
 
@@ -525,11 +535,10 @@ pub fn run_deadline_is_not_refreshed_by_active_chunks_test() {
       within: 40,
     )
   assert bare_terminal(outcome)
-    == stream.AttemptTerminal(
-      stream.Failed(stream.TransportFailed(
-        reason: "timed out waiting for the provider",
-      )),
-    )
+    == stream.AttemptTerminal(stream.Failed(
+      stream.TransportFailed(reason: "timed out waiting for the provider"),
+      accounting: accounting.empty(),
+    ))
   assert receive_from(cancelled, 100) == Ok(Nil)
 }
 
@@ -548,9 +557,10 @@ pub fn run_rejects_a_response_over_the_cumulative_byte_budget_test() {
       consumer: process.self(),
       within: 1000,
     )
-  let assert stream.AttemptTerminal(stream.Failed(stream.MalformedStream(
-    report: report,
-  ))) = outcome
+  let assert stream.AttemptTerminal(stream.Failed(
+    stream.MalformedStream(report: report),
+    accounting: _,
+  )) = outcome
   assert string.contains(report.context, "cumulative byte budget")
   assert receive_from(cancelled, 100) == Ok(Nil)
 }
@@ -570,9 +580,10 @@ pub fn run_transport_failure_in_band_test() {
       within: 1000,
     )
   assert bare_terminal(terminal)
-    == stream.AttemptTerminal(
-      stream.Failed(stream.TransportFailed(reason: "connection refused")),
-    )
+    == stream.AttemptTerminal(stream.Failed(
+      stream.TransportFailed(reason: "connection refused"),
+      accounting: accounting.empty(),
+    ))
 }
 
 pub fn run_explicit_cancel_stops_transport_test() {
@@ -589,7 +600,7 @@ pub fn run_explicit_cancel_stops_transport_test() {
       consumer: process.self(),
       within: 1000,
     )
-  let assert stream.AttemptCancelled(context) = outcome
+  let assert stream.AttemptCancelled(context, accounting: _) = outcome
     as "the attempt owns cancellation"
   assert context.cause == stream.CancellationRequested
   assert context.request_timeout_ms == Some(1000)
@@ -661,7 +672,8 @@ pub fn run_cancel_between_chunks_drops_late_http_terminal_test() {
 
   process.send(control, stream.Cancel)
 
-  let assert Ok(stream.AttemptCancelled(context)) = receive_from(outcomes, 1000)
+  let assert Ok(stream.AttemptCancelled(context, accounting: _)) =
+    receive_from(outcomes, 1000)
     as "cancellation remains a route-stopping outcome"
   assert context.cause == stream.CancellationRequested
   assert receive_from(cancelled, 100) == Ok(Nil)
@@ -702,7 +714,8 @@ pub fn run_timeout_refuses_to_retry_stubborn_transport_owner_test() {
       within: 20,
     )
   let assert Ok(owner) = receive_from(owners, 100)
-  let assert stream.AttemptCancellationUnconfirmed(context) = outcome
+  let assert stream.AttemptCancellationUnconfirmed(context, accounting: _) =
+    outcome
     as "the stubborn owner has not confirmed drain"
   assert context.cause == stream.RequestDeadline
   assert context.request_timeout_ms == Some(20)
@@ -744,11 +757,12 @@ pub fn run_transport_death_fails_in_band_test() {
       within: 1000,
     )
   assert bare_terminal(outcome)
-    == stream.AttemptTerminal(
-      stream.Failed(stream.TransportFailed(
+    == stream.AttemptTerminal(stream.Failed(
+      stream.TransportFailed(
         reason: "provider transport stopped before a terminal response",
-      )),
-    )
+      ),
+      accounting: accounting.empty(),
+    ))
 }
 
 pub fn run_start_failure_fails_once_in_band_test() {
@@ -767,9 +781,10 @@ pub fn run_start_failure_fails_once_in_band_test() {
       within: 1000,
     )
   assert bare_terminal(outcome)
-    == stream.AttemptTerminal(
-      stream.Failed(stream.TransportFailed(reason: "start failed: unavailable")),
-    )
+    == stream.AttemptTerminal(stream.Failed(
+      stream.TransportFailed(reason: "start failed: unavailable"),
+      accounting: accounting.empty(),
+    ))
 }
 
 pub fn run_tracked_publishes_owner_before_transport_start_test() {
@@ -824,7 +839,7 @@ pub fn run_tracked_publishes_owner_before_transport_start_test() {
   assert receive_from(transport_started, 20) == Error(Nil)
   process.send(permit, Nil)
   assert receive_from(transport_started, 1000) == Ok(Nil)
-  let assert Ok(stream.AttemptDrainProofLost(context)) =
+  let assert Ok(stream.AttemptDrainProofLost(context, accounting: _)) =
     receive_from(outcomes, 1000)
     as "abnormal retirement cannot prove drain"
   assert context.source == stream.AttemptSource
@@ -1008,8 +1023,50 @@ fn receive_from(subject: process.Subject(a), timeout: Int) -> Result(a, Nil) {
 
 fn bare_terminal(outcome) {
   case outcome {
-    stream.AttemptTerminal(stream.Failed(error)) ->
-      stream.AttemptTerminal(stream.Failed(stream.underlying_error(error)))
+    stream.AttemptTerminal(stream.Failed(error, accounting: _)) ->
+      stream.AttemptTerminal(stream.Failed(
+        stream.underlying_error(error),
+        accounting: accounting.empty(),
+      ))
     _ -> outcome
   }
+}
+
+pub fn cancellation_retains_reported_usage_snapshot_test() {
+  let cancelled = process_subject()
+  let control = process_subject()
+  let transcript =
+    fixture.sse_event(
+      "message_start",
+      "{\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":7,\"output_tokens\":0,\"cache_read_input_tokens\":2,\"cache_creation_input_tokens\":1}}}",
+    )
+    <> fixture.sse_event(
+      "content_block_start",
+      "{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"observed\"}}",
+    )
+  let outcome =
+    stream.run(
+      repeating_transport(
+        cancelled,
+        bit_array.from_string(transcript),
+        every_ms: 1000,
+      ),
+      http.HttpRequest(method: "POST", url: "http://x", headers: [], body: ""),
+      anthropic.response_machine(
+        fixture.resolved("anthropic", "fixture-model"),
+        now: 0,
+      ),
+      fn(_delta) { process.send(control, stream.Cancel) },
+      control:,
+      consumer: process.self(),
+      within: 2000,
+    )
+  let assert stream.AttemptCancelled(_, accounting: report) = outcome
+    as "the delivered delta orders cancellation after the measured input"
+  let usage = accounting.total(report)
+  assert #(usage.input, usage.cache_read, usage.cache_write, usage.total_tokens)
+    == #(7, 2, 1, 10)
+  assert accounting.attempts(report) == 1
+  assert usage.evidence == usage_evidence.partial(usage_evidence.Api)
+  assert receive_from(cancelled, 1000) == Ok(Nil)
 }

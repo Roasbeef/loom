@@ -336,13 +336,17 @@ fn number_element(number: String) -> Element(message) {
 }
 
 // A figure's label and its number: `ctx ~41%` is the word `ctx` and the
-// emphasised `~41%`. A figure with no space is all emphasis.
+// emphasised `~41%`. The number is the last token and the label is everything
+// before it, because the cost words carry qualifiers ahead of the marker
+// (`API ref partial est $1.00`, `mixed rates est $2.10`) and only the amount
+// is emphasis. A figure with no space is all emphasis.
 fn figure_words(words: String) -> List(Element(message)) {
-  case string.split_once(words, " ") {
-    Ok(#(label, number)) -> [
-      html.text(label <> " "),
+  case list.reverse(string.split(words, " ")) {
+    [number, last_label, ..earlier] -> [
+      html.text(string.join(list.reverse([last_label, ..earlier]), " ") <> " "),
       number_element(number),
     ]
-    Error(Nil) -> [number_element(words)]
+
+    [_] | [] -> [number_element(words)]
   }
 }

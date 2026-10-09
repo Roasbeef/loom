@@ -31,6 +31,13 @@
 //// tool executions, deferred fetches, and summary requests go through the
 //// intent/settle sandwich as `Dispatch`.
 ////
+//// Provider settlements carry two independent observations. The assistant
+//// message retains the final attempt for context projection; `request_usage_row`
+//// writes all attempts under the request's one reserved ledger ID. Recovery
+//// records unknown coverage when a terminal was lost. The transaction that
+//// advances the operation also commits that row, so re-planning cannot charge
+//// the same request twice.
+////
 //// ## Flow
 ////
 //// `next_action` → `run_action` → `checkpoint_action` → `assistant_action` → `tools_action` → `finish`
@@ -115,6 +122,7 @@
 //// - **shared helpers** — entry placement, batch planning, the synthetic
 ////   messages recovery commits, stop-reason normalization, backoff.
 
+import core/accounting
 import core/corruption.{type CorruptionReport}
 import core/ids.{type EntryId, type OpId, type Seq, type UsageId}
 import core/json.{type JsonValue}
@@ -124,6 +132,7 @@ import core/message.{
   CustomMessage, Errored, Length, ToolResultMessage, ToolResultText, UserMessage,
 }
 import core/tx.{type Tx, type Write, Tx}
+import core/usage_evidence
 import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/int
@@ -350,7 +359,11 @@ pub type Observation {
   /// supplied (on request via `OverflowPreparationKey`) when the
   /// settlement classifies as a first overflow.
   ObservedAssistantSettled(
+    /// The final response whose usage remains suitable for context estimation.
     settled: SettledAssistantMessage,
+    /// Every attempt retained by this provider request, including fallbacks.
+    accounting: accounting.RequestAccounting,
+    /// The first overflow's preparation, when the runtime has supplied it.
     overflow_preparation: Option(PreparationOutcome),
   )
 
@@ -398,7 +411,12 @@ pub type Observation {
   ObservedResolution(resolution: ModelResolution)
 
   /// The pending deferred fetch settled.
-  ObservedDeferredSettled(settled: SettledAssistantMessage)
+  ObservedDeferredSettled(
+    /// The final response produced by the poll.
+    settled: SettledAssistantMessage,
+    /// The poll request's complete retained accounting report.
+    accounting: accounting.RequestAccounting,
+  )
 
   /// The pending deferred fetch is orphaned; recovery replaces the poll
   /// under fresh ids at the same poll number once a permit and identity
@@ -409,7 +427,10 @@ pub type Observation {
   ObservedStructuralDecision(verdict: StructuralVerdict)
 
   /// The current nested summary request returned with its usage.
-  ObservedSummaryReturned(usage: Usage)
+  ObservedSummaryReturned(
+    /// The nested request's report, retained even when inference failed.
+    accounting: accounting.RequestAccounting,
+  )
 
   /// The attempt's progress after its latest request cleared.
   ObservedSummaryProgress(progress: SummaryProgress)
@@ -1223,7 +1244,7 @@ fn await_generation(pass: RunPass, attempt: AssistantAttempt) -> Action {
   let RunPass(op:, in:, ..) = pass
   let AssistantAttempt(context:, response_entry:, ..) = attempt
   case in.observation {
-    ObservedAssistantSettled(settled:, overflow_preparation:) ->
+    ObservedAssistantSettled(settled:, overflow_preparation:, ..) ->
       settle_assistant(pass, attempt, settled, overflow_preparation)
     ObservedAssistantOrphaned(partial:) ->
       settle_orphaned_assistant(pass, attempt, partial)
@@ -1380,7 +1401,7 @@ fn enter_overflow_compaction(
   transition(pass, next, [
     build.message_entry(response_entry, in.leaf, normalized, False),
     build.set_leaf(op.strand, Some(response_entry)),
-    build.usage_row(usage, Some(response_entry), message_usage(message)),
+    request_usage_row(pass, usage, response_entry, message),
     build.set_preparation(op.id, task_id, preparation),
     build.set_op_state(op.id, next),
   ])
@@ -1475,7 +1496,7 @@ fn settle_writes(
   [
     build.message_entry(response_entry, in.leaf, message, False),
     build.set_leaf(op.strand, Some(response_entry)),
-    build.usage_row(usage_id, Some(response_entry), message_usage(message)),
+    request_usage_row(pass, usage_id, response_entry, message),
     build.set_op_state(op.id, next),
   ]
 }
@@ -2370,7 +2391,7 @@ fn await_poll(
   let RunPass(op:, in:, ..) = pass
   let Fetch(step_id:, poll:, ..) = fetch
   case in.observation {
-    ObservedDeferredSettled(settled:) ->
+    ObservedDeferredSettled(settled:, ..) ->
       settle_poll(pass, fetch, response_entry, usage, settled)
     ObservedDeferredOrphaned | ObservedResolution(..) ->
       reconcile_orphaned_poll(pass, fetch, response_entry, usage)
@@ -2397,7 +2418,8 @@ fn reconcile_orphaned_poll(
   case pass.control {
     CancelRequested(..) ->
       settle_cancelled_poll(pass, fetch, response_entry, usage)
-    Running -> replace_orphaned_poll(pass, fetch)
+    Running ->
+      record_uncertain_request(replace_orphaned_poll(pass, fetch), usage)
   }
 }
 
@@ -2405,8 +2427,9 @@ fn reconcile_orphaned_poll(
 /// so it is simply made again under *fresh* ids at the **same** poll
 /// number — the poll count measures permits spent against the source
 /// handle, and a replacement is not a new poll. The abandoned reserved
-/// ids are never materialized. The replacement still costs a permit,
-/// which is why the same guard as `start_poll` opens this function.
+/// response entry is never materialized; its usage row records uncertainty.
+/// The replacement still costs a permit, which is why the same guard as
+/// `start_poll` opens this function.
 fn replace_orphaned_poll(pass: RunPass, fetch: Fetch) -> Action {
   let RunPass(op:, in:, ..) = pass
   let Fetch(source_entry:, step_id:, poll:, ..) = fetch
@@ -2696,7 +2719,7 @@ fn settle_cancelled_poll(
       response_model: None,
       response_id: None,
       diagnostics: None,
-      usage: build.zero_usage(),
+      usage: accounting.unknown_usage(usage_evidence.Other),
       stop_reason: Aborted,
       deferred: None,
       error_message: Some("deferred poll aborted"),
@@ -2842,7 +2865,7 @@ fn reconcile_pending_assistant(
   let RunPass(op:, in:, ..) = pass
   let AssistantAttempt(context:, response_entry:, ..) = attempt
   case in.observation {
-    ObservedAssistantSettled(settled:, overflow_preparation: _) ->
+    ObservedAssistantSettled(settled:, overflow_preparation: _, ..) ->
       settle_assistant(pass, attempt, settled, None)
     ObservedAssistantOrphaned(partial:) ->
       settle_orphaned_assistant(pass, attempt, partial)
@@ -3165,7 +3188,7 @@ fn settle_summary_request(
 ) -> Action {
   let StructuralTask(op:, in:, task_id:, host:) = task
   case in.observation {
-    ObservedSummaryReturned(usage:) -> {
+    ObservedSummaryReturned(accounting: report) -> {
       let next_generation =
         SummaryEffectPending(
           context:,
@@ -3175,15 +3198,24 @@ fn settle_summary_request(
         )
       let next =
         host_state(host, Generating(task_id:, generation: next_generation))
+
+      // A request that failed before any provider attempt spent nothing. The
+      // reserved ID stays in `usage_ids` so request numbering is stable, but
+      // no ledger row records a zero-attempt report.
+      let rows = case accounting.attempts(report) {
+        0 -> []
+        _ -> [build.request_usage_row(request.usage, None, report)]
+      }
       Transition(
         next:,
-        tx: op_tx(op, in, [
-          build.usage_row(request.usage, None, usage),
-          build.set_op_state(op.id, next),
-        ]),
+        tx: op_tx(op, in, list.append(rows, [build.set_op_state(op.id, next)])),
       )
     }
-    ObservedSummaryOrphaned -> advance_orphaned_summary(task, context, attempt)
+    ObservedSummaryOrphaned ->
+      record_uncertain_request(
+        advance_orphaned_summary(task, context, attempt),
+        request.usage,
+      )
     NoObservation ->
       AwaitEffect(key: SummaryKey(operation: op.id, task_id:, attempt:))
     other -> unexpected_observation(op, "summary request pending", other)
@@ -4206,7 +4238,7 @@ fn synthetic_response(
     response_model: None,
     response_id: None,
     diagnostics: None,
-    usage: build.zero_usage(),
+    usage: accounting.unknown_usage(usage_evidence.Other),
     stop_reason:,
     deferred: None,
     error_message: Some(error_message),
@@ -4256,10 +4288,62 @@ fn overflow_operation_error(message: AgentMessage) -> OperationError {
   )
 }
 
-fn message_usage(message: AgentMessage) -> Usage {
-  case message {
-    AssistantMessage(usage:, ..) -> usage
-    _ -> build.zero_usage()
+// The independent provider report is the ledger authority. Recovery has only
+// the synthetic message's unknown observation, so it records that uncertainty
+// under the same reserved row rather than pretending the request was free.
+fn request_usage_row(
+  pass: RunPass,
+  usage_id: UsageId,
+  response_entry: EntryId,
+  message: AgentMessage,
+) -> Write {
+  let report = case pass.in.observation {
+    ObservedAssistantSettled(accounting: report, ..)
+    | ObservedDeferredSettled(accounting: report, ..) -> report
+    NoObservation
+    | ObservedRunStart(..)
+    | ObservedAdmission(..)
+    | ObservedAssistantOrphaned(..)
+    | ObservedToolCleared(..)
+    | ObservedToolRefused(..)
+    | ObservedToolSettled(..)
+    | ObservedToolOrphaned(..)
+    | ObservedResolution(..)
+    | ObservedDeferredOrphaned
+    | ObservedStructuralDecision(..)
+    | ObservedSummaryReturned(..)
+    | ObservedSummaryProgress(..)
+    | ObservedSummaryOrphaned
+    | ObservedRunEnd(..) ->
+      // A settlement that carries no assistant message cannot establish that
+      // the request was free, so it is recorded as unknown remote usage.
+      accounting.from_usage(case message {
+        AssistantMessage(usage:, ..) -> usage
+        UserMessage(..) | ToolResultMessage(..) | CustomMessage(..) ->
+          accounting.unknown_usage(usage_evidence.Other)
+      })
+  }
+  build.request_usage_row(usage_id, Some(response_entry), report)
+}
+
+// When recovery replaces a request, its reserved usage ID records uncertainty
+// in the same transaction that advances state. An admission wait writes
+// nothing, so repeated planning cannot charge the abandoned request twice.
+fn record_uncertain_request(action: Action, usage_id: UsageId) -> Action {
+  let row =
+    build.request_usage_row(
+      usage_id,
+      None,
+      accounting.from_usage(accounting.unknown_usage(usage_evidence.Other)),
+    )
+  case action {
+    Transition(next:, tx:) ->
+      Transition(next:, tx: tx.Tx(..tx, writes: [row, ..tx.writes]))
+    Dispatch(intent:, next:, tx:) ->
+      Dispatch(intent:, next:, tx: tx.Tx(..tx, writes: [row, ..tx.writes]))
+    Finish(result:, tx:) ->
+      Finish(result:, tx: tx.Tx(..tx, writes: [row, ..tx.writes]))
+    AwaitEffect(..) | Wait(..) | Fault(..) -> action
   }
 }
 
@@ -4275,8 +4359,8 @@ fn message_api(message: AgentMessage) -> String {
 /// Only an assistant message has one. The other three constructors are
 /// spelled out rather than swept into a catch-all because the answer
 /// given for them is a *specific* stop reason and not an admission of
-/// ignorance — `message_usage` and `message_api` above can say "zero"
-/// and "unknown", and this return type has no such word. `Stop` is
+/// ignorance — `message_api` above can say "unknown", and this
+/// return type has no such word. `Stop` is
 /// therefore load-bearing: the sole caller distinguishes `Length` from
 /// everything else, so answering `Stop` for a source that is not an
 /// assistant message is the claim "this response was not truncated".

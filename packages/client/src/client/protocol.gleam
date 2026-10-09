@@ -86,6 +86,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import storage/catalogue
 
 /// The one protocol version this gateway speaks. A different `v` on the
 /// wire is a refused frame, never tolerated drift.
@@ -294,6 +295,17 @@ pub type Command {
   /// Change gateway-defined configuration keys.
   SetConfig(strand: Option(String), config: JsonValue)
 
+  /// Reads the session's model role profile and the profile names the
+  /// daemon's configuration defines, answered by a `profile` snapshot
+  /// (protocol-change/082). Empty-bodied: a session has one profile, so there
+  /// is nothing to scope.
+  ProfileGet
+
+  /// Switches the session's saved model role profile and restarts the session
+  /// to apply it. `None` is the configuration's default roles. The reply is a
+  /// `profile` snapshot, and the connection closes when the restart begins.
+  ProfileSet(profile: Option(String))
+
   /// List every schedule this session holds — the operator's
   /// `[[schedule]]` tables and the strands' own — answered by a
   /// `schedules` snapshot. Read-only, and deliberately empty-bodied:
@@ -428,6 +440,20 @@ pub type Snapshot {
   /// both `permissions` and a successful `permission_forget`, so one reply
   /// redraws the list after a forget.
   PermissionsSnapshot(board: JsonValue)
+
+  /// The session's model role profile and the profiles the configuration
+  /// defines: the reply to both `profile_get` and `profile_set`
+  /// (protocol-change/082). `switched` is present only in the reply to a
+  /// switch, as the number of strands it moved, and its presence says the
+  /// session is restarting to apply the profile.
+  ProfileSnapshot(
+    /// The profile the session routes by, or `None` for the default roles.
+    current: Option(String),
+    /// The profile names the configuration defines, sorted.
+    available: List(String),
+    /// How many strands a switch moved; `None` for a read.
+    switched: Option(Int),
+  )
 }
 
 /// One schedule as the protocol lists it.
@@ -703,13 +729,31 @@ pub type Event {
   GoalChanged
 
   /// One usage-ledger append.
-  UsageEvent(strand: String, op: Option(String), usage: Usage)
+  UsageEvent(
+    /// The strand whose request produced this row.
+    strand: String,
+    /// The operation owning the request, when present.
+    op: Option(String),
+    /// Request totals across every retained attempt.
+    usage: Usage,
+    /// The final attempt for context projection; None means no observation.
+    last_usage: Option(Usage),
+  )
 
   /// A bounded, unsolicited reading of one usage row.
   ///
   /// Its distinct wire name keeps older terminals from treating a pushed
   /// observation as another cumulative ledger append.
-  UsageObservationEvent(strand: String, op: Option(String), usage: Usage)
+  UsageObservationEvent(
+    /// The strand whose request produced this row.
+    strand: String,
+    /// The operation owning the request, when present.
+    op: Option(String),
+    /// Request totals observed from the durable ledger.
+    usage: Usage,
+    /// The final attempt, separately from cumulative consumption.
+    last_usage: Option(Usage),
+  )
 
   /// An escalation lifecycle change.
   EscalationEvent(record: EscalationRecord)
@@ -1007,6 +1051,11 @@ fn command_body(command: Command) -> #(String, JsonValue) {
         #("strand", option.map(strand, json.String)),
         #("config", Some(config)),
       ]),
+    )
+    ProfileGet -> #("profile_get", json.Object([]))
+    ProfileSet(profile:) -> #(
+      "profile_set",
+      object_of([#("profile", option.map(profile, json.String))]),
     )
     ListSchedules -> #("schedules", json.Object([]))
     CancelSchedule(target:, name:) -> #(
@@ -1412,6 +1461,15 @@ fn decode_command_body(
     }
 
     // Empty-bodied for the same reason `models` is: it scopes nothing.
+    "profile_get" -> {
+      use _ <- result.try(body_fields(body))
+      Ok(ProfileGet)
+    }
+    "profile_set" -> {
+      use fields <- result.try(body_fields(body))
+      use profile <- result.try(optional_profile(fields))
+      Ok(ProfileSet(profile:))
+    }
     "schedules" -> Ok(ListSchedules)
     "schedule_cancel" -> {
       use fields <- result.try(body_fields(body))
@@ -1589,13 +1647,13 @@ fn event_body(event: Event) -> #(String, JsonValue) {
         ]),
       ),
     )
-    UsageEvent(strand:, op:, usage:) -> #(
+    UsageEvent(strand:, op:, usage:, last_usage:) -> #(
       "usage",
-      usage_body(strand, op, usage),
+      usage_body(strand, op, usage, last_usage),
     )
-    UsageObservationEvent(strand:, op:, usage:) -> #(
+    UsageObservationEvent(strand:, op:, usage:, last_usage:) -> #(
       "usage_observation",
-      usage_body(strand, op, usage),
+      usage_body(strand, op, usage, last_usage),
     )
     EscalationEvent(record:) -> #("escalation", encode_escalation(record))
     StrandResultEvent(strand:, op:, status:, error:) -> #(
@@ -1629,11 +1687,23 @@ fn event_body(event: Event) -> #(String, JsonValue) {
 
 // The credited ledger row and its unsolicited observation have identical
 // fixed-shape counters. Only their event names and delivery rules differ.
-fn usage_body(strand: String, op: Option(String), usage: Usage) -> JsonValue {
+fn usage_body(
+  strand: String,
+  op: Option(String),
+  usage: Usage,
+  last_usage: Option(Usage),
+) -> JsonValue {
   object_of([
     #("strand", Some(json.String(strand))),
     #("op", option.map(op, json.String)),
     #("usage", Some(codec.encode_usage(usage))),
+    #(
+      "last_usage",
+      Some(case last_usage {
+        None -> json.Null
+        Some(last) -> codec.encode_usage(last)
+      }),
+    ),
   ])
 }
 
@@ -1706,6 +1776,23 @@ fn encode_snapshot(snapshot: Snapshot) -> JsonValue {
       ])
     PermissionsSnapshot(board:) ->
       json.Object([#("mode", json.String("permissions")), #("board", board)])
+    ProfileSnapshot(current:, available:, switched:) ->
+      json.Object(
+        list.flatten([
+          [#("mode", json.String("profile"))],
+          // The default roles are the absence of the field, which is also how
+          // `profile_set` spells them, so a snapshot can be sent back verbatim.
+          case current {
+            Some(name) -> [#("profile", json.String(name))]
+            None -> []
+          },
+          [#("available", json.Array(list.map(available, json.String)))],
+          case switched {
+            Some(moved) -> [#("moved", json.Int(moved))]
+            None -> []
+          },
+        ]),
+      )
   }
 }
 
@@ -2033,12 +2120,12 @@ fn decode_event_body(name: String, body: JsonValue) -> Result(Event, String) {
       Ok(GoalChanged)
     }
     "usage" -> {
-      use #(strand, op, usage) <- result.try(decode_usage_body(body))
-      Ok(UsageEvent(strand:, op:, usage:))
+      use #(strand, op, usage, last_usage) <- result.try(decode_usage_body(body))
+      Ok(UsageEvent(strand:, op:, usage:, last_usage:))
     }
     "usage_observation" -> {
-      use #(strand, op, usage) <- result.try(decode_usage_body(body))
-      Ok(UsageObservationEvent(strand:, op:, usage:))
+      use #(strand, op, usage, last_usage) <- result.try(decode_usage_body(body))
+      Ok(UsageObservationEvent(strand:, op:, usage:, last_usage:))
     }
     "escalation" -> {
       use record <- result.try(decode_escalation(body))
@@ -2076,7 +2163,7 @@ fn decode_event_body(name: String, body: JsonValue) -> Result(Event, String) {
 
 fn decode_usage_body(
   body: JsonValue,
-) -> Result(#(String, Option(String), Usage), String) {
+) -> Result(#(String, Option(String), Usage, Option(Usage)), String) {
   use fields <- result.try(body_fields(body))
   use strand <- result.try(required_string(fields, "strand"))
   use op <- result.try(optional_string(fields, "op"))
@@ -2088,7 +2175,18 @@ fn decode_usage_body(
     codec.decode_usage(usage_value)
     |> result.map_error(fn(report) { report.expected }),
   )
-  Ok(#(strand, op, usage))
+
+  // Historical frames described one attempt; present null explicitly carries
+  // no final observation, and a malformed present value is refused.
+  use last_usage <- result.try(case list.key_find(fields, "last_usage") {
+    Error(Nil) -> Ok(Some(usage))
+    Ok(json.Null) -> Ok(None)
+    Ok(value) ->
+      codec.decode_usage(value)
+      |> result.map(Some)
+      |> result.map_error(fn(report) { report.expected })
+  })
+  Ok(#(strand, op, usage, last_usage))
 }
 
 // These checks bound each independent frame. The receiver additionally checks
@@ -2337,6 +2435,28 @@ fn decode_snapshot(body: JsonValue) -> Result(Event, String) {
         |> result.replace_error("missing permissions board"),
       )
       Ok(SnapshotEvent(PermissionsSnapshot(board:)))
+    }
+    "profile" -> {
+      use current <- result.try(optional_string(fields, "profile"))
+      use available <- result.try(case list.key_find(fields, "available") {
+        Error(Nil) -> Ok([])
+        Ok(json.Array(items)) ->
+          list.try_map(items, fn(item) {
+            case item {
+              json.String(name) -> Ok(name)
+              json.Object(_)
+              | json.Array(_)
+              | json.Int(_)
+              | json.Float(_)
+              | json.Bool(_)
+              | json.Null ->
+                Error("available must be an array of profile names")
+            }
+          })
+        Ok(_) -> Error("available must be an array")
+      })
+      use switched <- result.try(optional_int(fields, "moved"))
+      Ok(SnapshotEvent(ProfileSnapshot(current:, available:, switched:)))
     }
     other -> Error("unknown snapshot mode: " <> other)
   }
@@ -2887,6 +3007,27 @@ fn required_int(
     Ok(json.Int(value)) -> Ok(value)
     Ok(_) -> Error(key <> " must be an integer")
     Error(Nil) -> Error(key <> " is required")
+  }
+}
+
+const profile_words =
+  "profile must be a name of lowercase letters, numbers, _ and -, starting with a letter"
+
+// The optional profile of a `profile_set`. An absent field is the default
+// roles. A field that is present must be a profile name: null, the empty
+// string and a malformed name are refused rather than read as the default, so
+// a misspelled name can never move a session onto the default roles.
+fn optional_profile(
+  fields: List(#(String, JsonValue)),
+) -> Result(Option(String), String) {
+  case list.key_find(fields, "profile") {
+    Error(Nil) -> Ok(None)
+    Ok(json.String(name)) ->
+      case catalogue.is_profile_name(name) {
+        True -> Ok(Some(name))
+        False -> Error(profile_words)
+      }
+    Ok(_) -> Error(profile_words)
   }
 }
 

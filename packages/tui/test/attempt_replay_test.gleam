@@ -8,6 +8,7 @@ import core/entry
 import core/ids
 import core/json
 import core/message
+import core/usage_evidence
 import etui/backend
 import etui/widgets/textarea
 import gleam/bit_array
@@ -72,6 +73,7 @@ fn metadata_with_peers(peers) {
           None,
           0,
           message.UsageCost(0.0, 0.0, 0.0, 0.0, 0.0),
+          usage_evidence.none(),
         )),
       ),
       #(
@@ -450,6 +452,7 @@ pub fn credited_idle_cut_repaints_settled_answer_without_keyboard_input_test() {
           None,
           0,
           message.UsageCost(0.0, 0.0, 0.0, 0.0, 0.0),
+          usage_evidence.none(),
         ),
         message.Stop,
         None,
@@ -562,6 +565,7 @@ fn settled_row(answer: String) -> entry.Entry {
         None,
         0,
         message.UsageCost(0.0, 0.0, 0.0, 0.0, 0.0),
+        usage_evidence.none(),
       ),
       message.Stop,
       None,

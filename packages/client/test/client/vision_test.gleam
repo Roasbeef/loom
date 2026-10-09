@@ -26,6 +26,7 @@ import core/json
 import core/message
 import core/register
 import core/tx.{Expect, InsertEntry, SetRegister, Tx}
+import core/usage_evidence
 import gleam/bit_array
 import gleam/erlang/process
 import gleam/list
@@ -412,6 +413,7 @@ fn assistant_answer() -> message.AgentMessage {
         cache_write: 0.0,
         total: 0.0,
       ),
+      evidence: usage_evidence.priced_api(),
     ),
     stop_reason: message.Stop,
     deferred: None,
@@ -1377,7 +1379,7 @@ pub fn image_budget_protects_held_batch_and_recovers_next_run_test() {
     as "the fixture makes a generation request"
   let surface = wiring.build_effects(config).provider
   let handle = surface.request(effects.GenerationRequest(..spec, operation: op))
-  let assert Ok(#([], stream.Failed(error:))) =
+  let assert Ok(#([], stream.Failed(error:, accounting: _))) =
     stream.await_terminal(handle, within: 2000)
     as "the held batch must fail locally instead of losing one current image"
   let assert stream.StreamError(api_error_type: "image_limit", message:) =
@@ -1394,7 +1396,7 @@ pub fn image_budget_protects_held_batch_and_recovers_next_run_test() {
     surface.request(
       effects.GenerationRequest(..spec, operation: next_op, context:),
     )
-  let assert Ok(#(_, stream.Failed(error:))) =
+  let assert Ok(#(_, stream.Failed(error:, accounting: _))) =
     stream.await_terminal(handle, within: 2000)
     as "the fixture transport deliberately returns an HTTP error"
   let assert stream.HttpError(status: 400, ..) = stream.underlying_error(error)
@@ -1537,7 +1539,7 @@ pub fn image_budget_after_compaction_keeps_the_operation_boundary_test() {
     wiring.build_effects(config).provider.request(
       effects.GenerationRequest(..spec, operation: op),
     )
-  let assert Ok(#(_, stream.Failed(error:))) =
+  let assert Ok(#(_, stream.Failed(error:, accounting: _))) =
     stream.await_terminal(handle, within: 2000)
     as "the fixture transport must complete"
   let assert stream.HttpError(status: 400, ..) = stream.underlying_error(error)

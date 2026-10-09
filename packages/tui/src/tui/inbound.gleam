@@ -33,7 +33,6 @@
 ////    in `begin_reconnect`, which asks `reconnect_decision` if one is owed.
 
 import core/json
-import core/message
 import core/register
 import etui/widgets/textarea as text_area
 import gleam/dict.{type Dict}
@@ -782,27 +781,6 @@ fn append_returned_text(
     _ -> current <> "\n\n" <> returned
   }
   text_area.state_from_string(restored)
-}
-
-/// A usage record with every counter at zero.
-@internal
-pub fn zero_usage() -> message.Usage {
-  message.Usage(
-    input: 0,
-    output: 0,
-    cache_read: 0,
-    cache_write: 0,
-    cache_write_1h: None,
-    reasoning: None,
-    total_tokens: 0,
-    cost: message.UsageCost(
-      input: 0.0,
-      output: 0.0,
-      cache_read: 0.0,
-      cache_write: 0.0,
-      total: 0.0,
-    ),
-  )
 }
 
 /// Keeps the agent inspector's selected message valid against the current

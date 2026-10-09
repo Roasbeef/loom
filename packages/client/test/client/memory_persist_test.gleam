@@ -29,10 +29,12 @@ import client/memory
 import client/retryconf
 import client/schedule
 import client/serve
+import core/accounting
 import core/clock
 import core/ids as core_ids
 import core/json as core_json
 import core/message
+import core/usage_evidence
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{None, Some}
@@ -195,8 +197,18 @@ pub fn memory_is_protected_where_a_write_could_reach_it_test() {
 fn scripted_distiller() -> distill.Distiller {
   distill.Distiller(ask: fn(prompt) {
     case string.contains(prompt, "consolidating the durable memory") {
-      True -> Ok(distill.Answer(text: consolidated, usage: usage(9)))
-      False -> Ok(distill.Answer(text: "nothing", usage: usage(3)))
+      True ->
+        Ok(distill.Answer(
+          text: consolidated,
+          usage: usage(9),
+          accounting: accounting.from_usage(usage(9)),
+        ))
+      False ->
+        Ok(distill.Answer(
+          text: "nothing",
+          usage: usage(3),
+          accounting: accounting.from_usage(usage(3)),
+        ))
     }
   })
 }
@@ -224,6 +236,7 @@ fn settings(
     peer_directory: None,
     peer_defaults: None,
     first_prompt: None,
+    profile_desk: None,
     codemode_sockets: None,
     secrets: secret.env(),
     secret_failures: [],
@@ -287,6 +300,7 @@ fn scripted_catalog() -> catalog.Catalog {
         pricing: None,
         vision: catalog.TextOnly,
         max_images: 8,
+        cyber_access: None,
       ),
     ],
     roles: [#(model.Main, ["acme"])],
@@ -351,6 +365,7 @@ fn usage(tokens: Int) -> message.Usage {
       cache_write: 0.0,
       total: 0.0,
     ),
+    evidence: usage_evidence.priced_api(),
   )
 }
 

@@ -708,6 +708,14 @@ pub fn confirm_registration(session_id session_id: String) {
   #(sql, [dev.ParamString(session_id)])
 }
 
+pub fn set_registration_profile(
+  profile profile: String,
+  session_id session_id: String,
+) {
+  let sql = "UPDATE catalogue_sessions SET profile = ? WHERE session_id = ?"
+  #(sql, [dev.ParamString(profile), dev.ParamString(session_id)])
+}
+
 pub type RegistrationDisplayName {
   RegistrationDisplayName(name: String)
 }

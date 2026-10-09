@@ -3,12 +3,14 @@
 //// compaction (decline and empty-preparation dedup), navigation, and
 //// standalone compaction.
 
+import core/accounting
 import core/clock
 import core/entry
 import core/ids
 import core/json
 import core/message
 import core/register
+import core/usage_evidence
 import gleam/list
 import gleam/option.{None, Some}
 import machine/acceptance.{AcceptCompaction, AcceptNavigation, AcceptRun}
@@ -63,6 +65,7 @@ pub fn orphaned_poll_replaced_at_the_same_poll_number_test() {
       world,
       ObservedAssistantSettled(
         settled: fixture.settled(deferred),
+        accounting: fixture.report(fixture.settled(deferred)),
         overflow_preparation: None,
       ),
       opts(),
@@ -87,13 +90,24 @@ pub fn orphaned_poll_replaced_at_the_same_poll_number_test() {
     next: _,
     tx: replacement,
   ) = action
-  assert scenario.write_names(replacement) == ["set:op.state"]
+  assert scenario.write_names(replacement) == ["insert:usage", "set:op.state"]
+  let assert [_, orphan] = world.store.usage
+    as "Recovery must retain the abandoned poll's reserved usage row."
+  assert orphan.entry_id == None
+  assert orphan.usage.evidence == usage_evidence.unknown(usage_evidence.Other)
+  let assert Ok(report) = accounting.decode_row(orphan)
+    as "The orphan report must remain durably readable."
+  assert accounting.attempts(report) == 1
+
   // And it still settles normally afterwards.
   let ready = fixture.assistant(message.Stop, "batch finished", 30)
   let assert Ok(#(world, _writes)) =
     scenario.step_writes(
       world,
-      ObservedDeferredSettled(settled: fixture.settled(ready)),
+      ObservedDeferredSettled(
+        settled: fixture.settled(ready),
+        accounting: fixture.report(fixture.settled(ready)),
+      ),
       permit,
     )
   let assert Ok(#(_world, action)) = scenario.step(world, NoObservation, opts())
@@ -109,6 +123,7 @@ pub fn deferred_suspend_poll_resume_test() {
       world,
       ObservedAssistantSettled(
         settled: fixture.settled(deferred),
+        accounting: fixture.report(fixture.settled(deferred)),
         overflow_preparation: None,
       ),
       opts(),
@@ -140,7 +155,10 @@ pub fn deferred_suspend_poll_resume_test() {
   let assert Ok(#(world, writes)) =
     scenario.step_writes(
       world,
-      ObservedDeferredSettled(settled: fixture.settled(still_pending)),
+      ObservedDeferredSettled(
+        settled: fixture.settled(still_pending),
+        accounting: fixture.report(fixture.settled(still_pending)),
+      ),
       permit,
     )
   assert writes
@@ -165,7 +183,10 @@ pub fn deferred_suspend_poll_resume_test() {
   let assert Ok(#(world, _writes)) =
     scenario.step_writes(
       world,
-      ObservedDeferredSettled(settled: fixture.settled(ready)),
+      ObservedDeferredSettled(
+        settled: fixture.settled(ready),
+        accounting: fixture.report(fixture.settled(ready)),
+      ),
       permit,
     )
   let assert Ok(#(world, action)) = scenario.step(world, NoObservation, opts())
@@ -202,6 +223,7 @@ pub fn deferred_handle_api_checked_against_request_api_test() {
       world,
       ObservedAssistantSettled(
         settled: fixture.settled(response),
+        accounting: fixture.report(fixture.settled(response)),
         overflow_preparation: None,
       ),
       opts(),
@@ -214,7 +236,7 @@ pub fn deferred_handle_api_checked_against_request_api_test() {
 pub fn cancelled_poll_retains_reported_usage_test() {
   // ORCH-M3 (pi §4.6): a poll that really settled while cancellation was
   // durable commits normalized to aborted, retaining its reported usage —
-  // never the zero-usage synthetic reserved for unknown-outcome orphans.
+  // Orphaned requests instead retain unknown coverage.
   let world = start_run("run this as a batch job")
   let deferred = fixture.assistant_deferred(Some(fixture.handle("job-c")))
   let assert Ok(#(world, _writes)) =
@@ -222,6 +244,7 @@ pub fn cancelled_poll_retains_reported_usage_test() {
       world,
       ObservedAssistantSettled(
         settled: fixture.settled(deferred),
+        accounting: fixture.report(fixture.settled(deferred)),
         overflow_preparation: None,
       ),
       opts(),
@@ -245,10 +268,18 @@ pub fn cancelled_poll_retains_reported_usage_test() {
   let world = World(..world, store: aborted_store)
   // The genuinely-settled poll result arrives with real usage.
   let ready = fixture.assistant(message.Stop, "batch finished", 30)
+  let assert message.AssistantMessage(usage: final_usage, ..) = ready
+    as "The settled poll must carry final attempt usage."
+  let report =
+    accounting.from_usage(fixture.usage_of(10, 5))
+    |> accounting.append(final_usage)
   let assert Ok(#(world, writes)) =
     scenario.step_writes(
       world,
-      ObservedDeferredSettled(settled: fixture.settled(ready)),
+      ObservedDeferredSettled(
+        settled: fixture.settled(ready),
+        accounting: report,
+      ),
       permit,
     )
   assert writes
@@ -258,15 +289,21 @@ pub fn cancelled_poll_retains_reported_usage_test() {
   let assert Ok(RunState(latest_assistant: Some(response_id), ..)) =
     scenario.read_op_state(world.store, world.op.id)
   let assert Ok(entry.MessageEntry(
-    message: message.AssistantMessage(stop_reason: message.Aborted, ..),
+    message: message.AssistantMessage(
+      stop_reason: message.Aborted,
+      usage: committed_usage,
+      ..,
+    ),
     ..,
   )) = store.get_entry(world.store, ids.entry_id_to_string(response_id))
   let assert [row] =
     world.store.usage
     |> list.filter(fn(row) { row.entry_id == Some(response_id) })
-  // 100 input + 30 output — the fixture's real reported usage, not the
-  // zero-usage synthetic.
-  assert row.usage.total_tokens == 130
+  // Cancellation changes the stop reason while preserving both frontiers:
+  // final response usage for context and all request attempts for the ledger.
+  assert committed_usage == final_usage
+  assert row.usage.total_tokens == 145
+  assert accounting.decode_row(row) == Ok(report)
 }
 
 pub fn poll_handle_mismatch_drains_as_failure_test() {
@@ -277,6 +314,7 @@ pub fn poll_handle_mismatch_drains_as_failure_test() {
       world,
       ObservedAssistantSettled(
         settled: fixture.settled(deferred),
+        accounting: fixture.report(fixture.settled(deferred)),
         overflow_preparation: None,
       ),
       opts(),
@@ -291,7 +329,10 @@ pub fn poll_handle_mismatch_drains_as_failure_test() {
   let assert Ok(#(world, _writes)) =
     scenario.step_writes(
       world,
-      ObservedDeferredSettled(settled: fixture.settled(mismatched)),
+      ObservedDeferredSettled(
+        settled: fixture.settled(mismatched),
+        accounting: fixture.report(fixture.settled(mismatched)),
+      ),
       permit,
     )
   let assert Ok(RunState(phase: operation.FailureDrain(error:, ..), ..)) =
@@ -326,6 +367,7 @@ pub fn steer_consumed_at_checkpoint_with_skip_test() {
       world,
       ObservedAssistantSettled(
         settled: fixture.settled(answer),
+        accounting: fixture.report(fixture.settled(answer)),
         overflow_preparation: None,
       ),
       opts(),
@@ -357,6 +399,7 @@ pub fn threshold_decline_marks_boundary_test() {
       world,
       ObservedAssistantSettled(
         settled: fixture.settled(answer),
+        accounting: fixture.report(fixture.settled(answer)),
         overflow_preparation: None,
       ),
       opts(),
@@ -429,6 +472,7 @@ pub fn threshold_empty_preparation_marks_boundary_test() {
       world,
       ObservedAssistantSettled(
         settled: fixture.settled(answer),
+        accounting: fixture.report(fixture.settled(answer)),
         overflow_preparation: None,
       ),
       opts(),
@@ -476,7 +520,9 @@ pub fn standalone_compaction_generated_test() {
   let assert Ok(#(world, _writes)) =
     scenario.step_writes(
       world,
-      ObservedSummaryReturned(usage: fixture.usage_of(2000, 150)),
+      ObservedSummaryReturned(
+        accounting: accounting.from_usage(fixture.usage_of(2000, 150)),
+      ),
       opts(),
     )
   // Publication is the terminal transaction, with the compaction entry
@@ -501,6 +547,42 @@ pub fn standalone_compaction_generated_test() {
       "set:strand.state",
     ]
   assert store.list_register_keys(world.store, register.OpPreparation, "") == []
+}
+
+pub fn a_summary_request_with_no_attempt_writes_no_usage_row_test() {
+  let world = scenario.fresh()
+  let assert Ok(#(world, _accept_tx)) =
+    scenario.accept(
+      world,
+      AcceptCompaction(
+        custom_instructions: Some("be brief"),
+        preparation: Some(fixture.preparation()),
+      ),
+    )
+  let assert Ok(#(world, _writes)) =
+    scenario.step_writes(
+      world,
+      ObservedStructuralDecision(verdict: VerdictGenerate),
+      opts(),
+    )
+  let assert Ok(#(world, _writes)) =
+    scenario.step_writes(
+      world,
+      ObservedResolution(resolution: ModelResolved),
+      opts(),
+    )
+  let assert Ok(#(world, action)) = scenario.step(world, NoObservation, opts())
+  let assert Dispatch(intent: planner.SummaryProviderRequest(..), ..) = action
+
+  // The request failed before any provider attempt, so nothing was spent.
+  let assert Ok(#(world, writes)) =
+    scenario.step_writes(
+      world,
+      ObservedSummaryReturned(accounting: accounting.empty()),
+      opts(),
+    )
+  assert writes == ["set:op.state"]
+  assert world.store.usage == []
 }
 
 pub fn standalone_compaction_declined_test() {
@@ -534,6 +616,7 @@ pub fn unsummarized_navigation_completes_in_one_transaction_test() {
       world,
       ObservedAssistantSettled(
         settled: fixture.settled(answer),
+        accounting: fixture.report(fixture.settled(answer)),
         overflow_preparation: None,
       ),
       opts(),
@@ -585,6 +668,7 @@ pub fn summarized_navigation_publishes_summary_test() {
       world,
       ObservedAssistantSettled(
         settled: fixture.settled(answer),
+        accounting: fixture.report(fixture.settled(answer)),
         overflow_preparation: None,
       ),
       opts(),
@@ -667,6 +751,7 @@ pub fn a_refusal_that_ends_the_run_finishes_it_test() {
       world,
       ObservedAssistantSettled(
         settled: fixture.settled(answer),
+        accounting: fixture.report(fixture.settled(answer)),
         overflow_preparation: None,
       ),
       opts(),
@@ -712,4 +797,109 @@ fn step_until_run_end(world: World, fuel: Int) -> World {
     AwaitEffect(key: planner.RunEndKey(..)) -> next
     _ -> step_until_run_end(next, fuel - 1)
   }
+}
+
+pub fn request_ledger_aggregates_fallbacks_without_inflating_context_test() {
+  let world = start_run("answer after fallback")
+  let final = fixture.assistant(message.Stop, "the final answer", 30)
+  let assert message.AssistantMessage(usage: final_usage, ..) = final
+    as "The fixture must contain an assistant response."
+  let report =
+    accounting.from_usage(fixture.usage_of(200, 50))
+    |> accounting.append(final_usage)
+  let assert Ok(#(world, writes)) =
+    scenario.step_writes(
+      world,
+      ObservedAssistantSettled(fixture.settled(final), report, None),
+      opts(),
+    )
+    as "The completed request must commit."
+  assert writes
+    == ["insert:message", "set:strand.leaf", "insert:usage", "set:op.state"]
+  let assert [row] = world.store.usage
+    as "A logical request reserves exactly one ledger row."
+  assert row.usage == accounting.total(report)
+  assert accounting.decode_row(row) == Ok(report)
+  let assert Some(response_id) = row.entry_id
+    as "The ledger row must point at its final assistant entry."
+  let assert Ok(entry.MessageEntry(message: stored, ..)) =
+    store.get_entry(world.store, ids.entry_id_to_string(response_id))
+    as "The final assistant response must be durable."
+  assert stored == final
+}
+
+pub fn failed_summary_keeps_all_request_attempts_in_one_row_test() {
+  let world = scenario.fresh()
+  let assert Ok(#(world, _tx)) =
+    scenario.accept(world, AcceptCompaction(None, Some(fixture.preparation())))
+    as "Compaction must be admitted."
+  let assert Ok(#(world, _writes)) =
+    scenario.step_writes(
+      world,
+      ObservedStructuralDecision(VerdictGenerate),
+      opts(),
+    )
+    as "The generated summary must enter resolution."
+  let assert Ok(#(world, _writes)) =
+    scenario.step_writes(world, ObservedResolution(ModelResolved), opts())
+    as "The model must resolve."
+  let assert Ok(#(world, _action)) = scenario.step(world, NoObservation, opts())
+    as "The nested request must dispatch."
+  let uncertain =
+    message.Usage(
+      ..fixture.usage_of(0, 0),
+      evidence: usage_evidence.unknown(usage_evidence.Other),
+    )
+  let report =
+    accounting.from_usage(fixture.usage_of(200, 50))
+    |> accounting.append(uncertain)
+  let assert Ok(#(world, writes)) =
+    scenario.step_writes(world, ObservedSummaryReturned(report), opts())
+    as "Even a failed summary request must commit its report."
+  assert writes == ["insert:usage", "set:op.state"]
+  let assert [row] = world.store.usage
+    as "All fallback attempts belong to one request row."
+  assert accounting.decode_row(row) == Ok(report)
+  assert row.entry_id == None
+  let assert Ok(#(world, _action)) =
+    scenario.step(
+      world,
+      ObservedSummaryProgress(planner.SummaryFailed(
+        operation.OperationError("summary_failed", "failed", None),
+        retryable: False,
+      )),
+      opts(),
+    )
+    as "A failed summary must retain its committed consumption."
+  assert world.store.usage == [row]
+}
+
+pub fn orphaned_summary_records_uncertainty_once_before_retry_test() {
+  let world = scenario.fresh()
+  let assert Ok(#(world, _tx)) =
+    scenario.accept(world, AcceptCompaction(None, Some(fixture.preparation())))
+    as "Compaction must be admitted."
+  let assert Ok(#(world, _writes)) =
+    scenario.step_writes(
+      world,
+      ObservedStructuralDecision(VerdictGenerate),
+      opts(),
+    )
+    as "Summary generation must be selected."
+  let assert Ok(#(world, _writes)) =
+    scenario.step_writes(world, ObservedResolution(ModelResolved), opts())
+    as "The model must resolve."
+  let assert Ok(#(world, _action)) = scenario.step(world, NoObservation, opts())
+    as "The nested request must dispatch."
+  let assert Ok(#(world, writes)) =
+    scenario.step_writes(world, planner.ObservedSummaryOrphaned, opts())
+    as "The lost request must advance to retry with its uncertain row."
+  assert writes == ["insert:usage", "set:op.state"]
+  let assert [row] = world.store.usage
+    as "Recovery must retain exactly one uncertain request."
+  assert row.entry_id == None
+  assert row.usage.evidence == usage_evidence.unknown(usage_evidence.Other)
+  let assert Ok(#(world, _action)) = scenario.step(world, NoObservation, opts())
+    as "Re-planning retry must not charge the orphan twice."
+  assert world.store.usage == [row]
 }

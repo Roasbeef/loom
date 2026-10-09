@@ -20,6 +20,7 @@ import client/goalloop
 import client/goalstate
 import core/json
 import core/register
+import core/usage_evidence
 import gleam/option.{None, Some}
 import gleam/result
 import session/session.{type Session}
@@ -96,6 +97,7 @@ fn board(goal: option.Option(goalstate.Goal), now: Int) -> json.JsonValue {
         #("token_budget", json.Int(goal.token_budget)),
         #("tokens_used", json.Int(goal.tokens_used)),
         #("cost_used", json.Float(goal.cost_used)),
+        #("cost_evidence", usage_evidence.encode(goal.cost_evidence)),
         #("continuations", json.Int(goal.continuations)),
         #("created_ms", json.Int(goal.created_ms)),
         #("updated_ms", json.Int(goal.updated_ms)),

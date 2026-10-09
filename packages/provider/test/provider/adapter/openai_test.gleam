@@ -1,6 +1,8 @@
+import core/accounting
 import core/json
 import core/message
 import core/msgpack
+import core/usage_evidence
 import gleam/bit_array
 import gleam/list
 import gleam/option.{None, Some}
@@ -82,8 +84,9 @@ pub fn happy_text_settles_test() {
   let assert [
     stream.Delta(stream.TextDelta(index: 0, text: "Hello")),
     stream.Delta(stream.TextDelta(index: 0, text: " there")),
-    stream.Settled(message: settled, usage:),
+    stream.Settled(message: settled, accounting: usage),
   ] = events
+  let usage = accounting.total(usage)
   let assert message.AssistantMessage(
     content:,
     api:,
@@ -151,7 +154,7 @@ pub fn tool_call_with_streamed_arguments_test() {
     )),
     stream.Delta(stream.ToolCallDelta(arguments_json: "{\"city\":", ..)),
     stream.Delta(stream.ToolCallDelta(arguments_json: "\"Paris\"}", ..)),
-    stream.Settled(message: settled, usage: _),
+    stream.Settled(message: settled, accounting: _),
   ] = events
   let assert message.AssistantMessage(content:, stop_reason:, ..) =
     stream.message(settled)
@@ -182,7 +185,7 @@ pub fn reasoning_content_becomes_thinking_test() {
   let assert [
     stream.Delta(stream.ThinkingDelta(index: 0, thinking: "hmm")),
     stream.Delta(stream.TextDelta(index: 1, text: "Answer")),
-    stream.Settled(message: settled, usage: _),
+    stream.Settled(message: settled, accounting: _),
   ] = events
   let assert message.AssistantMessage(content:, ..) = stream.message(settled)
   assert content
@@ -201,14 +204,15 @@ pub fn reasoning_content_becomes_thinking_test() {
 pub fn stream_without_done_still_settles_on_end_test() {
   let transcript = content_chunk("hi") <> finish_chunk("stop")
   let events = fixture.drive_ok(machine(), transcript)
-  let assert [stream.Delta(_), stream.Settled(message: _, usage: _)] = events
+  let assert [stream.Delta(_), stream.Settled(message: _, accounting: _)] =
+    events
 }
 
 pub fn disconnect_before_finish_reason_fails_in_band_test() {
   let events = fixture.drive_ok(machine(), content_chunk("hi"))
   let assert [
     stream.Delta(_),
-    stream.Failed(stream.StreamDisconnected(context: _)),
+    stream.Failed(stream.StreamDisconnected(context: _), accounting: _),
   ] = events
 }
 
@@ -217,13 +221,14 @@ pub fn unknown_finish_reason_fails_in_band_test() {
   let events = fixture.drive_ok(machine(), transcript)
   let assert [
     stream.Delta(_),
-    stream.Failed(stream.UnmappedStopReason(raw: "novel_reason")),
+    stream.Failed(stream.UnmappedStopReason(raw: "novel_reason"), accounting: _),
   ] = events
 }
 
 pub fn malformed_chunk_fails_in_band_test() {
   let events = fixture.drive_ok(machine(), sse_data("{broken") <> done())
-  let assert [stream.Failed(stream.MalformedStream(report: _))] = events
+  let assert [stream.Failed(stream.MalformedStream(report: _), accounting: _)] =
+    events
 }
 
 // --- adapter-computed overflow ----------------------------------------------
@@ -233,7 +238,7 @@ pub fn silent_overflow_settles_as_error_test() {
   // usage above the window with no real output.
   let transcript = finish_chunk("stop") <> usage_chunk(260_000, 0, 0) <> done()
   let events = fixture.drive_ok(machine(), transcript)
-  let assert [stream.Settled(message: settled, usage: _)] = events
+  let assert [stream.Settled(message: settled, accounting: _)] = events
   let assert message.AssistantMessage(
     stop_reason:,
     error_message: Some(error_message),
@@ -270,7 +275,9 @@ pub fn oversized_usage_counts_clamp_and_stay_encodable_test() {
     <> usage_chunk(100_000_000_000_000_000_000, 100, 0)
     <> done()
   let events = fixture.drive_ok(machine(), transcript)
-  let assert [_delta, stream.Settled(message: settled, usage:)] = events
+  let assert [_delta, stream.Settled(message: settled, accounting: usage)] =
+    events
+  let usage = accounting.total(usage)
   assert usage.input == wire.max_usage_count
   assert usage.output == 100
   assert_usage_encodable(usage)
@@ -286,7 +293,8 @@ pub fn negative_usage_counts_clamp_to_zero_test() {
     <> usage_chunk(-260_000, -5, -9)
     <> done()
   let events = fixture.drive_ok(machine(), transcript)
-  let assert [_delta, stream.Settled(message: _, usage:)] = events
+  let assert [_delta, stream.Settled(message: _, accounting: usage)] = events
+  let usage = accounting.total(usage)
   assert usage.input == 0
   assert usage.output == 0
   assert usage.cache_read == 0
@@ -303,15 +311,18 @@ pub fn server_error_with_json_body_test() {
         "{\"error\":{\"message\":\"The server had an error\",\"type\":\"server_error\",\"code\":null}}",
       ),
     ])
-  assert events
-    == [
-      stream.Failed(stream.HttpError(
+  let assert [
+    stream.Failed(
+      stream.HttpError(
         status: 500,
         api_error_type: "server_error",
         message: "The server had an error",
         retry_after_ms: None,
-      )),
-    ]
+      ),
+      accounting: _,
+    ),
+  ] = events
+    as "the failure remains in band"
 }
 
 pub fn untyped_mid_stream_throttle_classifies_retryable_test() {
@@ -325,7 +336,7 @@ pub fn untyped_mid_stream_throttle_classifies_retryable_test() {
     )
     <> done()
   let events = fixture.drive_ok(machine(), transcript)
-  let assert [stream.Failed(failure)] = events
+  let assert [stream.Failed(failure, accounting: _)] = events
   assert retry.classify(failure) == retry.Retryable(backoff_hint_ms: None)
 }
 
@@ -334,7 +345,9 @@ pub fn oversized_http_error_body_fails_at_the_byte_budget_test() {
     fixture.drive(machine(), status: 500, headers: [], chunks: [
       bit_array.from_string(string.repeat("x", 65_537)),
     ])
-  let assert [stream.Failed(stream.MalformedStream(report: report))] = events
+  let assert [
+    stream.Failed(stream.MalformedStream(report: report), accounting: _),
+  ] = events
   assert string.contains(report.context, "exceeded its byte budget")
 }
 
@@ -523,7 +536,8 @@ pub fn cache_read_and_write_split_out_of_prompt_tokens_test() {
   let transcript =
     finish_chunk("stop") <> cached_usage_chunk(9000, 40, 7000, 1500) <> done()
   let events = fixture.drive_ok(machine(), transcript)
-  let assert [stream.Settled(message: settled, usage:)] = events
+  let assert [stream.Settled(message: settled, accounting: usage)] = events
+  let usage = accounting.total(usage)
   assert usage.cache_read == 7000
   assert usage.cache_write == 1500
   assert usage.input == 500
@@ -543,7 +557,8 @@ pub fn an_absent_cache_write_count_reads_as_zero_test() {
   // missing field must read as "nothing reported", not shift `input`.
   let transcript = finish_chunk("stop") <> usage_chunk(9000, 40, 7000) <> done()
   let events = fixture.drive_ok(machine(), transcript)
-  let assert [stream.Settled(message: _, usage:)] = events
+  let assert [stream.Settled(message: _, accounting: usage)] = events
+  let usage = accounting.total(usage)
   assert usage.cache_read == 7000
   assert usage.cache_write == 0
   assert usage.input == 2000
@@ -556,7 +571,8 @@ pub fn an_impossible_cache_write_count_cannot_drive_input_negative_test() {
   let transcript =
     finish_chunk("stop") <> cached_usage_chunk(1000, 5, 900, 5000) <> done()
   let events = fixture.drive_ok(machine(), transcript)
-  let assert [stream.Settled(message: _, usage:)] = events
+  let assert [stream.Settled(message: _, accounting: usage)] = events
+  let usage = accounting.total(usage)
   assert usage.cache_read == 900
   assert usage.cache_write == 100
   assert usage.input == 0
@@ -571,7 +587,7 @@ pub fn cache_write_counts_toward_overflow_test() {
     <> cached_usage_chunk(260_000, 0, 100_000, 60_000)
     <> done()
   let events = fixture.drive_ok(machine(), transcript)
-  let assert [stream.Settled(message: settled, usage: _)] = events
+  let assert [stream.Settled(message: settled, accounting: _)] = events
   let assert message.AssistantMessage(
     stop_reason:,
     error_message: Some(error_message),
@@ -616,7 +632,8 @@ fn one_malformed_tool_call_transcript() -> String {
 
 pub fn malformed_tool_arguments_settle_the_stream_test() {
   let events = fixture.drive_ok(machine(), one_malformed_tool_call_transcript())
-  let assert Ok(stream.Settled(message: settled, usage: _)) = list.last(events)
+  let assert Ok(stream.Settled(message: settled, accounting: _)) =
+    list.last(events)
   let assert message.AssistantMessage(content:, stop_reason:, ..) =
     stream.message(settled)
 
@@ -638,7 +655,8 @@ pub fn malformed_tool_arguments_settle_the_stream_test() {
 
 pub fn malformed_tool_arguments_carry_the_raw_text_and_the_error_test() {
   let events = fixture.drive_ok(machine(), one_malformed_tool_call_transcript())
-  let assert Ok(stream.Settled(message: settled, usage: _)) = list.last(events)
+  let assert Ok(stream.Settled(message: settled, accounting: _)) =
+    list.last(events)
   let assert message.AssistantMessage(
     content: [_text, message.AssistantToolCall(call: bad), _good],
     ..,
@@ -713,4 +731,52 @@ fn image_result(
     is_error: False,
     timestamp: 2,
   )
+}
+
+pub fn repeated_usage_then_disconnect_retains_one_partial_attempt_test() {
+  let snapshot = usage_chunk(10, 3, 4)
+  let assert [stream.Failed(stream.StreamDisconnected(_), accounting: report)] =
+    fixture.drive_ok(machine(), snapshot <> snapshot)
+    as "usage-only snapshots retain their measured prefix on disconnect"
+  let usage = accounting.total(report)
+  assert #(usage.input, usage.cache_read, usage.output, usage.total_tokens)
+    == #(6, 4, 3, 13)
+  assert accounting.attempts(report) == 1
+  assert usage.evidence == usage_evidence.partial(usage_evidence.Api)
+}
+
+pub fn finished_usage_requires_the_cache_partition_witness_test() {
+  let missing_cache =
+    chunk(
+      "\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":3}",
+    )
+  let assert [stream.Settled(_, accounting: partial)] =
+    fixture.drive_ok(machine(), finish_chunk("stop") <> missing_cache <> done())
+    as "an inclusive prompt count leaves cache allocation provisional"
+  let assert [stream.Settled(_, accounting: complete)] =
+    fixture.drive_ok(
+      machine(),
+      finish_chunk("stop") <> usage_chunk(10, 3, 0) <> done(),
+    )
+    as "explicit zero cache usage is a measurement"
+  assert accounting.total(partial).total_tokens == 13
+  assert accounting.total(partial).evidence
+    == usage_evidence.partial(usage_evidence.Api)
+  assert accounting.total(complete).evidence
+    == usage_evidence.reported(usage_evidence.Api)
+}
+
+pub fn stale_preterminal_usage_remains_partial_after_output_finishes_test() {
+  let assert [stream.Delta(_), stream.Settled(_, accounting: report)] =
+    fixture.drive_ok(
+      machine(),
+      usage_chunk(10, 1, 4)
+        <> content_chunk("later output")
+        <> finish_chunk("stop")
+        <> done(),
+    )
+    as "finishReason cannot promote an earlier running output measurement"
+  assert accounting.total(report).output == 1
+  assert accounting.total(report).evidence
+    == usage_evidence.partial(usage_evidence.Api)
 }

@@ -830,3 +830,17 @@ than in a commit message.
    the evaluation dropped, `a_resume_offers_the_goal_feed_at_once_test` fails,
    which is the test standing guard over the stall `/goal resume` reached
    through the operator's own door.
+
+## Addendum: request evidence under protocol 081
+
+Protocol 081 adds `cost_evidence` to the durable goal cell and its observer
+board. It records coverage and rate basis alongside the displayed cost,
+without changing continuation gates. New goals start with the no-consumption
+identity, historical cells without the field retain unknown evidence, and
+malformed present fields are refused. The writer adds the witness with each
+primary row and the same durable accounting cursor. Goal panels label plan
+costs as API reference estimates and partial evidence as partial estimates.
+
+The primary token formula is `Usage.input + Usage.output`. Input is already
+the uncached bucket. Cache-read and cache-write counts must not be subtracted
+from it again, and reasoning must not be added to output again.

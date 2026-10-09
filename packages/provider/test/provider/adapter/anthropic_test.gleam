@@ -1,6 +1,8 @@
+import core/accounting
 import core/json
 import core/message
 import core/msgpack
+import core/usage_evidence
 import gleam/bit_array
 import gleam/list
 import gleam/option.{None, Some}
@@ -90,8 +92,9 @@ pub fn happy_text_settles_test() {
   let assert [
     stream.Delta(stream.TextDelta(index: 0, text: "Hello")),
     stream.Delta(stream.TextDelta(index: 0, text: " world")),
-    stream.Settled(message: settled, usage:),
+    stream.Settled(message: settled, accounting: usage),
   ] = events
+  let usage = accounting.total(usage)
   let assert message.AssistantMessage(
     content:,
     api:,
@@ -170,7 +173,7 @@ pub fn tool_call_with_streamed_arguments_test() {
     )),
     stream.Delta(stream.ToolCallDelta(arguments_json: "{\"city\":", ..)),
     stream.Delta(stream.ToolCallDelta(arguments_json: "\"Paris\"}", ..)),
-    stream.Settled(message: settled, usage: _),
+    stream.Settled(message: settled, accounting: _),
   ] = events
   let assert message.AssistantMessage(content:, stop_reason:, ..) =
     stream.message(settled)
@@ -224,7 +227,7 @@ pub fn thinking_block_with_signature_test() {
   let assert [
     stream.Delta(stream.ThinkingDelta(index: 0, thinking: "Let me reason.")),
     stream.Delta(stream.TextDelta(index: 1, text: "Done.")),
-    stream.Settled(message: settled, usage: _),
+    stream.Settled(message: settled, accounting: _),
   ] = events
   let assert message.AssistantMessage(content:, ..) = stream.message(settled)
   assert content
@@ -252,7 +255,7 @@ pub fn redacted_thinking_block_test() {
     <> message_delta("end_turn", 5)
     <> message_stop()
   let events = fixture.drive_ok(machine(), transcript)
-  let assert [stream.Settled(message: settled, usage: _)] = events
+  let assert [stream.Settled(message: settled, accounting: _)] = events
   let assert message.AssistantMessage(content:, ..) = stream.message(settled)
   assert content
     == [
@@ -273,7 +276,8 @@ pub fn overflow_settles_as_error_with_canonical_message_test() {
     <> message_delta("end_turn", 3)
     <> message_stop()
   let events = fixture.drive_ok(machine(), transcript)
-  let assert [stream.Settled(message: settled, usage:)] = events
+  let assert [stream.Settled(message: settled, accounting: usage)] = events
+  let usage = accounting.total(usage)
   let assert message.AssistantMessage(
     stop_reason:,
     error_message: Some(error_message),
@@ -295,7 +299,7 @@ pub fn substantive_answer_is_not_overflow_test() {
     <> message_delta("end_turn", 900)
     <> message_stop()
   let events = fixture.drive_ok(machine(), transcript)
-  let assert [stream.Settled(message: settled, usage: _)] = events
+  let assert [stream.Settled(message: settled, accounting: _)] = events
   let assert message.AssistantMessage(stop_reason:, error_message:, ..) =
     stream.message(settled)
   assert stop_reason == message.Stop
@@ -316,15 +320,18 @@ pub fn rate_limited_with_retry_after_test() {
         ),
       ],
     )
-  assert events
-    == [
-      stream.Failed(stream.HttpError(
+  let assert [
+    stream.Failed(
+      stream.HttpError(
         status: 429,
         api_error_type: "rate_limit_error",
         message: "Rate limited",
         retry_after_ms: Some(7000),
-      )),
-    ]
+      ),
+      accounting: _,
+    ),
+  ] = events
+    as "the failure remains in band"
 }
 
 pub fn overloaded_stream_error_event_test() {
@@ -335,13 +342,16 @@ pub fn overloaded_stream_error_event_test() {
       "{\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}",
     )
   let events = fixture.drive_ok(machine(), transcript)
-  assert events
-    == [
-      stream.Failed(stream.StreamError(
+  let assert [
+    stream.Failed(
+      stream.StreamError(
         api_error_type: "overloaded_error",
         message: "Overloaded",
-      )),
-    ]
+      ),
+      accounting: _,
+    ),
+  ] = events
+    as "the failure remains in band"
 }
 
 pub fn oversized_http_error_body_fails_at_the_byte_budget_test() {
@@ -349,7 +359,9 @@ pub fn oversized_http_error_body_fails_at_the_byte_budget_test() {
     fixture.drive(machine(), status: 500, headers: [], chunks: [
       bit_array.from_string(string.repeat("x", 65_537)),
     ])
-  let assert [stream.Failed(stream.MalformedStream(report: report))] = events
+  let assert [
+    stream.Failed(stream.MalformedStream(report: report), accounting: _),
+  ] = events
   assert string.contains(report.context, "exceeded its byte budget")
 }
 
@@ -361,12 +373,15 @@ pub fn mid_stream_disconnect_fails_in_band_test() {
       "{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}",
     )
   let events = fixture.drive_ok(machine(), truncated)
-  assert events
-    == [
-      stream.Failed(stream.StreamDisconnected(
+  let assert [
+    stream.Failed(
+      stream.StreamDisconnected(
         context: "response body ended before message_stop",
-      )),
-    ]
+      ),
+      accounting: _,
+    ),
+  ] = events
+    as "the failure remains in band"
 }
 
 pub fn unknown_stop_reason_fails_in_band_test() {
@@ -375,15 +390,18 @@ pub fn unknown_stop_reason_fails_in_band_test() {
     <> message_delta("galaxy_brain", 12)
     <> message_stop()
   let events = fixture.drive_ok(machine(), transcript)
-  assert events
-    == [stream.Failed(stream.UnmappedStopReason(raw: "galaxy_brain"))]
+  let assert [
+    stream.Failed(stream.UnmappedStopReason(raw: "galaxy_brain"), accounting: _),
+  ] = events
+    as "the failure remains in band"
 }
 
 pub fn malformed_sse_data_fails_in_band_test() {
   let transcript =
     message_start(25, 0, 0) <> sse_event("message_delta", "{not json")
   let events = fixture.drive_ok(machine(), transcript)
-  let assert [stream.Failed(stream.MalformedStream(report: _))] = events
+  let assert [stream.Failed(stream.MalformedStream(report: _), accounting: _)] =
+    events
 }
 
 pub fn unknown_event_types_are_ignored_test() {
@@ -393,7 +411,7 @@ pub fn unknown_event_types_are_ignored_test() {
   let assert [
     stream.Delta(_),
     stream.Delta(_),
-    stream.Settled(message: _, usage: _),
+    stream.Settled(message: _, accounting: _),
   ] = fixture.drive_ok(machine(), transcript)
 }
 
@@ -420,7 +438,8 @@ pub fn usage_extraction_with_cache_test() {
     <> message_delta("end_turn", 50)
     <> message_stop()
   let events = fixture.drive_ok(machine(), transcript)
-  let assert [stream.Settled(message: _, usage:)] = events
+  let assert [stream.Settled(message: _, accounting: usage)] = events
+  let usage = accounting.total(usage)
   assert usage.input == 100
   assert usage.output == 50
   assert usage.cache_read == 2000
@@ -456,7 +475,8 @@ pub fn oversized_usage_counts_clamp_and_stay_encodable_test() {
     <> message_delta("end_turn", 100)
     <> message_stop()
   let events = fixture.drive_ok(machine(), transcript)
-  let assert [stream.Settled(message: settled, usage:)] = events
+  let assert [stream.Settled(message: settled, accounting: usage)] = events
+  let usage = accounting.total(usage)
   assert usage.input == wire.max_usage_count
   assert usage.output == 100
   assert usage.total_tokens == wire.max_usage_count + 100
@@ -474,7 +494,8 @@ pub fn negative_usage_counts_clamp_to_zero_test() {
     <> message_delta("end_turn", -7)
     <> message_stop()
   let events = fixture.drive_ok(machine(), transcript)
-  let assert [stream.Settled(message: _, usage:)] = events
+  let assert [stream.Settled(message: _, accounting: usage)] = events
+  let usage = accounting.total(usage)
   assert usage.input == 0
   assert usage.output == 0
   assert usage.cache_read == 0
@@ -499,7 +520,8 @@ pub fn duplicate_message_start_does_not_zero_usage_test() {
     <> message_delta("end_turn", 50)
     <> message_stop()
   let events = fixture.drive_ok(machine(), transcript)
-  let assert [stream.Settled(message: _, usage:)] = events
+  let assert [stream.Settled(message: _, accounting: usage)] = events
+  let usage = accounting.total(usage)
   assert usage.input == 100
   assert usage.cache_read == 2000
   assert usage.cache_write == 300
@@ -658,6 +680,7 @@ fn assistant(text: String) -> message.AgentMessage {
     response_id: None,
     diagnostics: None,
     usage: message.Usage(
+      evidence: usage_evidence.reported(usage_evidence.Api),
       input: 0,
       output: 0,
       cache_read: 0,
@@ -875,7 +898,8 @@ pub fn cache_counters_fold_into_usage_test() {
     <> message_delta("end_turn", 60)
     <> message_stop()
   let events = fixture.drive_ok(machine(), transcript)
-  let assert [stream.Settled(message: settled, usage:)] = events
+  let assert [stream.Settled(message: settled, accounting: usage)] = events
+  let usage = accounting.total(usage)
   assert usage.input == 140
   assert usage.cache_read == 24_000
   assert usage.cache_write == 1800
@@ -905,7 +929,8 @@ pub fn message_delta_reports_the_one_hour_write_breakdown_test() {
     )
     <> message_stop()
   let events = fixture.drive_ok(machine(), transcript)
-  let assert [stream.Settled(message: _, usage:)] = events
+  let assert [stream.Settled(message: _, accounting: usage)] = events
+  let usage = accounting.total(usage)
   assert usage.cache_write == 500
   assert usage.cache_write_1h == Some(500)
 }
@@ -920,7 +945,7 @@ pub fn cache_write_counts_toward_overflow_test() {
     <> message_delta("end_turn", 3)
     <> message_stop()
   let events = fixture.drive_ok(machine(), transcript)
-  let assert [stream.Settled(message: settled, usage: _)] = events
+  let assert [stream.Settled(message: settled, accounting: _)] = events
   let assert message.AssistantMessage(
     stop_reason:,
     error_message: Some(error_message),
@@ -997,7 +1022,7 @@ pub fn malformed_tool_arguments_settle_the_stream_test() {
     stream.Delta(_),
     stream.Delta(_),
     stream.Delta(_),
-    stream.Settled(message: settled, usage: _),
+    stream.Settled(message: settled, accounting: _),
   ] = events
   let assert message.AssistantMessage(content:, stop_reason:, ..) =
     stream.message(settled)
@@ -1020,7 +1045,8 @@ pub fn malformed_tool_arguments_settle_the_stream_test() {
 
 pub fn malformed_tool_arguments_carry_the_raw_text_and_the_error_test() {
   let events = fixture.drive_ok(machine(), one_malformed_tool_call_transcript())
-  let assert Ok(stream.Settled(message: settled, usage: _)) = list.last(events)
+  let assert Ok(stream.Settled(message: settled, accounting: _)) =
+    list.last(events)
   let assert message.AssistantMessage(
     content: [_text, message.AssistantToolCall(call: bad), _good],
     ..,
@@ -1029,4 +1055,29 @@ pub fn malformed_tool_arguments_carry_the_raw_text_and_the_error_test() {
   let assert Ok(#(raw, reason)) = message.malformed_arguments_of(bad.arguments)
   assert raw == "{\"city\": \"Paris\""
   assert string.contains(reason, "core/json.parse")
+}
+
+pub fn repeated_usage_then_disconnect_retains_one_partial_attempt_test() {
+  let start = message_start(7, 2, 1)
+  let events = fixture.drive_ok(machine(), start <> start)
+  let assert [stream.Failed(stream.StreamDisconnected(_), accounting: report)] =
+    events
+    as "a disconnected Messages request retains its measured prefix"
+  let usage = accounting.total(report)
+  assert #(usage.input, usage.cache_read, usage.cache_write, usage.output)
+    == #(7, 2, 1, 1)
+  assert usage.total_tokens == 11
+  assert accounting.attempts(report) == 1
+  assert usage.evidence == usage_evidence.partial(usage_evidence.Api)
+}
+
+pub fn finished_usage_requires_a_final_output_witness_test() {
+  let assert [stream.Settled(_, accounting: report)] =
+    fixture.drive_ok(
+      machine(),
+      message_start(7, 2, 1) <> message_delta("end_turn", 3) <> message_stop(),
+    )
+    as "a terminal plus all priced bucket witnesses establishes coverage"
+  assert accounting.total(report).evidence
+    == usage_evidence.reported(usage_evidence.Api)
 }

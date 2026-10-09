@@ -50,6 +50,7 @@ import conformance/simulation/fault.{type Schedule}
 import conformance/simulation/plane.{type Plane}
 import conformance/simulation/script.{type Script, type Settle, type Trigger}
 import conformance/simulation/vclock.{type Clockwork}
+import core/accounting
 import core/json
 import core/message.{
   type AgentMessage, AssistantMessage, AssistantText, AssistantToolCall,
@@ -57,6 +58,7 @@ import core/message.{
   UserText,
 }
 import core/register
+import core/usage_evidence
 import gleam/bool
 import gleam/erlang/process
 import gleam/int
@@ -303,9 +305,12 @@ fn starved_handle(
               ReleaseStarved ->
                 process.send(
                   events,
-                  stream.Failed(error: stream.TransportFailed(
-                    reason: "simulated provider effect timeout",
-                  )),
+                  stream.Failed(
+                    error: stream.TransportFailed(
+                      reason: "simulated provider effect timeout",
+                    ),
+                    accounting: accounting.empty(),
+                  ),
                 )
             }
           })
@@ -463,20 +468,31 @@ fn send_settlement(
   settle: Settle,
 ) -> Nil {
   case settle {
-    script.Transient -> process.send(events, stream.Failed(error: transient()))
+    script.Transient ->
+      process.send(
+        events,
+        stream.Failed(error: transient(), accounting: accounting.empty()),
+      )
     other -> {
       let message = response(other)
       case stream.settle(message) {
         Ok(settled) ->
           process.send(
             events,
-            stream.Settled(message: settled, usage: usage_of(message)),
+            stream.Settled(
+              message: settled,
+              accounting: accounting.from_usage(usage_of(message)),
+            ),
           )
 
         // A settlement the provider package refuses to settle would be a
         // bug in this script, not in the harness under test; report it
         // as a transport failure so the run still terminates.
-        Error(_) -> process.send(events, stream.Failed(error: transient()))
+        Error(_) ->
+          process.send(
+            events,
+            stream.Failed(error: transient(), accounting: accounting.empty()),
+          )
       }
     }
   }
@@ -485,7 +501,7 @@ fn send_settlement(
 fn usage_of(message: AgentMessage) -> message.Usage {
   case message {
     AssistantMessage(usage:, ..) -> usage
-    _ -> effects.zero_usage()
+    _ -> accounting.unknown_usage(usage_evidence.Other)
   }
 }
 
@@ -611,6 +627,7 @@ pub fn usage(tokens: Int) -> message.Usage {
       cache_write: 0.0,
       total: 0.0,
     ),
+    evidence: usage_evidence.priced_api(),
   )
 }
 

@@ -4,8 +4,10 @@
 //// sessions with. Everything is a pure function of the threaded `Seed`,
 //// so a failing property reproduces from its seed alone.
 
+import core/accounting
 import core/json.{type JsonValue}
 import core/message.{type AgentMessage, type ToolCall}
+import core/usage_evidence
 import gleam/int
 import gleam/list
 import gleam/option.{None}
@@ -73,20 +75,8 @@ pub fn one_of(seed: Seed, choices: List(a), fallback: a) -> #(a, Seed) {
 /// A zero-cost, zero-token usage value.
 pub fn zero_usage() -> message.Usage {
   message.Usage(
-    input: 0,
-    output: 0,
-    cache_read: 0,
-    cache_write: 0,
-    cache_write_1h: None,
-    reasoning: None,
-    total_tokens: 0,
-    cost: message.UsageCost(
-      input: 0.0,
-      output: 0.0,
-      cache_read: 0.0,
-      cache_write: 0.0,
-      total: 0.0,
-    ),
+    ..accounting.zero_usage(),
+    evidence: usage_evidence.priced_api(),
   )
 }
 

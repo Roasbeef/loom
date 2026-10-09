@@ -61,6 +61,7 @@ import client/blocksummarybook
 import client/catalog
 import client/checkpoint
 import client/codemode as codemode_wiring
+import client/codex/transport as codex_transport
 import client/context_view
 import client/contributions
 import client/daemon/domain as domain_service
@@ -106,6 +107,7 @@ import client/memory
 import client/notes
 import client/peer_mail
 import client/peers
+import client/profile_switch
 import client/retryconf
 import client/rules
 import client/rulescan
@@ -367,6 +369,12 @@ pub type Settings {
     /// once, so the daemon can seed the catalogue's subtitle
     /// (`protocol-change/067`). `None` for a host with no catalogue.
     first_prompt: Option(fn(String) -> Nil),
+    /// What the session's hub needs from the daemon to read and switch its
+    /// model profile (`protocol-change/082`): the names, a loader for the
+    /// catalogue a profile would route by, the registration write and the
+    /// restart. `None` for a host with no daemon, whose hub then answers the
+    /// profile commands as unsupported.
+    profile_desk: Option(profile_switch.Desk),
     /// Where code-mode cap sockets are bound: `<state root>/run` for a
     /// daemon-managed session, `None` to bind them under the workspace's
     /// `.codemode`. A field because only the daemon knows its state root,
@@ -1262,6 +1270,7 @@ pub fn build_domain(
       secrets: secret_store,
       clock:,
     )
+    |> provider_gateway.with_codex_transport(codex_transport.transport())
   domain_service.build(
     domain_service.Config(
       history: history.SharedConfig(
@@ -1492,6 +1501,7 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
       secrets: secret_store,
       clock:,
     )
+    |> provider_gateway.with_codex_transport(codex_transport.transport())
 
   Ok(Settings(
     session_path:,
@@ -1503,6 +1513,7 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
     peer_directory: None,
     peer_defaults: None,
     first_prompt: None,
+    profile_desk: None,
     codemode_sockets: None,
     base_policy: admitting_config_mounts(
       base_policy_for(
@@ -1724,6 +1735,7 @@ fn adapter_api(dialect: catalog.Dialect) -> String {
     catalog.Anthropic -> anthropic.api_name
     catalog.OpenAiCompatible -> openai.api_name
     catalog.OpenAiResponses -> responses.api_name
+    catalog.CodexSubscription(profile: _) -> responses.subscription_api_name
     catalog.Gemini -> gemini.api_name
   }
 }
@@ -2080,6 +2092,7 @@ fn env_catalog() -> catalog.Catalog {
         // `vision` key.
         vision: catalog.ReadsImages,
         max_images: 8,
+        cyber_access: None,
       ),
     ],
     roles: [#(model.Main, ["anthropic"])],
@@ -4627,6 +4640,7 @@ fn assemble_in(
             })
             |> hub.with_catalog(hub_catalog)
             |> with_first_prompt(settings.first_prompt)
+            |> with_profile_desk(settings.profile_desk)
             |> hub.with_registry(tool_registry)
             |> hub.with_extension_refusals(extension_refusals)
             |> hub.with_skills(skills)
@@ -7391,6 +7405,17 @@ fn with_first_prompt(
 ) -> hub.Options {
   case report {
     Some(report) -> hub.with_first_prompt(options, report)
+    None -> options
+  }
+}
+
+// The daemon's door for the session's model profile, when it supplied one.
+fn with_profile_desk(
+  options: hub.Options,
+  desk: Option(profile_switch.Desk),
+) -> hub.Options {
+  case desk {
+    Some(desk) -> hub.with_profile_desk(options, desk)
     None -> options
   }
 }

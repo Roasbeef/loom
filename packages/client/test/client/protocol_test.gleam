@@ -694,3 +694,101 @@ pub fn advisor_pending_protocol_round_trips_and_tolerates_a_body_test() {
     )
   assert protocol.decode_event(protocol.encode_event(observed)) == Ok(observed)
 }
+
+// --- the model profile (protocol-change/082) --------------------------------
+
+pub fn the_profile_commands_round_trip_test() {
+  let read =
+    protocol.encode_command(protocol.CommandEnvelope(
+      id: 50,
+      command: protocol.ProfileGet,
+    ))
+  assert read == "{\"v\":2,\"id\":50,\"cmd\":\"profile_get\",\"body\":{}}"
+  assert protocol.decode_command(read)
+    == Ok(protocol.CommandEnvelope(id: 50, command: protocol.ProfileGet))
+
+  // A name is carried, and the default roles are the absence of the field.
+  let named =
+    protocol.encode_command(protocol.CommandEnvelope(
+      id: 51,
+      command: protocol.ProfileSet(profile: Some("codex-blue")),
+    ))
+  assert named
+    == "{\"v\":2,\"id\":51,\"cmd\":\"profile_set\",\"body\":{\"profile\":\"codex-blue\"}}"
+  assert protocol.decode_command(named)
+    == Ok(protocol.CommandEnvelope(
+      id: 51,
+      command: protocol.ProfileSet(profile: Some("codex-blue")),
+    ))
+  let default =
+    protocol.encode_command(protocol.CommandEnvelope(
+      id: 52,
+      command: protocol.ProfileSet(profile: None),
+    ))
+  assert default == "{\"v\":2,\"id\":52,\"cmd\":\"profile_set\",\"body\":{}}"
+  assert protocol.decode_command(default)
+    == Ok(protocol.CommandEnvelope(
+      id: 52,
+      command: protocol.ProfileSet(profile: None),
+    ))
+}
+
+// A misspelled profile must never read as the default roles, so every present
+// value that is not a profile name is a malformed request.
+pub fn a_present_profile_that_is_not_a_name_is_refused_test() {
+  list.each(
+    ["\"\"", "null", "7", "\"Codex\"", "\"9lives\"", "\"a b\"", "[\"codex\"]"],
+    fn(value) {
+      let frame =
+        "{\"v\":2,\"id\":53,\"cmd\":\"profile_set\",\"body\":{\"profile\":"
+        <> value
+        <> "}}"
+      let assert Error(protocol.BadBody(reason:, ..)) =
+        protocol.decode_command(frame)
+        as "a malformed profile must not decode"
+      assert string.contains(reason, "profile must be a name")
+    },
+  )
+}
+
+pub fn a_profile_snapshot_round_trips_and_omits_the_default_test() {
+  list.each(
+    [
+      protocol.ProfileSnapshot(
+        current: Some("codex"),
+        available: ["codex", "codex-blue"],
+        switched: None,
+      ),
+      protocol.ProfileSnapshot(
+        current: None,
+        available: ["codex"],
+        switched: Some(2),
+      ),
+      protocol.ProfileSnapshot(current: None, available: [], switched: None),
+    ],
+    fn(snapshot) {
+      let event = protocol.SnapshotEvent(snapshot)
+      let encoded =
+        protocol.encode_event(protocol.EventEnvelope(
+          reply_to: Some(51),
+          seq: None,
+          event:,
+        ))
+      assert protocol.decode_event(encoded)
+        == Ok(protocol.EventEnvelope(reply_to: Some(51), seq: None, event:))
+    },
+  )
+  let encoded =
+    protocol.encode_event(protocol.EventEnvelope(
+      reply_to: Some(51),
+      seq: None,
+      event: protocol.SnapshotEvent(protocol.ProfileSnapshot(
+        current: None,
+        available: ["codex"],
+        switched: Some(1),
+      )),
+    ))
+  assert !string.contains(encoded, "\"profile\":")
+    as "the default roles are the absence of the field"
+  assert string.contains(encoded, "\"moved\":1")
+}

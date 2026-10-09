@@ -417,6 +417,10 @@ type Message(instance) {
     String,
     Subject(Result(View, AdminError)),
   )
+
+  /// Replace the model profile a registration names, for the session's own
+  /// hub (protocol-change/082).
+  SetProfile(String, Option(String), Subject(Result(Nil, Error)))
   DomainSourceIds(String, String, Subject(Result(List(String), String)))
   DomainSourcePaths(List(String), Subject(Result(List(distill.Source), String)))
   FrameAuthority(
@@ -1072,6 +1076,36 @@ pub fn rename(
     _,
   ))
   |> result.unwrap(Error(AdminUnavailable))
+}
+
+/// Replaces the model profile a session's registration names, or clears it with
+/// `None` (protocol-change/082).
+///
+/// The session's own hub calls this when its owner switches profile, so like
+/// `seed_subtitle` it carries no credential: no wire message reaches it, the
+/// identity is the one the hub was built for, and the hub has already judged
+/// who may ask. The registry does not check that the configuration defines the
+/// name, which the hub's loader did a moment earlier; the catalogue judges only
+/// its grammar. The write runs in the registry's turn, and the profile is read
+/// by the next open, so a resident session is not changed by it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.set_profile(registry, session_id, Some("codex"))
+/// ```
+@internal
+pub fn set_profile(
+  manager: Manager(instance),
+  id: String,
+  profile: Option(String),
+) -> Result(Nil, Error) {
+  call.try_call(manager.commands, waiting: 5000, sending: SetProfile(
+    id,
+    profile,
+    _,
+  ))
+  |> result.unwrap(Error(Unavailable))
 }
 
 /// Seeds a session's subtitle from its first accepted prompt, without waiting.
@@ -2065,6 +2099,15 @@ fn handle(
         View(record, status(book, record))
       }
       process.send(reply, outcome)
+      sm.keep(book)
+    }
+    SetProfile(id, profile, reply) -> {
+      process.send(
+        reply,
+        catalogue.set_profile(book.catalogue, id, profile)
+          |> result.replace(Nil)
+          |> result.map_error(Catalogue),
+      )
       sm.keep(book)
     }
     Isolate(caller, epoch, id, state_root, reply) -> {

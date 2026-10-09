@@ -22,6 +22,7 @@ import broker/token
 import client/checkpoint
 import client/escalate
 import client/wiring
+import core/accounting
 import core/clock
 import core/codec
 import core/entry
@@ -30,6 +31,7 @@ import core/json
 import core/message.{type AgentMessage}
 import core/register
 import core/tx.{InsertEntry, SetRegister, Tx}
+import core/usage_evidence
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -700,10 +702,13 @@ fn scripted_provider(
         process.send(summaries, Nil)
         process.send(
           events,
-          stream.Failed(error: stream.StreamError(
-            api_error_type: "invalid_request_error",
-            message: "this endpoint does not summarize",
-          )),
+          stream.Failed(
+            error: stream.StreamError(
+              api_error_type: "invalid_request_error",
+              message: "this endpoint does not summarize",
+            ),
+            accounting: accounting.empty(),
+          ),
         )
       }
       effects.PollRequest(..) -> settle(events, answer("polled", 1))
@@ -748,14 +753,20 @@ fn settle(events: Subject(stream.StreamEvent), reply: AgentMessage) -> Nil {
     Ok(settled) ->
       process.send(
         events,
-        stream.Settled(message: settled, usage: usage_of(reply)),
+        stream.Settled(
+          message: settled,
+          accounting: accounting.from_usage(usage_of(reply)),
+        ),
       )
     Error(Nil) ->
       process.send(
         events,
-        stream.Failed(error: stream.TransportFailed(
-          reason: "the scripted settlement was not settleable",
-        )),
+        stream.Failed(
+          error: stream.TransportFailed(
+            reason: "the scripted settlement was not settleable",
+          ),
+          accounting: accounting.empty(),
+        ),
       )
   }
 }
@@ -763,7 +774,7 @@ fn settle(events: Subject(stream.StreamEvent), reply: AgentMessage) -> Nil {
 fn usage_of(reply: AgentMessage) -> message.Usage {
   case reply {
     message.AssistantMessage(usage:, ..) -> usage
-    _ -> effects.zero_usage()
+    _ -> accounting.unknown_usage(usage_evidence.Other)
   }
 }
 
@@ -830,6 +841,7 @@ fn usage(tokens: Int) -> message.Usage {
       cache_write: 0.0,
       total: 0.0,
     ),
+    evidence: usage_evidence.priced_api(),
   )
 }
 

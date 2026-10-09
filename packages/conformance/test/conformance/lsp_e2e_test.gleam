@@ -1059,6 +1059,7 @@ fn settings(
     peer_directory: None,
     peer_defaults: None,
     first_prompt: None,
+    profile_desk: None,
     secrets: secret.env(),
     secret_failures: [],
     session_path: rig.root <> "/session.db",

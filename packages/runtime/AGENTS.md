@@ -670,7 +670,7 @@ extended by the M3 runtime wave.
   not deregistered: an effect that already delivered a real settlement
   still queued in the mailbox commits under its reserved ids as `aborted`
   **retaining its reported usage** (ORCH-M3), while one that dies unreported
-  settles through the monitor as a synthetic zero-usage abort.
+  settles through the monitor as a synthetic abort with unknown usage coverage.
 - **Fourteen corners of `fact.custom` are reserved, and reserving hides as
   well as refuses.** `escalation/`, `operation-result/`, `lineage/`,
   `child-run/`, `prompt/`, `session/`, `rule/`, `schedule/`, `ext/`,
@@ -958,3 +958,13 @@ names and idle interval. Readiness does not replace lifecycle: a finished or
 lost record may retain its endpoint declaration. Peer entries carry the core
 `PeerOrigin` variant through the same durable conversation codec as human
 entries; grant and receipt checks remain in the existing admission transaction.
+
+## Provider reports (protocol 081)
+
+`strand_runtime.provider_terminal_observation` preserves the independent
+request report on generation, polling, and nested-summary terminals.
+`effects.settle_failure` uses the report's final attempt for the synthetic
+assistant while passing the full report to the machine. A local empty
+report establishes no consumption; owner loss without a report becomes an
+unknown observation. The existing usage hook sees the committed aggregate
+row once, and context readers use the assistant's final response usage.

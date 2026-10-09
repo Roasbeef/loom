@@ -57,11 +57,13 @@ import client/grants
 import client/protocol
 import client/server
 import client/wiring
+import core/accounting
 import core/clock
 import core/entry
 import core/ids
 import core/json
 import core/message.{type AgentMessage}
+import core/usage_evidence
 import gleam/bool
 import gleam/erlang/process.{type Subject}
 import gleam/int
@@ -1166,14 +1168,20 @@ fn settle(
     Ok(settled) ->
       process.send(
         events,
-        stream.Settled(message: settled, usage: usage_of(message)),
+        stream.Settled(
+          message: settled,
+          accounting: accounting.from_usage(usage_of(message)),
+        ),
       )
     Error(Nil) ->
       process.send(
         events,
-        stream.Failed(error: stream.TransportFailed(
-          reason: "the scripted settlement was not settleable",
-        )),
+        stream.Failed(
+          error: stream.TransportFailed(
+            reason: "the scripted settlement was not settleable",
+          ),
+          accounting: accounting.empty(),
+        ),
       )
   }
 }
@@ -1181,7 +1189,7 @@ fn settle(
 fn usage_of(message: AgentMessage) -> message.Usage {
   case message {
     message.AssistantMessage(usage:, ..) -> usage
-    _ -> effects.zero_usage()
+    _ -> accounting.unknown_usage(usage_evidence.Other)
   }
 }
 
@@ -1283,6 +1291,7 @@ fn demo_usage(tokens: Int) -> message.Usage {
       cache_write: 0.0,
       total: 0.0,
     ),
+    evidence: usage_evidence.priced_api(),
   )
 }
 

@@ -12,6 +12,7 @@
 //// observation, even after failure. A timeout is reported as unconfirmed,
 //// never as successful cleanup. Output excludes request data and raw errors.
 
+import core/accounting
 import core/clock
 import core/codec
 import core/json
@@ -124,7 +125,7 @@ fn run(selected: String, secrets: secret.SecretStore) -> Result(Nil, String) {
 
 fn print_terminal(terminal: stream.StreamEvent) -> Result(Nil, String) {
   case terminal {
-    stream.Settled(settled, usage) -> {
+    stream.Settled(settled, report) -> {
       // Unexpected content is never printed. The exact success text is public
       // fixture data, so neither arbitrary output nor replay metadata can
       // disclose credentials through this runner's diagnostics.
@@ -136,7 +137,10 @@ fn print_terminal(terminal: stream.StreamEvent) -> Result(Nil, String) {
         | message.ToolResultMessage(..)
         | message.CustomMessage(..) -> Nil
       }
-      io.println("usage: " <> json.to_string(codec.encode_usage(usage)))
+      io.println(
+        "usage: "
+        <> json.to_string(codec.encode_usage(accounting.total(report))),
+      )
       case stream.message(settled) {
         message.AssistantMessage(
           stop_reason: message.Stop,
@@ -153,7 +157,7 @@ fn print_terminal(terminal: stream.StreamEvent) -> Result(Nil, String) {
           Error("terminal: expected Stop with the exact smoke answer")
       }
     }
-    stream.Failed(error) -> Error("terminal: " <> failure_category(error))
+    stream.Failed(error, _) -> Error("terminal: " <> failure_category(error))
     stream.Delta(_) -> Error("terminal: unexpected delta")
   }
 }

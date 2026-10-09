@@ -18,6 +18,7 @@ import client/goalcheck
 import client/goalloop
 import client/goalstate
 import client/notes
+import core/accounting
 import core/clock
 import core/entry.{type Entry}
 import core/ids.{type EntryId, type OpId, type UsageId}
@@ -25,6 +26,7 @@ import core/json
 import core/message
 import core/register
 import core/tx.{InsertUsage, SetRegister, Tx}
+import core/usage_evidence
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -1242,7 +1244,12 @@ fn a_finishing_rig(
       let assert Ok(settled) = stream.settle(assistant("done"))
       process.send(
         events,
-        stream.Settled(message: settled, usage: effects.zero_usage()),
+        stream.Settled(
+          message: settled,
+          accounting: accounting.from_usage(accounting.unknown_usage(
+            usage_evidence.Other,
+          )),
+        ),
       )
       stream.immediate(events:, cancel: fn() { Nil })
     })
@@ -1486,6 +1493,7 @@ fn usage_row() -> entry.UsageRow {
         cache_write: 0.0,
         total: 0.3,
       ),
+      evidence: usage_evidence.priced_api(),
     ),
     details: None,
   )
@@ -1660,7 +1668,7 @@ fn assistant(text: String) -> message.AgentMessage {
     response_model: None,
     response_id: None,
     diagnostics: None,
-    usage: effects.zero_usage(),
+    usage: accounting.unknown_usage(usage_evidence.Other),
     stop_reason: message.Stop,
     deferred: None,
     error_message: None,
@@ -2063,9 +2071,9 @@ pub fn a_primary_row_accounts_against_the_goal_test() {
   let _drained = settle(subject)
 
   let goal = goal_cell(rig)
-  // Non-cached input 11 - 3 - 4 = 4, plus output 22: 26. Reasoning is
+  // Input 11 is already uncached, plus output 22: 33. Reasoning is
   // inside output and not added again.
-  assert goal.tokens_used == 26
+  assert goal.tokens_used == 33
   assert goal.accounted_through_seq == spent
   stop(rig)
 }
@@ -2093,7 +2101,7 @@ pub fn a_lost_row_is_recovered_by_the_next_scan_test() {
   let _drained = settle(subject)
 
   let goal = goal_cell(rig)
-  assert goal.tokens_used == 52
+  assert goal.tokens_used == 66
   assert goal.accounted_through_seq == newer
   stop(rig)
 }
@@ -2134,7 +2142,7 @@ pub fn the_accounting_counts_only_the_primary_test() {
   let goal = goal_cell(rig)
   // One row of the three counted, and the cursor past all three: a row
   // the sum refuses is a row it must never re-examine.
-  assert goal.tokens_used == 26
+  assert goal.tokens_used == 33
   assert goal.accounted_through_seq == trailing
   stop(rig)
 }
@@ -2210,7 +2218,7 @@ pub fn a_replayed_row_does_not_count_twice_test() {
   let _drained = settle(subject)
 
   let goal = goal_cell(rig)
-  assert goal.tokens_used == 26
+  assert goal.tokens_used == 33
   stop(rig)
 }
 
@@ -2622,7 +2630,7 @@ pub fn spend_before_the_pin_is_not_charged_to_the_goal_test() {
   process.send(subject, advisor.PrimarySpent)
   barrier(subject)
 
-  assert goal_cell(rig).tokens_used == 26
+  assert goal_cell(rig).tokens_used == 33
     as "spend after the pin is charged to the goal"
   stop(rig)
 }
@@ -2653,7 +2661,7 @@ pub fn a_raised_budget_is_not_charged_for_the_stopped_stretch_test() {
   let limited = goal_cell(rig)
   assert limited.status == goalstate.Limited(by: goalstate.ByTokenBudget)
     as "the budget must have tripped before the operator raises it"
-  assert limited.tokens_used == 26
+  assert limited.tokens_used == 33
 
   // The trip's wrap-up woke the primary to say the loop had stopped, and that
   // run has to close before the fixture can accept another turn.
@@ -2669,7 +2677,7 @@ pub fn a_raised_budget_is_not_charged_for_the_stopped_stretch_test() {
   process.send(subject, advisor.PrimarySpent)
   barrier(subject)
 
-  assert goal_cell(rig).tokens_used == 26
+  assert goal_cell(rig).tokens_used == 33
     as "a stopped goal is not charged for the operator's own work"
 
   // The same objective with room to run again.
@@ -2678,7 +2686,7 @@ pub fn a_raised_budget_is_not_charged_for_the_stopped_stretch_test() {
 
   let raised = goal_cell(rig)
   assert raised.status == goalstate.Active
-  assert raised.tokens_used == 26
+  assert raised.tokens_used == 33
     as "the raised budget is not charged for the stopped stretch"
   assert raised.accounted_through_seq >= limited.accounted_through_seq
     as "the cursor moves to the ledger's newest row, never backwards"

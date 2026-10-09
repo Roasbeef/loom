@@ -1,5 +1,18 @@
 # client
 
+## Responses cybersecurity access
+
+`client/catalog.CatalogModel.cyber_access` holds an optional typed
+`provider/model.CyberAccessProgram` selected by `[models.<name>].cyber_access`.
+Only `openai-responses` and `codex-subscription` accept the key. The catalogue
+attaches it through `provider/gateway.with_cyber_access`; the opaque gateway
+indexes selections by provider name, and each actual attempt passes that
+entry's option into the Responses request encoder. Missing options omit
+`access_programs`; explicit options send the bounded `cyber` value. Provider
+approval remains remote. A 403 denial is terminal, and retryable fallback uses
+its own entry's selection. The frozen resolved identity and request types keep
+their existing shape.
+
 ## Per-strand shell directories
 
 `client/working_directory` stores canonical shell defaults under reserved
@@ -1147,8 +1160,48 @@ catalogue without opening runtimes. Explicit admission invokes
   `auth = "api-key"` and a nonempty `api_key_env`, and defaults to
   `https://api.openai.com/v1`. The existing `openai` spelling remains
   Chat Completions. Older dialects still refuse `auth`; all API-key entries
-  refuse `profile` and arbitrary `headers`. `codex-subscription` is
-  explicitly unsupported under issue #117's deferred support-boundary gate.
+  refuse `profile` and arbitrary `headers`.
+- `catalog.CodexSubscription(profile)` requires `auth = "codex"` and a
+  bounded ASCII profile name for the compatibility `codex-subscription`
+  spelling. It rejects `api_key_env`, `base_url`, and arbitrary `headers`.
+  `catalog.gateway` registers a
+  `provider/gateway.CodexSubscriptionProvider`; `serve.adapter_api` keeps the
+  distinct `"codex-subscription"` durable identity. Inference uses the fixed
+  public Responses API with the native SIWC grant. Authenticated `/v1/models`
+  exposes account-visible IDs only; context and reasoning properties remain
+  catalogue configuration.
+- `client/codex/profile_control.{Command, ControlEvent}` is the native operator
+  vocabulary, passed over an in-VM `Subject` and never over a wire.
+  `Status`, `LoginBrowser`, `Logout`, and `Models` enter
+  `codex/transport.command`; the CLI monitors its parked `http.PreparedRequest`
+  before calling `begin` and accepts completion only after normal owner drain.
+  Events are closed types: `Permission` (`PlanEnabled`, `IdentityOnly`) and
+  `SignIn` (`SignedOut`, `SignedIn(permission)`) replace status strings.
+  `LoginInstructions` carries the bound loopback port, and the CLI builds the
+  literal `/auth/start` URL from it with `oauth.start_url`, never the issuer
+  redirect or returning identity hint. There is no device command.
+- `client/codex/transport.{transport, command, prepare_with}` owns each native
+  operation in one witnessed managed task. Its worker creates and publishes
+  its own begin subject before preparation returns. The same `weft.Ledger`
+  covers authentication HTTP, the callback listener, and inference HTTP;
+  every owner is adopted before admission and its original drain witness
+  remains required after cancellation or worker loss.
+- `client/codex/credentials.{Binding, Grant}` keeps issued client, stable host
+  URI, verified subject, and optional grant in a bounded private versioned
+  record. `profile.{auth, execute}` acquires an existing kernel launch lock
+  for each bounded credential operation, rereads the record, and saves
+  rotation atomically. It releases the lock before inference starts, permits
+  several profiles without a VM-global token cache, and allows control while
+  a stream is active. Login holds the lock for the browser attempt; contending
+  operations can report `profile_busy`.
+- `client/codex/oauth.{Services, Attempt, Callback}` owns browser PKCE,
+  dynamic-to-issued client registration, state, nonce, refresh and revocation.
+  `oidc.Verification` distinguishes browser nonce validation from refresh
+  subject continuity. Gose pins RS256 to the fixed issuer JWKS and validates
+  issuer, issued-client audience, expiry and subject; multiple audiences
+  require a matching authorized party. Identity-only grants are saved,
+  including grants without a refresh token, while plan inference requires
+  `resource.invoke` and `chatgpt.tokens.use.direct`.
 - `client/demo.run` — the M3 acceptance flow end to end, executed as a
   test and runnable as `gleam run -m client/demo`.
 - `test/client/tui_e2e_test` + `test/support/terminal` — the real
@@ -3642,7 +3695,10 @@ these forks because they define the same modules.
   `mist` + `gleam_http` (the websocket transport), `simplifile` (the
   token file, the pack file, and the session's instruction files),
   `weft` (the bounded concurrent run `client/mcp.start` fans server
-  bring-up out over).
+  bring-up out over, native subscription witnessed tasks and custody ledgers,
+  and per-profile lock polling), `gleam_crypto` (PKCE entropy and constant-time
+  state/nonce comparisons), and `gose` (maintained JWT/JWK signature and claim
+  validation).
 - The spec DAG (§0.1) writes `L → A,C,E,K`. The `B`, `D`, `F`, and `G`
   edges are real and load-bearing — catch-up scans storage directly,
   compaction and navigation build `machine/acceptance` plans, the delta
@@ -3679,8 +3735,47 @@ these forks because they define the same modules.
   `sys:terminate/3` for stopping the service supervisor the way OTP
   stops one, and the documented exit-code halt. Test-side, `client_test_ffi.erl` is a
   minimal websocket probe for the boot smoke.
+- **Native subscription effects** reuse `host/bootstrap` private bounded
+  reads, atomic writes and kernel launch locks, `provider/http` native HTTP
+  ownership, and `client/daemon/listener`'s parked Mist listener. No custom
+  subscription FFI or authentication helper is needed by `client/codex`.
+  The pinned Weft revision starts cancelling adopted owners when a worker
+  exits unreported, which the transport's custody tests rely on.
 
 ## Traffic
+
+- `serve` injects `codex_transport.transport()` into assembled catalogue
+  gateways. `gateway.CodexTransport.prepare_streaming` requests a parked
+  `http.PreparedRequest`; the gateway publishes its owner before `begin`.
+  Inside that operation, `profile.auth(profile, ledger)` acquires the durable
+  credential lock, obtains an authorized bearer, and releases the lock before
+  the fixed public `/v1/responses` request is prepared. The transport adopts the
+  prepared native HTTP owner into the same ledger before starting it.
+  `http.ResponseStatus`, `ResponseChunk`, and `ResponseEnd` reach the existing
+  provider stream pump. A fixed local authentication refusal becomes a
+  redacted 401 response; no saved token or account subject enters those events.
+- `codex/transport.command` runs `profile.execute` with
+  `codex/profile_control.Command` and a `Subject(ControlEvent)`. Browser login adopts
+  `daemon/listener.Listener`, opens ephemeral literal loopback, and emits
+  `LoginInstructions` only after the bound port is known. The attempt worker
+  checks each request's Host against that actual authority before issuing the
+  private redirect or consuming the state-checked callback. The ten-minute
+  browser budget is absolute. The issued client registration is saved with the
+  grant only after the code exchange and identity verification succeed, and
+  that save precedes `LoginComplete`.
+  Model discovery decodes the subscription endpoint's `models[].slug` and
+  `visibility` fields, validates the whole bounded catalogue, and projects only
+  listed identifiers in server order. Model instructions and unknown metadata
+  never enter the operator event; the Platform API's `data[].id` is not this
+  endpoint's subscription response.
+  `Models` calls authenticated public `/v1/models`, bounds its body, and emits
+  only validated IDs through `ModelCatalogue`.
+- `Logout` attempts refresh-token revocation, clears the grant locally, and
+  retains issued client, host and verified subject. An unconfirmed upstream
+  revocation produces `LogoutRevocationUnconfirmed` rather than retaining local
+  tokens. It does not retract a request already admitted to HTTP. Temporary
+  refresh failures preserve the durable grant; terminal refresh failure clears
+  tokens while preserving registration. Each later operation rereads disk.
 
 - `protocol.ListSkills(offset)` is a subscribed read available to observers.
   `SkillsSnapshot(board)` returns bounded consecutive metadata rows with a next
@@ -4910,6 +5005,21 @@ these forks because they define the same modules.
   `catalogue_facts`. The client listing carries the distinct dialect through
   its existing open string; neither the wire version nor the durable
   `{catalogue-name, model_id}` identity changes.
+- **Subscription profiles select credentials, never endpoints.** Catalogue
+  validation requires `auth = "codex"`, bounds the profile name, and refuses
+  API-key and URL fields. `codex/transport.validate_request` admits only the
+  relative `POST /responses` shape with its fixed non-secret headers. The
+  native profile owns token and signed subject binding; the bearer reaches
+  only the fixed public Responses HTTP authorization boundary. Control events,
+  durable messages and logs carry no token or account subject. Missing plan
+  permission is explicit; an identity-only login cannot authorize inference.
+  Native and installed Codex CLI credential stores remain separate.
+- **The native subscription worker lives through HTTP drain.** The HTTP owner
+  monitors the worker that prepared it even after begin. `codex_bridge` therefore
+  monitors that owner before begin and keeps its creating worker alive until
+  the owner exits. Its surviving Weft scope independently retains cancellation
+  and drain proof; a normal worker return cannot cancel a still-admitted stream,
+  and an abnormal native exit cannot become a clean scope exit.
 - **A checkpoint never publishes a blank.** A strand with no notes is
   told, in the checkpoint, that it wrote none and where notes go; a
   checkpoint whose inputs would not read is declined rather than
@@ -5161,6 +5271,9 @@ connects these paths to held queue projection and shared request ownership.
 
 ## Deep Docs
 
+- [docs/architecture/codex-subscription.md](../../docs/architecture/codex-subscription.md)
+  — the opt-in helper, credential, request, and drain boundaries and the
+  remaining live interoperability and support gates.
 - [docs/architecture/orchestration.md](../../docs/architecture/orchestration.md)
   — the runtime surface the hub dispatches onto.
 - [docs/architecture/durability.md](../../docs/architecture/durability.md)
@@ -5871,6 +5984,25 @@ and only for a page that holds the creation capability; `ui_socket.create_for`
 takes the chosen profile and maps `unknown_profile` to
 `creations.UnknownProfile`.
 
+## Request accounting
+
+Provider settlement and failure carry `core/accounting.RequestAccounting`.
+The relay preserves that report through terminal delivery and uses an empty
+report for refusals before dispatch. Goal accounting adds aggregate usage and
+folds `cost_evidence` alongside the durable cursor; uncached token goals count
+`input + output`, since input already excludes cache buckets. Client usage
+pushes carry aggregate consumption and optional `last_usage` separately.
+Context readers suppress only unknown all-zero final observations, retaining
+historical nonzero readings and reported zero measurements.
+
+`distill.Answer` keeps the final attempt's usage apart from request accounting;
+`distill.Failure` retains the same report without an answer. Extraction and
+consolidation persist failed request consumption in the memory ledger.
+Glance and block summary requests commit one aggregate row with phase details
+before parsing or publishing the text. A ledger commit failure prevents that
+publication; an empty report writes no row. These auxiliary rows do not
+replace the primary operation's context measurement.
+
 ### Pinned main model (protocol 080)
 
 A session can also be created on one `[models.<key>]` entry. The key is a second
@@ -5916,3 +6048,32 @@ The manager owns one package server at a time. `diagnostics(None)` always return
 a partial `Unsettled` snapshot, while explicit file queries retain their own
 server acquisition and settlement. A healthy control cannot certify unavailable
 owners elsewhere in the workspace. Protocol 078 records that scope contract.
+
+## Switching a session's profile (protocol 082)
+
+`profile_get` and `profile_set` are session commands
+([protocol 082](../../protocol-change/082-session-profile-switch.md)), answered
+by a `profile` snapshot (`protocol.ProfileSnapshot`: `current`, `available`, and
+`switched` only in the reply to a switch). The decoder reads an absent `profile`
+as the default roles and refuses null, the empty string and a malformed name
+(`optional_profile`). `ProfileSet` is owner-only (`gateway.owner_only` now
+answers the refusal words) and is not a read.
+
+The hub reaches the daemon through `profile_switch.Desk`, which
+`serve.Settings.profile_desk` carries from the daemon's builder
+(`daemon/main.profile_desk`) to `gateway.with_profile_desk`. A hub with no desk
+answers `unsupported`. `gateway.set_profile` refuses while `State.live` is
+non-empty, answers the listing for the profile the session already has, loads
+the entering catalogue (`desk.load` → `daemon/profiles.load`), computes the
+strands to move with `catalog.retargets` against `State.catalog`, saves the name
+(`desk.save` → `manager.set_profile` → `catalogue.set_profile`), rewrites the
+moved strands' models in one commit through `apply_changes` (the half of
+`apply_config` after validation), replies, and calls `desk.restart`
+(`daemon/restart.begin`: a `spawn_unlinked` stop and open that outlives the
+session, because every weft start is linked to its caller). A strand follows a
+role while its model is that role's head; a model chosen with `/model` heads no
+role and stays. `default` is reserved: `catalog.default_profile`, refused as a
+profile table name at load.
+
+`Settings` gained `profile_desk`, so every `serve.Settings` literal in the tests
+carries `profile_desk: None`.

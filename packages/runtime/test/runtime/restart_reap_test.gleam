@@ -19,10 +19,13 @@
 //// direct subject died with the predecessor instead of resolving the stable
 //// strand name to newly replayed work.
 
+import core/accounting
+
 import core/clock
 import core/entry
 import core/json
 import core/message
+import core/usage_evidence
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/list
 import gleam/option.{Some}
@@ -234,7 +237,15 @@ pub fn provider_timeout_cancels_before_settling_test() {
         let events = process.new_subject()
         stream.immediate(events:, cancel: fn() {
           let _cancelled = recorder.bump(rec, "provider-cancelled")
-          process.send(events, stream.Failed(error: stream.ProviderCancelled))
+          process.send(
+            events,
+            stream.Failed(
+              error: stream.ProviderCancelled,
+              accounting: accounting.from_usage(accounting.unknown_usage(
+                usage_evidence.Other,
+              )),
+            ),
+          )
         })
       }),
     )
@@ -300,7 +311,15 @@ pub fn provider_deadline_is_not_refreshed_by_delta_flood_test() {
         let flooder = process.spawn_unlinked(fn() { flood_deltas(events, 200) })
         process.send(flooders, flooder)
         stream.immediate(events:, cancel: fn() {
-          process.send(events, stream.Failed(error: stream.ProviderCancelled))
+          process.send(
+            events,
+            stream.Failed(
+              error: stream.ProviderCancelled,
+              accounting: accounting.from_usage(accounting.unknown_usage(
+                usage_evidence.Other,
+              )),
+            ),
+          )
         })
       }),
     )
@@ -664,7 +683,15 @@ pub fn strand_exit_during_provider_start_waits_for_parked_custodian_test() {
             })
           }
           _ -> {
-            process.send(events, stream.Failed(error: stream.ProviderCancelled))
+            process.send(
+              events,
+              stream.Failed(
+                error: stream.ProviderCancelled,
+                accounting: accounting.from_usage(accounting.unknown_usage(
+                  usage_evidence.Other,
+                )),
+              ),
+            )
             stream.immediate(events:, cancel: fn() { Nil })
           }
         }

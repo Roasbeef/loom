@@ -1565,7 +1565,7 @@ single strand's chain. Source: (`client/gateway.gleam:1378-1381`) and
 (`storage/snapshot.gleam:42`).
 
 A `session` that is not this attachment's own is refused with the code
-`wrong_session`. Source: (`client/gateway.gleam:2148`).
+`wrong_session`. Source: (`client/gateway.gleam:2175`).
 
 `from_seq` exists in the command's decoder for the in-process host
 fixture, where it selects a resume reply. Over the authenticated
@@ -1843,7 +1843,7 @@ See [protocol 022](../protocol-change/022-human-input-priority.md).
 
 #### 4.9.4 `follow_up`
 
-Body is identical to `steer`. Source: (`client/protocol.gleam:1247`).
+Body is identical to `steer`. Source: (`client/protocol.gleam:1296`).
 
 ```json
 {"v":2,"id":5,"cmd":"follow_up","body":{"strand":"main","text":"now add tests"}}
@@ -1905,7 +1905,7 @@ Source: (`client/gateway.gleam:3883-3915`).
 Three checks, in order:
 
 1. `expected_seq` MUST equal the record's current sequence. A mismatch
-   is `stale_approval`. Source: (`client/gateway.gleam:6491`).
+   is `stale_approval`. Source: (`client/gateway.gleam:6548`).
 2. The record MUST still be pending. Otherwise the code is
    `not_pending`.
    Source: (`client/gateway.gleam:3941-3952`).
@@ -2438,6 +2438,52 @@ success the reply is the `permissions` snapshot that remains, so one round
 trip both acts and redraws. A forget does not reach a call that is already
 running with the authority it captured.
 
+#### 4.9.30 `profile_get` and `profile_set`
+
+The session's model role profile (`[profiles.<name>.roles]` of the daemon's
+configuration, [protocol 076](../protocol-change/076-config-profiles.md)) and the
+profiles it may switch to. See
+[protocol 082](../protocol-change/082-session-profile-switch.md).
+
+```json
+{"v":2,"id":64,"cmd":"profile_get","body":{}}
+{"v":2,"reply_to":64,"event":"snapshot","body":{"mode":"profile","profile":"codex","available":["codex","codex-blue"]}}
+```
+
+`profile_get` has an empty body and is a read. The reply is a `profile` snapshot
+(section 5.2): `profile` is the profile the session routes its roles by and is
+absent for the configuration's default roles, and `available` is the profile
+names the configuration defines now, sorted. The names are read from the file at
+each request.
+
+```json
+{"v":2,"id":65,"cmd":"profile_set","body":{"profile":"codex-blue"}}
+{"v":2,"reply_to":65,"event":"snapshot","body":{"mode":"profile","profile":"codex-blue","available":["codex","codex-blue"],"moved":1}}
+```
+
+| Field | Type | Presence | Meaning |
+|---|---|---|---|
+| `profile` | string | optional | The profile to switch to: a lowercase letter, then lowercase letters, numbers, `_` or `-`, at most 32 characters. Absent means the default roles. A present value that is not a profile name, including null and the empty string, is refused as `bad_request` and never read as the default. |
+
+`profile_set` is the session owner's alone. An observer is refused as for every
+mutation, and an authenticated member is refused with `forbidden`. It saves the
+profile with the session's registration, moves the strands that held the old
+profile's model for a role to the new profile's, replies, and then stops and
+reopens the session so that every role is built from the new profile. The reply
+carries `moved`, the number of strands moved, and a client that sees it MUST expect
+the connection to close and reattach by opening the session again. A strand whose
+model was chosen with `set_config` `model_name` and is not the head of any role of
+the old profile is left where it is.
+
+Errors: `bad_request` for a malformed name, and for a name the configuration does
+not define, with the sentence that lists the ones it does; `conflict` while any
+strand has a running operation, because the restart would end it; `forbidden` for
+a member; `unsupported` for a session with no daemon behind it; `internal` when the
+registration could not be written, in which case nothing changed, or when the
+strands could not be moved after it was written. A `profile_set` to the profile
+the session already has is answered with the listing, as `profile_get`, and
+changes nothing.
+
 ## 5. Events
 
 ### 5.1 Which events reach which client
@@ -2470,7 +2516,7 @@ One body, discriminated by `mode`.
 
 | Field | Type | Presence | Meaning |
 |---|---|---|---|
-| `mode` | string | required | `full`, `resume`, `strands`, `config`, `models`, `skills`, `notes`, `schedules`, `queued_input`, `worktree_diff`, `live_jobs` or `context`. |
+| `mode` | string | required | `full`, `resume`, `strands`, `config`, `models`, `skills`, `notes`, `schedules`, `queued_input`, `worktree_diff`, `live_jobs`, `context` or `profile`. |
 
 Source: (`client/protocol.gleam:1471-1540`).
 
@@ -2479,7 +2525,9 @@ Mode `full` carries `session`, `next_seq`, `strands`, `entries`,
 Mode `resume` carries `next_seq` only. Mode `strands` carries a full
 replacement `strands` list. Mode `config` carries `config`. Mode
 `models` carries `models`. Mode `notes` carries `board` (section 4.9.16).
-Mode `schedules` carries `schedules`. Modes `queued_input`, `worktree_diff`,
+Mode `schedules` carries `schedules`. Mode `profile` carries `profile`
+(absent for the default roles), `available` and, in the reply to `profile_set`
+only, `moved` (section 4.9.30). Modes `queued_input`, `worktree_diff`,
 `live_jobs`, `skills`, `context` and `goal` carry `board` (sections 4.9.17 through 4.9.27).
 Source: (`client/protocol.gleam:1036-1073`).
 
@@ -2790,6 +2838,15 @@ Source: (`core/codec.gleam:73-93`) and (`core/codec.gleam:118-126`).
 
 A client accumulates ledger appends onto the running total the metadata
 document's `usage` field carries.
+
+Protocol 081 extends both usage event shapes with `last_usage`, an optional
+final-attempt observation distinct from aggregate request consumption.
+Historical events without the field read their aggregate as the observation;
+malformed present values are refused. Sequence and legacy projections retain
+aggregate evidence but preserve context and cache state when the observation
+is unknown with all primary token counters zero. A reported zero is a valid
+measurement. Goal board cells also carry `cost_evidence`, with unknown
+coverage for historical cells lacking it.
 
 Protocol 047 also allows a bounded unsolicited `usage_observation` with this
 same body and a durable `seq`. It is a per-request reading for live cache
@@ -3274,8 +3331,8 @@ Source: (`docs/architecture/client.md:111-115`).
 | `unknown_escalation` | `approve`, `deny` on an id with no record. | Refresh with `escalations_get`. |
 | `not_pending` | `approve`, `deny` on a record already resolved. | Refresh and stop asking. |
 | `stale_approval` | `approve`, `deny` when `expected_seq`, `action` or `grants` do not match. | Re-render from `details.escalation` and ask again. |
-| `conflict` | A busy strand with a full queue; `abort` with no live operation; nothing to compact; a duplicate strand name; an operator `[[schedule]]`; a lost write lease. | Reconcile, then decide. |
-| `unsupported` | An unknown command name; a bounded-transfer command on the host fixture; `schedule_cancel` with no scheduling plane. | Stop offering the feature. |
+| `conflict` | A busy strand with a full queue; `abort` with no live operation; nothing to compact; a duplicate strand name; an operator `[[schedule]]`; a lost write lease; `profile_set` while a strand runs. | Reconcile, then decide. |
+| `unsupported` | An unknown command name; a bounded-transfer command on the host fixture; `schedule_cancel` with no scheduling plane; `profile_get` or `profile_set` on a session with no daemon behind it. | Stop offering the feature. |
 | `forbidden` | Any mutation from an observer. | Disable the control. |
 | `internal` | A server-side failure. The command's effect is unspecified. | Reconcile with `catch_up`. |
 | `stale_snapshot` | `snapshot_next` with a wrong id or index; an expired transfer; beginning a second transfer. | Discard the partial transfer and begin a new one. |
@@ -3610,7 +3667,7 @@ below have not been edited.
 
 8. **Two operation phases are missing from the documented label set.**
    `packages/client/protocol.md` lists eight labels. The code also emits
-   `checkpoint` (`client/gateway.gleam:4007`) and `navigating`
+   `checkpoint` (`client/gateway.gleam:4055`) and `navigating`
    (`client/gateway.gleam:3052`).
 
 9. **The spec's control command list is incomplete.**

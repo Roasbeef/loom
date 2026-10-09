@@ -4,12 +4,14 @@
 //// the reason-gated survival of an in-run compaction whose summarizer
 //// failed.
 
+import core/accounting
 import core/clock
 import core/entry
 import core/ids
 import core/json
 import core/message
 import core/register
+import core/usage_evidence
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
@@ -69,6 +71,7 @@ pub fn retry_then_failure_drain_recovers_on_steer_test() {
       world,
       ObservedAssistantSettled(
         settled: fixture.settled(error),
+        accounting: fixture.report(fixture.settled(error)),
         overflow_preparation: None,
       ),
       opts(),
@@ -94,6 +97,7 @@ pub fn retry_then_failure_drain_recovers_on_steer_test() {
       world,
       ObservedAssistantSettled(
         settled: fixture.settled(fatal),
+        accounting: fixture.report(fixture.settled(fatal)),
         overflow_preparation: None,
       ),
       opts(),
@@ -141,6 +145,7 @@ pub fn failure_drain_without_input_finishes_failed_test() {
       world,
       ObservedAssistantSettled(
         settled: fixture.settled(fatal),
+        accounting: fixture.report(fixture.settled(fatal)),
         overflow_preparation: None,
       ),
       opts(),
@@ -156,7 +161,7 @@ pub fn failure_drain_without_input_finishes_failed_test() {
 pub fn orphaned_request_retries_with_partial_test() {
   let world = start_run("interrupted")
   // The continuation is lost mid-request; recovery commits a synthetic
-  // zero-usage error under the reserved ids carrying the partial, then
+  // unknown-usage error under the reserved ids carrying the partial, then
   // ordinary classification retries.
   let partial = [
     message.AssistantText(text: "half an answ", text_signature: None),
@@ -184,6 +189,10 @@ pub fn orphaned_request_retries_with_partial_test() {
     ..,
   )) = store.get_entry(world.store, ids.entry_id_to_string(synthetic_id))
   assert usage.total_tokens == 0
+  assert usage.evidence == usage_evidence.unknown(usage_evidence.Other)
+  let assert [row] = world.store.usage
+    as "Recovery must preserve one uncertain remote observation."
+  assert row.usage == usage
 }
 
 pub fn truncated_batch_stages_synthetic_errors_test() {
@@ -206,6 +215,7 @@ pub fn truncated_batch_stages_synthetic_errors_test() {
       world,
       ObservedAssistantSettled(
         settled: fixture.settled(truncated),
+        accounting: fixture.report(fixture.settled(truncated)),
         overflow_preparation: None,
       ),
       opts(),
@@ -387,6 +397,7 @@ pub fn malformed_call_arguments_stage_a_synthetic_error_test() {
       world,
       ObservedAssistantSettled(
         settled: fixture.settled(response),
+        accounting: fixture.report(fixture.settled(response)),
         overflow_preparation: None,
       ),
       opts(),
@@ -513,6 +524,9 @@ fn threshold_compaction_generating(
       world,
       ObservedAssistantSettled(
         settled: fixture.settled(fixture.assistant(message.Stop, "ok", 5)),
+        accounting: fixture.report(
+          fixture.settled(fixture.assistant(message.Stop, "ok", 5)),
+        ),
         overflow_preparation: None,
       ),
       opts(),
@@ -551,6 +565,12 @@ fn overflow_compaction_generating(prompt: String) -> World {
           "context window exceeded: too big",
           False,
         )),
+        accounting: fixture.report(
+          fixture.settled(fixture.assistant_error(
+            "context window exceeded: too big",
+            False,
+          )),
+        ),
         overflow_preparation: Some(Prepared(preparation: fixture.preparation())),
       ),
       opts(),
@@ -622,7 +642,9 @@ pub fn threshold_summary_failure_past_the_ladder_keeps_the_run_alive_test() {
   let assert Ok(#(world, _writes)) =
     scenario.step_writes(
       world,
-      ObservedSummaryReturned(usage: fixture.usage_of(3000, 200)),
+      ObservedSummaryReturned(
+        accounting: accounting.from_usage(fixture.usage_of(3000, 200)),
+      ),
       exceeded,
     )
   // The attempt is over and not retryable: the ladder is exhausted.
@@ -705,7 +727,11 @@ pub fn provider_retry_hint_persists_the_minimum_wait_test() {
   let assert Ok(#(world, _)) =
     scenario.step_writes(
       world,
-      ObservedAssistantSettled(fixture.settled(failure), None),
+      ObservedAssistantSettled(
+        fixture.settled(failure),
+        fixture.report(fixture.settled(failure)),
+        None,
+      ),
       opts(),
     )
     as "The failed response and retry deadline commit together."
@@ -746,7 +772,11 @@ pub fn malformed_or_short_retry_hints_do_not_shorten_policy_test() {
       let assert Ok(#(world, _)) =
         scenario.step_writes(
           world,
-          ObservedAssistantSettled(fixture.settled(failure), None),
+          ObservedAssistantSettled(
+            fixture.settled(failure),
+            fixture.report(fixture.settled(failure)),
+            None,
+          ),
           opts(),
         )
         as "The configured wait is persisted."
@@ -792,7 +822,11 @@ pub fn unbounded_policy_long_polls_at_the_capped_delay_test() {
       let assert Ok(#(world, _)) =
         scenario.step_writes(
           world,
-          ObservedAssistantSettled(fixture.settled(error), None),
+          ObservedAssistantSettled(
+            fixture.settled(error),
+            fixture.report(fixture.settled(error)),
+            None,
+          ),
           opts(),
         )
         as "The retryable failure commits and the run waits again."
@@ -846,6 +880,9 @@ pub fn jitter_spreads_two_strands_on_the_same_ladder_test() {
           world,
           ObservedAssistantSettled(
             fixture.settled(fixture.assistant_error("overloaded", True)),
+            fixture.report(
+              fixture.settled(fixture.assistant_error("overloaded", True)),
+            ),
             None,
           ),
           opts(),
@@ -869,7 +906,9 @@ pub fn summary_retry_hint_uses_the_same_minimum_wait_test() {
   let assert Ok(#(world, _)) =
     scenario.step_writes(
       world,
-      ObservedSummaryReturned(fixture.usage_of(3000, 200)),
+      ObservedSummaryReturned(
+        accounting.from_usage(fixture.usage_of(3000, 200)),
+      ),
       options,
     )
     as "The first summary request settles its usage."

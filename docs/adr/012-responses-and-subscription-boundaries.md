@@ -88,3 +88,125 @@ Issue #117 remains open for its deferred subscription track. A later
 supported integration needs an addendum here, including the evidence that
 satisfies the gate and the owner of login, refresh, cancellation, and
 history.
+
+## Addendum, September 22, 2026: experimental subscription work
+
+PR [#278](https://github.com/Roasbeef/loom/pull/278) merged the public
+Responses adapter at `af211a9e`. It did not establish a subscription
+credential or transport contract. The subscription work now has a separate,
+isolated development branch. This addendum records the implementation
+boundary for that work; it does **not** change the accepted support gate
+above or declare the private endpoint a supported public API.
+
+OpenAI's [Codex authentication guide](https://learn.chatgpt.com/docs/auth)
+distinguishes ChatGPT subscription sign-in from usage-billed Platform API
+keys. It says general OpenAI API calls continue to use Platform keys.
+OpenAI's [App Server guide](https://learn.chatgpt.com/docs/app-server)
+documents a thread and turn service, with its own history and execution
+lifecycle. Neither document offers a public raw-inference endpoint that
+accepts a third-party harness's caller-owned history and tool results under
+ChatGPT subscription credentials. The pinned
+[Codex implementation](https://github.com/openai/codex/blob/5fc7840cf6d085a7a7b3438d69a2beb934a2a5f4/codex-rs/model-provider-info/src/lib.rs#L292-L333)
+and [oh-my-pi implementation](https://github.com/can1357/oh-my-pi/blob/da58b16f424273605795435a6753778f422baff3/packages/ai/src/providers/openai-codex-responses.ts)
+show a private Codex Responses route. Those are compatibility references,
+not an OpenAI support promise to Loom.
+
+The experimental integration therefore uses a distinct
+`codex-subscription` identity and a dedicated credential/request helper.
+The helper owns its own profile, login, refresh, account and workspace
+binding, fixed destination, and subscription HTTP requests. It returns
+bounded status and SSE bytes for the existing pure Responses decoder.
+Loom still owns history, tool execution, policy, and the outer agent loop.
+No bearer, refresh, or account token enters the catalogue, BEAM process
+state, durable messages, logs, or helper protocol frames. API-key inference
+remains on `api.openai.com`; subscription credentials may reach only the
+helper's pinned Codex backend origin. Redirects cannot carry credentials
+to another origin. A 401 gets at most one coordinated refresh and replay.
+The detailed boundary and acceptance tests live in
+[the subscription architecture note](../architecture/codex-subscription.md).
+
+The release gate remains explicit: before presenting this as supported
+subscription access or merging it as a normal provider, obtain OpenAI
+documentation or confirmation for this integration boundary. If OpenAI
+supports only App Server for third-party subscription use, that would be a
+separate agent-backend design because App Server owns threads and turns.
+An opt-in experimental build can be evaluated against the pinned private
+route, but successful tests or a live login alone do not satisfy the
+support gate. No frozen provider or client interface changes are authorized
+by this addendum; propose a `protocol-change/NNN.md` first if they become
+necessary.
+
+## Addendum, October 4, 2026: documented ChatGPT plan usage
+
+OpenAI now documents
+[Sign in with ChatGPT for open-source apps](https://developers.openai.com/siwc/token-sharing-open-source).
+The flow dynamically registers the application for a user and workspace,
+obtains explicit permission to use ChatGPT plan allowance, and issues OAuth
+credentials for the public Responses API. The client owns history and tools;
+an embedded Codex agent loop is not required.
+[Registration and sign-in](https://developers.openai.com/siwc/token-sharing-open-source/sign-in),
+[models and inference](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference).
+
+That documentation establishes the supported integration target requested
+by this ADR. The September statement that only Platform keys had a
+documented public inference path is superseded for this flow. PR #496 still
+uses the legacy Codex client ID and private backend, so it does not implement
+the newly documented contract. Its migration must persist the issued client
+ID and host identity, validate identity and usage scopes, preserve account
+binding during refresh, and use the public endpoints. The existing API-key
+provider and legacy credentials remain distinct from that OAuth grant.
+
+The remaining merge evidence is implementation conformance to that contract,
+a live entitled inference and tool turn, and the repository gates. Successful
+legacy login does not substitute for the new grant. The subscription
+architecture note records the concrete differences and Pi reference.
+Superseded by the next addendum.
+
+## Addendum, October 4, 2026: native SIWC implementation
+
+The authorized migration implements the documented flow in native Gleam.
+This addendum updates the implementation status in the earlier October 4
+addendum; the September helper architecture remains a historical decision.
+The compatibility spellings `codex-subscription`, `auth = "codex"`, and
+`loomd codex` now select browser PKCE SIWC, the public `/v1/responses`
+endpoint, and authenticated public `/v1/models`. Loom continues to own
+history, tools, policy, and the agent loop.
+
+`client/codex/profile` owns each protected credential operation under the
+existing kernel file lock. It rereads the durable record, serializes refresh
+and replacement across VMs, and releases the lock before inference starts.
+Management commands can therefore run during an active stream. Login holds
+the lock for its pending attempt; concurrent operations can report
+`profile_busy`. The issued client, stable host URI, and verified subject
+outlive logout. A fresh login uses dynamic registration; returning login
+uses that retained binding and checks account identity before replacing a
+grant. Identity-only permission is saved, while inference requires explicit
+resource invocation and direct plan-usage scopes.
+[Sign-in](https://developers.openai.com/siwc/token-sharing-open-source/sign-in),
+[profiles and sessions](https://developers.openai.com/siwc/token-sharing-open-source/profiles-and-sessions).
+
+`client/codex/oidc` uses Gose to verify RS256 against the fixed issuer JWKS,
+then enforces issuer, issued-client audience, expiry, subject, and browser
+nonce. Multiple audiences require a matching authorized party. The callback
+listener binds ephemeral literal `127.0.0.1` and validates its exact kernel
+selected authority before exposing the private issuer redirect or consuming
+a callback. The displayed `/auth/start` URL contains no credential.
+`client/codex_bridge` publishes a parked operation owner before begin; its
+surviving Weft ledger adopts every HTTP and listener owner before admission.
+The original native drain witnesses remain required when a leaf worker dies.
+
+The documented integration boundary is established, and the native migration
+is implemented on Weft 0.4.6, the first release with the worker-cleanup
+ordering the native custody scope needs. The old Go helper, FFI, framing
+fixtures, and packaging have been replaced with native release status
+verification.
+
+## Addendum, October 8, 2026: module renames
+
+The native addendum above names `client/codex_bridge`. That module is now
+`client/codex/transport`, and the operator command module that was
+`client/codex/protocol` is now `client/codex/profile_control`. Each module's
+role is unchanged: the transport publishes the parked operation owner and
+adopts every HTTP and listener owner before admission, and `profile_control`
+carries the operator commands and their reported events. The decision above is
+not affected.

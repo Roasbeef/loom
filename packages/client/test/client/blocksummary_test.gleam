@@ -15,6 +15,7 @@ import client/blocksummarybook
 import client/catalog
 import client/distill
 import client/vision
+import core/accounting
 import core/clock
 import core/entry
 import core/ids.{type EntryId, type OpId}
@@ -22,6 +23,7 @@ import core/json.{type JsonValue}
 import core/message
 import core/register
 import core/tx.{InsertEntry, SetRegister, Tx}
+import core/usage_evidence
 import events/bus
 import gleam/erlang/process.{type Subject}
 import gleam/list
@@ -604,6 +606,56 @@ pub fn only_single_provider_routes_are_observed_test() {
   )
 }
 
+pub fn failed_block_summary_retains_one_fallback_report_test() {
+  let final = accounting.unknown_usage(usage_evidence.Other)
+  let first = message.Usage(..final, input: 12, total_tokens: 12)
+  let report = accounting.from_usage(first) |> accounting.append(final)
+  let rig = a_rig(Accounted(Error(distill.Failure("failed", report))))
+  commit_entries(rig, [
+    an_entry(93, assistant("acme", [thinking(string.repeat("x", 600))])),
+  ])
+  let assert Ok(_asked) = process.receive(rig.asked, 2000)
+    as "The block summary must dispatch."
+  assert process.receive(rig.written, 300) == Error(Nil)
+  assert process.receive(rig.published, 100) == Error(Nil)
+  let assert Ok(rows) =
+    storage.scan_usage(rig.opened.store, storage.usage_scan())
+    as "Failure accounting must be durable."
+  let assert [row] = rows
+    as "Fallback attempts must share one summary request row."
+  assert accounting.decode_row(row) == Ok(report)
+  let assert Some(json.Object(fields)) = row.details
+    as "The auxiliary request must retain phase metadata."
+  assert list.key_find(fields, "phase") == Ok(json.String("block-summary"))
+  stop(rig)
+}
+
+pub fn ledger_failure_prevents_block_summary_publication_test() {
+  let usage =
+    message.Usage(
+      ..accounting.unknown_usage(usage_evidence.Other),
+      input: 12,
+      total_tokens: 12,
+    )
+  let answer =
+    distill.Answer("A usable summary.", usage, accounting.from_usage(usage))
+  let rig =
+    a_rig_with_store(Accounted(Ok(answer)), fn(store) {
+      storage.Storage(..store, commit: fn(_handle, _tx) {
+        Error(tx.Faulted("injected ledger failure"))
+      })
+    })
+  commit_entries(rig, [
+    an_entry(97, assistant("acme", [thinking(string.repeat("x", 600))])),
+  ])
+  let assert Ok(_asked) = process.receive(rig.asked, 2000)
+    as "The summary must dispatch before the ledger failure."
+  assert process.receive(rig.written, 300) == Error(Nil)
+  assert process.receive(rig.published, 100) == Error(Nil)
+  assert storage.scan_usage(rig.opened.store, storage.usage_scan()) == Ok([])
+  stop(rig)
+}
+
 // --- the rig -------------------------------------------------------------------
 
 type Rig {
@@ -619,6 +671,8 @@ type Rig {
 }
 
 type Script {
+  Accounted(outcome: Result(distill.Answer, distill.Failure))
+
   Answering(answer: fn(String) -> Result(String, String))
 
   Held(label: String)
@@ -633,6 +687,13 @@ fn held(label: String) -> Script {
 }
 
 fn a_rig(script: Script) -> Rig {
+  a_rig_with_store(script, fn(store) { store })
+}
+
+fn a_rig_with_store(
+  script: Script,
+  transform: fn(storage.Storage(Nil)) -> storage.Storage(Nil),
+) -> Rig {
   let assert Ok(opened) = session.open_memory(clock.fixed(at: 1000))
     as "the memory session must open"
   let asked = process.new_subject()
@@ -645,6 +706,10 @@ fn a_rig(script: Script) -> Rig {
   let summarizer =
     distill.Distiller(ask: fn(request) {
       case script {
+        Accounted(outcome:) -> {
+          process.send(asked, request)
+          outcome
+        }
         Answering(answer:) -> {
           process.send(asked, request)
           answer(request)
@@ -657,14 +722,20 @@ fn a_rig(script: Script) -> Rig {
           let release = process.new_subject()
           process.send(held, #(request, release))
           let _released = process.receive(release, 5000)
-          Ok(distill.Answer(text: label, usage: effects.zero_usage()))
+          Ok(distill.Answer(
+            text: label,
+            usage: accounting.unknown_usage(usage_evidence.Other),
+            accounting: accounting.from_usage(accounting.unknown_usage(
+              usage_evidence.Other,
+            )),
+          ))
         }
       }
     })
 
   let assert Ok(_started) =
     blocksummary.start(blocksummary.Wiring(
-      session: opened,
+      session: session.Session(..opened, store: transform(opened.store)),
       route: blocksummary.Route(provider: "acme", summarizer:),
       settled: settled(),
       write: fn(cell, value) {
@@ -686,10 +757,17 @@ fn a_rig(script: Script) -> Rig {
 
 fn option_answer(
   answer: Result(String, String),
-) -> Result(distill.Answer, String) {
+) -> Result(distill.Answer, distill.Failure) {
   case answer {
-    Ok(text) -> Ok(distill.Answer(text:, usage: effects.zero_usage()))
-    Error(reason) -> Error(reason)
+    Ok(text) ->
+      Ok(distill.Answer(
+        text:,
+        usage: accounting.unknown_usage(usage_evidence.Other),
+        accounting: accounting.from_usage(accounting.unknown_usage(
+          usage_evidence.Other,
+        )),
+      ))
+    Error(reason) -> Error(distill.Failure(reason, accounting.empty()))
   }
 }
 
@@ -847,7 +925,7 @@ fn assistant(
     response_model: None,
     response_id: None,
     diagnostics: None,
-    usage: effects.zero_usage(),
+    usage: accounting.unknown_usage(usage_evidence.Other),
     stop_reason: message.Stop,
     deferred: None,
     error_message: None,
@@ -940,6 +1018,7 @@ fn an_entry_named(name: String) -> catalog.CatalogModel {
     pricing: None,
     vision: catalog.ReadsImages,
     max_images: 8,
+    cyber_access: None,
   )
 }
 

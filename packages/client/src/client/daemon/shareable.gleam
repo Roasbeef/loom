@@ -45,6 +45,7 @@
 //// own turn, so it is the last word on who may.
 
 import client/daemon/manager
+import client/daemon/restart
 import gleam/result
 import storage/access
 import storage/catalogue
@@ -286,31 +287,11 @@ fn resumed(
   }
 }
 
-// The registry's open, the turn `sessions.open` runs, then a wait until the
-// session is resident. A status that cannot become resident without another
-// request ends the wait at once.
+// The registry's open and the wait until the session is resident, which
+// `restart` shares: a profile switch reopens a session the same way.
 fn reopened(
   registry: manager.Manager(instance),
   id: String,
 ) -> Result(Nil, Nil) {
-  use _ <- result.try(manager.open(registry, id) |> result.replace_error(Nil))
-  let outcome =
-    poll.until(within: resume_wait_ms, every: 50, attempt: fn() {
-      case manager.get(registry, id) {
-        Error(_) -> poll.Fail(Nil)
-        Ok(view) ->
-          case view.status {
-            manager.Resident(_) -> poll.Done(Nil)
-            manager.Opening(_) -> poll.Retry
-            manager.Reserved
-            | manager.Saved
-            | manager.Stopping(_)
-            | manager.RecoveryBlocked(_) -> poll.Fail(Nil)
-          }
-      }
-    })
-  case outcome {
-    poll.Answered(Nil) -> Ok(Nil)
-    poll.Failed(Nil) | poll.Expired -> Error(Nil)
-  }
+  restart.reopened(registry, id, within: resume_wait_ms)
 }

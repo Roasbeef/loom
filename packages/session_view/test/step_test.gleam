@@ -16,6 +16,7 @@
 import core/codec
 import core/json
 import core/message
+import core/usage_evidence
 import gleam/bit_array
 import gleam/int
 import gleam/list
@@ -101,6 +102,7 @@ fn transfer() -> List(connection_event.Message) {
             None,
             0,
             message.UsageCost(0.0, 0.0, 0.0, 0.0, 0.0),
+            usage_evidence.none(),
           )),
         ),
         #(
