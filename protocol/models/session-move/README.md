@@ -218,12 +218,16 @@ while the first move's source is still finishing.
 | `Abandon(n)` | `[n, moving, op]` to `[n, serving]`. The operator may ask at any time; after a refusal the mover must (`AbandonRefused`). |
 | `Revert(n)` | The record names `n` serving: the row goes back to `resident`. |
 | `Retire(n)` | The receiver has answered (a refusal is held, or the receiver holds the session `imported` under this op, which is what `Accepted` and a stage of `Activated` report) and a consistent read names the other node: the row becomes `moved` and the file is set aside. |
+| `Delete(m)` | The owner deletes the session: the record becomes absent, and its row and file go. |
+| `GoneRetire(n)` | A source whose mover is still on a move finds the record absent. Once a member has seeded, every session has a record, so a missing one means the owner deleted it: the row becomes `moved` and the file is set aside. |
 | `Crash(n)`, `Restart(n)`, `QuorumLoss`, `QuorumBack` | Memory is lost and the rest survives; a restart resumes a mover for a `moving` row. |
 
 ### What is abstracted away
 
-- The record has no absent state. Deletion is a separate flow (the `Deleting`
-  mark) and is not modelled.
+- Deletion is one step, `Delete`, with the record going absent for good; the
+  `Deleting` mark and its retries are not modelled. The seed is not modelled
+  either: the model starts with every session recorded, which is the state
+  after the seed, so an absent record always means a deletion.
 - `Revert` may run whenever its read allows, and `Retire` whenever the
   receiver's answer and its read allow, not only at the point in a run where
   the code takes them. That is a superset of what the code does, so a safety
@@ -249,10 +253,11 @@ while the first move's source is still finishing.
 | `ServeOnlyAsOwner` | A node serves only while the record names it. |
 | `OwnerHasNewest` | The owner the record names holds the newest version, in its file or, between its activation and its import, in the copy that activation placed with it. No write is lost and no owner is left without the session. |
 | `MovingIsRemembered` | A record that says `moving` has the row that says so on its owner, so a restart finds the move. |
+| `NoResurrection` | Once the owner deleted the session, no node holds it in a row that lets it serve. |
 | `OneServingHolder` | As in `Move.tla`. |
 | `MoveSettles` | `reg.st = moving ~> reg.st = serving`. |
 | `MoverEnds` | Every node's `moving` row comes to say `moved` or `resident`. |
-| `OwnerCanServe` | `reg.st = serving ~> Allows(reg.owner)`: whoever the record names as serving comes to hold the session in a row that lets it serve. |
+| `OwnerCanServe` | `reg.st = serving ~> (reg.st = absent \/ Allows(reg.owner))`: whoever the record names as serving comes to hold the session in a row that lets it serve, unless it is deleted first. |
 
 Reachability was checked by hand with throwaway invariants: the return move
 completes and A serves it; A's row is still `moving(1)` while op 2's copy is
@@ -287,6 +292,7 @@ On TLC 2.19, one worker:
 | `KhepriMutantImportOverMoving` | `ReceiverChecksRow = FALSE` | A crashed after op 1 activated; B wrote version 2 and moves it back. A's activation CAS commits while A's row is still `moving(1)`, the import is refused because of that row, and the copy holding version 2 is dropped: the record names A, which holds version 1. `OwnerHasNewest` breaks. |
 | `KhepriMutantRefuseOwned` | `RefuseOnlyOthers = FALSE` | B's activation committed and B crashed before importing. B refuses the repeat although the record names it, and drops the only copy. `OwnerHasNewest` breaks. |
 | `KhepriMutantRetireStale` | `RetireConsistent = FALSE` | B's return is refused, B abandons it, and B retires on a value from before it owned the session, setting aside the file it owns. `OwnerHasNewest` breaks. |
+| `KhepriMutantGoneReverts` | `GoneSetsAside = FALSE` | A gives B the session and its mover stays on the move; B imports it and deletes it. A then finds no record and reverts its row, so it can serve a deleted session again. `NoResurrection` breaks. |
 | `KhepriMutantRetireOnSilence` | `RetireOnAnswer = FALSE` | B's activation commits and B crashes before importing. A retires on the record alone and stops asking, so nothing makes B import: the record names B for ever, and B holds only the incoming copy. `OwnerCanServe` breaks (a temporal property, exit 13). |
 
 `KhepriMutantImportOverMoving` is the rule in `session_importer.activated`:

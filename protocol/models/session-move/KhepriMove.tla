@@ -26,8 +26,8 @@
 (* the sender gave up. The sender may abandon a move at any time, which is *)
 (* the operator's hand-abandon; after a refusal it must.                   *)
 (*                                                                         *)
-(* Eight constants each switch one rule off so that its mutation can be    *)
-(* checked. A clean run sets all eight to TRUE. Each KhepriMutant*.cfg     *)
+(* Nine constants each switch one rule off so that its mutation can be     *)
+(* checked. A clean run sets all nine to TRUE. Each KhepriMutant*.cfg     *)
 (* sets one to FALSE and names the property TLC must then violate.         *)
 (***************************************************************************)
 EXTENDS Naturals
@@ -43,6 +43,8 @@ CONSTANTS
                        \* someone else.
     RetireConsistent,  \* The source retires on a current read of the record.
     RetireOnAnswer,    \* The source retires only once the receiver answered.
+    GoneSetsAside,     \* A source that finds the record gone sets its copy
+                       \* aside rather than serving it again.
     MaxInc,            \* Bound on the executor incarnation.
     MaxVer,            \* Bound on the session's content version.
     MaxCrashes,        \* Bound on crashes of either node.
@@ -85,12 +87,16 @@ vars == <<reg, lastOp, sawOther, quorum, qlosses, row, rowOp, file, top,
 
 Serving(n) == [owner |-> n, st |-> "serving", op |-> 0]
 
+(* The record after its owner deleted the session. Nothing writes it again. *)
+Absent == [owner |-> "none", st |-> "absent", op |-> 0]
+
 Moving(n, op) == [owner |-> n, st |-> "moving", op |-> op]
 
 Holders == {"none", "A", "B"}
 
 TypeOK ==
-    /\ reg \in [owner : Nodes, st : {"serving", "moving"}, op : 0..2]
+    /\ reg \in [owner : Nodes \cup {"none"}, st : {"serving", "moving", "absent"},
+               op : 0..2]
     /\ lastOp \in 0..2
     /\ sawOther \in [Nodes -> BOOLEAN]
     /\ quorum \in BOOLEAN
@@ -384,6 +390,36 @@ Retire(n) ==
                    copyVer, exec, serving, alive, started, crashes>>
 
 (***************************************************************************)
+(* The owner deletes the session: its record goes, and so do its row and   *)
+(* its file. A source whose mover is still on an earlier move, because it  *)
+(* was down when the receiver activated, then finds no record. Once a      *)
+(* member has seeded, every session has a record, so a missing one means   *)
+(* only this, and the source sets its copy aside (GoneSetsAside); the      *)
+(* mutant reverts and serves it again.                                     *)
+(***************************************************************************)
+Delete(m) ==
+    /\ alive[m] /\ quorum /\ reg = Serving(m) /\ Allows(m)
+    /\ mover[m] = "idle" /\ ~serving[m]
+    /\ Write(Absent)
+    /\ row' = [row EXCEPT ![m] = "absent"]
+    /\ rowOp' = [rowOp EXCEPT ![m] = 0]
+    /\ file' = [file EXCEPT ![m] = 0]
+    /\ UNCHANGED <<lastOp, quorum, qlosses, top, copySt, copyVer, exec,
+                   serving, alive, mover, intent, refused, started, crashes>>
+
+GoneRetire(n) ==
+    /\ alive[n] /\ mover[n] = "run" /\ row[n] = "moving" /\ quorum
+    /\ reg = Absent
+    /\ row' = [row EXCEPT ![n] = IF GoneSetsAside THEN "moved" ELSE "resident"]
+    /\ file' = [file EXCEPT ![n] = IF GoneSetsAside THEN 0 ELSE @]
+    /\ mover' = [mover EXCEPT ![n] = "idle"]
+    /\ intent' = [intent EXCEPT ![n] = FALSE]
+    /\ refused' = [refused EXCEPT ![n] = FALSE]
+    /\ DropCut(n)
+    /\ UNCHANGED <<reg, lastOp, sawOther, quorum, qlosses, rowOp, top,
+                   copyVer, exec, serving, alive, started, crashes>>
+
+(***************************************************************************)
 (* The environment. A crash loses memory and keeps the record, the rows,   *)
 (* the files, the copies and the ledger; a restart resumes a mover for a   *)
 (* moving row. The cluster loses and regains its majority.                 *)
@@ -426,6 +462,7 @@ Next ==
     \/ \E n \in Nodes :
           \/ AttachExec(n) \/ Open(n) \/ Edit(n) \/ StopClose(n) \/ CloseRefused(n)
           \/ Abandon(n) \/ Revert(n) \/ Retire(n) \/ Crash(n) \/ Restart(n)
+          \/ Delete(n) \/ GoneRetire(n)
     \/ \E n \in Nodes, op \in Ops : Intend(n, op) \/ IntentCAS(n, op) \/ Cut(n, op)
     \/ \E op \in Ops :
           \/ Send(op)
@@ -453,6 +490,7 @@ Spec ==
           /\ WF_vars(StopClose(n)) /\ WF_vars(Revert(n))
           /\ WF_vars(Retire(n)) /\ WF_vars(Restart(n))
           /\ WF_vars(AbandonRefused(n)) /\ WF_vars(CloseRefused(n))
+          /\ WF_vars(GoneRetire(n))
     /\ \A n \in Nodes, op \in Ops : WF_vars(IntentCAS(n, op)) /\ WF_vars(Cut(n, op))
     /\ \A op \in Ops :
           /\ WF_vars(Send(op))
@@ -484,9 +522,13 @@ OneOwner == ~(serving["A"] /\ serving["B"])
 ServeOnlyAsOwner == \A n \in Nodes : serving[n] => reg.owner = n
 
 OwnerHasNewest ==
+    \/ reg.st = "absent"
     \/ file[reg.owner] = top
     \/ /\ reg.st = "serving" /\ lastOp # 0 /\ Dst(lastOp) = reg.owner
        /\ copySt[lastOp] = "sent" /\ copyVer[lastOp] = top
+
+(* NoResurrection: once the owner deleted the session, no node can serve it. *)
+NoResurrection == reg.st = "absent" => \A n \in Nodes : ~Allows(n)
 
 MovingIsRemembered ==
     reg.st = "moving" =>
@@ -512,6 +554,7 @@ MoverEnds == \A n \in Nodes : (row[n] = "moving") ~> (row[n] # "moving")
 (* without the session it owns, as when a receiver's import is never       *)
 (* finished because nobody asks it again.                                  *)
 (***************************************************************************)
-OwnerCanServe == (reg.st = "serving") ~> Allows(reg.owner)
+OwnerCanServe ==
+    (reg.st = "serving") ~> (reg.st = "absent" \/ Allows(reg.owner))
 
 =========================================================================
