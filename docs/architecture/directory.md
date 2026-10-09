@@ -393,7 +393,11 @@ store. When the record write fails, the receiver reads what the record holds:
 - **The receiver is already the owner.** Its own earlier write committed and its
   reply or its import was lost, or the session has moved on since. It finishes the
   import if it has not, and answers `Accepted`. It never removes a session it
-  owns.
+  owns, and it never refuses one: an import that cannot finish now, because its
+  configuration changed since the write (the executor or the sender no longer
+  listed), answers `Failed`, keeps the incoming copy, and the source asks again.
+  The same holds when a check before the write refuses and a consistent read
+  shows this daemon already owns the record.
 - **Another daemon owns it, or there is no record.** The move ended without this
   receiver. It answers `Refused(move_ended)` and removes only its incoming copy.
 - **The write did not commit in time.** It answers `Failed`, which the source
@@ -557,6 +561,14 @@ file aside where an operator can recover it.
 When every registration is copied, the daemon writes `[loom, migrated, <node>]`.
 Until then its movers do not act on the store, so no move decides anything from
 a record that is merely missing.
+
+The marker is written once per node name, and nothing checks afterwards that
+every remote session has a record. So a seeded member must not drop
+`[directory]` and later add it back, and must not change its node name: a remote
+session created in between has no record, and a move of it would find the record
+missing and set the session aside as deleted. To take a member out of the
+directory, move or delete its remote sessions first. To rename one, decommission
+the member and bootstrap or join it again as a new member.
 
 ## What failover would add
 
