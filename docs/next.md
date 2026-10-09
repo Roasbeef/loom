@@ -270,6 +270,16 @@ has a section, "The session directory in Khepri".
 
 #### Evidence
 
+After the re-verify review's fixes (a receiver that owns the record answers
+`Failed`, never `Refused`; the gone record logged on the abandon path; the seed
+marker's assumptions documented) and the rebase onto PR #923's head
+`0e7be0b43`, every gate passed on the first run: `make lint` (0 errors),
+`make doc-check`, `make prelude-check`, `make model-check` (`KhepriMove` 332,902
+states, nine mutants caught), `make check-client` (3699 tests), `make
+server-shipment` and `make sandbox`, the shipped `daemon_shipped_remote_move_test`
+and `daemon_shipped_directory_test` with 0 SKIP lines, and `make check-gleam`
+(649 s). The table below is the earlier run on `cb69cd798`.
+
 All rows are for `cb69cd798` and its successors, which change only this file
 and move one function in `session_movers` (the R15 fix below), on a Mac
 (Darwin, macOS 15.5), each gate's own exit code captured directly. The machine
