@@ -2035,4 +2035,3 @@ pub fn a_deletion_mark_is_set_cleared_listed_and_leaves_with_the_row_test() {
   assert catalogue.deleting(store) == Ok([])
   assert catalogue.close(store) == Ok(Nil)
 }
-
