@@ -134,13 +134,13 @@ workspace path they put in a spec comes from the census as an opaque string.
 
 ### What a remote session refuses
 
-Four features read orchestrator-side state that has no executor counterpart
+Two features read orchestrator-side state that has no executor counterpart
 yet, and a remote session refuses them rather than half running them: extension
-tools, operator-added directories, background code mode, and MCP façades inside
-code mode. Foreground `code_mode` works. A remote failure never falls back to a
-local path, because a remote session's orchestrator has no workspace path to
-fall back to. Background code mode and MCP façades have a design that is not
-built yet; see "Background code mode and MCP on a remote session" below.
+tools and operator-added directories. Foreground and background `code_mode`
+work, and so do MCP façades inside code mode; see "Background code mode and MCP
+on a remote session" below. A remote failure never falls back to a local path,
+because a remote session's orchestrator has no workspace path to fall back
+to.
 
 ## Trust and transport
 
@@ -722,7 +722,7 @@ there.
 
 ## Background code mode and MCP on a remote session
 
-**Status: designed; the implementation follows on this branch.** The rules are in the protocol-change/078
+**Status: built, at protocol version 3.** The rules are in the protocol-change/078
 addendum "background code mode and MCP façades on a remote session", together
 with the failure table for both paths. This section shows how the parts fit.
 
@@ -766,7 +766,7 @@ sequenceDiagram
     Note over H: code_mode tool loads the source,<br/>builds the terms
     H-)O: LaunchExecution(terms)
     O->>A: async_runs.launch
-    Note over A: claim the record (Running)<br/>before the worker starts
+    Note over A: claim the record (Starting)<br/>before the worker starts
     A-->>O: handle
     O--)H: handle
     H-->>O: RunFinished(handle)
@@ -784,7 +784,7 @@ sequenceDiagram
     O-->>P: the input
     Note over A,H: link cut
     Note over H: worker DOWN noconnection:<br/>waiter dropped, program runs on
-    Note over P: owner-bound calls denied<br/>owner_unavailable
+    Note over P: execution.receive waits<br/>for the link, within its wait
     Note over A,H: link back
     A->>H: StartExecution (same key, re-sent)
     Note over H: row admitted: join the waiters
@@ -869,8 +869,9 @@ sequenceDiagram
 One program may import façades of both placements. The executor's router sends
 `mcp.<server>` to the owner unless the scope's plan names that server as
 executor-placed. The plan is fixed when the plane is built, for one
-incarnation; a later open that rebinds the scope with a different plan logs
-`mcp.plan_stale` and the change waits for the next reopen.
+incarnation. A later open that rebinds the scope after an orchestrator restart
+keeps the plane and its plan, and answers with the census the plane was built
+with, so a changed plan takes effect at the next reopen.
 
 ## Failures
 
@@ -938,6 +939,18 @@ restarted executor refusing a call it may have run, and a late `Run` starting an
 acknowledged key. It leaves out scope states other than `open`, reopening,
 capacity, the byte budget, the plane build, owner callbacks and time.
 
+The same project models background executions on the same host and ledger: the
+orchestrator's records and their workers, the stop, the reconciler, and
+recovery after an orchestrator restart. Its specs are that no program starts
+after the host processed its stop, that a finished record holds the value the
+ledger stored, that only a closing decision stops a program, that a program
+which stored its value while its record was live is not recorded lost, that the
+reconciler acknowledges a row only once its record is finished or lost, and
+that every record and program settles. Five more mutants, from a stop that does
+not bar a missing key to a reconciler that skips executions, are each caught.
+The input journal and progress travel over the owner port and are tested in
+Gleam instead.
+
 Neither model covers trust and transport, pools, the directory or peer mail.
 The directory holds no state of its own, so it has no model.
 
@@ -947,9 +960,16 @@ The directory holds no state of its own, so it has no model.
   the executor its first open chose. If that executor is down the session waits.
   A replicated store behind `session_directory` (Khepri) is planned for a
   follow-up PR and is the prerequisite for failover.
-- **Remote sessions refuse** extension tools, operator-added directories,
-  background code mode and MCP façades in code mode. The last two are designed
-  (see above) and not built.
+- **Remote sessions refuse** extension tools and operator-added directories.
+- **Background code mode on a remote session** answers the model's `check`,
+  `send` and `cancel` through the executor, because `code_mode` is placed there
+  by name, so those modes wait for a cut link like any other tool call. A
+  running execution does not survive an orchestrator restart: only one that had
+  already finished keeps its result. Each execution reserves 1 MiB of the
+  executor's ledger budget, which is per executor and shared by its scopes.
+- **MCP on a remote session**: the plan is fixed for an incarnation, a server is
+  never restarted or jailed on either machine, and an orchestrator-placed server
+  is started even when the executor offers no `code_mode`.
 - **After an executor restart**, an open session fails new calls until it is
   closed and reopened, and the reopen needs the operator's release. Runs left
   by an orchestrator that died hold their budget until the session is reopened

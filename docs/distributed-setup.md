@@ -996,6 +996,48 @@ tunnel stayed down for 96 seconds, past the end of the command, and after the
 reconnect the model still received the command's real result, read from the
 executor's ledger, with the command run once.
 
+### Background code mode and MCP servers
+
+**Pending**. Written from the code and the shipped fixtures
+`daemon_shipped_remote_background_test` and `daemon_shipped_remote_mcp_test`,
+which run both daemons on one machine; no named run has repeated them.
+
+A remote session runs `code_mode` with `mode: "launch"` as a local session does.
+The program runs on the executor beside the checkout. Its record, the input the
+model sends it and its progress stay on the orchestrator, and the model's
+`check`, `send`, `join` and `cancel` work unchanged. If the connection drops,
+the program keeps running and a program waiting for input waits for the
+connection to return. If the executor restarts, every running program is
+reported lost to the model. If the orchestrator restarts, a program that had
+already finished keeps its result, and one still running is reported lost and
+stopped.
+
+An MCP server for a remote session runs on the orchestrator unless its table
+says otherwise. To run it on the executor beside the checkout, give the
+orchestrator's table `runs_on = "executor"` and put a table of the same name in
+the executor's `loom.toml`:
+
+```toml
+# The orchestrator's loom.toml. The command is used only by local sessions.
+[mcp.repo]
+command = ["repo-mcp"]
+runs_on = "executor"
+
+# The executor's loom.toml. This command and key are the ones that run.
+[mcp.repo]
+command = ["/usr/local/bin/repo-mcp", "--stdio"]
+api_key_env = "REPO_TOKEN"
+```
+
+The executor reads `api_key_env` from its own environment or its own
+`[secrets]` table, so the key is set on the executor and never crosses the
+connection. When a session opens, the orchestrator logs `mcp.ready` or
+`mcp.unavailable` for each server it expects on the executor, with
+`placement: executor`. An executor with no table for the name answers
+`this executor declares no [mcp.repo] table`, and a program that imports
+`cap/mcp/repo` is refused. Editing either table takes effect when the session is
+next stopped and opened.
+
 ### Several executors: pools
 
 With more than one executor you can let the orchestrator choose (**Pending**; the
@@ -1363,16 +1405,13 @@ not yet do the following.
   refuses them.
 - **No operator-added directories on remote sessions.** They are validated against
   the orchestrator's disk.
-- **No background code mode and no MCP facades in code mode on remote sessions.**
-  Foreground `code_mode` works, without those two features. Both are designed
-  and not built (the protocol-change/078 addendum on background code mode and
-  MCP façades). When they land, an `[mcp.<name>]` table on the orchestrator will
-  take `runs_on = "orchestrator"` (the default) or `runs_on = "executor"`. A
-  server on the orchestrator keeps its key there. A server on the executor runs
-  beside the checkout, and the executor reads its `api_key_env` variable from
-  its own environment or its own `[secrets]` table, so that variable has to be
-  set on the executor, not on the orchestrator. Its `command` has to name an
-  executable the executor can find.
+- **Background code mode waits on the connection.** The model's `check`,
+  `send` and `cancel` for a background program go through the executor, so they
+  wait for a dropped connection like any other tool call. A program still
+  running when the orchestrator restarts is reported lost.
+- **MCP servers are not restarted or jailed** on either machine, as on a local
+  session, and an orchestrator starts its servers for a remote session even when
+  the executor offers no `code_mode`.
 - **No automatic connection.** Nodes connect only to the peers you list, only when
   asked.
 - **Provisioning is one-shot.** `provision` discards the authority's key, so adding

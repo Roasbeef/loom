@@ -177,13 +177,38 @@ a peer can send, which is scope hygiene and not a security boundary.
   report "still starting" until the next daemon starts.
 - On macOS, an executor started from a checkout looks for its code-mode seed under
   the workspace's `build/` by default, which is wrong there. Pass `--codemode-seed`.
-- Remote sessions refuse extension tools, operator directory additions, background
-  code mode and MCP facades.
+- Remote sessions refuse extension tools and operator directory additions.
+  Background code mode and MCP facades on a remote session are on the stacked
+  branch `distributed/remote-codemode` (see below), not on this one.
 - `remote/protocol` and `storage/exec_ledger` each keep their own `Key` and
   `CloseOutcome` types with mappers between them.
 - Two recorded flakes: `daemon_shipped_remote_test`'s partition drill saw an
   `options_mismatch` at executor boot once, and the macOS gate's skip census flags two
   undeclared broker `/proc` skips. Both are filed as tasks.
+
+## Background code mode and MCP on a remote session
+
+The branch `distributed/remote-codemode`, stacked on PR #923, implements the
+protocol-change/078 addendum "background code mode and MCP façades on a remote
+session" at protocol version 3. The orchestrator keeps each background
+execution's record, input and progress in `async_runs`; the executor runs the
+program under the ledger key `(session, op, "async/<id>", 0)`; a closed record
+sends `StopExecution`, which `exec_ledger.stop_or_fence` turns into an unknown
+row or a barred key; the owner port's reconciler stops orphans and acknowledges
+an execution's row only once its record is closed; recovery after an
+orchestrator restart keeps a result the executor already stored. `[mcp.<name>]`
+gains `runs_on`, and an executor-placed server runs from the executor's own
+table. `packages/client/CLAUDE.md`, "Background code mode and MCP on a
+registered session", is the map; the P model's mutants M8 to M12 and the
+shipped fixtures `daemon_shipped_remote_background_test` and
+`daemon_shipped_remote_mcp_test` are the evidence.
+
+Open on that branch: `check`, `send` and `cancel` wait out a link cut because
+`code_mode` is placed on the executor by name; the execution budget (1 MiB a
+row) is per executor; a rebound attach keeps the old MCP plan without a log
+line saying so; and the launching call that the record now stores is used to
+attribute a background program's workflow steps but does not change the step
+id the workflow ledger records.
 
 ## The Linux box
 
