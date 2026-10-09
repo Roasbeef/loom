@@ -156,9 +156,25 @@ The architecture page and 079 at the implemented spellings, the package
    deadlines, and worth reporting upstream.
 4. **Retiring the phase 5 path.** Once every deployment has a directory, the
    fan-out, `inbound_settled` and the rows-as-authority mover can go.
-5. **Local sessions across members.** A member records only remote sessions, so
-   another member answers `not_found` for a local session and peer mail to a
-   local session on another orchestrator is not routed. Phase 3's fan-out
-   answered both. This follows the ruling that local sessions are not recorded;
-   recording them, or asking peers for a miss, is the choice to revisit if the
-   mail matters.
+5. **Local sessions across members** (closed). The first implementation
+   recorded only remote sessions, so another member answered `not_found` for a
+   local session and peer mail to it was not routed. The owner ruled that every
+   session is recorded: a local session gets `{self, local}`, written by the
+   movers' upkeep after the session exists and never waited on, so the gap is
+   closed without making local creation depend on a quorum.
+
+## 4. After the implementation review
+
+The review found two problems around a move that the model did not cover, and
+three smaller ones; ADR-019's addendum records the changes. The give-up now
+waits for this daemon's seed, and a given-up move whose receiver already owns
+the session retires only on the receiver's answer, because a receiver that
+crashed between its compare-and-set and its import finishes the import only
+when the source asks again. `KhepriMove.tla` now makes the receiver's steps fair
+only while the source asks, adds `OwnerCanServe`, and catches the old rule with
+`KhepriMutantRetireOnSilence`; the clean model needed three steps closer to the
+code to stay live (a sender that finds the receiver owning the session carries
+on, a resumed sender cuts and sends again, a refused close is an answer), and
+`MoverEnds` still holds. Bootstrap no longer counts the Ra system's own files
+as a store, the join's retries moved from the shim to `weft/poll`, and an
+unrecognised Khepri answer is named instead of reported as a lost quorum.

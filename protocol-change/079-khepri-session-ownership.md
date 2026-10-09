@@ -72,13 +72,13 @@ their own. This is the decision.
 
 ### The record
 
-The store is named `loom_directory`. Each remote session (created with an
-executor or a pool) on a member daemon has one tree node at
-`[loom, sessions, <<SessionId>>]`:
+The store is named `loom_directory`. Each session on a member daemon has one
+tree node at `[loom, sessions, <<SessionId>>]`:
 
 ```erlang
-{loom_owner, 1, Owner, serving}
-{loom_owner, 1, Owner, {moving, Op, To}}
+{loom_owner, 1, Owner, serving}            %% a remote session
+{loom_owner, 1, Owner, {moving, Op, To}}   %% a remote session being moved
+{loom_owner, 1, Owner, local}              %% a local session: a lookup hint
 %% Owner, To :: binary()   distribution node names
 %% Op        :: binary()   the move's identity, as in catalogue_session_moves
 ```
@@ -90,6 +90,7 @@ pub type Record {
 
 pub type OwnerState {
   Serving
+  Local
   Moving(op: String, to: String)
 }
 ```
@@ -103,7 +104,9 @@ the bare node name when no row names it.
 `[loom, migrated, <<Node>>]` holds `{loom_migrated, 1}` once that orchestrator
 has seeded the store from its catalogue.
 
-Local sessions have no record.
+A local session's record is a lookup hint, never an authority: a local session
+never moves, and its state, `local`, matches no move's or remote delete's
+expected value.
 
 ### Writes
 
@@ -114,6 +117,8 @@ Local sessions have no record.
 | Activate a move | the receiver | CAS | `{source, {moving, Op, self}}` | `{self, serving}` |
 | Abandon a move | the source | CAS | `{self, {moving, Op, To}}` | `{self, serving}` |
 | Delete a remote session | its owner | delete with a data condition | `{self, serving}` | absent |
+| Record a local session | its owner's movers, best-effort | create | absent | `{self, local}` |
+| Forget a deleted local session | its owner's movers, best-effort | delete with a data condition | `{self, local}` | absent |
 | Mark migration done | each orchestrator | put | | `{loom_migrated, 1}` |
 
 Every expected value is a literal term. Each write runs in a weft task under a
@@ -197,11 +202,11 @@ as in phase 5, and replies. The mover then:
    its reply was lost, so the move goes on and the receiver is asked again;
 3. closes, cuts and sends as in phase 5;
 4. asks the receiver to activate;
-5. retires when the receiver answered `Accepted` or `Refused(move_ended)`, or an
-   abandon found the record changed, and a consistent read shows another
-   owner: `finish_move`, then the file work. A consistent read naming this
-   daemon as `serving` reverts the row instead, since its own abandon
-   committed.
+5. retires on the receiver's answer (`Accepted`, a stage of `Activated`,
+   `Refused(move_ended)`, or a refusal or a refused close that an abandon
+   followed) when a consistent read shows another owner: `finish_move`, then
+   the file work. A consistent read naming this daemon as `serving` reverts the
+   row instead, since its own abandon committed.
 
 The receiver's activation: a custody row `imported(Op, From)` answers `Accepted`
 at once; a row that holds the session in any other state, `moving` included, is
@@ -215,18 +220,25 @@ record is `Refused(move_ended)`, and only the incoming copy is removed. `NoQuoru
 is `Failed`.
 
 The source abandons by the abandon CAS followed by `abort_move`. A `Mismatch`
-whose owner is another node sends the mover to retirement instead. The source
-abandons on the phase 5 causes, after thirty minutes of stalls during which the
-store had a quorum and the receiver's migration marker existed, and on the
-owner's request: `sessions.move` with `abandon: true` (owner-only, `epoch`
+whose owner is another node means the receiver activated first. After an answer
+(a refusal, a refused close) the mover retires. After silence (the give-up or
+the owner's request) it does not: the receiver may have crashed between its CAS
+and its import, which only the source's next activation makes it finish, so the
+outcome is `Deferred` and the next run asks the receiver again and retires on
+its answer. The source abandons on the phase 5 causes, after thirty minutes of
+stalls during which the store had a quorum, this daemon had seeded the store
+and the receiver's migration marker existed, and on the owner's request: `sessions.move` with `abandon: true` (owner-only, `epoch`
 required) asks the movers to abandon now and replies `{session_id, op, state:
 "abandoning"}`. A session with no `moving` row is refused `conflict`, and a
 daemon that is not a member refuses `not_movable`, because without the record a
 move cannot be abandoned on silence. The abandon itself runs in the mover, so
 its outcome is read from `sessions.get` afterwards.
 
-A move stalled for want of a quorum is reported as unquorate and does not count
-toward the thirty minutes.
+A move stalled for a reason giving up could not cure (the store has no quorum,
+this daemon has not seeded it, or the receiver owns the session and must be
+asked again) is reported as `Deferred` and does not count toward the thirty
+minutes. The give-up itself waits for this daemon's seed, because before it an
+absent record means "not copied yet".
 
 `inbound_settled` and its `not_movable` and `busy` refusals are not applied on a
 member daemon.
@@ -246,6 +258,18 @@ then deletes the record with the condition `{self, serving}`:
 | `NoQuorum` | the mark stays, the delete is refused `no_quorum` |
 
 The movers' tick retries the record delete for every marked session.
+
+### Local sessions
+
+Creating a local session makes no store call and succeeds without a majority.
+The movers' upkeep writes `{self, local}` for every local session missing from
+this member's copy (`migrate.cover_local`): at boot, and after each local
+creation, which asks for it (`Control.cover`) and does not wait. A pass that
+fails leaves the work wanted for the next tick. `sessions.delete` of a local
+session removes its record best-effort (`Control.forget`); a record left
+behind names the owner, which answers `not_found`. An orchestrator member, one
+that lists executors, pools or other orchestrators, records local sessions; an
+executor member writes nothing.
 
 ### Orchestrator port
 
@@ -303,8 +327,12 @@ before.
 ### Forming the cluster
 
 `loomd directory bootstrap` (daemon stopped) creates a one-member store and the
-`joined` marker, and refuses when the data directory is not empty or when a
-configured member answers that it holds a joined store. A booting member whose
+`joined` marker, and refuses when the data directory holds a store (the
+`joined` marker or a Ra server directory; the files the Ra system writes at
+every daemon boot do not count) or when a configured member answers that it
+holds a joined store. The refusal names the remedy: start the daemon when a
+cluster exists, or remove the directory and bootstrap again when the store is
+a leftover. A booting member whose
 store is not joined joins through the first member that answers, as a
 `promotable` non-voter after removing its own stale identity, and marks itself
 joined once Ra has promoted it. A joined member restarts its server.
