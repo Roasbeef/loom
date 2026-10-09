@@ -401,7 +401,7 @@ carries the daemon epoch that most control commands must echo.
 | `ui.path` | string | optional | Present only when the daemon was started with `--ui`: the web view's route prefix, `"/ui"`. A client that does not know the field ignores it. |
 
 Source: (`client/daemon/server.gleam:577-617`); the `ui` field is
-`hello_view` (`client/daemon/server.gleam:1835`).
+`hello_view` (`client/daemon/server.gleam:1842`).
 
 The epoch changes when the daemon restarts. A client MUST discard
 ephemeral state and re-select a session on reconnecting to a different
@@ -536,7 +536,7 @@ Source: (`client/daemon/server.gleam:839-860`).
 A page stops on an authorized record boundary once its encoded size
 would exceed 60000 bytes. The next request resumes after the last
 emitted id. A single record too large for that budget is refused with
-`metadata_too_large`. Source: (`client/daemon/server.gleam:2797`).
+`metadata_too_large`. Source: (`client/daemon/server.gleam:2810`).
 
 Errors: `revision_changed` when `revision` was supplied and differs from
 the catalogue's current one; `metadata_too_large`; `unavailable`.
@@ -604,6 +604,7 @@ Owner-only. Reserves a durable identity and initializes the session.
 | `configuration` | string | required | Configuration file path, at most 4096 bytes. Canonicalized by the server. |
 | `domain_scope` | string | optional | `workspace_private` (the default) or `session_only`. |
 | `profile` | string | optional | A model profile of the session's configuration (`[profiles.<name>.roles]`): a lowercase letter, then lowercase letters, numbers, `_` or `-`, at most 32 characters. Absent means the configuration's default roles. A present value that is not a profile name, including the empty string, is refused as malformed. The server stores the name with the session and resolves it again at every open. See [protocol-change/076](../protocol-change/076-config-profiles.md). |
+| `model` | string | optional | A `[models.<key>]` key of the session's configuration to pin the `main` role to, 1 to 64 bytes. Absent means the chain the profile or configuration gives. A present value that is not a key of that length, including the empty string and a non-string, is refused as malformed. The server stores the key with the session and resolves it again at every open, after the profile. See [protocol-change/080](../protocol-change/080-session-model-choice.md). |
 
 Source: (`client/daemon/protocol.gleam:227-234`) and
 (`client/daemon/protocol.gleam:256-263`).
@@ -620,12 +621,15 @@ when a path cannot be canonicalized; `unknown_profile` when the
 configuration the session will load does not define `profile`, which is
 a refusal whose `message` names the profiles that do exist
 (`unknown profile "x"; the configuration defines: a, b`);
-`unusable_configuration` when a profile is named and that configuration
+`unknown_model` when it does not define `model`, with a `message` that names
+the keys that exist (`unknown model "x"; the configuration defines: a, b`), and
+the profile is judged first when both are wrong;
+`unusable_configuration` when a profile or a model is named and that configuration
 cannot be read or parsed, whose `message` is the daemon's startup wording
 (for an unknown top-level key, ``unknown key `x` in the top level (allowed: ...)``);
 `conflict` when
-the key was reused with different metadata, a different `profile`
-included; `unavailable`.
+the key was reused with different metadata, a different `profile` or
+`model` included; `unavailable`.
 Source: (`client/daemon/server.gleam:657-664`).
 
 The server assigns the database path beneath its own private session
@@ -938,7 +942,7 @@ While the daemon is draining, an existing control socket may still issue
 the read commands `status`, `sessions.list`, `sessions.get`,
 `sessions.default`, `operations.get`, `peers.inspect`, `sessions.activity`,
 `principals.list`, `principals.memberships`, and `ui.link`. Every mutating control command is refused. Source:
-`control_use` (`client/daemon/server.gleam:2154-1130`).
+`control_use` (`client/daemon/server.gleam:2161-1130`).
 
 That includes `sessions.delete`, which is a mutation like any other.
 
@@ -1086,7 +1090,7 @@ the `hello` states with its `ui` field. The request carries the canonical
 
 `page` is the page's ceiling: `"observer"`, which is also the value when
 the field is absent, or `"operator"`. Any other value is refused with
-`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:850`). The
+`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:875`). The
 ceiling caps the page's role and never grants one: the page acts with the
 smallest of the principal's membership role, the ceiling, and Operator.
 
@@ -3613,7 +3617,7 @@ below have not been edited.
    `docs/loom-implementation-spec.md` §1.6 names ten control commands.
    The code implements six more: `sessions.isolate`, `sessions.invite`,
    `sessions.set_role`, `sessions.revoke`, `credentials.rotate` and
-   `credentials.revoke` (`client/daemon/protocol.gleam:437`). The
+   `credentials.revoke` (`client/daemon/protocol.gleam:445`). The
    six are specified in `protocol-change/015`'s addenda, so the gap is
    in the spec's summary rather than in the decision record.
    `protocol-change/053` adds a third route, `/v2/claim`, with its one

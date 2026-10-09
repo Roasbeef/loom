@@ -58,6 +58,7 @@ main = [\"session_b\"]
       "resolution",
       catalogue.Saved,
       profile: option.None,
+      model: option.None,
       subtitle: option.None,
     )
   let selected =
@@ -124,6 +125,7 @@ fn resolve_profiled(
   seed: Int,
   config_text: String,
   profile: option.Option(String),
+  model: option.Option(String),
 ) -> Result(serve.Settings, String) {
   let fixture = owned_assembly_test.settings()
   let state = filepath.directory_name(fixture.session_path)
@@ -145,6 +147,7 @@ fn resolve_profiled(
       "profiled-" <> id,
       catalogue.Saved,
       profile:,
+      model:,
       subtitle: option.None,
     )
   let selected =
@@ -161,8 +164,9 @@ fn resolve_profiled(
 
 pub fn two_sessions_on_different_profiles_route_different_main_models_test() {
   let text = profiled_config <> alt_profile
-  let assert Ok(plain) = resolve_profiled(801, text, option.None)
-  let assert Ok(alt) = resolve_profiled(802, text, option.Some("alt"))
+  let assert Ok(plain) = resolve_profiled(801, text, option.None, option.None)
+  let assert Ok(alt) =
+    resolve_profiled(802, text, option.Some("alt"), option.None)
 
   // Each session starts its strand on its own main model, and neither
   // resolution leaks into the other: they are built from one file by two
@@ -186,7 +190,7 @@ pub fn two_sessions_on_different_profiles_route_different_main_models_test() {
 
 pub fn a_session_whose_profile_was_removed_is_refused_not_defaulted_test() {
   let assert Error(reason) =
-    resolve_profiled(803, profiled_config, option.Some("alt"))
+    resolve_profiled(803, profiled_config, option.Some("alt"), option.None)
   assert string.contains(
     reason,
     "unknown profile \"alt\"; the configuration defines no profiles",
@@ -209,6 +213,7 @@ pub fn a_session_with_a_profile_needs_a_config_file_test() {
       "profiled-" <> id,
       catalogue.Saved,
       profile: option.Some("alt"),
+      model: option.None,
       subtitle: option.None,
     )
   let selected =
@@ -223,4 +228,89 @@ pub fn a_session_with_a_profile_needs_a_config_file_test() {
   let assert Error(reason) =
     serve.resolve_managed(["--helper", "/bin/sh"], record, selected, state)
   assert string.contains(reason, "profile \"alt\" needs a config file")
+}
+
+// --- model choice (protocol-change/080) -------------------------------------
+
+pub fn a_pinned_model_replaces_only_the_main_chain_test() {
+  let assert Ok(plain) =
+    resolve_profiled(805, profiled_config, option.None, option.None)
+  let assert Ok(pinned) =
+    resolve_profiled(806, profiled_config, option.None, option.Some("alt"))
+
+  // The strand starts on the pinned entry, and the neighbouring session built
+  // from the same file is unaffected.
+  assert plain.model.provider == "base"
+  assert pinned.model.provider == "alt"
+  assert pinned.model.model_id == "alt-model"
+  assert pinned.context_window == 2000
+
+  // Only `main` moved: the role the choice did not name keeps the file's chain.
+  let assert Ok(pinned_main) =
+    provider_gateway.resolve(pinned.gateway, model.Main)
+  let assert Ok(pinned_summary) =
+    provider_gateway.resolve(pinned.gateway, model.Summarize)
+  assert pinned_main.provider == "alt"
+  assert pinned_summary.provider == "base"
+}
+
+pub fn a_pinned_model_is_laid_over_the_profiles_roles_test() {
+  // The profile routes `main` and `summarize` to `alt`. Pinning `base` then
+  // moves `main` back and leaves the profile's `summarize` in place, so the
+  // model is applied after the profile and touches nothing else.
+  let text = profiled_config <> "
+[profiles.alt.roles]
+main = [\"alt\"]
+summarize = [\"alt\"]
+"
+  let assert Ok(settings) =
+    resolve_profiled(807, text, option.Some("alt"), option.Some("base"))
+  let assert Ok(main) = provider_gateway.resolve(settings.gateway, model.Main)
+  let assert Ok(summary) =
+    provider_gateway.resolve(settings.gateway, model.Summarize)
+  assert settings.model.provider == "base"
+  assert main.provider == "base"
+  assert summary.provider == "alt"
+}
+
+pub fn a_session_whose_model_was_removed_is_refused_not_defaulted_test() {
+  let assert Error(reason) =
+    resolve_profiled(808, profiled_config, option.None, option.Some("gone"))
+  assert string.contains(
+    reason,
+    "unknown model \"gone\"; the configuration defines: alt, base",
+  )
+}
+
+pub fn a_session_with_a_model_needs_a_config_file_test() {
+  let fixture = owned_assembly_test.settings()
+  let state = filepath.directory_name(fixture.session_path)
+  let #(id, _) = ids.mint_session(ids.generator(clock.fixed(1), 809))
+  let id = ids.session_id_to_string(id)
+  let record =
+    catalogue.Registration(
+      id,
+      fixture.session_path,
+      fixture.workspace,
+      "Pinned",
+      "",
+      1,
+      "pinned-" <> id,
+      catalogue.Saved,
+      profile: option.None,
+      model: option.Some("alt"),
+      subtitle: option.None,
+    )
+  let selected =
+    domain.Domain(
+      domain.key(domain.SessionOnly, record.workspace, id),
+      domain.SessionOnly,
+      record.workspace,
+      "",
+      state <> "/pinned/" <> id <> "-memory.sqlite",
+      state <> "/pinned/" <> id <> "-index.sqlite",
+    )
+  let assert Error(reason) =
+    serve.resolve_managed(["--helper", "/bin/sh"], record, selected, state)
+  assert string.contains(reason, "model \"alt\" needs a config file")
 }

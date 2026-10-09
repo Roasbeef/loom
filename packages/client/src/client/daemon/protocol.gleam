@@ -209,6 +209,10 @@ pub type Command {
     /// The model profile to create the session under, or `None` for the
     /// configuration's default roles (protocol-change/076).
     profile: Option(String),
+    /// The `[models.<key>]` entry to pin the session's `main` role to, or
+    /// `None` for the chain the profile or configuration gives
+    /// (protocol-change/080).
+    model: Option(String),
     domain_scope: domain.Scope,
   )
 
@@ -541,8 +545,9 @@ fn decode_fields(
       use name <- result.try(text_field(fields, "name", 256))
       use configuration <- result.try(configuration_field(fields))
       use profile <- result.try(profile_field(fields))
+      use model <- result.try(model_field(fields))
       use scope <- result.map(domain_scope(fields))
-      CreateSession(key, workspace, name, configuration, profile, scope)
+      CreateSession(key, workspace, name, configuration, profile, model, scope)
     }
     "sessions.open" -> {
       use id <- result.try(session_id(fields))
@@ -783,6 +788,26 @@ fn profile_field(
         False -> Error(profile_words)
       }
     Ok(_other) -> Error(profile_words)
+  }
+}
+
+const model_words = "model must be a model key of 1 to 64 bytes"
+
+// The optional model key of a creation. An absent field leaves the main chain
+// as the profile or configuration gives it; a field that is present must be a
+// key, so a malformed one is refused as a bad request and never read as no
+// choice (protocol-change/080).
+fn model_field(
+  fields: List(#(String, JsonValue)),
+) -> Result(Option(String), String) {
+  case list.key_find(fields, "model") {
+    Error(Nil) -> Ok(None)
+    Ok(json.String(key)) ->
+      case catalogue.is_model_key(key) {
+        True -> Ok(Some(key))
+        False -> Error(model_words)
+      }
+    Ok(_other) -> Error(model_words)
   }
 }
 

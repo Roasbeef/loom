@@ -5868,6 +5868,28 @@ and only for a page that holds the creation capability; `ui_socket.create_for`
 takes the chosen profile and maps `unknown_profile` to
 `creations.UnknownProfile`.
 
+### Pinned main model (protocol 080)
+
+A session can also be created on one `[models.<key>]` entry. The key is a second
+optional `sessions.create` field (`protocol.CreateSession.model`, decoded by
+`model_field` against `storage/catalogue.is_model_key` and refused when present
+and not a key), a field of `manager.Creation` and of the registration
+(`Registration.model`, compared on a retry like the profile), and an argument of
+`serve.load_config`, which applies `catalog.select_model` after
+`select_profile`: the `main` chain becomes that entry alone and no other role
+moves. Every open resolves it again, so a key the file no longer defines fails
+the open with `unknown model "x"; the configuration defines: ...` and never
+opens on the default model; with no config file it fails like a profile does.
+`daemon/profiles` answers the daemon's pre-reservation question for both:
+`check_choice` judges the profile and then the model (`check_model`, a third
+`Refusal`, `UnknownModel`), `server.create_session` maps it to the code
+`unknown_model`, and the control dispatch words it with the keys that exist.
+`HomeAttachment.models` reads `profiles.model_keys` for the web form once at page
+open and, as for profiles, only for a page that holds the creation capability.
+`ui_socket.create_for` and `create_task` take a `creations.Roles` in place of a
+bare profile and map `unknown_model` to `creations.UnknownModel`. The observer
+socket's admission is untouched: the form's existing submit carries the field.
+
 ## Explicit browser result reads
 
 Protocol change 079 adds keyed result-page and result-download GETs. Each request

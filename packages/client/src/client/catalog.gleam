@@ -18,7 +18,7 @@
 //// ## Flow
 ////
 //// `parse` → `parse_models` → `parse_roles` → `parse_profiles` → `parse_mcp_servers`
-//// → `select_profile` → `gateway`
+//// → `select_profile` → `select_model` → `gateway`
 ////
 //// 1. `parse` reads the TOML, checks the top-level keys with `known_keys` so a
 ////    typoed table is refused by exactly one parser, and requires `[models]`
@@ -35,10 +35,12 @@
 ////    `mcp_server_name` holds each key to the import grammar.
 //// 6. `parse_tools`, `parse_workspace` and `parse_advisor` read their own
 ////    tables from the same text; the host calls them beside `parse`.
-//// 7. `find`, `main_model`, `routed_roles`, `profile_names` and `select_profile`
-////    answer lookups over the result. `select_profile` is how a session takes
-////    a profile: it returns the catalogue with that profile's roles in place of
-////    the default ones.
+//// 7. `find`, `main_model`, `routed_roles`, `profile_names`, `model_keys`,
+////    `select_profile` and `select_model` answer lookups over the result.
+////    `select_profile` is how a session takes a profile: it returns the
+////    catalogue with that profile's roles in place of the default ones.
+////    `select_model` is applied after it for a session pinned to one model
+////    (protocol-change/080): it replaces the main role's chain with that entry alone.
 //// 8. `gateway` registers each entry as a provider through `provider_config`
 ////    and `priced`, then routes every role's chain with `resolved`.
 ////
@@ -2034,6 +2036,80 @@ pub fn select_profile(
   case list.find(catalog.profiles, fn(named) { named.name == name }) {
     Ok(Profile(roles:, ..)) -> Ok(Catalog(..catalog, roles:))
     Error(Nil) -> Error(unknown_profile(profile_names(catalog), name))
+  }
+}
+
+/// The keys of the `[models.<key>]` entries a session may be created on, in the
+/// order the catalogue keeps (sorted by key). A key longer than
+/// `storage/catalogue.model_key_limit` bytes is left out: the catalogue column,
+/// the wire and the web form all stop there, so such a key could not be
+/// remembered with the session (protocol-change/080).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalog.model_keys(catalogue) -> ["anthropic-opus", "baseten-glm"]
+/// ```
+///
+pub fn model_keys(catalog: Catalog) -> List(String) {
+  catalog.models
+  |> list.map(fn(entry) { entry.name })
+  |> list.filter(stored_catalogue.is_model_key)
+}
+
+/// The catalogue a session pinned to the named model routes by: the same
+/// entries, servers and profiles, with the `main` role replaced by the one-entry
+/// chain `[key]` and every other role as it was. It is applied after
+/// `select_profile`, so a profile's roles are the base the model is laid over
+/// (protocol-change/080).
+///
+/// The `main` chain has no fallbacks afterwards: the session runs on the chosen
+/// entry or fails. The refusal names the keys that exist, as `select_profile`'s
+/// names the profiles.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalog.select_model(catalogue, "flash")
+/// // -> Ok(catalog.Catalog(..catalogue, roles: [#(model.Main, ["flash"]), ..]))
+/// ```
+///
+/// ```gleam
+/// // catalog.select_model(catalogue, "nope")
+/// // -> Error("unknown model \"nope\"; the configuration defines: a, b")
+/// ```
+///
+pub fn select_model(catalog: Catalog, key: String) -> Result(Catalog, String) {
+  case find(catalog, key) {
+    Ok(_entry) ->
+      Ok(
+        Catalog(
+          ..catalog,
+          roles: override_roles(catalog.roles, [#(model.Main, [key])]),
+        ),
+      )
+    Error(Nil) -> Error(unknown_model(model_keys(catalog), key))
+  }
+}
+
+/// The refusal for a model key the configuration does not define, naming the
+/// ones it does. `select_model`, the daemon's check at session creation and the
+/// web form's refusal all word it here, as `unknown_profile` does for profiles.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert catalog.unknown_model([], "x")
+///   == "unknown model \"x\"; the configuration defines no models"
+/// assert catalog.unknown_model(["a", "b"], "x")
+///   == "unknown model \"x\"; the configuration defines: a, b"
+/// ```
+///
+pub fn unknown_model(known: List(String), key: String) -> String {
+  let prefix = "unknown model \"" <> key <> "\"; the configuration defines"
+  case known {
+    [] -> prefix <> " no models"
+    known -> prefix <> ": " <> string.join(known, ", ")
   }
 }
 

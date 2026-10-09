@@ -399,7 +399,7 @@ pub fn member_authority_is_checked_again_on_each_control_request_test() {
     let assert Ok(visible) =
       manager.create(
         ready.registry,
-        manager.Creation("visible", ready.state_root, "Visible", "", None),
+        manager.Creation("visible", ready.state_root, "Visible", "", None, None),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 100),
       )
@@ -407,7 +407,7 @@ pub fn member_authority_is_checked_again_on_each_control_request_test() {
     let assert Ok(hidden) =
       manager.create(
         ready.registry,
-        manager.Creation("hidden", ready.state_root, "Hidden", "", None),
+        manager.Creation("hidden", ready.state_root, "Hidden", "", None, None),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 101),
       )
@@ -803,6 +803,7 @@ pub fn a_member_cannot_delete_a_session_it_can_read_test() {
           "Visible",
           "",
           None,
+          None,
         ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 200),
@@ -857,6 +858,7 @@ pub fn owner_archives_and_restores_through_the_control_socket_test() {
         "wire-archive",
         catalogue.Reserved,
         profile: option.None,
+        model: option.None,
         subtitle: option.None,
       )
     assert catalogue.reserve(store, registration) == Ok(registration)
@@ -1014,7 +1016,7 @@ pub fn peer_send_control_routes_bound_identity_and_refuses_unlinked_or_saved_tes
     let assert Ok(source) =
       manager.create(
         ready.registry,
-        manager.Creation("source", ready.state_root, "Source", "", None),
+        manager.Creation("source", ready.state_root, "Source", "", None, None),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 400),
       )
@@ -1022,7 +1024,7 @@ pub fn peer_send_control_routes_bound_identity_and_refuses_unlinked_or_saved_tes
     let assert Ok(target) =
       manager.create(
         ready.registry,
-        manager.Creation("target", ready.state_root, "Target", "", None),
+        manager.Creation("target", ready.state_root, "Target", "", None, None),
         directory: ready.sessions_directory,
         generator: generator,
       )
@@ -1172,7 +1174,14 @@ pub fn peer_cli_routes_inspect_link_send_and_partial_unlink_test() {
     let assert Ok(source) =
       manager.create(
         ready.registry,
-        manager.Creation("cli-source", ready.state_root, "Source", "", None),
+        manager.Creation(
+          "cli-source",
+          ready.state_root,
+          "Source",
+          "",
+          None,
+          None,
+        ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 701),
       )
@@ -1180,7 +1189,14 @@ pub fn peer_cli_routes_inspect_link_send_and_partial_unlink_test() {
     let assert Ok(target) =
       manager.create(
         ready.registry,
-        manager.Creation("cli-target", ready.state_root, "Target", "", None),
+        manager.Creation(
+          "cli-target",
+          ready.state_root,
+          "Target",
+          "",
+          None,
+          None,
+        ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 702),
       )
@@ -1354,6 +1370,7 @@ pub fn peer_cli_collects_bounded_inspection_pages_test() {
           "Source",
           "",
           None,
+          None,
         ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 703),
@@ -1417,7 +1434,7 @@ pub fn session_activity_reports_residents_and_omits_saved_sessions_test() {
       let assert Ok(created) =
         manager.create(
           ready.registry,
-          manager.Creation(pair.0, ready.state_root, pair.0, "", None),
+          manager.Creation(pair.0, ready.state_root, pair.0, "", None, None),
           directory: ready.sessions_directory,
           generator: ids.generator(clock.fixed(0), pair.1),
         )
@@ -1539,7 +1556,7 @@ pub fn session_activity_reports_residents_and_omits_saved_sessions_test() {
     let assert Ok(_) =
       manager.create(
         ready.registry,
-        manager.Creation(other_id, ready.state_root, other_id, "", None),
+        manager.Creation(other_id, ready.state_root, other_id, "", None, None),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 804),
       )
@@ -1707,7 +1724,7 @@ pub fn a_homes_activity_read_is_a_state_word_for_each_held_answer_test() {
         let assert Ok(_) =
           manager.create(
             ready.registry,
-            manager.Creation(pair.0, ready.state_root, pair.0, "", None),
+            manager.Creation(pair.0, ready.state_root, pair.0, "", None, None),
             directory: ready.sessions_directory,
             generator: ids.generator(clock.fixed(0), pair.1),
           )
@@ -1877,7 +1894,7 @@ pub fn a_browser_row_authenticates_on_no_v2_route_test() {
     let assert Ok(visible) =
       manager.create(
         ready.registry,
-        manager.Creation("visible", ready.state_root, "Visible", "", None),
+        manager.Creation("visible", ready.state_root, "Visible", "", None, None),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 100),
       )
@@ -2107,6 +2124,194 @@ pub fn a_profile_with_no_config_file_names_the_missing_file_test() {
     assert field(body, "message")
       == json.String(
         "unknown profile \"alt\"; the configuration defines no profiles",
+      )
+    let _ = ffi_ws.tcp_close(socket)
+    Nil
+  })
+}
+
+// --- model choice (protocol-change/080) -------------------------------------
+
+pub fn a_creation_stores_its_model_beside_its_profile_and_a_retry_must_repeat_both_test() {
+  fixture(fn(_, ready, port, credential) {
+    assert simplifile.write(
+        ready.state_root <> "/profiled.toml",
+        profiled_catalogue,
+      )
+      == Ok(Nil)
+    let #(socket, _) = connect(port, credential, "/v2/control")
+    let _hello = frame(socket, within_ms: 1000)
+    let pinned =
+      profiled_creation(ready, "pinned", [
+        #("profile", json.String("alt")),
+        #("model", json.String("base")),
+      ])
+    let created = send(socket, 1, "sessions.create", pinned, within_ms: 1000)
+    assert field(created, "event") == json.String("sessions.create")
+    let assert json.String(id) = field(field(created, "body"), "session_id")
+      as "creation exposes its identity"
+
+    // The registration holds both keys, which a resume resolves again.
+    let assert Ok(saved) = manager.get(ready.registry, id)
+      as "the creation reply follows durable registration"
+    assert saved.registration.profile == Some("alt")
+    assert saved.registration.model == Some("base")
+
+    // The same request is the same session. A different model, or none, under
+    // the same key is a different request.
+    let retried = send(socket, 2, "sessions.create", pinned, within_ms: 1000)
+    assert field(field(retried, "body"), "session_id") == json.String(id)
+    let changed =
+      send(
+        socket,
+        3,
+        "sessions.create",
+        profiled_creation(ready, "pinned", [
+          #("profile", json.String("alt")),
+          #("model", json.String("alt")),
+        ]),
+        within_ms: 1000,
+      )
+    assert field(field(changed, "body"), "code") == json.String("conflict")
+    let dropped =
+      send(
+        socket,
+        4,
+        "sessions.create",
+        profiled_creation(ready, "pinned", [
+          #("profile", json.String("alt")),
+        ]),
+        within_ms: 1000,
+      )
+    assert field(field(dropped, "body"), "code") == json.String("conflict")
+    let _ = ffi_ws.tcp_close(socket)
+    Nil
+  })
+}
+
+pub fn an_unknown_model_is_refused_naming_the_known_keys_and_stores_nothing_test() {
+  fixture(fn(_, ready, port, credential) {
+    assert simplifile.write(
+        ready.state_root <> "/profiled.toml",
+        profiled_catalogue,
+      )
+      == Ok(Nil)
+    let #(socket, _) = connect(port, credential, "/v2/control")
+    let _hello = frame(socket, within_ms: 1000)
+    let refused =
+      send(
+        socket,
+        1,
+        "sessions.create",
+        profiled_creation(ready, "unknown-model", [
+          #("model", json.String("bsae")),
+        ]),
+        within_ms: 1000,
+      )
+    assert field(refused, "event") == json.String("error")
+    let body = field(refused, "body")
+    assert field(body, "code") == json.String("unknown_model")
+    assert field(body, "message")
+      == json.String(
+        "unknown model \"bsae\"; the configuration defines: alt, base",
+      )
+
+    // No identity was reserved for the refused request.
+    let assert Ok(page) = catalogue_page(ready)
+    assert page == []
+
+    // When the profile is also wrong, the profile is the one reported.
+    let both =
+      send(
+        socket,
+        2,
+        "sessions.create",
+        profiled_creation(ready, "both-wrong", [
+          #("profile", json.String("nope")),
+          #("model", json.String("bsae")),
+        ]),
+        within_ms: 1000,
+      )
+    assert field(field(both, "body"), "code") == json.String("unknown_profile")
+
+    // A present value that is not a key (empty, over the bound, not text) is a
+    // malformed request and not a lookup, and never reads as no choice.
+    let malformed = fn(id, value) {
+      send(
+        socket,
+        id,
+        "sessions.create",
+        profiled_creation(ready, "malformed-" <> string.inspect(id), [
+          #("model", value),
+        ]),
+        within_ms: 1000,
+      )
+    }
+    assert field(field(malformed(3, json.String("")), "body"), "code")
+      == json.String("bad_request")
+    assert field(
+        field(malformed(4, json.String(string.repeat("k", 65))), "body"),
+        "code",
+      )
+      == json.String("bad_request")
+    assert field(field(malformed(5, json.Int(1)), "body"), "code")
+      == json.String("bad_request")
+    let _ = ffi_ws.tcp_close(socket)
+    Nil
+  })
+}
+
+pub fn a_model_against_a_config_that_does_not_parse_names_the_key_test() {
+  fixture(fn(_, ready, port, credential) {
+    assert simplifile.write(
+        ready.state_root <> "/profiled.toml",
+        "[retry2]\nbogus = 1\n",
+      )
+      == Ok(Nil)
+    let #(socket, _) = connect(port, credential, "/v2/control")
+    let _hello = frame(socket, within_ms: 1000)
+    let refused =
+      send(
+        socket,
+        1,
+        "sessions.create",
+        profiled_creation(ready, "bogus-model", [
+          #("model", json.String("base")),
+        ]),
+        within_ms: 1000,
+      )
+    let body = field(refused, "body")
+    assert field(body, "code") == json.String("unusable_configuration")
+    let assert json.String(message) = field(body, "message")
+    assert string.contains(message, "unknown key `retry2` in the top level")
+    let _ = ffi_ws.tcp_close(socket)
+    Nil
+  })
+}
+
+pub fn a_model_with_no_config_file_is_refused_as_unknown_test() {
+  fixture(fn(_, ready, port, credential) {
+    let #(socket, _) = connect(port, credential, "/v2/control")
+    let _hello = frame(socket, within_ms: 1000)
+    let refused =
+      send(
+        socket,
+        1,
+        "sessions.create",
+        json.Object([
+          #("request_key", json.String("no-file-model")),
+          #("workspace", json.String(ready.state_root)),
+          #("name", json.String("No file")),
+          #("configuration", json.String("")),
+          #("model", json.String("base")),
+        ]),
+        within_ms: 1000,
+      )
+    let body = field(refused, "body")
+    assert field(body, "code") == json.String("unknown_model")
+    assert field(body, "message")
+      == json.String(
+        "unknown model \"base\"; the configuration defines no models",
       )
     let _ = ffi_ws.tcp_close(socket)
     Nil

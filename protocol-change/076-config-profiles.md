@@ -327,3 +327,10 @@ upstream identifier, shortened, and keeps doing so.
 The name is the owner's text from the configuration file and is drawn only as a
 text node. The terminal's identity line already shows the active strand's model,
 by the last segment of its upstream identifier, and is unchanged.
+
+## Addendum 2026-10-08: choosing a model beside a profile
+
+[080](080-session-model-choice.md) adds a second optional `sessions.create`
+field, `model`, that pins the `main` role to one `[models.<key>]` entry. It is
+stored, checked, refused and resolved again exactly as `profile` is, and it is
+applied after the profile, so the two compose. Nothing above changes.

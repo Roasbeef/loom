@@ -395,6 +395,11 @@ daemon can route their roles differently, and a profile the file no longer
 defines refuses the open instead of falling back to the default roles. Shared
 domain maintenance does not use it.
 
+It likewise stores the key of the `[models.<key>]` entry the session's `main`
+role was pinned to, or none ([protocol 080](../../protocol-change/080-session-model-choice.md)).
+The key is resolved again at every open, after the profile, and a key the file
+no longer defines refuses the open.
+
 Only saved registrations appear in paged domain source enumeration.
 Reserved registrations are excluded before the page limit is applied, so
 maintenance cannot create their missing databases by opening them.
