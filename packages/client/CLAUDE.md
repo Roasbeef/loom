@@ -6892,7 +6892,13 @@ as the authority (the next section); failover is deferred.
   configuration order wins over any silence; with no holder, any silence makes the
   miss `Unreachable`; only a full set of "not held" is `Unknown`. A callback that
   crashes or runs past the deadline is silence. Nothing is cached, registered or
-  retried, and no connection is made at startup.
+  retried, and no connection is made at startup. One command retries:
+  `peers.link` has no outbox and no client retry behind it, so a link whose
+  lookup finds the owner silent calls `Directory.settle` (`settle_over`: every
+  listed orchestrator connected at once under `settle_ms`, 5 s) and asks once
+  more, because the silence may be a first TLS handshake that outlasted the
+  lookup's `connect_ms` (1.5 s) and finishes in the background
+  (`daemon_shipped_peer_mail_test`'s slow-handshake test).
 - `daemon/server` takes the directory as `Config.directory`
   (`session_directory.none()` when there is no distribution or no orchestrator).
   `dispatch` runs `sessions.get` and `sessions.open` as it always did and, only
