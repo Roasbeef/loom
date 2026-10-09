@@ -82,6 +82,19 @@ pub type ThinkingLevel {
   ThinkingHigh
 }
 
+/// The cybersecurity access program an operator selects for Responses.
+/// Provider-side approval and model compatibility remain the server's decision.
+pub type CyberAccessProgram {
+  /// Explicitly select standard safeguards.
+  StandardCyberAccess
+
+  /// Select the approved Daybreak Blue program.
+  DaybreakBlue
+
+  /// Select the approved Daybreak Red program.
+  DaybreakRed
+}
+
 /// A fully resolved model identity, produced by `gateway.resolve` or
 /// carried in durable operation state. This is the value the machine
 /// persists at intent time so recovery re-dispatches to exactly the same

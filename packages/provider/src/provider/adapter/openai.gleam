@@ -65,6 +65,7 @@
 ////    `on_end` reaches it through `settle_or_disconnect` when the provider
 ////    closed without a sentinel.
 
+import core/accounting
 import core/corruption.{type CorruptionReport}
 import core/json.{type JsonValue}
 import core/message.{
@@ -74,6 +75,7 @@ import core/message.{
   ToolUse, Usage, UsageCost, UserImage, UserMessage, UserText,
 }
 import core/origin
+import core/usage_evidence
 import gleam/bit_array
 import gleam/bool
 import gleam/int
@@ -83,6 +85,7 @@ import gleam/result
 import gleam/string
 import provider/http.{type HttpRequest, HttpRequest}
 import provider/internal/diagnostic
+import provider/internal/usage_witness
 import provider/internal/wire
 import provider/model.{
   type ProviderRequest, type ResolvedModel, type ToolSpec, ThinkingHigh,
@@ -408,6 +411,13 @@ pub fn map_finish_reason(
   }
 }
 
+// Missing cache partition counts leave allocation and pricing provisional.
+const required_usage_fields = [
+  "prompt_tokens",
+  "completion_tokens",
+  "prompt_tokens_details.cached_tokens",
+]
+
 // --- response accumulation ----------------------------------------------
 
 /// The pure streamed-response state for one chat-completions attempt.
@@ -436,6 +446,10 @@ pub opaque type Accumulator {
     response_id: Option(String),
     response_model: Option(String),
     done: Bool,
+    /// Fixed count paths distinguish numeric defaults from reported buckets.
+    witness: usage_witness.Witness,
+    /// Only a final usage witness can establish complete output measurement.
+    evidence: usage_evidence.Evidence,
   )
 }
 
@@ -490,18 +504,16 @@ pub fn response_machine(
       response_id: None,
       response_model: None,
       done: False,
+      witness: usage_witness.new(),
+      evidence: usage_evidence.unknown(usage_evidence.Api),
     ),
     on_status: fn(acc, status, headers) {
       Accumulator(..acc, status:, retry_after_ms: wire.retry_after_ms(headers))
     },
     on_chunk: on_chunk,
     on_end: on_end,
-    on_failure: fn(acc, reason) {
-      case acc.done {
-        True -> []
-        False -> [Failed(stream.TransportFailed(reason:))]
-      }
-    },
+    usage: build_usage,
+    on_failure: fn(acc, reason) { fail(acc, stream.TransportFailed(reason:)).1 },
   )
 }
 
@@ -546,7 +558,7 @@ fn on_end(acc: Accumulator) -> List(StreamEvent) {
   use <- bool.guard(when: acc.done, return: [])
   case acc.status {
     200 -> settle_or_disconnect(acc)
-    status -> [Failed(http_error(status, acc))]
+    status -> fail(acc, http_error(status, acc)).1
   }
 }
 
@@ -555,11 +567,13 @@ fn on_end(acc: Accumulator) -> List(StreamEvent) {
 fn settle_or_disconnect(acc: Accumulator) -> List(StreamEvent) {
   case acc.stop {
     Some(_) -> settle(acc).1
-    None -> [
-      Failed(StreamDisconnected(
-        context: "response body ended before a finish_reason",
-      )),
-    ]
+    None ->
+      fail(
+        acc,
+        StreamDisconnected(
+          context: "response body ended before a finish_reason",
+        ),
+      ).1
   }
 }
 
@@ -668,9 +682,35 @@ fn handle_chunk_document(
     Ok(usage) -> extract_usage(acc, usage)
     Error(Nil) -> acc
   }
-  case wire.array_field(document, "choices") {
+  let #(acc, events) = case wire.array_field(document, "choices") {
     Ok([choice, ..]) -> handle_choice(acc, choice)
     _ -> #(acc, [])
+  }
+
+  // Only a usage-bearing document at the output boundary can establish the
+  // final count. EOF with an earlier snapshot retains partial evidence.
+  let evidence = final_usage_evidence(acc, document)
+  #(Accumulator(..acc, evidence:), events)
+}
+
+// Required input/cache witnesses may come from earlier snapshots, but the
+// final generated count must be reported after output has finished.
+fn final_usage_evidence(
+  acc: Accumulator,
+  document: JsonValue,
+) -> usage_evidence.Evidence {
+  case acc.done, acc.stop, wire.field(document, "usage") {
+    False, Some(_), Ok(usage) ->
+      case wire.int_field(usage, "completion_tokens") {
+        Ok(_) ->
+          usage_witness.finished(
+            acc.witness,
+            required_usage_fields,
+            usage_evidence.Api,
+          )
+        Error(Nil) -> acc.evidence
+      }
+    _, _, _ -> acc.evidence
   }
 }
 
@@ -679,8 +719,11 @@ fn handle_chunk_document(
 // earlier chunk already reported (mirrors the Anthropic adapter's
 // handle_message_start).
 fn extract_usage(acc: Accumulator, usage: JsonValue) -> Accumulator {
+  let witness = usage_witness.observe(acc.witness, usage, required_usage_fields)
   Accumulator(
     ..acc,
+    witness:,
+    evidence: usage_witness.snapshot(witness, usage_evidence.Api),
     prompt_tokens: wire.count_field_or(
       usage,
       "prompt_tokens",
@@ -1045,7 +1088,9 @@ fn settle_with_stop(
       "stop reason pending at [DONE]",
     ))
   })
-  #(Accumulator(..acc, done: True), [Settled(message: settled, usage:)])
+  #(Accumulator(..acc, done: True, evidence: usage.evidence), [
+    Settled(message: settled, accounting: accounting.from_usage(usage)),
+  ])
 }
 
 // The settlement combinator: run `then` on success, or fail the stream
@@ -1112,6 +1157,7 @@ fn build_usage(acc: Accumulator) -> Usage {
     int.min(acc.cache_write_tokens, acc.prompt_tokens - cache_read)
   let input = acc.prompt_tokens - cache_read - cache_write
   Usage(
+    evidence: acc.evidence,
     input:,
     output: acc.completion_tokens,
     cache_read:,
@@ -1144,6 +1190,8 @@ fn fail(
 ) -> #(Accumulator, List(StreamEvent)) {
   case acc.done {
     True -> #(acc, [])
-    False -> #(Accumulator(..acc, done: True), [Failed(error:)])
+    False -> #(Accumulator(..acc, done: True), [
+      Failed(error:, accounting: accounting.from_usage(build_usage(acc))),
+    ])
   }
 }

@@ -4,6 +4,9 @@
 //// on the block they signed, a function call is one whole delta, `STOP`
 //// with a call is tool use, and replay carries every signature back.
 
+import core/accounting
+import core/usage_evidence
+
 import core/json
 import core/message
 import core/msgpack
@@ -112,8 +115,9 @@ pub fn happy_text_settles_test() {
     stream.Delta(stream.ThinkingDelta(index: 0, thinking: "Thinking it over.")),
     stream.Delta(stream.TextDelta(index: 1, text: "hello")),
     stream.Delta(stream.TextDelta(index: 1, text: " there")),
-    stream.Settled(message: settled, usage:),
+    stream.Settled(message: settled, accounting: usage),
   ] = events
+  let usage = accounting.total(usage)
   let assert message.AssistantMessage(
     content:,
     api:,
@@ -202,7 +206,7 @@ pub fn tool_call_arrives_whole_and_stop_becomes_tool_use_test() {
       name: "get_weather",
       arguments_json: "{\"city\":\"Paris\"}",
     )),
-    stream.Settled(message: settled, usage: _),
+    stream.Settled(message: settled, accounting: _),
   ] = events
   let assert message.AssistantMessage(content:, stop_reason:, end_turn:, ..) =
     stream.message(settled)
@@ -248,7 +252,7 @@ pub fn disconnect_before_finish_reason_fails_in_band_test() {
     )
   let assert [
     stream.Delta(_),
-    stream.Failed(stream.StreamDisconnected(context: _)),
+    stream.Failed(stream.StreamDisconnected(context: _), accounting: _),
   ] = events
 }
 
@@ -260,14 +264,14 @@ pub fn unknown_finish_reason_fails_in_band_test() {
     )
   let assert [
     stream.Delta(_),
-    stream.Failed(stream.UnmappedStopReason(raw: "NOVEL_REASON")),
+    stream.Failed(stream.UnmappedStopReason(raw: "NOVEL_REASON"), accounting: _),
   ] = events
 }
 
 pub fn safety_finish_settles_as_error_test() {
   let events =
     fixture.drive_ok(machine(), chunk("", "SAFETY", usage_json(1, 0, 0, 0)))
-  let assert [stream.Settled(message: settled, usage: _)] = events
+  let assert [stream.Settled(message: settled, accounting: _)] = events
   let assert message.AssistantMessage(
     stop_reason:,
     error_message: Some(error_message),
@@ -286,7 +290,8 @@ pub fn a_blocked_prompt_settles_as_error_not_disconnect_test() {
       "{\"promptFeedback\":{\"blockReason\":\"PROHIBITED_CONTENT\"},\"usageMetadata\":{\"promptTokenCount\":9,\"totalTokenCount\":9}}",
     )
   let events = fixture.drive_ok(machine(), transcript)
-  let assert [stream.Settled(message: settled, usage:)] = events
+  let assert [stream.Settled(message: settled, accounting: usage)] = events
+  let usage = accounting.total(usage)
   let assert message.AssistantMessage(
     stop_reason:,
     raw_stop_reason:,
@@ -307,7 +312,7 @@ pub fn documents_after_an_in_chunk_failure_emit_nothing_test() {
       "{\"error\":{\"code\":500,\"message\":\"boom\",\"status\":\"INTERNAL\"}}",
     )
     <> chunk(text_part("late"), "STOP", usage_json(1, 1, 0, 0))
-  let assert [stream.Failed(stream.StreamError(..))] =
+  let assert [stream.Failed(stream.StreamError(..), accounting: _)] =
     fixture.drive_ok(machine(), transcript)
 }
 
@@ -327,7 +332,8 @@ pub fn an_empty_system_prompt_sends_no_system_instruction_test() {
 
 pub fn malformed_chunk_fails_in_band_test() {
   let events = fixture.drive_ok(machine(), sse_data("{broken"))
-  let assert [stream.Failed(stream.MalformedStream(report: _))] = events
+  let assert [stream.Failed(stream.MalformedStream(report: _), accounting: _)] =
+    events
 }
 
 pub fn in_stream_error_document_fails_in_band_test() {
@@ -338,19 +344,22 @@ pub fn in_stream_error_document_fails_in_band_test() {
         "{\"error\":{\"code\":429,\"message\":\"Quota exceeded\",\"status\":\"RESOURCE_EXHAUSTED\"}}",
       ),
     )
-  assert events
-    == [
-      stream.Failed(stream.StreamError(
+  let assert [
+    stream.Failed(
+      stream.StreamError(
         api_error_type: "RESOURCE_EXHAUSTED",
         message: "Quota exceeded",
-      )),
-    ]
+      ),
+      accounting: _,
+    ),
+  ] = events
+    as "the failure remains in band"
 }
 
 pub fn silent_overflow_settles_as_error_test() {
   let transcript = chunk("", "STOP", usage_json(260_000, 0, 0, 0))
   let events = fixture.drive_ok(machine(), transcript)
-  let assert [stream.Settled(message: settled, usage: _)] = events
+  let assert [stream.Settled(message: settled, accounting: _)] = events
   let assert message.AssistantMessage(
     stop_reason:,
     error_message: Some(error_message),
@@ -381,7 +390,8 @@ fn assert_usage_encodable(usage: message.Usage) -> Nil {
 pub fn cached_tokens_split_out_of_prompt_tokens_test() {
   let transcript = chunk("", "STOP", usage_json(9000, 40, 0, 7000))
   let events = fixture.drive_ok(machine(), transcript)
-  let assert [stream.Settled(message: settled, usage:)] = events
+  let assert [stream.Settled(message: settled, accounting: usage)] = events
+  let usage = accounting.total(usage)
   assert usage.cache_read == 7000
   assert usage.input == 2000
   assert usage.cache_write == 0
@@ -397,7 +407,8 @@ pub fn absent_thoughts_count_reads_as_not_reported_test() {
   let usage_text =
     "{\"promptTokenCount\":6,\"candidatesTokenCount\":4,\"totalTokenCount\":10}"
   let events = fixture.drive_ok(machine(), chunk("", "STOP", usage_text))
-  let assert [stream.Settled(message: _, usage:)] = events
+  let assert [stream.Settled(message: _, accounting: usage)] = events
+  let usage = accounting.total(usage)
   assert usage.reasoning == None
   assert usage.output == 4
   assert usage.total_tokens == 10
@@ -407,7 +418,8 @@ pub fn oversized_usage_counts_clamp_and_stay_encodable_test() {
   let transcript =
     chunk("", "STOP", usage_json(100_000_000_000_000_000_000, 100, 0, 0))
   let events = fixture.drive_ok(machine(), transcript)
-  let assert [stream.Settled(message: settled, usage:)] = events
+  let assert [stream.Settled(message: settled, accounting: usage)] = events
+  let usage = accounting.total(usage)
   assert usage.input == wire.max_usage_count
   assert usage.output == 100
   assert_usage_encodable(usage)
@@ -419,7 +431,8 @@ pub fn oversized_usage_counts_clamp_and_stay_encodable_test() {
 pub fn negative_usage_counts_clamp_to_zero_test() {
   let transcript = chunk("", "STOP", usage_json(-260_000, -5, -9, -1))
   let events = fixture.drive_ok(machine(), transcript)
-  let assert [stream.Settled(message: _, usage:)] = events
+  let assert [stream.Settled(message: _, accounting: usage)] = events
+  let usage = accounting.total(usage)
   assert usage.input == 0
   assert usage.output == 0
   assert usage.cache_read == 0
@@ -437,15 +450,18 @@ pub fn invalid_key_error_carries_the_status_word_test() {
         "{\"error\":{\"code\":400,\"message\":\"API key not valid. Please pass a valid API key.\",\"status\":\"INVALID_ARGUMENT\"}}",
       ),
     ])
-  assert events
-    == [
-      stream.Failed(stream.HttpError(
+  let assert [
+    stream.Failed(
+      stream.HttpError(
         status: 400,
         api_error_type: "INVALID_ARGUMENT",
         message: "API key not valid. Please pass a valid API key.",
         retry_after_ms: None,
-      )),
-    ]
+      ),
+      accounting: _,
+    ),
+  ] = events
+    as "the failure remains in band"
 }
 
 pub fn rate_limit_is_retryable_test() {
@@ -460,7 +476,7 @@ pub fn rate_limit_is_retryable_test() {
         ),
       ],
     )
-  let assert [stream.Failed(error)] = events
+  let assert [stream.Failed(error, accounting: _)] = events
   assert retry.classify(error) == retry.Retryable(backoff_hint_ms: Some(3000))
 }
 
@@ -469,7 +485,9 @@ pub fn oversized_http_error_body_fails_at_the_byte_budget_test() {
     fixture.drive(machine(), status: 500, headers: [], chunks: [
       bit_array.from_string(string.repeat("x", 65_537)),
     ])
-  let assert [stream.Failed(stream.MalformedStream(report: report))] = events
+  let assert [
+    stream.Failed(stream.MalformedStream(report: report), accounting: _),
+  ] = events
   assert string.contains(report.context, "exceeded its byte budget")
 }
 
@@ -628,6 +646,7 @@ fn assistant_turn(
     response_id: None,
     diagnostics: None,
     usage: message.Usage(
+      evidence: usage_evidence.reported(usage_evidence.Api),
       input: 0,
       output: 0,
       cache_read: 0,
@@ -851,4 +870,65 @@ pub fn the_request_is_deterministic_test() {
       request:,
     )
   assert once.body == again.body
+}
+
+pub fn repeated_usage_then_disconnect_retains_one_partial_attempt_test() {
+  let snapshot = chunk("", "", usage_json(10, 3, 2, 4))
+  let assert [stream.Failed(stream.StreamDisconnected(_), accounting: report)] =
+    fixture.drive_ok(machine(), snapshot <> snapshot)
+    as "Gemini snapshots replace running usage before disconnection"
+  let usage = accounting.total(report)
+  assert #(usage.input, usage.cache_read, usage.output, usage.total_tokens)
+    == #(6, 4, 5, 15)
+  assert usage.reasoning == Some(2)
+  assert accounting.attempts(report) == 1
+  assert usage.evidence == usage_evidence.partial(usage_evidence.Api)
+}
+
+pub fn terminal_usage_establishes_all_priced_bucket_witnesses_test() {
+  let assert [stream.Settled(_, accounting: report)] =
+    fixture.drive_ok(machine(), chunk("", "STOP", usage_json(10, 3, 2, 4)))
+    as "the final snapshot includes thoughts once within output"
+  assert accounting.total(report).output == 5
+  assert accounting.total(report).evidence
+    == usage_evidence.reported(usage_evidence.Api)
+}
+
+pub fn stale_preterminal_usage_remains_partial_after_output_finishes_test() {
+  let assert [stream.Delta(_), stream.Settled(_, accounting: report)] =
+    fixture.drive_ok(
+      machine(),
+      chunk("", "", usage_json(10, 3, 2, 4))
+        <> chunk(text_part("later output"), "STOP", "{}"),
+    )
+    as "finishReason cannot promote an earlier running output measurement"
+  assert accounting.total(report).output == 5
+  assert accounting.total(report).evidence
+    == usage_evidence.partial(usage_evidence.Api)
+}
+
+// Gemini omits thoughtsTokenCount from a response with no thoughts, so its
+// absence is a zero count and the terminal snapshot still settles Complete.
+pub fn terminal_usage_without_thoughts_field_is_complete_test() {
+  let usage =
+    "{\"promptTokenCount\":10,\"candidatesTokenCount\":3,"
+    <> "\"cachedContentTokenCount\":4,\"totalTokenCount\":13}"
+  let assert [stream.Settled(_, accounting: report)] =
+    fixture.drive_ok(machine(), chunk("", "STOP", usage))
+    as "a response without thoughts reports no thoughtsTokenCount"
+  let total = accounting.total(report)
+  assert #(total.input, total.cache_read, total.output) == #(6, 4, 3)
+  assert total.evidence == usage_evidence.reported(usage_evidence.Api)
+}
+
+// A missing candidatesTokenCount still cannot be the final output measurement.
+pub fn terminal_usage_without_candidates_field_stays_partial_test() {
+  let usage =
+    "{\"promptTokenCount\":10,\"thoughtsTokenCount\":2,"
+    <> "\"cachedContentTokenCount\":4,\"totalTokenCount\":12}"
+  let assert [stream.Settled(_, accounting: report)] =
+    fixture.drive_ok(machine(), chunk("", "STOP", usage))
+    as "the terminal snapshot omits the generated count"
+  assert accounting.total(report).evidence
+    == usage_evidence.partial(usage_evidence.Api)
 }

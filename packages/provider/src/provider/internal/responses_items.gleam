@@ -90,7 +90,8 @@ fn restore_item(
     "function_call", [message.AssistantToolCall(call), ..rest] -> {
       use <- bool.guard(
         wire.string_field(raw, "call_id") != Ok(call.id)
-          || wire.string_field(raw, "name") != Ok(call.name),
+          || wire.string_field(raw, "name") != Ok(call.name)
+          || function_namespace(raw) != Ok(call.namespace),
         Error(Nil),
       )
       let arguments = case message.malformed_arguments_of(call.arguments) {
@@ -199,11 +200,19 @@ pub fn item(value: JsonValue) -> Result(JsonValue, Nil) {
       use call_id <- result.try(nonempty(value, "call_id"))
       use name <- result.try(nonempty(value, "name"))
       use arguments <- result.try(wire.string_field(value, "arguments"))
-      Ok([
-        #("call_id", json.String(call_id)),
-        #("name", json.String(name)),
-        #("arguments", json.String(arguments)),
-      ])
+      use namespace <- result.try(function_namespace(value))
+      let namespace = case namespace {
+        None -> []
+        Some(name) -> [#("namespace", json.String(name))]
+      }
+      Ok(list.append(
+        [
+          #("call_id", json.String(call_id)),
+          #("name", json.String(name)),
+          #("arguments", json.String(arguments)),
+        ],
+        namespace,
+      ))
     }
     "reasoning" -> {
       use summary <- result.try(wire.array_field(value, "summary"))
@@ -238,6 +247,20 @@ pub fn message_phase(value: JsonValue) -> Result(Option(String), Nil) {
     None | Some("commentary") | Some("final_answer") -> Ok(phase)
     Some(_) -> Error(Nil)
   }
+}
+
+/// Retains the optional function namespace as metadata separate from its name.
+/// Empty strings and non-string values cannot invent a namespace identity.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert responses_items.function_namespace(json.Object([])) == Ok(None)
+/// ```
+pub fn function_namespace(value: JsonValue) -> Result(Option(String), Nil) {
+  use namespace <- result.try(optional_string(value, "namespace"))
+  use <- bool.guard(namespace == Some(""), Error(Nil))
+  Ok(namespace)
 }
 
 fn optional_content(
@@ -421,7 +444,7 @@ pub fn blocks(items: List(JsonValue)) -> List(message.AssistantBlock) {
             "",
           )),
           thought_signature: None,
-          namespace: None,
+          namespace: option_string(item, "namespace"),
         )),
       ]
       Ok("reasoning") -> {

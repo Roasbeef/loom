@@ -35,7 +35,8 @@ pub type HttpRequest {
 /// One event in a streamed HTTP response, delivered in order: exactly one
 /// `ResponseStatus`, then zero or more `ResponseChunk`s, then exactly one
 /// `ResponseEnd` — or a single `RequestFailed` at any point, which
-/// terminates the stream.
+/// terminates the stream. A trusted local admission boundary may instead emit
+/// one terminal `RequestRefused`, proving inference never started.
 ///
 /// Constructor invariants: `ResponseStatus.headers` are lowercase-named
 /// response headers; `ResponseChunk.chunk` is a raw body fragment split at
@@ -53,6 +54,11 @@ pub type HttpEvent {
 
   /// The transport failed before the response completed.
   RequestFailed(reason: String)
+
+  /// A trusted local admission boundary refused inference before dispatch.
+  /// The bounded body contains only redacted operator diagnostics. This event
+  /// establishes no inference consumption and still requires owner drain.
+  RequestRefused(status: Int, body: BitArray)
 }
 
 /// One live transport request. The process is the sole sender of this
@@ -134,7 +140,7 @@ pub fn owner(request: RunningRequest) -> Pid {
 /// during startup remains queued until the native request identity is known.
 /// `RunningRequest.owner` is the sole sender of response events, delivers them
 /// in contract order, and either delivers a terminal `ResponseEnd` or
-/// `RequestFailed` before exiting or exits so its monitor reports transport
+/// `RequestFailed` or local `RequestRefused` before exiting or exits so its monitor reports transport
 /// death.
 pub type Transport {
   Transport(

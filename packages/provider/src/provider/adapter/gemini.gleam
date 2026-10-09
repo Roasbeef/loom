@@ -76,6 +76,7 @@
 //// 7. There is no terminator event, so `on_end` calls `settle`, which builds
 ////    the one assistant message in `settle_with_stop`.
 
+import core/accounting
 import core/corruption.{type CorruptionReport}
 import core/json.{type JsonValue}
 import core/message.{
@@ -85,6 +86,7 @@ import core/message.{
   ToolUse, Usage, UsageCost, UserImage, UserMessage, UserText,
 }
 import core/origin
+import core/usage_evidence
 import gleam/bit_array
 import gleam/bool
 import gleam/int
@@ -94,6 +96,7 @@ import gleam/result
 import gleam/string
 import provider/http.{type HttpRequest, HttpRequest}
 import provider/internal/diagnostic
+import provider/internal/usage_witness
 import provider/internal/wire
 import provider/model.{
   type ProviderRequest, type ResolvedModel, type ThinkingLevel, type ToolSpec,
@@ -602,6 +605,16 @@ pub fn map_finish_reason(
   }
 }
 
+// Missing cache partition counts leave allocation and pricing provisional.
+// `thoughtsTokenCount` is absent from a response that has no thoughts, such as
+// one from a non-thinking model or with thinking off, so its absence is a
+// count of zero rather than missing evidence and it is not required.
+const required_usage_fields = [
+  "promptTokenCount",
+  "candidatesTokenCount",
+  "cachedContentTokenCount",
+]
+
 // --- response accumulation ----------------------------------------------
 
 /// The pure streamed-response state for one `generateContent` attempt.
@@ -629,6 +642,10 @@ pub opaque type Accumulator {
     response_id: Option(String),
     response_model: Option(String),
     done: Bool,
+    /// Fixed count paths distinguish numeric defaults from reported buckets.
+    witness: usage_witness.Witness,
+    /// Only a final usage witness can establish complete output measurement.
+    evidence: usage_evidence.Evidence,
   )
 }
 
@@ -681,18 +698,16 @@ pub fn response_machine(
       response_id: None,
       response_model: None,
       done: False,
+      witness: usage_witness.new(),
+      evidence: usage_evidence.unknown(usage_evidence.Api),
     ),
     on_status: fn(acc, status, headers) {
       Accumulator(..acc, status:, retry_after_ms: wire.retry_after_ms(headers))
     },
     on_chunk: on_chunk,
     on_end: on_end,
-    on_failure: fn(acc, reason) {
-      case acc.done {
-        True -> []
-        False -> [Failed(stream.TransportFailed(reason:))]
-      }
-    },
+    usage: build_usage,
+    on_failure: fn(acc, reason) { fail(acc, stream.TransportFailed(reason:)).1 },
   )
 }
 
@@ -740,7 +755,7 @@ fn on_end(acc: Accumulator) -> List(StreamEvent) {
   use <- bool.guard(when: acc.done, return: [])
   case acc.status {
     200 -> settle(acc).1
-    status -> [Failed(http_error(status, acc))]
+    status -> fail(acc, http_error(status, acc)).1
   }
 }
 
@@ -844,7 +859,10 @@ fn handle_response_document(
     Ok(usage) -> extract_usage(acc, usage)
     Error(Nil) -> acc
   }
-  case wire.array_field(document, "candidates"), blocked_prompt(document) {
+  let #(acc, events) = case
+    wire.array_field(document, "candidates"),
+    blocked_prompt(document)
+  {
     Ok([candidate, ..]), _ -> handle_candidate(acc, candidate)
 
     // A prompt the API refuses outright comes back with no candidates and
@@ -863,6 +881,11 @@ fn handle_response_document(
     )
     _, Error(Nil) -> #(acc, [])
   }
+
+  // Only a usage-bearing document at the output boundary can establish the
+  // final count. EOF with an earlier snapshot retains partial evidence.
+  let evidence = final_usage_evidence(acc, document)
+  #(Accumulator(..acc, evidence:), events)
 }
 
 fn blocked_prompt(document: JsonValue) -> Result(String, Nil) {
@@ -870,13 +893,37 @@ fn blocked_prompt(document: JsonValue) -> Result(String, Nil) {
   |> result.try(wire.string_field(_, "blockReason"))
 }
 
+// Required input/cache witnesses may come from earlier snapshots, but the
+// final generated count must be reported after output has finished.
+fn final_usage_evidence(
+  acc: Accumulator,
+  document: JsonValue,
+) -> usage_evidence.Evidence {
+  case acc.done, acc.stop, wire.field(document, "usageMetadata") {
+    False, Some(_), Ok(usage) ->
+      case wire.int_field(usage, "candidatesTokenCount") {
+        Ok(_) ->
+          usage_witness.finished(
+            acc.witness,
+            required_usage_fields,
+            usage_evidence.Api,
+          )
+        Error(Nil) -> acc.evidence
+      }
+    _, _, _ -> acc.evidence
+  }
+}
+
 // Every count defaults to the accumulator's current value, never to zero,
 // so a later chunk carrying a partial usage object cannot erase counts an
 // earlier chunk already reported. Every chunk repeats the running usage,
 // and the last one is the whole response.
 fn extract_usage(acc: Accumulator, usage: JsonValue) -> Accumulator {
+  let witness = usage_witness.observe(acc.witness, usage, required_usage_fields)
   Accumulator(
     ..acc,
+    witness:,
+    evidence: usage_witness.snapshot(witness, usage_evidence.Api),
     prompt_tokens: wire.count_field_or(
       usage,
       "promptTokenCount",
@@ -1155,7 +1202,9 @@ fn settle_with_stop(
       "stop reason pending at end of stream",
     ))
   })
-  #(Accumulator(..acc, done: True), [Settled(message: settled, usage:)])
+  #(Accumulator(..acc, done: True, evidence: usage.evidence), [
+    Settled(message: settled, accounting: accounting.from_usage(usage)),
+  ])
 }
 
 fn is_tool_call(block: message.AssistantBlock) -> Bool {
@@ -1214,6 +1263,7 @@ fn build_usage(acc: Accumulator) -> Usage {
   let thoughts = option.unwrap(acc.thoughts_tokens, 0)
   let output = acc.candidates_tokens + thoughts
   Usage(
+    evidence: acc.evidence,
     input: acc.prompt_tokens - cache_read,
     output:,
     cache_read:,
@@ -1241,6 +1291,8 @@ fn fail(
 ) -> #(Accumulator, List(StreamEvent)) {
   case acc.done {
     True -> #(acc, [])
-    False -> #(Accumulator(..acc, done: True), [Failed(error:)])
+    False -> #(Accumulator(..acc, done: True), [
+      Failed(error:, accounting: accounting.from_usage(build_usage(acc))),
+    ])
   }
 }
