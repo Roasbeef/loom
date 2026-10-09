@@ -31,6 +31,7 @@ Worked, commented files:
 | `loom --config <path>` | The path given, passed on to the daemon the launcher starts. |
 | `loom` with no `--config` | `<state-dir>/loom.toml` when that file exists, where the state directory is `--state-dir` or `~/.loom`. When it does not exist, no file is read. |
 | `loom --model-profile <name>` | Selects a `[profiles.<name>]` table of the file for a newly created session. A resumed session keeps the profile it was created with. |
+| New-session form on the web home | Offers the file's profiles and its `[models.<name>]` keys (see [Choosing a model for one session](#choosing-a-model-for-one-session)). |
 
 A file given with `--config` replaces the `LOOM_*` environment surface for model
 and role configuration entirely. Precedence is command-line flags, then the
@@ -183,6 +184,19 @@ names replaces the default chain whole. A role it omits keeps the default chain.
 | `summarize` | array of strings | the `[roles]` chain | model names | Replacement chain for `summarize`. |
 | `vision` | array of strings | the `[roles]` chain | model names, each reading images | Replacement chain for `vision`. |
 | `advisor` | array of strings | the `[roles]` chain | model names | Replacement chain for `advisor`. |
+
+### Choosing a model for one session
+
+The web home's new-session forms and the `sessions.create` control command can
+pin a session's `main` role to one `[models.<name>]` entry, with or without a
+profile. The `main` chain becomes that one entry, so it has no fallbacks, and
+every other role keeps the chain `[roles]` or the chosen profile gives it. A
+profile and a model compose: the profile's roles are applied first and `main` is
+pinned afterwards. The session stores the key and resolves it again at every
+open, so renaming or removing the entry makes the session unopenable until it is
+restored. The web form offers a key of at most 64 bytes; a longer `<name>` is
+valid in the file and cannot be chosen this way. Only the key is given to the
+web page.
 
 ## `[mcp.<name>]`
 

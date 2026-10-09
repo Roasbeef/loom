@@ -30,6 +30,7 @@
 ////    session and so outlives every one.
 
 import core/ids
+import gleam/bit_array
 import gleam/dynamic/decode
 import gleam/int
 import gleam/list
@@ -42,6 +43,7 @@ import storage/catalogue_archives_schema
 import storage/catalogue_claims_schema
 import storage/catalogue_credential_kinds_schema
 import storage/catalogue_logins_schema
+import storage/catalogue_models_schema
 import storage/catalogue_names_schema
 import storage/catalogue_profiles_schema
 import storage/catalogue_recent_folders_schema
@@ -87,6 +89,13 @@ pub type Registration {
     /// the roles it resolved to: the daemon resolves it again each time the
     /// session opens (protocol-change/076).
     profile: Option(String),
+    /// The `[models.<key>]` entry the session's `main` role was pinned to at
+    /// creation, by key, or `None` for the chain the profile or the
+    /// configuration gives. Like `profile` it is part of the immutable creation
+    /// request and is a key rather than the role set it resolved to, so the
+    /// daemon resolves it again each time the session opens
+    /// (protocol-change/080).
+    model: Option(String),
     /// Creation time in Unix milliseconds.
     created_at: Int,
     /// The immutable creation request key.
@@ -228,7 +237,7 @@ fn initialize_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
 /// raise this fails `migrations_end_at_the_current_version_test` rather than
 /// leaving a catalogue that claims a version whose migration never ran.
 @internal
-pub const current_version = 9
+pub const current_version = 10
 
 /// The migration schemas in version order, each applied to a catalogue that
 /// lacks its version.
@@ -243,6 +252,7 @@ pub fn migrations() -> List(#(Int, String)) {
     #(7, catalogue_logins_schema.schema),
     #(8, catalogue_recent_folders_schema.schema),
     #(9, catalogue_profiles_schema.schema),
+    #(10, catalogue_models_schema.schema),
   ]
 }
 
@@ -342,6 +352,7 @@ fn insert(
       created_at: record.created_at,
       request_key: record.request_key,
       profile: option.unwrap(record.profile, ""),
+      model: option.unwrap(record.model, ""),
     ),
   ))
   use Nil <- result.try(statement(catalogue, sql.increment_catalogue_revision()))
@@ -967,6 +978,7 @@ fn page_for(
             request_key: row.request_key,
             state: Reserved,
             profile: stored_profile(row.profile),
+            model: stored_model(row.model),
             subtitle: option.then(row.subtitle, stored_subtitle),
           ),
           row.state,
@@ -1022,6 +1034,7 @@ pub fn member_page(
             request_key: row.request_key,
             state: Reserved,
             profile: stored_profile(row.profile),
+            model: stored_model(row.model),
             subtitle: option.then(row.subtitle, stored_subtitle),
           ),
           row.state,
@@ -1136,6 +1149,7 @@ fn find(catalogue: Catalogue, id: String, request_key: String, path: String) {
         request_key: row.request_key,
         state: Reserved,
         profile: stored_profile(row.profile),
+        model: stored_model(row.model),
         subtitle: None,
       ),
       row.state,
@@ -1222,8 +1236,8 @@ fn validate(record: Registration) -> Result(Nil, Error) {
     && record.request_key != ""
     && record.created_at >= 0
   {
-    True ->
-      case record.profile {
+    True -> {
+      use Nil <- result.try(case record.profile {
         None -> Ok(Nil)
         Some(name) ->
           case is_profile_name(name) {
@@ -1231,7 +1245,16 @@ fn validate(record: Registration) -> Result(Nil, Error) {
             False ->
               Error(Invalid("registration profile is not a profile name"))
           }
+      })
+      case record.model {
+        None -> Ok(Nil)
+        Some(key) ->
+          case is_model_key(key) {
+            True -> Ok(Nil)
+            False -> Error(Invalid("registration model is not a model key"))
+          }
       }
+    }
     False ->
       Error(Invalid(
         "registration needs absolute paths, a request key and a nonnegative creation time",
@@ -1272,6 +1295,30 @@ pub fn is_profile_name(text: String) -> Bool {
   }
 }
 
+/// The longest model key a registration, the wire and the web form carry, in
+/// bytes. It is the catalogue column's bound.
+pub const model_key_limit = 64
+
+/// Whether text is a model key a session may be created with: one to
+/// `model_key_limit` bytes. A `[models.<key>]` key is any TOML key and has no
+/// grammar, so the bound is all this checks. Whether a configuration defines the
+/// key is the daemon's check against that configuration
+/// (`client/daemon/profiles.check_model`), made before a registration exists and
+/// again at every open.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert catalogue.is_model_key("baseten-glm-5-3")
+/// assert catalogue.is_model_key("opus 4.8")
+/// assert !catalogue.is_model_key("")
+/// assert !catalogue.is_model_key(string.repeat("k", 65))
+/// ```
+pub fn is_model_key(text: String) -> Bool {
+  let size = bit_array.byte_size(bit_array.from_string(text))
+  size >= 1 && size <= model_key_limit
+}
+
 fn is_letter(grapheme: String) -> Bool {
   list.contains(string.to_graphemes("abcdefghijklmnopqrstuvwxyz"), grapheme)
 }
@@ -1285,6 +1332,17 @@ fn stored_profile(text: String) -> Option(String) {
   case text {
     "" -> None
     name -> Some(name)
+  }
+}
+
+// The model column follows the profile column's rule: the default, the empty
+// string, means no choice, and any other text is kept as stored and judged by
+// `validate`, so a damaged value fails the read instead of opening the session
+// on the default model.
+fn stored_model(text: String) -> Option(String) {
+  case text {
+    "" -> None
+    key -> Some(key)
   }
 }
 

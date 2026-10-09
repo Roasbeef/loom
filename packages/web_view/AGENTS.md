@@ -611,7 +611,13 @@ page keys and nonces, and the relay into the session's gateway.
   is `Untried` again once the lead has been closed, `completion_after`), and a
   fold says how many steps it did not show. Records that arrive after a closed turn with no input of
   their own are read with that turn again (`lead_of`, `beside`). A parked
-  strand's closed turns are dropped with its window.
+  strand's closed turns are dropped with its window. No block the closed
+  turns cover reaches the window's groups (`uncovered`, in `laid_out`): the
+  advisor's commentary is projected from the capture's whole window and keeps
+  blocks older than the newest closed turn's end. Before this, such a block
+  stayed in the window as a group of its own, the count of closed groups no
+  longer matched the groups dropped, and the newest closed turn was drawn from
+  its summary and from the window again (`closed_turn_test`).
   `FoldToggled(fold)` opens or closes a fold (`folded_at`): it acts only on a
   `Connected` page with a cut and only on a number that is the id of a fold the
   page draws, as `OlderRequested` acts only on a page that is reading, and a
@@ -1450,6 +1456,24 @@ offered none. `home.Creating` and `home.CreatingElsewhere` carry the chosen
 and `Start.create` passes it to the daemon. The daemon checks it again against its
 configuration; a profile removed since is `creations.UnknownProfile`, whose fixed
 words say to reload the page.
+
+### Model keys beside profiles (protocol 080)
+
+`Start.models` is the list of `[models.<key>]` keys the daemon's configuration
+defines, read with the profile names and `[]` unless `Start.create` is `Some`.
+`view/create.Offered.models` carries it, and both forms draw a "Main model"
+select (`name="model"`) after the profile select only when it is not empty. The
+select is independent of the profile one: a form may draw either, both or
+neither. Keys are drawn exactly as profile names are (a text node, a position as
+the value, the profile row's stylesheet classes), and `create.fields_with_roles` /
+`typed_fields_with_roles` read each field against its own list, so a position
+offered for profiles is never read as a model. The profile and the model travel
+together as one `creations.Roles(profile, model)` (`creations.default_roles` is
+neither): `home.Creating`, `home.CreatingElsewhere`, the `Start.create` closure
+and `create.Offered`'s submits all take it, and `home.offered_roles` checks both
+fields against the page's lists. Only the key string reaches the page; no URL,
+key variable, upstream identifier or pricing does. A key removed since the page
+opened is `creations.UnknownModel`, whose fixed words say to reload the page.
 
 ## Large result access
 

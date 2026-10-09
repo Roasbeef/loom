@@ -19,11 +19,12 @@ with these forks: they define the same modules.
 
 ## Key Types
 
-- The catalogue is at `user_version` 9. Each later version has its own embedded
+- The catalogue is at `user_version` 10. Each later version has its own embedded
   migration schema (`catalogue_names_schema`, `catalogue_archives_schema`,
   `catalogue_claims_schema`, `catalogue_subtitles_schema`,
   `catalogue_credential_kinds_schema`, `catalogue_logins_schema`,
-  `catalogue_recent_folders_schema`, `catalogue_profiles_schema`), and
+  `catalogue_recent_folders_schema`, `catalogue_profiles_schema`,
+  `catalogue_models_schema`), and
   `initialize_schema` applies every
   schema an
   older catalogue lacks, then moves the version, in one transaction; a fresh
@@ -48,6 +49,14 @@ with these forks: they define the same modules.
   configuration file and the wire. A stored value that is not a name fails the
   read with `Invalid` and is never read as "no profile", because that would open
   a profiled session under the default roles.
+- `Registration.model: Option(String)` is the `[models.<key>]` key the session's
+  `main` role was pinned to at creation (protocol-change/080), stored as version
+  10's `model` column (`NOT NULL DEFAULT ''`, empty meaning none) and carried,
+  compared on a retry and read exactly as `profile` is. `is_model_key` is the
+  whole grammar: 1 to `model_key_limit` (64) bytes, the column's own bound, since
+  a `[models.<key>]` key is any TOML key. Because the column cannot hold more than
+  the limit, a stored value is always a key, and there is no damaged-model read to
+  refuse.
 - `catalogue.Visibility` separates active and archived rows from initialization
   state. Schema version 3 adds `catalogue_session_archives`, migrated atomically
   from versions 1 and 2. `set_visibility` changes the overlay, clears an archived

@@ -331,7 +331,8 @@ In more detail:
    supplied. That callback resolves settings with `serve.resolve_managed`,
    which reloads the registration's saved configuration and canonical
    workspace (never the daemon's working directory), applies the
-   registration's model profile to that configuration's roles, and adds the
+   registration's model profile and then its pinned model key to that
+   configuration's roles, and adds the
    state-root masks to the sandbox policy. It attaches a peer directory, then calls
    `serve.assemble_in_domain`, which builds the session's storage, broker,
    helper pool, services, gateway and runtime tree under the custody owner.

@@ -55,6 +55,7 @@ pub fn creation_configuration_preserves_defaults_and_rejects_invalid_fields_test
         "name",
         "",
         None,
+        None,
         domain.WorkspacePrivate,
       ),
     ))
@@ -176,6 +177,7 @@ pub fn every_control_command_has_one_typed_decode_test() {
         "/workspace",
         "name",
         "/config",
+        None,
         None,
         domain.WorkspacePrivate,
       ),
@@ -569,6 +571,7 @@ pub fn creation_profile_is_optional_and_must_be_a_profile_name_test() {
         "name",
         "",
         Some("deepseek"),
+        None,
         domain.WorkspacePrivate,
       ),
     ))
@@ -590,6 +593,65 @@ pub fn creation_profile_is_optional_and_must_be_a_profile_name_test() {
           envelope(1, "sessions.create", [#("profile", value), ..fields]),
         )
         as "profile must be a profile name"
+    },
+  )
+}
+
+pub fn session_creation_decodes_an_optional_model_key_test() {
+  let fields = [
+    #("request_key", json.String("key")),
+    #("workspace", json.String("/workspace")),
+    #("name", json.String("name")),
+    #("configuration", json.String("")),
+  ]
+  assert protocol.decode(
+      envelope(1, "sessions.create", [
+        #("model", json.String("baseten-glm-5-3")),
+        ..fields
+      ]),
+    )
+    == Ok(protocol.Request(
+      1,
+      protocol.CreateSession(
+        "key",
+        "/workspace",
+        "name",
+        "",
+        None,
+        Some("baseten-glm-5-3"),
+        domain.WorkspacePrivate,
+      ),
+    ))
+
+  // A model key has no grammar beyond its bound, so a key with spaces or dots
+  // is carried through and the daemon's catalogue is what judges it.
+  let assert Ok(protocol.Request(
+    _,
+    protocol.CreateSession(model: Some("opus 4.8"), ..),
+  )) =
+    protocol.decode(
+      envelope(1, "sessions.create", [
+        #("model", json.String("opus 4.8")),
+        ..fields
+      ]),
+    )
+    as "a key is any text within its bound"
+
+  // Anything present that is not a key is refused, never read as no choice: a
+  // misspelled model must not create a default-model session.
+  list.each(
+    [
+      json.String(""),
+      json.String(string.repeat("k", 65)),
+      json.Null,
+      json.Int(1),
+    ],
+    fn(value) {
+      let assert Error(_) =
+        protocol.decode(
+          envelope(1, "sessions.create", [#("model", value), ..fields]),
+        )
+        as "model must be a model key"
     },
   )
 }

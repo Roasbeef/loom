@@ -1479,3 +1479,88 @@ pub fn a_non_table_profiles_entry_is_refused_test() {
   assert catalog.parse(text)
     == Error("profiles must be a table of [profiles.<name>.roles] entries")
 }
+
+// --- model choice (protocol-change/080) --------------------------------------
+
+pub fn model_keys_list_every_entry_sorted_test() {
+  let assert Ok(parsed) = catalog.parse(with_profiles)
+  assert catalog.model_keys(parsed) == ["eyes", "fast", "slow"]
+}
+
+pub fn a_model_key_beyond_the_stored_bound_is_not_offered_test() {
+  let long = string.repeat("k", 65)
+  let text =
+    minimal
+    <> "\n[models."
+    <> long
+    <> "]\ndialect = \"openai\"\napi_key_env = \"KEY\"\nmodel_id = \"m\"\ncontext_window = 1000\nmax_output_tokens = 100\n"
+  let assert Ok(parsed) = catalog.parse(text)
+
+  // The file still loads and the entry still exists, but a key the catalogue
+  // column cannot remember with a session is not offered.
+  assert list.contains(list.map(parsed.models, fn(entry) { entry.name }), long)
+  assert !list.contains(catalog.model_keys(parsed), long)
+}
+
+pub fn selecting_a_model_replaces_only_main_with_that_entry_alone_test() {
+  let assert Ok(parsed) = catalog.parse(with_profiles)
+  let assert Ok(pinned) = catalog.select_model(parsed, "eyes")
+
+  // `main` was a two-entry chain; it is now the chosen entry with no fallback,
+  // and every other role keeps the default chain.
+  assert pinned.roles
+    == [
+      #(model.Main, ["eyes"]),
+      #(model.Plan, ["slow"]),
+      #(model.Summarize, ["slow"]),
+      #(model.Vision, ["eyes"]),
+    ]
+  assert pinned.models == parsed.models
+  assert pinned.profiles == parsed.profiles
+  let assert Ok(main) = catalog.main_model(pinned)
+  assert main.name == "eyes"
+}
+
+pub fn a_model_is_laid_over_a_profiles_roles_test() {
+  let assert Ok(parsed) = catalog.parse(with_profiles)
+  let assert Ok(quick) = catalog.select_profile(parsed, "quick")
+  let assert Ok(pinned) = catalog.select_model(quick, "slow")
+
+  // The profile's `summarize` stays and only its `main` is moved.
+  assert pinned.roles
+    == [
+      #(model.Main, ["slow"]),
+      #(model.Plan, ["slow"]),
+      #(model.Summarize, ["fast", "slow"]),
+      #(model.Vision, ["eyes"]),
+    ]
+}
+
+pub fn selecting_a_model_moves_the_gateway_without_touching_the_original_test() {
+  let assert Ok(parsed) = catalog.parse(with_profiles)
+  let assert Ok(pinned) = catalog.select_model(parsed, "fast")
+  let build = fn(catalogue) {
+    catalog.gateway(
+      catalogue,
+      transport: provider_test.silent(),
+      secrets: secret.from_list([]),
+      clock: clock.fixed(at: 0),
+    )
+  }
+  let assert Ok(default_route) =
+    provider_gateway.resolve(build(parsed), model.Main)
+  let assert Ok(pinned_route) =
+    provider_gateway.resolve(build(pinned), model.Main)
+  assert default_route.provider == "slow"
+  assert pinned_route.provider == "fast"
+}
+
+pub fn an_unknown_model_names_the_known_keys_test() {
+  let assert Ok(parsed) = catalog.parse(with_profiles)
+  assert catalog.select_model(parsed, "fats")
+    == Error(
+      "unknown model \"fats\"; the configuration defines: eyes, fast, slow",
+    )
+  assert catalog.unknown_model([], "x")
+    == "unknown model \"x\"; the configuration defines no models"
+}

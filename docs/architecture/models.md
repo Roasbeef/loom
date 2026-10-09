@@ -324,6 +324,22 @@ table (models, tools, MCP, language servers, mounts) is shared by all profiles.
 [Protocol 076](../../protocol-change/076-config-profiles.md) records the
 decision.
 
+### Pinning a session's main model
+
+A session can also be created on one `[models.<key>]` entry, without writing a
+profile for it. The choice replaces the `main` role's chain with that one entry
+and leaves every other role as the file, or the session's profile, gives it
+(`catalog.select_model`, applied after `select_profile`, so a profile and a model
+compose: the profile's roles first, then `main` pinned). The chain has no
+fallbacks: a retryable failure on the chosen model does not move to the default
+chain's next entry. The web home's new-session forms offer the file's model keys
+in a "Main model" select, and `sessions.create` takes an optional `model` field.
+The catalogue stores the key, never the roles, and every open resolves it again
+in the same load step as the profile, so a key the file no longer defines refuses
+the open and never falls back to the default model. A key longer than 64 bytes
+is not offered. [Protocol 080](../../protocol-change/080-session-model-choice.md)
+records the decision.
+
 ### Role follows identity
 
 The rule is **role follows identity.** An effect intent commits the
