@@ -208,24 +208,33 @@ while the first move's source is still finishing.
 |---|---|
 | `AttachExec(n)`, `Open(n)`, `Edit(n)` | A node attaches, serves, and writes a new version. Opening needs the node's own row to allow it and reads nothing from the record. |
 | `Intend(n, op)` | The registry turn: the row becomes `moving(op)`, serving stops, the mover starts. |
-| `IntentCAS(n, op)` | `[n, serving]` to `[n, moving, op]`, or a repeat that finds it already written. |
-| `StopClose(n)`, `Cut(n, op)`, `Send(op)` | As in `Move.tla`. The cut carries the version of the file. |
+| `IntentCAS(n, op)` | `[n, serving]` to `[n, moving, op]`, or a repeat that finds it already written, or a record that names the receiver, after which the run carries on so the receiver is asked again. |
+| `StopClose(n)`, `Cut(n, op)`, `Send(op)` | As in `Move.tla`. The cut carries the version of the file. A sender that runs again cuts and sends again, since it cannot see that a copy was placed. None runs while a refusal is held. |
+| `CloseRefused(n)` | The executor refuses the close because the receiver holds the scope, which it can only do after importing. The mover holds it as a refusal. |
 | `ActivateCAS(m, op)` | `[source, moving, op]` to `[m, serving]`. Not tied to the sender's mover: an activation can arrive any number of times once a copy is sent. |
 | `Import(m, op)` | Once the record names `m`: the row becomes `imported(op)` and the copy is placed. |
 | `RefuseConflict(m, op)` | The receiver's row holds the session in another state (including `moving`): refused before anything is written, and the incoming copy is dropped. |
 | `RefuseEnded(m, op)` | The record names a third party, or no longer says the move: refused, dropping only the incoming copy. |
 | `Abandon(n)` | `[n, moving, op]` to `[n, serving]`. The operator may ask at any time; after a refusal the mover must (`AbandonRefused`). |
 | `Revert(n)` | The record names `n` serving: the row goes back to `resident`. |
-| `Retire(n)` | A consistent read names the other node: the row becomes `moved` and the file is set aside. |
+| `Retire(n)` | The receiver has answered (a refusal is held, or the receiver holds the session `imported` under this op, which is what `Accepted` and a stage of `Activated` report) and a consistent read names the other node: the row becomes `moved` and the file is set aside. |
 | `Crash(n)`, `Restart(n)`, `QuorumLoss`, `QuorumBack` | Memory is lost and the rest survives; a restart resumes a mover for a `moving` row. |
 
 ### What is abstracted away
 
 - The record has no absent state. Deletion is a separate flow (the `Deleting`
   mark) and is not modelled.
-- `Retire` and `Revert` may run whenever their reads allow, not only after the
-  receiver answered. That is a superset of what the code does, so a safety
+- `Revert` may run whenever its read allows, and `Retire` whenever the
+  receiver's answer and its read allow, not only at the point in a run where
+  the code takes them. That is a superset of what the code does, so a safety
   result holds for the code's narrower order.
+- The receiver's steps may happen at any time once a copy is sent, which
+  stands for activations still in flight; but they are fair only while the
+  source is asking (`Asking`), because in the code they run inside the
+  source's activation request. That is what lets the liveness properties see
+  a receiver whose import nobody asks for.
+- Local sessions have records too, but they never move; their record is a
+  lookup hint and takes part in no step here.
 - `Import` does not need a majority. The code learns that the record names
   it from a compare-and-set, which does; allowing it without one is again a
   superset.
@@ -243,6 +252,7 @@ while the first move's source is still finishing.
 | `OneServingHolder` | As in `Move.tla`. |
 | `MoveSettles` | `reg.st = moving ~> reg.st = serving`. |
 | `MoverEnds` | Every node's `moving` row comes to say `moved` or `resident`. |
+| `OwnerCanServe` | `reg.st = serving ~> Allows(reg.owner)`: whoever the record names as serving comes to hold the session in a row that lets it serve. |
 
 Reachability was checked by hand with throwaway invariants: the return move
 completes and A serves it; A's row is still `moving(1)` while op 2's copy is
@@ -276,7 +286,8 @@ On TLC 2.19, one worker:
 | `KhepriMutantImportBeforeCAS` | `ImportAfterCAS = FALSE` | B imports while the record still names A, and serves. `ServeOnlyAsOwner` breaks. |
 | `KhepriMutantImportOverMoving` | `ReceiverChecksRow = FALSE` | A crashed after op 1 activated; B wrote version 2 and moves it back. A's activation CAS commits while A's row is still `moving(1)`, the import is refused because of that row, and the copy holding version 2 is dropped: the record names A, which holds version 1. `OwnerHasNewest` breaks. |
 | `KhepriMutantRefuseOwned` | `RefuseOnlyOthers = FALSE` | B's activation committed and B crashed before importing. B refuses the repeat although the record names it, and drops the only copy. `OwnerHasNewest` breaks. |
-| `KhepriMutantRetireStale` | `RetireConsistent = FALSE` | B starts the return and retires on a value from before it owned the session, setting aside the file it owns. `OwnerHasNewest` breaks. |
+| `KhepriMutantRetireStale` | `RetireConsistent = FALSE` | B's return is refused, B abandons it, and B retires on a value from before it owned the session, setting aside the file it owns. `OwnerHasNewest` breaks. |
+| `KhepriMutantRetireOnSilence` | `RetireOnAnswer = FALSE` | B's activation commits and B crashes before importing. A retires on the record alone and stops asking, so nothing makes B import: the record names B for ever, and B holds only the incoming copy. `OwnerCanServe` breaks (a temporal property, exit 13). |
 
 `KhepriMutantImportOverMoving` is the rule in `session_importer.activated`:
 a receiver whose row holds the session in any state but the one the move left

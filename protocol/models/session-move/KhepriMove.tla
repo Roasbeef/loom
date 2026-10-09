@@ -26,9 +26,9 @@
 (* the sender gave up. The sender may abandon a move at any time, which is *)
 (* the operator's hand-abandon; after a refusal it must.                   *)
 (*                                                                         *)
-(* Seven constants each switch one rule off so that its mutation can be    *)
-(* checked. A clean run sets all seven to TRUE. Each KhepriMutant*.cfg     *)
-(* sets one to FALSE and names the invariant TLC must then violate.        *)
+(* Eight constants each switch one rule off so that its mutation can be    *)
+(* checked. A clean run sets all eight to TRUE. Each KhepriMutant*.cfg     *)
+(* sets one to FALSE and names the property TLC must then violate.         *)
 (***************************************************************************)
 EXTENDS Naturals
 
@@ -42,6 +42,7 @@ CONSTANTS
     RefuseOnlyOthers,  \* The receiver refuses only when the record names
                        \* someone else.
     RetireConsistent,  \* The source retires on a current read of the record.
+    RetireOnAnswer,    \* The source retires only once the receiver answered.
     MaxInc,            \* Bound on the executor incarnation.
     MaxVer,            \* Bound on the session's content version.
     MaxCrashes,        \* Bound on crashes of either node.
@@ -194,10 +195,14 @@ IntentCAS(n, op) ==
           THEN row[n] = "moving" /\ rowOp[n] = op /\ mover[n] = "run"
           ELSE \/ row[n] = "moving" /\ rowOp[n] = op /\ mover[n] = "run"
                \/ ~started[op] /\ Allows(n) /\ mover[n] = "idle"
-    /\ reg.owner = n
     /\ \/ /\ reg = Serving(n)
           /\ Write(Moving(n, op))
        \/ /\ reg = Moving(n, op)
+          /\ UNCHANGED <<reg, sawOther>>
+       \* The record names the receiver: its activation committed and its
+       \* reply, or its import, was lost. The run carries on so that the
+       \* receiver is asked again.
+       \/ /\ reg.owner # n /\ mover[n] = "run"
           /\ UNCHANGED <<reg, sawOther>>
     /\ intent' = [intent EXCEPT ![n] = mover[n] = "run"]
     /\ UNCHANGED <<lastOp, quorum, qlosses, row, rowOp, file, top, copySt,
@@ -206,10 +211,14 @@ IntentCAS(n, op) ==
 
 (***************************************************************************)
 (* The sender's steps once its intent has committed: close the scope, cut  *)
-(* the copy at the version the file holds, and send it.                    *)
+(* the copy at the version the file holds, and send it. None of them runs  *)
+(* once a refusal is held: the run that heard it abandons or retires. A    *)
+(* sender that runs again cannot see that the receiver already placed a    *)
+(* copy, so it cuts and sends again, and the receiver answers from what it *)
+(* holds.                                                                  *)
 (***************************************************************************)
 StopClose(n) ==
-    /\ alive[n] /\ mover[n] = "run" /\ intent[n]
+    /\ alive[n] /\ mover[n] = "run" /\ intent[n] /\ ~refused[n]
     /\ serving[n] \/ exec.holder = n
     /\ serving' = [serving EXCEPT ![n] = FALSE]
     /\ exec' = [exec EXCEPT !.holder = IF @ = n THEN "none" ELSE @]
@@ -217,10 +226,23 @@ StopClose(n) ==
                    top, copySt, copyVer, alive, mover, intent, refused,
                    started, crashes>>
 
+(***************************************************************************)
+(* The executor refuses the close when the receiver holds the scope, which *)
+(* it can only do once it imported the session. The code treats that as a  *)
+(* final answer, as it treats a refusal.                                   *)
+(***************************************************************************)
+CloseRefused(n) ==
+    /\ alive[n] /\ mover[n] = "run" /\ intent[n]
+    /\ exec.holder = Other(n) /\ ~refused[n]
+    /\ refused' = [refused EXCEPT ![n] = TRUE]
+    /\ UNCHANGED <<reg, lastOp, sawOther, quorum, qlosses, row, rowOp, file,
+                   top, copySt, copyVer, exec, serving, alive, mover, intent,
+                   started, crashes>>
+
 Cut(n, op) ==
     /\ Src(op) = n /\ alive[n] /\ mover[n] = "run" /\ intent[n]
-    /\ row[n] = "moving" /\ rowOp[n] = op
-    /\ ~serving[n] /\ exec.holder = "none" /\ copySt[op] = "none"
+    /\ ~refused[n] /\ row[n] = "moving" /\ rowOp[n] = op
+    /\ ~serving[n] /\ exec.holder = "none" /\ copySt[op] \in {"none", "placed"}
     /\ copySt' = [copySt EXCEPT ![op] = "cut"]
     /\ copyVer' = [copyVer EXCEPT ![op] = file[n]]
     /\ UNCHANGED <<reg, lastOp, sawOther, quorum, qlosses, row, rowOp, file,
@@ -229,6 +251,7 @@ Cut(n, op) ==
 
 Send(op) ==
     /\ alive[Src(op)] /\ mover[Src(op)] = "run" /\ rowOp[Src(op)] = op
+    /\ ~refused[Src(op)]
     /\ copySt[op] = "cut"
     /\ copySt' = [copySt EXCEPT ![op] = "sent"]
     /\ UNCHANGED <<reg, lastOp, sawOther, quorum, qlosses, row, rowOp, file,
@@ -304,7 +327,13 @@ RefuseEnded(m, op) ==
 (* record says this node serves (Revert). Retire reads the record          *)
 (* consistently, so it needs a majority, and retires only when the record  *)
 (* names the other node: the row becomes moved and the file is set aside.  *)
-(* The mutant retires on any value the record ever held.                   *)
+(* It also needs the receiver's answer (RetireOnAnswer): a refusal, or the  *)
+(* receiver holding the session imported, which is what Accepted and a     *)
+(* stage of Activated report. A record that names the receiver is not      *)
+(* enough, because the receiver may have crashed between its write and its *)
+(* import, and only the source's next activation makes it import. The      *)
+(* mutants retire on any value the record ever held, and on the record     *)
+(* alone.                                                                  *)
 (***************************************************************************)
 Abandon(n) ==
     /\ alive[n] /\ mover[n] = "run" /\ row[n] = "moving" /\ quorum
@@ -333,8 +362,15 @@ Revert(n) ==
     /\ UNCHANGED <<reg, lastOp, sawOther, quorum, qlosses, rowOp, file, top,
                    copyVer, exec, serving, alive, started, crashes>>
 
+Answered(n) ==
+    \/ refused[n]
+    \/ /\ alive[Dst(rowOp[n])]
+       /\ row[Dst(rowOp[n])] = "imported"
+       /\ rowOp[Dst(rowOp[n])] = rowOp[n]
+
 Retire(n) ==
     /\ alive[n] /\ mover[n] = "run" /\ row[n] = "moving"
+    /\ RetireOnAnswer => Answered(n)
     /\ IF RetireConsistent
           THEN quorum /\ reg.owner # n
           ELSE sawOther[n]
@@ -388,7 +424,7 @@ QuorumBack ==
 
 Next ==
     \/ \E n \in Nodes :
-          \/ AttachExec(n) \/ Open(n) \/ Edit(n) \/ StopClose(n)
+          \/ AttachExec(n) \/ Open(n) \/ Edit(n) \/ StopClose(n) \/ CloseRefused(n)
           \/ Abandon(n) \/ Revert(n) \/ Retire(n) \/ Crash(n) \/ Restart(n)
     \/ \E n \in Nodes, op \in Ops : Intend(n, op) \/ IntentCAS(n, op) \/ Cut(n, op)
     \/ \E op \in Ops :
@@ -400,22 +436,30 @@ Next ==
 (***************************************************************************)
 (* Fairness. Every protocol step, every restart and the return of the      *)
 (* majority eventually happen while they stay enabled, and so does the     *)
-(* abandon a refusal asks for. Crashes and losses of the majority are      *)
-(* bounded. The opens, the edits, the hand-abandon and the start of a move *)
-(* are not fair: a move must settle without them.                          *)
+(* abandon a refusal asks for. The receiver's steps are fair only while    *)
+(* the source is asking (Asking), because in the code they run inside the  *)
+(* source's activation request: a receiver that crashed after its write    *)
+(* imports only when it is asked again. Crashes and losses of the majority *)
+(* are bounded. The opens, the edits, the hand-abandon and the start of a  *)
+(* move are not fair: a move must settle without them.                     *)
 (***************************************************************************)
+Asking(op) ==
+    /\ alive[Src(op)] /\ mover[Src(op)] = "run"
+    /\ row[Src(op)] = "moving" /\ rowOp[Src(op)] = op
+
 Spec ==
     /\ Init /\ [][Next]_vars
     /\ \A n \in Nodes :
           /\ WF_vars(StopClose(n)) /\ WF_vars(Revert(n))
           /\ WF_vars(Retire(n)) /\ WF_vars(Restart(n))
-          /\ WF_vars(AbandonRefused(n))
+          /\ WF_vars(AbandonRefused(n)) /\ WF_vars(CloseRefused(n))
     /\ \A n \in Nodes, op \in Ops : WF_vars(IntentCAS(n, op)) /\ WF_vars(Cut(n, op))
     /\ \A op \in Ops :
           /\ WF_vars(Send(op))
-          /\ WF_vars(ActivateCAS(Dst(op), op)) /\ WF_vars(Import(Dst(op), op))
-          /\ WF_vars(RefuseConflict(Dst(op), op))
-          /\ WF_vars(RefuseEnded(Dst(op), op))
+          /\ WF_vars(ActivateCAS(Dst(op), op) /\ Asking(op))
+          /\ WF_vars(Import(Dst(op), op) /\ Asking(op))
+          /\ WF_vars(RefuseConflict(Dst(op), op) /\ Asking(op))
+          /\ WF_vars(RefuseEnded(Dst(op), op) /\ Asking(op))
     /\ WF_vars(QuorumBack)
 
 (***************************************************************************)
@@ -461,5 +505,13 @@ OneServingHolder ==
 MoveSettles == (reg.st = "moving") ~> (reg.st = "serving")
 
 MoverEnds == \A n \in Nodes : (row[n] = "moving") ~> (row[n] # "moving")
+
+(***************************************************************************)
+(* OwnerCanServe: whoever the record names as serving comes to hold the    *)
+(* session in a row that lets it serve. It fails when an owner is left     *)
+(* without the session it owns, as when a receiver's import is never       *)
+(* finished because nobody asks it again.                                  *)
+(***************************************************************************)
+OwnerCanServe == (reg.st = "serving") ~> Allows(reg.owner)
 
 =========================================================================
