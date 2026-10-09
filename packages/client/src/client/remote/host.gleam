@@ -105,6 +105,7 @@
 //// 8. `close` fences the scope, cancels its calls, and `finish_closed` records
 ////    how the plane's cleanup ended.
 
+import broker/internal/call
 import client/internal/ffi_os
 import client/owner_services.{type ExecutionTerms, type OwnerServices}
 import client/remote/address.{type Address}
@@ -118,8 +119,6 @@ import client/wiring.{type Authority}
 import core/clock.{type Clock}
 import core/json.{type JsonValue}
 import gleam/dict.{type Dict}
-import gleam/dynamic
-import gleam/erlang/atom
 import gleam/erlang/node
 import gleam/erlang/process.{
   type Down, type ExitReason, type Monitor, type Name, type Pid, type Selector,
@@ -428,7 +427,7 @@ pub fn supervised(config: Config(census)) {
 pub fn cancels_run(reason: ExitReason) -> Bool {
   case reason {
     process.Normal | process.Killed -> True
-    process.Abnormal(detail) -> !is_noconnection(detail)
+    process.Abnormal(_) -> !call.is_disconnection(reason)
   }
 }
 
@@ -1407,10 +1406,6 @@ fn halt(state: State(census), key: Key, live: Live) -> State(census) {
     Execution, Ok(Building(..)) | Execution, Error(Nil) | ToolCall, _ -> Nil
   }
   State(..state, live: dict.delete(state.live, key))
-}
-
-fn is_noconnection(detail: dynamic.Dynamic) -> Bool {
-  detail == atom.to_dynamic(atom.create("noconnection"))
 }
 
 // --- close --------------------------------------------------------------------
