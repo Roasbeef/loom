@@ -105,6 +105,76 @@ MUTATIONS = {
     ("PSrc/Host.p",
      "      ledger[key] = (phase = ROW_ACKED, outcome = 0);\n",
      "      ledger -= (key);\n")]),
+
+  # exec_ledger.stop_or_fence bars a key that has no row. Here a stop for a
+  # missing key does nothing, so a start a dead worker sent before the record
+  # closed arrives after the stop and starts the program.
+  "M8-stop-does-not-fence": ("tcOnlyExecNoStartAfterStop", 20000, r"started after the host processed its stop", [
+    ("PSrc/Host.p",
+     "      ledger[key] = (phase = ROW_UNKNOWN, outcome = 0);\n"
+     "      execs += (key);\n"
+     "      announce eUnknown, key;\n"
+     "      return;\n",
+     "      return;\n")]),
+
+  # surface.start_execution sends the same start again after a dropped
+  # connection. Here the worker takes the break for a cancel and stops the
+  # program, though nobody closed its record.
+  "M9-noconnection-stops": ("tcOnlyExecStopOnlyOnDecision", 20000, r"stopped though its record was never closed", [
+    ("PSrc/Execution.p",
+     "    on eNoConn do {\n"
+     "      resent = true;\n"
+     "      sendStart();\n"
+     "      resent = false;\n"
+     "    }\n",
+     "    on eNoConn do {\n"
+     "      var m: tMsg;\n"
+     "      m = default(tMsg);\n"
+     "      m.kind = K_STOP;\n"
+     "      m.dest = executor;\n"
+     "      m.from = this;\n"
+     "      m.key = key;\n"
+     "      send wire, eSend, (sender = this, msg = m);\n"
+     "    }\n")]),
+
+  # workspace.settled_by_kind acknowledges an execution's row only once its
+  # record is closed. Here every settled row is acknowledged, so a value the
+  # worker has not read yet becomes a tombstone.
+  "M10-settled-ignores-record": ("tcOnlyExecAckOnlyWhenRecordTerminal", 20000, r"acknowledged while its record was live", [
+    ("PSrc/Execution.p",
+     "    return !(key in phase) || phase[key] != P_LIVE;\n",
+     "    return true;\n")]),
+
+  # exec_ledger.open turns every admitted row unknown and relaunches nothing.
+  # Here a restarted executor starts its running programs again.
+  "M11-restart-relaunches": ("tcOnlyExecAtMostOnce", 20000, r"started twice", [
+    ("PSrc/Host.p",
+     "    foreach (k in ks) {\n"
+     "      markUnknown(k);\n"
+     "    }\n"
+     "    placed = false;\n",
+     "    foreach (k in ks) {\n"
+     "      if (k in execs && ledger[k].phase == ROW_ADMITTED) {\n"
+     "        announce eStart, (key = k, runToken = scopeToken, scopeToken = scopeToken);\n"
+     "        nextJob = nextJob + 1;\n"
+     "        new ExecBody((host = this, key = k, job = nextJob));\n"
+     "      } else {\n"
+     "        markUnknown(k);\n"
+     "      }\n"
+     "    }\n"
+     "    placed = false;\n")]),
+
+  # The reconciler stops a running program whose record is no longer live.
+  # Here it skips the executions, so a program whose stop a partition lost runs
+  # on forever.
+  "M12-reconciler-skips-executions": ("tcOnlyEveryExecutionSettles", 40000, r"liveness bug", [
+    ("PSrc/Execution.p",
+     "    foreach (k in running) {\n"
+     "      if (k in phase && phase[k] != P_LIVE) {\n"
+     "        sendStop(k);\n"
+     "      }\n"
+     "    }\n",
+     "")]),
 }
 
 

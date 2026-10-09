@@ -20,6 +20,9 @@ machine Host {
   var live: map[tKey, tLive];
   var dead: set[machine];
   var nextJob: int;
+  // The keys whose ledger row is an execution's (the row's `tool` column is
+  // `execution`). Durable, with the ledger.
+  var execs: set[tKey];
 
   start state Up {
     entry (w: machine) {
@@ -31,12 +34,20 @@ machine Host {
         attach(m);
       } else if (m.kind == K_RUN) {
         admitRun(m);
+      } else if (m.kind == K_START) {
+        admitRun(m);
+      } else if (m.kind == K_STOP) {
+        stopExecution(m.key);
+      } else if (m.kind == K_LIST) {
+        listExecutions(m);
       } else if (m.kind == K_ASK) {
         ask(m);
       } else if (m.kind == K_ACK) {
         ack(m.key);
       } else if (m.kind == K_CALL_DOWN) {
         callGone(m.from);
+      } else if (m.kind == K_CALL_LOST) {
+        callLost(m.from);
       }
     }
 
@@ -86,8 +97,16 @@ machine Host {
     }
     if (!(m.key in ledger)) {
       ledger[m.key] = (phase = ROW_ADMITTED, outcome = 0);
+      if (m.kind == K_START) {
+        execs += (m.key);
+      }
       startRun(m);
       return;
+    }
+    if (m.kind == K_START && isExecution(m.key)) {
+      if (ledger[m.key].phase == ROW_UNKNOWN && !(m.key in live)) {
+        announce eBarredStart, m.key;
+      }
     }
     answerFromRow(m);
   }
@@ -125,8 +144,81 @@ machine Host {
     nextJob = nextJob + 1;
     live[m.key] = (job = nextJob, waiters = default(seq[tWaiter]));
     announce eStart, (key = m.key, runToken = m.token, scopeToken = scopeToken);
-    new Body((host = this, key = m.key, job = nextJob));
+    if (m.kind == K_START) {
+      new ExecBody((host = this, key = m.key, job = nextJob));
+    } else {
+      new Body((host = this, key = m.key, job = nextJob));
+    }
     addWaiter(m.key, m.from, m.attempt);
+  }
+
+  // --- executions -----------------------------------------------------------
+
+  // host.stop_execution over exec_ledger.stop_or_fence, one transaction: a
+  // running row turns unknown and the program is stopped (its waiters hear
+  // that it is lost), a key with no row is barred with an unknown row, and a
+  // settled row or a tombstone is left alone. There is no reply. Only the first
+  // two change anything, so only they are announced: a stop the reconciler
+  // sends from a listing taken before the program finished meets a settled row
+  // and does nothing.
+  fun stopExecution(key: tKey) {
+    var row: tRowRec;
+    var l: tLive;
+    var w: tWaiter;
+    if (!(key in ledger)) {
+      announce eStopProcessed, key;
+      ledger[key] = (phase = ROW_UNKNOWN, outcome = 0);
+      execs += (key);
+      announce eUnknown, key;
+      return;
+    }
+    row = ledger[key];
+    if (row.phase == ROW_ADMITTED) {
+      announce eStopProcessed, key;
+      markUnknown(key);
+      if (key in live) {
+        l = live[key];
+        foreach (w in l.waiters) {
+          send wire, eSend, (sender = this, msg = answerTo(w, key, ANS_LOST, 0));
+        }
+        live -= (key);
+      }
+    }
+  }
+
+  // host.unacked over exec_ledger.unacked and exec_ledger.admitted: the
+  // executions still running, and the settled execution rows the reconciler
+  // may acknowledge.
+  fun listExecutions(m: tMsg) {
+    var r: tMsg;
+    var k: tKey;
+    var ks: seq[tKey];
+    r = default(tMsg);
+    r.kind = K_LISTED;
+    r.dest = m.from;
+    r.from = this;
+    ks = keys(ledger);
+    foreach (k in ks) {
+      if (k in execs) {
+        if (ledger[k].phase == ROW_ADMITTED) {
+          r.running += (sizeof(r.running), k);
+        } else if (ledger[k].phase == ROW_TERMINAL || ledger[k].phase == ROW_UNKNOWN) {
+          r.settled += (sizeof(r.settled), k);
+        }
+      }
+    }
+    send wire, eSend, (sender = this, msg = r);
+  }
+
+  // A waiter's node went away: the monitor fires with `noconnection` for every
+  // key it waits on, which never cancels a run.
+  fun callLost(call: machine) {
+    var ks: seq[tKey];
+    var k: tKey;
+    ks = keys(live);
+    foreach (k in ks) {
+      waiterDown(k, call, true);
+    }
   }
 
   // host.join_run: the key is live, so the sender waits on the run that exists.
@@ -358,6 +450,20 @@ machine Body {
   start state Running {
     entry (p: (host: machine, key: tKey, job: int)) {
       send p.host, eBodyDone, (key = p.key, job = p.job);
+    }
+  }
+}
+
+// A background program. It may finish by itself, as Body does, or run until
+// something stops it: the record's deadline, a cancel, the scope closing. A
+// program that never ends unless stopped is what makes an unstopped orphan
+// visible to the liveness spec.
+machine ExecBody {
+  start state Running {
+    entry (p: (host: machine, key: tKey, job: int)) {
+      if ($) {
+        send p.host, eBodyDone, (key = p.key, job = p.job);
+      }
     }
   }
 }

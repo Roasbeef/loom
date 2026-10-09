@@ -70,7 +70,7 @@ machine Wire {
     }
     q += (sizeof(q), s.msg);
     queues[pair] = q;
-    if (s.msg.kind == K_RUN || s.msg.kind == K_ASK || s.msg.kind == K_ATTACH) {
+    if (s.msg.kind == K_RUN || s.msg.kind == K_START || s.msg.kind == K_ASK || s.msg.kind == K_ATTACH) {
       watching[s.sender] = s.msg.attempt;
     }
   }

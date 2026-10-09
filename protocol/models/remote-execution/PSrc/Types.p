@@ -42,7 +42,17 @@ enum tDelivery { D_FINISHED, D_LOST, D_NOT_RUN, D_STALE, D_NOPLANE }
 // K_CALL_DOWN is not a message in the code: it is the host's monitor of an
 // effect process firing, and it is carried like one because the monitor's
 // signal travels the same wire.
-enum tKind { K_ATTACH, K_ATTACHED, K_RUN, K_ANSWER, K_ASK, K_LOOKUP, K_ACK, K_CALL_DOWN }
+enum tKind { K_ATTACH, K_ATTACHED, K_RUN, K_ANSWER, K_ASK, K_LOOKUP, K_ACK, K_CALL_DOWN, K_START, K_STOP, K_LIST, K_LISTED, K_CALL_LOST }
+
+// The background executions (protocol-change/078, the addendum on background
+// code mode) add five kinds. K_START is `StartExecution`, admitted by key as a
+// `Run` is and answered with a K_ANSWER. K_STOP is `StopExecution`, which has
+// no reply. K_LIST and K_LISTED are the reconciler's `ListUnacked` and its
+// answer, which carries the executions still running and the settled execution
+// rows. K_CALL_LOST is, like K_CALL_DOWN, a monitor firing rather than a
+// message: the waiter's node went away, so the DOWN's reason is `noconnection`.
+// An execution's key is an integer like a call's; the executions use keys from
+// `firstExecution()` up, so the two never share one.
 
 // Whether an effect process starts a fresh call or recovers an orphaned one.
 enum tMode { MODE_RUN, MODE_RECOVER }
@@ -64,7 +74,7 @@ type tRowRec = (phase: tRow, outcome: int);
 // in a K_ASK. `attempt` numbers the sender's exchanges (each has its own reply
 // subject) and a reply carries the attempt it answers; `resent` marks a send
 // repeated after a dropped connection, so the probes can tell it from a first send.
-type tMsg = (kind: tKind, dest: machine, from: machine, key: tKey, token: int, attempt: int, resent: bool, fence: bool, answer: tAnswer, look: tLook, outcome: int);
+type tMsg = (kind: tKind, dest: machine, from: machine, key: tKey, token: int, attempt: int, resent: bool, fence: bool, answer: tAnswer, look: tLook, outcome: int, running: seq[tKey], settled: seq[tKey]);
 
 // One process waiting on a live run, and the attempt whose reply subject it
 // waits on. Each attempt of a request has a reply subject of its own
@@ -87,6 +97,15 @@ fun fenceOutcome(): int {
 // The result the tool body produces for a key.
 fun bodyOutcome(key: tKey): int {
   return 100 + key;
+}
+
+// The first key an execution uses. Calls use the keys below it.
+fun firstExecution(): int {
+  return 10;
+}
+
+fun isExecution(key: tKey): bool {
+  return key >= firstExecution();
 }
 
 // ---------------------------------------------------------------------------
@@ -157,6 +176,46 @@ event eDelivered: (key: tKey, kind: tDelivery, outcome: int);
 // The host cancelled a live run because its last waiter went away, and whether
 // that waiter's exit reason was `noconnection`.
 event eCancelled: (key: tKey, noconn: bool);
+
+// --- background executions --------------------------------------------------
+
+// The orchestrator's open attached under this token, or ended. The execution
+// service (Record) launches and recovers on the first and loses its worker on
+// the second.
+event eOpenReady: int;
+event eOpenGone;
+
+// A worker heard how its execution's start ended.
+event eExecDone: (gen: int, key: tKey, answer: tAnswer, outcome: int);
+
+// The environment cancels one live execution (an owner's cancel or an abort of
+// the launching operation), lets every live execution's deadline pass, or runs
+// the reconciler's last pass once the network is quiet.
+event eExecCancel;
+event eDeadline;
+event eReconcile;
+
+// The execution service made an execution's record: the launch was claimed.
+event eExecCreated: tKey;
+
+// The record closed: finished with the value the worker heard or recovery
+// read, or lost. `decided` is true for a loss the service chose (a cancel, the
+// deadline, a restart) and false for a loss an answer from the executor caused.
+event eRecordFinished: (key: tKey, outcome: int);
+event eRecordLost: (key: tKey, decided: bool);
+
+// The service decided an execution must stop, and the host processed a stop.
+event eStopDecided: tKey;
+event eStopProcessed: tKey;
+
+// The service acknowledged a settled execution row.
+event eExecAckSent: tKey;
+
+// A start found its key barred by a stop that arrived first.
+event eBarredStart: tKey;
+
+// Recovery finished a record from the value the executor had stored.
+event eExecRecovered: tKey;
 
 // Events that mark a situation the probes ask the checker to reach.
 event eStaleRun: tKey;

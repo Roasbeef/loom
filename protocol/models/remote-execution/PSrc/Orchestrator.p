@@ -24,14 +24,18 @@ machine Orch {
   var attachAttempt: int;
   var delivered: set[tKey];
   var calls: seq[machine];
+  // The session's execution service, told when an open attaches and ends.
+  // Null in the cases that model tool calls alone.
+  var record: machine;
 
   start state Init {
-    entry (p: (wire: machine, executor: machine, replays: seq[tReplay], acks: tAck)) {
+    entry (p: (wire: machine, executor: machine, replays: seq[tReplay], acks: tAck, record: machine)) {
       var i: int;
       wire = p.wire;
       executor = p.executor;
       replays = p.replays;
       acks = p.acks;
+      record = p.record;
       i = 0;
       while (i < sizeof(replays)) {
         announce eIntent, i;
@@ -55,6 +59,9 @@ machine Orch {
     on eNet do (m: tMsg) {
       if (m.kind == K_ATTACHED && m.attempt == attachAttempt) {
         startCalls();
+        if (record != null) {
+          send record, eOpenReady, token;
+        }
         goto Running;
       }
     }
@@ -73,6 +80,9 @@ machine Orch {
     // monitors of them fire, and the next open attaches with a new token.
     on eOpenCrash do {
       killCalls();
+      if (record != null) {
+        send record, eOpenGone;
+      }
       gen = gen + 1;
       token = token + 1;
       sendAttach();
