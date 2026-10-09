@@ -81,7 +81,7 @@ Linux: the box described below.
 
 | Gate | Host | Result |
 | --- | --- | --- |
-| `make check-gleam` (format, warning-free build, every package's tests, lint) | Mac | exit 0, 636 s. host 75, core 140, storage 256, session 65, machine 93, prompt 103, session_view 427, web_view 927, telemetry 34, runtime 190, provider 257, broker 401, executor 10, mcp 123, lsp 191, tools 680, cap 182, ext 37, codemode 381, events 47, client 3591, conformance 97, tui 1312, lint 240 |
+| `make check-gleam` (format, warning-free build, every package's tests and the lint package's own tests; the house-rule lint is `make lint`, below) | Mac | exit 0, 636 s. host 75, core 140, storage 256, session 65, machine 93, prompt 103, session_view 427, web_view 927, telemetry 34, runtime 190, provider 257, broker 401, executor 10, mcp 123, lsp 191, tools 680, cap 182, ext 37, codemode 381, events 47, client 3591, conformance 97, tui 1312, lint 240 |
 | `make doc-check`, `make prelude-check` | Mac | exit 0, exit 0 |
 | `make server-shipment`, `make sandbox` | Mac | exit 0, exit 0 |
 | Ten shipped modules against `bin/loomd` (`daemon_shipped_remote`, `_codemode`, `_caps`, `_tools`, `_pool`, `_strand`, `_owner_loss`, `daemon_shipped_directory`, `_peer_mail`, `daemon_shipped_remote_move`) | Mac | every one exit 0, 0 SKIP lines |
@@ -93,7 +93,8 @@ Linux: the box described below.
 | `make model-check` | Linux | not run: the box has no Java, TLA+ jar or P tool |
 | Cross-host, both directions (Mac brains with box hands, and the reverse): file, `bash`, `fs_read` and `git` in the remote checkout and absent locally; stop then `Closed(AllRetired)`; reopen at incarnation 2; tunnel cut during a 75 s call, which ran once and was delivered after recovery | Mac and Linux | passed on `61429be82` (and earlier on `193dbd8db`), credentials from `loom distribution provision` and `install --home`. Each direction ran two cuts: a short one restored while the call was still running, and a long one restored 96 s after the cut, about 20 s after the executor finished the call. In both, the command started once and finished once, and the model received its real result after the reconnect (in the long cut, from the executor's terminal ledger row). Before each drive, the tunnelled `epmd` named the executor and `openssl s_client` showed the executor's own leaf |
 | Shipped SIGKILL restart and partition drills (`daemon_shipped_remote_test`) | Mac | in the shipped row above |
-| Gated signoff (`make signoff-remote`), fresh Linux container | Linux | green on `6c945a8c2`. An earlier run in a fresh container, with no `epmd` running, found the missing `epmd` start that `7628912ba` fixes. On `61429be82` it failed 1 of 3595: `daemon_shipped_remote_tools_test`'s goal check did not reach `complete` within its 60 s poll while the lane ran shipped modules side by side. The module passed three runs out of three on the Mac on the same commit (about 20 s each), so the failure looks load-bound, but that is not proven |
+| Gated signoff (`make signoff-remote`), fresh Linux container | Linux | green on `0e7be0b43`, the head after the second merge of `main`, and earlier on `6c945a8c2`. An earlier run in a fresh container, with no `epmd` running, found the missing `epmd` start that `7628912ba` fixes. Red runs in between found three things, all fixed with a test: an advisor goal that rested until the two-minute tick when pinned in the instant after a review ended (`ee6402c8b`, a product defect), the remote goal test stopping before the reviewer's last request (`7bceffb6e`), and the movers' tests checking the files between the `moved` row and the rename (`0e7be0b43`) |
+| `make lint` (the house rules) | Mac | exit 0 on `0e7be0b43`, 0 errors |
 
 ## Rulings already made
 
