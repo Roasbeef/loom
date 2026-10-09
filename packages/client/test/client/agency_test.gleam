@@ -26,6 +26,7 @@ import client/peer_mail
 import client/peers
 import client/serve
 import client/workflow_ledger
+import core/accounting
 import core/clock.{type Clock}
 import core/codec
 import core/entry
@@ -35,6 +36,7 @@ import core/message
 import core/register
 import core/todo_list
 import core/tx
+import core/usage_evidence
 import gleam/bit_array
 import gleam/erlang/process.{type Subject}
 import gleam/int
@@ -275,7 +277,7 @@ fn settle_into(events: Subject(stream.StreamEvent), text: String) -> Nil {
         response_model: None,
         response_id: None,
         diagnostics: None,
-        usage: effects.zero_usage(),
+        usage: accounting.unknown_usage(usage_evidence.Other),
         stop_reason: message.Stop,
         deferred: None,
         error_message: None,
@@ -287,7 +289,12 @@ fn settle_into(events: Subject(stream.StreamEvent), text: String) -> Nil {
       as "the scripted response must settle"
     process.send(
       events,
-      stream.Settled(message: settled, usage: effects.zero_usage()),
+      stream.Settled(
+        message: settled,
+        accounting: accounting.from_usage(accounting.unknown_usage(
+          usage_evidence.Other,
+        )),
+      ),
     )
   }
 }

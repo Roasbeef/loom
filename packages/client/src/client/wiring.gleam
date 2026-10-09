@@ -162,6 +162,7 @@ import client/notes
 import client/permissions
 import client/tool_holder
 import client/vision
+import core/accounting
 import core/clock.{type Clock}
 import core/entry
 import core/ids.{type OpId}
@@ -1319,10 +1320,13 @@ fn unsupported(reason: String) -> StreamHandle {
   let events = process.new_subject()
   process.send(
     events,
-    stream.Failed(error: stream.StreamError(
-      api_error_type: "unsupported_request",
-      message: reason,
-    )),
+    stream.Failed(
+      error: stream.StreamError(
+        api_error_type: "unsupported_request",
+        message: reason,
+      ),
+      accounting: accounting.empty(),
+    ),
   )
   stream.immediate(events:, cancel: fn() { Nil })
 }

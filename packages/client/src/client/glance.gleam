@@ -72,6 +72,7 @@ import client/glancepace
 import client/glanceslice
 import client/internal/session_owner
 import client/notes
+import core/accounting
 import core/clock.{type Clock}
 import core/entry.{type Entry, type UsageRow}
 import core/glance as glance_cell
@@ -301,7 +302,7 @@ pub fn hooks(
 /// The context size one usage row measures: `input + cache_read +
 /// cache_write + output`, the figure `core/glance.Glance.tokens` carries.
 /// An adjustment row is a reconciliation delta rather than a measurement,
-/// so it measures nothing.
+/// so it measures nothing. An unknown zero snapshot also measures nothing.
 ///
 /// ## Examples
 ///
@@ -311,13 +312,19 @@ pub fn hooks(
 pub fn context_of(row: UsageRow) -> Option(Int) {
   case row.adjustment {
     True -> None
-    False ->
-      Some(
-        row.usage.input
-        + row.usage.cache_read
-        + row.usage.cache_write
-        + row.usage.output,
-      )
+    False -> {
+      // Fallback spending is a ledger total. Context belongs to the last
+      // attempt, and malformed present metadata cannot become a measurement.
+      case accounting.decode_row(row) {
+        Error(_) -> None
+        Ok(report) ->
+          accounting.last(report)
+          |> option.then(accounting.observed_usage)
+          |> option.map(fn(usage) {
+            usage.input + usage.cache_read + usage.cache_write + usage.output
+          })
+      }
+    }
   }
 }
 
@@ -610,7 +617,27 @@ fn summarize(
   let title = stored_title(store, launch.strand, launch.operation)
   let material = glanceslice.gather(prompts:, recent:, title:)
 
-  use answer <- result.try(wiring.summarizer.ask(glanceslice.request(material)))
+  // An auxiliary request owns one ledger row even when no glance is usable.
+  use answer <- result.try(
+    case wiring.summarizer.ask(glanceslice.request(material)) {
+      Ok(answer) -> {
+        use Nil <- result.try(distill.record_request(
+          wiring.session,
+          answer.accounting,
+          "glance",
+        ))
+        Ok(answer)
+      }
+      Error(failure) -> {
+        use Nil <- result.try(distill.record_request(
+          wiring.session,
+          failure.accounting,
+          "glance",
+        ))
+        Error(failure.reason)
+      }
+    },
+  )
   use reply <- result.try(
     glanceslice.parse(answer.text, title)
     |> result.replace_error("the summarizer's answer was not usable"),

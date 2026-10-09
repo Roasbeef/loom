@@ -204,6 +204,7 @@ import client/schedule
 import client/scheduleadmin
 import client/skills
 import client/wiring
+import core/accounting
 import core/clock
 import core/codec as core_codec
 import core/entry.{type Entry, type UsageRow}
@@ -214,6 +215,7 @@ import core/message.{type AgentMessage, type UserBlock}
 import core/origin
 import core/register
 import core/tx
+import core/usage_evidence
 import events/bus
 import gleam/bit_array
 import gleam/bool
@@ -3222,11 +3224,16 @@ fn pull_and_broadcast(state: State) -> State {
               observation_strand: None,
             )
           case emit.event, emit.observation_strand {
-            protocol.UsageEvent(op:, usage:, ..), Some(strand) -> {
+            protocol.UsageEvent(op:, usage:, last_usage:, ..), Some(strand) -> {
               let observed =
                 Emit(
                   seq: emit.seq,
-                  event: protocol.UsageObservationEvent(strand:, op:, usage:),
+                  event: protocol.UsageObservationEvent(
+                    strand:,
+                    op:,
+                    usage:,
+                    last_usage:,
+                  ),
                   observation_strand: None,
                 )
               case bounded_usage_observation(observed) {
@@ -3721,7 +3728,12 @@ fn new_usage(
         }
         Emit(
           seq: row.seq,
-          event: protocol.UsageEvent(strand:, op:, usage: row.usage),
+          event: protocol.UsageEvent(
+            strand:,
+            op:,
+            usage: row.usage,
+            last_usage: last_row_usage(row),
+          ),
           observation_strand:,
         )
       })
@@ -5241,7 +5253,12 @@ fn replay_usage_row(
   }
   Emit(
     seq: row.seq,
-    event: protocol.UsageEvent(strand:, op: None, usage: row.usage),
+    event: protocol.UsageEvent(
+      strand:,
+      op: None,
+      usage: row.usage,
+      last_usage: last_row_usage(row),
+    ),
     observation_strand: None,
   )
 }
@@ -5407,7 +5424,7 @@ fn full_snapshot(state: State) -> WireEvent {
   let escalations = pending_escalations(state)
   let usage = case storage.stats(store.store) {
     Ok(storage.SessionStats(usage:, ..)) -> usage
-    Error(_) -> effects.zero_usage()
+    Error(_) -> accounting.unknown_usage(usage_evidence.Other)
   }
   protocol.SnapshotEvent(protocol.FullSnapshot(
     session: state.session_id,
@@ -8087,4 +8104,31 @@ pub fn is_alive(gateway: Gateway) -> Bool {
 /// ```
 pub fn with_skills(options: Options, catalogue: skill.Catalogue) -> Options {
   Options(..options, skills: catalogue)
+}
+
+// The aggregate bills the request; the final attempt measures its context.
+// Malformed present details cannot silently turn a fallback total into context.
+//
+// An adjustment is not a request, and an auxiliary request (a glance or a
+// block summary) runs on its own model with its own small prompt. Both still
+// reach the cost total through `usage`, but neither may supply a context,
+// output-rate or cache reading for the live strand they were attributed to.
+fn last_row_usage(row: UsageRow) -> Option(message.Usage) {
+  use <- bool.guard(when: row.adjustment || is_auxiliary_row(row), return: None)
+  accounting.decode_row(row)
+  |> result.map(accounting.last)
+  |> result.unwrap(None)
+  |> option.then(accounting.observed_usage)
+}
+
+// The auxiliary writers in `client/distill` commit a row with no entry and
+// name the work in a top-level `phase` detail. The planner's own
+// summary-request rows also carry no entry, but they are the strand's
+// requests and name no phase, so they keep their observation.
+fn is_auxiliary_row(row: UsageRow) -> Bool {
+  case row.entry_id, row.details {
+    None, Some(json.Object(fields)) ->
+      list.any(fields, fn(field) { field.0 == "phase" })
+    None, Some(_) | None, None | Some(_), _ -> False
+  }
 }

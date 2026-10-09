@@ -701,6 +701,7 @@ fn entry(
     thinking: model.ThinkingOff,
     vision: catalog.TextOnly,
     max_images: 8,
+    cyber_access: None,
     pricing: None,
   )
 }

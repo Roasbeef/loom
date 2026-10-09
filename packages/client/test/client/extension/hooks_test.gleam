@@ -15,6 +15,7 @@ import core/ids
 import core/json
 import core/message
 import core/msgpack
+import core/usage_evidence
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{None, Some}
@@ -750,6 +751,7 @@ fn usage_row() -> entry.UsageRow {
         cache_write: 0.0,
         total: 0.3,
       ),
+      evidence: usage_evidence.priced_api(),
     ),
     details: None,
   )
@@ -836,6 +838,7 @@ fn core_usage() -> message.Usage {
       cache_write: 0.0,
       total: 0.0,
     ),
+    evidence: usage_evidence.priced_api(),
   )
 }
 

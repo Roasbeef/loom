@@ -135,7 +135,10 @@
 //// when it does not. The summary path's exact arrangement
 //// (`client/wiring`'s `summary_target`), no new role and no protocol
 //// change. Both calls' usage rows land in the memory session's own
-//// ledger, so memory's cost is visible where memory lives.
+//// ledger, so memory's cost is visible where memory lives. Both success and
+//// failure reports preserve all fallback attempts; final response usage stays
+//// independent. Local refusal before dispatch creates no usage row. Phase and
+//// bounded accounting metadata commit together with each aggregate row.
 ////
 //// The provider is reached through the `Distiller` seam below rather
 //// than directly, which is what lets a test script both turns and drive
@@ -149,12 +152,14 @@ import client/internal/ffi_os
 import client/memory.{type Cursor, type Opened, type Provenance}
 import client/notes
 import client/rules
+import core/accounting
 import core/clock.{type Clock}
 import core/entry.{type Entry}
 import core/ids.{type Generator, type Seq, type SessionId}
 import core/json
 import core/message.{type AgentMessage, type Usage}
 import core/tx.{InsertUsage, Tx}
+import core/usage_evidence
 import gleam/bool
 import gleam/erlang/process
 import gleam/int
@@ -179,21 +184,44 @@ import weft
 
 // --- the seams -------------------------------------------------------------
 
-/// What one model turn answered: its text, and what it cost.
+/// The final model response and the accounting of its complete request.
 pub type Answer {
-  Answer(text: String, usage: Usage)
+  /// A successful answer whose context usage remains the final attempt.
+  Answer(
+    /// The final response's text.
+    text: String,
+    /// The final attempt's usage, suitable for context estimation.
+    usage: Usage,
+    /// All attempts consumed by the logical request.
+    accounting: accounting.RequestAccounting,
+  )
+}
+
+/// A failed request's diagnostic and consumption, retained independently.
+pub type Failure {
+  /// The diagnostic may be displayed; accounting remains a typed ledger input.
+  Failure(
+    /// A redacted explanation of why no answer was produced.
+    reason: String,
+    /// All observations retained before the request failed.
+    accounting: accounting.RequestAccounting,
+  )
 }
 
 /// The pipeline's whole provider surface: one prompt in, one settled
 /// answer out.
 ///
-/// Constructor invariants: `ask` is total — it returns a worded `Error`,
+/// Constructor invariants: `ask` is total — it returns a typed `Failure`,
 /// it does not crash — and it has already decided which identity the
 /// turn dispatches to (`target`). Production fills it with
 /// `gateway_distiller`; a test fills it with a script and the pipeline
 /// cannot tell the difference.
 pub type Distiller {
-  Distiller(ask: fn(String) -> Result(Answer, String))
+  /// The request retains accounting on either result branch.
+  Distiller(
+    /// Dispatches one prompt and returns its final answer or failure report.
+    ask: fn(String) -> Result(Answer, Failure),
+  )
 }
 
 /// One candidate distillate: a pipeline entry type and its text.
@@ -972,7 +1000,9 @@ pub type CascadeMode {
 /// ```
 ///
 pub fn no_distiller() -> Distiller {
-  Distiller(ask: fn(_prompt) { Error("a cascade dispatches no model turn") })
+  Distiller(ask: fn(_prompt) {
+    Error(Failure("a cascade dispatches no model turn", accounting.empty()))
+  })
 }
 
 /// **The first-order erasure cascade** (issue #115): drops from the head
@@ -1464,12 +1494,21 @@ fn extract_all(
       Extracted(candidates: [], read: [], generator: opened.generator),
       fn(carried, harvest) {
         case config.distiller.ask(extraction_prompt(harvest)) {
-          Error(reason) -> {
+          Error(failure) -> {
             log.warn(config.logger, "distill.extraction_failed", [
               field.text(key: "session", value: harvest.session),
-              field.text(key: "reason", value: reason),
+              field.text(key: "reason", value: failure.reason),
             ])
-            carried
+            Extracted(
+              ..carried,
+              generator: record_usage(
+                opened,
+                carried.generator,
+                failure.accounting,
+                "extract",
+                config,
+              ),
+            )
           }
           Ok(answer) -> {
             log.debug(config.logger, "distill.source_read", [
@@ -1488,7 +1527,7 @@ fn extract_all(
               generator: record_usage(
                 opened,
                 carried.generator,
-                answer.usage,
+                answer.accounting,
                 "extract",
                 config,
               ),
@@ -1509,10 +1548,21 @@ fn consolidate(
   generator: Generator,
 ) -> Result(#(List(Candidate), Generator), String) {
   use answer <- result.try(
-    config.distiller.ask(consolidation_prompt(current, candidates, notes)),
+    config.distiller.ask(consolidation_prompt(current, candidates, notes))
+    |> result.map_error(fn(failure) {
+      let _next =
+        record_usage(
+          opened,
+          generator,
+          failure.accounting,
+          "consolidate",
+          config,
+        )
+      failure.reason
+    }),
   )
   let generator =
-    record_usage(opened, generator, answer.usage, "consolidate", config)
+    record_usage(opened, generator, answer.accounting, "consolidate", config)
   case parse_candidates(answer.text) {
     // A consolidation that produced nothing usable must not replace the
     // head with an empty one: memory would be erased by one malformed
@@ -1528,10 +1578,11 @@ fn consolidate(
 fn record_usage(
   opened: Opened,
   generator: Generator,
-  usage: Usage,
+  report: accounting.RequestAccounting,
   phase: String,
   config: Config,
 ) -> Generator {
+  use <- bool.guard(when: accounting.attempts(report) == 0, return: generator)
   let #(id, generator) = ids.mint_usage(generator)
   let row =
     entry.UsageRow(
@@ -1539,8 +1590,10 @@ fn record_usage(
       seq: 0,
       entry_id: None,
       adjustment: False,
-      usage:,
-      details: Some(json.Object([#("phase", json.String(phase))])),
+      usage: accounting.total(report),
+      details: Some(
+        accounting.details(report, [#("phase", json.String(phase))]),
+      ),
     )
   case
     storage.commit(
@@ -1558,6 +1611,46 @@ fn record_usage(
       ])
   }
   generator
+}
+
+/// Commits one auxiliary provider request's aggregate and bounded metadata.
+/// Local refusals with no remote attempts write no ledger row. A commit
+/// failure returns before callers may publish the summary derived from it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert distill.record_request(session, accounting.empty(), "glance") == Ok(Nil)
+/// ```
+@internal
+pub fn record_request(
+  owner: session.Session,
+  report: accounting.RequestAccounting,
+  phase: String,
+) -> Result(Nil, String) {
+  use <- bool.guard(when: accounting.attempts(report) == 0, return: Ok(Nil))
+  let generator =
+    ids.generator(
+      clock.from_function(ffi_os.system_time_ms),
+      seed: ffi_os.unique_positive_integer(),
+    )
+  let #(id, _generator) = ids.mint_usage(generator)
+  let row =
+    entry.UsageRow(
+      id:,
+      seq: 0,
+      entry_id: None,
+      adjustment: False,
+      usage: accounting.total(report),
+      details: Some(
+        accounting.details(report, [#("phase", json.String(phase))]),
+      ),
+    )
+  storage.commit(owner.store, Tx(writes: [InsertUsage(row)], expected: []))
+  |> result.map(fn(_committed) { Nil })
+  |> result.map_error(fn(error) {
+    "the request usage row did not commit: " <> string.inspect(error)
+  })
 }
 
 fn describe_fault(fault: memory.MemoryFault) -> String {
@@ -1700,7 +1793,10 @@ fn bound_gateway_distiller(
     // has gone. Retaining the monitor before begin makes the later drain wait
     // an observation of the real exit rather than a `noproc` guess.
     let drain_witness = stream.watch_drain(handle)
-    use Nil <- result.try(publish(handle))
+    use Nil <- result.try(
+      publish(handle)
+      |> result.map_error(fn(reason) { Failure(reason, accounting.empty()) }),
+    )
     begin()
     case stream.await_terminal(handle, within: timeout_ms) {
       Error(Nil) -> {
@@ -1710,27 +1806,69 @@ fn bound_gateway_distiller(
         // soon as this call returns. A timeout ends the receive, not the work;
         // keep this fold step private until the old provider subtree is gone.
         case stream.await_drain_forever(drain_witness) {
-          stream.Drained -> Error("the model did not answer inside the timeout")
+          stream.Drained ->
+            Error(Failure(
+              "the model did not answer inside the timeout",
+              timeout_accounting(handle),
+            ))
           stream.TimedOut | stream.ProofLost -> {
             process.kill(process.self())
-            Error("the provider owner exited without proving drain")
+            Error(Failure(
+              "the provider owner exited without proving drain",
+              unknown_accounting(),
+            ))
           }
         }
       }
-      Ok(#(_deltas, stream.Failed(error:))) -> {
+      Ok(#(_deltas, stream.Failed(error:, accounting: report))) -> {
         stream.release_drain(drain_witness)
-        Error(string.inspect(error))
+        Error(Failure(stream.describe_error(error), report))
       }
       Ok(#(_deltas, stream.Delta(..))) -> {
         stream.release_drain(drain_witness)
-        Error("the stream ended on a delta, which cannot happen")
+        Error(Failure(
+          "the stream ended on a delta, which cannot happen",
+          unknown_accounting(),
+        ))
       }
-      Ok(#(_deltas, stream.Settled(message:, usage:))) -> {
+      Ok(#(_deltas, stream.Settled(message:, accounting: report))) -> {
         stream.release_drain(drain_witness)
-        Ok(Answer(text: settled_text(stream.message(message)), usage:))
+        let settled = stream.message(message)
+        Ok(Answer(
+          text: settled_text(settled),
+          usage: final_usage(settled),
+          accounting: report,
+        ))
       }
     }
   })
+}
+
+// Drain orders the terminal publication before owner exit. A local timeout
+// may therefore retain the gateway's report even though it refuses the answer.
+fn timeout_accounting(
+  handle: stream.StreamHandle,
+) -> accounting.RequestAccounting {
+  case stream.await_terminal(handle, within: 0) {
+    Ok(#(_, stream.Settled(accounting: report, ..)))
+    | Ok(#(_, stream.Failed(accounting: report, ..))) -> report
+    Ok(#(_, stream.Delta(..))) | Error(Nil) -> unknown_accounting()
+  }
+}
+
+// A lost remote terminal cannot establish zero consumption.
+fn unknown_accounting() -> accounting.RequestAccounting {
+  accounting.from_usage(accounting.unknown_usage(usage_evidence.Other))
+}
+
+// The settled response owns context usage, independently of fallback totals.
+fn final_usage(settled: AgentMessage) -> Usage {
+  case settled {
+    message.AssistantMessage(usage:, ..) -> usage
+    message.UserMessage(..)
+    | message.ToolResultMessage(..)
+    | message.CustomMessage(..) -> accounting.total(unknown_accounting())
+  }
 }
 
 fn user(text: String) -> AgentMessage {

@@ -13,6 +13,7 @@ import core/entry
 import core/ids
 import core/json
 import core/message
+import core/usage_evidence
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
@@ -335,6 +336,7 @@ fn no_usage() -> message.Usage {
       cache_write: 0.0,
       total: 0.0,
     ),
+    evidence: usage_evidence.priced_api(),
   )
 }
 

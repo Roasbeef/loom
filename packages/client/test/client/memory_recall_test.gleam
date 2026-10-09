@@ -25,11 +25,13 @@ import client/escalate
 import client/history
 import client/serve
 import client/wiring
+import core/accounting
 import core/clock
 import core/entry
 import core/ids
 import core/json
 import core/message.{type AgentMessage}
+import core/usage_evidence
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -482,14 +484,20 @@ fn settle(events: Subject(stream.StreamEvent), reply: AgentMessage) -> Nil {
     Ok(settled) ->
       process.send(
         events,
-        stream.Settled(message: settled, usage: usage_of(reply)),
+        stream.Settled(
+          message: settled,
+          accounting: accounting.from_usage(usage_of(reply)),
+        ),
       )
     Error(Nil) ->
       process.send(
         events,
-        stream.Failed(error: stream.TransportFailed(
-          reason: "the scripted settlement was not settleable",
-        )),
+        stream.Failed(
+          error: stream.TransportFailed(
+            reason: "the scripted settlement was not settleable",
+          ),
+          accounting: accounting.empty(),
+        ),
       )
   }
 }
@@ -497,7 +505,7 @@ fn settle(events: Subject(stream.StreamEvent), reply: AgentMessage) -> Nil {
 fn usage_of(reply: AgentMessage) -> message.Usage {
   case reply {
     message.AssistantMessage(usage:, ..) -> usage
-    _other -> effects.zero_usage()
+    _other -> accounting.unknown_usage(usage_evidence.Other)
   }
 }
 
@@ -536,6 +544,7 @@ fn usage(tokens: Int) -> message.Usage {
       cache_write: 0.0,
       total: 0.0,
     ),
+    evidence: usage_evidence.priced_api(),
   )
 }
 

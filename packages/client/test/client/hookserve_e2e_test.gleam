@@ -629,6 +629,7 @@ fn scripted_catalog() -> catalog.Catalog {
         pricing: None,
         vision: catalog.TextOnly,
         max_images: 8,
+        cyber_access: None,
       ),
     ],
     roles: [#(model.Main, ["acme"])],

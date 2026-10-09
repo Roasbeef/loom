@@ -10,15 +10,16 @@
 import client/advisorslice
 import client/goalstate
 import client/notes
+import core/accounting
 import core/clock
 import core/entry
 import core/ids.{type EntryId}
 import core/json
 import core/message
+import core/usage_evidence
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
-import runtime/effects
 
 // --- nothing to review -----------------------------------------------------
 
@@ -969,7 +970,7 @@ fn assistant(
     response_model: None,
     response_id: None,
     diagnostics: None,
-    usage: effects.zero_usage(),
+    usage: accounting.unknown_usage(usage_evidence.Other),
     stop_reason:,
     deferred: None,
     error_message:,

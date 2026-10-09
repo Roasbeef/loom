@@ -72,6 +72,7 @@
 
 import core/ids.{type OpId}
 import core/json.{type JsonValue}
+import core/usage_evidence
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -270,6 +271,8 @@ pub type Goal {
     /// The summed dollar cost of accounted rows, recorded for display
     /// and never for gating.
     cost_used: Float,
+    /// Coverage and rate basis of the displayed estimate under protocol 081.
+    cost_evidence: usage_evidence.Evidence,
     /// Goal continuations since the last run start on the primary the
     /// loop did not open. Reset there, so the cap bounds one autonomous
     /// stretch rather than the goal's whole life.
@@ -354,6 +357,7 @@ pub fn new(
     tokens_used: 0,
     accounted_through_seq: accounted_from,
     cost_used: 0.0,
+    cost_evidence: usage_evidence.none(),
     continuations: 0,
     zero_progress: 0,
     unanswered_feeds: 0,
@@ -578,6 +582,7 @@ pub fn encode(goal: Goal) -> JsonValue {
     #("tokens_used", json.Int(goal.tokens_used)),
     #("accounted_through_seq", json.Int(goal.accounted_through_seq)),
     #("cost_used", json.Float(goal.cost_used)),
+    #("cost_evidence", usage_evidence.encode(goal.cost_evidence)),
     #("continuations", json.Int(goal.continuations)),
     #("zero_progress", json.Int(goal.zero_progress)),
     #("unanswered_feeds", json.Int(goal.unanswered_feeds)),
@@ -914,6 +919,7 @@ pub fn decode(payload: JsonValue) -> Result(Goal, String) {
   use updated <- result.try(required_ms(fields, "updated_ms"))
   use counts <- result.try(decode_counters(fields))
   use cost_used <- result.try(optional_cost(fields))
+  use cost_evidence <- result.try(optional_cost_evidence(fields))
   use reviewer_note <- result.try(optional_text(fields, "reviewer_note"))
   use check <- result.try(optional_text(fields, "check"))
   use last_check <- result.try(optional_last_check(fields))
@@ -930,6 +936,7 @@ pub fn decode(payload: JsonValue) -> Result(Goal, String) {
     tokens_used: counts.tokens_used,
     accounted_through_seq: counts.accounted_through_seq,
     cost_used:,
+    cost_evidence:,
     continuations: counts.continuations,
     zero_progress: counts.zero_progress,
     unanswered_feeds: counts.unanswered_feeds,
@@ -1161,4 +1168,17 @@ fn field_error(key: String, expected: String, got: JsonValue) -> String {
   <> expected
   <> ", got "
   <> json.to_string(got)
+}
+
+// Historical goal cells carry a number without its measurement coverage.
+// A present malformed witness is refused rather than read as historical.
+fn optional_cost_evidence(
+  fields: List(#(String, JsonValue)),
+) -> Result(usage_evidence.Evidence, String) {
+  case list.key_find(fields, "cost_evidence") {
+    Error(Nil) -> Ok(usage_evidence.unknown(usage_evidence.Other))
+    Ok(value) ->
+      usage_evidence.decode(value)
+      |> result.map_error(fn(_) { "invalid goal cost evidence" })
+  }
 }

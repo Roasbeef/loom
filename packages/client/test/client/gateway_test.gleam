@@ -20,6 +20,7 @@ import client/protocol
 import client/provider_relay
 import client/schedule
 import client/scheduleadmin
+import core/accounting
 import core/clock
 import core/entry as core_entry
 import core/ids
@@ -27,6 +28,7 @@ import core/json
 import core/message
 import core/register
 import core/tx
+import core/usage_evidence
 import events/bus
 import gleam/bit_array
 import gleam/dynamic.{type Dynamic}
@@ -129,6 +131,7 @@ fn test_catalog() -> catalog.Catalog {
         pricing: None,
         vision: catalog.TextOnly,
         max_images: 8,
+        cyber_access: None,
       ),
       catalog.CatalogModel(
         name: "fallback",
@@ -142,6 +145,7 @@ fn test_catalog() -> catalog.Catalog {
         pricing: None,
         vision: catalog.TextOnly,
         max_images: 8,
+        cyber_access: None,
       ),
     ],
     roles: [#(model.Main, ["acme", "fallback"])],
@@ -163,7 +167,7 @@ fn scripted_answer() -> message.AgentMessage {
     response_model: None,
     response_id: None,
     diagnostics: None,
-    usage: effects.zero_usage(),
+    usage: accounting.unknown_usage(usage_evidence.Other),
     stop_reason: message.Stop,
     deferred: None,
     error_message: None,
@@ -335,7 +339,12 @@ fn start_harness_adjusted(
             let assert Ok(settled) = stream.settle(scripted_answer())
             process.send(
               events,
-              stream.Settled(message: settled, usage: effects.zero_usage()),
+              stream.Settled(
+                message: settled,
+                accounting: accounting.from_usage(accounting.unknown_usage(
+                  usage_evidence.Other,
+                )),
+              ),
             )
             stream.immediate(events:, cancel: fn() { Nil })
           })
@@ -2124,7 +2133,15 @@ fn registry_view_compaction_tail(
       let events = process.new_subject()
       let assert Ok(answer) = stream.settle(scripted_answer())
         as "the fixture returns a valid settled summary"
-      process.send(events, stream.Settled(answer, effects.zero_usage()))
+      process.send(
+        events,
+        stream.Settled(
+          answer,
+          accounting: accounting.from_usage(accounting.unknown_usage(
+            usage_evidence.Other,
+          )),
+        ),
+      )
       stream.immediate(events, fn() { Nil })
     })
 
@@ -2792,7 +2809,13 @@ fn cancellable_provider(cancelled: Subject(Nil)) -> effects.ProviderSurface {
     let events = process.new_subject()
     stream.immediate(events:, cancel: fn() {
       process.send(cancelled, Nil)
-      process.send(events, stream.Failed(error: stream.ProviderCancelled))
+      process.send(
+        events,
+        stream.Failed(
+          error: stream.ProviderCancelled,
+          accounting: accounting.empty(),
+        ),
+      )
     })
   })
 }
@@ -2824,7 +2847,13 @@ pub fn preview_observation_drops_backlog_but_preserves_consumer_and_cancel_test(
       process.send(supplied, events)
       stream.immediate(events:, cancel: fn() {
         process.send(cancelled, Nil)
-        process.send(events, stream.Failed(stream.ProviderCancelled))
+        process.send(
+          events,
+          stream.Failed(
+            stream.ProviderCancelled,
+            accounting: accounting.empty(),
+          ),
+        )
       })
     })
   let handle =
@@ -2861,8 +2890,11 @@ pub fn preview_observation_drops_backlog_but_preserves_consumer_and_cancel_test(
   // One release exposes the terminal immediately, not fifty queued callbacks.
   process.send(release, Nil)
   assert process.receive(seen, within: 1000)
-    == Ok(stream.Failed(stream.ProviderCancelled))
-  let assert Ok(stream.Failed(error)) = stream.next(handle, within: 1000)
+    == Ok(stream.Failed(
+      stream.ProviderCancelled,
+      accounting: accounting.empty(),
+    ))
+  let assert Ok(stream.Failed(error, _)) = stream.next(handle, within: 1000)
     as "the consumer receives one cancellation terminal"
   assert stream.underlying_error(error) == stream.ProviderCancelled
   assert stream.await_drain_forever(witness) == stream.Drained
@@ -2893,7 +2925,13 @@ pub fn preview_sources_bound_blocked_gateway_and_disable_after_timeout_test() {
       let events = process.new_subject()
       process.send(supplied, events)
       stream.immediate(events:, cancel: fn() {
-        process.send(events, stream.Failed(stream.ProviderCancelled))
+        process.send(
+          events,
+          stream.Failed(
+            stream.ProviderCancelled,
+            accounting: accounting.empty(),
+          ),
+        )
       })
     })
   let tapped = gateway.tap_preview_provider(surface, to: harness.hub.name)
@@ -2978,7 +3016,13 @@ pub fn expired_preview_admission_cannot_allocate_after_caller_timeout_test() {
       let events = process.new_subject()
       process.send(supplied, events)
       stream.immediate(events:, cancel: fn() {
-        process.send(events, stream.Failed(stream.ProviderCancelled))
+        process.send(
+          events,
+          stream.Failed(
+            stream.ProviderCancelled,
+            accounting: accounting.empty(),
+          ),
+        )
       })
     })
   let tapped = gateway.tap_preview_provider(surface, to: harness.hub.name)
@@ -3002,7 +3046,7 @@ pub fn expired_preview_admission_cannot_allocate_after_caller_timeout_test() {
     == Ok(stream.Delta(stream.TextDelta(0, "still authoritative")))
   assert process_monitor_count(pid) == baseline
   stream.cancel(handle)
-  let assert Ok(stream.Failed(error)) = stream.next(handle, within: 1000)
+  let assert Ok(stream.Failed(error, _)) = stream.next(handle, within: 1000)
     as "the consumer receives one cancellation terminal"
   assert stream.underlying_error(error) == stream.ProviderCancelled
   assert stream.await_drain_forever(witness) == stream.Drained
@@ -3073,7 +3117,7 @@ pub fn provider_tap_forwards_explicit_cancellation_once_test() {
   stream.cancel(handle)
 
   let assert Ok(Nil) = process.receive(cancelled, within: 1000)
-  let assert Ok(stream.Failed(error)) = stream.next(handle, within: 1000)
+  let assert Ok(stream.Failed(error, _)) = stream.next(handle, within: 1000)
   let assert stream.ProviderCancelled = stream.underlying_error(error)
     as "the relay preserves the underlying terminal error"
   assert list.any(stream.failure_context(error), fn(context) {
@@ -3134,7 +3178,7 @@ pub fn provider_relay_bounds_unacknowledged_cancellation_test() {
 
   stream.cancel(handle)
 
-  let assert Ok(stream.Failed(error)) = stream.next(handle, within: 2500)
+  let assert Ok(stream.Failed(error, _)) = stream.next(handle, within: 2500)
   let assert stream.CancellationUnconfirmed = stream.underlying_error(error)
     as "the relay preserves the underlying terminal error"
   let assert Ok(Nil) = process.receive(cancelled, within: 1000)
@@ -3151,7 +3195,13 @@ pub fn provider_relay_custodian_is_distinct_from_inner_consumer_test() {
     effects.ProviderSurface(timeout_ms: 10_000, request: fn(_spec) {
       process.send(callers, process.self())
       let events = process.new_subject()
-      process.send(events, stream.Failed(error: stream.ProviderCancelled))
+      process.send(
+        events,
+        stream.Failed(
+          error: stream.ProviderCancelled,
+          accounting: accounting.empty(),
+        ),
+      )
       stream.immediate(events:, cancel: fn() { Nil })
     })
   let prepared =
@@ -3171,7 +3221,7 @@ pub fn provider_relay_custodian_is_distinct_from_inner_consumer_test() {
 
   assert inner_consumer != owner
     as "fallible stream consumption must not be the public drain witness"
-  let assert Ok(stream.Failed(error)) = stream.next(handle, within: 1000)
+  let assert Ok(stream.Failed(error, _)) = stream.next(handle, within: 1000)
   let assert stream.ProviderCancelled = stream.underlying_error(error)
     as "the relay preserves the underlying terminal error"
 
@@ -3196,7 +3246,13 @@ pub fn provider_relay_cancel_during_inner_start_keeps_guard_test() {
       let events = process.new_subject()
       stream.immediate(events:, cancel: fn() {
         process.send(cancelled, Nil)
-        process.send(events, stream.Failed(error: stream.ProviderCancelled))
+        process.send(
+          events,
+          stream.Failed(
+            error: stream.ProviderCancelled,
+            accounting: accounting.empty(),
+          ),
+        )
       })
     })
   let handle =
@@ -3212,7 +3268,7 @@ pub fn provider_relay_cancel_during_inner_start_keeps_guard_test() {
   assert process.receive(cancelled, within: 20) == Error(Nil)
   process.send(start_gate, Nil)
   assert process.receive(cancelled, within: 1000) == Ok(Nil)
-  let assert Ok(stream.Failed(error)) = stream.next(handle, within: 1000)
+  let assert Ok(stream.Failed(error, _)) = stream.next(handle, within: 1000)
     as "the cancelled startup produces one terminal"
   assert stream.underlying_error(error) == stream.ProviderCancelled
   assert list.any(stream.failure_context(error), fn(context) {
@@ -3245,7 +3301,7 @@ pub fn provider_relay_startup_cancel_has_one_delta_proof_deadline_test() {
 
   // The flood runs longer than the 1.5-second cancellation grace. The relay
   // must discard each delta without treating activity as renewed proof time.
-  let assert Ok(stream.Failed(error)) = stream.next(handle, within: 2500)
+  let assert Ok(stream.Failed(error, _)) = stream.next(handle, within: 2500)
     as "startup cancellation must keep one fixed proof deadline"
   let assert stream.CancellationUnconfirmed = stream.underlying_error(error)
     as "the relay preserves the underlying terminal error"
@@ -3283,7 +3339,13 @@ pub fn provider_relay_observes_a_burst_in_order_test() {
       list.each([1, 2, 3, 4, 5], fn(index) {
         process.send(events, stream.Delta(stream.TextDelta(index:, text: "d")))
       })
-      process.send(events, stream.Failed(error: stream.ProviderCancelled))
+      process.send(
+        events,
+        stream.Failed(
+          error: stream.ProviderCancelled,
+          accounting: accounting.empty(),
+        ),
+      )
       stream.immediate(events:, cancel: fn() { Nil })
     })
   let handle =
@@ -3295,14 +3357,14 @@ pub fn provider_relay_observes_a_burst_in_order_test() {
   assert burst_indices(fn() { process.receive(seen, within: 1000) }, 5)
     == [1, 2, 3, 4, 5]
     as "the observer must see every delta of the burst, in arrival order"
-  let assert Ok(stream.Failed(error: stream.ProviderCancelled)) =
+  let assert Ok(stream.Failed(error: stream.ProviderCancelled, accounting: _)) =
     process.receive(seen, within: 1000)
     as "the terminal must reach the observer behind the deltas it followed"
 
   assert burst_indices(fn() { stream.next(handle, within: 1000) }, 5)
     == [1, 2, 3, 4, 5]
     as "the consumer must be forwarded the same deltas, in the same order"
-  let assert Ok(stream.Failed(error)) = stream.next(handle, within: 1000)
+  let assert Ok(stream.Failed(error, _)) = stream.next(handle, within: 1000)
     as "the terminal is forwarded once the observer has seen it"
   let assert stream.ProviderCancelled = stream.underlying_error(error)
     as "the relay preserves the underlying terminal error"
@@ -3336,7 +3398,13 @@ pub fn provider_relay_consumer_death_observes_nothing_test() {
       let events = process.new_subject()
       stream.immediate(events:, cancel: fn() {
         process.send(cancelled, Nil)
-        process.send(events, stream.Failed(error: stream.ProviderCancelled))
+        process.send(
+          events,
+          stream.Failed(
+            error: stream.ProviderCancelled,
+            accounting: accounting.empty(),
+          ),
+        )
       })
     })
   let consumer =
@@ -3417,7 +3485,7 @@ pub fn provider_relay_worker_crash_fails_promptly_and_cancels_test() {
     stream.Delta(stream.TextDelta(index: 0, text: "before crash")),
   )
 
-  let assert Ok(stream.Failed(error)) = stream.next(handle, within: 1000)
+  let assert Ok(stream.Failed(error, _)) = stream.next(handle, within: 1000)
   let assert stream.TransportFailed(reason:) = stream.underlying_error(error)
     as "the relay preserves the underlying terminal error"
   assert reason == "provider relay worker stopped before a terminal response"
@@ -3457,7 +3525,7 @@ pub fn provider_relay_worker_crash_waits_for_stubborn_owner_test() {
   let drain_witness = stream.watch_drain(handle)
   let assert Ok(#(owner, release)) = process.receive(owners, within: 1000)
 
-  let assert Ok(stream.Failed(error)) = stream.next(handle, within: 2500)
+  let assert Ok(stream.Failed(error, _)) = stream.next(handle, within: 2500)
   let assert stream.CancellationUnconfirmed = stream.underlying_error(error)
     as "the relay preserves the underlying terminal error"
   let assert Ok(Nil) = process.receive(cancelled, within: 1000)
@@ -3779,6 +3847,16 @@ fn commit_usage_row(
   entry_id: Option(ids.EntryId),
   usage: message.Usage,
 ) -> Int {
+  commit_usage_row_with_details(harness, seed, entry_id, usage, None)
+}
+
+fn commit_usage_row_with_details(
+  harness: Harness,
+  seed: Int,
+  entry_id: Option(ids.EntryId),
+  usage: message.Usage,
+  details: Option(json.JsonValue),
+) -> Int {
   let #(id, _) =
     ids.mint_usage(ids.generator(clock.fixed(1_700_000_000_002), seed))
   let row =
@@ -3788,7 +3866,7 @@ fn commit_usage_row(
       entry_id:,
       adjustment: False,
       usage:,
-      details: None,
+      details:,
     )
   let assert Ok(commit) =
     writer.commit(harness.runtime.tree.writer, tx.Tx([tx.InsertUsage(row)], []))
@@ -3849,6 +3927,7 @@ pub fn a_network_usage_commit_pushes_its_row_and_notice_test() {
       reasoning: None,
       total_tokens: 250_412,
       cost: message.UsageCost(0.0, 0.004, 0.25, 0.0, 0.254),
+      evidence: usage_evidence.priced_api(),
     )
   let #(entry_id, _entry_seq) = commit_user_entry_with_id(harness, 74, "prompt")
   let _entry_notice = next_on(inbox)
@@ -3863,7 +3942,12 @@ pub fn a_network_usage_commit_pushes_its_row_and_notice_test() {
   assert observed.reply_to == None
   assert observed.seq == Some(seq)
   assert observed.event
-    == protocol.UsageObservationEvent(strand: "main", op: None, usage:)
+    == protocol.UsageObservationEvent(
+      strand: "main",
+      op: None,
+      usage:,
+      last_usage: Some(usage),
+    )
   assert process.receive(inbox, within: 100) == Error(Nil)
     as "one durable usage row has one observation, not a repeated stream"
 }
@@ -3892,6 +3976,7 @@ pub fn a_network_unattributed_usage_commit_has_no_observation_test() {
       reasoning: None,
       total_tokens: 250_412,
       cost: message.UsageCost(0.0, 0.004, 0.25, 0.0, 0.254),
+      evidence: usage_evidence.priced_api(),
     )
   let seq = commit_usage_row(harness, 75, None, usage)
 
@@ -3900,6 +3985,68 @@ pub fn a_network_unattributed_usage_commit_has_no_observation_test() {
   assert notice.event == protocol.CommittedEvent(strand: "main")
   assert process.receive(inbox, within: 100) == Error(Nil)
     as "a row with no entry cannot update an invented strand cache"
+}
+
+// A reported request whose counters would, if read as the live strand's
+// own, skew its context, output rate and cache readings.
+fn auxiliary_usage() -> message.Usage {
+  message.Usage(
+    input: 40,
+    output: 9,
+    cache_read: 0,
+    cache_write: 0,
+    cache_write_1h: None,
+    reasoning: None,
+    total_tokens: 49,
+    cost: message.UsageCost(0.0001, 0.0002, 0.0, 0.0, 0.0003),
+    evidence: usage_evidence.priced_api(),
+  )
+}
+
+fn next_usage_event(harness: Harness, remaining: Int) -> protocol.Event {
+  let envelope = next(harness)
+  case envelope.event, remaining > 0 {
+    protocol.UsageEvent(..), _ -> envelope.event
+    _, True -> next_usage_event(harness, remaining - 1)
+    _, False -> panic as "a usage frame must arrive"
+  }
+}
+
+/// A glance or block summary commits a ledger row with no entry and a `phase`
+/// detail, so the host attributes it to the live strand. The row must still
+/// reach the cost total, but it carries no final-attempt observation: the
+/// summarizer's small uncached request on another model would otherwise
+/// replace the strand's output rate and feed its cache watch.
+pub fn an_auxiliary_usage_row_adds_cost_but_no_observation_test() {
+  let harness = start_harness()
+  subscribe(harness)
+  let usage = auxiliary_usage()
+  let _seq =
+    commit_usage_row_with_details(
+      harness,
+      78,
+      None,
+      usage,
+      Some(json.Object([#("phase", json.String("glance"))])),
+    )
+
+  let assert protocol.UsageEvent(usage: got, last_usage:, ..) =
+    next_usage_event(harness, 8)
+  assert got == usage as "the row still bills the session"
+  assert last_usage == None
+    as "an auxiliary request supplies no reading for the live strand"
+}
+
+/// The planner's own summary request also commits without an entry, but it
+/// is the strand's request, so its final attempt remains an observation.
+pub fn a_strand_summary_usage_row_keeps_its_observation_test() {
+  let harness = start_harness()
+  subscribe(harness)
+  let usage = auxiliary_usage()
+  let _seq = commit_usage_row(harness, 79, None, usage)
+
+  let assert protocol.UsageEvent(last_usage:, ..) = next_usage_event(harness, 8)
+  assert last_usage == Some(usage)
 }
 
 /// An entry found only by the completeness pass has a display strand, but
@@ -3945,6 +4092,7 @@ pub fn a_network_fallback_entry_has_no_usage_observation_test() {
       reasoning: None,
       total_tokens: 250_412,
       cost: message.UsageCost(0.0, 0.004, 0.25, 0.0, 0.254),
+      evidence: usage_evidence.priced_api(),
     )
   let seq = commit_usage_row(harness, 77, Some(entry_id), usage)
 
@@ -3993,7 +4141,12 @@ fn delta_provider(text: String) -> effects.ProviderSurface {
     let assert Ok(settled) = stream.settle(scripted_answer())
     process.send(
       events,
-      stream.Settled(message: settled, usage: effects.zero_usage()),
+      stream.Settled(
+        message: settled,
+        accounting: accounting.from_usage(accounting.unknown_usage(
+          usage_evidence.Other,
+        )),
+      ),
     )
     stream.immediate(events:, cancel: fn() { Nil })
   })
@@ -4396,9 +4549,18 @@ fn prepare_parked(gate: Subject(GateMessage)) -> stream.PreparedStream {
             True -> {
               let assert Ok(settled) = stream.settle(scripted_answer())
                 as "the fixture answer must settle"
-              stream.Settled(message: settled, usage: effects.zero_usage())
+              stream.Settled(
+                message: settled,
+                accounting: accounting.from_usage(accounting.unknown_usage(
+                  usage_evidence.Other,
+                )),
+              )
             }
-            False -> stream.Failed(stream.ProviderCancelled)
+            False ->
+              stream.Failed(
+                stream.ProviderCancelled,
+                accounting: accounting.empty(),
+              )
           }
           process.send(events, terminal)
         }

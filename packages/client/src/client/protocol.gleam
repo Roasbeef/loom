@@ -703,13 +703,31 @@ pub type Event {
   GoalChanged
 
   /// One usage-ledger append.
-  UsageEvent(strand: String, op: Option(String), usage: Usage)
+  UsageEvent(
+    /// The strand whose request produced this row.
+    strand: String,
+    /// The operation owning the request, when present.
+    op: Option(String),
+    /// Request totals across every retained attempt.
+    usage: Usage,
+    /// The final attempt for context projection; None means no observation.
+    last_usage: Option(Usage),
+  )
 
   /// A bounded, unsolicited reading of one usage row.
   ///
   /// Its distinct wire name keeps older terminals from treating a pushed
   /// observation as another cumulative ledger append.
-  UsageObservationEvent(strand: String, op: Option(String), usage: Usage)
+  UsageObservationEvent(
+    /// The strand whose request produced this row.
+    strand: String,
+    /// The operation owning the request, when present.
+    op: Option(String),
+    /// Request totals observed from the durable ledger.
+    usage: Usage,
+    /// The final attempt, separately from cumulative consumption.
+    last_usage: Option(Usage),
+  )
 
   /// An escalation lifecycle change.
   EscalationEvent(record: EscalationRecord)
@@ -1589,13 +1607,13 @@ fn event_body(event: Event) -> #(String, JsonValue) {
         ]),
       ),
     )
-    UsageEvent(strand:, op:, usage:) -> #(
+    UsageEvent(strand:, op:, usage:, last_usage:) -> #(
       "usage",
-      usage_body(strand, op, usage),
+      usage_body(strand, op, usage, last_usage),
     )
-    UsageObservationEvent(strand:, op:, usage:) -> #(
+    UsageObservationEvent(strand:, op:, usage:, last_usage:) -> #(
       "usage_observation",
-      usage_body(strand, op, usage),
+      usage_body(strand, op, usage, last_usage),
     )
     EscalationEvent(record:) -> #("escalation", encode_escalation(record))
     StrandResultEvent(strand:, op:, status:, error:) -> #(
@@ -1629,11 +1647,23 @@ fn event_body(event: Event) -> #(String, JsonValue) {
 
 // The credited ledger row and its unsolicited observation have identical
 // fixed-shape counters. Only their event names and delivery rules differ.
-fn usage_body(strand: String, op: Option(String), usage: Usage) -> JsonValue {
+fn usage_body(
+  strand: String,
+  op: Option(String),
+  usage: Usage,
+  last_usage: Option(Usage),
+) -> JsonValue {
   object_of([
     #("strand", Some(json.String(strand))),
     #("op", option.map(op, json.String)),
     #("usage", Some(codec.encode_usage(usage))),
+    #(
+      "last_usage",
+      Some(case last_usage {
+        None -> json.Null
+        Some(last) -> codec.encode_usage(last)
+      }),
+    ),
   ])
 }
 
@@ -2033,12 +2063,12 @@ fn decode_event_body(name: String, body: JsonValue) -> Result(Event, String) {
       Ok(GoalChanged)
     }
     "usage" -> {
-      use #(strand, op, usage) <- result.try(decode_usage_body(body))
-      Ok(UsageEvent(strand:, op:, usage:))
+      use #(strand, op, usage, last_usage) <- result.try(decode_usage_body(body))
+      Ok(UsageEvent(strand:, op:, usage:, last_usage:))
     }
     "usage_observation" -> {
-      use #(strand, op, usage) <- result.try(decode_usage_body(body))
-      Ok(UsageObservationEvent(strand:, op:, usage:))
+      use #(strand, op, usage, last_usage) <- result.try(decode_usage_body(body))
+      Ok(UsageObservationEvent(strand:, op:, usage:, last_usage:))
     }
     "escalation" -> {
       use record <- result.try(decode_escalation(body))
@@ -2076,7 +2106,7 @@ fn decode_event_body(name: String, body: JsonValue) -> Result(Event, String) {
 
 fn decode_usage_body(
   body: JsonValue,
-) -> Result(#(String, Option(String), Usage), String) {
+) -> Result(#(String, Option(String), Usage, Option(Usage)), String) {
   use fields <- result.try(body_fields(body))
   use strand <- result.try(required_string(fields, "strand"))
   use op <- result.try(optional_string(fields, "op"))
@@ -2088,7 +2118,18 @@ fn decode_usage_body(
     codec.decode_usage(usage_value)
     |> result.map_error(fn(report) { report.expected }),
   )
-  Ok(#(strand, op, usage))
+
+  // Historical frames described one attempt; present null explicitly carries
+  // no final observation, and a malformed present value is refused.
+  use last_usage <- result.try(case list.key_find(fields, "last_usage") {
+    Error(Nil) -> Ok(Some(usage))
+    Ok(json.Null) -> Ok(None)
+    Ok(value) ->
+      codec.decode_usage(value)
+      |> result.map(Some)
+      |> result.map_error(fn(report) { report.expected })
+  })
+  Ok(#(strand, op, usage, last_usage))
 }
 
 // These checks bound each independent frame. The receiver additionally checks

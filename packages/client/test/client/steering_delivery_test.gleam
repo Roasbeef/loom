@@ -4,10 +4,12 @@
 
 import client/agency
 import client/peer_mail
+import core/accounting
 import core/clock.{type Clock}
 import core/ids
 import core/json
 import core/message
+import core/usage_evidence
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{None, Some}
@@ -238,7 +240,7 @@ fn settle_tool(events: Subject(stream.StreamEvent)) -> Nil {
       response_model: None,
       response_id: None,
       diagnostics: None,
-      usage: effects.zero_usage(),
+      usage: accounting.unknown_usage(usage_evidence.Other),
       stop_reason: message.ToolUse,
       deferred: None,
       error_message: None,
@@ -248,7 +250,15 @@ fn settle_tool(events: Subject(stream.StreamEvent)) -> Nil {
     )
   let assert Ok(settled) = stream.settle(response)
     as "the tool response settles"
-  process.send(events, stream.Settled(settled, effects.zero_usage()))
+  process.send(
+    events,
+    stream.Settled(
+      settled,
+      accounting: accounting.from_usage(accounting.unknown_usage(
+        usage_evidence.Other,
+      )),
+    ),
+  )
 }
 
 fn settle_into(events: Subject(stream.StreamEvent), text: String) -> Nil {
@@ -262,7 +272,7 @@ fn settle_into(events: Subject(stream.StreamEvent), text: String) -> Nil {
         response_model: None,
         response_id: None,
         diagnostics: None,
-        usage: effects.zero_usage(),
+        usage: accounting.unknown_usage(usage_evidence.Other),
         stop_reason: message.Stop,
         deferred: None,
         error_message: None,
@@ -274,7 +284,12 @@ fn settle_into(events: Subject(stream.StreamEvent), text: String) -> Nil {
       as "the scripted response must settle"
     process.send(
       events,
-      stream.Settled(message: settled, usage: effects.zero_usage()),
+      stream.Settled(
+        message: settled,
+        accounting: accounting.from_usage(accounting.unknown_usage(
+          usage_evidence.Other,
+        )),
+      ),
     )
   }
 }
