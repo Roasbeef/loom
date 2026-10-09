@@ -331,10 +331,12 @@ has a different directory, so ids do not resolve across workspaces.
 
 The jail never reaches the store. `workspaces/` and `domains/` are on the
 masked list above, enforced by `serve.protecting_state_root` when a session
-is resolved, so the base policy carries no blob entry and the workspace holds
+is resolved. The daemon root creates both directories at start, so the mask
+does not depend on whether a domain of that kind exists yet, so the base policy carries no blob entry and the workspace holds
 no harness directory other than `.codemode`. A standalone host has no state
-root; there `serve.protecting_standalone_blobs` protects the store when a
-writable root reaches it, the way the memory files are protected.
+root; there `serve.protecting_standalone_blobs` protects the store
+unconditionally, as the index database is, because the directory is created
+before any jail is spawned.
 
 The harness's own `fs_read` still opens artifact paths. `tools/fs` adds
 `Ctx.blob_root` to the readable roots it authorizes against, so a session
@@ -348,7 +350,13 @@ hashes the bytes first and skips a file whose digest differs from its name,
 because the old directory is no longer protected and a jailed tool can write
 it. It also skips a symbolic link, a non-regular file and a file over 256 MiB,
 logs each skip, and stops after five seconds with the rest left for the next
-start. A name already in the new store is not read or rewritten, so a second
+start. It first checks that `.blobs` itself is a real directory, with a
+`link_info` that does not follow links, because a jailed tool could replace
+the directory with a link to another workspace's store, whose files all hash
+to their own names. A refusal that cannot change (a digest mismatch, an
+oversized file, a non-regular file) is written to `.legacy-rejected` in the
+new store, so planted garbage is hashed once and cannot keep the genuine
+blobs behind it from being reached at later starts. A name already in the new store is not read or rewritten, so a second
 run copies nothing. Nothing is deleted: the old directory stays as an ordinary
 directory, nothing reads it after the copy, and the worktree observer still
 excludes it from its untracked listing.

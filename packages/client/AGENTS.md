@@ -2899,8 +2899,10 @@ catalogue without opening runtimes. Explicit admission invokes
   needs no entry: it is `blobs/` inside the session's domain directory
   (`workspaces/<digest>/` or `domains/sessions/<id>/`), so the `workspaces/`
   and `domains/` masks already cover it, and the base policy protects
-  nothing inside the workspace. Adding an entry that the daemon creates
-  lazily means adding it to `lazy_masks`, not `established_masks`: the
+  nothing inside the workspace. `workspaces/` and `domains/` are created by `daemon/root.directories`
+  and sit in `established_masks`, so a session admitted before the first
+  domain of either kind still masks both. Adding an entry that the daemon
+  creates lazily means adding it to `lazy_masks`, not `established_masks`: the
   jail refuses to mask a *missing* protected path under a read-only
   parent, and that refusal is a refusal of every jailed call. `lazy_masks`
   is filtered on **existence or a writable root**, never on writability
@@ -4053,16 +4055,20 @@ these forks because they define the same modules.
   with no domain. The state-root masks `workspaces/` and `domains/` already
   keep every jail out, so `base_policy` carries no `protected` entry and the
   workspace holds no harness directory but `.codemode`. A standalone host
-  has no state root, so `protecting_standalone_blobs` protects the store the
-  way `protecting_memory` protects its files: when a writable root reaches
-  it. `tools/fs` treats `Ctx.blob_root` as a readable root for its
+  has no state root, so `protecting_standalone_blobs` protects the store
+  unconditionally, like the index database, since `prepare_directories`
+  creates it before any jail runs. `tools/fs` treats `Ctx.blob_root` as a readable root for its
   authorization, because the store is outside the workspace and `fs_read`
   opens refs by path under `read_scope = "workspace"`; writing it is not
   granted. `client/blobs.adopt_legacy` runs in `prepare_directories`: it
   copies each `sha256-<64 hex>` file from a workspace's old `.blobs` into the
   new store after checking that the bytes hash to the name, skips (and logs)
   one that does not, a link, a non-file or one over 256 MiB, stops after 5 s
-  and continues at the next start, and never deletes anything. The old
+  and continues at the next start, and never deletes anything. It refuses a
+  `.blobs` that is itself a link (`link_info`, not `is_directory`), which a
+  jail could point at another workspace's store, and remembers lasting
+  refusals in `.legacy-rejected` in the new store so planted garbage is not
+  re-hashed at every start. The old
   directory is an ordinary directory afterwards, and nothing reads it:
   `worktree_diff` still excludes it from the untracked listing.
 - **A jailed Go tool's caches live outside the checkout, per workspace.**
