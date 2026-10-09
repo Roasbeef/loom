@@ -16,7 +16,8 @@ the peer mail addendum), the control command `sessions.move`, the members
 `moving` and `moved` of `sessions.get`, three refusal codes (`moving`,
 `orchestrator_unknown` and `not_movable`, see the session movement addendum),
 `effects.ToolSurface`
-(one slot), and two new formats that are not Part 1 interfaces: the closed
+(one slot), one `[mcp.<name>]` key (`runs_on`, see the addendum on background
+code mode and MCP façades, which is proposed and not built), and two new formats that are not Part 1 interfaces: the closed
 message vocabulary between orchestrator and executor nodes, and the
 executor's execution ledger. The helper wire (Part 1.4) is unchanged.
 **Raised by**: issue #697 and the owner's takeover ruling of 2026-10-07.
@@ -912,6 +913,455 @@ that says the call did not happen, even for a key whose row the restart turned
 answered, a lost one is answered `RunLost`, and only a key with no row is refused
 for the missing plane.
 
+### Addendum: background code mode and MCP façades on a remote session
+
+**Status**: PROPOSED 2026-10-09. This is the design; none of it is built. Until
+it lands, a remote session refuses both features as the body above says.
+
+A remote session refuses four features that read orchestrator-side state. This
+addendum adds two of them: background code mode (`async_runs`,
+`async_codemode`) and the MCP façades inside code mode. Extension tools and
+operator-added directories stay refused (see "What stays refused" below). The
+owner's rulings of 2026-10-08 are binding here: the orchestrator owns the
+durable record of a background execution and the executor only runs the
+program; each MCP server is placed on the orchestrator or on the executor by a
+key in its `[mcp.<name>]` table; and the work lands as its own pull request on
+top of PR #923.
+
+The change bumps `protocol.version` from 2 to 3. It adds two `HostMessage`
+constructors, two `OwnerMessage` constructors and two `OwnerServices` functions,
+one field on `Attach`, one field on `Unacked` and one field on the census. The
+ledger's tables do not change and its schema stays at version 3. One
+`loom.toml` key is added. No Part 1 interface moves.
+
+#### Background code mode: who does what
+
+A local background execution has three parts. `async_runs` claims a durable
+record, keeps the input journal, the volatile progress and delivery
+observations, the cumulative and live ceilings and the idle expiry, sends the
+completion notice and recovers after a restart. A worker closure runs
+`codemode.execute` inside a weft scope with a fixed deadline. A router in
+`async_codemode` binds the `execution.*` and `workflow.step` capabilities and
+the execution's own Agency custody to that one record.
+
+On a remote session the first part stays on the orchestrator unchanged. The
+worker becomes a process on the orchestrator that asks the executor to run the
+program and waits for its result, the way an effect process waits on a `Run`.
+The program runs on the executor beside the checkout. The capabilities that
+read the record already go back to the owner: `client/cap_placement` places
+`execution.*`, `workflow.step`, `strand.*`, `notes.*`, `schedule.*` and
+`peer.*` on the owner, and the executor's `owner_codemode.sent_to` sends them
+over the owner port. So the program's inputs and progress need no new message.
+A program reads its next input with `execution.receive` or
+`execution.receive_enveloped` and publishes progress with `execution.progress`,
+each a `Capability` call that `async_runs` answers from the journal it already
+keeps.
+
+#### The execution key
+
+An execution's row in the executor's ledger has the key
+`Key(session, op, "async/" <> id, 0)`. `op` is the launching call's operation
+and `id` is the execution's identity, `agent.call_site_digest` over the
+launching call's strand, operation, step and source index, as `async_codemode`
+mints it today. `"async/" <> id` is already the record's `step` and the broker
+step every effect of the program runs under. The source index is always 0,
+because the step alone names one execution. No planner step starts with
+`async/`, so an execution key never equals a tool call's key. The row's `tool`
+column holds `execution`, a name no tool has, so the host and the reconciler
+can tell an execution row from a tool call's row without parsing the step.
+
+The row follows the ledger's existing rules: it is admitted once by key in the
+transaction that checks the scope's state, incarnation and attach token; it is
+`terminal` before any reply; it becomes `unknown` before a cancelled run's
+worker is killed and when the executor's VM restarts; an acknowledgement turns
+it into a tombstone for the rest of the incarnation. It reserves
+`max_result_bytes` (16 MiB), because a program's result can fill one 16 MiB
+capability frame. The stored outcome is the execution value that
+`tools/codemode.execution_value` renders, under its own envelope in
+`remote/codec` (`{"kind": "execution", "value": ...}`) and decoded totally.
+
+#### New messages
+
+Orchestrator to executor, two constructors join `HostMessage`:
+
+| Message | Meaning |
+|---|---|
+| `StartExecution(key, incarnation, token, terms, remaining_ms, reply)` | Run one background program, idempotently by `key`. Admitted only if `incarnation` and `token` equal the scope's, exactly as `Run` is. A new row starts the program; an `admitted` row adds the sender to its waiters; a `terminal` row answers the stored value; an `unknown` row or a tombstone answers `ExecutionLost`. The host monitors the sender, and the last waiter's `DOWN` with any reason but `noconnection` cancels the program, as for `Run`. `remaining_ms` is the time left before the record's deadline, measured on the orchestrator's clock when the message is sent. The executor builds the program's deadline from it on its own clock at admission; a re-send carries a smaller value, and admission ignores it because the program is already running. |
+| `StopExecution(key, incarnation)` | The orchestrator's record of this execution has closed: an owner's cancel, an abort of the launching operation, a session stop, the deadline, an idle expiry or a restart. In one transaction an `admitted` row becomes `unknown`, and the host then cancels the program and aborts its broker step; a key with no row is inserted as `unknown`, so a late `StartExecution` for it is answered `ExecutionLost` and never starts; a `terminal` row, an `unknown` row or a tombstone is left as it is. A different incarnation changes nothing. There is no reply. |
+
+The reply to `StartExecution` is a new type:
+
+```gleam
+pub type ExecutionAnswer {
+  /// The program ended, and this is `execution_value` of its run.
+  ExecutionFinished(value: JsonValue)
+  /// The execution was admitted and its outcome is lost: the executor
+  /// restarted, the program was stopped, or its worker died. It may have run.
+  ExecutionLost
+  /// The execution was not admitted.
+  ExecutionRefused(refusal: Refusal)
+}
+```
+
+`ListUnacked`'s reply, `Unacked`, gains `executions: List(Key)`: the scope's
+execution rows that are still `admitted`. The reconciler uses it to stop
+programs whose record has closed (see "Acknowledgement and orphans" below).
+
+`terms` is a new plain-data record, `ExecutionTerms`. It carries what the
+launching tool call captured on the executor and nothing the executor can
+derive again: the strand, the operation, the launching step and source index,
+the program's source text (already loaded, so a `program_path` is read once, at
+launch, beside the checkout), the seam's name, the requested `within_ms`, the
+directory access and the grants the launching call held. Every field is a type
+the vocabulary already carries (`Authority` holds the directory access and
+`Grant`s). The executor rebuilds the rest of the `tools/codemode.Request` at
+admission from its own plane: the workspace root, the base policy, the
+enforcement demand and the child environment. The child environment is resolved
+from the executor's own `[tools] env` and `[secrets]`, so no environment value
+crosses the wire in either direction. A background program's build output is
+not streamed, because no running tool call is left to stream it to.
+
+Executor to orchestrator, two constructors join `OwnerMessage`, backed by two
+new `OwnerServices` functions:
+
+| Message | Meaning |
+|---|---|
+| `LaunchExecution(terms, reply)` | The executor's `code_mode` tool was called with `mode: "launch"`. The owner builds the record (deadline on its own clock, `now + within_ms`), claims it with `async_runs.launch` and answers the handle, or the refusal `async_runs` gives today. |
+| `InteractExecution(strand, handle, interaction, within_ms, reply)` | The executor's `code_mode` tool was called with `check`, `join`, `cancel` or `send`. The owner answers with `async_runs.interact`, which checks that the strand owns the handle. |
+
+A local session never calls either function, as it never calls `capability`.
+`owner_link` bounds `LaunchExecution` by its 15-second record budget and
+`InteractExecution` by `within_ms` plus a two-second slack.
+
+#### The launch, start to finish
+
+1. The model calls `code_mode` with `mode: "launch"`. It is a workspace tool,
+   so the orchestrator sends it as an ordinary `Run`.
+2. On the executor the tool authorizes the call, loads the source and builds
+   its request as it does locally. Its `Background.launch` is
+   `OwnerServices.launch_execution`, which sends `LaunchExecution(terms)`.
+3. On the orchestrator the owner port calls `async_runs.launch` with a worker
+   whose work is `surface.start_execution`. `async_runs` claims the record
+   (`Running`) before it starts the worker, as it does locally, and answers the
+   handle. The tool call on the executor returns the handle, and its `Run`
+   finishes.
+4. The worker sends `StartExecution`. The host admits the key and starts the
+   program as a weft run that calls the plane's new `execute` function. The
+   function runs `codemode.execute` with the step `async/<id>` and a fixed
+   deadline of `remaining_ms` on the executor's clock.
+5. The program's owner-bound calls cross the owner port as `Capability`
+   messages. Its workspace calls are served on the executor under the broker
+   step `async/<id>`.
+6. When the program ends, the host commits the row `terminal` and answers
+   `ExecutionFinished(value)` to every waiter. The worker returns the value,
+   and `async_runs` saves `Finished(value)` and sends the completion notice as
+   it does locally.
+
+The worker reuses the surface's repair loop. When the connection drops it
+reconnects with a pause that doubles from 50 ms to 2 s and sends the same
+`StartExecution` again, until it gets an answer or is killed. `ExecutionLost`
+and `ExecutionRefused` end the worker with a reason, and `async_runs` saves
+`Lost(reason)`. That needs one change in `async_runs`: the work closure returns
+`Result(JsonValue, String)`, and `Error(reason)` is saved as `Lost(reason)`
+instead of the generic "execution worker lost".
+
+#### Binding a background program's calls on the owner
+
+Locally a background program's router is built per launch, so its
+`execution.*`, `workflow.step` and `strand.*` calls are bound to its record and
+its Agency custody (`AsyncCustody(strand, op, id, Owned)`) by closure. On a
+remote session the owner receives an `OwnerCapCall`, whose `step_id` is the
+step the executor's tool shell filled in, never a value from the program. A
+background program's calls carry the step `async/<id>`. The owner answers such
+a call in that execution's custody only when the record for `id` exists, its
+`strand` and `operation` equal the call's, and its phase is `Starting` or
+`Running`. It then composes the arms `async_codemode.launch` composes locally:
+the input router, the workflow router and the Agency's `async_seam` over the
+execution's custody. A call whose record has closed is refused with
+`execution_closed`, and a call naming an `async/` step with no record is refused
+with `execution_unknown`. A foreground program's calls keep the planner's step
+and are answered as they are today. The `OwnerCapCall` shape does not change.
+
+#### Cancellation
+
+A program is cancelled only on a decision the orchestrator recorded, never on
+`noconnection`. The decision is the record leaving `Starting` or `Running`.
+`async_runs` makes it in the places it makes it today (`close`, `recover`,
+`on_shutdown`, `abort_operation`, the deadline and idle sweeps), and for a
+remote session its `abort` closure sends `StopExecution` for the execution's key
+instead of aborting a local broker step. `async_runs` also cancels the worker,
+and the host sees the worker's `DOWN` with a reason other than `noconnection`,
+which cancels the program a second way. Both paths are idempotent.
+
+A `noconnection` `DOWN` drops the worker as a waiter and leaves the program
+running, so a link cut never stops it. When the record closes during a
+partition, `StopExecution` and the worker's death are both lost with the
+connection. The program then runs until the executor's deadline, which is the
+record's deadline less the time the start took to arrive, or until the
+reconciler stops it after the link returns. A background program's deadline is
+at most `max_within_ms`, 15 minutes, which bounds how long such a program can
+outlive its record. While it runs, its owner-bound calls are refused with
+`execution_closed`, so it cannot spawn a child, read input or write a note.
+
+#### Acknowledgement and orphans
+
+The owner port's reconciler acknowledges an execution row by a different rule
+from a tool call's row. `workspace.settled` accepts an execution key only when
+the record for its `id` is terminal (`Finished` or `Lost`) or absent. The tool
+call rule would accept it at once, because no planner batch lists an `async/`
+step, and an acknowledgement that came before the worker read the result would
+leave a tombstone. The worker's re-send would then get `ExecutionLost`, and a
+finished program would be recorded as lost.
+
+The reconciler also stops orphans. At attach and on every pass it reads
+`Unacked.executions` and sends `StopExecution` for each key whose record is not
+`Starting` or `Running`. That covers a stop lost to a partition and a program
+left running by an orchestrator that restarted. A `StopExecution` that is lost
+needs no retry of its own: a connection drop that loses it also loses any
+`StartExecution` still in flight on the connection, and a `StartExecution` that
+was delivered left an `admitted` row, which the next pass sees.
+
+#### Recovery
+
+**An orchestrator restart.** The program keeps running on the executor, because
+its waiter left with `noconnection`. The new open attaches at the same
+incarnation with a new token (`Rebound`), which re-points the scope's owner link
+to the new owner port. `async_runs.recover` marks every record that was
+`Starting`, `Running` or `Draining` as `Lost("execution service restarted")`,
+sends the launching strand one completion notice, and its `abort` closure sends
+`StopExecution`.
+The reconciler's attach pass is the second path. This is the local rule: a
+restart of the service that owns the record never resumes an execution. The
+satellite's heap does survive on the executor, so resuming it would be possible,
+and it is left out on purpose (see "What stays refused").
+
+**An executor restart.** `exec_ledger.open` turns the `admitted` row `unknown`,
+as for any call. The worker's re-send is answered `ExecutionLost`, and
+`async_runs` saves `Lost` with a reason that says the executor restarted and
+that the program may have done part of its work. Nothing is replayed. New
+launches on the session fail as new tool calls do after an executor restart,
+until the session is closed and reopened.
+
+**A stale incarnation or token.** `StartExecution` is admitted under the same
+check as `Run`, so a dead open's in-flight start is refused by value. Within one
+open, a worker that died (because `async_runs` restarted) may have a
+`StartExecution` still in flight while the new `async_runs` records the
+execution as lost and sends `StopExecution` from another process. Either order
+is safe: a stop that arrives first inserts the key as `unknown` and the late
+start is answered `ExecutionLost`; a start that arrives first is admitted and
+the stop cancels it.
+
+**A scope close.** `Close` cancels the scope's live calls, and an execution row
+is one of them. On a session stop, `async_runs` records `Lost("session
+stopped")` first, because the session's services stop before its workspace.
+
+#### Two clocks
+
+The record's deadline is the orchestrator's (`deadline_ms`), and the sweep in
+`async_runs` enforces it there. The program's deadline is built on the
+executor's clock from `remaining_ms`. The two end at about the same moment, and
+clock skew only decides which side ends the execution first and with which
+reason. It never decides whether the program runs twice, because the row is
+admitted once.
+
+#### MCP: the placement key
+
+Each `[mcp.<name>]` table gains `runs_on`, with the values `"orchestrator"` (the
+default) and `"executor"`. A local session ignores the key and starts every
+server on its own daemon, as it always has. On a remote session the key places
+each server. One program may import façades of both placements.
+
+The table keeps `command` and `api_key_env` in both placements, because a local
+session on the same orchestrator needs them to start the server. An executor
+reads no `[mcp]` table of its own.
+
+#### MCP on the orchestrator
+
+For an orchestrator-placed server the orchestrator does what a local session
+does: it resolves `api_key_env` through its own secret store, spawns the server,
+lists its tools and generates the façade (`codegen.Generated`: the module name,
+the source text and the declaration surface). It does so before the attach,
+which is where a local session starts its servers too. The key's value stays on
+the orchestrator.
+
+The executor receives only the generated façades, in the attach (below). It
+uses them in the three places a local host uses its MCP layer and does not
+need a client for: the vetting allowlist (`cap/mcp` and one `cap/mcp/<server>`
+per server), the `code_mode` description and the `cap://mcp/<server>` reads,
+and the generated table the hermetic build writes into the vendored prelude.
+The fourth place, the router arm, stays on the orchestrator: `cap_placement`
+already places `mcp.<server>` on the owner, so the executor sends the call over
+the owner port, and `owner_codemode.answering` gains the `client/mcp.routing`
+arm over the session's layer. A call's 60-second MCP timeout sits inside the
+owner link's 120-second capability budget.
+
+If the census shows that the executor offers no `code_mode`, the orchestrator
+retires the layer it started and logs one line, as a local host that registers
+no `code_mode` does without starting anything.
+
+#### MCP on the executor
+
+An executor-placed server runs on the executor, beside the checkout. The
+orchestrator sends its spawn specification in the attach: the server's name,
+its `command` argv and the *name* of its `api_key_env`. The executor resolves
+that name through its own `provider/secret` store, which reads its own
+environment and its own `[secrets]` table, and sets the value in the child's
+environment, as a local daemon does. The value never crosses the wire, and the
+orchestrator never reads it. A name the executor cannot resolve refuses that
+server before anything is spawned, and the census says why without the value.
+
+The alternative was for each executor to declare its servers in its own
+`loom.toml`. That was rejected because the server set is then written twice,
+once on the orchestrator for local sessions and once on the executor, and a
+disagreement between the two copies is found only at spawn. The argv and the
+variable name are names, not secrets. `command` is the one exception to the
+rule that configuration naming a path on a machine lives on that machine: its
+executable is looked up on the executor's `PATH`. An operator who needs a different
+executable on the executor sets an absolute path that exists on both machines,
+or a name that both `PATH`s resolve.
+
+The executor's plane starts the servers when it is built and owns their
+clients for the plane's life. The plane retires them in its close, before the
+helper pool, and a client whose retirement is not proven counts toward the
+scope's `UnknownCleanup` like any other child. A server process is spawned
+unjailed on the executor, with the executor daemon's privileges, which is the
+same posture a local daemon has (#109 is still open). A call to an
+executor-placed server is answered on the executor by the plane's own
+`client/mcp.routing` arm and never crosses the network. The executor's router
+therefore treats `mcp.<server>` as workspace-bound when the scope's plan names
+`<server>` as executor-placed, and owner-bound otherwise. The owner refuses an
+executor-placed name it is sent with `unsupported_cap`, because its layer does
+not hold that server.
+
+#### MCP: what the attach carries
+
+`Attach` gains `mcp: McpPlan`:
+
+```gleam
+pub type McpPlan {
+  McpPlan(
+    /// Façades of the servers the orchestrator runs, generated there.
+    served: List(Facade),
+    /// Servers the executor spawns, by name, argv and key name.
+    spawned: List(SpawnSpec),
+  )
+}
+
+pub type Facade {
+  Facade(server: String, module_name: String, source: String, surface: String)
+}
+
+pub type SpawnSpec {
+  SpawnSpec(server: String, command: List(String), api_key_env: Option(String))
+}
+```
+
+A plan is at most a few MiB: each façade is bounded by the generator at 512 KiB
+of source and 64 KiB of surface. The census gains `mcp`, one entry per server of
+the plan: ready with its tool count, or refused with the reason. The
+orchestrator logs `mcp.ready` and `mcp.unavailable` from it with a `placement`
+field.
+
+The plan is fixed for the life of the plane, that is, for one incarnation. A
+`Created` or `Reopened` attach builds the plane from the plan it carries. A
+`Rebound` attach, which happens only when a new open takes over a scope after an
+orchestrator restart, keeps the plane and the plan it was built with, and the
+orchestrator logs `mcp.plan_stale` naming the servers whose plan differs. The
+reason is that the executor-placed servers live with the plane and may be in use
+by a running program, and the `code_mode` description was rendered from the
+plan when the plane was built. A stale orchestrator-placed façade fails in
+band: a server removed from the configuration answers `unsupported_cap`, and a
+tool the server no longer lists answers its own JSON-RPC error. A changed plan
+takes effect at the next reopen.
+
+#### Failures
+
+| Failure | Background execution | MCP, orchestrator placement | MCP, executor placement |
+|---|---|---|---|
+| Link cut | The program keeps running. Its owner-bound calls are denied `owner_unavailable` until the link returns, so `execution.receive` returns an error the program sees. The worker re-sends `StartExecution` and joins the run, or reads the stored value if it ended. The model's `check`, `send` and `cancel` are `code_mode` calls, which run on the executor, so they wait for the link like any workspace tool. | A call in flight is denied `owner_unavailable`. The server may have acted, as it may after `mcp_timeout`. | Calls are unaffected: client and server are both on the executor. |
+| Executor restart | The row becomes `unknown`. The worker's re-send gets `ExecutionLost`, and the record is `Lost` with a reason that says the program may have run part of its work. Nothing is replayed. | The servers on the orchestrator are unaffected; no program is left to call them. | The servers die with the VM. The reopen after `loomd executor release` builds a new plane and spawns them again. |
+| Orchestrator restart | The program keeps running. The new open rebinds the scope; `async_runs.recover` marks the record `Lost` and sends the strand one completion notice; `StopExecution` and the reconciler stop the program. | The servers die with the orchestrator. Programs on the executor get `owner_unavailable` until the new open; the new open starts the servers again. | The servers keep running with the scope. A program keeps calling them. |
+| Duplicate start | A re-sent `StartExecution` joins the live run or reads the stored row; the ledger admits the key once. A second `LaunchExecution` for one call is not sent, because `owner_link` sends once and `code_mode` is never replayed. If one arrived, `async_runs.admit` would find the record, compute a different deadline and refuse it as a handle collision; it never starts a second worker. | Not applicable. | A `Rebound` attach does not spawn the servers again. |
+| Cancel racing a finish | The orchestrator's record decides. `async_runs` keeps the first terminal phase it settles on, as it does locally. If `StopExecution` reaches the host first, the row becomes `unknown` and the record is `Lost`. If the program's commit comes first, the stop changes nothing, and the record keeps whichever phase `async_runs` settled first. Either way the row is acknowledged once the record is terminal. | Not applicable. | Not applicable. |
+| MCP server dies | Not applicable. | The client latches dead and every later call is `mcp_unavailable` in band. It is not restarted, as on a local session; the next open starts it again. | The same, on the executor. It starts again at the next reopen. |
+| Launch reply lost | The record is claimed and the program starts, but the launching tool call reports the owner unreachable. Its failure text says the execution may have been launched and that a completion notice will follow if it was. | Not applicable. | Not applicable. |
+| Ledger budget full | `StartExecution` is refused `BudgetExhausted` and the record becomes `Lost` with the refusal's text. Eight live executions per session hold up to 128 MiB of the 512 MiB budget. | Not applicable. | Not applicable. |
+
+#### The P model
+
+The P model `protocol/models/remote-execution` should cover the background
+execution, because its rules are the ones the model already checks, with two
+new senders on the orchestrator: the worker and the process that sends
+`StopExecution`. The additions are these.
+
+- **Machines.** An `Exec` machine on the orchestrator for the worker: it sends
+  `StartExecution`, re-sends after a break, and reports to `Orch`. `Orch` gains
+  one execution record per key, with the phases live, finished and lost, and a
+  reconciler step that asks for `Unacked.executions` and stops the keys whose
+  record is not live. `Host` gains `startExecution` (the `admitRun` path over
+  execution keys) and `stopExecution`.
+- **Faults.** `Chaos` gains an owner's cancel and a deadline (the record becomes
+  lost, the worker is killed and a stop is sent) beside the existing breaks,
+  executor crashes, open crashes and runtime restarts.
+- **Specs.** `AtMostOnceStart` and `UnknownIsFinal` extend to execution keys
+  unchanged. New: `ExecNoStartAfterStop` (once the host has processed a stop
+  for a key, no program for the key starts); `ExecFinishedIsStored` (a record
+  is finished with a value only if the ledger stored that value as terminal);
+  `ExecLostOnExecutorRestart` (a key admitted when the executor restarts never
+  ends finished, and its program never starts again); `ExecStopOnlyOnDecision`
+  (a running program is cancelled only by a stop for a closed record or a
+  killed waiter, never by `noconnection`); `ExecNotLostWhenFinished` (a
+  program that committed its value while its record was live and no stop was
+  decided ends finished); and the liveness spec `EveryExecutionSettles` (every
+  claimed record becomes terminal, and every admitted row whose record closed
+  eventually becomes `unknown` or `terminal`).
+- **Mutants.** `M8-stop-does-not-fence` (a stop for a missing key inserts
+  nothing; caught by `ExecNoStartAfterStop`); `M9-noconnection-stops` (the
+  worker treats a break as a cancel; caught by `ExecStopOnlyOnDecision`);
+  `M10-settled-ignores-record` (the reconciler acknowledges a terminal execution
+  row while its record is live; caught by `ExecNotLostWhenFinished`);
+  `M11-restart-relaunches` (the host starts admitted execution rows again after a
+  restart; caught by `AtMostOnceStart`); and `M12-reconciler-skips-executions`
+  (orphans are never stopped; caught by `EveryExecutionSettles`).
+
+The model would still leave out time, the idle expiry, the input journal and
+owner-bound calls. Input and progress travel over the owner port, which the
+model does not cover, and they carry no custody rule the ledger enforces.
+
+#### What stays refused
+
+- **Extension tools.** Extensions are installed under the orchestrator's home
+  and run as jailed satellites with their own fixed authority. On a remote
+  session they would have to run beside the checkout, which needs an executor
+  installation as machine configuration and a census entry for it. Neither is
+  designed.
+- **Operator-added directories.** They are validated against the
+  orchestrator's filesystem when added. A remote session would need the
+  executor to validate them and to report the result, which is a new message
+  with no current user.
+- **Resuming a background execution after an orchestrator restart.** The
+  program's heap survives on the executor, but the local rule is that a
+  restarted service records the execution as lost and never resumes it. Keeping
+  the remote rule the same keeps one meaning for `Lost("execution service
+  restarted")`.
+- **Supervising an MCP server.** A dead server is not restarted on either
+  placement, as on a local session.
+- **Jailing an MCP server.** An executor-placed server is spawned unjailed, as
+  a local one is, until #109 is decided.
+
+#### What it costs
+
+A background launch on a remote session crosses the network four times before
+the program starts: the launching `Run`, `LaunchExecution` and its answer,
+`StartExecution`. The model's `check`, `send` and `cancel` wait for the link,
+because `code_mode` is placed on the executor by name. Every owner-bound call
+from a background program reads its execution record on the owner. An
+execution row holds 16 MiB of the ledger's budget for up to 15 minutes. A
+program whose record closed during a partition may run on until its deadline.
+An orchestrator-placed server is started before the orchestrator learns
+whether the executor offers `code_mode`, and is retired after the attach if it
+does not. A changed MCP plan waits for the next reopen.
+
 ## Impact
 
 - `client`: the workspace plane is split out of `serve.assemble_in`; new
@@ -927,6 +1377,13 @@ for the missing plane.
 - Formal models: a TLA+ model of a session move and a P model of remote
   execution against the ledger, both gated by `make model-check`. There is no
   directory model, because the directory holds no state of its own.
+
+- Proposed, not built: background code mode and MCP façades on a remote
+  session. `client/remote/*` gains the execution messages and the MCP plan at
+  protocol version 3; `async_runs` takes a work closure that can fail with a
+  reason; `owner_codemode` binds a background program's calls to its record and
+  answers orchestrator-placed MCP servers; `executor_plane` runs background
+  programs and executor-placed servers; `catalog` reads `runs_on`.
 
 Local sessions see no behavior change. A daemon without `[distribution]`
 never starts `net_kernel`, and its sessions never consult the ledger.
