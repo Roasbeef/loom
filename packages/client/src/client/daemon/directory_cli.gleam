@@ -148,14 +148,18 @@ fn bootstrap(
 
   // A store on disk is refused before anything is reserved or started: it is
   // either this cluster's, and must not be replaced, or a leftover an operator
-  // removes on purpose.
+  // removes on purpose. The refusal says which, and how to remove it.
   use Nil <- result.try(case store.holds_data(directory) {
     False -> Ok(Nil)
     True ->
       Error(
         directory
         <> " already holds a directory store; bootstrap creates a cluster "
-        <> "only on a member that has none",
+        <> "only on a member that has none. If a cluster exists, do not "
+        <> "bootstrap: start this daemon and it rejoins. If none exists and "
+        <> "this store is left from an earlier attempt, remove "
+        <> directory
+        <> " and run bootstrap again",
       )
   })
   use _claimed <- result.try(

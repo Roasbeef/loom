@@ -58,12 +58,12 @@ pub fn a_member_that_already_holds_a_store_is_refused_test() {
   let assert Ok(Nil) =
     simplifile.write(config, distribution_table <> directory_table)
     as "written"
+
+  // A server's directory is what a started store leaves; the Ra system's own
+  // files alone are not a store (`store_test`).
   let assert Ok(Nil) =
-    simplifile.create_directory_all(scratch <> "/state/directory")
-    as "made"
-  let assert Ok(Nil) =
-    simplifile.write(scratch <> "/state/directory/00000001.wal", "x")
-    as "a store file"
+    simplifile.create_directory_all(scratch <> "/state/directory/LOOMSERVER1")
+    as "a store's server directory"
   let assert Error(reason) =
     directory_cli.run([
       "bootstrap",
@@ -74,6 +74,13 @@ pub fn a_member_that_already_holds_a_store_is_refused_test() {
     ])
     as "a member with a store is refused"
   assert string.contains(reason, "already holds a directory store")
+
+  // The refusal names the remedy for each case.
+  assert string.contains(reason, "start this daemon and it rejoins")
+  assert string.contains(
+    reason,
+    "remove " <> scratch <> "/state/directory and run bootstrap again",
+  )
 }
 
 pub fn a_missing_config_flag_is_refused_with_the_usage_test() {

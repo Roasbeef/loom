@@ -193,7 +193,15 @@ pub fn mark_joined(directory: String) -> Result(Nil, String) {
   })
 }
 
-/// Whether the data directory holds anything. Bootstrap refuses one that does.
+/// Whether the data directory holds a store: the joined marker, or the
+/// directory Ra keeps for a server it started. Bootstrap refuses one that
+/// does.
+///
+/// A member daemon starts the Ra system at every boot, joined or not, and the
+/// system writes its own files (`names.dets`, `meta.dets`, the first
+/// write-ahead log) into the directory at once. Those hold no store and no
+/// membership, so they are not counted: a member that booted before any
+/// cluster existed can still be the one that creates it.
 ///
 /// ## Examples
 ///
@@ -201,9 +209,13 @@ pub fn mark_joined(directory: String) -> Result(Nil, String) {
 /// // store.holds_data(state_root <> "/directory")
 /// ```
 pub fn holds_data(directory: String) -> Bool {
-  case simplifile.read_directory(directory) {
-    Ok([_, ..]) -> True
-    Ok([]) | Error(_) -> False
+  is_joined(directory)
+  || case simplifile.read_directory(directory) {
+    Ok(entries) ->
+      list.any(entries, fn(entry) {
+        simplifile.is_directory(directory <> "/" <> entry) == Ok(True)
+      })
+    Error(_) -> False
   }
 }
 

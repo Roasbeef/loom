@@ -110,6 +110,22 @@ pub fn the_joined_marker_and_the_data_check_test() {
   assert store.is_joined(directory)
 }
 
+pub fn a_ra_system_with_no_store_is_not_data_test() {
+  let directory =
+    remote_fixtures.scratch("directory-system-only") <> "/directory"
+  let assert Ok(Nil) = store.start_system(directory) as "the Ra system starts"
+
+  // The system's own files are there, and they are not a store.
+  let assert Ok([_, ..]) = simplifile.read_directory(directory)
+    as "the Ra system wrote its files"
+  assert !store.holds_data(directory)
+  let assert Ok(Nil) = store.boot(10_000) as "a one-member store starts"
+
+  // A started server is.
+  assert store.holds_data(directory)
+  store.stop()
+}
+
 pub fn a_stopped_store_answers_no_quorum_rather_than_absent_test() {
   let directory = remote_fixtures.scratch("directory-stopped") <> "/directory"
   let assert Ok(Nil) = store.start_system(directory) as "the Ra system starts"
