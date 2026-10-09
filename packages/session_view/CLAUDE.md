@@ -287,7 +287,8 @@ for a host with no surfaces.
   `Returned` rows for sub-agents, `Nudged` for a delivered advisor frame,
   `Peer` for another session's message, `Sibling` for a message a strand of
   the same session sent (stored origin `StrandOrigin`, framing removed by
-  `strand_framing.strip`, a brief's result-contract trailer kept apart),
+  `strand_framing.strip`, a brief's result-contract trailer kept apart; `Peer`
+  and `Sibling` keep the whole text and the host shortens it when it draws),
   `Missed` for a cache notice and `Commentary` for the advisor's board (reviews that
   stand next to each other are one piece with a `reviews` count). A feed or goal
   feed sent to the advisor is an input, since the advisor's strand has no other:

@@ -1105,7 +1105,11 @@ page keys and nonces, and the relay into the session's gateway.
   owner's link with `peer_send`, at the operator's prompt. Nothing is sent by
   `reply`. A `turns.Sibling` piece (a strand of the same session) is a
   `sibling-card` headed `strand · <id>` with no receipt and no Reply, since
-  no peer link exists to answer through. `component.pending_nudges(model)` and `component.goal(model)` read
+  no peer link exists to answer through. Peer and sibling pieces hold the
+  whole message; `lane.message_body` draws one the composer would shorten as
+  its collapsed line with a client-side `<loom-expand>` to the whole text (cut
+  by `expansion.capped`), so opening it asks the daemon for nothing.
+  `component.pending_nudges(model)` and `component.goal(model)` read
   `Shared.nudges` and `Shared.goal`.
 - `operator_page.Msg(socket)`: `Observed(component.Msg)`, `Submitted(text,
   delivery, images)`, `Decided(id, seq, answer)`, `Controlled(component.Control)` and

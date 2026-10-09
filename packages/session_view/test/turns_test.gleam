@@ -15,6 +15,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/string
 import session_view/composer
 import session_view/decisions
+import session_view/fold_budget
 import session_view/protocol
 import session_view/snapshot
 import session_view/snapshot_view
@@ -1484,4 +1485,34 @@ pub fn a_running_call_carries_the_time_of_its_record_test() {
   assert standing == turns.Done
   assert since == None
   assert words.verb == "Read"
+}
+
+fn long_brief() -> String {
+  string.repeat("a line of a long brief\n", 400)
+}
+
+// A long message keeps its whole text on the piece, so a host that opens it
+// has the rest to draw, and weighs what the lane draws closed, so it does not
+// fill the page's row limit and push its own turn out of the window.
+pub fn a_long_sibling_message_keeps_its_whole_text_and_weighs_its_closed_form_test() {
+  let items = [
+    item(
+      1,
+      10_000,
+      said(
+        strand_framing.message_head("sub:main/x")
+          <> long_brief()
+          <> strand_framing.message_foot,
+        Some(message.StrandOrigin("sub:main/x")),
+      ),
+    ),
+  ]
+  let assert [turns.Sibling(text:, ..)] = pieces_of(items, [])
+    as "one sibling piece"
+  assert string.starts_with(text, "a line of a long brief\n")
+  assert string.ends_with(string.trim(text), "a line of a long brief")
+  assert list.length(string.split(text, "\n")) >= 400
+
+  let blocks = transcript.blocks(cut(items), view(1, []), "main", [])
+  assert fold_budget.weigh(blocks, strands()).base < 10
 }
