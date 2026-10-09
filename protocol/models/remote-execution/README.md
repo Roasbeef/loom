@@ -326,6 +326,73 @@ on the rule the mutation removes.
 | `M5-reply-before-commit` | `bodyDone` answers the waiters, then commits in a later step, which a crash can overtake. | `tcOnlyOutcomeFaithful` (`OutcomeFaithful`) |
 | `M6-plane-checked-before-ledger` | With no plane, `admitRun` refuses every `Run` with `NoPlane` before it looks at the ledger. | `tcDefectNoPlane` (`RefusalMeansUntouched`) |
 | `M7-ack-deletes-the-row` | `ack` deletes the row instead of leaving a tombstone. | `tcOnlyNoStartAfterAck` (`NoStartAfterFence`) |
+| `M8-stop-does-not-fence` | A stop for a key with no row does nothing, instead of barring the key. | `tcOnlyExecNoStartAfterStop` (`ExecNoStartAfterStop`) |
+| `M9-noconnection-stops` | The worker takes a dropped connection for a cancel and stops the program. | `tcOnlyExecStopOnlyOnDecision` (`ExecStopOnlyOnDecision`) |
+| `M10-settled-ignores-record` | The reconciler acknowledges every settled execution row, whatever its record says. | `tcOnlyExecAckOnlyWhenRecordTerminal` (`ExecAckOnlyWhenRecordTerminal`) |
+| `M11-restart-relaunches` | A restarted executor starts its admitted programs again instead of marking them unknown. | `tcOnlyExecAtMostOnce` (`AtMostOnceStart`) |
+| `M12-reconciler-skips-executions` | The reconciler never stops a running program whose record closed. | `tcOnlyEveryExecutionSettles` (`EveryExecutionSettles`) |
+
+## Background executions
+
+The addendum to protocol-change/078 on background code mode adds a second kind
+of key to the same host and ledger: an execution, keyed
+`(session, op, "async/<id>", 0)`, which a worker on the orchestrator starts with
+`StartExecution` and which a stop or the reconciler can end. The model checks it
+with three more machines in `PSrc/Execution.p` and `PSrc/Host.p`, and the specs
+in `PSpec/ExecutionSpecs.p`.
+
+| Machine | Stands for |
+|---|---|
+| `Record` (`PSrc/Execution.p`) | `client/async_runs` with `async_codemode.remote` and the owner port's reconciler: the durable phase of each record, the worker it starts, recovery after an orchestrator restart, the decision to close a record (a cancel, the deadline, a lost recovery question), and the reconciler's pass that stops orphans and acknowledges settled rows. |
+| `Exec` (`PSrc/Execution.p`) | One worker, `surface.start_execution`: it sends `StartExecution`, sends the same start again after a dropped connection, and tells its record how the start ended. |
+| `ExecBody` (`PSrc/Host.p`) | The program on the executor. It ends whenever the scheduler gets to it, unless it was stopped. |
+
+`Host` handles `StartExecution` through the same admission as `Run`, so the
+token, the row and the restart rules above apply to executions unchanged.
+`Host.stopExecution` is `exec_ledger.stop_or_fence`: an admitted row becomes
+unknown and the program is stopped, and a key with no row is inserted unknown,
+so a start that a dead worker sent before the record closed finds the key
+taken. `Host.listExecutions` is the reconciler's listing of running executions
+and unacknowledged rows. The reconciler's pass is held by the wire until
+nothing is in flight, as the acknowledgement is.
+
+A record's phase is decided before anything is sent. A decision to close it is
+made durable first and the stop follows, so a stop that a partition loses is
+found again by the reconciler, which stops a running program whose record is no
+longer live. A dropped connection is not a decision. After an orchestrator
+restart, recovery asks the executor for each live record's key once: a terminal
+row finishes the record with the stored value, and any other answer, or no
+answer, loses it.
+
+| Spec | Rule | Code |
+|---|---|---|
+| `ExecNoStartAfterStop` | Once the host has processed a stop for a key, no program for it starts. | `exec_ledger.stop_or_fence` |
+| `ExecFinishedIsStored` | A record finished with a value only if the ledger stored that value as the key's terminal row. | `host.run_finished`, `async_runs` recovery |
+| `ExecStopOnlyOnDecision` | A stop reaches the host only for an execution whose record was decided closed. | `surface.start_execution`, `async_runs.close` |
+| `ExecNotLostWhenFinished` | A program that committed its value while its record was live, with no stop decided, ends finished. | `host.deliver` |
+| `ExecAckOnlyWhenRecordTerminal` | The reconciler acknowledges an execution's row only once its record is finished or lost. | `workspace.settled_by_kind` |
+| `EveryExecutionSettles` | Liveness: every claimed record ends finished or lost, and every program that started ends terminal or unknown. | the reconciler and the deadline |
+
+`AtMostOnceStart`, `UnknownIsFinal`, `StaleTokenRefused` and `CancelOnlyOnAbort`
+from `PSpec/Specs.p` are asserted over executions too. Two probes show the
+model reaches the paths the specs depend on: `tcProbeExecStartBarred`, a late
+start that finds its key barred by a stop, and `tcProbeExecRecoveredValue`, a
+recovery that keeps a value the executor stored while the orchestrator was down.
+
+| Case | Executions and calls | Faults |
+|---|---|---|
+| `tcExecQuiet` | two executions | none |
+| `tcExecCancel` | two executions | two drops, two cancels |
+| `tcExecOpenCrash` | two executions | one drop, one orchestrator restart, one cancel |
+| `tcExecHostCrash` | two executions | one drop, one executor crash, one cancel |
+| `tcExecAll` | two executions beside one call of each replay kind | two drops, one crash, one open ending, two cancels |
+| `tcOnlyExec*`, `tcOnlyEveryExecutionSettles` | as `tcExecCancel`, except `tcOnlyExecAtMostOnce` (`tcExecHostCrash`'s) | one spec each, for `mutate.py` |
+
+Left out: the input journal, progress and the other owner-bound calls, which
+travel over the owner port and are tested in Gleam against the executor's
+router (`client/remote/owner_link_test`); the idle expiry, which closes a record
+as the deadline does; the result size limit; and MCP, which is configuration
+and placement rather than protocol.
 
 ## Running it
 
