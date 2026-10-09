@@ -13,7 +13,7 @@ packages = [
   { name = "gleam_crypto", version = "1.6.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "gleam_crypto", source = "hex", outer_checksum = "2DE9E4EF53CF6FEE049D4F765731F7178F7A11AEFAE00EEE63BF7536B354AD3F" },
   { name = "gleam_erlang", version = "1.3.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "gleam_erlang", source = "hex", outer_checksum = "1124AD3AA21143E5AF0FC5CF3D9529F6DB8CA03E43A55711B60B6B7B3874375C" },
   { name = "gleam_http", version = "4.4.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "gleam_http", source = "hex", outer_checksum = "F065CE9941A7756ABBAEAE7F9F32A96CAD29DA3311A381DB2D926EA8E8C156DC" },
-  { name = "gleam_mcp", version = "0.2.0", build_tools = ["gleam"], requirements = ["gleam_erlang", "gleam_http", "gleam_otp", "gleam_regexp", "gleam_stdlib", "glisten", "gun", "mist", "weft"], source = "git", repo = "https://github.com/Roasbeef/gleam-mcp.git", commit = "686955fc0461630bf64a4dc8eb51565dc7ca1ac9" },
+  { name = "gleam_mcp", version = "0.2.0", build_tools = ["gleam"], requirements = ["gleam_erlang", "gleam_http", "gleam_otp", "gleam_regexp", "gleam_stdlib", "glisten", "gun", "mist", "weft"], source = "git", repo = "https://github.com/Roasbeef/gleam-mcp.git", commit = "51c2266a43cfe62b983d9679cd02caf1ac1524c9" },
   { name = "gleam_otp", version = "1.3.0", build_tools = ["gleam"], requirements = ["gleam_erlang", "gleam_stdlib"], otp_app = "gleam_otp", source = "hex", outer_checksum = "DE4CA6850842F0266EE95317A25DD6A0A0F20CDFAB7C0ADC2E63251D7C3C72EC" },
   { name = "gleam_regexp", version = "1.1.1", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "gleam_regexp", source = "hex", outer_checksum = "9C215C6CA84A5B35BB934A9B61A9A306EC743153BE2B0425A0D032E477B062A9" },
   { name = "gleam_stdlib", version = "1.0.5", build_tools = ["gleam"], requirements = [], otp_app = "gleam_stdlib", source = "hex", outer_checksum = "CEE5B6C076A85B45F60C585F4316C63EC8B7127C119D5738C3958A9C4D50404E" },
@@ -24,11 +24,11 @@ packages = [
   { name = "hpack_erl", version = "0.3.0", build_tools = ["rebar3"], requirements = [], otp_app = "hpack", source = "hex", outer_checksum = "D6137D7079169D8C485C6962DFE261AF5B9EF60FBC557344511C1E65E3D95FB0" },
   { name = "logging", version = "1.5.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "logging", source = "hex", outer_checksum = "BC5F18CE5DD9686100229FE5409BDC3DD5C46D5A7DF2F804AD2D8F0DD6C5060E" },
   { name = "mist", version = "6.0.3", build_tools = ["gleam"], requirements = ["exception", "gleam_erlang", "gleam_http", "gleam_otp", "gleam_stdlib", "glisten", "gramps", "hpack_erl", "logging"], source = "git", repo = "https://github.com/Roasbeef/mist.git", commit = "28b43178ff57bfb619c64b8c3544831646d5fdb9" },
-  { name = "weft", version = "0.4.5", build_tools = ["gleam"], requirements = ["gleam_erlang", "gleam_otp", "gleam_stdlib"], otp_app = "weft", source = "hex", outer_checksum = "CDD540819BE4E87D3C19FD4843F02AB1707A979FE909AE85EEF2034C1E48ED6C" },
+  { name = "weft", version = "0.4.6", build_tools = ["gleam"], requirements = ["gleam_erlang", "gleam_otp", "gleam_stdlib"], otp_app = "weft", source = "hex", outer_checksum = "836E64B55CC6C0527F6AEC70AE1C412C5B60F641824919F38BA229FA3524552D" },
 ]
 
 [requirements]
 core = { path = "../core" }
-gleam_mcp = { git = "https://github.com/Roasbeef/gleam-mcp.git", ref = "686955fc0461630bf64a4dc8eb51565dc7ca1ac9" }
+gleam_mcp = { git = "https://github.com/Roasbeef/gleam-mcp.git", ref = "51c2266a43cfe62b983d9679cd02caf1ac1524c9" }
 gleam_stdlib = { version = ">= 1.0.0 and < 2.0.0" }
 gleeunit = { version = ">= 1.0.0 and < 2.0.0" }

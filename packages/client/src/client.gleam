@@ -19,6 +19,8 @@
 
 import argv
 import client/daemon/admin
+import client/daemon/distribution_cli
+import client/daemon/executor_cli
 import client/daemon/main as daemon
 import client/daemon/peer_cli
 import client/extension/cli
@@ -50,6 +52,9 @@ pub fn main() -> Nil {
         ["access", ..rest] -> admin.main(rest)
         ["peer", ..rest] -> peer_cli.main(rest)
         ["ext", ..rest] -> cli.main(rest)
+        ["distribution", ..rest] | ["dist", ..rest] ->
+          distribution_cli.main(rest)
+        ["executor", ..rest] -> executor_cli.main(rest)
         _other -> daemon.main()
       }
   }
@@ -62,7 +67,18 @@ pub fn main() -> Nil {
 // position only: anywhere else it is a plausible value — a principal or
 // display name in an `access` command — and intercepting it would reach
 // into arguments that belong to the subcommand.
-fn help_for(arguments: List(String)) -> Option(String) {
+/// The help text an argument list asks for, or `None` when it asks for none.
+/// `dist` and `distribution` name the same topic, so the shorthand shows the
+/// same text as the full word.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert client.help_for(["dist", "--help"])
+///   == client.help_for(["distribution", "--help"])
+/// ```
+@internal
+pub fn help_for(arguments: List(String)) -> Option(String) {
   let asks = case arguments {
     ["help", ..] -> True
     _ -> list.contains(arguments, "--help") || list.contains(arguments, "-h")
@@ -74,6 +90,8 @@ fn help_for(arguments: List(String)) -> Option(String) {
         Ok("access") -> Some(admin.usage)
         Ok("peer") -> Some(peer_cli.usage)
         Ok("ext") -> Some(cli.usage)
+        Ok("distribution") | Ok("dist") -> Some(distribution_cli.usage)
+        Ok("executor") -> Some(executor_cli.usage)
         Ok(_other) | Error(Nil) -> Some(usage)
       }
   }
@@ -81,10 +99,10 @@ fn help_for(arguments: List(String)) -> Option(String) {
 
 fn is_topic(word: String) -> Bool {
   case word {
-    "access" | "peer" | "ext" -> True
+    "access" | "peer" | "ext" | "distribution" | "dist" | "executor" -> True
     _ -> False
   }
 }
 
 const usage =
-  "usage: loomd [--state-dir PATH] [--bind ADDRESS] [--capacity N]\n       [--owner-name NAME] [--read-scope SCOPE] [--network NETWORK]\n       [--helper PATH] [--config PATH] [--codemode-seed PATH]\n       [--codemode-seams PATH] [--best-effort | --full-enforcement]\n       loomd <command> [options]\n\ncommands:\n  access <command>    Manage session access.\n  peer <command>      Inspect links, grant, revoke, or send.\n  ext <command>       Manage extensions.\n\nRun `loomd help <command>` for command usage."
+  "usage: loomd [--state-dir PATH] [--bind ADDRESS] [--capacity N]\n       [--owner-name NAME] [--read-scope SCOPE] [--network NETWORK]\n       [--helper PATH] [--config PATH] [--codemode-seed PATH]\n       [--codemode-seams PATH] [--best-effort | --full-enforcement]\n       loomd <command> [options]\n\ncommands:\n  access <command>    Manage session access.\n  peer <command>      Inspect links, grant, revoke, or send.\n  ext <command>       Manage extensions.\n  distribution <command>\n                      Provision trusted distribution: init, provision,\n                      install, show, options. `dist` is short for it.\n  executor <command>  Release a scope an executor will not reopen itself.\n\nRun `loomd help <command>` for command usage."

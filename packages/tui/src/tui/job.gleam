@@ -357,6 +357,12 @@ pub type AttachRoute {
     name: String,
     config: String,
     profile: String,
+    /// The executor `workspace` is registered on, or empty when it is a path
+    /// on the daemon's host (protocol-change/078).
+    executor: String,
+    /// The pool of executors `workspace` is registered on, or empty
+    /// (protocol-change/078).
+    pool: String,
   )
 }
 

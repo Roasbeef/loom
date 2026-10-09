@@ -647,7 +647,16 @@ fn resolve(
           daemon_selection.open(host, session)
         }
       })
-    job.CreateSession(control:, key:, workspace:, name:, config:, profile:) ->
+    job.CreateSession(
+      control:,
+      key:,
+      workspace:,
+      name:,
+      config:,
+      profile:,
+      executor:,
+      pool:,
+    ) ->
       with_control(running, control, fn(host) {
         fn() {
           use host <- daemon_selection.with_live_control(host)
@@ -658,6 +667,8 @@ fn resolve(
             name,
             config,
             profile,
+            executor,
+            pool,
           )
         }
       })
@@ -721,6 +732,7 @@ fn load_page(host, command, collection, session, workspace) {
     | control_protocol.SessionReply(_)
     | control_protocol.LifecycleReply(_)
     | control_protocol.DeletedReply(_)
+    | control_protocol.MovedReply(..)
     | control_protocol.PeersInspectionReply(_)
     | control_protocol.PeersMutationReply(_)
     | control_protocol.AccessListingReply(_)
@@ -872,6 +884,7 @@ fn activity(
     | control_protocol.SessionReply(_)
     | control_protocol.LifecycleReply(_)
     | control_protocol.DeletedReply(_)
+    | control_protocol.MovedReply(..)
     | control_protocol.PeersInspectionReply(_)
     | control_protocol.PeersMutationReply(_)
     | control_protocol.AccessListingReply(_)

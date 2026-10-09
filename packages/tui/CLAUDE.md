@@ -599,6 +599,9 @@ Gleam forbids import cycles and none of the `tui/` modules may import
   replies from the slots the runtime admitted them into. `create_session`
   starts a `job.Configure` job when the terminal has local launch options,
   and `drain_configuration` continues the creation with its answer.
+- `tui/placement`: where a new session's workspace lives (`OnThisHost` or
+  `OnExecutor(executor, workspace)`, protocol 078), the shape rules that refuse a
+  typo before a round trip, and `label`, the `executor:name` text listings use.
 - `tui/projection`: `refresh_render_cache`, `refresh_diff_cache` and the
   record row cache.
 - `tui/live_tail`: the rows of a streaming answer, rebuilt each frame from
@@ -837,11 +840,16 @@ boundaries and the split's measurements under Invariants.
   or write terminal escape sequences. An
   `Invalid` launch writes its reason to stderr
   and exits nonzero instead of entering the alternate screen.
-  `loom ext …` is a passthrough to `loomd`'s own `ext` subcommand: `main`
+  `loom ext …` is a passthrough to `loomd`'s own `ext` subcommand, and so is
+  `loom distribution …` (`dist` for short, normalised to `distribution`, with
+  the provisioning commands implemented in `client/daemon/distribution_cli`;
+  `tui.server_arguments` is the tested seam that says what the server is
+  handed, and `scripts/cli_help_test.sh` runs the built binaries with a stand-in
+  server): `main`
   answers it before it builds a model, so nothing draws a frame and no
   terminal state is installed on the way past. Its three help forms are
   local instead: the client-only shipment can print extension usage without
-  locating `loomd`. The private copy is compared with `loomd ext --help` by
+  locating `loomd`. The private copies (`extension_usage`, `distribution_usage`) are compared with `loomd ext --help` and `loomd distribution --help` by
   the shipped acceptance, preserving the shared text without an inverted
   package dependency. The daemon is located by
   `tui/bootstrap.server_executable`, the same ladder an implicit local
@@ -850,8 +858,12 @@ boundaries and the split's measurements under Invariants.
   the child's own status. `Replay` is the same shape for a different
   reason: `loom replay <path>` drives a recording through the virtual
   backend and prints frames, so it installs no terminal state and opens no
-  socket either. `Sessions` is `loom sessions list` and `loom sessions rm
-  <id>`: it reaches the control endpoint as the owner over the same
+  socket either. `Sessions` is `loom sessions list`, `loom sessions rm
+  <id>` and `loom sessions move <id> --to <orchestrator>` (protocol-change/078,
+  phase 5; `--to` is checked against `placement.is_orchestrator_name` before any
+  daemon is started, `MoveSession` is a mutation, and the answer `MovedReply`
+  names the operation; the command returns once the daemon accepted the move and
+  does not wait for it): it reaches the control endpoint as the owner over the same
   bootstrap ladder the picker uses, prints a styled table on a terminal and
   one line per row otherwise, or one line of outcome, and exits with a
   status. `list` shows the resident track by default — every lifecycle but
@@ -3169,3 +3181,93 @@ that valueless flag for BEAM profiling before the application starts, so a bare
 `--profile` is still an unknown local option here (`tui.launch_options` is the
 test seam). A value beginning with `-` is refused so a forgotten name does not
 consume the next flag.
+
+## Executor launch flag (protocol 078)
+
+`loom --executor <name> --workspace <registered name>` creates new sessions in a
+workspace registered on that `[executors.<name>]` of the daemon's configuration.
+`tui.parse_local_launch` reads the two flags before `parse_local_options` sees
+the words, for two reasons. `--workspace` with an executor is a name and not a
+directory, and `bootstrap.Options.workspace` is canonicalized by the launcher,
+so the name lives only in `bootstrap.Options.placement`
+(`tui/placement.Placement`: `OnThisHost` or `OnExecutor(executor, workspace)`),
+a type that cannot hold an executor without a workspace. And `loom ui` and
+`loom sessions` take the shared local options but have no session to create, so
+they keep refusing `--executor` as an unknown local option. `--executor` is
+refused with `--session` (it says where a new session goes and `--session` opens
+one that exists), without a value, twice, with a flag-shaped value, with a name
+that is not an executor name, and with a `--workspace` that is empty, holds a
+`/` or a NUL, or is longer than 128 bytes. `placement` repeats the daemon's
+shapes because this package cannot import `storage`; the daemon judges the same
+text again, so the copy can only make this client stricter or looser than the
+daemon, never unsafe. A remote launch (`--addr`) ignores the flag as it ignores
+`--workspace`.
+
+Like the profile, the placement applies to every creation the terminal makes:
+the picker's `n` (`session_control.create_session_configured`) sends
+`sessions.create` with `workspace` set to the registered name and `executor`
+set, through `job.CreateSession.executor` and `selection.create_named`. The
+protocol encoder (`protocol.CreateSession.executor`) sends the field only when it
+is not empty, so a local creation is the request it always was. The session's
+display name is the registered name. The footer shows the name as the launch
+gave it: `interactive` builds the context directly and `selection.target` skips
+`workspace.discover_from` for a session with an executor, which would read the
+name relative to the terminal's working directory and could show the branch of an
+unrelated local folder.
+
+`loom --pool <name> --workspace <registered name>` is the same for a
+`[pools.<name>]`: the placement is `InPool(pool, workspace)`, the creation sends
+`pool` and no `executor` (`job.CreateSession.pool`,
+`protocol.CreateSession.pool`), and the daemon picks the executor when the
+session first opens. `--pool` and `--executor` are exclusive, and every other
+rule above holds for it. The terminal words `pool_unknown`. A pooled session's
+row carries no `executor` until its first open has chosen one, and the terminal
+does not read the row's `pool`, so until then the row lists with its registered
+name where a path would be.
+
+`protocol.Session.executor` is the optional `executor` member of a session row
+(`Some` only for a remote session; absent, empty, over-long and non-string read
+as `None`, as the subtitle does). Listings show it. The picker groups by
+`session_selector.Place`, `Directory(path)` or `Registered(executor, workspace)`,
+because two executors may each register `app` and neither is a directory called
+`app`; a registered group's heading says `on <executor>` where a directory's says
+its path, and the details pane draws `EXECUTOR` and `WORKSPACE` rows. `loom
+sessions list` shows `executor:name` in its WORKSPACE column, in the styled table
+and in the plain, script-read format (`placement.label`), and a local row is
+byte-identical to before.
+
+`selection.failure` words the two refusals a remote creation can meet:
+`executor_unknown` (the daemon's configuration has no such executor, with the
+flag's own words appended because the refusal does not repeat the name) and a
+`start_failed` whose reason leads with `executor_unavailable:`, shown as `session
+startup failed (executor_unavailable): <reason>`. Tests are
+`executor_launch_test` (flag parsing, the request, the creation job, listings,
+grouping, the failure words) and `daemon_protocol_test` (the optional member).
+
+## Orchestrator redirects (protocol 078, phase 3)
+
+A daemon that does not hold a session the owner names can say which other
+orchestrator does. `sessions.get` and `sessions.open` then refuse with
+`not_owner` (the owner's `orchestrator` name and, when the daemon's operator
+configured one, its `address`) or `owner_unreachable` (the `orchestrators` that
+did not answer). The two codes carry members beyond `code` and `message`, so
+`tui/daemon/protocol.decode` turns them into their own `Event`, `Redirected(id,
+Redirect)`, with `Redirect` = `NotOwner(orchestrator, Option(address))` |
+`OwnerUnreachable(names)`, and `tui/daemon` carries it to the caller as
+`Failure.Redirected`. The decoder is total about the members: a redirect whose
+members are missing, empty or the wrong type is the ordinary `Refused` with its
+code and words, so the operator still learns the daemon refused.
+
+The terminal never follows a redirect. It holds a token for the local daemon (or
+the one `--addr` named) and none for another, so `selection.failure_for(session,
+reason)` words the launch that reaches the owner: `loom --addr <address>
+--session <id> --token-file <owner token file on that host>`, or the same with
+`<its control address>` when the daemon configured none, or the names that could
+not be asked. `selection.failure` is `failure_for` with a `<session-id>`
+placeholder, and `selection.open` (the path of `--session`, and of `loom ui
+<session>` through `opened_for_link`) is the caller that has the id. The web view
+has no path that can meet a redirect: a page, its ticket, cookie and key are
+bound to the daemon that minted them, and `loom ui <session>` is a terminal
+command that opens the session first, so its wording is this one. Tests are
+`orchestrator_redirect_test` (the decoder, its fallbacks and the three
+sentences).

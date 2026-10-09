@@ -61,6 +61,7 @@ import client/retryconf
 import client/schedule
 import client/serve
 import client/session_socket_test
+import client/workspace_policy
 import core/clock
 import core/entry
 import core/ids
@@ -926,7 +927,7 @@ fn boot(settings: serve.Settings) -> Result(Booted, String) {
             == Ok(Nil)
           let base =
             policy.SandboxPolicy(
-              ..serve.base_policy(record.workspace),
+              ..workspace_policy.base_policy(record.workspace),
               readable_roots: settings.base_policy.readable_roots,
               mounts: settings.base_policy.mounts,
             )
@@ -975,6 +976,8 @@ fn boot(settings: serve.Settings) -> Result(Booted, String) {
         "",
         None,
         None,
+        "",
+        "",
       ),
       directory: serving.ready.sessions_directory,
       generator: ids.generator(
@@ -1032,7 +1035,7 @@ fn scripted_catalog() -> catalog.Catalog {
 
 // A repository-relative test path as the absolute one every policy path
 // must be: the workspace becomes the base policy's writable root, and
-// `serve.base_policy_fault` refuses a boot on a policy the jail could
+// `workspace_policy.base_policy_fault` refuses a boot on a policy the jail could
 // not accept.
 fn absolute(path: String) -> String {
   let assert Ok(here) = simplifile.current_directory()
@@ -1054,7 +1057,7 @@ fn settings_at(test_root: String) -> serve.Settings {
     bind_port: 0,
     token_path: test_root <> "/session.db.token",
     workspace: absolute(test_root) <> "/work",
-    base_policy: serve.base_policy(absolute(test_root) <> "/work"),
+    base_policy: workspace_policy.base_policy(absolute(test_root) <> "/work"),
     // No tool is dispatched in this protocol round trip, so the terminal
     // boundary stays independent of whichever jail layers the host offers.
     helper_path: absolute("../../bin/loom-exec"),

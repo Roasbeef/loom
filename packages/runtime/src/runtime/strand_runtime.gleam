@@ -115,12 +115,12 @@ import machine/classification
 import machine/codec
 import machine/operation.{
   type NormalizedRetryPolicy, type Operation, type OperationState,
-  type PendingEntry, type StructuralPreparation, type SummaryGeneration,
-  Assistant, AwaitingDeferred, BranchSummaryPreparation, Compacting,
-  CompactionIntent, CompactionPreparation, CompactionState,
-  DeferredEffectPending, DeferredSuspended, Generating, GenerationReady,
-  NavigationIntent, NavigationState, OverflowReason, RunIntent, RunState,
-  SummarizedNavigation, ThresholdReason, Tools,
+  type PendingEntry, type ReplayPolicy, type StructuralPreparation,
+  type SummaryGeneration, Assistant, AwaitingDeferred, BranchSummaryPreparation,
+  CallEffectPending, Compacting, CompactionIntent, CompactionPreparation,
+  CompactionState, DeferredEffectPending, DeferredSuspended, Generating,
+  GenerationReady, NavigationIntent, NavigationState, OverflowReason, RunIntent,
+  RunState, SummarizedNavigation, ThresholdReason, Tools,
 }
 import machine/planner.{type Observation, type StructuralVerdict, NoObservation}
 import machine/queue
@@ -237,6 +237,16 @@ pub opaque type Message {
 
   /// A tool effect settled.
   ToolDone(token: EffectToken, outcome: effects.ToolOutcome)
+
+  /// A recovery effect asked the tool surface what became of an orphaned
+  /// call and got `recovery`. `replay` is the policy persisted in the
+  /// call's intent, carried here so the driver judges a call that never
+  /// started by what the dead incarnation declared.
+  ToolRecovered(
+    token: EffectToken,
+    recovery: effects.Recovery,
+    replay: ReplayPolicy,
+  )
 
   /// A monitored effect process exited.
   EffectExit(down: process.Down)
@@ -579,6 +589,8 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       finish(logger, provider_done(state, token, terminal))
     ToolDone(token:, outcome:) ->
       finish(logger, tool_done(state, token, outcome))
+    ToolRecovered(token:, recovery:, replay:) ->
+      finish(logger, recovery_done(state, token, recovery, replay))
     EffectExit(down:) -> finish(logger, effect_exit(state, down))
   }
 }
@@ -879,21 +891,108 @@ fn tool_done(
 ) -> Outcome {
   case take_live(state, token), token {
     None, _ -> Continue(state)
-    Some(#(live, state)), ToolEffect(source_index:, ..) -> {
-      log.debug(step_logger(state, token), "effect.settled", [
-        field.text(key: "kind", value: effect_kind(token)),
-        field.text(key: "outcome", value: tool_outcome_name(outcome)),
-      ])
-      let #(now, state) = read_clock(state)
-      use observation <- or_halt(tool_observation(
-        live,
-        outcome,
-        source_index,
-        now,
-      ))
-      drive(push_observation(state, observation))
-    }
+    Some(#(live, state)), ToolEffect(source_index:, ..) ->
+      settle_tool(state, token, live, source_index, outcome)
     Some(_), _ -> Halt("tool outcome arrived under a non-tool effect token")
+  }
+}
+
+// A tool outcome becomes the machine's settled observation. A fresh run and
+// a recovered outcome both end here, which is what makes a recovered call
+// indistinguishable from one that ran in this incarnation: same staging,
+// same terminate flag, same synthetic result on failure.
+fn settle_tool(
+  state: State,
+  token: EffectToken,
+  live: Live,
+  source_index: Int,
+  outcome: effects.ToolOutcome,
+) -> Outcome {
+  log.debug(step_logger(state, token), "effect.settled", [
+    field.text(key: "kind", value: effect_kind(token)),
+    field.text(key: "outcome", value: tool_outcome_name(outcome)),
+  ])
+  let #(now, state) = read_clock(state)
+  use observation <- or_halt(tool_observation(live, outcome, source_index, now))
+  drive(push_observation(state, observation))
+}
+
+// What the surface said about an orphaned call, mapped onto observations
+// the planner already accepts. The machine learns nothing new: a recovered
+// outcome is an ordinary settlement, and the two other answers are the
+// orphan observation it has always had, differing only in whether a replay
+// is still permitted.
+fn recovery_done(
+  state: State,
+  token: EffectToken,
+  recovery: effects.Recovery,
+  replay: ReplayPolicy,
+) -> Outcome {
+  case take_live(state, token), token {
+    None, _ -> Continue(state)
+    Some(#(live, state)), ToolEffect(source_index:, ..) ->
+      case recovery {
+        effects.Recovered(outcome:) ->
+          settle_tool(state, token, live, source_index, outcome)
+
+        // The executor restarted mid-run: whether the call took effect is
+        // unknowable, so a replay is ruled out whatever the policy says.
+        effects.OutcomeUnknown ->
+          drive(push_observation(
+            state,
+            planner.ObservedToolOrphaned(
+              source_index:,
+              replay_still_safe: False,
+              checkpoint: None,
+            ),
+          ))
+
+        effects.NotStarted ->
+          not_started(state, token, live, source_index, replay)
+      }
+    Some(_), _ -> Halt("a recovery arrived under a non-tool effect token")
+  }
+}
+
+// The call never reached the executor, so nothing it does can have
+// happened. It may still run again only as the planner's replay: both the
+// declaration persisted in the intent and the current registration must
+// say safe, the same two-sided test an ordinary orphan faces. Any other
+// call is told to the model as not having run, because the planner's
+// orphan arm would claim an unknown outcome for a call known not to have
+// started.
+fn not_started(
+  state: State,
+  token: EffectToken,
+  live: Live,
+  source_index: Int,
+  replay: ReplayPolicy,
+) -> Outcome {
+  let replayable = case replay, live.call {
+    operation.ReplaySafe, Some(call) ->
+      state.effects.tools.replay_still_safe(call.name)
+    _, _ -> False
+  }
+  case replayable {
+    True ->
+      drive(push_observation(
+        state,
+        planner.ObservedToolOrphaned(
+          source_index:,
+          replay_still_safe: True,
+          checkpoint: None,
+        ),
+      ))
+    False ->
+      settle_tool(
+        state,
+        token,
+        live,
+        source_index,
+        effects.ToolFailed(
+          reason: "the call never reached the executor and did not run",
+        ),
+      )
   }
 }
 
@@ -1185,16 +1284,20 @@ fn await_effect_action(
 ) -> Outcome {
   case resolve_key(state, loaded, key, observation, now) {
     KeyHalt(reason) -> Halt(reason)
-    KeyWait ->
-      // Parked on a live effect. An unconsumed real observation goes
-      // back to the front of the queue.
-      case observation {
-        NoObservation -> Continue(state)
-        other -> Continue(push_observation_front(state, other))
-      }
+    KeyWait -> park_on_live(state, observation)
+    KeySpawned(state) -> park_on_live(state, observation)
     KeyObservation(refined) -> plan(state, loaded, refined, fuel - 1)
     KeyCleared(observation: refined, cleared:) ->
       plan(State(..state, cleared: Some(cleared)), loaded, refined, fuel - 1)
+  }
+}
+
+// Parked on a live effect. An unconsumed real observation goes back to the
+// front of the queue.
+fn park_on_live(state: State, observation: Observation) -> Outcome {
+  case observation {
+    NoObservation -> Continue(state)
+    other -> Continue(push_observation_front(state, other))
   }
 }
 
@@ -1311,6 +1414,11 @@ type KeyResolution {
   /// exists to close.
   KeyCleared(observation: Observation, cleared: Cleared)
   KeyWait
+
+  /// A recovery effect was just spawned to fetch the key's answer. A wait,
+  /// except that the state it carries is the one recording the new live
+  /// effect, so `has_live_tool` sees it on the next resolution.
+  KeySpawned(State)
   KeyHalt(String)
 }
 
@@ -1362,8 +1470,8 @@ fn resolve_key(
       overflow_preparation_key(state, hooks, operation, observation)
     planner.ToolClearanceKey(operation:, step_id:, source_index:) ->
       tool_clearance_key(state, loaded, operation, step_id, source_index, now)
-    planner.ToolKey(operation:, step_id:, source_index:, result_entry: _) ->
-      tool_key(state, loaded, operation, step_id, source_index)
+    planner.ToolKey(operation:, step_id:, source_index:, result_entry:) ->
+      tool_key(state, loaded, operation, step_id, source_index, result_entry)
     planner.PollAdmissionKey(operation: _, step_id: _, poll: _) ->
       KeyObservation(
         planner.ObservedResolution(resolution: hooks.resolution(
@@ -1552,6 +1660,7 @@ fn tool_key(
   operation: OpId,
   step_id: String,
   source_index: Int,
+  result_entry: EntryId,
 ) -> KeyResolution {
   // Any pending call's observation satisfies the key.
   use <- bool.guard(
@@ -1559,14 +1668,76 @@ fn tool_key(
     return: KeyWait,
   )
   use call <- or_key_halt(source_call(loaded, source_index))
+  case state.effects.tools.recover {
+    // Loom has no durable tool checkpoints (no list store — spec-gaps
+    // WP-D item 2), so the checkpoint is always absent.
+    None ->
+      KeyObservation(planner.ObservedToolOrphaned(
+        source_index:,
+        replay_still_safe: state.effects.tools.replay_still_safe(call.name),
+        checkpoint: None,
+      ))
 
-  // Loom has no durable tool checkpoints (no list store — spec-gaps
-  // WP-D item 2), so the checkpoint is always absent.
-  KeyObservation(planner.ObservedToolOrphaned(
-    source_index:,
-    replay_still_safe: state.effects.tools.replay_still_safe(call.name),
-    checkpoint: None,
-  ))
+    // A surface with its own record of finished calls is asked before the
+    // planner is told anything. The answer arrives as a message, so the
+    // driver stays responsive while a remote ledger is consulted.
+    Some(recover) -> {
+      use replay <- or_key_halt(pending_replay(loaded, source_index))
+      use arguments <- or_key_halt(read_tool_arguments(
+        state,
+        planner.tool_args_key(operation, step_id, source_index),
+      ))
+
+      // The run a replay would use, rebuilt from the persisted intent: the
+      // effective arguments the clearance wrote and the policy declared
+      // beside the pending call, with no grants. The approval that widened
+      // the original dispatch was spent by the incarnation that died, and
+      // asking an executor what happened must not become a second use of it.
+      let run =
+        effects.ToolRun(
+          operation:,
+          step_id:,
+          source_index:,
+          strand: state.strand,
+          call:,
+          arguments:,
+          replay:,
+          grants: [],
+        )
+      KeySpawned(spawn_recovery(
+        state,
+        ToolEffect(operation:, step_id:, source_index:, result_entry:),
+        loaded.configuration,
+        run,
+        recover,
+      ))
+    }
+  }
+}
+
+// The replay policy persisted in the intent of the effect-pending call at
+// `source_index`. Only a call in that state can be orphaned, so any other
+// finding means the batch and the key disagree about where the call is.
+fn pending_replay(
+  loaded: Loaded,
+  source_index: Int,
+) -> Result(ReplayPolicy, String) {
+  let pending = case loaded.op_state {
+    RunState(phase: Tools(batch:), ..) ->
+      list.find_map(batch.calls, fn(state) {
+        case state {
+          CallEffectPending(source_index: index, replay:, ..)
+            if index == source_index
+          -> Ok(replay)
+          _ -> Error(Nil)
+        }
+      })
+    _ -> Error(Nil)
+  }
+  result.replace_error(
+    pending,
+    "a recovery was requested for a call that is not effect-pending",
+  )
 }
 
 fn summary_key(
@@ -2508,8 +2679,39 @@ fn spawn_tool(
   configuration: StrandConfiguration,
   run: effects.ToolRun,
 ) -> State {
-  let parent = state.internal
   let runner = state.effects.tools.run
+  spawn_tool_worker(state, token, configuration, run, fn() {
+    ToolDone(token:, outcome: runner(run))
+  })
+}
+
+// The recovery twin of `spawn_tool`: the same monitored, reaper-adopted
+// worker registered under the call's own `ToolEffect` token, so `KeyWait`,
+// `has_live_tool` and the abort path treat it as the tool it stands in for.
+// What differs is the question the worker asks and the message it reports.
+fn spawn_recovery(
+  state: State,
+  token: EffectToken,
+  configuration: StrandConfiguration,
+  run: effects.ToolRun,
+  recover: fn(effects.ToolRun) -> effects.Recovery,
+) -> State {
+  spawn_tool_worker(state, token, configuration, run, fn() {
+    ToolRecovered(token:, recovery: recover(run), replay: run.replay)
+  })
+}
+
+// `work` runs on the worker, and its message is the worker's only report.
+// A worker that dies first reports through the monitor instead, as an
+// ordinary tool effect exit.
+fn spawn_tool_worker(
+  state: State,
+  token: EffectToken,
+  configuration: StrandConfiguration,
+  run: effects.ToolRun,
+  work: fn() -> Message,
+) -> State {
+  let parent = state.internal
   let call = run.call
   let logger = step_logger(state, token)
   log.debug(logger, "effect.dispatched", [
@@ -2518,10 +2720,7 @@ fn spawn_tool(
     field.flag(key: "replay", value: run.replay == operation.ReplaySafe),
   ])
   let #(pid, stop) =
-    spawn_effect(state.reaper, logger, fn() {
-      let outcome = runner(run)
-      wake(parent, ToolDone(token:, outcome:))
-    })
+    spawn_effect(state.reaper, logger, fn() { wake(parent, work()) })
   let monitor = process.monitor(pid)
   State(..state, live: [
     Live(token:, pid:, stop:, monitor:, configuration:, call: Some(call)),

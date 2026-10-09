@@ -19,12 +19,13 @@ with these forks: they define the same modules.
 
 ## Key Types
 
-- The catalogue is at `user_version` 10. Each later version has its own embedded
+- The catalogue is at `user_version` 13. Each later version has its own embedded
   migration schema (`catalogue_names_schema`, `catalogue_archives_schema`,
   `catalogue_claims_schema`, `catalogue_subtitles_schema`,
   `catalogue_credential_kinds_schema`, `catalogue_logins_schema`,
   `catalogue_recent_folders_schema`, `catalogue_profiles_schema`,
-  `catalogue_models_schema`), and
+  `catalogue_models_schema`, `catalogue_executors_schema`,
+  `catalogue_pools_schema`, `catalogue_moves_schema`), and
   `initialize_schema` applies every
   schema an
   older catalogue lacks, then moves the version, in one transaction; a fresh
@@ -57,6 +58,57 @@ with these forks: they define the same modules.
   a `[models.<key>]` key is any TOML key. Because the column cannot hold more than
   the limit, a stored value is always a key, and there is no damaged-model read to
   refuse.
+- `Registration.executor: String` names the `[executors.<name>]` a session's
+  workspace is registered on, empty for a local session (protocol-change/078).
+  Version 11 adds it as a `NOT NULL DEFAULT ''` column of `catalogue_sessions`,
+  so a v10 row reads back as local, and it is part of the creation request: a
+  retry that repeats the key with another executor is a `Conflict`. When it is
+  set, `workspace` holds the registered workspace name and never a path on this
+  host. `validate` enforces the split from the text alone: a local workspace
+  starts with `/`, a registered one satisfies `is_workspace_name` (one to 128
+  bytes, no `/`, no NUL), and the two cannot overlap. `is_executor_name` shares
+  the profile grammar. `set_workspace_default` refuses a registered session with
+  `Conflict`, because a default is keyed by the name alone and two executors may
+  register the same one. `storage/domain.validate` lets only a `SessionOnly`
+  domain carry a workspace name; the workspace aggregate stays path-keyed.
+- `Registration.pool: String` names the `[pools.<name>]` a session was created
+  in, empty for a session that named none. Version 12 adds it as a
+  `NOT NULL DEFAULT ''` column, and it is part of the creation request. A
+  pooled session's `executor` is empty at creation and is set once by
+  `seed_executor` after its first attach chose one (the executor shown in
+  listings), so `reserve` compares the pool and not the executor for a pooled
+  registration. A pooled registration's workspace is a registered name, as an
+  executor session's is, and `set_workspace_default` refuses it. `is_pool_name`
+  shares the profile grammar.
+- `catalogue.Custody` says who serves a session, apart from `State` and
+  `Visibility`: `Resident` (no row), `Moving(op, to)`, `Moved(op, to)` and
+  `Imported(op, from)`. Version 13 adds `catalogue_session_moves(session_id,
+  op, peer, state)`, one row per session, with `state` one of `moving`, `moved`
+  and `imported`. `custody` reads it; `begin_move`, `finish_move`,
+  `abort_move` and `import_session` are compare-and-set transitions, each in
+  one immediate transaction, keyed by the move's `op`: source side `Resident ->
+  Moving -> Moved` with `Moving -> Resident` for an early abort, target side
+  `Resident -> Imported`. Two transitions let a session travel more than once,
+  and each needs a new op: `begin_move` on an `Imported` session replaces the
+  import row with `Moving` (a session moves onward from the catalogue that
+  received it), and `import_session` on a `Moved` session whose tombstone has a
+  different op replaces it with `Imported` (a session comes back to the
+  catalogue that handed it over, whose registration was kept). Both replace the
+  row in one transaction. A repeat of the same op answers the stored custody
+  and writes nothing, and the revision moves only when a row changes. Any other
+  op, or a transition the stored state does not allow, is `Conflict`. A `Moved`
+  row cannot be undone by the op that wrote it, so an abort or an import of
+  that move arriving late changes nothing, and `delete` refuses a `Moving` or
+  `Moved` session with `Conflict` because the row is the only record of who
+  owns it (an `Imported` row leaves with its session). `moving` lists the moves
+  still in `Moving`, which a restart resumes. A stored row whose op or peer breaks its
+  grammar (`is_move_op`, `is_orchestrator_name`) fails the read with `Invalid`
+  and is never read as `Resident`. The table's foreign key to
+  `catalogue_sessions` means a registration cannot be removed while its row
+  stands.
+  `Visibility` was not given a `Moved` arm: archiving is the owner's choice and
+  independent of custody, and a `Visibility` variant would force every
+  existing archive match to decide what a moved session means.
 - `catalogue.Visibility` separates active and archived rows from initialization
   state. Schema version 3 adds `catalogue_session_archives`, migrated atomically
   from versions 1 and 2. `set_visibility` changes the overlay, clears an archived
@@ -101,6 +153,12 @@ with these forks: they define the same modules.
   memory/index paths separately from session admission. `reserve_session`
   atomically reserves identity and its mapping; `isolate` replaces a private
   mapping with a fresh session-only record without opening or copying files.
+  `import_session` takes in a session another orchestrator handed over: for a
+  session never seen here it reserves the registration, binds its session-only
+  mapping, confirms it and records the `Imported` custody in one transaction,
+  so no confirmed registration exists without the row that explains it; for a
+  session returning to the catalogue that gave it up it keeps the registration
+  and mapping and changes only the row.
   `sources` pages only saved registrations and validates their mapped workspace.
   Existing domain references and repeated isolation retain their original paths.
   The catalogue also reserves `digest_beside(memory_path)` and checks memory,
@@ -288,17 +346,59 @@ with these forks: they define the same modules.
   `rewrite_into` takes two transforms: an entry rewrite for `entries`
   payloads and a value rewrite for register payloads and usage-ledger
   details, because the audit contract covers every store a needle can
-  reach.
+  reach. `export_closed(path, to, owner, clock)` is the rewrite's first half
+  with no transform: it claims the lease under `owner` (the session-move
+  protocol uses `move:<op>`), retires the WAL, takes the `VACUUM INTO` copy,
+  clears the copy's `writer_lease` rows and returns the copy's SHA-256 as
+  hex. `rewrite_into` calls the same `cut_closed`, so the two cannot drift.
+  The claim stays held in the original after a successful export, and the
+  same owner may re-cut over its own unexpired claim; any other unexpired
+  holder is `RewriteLeaseHeld`. `release_export(path, owner)` deletes the claim
+  of that owner from the original, so an aborted move gives the session back at
+  once and a finished one frees the file before it is set aside; another
+  owner's claim is left alone.
 - `storage/internal/branch.Refine` — the shared incremental
   truncate/filter/cursor/limit pipeline, fed page by page by SQLite and
   whole by Memory.
+- `storage/exec_ledger` — the executor's execution ledger
+  (`docs/design-notes/distributed-runtime.md`, "The execution ledger";
+  `protocol-change/078`): one SQLite file per executor, rows keyed by
+  session, no process of its own (a later node-level actor owns the single
+  connection). Its DDL is `sql/exec_ledger.sql` (embedded as
+  `exec_ledger_schema`, with `sql/exec_ledger_releases.sql` as its second
+  version, embedded as `exec_ledger_releases_schema`, and `sql/exec_ledger_acks.sql`
+  as its third, embedded as `exec_ledger_acks_schema`; `PRAGMA user_version` 3,
+  its own `application_id`; an older file gains the tables it lacks when it is
+  opened) and its named queries are `src/storage/sql/exec_ledger.sql`, generated into
+  `sql.gleam` with the `Ledger*` names. Two tables: `scope(session, workspace,
+  incarnation, state open|closing|closed, close_outcome, attach_token)` and
+  `call(session, op, step, source_index, incarnation, tool, state
+  admitted|terminal|unknown, outcome, outcome_digest, outcome_bytes)`, plus
+  `scope_release(session, workspace, incarnation, was, released_at_ms)`, the
+  operator release record, and `call_ack(session, op, step, source_index,
+  incarnation)`, the acknowledgement tombstones.
+  `Ledger` is opaque; `Key` is the planner's call identity;
+  `Limits(max_unclean_scopes, max_ledger_bytes)` is passed on every call;
+  `ScopeState` is `Open | Closing | Closed(AllRetired | UnknownCleanup(n))`;
+  `CallState` is `Admitted | Terminal(outcome) | Unknown | Acked`; `Lookup` is
+  `Missing | Found(CallState)`; `Admission` is `Fresh | Existing(CallState)`;
+  `Fencing` is `Standing(CallState) | Fenced`;
+  `Error` is one closed type (`StaleIncarnation`, `StaleToken`,
+  `ScopeNotOpen`, `ScopeClosing`, `UncleanClose`, `NotReleasable`, `CapacityExhausted`,
+  `BudgetExhausted`, `DigestMismatch`, `MalformedRow`, ...). Operations:
+  `open`, `close`, `attach`, `admit`, `finish`, `mark_unknown`, `query`,
+  `query_or_fence`, `ack`, `begin_close`, `finish_close`, `release` (with
+  `Released`, and `releases` listing the `Release` rows), `scope`, and `unacked`, the attach reply's two
+  key lists as a read that changes nothing (`Unacked(terminal, unknown)`), for
+  a reconciler that must not replace the scope's token to look.
 
 ## Relationships
 
 - **Depends on**: `core` (ids, entries, registers, tx, codecs,
   corruption), `sqlight` (the SQLite binding, ADR-002), `simplifile` (the
   rewrite's copy/rename/unlink), `gleam_erlang` + `gleam_otp` (both
-  backends are actors), `parrot` (typed catalogue queries, ADR-004).
+  backends are actors), `parrot` (typed catalogue queries, ADR-004),
+  `gleam_crypto` (the execution ledger's SHA-256 outcome digest).
 - **Depended on by**: `session` (wraps one open handle; owns the migration
   chain and drives the rewrite), `runtime` (the StorageWriter owns it),
   `events` (projections and the search service scan sessions through the
@@ -559,8 +659,78 @@ with these forks: they define the same modules.
   how an external index (WP-K search) learns its cursors are invalid;
   `generation` reads it without taking the lease, and never conjures a file
   that does not exist.
+- **The execution ledger decides in the transaction that writes.** Every
+  `exec_ledger` write runs in `BEGIN IMMEDIATE`, and `admit` compares the
+  request's incarnation and attach token **by value** against the stored scope
+  inside the transaction that inserts the call row. A stale runtime's `Run`
+  is therefore refused by content whatever order the network delivered it
+  in, and two connections racing one key produce exactly one `Fresh`. Remove
+  the token comparison and the stale-token test fails.
+- **`query_or_fence` settles a missing row in the transaction that finds it.**
+  The recovery of a call that must not run twice calls it instead of `query`:
+  an existing row is returned as `Standing`, and no row becomes a `terminal`
+  row carrying the caller's did-not-start outcome (tool `(fence)`), after which
+  `admit` for that key returns `Existing(Terminal)` and never `Fresh`. It checks
+  the scope exists and is at the caller's incarnation, not the attach token (the
+  only thing it writes is that the call did not run), and skips the byte budget
+  (one short outcome per orphaned call, retired by `ack`). A fence that inserts
+  nothing fails `a_fence_with_no_row_inserts_a_terminal_row_and_blocks_admission_test`.
+  The default ledger budget is 512 MiB: sixteen live calls reserve 16 MiB each,
+  and the rest is room for unacknowledged results.
+- **An `ack` retires the row and leaves a tombstone.** `ack` deletes a `terminal`
+  or `unknown` row, releases its bytes, and writes a `call_ack` row for the key
+  (schema version 3, `sql/exec_ledger_acks.sql`). A key with a tombstone reads as
+  `CallState.Acked`, `admit` returns `Existing(Acked)` for it and never `Fresh`,
+  and `query_or_fence` returns `Standing(Acked)`. That makes a key admitted once
+  in an incarnation never start again in it. Nothing else orders a late `Run`
+  after the acknowledgement: a runtime restart inside one open keeps the attach
+  token, recovery's fence from a new process can overtake the dead process's
+  `Run`, and the acknowledgement follows the fence. Tombstones hold no outcome or
+  bytes, are not in the byte budget, and are dropped by `forget_acks` when the
+  scope reopens, when `finish_close` records `AllRetired`, and in `release`; a
+  scope closed with unknown cleanup keeps them. `ack` deletes only `terminal` and
+  `unknown` rows, so a misdirected ack cannot discard a live run's reservation,
+  and an attach reply lists a session's unacknowledged `terminal` and `unknown`
+  keys so a lost ack cannot leak a row forever. Deleting the row without the
+  tombstone fails `an_acknowledged_key_is_never_admitted_again_in_its_incarnation_test`
+  and the P model's `tcDefectLateRun`.
+- **`exec_ledger.open` is restart recovery, so one opener per VM.** It turns
+  every `admitted` row into `unknown` and nothing turns one back; a second
+  `open` while runs are in flight would mark them lost. The node-level actor is
+  the only opener among daemons. `open` itself takes no lock; the executor daemon
+  holds the state directory's endpoint reservation for its VM's life, and
+  `loomd executor release`, the only other opener, takes the same reservation
+  first and refuses to run beside a daemon. A call still `admitted` at close is
+  the actor's to settle (`finish` or `mark_unknown`); `finish_close` does not
+  look for it.
+- **Scope rules.** A session has one scope (`attach` refuses a second
+  workspace, so a call key finds its scope without a workspace). Reopen needs
+  `Closed(AllRetired)` and exactly `incarnation + 1`; `UnknownCleanup` never
+  reopens by itself. `release` is the one exit, taken by an operator: it moves
+  a `Closing` or `Closed(UnknownCleanup)` scope to `Closed(AllRetired)` and
+  writes the `scope_release` row in the same transaction, and it refuses an
+  `Open` scope and a clean one (`NotReleasable`). At most `max_unclean_scopes` (16) scopes may be anything but
+  `Closed(AllRetired)`, and a clean close frees its slot immediately.
+- **The ledger byte budget** is `sum(outcome_bytes)` over `admitted` (the
+  reservation) and `terminal` (the real size) rows plus the new reservation,
+  against `max_ledger_bytes`; `finish` shrinks the reservation, `ack` and
+  `mark_unknown` release it.
+- **Every decoded ledger row is total.** The state and close-outcome columns
+  decode together, a `terminal` row's outcome must match its SHA-256 digest
+  and recorded size (`DigestMismatch`), and a state that fits no variant is
+  `MalformedRow`. Nothing defaults.
+- **`exec_ledger_schema`, `exec_ledger_releases_schema` and
+  `exec_ledger_acks_schema` are generated** from `sql/exec_ledger.sql`,
+  `sql/exec_ledger_releases.sql` and `sql/exec_ledger_acks.sql` by `make gen-sql`, and
+  the ledger's `Ledger*` queries are in the generated `sql.gleam`;
+  `exec_ledger_test` checks each embedded schema against its file. An older
+  build refuses a version 3 file as `Unsupported`.
 
 ## Deep Docs
+
+- [docs/design-notes/distributed-runtime.md](../../docs/design-notes/distributed-runtime.md)
+  — "The execution ledger" and "Incarnations, close and reopen": the rulings
+  `storage/exec_ledger` implements.
 
 - [docs/architecture/durability.md](../../docs/architecture/durability.md) —
   the plane in full: the three stores, the segmented index, query plans as

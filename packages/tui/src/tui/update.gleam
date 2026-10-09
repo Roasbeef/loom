@@ -15,6 +15,7 @@ import host/endpoint
 import simplifile
 import tui/bootstrap
 import tui/daemon
+import tui/placement
 import tui/update/files
 import tui/update/lifecycle
 import tui/update/manifest
@@ -142,6 +143,7 @@ fn install_locked(
       choices.state,
       choices.config,
       "",
+      placement.OnThisHost,
     )
   case choices.action {
     options.InstallOnly -> files.publish(stage, prefix, client)

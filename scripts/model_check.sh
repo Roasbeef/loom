@@ -1,7 +1,18 @@
 #!/usr/bin/env bash
-# model_check.sh — compile and check every P protocol model.
+# model_check.sh — check every protocol model: the TLA+ session-move model
+# with TLC, then every P project.
 #
-# Usage: scripts/model_check.sh   (MODEL_SCHEDULES, MODEL_PROBE_SCHEDULES)
+# Usage: scripts/model_check.sh
+#   (MODEL_SCHEDULES, MODEL_PROBE_SCHEDULES, TLA2TOOLS, TLA_JAVA)
+#
+# The TLA+ model, protocol/models/session-move, runs first. TLC must pass
+# the clean configuration, Move.cfg, and must report a violation of the
+# invariant each Mutant*.cfg names on its `\* expect-violation:` line. A
+# mutation that no longer fails means the model stopped depending on the
+# rule the mutation removes. TLC needs tla2tools.jar ($TLA2TOOLS, or
+# ~/tools/tla2tools.jar) and a Java 11 or later ($TLA_JAVA, java on PATH,
+# or a Homebrew openjdk). Without both, this script prints a SKIP line,
+# which the skip census refuses in CI, and moves on to the P projects.
 #
 # Each directory under protocol/models with a .pproj is a P project. Its
 # README says how it is run; this script runs the same commands for every
@@ -16,6 +27,13 @@
 # check` exits non-zero exactly when it finds a bug, which is what both
 # readings rest on.
 #
+# A project whose mutate.py accepts `--check` also has its mutants run, after
+# its cases: each mutant applies one text replacement to the model, and the
+# gate requires the test case that mutant names to fail on the rule it names.
+# A mutant that survives means the model stopped depending on the rule the
+# mutation removes, which is the same reading as a TLA+ Mutant*.cfg. Another
+# project's mutate.py, which is run by hand, is left alone.
+#
 # The schedule counts are smaller than the README's 30,000 because this is
 # a gate run on every model change, not the recorded result. The default
 # of 1,000 schedules takes about six seconds a case. Every probe in the
@@ -29,13 +47,100 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 schedules="${MODEL_SCHEDULES:-1000}"
 probe_schedules="${MODEL_PROBE_SCHEDULES:-2000}"
+failed=0
+
+# --- the TLA+ model --------------------------------------------------------
+
+# java_major prints the major version of the java binary given.
+java_major() {
+	"$1" -XshowSettings:properties -version 2>&1 |
+		sed -n 's/^ *java.specification.version = //p' | sed 's/^1\.//'
+}
+
+# find_java prints the first java binary that is Java 11 or later, which is
+# what a current tla2tools.jar needs.
+find_java() {
+	local candidate major
+	for candidate in "${TLA_JAVA:-}" "$(command -v java || true)" \
+		/opt/homebrew/opt/openjdk*/bin/java /usr/local/opt/openjdk*/bin/java; do
+		[ -n "$candidate" ] && [ -x "$candidate" ] || continue
+		major="$(java_major "$candidate" || true)"
+		if [ -n "$major" ] && [ "$major" -ge 11 ] 2>/dev/null; then
+			echo "$candidate"
+			return 0
+		fi
+	done
+	return 1
+}
+
+# run_tla runs TLC on one configuration, leaving its output in the log file.
+# TLC exits 0 for a pass and 12 for an invariant violation.
+run_tla() {
+	local java="$1" jar="$2" cfg="$3" metadir="$4" log="$5"
+	rm -rf "$metadir"
+	mkdir -p "$metadir"
+	"$java" -Xmx1g -cp "$jar" tlc2.TLC -workers 1 -metadir "$metadir" \
+		-config "$tla/$cfg.cfg" "$tla/Move.tla" >"$log" 2>&1
+}
+
+# tla_counts prints "N states, M distinct, depth D" from a TLC log.
+tla_counts() {
+	local found distinct depth
+	found="$(sed -n 's/^\([0-9,]*\) states generated.*/\1/p' "$1" | tail -1)"
+	distinct="$(sed -n 's/^[0-9,]* states generated, \([0-9,]*\) distinct.*/\1/p' "$1" | tail -1)"
+	depth="$(sed -n 's/^The depth of the complete state graph search is \([0-9]*\).*/\1/p' "$1" | tail -1)"
+	echo "${found:-?} states, ${distinct:-?} distinct, depth ${depth:-?}"
+}
+
+check_tla() {
+	local jar java name expected code out log
+	tla="$root/protocol/models/session-move"
+	jar="${TLA2TOOLS:-$HOME/tools/tla2tools.jar}"
+	echo "==> session-move (TLA+)"
+	[ -r "$jar" ] || {
+		echo "SKIP tla_models: no tla2tools.jar at $jar (set TLA2TOOLS)"
+		return 0
+	}
+	java="$(find_java)" || {
+		echo "SKIP tla_models: no Java 11 or later (set TLA_JAVA)"
+		return 0
+	}
+	out="$root/build/tla"
+	mkdir -p "$out"
+
+	log="$out/Move.log"
+	if run_tla "$java" "$jar" Move "$out/Move.states" "$log"; then
+		echo "   ok   Move ($(tla_counts "$log"))"
+	else
+		echo "   FAIL Move: see $log"
+		failed=1
+	fi
+
+	for cfg in "$tla"/Mutant*.cfg; do
+		name="$(basename "$cfg" .cfg)"
+		expected="$(sed -n 's/^\\\* expect-violation: *//p' "$cfg")"
+		log="$out/$name.log"
+		code=0
+		run_tla "$java" "$jar" "$name" "$out/$name.states" "$log" || code=$?
+		if [ "$code" -eq 12 ] && grep -q "Invariant $expected is violated" "$log"; then
+			echo "   ok   $name (violates $expected: $(tla_counts "$log"))"
+		else
+			echo "   FAIL $name: TLC exited $code, expected a violation of $expected, see $log"
+			failed=1
+		fi
+	done
+}
+
+check_tla
+
+# --- the P projects --------------------------------------------------------
+
 PATH="$PATH:$HOME/.dotnet/tools:$HOME/.dotnet"
 command -v p >/dev/null || {
 	echo "model_check: the P tool is not installed (dotnet tool install --global P)" >&2
 	exit 2
 }
 
-failed=0
 for project in "$root"/protocol/models/*/*.pproj; do
 	model="$(dirname "$project")"
 	echo "==> $(basename "$model")"
@@ -64,5 +169,8 @@ for project in "$root"/protocol/models/*/*.pproj; do
 			;;
 		esac
 	done
+	if [ -f "$model/mutate.py" ] && grep -q -- '--check' "$model/mutate.py"; then
+		(cd "$model" && python3 mutate.py --check) || failed=1
+	fi
 done
 exit "$failed"

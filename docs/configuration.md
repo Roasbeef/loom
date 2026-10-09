@@ -31,6 +31,8 @@ Worked, commented files:
 | `loom --config <path>` | The path given, passed on to the daemon the launcher starts. |
 | `loom` with no `--config` | `<state-dir>/loom.toml` when that file exists, where the state directory is `--state-dir` or `~/.loom`. When it does not exist, no file is read. |
 | `loom --model-profile <name>` | Selects a `[profiles.<name>]` table of the file for a newly created session. A resumed session keeps the profile it was created with. |
+| `loom --executor <name> --workspace <registered name>` | Not a file choice: creates new sessions in the workspace registered under that name on that `[executors.<name>]` of the file the daemon loaded. With `--executor`, `--workspace` is a name and not a path. |
+| `loom --pool <name> --workspace <registered name>` | The same, but the daemon picks the executor from that `[pools.<name>]` when the session first opens. Exclusive with `--executor`. |
 | New-session form on the web home | Offers the file's profiles and its `[models.<name>]` keys (see [Choosing a model for one session](#choosing-a-model-for-one-session)). |
 
 A file given with `--config` replaces the `LOOM_*` environment surface for model
@@ -55,9 +57,12 @@ error instead of a setting that silently does nothing.
 **There is no live reload.** A session reads the file when it is built: when it
 is created, opened, or resumed. It keeps what it read for as long as it runs, so
 an edit reaches a running session only after that session is stopped and opened
-again. Two tables are read once, when the daemon starts, and need a daemon
-restart: [`[daemon]`](#daemon) and [`[peers]`](#peers) (from protocol-change
-077). The MCP, language-server, rule and schedule tables are trust decisions and
+again. Seven tables are read once, when the daemon starts, and need a daemon
+restart: [`[daemon]`](#daemon), [`[peers]`](#peers) (from protocol-change 077),
+[`[distribution]`](#distribution), [`[executors.<name>]`](#executorsname),
+[`[pools.<name>]`](#poolsname), [`[workspaces.<name>]`](#workspacesname) and
+[`[orchestrators.<name>]`](#orchestratorsname) (from protocol-change 078). `[distribution]` also needs the VM booted for it.
+The MCP, language-server, rule and schedule tables are trust decisions and
 have no flag, no discovery and no reload path; editing the file and reopening the
 session is the decision.
 
@@ -96,6 +101,11 @@ is not in this list is refused.
 | `jobs` | table | Background job wall ceiling and idle heartbeat. | [`[jobs]`](#jobs) |
 | `retry` | table | Provider retry ladder. | [`[retry]`](#retry) |
 | `peers` | table | Default peer links (from protocol-change 077). | [`[peers]`](#peers) |
+| `distribution` | table and array of `[[distribution.peers]]` | Trusted TLS Erlang distribution (from protocol-change 078). | [`[distribution]`](#distribution) |
+| `executors` | table of `[executors.<name>]` | Machines a session's workspace may be registered on (from protocol-change 078). | [`[executors.<name>]`](#executorsname) |
+| `pools` | table of `[pools.<name>]` | Named groups of executors a session may be placed on without naming one (from protocol-change 078). | [`[pools.<name>]`](#poolsname) |
+| `workspaces` | table of `[workspaces.<name>]` | Checkouts this machine serves to orchestrators (from protocol-change 078). | [`[workspaces.<name>]`](#workspacesname) |
+| `orchestrators` | table of `[orchestrators.<name>]` | Other orchestrators this daemon asks who owns a session it does not know (from protocol-change 078). | [`[orchestrators.<name>]`](#orchestratorsname) |
 
 ## `[models.<name>]`
 
@@ -448,6 +458,321 @@ for explicit links.
 | `default_links` | string | `off` | `off`, `same_owner` | `same_owner` admits a `main` to `main` message between two different sessions that the owner holds alone and that have no recorded unlink. |
 | `default_wake` | string | `busy_only` | `busy_only`, `may_wake` | The wake permission of a default link. `busy_only` adds to a running strand and does nothing to an idle one. `may_wake` may start a run on the recipient's `main`. An explicit grant for the pair overrides it. |
 
+## `[distribution]`
+
+(From protocol-change 078.) Optional, read once when the daemon starts, like
+`[daemon]`. It lets this daemon join other Loom daemons as a trusted Erlang node
+over TLS. Without the table the daemon never starts distribution and nothing
+about it changes. This release provides membership only: the daemon starts
+distribution, accepts the listed peers and can connect to them. The executor role
+and remote tool calls build on it later.
+
+A connected peer has the full privileges of a distributed Erlang node, so list
+only machines you administer. The daemon is hidden, `dist_auto_connect` is
+`never` (a message to a node that nobody connected to is dropped, not dialed),
+and only the listed peers may connect. Every certificate chain is verified
+against `ca`. The peer's leaf certificate must also hash to the configured
+`sha256` and carry the peer's exact node name as its only DNS name that contains
+an `@`, and both sides of a connection check this. The certificate may carry
+other DNS names and IP addresses, which TLS needs for the host name check, such as
+the host in the node name. The certificate of this daemon must carry its own
+`node` name in the same way, or the daemon refuses to start.
+
+| Key | Type | Required, default | Allowed values | Meaning |
+| --- | --- | --- | --- | --- |
+| `node` | string | required | `name@host`, ASCII letters, digits, `_`, `-` and `.`, with a dot in the host, at most 255 bytes | The full name of this node. |
+| `ca` | string | required | absolute path | PEM file of the trusted roots. |
+| `certificate` | string | required | absolute path | PEM file of this node's certificate chain. |
+| `key` | string | required | absolute path, mode 0600 | PEM file of this node's private key. |
+| `cookie` | string | required | absolute path, mode 0600 | The daemon's `$HOME/.erlang.cookie`: at least 16 characters of `A-Z`, `a-z`, `0-9`, `_` and `-`, no trailing newline. The emulator reads its cookie from that file, so the daemon refuses any other path. |
+| `listen_port` | integer | any free port | 1 to 65535 | Fixes the port of the distribution listener, for a firewall. Peers still find it through `epmd`. |
+| `peers` | array of tables | required | one to 32 `[[distribution.peers]]` rows | The nodes allowed to connect, and the nodes this daemon may connect to. |
+
+## `[[distribution.peers]]`
+
+One row per trusted node. A node may not list itself, and no two rows may share a
+node name or a pin.
+
+| Key | Type | Required, default | Allowed values | Meaning |
+| --- | --- | --- | --- | --- |
+| `node` | string | required | `name@host`, same form as `distribution.node` | The peer's full node name. |
+| `sha256` | string | required | 64 hexadecimal characters | SHA-256 of the DER of the peer's leaf certificate, for example `openssl x509 -in peer.pem -outform DER \| openssl dgst -sha256`. |
+
+Peers find each other through `epmd`, the Erlang name service. The VM is booted
+without a node name, so the emulator does not launch one; the daemon checks for an
+`epmd` on loopback when it starts distribution and starts the release's own
+`epmd -daemon` if none answers. It honours `-start_epmd false` in `ERL_FLAGS`, for
+an `epmd` you manage or forward yourself. `epmd` takes its port from
+`ERL_EPMD_PORT` and its bind addresses from `ERL_EPMD_ADDRESS`, both read from the
+daemon's environment. When no `epmd` can be had the daemon exits naming the port,
+and it does not report a credential problem. See
+[distributed-setup](distributed-setup.md#check-that-both-are-tls-nodes).
+
+The VM has to be booted for distribution before any Gleam code runs, so starting
+the daemon takes two steps. (`loom distribution install` does both for a
+provisioned node; see [Provisioning a deployment](#provisioning-a-deployment).)
+First write the options file from the same configuration:
+
+```sh
+loomd distribution options ~/.loom/loom.toml ~/.loom/distribution.options
+```
+
+The file names the credential paths and the public pins and holds no secret. It is
+written with mode 0600, and the daemon refuses an options file that other users
+can write or that was not generated from the current `[distribution]` table, so
+rerun the command after editing the table. Then start the daemon through
+`bin/loomd` with the file named in `LOOM_DISTRIBUTION_OPTFILE`:
+
+```sh
+LOOM_DISTRIBUTION_OPTFILE=~/.loom/distribution.options bin/loomd --config ~/.loom/loom.toml
+```
+
+The launcher appends `-proto_dist inet_tls -ssl_dist_optfile <file>` to any
+`ERL_FLAGS` already set, and does nothing when the variable is unset. A daemon that
+has the table but was started without the variable exits at startup, names this
+step, and opens no catalogue. `ERL_FLAGS` must not also set `-name`, `-sname`,
+`-setcookie` or `-ssl_dist_opt`. Code-mode satellites and other child VMs never
+inherit these flags or the credential files.
+
+## `[executors.<name>]`
+
+(From protocol-change 078.) Optional, read once when the daemon starts, like
+`[distribution]`. Each table names a machine whose registered workspaces a session
+can use instead of a directory on this host: `sessions.create` accepts an
+`executor` that is one of these names, and its `workspace` is then the name of a
+workspace registered on that machine. `<name>` is a lowercase letter, then
+lowercase letters, digits, `_` or `-`, at most 32 characters. The tables require a
+`[distribution]` table, because an executor is a pinned peer, and a daemon
+without `[executors]` refuses every creation that names an executor. A session is
+created on one with `loom --executor <name> --workspace <registered name>` or with
+the web home's "New session on an executor" form, which is offered only when this
+table has an entry; see [Setting up a distributed Loom](distributed-setup.md).
+
+An executor may also declare what its machine provides. A declaration is a claim
+written in this file, not something the daemon discovers. A pool that requires a
+platform, an enforcement or a toolchain skips the executors that did not declare
+it, and when a session attaches, the executor's answer is compared with the
+declaration: a session whose executor contradicts it fails to open with a reason
+that names the declared and the reported value. An executor that provides more
+than it declared is not contradicted.
+
+| Key | Type | Required, default | Allowed values | Meaning |
+| --- | --- | --- | --- | --- |
+| `node` | string | required | one of the `node` values in `[[distribution.peers]]` | The peer node that serves this executor's workspaces. |
+| `platform` | string | none declared | `<os>/<architecture>`, such as `linux/x86_64` or `macos/arm64` | The platform the machine reports in the system prompt. |
+| `enforcement` | string | none declared | `enforced` or `degraded` | Whether the machine's sandbox helper confines what it runs. |
+| `toolchains` | array of strings | none declared | distinct lowercase names | What the machine provides: `codemode` for the code-mode toolchain, or the key of an `[lsp.<name>]` server it serves. |
+
+## `[pools.<name>]`
+
+(From protocol-change 078.) Optional, read once when the daemon starts, like
+`[executors.<name>]`. A pool is a named list of executors, so that a session can
+be created on "any of these" instead of on one machine: `sessions.create` accepts
+a `pool` in place of an `executor`, never both, and its `workspace` is the name of
+a workspace that every executor of the pool is expected to register. `<name>` has
+the same grammar as an executor name. The pool's executors must each be a
+configured `[executors.<name>]`.
+
+The daemon picks the executor when the session first opens. It tries the pool's
+executors in the order listed, after dropping the ones that do not satisfy the
+pool's requirements, and it goes to the next executor only when the first could
+not have created a scope: the machine could not be reached, or it answered that
+it already holds its maximum number of scopes. Any other failure fails the open.
+The chosen executor is recorded with the session and is never chosen again: a
+session that is stopped and opened again goes back to the same executor, and
+when that executor is full or down the open fails with `executor_unavailable:`
+and no other machine is tried, because the checkout it holds is the session's
+only copy. See [Setting up a distributed Loom](distributed-setup.md).
+
+The three requirement keys have the same values as the declarations of an
+executor. A pool that sets one admits only the executors that declared the same
+value (for `toolchains`, every name listed), and an executor that declared nothing
+is skipped, because the daemon would be guessing.
+
+| Key | Type | Required, default | Allowed values | Meaning |
+| --- | --- | --- | --- | --- |
+| `executors` | array of strings | required | one or more distinct names of `[executors.<name>]` tables | The executors of the pool, in the order they are tried. |
+| `platform` | string | no requirement | `<os>/<architecture>` | Admit only executors that declared this platform. |
+| `enforcement` | string | no requirement | `enforced` or `degraded` | Admit only executors that declared this enforcement. |
+| `toolchains` | array of strings | no requirement | distinct lowercase names | Admit only executors that declared all of these toolchains. |
+
+## `[workspaces.<name>]`
+
+(From protocol-change 078.) Optional, read once when the daemon starts, like
+`[distribution]`. This is the executor's side of a registered workspace: each table
+names a checkout this machine serves, and an orchestrator that registers a
+workspace under that name is attached to it. The orchestrator sends only the name.
+It never learns or sends a path, so a session cannot reach a directory that is not
+listed here. `<name>` is 1 to 128 bytes with no `/` and no NUL. The tables require
+a `[distribution]` table, and a daemon that has at least one starts the executor
+host, which serves every listed workspace to the peers it pins. A daemon with no
+`[workspaces]` starts no host.
+
+The machine's own settings apply to every attached session: the `[tools]`,
+`[workspace]`, `[lsp.<name>]`, `[jobs]` and `[secrets]` tables of this file, the
+toolchain and code-mode seed it finds, and the helper it runs. A session's
+scratch, blob and work directories are created under the daemon's state
+directory, in `scopes/<session>`, and removed when the session's scope closes.
+
+| Key | Type | Required, default | Allowed values | Meaning |
+| --- | --- | --- | --- | --- |
+| `root` | string | required | an absolute path with no `..` segment, naming an existing directory | The checkout served under this name. The daemon refuses to start when it is not a directory. |
+
+## `[orchestrators.<name>]`
+
+(From protocol-change 078.) Optional, read once when the daemon starts, like
+`[executors.<name>]`. This is the table for a deployment with more than one
+orchestrator. Each orchestrator keeps its own catalogue, and a session is created
+on, and owned by, the orchestrator the client was connected to. A client that
+connects to the other orchestrator and names that session gets no record there, so
+the daemon asks the orchestrators listed here, over distribution, which of them
+holds it. If one does, `sessions.get` and `sessions.open` answer `not_owner`,
+naming that orchestrator and, when this table gives one, the address to connect
+to; if none does, the answer is `not_found` as before, and if a listed
+orchestrator cannot be reached the answer is `owner_unreachable`. Only the daemon's
+owner is redirected. The daemon never connects a client to the other orchestrator
+itself: the client needs that machine's own credential.
+
+`<name>` is a lowercase letter, then lowercase letters, digits, `_` or `-`, at most
+32 characters, and is the name a `not_owner` refusal carries. The table requires a
+`[distribution]` table, because an orchestrator is a pinned peer, and two names may
+not share a node. List each orchestrator on the other. A daemon with a
+`[distribution]` table answers these questions for its peers whether or not it
+lists any orchestrator itself; the table only says whom this daemon asks. A daemon
+without `[orchestrators]` asks nobody.
+
+| Key | Type | Required, default | Allowed values | Meaning |
+| --- | --- | --- | --- | --- |
+| `node` | string | required | one of the `node` values in `[[distribution.peers]]` | The peer node that answers for this orchestrator. |
+| `address` | string | none | `wss://<host>[:<port>]/v2/control`, or `ws://` for a loopback host, with no credentials, query or fragment | The control address a client passes to `loom --addr` to reach this orchestrator. A daemon binds loopback only, so this is whatever the operator exposes (a tunnel, a proxy). When absent, `not_owner` names the orchestrator and no address. |
+
+## Provisioning a deployment
+
+The tables above are what a node reads. Writing them for every machine by hand,
+with a matching certificate, pin and cookie, is what `loom distribution` does
+for you. It is a subcommand of `loom` that is forwarded to `loomd` the way
+`loom ext` is, it is also `loomd distribution`, and `dist` is short for
+`distribution` in both (`loom dist install node.loombundle`). It needs no
+openssl and no script: the certificates are minted by the Erlang runtime the
+daemon already runs on.
+
+The flow has three steps. Provision once, on any machine. Copy each bundle to its
+machine. Install it there.
+
+```sh
+loom distribution init plan.toml            # write an example plan
+loom distribution provision plan.toml out   # mint everything, write out/
+scp out/devbox.loombundle devbox:           # a secure channel; see below
+ssh devbox loom distribution install devbox.loombundle
+```
+
+`provision` writes `out/<node>.loombundle` (mode 0600) for each node and
+`out/system.json`. A bundle holds the node's private key and the deployment's
+cookie, so copy it only over a channel you trust, and delete it after installing.
+`system.json` holds no private material: each node's role, Erlang node name,
+host, port, certificate pin, peers, executors and workspaces. `loom distribution
+show out` prints it as a table. `provision` refuses a directory that already
+holds files unless you pass `--force`. It discards the certificate authority's key
+when it finishes, so adding a node, renewing a certificate or revoking one means
+provisioning again and reinstalling every bundle with `--force`. Certificates are
+valid for five years and the authority for ten; certificate rotation is later
+work.
+
+`install BUNDLE [--home DIR] [--config PATH] [--force]` runs on the node's machine
+and does everything the daemon needs before it starts:
+
+- It validates the bundle: well formed, a role that carries only its own tables,
+  a certificate that chains to the CA and is not expired, a key that belongs to the
+  certificate, the node name as the certificate's only DNS name with an `@`, and a
+  cookie the daemon accepts.
+- It writes `ca.pem`, `cert.pem`, `key.pem` (mode 0600) and `dist.options` into a
+  private directory: the plan's `bundle_dir`, or `<home>/.loom/distribution`.
+- It writes the cookie to `<home>/.erlang.cookie`, where `home` is `--home` or
+  `$HOME`. A different cookie already there is refused, because Erlang reads that
+  one file for every distributed node you start; `--force` replaces it.
+- It merges `[distribution]`, its `[[distribution.peers]]` rows and the role tables
+  (`[executors.<name>]` on an orchestrator, `[workspaces.<name>]` on an executor)
+  into `--config`, which defaults to `<home>/.loom/loom.toml`. Every other table
+  and comment stays as it was. A table that already exists with different values is
+  refused; `--force` replaces exactly the tables the bundle owns.
+- It prints the command that starts the daemon, with `LOOM_DISTRIBUTION_OPTFILE`
+  set.
+
+Nothing is written unless every destination is acceptable, and installing the same
+bundle twice changes nothing the second time. No command prints a key, a cookie or
+a certificate.
+
+### The plan
+
+A plan is a TOML or JSON file, chosen by its extension, and both spellings mean the
+same thing. The JSON form has the same keys, with a top-level `node` array.
+
+```toml
+[[node]]
+name = "laptop"                              # bundle name
+role = "orchestrator"
+erlang_node = "loom@laptop.example"
+host = "laptop.example"
+listen_port = 4370
+bundle_dir = "/Users/me/.loom/distribution"
+executors = ["devbox"]
+
+[[node]]
+name = "devbox"
+role = "executor"
+erlang_node = "loom@devbox.example"
+host = "devbox.example"
+listen_port = 4370
+bundle_dir = "/home/me/.loom/distribution"
+[node.workspaces]
+repo = "/home/me/src/loom"
+```
+
+| Key | Type | Required, default | Allowed values | Meaning |
+| --- | --- | --- | --- | --- |
+| `name` | string | required | lowercase letter, then lowercase letters, digits, `_` or `-`, at most 32; unique | The bundle's name, and for an executor its `[executors.<name>]` key on every orchestrator that uses it. |
+| `role` | string | required | `orchestrator`, `executor` | What the daemon does. |
+| `erlang_node` | string | required | the `distribution.node` form; unique | The Erlang node name, which becomes the certificate's exact node name. |
+| `host` | string | host of `erlang_node` | DNS name or address | Also a name in the certificate, for the TLS host name check. |
+| `listen_port` | integer | any free port | 1 to 65535 | The fixed distribution port. Two nodes on one host need different ports. |
+| `bundle_dir` | string | `<home>/.loom/distribution` | absolute path | Where that machine's credential files go. |
+| `executors` | list of strings | none | names of executor nodes | Orchestrators only. The executors this node uses. |
+| `workspaces` | table of name = root | none | name of 1 to 128 bytes with no `/`, absolute root | Executors only. The workspaces it registers. |
+
+Every orchestrator peers with the executors it uses and with every other
+orchestrator, and each executor peers with the orchestrators that use it, always in
+both directions. An executor that no orchestrator uses, and an orchestrator with no
+peer, are errors. Unknown keys are refused.
+
+## Releasing an executor's stuck scope
+
+An executor keeps one scope for each session whose checkout it holds. When a
+session closes and the executor cannot prove that every process of the scope has
+exited, the scope records unknown cleanup and the executor refuses every later
+open of that session. The executor never decides on its own that those processes
+are gone. After an executor daemon restarts this happens to every session that
+closes, because the new daemon has no workspace for the scope to retire. A daemon
+that ends in the middle of a close leaves the scope closing, which is refused in
+the same way. Each such scope holds one of the executor's sixteen slots for scopes
+that are not cleanly closed.
+
+`loom executor release SESSION [--state-dir PATH]` is the operator's override. It
+is also `loomd executor release`. Run it on the executor, with the executor daemon
+stopped: it opens the daemon's ledger at `<state-dir>/exec-ledger.db` (the state
+directory defaults to `~/.loom`), and it refuses to start while a daemon holds that
+state directory. It closes a closing scope, or one with unknown cleanup, as having
+every child retired, and records the release in the ledger with the state the scope
+was in and the time. It refuses a scope that is open, because its session may be
+running, and a scope that is already closed cleanly. `SESSION` is the orchestrator
+session id that the refused open names. The session's next open reopens the scope.
+Check first that nothing from the session still runs on the machine, because the
+command trusts you on that point and nothing else does.
+
+The command holds the state directory's daemon reservation while it runs and leaves
+that record behind when it exits. A daemon started during the release is refused
+and has to be started again, and `loom` may report that the daemon is still
+starting until the next daemon starts.
+
 ## What this file does not configure
 
 - **Hooks.** Claude-compatible hooks are read from `~/.claude/settings.json`, the
@@ -460,6 +785,10 @@ for explicit links.
   [compaction](architecture/compaction.md).
 - **Helper pool and disabled tools.** `LOOM_HELPER_POOL` and
   `LOOM_DISABLE_TOOLS`, environment variables read by the daemon.
+- **Executor scope limit.** `LOOM_EXECUTOR_MAX_SCOPES`, an environment variable
+  read by a daemon that serves `[workspaces.<name>]`: the most scopes the executor
+  admits that are not cleanly closed, 16 when unset. An executor at its limit
+  refuses a further session's attach, which is what a pool moves past.
 - **Daemon flags.** `--state-dir`, `--bind`, `--capacity`, `--owner-name`, `--ui`,
   `--helper`, `--codemode-seed`, `--codemode-seams`, `--best-effort` and
   `--full-enforcement` are flags with no table. Run `loomd --help`.

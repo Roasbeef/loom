@@ -94,6 +94,7 @@ pub fn unattributed_approvals_never_widen_a_clearance_test() {
             replay: ReplaySafe,
           )
         },
+        recover: None,
       ),
     )
   let assert Ok(rt) = api.open(sess, eff, options())

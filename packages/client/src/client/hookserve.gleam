@@ -78,6 +78,7 @@ import core/clock.{type Clock}
 import core/ids.{type OpId}
 import core/json.{type JsonValue}
 import core/message.{type AgentMessage}
+import gleam/bit_array
 import gleam/dict
 import gleam/erlang/process.{type Subject}
 import gleam/list
@@ -191,6 +192,71 @@ pub fn locations(home: Option(String), workspace: String) -> List(Located) {
   |> list.filter(fn(located) { located.path != "" })
 }
 
+/// What reading one source file gave, as data a machine other than the one
+/// holding the file can send.
+///
+/// The bytes are kept whole and decoded as text only when a source is
+/// parsed, so a file that is not UTF-8 is refused in the same words whether
+/// it was read here or on another machine.
+pub type Contents {
+  /// There is no such file, which is how an operator says "no hooks here".
+  Missing
+
+  /// The file's bytes.
+  Bytes(BitArray)
+
+  /// The file exists and could not be read, with the reason.
+  Unreadable(reason: String)
+}
+
+/// Reads one source file from this machine's disk.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert hookserve.read_contents("/no/such/settings.json") == hookserve.Missing
+/// ```
+///
+pub fn read_contents(path: String) -> Contents {
+  case simplifile.read_bits(path) {
+    Ok(bytes) -> Bytes(bytes)
+    Error(simplifile.Enoent) -> Missing
+    Error(other) -> Unreadable(simplifile.describe_error(other))
+  }
+}
+
+/// Pairs each located source with its contents for a session whose
+/// workspace may be on another machine.
+///
+/// The operator's own file lives on the owner's disk and is read here. The
+/// workspace's files were read where the workspace is and arrive as
+/// `workspace_files`, keyed by path; a path not among them is missing. Trust
+/// is decided afterwards, in `load_from`, on the owner, from the bytes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // hookserve.gather(hookserve.locations(home, ws), census.hook_files)
+/// ```
+///
+pub fn gather(
+  located: List(Located),
+  workspace_files: List(#(String, Contents)),
+) -> List(#(Located, Contents)) {
+  list.map(located, fn(one) {
+    case one.origin {
+      hookcompat.UserSettings -> #(one, read_contents(one.path))
+      hookcompat.ProjectSettings
+      | hookcompat.LocalSettings
+      | hookcompat.LoomInline
+      | hookcompat.Plugin(_) -> #(
+        one,
+        list.key_find(workspace_files, one.path) |> result.unwrap(Missing),
+      )
+    }
+  })
+}
+
 /// Loads, parses, trust-checks, and merges every located source.
 ///
 /// A source that does not exist is not an event: absent files are how
@@ -205,10 +271,37 @@ pub fn load(
   wiring: hookwire.Wiring,
   runner: hookrunner.Context,
 ) -> Serving {
+  load_from(
+    list.map(located, fn(one) { #(one, read_contents(one.path)) }),
+    trust_root,
+    wiring,
+    runner,
+  )
+}
+
+/// `load` over sources whose contents were read elsewhere.
+///
+/// The parse, the trust check and the merge are exactly `load`'s: only where
+/// the bytes came from differs, which is why trust stays with whoever holds
+/// the trust record.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // hookserve.load_from(hookserve.gather(located, files), trust_root, wiring, runner)
+/// ```
+///
+pub fn load_from(
+  sources: List(#(Located, Contents)),
+  trust_root: Option(String),
+  wiring: hookwire.Wiring,
+  runner: hookrunner.Context,
+) -> Serving {
   let #(configs, skipped, notes) =
-    list.fold(located, #([], [], []), fn(state, one) {
+    list.fold(sources, #([], [], []), fn(state, source) {
       let #(configs, skipped, notes) = state
-      case read(one, trust_root) {
+      let #(one, contents) = source
+      case read(one, contents, trust_root) {
         // A file that is not there is not a diagnostic. Every session
         // whose operator keeps no `~/.claude` would otherwise open
         // with a warning about a decision nobody made.
@@ -247,15 +340,24 @@ type Reading {
   Refused(reason: String)
 }
 
-// One located file read, parsed, and trust-checked.
-fn read(located: Located, trust_root: Option(String)) -> Reading {
-  case simplifile.read(located.path) {
-    Ok(text) -> parsed(located, trust_root, text)
-    Error(simplifile.Enoent) -> Absent
-    Error(other) ->
-      Refused(
-        "the file could not be read: " <> simplifile.describe_error(other),
-      )
+// One located file's contents, parsed and trust-checked.
+fn read(
+  located: Located,
+  contents: Contents,
+  trust_root: Option(String),
+) -> Reading {
+  case contents {
+    Bytes(bytes) ->
+      case bit_array.to_string(bytes) {
+        Ok(text) -> parsed(located, trust_root, text)
+        Error(Nil) ->
+          Refused(
+            "the file could not be read: "
+            <> simplifile.describe_error(simplifile.NotUtf8),
+          )
+      }
+    Missing -> Absent
+    Unreadable(reason:) -> Refused("the file could not be read: " <> reason)
   }
 }
 
@@ -752,6 +854,7 @@ pub fn wire(
         ..tools,
         clear: fn(query) { cleared(serving, clear, query) },
         run: fn(query) { ran(serving, run(query), query) },
+        recover: tools.recover,
       ),
     ),
   )

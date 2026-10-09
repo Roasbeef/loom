@@ -25,7 +25,7 @@ import core/json
 import core/message
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/list
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import gleam/otp/actor
 import gleam/result
 import gleam/string
@@ -95,6 +95,7 @@ pub fn strand_restart_reaps_the_live_tool_effect_test() {
       tools: effects.ToolSurface(
         ..base_effects.tools,
         execution_mode: fn(_name) { effects.ExclusiveExecution },
+        recover: None,
       ),
     )
   let options =

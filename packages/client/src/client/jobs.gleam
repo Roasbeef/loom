@@ -182,12 +182,12 @@ import broker/budget
 import broker/exec.{type EnforcementDemand}
 import broker/framing
 import broker/policy.{type SandboxPolicy}
-import client/internal/session_owner
 import client/internal/timebase
 import client/jobstate.{
   type JobId, type JobRecord, type JobSpill, type JobState, type KillCause,
 }
 import client/notice
+import client/owner_services.{type FactAccess, type FactFault}
 import core/clock.{type Clock}
 import core/ids.{type OpId}
 import core/json.{type JsonValue}
@@ -201,7 +201,6 @@ import gleam/option.{type Option, None, Some}
 import gleam/otp/supervision
 import gleam/result
 import gleam/string
-import runtime/api.{type Runtime}
 import runtime/residency
 import simplifile
 import telemetry/owner
@@ -767,12 +766,17 @@ fn known_keys(
 /// growing parameter list.
 pub type Wiring {
   Wiring(
-    /// Borrows the live runtime. A function rather than the runtime
-    /// itself for the reason `client/scheduleseam.Wiring` states: the
-    /// seam is built before `api.open` has returned one, so a closure
-    /// over the runtime would be a value cycle. `Error(Nil)` becomes an
-    /// in-band `Unavailable`, never a crash.
-    runtime: fn() -> Result(Runtime, Nil),
+    /// What the actor needs from the session's owner: the `job/` records,
+    /// the completion notice, the activity read and the heartbeat. Plain
+    /// functions rather than a borrowed runtime, so the actor runs the
+    /// same beside the session or on another node. An owner which cannot
+    /// be reached becomes an in-band `Unavailable`, never a crash.
+    owner: owner_services.JobsOwner,
+    /// The path this actor labels itself under for the ownership
+    /// inspector, which is the session's canonical id. A function because
+    /// the session id is only known once the runtime is open; `Error(Nil)`
+    /// leaves the process unlabelled rather than failing its start.
+    session_path: fn() -> Result(List(#(String, String)), Nil),
     policy: JobsPolicy,
     /// The session's own time base. Every instant a job records and every
     /// wait a poll makes is read through this, so a simulated session
@@ -942,9 +946,11 @@ pub fn start(
 ) -> Result(actor.Started(Subject(Message)), actor.StartError) {
   actor.new_with_initialiser(1000, fn(subject) {
     // The initialiser runs in the actor's own process, so this label names
-    // it to the ownership inspector under its session. The runtime is only
-    // borrowed here, and a refused borrow leaves the process unlabelled.
-    session_owner.label_borrowed(wiring.runtime, owner.BackgroundJobs)
+    // it to the ownership inspector under its session. The path is only
+    // asked for here, and a refused ask leaves the process unlabelled.
+    let _labelled =
+      wiring.session_path()
+      |> result.map(owner.label(_, owner.BackgroundJobs))
 
     let state =
       State(
@@ -1386,7 +1392,6 @@ fn admitted(
   caller: Pid,
   reply_with: Subject(Result(Started, Refusal)),
 ) -> Result(State, Refusal) {
-  use runtime <- result.try(borrow(state))
   use Nil <- result.try(room_for_one_more(state, strand))
   let #(now, _clock) = clock.read(state.wiring.clock)
   let running_under =
@@ -1411,7 +1416,7 @@ fn admitted(
       state: jobstate.Starting,
       spill: jobstate.no_spill(),
     )
-  use Nil <- result.try(claim(runtime, record))
+  use Nil <- result.try(claim(state.wiring.owner.facts, record))
 
   // Session custody survives abort of the turn which requested it. A fresh
   // broker identity separates that custody without changing attribution in
@@ -1455,14 +1460,6 @@ fn listening(audience: Audience, caller: Pid) -> Listener {
     NotifyOwner -> Owner
     CallerWaiting -> Caller(monitor: process.monitor(caller))
     ProgramWatches -> Program
-  }
-}
-
-fn borrow(state: State) -> Result(Runtime, Refusal) {
-  case state.wiring.runtime() {
-    Error(Nil) ->
-      Error(Unavailable(reason: "the session runtime is not available"))
-    Ok(runtime) -> Ok(runtime)
   }
 }
 
@@ -1567,13 +1564,8 @@ fn argv(command: String) -> List(String) {
 // The cell's absence is the claim. `expected: None` commits only while
 // nothing is there, so the id belongs to whichever writer lands first and
 // a loser is told rather than silently replacing a live job's record.
-fn claim(runtime: Runtime, record: JobRecord) -> Result(Nil, Refusal) {
-  api.put_reserved_fact_expecting(
-    runtime,
-    jobstate.job_key(record.id),
-    jobstate.encode(record),
-    expected: None,
-  )
+fn claim(facts: FactAccess, record: JobRecord) -> Result(Nil, Refusal) {
+  facts.put(jobstate.job_key(record.id), jobstate.encode(record), None)
   |> result.replace(Nil)
   |> result.map_error(commit_refused)
 }
@@ -1585,12 +1577,12 @@ fn claim(runtime: Runtime, record: JobRecord) -> Result(Nil, Refusal) {
 // longer the session's and the answer is to reopen, never to retry. So
 // nothing here retries anything — every commit in this module is made
 // once and its failure is reported.
-fn commit_refused(error: api.ApiError) -> Refusal {
-  case error {
-    api.FactConflict(..) ->
+fn commit_refused(fault: FactFault) -> Refusal {
+  case fault {
+    owner_services.Conflict ->
       Unavailable(reason: "another writer holds this job's record")
 
-    api.SessionStolen(held_by:) ->
+    owner_services.LeaseStolen(held_by:) ->
       Unavailable(
         reason: "this session's writer lease was taken"
         <> case held_by {
@@ -1599,18 +1591,16 @@ fn commit_refused(error: api.ApiError) -> Refusal {
         },
       )
 
-    api.RuntimeUnavailable
-    | api.AcceptRejected(..)
-    | api.QueueRejected(..)
-    | api.ReadFailed(..)
-    | api.CommitFailed(..)
-    | api.RaceLost
-    | api.ReservedFactKey(..)
-    | api.UnreservedFactKey(..)
-    | api.EscalationExists(..)
-    | api.EscalationNotFound(..)
-    | api.EscalationWrongStatus(..) ->
-      Unavailable(reason: string.inspect(error))
+    owner_services.StoreAbsent ->
+      Unavailable(reason: owner_services.unavailable)
+
+    owner_services.Failed(detail:) -> Unavailable(reason: detail)
+
+    // The fence only ever refuses a key this actor did not build, so this is
+    // a defect rather than a runtime condition; it is still reported in band
+    // like every other refusal here.
+    owner_services.NotServed(key:) ->
+      Unavailable(reason: "the fact `" <> key <> "` is not served to jobs")
   }
 }
 
@@ -2418,9 +2408,7 @@ fn commit_event(
 // thread of control. What a CAS would defend against is a second writer,
 // and there is not one.
 fn persist(state: State, record: JobRecord) -> Result(Nil, Refusal) {
-  use runtime <- result.try(borrow(state))
-  api.put_reserved_fact(
-    runtime,
+  state.wiring.owner.facts.put_blind(
     jobstate.job_key(record.id),
     jobstate.encode(record),
   )
@@ -2428,8 +2416,7 @@ fn persist(state: State, record: JobRecord) -> Result(Nil, Refusal) {
 }
 
 fn discard(state: State, id: JobId) -> Result(Nil, Refusal) {
-  use runtime <- result.try(borrow(state))
-  api.delete_reserved_fact(runtime, jobstate.job_key(id))
+  state.wiring.owner.facts.delete(jobstate.job_key(id))
   |> result.map_error(commit_refused)
 }
 
@@ -2517,19 +2504,62 @@ fn live_board(
 ) -> JsonValue {
   let #(total, rows) =
     dict.fold(records, #(0, []), fn(acc, _id, held) {
-      case
-        held.record.owner == strand && !jobstate.is_terminal(held.record.state)
-      {
-        False -> acc
-        True -> {
-          let rows = case acc.0 < max_jobs_per_strand {
-            True -> [live_row(held.record, now), ..acc.1]
-            False -> acc.1
-          }
-          #(acc.0 + 1, rows)
-        }
-      }
+      live_step(acc, held.record, strand, now)
     })
+  board_of(strand, now, total, rows)
+}
+
+/// The live board of a strand over job records read from the session's store.
+///
+/// A session whose jobs actor runs on an executor has no actor in the
+/// orchestrator's VM to ask, but every record that actor writes is also a
+/// `job/<id>` cell in the orchestrator's store. This is the board built from
+/// those records, with the shape and the four-row bound of the actor's own.
+/// `now` should be read from the clock the records were stamped on.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // jobs.live_board_of(records, "main", now)
+/// ```
+pub fn live_board_of(
+  records: List(JobRecord),
+  strand: String,
+  now: Int,
+) -> JsonValue {
+  let #(total, rows) =
+    list.fold(records, #(0, []), fn(acc, record) {
+      live_step(acc, record, strand, now)
+    })
+  board_of(strand, now, total, rows)
+}
+
+// One record's contribution: a live job of the strand counts, and becomes a
+// row only while the bound has room.
+fn live_step(
+  acc: #(Int, List(JsonValue)),
+  record: JobRecord,
+  strand: String,
+  now: Int,
+) -> #(Int, List(JsonValue)) {
+  case record.owner == strand && !jobstate.is_terminal(record.state) {
+    False -> acc
+    True -> {
+      let rows = case acc.0 < max_jobs_per_strand {
+        True -> [live_row(record, now), ..acc.1]
+        False -> acc.1
+      }
+      #(acc.0 + 1, rows)
+    }
+  }
+}
+
+fn board_of(
+  strand: String,
+  now: Int,
+  total: Int,
+  rows: List(JsonValue),
+) -> JsonValue {
   json.Object([
     #("strand", json.String(strand)),
     #("observed_at_ms", json.Int(now)),
@@ -2704,36 +2734,41 @@ fn closes(end: StdinEnd) -> Bool {
 // the sweep decoded is therefore held detached, with two empty tails,
 // which is exactly what a job whose runner is gone has left to show.
 fn reap(state: State) -> State {
-  case state.wiring.runtime() {
-    Error(Nil) -> state
-    Ok(runtime) -> {
-      let swept = sweep(runtime) |> result.unwrap([])
-
-      // This incarnation owns no job, so every staging file the store
-      // holds belongs to one that is gone.
-      let _unlinked = unlink_orphans(state)
-      let state =
-        State(
-          ..state,
-          jobs: list.fold(swept, state.jobs, fn(jobs, swept) {
-            remember(jobs, swept.record)
-          }),
-        )
-
-      // A job this sweep declared lost ended without anybody hearing
-      // about it, so its owner is told now. One the store already held as
-      // terminal was told, or chose not to be, by the incarnation that
-      // wrote it; telling it again on every restart would wake the strand
-      // once per job it ever ran.
-      list.each(swept, fn(swept) {
-        case swept.fate {
-          Unheard -> tell(state, swept.record, no_streams())
-          Heard -> Nil
-        }
-      })
-      state
-    }
+  // A store that is not there at all means the session is not open yet
+  // (or is already going), and the sweep is skipped whole. A store which is
+  // there but could not be read leaves nothing to remember, and the
+  // orphaned staging files below are still cleared.
+  case sweep(state.wiring.owner.facts) {
+    Error(owner_services.StoreAbsent) -> state
+    Error(_unreadable) -> reaped(state, [])
+    Ok(swept) -> reaped(state, swept)
   }
+}
+
+// The rest of the restart sweep, once the store has said what it holds.
+fn reaped(state: State, swept: List(Swept)) -> State {
+  // This incarnation owns no job, so every staging file the store holds
+  // belongs to one that is gone.
+  let _unlinked = unlink_orphans(state)
+  let state =
+    State(
+      ..state,
+      jobs: list.fold(swept, state.jobs, fn(jobs, swept) {
+        remember(jobs, swept.record)
+      }),
+    )
+
+  // A job this sweep declared lost ended without anybody hearing about it,
+  // so its owner is told now. One the store already held as terminal was
+  // told, or chose not to be, by the incarnation that wrote it; telling it
+  // again on every restart would wake the strand once per job it ever ran.
+  list.each(swept, fn(swept) {
+    case swept.fate {
+      Unheard -> tell(state, swept.record, no_streams())
+      Heard -> Nil
+    }
+  })
+  state
 }
 
 // One record as the restart sweep left it, and whether its end is still
@@ -2776,11 +2811,8 @@ fn remember(jobs: Dict(JobId, Held), record: JobRecord) -> Dict(JobId, Held) {
 // A record whose `Lost` could not be written is dropped rather than kept,
 // because holding it would answer a poll with a state the store does not
 // carry — and the next boot's sweep will meet the same cell and try again.
-fn sweep(runtime: Runtime) -> Result(List(Swept), Refusal) {
-  use cells <- result.try(
-    api.reserved_facts(runtime, prefix: jobstate.key_prefix)
-    |> result.map_error(commit_refused),
-  )
+fn sweep(facts: FactAccess) -> Result(List(Swept), FactFault) {
+  use cells <- result.try(facts.list(jobstate.key_prefix))
   Ok(
     list.filter_map(cells, fn(cell) {
       let #(_key, payload) = cell
@@ -2798,7 +2830,7 @@ fn sweep(runtime: Runtime) -> Result(List(Swept), Refusal) {
                 True -> Heard
                 False -> Unheard
               }
-              reap_one(runtime, record)
+              reap_one(facts, record)
               |> result.map(fn(lost) { Swept(record: lost, fate:) })
             }
           }
@@ -2807,16 +2839,12 @@ fn sweep(runtime: Runtime) -> Result(List(Swept), Refusal) {
   )
 }
 
-fn reap_one(runtime: Runtime, record: JobRecord) -> Result(JobRecord, Nil) {
+fn reap_one(facts: FactAccess, record: JobRecord) -> Result(JobRecord, Nil) {
   use lost <- result.try(
     jobstate.step(record, jobstate.RunnerLost(reason: jobstate.VmRestart))
     |> result.replace_error(Nil),
   )
-  api.put_reserved_fact(
-    runtime,
-    jobstate.job_key(lost.id),
-    jobstate.encode(lost),
-  )
+  facts.put_blind(jobstate.job_key(lost.id), jobstate.encode(lost))
   |> result.replace(lost)
   |> result.replace_error(Nil)
 }
@@ -2929,19 +2957,18 @@ fn stopped_on_purpose(state: Option(JobState)) -> Bool {
 // the heartbeat is not what finds it, since a terminal job is not live
 // work. `docs/design-notes/async-completion-wake.md` weighs the window.
 fn tell(state: State, record: JobRecord, streams: Streams) -> Nil {
-  case worth_telling(record.state), state.wiring.runtime() {
-    True, Ok(runtime) -> {
+  case worth_telling(record.state) {
+    True -> {
       let work = notice.Job(id: jobstate.job_id_to_string(record.id))
       let _delivered =
-        notice.deliver(
-          runtime,
+        state.wiring.owner.notify(
           record.owner,
           work,
           completion_text(record, streams),
         )
       Nil
     }
-    True, Error(Nil) | False, _runtime -> Nil
+    False -> Nil
   }
 }
 
@@ -3098,26 +3125,22 @@ fn utf8_from(bytes: BitArray, skipped: Int) -> String {
 fn beat(state: State) -> State {
   let interval = state.wiring.policy.heartbeat_ms
   use <- bool.guard(when: interval <= 0, return: state)
-  case state.wiring.runtime() {
-    Error(Nil) -> state
-    Ok(runtime) -> {
-      let #(now, _clock) = clock.read(state.wiring.clock)
-      let owners = wakeful_by_owner(state.jobs)
-      let idle = notice.retain(state.idle, dict.keys(owners))
-      let idle =
-        dict.fold(owners, idle, fn(idle, owner, records) {
-          notice.sample(
-            runtime,
-            idle,
-            owner,
-            now:,
-            interval_ms: interval,
-            lines: fn() { list.map(records, heartbeat_line(_, now)) },
-          )
-        })
-      State(..state, idle:)
-    }
-  }
+  let #(now, _clock) = clock.read(state.wiring.clock)
+  let owners = wakeful_by_owner(state.jobs)
+  let idle = notice.retain(state.idle, dict.keys(owners))
+  let idle =
+    dict.fold(owners, idle, fn(idle, owner, records) {
+      notice.sample(
+        state.wiring.owner.strand_activity,
+        state.wiring.owner.wake,
+        idle,
+        owner,
+        now:,
+        interval_ms: interval,
+        lines: fn() { list.map(records, heartbeat_line(_, now)) },
+      )
+    })
+  State(..state, idle:)
 }
 
 // Every live job that asked for the heartbeat, grouped by the strand that

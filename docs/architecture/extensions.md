@@ -656,7 +656,7 @@ name:
    (`manager.probe_server`, `check.enforcement_line`). The demand is the
    operator's: platform enforcement unless `--best-effort`.
 4. **A manager starts with just that server**, its roots expanded by
-   `serve.lsp_server_roots` against `serve.lsp_places`, the daemon's
+   `workspace_policy.lsp_server_roots` against `workspace_policy.lsp_places`, the daemon's
    environment as a session reads it, over `manager.jailed`, the session's
    own backend.
 5. **Each check asks the door**, through `client/lsp/profile_check`: one
@@ -781,7 +781,7 @@ value the previous step produced.
 
 1. **At boot, discovery feeds the registry.** `serve.assemble` reads
    `installed.discover` for the extensions root before it builds the
-   registry (`extension_registrations` at `client/serve.gleam:2833`). A
+   registry (`extension_registrations` at `client/serve.gleam:2417`). A
    `Refused` is logged and registers nothing. A `Ready` on a host with no
    code-mode toolchain is also logged and registers nothing: with no
    `erl` there is no satellite to boot, and a tool definition that can
@@ -923,7 +923,7 @@ actor is alive, so a breach fails the next boot outright instead of
 silently lending it authority.
 
 **Who owns the hosts.** `client/extension/hosts` is one supervised actor
-per session (`extension_hosts.supervised` at `client/serve.gleam:4525`).
+per session (`extension_hosts.supervised` at `client/serve.gleam:4717`).
 It holds at most one host per installed extension, started lazily on that
 extension's first use under whichever call happened to be first. That is
 sound because every extension call in a session runs under one workspace
@@ -1230,7 +1230,7 @@ approving, and read back what it was never shown.
 contribution, a repeated name is the author overriding themselves, and
 the later one wins. *Between* contributions, a repeated name takes the
 boot down, naming both origins
-(`contributions.registry` at `client/contributions.gleam:451`). An
+(`contributions.registry` at `client/contributions.gleam:424`). An
 extension that could register `bash` would silently redefine what the
 model's `bash` call does, and every sandbox argument in the tree would be
 about the wrong function.
@@ -1556,11 +1556,11 @@ whose door serves `cap/lsp` and automatic post-edit diagnostics (ADR-015,
 | `client/extension/memory.gleam` | The durable half of those two arms: `Cell`, `Door`, `key` (the one composition of `ext/<name>/<key>`), `door` over a borrowed runtime, and `shut` for a host with no session. |
 | `packages/ext/src/ext/memory.gleam` | The author's side: `remember` and `recall` over `ext.remember` and `ext.recall`. |
 | `client/extension/dispatch.gleam` | An install record as `tools.Tool` values over the session's host: `tools` (`extension/dispatch.gleam:205`), `hosting` (`extension/dispatch.gleam:414`), the timeout clamp `within` (`extension/dispatch.gleam:686`), the jail's `requirements` (`extension/dispatch.gleam:333`), and `settle` (`extension/dispatch.gleam:883`). |
-| `client/serve.gleam` | The boot that finds what is installed: `extension_registrations` (`client/serve.gleam:2833`), the two refusals it logs, and the contribution it appends. |
-| `client/contributions.gleam` | The tool registry as an ordered list of contributions: `registry` (`client/contributions.gleam:451`) and the collision that refuses a boot. |
+| `client/serve.gleam` | The boot that finds what is installed: `extension_registrations` (`client/serve.gleam:2417`), the two refusals it logs, and the contribution it appends. |
+| `client/contributions.gleam` | The tool registry as an ordered list of contributions: `registry` (`client/contributions.gleam:424`) and the collision that refuses a boot. |
 | `broker/egress.gleam` | The outbound HTTP surface: `request` (`broker/egress.gleam:374`), `one_host`, `Secret` (`broker/egress.gleam:159`), and a `Refusal` type with nowhere to put a credential. |
 | `broker/internal/ffi_egress.gleam` | One hop over `httpc` on a broker-private profile: `fetch` (`broker/internal/ffi_egress.gleam:61`). The only impurity in the path. |
-| `tui/tui.gleam` | `loom ext …` forwarded to the server by the same ladder a local session uses; the `Forward` arm is at `tui.gleam:317`. |
+| `tui/tui.gleam` | `loom ext …` forwarded to the server by the same ladder a local session uses; the `Forward` arm is at `tui.gleam:332`. |
 | `client/test/client/extension_test.gleam` | The install acceptance, layer by layer, plus the one real jailed build. |
 | `client/test/client/extension/profile_test.gleam` | The profile tier: both tiers' manifest refusals, `[[check]]` decoding, an install that never fetches or builds, record format 3, the load's profile comparison, and `loom ext check`'s refusals and report. |
 | `client/test/client/lsp/profile_check_test.gleam` | The check runner over a fake door: a pass, the set comparison, both directions of a mismatch, and an error. |

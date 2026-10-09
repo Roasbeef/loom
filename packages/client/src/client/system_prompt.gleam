@@ -854,14 +854,77 @@ pub fn discover(
   workspace workspace: String,
   home home: Option(String),
 ) -> #(List(GuidanceFile), List(String)) {
-  let #(standing, standing_notes) = user_default(home)
+  let #(standing, standing_notes) = discover_user(home)
+  let #(files, notes) = discover_workspace(workspace)
+  #(
+    list.append(option.values([standing]), files),
+    list.append(standing_notes, notes),
+  )
+}
+
+/// The operator's standing instructions alone: slot one of `discover`,
+/// read from the machine the operator's home is on.
+///
+/// Split from the workspace's files because the two are read on different
+/// machines when a session's workspace is not where its owner is. The
+/// operator's global `AGENTS.md` stays with the owner. The workspace's
+/// files are the workspace's to read, and arrive as text.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // system_prompt.discover_user(option.Some("/home/me"))
+/// // -> #(Some(GuidanceFile("/home/me/.agents/AGENTS.md", UserDefaultFile, "# mine")), [])
+/// ```
+///
+pub fn discover_user(
+  home: Option(String),
+) -> #(Option(GuidanceFile), List(String)) {
+  user_default(home)
+}
+
+/// The workspace's own instruction files alone: slots two and three of
+/// `discover`, `AGENTS.md` and then `CLAUDE.md` unless the second is the
+/// first's byte-identical copy.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // system_prompt.discover_workspace("/work")
+/// // -> #([GuidanceFile("/work/AGENTS.md", WorkspaceFile, "# project")], [])
+/// ```
+///
+pub fn discover_workspace(
+  workspace: String,
+) -> #(List(GuidanceFile), List(String)) {
   let #(agents, agents_notes) = workspace_slot(workspace, agents_file)
   let #(claude, claude_notes) = workspace_slot(workspace, claude_file)
-
   #(
-    option.values([standing, agents, distinct_from(claude, agents)]),
-    list.flatten([standing_notes, agents_notes, claude_notes]),
+    option.values([agents, distinct_from(claude, agents)]),
+    list.append(agents_notes, claude_notes),
   )
+}
+
+/// The instruction files as the one document the prompt carries, with the
+/// warnings passed through.
+///
+/// The rendering half of `guidance`, for a caller which gathered the files
+/// from more than one place.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert system_prompt.render_guidance([], ["a note"]) == #(None, ["a note"])
+/// ```
+///
+pub fn render_guidance(
+  files: List(GuidanceFile),
+  notes: List(String),
+) -> #(Option(String), List(String)) {
+  case files {
+    [] -> #(None, notes)
+    [_, ..] -> #(Some(render_files(files)), notes)
+  }
 }
 
 // A `CLAUDE.md` that is byte-identical to the `AGENTS.md` beside it is
@@ -898,10 +961,7 @@ pub fn guidance(
   home home: Option(String),
 ) -> #(Option(String), List(String)) {
   let #(files, notes) = discover(workspace:, home:)
-  case files {
-    [] -> #(None, notes)
-    [_, ..] -> #(Some(render_files(files)), notes)
-  }
+  render_guidance(files, notes)
 }
 
 /// The prompt block one instruction file renders as: the harness's own

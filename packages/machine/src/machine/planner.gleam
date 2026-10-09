@@ -4403,3 +4403,25 @@ fn take_per_mode(
       }
   }
 }
+
+/// The `op.tool_args` register key under which a call's effective arguments
+/// are persisted at dispatch.
+///
+/// The runtime needs it to rebuild a `ToolRun` for an orphaned call it can
+/// recover through its tool surface, and the key's format belongs to the
+/// planner that writes it, so the runtime asks here rather than repeating the
+/// format.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // planner.tool_args_key(operation, "turn-1", 0)
+/// ```
+///
+pub fn tool_args_key(
+  operation: OpId,
+  step_id: String,
+  source_index: Int,
+) -> String {
+  build.tool_args_key(operation, step_id, source_index)
+}

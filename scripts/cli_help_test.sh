@@ -127,6 +127,61 @@ run_help loomd "usage: loom ext" ext --help
 cmp "$scratch/loom-ext.stdout" "$scratch/loomd.stdout"
 run_help loomd "usage: loom ext" ext -h
 run_help loomd "usage: loom ext" help ext
+
+# `loom distribution` is a passthrough like `ext`, and `dist` is the same
+# command under a shorter name on both binaries. The launcher prints the help
+# text itself, so it needs no server, and the text must equal the server's.
+run_help loom "usage: loom distribution" distribution --help
+cp "$scratch/loom.stdout" "$scratch/loom-distribution.stdout"
+for spelling in "dist --help" "dist -h" "help dist" "help distribution"; do
+  # shellcheck disable=SC2086
+  LOOM_SERVER="$scratch/no-loomd" run_help loom "usage: loom distribution" $spelling
+  cmp "$scratch/loom-distribution.stdout" "$scratch/loom.stdout"
+done
+for spelling in "distribution --help" "dist --help" "dist -h" "help dist" "help distribution"; do
+  # shellcheck disable=SC2086
+  run_help loomd "usage: loom distribution" $spelling
+  cmp "$scratch/loom-distribution.stdout" "$scratch/loomd.stdout"
+done
+
+# `loom executor` is a passthrough in the same way: the launcher prints the
+# help text itself, and the text must equal the server's.
+run_help loom "usage: loom executor" executor --help
+cp "$scratch/loom.stdout" "$scratch/loom-executor.stdout"
+LOOM_SERVER="$scratch/no-loomd" run_help loom "usage: loom executor" help executor
+cmp "$scratch/loom-executor.stdout" "$scratch/loom.stdout"
+for spelling in "executor --help" "executor -h" "help executor"; do
+  # shellcheck disable=SC2086
+  run_help loomd "usage: loom executor" $spelling
+  cmp "$scratch/loom-executor.stdout" "$scratch/loomd.stdout"
+done
+
+# A bare `loomd executor` is the command's own usage error and never starts a
+# daemon.
+run_failure loomd executor
+
+# Both spellings reach the command itself on `loomd`: a bare `dist` is the
+# command's own usage error and never starts a daemon.
+run_failure loomd dist
+run_failure loomd distribution
+
+# `loom dist ...` forwards to the server with every word untouched except that
+# the subcommand is spelled `distribution`. A stand-in server prints the
+# arguments it was given, one per line.
+fake_server="$scratch/fake-loomd"
+printf '#!/bin/sh\nfor word in "$@"; do printf "%%s\\n" "$word"; done\n' >"$fake_server"
+chmod +x "$fake_server"
+want=$'distribution\nprovision\nplan.toml\nout\n--force'
+for verb in distribution dist; do
+  got="$(LOOM_SERVER="$fake_server" HOME="$scratch/forward.home" \
+    "$root/bin/loom" "$verb" provision plan.toml out --force)"
+  if [ "$got" != "$want" ]; then
+    echo "cli_help_test: loom $verb did not forward its words to the server" >&2
+    printf '%s\n' "$got" >&2
+    exit 1
+  fi
+done
+
 # The `--help` and `-h` flags win wherever they appear in argv: flags
 # before them describe the launch rather than failing as unknown options,
 # and no recording, state directory, or replay output is created on the

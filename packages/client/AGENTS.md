@@ -3,8 +3,9 @@
 ## Per-strand shell directories
 
 `client/working_directory` stores canonical shell defaults under reserved
-`client/working_directory/<strand>` facts, using the projected fact supplier
-from `agency.fact_supplier`. Missing state means workspace; corruption,
+`client/working_directory/<strand>` facts, through `owner_services.FactAccess`
+(whose `cell` and `put` use the projected fact supplier from
+`agency.fact_supplier`). Missing state means workspace; corruption,
 unavailable storage, a deleted directory or a redirected canonical target is
 an explicit error. An absolute setter path allows recovery. Writes compare the
 previous sequence. `serve` installs the native tool and wraps the existing
@@ -196,7 +197,17 @@ described below. `gateway` validates the displayed action,
 sequence and echoed subset before preparing a union of those echoed grants.
 The runtime atomically commits that fact and approval under both expectations.
 
-`wiring.run_tool` validates and snapshots remembered grants once. Their path
+`wiring.run_tool` is `read_authority` followed by `run_workspace_tool`.
+`read_authority` reads the stored directory additions, standing grants and
+exact-action consent from the session store and never touches the filesystem
+(`directories.read_stored`, `permissions.read_for_stored`); the result is the
+plain-data `wiring.Authority`. `run_workspace_tool` revalidates it against the
+local filesystem (`directories.revalidate`, `permissions.revalidate`), then
+widens the policy and dispatches, taking only a `WorkspaceView` of the `Config`
+plus the two owner functions (`refused`, `output`). The fused `directories.read`
+and `permissions.read_for` remain as compositions for other callers. The
+split is what lets a workspace on another node run the second half. It
+validates and snapshots remembered grants once. Their path
 component joins explicit native access; their path and network component joins
 the jail policy. Protected writes remain denied. Reopening the session restores
 this authority, while a paused call resumes with its consumed call approval and
@@ -915,7 +926,11 @@ catalogue without opening runtimes. Explicit admission invokes
 - `client/daemon/main.start_class` classifies a start failure into a stage, a
   class, and the structured detail that class permits. Only values proven free
   of a path or a credential may be logged, which is why the reason string is
-  matched rather than recorded. `serve.storage_open_refusal` renders a held
+  matched rather than recorded. The one exception is an `executor_unavailable:`
+  reason: `executor_detail` logs it as `reason` (clipped to 512 bytes) unless it
+  contains a path separator, in which case the class alone is logged, because
+  a storage error and an executor's own sentence can name a path.
+  `serve.storage_open_refusal` renders a held
   writer lease with its expiry so the classifier can emit class `lease_held`
   with `lease_expires_at_ms` — after an unclean exit that expiry is the entire
   answer to when the session reopens. See
@@ -2477,6 +2492,176 @@ catalogue without opening runtimes. Explicit admission invokes
   a due beat restarts its stretch. Both owning services sample every
   `heartbeat_tick_ms` (a minute, slower than the hibernation interval).
   `docs/design-notes/async-completion-wake.md` has the design.
+- `client/owner_services.{OwnerServices, JobsOwner, FactAccess, FactFault,
+  OwnerCapCall, working_directory_prefix, served_prefixes, jobs_owner,
+  local_facts, local_jobs_owner, local, no_capability, unavailable}` — the
+  one record of plain functions a session's workspace half calls back into
+  the owner through: `escalate` (a policy refusal's decision), `facts`,
+  `output` (the rolling output tail), `capability` (an owner-bound
+  code-mode call), `holds` (a strand's tool list), and `notify`,
+  `strand_activity` and `wake` (the jobs actor's completion notice, activity
+  read and idle heartbeat). Locally every function is the call it replaced;
+  a workspace on another node is given the same record backed by messages.
+  `FactAccess` is fenced to `client/working_directory/` and `job/` (a key
+  elsewhere is `NotServed` before any store is consulted) and keeps
+  `FactFault` distinct: `StoreAbsent`, `Conflict`, `LeaseStolen(held_by)`,
+  `Failed(detail)`. `jobs.Wiring` takes a `JobsOwner` plus a `session_path`
+  label supplier instead of a borrowed runtime. `notice.deliver` is the local
+  `notify`; `notice.sample` takes the activity and wake functions, with
+  `sample_runtime` as the shim `async_runs` keeps. `serve` builds the local
+  record (`owner_services.local`) and derives `wiring.Config.escalations` and
+  `observe_output` from it. Background code mode (`async_runs`,
+  `async_codemode`) is not ported and keeps its `Runtime`.
+- `client/cap_placement.{Placement, owner_caps, executor_caps, placement}` —
+  where each code-mode capability name is answered when the workspace is not
+  in the owner's VM, built from the routers' `serviced_caps` constants.
+  `cap_placement_test` fails on a name in neither group or in both.
+  `codemode.OwnerSide` is the four doors the owner's arms read (surface with
+  its Agency, notes, schedules, MCP), `codemode.owner_side` reads them off a
+  `Config` and `codemode.owner_serving` builds them from a seam setting, an
+  Agency and a scheduling door with no `Config` at all, which is what an
+  orchestrator of a remote workspace has. `owner_arms` reads the arms for one
+  seam, `owner_calls` composes `strand.*` and `notes.*` from them for the local
+  router, and `owner_answering` composes the same arms to answer an
+  `OwnerCapCall` from plain data (`owner_capability(config)` is it over the
+  Config's own side). It refuses a seam the surface does not serve, and its
+  `beyond` argument wraps the whole chain outermost for arms a `Config` does not
+  carry. `peer.*` is one: a local session composes it through
+  `serve.with_code_mode_peers`, and the owner of a remote one through
+  `owner_codemode.answering`.
+- `client/owner_codemode.{over_owner, advertising_peers, answering}` — code
+  mode when the workspace and its owner are on different nodes, both ends in
+  one module. `over_owner(config, owner)` is the executor's `CodeModeAttach.arms`:
+  it serves the shipped default of both seams over a stand-in Agency (every
+  operation `AgencyUnavailable` except `holds`, which asks the owner), and puts
+  one router outside the execution's that sends each name
+  `cap_placement.placement` gives the owner as an `OwnerCapCall` through
+  `OwnerServices.capability`, inside the `ServedHere` worker so the capability
+  host keeps reading its channel. A dead port or dropped link answers
+  `owner_unavailable` at once. `answering(side, peers:)` is the orchestrator's
+  end, built in `serve` for a registered workspace from the session's own
+  Agency, scheduling door and peer wiring. `advertising_peers` appends
+  `peer.*` to every seam a tool offers, for `serve.code_mode_tool` and the
+  executor. Not offered on an executor: MCP façades, background code mode and
+  workflow steps (the owner names the refusal). An operator's narrower
+  `--codemode-seams` choice is enforced by the owner, since the executor is
+  not told it.
+  `owner_codemode_test` drives the capability router through a real owner port
+  and link, and `daemon_shipped_remote_caps_test` runs the route across two
+  daemons.
+- `client/workspace_policy.{Basis, session_base, session_toolchain,
+  base_policy_for, base_policy_fault, go_cache_fault, protecting_*,
+  admitting_*, widening_*, allowing_*, under_tools_config, merging_mounts,
+  tool_environment, session_environment, prepare_directories, degraded,
+  lsp_server_roots, lsp_places, env_text, ...}` — the sandbox policy,
+  environment and directory layout of a session's workspace, as functions of
+  plain values (a workspace path, the `[tools]` table, the Go caches, the
+  owner's protected files). They moved out of `serve` so that the workspace
+  half of session assembly can use them without importing `serve`, and so
+  that an executor holding only a workspace can run the same composition. `Basis` is the four values `session_base`,
+  `session_toolchain` and `go_cache_fault` read; `serve.workspace_basis`
+  derives it from `Settings`. `prepare_directories` takes the owner's
+  directory as an `Option` first argument, so the workspace half does not
+  need the session path. Nothing here reads a session, a store or a mailbox.
+- `client/workspace_plane.{WorkspaceSpec, Prepared, Census, Warning, Attach,
+  CodeModeAttach, Retain, Children, WorkspacePlane, PromptFacts, Started,
+  Local, LspPlane, prepare, start, start_local, worktree_wiring,
+  start_effect_plane, mixed_entropy}` — the workspace half of a session,
+  built alone. `prepare(spec, reading:)` spawns nothing: it discovers the
+  toolchain, composes the session base with `workspace_policy.session_base`,
+  refuses a base the sandbox cannot enforce or a Go cache that cannot be
+  honoured, makes the directories and reads the machine into a `Census`
+  (workspace root as an opaque string, toolchain result, effective language
+  servers with roots resolved, installed-extension discovery, platform,
+  shell, base policy, tool environment and its unset names, Git program,
+  the workspace's two hook settings files as bytes, warnings). `WorkspaceSpec` is plain data, including `owner_files` (the
+  index, memory store and digest paths to mask, `None` when the owner is on
+  another machine); `reading` is the one closure `prepare` takes, because
+  `[tools] env` values resolve from the machine's own configuration.
+  `start_local(prepared, attach)` takes the owner's contribution as an
+  `Attach` (logger, namespace, `Retain` custody callback, `OwnerServices`,
+  the session label for the jobs actor, and `CodeModeAttach` carrying the
+  owner's arms of code mode and the `code_mode` tool constructor) and
+  starts the helper pool, the executor service and the broker, publishing
+  `Helpers` then `Broker` through `Retain` in that order. It recomputes
+  `session_base` first, because masks over the owner's files depend on files
+  that exist only after the owner's storage opened (the second computation
+  is the one the returned census carries; a test pins it). It builds the
+  scratch, jobs and language-server wiring, the code-mode configuration
+  (workspace doors first, `CodeModeAttach.arms` last, so the peer router
+  wraps the working-directory router as it did), the workspace's tools
+  (`contributions.workspace_tools` then `directory_tools`, less the
+  operator's deactivations) into the registry `run` dispatches over, and
+  prepares the Git identity, whose warning joins the census. `decls` is that
+  registry described, in registration order. `start` returns only the interface a remote workspace
+  matches, `Started{plane, children, decls}`; `start_local` returns `Local`,
+  which adds the pool, executor, language-server plane, code-mode
+  configuration that `serve` still needs. `Children` is
+  three adders (`scratch`, `jobs`, `lsp_manager`) because `serve` splices
+  each into its services tree at its established position; each holds only
+  its child specification. `WorkspacePlane` is `run(ToolRun, Authority)` (the
+  workspace half of `wiring.run_tool`), `broker`, `census`, a lazy
+  `prompt_facts` (the workspace's guidance files as text and the helper's
+  health, so a pinned prompt pays for neither), `resolve_directory`
+  (`directories.resolve_addition` against the workspace's filesystem),
+  `live_jobs`, `fatal` (pool, executor, broker pids) and `close` (the
+  language-server stop `close_instance` runs). A local plane never calls
+  `OwnerServices.capability`: the owner's code-mode arms are composed into
+  the router directly. `mixed_entropy` and `start_effect_plane` (the
+  one-shot planes' entry, which `serve.start_effect_plane` delegates to)
+  live here too.
+- `client/tool_placement.{Placement, core_names, workspace_names,
+  owner_names, placement}` — which half runs each built-in tool, as two
+  lists of names built from the tool modules' own name constants.
+  `placement(name)` is `Ok(WorkspaceSide)` for `bash`, `grep`, the file
+  tools, `code_mode`, the `job_*` tools and `working_directory`;
+  `Ok(OwnerSide)` for the agent family (with `todo`), `history_search`,
+  `remember`, `schedule_*`, `context_remaining`, `load_skill`, `peer_*` and
+  `advise`; and `Error(Nil)` for an extension's tool, which a local session
+  runs on the owner and a remote one will refuse. `tool_placement_test` builds
+  each half with every plane enabled and fails on a name built and not placed,
+  placed on the wrong side, on both sides, or listed and not built.
+- `wiring.{run_placed, WorkspaceRun}` — the routed tool surface. `serve`
+  replaces the `run` slot of the built `Effects` with `run_placed(owner_run,
+  run_holder, session, clock)`: a name `tool_placement` puts on the workspace
+  reads its stored `Authority` and runs through the plane's `run`; everything
+  else, owner-side built-ins and extension tools, takes the path every call
+  took before. The plane's `run` closes over the workspace's registry, so it
+  is held in a second `tool_holder` (started with the first by `start_holders`
+  and retired with it under `custody.ToolConfig`) for the reason the
+  configuration is: the effect surface is copied into every process that holds
+  the runtime. The owner's registry holds the workspace's tools only as
+  `contributions.described_tools(decls)`, `tool.Described` with a `run` that
+  refuses, built by `tool.from_described`; a routing mistake meets that
+  refusal, never a tool. `ToolSurface.recover` stays `None`.
+- `client/hookserve.{Contents, read_contents, gather, load_from}` — imported
+  hooks over sources read on another machine. `read_contents` is one file as
+  `Missing`, `Bytes` or `Unreadable(reason)`; `gather` pairs each located
+  source with its contents, reading the operator's file on the owner and
+  taking the workspace's from the census by path; `load_from` is `load` over
+  those pairs, so parsing, the trust check against the owner's record and the
+  merge are the same function whichever machine the bytes came from. `load`
+  is `load_from` over files read here.
+- `client/directories.{resolve_addition, admin_over}` — the half of an
+  operator's `add-dir` that needs the workspace's files, and the door built
+  over a resolver for it. `admin_with_facts` is `admin_over` with
+  `resolve_addition` over the session's workspace; `serve` passes the plane's
+  `resolve_directory`.
+- `client/system_prompt.{discover_user, discover_workspace, render_guidance}` —
+  `discover` split at the machine boundary. The operator's global `AGENTS.md`
+  is read on the owner; the workspace's `AGENTS.md` and `CLAUDE.md` arrive
+  from the plane's `prompt_facts` as text, and `serve.render_prompt` renders
+  the same document the single lookup did (a test pins the equality).
+- `client/contributions.{workspace_tools, directory_tools, OwnerTools,
+  owner_tools, compose}` — `built_in` is now the workspace's tools (the five
+  core tools, `code_mode`, the `job_*` tools) composed with the owner's
+  (`agent_*`, `history_search`, `remember`, `schedule_*`,
+  `context_remaining`). `compose` cuts the workspace's list after the run of
+  core tools and after `code_mode` and wedges the owner's two runs in, so the
+  registration order (the pinned prompt's tool index) is what it always was
+  whichever tools are absent. `tool.Described` is a tool's name, description,
+  snippet, schema, replay and execution mode: what a registry needs to offer a
+  tool whose behavior is on another machine.
 - `client/jobs.{JobsPolicy, Request, Audience, Released, Started, Cursors,
   Polled, Listed, Refusal, Spill, Wiring, Message, StdinEnd, Control, Ask,
   max_jobs_per_strand, default_wall_ms, tail_bytes, settle_grace_ms,
@@ -2786,7 +2971,7 @@ catalogue without opening runtimes. Explicit admission invokes
   registry produces reaches a session once: the prompt index and
   `active_tool_names` are both fixed at session creation, so an
   extension installed later is seen by the next session, not this one.
-- `client/serve.session_base(Settings, String, String, String,
+- `client/workspace_policy.session_base(Settings, String, String, String,
   Result(Toolchain, String))` — the whole composed session base in one
   named function: the index and memory protections, `allowing_tool_tmpdir`,
   `allowing_imported_hook_env`, `under_tools_config`,
@@ -2796,7 +2981,7 @@ catalogue without opening runtimes. Explicit admission invokes
   read the composed allowlist back — `policy.meet` intersects `env_allow`
   against this, so a step left out is not a missing convenience but every
   call that wanted the name refused.
-- `client/serve.protecting_index(SandboxPolicy, String)` — the base
+- `client/workspace_policy.protecting_index(SandboxPolicy, String)` — the base
   policy with the search index added to `protected`. A security property,
   not hygiene: snippets from that index are read back into *future*
   sessions' contexts, so an index a model can write is a channel from one
@@ -2804,7 +2989,7 @@ catalogue without opening runtimes. Explicit admission invokes
   writes and leaves reads alone, which is exactly the asymmetry wanted.
   `assemble` composes it before `base_policy_fault` validates, so the
   addition is checked by the same gate every other path is.
-- `client/serve.protecting_memory(SandboxPolicy, String, String)` — the
+- `client/workspace_policy.protecting_memory(SandboxPolicy, String, String)` — the
   same bargain one step along, over `loom-memory.db` (with its WAL
   family) and `loom-memory.digest`. More direct than the index's: a
   search snippet reaches a later session only if a model searches for it,
@@ -2815,8 +3000,8 @@ catalogue without opening runtimes. Explicit admission invokes
   parent and neither file exists until a distillation run has happened.
   The two functions share one `protecting(always:, where_maskable:)`
   mechanism rather than each carrying a copy.
-- `client/serve.state_root_mask_candidates(String)` and
-  `client/serve.protecting_state_root(SandboxPolicy, String)` — what the
+- `client/workspace_policy.state_root_mask_candidates(String)` and
+  `client/workspace_policy.protecting_state_root(SandboxPolicy, String)` — what the
   daemon masks under its state root, and the composition `resolve_managed`
   applies in place of the root. **The state root is not itself a mask**,
   and that is the invariant: masking `~/.loom` wholesale reads as prudence
@@ -2848,7 +3033,7 @@ catalogue without opening runtimes. Explicit admission invokes
   catalogue WAL readable from every jail. The public
   `state_root_mask_candidates` is the unfiltered list; `protecting_state_root`
   is what a session actually gets.
-- `client/serve.build_plane_policy(writable, state_root)` — the base an
+- `client/workspace_policy.build_plane_policy(writable, state_root)` — the base an
   extension install's jailed build runs under, and the second place the
   state root has to be masked. The extensions root is
   `<state_root>/extensions` by default, so the build runs one directory
@@ -2864,10 +3049,10 @@ catalogue without opening runtimes. Explicit admission invokes
   `serve.start_build_plane` therefore takes a `state_root` argument, and
   `client/extension/cli` derives it as the parent of the extensions root,
   which is the inverse of `record.root_for`.
-- `client/serve.admitting_codemode(base, discovered)` — the base half of
+- `client/workspace_policy.admitting_codemode(base, discovered)` — the base half of
   the code-mode mount plan. The toolchain is located *before* the base
-  policy is built (the discovery call moved up out of `code_mode_seam`,
-  which now only reports it) because the base has to carry what a
+  policy is built (`workspace_plane.prepare` makes the discovery call and
+  `serve.code_mode_mcp` only reports it) because the base has to carry what a
   satellite requires: mounts compose as the meet by path, so a base built
   without them would refuse every code-mode launch. Both halves read
   `client/codemode.toolchain_mounts`, so they cannot drift. A host with no
@@ -2877,20 +3062,20 @@ catalogue without opening runtimes. Explicit admission invokes
   — is refused at boot by `base_policy_fault` naming both paths, which is
   the same treatment `broker/policy.validate` gives every mount-over-mask
   pair.
-- `client/serve.admissible_toolchain(discovered, base)` — the step in
+- `client/workspace_policy.admissible_toolchain(discovered, base)` — the step in
   front of `admitting_codemode`, in both the session assembly and
   `start_build_plane`. It turns a discovered toolchain into an `Error`
   when one of its mounts would shadow a writable root of `base`
   (`codemode.clear_of`), so the base never carries the mount — which
   `validate` and the helper now refuse (`protocol-change/057`), and which
-  would otherwise refuse the whole boot — and `code_mode_seam` registers
-  no tool and logs the sentence. The session asks a base assembled with
+  would otherwise refuse the whole boot — and no `code_mode` tool is built
+  while `serve.code_mode_mcp` logs the sentence. The session asks a base assembled with
   the toolchain already in it for its writable roots, which is the same
   answer, because `admitting_codemode` changes mounts and no root. An
   operator's `[workspace] mounts` line naming a read-only ancestor of the
   workspace is *not* filtered: `base_policy_fault` refuses the boot naming
   both paths, the treatment every written mount gets.
-- `client/serve.{base_policy_for, admitting_config_mounts}` select the
+- `client/workspace_policy.{base_policy_for, admitting_config_mounts}` select the
   session's filesystem view. `catalog.ReadScope` defaults to `HostReads`,
   with readable root `/`; `WorkspaceReads` selects the minimal helper view.
   The trusted `[workspace] read_scope` setting and daemon `--read-scope`
@@ -2901,7 +3086,7 @@ catalogue without opening runtimes. Explicit admission invokes
   caches do not require host-home writes. A configured mount overlapping
   a protected path refuses assembly. Protocol-change/020's addendum records
   why the minimal view is now an explicit restriction.
-- `client/serve.base_policy_fault` refuses a **workspace inside a mask**
+- `client/workspace_policy.base_policy_fault` refuses a **workspace inside a mask**
   as well as a policy `broker/policy.validate` rejects. `protected` is the
   policy's only subtractive verb and no grant carves a hole in one, so a
   writable root at or under a masked entry yields a session that comes up
@@ -2918,10 +3103,13 @@ catalogue without opening runtimes. Explicit admission invokes
   error, not a fallback — a typo that quietly served the workspace seam
   would look exactly like a server ignoring the flag.
 - `client/serve.Instance` owns one session's runtime, broker, helper pool,
-  MCP layer, gateway and composition-service supervisor, and `lsp:
-  Option(LspPlane)` — the language-server manager's handle, the helper-lease
-  counter and the servers' attribution operation, `None` with no
-  configured server.
+  MCP layer, gateway and composition-service supervisor, `plane:
+  WorkspacePlane` (what the owner holds of the workspace half), and `lsp:
+  Option(workspace_plane.LspPlane)` — the language-server manager's handle,
+  the helper-lease counter and the servers' attribution operation, `None`
+  with no configured server. `pool`, `executor`, `broker` and `lsp` stay
+  populated from the local plane for the teardown paths and the tests that
+  read them.
   Its `namespace` owns the 11 reclaimable service addresses and is retired
   after the services stop. `prompt` retains the exact assembled prompt;
   `helper_path` identifies the executable used by this session. Optional
@@ -2988,8 +3176,11 @@ catalogue without opening runtimes. Explicit admission invokes
   cannot show an order. `helper_ladder` is `--helper`, the tree this
   server shipped in, `PATH`, `./bin`; `seed_ladder` is `--codemode-seed`,
   the workspace's own seed, the bundled one, and a named path for the
-  refusal to point at when nothing answers.
-- `client/serve.{shell_path, base_policy, degraded, helper_probe_ms}` —
+  refusal to point at when nothing answers. The workspace rung is
+  `serve.usable_seed`, which admits a snapshot only after `seed.verify`
+  accepts it; a local daemon and an executor (`executor_plane.seed_of`) both
+  use it.
+- `client/workspace_policy.{shell_path, base_policy, degraded, helper_probe_ms}` —
   the host facts the system prompt and the jail must agree on: the shell
   jailed commands run under, the *default* session base policy, and the
   one question the prompt has no other source for — whether a helper's
@@ -3007,7 +3198,7 @@ catalogue without opening runtimes. Explicit admission invokes
   inside `broker.clear_call` rather than coming back as a resource
   error. Distinct from the broker's pooled `max_outstanding`, which
   refuses amplification rather than describing what the host affords.
-- `client/serve.start_effect_plane_in` — a session has one execution model,
+- `client/workspace_plane.start_effect_plane_in` — a session has one execution model,
   the executor service (issue #696). There is no lane setting: S3 deleted
   `ExecutorLane`, `Settings.executor_lane` and `LOOM_EXECUTOR_LANE`, so a
   session cannot be opted back into the broker's per-call relay. It builds
@@ -3025,7 +3216,8 @@ catalogue without opening runtimes. Explicit admission invokes
   before the broker serves anything. `start_effect_plane`, which the build
   plane, the check plane and the extension installer use, has no custody
   instance to publish into but runs the same model: it starts the pool, the
-  executor service over it (`start_service_lane`, with a discarded logger)
+  executor service over it (`workspace_plane.start_service_lane`, with a
+  discarded logger and no custody)
   and a `broker.start_dispatching` broker, and returns all three. The
   `BuildPlane` and `CheckPlane` hold the executor, and `stop_build_plane` and
   `stop_check_plane` close it with `executor.drain_ms` and
@@ -3234,7 +3426,7 @@ The rest of the path is phase 1's own, and each module is one question:
   `/private/tmp` and refuses either by name, starts `serve.start_check_plane` over it, prints the
   probe's `enforcement.Report` (`manager.probe_server`), starts a
   `manager` over the one approved server (roots via
-  `serve.lsp_server_roots` and `Setup.places`, `toolchain: None`), runs
+  `workspace_policy.lsp_server_roots` and `Setup.places`, `toolchain: None`), runs
   `profile_check.run_all` through `manager.door`, and stops the manager,
   waits for its lease, aborts the operation, stops the plane and deletes
   the scratch on every path out. **Invariant: the profile proved is the
@@ -3532,7 +3724,7 @@ question each, and one composition point in `serve`:
   grant the hook could widen. **The requirement is the keys of that
   environment under `RefuseNarrowed`**, so every name it carries has to
   be on the session base's allowlist or the whole call is refused before
-  a process exists; `serve.allowing_imported_hook_env` is what grants
+  a process exists; `workspace_policy.allowing_imported_hook_env` is what grants
   `CLAUDE_PROJECT_DIR` there, beside `allowing_tool_tmpdir`'s `TMPDIR`.
   Nothing rewrites the command string: `Context.env` carries `HOME` and
   the shell expands `~` against it, so the substitution
@@ -3882,7 +4074,7 @@ these forks because they define the same modules.
   refuses by name rather than leaving a strand with a driver, a model and
   nothing it can say.
 - **A linked git worktree widens the session base to its git directories.**
-  `serve.widening_linked_worktree` reads `<workspace>/.git`; when it is a
+  `workspace_policy.widening_linked_worktree` reads `<workspace>/.git`; when it is a
   `gitdir:` file, the named directory and the main repository's `.git`
   its `commondir` points at join `writable_roots`, because a jailed
   `git commit` must write the index lock and objects there and both sit
@@ -3890,7 +4082,7 @@ these forks because they define the same modules.
   already has. A primary checkout, a non-repository, or an unreadable
   `.git` file leaves the base untouched.
 - **A jailed child's environment reserves five names per session.**
-  `serve.session_environment` gives every tool shell, satellite and hook
+  `workspace_policy.session_environment` gives every tool shell, satellite and hook
   host the same `PATH`. The bundled toolchain stays first, followed by the
   explicit additions and host PATH, so arbitrary installations are discoverable
   without naming language-manager directories. Lookup does not widen filesystem
@@ -3934,7 +4126,7 @@ these forks because they define the same modules.
 - **A jailed Go tool's caches live outside the checkout, per workspace.**
   `client/gocache` locates `<cache>/loom/workspace/<sha256 of the
   workspace path>` (`<cache>` as `lsp_places` resolves it) and
-  `serve.session_environment` points `GOCACHE`, `GOMODCACHE` and
+  `workspace_policy.session_environment` points `GOCACHE`, `GOMODCACHE` and
   `GOLANGCI_LINT_CACHE` beneath it; they used to land under the tool
   `HOME` inside the operator's checkout (20 GB measured). The root joins
   `writable_roots` through `gocache.admitting` in `session_base`, the same
@@ -3947,7 +4139,7 @@ these forks because they define the same modules.
   mirror degrades to the public proxy, and sets `GOPROXY` to
   `file://<mirror>/cache/download,https://proxy.golang.org,direct`;
   `[tools]` may not name the owned names (`GOPROXY` only with a mirror),
-  checked by `serve.go_cache_fault` at boot together with the mirror's
+  checked by `workspace_policy.go_cache_fault` at boot together with the mirror's
   existence and its non-overlap with the workspace, protected paths and
   the root. `[workspace] go_cache_limit_mib` (default 10240) bounds the
   build cache: at session start a weft task measures it with `du -sk`,
@@ -3969,8 +4161,8 @@ these forks because they define the same modules.
   `catalog.parse_tools` reads an operator's `network = "off" | "full"`
   (full is the default and what an absent table means) plus `env` names
   read from the host at boot and `[tools.set]` literals;
-  `serve.tool_environment` appends them *after* the five server-owned
-  names, and `serve.under_tools_config` puts the chosen network on the
+  `workspace_policy.tool_environment` appends them *after* the five server-owned
+  names, and `workspace_policy.under_tools_config` puts the chosen network on the
   session base and every configured name on its `env_allow`. The daemon
   `--network off|full` flag overrides the selected file at session resolution. Both halves
   are load-bearing and neither implies the other: the meet takes the
@@ -4552,7 +4744,7 @@ these forks because they define the same modules.
   execution directory. Extension hosts use `host_socket_directory`, keyed
   on the extension name like `host_root`, and keep it for the session.
   `daemon/root.directories` creates `<state root>/run` mode 0700 at
-  startup, and `serve.established_masks` masks it from **every** jail.
+  startup, and `workspace_policy.established_masks` masks it from **every** jail.
   Only the satellite's own base reaches its directory:
   `codemode.reaching_socket` adds that directory as a readable root and
   drops a protected entry only when it lies inside the socket root and
@@ -5204,7 +5396,7 @@ read-only broker, deadline and byte bounds; no repository ignore file is edited.
 
 Session assembly keeps the same two directories out of the operator's own
 `git status` without editing a repository file either: `prepare_directories`
-writes `serve.ignore_everything` as `.gitignore` inside each, where none
+writes `workspace_policy.ignore_everything` as `.gitignore` inside each, where none
 exists. An ignore file inside an untracked directory hides the directory
 itself, so no git metadata is resolved, and a linked worktree needs nothing
 different. An operator's replacement file is left alone. `$TMPDIR` under
@@ -5302,6 +5494,37 @@ clear it, each in one `api.edit_reserved_facts` transaction. Default rows carry
 `running`. `peers.send` refuses a closed recipient with `peers.not_running`, and
 nothing opens a session. Default entries share the 64-link bound after the
 explicit ones. A new `[peers]` key means `peer_defaults` and its test.
+
+Sender outbox (protocol-change/078 addendum). `peers.send` records each message
+in the sending session before it asks the recipient: `peer_mail.OutboxClaim`
+writes `client/peers/outbox/<digest(strand, session, id)>` `pending`
+(`put_reserved_fact_expecting`, expecting absent), the inline attempt runs, and
+`OutboxSettle` flips the row to `admitted` (receipt) or `refused` (reason). An
+unreachable owner is the typed failure `peer_mail.Unreachable` (`Endpoint.call`
+and `Directory.resolve` answer `Result(_, peer_mail.Failure)`, where `Refused(reason)`
+is a definitive answer), which a local endpoint never returns; `peers.send` then
+leaves the row `pending` and returns
+`{"state": "queued"}` (`peers.queued`, `peers.is_queued`), and the router
+answers a program with the denial `peer_queued` because `cap/peer.send` is typed
+to a receipt. `client/peer_outbox` is the pure module (row, `claim`, `room`,
+`settle`, `expire`, codec); `client/internal/peer_outbox_store` applies it to the
+store inside the Agency actor; `OutboxDue` also refuses rows pending over an
+hour. `client/peer_outbox_drain` is a `weft/state_machine` (`Idle`/`Waiting`)
+with one named timeout `peer-outbox-drain`: a pass at session open, then every
+`retry_interval_ms` (5000) while any row is owed, no timer when none is. It is
+built from a `peers.Wiring` and an injected `after`, reads rows through
+`OutboxDue`, and attempts each through `peers.resend`, which resolves through
+`Directory.resolve` like `send`. `agency.Config.outbox_queued` rings it
+(`peer_outbox_drain.poke`) after an `OutboxSettle(Unanswered)`; `serve` wires the
+closure and adds the drainer beside the schedule scanner. Bounds: 64 rows per
+strand (`outbox_full` when all pending, else the oldest finished row is evicted),
+one hour pending, `Unlink` deletes the pending rows to the link,
+the `peer.sent_receipt` router arm reads an admitted local row first. A refused row is replaced
+by a repeat of its id. The drainer is not labelled with a `telemetry/owner` role
+(roles are frozen by the protocol), so an ownership inspector reports it as
+`unknown`. Tests: `peer_outbox_test` (pure), `peer_outbox_flow_test` and
+`peer_outbox_drain_test` over `support/peer_rig` (two real runtimes behind a
+scripted network, a fake timer wheel, a file-backed reopen).
 
 An owner's web page manages links through `daemon/ui_peers`: `run` executes a
 `web_view/peer_links.Request` against `peers.inspect`, `peers.link` and
@@ -5417,7 +5640,7 @@ such as `lsp_go` in them is a fixture's, not a dependency on that repository.
   `writable` root written `<cache>/loom[/...]` (compared by component, so
   `<cache>/./loom` too) is refused at decode, record decode included, and
   `private_cache_fault(server, places)` — called from
-  `serve.lsp_server_roots` at boot and by `loom ext check` — refuses an
+  `workspace_policy.lsp_server_roots` at boot and by `loom ext check` — refuses an
   absolute or `~/` root that resolves inside `<cache>/loom`, or a
   `writable` one that holds it (`~/.cache`): each would let a server swap
   a private cache for a link.
@@ -5585,15 +5808,16 @@ such as `lsp_go` in them is a fixture's, not a dependency on that repository.
   `ClientDown` and `ManagerDown`: an evicted or released keeper, or one
   whose manager died, stops its client gracefully (`lsp/client.stop`).
 - **Serve wiring.** The boot discovers installed extensions once
-  (`discovered_extensions`) and hands both readers that answer: the
+  (`workspace_plane.prepare`, into `Census.extensions`) and hands both
+  readers that answer: the
   `Ready` records' `lsp` go through `profiles.effective_lsp_servers` with
   `Catalog.lsp_servers`, each refusal one `lsp.profile_refused` warning
   (`extension`, `server`, `other`, `reason`), and only `Jailed`
-  extensions become tool contributions. `serve.assemble_in` builds the
-  plane only when the effective server list is non-empty. Each server's `readable`/`writable`
+  extensions become tool contributions. `workspace_plane.start_local` builds
+  the plane only when the effective server list is non-empty. Each server's `readable`/`writable`
   `~/` and `<cache>/` roots are expanded once with
   `profile.expand_path(_, places)`, where `places` is
-  `serve.home_directory()` and `profile.cache_place` over
+  `workspace_policy.home_directory()` and `profile.cache_place` over
   `ffi_os.platform`'s OS name and the daemon's `XDG_CACHE_HOME`; a server
   whose roots will not resolve, or every
   server when the lease counter will not start, is refused with one
@@ -5889,6 +6113,1007 @@ open and, as for profiles, only for a page that holds the creation capability.
 `ui_socket.create_for` and `create_task` take a `creations.Roles` in place of a
 bare profile and map `unknown_model` to `creations.UnknownModel`. The observer
 socket's admission is untouched: the form's existing submit carries the field.
+
+The model composes with a session's place (protocol 078): `manager.Creation` and
+the registration carry the model beside `executor` and `pool`, `reserve_creation`
+compares all of them on a retry (a pooled request still does not compare the
+executor), and a session that moves keeps it because `session_move.Manifest`
+carries `model` and `session_importer` registers it on the receiver. The web
+form for a registered workspace draws no model select, so `create_for` passes
+`creations.default_roles` for that place; the control command can pin a model on
+an executor or pool session.
+
+## Trusted distribution membership (protocol 078)
+
+`client/distribution` is the membership layer for orchestrator and executor
+daemons that trust each other as Erlang nodes. It starts TLS distribution on a
+VM that was booted for it and connects to the configured peers. It sends no
+message, registers no name and runs no service; the executor role and remote
+tool calls are later slices that use the `Peer` it returns.
+
+`Config` is built by `configure` (names, absolute credential paths, one to 32
+distinct peers each with a 32-byte pin, optional `listen_port`) or read from
+the `[distribution]` table by `from_document` / `parse`; both return a sentence
+naming the key, and `None` when the table is absent, which means distribution
+stays off. `catalog.parse` validates the same table, so a typo is refused
+wherever the file is read. `tls_options` renders the `ssl_dist_optfile` text
+and `boot_arguments` the three flags. `start` returns a `Membership`; `peer`
+resolves a configured name to a `Peer`, `connect` makes an explicit hidden
+connection under a weft deadline, and `describe` words a `Fault` for the
+operator.
+
+`client/internal/ffi_distribution` and `src/client_distribution_ffi.erl` are
+the only foreign code: the ssl `verify_fun`, `net_kernel:start/2` and
+`hidden_connect_node/1`, the checks of the emulator's own boot arguments, and
+the launch of `epmd`. None of it is expressible in `gleam_erlang`, `gleam_otp` or `weft`. The verify
+callback keeps every PKIX failure, and for the leaf it requires the SHA-256 pin
+and the exact node name (the certificate's only DNS name containing an `@`) of
+one configured peer, in both directions. Network input never makes an atom:
+peer names become atoms once inside `start`, and `peer` looks them up by string.
+
+Invariants that break things when violated:
+
+- `start` checks the boot before it reads a credential: not already distributed,
+  OTP 29 or newer, `-proto_dist inet_tls`, `-ssl_dist_optfile` present, no
+  `-name`, `-sname`, `-setcookie`, `-nocookie` or `-ssl_dist_opt`, and an options
+  file that is private and equals `tls_options` for this configuration. Each
+  failure is its own `BootRefusal`, so the operator is told what to change.
+- The configured cookie path must be the emulator's `$HOME/.erlang.cookie`,
+  since the emulator reads the cookie from the init home when it opens its
+  listener. The key and cookie must be mode 0600.
+- `dist_auto_connect` is `never` and the node is hidden. Do not add a code path
+  that dials a node that is not a configured peer, and never connect from
+  inside a satellite: satellites boot with `-proto_dist none` and their
+  environment is built from an allowlist, so `ERL_FLAGS` is not inherited.
+- A failed `start` stops the partial distribution (`net_kernel:stop/0`) and
+  returns no `Membership`.
+- An epmd must answer before `net_kernel:start/2`. The daemon VM is booted
+  without `-name`, and unlike `erl -name` at boot, a dynamic `net_kernel:start/2`
+  never launches epmd, so on a machine with no epmd running the node fails to
+  register (`econnrefused`, then `nodistribution`). `ensure_epmd` in the FFI asks
+  loopback (under a deadline, since `erl_epmd:names/1` has none) and, when
+  nothing answers, runs `epmd -daemon` from `code:root_dir()/erts-<version>/bin`
+  or `PATH`, then polls up to three seconds. It does nothing under
+  `-start_epmd false`, which the tunnelled-orchestrator recipe sets. The port is
+  the VM's `epmd_port` argument (from `ERL_EPMD_PORT`); `ERL_EPMD_ADDRESS`
+  reaches the daemon through the inherited environment. Failures are
+  `EpmdUnavailable(port)` and `StartFailed`, never `InvalidCredentials`: that
+  fault now means only a credential read or match failed. The fixture's
+  `raw_wait` calls `ensure_epmd` too, so it works with no epmd.
+
+The daemon calls `start` from `daemon/main.prepare_startup` before the
+catalogue is opened and refuses to start with `describe`'s sentence, so a VM
+booted without the flags fails before any state is touched. The launcher
+`bin/loomd` (Makefile `server-shipment`) appends `-proto_dist inet_tls
+-ssl_dist_optfile "$LOOM_DISTRIBUTION_OPTFILE"` to `ERL_FLAGS` when that
+variable is set and is otherwise unchanged. `daemon/distribution_cli` is
+`loomd distribution options CONFIG OUTPUT`, which writes the options file with
+mode 0600 from the same table.
+
+`test/client/distribution_test.gleam` covers configuration refusals in process
+and drives `test/client_distribution_fixture_ffi.erl`, which mints certificates
+and boots separate emulators with the production flags: a correct pair connects
+and exchanges a message; a wrong leaf pin (either side), a pin that matches but
+carries another node name, a pin that matches but was issued by an untrusted
+CA, and a cookie mismatch are each refused; a send to an unconnected peer does
+not connect; and the boot and credential refusals leave the VM non-distributed.
+Four scenarios give the child a private `ERL_EPMD_PORT` and so hold with or
+without a machine epmd: start launches an epmd that registers the node and
+stops it afterwards, a port held by a listener that never answers gives
+`EpmdUnavailable` without hanging, a taken `listen_port` gives `StartFailed`,
+and `-start_epmd false` launches nothing.
+Removing the pin comparison, the name comparison, the PKIX failure or
+`dist_auto_connect = never` from the callback fails exactly its own scenario.
+
+`test/client/daemon_shipped_remote_test.gleam` is the shipped-daemon end to end
+(issue #697, gated on `LOOM_BOOTSTRAP_E2E_SERVER` like the other shipped
+fixtures, and on the sibling `bin/loom-exec` enforcing a policy, which
+`enforcement.probe` measures; `make server-shipment` alone does not build the
+helper, `make binaries` or `make sandbox` plus an install into `bin/` does).
+`test/support/remote_daemons.gleam` mints a CA and per-node leaves with
+`openssl`, writes each node's cookie at that node's isolated `$HOME`, renders the
+`loom.toml` files and `loomd distribution options`, and starts an orchestrator, an
+executor and a second orchestrator with a decoy pin through a wrapper that sets
+`LOOM_DISTRIBUTION_OPTFILE`. `test/support/remote_probe.gleam` runs as a throwaway
+emulator that each daemon lists as a peer and reports connections, makes a daemon
+dial or drop a connection (`erpc`), and lists a daemon's hidden nodes. The
+orchestrator's model is a `provider_http` script on loopback. Three tests share
+the fixture:
+
+- `daemon_shipped_remote_test_`: wrong pins are refused in each direction and no
+  daemon dials the executor before a session exists; `sessions.create` with
+  `executor`/`workspace` settles `resident`; the model writes a file with
+  `fs_write`, reads it with `bash` and `fs_read`; the file is under the
+  executor's checkout and nothing named like it or like `repo` is on the
+  orchestrator; the executor then lists the orchestrator as connected with no
+  probe dial; a stop leaves the executor's scope `closed`/`all_retired` at
+  incarnation 1 (read from a copy of `exec-ledger.db`), and a reopen attaches at
+  incarnation 2 and reads the earlier file.
+- `daemon_shipped_remote_restart_test_`: the orchestrator is killed with
+  `SIGKILL` while a `bash` call sleeps on the executor and started again. The
+  reopen waits out the dead daemon's writer lease (up to 60 s), recovers the call
+  from the executor's ledger, and the model gets the stored outcome; the
+  side-effect file shows one run.
+- `daemon_shipped_remote_partition_test_`: the probe has the orchestrator
+  `disconnect_node` the executor mid-call; the surface repairs the link and
+  re-sends the same `Run`, the file shows one run, and the executor lists the
+  orchestrator again afterwards.
+
+`test/client/daemon_shipped_remote_codemode_test.gleam` runs the two heavier
+effects on the same two-daemon fixture, with no probe node. Both tests need the
+build seed (`make codemode-seed`), which the fixture hands the executor with
+`remote_daemons.start_with(layout, ["--codemode-seed", seed])`; the executor
+reads that flag as a local daemon does (`executor_plane.machine`). The fixture
+directory is a short one under `/var/tmp` because code mode's capability socket
+is bound below the executor's state root and an AF_UNIX path is about a hundred
+bytes. A missing seed, `gleam` or `rg` prints a `SKIP shipped remote code mode`
+line and passes. The provider is started with `provider.with_server_for` for a
+longer callback budget and, in the code-mode test, `provider.AlsoFailed`, which
+lets the model receive an error result.
+
+- `daemon_shipped_remote_codemode_test_`: one `code_mode` program is vetted,
+  compiled and launched on the executor, writes a file through `cap/fs` into the
+  executor's checkout and reports a computed value with the text of `README.md`;
+  a second program that does not type check comes back as an error result with
+  the compiler's diagnostic. The program's file and the `.codemode` and `.blobs`
+  directories are absent from the orchestrator, and a stop leaves the scope
+  `closed`/`all_retired`.
+- `daemon_shipped_remote_lsp_test_`: the executor's `loom.toml` carries
+  `[lsp.gleam]` and the orchestrator's does not. A `cap/lsp` program reads the
+  hover, definition and references of `greet`; a rename preview names three files
+  and leaves the disk alone; the apply rewrites all three in the executor's
+  checkout with settled, empty diagnostics; an `fs_write` of a module that does
+  not type check returns a settled diagnostics block with one error, and
+  `lsp.diagnostics` reads it back. The executor is started with `--helper` naming
+  the real `bin/loom-exec`, not the isolated launcher's symbolic link to it: the
+  helper re-executes itself inside the sandbox profile, a language server's
+  profile reads only the system directories and the project, and the link lives
+  in the fixture's home, so the profile cannot follow it (the exec fails with
+  `sandbox-exec: execvp() ... Operation not permitted` and the probe exits 71).
+  `bash` and code mode run under a profile that reads the whole host and never
+  notice.
+
+`test/client/daemon_shipped_remote_tools_test.gleam` covers the rest of the
+phase 1 workspace plane on the same fixture, one pair per test, with the pair's
+arrangement in `test/support/remote_pair.gleam` (gating, the short `/var/tmp`
+directory, credentials, both configuration files, `open_registered`,
+`session_fact` and `session_socket`). `session_fact` reads a reserved fact from
+a copy of the orchestrator's session store, and `session_socket` is the owner's
+socket on the session for commands such as `goal_set` and `worktree_diff`. A
+host without `rg` or `git` prints a `SKIP shipped remote tools` line and passes.
+`provider_http` admits the advisor's standing brief (`advisor.brief`) as a
+leading block of the first user message, so a scripted reviewer can be fed.
+
+- `daemon_shipped_remote_search_and_cwd_test_`: `grep` finds a pattern in files
+  only the executor holds and honours its `globs`; `working_directory` selects a
+  subdirectory, the next `bash` reports the executor's path, a `bash` call's own
+  `cwd` leaves the selection alone, the orchestrator's store holds
+  `client/working_directory/main`, and after a stop and reopen a `bash` call
+  still starts there.
+- `daemon_shipped_remote_jobs_test_`: a `bash` call whose `timeout_ms` passes
+  becomes a background job, and ends when the test creates a file in the
+  checkout; the executor's completion notice wakes the idle session through the
+  owner port, and `job_poll` reads its exit status and output. A second job,
+  started with `mode: "background"`, appends to a file every fifth of a second;
+  `job_kill` stops it and the file stops growing. `live_jobs` lists both while
+  they run and none after, and the store holds a `job/<id>` record for each, in
+  the phase it ended in.
+- `daemon_shipped_remote_hooks_test_`: the checkout's `.claude/settings.json`
+  runs nothing until the orchestrator holds a trust record for the hash of the
+  bytes the executor sent (the test writes it with `hooktrust.trust`, as the
+  absent `loom hooks trust` will). Then a `SessionStart` hook runs once and its
+  output rides the first request, a `PreToolUse` hook runs on the executor
+  around a `bash` call with the call as stdin and the checkout as its working
+  directory, a `PostToolUse` hook replaces the output the model reads, and a
+  `PreToolUse` hook that exits 2 refuses an `fs_write` with its message as the
+  error result. A `PostToolUse` note added beside the output is a second content
+  block, which `provider_http` does not admit, so the hook rewrites instead.
+- `daemon_shipped_remote_goal_test_`: a goal's check runs in the executor's
+  checkout. One check passes on a file only the executor holds and prints the
+  executor's path; the other fails because the file it names exists only in the
+  orchestrator's launch directory. The board and the reviewer's feed (a second
+  scripted provider on the `advisor` role) carry each result.
+- `daemon_shipped_remote_git_and_guidance_test_`: the executor's `AGENTS.md` and
+  `CLAUDE.md` and the operator's global `AGENTS.md` reach every request's system
+  prompt, and same-named decoys in the orchestrator's launch directory, under the
+  registered name there and in its home reach none. A `git` call reports the
+  executor's branch and commit; the orchestrator's store holds that commit as
+  `session/git-start` and the root and branch in `client/peers/git-observation`;
+  the `worktree_diff` board lists a file the model added. The system prompt has
+  no Git state (`prompt/default`), local or remote.
+
+`test/client/daemon_shipped_remote_strand_test.gleam` and
+`daemon_shipped_remote_owner_loss_test.gleam` run a `code_mode` program on the
+executor that spawns a child strand, on the same `remote_pair` fixture. Both
+need the build seed (`remote_pair.code_mode_seed`, passed to the executor as
+`--codemode-seed`) and print a `SKIP shipped remote ...` line without it. A
+spawned child makes the glance loop ask the `summarize` role for a title, and an
+unrouted role falls back to `main`, which is the scripted provider and refuses
+the request as out of order; `remote_pair.models_without_glance` routes the role
+to a closed port so the script lists only the conversation under test. A child's
+first request is matched by `AwaitPromptPrefix(strand_framing.brief_head("main"))`.
+
+- `daemon_shipped_remote_strand_test_`: the program calls `strand.spawn` and
+  `strand.wait`; the orchestrator's Agency creates the child and runs its turn
+  against the same scripted provider. The child's `bash` call prints the
+  executor's checkout as its working directory and writes a file there, which is
+  absent from the orchestrator. The child's final text returns through the join
+  into the program's report, and the scope closes `all_retired`.
+- `daemon_shipped_remote_owner_loss_test_`: the program joins a detached child
+  whose `bash` call takes 40 seconds. After the call has started, a probe (the
+  third distribution node, issued by `remote_pair.probe_identity`, listed in
+  both configurations by `remote_pair.configure_trusting`) has the orchestrator
+  drop its connection to the executor (`remote_pair.drop_link`). The program is
+  told `owner_unavailable` and the model answers within 20 seconds of the cut,
+  with the child's command run once and the provider's script consumed in order.
+  An owner that is up and silent is not covered: its bound is a constant of the
+  executor, and no daemon can be made to hold a reply back without a hook in
+  production code.
+
+### Provisioning a deployment (issue #697)
+
+`loom distribution` (also `loomd distribution`, and `dist` for either) takes an
+operator from nothing to a trusted deployment with no openssl and no script.
+`loom` forwards the verb to `loomd` the way it forwards `ext`
+(`packages/tui/CLAUDE.md`); the implementation is here, in five modules that
+each own one step:
+
+- `client/distribution_plan` reads the plan (`[[node]]` tables, in TOML or JSON
+  by file extension) into a neutral `Tree`, decodes it once, and validates it:
+  unique executor-grammar node names and Erlang names, roles closed, `executors`
+  only on orchestrators and naming executors, `workspaces` only on executors
+  under `catalogue.is_workspace_name` with absolute roots, every executor used
+  and every orchestrator peered. `peers` derives the edges: an orchestrator
+  peers with the executors it uses and with the other orchestrators, an executor
+  with the orchestrators that use it, always symmetrically.
+- `client/distribution_provision` mints one authority, one certificate per node
+  and one shared cookie, builds a `Bundle` per node and the secret-free
+  `System` (`system.json`), and writes `<node>.loombundle` (mode 0600) and
+  `system.json` into a 0700 directory it refuses to reuse without `--force`. The
+  CA key is dropped when `provision` returns. `render` is `show`.
+- `client/distribution_bundle` is the single-file bundle: JSON, marker
+  `loom-distribution-bundle/1`, the node's role, peers with pins, role tables
+  and the CA, certificate, key and cookie inline. `decode` is the install gate:
+  strict keys, the plan's own `check_node`, the daemon's own `configure` for the
+  node and peers, the cookie rule, and `ffi_pki.inspect` (readable PEM, chain to
+  the CA and validity, key matches certificate, exactly the node name as the
+  only `@` DNS name, the host present). `config_tables` renders the `loom.toml`
+  tables the bundle owns.
+- `client/distribution_install` is `install BUNDLE [--home] [--config]
+  [--force]`. It decides every destination (create, unchanged, replace or
+  refuse) before it writes anything, merges the owned tables into `loom.toml` at
+  the text level (append what is missing, skip what is equal, refuse or with
+  `--force` remove the bundle's own sections and append), reads the merged text
+  back through `distribution.from_document` and `executors.from_document`, and
+  generates the options file from the merged `[distribution]`. A different
+  existing cookie at `$HOME/.erlang.cookie` is refused unless `--force`, since
+  Erlang reads one cookie for every node the user starts. Rerunning with the
+  same bundle changes nothing.
+- `daemon/distribution_cli` dispatches `init`, `provision`, `show`, `install`
+  and `options`. `run` returns the text to print; `main` prints and halts. No
+  command prints a key, cookie or certificate.
+- `daemon/executor_cli` is `loomd executor release SESSION [--state-dir PATH]`
+  (`loom executor release` forwards to it from the launcher, with the help text
+  duplicated in `tui` and compared by `scripts/cli_help_test.sh`). It takes the
+  state directory's endpoint reservation through `daemon.claim_endpoint`, which
+  refuses while a live daemon holds it, then opens `<state-dir>/exec-ledger.db`
+  and calls `exec_ledger.release`. It never creates the state directory. The
+  orchestrator's side of the same exit is `scope.attach_at`: a close with unknown
+  cleanup attaches at the next incarnation, which the executor refuses until the
+  release and reopens after it.
+
+The only new foreign code is `src/client_pki_ffi.erl` behind
+`client/internal/ffi_pki`: five operations (`authority`, `issue`, `pin`,
+`inspect`, `random_bytes`) over OTP `public_key` and `crypto`, because no Gleam
+library generates or signs X.509. Keys are ECDSA P-256, signatures
+ecdsa-with-SHA256, the authority lasts 3650 days and node certificates 1825 days.
+Renewal, adding a node without reissuing the others, and revocation are certificate
+rotation, which is later work: today a changed deployment is provisioned again and
+every bundle is reinstalled with `--force`.
+
+Invariants:
+
+- A bundle holds the key and the cookie. It is written 0600 through
+  `bootstrap.atomic_write_private`, and no command or error message may contain
+  `Bundle.key`, `Bundle.cookie` or any PEM. The tests assert this for the
+  summary, `system.json`, `show` and `install` output.
+- `install` writes nothing when any destination is refused. A new destination,
+  or a new refusal, goes into the plan phase before `ensure_private_directory`.
+- The text merge touches only `[distribution]` (with its peer rows),
+  `[executors.<name>]` and `[workspaces.<name>]` sections the bundle names. The
+  read-back in `accepted` is what proves a section was replaced; keep it.
+- A plan or bundle rule is the daemon's rule by construction (`check_node_name`,
+  `configure`, `is_executor_name`, `is_workspace_name`), never a copy.
+
+`test/client/distribution_provision_test.gleam` covers the plan in both
+spellings, each refusal, provisioning modes and `system.json`, the pins and the
+exact certificate names (recomputed in `client_distribution_fixture_ffi` with
+`public_key` directly), install into scratch homes, idempotence, the cookie,
+conflicting-table and credential refusals, tampered bundles, the commands, the
+`dist` alias, and two real emulators booted from files `install` wrote: they
+connect with pins checked on the executor's fixed port, and changing one peer pin
+in the orchestrator's installed `loom.toml` makes the connection refuse.
+
+## Naming a registered workspace (protocol 078)
+
+`sessions.create` takes an optional `executor`. `client/executors` decodes the
+`[executors.<name>]` tables (`node` only, which must be one of the
+`[[distribution.peers]]` nodes, so a document with executors and no
+`[distribution]` is refused); `catalog.parse` validates it with every other table
+and `daemon/main.prepare_startup` captures the list once in `Config.executors`,
+which `listen_serving` copies into `server.Config.executors`. It is never reread.
+A new `[executors.<name>]` key means `executors.row`, `scripts/config_keys.sh`
+and `docs/configuration.md`.
+
+With an `executor` the workspace is a registered name. `protocol` decodes it
+under `catalogue.is_workspace_name` (no `/`, no NUL, at most 128 bytes), takes the
+executor under `is_executor_name`, defaults the domain scope to `session_only` and
+refuses `workspace_private` as malformed. `server.create_session` then skips
+`bootstrap.canonical_directory` for it, answers `executor_unknown` when
+`executors.find` misses, does not call `manager.remember_folder`, and passes the
+name through `manager.Creation.executor`, which `reserve_creation` compares on a
+retry. `view_json` and the owner `sessions.get` add an `executor` member only
+when it is non-empty, so a local record is byte-identical.
+
+Every use of `Registration.workspace` that a registered session reaches is
+guarded by the shape of the text (a name never starts with `/`) or by the
+executor itself: `serve.resolve_managed` resolves a registration with
+`RegisteredWorkspace`, so `resolve` neither canonicalizes the name nor looks for a
+helper or Go caches for it;
+`ui_project.locate` returns `None` for a workspace that is not an absolute path;
+`ui_socket.known_workspace` only matches local sessions, so a home page can never
+re-create into a name; `catalogue.set_workspace_default` refuses a registered
+session; the domain record holds the name under a session-only domain, which
+`storage/domain.validate` alone allows. Creating such a session starts its
+opening (create initializes) and the daemon assembles it with
+`serve.assemble_registered` (see "Assembling a registered session" below). A
+daemon that cannot reach the executor (no `[distribution]`, an unconfigured name,
+a refused handshake or attach) fails the build, and `operations.get` reports
+`start_failed` with an `executor_unavailable: ...` reason; the registration stays
+`reserved`, so `sessions.open` answers `not_initialized` and the creation key
+retries. `test/client/daemon_registered_test.gleam` covers the wire, and
+`executors_test` the table.
+
+Both first-party clients create such a session. The terminal sends the same
+`sessions.create` from `loom --executor <name> --workspace <registered name>` (see
+`packages/tui`). The web home reaches `create_session` through
+`ui_socket.create_for` with a `creations.Registered(executor, workspace)` place:
+`placed` judges only the shape of the name (`creations.registered_name`) and never
+calls the folder check, `executor_of` puts the executor on the `manager.Creation`,
+and `scope_of` makes a registered place session-only whatever the form said, which
+the control decoder does for `domain_scope` and a direct `create_session` call does
+not. `server.create_session` then answers `executor_unknown` for an executor the
+daemon does not configure, which `creation_refusal` words as
+`creations.UnknownExecutor`. The page learns the executor names from
+`server.HomeAttachment.executors` (`list.map(config.executors, ...)` in
+`home_upgrade`), which `ui_socket.upgrade_home` hands to `home.Start.executors`
+only for a page that holds the creation capability; nothing about it is on the
+control protocol. `listed_entry` copies `Registration.executor` into the sidebar's
+`sessions.Entry`, and `with_projects` skips a registered entry, whose workspace is
+a name and not a path to look a repository up from.
+
+## Remote tool calls (protocol 078)
+
+`client/remote/*` is the mechanics of running a session's tool calls on another
+machine: the executor's host, the orchestrator's surface and owner port, and the
+closed message vocabulary between them
+(`docs/design-notes/distributed-runtime.md` section 6, `protocol-change/078`).
+It is generic over the workspace plane, so nothing here depends on how `serve`
+assembles one; an integration supplies a `host.PlaneFactory` on the executor and
+composes `surface.Functions` into a `ToolSurface` on the orchestrator. The
+orchestrator side is assembled by `remote/workspace` and `serve`, and the
+executor side by `daemon/main.start_executor`, which starts the host from
+`[workspaces.<name>]` rows with `executor_plane.factory`; both have sections
+below.
+
+- `remote/protocol` is plain data only: `Key`, `HostMessage(census)` (`Attach`,
+  `Run`, `Query`, `QueryOrFence`, `ListUnacked`, `Ack`, `Close`), `OwnerMessage`
+  (one constructor per `OwnerServices` function, plus `Tail` as a cast), the
+  replies (`RunAnswer` = `RunFinished | RunLost | RunRefused`, `Lookup` =
+  `Missing | Admitted | Terminal | Unknown | Fenced`), `Refusal`, and
+  `CloseOutcome`. The census is a type parameter the host never reads.
+  `unknown_outcome_text` is the model's wording for a lost call and
+  `did_not_run_text` the wording of a fenced one. `Attach` carries
+  `protocol.version` (2); the host refuses any other value with `VersionMismatch`.
+  Change the version whenever a constructor or field changes. Version 2 moved
+  the executor's clock reading out of the census and into `Attached`, so each
+  reply carries the time it was sent.
+- `remote/address` is `{registered name, node}`. `deliver` and `watch` go through
+  `internal/ffi_remote`, three stock-OTP `@external`s (`erlang:send/2` and
+  `erlang:monitor/2` on a `{Name, Node}` destination, and `gleam_stdlib`'s
+  identity to make a `Name` from fixed text) because `gleam_erlang` resolves a
+  named subject only on the sending node. No `.erl` file, and no atom is made
+  from network input.
+- `remote/codec` stores a `ToolOutcome` as the `core/codec` JSON in an envelope
+  and decodes it totally.
+- `remote/host` is the executor's node-level actor (`weft/actor`), registered under
+  `address.default()`. It owns the one `storage/exec_ledger` handle, builds a
+  `Plane(census)` per session through the `PlaneFactory` as a weft run (the
+  scope is `Building` until it reports), runs each tool as a weft run whose
+  result arrives as a message, and commits `finish` before any waiter is
+  answered. A `Plane` is `run`, `census`, `children` (adders for a per-scope
+  supervisor the host starts through an owner process) and `close`, which is
+  handed a function that stops those children. Read its module doc for the
+  admission table.
+- `remote/owner_link` is the executor's `OwnerServices` over messages: monitored
+  calls (`broker/internal/call.try_call`), in-band failure when the owner is
+  gone, and a one-cell `Link` that `host.attach` re-points when a later runtime
+  attaches to an open scope.
+- `remote/owner_port` is the orchestrator's per-session actor. Every request runs
+  in a weft run cancelled when its requester exits (`cancel_when_exits`), and a
+  `Tail` is served inline. It reconciles acknowledgements on `bind` and on a
+  weft periodic timer, acknowledging only keys the injected `settled` accepts.
+- `remote/surface` is `attach`, `run`, `recover`, `ack`, `places` and
+  `functions`. A lost connection is repaired with `weft/poll.fold_until` on a
+  doubling interval and the same `Run` is sent again. `recover` sends
+  `QueryOrFence` for a call whose `run.replay` is `ReplayNever` and plain
+  `Query` for a `ReplaySafe` one.
+
+Invariants that break things when violated:
+
+- Every session open calls `surface.attach` once, before its first `run` or
+  `recover`, and shares that one surface across every strand and every strand
+  or runtime restart inside the open. The fresh token is the only fence against
+  a dead open's in-flight `Run`; Erlang orders messages per sender pair only. A
+  second attach inside one open rotates the token and gets another strand's
+  live `Run` refused as `StaleToken`. `recover` assumes the attach ran, because
+  "no row" means "never started" only after it.
+- A `Run` is idempotent by call key and the host never starts a second run for a
+  key. The surface relies on this to re-send after a reconnect; do not re-send
+  `Run` anywhere else.
+- The host cancels a run only when its last waiter exits with a reason other
+  than `noconnection` (`host.cancels_run`). `noconnection` leaves the run going
+  and its outcome in the ledger. A waiter that exits with `noconnection` is
+  dropped, and its re-send adds it back.
+- The ledger row is made `terminal` before any reply, `unknown` before a cancelled
+  run's worker is killed, and a request for an `unknown` key never starts the
+  call again.
+- An escalation crosses as a remaining duration, never a deadline. The plane must
+  be built on `AttachSpec.clock` so the executor's deadline and the owner link
+  read one time base.
+- A `Run` for a scope with no plane in this VM (after an executor restart,
+  before the next attach) is answered from the ledger first: a key with a stored
+  outcome gets it, a key with an unknown or orphaned-admitted row gets `RunLost`,
+  and only a key with no row is refused with `NoPlane` or `PlaneBuilding`. The
+  refusal says nothing started, which is false for a call the restart cut off
+  (`answer_without_plane`; model: `RefusalMeansUntouched`).
+- A scope with no plane in this VM closes as `UnknownCleanup(0)`: without a
+  plane there is no retirement witness. A failed plane build leaves the scope
+  open for a retry attach at the same incarnation.
+- The plane build, a tool run and a close are each a weft run, so none blocks
+  the host or another session. While a scope is `Building`, a second `Attach`,
+  a `Run` and a `Close` for it are refused with `PlaneBuilding` before the
+  ledger is touched; do not move the check after `exec_ledger.attach`, which
+  would replace the token the first attach is waiting on. `surface.attach` treats
+  that refusal as "ask again": it re-sends the same attach, with the same token,
+  until `attach_within_ms` runs out and only then returns `PlaneBuilding`, so a
+  repair that re-sends an attach whose build is still running does not fail the
+  open.
+- A repeated `Close` on a scope that already ended at that incarnation answers
+  the stored `CloseOutcome` and does not ask the plane again, so an orchestrator
+  whose reply was lost, or whose move resumes after a restart, learns the
+  cleanup finished. The scope row is the evidence, not the host's memory. A
+  `Close` at another incarnation is still refused. A second `Close` that arrives
+  while the first is running is not guarded yet: it finds no plane and records
+  `UnknownCleanup(0)` before the first job finishes.
+- Recovery of a `ReplayNever` call must fence (`QueryOrFence`). A plain `Query`
+  that finds no row leaves a window in which a dead runtime's `Run` is still in
+  flight and then starts the call that recovery just reported as not started.
+  Making `exec_ledger.query_or_fence` insert nothing fails
+  `a_fence_before_a_stale_run_stops_the_run_from_starting_test`.
+- The host's death must end the daemon. The planes it builds (pool, executor
+  service, broker) are not in its link set, so a lone restart would leave them
+  running and build second ones on the next attach. `daemon/main.start_executor`
+  unlinks the host and `wait` halts on its monitor.
+- `ffi_remote.send` to an unregistered name on the local node raises, so same-VM
+  tests must keep the host up; across nodes the send is dropped instead.
+- The owner port's requester is a pid on the executor's node, and
+  `owner_port.answer` hands it to `weft.cancel_when_exits`. That needs weft
+  >= 0.4.6, which watches a remote pid by monitor alone; 0.4.5 raised `badarg`
+  from `erlang:is_process_alive/1` and took the session down on the first
+  executor callback. The test builds an unconnected node's pid with
+  `client_test_ffi:remote_pid/0`.
+
+Tests: `remote/{codec,host,owner_port,surface}_test` run one VM against a real
+ledger and a fake plane (`support/remote_fixtures`, which counts how many times
+the fake tool ran and can hold one session's build open). `remote/remote_nodes_test` drives
+`client_distribution_fixture_ffi`'s `remote_*` scenarios on two real emulators
+(`support/remote_nodes` holds the roles): an undisturbed call that round-trips an
+owner callback, a connection dropped while the tool runs and repaired at once,
+and one that stays down until the tool has finished. Each asserts one outcome and
+one tool run. Making the host ignore the attach token fails the stale-token
+tests, making `noconnection` cancel fails `only_noconnection_leaves_a_call_running`
+and both outage scenarios, and making the surface skip the re-send fails both
+outage scenarios.
+
+## Assembling a registered session (protocol 078)
+
+`remote/workspace` is the orchestrator's workspace half. `workspace.attach`
+turns an executor's attach reply into the `workspace_plane.WorkspacePlane` that
+`serve.assemble_in` already reads, so the conversation half is assembled by the
+same code for both placements and only the `Home` (`Here(prepared)` or
+`There(placement)`) and the `Half` it yields differ. In order, an open: reads
+`remote/scope` and chooses the candidates (the executor the cell names, else the
+`Placement`'s, see "Executor pools" below); connects the candidate's peer
+(`Reach.connect`, failure keeps the `executor_unavailable:` prefix); writes the
+cell, naming the executor and the incarnation; starts one `owner_port` over the
+same `OwnerServices` a local session builds; attaches once; compares the census
+with the executor's declaration; builds the plane. `serve.assemble_registered` is
+the entry point, `daemon/main` keeps the `distribution.Membership` and builds the
+`Placement` (`workspace.fixed` or `workspace.pooled`) for a registration with an
+`executor` or a `pool`, and `Instance.pool` and `Instance.executor`
+are `None` for such a session (`test/support/local_workspace` unwraps them for
+local fixtures).
+
+- **Tools.** The registry takes `contributions.described_tools(census.tools)`
+  where a local session takes its plane's `decls`, so the order, the pinned
+  prompt index and the active list match a local session's. `wiring.run_placed`
+  routes by `tool_placement`, unchanged; `plane.run` for a registered session
+  ignores the authority `run_placed` read, because the surface reads its own
+  with `wiring.read_authority` at the send. `ToolSurface.recover` is
+  `Hands.recover`: a workspace tool asks the executor's ledger, an owner tool is
+  judged by its replay policy as it is in a local session (safe is offered for
+  replay, anything else is unknown). Clearance stays local.
+- **Non-tool callers.** Imported hooks, the goal check and Git observation use
+  `plane.broker`, a `broker.over(census.broker, clock)` handle, and
+  `Half.call_clock`, this machine's clock shifted by the reply's `executor_now_ms`
+  (the host reads its clock for each `Attached`, a rebound one included) minus the
+  local reading at receipt (`workspace.rebased`). A `CallSpec` deadline is
+  absolute and the executor's broker compares it with its own clock, so every
+  caller that builds a deadline must read `call_clock`, not `clock`.
+  `with_imported_hooks`, `goal_check_wiring` and `worktree_wiring` take it.
+- **Prompt.** `render_prompt` is unchanged: the user's guidance is read here, the
+  workspace's arrives in `census.prompt`, and the platform, shell and policy
+  facts come from `census.census`.
+- **Scope record.** `remote/scope` keeps `{incarnation, closed, executor}` in the
+  reserved cell `client/remote/scope`. No cell attaches at 1, a close that ended,
+  clean or with unknown cleanup, at the stored incarnation plus one, anything
+  else at the stored one. The unknown-cleanup case asks for the next
+  incarnation so that an operator's `loomd executor release` on the executor
+  turns the executor's `UncleanClose` into a reopen. It is written
+  straight to the store (the way `session_git` writes), so only while no runtime
+  owns it: after the connection and before the attach is sent, by the close
+  below, and removed by `scope.clear` after a first open's capacity refusal. A
+  `StaleIncarnation` from the executor fails the open naming both numbers, except
+  in one case: when the record never saw the close of the incarnation it just
+  attached under (`closed: None`) and the executor reports that same incarnation,
+  the scope is closed cleanly there. The open then asks the executor to close it
+  (a closed scope answers its stored outcome), records the answer, and attaches
+  once more at the incarnation the record now allows.
+- **Close.** `custody.Workspace` (after `Services`, before `Mcp`) runs
+  `plane.close`: ask the executor to close the scope, record what it reports,
+  stop the owner port. An unanswered or refused close records nothing and still
+  succeeds, since the scope is then open on the executor and the next open
+  rebinds it; failing custody over an unreachable machine would only hold the
+  reservation. `plane.fatal` is empty, so a partition is not a fatal root.
+  `close_instance` stops the broker and helpers only for a local workspace.
+- **Settled.** The port's reconciler acknowledges a key when `workspace.settled`
+  says this session no longer holds the call pending: the operation's state is
+  gone, or its `Tools` batch for that step no longer lists the call as planned or
+  running. A staged, interrupted or aborted call is therefore settled; a call
+  still running is not. The host retires the row on the acknowledgement and keeps
+  a tombstone for the key until the scope's incarnation changes, so a `Run` for
+  an acknowledged key, which a dead runtime's effect process can still have in
+  flight, is answered `RunLost` and never starts (`Existing(Acked)` in
+  `admit_run`; a `Query` reports `Unknown`).
+- **Jobs.** `plane.live_jobs` reads the `job/*` cells from the session's store
+  and builds the board with `jobs.live_board_of`.
+- **Refused or omitted.** Extension tools (`tool_placement` answers `Error(Nil)`,
+  so none are registered, with one notice per extension installed on the
+  executor), operator directory additions (`resolve_directory` refuses), MCP
+  servers and background code mode. Owner-bound code-mode capabilities
+  (`strand.*`, `notes.*`, `schedule.*`, `peer.*`) are answered:
+  `OwnerServices.capability` is `owner_codemode.answering` over the session's
+  own Agency, scheduling door and peer wiring, where a local session keeps
+  `no_capability` because it never calls it.
+
+What `assemble_in` does not do for a registered workspace, and which is why
+nothing touches the registered name: `workspace_plane.prepare` is skipped (it
+discovers the toolchain, composes the base, creates the workspace's blob, tool
+home, tmp and scratch directories); `start_local` is replaced by the attach (the
+helper pool, executor, broker, jobs, scratch, LSP and code-mode host live on the
+executor); `code_mode_mcp` is replaced by a skipped-MCP notice; extension
+discovery and registration are skipped; `resolve` skips `find_helper` and
+`gocache.locate`. The rest reads only the orchestrator's own files (session,
+index, memory, home, skills), the census, or the executor through the broker
+handle. Owner tools still run `wiring.run_tool` here; with no directory
+additions and no filesystem grants for them, `revalidate` has nothing to stat.
+
+Invariants:
+
+- One `Surface` per session open. Do not attach per strand or per driver restart.
+- The hook wrappers (`hookserve.wire`, `extension/hooks.wire`) must carry
+  `tools.recover` forward; they run after the surface is composed.
+- Anything that puts an absolute deadline in a `CallSpec` for the executor's
+  broker reads `Half.call_clock`.
+- Never write the scope cell while a runtime owns the store.
+
+Tests: `remote/workspace_test` and `remote/scope_test` (real host and ledger, fake
+plane via `support/remote_orchestrator`) cover each incarnation shape, token
+rotation with recovery, the settled rule, the clock and jobs;
+`remote_assembly_test` assembles a whole registered session under custody and
+drives a scripted model through a workspace tool and an owner tool.
+Routing a workspace tool to the owner path fails `a_workspace_call_runs_on_the_executor_...`,
+attaching at the stored incarnation after a clean close fails the reopen tests, and
+dropping the clock offset fails `the_non_tool_clock_reads_the_executors_timebase_test`.
+
+## The executor role (protocol 078)
+
+A `loomd` whose `--config` file has `[distribution]` and at least one
+`[workspaces.<name>]` row serves those checkouts to the peers it pins.
+
+- `client/workspaces` decodes `[workspaces.<name>]` (`root` only: absolute, no
+  `..` segment) the way `client/executors` decodes executors, and requires
+  `[distribution]`. `catalog.parse` validates it; `catalog.parse_lsp` reads only
+  the `[lsp.<name>]` tables because an executor has no model catalogue. A new key
+  means `workspaces.row`, `scripts/config_keys.sh` and `docs/configuration.md`
+  move together.
+- `client/executor_plane` is the real `PlaneFactory`. `machine` reads this
+  executor's own settings once (`--helper`, `--config`, `--codemode-seed`,
+  `--best-effort`, `--full-enforcement`, `--read-scope`, `--network`,
+  `LOOM_HELPER_POOL`, `LOOM_DISABLE_TOOLS`, and the `[tools]`, `[workspace]`,
+  `[lsp]`, `[jobs]`, `[secrets]` tables). `factory` resolves the workspace name
+  against the rows, canonicalizes the root, creates `<state>/scopes/<session>`
+  fresh (the helpers' scratch lives there; the session name is validated before
+  it names a path), and calls `workspace_plane.prepare` then `start` with the
+  `OwnerServices` from the `AttachSpec`, `owner_codemode.over_owner` as the
+  owner's code-mode arms and `codemode_wiring.seam` with
+  `owner_codemode.advertising_peers` as the `code_mode` tool. The census it
+  returns is
+  `RemoteCensus` (plain data plus the broker's subject; the prompt facts are read
+  once, at attach). `workspace_plane` itself is unchanged.
+- The plane's cleanups cannot go to custody, because the factory runs in a
+  short-lived weft run. The `Retain` it passes files each `(Part, cleanup)` in the
+  build process and calls `transfer` (unlinking the build from the resource).
+  `retire` runs them in `instance_owner.Part` order after the language servers
+  and the scope's children, and reports `AllRetired` only when nothing failed and
+  the `Helpers` cleanup (`executor.close`, which ends in `exec.close_pool`)
+  succeeded. No helper cleanup means `UnknownCleanup`. The scope directory is
+  removed only on `AllRetired`.
+- `daemon/main.start_executor` starts `remote/host` under `address.default()`
+  with the ledger at `<state>/exec-ledger.db`; a daemon with no rows starts
+  nothing. The host is unlinked and monitored; its death halts the daemon.
+  Rows are checked to be directories at startup (`existing_roots`) and again at
+  each attach.
+
+Tests: `executor_plane_test` runs the factory over a temp checkout with the
+shipped helper (write then read, `bash`, close then reopen, an unknown
+workspace, the census walk for function values and its `term_to_binary` round
+trip, an 8 MiB read, the `code_mode` description listing the owner-bound
+capabilities where a seed exists, a real program whose `strand.roster` and
+`notes.put` reach the owner's Agency through the owner port where the host
+has a jail, and `retire` with injected cleanups). `daemon_executor_test`
+covers the boot decision. `remote_nodes_test`'s `remote_workspace` scenario
+serves a real workspace to a second node. Making `retire` ignore the helper
+witness fails `a_scope_with_no_helper_cleanup_has_no_witness_test`; building the
+plane back inside the host actor fails the two build-isolation tests in
+`host_test`.
+
+## Executor pools (protocol 078)
+
+A session may be created in a `[pools.<name>]` instead of on one executor
+(`sessions.create{pool}`, exclusive with `executor`). The executor is chosen when
+the session first opens and then never again.
+
+- `client/executors` also reads the optional declarations of a row: `platform`
+  (`<os>/<architecture>`, the label `system_prompt.platform` writes),
+  `enforcement` (`enforced` or `degraded`, the census's `PromptFacts.helper`) and
+  `toolchains` (`codemode` or an `[lsp.<name>]` key). They are the operator's
+  claims. `executors.contradiction(row, observed)` compares them with what an
+  attach census says and words both values; a row that declares nothing, or that
+  provides more than it declared, is never contradicted. `client/pools` reads
+  `[pools.<name>]` (`executors` in trial order, plus the same three keys as
+  requirements) and `pools.candidates(pool, configured)` is the whole filter, a
+  pure function of configuration: an executor that declared nothing cannot
+  satisfy a requirement. `catalog.parse` validates both tables.
+- `workspace.attach` is the placement loop (read its module doc for the order of
+  steps). The scope record names the executor, and it is written after the
+  connection and before `Attach` is sent. That one ordering is what makes "a
+  session whose record names an executor has only that candidate" structural, and
+  a reply lost after delivery is retried against the same machine, where the
+  ledger's `Rebound` arm makes it converge. A first open (no record) goes to the
+  next candidate on exactly two outcomes, both of which prove no scope exists: the
+  connection failed, or the executor answered `CapacityExhausted` (decided inside
+  the attach transaction before any plane is built). After the capacity refusal
+  the record is cleared. A capacity refusal at reopen, an unanswered attach, a
+  version or workspace refusal and a build failure all fail the open and leave the
+  record where it is. The census is compared with the declaration after the attach;
+  a contradiction asks the executor to close the scope and fails the open.
+- `workspace.Placement` is three functions so that the configuration and the
+  catalogue stay outside this module: `first` (the candidates for a session with
+  no record, or why there are none), `named` (a configured executor by name, for
+  a record that names one) and `chosen` (told the executor after every successful
+  attach, because an earlier open whose reply was lost may have named it without
+  the catalogue hearing). `workspace.fixed` and `workspace.pooled` build them.
+  `chosen` is `manager.seed_executor`, a cast that runs `catalogue.seed_executor`
+  in the registry's turn, which writes the `executor` column once, only for a
+  registration with a pool and no executor.
+- The catalogue is at version 13 (v13 adds `catalogue_session_moves`, the
+  custody of a session moving between orchestrators, read with
+  `catalogue.custody`; nothing in the client reads it yet). `Registration.pool` is part of the creation
+  request and `reserve_creation` compares it, and for a pooled request it does not
+  compare the executor, which is the first open's choice (`named_same_executor`).
+  `view_json` adds `executor` and `pool` members only when non-empty. The control
+  decoder refuses `executor` with `pool`, a `workspace_private` scope and a
+  workspace that is not a registered name; `server.create_session` answers
+  `pool_unknown` for a pool the daemon does not configure.
+- `LOOM_EXECUTOR_MAX_SCOPES` (`executor_plane.scope_limits`) lowers the number of
+  scopes an executor admits before refusing an attach; the ledger default is 16.
+  It is how a test makes an executor full.
+
+Tests: `remote/placement_test` runs real hosts and ledgers, each with a limit of
+one scope and its own name, in one VM, and covers the order, a connection that
+fails, a pool full everywhere (the record is withdrawn), a reopen into a full
+executor, a bound executor that is down, a link that breaks after the attach was
+delivered (`remote_orchestrator.lossy_link`), and declarations the census
+confirms and contradicts. `daemon_registered_test`, `daemon_protocol_test`,
+`executors_test` and `pools_test` cover the wire and the tables, and
+`daemon_shipped_remote_pool_test` boots an orchestrator and two executors with
+`support/remote_daemons.trio`. Dropping the record write before the attach fails
+five tests of `placement_test`, and letting a reopen treat a capacity refusal as
+"next" fails `a_reopen_into_a_full_executor_never_moves_to_another_test`.
+
+## Two orchestrators (protocol 078, phase 3)
+
+A deployment may run two orchestrators, each with its own catalogue. A session is
+created on, and owned by, the orchestrator the client is connected to, and a
+daemon asked about a session its catalogue lacks asks the others which one holds
+it. The decision is the owner's option C: a Khepri-shaped directory interface
+backed, for now, by a parallel lookup over pinned peers; each catalogue stays the
+source of truth; phase 5 added the write half (`activate`) and kept the catalogues
+as the authority (the next section); failover is deferred.
+
+- `client/orchestrators` decodes `[orchestrators.<name>]` (`node`, which must be a
+  `[[distribution.peers]]` node as an executor's must, and an optional `address`
+  held to `host/claim.remote_address`, so a bearer never goes over cleartext to a
+  remote host or into a URL with credentials). Two names for one node are
+  refused. `catalog.parse` validates it and `daemon/main.prepare_startup`
+  captures it in `Config.orchestrators`; a new key means `orchestrators.row`,
+  `scripts/config_keys.sh` and `docs/configuration.md`.
+- `remote/address` is `Address(message)`: the node and a `Name(message)`, no longer
+  pinned to the executor host's `HostMessage`.
+- `remote/orchestrator_port` is the answering end: one weft actor per daemon under
+  the fixed name `loom_orchestrator`, with its own closed `Message` (`Owns(session,
+  reply)`) and `Ownership` (`Owned | NotOwned`). It reads the catalogue through a
+  function `daemon/main.catalogue_holds` builds over `manager.get`: a registration
+  in any state and either visibility is `Owned`, a missing one `NotOwned`, and a
+  read that fails sends nothing, so the asker's deadline reports it as unreachable
+  and a fault is never mistaken for proof. `daemon/main.start_orchestrator_port`
+  starts it, linked to the process that runs the daemon's services, whenever
+  `[distribution]` is present, whether or not the daemon lists any orchestrator.
+  `ask` takes the monitor before it sends, as `surface` does, so a node that is
+  already gone ends the wait at once.
+- `client/session_directory` is the interface: `Directory(lookup)` answering
+  `Ok(Here)`, `Ok(Elsewhere(Orchestrator))`, `Error(Unknown)` or
+  `Error(Unreachable(names))`. `peers` is the phase 3 backing: the local
+  catalogue first, then every configured orchestrator at once in one weft run
+  under `deadline_ms` (2 s), each task `distribution.connect` then
+  `orchestrator_port.ask`. `decide` is the pure policy: the first holder in
+  configuration order wins over any silence; with no holder, any silence makes the
+  miss `Unreachable`; only a full set of "not held" is `Unknown`. A callback that
+  crashes or runs past the deadline is silence. Nothing is cached, registered or
+  retried, and no connection is made at startup. One command retries:
+  `peers.link` has no outbox and no client retry behind it, so a link whose
+  lookup finds the owner silent calls `Directory.settle` (`settle_over`: every
+  listed orchestrator connected at once under `settle_ms`, 5 s) and asks once
+  more, because the silence may be a first TLS handshake that outlasted the
+  lookup's `connect_ms` (1.5 s) and finishes in the background
+  (`daemon_shipped_peer_mail_test`'s slow-handshake test).
+- `daemon/server` takes the directory as `Config.directory`
+  (`session_directory.none()` when there is no distribution or no orchestrator).
+  `dispatch` runs `sessions.get` and `sessions.open` as it always did and, only
+  when the answer is `not_found` and the principal is the owner, asks the
+  directory (`redirected`): `Elsewhere` becomes `not_owner` with `orchestrator`
+  and the row's `address`, `Unreachable` becomes `owner_unreachable` with
+  `orchestrators`, and `Here` or `Unknown` leave `not_found`. A member is always
+  `not_found` and the directory is not asked, because a member's standing is the
+  owning daemon's to judge; a stale epoch is refused before the lookup. Control
+  refusals are the `Refused(code, message, detail)` record, whose `detail` is
+  empty except for these two, and `refusal_with` writes the members.
+
+Not built, on purpose: a merged `sessions.list`, a `register` step (ids are UUIDv7
+and creation is local), a `not_owner` on the session socket, an address advertised
+by the owner, any automatic follow (a client would need a credential for a second
+daemon), and a new constructor on `remote/protocol.HostMessage`.
+
+Peer mail across orchestrators (protocol-change/078, the peer mail addendum). The
+only same-node assumption in peer mail was the recipient's `peer_mail.Endpoint`,
+so the work is a second kind of endpoint and a directory that returns it:
+
+- `orchestrator_port.PeerCommand(session, command, reply)` is a second `Message`
+  beside `Owns`. `served` names every `peer_mail.Command` constructor and accepts
+  only `Allow`, `Revoke`, `Deliver` and `SentReceipt`; any other (`Inbox`,
+  `History`, `Link`, `Roster`, `Outbox*`, ...) is answered `Refused(peer_unserved)`
+  without calling the handler, and a new `Command` constructor is a compile error
+  there until someone decides. The handler is the `start_serving` argument;
+  `start` keeps its signature and refuses every peer command.
+  `daemon/main.peer_command` is the production handler: `manager.resolve`, then
+  the resident's own endpoint, so a session not resident here answers
+  `peers.not_running`. The command is plain data. The port runs a command in its
+  own loop, so a wedged session delays the next `Owns` by at most the Agency's
+  5 s holder timeout.
+- `remote/remote_peer` builds the other end. `at(address, session, within_ms)` is
+  an `Endpoint` whose `call` monitors the port (`address.watch`) before it sends,
+  then waits for the answer, the `DOWN` or the deadline: an answer is `Ok` or
+  `Refused`; `noconnection`, `noproc` and the deadline are `Unreachable`.
+  `over_distribution(membership)` resolves the pinned peer, connects (1.5 s) and
+  asks with `call_ms` (7 s). A reply after the deadline reaches nobody, which is
+  the lost-reply case the outbox expects: the retry gets `same_receipt`.
+- `session_directory.Directory` has a second field, `reach(orchestrator, session)
+  -> Endpoint`. `none()` and `peers()` give an endpoint that is always
+  `Unreachable`; `with_reach` sets it, and `daemon/main.session_directory_of`
+  sets `remote_peer.over_distribution`.
+- `peers.routed(local, sessions)` is the one `Directory.resolve` both
+  `server.peer_directory` (control commands, the web page) and
+  `main.peer_directory_across` (a session's tools and drainer) use. A session
+  resident here is answered by `local` and the directory is not asked. Only a
+  miss calls `lookup`: `Elsewhere` gives `reach`, `Unreachable` gives
+  `peer_mail.Unreachable`, and `Here` or `Unknown` keep the local refusal.
+  `main.peer_directory` keeps its two-argument form with `session_directory.none()`.
+- `LinkPeers` resolves its target through the directory, so `peers.link` writes
+  the grant on the recipient's orchestrator (`Allow`). `unlink_session` revokes
+  there (`Revoke`), and an unreachable revoke is reported in `recipient_grant`.
+  `peer.sent_receipt` asks the recipient's orchestrator (`SentReceipt`) when the
+  sender's own row has no receipt.
+- What stays local. `Roster` and `Describe` are not served, so a remote
+  recipient's roster row has `running: true` and `exported_strands` set to an
+  `unavailable` object, and `describe` reads the local catalogue only, which has
+  no row for a remote session. `peers.inspect` shows `wake: null` for a link to a
+  remote recipient. Sending to a recipient that is saved on its owner is refused
+  `not_running` there and is not queued.
+
+Tests: `orchestrators_test` (the table), `remote/orchestrator_port_test` (the
+answers and the silence), `session_directory_test` (the policy, the fan-out's
+concurrency and its deadline, a crashing question), `daemon_directory_test` (a
+stub directory behind the real control socket: which commands ask, which
+principals are redirected, what the refusals carry; and `catalogue_holds` against
+a real registry including a reserved and an archived row),
+`daemon_shipped_directory_test` (two shipped daemons), `peer_remote_test` (two
+real ports in one VM: link, send, receipt and unlink across them, the refused
+commands, an unreachable then returning owner under the drainer, a lost reply),
+and `daemon_shipped_peer_mail_test` (two shipped daemons: a send to a stopped
+orchestrator is queued and delivered once, over the fixture in
+`support/remote_duo`).
+
+## Moving a session between orchestrators (protocol 078, phase 5)
+
+An owner hands a session on an executor to another orchestrator with
+`sessions.move`. Two catalogue rows are the authority, the source's `moving` and
+`moved` and the receiver's `imported`, ordered by a write-ahead intent. No third
+store decides and the executor records no owner; its incarnation fence is a second
+guard, because a copied cell makes the receiver attach at `incarnation + 1` and
+the executor refuses the old token by value. The storage half is in
+`packages/storage/CLAUDE.md` (`Custody`, `export_closed`, `release_export`,
+`domain.import_session`). `docs/design-notes/distributed-runtime.md` section 8 and
+the protocol-change/078 addendum on moving a session have the protocol.
+
+- `session_move` is the vocabulary and nothing else: the six `Step`s, the `Manifest`
+  (the registration without its path and configuration, which name files on the
+  source's machine), `Chunk`, `Activation`, `Stage` (`Absent | Received |
+  Activated`), `Verdict` (`Accepted | Refused(Refusal) | Failed`) and the file and
+  lease-owner names. It performs no I/O, so the mover, the importer and the port
+  import it without importing one another.
+- `daemon/manager` carries the catalogue half. `begin_move` commits `moving` and
+  cancels the slot in one registry turn, so nothing can open the store after the
+  intent. `prepare_slot` reads the custody row and refuses `moving` and `moved`
+  (`SessionMoving`, `SessionMoved`); archive, restore and delete refuse them too
+  (`AdminMoving`, `AdminMoved`). `movable` refuses a session with no executor, an
+  archived one and a reserved one (`AdminNotMovable`). `finish_move`, `abort_move`,
+  `moving_sessions` and `custody` are the mover's reads and compare-and-sets, and
+  `import_session` registers, records the import and renames the copy into place
+  in one turn, finishing the rename for a repeat and removing a late duplicate
+  instead of putting it over the placed file. It reads whether the import already
+  committed before it checks for an open slot, and `AdminBusy` refuses a first
+  import only.
+- `remote/orchestrator_port` gains `Import`, `ImportStatus` and `Activate` beside
+  `Owns`, and `Ownership` gains `Moved(to)`. The daemon supplies an `Importer` of
+  three functions, so the port knows neither the catalogue nor the filesystem. A
+  daemon that never receives sessions starts the port with `declining()` and
+  refuses all three. Pieces and the status run in the port's own turn, so the
+  pieces of one copy land in order; `Activate` hashes and opens a whole file, so it
+  runs in a task linked to the port and cancelled with its requester, and `Owns` is
+  never kept waiting behind it.
+- `session_directory` is `Directory(lookup, activate)` and `Courier(send, stage)`.
+  A catalogue's own tombstone answers `lookup` as `Elsewhere` with no question to a
+  peer, and a peer's tombstone redirects when nobody holds the session. The
+  courier and `activate` are built over the pinned connection, one connection
+  attempt per call, as `over_distribution` is.
+- `session_importer` is the receiving end. `take` writes pieces to a `.part` file
+  that becomes the copy only when the last piece lands; a piece that does not
+  start where the file stands is `OutOfOrder` and the sender begins again.
+  `activate` asks the registry first, and a repeat of the same move is answered
+  `Accepted` without looking at the copy or at who asks, using the origin the row
+  recorded (an operator who renamed the sender's `[orchestrators]` row meanwhile
+  changes nothing). Only then does it check the sender's node against
+  `[orchestrators.<name>]`, then the digest, then the scope cell read from a
+  scratch copy (opening a session file rewrites it), then the executor row, and
+  only then hands the registry the import. A copy refused for a reason a resend
+  cannot cure is removed. `stage` returns `Result(Stage, Nil)`: a registry read
+  or a copy path that cannot be examined is `Error(Nil)` and the port sends no
+  reply, because `Absent` would make the source send the file again to a receiver
+  that may hold the session, and `Activated` over an unexamined path could let the
+  source retire while a copy still waits.
+- `session_mover` is the source's driver. `drive` takes the steps in order and every
+  run starts from what is on disk: it reads the row, asks the receiver how far the
+  move has got, and does what remains. A move finishes, is abandoned only on an
+  answer, or stalls. `Abandon` comes from an unproven cleanup, an executor that
+  refused the close, a corrupt or oversized file, a receiver's `Refused` and
+  nothing else; silence is `Stall`, because an unreachable receiver may have
+  activated the session. A digest the receiver refuses, or a copy it no longer has,
+  sends the whole file once more. A send that finds the receiver's stage
+  `Activated` goes straight to the retirement. Each step is bounded by a weft deadline of its
+  own (`Budget`), and an expiry is a stall. `Environment.after` is told after each
+  step; a daemon passes the crash knob and a test passes a recorder.
+- `session_movers` is the daemon's actor, started beside the orchestrator port and
+  linked to the process that starts the daemon's services. `Control` carries the
+  listed orchestrators, `begin` and `holds` (the ask of an origin's port). One entry per session;
+  `Begin` starts a mover once, a tick runs a stalled one again, `resume` begins every
+  `moving` row at boot. It is not the registry, whose turns are bounded by five
+  seconds while a move waits an executor's minute.
+- `remote/workspace.close_stopped` closes the scope of a session that has no
+  runtime and tells `CloseRefused` (final) from `CloseUnanswered` (retried). A
+  repeated Close at a closed scope answers the stored outcome (`remote/host`), which
+  is how a restarted mover learns a lost reply had landed.
+- `daemon/server` has `sessions.move` (owner, epoch, destination in
+  `Config.movers.orchestrators`, then `inbound_settled` for an imported session,
+  then `manager.begin_move`, then
+  `Config.movers.begin`), the `moving` and `moved` members of `sessions.get`
+  (`with_custody`), `moving` on `open` (`in_flight`), and `not_owner` from the
+  tombstone for open, archive, restore and delete (`tombstoned`). `daemon/main`
+  builds the movers in `start_movers`, gives the port its importer, and reads
+  `LOOM_MOVE_CRASH_AFTER`.
+
+`LOOM_MOVE_CRASH_AFTER=<step>` is **test-only**: it halts the VM the moment the
+named step (`intent`, `close`, `cut`, `send`, `activate`, `retire`) is durable,
+so `daemon_shipped_remote_move_test` can lose the source at each step. It is read
+once at startup, is not a configuration key, and is not an operator setting.
+
+Invariants that break things when violated:
+
+- Once the receiver has committed `imported` under an operation, every `Activate`
+  for it is answered `Accepted`, whether or not a slot is open, the sender is still
+  listed, or the copy is still there. The source abandons on any refusal other than
+  a bad digest or a missing copy, so a refusal after the commit leaves two owners.
+  `Move.tla` models it as `RefuseUncommitted`, with `MutantRefuse` as its check.
+- A move is begun on an `imported` session, and `sessions.delete` removes one,
+  only after the orchestrator it came from answers `Moved` for it
+  (`inbound_settled`, through `Control.holds`, outside the registry turn; a move
+  is refused `not_movable` and a delete `busy`). `begin_move` replaces the
+  `imported` row and `abort_move` deletes it to `resident`, so a move begun
+  earlier loses the record the source's retry needs, and a return move meets the
+  source's own `moving` row. A delete removes the row, so the retry imports the
+  session afresh. Both daemons would abandon and both would be resident. The
+  web page's delete in `ui_socket` does not make this check yet.
+- The intent is committed in the registry turn that cancels the slot, and admission
+  reads the custody row in the turn that reserves a slot. Moving the read out of
+  that turn lets a runtime open a file whose copy is being cut.
+- Only an answer abandons a move. An unreachable receiver, an unanswered close and
+  an expired deadline are stalls. Abandoning on silence can leave two owners.
+- The activation is the compare-and-set on the receiver and the retirement is the
+  one on the source; `moved` has no way out under the same operation, and a
+  returning move needs a new one.
+- The receiver reads the copy's cell from a scratch copy and never from the file it
+  hashed. A path that holds no file is refused before `scope.read_at` opens it,
+  because opening creates a missing file.
+- A returning session keeps the registration and mapping its catalogue already
+  has; only the custody row changes.
+- The cut reclaims its own lease and nothing else's. `sqlite.release_export` frees
+  it on abort and before the original is set aside, so a refused move never makes
+  the owner wait out ten minutes.
+
+Not built, on purpose: a merged list, an owner column on the executor, resume inside
+a file, abandoning after a send except on a refusal, failover, a local-session move,
+memory-domain, membership and claim transfer, and a web surface.
+
+Tests: `session_move_test`, `session_importer_test` (the pieces, every refusal, a
+return trip), `session_directory_test` and `remote/orchestrator_port_test` (the new
+answers and messages), `daemon_manager_test` (the registry's half),
+`remote/workspace_test` and `remote/scope_test`, `session_mover_test` (two
+registries, the real port and an executor host in one VM: every interruption, the
+trip there and back, the movers' retry and resume), `daemon_move_test` (the command,
+views and refusals across the real control socket), and
+`daemon_shipped_remote_move_test` (three shipped daemons, a clean move and the
+source lost after each step). The terminal's side is `tui`'s `sessions_move_test`.
 
 ## Explicit browser result reads
 

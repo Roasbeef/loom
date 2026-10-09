@@ -43,7 +43,7 @@ gets a "before" capture from the real client, a list of what is sloppy, an
 The "before" captures were made in a private tmux session from this worktree
 at `f9927f7d9`. The agent workspace is `gleam dev agents dark`, the shipped
 six-agent fixture through the shipped loop. The picker was drawn by the
-shipped `render` (`tui/session_selector.gleam:783`) over a seven-session
+shipped `render` (`tui/session_selector.gleam:815`) over a seven-session
 fixture page, because `--demo` has no daemon to list sessions from and
 `open_session_selector` (`tui/submit.gleam:156`) refuses without a control
 host. The frames are the real renderer's output either way.
@@ -63,7 +63,7 @@ host. The frames are the real renderer's output either way.
   picker adds a bracketed lifecycle tag, so the row reads
   `▸ ● ws · main · 01a0a1e2-af88                 current`. The identity is the
   same twelve characters on every row, so it tells the operator nothing, and
-  `row_lines` (`tui/session_selector.gleam:966`) puts it there to keep two
+  `row_lines` (`tui/session_selector.gleam:998`) puts it there to keep two
   same-named sessions apart, which the detail pane already does.
 - Nothing lines up. The name, the tag and the identity are one string, so
   the second column starts wherever the name ends.
@@ -98,14 +98,14 @@ two-line preview of the highlighted row sits above the help line. An empty
 filter says what to press next and keeps the counts.
 
 **Data.** Everything drawn exists today except one figure. Rows come from
-`Session` (`tui/daemon/protocol.gleam:431`) and the page from `Page`
+`Session` (`tui/daemon/protocol.gleam:452`) and the page from `Page`
 (`tui/daemon/protocol.gleam:412`). The state phrase, counts, last message,
 model and the strand rows come from `Activity`
 (`tui/daemon/protocol.gleam:300`) with its `ActivityState`
 (`tui/daemon/protocol.gleam:325`) and `GlanceLine`
 (`tui/daemon/protocol.gleam:352`), which `observe`
 (`tui/session_selector.gleam:405`) folds in from the `sessions.activity` poll
-that `service_activity` (`tui/session_control.gleam:1405`) runs while the
+that `service_activity` (`tui/session_control.gleam:1442`) runs while the
 picker is open. The filter tabs are `Filter` (`tui/session_selector.gleam:75`)
 and the glyphs are `Presence` (`tui/session_selector.gleam:73`). The one
 figure that does not exist is an age for a resident session's last activity:

@@ -13,7 +13,7 @@
 
 import client/catalog
 import client/secrets
-import client/serve
+import client/workspace_policy
 import core/clock
 import gleam/erlang/process
 import gleam/list
@@ -297,9 +297,13 @@ pub fn a_resolved_value_reaches_a_jailed_tool_environment_test() {
     catalog.ToolsConfig(..catalog.default_tools(), env: ["GH_TOKEN", "ABSENT"])
 
   let #(environment, unset) =
-    serve.tool_environment("/work", None, None, tools, reading: fn(name) {
-      secret.lookup(store, name)
-    })
+    workspace_policy.tool_environment(
+      "/work",
+      None,
+      None,
+      tools,
+      reading: fn(name) { secret.lookup(store, name) },
+    )
   assert list.key_find(environment, "GH_TOKEN") == Ok("resolved-value")
   assert unset == ["ABSENT"]
 }

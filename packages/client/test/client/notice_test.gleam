@@ -8,6 +8,7 @@
 
 import client/advisor
 import client/notice
+import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/string
 
@@ -205,4 +206,60 @@ pub fn the_advisor_is_never_woken_by_a_notice_test() {
   assert !notice.may_wake(advisor.strand)
   assert !notice.may_wake("sub:main/probe-0a1b")
   assert notice.may_wake("main")
+}
+
+// --- sampling through the owner's functions --------------------------------
+
+// A sample reaches its strand only through the two functions it is given, so
+// a strand on another node is sampled the same way. The wake sends what it
+// was asked to send to a subject, which is how the test sees it.
+fn sample_at(
+  idle: notice.IdleClock,
+  activity: Result(notice.Activity, String),
+  woken: Subject(#(String, String)),
+  now: Int,
+) -> notice.IdleClock {
+  notice.sample(
+    fn(_strand) { activity },
+    fn(strand, text) {
+      process.send(woken, #(strand, text))
+      Ok(Nil)
+    },
+    idle,
+    "main",
+    now:,
+    interval_ms: interval,
+    lines: fn() { ["job 01: make"] },
+  )
+}
+
+pub fn a_sample_wakes_an_idle_strand_through_the_supplied_function_test() {
+  let woken = process.new_subject()
+  let idle = sample_at(notice.idle_clock(), Ok(notice.Idle), woken, 0)
+
+  // The first sample starts the stretch and wakes nobody.
+  assert process.receive(woken, 10) == Error(Nil)
+
+  // A whole interval later the beat is due, and the text names the work.
+  let _idle = sample_at(idle, Ok(notice.Idle), woken, interval)
+  let assert Ok(#("main", text)) = process.receive(woken, 10)
+    as "the due beat reaches the supplied function"
+  assert string.contains(text, "[loom] idle heartbeat")
+  assert string.contains(text, "job 01: make")
+}
+
+pub fn a_busy_or_unreadable_strand_is_never_woken_test() {
+  let woken = process.new_subject()
+  let idle = sample_at(notice.idle_clock(), Ok(notice.Idle), woken, 0)
+
+  // Busy forgets the stretch, so nothing is due however late it is.
+  let idle = sample_at(idle, Ok(notice.Busy), woken, interval * 2)
+  assert process.receive(woken, 10) == Error(Nil)
+
+  // An unreadable strand is left out of the sample altogether: it fires
+  // nothing and keeps whatever stretch it had.
+  let idle = sample_at(idle, Error("unreadable"), woken, interval * 4)
+  assert process.receive(woken, 10) == Error(Nil)
+  let _idle = sample_at(idle, Ok(notice.Idle), woken, interval * 4)
+  assert process.receive(woken, 10) == Error(Nil)
 }

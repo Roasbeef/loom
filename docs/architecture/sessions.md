@@ -563,7 +563,7 @@ kernel-enforced sandbox, never in the harness VM (see
 Serving assembly performs the Git steps in this order, inside
 `client/serve`:
 
-1. Build the base sandbox policy. `serve.widening_linked_worktree` adds
+1. Build the base sandbox policy. `workspace_policy.widening_linked_worktree` adds
    writable roots for a workspace that is a linked worktree.
 2. Publish the tool Git identity with `git_identity.prepare`.
 3. Read or record the starting revision with `session_git.prepare`,
@@ -588,9 +588,9 @@ names the main repository's `.git`, where objects and refs live. Both are
 outside the workspace, so under the default policy a jailed `git commit`
 failed on the index lock.
 
-`serve.linked_git_directories` reads the `.git` file and its `commondir`
+`workspace_policy.linked_git_directories` reads the `.git` file and its `commondir`
 and returns those two directories, or only the first when `commondir`
-cannot be read. `serve.widening_linked_worktree` adds them to the base policy's writable roots. This extends the trust a
+cannot be read. `workspace_policy.widening_linked_worktree` adds them to the base policy's writable roots. This extends the trust a
 primary checkout already has: a tool that can write `<workspace>/.git`
 can already plant a hook or move a ref. A workspace that is not a linked
 worktree, or whose `.git` file does not parse, keeps the unchanged policy.

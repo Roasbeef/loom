@@ -5,6 +5,7 @@
 import client/agency
 import core/clock.{type Clock}
 import gleam/erlang/process.{type Subject}
+import gleam/option.{None}
 import machine/strand as machine_strand
 import provider/stream
 import runtime/api
@@ -79,6 +80,7 @@ pub fn open(path: String, time: Clock) -> Session {
           run: fn(_run) { effects.ToolFailed(reason: "no tools") },
           replay_still_safe: fn(_name) { False },
           execution_mode: fn(_name) { effects.ExclusiveExecution },
+          recover: None,
         ),
         hooks: effects.default_hooks(),
       ),

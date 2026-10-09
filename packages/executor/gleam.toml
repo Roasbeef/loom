@@ -13,7 +13,7 @@ simplifile = ">= 2.0.0 and < 3.0.0"
 core = { path = "../core" }
 broker = { path = "../broker" }
 telemetry = { path = "../telemetry" }
-weft = "== 0.4.5"
+weft = "== 0.4.6"
 
 [dev_dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"

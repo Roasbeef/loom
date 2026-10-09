@@ -32,6 +32,7 @@ import client/gateway_test
 import client/install
 import client/internal/ffi_os
 import client/mcp as mcp_wiring
+import client/owner_services
 import client/peer_mail
 import client/peers
 import client/schedule
@@ -39,6 +40,7 @@ import client/scheduleseam
 import client/scratch
 import client/serve
 import client/working_directory
+import client/workspace_policy
 import core/clock
 import core/ids
 import core/json
@@ -2485,7 +2487,7 @@ fn rig_sized(
       protected:,
       mounts: codemode.toolchain_mounts(toolchain),
     )
-    |> serve.merging_mounts
+    |> workspace_policy.merging_mounts
   let assert Ok(pool) =
     exec.start_pool(size: helpers, spawn: fn() {
       exec.spawn_helper(exec.SpawnConfig(
@@ -3411,6 +3413,7 @@ fn run_message_inspection(ready: Ready) -> Nil {
   let endpoint =
     peer_mail.Endpoint("00000000-0000-7000-8000-000000000002", fn(command) {
       peer_mail.handle(owner.runtime, wall_clock(), command)
+      |> peer_mail.refused
     })
   let assert Ok(_) =
     endpoint.call(
@@ -3561,7 +3564,10 @@ fn directory_case(rig: Rig) -> Nil {
   let id = ids.mint_session(ids.generator(clock.fixed(1000), 641)).0
   let harness = gateway_test.reserved_fixture(id)
   let facts = api.fact_handle(harness.runtime)
-  let supplier = fn() { Ok(facts) }
+  let supplier =
+    owner_services.local_facts(handle: fn() { Ok(facts) }, runtime: fn() {
+      Error(Nil)
+    })
   let ctx =
     tool.Ctx(
       ..live_ctx(rig.workspace, rig.base_policy, wall_clock()),

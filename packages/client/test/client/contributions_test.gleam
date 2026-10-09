@@ -446,3 +446,130 @@ fn dead_filesystem() -> tool.FileSystem {
     rename: fn(from, _to) { Error(tool.FsNotFound(path: from)) },
   )
 }
+
+// --- the two halves of the built-in list -----------------------------------
+
+fn a_code_mode() -> codemode_tool.CodeMode {
+  codemode_tool.CodeMode(
+    execute: fn(_request) { panic as "this test does not run a program" },
+    background: None,
+    seams: codemode_tool.one_seam(hint_offer(["cap/fs"], ["fs.read"])),
+    default_within_ms: 1000,
+    max_within_ms: 1000,
+  )
+}
+
+fn names_in_order(tools: List(tool.Tool)) -> List(String) {
+  list.map(tools, fn(each) { each.name })
+}
+
+/// A workspace with no plane offers the five core tools and nothing else,
+/// and each plane it has adds its own tools at the end of the list, so the
+/// list is a prefix of the registry order and the owner can wedge its tools
+/// into it.
+pub fn the_workspaces_tools_are_the_core_then_code_mode_then_jobs_test() {
+  assert names_in_order(contributions.workspace_tools(None, None, None, []))
+    == ["bash", "grep", "fs_read", "fs_write", "fs_edit"]
+  assert names_in_order(
+      contributions.workspace_tools(
+        Some(a_code_mode()),
+        Some(job.unavailable()),
+        None,
+        [],
+      ),
+    )
+    == [
+      "bash",
+      "grep",
+      "fs_read",
+      "fs_write",
+      "fs_edit",
+      "code_mode",
+      "job_poll",
+      "job_kill",
+      "job_send",
+    ]
+}
+
+/// The owner wedges its tools in at two places, after the core tools and
+/// after `code_mode`, and the result is the order the registry has always
+/// had because the prompt's tool index is pinned to it.
+pub fn compose_interleaves_the_owners_tools_at_the_two_cuts_test() {
+  let workspace =
+    contributions.workspace_tools(
+      Some(a_code_mode()),
+      Some(job.unavailable()),
+      None,
+      [],
+    )
+  let owner =
+    contributions.OwnerTools(agent: [contributed("agent_spawn")], session: [
+      contributed("history_search"),
+      contributed("remember"),
+    ])
+  assert names_in_order(contributions.compose(workspace, owner))
+    == [
+      "bash",
+      "grep",
+      "fs_read",
+      "fs_write",
+      "fs_edit",
+      "agent_spawn",
+      "code_mode",
+      "history_search",
+      "remember",
+      "job_poll",
+      "job_kill",
+      "job_send",
+    ]
+}
+
+/// A deactivated core tool shortens its run and moves nothing else, so the
+/// cuts still fall where the owner's tools belong.
+pub fn compose_survives_a_missing_core_tool_and_a_missing_code_mode_test() {
+  let workspace =
+    contributions.workspace_tools(None, Some(job.unavailable()), None, [])
+    |> list.filter(fn(each) { each.name != "bash" })
+  let owner =
+    contributions.OwnerTools(agent: [contributed("agent_spawn")], session: [
+      contributed("history_search"),
+    ])
+  assert names_in_order(contributions.compose(workspace, owner))
+    == [
+      "grep",
+      "fs_read",
+      "fs_write",
+      "fs_edit",
+      "agent_spawn",
+      "history_search",
+      "job_poll",
+      "job_kill",
+      "job_send",
+    ]
+}
+
+/// `built_in` is the two halves composed, and nothing else.
+pub fn built_in_is_the_workspace_and_owner_halves_composed_test() {
+  let mode = a_code_mode()
+  let jobs = job.unavailable()
+  let assert [contributions.Contribution(tools:, ..)] =
+    contributions.built_in(
+      None,
+      Some(mode),
+      None,
+      None,
+      None,
+      None,
+      Some(jobs),
+      None,
+      [],
+    )
+  let composed =
+    contributions.compose(
+      contributions.workspace_tools(Some(mode), Some(jobs), None, []),
+      contributions.owner_tools(None, None, None, None, None),
+    )
+  assert names_in_order(tools) == names_in_order(composed)
+  assert list.map(tools, fn(each) { each.description })
+    == list.map(composed, fn(each) { each.description })
+}

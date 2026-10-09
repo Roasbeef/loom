@@ -62,6 +62,7 @@ import support/tui_driver
 import tui/bootstrap
 import tui/daemon
 import tui/daemon/selection
+import tui/placement
 import tui/workspace
 import weft
 import weft/actor
@@ -483,6 +484,7 @@ fn connect(
         paths.root,
         config_of(directory),
         "",
+        placement.OnThisHost,
       ),
       process.self(),
       40_000,
@@ -514,6 +516,8 @@ fn create(
       directory,
       workspace.session_name(workspace.Context(directory, None)),
       config,
+      "",
+      "",
       "",
     )
     as "the session is explicitly created"

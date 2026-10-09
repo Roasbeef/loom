@@ -15,6 +15,7 @@ import client/jobs
 import client/retryconf
 import client/schedule
 import client/serve
+import client/workspace_policy
 import core/clock
 import core/ids
 import gleam/erlang/process
@@ -31,6 +32,7 @@ import session/session
 import simplifile
 import storage/sqlite
 import support/internal/ffi_memory
+import support/local_workspace
 import support/provider as provider_test
 import telemetry/level
 import telemetry/log
@@ -79,7 +81,7 @@ pub fn settings() -> serve.Settings {
     bind_port: -1,
     token_path: root <> "/never-created.token",
     workspace: root <> "/work",
-    base_policy: serve.base_policy(root <> "/work"),
+    base_policy: workspace_policy.base_policy(root <> "/work"),
     helper_path: here <> "/../sandbox/loom-exec",
     helper_pool_size: 2,
     session_id: "owned",
@@ -203,11 +205,11 @@ pub fn the_executor_service_is_a_fatal_root_and_closes_under_custody_test() {
     list.map(roots, fn(root) { root.0 }),
     "the executor service",
   )
-  assert process.is_alive(executor.pid(instance.executor))
+  assert process.is_alive(executor.pid(local_workspace.executor(instance)))
   lease_is_held(settings)
 
   assert host.close(prepared, within_ms: 5000) == custody.Closed
-  assert !process.is_alive(executor.pid(instance.executor))
+  assert !process.is_alive(executor.pid(local_workspace.executor(instance)))
   lease_is_released(settings)
   process.demonitor_process(watch)
 }

@@ -77,7 +77,7 @@ registry, queue or identity exists above it.
 The helper machine owns three timers: the handshake deadline, the cancel
 grace, and an idle heartbeat. The heartbeat is off in production, because
 `start_helper_pool` sets `heartbeat_interval_ms: 0`
-(`client/serve.gleam:697`). The execution's wall deadline is not in the helper
+(`client/workspace_plane.gleam:1341`). The execution's wall deadline is not in the helper
 machine at all. It lives in the broker's relay and, independently, in the
 helper's own `wall_s` policy limit.
 
@@ -157,19 +157,19 @@ token, but `settle` was never called, so no `CallSettled` follows.
 
 ### The per-session effect plane
 
-`start_effect_plane_in` (`client/serve.gleam:767`) builds one pool and one
+`start_effect_plane_in` (`client/workspace_plane.gleam:1354`) builds one pool and one
 broker for each session, and one executor service between them. The pool and the broker are captured by value in closures, and each is a
-fatal child of the instance (`instance_children`, `client/serve.gleam:2183`),
+fatal child of the instance (`instance_children`, `client/serve.gleam:2200`),
 since a replacement would be unreachable. The service is a third fatal child. The custody order of a session's teardown is Runtime,
 Services, Broker, Helpers, Mcp, Storage, Namespace (`clean`,
 `client/internal/instance_owner.gleam:366`), so the session's writer lease is
 released only after the `Helpers` step has shown a native exit for every helper
 the session owned. `Helpers` is `executor.close` with a two second drain budget and
-a five second helpers budget (`client/serve.gleam:773`), which drains executions
+a five second helpers budget (`client/workspace_plane.gleam:1418`), which drains executions
 and then closes the pool. Before the service it was `close_pool` with a five
 second wait.
 
-Only `serve.gleam` builds the pool. Only `executor.gleam` and its relays
+Only `workspace_plane.gleam` builds the pool. Only `executor.gleam` and its relays
 call `run`, `stdin` and `cancel`, and `broker.gleam` reaches them through the
 closures of an `Execution`. Seven clearance sites share the one broker per
 session: the ordinary tool runner, the jobs runner, goal checks,
@@ -178,7 +178,7 @@ git-identity step. Code mode reaches the broker through the opaque `Broker`
 handle at fifteen call sites in the `codemode` package, so any design that
 changes the handle's type touches all of them. One non-broker borrower exists:
 the boot-time `degraded` probe checks a helper out directly
-(`client/serve.gleam:6576`).
+(`client/workspace_policy.gleam:1445`).
 
 Some native processes never go through the pool, and "all execution goes
 through the service" must not be read to include them: MCP servers (an open
@@ -277,7 +277,7 @@ demonitoring the execution's guarantor, which also flushes any `DOWN` already
 queued, then calling `release`, then reclaiming the slot and token
 (`broker/broker.gleam:987`). A guarantor `DOWN` that reaches the broker with
 the monitor still in place calls `abandon` instead, through
-`handle_guarantor_down` (`broker/broker.gleam:969`). Because the demonitor is
+`handle_guarantor_down` (`broker/broker.gleam:1008`). Because the demonitor is
 the step that separates the two paths, the broker calls exactly one of them for
 any execution, never both and never `abandon` after a settlement. An earlier
 draft returned the helper from inside the relay, ahead of `settle`, and that
@@ -832,7 +832,7 @@ pool size, which is clamped to sixteen (`max_pool_size`,
 | Relay progress reports | one per mode or cancel change, then at most one chunk-driven report (first chunk, every 16th) per 250 ms | `progress_chunks`, `broker/relay.gleam:260`, and `progress_interval_ms`, `broker/relay.gleam:266`. Never per chunk. |
 | Registry size | at most the pool size (4 to 16) | By construction: a row exists only while the service holds a helper for it. |
 | Relay grace after a cancel | 5000 ms | `relay_grace_ms`, `broker/dispatch.gleam:67` |
-| Checkout wait | 15 000 ms | `exec.checkout(pool, waiting: 15_000)`, `client/serve.gleam:709` and `client/serve.gleam:757` |
+| Checkout wait | 15 000 ms | `exec.checkout(pool, waiting: 15_000)`, `client/workspace_plane.gleam:1400` |
 | Run call | 5000 ms | `run_wait_ms`, `broker/executor.gleam:360` (the direct dispatcher had its own copy) |
 | Service `start` call | 22 000 ms | `start_budget_ms`, `broker/executor.gleam:367`: the checkout wait, the relay's init wait, the run call and a second of slack |
 | Relay's ask to settle | 5000 ms | `settle_wait_ms`, `broker/relay.gleam:253` |
@@ -1280,7 +1280,7 @@ should be able to find before proposing the item again.
 | A metrics exporter, an HTTP endpoint, any knob for the ring or the progress interval | Out of S3's cut list. The numbers are in the snapshot and the lines. |
 | Output buffering or BEAM-side backpressure in the service | Ports are active. The honest bound is helper-side, and S2 measured cancel latency under flood instead. Leases whose output is a wire run uncapped (`OutputIsWire`), so their mailbox is bounded only by the consumer. |
 | A restartable in-session service | The pool and broker are fatal children captured by value. The service joins them. |
-| Re-enabling the idle heartbeat | It is off in production on purpose (`client/serve.gleam:697`). |
+| Re-enabling the idle heartbeat | It is off in production on purpose (`client/workspace_plane.gleam:1341`). |
 | Per-execution `limits`, use of the token by the helper, a shutdown acknowledgement, a `--version` flag, any new frame kind | Each is a wire change. The helper ignores `limits` and only checks the token for non-emptiness (`docs/spec-gaps.md`). |
 | Any NIF, and any Erlang FFI beyond `broker/internal/ffi_port` | The witnessed kill needs none: `kill_os_process` and `port_event` already exist. |
 | Folding #283 (idle retirement) into the epic | It is a pool change: one named timeout re-armed to the soonest expiry. The service must only not block it, so `Availability` stays the pool's. |
@@ -1506,7 +1506,7 @@ helper machine and pool stay in `broker/exec.gleam`, with `pool_census` added to
 the pool. The seam vocabulary is `broker/dispatch.gleam`, the pure core is
 `broker/execution.gleam`, the per-execution shell is `broker/relay.gleam`, the
 dispatcher is `broker/executor.gleam`. `broker/broker.gleam` holds the broker's
-own decisions and calls whichever dispatcher it was started with. `client/serve.gleam` does the
+own decisions and calls whichever dispatcher it was started with. `client/workspace_plane.gleam` starts the pool, the service and the broker, and `client/serve.gleam` does the rest of the
 per-session wiring and holds the lane switch. The package documentation for
 `broker` (`packages/broker/CLAUDE.md`) carries the types, messages and
 invariants of the new modules, and the effect-plane overview

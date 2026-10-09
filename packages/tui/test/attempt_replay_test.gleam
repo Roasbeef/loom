@@ -45,6 +45,7 @@ import tui/frame
 import tui/inbound
 import tui/interaction
 import tui/model as tui_model
+import tui/placement
 import tui/recording
 import tui/runtime
 import tui/session_control
@@ -1834,6 +1835,7 @@ fn opening_b_under_a_profile() -> tui_model.Model {
       "build",
       "build/absent/loom.toml",
       "beta",
+      placement.OnThisHost,
     )
   tui_model.Model(
     ..base,

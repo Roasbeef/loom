@@ -86,7 +86,19 @@ pub type Place {
   /// folder the owner may use (`inside`, and the checks of
   /// `client/daemon/folders`).
   Typed(path: String)
+
+  /// A workspace registered on an executor (protocol-change/078). The executor
+  /// is one the page drew from the names the daemon gave it, and the workspace
+  /// is the name the owner typed. It is a name and not a path: the daemon never
+  /// canonicalizes, stats or creates it on its own host, and judges only its
+  /// shape (`registered_name`) and that the executor is configured. Whether the
+  /// executor has a workspace by that name is learned when the session opens.
+  Registered(executor: String, workspace: String)
 }
+
+/// The most bytes a registered workspace name may hold, which is the
+/// catalogue's own bound on one.
+pub const registered_name_limit = 128
 
 /// A folder the owner recently started a session in, as the daemon remembers it.
 /// `id` is the daemon's identity for the entry, which the page keys its list by
@@ -184,6 +196,17 @@ pub type Reason {
   /// did not draw (protocol-change/080).
   UnknownModel
 
+  /// The executor the form chose is not an `[executors.<name>]` of the daemon's
+  /// configuration. The page offers only the executors it was given when it
+  /// opened, so this is a frame the page did not draw (protocol-change/078).
+  UnknownExecutor
+
+  /// The registered workspace name is empty, longer than
+  /// `registered_name_limit` bytes, or holds a slash or a control, zero-width or
+  /// direction-changing character. A path is refused here as well, because a
+  /// name that held a slash could be taken for a directory on the daemon's host.
+  InvalidWorkspaceName
+
   /// This credential has created as many sessions as it may recently. The
   /// count is the daemon's and is kept for the credential and not for the page,
   /// so opening another page does not reset it.
@@ -226,6 +249,10 @@ pub fn reason_words(reason: Reason) -> String {
       "That model profile is not in the configuration now. Reload the page."
     UnknownModel ->
       "That model is not in the configuration now. Reload the page."
+    UnknownExecutor ->
+      "That executor is not in the daemon's configuration now. Reload the page."
+    InvalidWorkspaceName ->
+      "Use the name the workspace is registered under on the executor: up to 128 bytes, with no slash or control characters. It is a name, not a path."
     TooMany -> "You have created many sessions this hour. Try again later."
     Full -> "The daemon has no room for another session. Stop one first."
     Unavailable -> "The daemon could not create the session. Try again."
@@ -309,6 +336,35 @@ pub fn folder(workspace: String) -> String {
   case list.last(segments) {
     Ok(name) -> name
     Error(Nil) -> "New session"
+  }
+}
+
+/// The registered workspace name a form's text stands for, or `Error(Nil)` for
+/// text that cannot be one: empty after trimming, longer than
+/// `registered_name_limit` bytes, holding a slash, or holding a control,
+/// zero-width or direction-changing character (the rule `chosen_name` applies to
+/// a name). A name with a slash is refused because the daemon tells a registered
+/// name from a path on its own host by the absence of one. The text is not
+/// otherwise judged here: the executor decides whether it has such a workspace.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert creations.registered_name("  app ") == Ok("app")
+/// assert creations.registered_name("") == Error(Nil)
+/// assert creations.registered_name("/work/app") == Error(Nil)
+/// assert creations.registered_name("a\nb") == Error(Nil)
+/// ```
+pub fn registered_name(typed: String) -> Result(String, Nil) {
+  let name = string.trim(typed)
+  case
+    name != ""
+    && string.byte_size(name) <= registered_name_limit
+    && !string.contains(name, "/")
+    && text_hygiene.single_line(name) == name
+  {
+    True -> Ok(name)
+    False -> Error(Nil)
   }
 }
 

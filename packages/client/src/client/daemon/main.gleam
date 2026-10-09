@@ -4,6 +4,25 @@
 //// and binds one v2 listener. Provider configuration and session resources are
 //// resolved only inside an explicitly admitted session builder. The root handle
 //// survives readiness failures so bounded shutdown can report uncertainty.
+////
+//// ## Flow
+////
+//// `main` → `claim_endpoint` → `prepare_startup` → `run` → `start_executor` →
+//// `start_orchestrator_port` → `start_movers` → `listen_moving` →
+//// `publish_endpoint` → `wait`
+////
+//// 1. `main` parses the flags, `claim_endpoint` reserves this VM, and
+////    `prepare_startup` reads the configuration once and prepares the root.
+//// 2. `run` starts the daemon's services in order. `start_executor` comes
+////    first, so a machine that serves workspaces answers peers before any
+////    client can connect, and `start_orchestrator_port` follows it, so a
+////    daemon with distribution answers a peer's question about which sessions
+////    it holds and takes the sessions a peer moves to it. `start_movers`
+////    follows that and resumes every move this daemon had in flight.
+//// 3. `listen_moving` binds the listener, and `publish_endpoint` records the
+////    bound port for the reservation this VM holds.
+//// 4. `wait` blocks on the signal relay, the root and the executor host, and a
+////    loss of either of the last two ends the daemon.
 
 import argv
 import client/catalog
@@ -17,16 +36,35 @@ import client/daemon/ui_assets
 import client/daemon/ui_login
 import client/daemon/ui_sessions
 import client/daemon/ui_socket
+import client/distribution
+import client/executor_plane
+import client/executors
 import client/host
 import client/internal/ffi_os
+import client/orchestrators
 import client/peer_defaults
 import client/peer_mail
 import client/peers
+import client/pools
+import client/remote/address
+import client/remote/host as executor_host
+import client/remote/orchestrator_port
+import client/remote/remote_peer
+import client/remote/workspace
 import client/serve
+import client/session_directory
+import client/session_importer
+import client/session_move
+import client/session_mover
+import client/session_movers
+import client/workspaces
 import core/clock
 import core/glance
 import core/ids
+import core/json.{type JsonValue}
 import gleam/dict
+import gleam/erlang/atom
+import gleam/erlang/node
 import gleam/erlang/process
 import gleam/http/request.{type Request}
 import gleam/http/response.{type Response}
@@ -41,6 +79,7 @@ import host/build_identity
 import host/endpoint
 import mist
 import simplifile
+import storage/catalogue
 import telemetry/field
 import telemetry/handler
 import telemetry/log.{type Logger}
@@ -67,6 +106,25 @@ pub type Config {
     /// Whether sessions are linked to each other without a grant, read from
     /// `[peers]` at startup and never reread (protocol-change/077).
     peer_policy: peer_mail.Policy,
+    /// The executors sessions may be placed on, read from `[executors.<name>]`
+    /// at startup and never reread (protocol-change/078).
+    executors: List(executors.Executor),
+    /// The groups of those executors a session may be created in, read from
+    /// `[pools.<name>]` at startup and never reread (protocol-change/078).
+    pools: List(pools.Pool),
+    /// The checkouts this machine serves to orchestrators, read from
+    /// `[workspaces.<name>]` at startup and never reread (protocol-change/078).
+    /// A daemon with none starts no executor host.
+    workspaces: List(workspaces.Workspace),
+    /// The other orchestrators this daemon asks which of them owns a session
+    /// its own catalogue lacks, read from `[orchestrators.<name>]` at startup
+    /// and never reread (protocol-change/078, phase 3).
+    orchestrators: List(orchestrators.Orchestrator),
+    /// The distribution membership `prepare_startup` started, or `None` when
+    /// the configuration has no `[distribution]` table. It is how the daemon
+    /// reaches the peers it asks, and a daemon without it asks nobody and
+    /// answers nobody.
+    membership: Option(distribution.Membership),
   )
 }
 
@@ -94,6 +152,7 @@ pub type Serving(instance) {
 type Event {
   Signal(host.Stop)
   RootGone(process.ExitReason)
+  ExecutorGone(process.ExitReason)
 }
 
 /// Which half of session startup produced a failure.
@@ -228,7 +287,21 @@ fn acquire_launch_lock(paths: endpoint.Paths) {
 @internal
 pub fn parse(arguments: List(String)) -> Result(Config, String) {
   let initial =
-    Config("", "127.0.0.1", 0, 8, "Owner", [], ViewOff, peer_defaults.off)
+    Config(
+      "",
+      "127.0.0.1",
+      0,
+      8,
+      "Owner",
+      [],
+      ViewOff,
+      peer_defaults.off,
+      [],
+      [],
+      [],
+      [],
+      None,
+    )
   use config <- result.try(parse_loop(arguments, initial))
   use state_root <- result.try(case config.state_root {
     "" ->
@@ -339,6 +412,365 @@ fn bind_address(value: String) -> Result(#(String, Int), String) {
   }
 }
 
+// Trusted distribution is started first, before the catalogue or any session
+// resource is opened, so a VM booted wrongly is refused with nothing to undo.
+// Without a `[distribution]` table nothing happens and the VM stays
+// non-distributed. The membership is kept for the sessions registered on an
+// executor, which resolve their peer through it when they open.
+fn start_distribution(
+  document: dict.Dict(String, tom.Toml),
+  configuration: String,
+) -> Result(Option(distribution.Membership), String) {
+  use found <- result.try(
+    distribution.from_document(document)
+    |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
+  )
+  case found {
+    None -> Ok(None)
+    Some(settings) ->
+      distribution.start(settings)
+      |> result.map(Some)
+      |> result.map_error(fn(fault) {
+        configuration <> ": " <> distribution.describe(fault)
+      })
+  }
+}
+
+// Each served checkout has to be a directory now, so an operator who mistyped
+// a root learns it at startup and not from the first session that attaches.
+// The plane factory checks again at every attach, because a directory can go
+// away in between.
+fn existing_roots(served: List(workspaces.Workspace)) -> Result(Nil, String) {
+  list.try_each(served, fn(workspace) {
+    bootstrap.canonical_directory(workspace.root)
+    |> result.map(fn(_resolved) { Nil })
+    |> result.map_error(fn(reason) {
+      "workspaces."
+      <> workspace.name
+      <> ".root "
+      <> workspace.root
+      <> " is not a directory: "
+      <> reason
+    })
+  })
+}
+
+/// Starts the executor host when the configuration serves any workspace, and
+/// returns the monitor `wait` watches it by. A configuration with none starts
+/// nothing and registers no name.
+///
+/// The host is deliberately not linked and not restarted. The workspace planes
+/// it builds are not in its link set, so a host that restarted alone would leave
+/// their helper pools and jobs actors running and build a second set beside
+/// them on the next attach. Its death therefore ends the daemon, and the
+/// ledger's recovery on the next boot turns every call it had in flight into an
+/// unknown outcome.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // assert main.start_executor(Config(..config, workspaces: []), logger) == Ok(None)
+/// ```
+@internal
+pub fn start_executor(
+  config: Config,
+  logger: Logger,
+) -> Result(Option(process.Monitor), String) {
+  case config.workspaces {
+    [] -> Ok(None)
+    configured -> {
+      use configuration <- result.try(captured_domain_configuration(
+        config.session_defaults,
+        "",
+      ))
+      use machine <- result.try(executor_plane.machine(
+        config.session_defaults,
+        configuration,
+        config.state_root,
+        logger,
+      ))
+      use started <- result.try(
+        executor_host.start(executor_host.Config(
+          name: address.default(),
+          ledger_path: config.state_root <> "/exec-ledger.db",
+          limits: executor_plane.scope_limits(),
+          max_result_bytes: executor_host.default_max_result_bytes,
+          clock: clock.from_function(ffi_os.system_time_ms),
+          factory: executor_plane.factory(machine, configured),
+        ))
+        |> result.map_error(fn(error) {
+          "the executor host did not start: " <> string.inspect(error)
+        }),
+      )
+      process.unlink(started.pid)
+      log.info(logger, "daemon.executor_serving", [
+        field.count("workspaces", list.length(configured)),
+      ])
+      Ok(Some(process.monitor(started.pid)))
+    }
+  }
+}
+
+/// Starts the orchestrator port when the configuration has a `[distribution]`
+/// table, and registers nothing otherwise.
+///
+/// The port answers a peer orchestrator's question about whether this daemon's
+/// catalogue holds a session. It runs whether or not this daemon lists any
+/// `[orchestrators.<name>]` of its own, since an orchestrator can be asked by a
+/// peer that lists it without listing that peer back. It is linked to the
+/// process that starts the daemon's services, so an abnormal exit of the port
+/// ends the daemon the way the executor host's does: a daemon that silently
+/// stopped answering would make every peer report it unreachable.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // assert main.start_orchestrator_port(Config(..config, membership: None), daemon, logger, peer) == Ok(Nil)
+/// ```
+@internal
+pub fn start_orchestrator_port(
+  config: Config,
+  daemon: root.Root(instance),
+  logger: Logger,
+  peer_endpoint: fn(instance) -> Option(peer_mail.Endpoint),
+) -> Result(Nil, String) {
+  case config.membership {
+    None -> Ok(Nil)
+    Some(_) -> {
+      use ready <- result.try(root.ready(daemon, within: 20_000))
+      use domain_configuration <- result.try(captured_domain_configuration(
+        config.session_defaults,
+        "",
+      ))
+      let importer =
+        session_importer.new(session_importer.Context(
+          registry: ready.registry,
+          state_root: ready.state_root,
+          sessions_directory: ready.sessions_directory,
+          domain_configuration:,
+          clock: clock.from_function(ffi_os.system_time_ms),
+          orchestrators: config.orchestrators,
+          executors: config.executors,
+          logger:,
+        ))
+      use _started <- result.try(
+        orchestrator_port.start_with(
+          orchestrator_port.default(),
+          catalogue_holds(ready.registry),
+          peer_command(ready.registry, peer_endpoint),
+          importer,
+        )
+        |> result.map_error(fn(error) {
+          "the orchestrator port did not start: " <> string.inspect(error)
+        }),
+      )
+      log.info(logger, "daemon.orchestrator_port", [
+        field.count("orchestrators", list.length(config.orchestrators)),
+      ])
+      Ok(Nil)
+    }
+  }
+}
+
+/// Forwards one peer-mail command from another orchestrator to a session
+/// resident here, the way the control commands reach the same session
+/// (`server.peer_endpoint`): resolve the identity with the manager and call the
+/// session's own endpoint. A session that is not resident answers
+/// `peers.not_running`, the refusal a send within one daemon gets, so the
+/// sender cannot tell where the recipient was supposed to be.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // main.peer_command(ready.registry, fn(resident) { Some(resident.peer) })("0198...", command)
+/// ```
+@internal
+pub fn peer_command(
+  registry: manager.Manager(instance),
+  endpoint: fn(instance) -> Option(peer_mail.Endpoint),
+) -> fn(String, peer_mail.Command) -> Result(JsonValue, String) {
+  fn(session, command) {
+    case manager.resolve(registry, session) {
+      Error(_) -> Error(peers.not_running)
+      Ok(resident) ->
+        case endpoint(resident) {
+          None -> Error("peer_service_unavailable")
+          Some(found) -> found.call(command) |> peer_mail.plain
+        }
+    }
+  }
+}
+
+/// Whether this daemon's catalogue holds a session, in any state and any
+/// visibility: `Owned` for a `reserved` or `saved` registration, archived or
+/// not, `NotOwned` when the catalogue has no such identity, and `Error(Nil)`
+/// when the registry could not answer. A `reserved` row counts because a
+/// creation retried under its original key has to land on the orchestrator that
+/// reserved it.
+///
+/// A session this catalogue handed to another orchestrator is `Moved` and names
+/// it. The registration is still here, but only as the tombstone that records
+/// whom the session went to, so the answer says so and not `Owned`: a peer that
+/// asked whether this daemon holds the session is told where it went.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // main.catalogue_holds(ready.registry)("0198c0de-0000-7000-8000-000000000001")
+/// ```
+@internal
+pub fn catalogue_holds(
+  registry: manager.Manager(instance),
+) -> fn(String) -> Result(orchestrator_port.Ownership, Nil) {
+  fn(id) {
+    case manager.get(registry, id) {
+      Ok(_) ->
+        case manager.custody(registry, id) {
+          Ok(catalogue.Moved(to:, ..)) -> Ok(orchestrator_port.Moved(to:))
+          Ok(catalogue.Resident)
+          | Ok(catalogue.Moving(..))
+          | Ok(catalogue.Imported(..)) -> Ok(orchestrator_port.Owned)
+          Error(_) -> Error(Nil)
+        }
+      Error(manager.Catalogue(catalogue.Missing)) ->
+        Ok(orchestrator_port.NotOwned)
+      Error(_) -> Error(Nil)
+    }
+  }
+}
+
+// The directory the control socket asks when its own catalogue misses. With no
+// distribution there is nobody to ask and the directory answers `Unknown`.
+fn session_directory_of(
+  config: Config,
+  registry: manager.Manager(instance),
+) -> session_directory.Directory {
+  case config.membership {
+    None -> session_directory.none()
+    Some(membership) ->
+      session_directory.peers(
+        config.orchestrators,
+        catalogue_holds(registry),
+        session_directory.over_distribution(membership),
+      )
+      |> session_directory.with_reach(remote_peer.over_distribution(membership))
+      |> session_directory.activating(session_directory.activation_over(
+        membership,
+      ))
+      |> session_directory.settling(session_directory.settle_over(
+        membership,
+        config.orchestrators,
+      ))
+  }
+}
+
+/// Starts the movers that hand sessions to other orchestrators, resumes every
+/// move this daemon had in flight, and returns the control the listener gives its
+/// owner commands (protocol-change/078, phase 5).
+///
+/// A daemon with no `[distribution]` has no peer to hand a session to, so it
+/// moves nothing and its control lists no destination. One with distribution
+/// always starts the movers, whether or not it lists an orchestrator, because a
+/// move begun before a restart is resumed from the catalogue and not from the
+/// configuration that began it. The actor is linked to the process that starts
+/// the daemon's services, as the orchestrator port is.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let assert Ok(control) = main.start_movers(config, daemon, logger)
+/// ```
+@internal
+pub fn start_movers(
+  config: Config,
+  daemon: root.Root(instance),
+  logger: Logger,
+) -> Result(session_movers.Control, String) {
+  case config.membership {
+    None -> {
+      // Without distribution there is nobody to hand a session to, but a move
+      // begun under a configuration that had it is still in the catalogue. It
+      // cannot be resumed, and the operator is told so rather than left to find
+      // a session that refuses to open.
+      use ready <- result.map(root.ready(daemon, within: 20_000))
+      case manager.moving_sessions(ready.registry) {
+        Ok([_, ..] as stuck) ->
+          log.warn(logger, "daemon.moves_cannot_resume", [
+            field.count("moves", list.length(stuck)),
+          ])
+        Ok([]) | Error(_) -> Nil
+      }
+      session_movers.idle()
+    }
+    Some(membership) -> {
+      use ready <- result.try(root.ready(daemon, within: 20_000))
+      let environment =
+        session_mover.Environment(
+          registry: ready.registry,
+          orchestrators: config.orchestrators,
+          directory: session_directory_of(config, ready.registry),
+          courier: session_directory.courier_over(membership),
+          close: closer_of(config, membership),
+          clock: clock.from_function(ffi_os.system_time_ms),
+          node: atom.to_string(node.name(node.self())),
+          budget: session_mover.default_budget(),
+          after: crash_after_step(),
+          logger:,
+        )
+      use control <- result.try(session_movers.start(
+        environment,
+        session_movers.retry_ms,
+        session_directory.over_distribution(membership),
+      ))
+      use resumed <- result.try(session_movers.resume(control, ready.registry))
+      log.info(logger, "daemon.movers", [
+        field.count("resumed", resumed),
+        field.count("orchestrators", list.length(config.orchestrators)),
+      ])
+      Ok(control)
+    }
+  }
+}
+
+// How a mover asks an executor to close the scope of a session that has no
+// runtime. An executor this daemon does not list, or whose node it does not
+// trust, cannot be asked, and the move waits as it does for one that is down.
+fn closer_of(
+  config: Config,
+  membership: distribution.Membership,
+) -> session_mover.Closer {
+  let configured = config.executors
+  fn(executor, session, workspace_name, incarnation) {
+    case workspace.reach(Some(membership), configured, executor) {
+      Ok(reach) ->
+        workspace.close_stopped(reach, session, workspace_name, incarnation)
+      Error(_unreachable) -> Error(workspace.CloseUnanswered)
+    }
+  }
+}
+
+// TEST-ONLY. `LOOM_MOVE_CRASH_AFTER=<step>` halts the VM the moment the named
+// step of a session move is durable, so a shipped test can lose the source at
+// each of the six steps and watch a restart finish the move. The steps are
+// `intent`, `close`, `cut`, `send`, `activate` and `retire`. Unset, or set to
+// anything else, it does nothing. It is read once at startup, is not documented
+// for operators, and has no counterpart in the configuration file.
+fn crash_after_step() -> fn(session_move.Step) -> Nil {
+  case
+    bootstrap.getenv("LOOM_MOVE_CRASH_AFTER")
+    |> result.replace_error(Nil)
+    |> result.try(session_move.parse_step)
+  {
+    Ok(wanted) -> fn(step) {
+      case step == wanted {
+        True -> ffi_os.halt(1)
+        False -> Nil
+      }
+    }
+    Error(Nil) -> fn(_step) { Nil }
+  }
+}
+
 /// Prepares the root before acquiring any daemon file or session resource.
 /// The caller retains the returned handle through listen or shutdown failures.
 ///
@@ -412,7 +844,38 @@ pub fn prepare_startup(
     peer_defaults.from_document(document)
     |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
   )
-  let config = Config(..config, view:, peer_policy:)
+  use executors <- result.try(
+    executors.from_document(document)
+    |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
+  )
+  use pools <- result.try(
+    pools.from_document(document)
+    |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
+  )
+  use workspaces <- result.try(
+    workspaces.from_document(document)
+    |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
+  )
+  use Nil <- result.try(
+    existing_roots(workspaces)
+    |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
+  )
+  use orchestrators <- result.try(
+    orchestrators.from_document(document)
+    |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
+  )
+  use membership <- result.try(start_distribution(document, configuration))
+  let config =
+    Config(
+      ..config,
+      view:,
+      peer_policy:,
+      executors:,
+      pools:,
+      workspaces:,
+      orchestrators:,
+      membership:,
+    )
   root.start(
     root.Config(
       config.state_root,
@@ -446,11 +909,11 @@ pub fn prepare_startup(
         let settings =
           serve.Settings(
             ..settings,
-            peer_directory: Some(
-              peer_directory(directory, fn(resident: serve.Resident) {
-                resident.peer
-              }),
-            ),
+            peer_directory: Some(peer_directory_across(
+              directory,
+              fn(resident: serve.Resident) { resident.peer },
+              session_directory_of(config, directory),
+            )),
             peer_defaults: Some(
               peer_mail.Defaults(policy: config.peer_policy, eligible: fn() {
                 manager.unshared_sessions(directory)
@@ -464,7 +927,50 @@ pub fn prepare_startup(
               manager.seed_subtitle(directory, registration.id, text)
             }),
           )
-        serve.assemble_in_domain(settings, identity, logger, owner, services)
+
+        // A workspace registered on an executor, or in a pool of them, is
+        // assembled with the executor's host in reach, and a daemon that cannot
+        // reach one says so in the reason the opening operation reports. The
+        // session records the executor an open chose in its own store, and the
+        // catalogue is told once so that a listing can show it.
+        let session_id = registration.id
+        let chosen = fn(executor) {
+          manager.seed_executor(directory, session_id, executor)
+        }
+        case registration.executor, registration.pool {
+          "", "" ->
+            serve.assemble_in_domain(
+              settings,
+              identity,
+              logger,
+              owner,
+              services,
+            )
+          name, "" ->
+            serve.assemble_registered(
+              settings,
+              identity,
+              logger,
+              owner,
+              Some(services),
+              workspace.fixed(membership, config.executors, name, chosen),
+            )
+          _, pool ->
+            serve.assemble_registered(
+              settings,
+              identity,
+              logger,
+              owner,
+              Some(services),
+              workspace.pooled(
+                membership,
+                config.executors,
+                config.pools,
+                pool,
+                chosen,
+              ),
+            )
+        }
         |> diagnose_start(logger, identity, RuntimeAssembly)
         |> result.map(serve.resident)
       },
@@ -510,7 +1016,8 @@ fn diagnose_domain_start(
 // A failed builder can retire before the control client reads its operation.
 // Record the classified cause here, while it still exists, rather than keeping
 // failed instances alive for diagnostics. The caller receives the same error;
-// only fixed labels and a validated session identity enter the log.
+// only fixed labels, a validated session identity and the path-free detail
+// that `start_class` returns enter the log.
 fn diagnose_start(
   outcome: Result(value, String),
   logger: Logger,
@@ -545,9 +1052,11 @@ fn diagnose_start(
 /// A class alone is not something an operator can act on, so a class that has
 /// an actionable fact behind it also returns that fact as its own field. Only
 /// values proven free of a path or a credential may be returned this way; the
-/// reason string itself never is, which is why it is matched rather than
-/// logged. The lease expiry qualifies: it is a millisecond instant minted by
-/// the writer that died, and it is the entire answer to "when can I retry?".
+/// reason string itself is not, which is why it is matched rather than
+/// logged. An executor reason is the one exception, and only when it names no
+/// path (see `executor_detail`). The lease expiry qualifies: it is a
+/// millisecond instant minted by the writer that died, and it is the entire
+/// answer to "when can I retry?".
 ///
 /// ## Examples
 ///
@@ -597,10 +1106,36 @@ pub fn start_class(
           [],
         )
 
+        // A remote open that could not reach or attach its executor. The reason
+        // is what separates a network failure from a pin, a capacity or an
+        // incarnation refusal, and it is the only thing an operator reading
+        // the log can act on.
+        "executor_unavailable: " <> detail -> #(
+          "executor_unavailable",
+          executor_detail(detail),
+        )
+
         _ -> #("assembly_failed", [])
       }
       #("runtime_assembly", class, detail)
     }
+  }
+}
+
+// The reason an executor could not hold a session, as a log field, or no field
+// when the text could name a path.
+//
+// Most of these reasons are fixed sentences from the open path. Two kinds are
+// not: a storage error, which `string.inspect` renders with the session's own
+// path, and a sentence the executor wrote, which can carry a path from its
+// disk. Every path contains a separator, so a reason with one is dropped
+// whole rather than scrubbed, and the class alone is logged as it was before.
+// Nothing here is built from a key, a cookie or a certificate. The length is
+// bounded because part of the text comes from another machine.
+fn executor_detail(detail: String) -> List(field.Field) {
+  case string.contains(detail, "/") || string.contains(detail, "\\") {
+    True -> []
+    False -> [field.text("reason", glance.clip(detail, 512))]
   }
 }
 
@@ -656,6 +1191,35 @@ pub fn listen_serving(
   peer_endpoint: fn(instance) -> Option(peer_mail.Endpoint),
   ui: Option(server.Ui(instance)),
 ) -> Result(Serving(instance), String) {
+  listen_moving(
+    config,
+    daemon,
+    upgrade,
+    peer_endpoint,
+    ui,
+    session_movers.idle(),
+  )
+}
+
+/// Starts the daemon listener as `listen_serving` does, with the control its
+/// owner commands use to hand sessions to other orchestrators. `start_movers`
+/// builds it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // main.listen_moving(config, daemon, upgrade, peers, Some(ui), movers)
+/// ```
+@internal
+pub fn listen_moving(
+  config: Config,
+  daemon: root.Root(instance),
+  upgrade: fn(Request(mist.Connection), server.Attachment(instance)) ->
+    Response(mist.ResponseData),
+  peer_endpoint: fn(instance) -> Option(peer_mail.Endpoint),
+  ui: Option(server.Ui(instance)),
+  movers: session_movers.Control,
+) -> Result(Serving(instance), String) {
   use ready <- result.try(root.ready(daemon, within: 20_000))
   use domain_configuration <- result.try(captured_domain_configuration(
     config.session_defaults,
@@ -666,6 +1230,10 @@ pub fn listen_serving(
       daemon:,
       peer_endpoint:,
       domain_configuration:,
+      executors: config.executors,
+      pools: config.pools,
+      directory: session_directory_of(config, ready.registry),
+      movers:,
       generator: fn() {
         ids.generator(
           clock.from_function(ffi_os.system_time_ms),
@@ -719,9 +1287,19 @@ fn run(
   let signals = process.new_subject()
   host.relay_sigterm(signals, ffi_os.wait_for_sigterm)
   case
-    web_view(config, daemon)
-    |> result.try(fn(ui) {
-      listen_serving(
+    {
+      use executor <- result.try(start_executor(config, logger))
+      use Nil <- result.try(
+        start_orchestrator_port(
+          config,
+          daemon,
+          logger,
+          fn(resident: serve.Resident) { Some(resident.peer) },
+        ),
+      )
+      use movers <- result.try(start_movers(config, daemon, logger))
+      use ui <- result.try(web_view(config, daemon))
+      use serving <- result.try(listen_moving(
         config,
         daemon,
         fn(request, attachment) {
@@ -734,12 +1312,11 @@ fn run(
         },
         fn(resident: serve.Resident) { Some(resident.peer) },
         ui,
-      )
-    })
-    |> result.try(fn(serving) {
+        movers,
+      ))
       publish_endpoint(config, serving, paths, fence)
-      |> result.replace(serving)
-    })
+      |> result.replace(#(serving, executor))
+    }
   {
     Error(reason) -> {
       log.error(logger, "daemon.start_failed", [field.text("reason", reason)])
@@ -747,7 +1324,7 @@ fn run(
       report_shutdown(logger, outcome)
       ffi_os.halt(1)
     }
-    Ok(serving) -> {
+    Ok(#(serving, executor)) -> {
       let host = case config.bind_host {
         "::1" -> "[::1]"
         host -> host
@@ -769,7 +1346,7 @@ fn run(
       log.info(logger, "daemon.listening", [
         field.count("port", serving.listener.port),
       ])
-      wait(daemon, watch, signals, logger)
+      wait(daemon, watch, executor, signals, logger)
     }
   }
 }
@@ -845,13 +1422,19 @@ fn web_view(
   }
 }
 
-fn wait(daemon, watch, signals, logger) {
-  let event =
+fn wait(daemon, watch, executor, signals, logger) {
+  let selector =
     process.new_selector()
     |> process.select_map(signals, Signal)
     |> process.select_specific_monitor(watch, fn(down) { RootGone(down.reason) })
-    |> process.selector_receive_forever
-  case event {
+  let selector = case executor {
+    Some(monitor) ->
+      process.select_specific_monitor(selector, monitor, fn(down) {
+        ExecutorGone(down.reason)
+      })
+    None -> selector
+  }
+  case process.selector_receive_forever(selector) {
     Signal(host.Signalled) -> {
       let outcome = root.shutdown(daemon, within: 30_000)
       report_shutdown(logger, outcome)
@@ -865,6 +1448,13 @@ fn wait(daemon, watch, signals, logger) {
     | RootGone(process.Abnormal(_))
     | Signal(host.Faulted(..)) -> {
       log.error(logger, "daemon.retirement_unconfirmed", [])
+      ffi_os.halt(1)
+    }
+
+    // The host ending at all, however it ended, is fatal: see `start_executor`
+    // for why it is never restarted on its own.
+    ExecutorGone(_reason) -> {
+      log.error(logger, "daemon.executor_lost", [])
       ffi_os.halt(1)
     }
   }
@@ -893,12 +1483,35 @@ pub fn peer_directory(
   registry: manager.Manager(instance),
   endpoint: fn(instance) -> peer_mail.Endpoint,
 ) -> peers.Directory {
+  peer_directory_across(registry, endpoint, session_directory.none())
+}
+
+/// Supplies the peer directory a session's tools use: a resident session
+/// resolves to its Agency, and a session another orchestrator owns resolves to
+/// that orchestrator's port, found through `sessions` (`peers.routed`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // main.peer_directory_across(registry, fn(resident) { resident.peer }, sessions)
+/// ```
+@internal
+pub fn peer_directory_across(
+  registry: manager.Manager(instance),
+  endpoint: fn(instance) -> peer_mail.Endpoint,
+  sessions: session_directory.Directory,
+) -> peers.Directory {
   peers.Directory(
-    resolve: fn(id) {
-      manager.resolve(registry, id)
-      |> result.map(endpoint)
-      |> result.map_error(string.inspect)
-    },
+    resolve: peers.routed(
+      fn(id) {
+        manager.resolve(registry, id)
+        |> result.map(endpoint)
+        |> result.map_error(fn(error) {
+          peer_mail.Refused(string.inspect(error))
+        })
+      },
+      sessions,
+    ),
     describe: fn(id) {
       manager.get(registry, id)
       |> result.map(server.view_json)

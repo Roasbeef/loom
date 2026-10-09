@@ -165,7 +165,7 @@ specifies them and [the web view](architecture/web-view.md) describes them.
 Without `--ui`, every `/ui/` path returns HTTP 404.
 
 Any other path returns HTTP 404.
-Source: `handle` (`client/daemon/server.gleam:341-187`).
+Source: `handle` (`client/daemon/server.gleam:375-187`).
 
 `<session-id>` MUST be the canonical session identifier the control
 endpoint reported. A path segment that is not a canonical session id is
@@ -401,7 +401,7 @@ carries the daemon epoch that most control commands must echo.
 | `ui.path` | string | optional | Present only when the daemon was started with `--ui`: the web view's route prefix, `"/ui"`. A client that does not know the field ignores it. |
 
 Source: (`client/daemon/server.gleam:577-617`); the `ui` field is
-`hello_view` (`client/daemon/server.gleam:1842`).
+`hello_view` (`client/daemon/server.gleam:1876`).
 
 The epoch changes when the daemon restarts. A client MUST discard
 ephemeral state and re-select a session on reconnecting to a different
@@ -441,6 +441,12 @@ next admitted operation clears the old failure memo.
 Credential, membership and epoch checks precede that read; other failures
 never quote the request or a private path.
 Source: (`client/daemon/server.gleam:1039`).
+
+The two redirect refusals, `not_owner` and `owner_unreachable`, carry a fixed
+sentence in `message` and also the members section 3.5 names (`orchestrator` and
+`address`, or `orchestrators`). `moving`, which says a session is on its way to
+another orchestrator, carries `orchestrator` and `op` (section 3.27). A client
+ignores a member it does not know.
 
 ### 3.3 `status`
 
@@ -512,11 +518,13 @@ Each session record:
 | Field | Type | Presence | Meaning |
 |---|---|---|---|
 | `session_id` | string | required | Canonical session identity. |
-| `workspace` | string | required | Server-canonicalized workspace directory. |
+| `workspace` | string | required | Server-canonicalized workspace directory, or, when `executor` is present, the name of a workspace registered on that executor. |
 | `name` | string | required | Display name chosen at creation. |
 | `created_at` | integer | required | Creation time in milliseconds. |
 | `status` | object | required | Lifecycle status, described below. |
 | `subtitle` | string | optional | The first line of the first prompt a person sent the session, at most 60 characters, derived once by the daemon and never changed ([protocol-change/067](../protocol-change/067-session-subtitle.md)). Omitted when the session has none. A client that does not know the member ignores it; a client that does treats a value that is not a nonblank string of at most 60 characters as absent. |
+| `executor` | string | optional | The executor the session's `workspace` is registered on ([protocol-change/078](../protocol-change/078-distributed-runtime.md)). Present only for a session created with an `executor`, so the record of a local session is unchanged. When it is present `workspace` is a name and not a path on the daemon's host. A client that does not know the member ignores it. |
+| `pool` | string | optional | The executor pool the session was created in ([protocol-change/078](../protocol-change/078-distributed-runtime.md), the addendum on pools). Present only for a session created with a `pool`. Such a session has no `executor` member until its first open chooses one, and carries both afterwards. A client that does not know the member ignores it. |
 
 Source: (`client/daemon/server.gleam:829-837`).
 
@@ -536,7 +544,7 @@ Source: (`client/daemon/server.gleam:839-860`).
 A page stops on an authorized record boundary once its encoded size
 would exceed 60000 bytes. The next request resumes after the last
 emitted id. A single record too large for that budget is refused with
-`metadata_too_large`. Source: (`client/daemon/server.gleam:2810`).
+`metadata_too_large`. Source: (`client/daemon/server.gleam:3015`).
 
 Errors: `revision_changed` when `revision` was supplied and differs from
 the catalogue's current one; `metadata_too_large`; `unavailable`.
@@ -562,7 +570,33 @@ field, `domain_scope`, whose value is `workspace_private` or
 Source: (`client/daemon/server.gleam:759-790`).
 
 Errors: `forbidden` when the credential has no membership,
-`not_found`, `unavailable`.
+`not_found`, `unavailable`, and for the owner principal `not_owner` and
+`owner_unreachable`.
+
+A session whose move to another orchestrator is in flight or finished carries
+one more member (protocol-change/078, phase 5). Neither member is present for a
+session that is not moving and has not moved, so its record is what it was
+before moves existed.
+
+| Member | Type | Presence | Meaning |
+|---|---|---|---|
+| `moving` | object | while a move is in flight | `op`, the move's identity, and `to`, the name of the destination in this daemon's `[orchestrators.<name>]` table. The session is stopped and cannot be opened here. |
+| `moved` | object | after the move finished | `to`, the name of the orchestrator that owns the session now. The record is the tombstone this daemon keeps; the conversation is on the other orchestrator. |
+
+On a daemon whose configuration has `[orchestrators.<name>]` tables (a deployment
+with more than one orchestrator, protocol-change/078), an owner who names a
+session this daemon's catalogue does not hold is answered by what the other
+orchestrators say. `not_owner` means one of them holds it. The error body carries,
+beside `code` and `message`, `orchestrator` (the name of the owner in this
+daemon's `[orchestrators.<name>]` table) and, when the operator configured one,
+`address`, the control address to give `loom --addr`. `owner_unreachable` means no
+orchestrator said it holds the session and some could not be asked. Its error
+body carries `orchestrators`, an array of the names that did not answer. A session
+every orchestrator answered it does not hold is `not_found`, and a member
+principal is always answered `not_found` for a session this daemon does not
+hold. A client treats `not_owner` as a statement of where the session is: this
+daemon does not forward the client, and the client needs a credential for the
+owner to use it. `owner_unreachable` can be retried.
 
 ### 3.6 `sessions.default` and `sessions.set_default`
 
@@ -599,10 +633,12 @@ Owner-only. Reserves a durable identity and initializes the session.
 | Field | Type | Presence | Meaning |
 |---|---|---|---|
 | `request_key` | string | required | Idempotency key, at most 256 bytes. Retrying with the same key recovers the original identity. |
-| `workspace` | string | required | Workspace directory, at most 4096 bytes. Canonicalized by the server. |
+| `workspace` | string | required | Workspace directory, at most 4096 bytes. Canonicalized by the server. With an `executor` it is instead the name of a workspace registered on that executor: one to 128 bytes with no `/` and no NUL, kept exactly as sent and never canonicalized, statted or created on the daemon's host. |
 | `name` | string | required | Display name, at most 256 bytes. Never becomes a filename. |
 | `configuration` | string | required | Configuration file path, at most 4096 bytes. Canonicalized by the server. |
-| `domain_scope` | string | optional | `workspace_private` (the default) or `session_only`. |
+| `domain_scope` | string | optional | `workspace_private` (the default) or `session_only`. With an `executor` the default is `session_only` and `workspace_private` is refused as malformed, because the workspace aggregate is keyed by a path on the daemon's host. |
+| `executor` | string | optional | The executor the workspace is registered on: an `[executors.<name>]` key of the daemon's configuration, in the grammar of a profile name. Absent means `workspace` is a path on the daemon's host and the command is exactly what it was. A present value that is not an executor name, including the empty string, is refused as malformed. The daemon stores the name with the session. See [protocol-change/078](../protocol-change/078-distributed-runtime.md). |
+| `pool` | string | optional | A pool of executors the workspace may be registered on: a `[pools.<name>]` key of the daemon's configuration, in the same grammar. Exclusive with `executor`: a request with both, or with a present value that is not a pool name, is refused as malformed. With a `pool` the workspace is a registered name, the domain scope defaults to `session_only`, and the daemon picks the executor when the session first opens. See the addendum on pools in [protocol-change/078](../protocol-change/078-distributed-runtime.md). |
 | `profile` | string | optional | A model profile of the session's configuration (`[profiles.<name>.roles]`): a lowercase letter, then lowercase letters, numbers, `_` or `-`, at most 32 characters. Absent means the configuration's default roles. A present value that is not a profile name, including the empty string, is refused as malformed. The server stores the name with the session and resolves it again at every open. See [protocol-change/076](../protocol-change/076-config-profiles.md). |
 | `model` | string | optional | A `[models.<key>]` key of the session's configuration to pin the `main` role to, 1 to 64 bytes. Absent means the chain the profile or configuration gives. A present value that is not a key of that length, including the empty string and a non-string, is refused as malformed. The server stores the key with the session and resolves it again at every open, after the profile. See [protocol-change/080](../protocol-change/080-session-model-choice.md). |
 
@@ -627,10 +663,17 @@ the profile is judged first when both are wrong;
 `unusable_configuration` when a profile or a model is named and that configuration
 cannot be read or parsed, whose `message` is the daemon's startup wording
 (for an unknown top-level key, ``unknown key `x` in the top level (allowed: ...)``);
-`conflict` when
-the key was reused with different metadata, a different `profile` or
-`model` included; `unavailable`.
+`executor_unknown` when `executor` names no `[executors.<name>]` of the
+daemon's configuration, and `pool_unknown` when `pool` names no
+`[pools.<name>]`, each before anything is reserved; `conflict` when
+the key was reused with different metadata, a different `profile`,
+`model`, `executor` or `pool` included; `unavailable`.
 Source: (`client/daemon/server.gleam:657-664`).
+
+`loom --executor <name> --workspace <registered name>` is the terminal's way to
+send `executor`, and the web home's "New session on an executor" form is the
+browser's; neither adds a member to this command. `loom --pool <name>
+--workspace <registered name>` sends `pool` the same way.
 
 The server assigns the database path beneath its own private session
 directory. A client MUST NOT expect its `name` to appear in any path.
@@ -654,7 +697,13 @@ operation id. Source: (`client/daemon/server.gleam:675-682`).
 
 Requires operator authority or better on the target session.
 Errors: `stale_epoch`, `forbidden`, `not_found`, `capacity`,
-`unavailable`.
+`unavailable`, and for the owner principal `not_owner` and `owner_unreachable`
+under the conditions of section 3.5. The epoch is checked first, so a stale
+epoch is never turned into a redirect.
+
+A session that is being moved answers `moving`, and one that has moved answers
+`not_owner` for the owner principal, naming the orchestrator that holds it now
+(section 3.27). Neither opens a runtime.
 
 A client MUST wait for `status.state` to become `resident` before
 attempting the session upgrade. `operations.get` is how it polls.
@@ -675,8 +724,10 @@ Source: (`client/daemon/protocol.gleam:240-244`).
 {"v":2,"id":7,"cmd":"sessions.stop","body":{"session_id":"0198c0de-0000-7000-8000-000000000001","epoch":"ep-7f3a"}}
 ```
 
-The reply body is a status object. A caller's timeout does not cancel
-cleanup and does not free the slot.
+The reply body is a status object. For a resident session it is
+`stopping` with the operation id of the cleanup. A caller's timeout does
+not cancel cleanup and does not free the slot. The id stops being
+readable when cleanup finishes; section 3.10 says how to wait for that.
 Source: (`client/daemon/server.gleam:683-689`).
 
 Errors: `forbidden`, `stale_epoch`, `not_found`, `unavailable`.
@@ -702,6 +753,21 @@ Operation ids contain the daemon epoch and an opening nonce, so a
 request for an old operation cannot observe a replacement as though it
 were the old one. Errors: `stale_operation`, `stale_epoch`, `forbidden`,
 `not_found`, `unavailable`.
+
+The daemon holds an operation only while the session's runtime slot is
+held. `operations.get` therefore answers a finished `sessions.stop` with
+`stale_operation`, and that is the documented outcome, not a lost stop:
+the `stopping` operation id that `sessions.stop` returned is forgotten
+once cleanup completes, and the session is `saved`. A client that
+stops a session and waits for it polls `sessions.get` until
+`status.state` is `saved`. A `stale_operation` from `operations.get` says
+only that the cleanup is no longer pending, so the client confirms the state
+with `sessions.get`. An open behaves differently:
+`operations.get` answers `resident` while the incarnation is held, and
+`start_failed` with the startup reason when the build failed (the daemon
+remembers the failure until the session is opened again), so a client
+that polls an open never meets `stale_operation` unless something else
+opened or stopped the session in between.
 
 ### 3.11 `sessions.invite`
 
@@ -914,6 +980,15 @@ to become `saved`, and then sends this command. The daemon does not stop
 the session on the caller's behalf, so a delete can never race a live
 writer.
 
+A session this daemon received from another orchestrator is also `busy` until
+that orchestrator has finished handing it over. Until then the source may still
+retry its activation, and a delete would remove the record that retry depends on,
+so the source would import the session again and undo the delete. The daemon asks
+the source whether it has retired the move and deletes only when it says so. A
+source that is down, silent or no longer in this daemon's `[orchestrators.<name>]`
+tables gives the same `busy`. Ask again once the source's move has finished
+(`sessions.get` there reports `moved`) or the source is reachable.
+
 On success the daemon removes, in one catalogue transaction: the
 registration, every membership in it, a workspace default that named it,
 and its domain mapping. The catalogue revision is incremented, so an open
@@ -934,7 +1009,10 @@ is the workspace's and outlives any one conversation that fed it. A
 client MUST NOT describe this command as erasing what the session
 contributed to memory.
 
-Errors: `forbidden`, `stale_epoch`, `not_found`, `busy`, `unavailable`.
+Errors: `forbidden`, `stale_epoch`, `not_found`, `busy`, `unavailable`. A
+session being moved is `moving`, and one that moved is `not_owner` for the owner,
+because the registration this daemon keeps for it is the only record of who owns
+it (section 3.27).
 
 ### 3.17 Reads during a drain
 
@@ -942,7 +1020,7 @@ While the daemon is draining, an existing control socket may still issue
 the read commands `status`, `sessions.list`, `sessions.get`,
 `sessions.default`, `operations.get`, `peers.inspect`, `sessions.activity`,
 `principals.list`, `principals.memberships`, and `ui.link`. Every mutating control command is refused. Source:
-`control_use` (`client/daemon/server.gleam:2161-1130`).
+`control_use` (`client/daemon/server.gleam:2195-1130`).
 
 That includes `sessions.delete`, which is a mutation like any other.
 
@@ -988,7 +1066,10 @@ metadata. The harness constructs provenance from the selected resident endpoint
 and its catalogue record.
 
 The success event is `peers.send`, and its body is the recipient's admission
-receipt. Retrying requires the same message ID, target, and text. A changed body
+receipt. When the recipient's owner is on another orchestrator and cannot be
+reached, the body is instead `{"state": "queued", "session", "message_id",
+"note"}`, and the message is delivered when the owner answers (see the
+[sender outbox](architecture/messaging.md#the-sender-outbox)). Retrying requires the same message ID, target, and text. A changed body
 is refused; revoking a grant can also refuse a retry. During daemon drain the
 command is refused like other control mutations. See the
 [API guide](async-collaboration.md#peer-messaging) for an example.
@@ -1090,7 +1171,7 @@ the `hello` states with its `ui` field. The request carries the canonical
 
 `page` is the page's ceiling: `"observer"`, which is also the value when
 the field is absent, or `"operator"`. Any other value is refused with
-`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:875`). The
+`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:1011`). The
 ceiling caps the page's role and never grants one: the page acts with the
 smallest of the principal's membership role, the ceiling, and Operator.
 
@@ -1304,6 +1385,60 @@ next admission reads the new one.
 
 Errors: `forbidden`, `invalid_name`, `not_found`, `bad_request`, `stale_epoch`,
 `unavailable`.
+
+### 3.27 `sessions.move`
+
+Owner-only. Hands a session that lives on an executor to another orchestrator
+([protocol-change/078](../protocol-change/078-distributed-runtime.md), phase 5).
+The daemon commits the intent, stops the session, and then carries the move out on
+its own: it closes the session's scope on the executor, copies the conversation
+file to the destination, has the destination take the session, and sets its own
+file aside. The command returns as soon as the intent is committed.
+
+| Field | Type | Presence | Meaning |
+|---|---|---|---|
+| `session_id` | string | required | Canonical session id. |
+| `to` | string | required | The destination, as the key of an `[orchestrators.<name>]` table of this daemon's configuration: a lowercase letter, then lowercase letters, numbers, `_` or `-`, at most 32 characters. |
+| `epoch` | string | required | The epoch from `hello`. |
+
+```json
+{"v":2,"id":18,"cmd":"sessions.move","body":{"session_id":"0198c0de-0000-7000-8000-000000000001","to":"bravo","epoch":"ep-7f3a"}}
+{"v":2,"reply_to":18,"event":"sessions.move","body":{"session_id":"0198c0de-0000-7000-8000-000000000001","op":"0198c0de-0000-7000-8000-000000000a01","to":"bravo","state":"moving"}}
+```
+
+`op` identifies the move on both orchestrators and in the files each keeps. A
+repeat of the request toward the same destination answers the stored `op`, so two
+callers asking at once start one move. A request toward another destination while
+a move is in flight is `conflict`.
+
+What a client sees while the move runs and after it:
+
+- `sessions.get` carries a `moving` member, then a `moved` member (section 3.5).
+- `sessions.open` answers `moving`, with `orchestrator` (the destination) and
+  `op`, and then `not_owner`, with `orchestrator` and the `address` this daemon's
+  configuration holds for it. `sessions.archive`, `sessions.restore` and
+  `sessions.delete` answer the same two codes. The owner is told where the
+  session went from this daemon's own record, and no other orchestrator is asked.
+- The destination holds the session, saved, as soon as it activates it, and a
+  client connects to it with a credential for that daemon. This daemon does not
+  forward the client, and members' grants and claims stay where they were
+  recorded.
+
+A move that cannot proceed stays in flight and is retried: the executor or the
+destination may be down, and an unreachable destination never abandons a move,
+because it may have taken the session and lost the reply. A move is abandoned,
+and the session returns to this daemon, only when something answers no: the
+executor could not prove the scope's cleanup, the file is corrupt or larger than
+256 MiB, or the destination refused the copy. A daemon that restarts resumes every
+move that was in flight.
+
+Errors: `forbidden`, `stale_epoch`, `not_found`, `unavailable`,
+`orchestrator_unknown` (the destination is not in this daemon's
+`[orchestrators.<name>]` tables), `not_movable` (the session has no executor yet,
+is archived, has not finished being created, or was imported from an orchestrator that has not yet retired the move that brought it here), `conflict` (a move toward
+another destination is in flight), and `not_owner` (the session already moved).
+`moving` is not a refusal of this command: asking again is how a client learns
+the stored `op`.
 
 ---
 
@@ -3301,7 +3436,7 @@ Sources: (`client/protocol.gleam:512-540`),
 | `too_large` | The message exceeds 65536 bytes, in either direction. | Page the request, or read a smaller listing. |
 | `forbidden` | An owner-only command from a member, or an observer opening a session. | Disable the control. |
 | `stale_epoch` | The supplied epoch is not the daemon's current one. | Re-read `hello` and retry with the new epoch. |
-| `stale_operation` | `operations.get` named an operation from a replaced incarnation. | Re-read the session's status. |
+| `stale_operation` | `operations.get` named an operation the daemon no longer holds: one from a replaced incarnation, or one whose runtime slot has been released. A finished `sessions.stop` is the usual case, because the `stopping` operation id is forgotten when cleanup completes (section 3.10). | Read `sessions.get` for the session's state. After a stop it is `saved`. |
 | `start_failed` | `operations.get` named the operation of an open whose builder returned an error. Distinct from `stale_operation`, which claims the request was overtaken. | Display the bounded startup reason in `message`, then decide whether to retry; the daemon log retains the classified cause. |
 | `revision_changed` | `sessions.list` supplied a revision that no longer holds. | Restart the listing from the empty cursor. |
 | `metadata_too_large` | A single session record exceeds the page budget. | Report; nothing to page around. |
@@ -3314,6 +3449,14 @@ Sources: (`client/protocol.gleam:512-540`),
 | `unavailable` | The daemon is draining, or a durable read failed. | Retry later. |
 | `invalid_workspace` | `sessions.create` could not canonicalize the workspace path. | Fix the path. |
 | `invalid_configuration` | `sessions.create` could not canonicalize the configuration path. | Fix the path. |
+| `executor_unknown` | `sessions.create` named an `executor` that the daemon's `[executors.<name>]` tables do not define. | Fix the name, or have the owner add the executor and restart the daemon. |
+| `pool_unknown` | `sessions.create` named a `pool` that the daemon's `[pools.<name>]` tables do not define. | Fix the name, or have the owner add the pool and restart the daemon. |
+| `not_owner` | `sessions.get` or `sessions.open` by the owner principal named a session this daemon's catalogue does not hold, and an orchestrator in its `[orchestrators.<name>]` tables does; or `sessions.open`, `sessions.archive`, `sessions.restore`, `sessions.delete` or `sessions.move` named a session this daemon handed to another orchestrator. The body also carries `orchestrator` and, when configured, `address`. | Connect to the named orchestrator with a credential for it, using `address` when present. Do not retry here. |
+| `moving` | `sessions.open`, `sessions.archive` or `sessions.delete` named a session that is being handed to another orchestrator (section 3.27). The body also carries `orchestrator`, the destination, and `op`. | Wait and ask again: the move ends in `not_owner` for this daemon or, if it is abandoned, in an ordinary session. |
+| `orchestrator_unknown` | `sessions.move` named a destination that is not a key of the daemon's `[orchestrators.<name>]` tables. | Fix the name, or have the owner add the orchestrator and restart the daemon. |
+| `not_movable` | `sessions.move` named a session that has no executor (a local session, or a pooled one that never opened), is archived, or has not finished being created. It is also the answer for a session this daemon imported when the orchestrator it came from did not answer that it has handed the session on: that orchestrator may still be finishing its move, or is down, or is no longer in this daemon's `[orchestrators.<name>]` tables. | Move a session that lives on an executor, restoring it first if it is archived. For an imported session, ask again after the source's move has finished (`sessions.get` there reports `moved`), or when the source is reachable again. |
+| `owner_unreachable` | `sessions.get` or `sessions.open` by the owner principal named a session this daemon's catalogue does not hold, no orchestrator said it holds it, and some could not be asked. The body also carries `orchestrators`, the names that did not answer. | Retry later, or connect to one of the named orchestrators directly. |
+| `executor_unavailable` | Not a code of its own: the leading word of the `message` of a `start_failed` for a session registered on an executor or a pool. The open could not place the session on its executor. The connection failed (epmd, the distribution port, a pin or a certificate), the executor refused the attach (it holds its maximum number of scopes, its scope is at another incarnation, the workspace name is not registered there), or its answer contradicted its declared platform, enforcement or toolchains. The text after the colon says which. Nothing is created on the daemon's host for the workspace name. | Fix the cause the message names, then retry. A session whose first open failed stays `reserved` and only a `sessions.create` retry under its original request key finishes it (section 3.4). A session that has opened before stays `saved`, and `sessions.open` retries it on the same executor. |
 
 Sources: (`client/daemon/protocol.gleam:124-160`),
 (`client/daemon/server.gleam:749-757`),
@@ -3617,7 +3760,7 @@ below have not been edited.
    `docs/loom-implementation-spec.md` §1.6 names ten control commands.
    The code implements six more: `sessions.isolate`, `sessions.invite`,
    `sessions.set_role`, `sessions.revoke`, `credentials.rotate` and
-   `credentials.revoke` (`client/daemon/protocol.gleam:445`). The
+   `credentials.revoke` (`client/daemon/protocol.gleam:472`). The
    six are specified in `protocol-change/015`'s addenda, so the gap is
    in the spec's summary rather than in the decision record.
    `protocol-change/053` adds a third route, `/v2/claim`, with its one

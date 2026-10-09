@@ -198,6 +198,27 @@ machine, such as the one `LOOM_SIGNOFF_HOST` names, not for a shared
 host where Docker's own confinement is the thing keeping one container's
 compromise from reaching another's.
 
+## Running a distributed pair
+
+`docker/distributed/compose.yaml` runs two containers of this image, an
+orchestrator and an executor, on one private network, and publishes only the
+orchestrator's client port on the host's loopback. The orchestrator stays in the
+plain posture; the executor can take the full-isolation posture above through
+`compose.isolated.yaml`. The loopback bind described above is why the client
+port goes through a small forwarder service. `make docker-distributed-smoke`
+brings the pair up and checks that both run a TLS node. See
+[the distributed setup guide](distributed-setup.md).
+
+The isolated override differs from the run line above in one flag: the executor
+keeps Docker's private cgroup namespace instead of `--cgroupns=host`. Inside it,
+`/sys/fs/cgroup` is the container's own cgroup, so the entrypoint creates the
+delegated base (`loom`, with the daemon in its leaf `loom/host`) below that and
+exports `LOOM_CGROUP_BASE` for the daemon, which is the migration step above done
+at boot. The host's root cgroup is not written, and nothing is left behind when
+the container is removed. The entrypoint refuses to delegate unless
+`/proc/self/cgroup` reads `0::/`, which is how a private namespace reports its
+root.
+
 ## Measured self-test counts
 
 `loom-exec --self-test` runs eleven probes (`docs/architecture/effects.md`)
@@ -230,20 +251,20 @@ Both rows against `loom-runtime:dev` came from `make docker-smoke`
 
 ## What remains unverified
 
-Two things this PR did not reach. First, the full-isolation row above
-needed the daemon's own process moved into the delegated cgroup
-subgroup by hand, once, from a root shell, before running the self-test
-directly; the image itself does not do this at boot, so a `loomd`
-started by the entrypoint still spawns its sandboxed sessions from
-outside the delegated tree unless an operator repeats that step (or a
-future change teaches the daemon to do it itself). Second, this was
-verified as a single operator running one container at a time on a
-shared signoff host; it says nothing about two containers on the same
-host both using `--cgroupns=host`, which share the same host cgroup
-tree and could in principle collide on `/sys/fs/cgroup/loom` if both
-used the same delegated path. Naming the base per container (for
-example `/sys/fs/cgroup/loom-<container-id>`) would remove that, but it
-was not exercised here.
+Two things this page's single-container run did not reach. First, the
+full-isolation row above needed the daemon's own process moved into the delegated
+cgroup subgroup by hand, once, from a root shell, before running the self-test
+directly; the image itself does not do this at boot, so a `loomd` started by the
+image's own entrypoint still spawns its sandboxed sessions from outside the
+delegated tree unless an operator repeats that step. The distributed pair's
+entrypoint does it at boot (see "Running a distributed pair"), so only the
+single-container run line has this gap. Second, this was verified as a single
+operator running one container at a time on a shared signoff host; it says
+nothing about two containers on the same host both using `--cgroupns=host`, which
+share the same host cgroup tree and could in principle collide on
+`/sys/fs/cgroup/loom` if both used the same delegated path. A private cgroup
+namespace, which the distributed override uses, has no such collision, because
+each container's `loom` directory is inside its own cgroup.
 
 Building the image itself was, at an earlier point in this branch's
 history, attempted on an Apple Silicon Mac through Docker Desktop's

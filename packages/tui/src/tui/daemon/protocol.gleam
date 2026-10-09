@@ -212,6 +212,14 @@ pub type Command {
     /// The model profile to create the session under, or empty for the
     /// configuration's default roles (protocol-change/076).
     profile: String,
+    /// The executor `workspace` is registered on, or empty when `workspace` is
+    /// a path on the daemon's host (protocol-change/078). With an executor the
+    /// workspace is a registered name, which the daemon keeps exactly as sent.
+    executor: String,
+    /// The pool of executors `workspace` is registered on, or empty
+    /// (protocol-change/078). Exclusive with `executor`: the daemon picks the
+    /// executor when the session first opens.
+    pool: String,
   )
 
   /// Explicitly starts the selected session in this connection's epoch.
@@ -230,6 +238,16 @@ pub type Command {
   DeleteSession(
     /// Saved registration selected explicitly for removal.
     session_id: String,
+  )
+
+  /// Hands a session to another orchestrator (protocol-change/078, phase 5).
+  /// The reply says the move is in flight; the daemon carries it to its end.
+  MoveSession(
+    /// Canonical registration selected by the owner.
+    session_id: String,
+    /// The destination, named as the daemon's `[orchestrators.<name>]` table
+    /// names it.
+    to: String,
   )
 
   /// Observes an operation only in the epoch where it was obtained.
@@ -448,6 +466,12 @@ pub type Session {
     /// session no prompt has reached; a present value that is not a bounded
     /// string reads as absent, since a display aid must not fail a listing.
     subtitle: Option(String),
+    /// The executor the session's workspace is registered on
+    /// (protocol-change/078), present only for a remote session, whose
+    /// `workspace` is then a registered name and not a path. A local session's
+    /// frame has no such member, and so does an older daemon's. A present value
+    /// that is not a bounded string reads as absent, as the subtitle does.
+    executor: Option(String),
   )
 }
 
@@ -541,6 +565,17 @@ pub type Reply {
     session_id: String,
   )
 
+  /// A move the daemon accepted and is carrying out.
+  MovedReply(
+    /// The session being moved.
+    session_id: String,
+    /// The move's identity, which the daemon stores and a repeat of the request
+    /// answers again.
+    op: String,
+    /// The orchestrator the session is going to.
+    to: String,
+  )
+
   /// The daemon accepted its drain request.
   ShutdownReply
 
@@ -606,6 +641,34 @@ pub type Event {
     /// Bounded peer diagnostic, sanitized separately when displayed.
     message: String,
   )
+
+  /// A correlated refusal that says where the session lives instead
+  /// (protocol-change/078, phase 3): the daemon does not hold the session, and
+  /// either names the orchestrator that does or the ones it could not ask.
+  Redirected(
+    /// Present when the server recovered a valid correlation ID.
+    id: Option(Int),
+    /// Where the daemon says the session is.
+    redirect: Redirect,
+  )
+}
+
+/// What a daemon that does not hold a session says about who does.
+pub type Redirect {
+  /// A configured orchestrator holds the session (`not_owner`).
+  NotOwner(
+    /// The orchestrator's name in the daemon's `[orchestrators.<name>]` table.
+    orchestrator: String,
+    /// The control address its operator configured for it, when one is.
+    address: Option(String),
+  )
+
+  /// No orchestrator said it holds the session, and some could not be asked
+  /// (`owner_unreachable`).
+  OwnerUnreachable(
+    /// The names of the orchestrators that did not answer.
+    orchestrators: List(String),
+  )
 }
 
 /// Names a command without exposing its body or credential.
@@ -631,6 +694,7 @@ pub fn name(command: Command) -> String {
     OpenSession(..) -> "sessions.open"
     StopSession(..) -> "sessions.stop"
     DeleteSession(..) -> "sessions.delete"
+    MoveSession(..) -> "sessions.move"
     GetOperation(..) -> "operations.get"
     InspectPeers(..) -> "peers.inspect"
     LinkPeers(..) -> "peers.link"
@@ -671,6 +735,7 @@ pub fn mutates(command: Command) -> Bool {
     | OpenSession(..)
     | StopSession(..)
     | DeleteSession(..)
+    | MoveSession(..)
     | ArchiveSession(..)
     | RestoreSession(..)
     | LinkPeers(..)
@@ -773,7 +838,7 @@ fn command_fields(command: Command, epoch: Epoch) {
       use other <- result.map(text_fields([#("workspace", workspace, 4096)]))
       list.append(fields, other)
     }
-    CreateSession(key, workspace, name, configuration, profile) -> {
+    CreateSession(key, workspace, name, configuration, profile, executor, pool) -> {
       use fields <- result.try(
         text_fields([
           #("request_key", key, 256),
@@ -791,13 +856,27 @@ fn command_fields(command: Command, epoch: Epoch) {
 
       // An empty profile is the default roles and is not sent, so a daemon
       // that predates profiles receives exactly the request it always did.
-      use profile <- result.map(case profile {
+      use profile <- result.try(case profile {
         "" -> Ok([])
         name -> text_fields([#("profile", name, 64)])
       })
+
+      // The executor is absent for a workspace on the daemon's host, for the
+      // same reason, and present only beside a registered workspace name.
+      use executor <- result.try(case executor {
+        "" -> Ok([])
+        name -> text_fields([#("executor", name, 64)])
+      })
+
+      // A pool is absent for the same reason, and the daemon refuses a request
+      // that carries both, so this client never sends one.
+      use pool <- result.map(case pool {
+        "" -> Ok([])
+        name -> text_fields([#("pool", name, 64)])
+      })
       [
         #("configuration", json.String(configuration)),
-        ..list.append(fields, profile)
+        ..list.append(fields, list.flatten([profile, executor, pool]))
       ]
     }
     OpenSession(id)
@@ -807,6 +886,11 @@ fn command_fields(command: Command, epoch: Epoch) {
     | RestoreSession(id) -> {
       use fields <- result.map(identity_fields(id))
       [#("epoch", json.String(epoch_value)), ..fields]
+    }
+    MoveSession(id, to) -> {
+      use fields <- result.try(identity_fields(id))
+      use destination <- result.map(text_fields([#("to", to, 64)]))
+      [#("epoch", json.String(epoch_value)), ..list.append(fields, destination)]
     }
     GetOperation(id, operation, expected) -> {
       use Nil <- result.try(case expected == epoch {
@@ -1052,13 +1136,48 @@ pub fn decode(text: String) -> Result(Event, String) {
       use id <- result.try(optional_id(value))
       use code <- result.try(text_at(body, "code", 64))
       use message <- result.map(text_at(body, "message", 2048))
-      Refused(id, code, message)
+
+      // A redirect whose members do not decode is an ordinary refusal with its
+      // code and words, never a failed frame: the client still learns that the
+      // daemon refused, and loses only where it pointed.
+      case redirect_at(code, body) {
+        Ok(redirect) -> Redirected(id, redirect)
+        Error(Nil) -> Refused(id, code, message)
+      }
     }
     event -> {
       use id <- result.try(positive_at(value, "reply_to"))
       use reply <- result.map(decode_reply(event, body))
       Answer(id, event, reply)
     }
+  }
+}
+
+// The members of the two redirect refusals, or `Error(Nil)` for any other code
+// and for a redirect that does not carry its members in the bounded form.
+fn redirect_at(code: String, body: json.JsonValue) -> Result(Redirect, Nil) {
+  case code {
+    "not_owner" -> {
+      use orchestrator <- result.try(
+        text_at(body, "orchestrator", 64) |> result.replace_error(Nil),
+      )
+      case field(body, "address") {
+        Error(_) -> Ok(NotOwner(orchestrator, None))
+        Ok(address) ->
+          bounded_text(address, 1024)
+          |> result.replace_error(Nil)
+          |> result.map(fn(address) { NotOwner(orchestrator, Some(address)) })
+      }
+    }
+    "owner_unreachable" ->
+      case field(body, "orchestrators") {
+        Ok(json.Array(names)) if names != [] ->
+          list.try_map(names, fn(name) { bounded_text(name, 64) })
+          |> result.replace_error(Nil)
+          |> result.map(OwnerUnreachable)
+        _ -> Error(Nil)
+      }
+    _ -> Error(Nil)
   }
 }
 
@@ -1083,6 +1202,12 @@ fn decode_reply(event: String, body: json.JsonValue) {
     "sessions.open" | "sessions.stop" ->
       result.map(lifecycle(body), LifecycleReply)
     "sessions.delete" -> result.map(deletion(body), DeletedReply)
+    "sessions.move" -> {
+      use session_id <- result.try(text_at(body, "session_id", 64))
+      use op <- result.try(text_at(body, "op", 64))
+      use to <- result.map(text_at(body, "to", 64))
+      MovedReply(session_id, op, to)
+    }
     "peers.inspect" -> Ok(PeersInspectionReply(body))
     "peers.link" | "peers.unlink" -> Ok(PeersMutationReply(body))
     "principals.list" | "principals.memberships" -> Ok(AccessListingReply(body))
@@ -1156,7 +1281,22 @@ fn session(body: json.JsonValue) {
   use created <- result.try(number_at(body, "created_at"))
   use status <- result.try(field(body, "status"))
   use status <- result.map(lifecycle(status))
-  Session(id, workspace, name, created, status, subtitle_of(body))
+  Session(
+    id,
+    workspace,
+    name,
+    created,
+    status,
+    subtitle_of(body),
+    executor_of(body),
+  )
+}
+
+// The optional executor of a remote session. Like the subtitle it is a display
+// aid, so a member that is absent, empty, too long or not a string reads as
+// none and does not fail the row. `text_at` already refuses the empty string.
+fn executor_of(body: json.JsonValue) -> Option(String) {
+  text_at(body, "executor", 64) |> option.from_result
 }
 
 // The optional subtitle. Every way of not being a nonblank string of at most 60

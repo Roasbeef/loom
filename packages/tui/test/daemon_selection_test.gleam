@@ -16,6 +16,7 @@ fn row(status) {
     1000,
     status,
     option.None,
+    option.None,
   )
 }
 

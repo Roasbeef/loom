@@ -326,7 +326,37 @@ pub fn admits(filter: Filter, presence: Presence) -> Bool {
   }
 }
 
-/// The rows the filter admits, grouped by workspace.
+/// Where a group's sessions live: a directory on the daemon's host, or a
+/// workspace registered on an executor (protocol-change/078).
+///
+/// The two are different kinds of text, and the executor is part of the
+/// identity of a registered workspace: two executors may each register a
+/// workspace called `app`, and their sessions are not one project. Grouping on
+/// the workspace text alone would merge them, and would draw a registered name
+/// with the path arithmetic that only a directory deserves.
+pub type Place {
+  /// A canonical directory on the daemon's own host.
+  Directory(path: String)
+
+  /// A name registered on this executor, kept as the daemon sent it.
+  Registered(executor: String, workspace: String)
+}
+
+/// The place a row's session lives.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // session_selector.place(row) == session_selector.Directory("/work/loom")
+/// ```
+pub fn place(row: protocol.Session) -> Place {
+  case row.executor {
+    Some(executor) -> Registered(executor, row.workspace)
+    None -> Directory(trim_slash(row.workspace))
+  }
+}
+
+/// The rows the filter admits, grouped by place.
 ///
 /// Groups appear in the order their first row appears on the page, and rows
 /// keep page order within a group, so the prioritized page's own ordering
@@ -335,16 +365,17 @@ pub fn admits(filter: Filter, presence: Presence) -> Bool {
 /// ## Examples
 ///
 /// ```gleam
-/// // session_selector.groups(state) == [#("/work/loom", [first, second])]
+/// // session_selector.groups(state)
+/// //   == [#(session_selector.Directory("/work/loom"), [first, second])]
 /// ```
-pub fn groups(state: State) -> List(#(String, List(protocol.Session))) {
+pub fn groups(state: State) -> List(#(Place, List(protocol.Session))) {
   state.page.sessions
   |> list.filter(fn(row) { admits(state.filter, presence(state, row)) })
   |> list.fold([], fn(groups, row) {
-    let workspace = trim_slash(row.workspace)
-    case list.key_find(groups, workspace) {
-      Ok(rows) -> list.key_set(groups, workspace, [row, ..rows])
-      Error(Nil) -> [#(workspace, [row]), ..groups]
+    let here = place(row)
+    case list.key_find(groups, here) {
+      Ok(rows) -> list.key_set(groups, here, [row, ..rows])
+      Error(Nil) -> [#(here, [row]), ..groups]
     }
   })
   |> list.reverse
@@ -957,9 +988,9 @@ fn list_lines(
       let #(lines, _) =
         list.fold(groups, #([], 0), fn(acc, group) {
           let #(lines, first) = acc
-          let #(workspace, rows) = group
+          let #(place, rows) = group
           let header =
-            ListLine(None, group_header(workspace, list.length(rows), width))
+            ListLine(None, group_header(place, list.length(rows), width))
           let drawn =
             rows
             |> list.index_map(fn(row, offset) {
@@ -1036,17 +1067,22 @@ fn fit_label(label: Label, width: Int) -> String {
 
 // One workspace heading: its last path segment in capitals, the path
 // shortened to the home directory, and how many of its sessions the filter
-// shows, right-aligned over the age column.
-fn group_header(workspace: String, count: Int, width: Int) -> span.Line {
-  let label =
-    text.truncate(
-      " " <> string.uppercase(workspace_name(workspace)),
-      int.max(4, width / 3),
-      "…",
+// shows, right-aligned over the age column. A registered workspace has a name
+// and no path, so its heading says which executor it is on where a directory's
+// says where it is.
+fn group_header(place: Place, count: Int, width: Int) -> span.Line {
+  let #(name, location) = case place {
+    Directory(path) -> #(workspace_name(path), home_relative(path))
+    Registered(executor:, workspace:) -> #(
+      text_hygiene.single_line(workspace),
+      "on " <> text_hygiene.single_line(executor),
     )
+  }
+  let label =
+    text.truncate(" " <> string.uppercase(name), int.max(4, width / 3), "…")
   let tally = int.to_string(count) <> " "
   let room = width - text.cell_width(label) - 2 - text.cell_width(tally) - 1
-  let path = fit_tail(home_relative(workspace), int.max(0, room))
+  let path = fit_tail(location, int.max(0, room))
   let used =
     text.cell_width(label) + 2 + text.cell_width(path) + text.cell_width(tally)
   span.line_new([
@@ -1611,15 +1647,41 @@ fn detail_lines(
     True -> row.session_id
     False -> short_identity(row.session_id)
   }
-  let place =
-    list.flatten([
-      model,
+
+  // A registered workspace is a name on an executor, so it gets that row and
+  // its name as given, and is not shortened as a path would be.
+  let located = case row.executor {
+    Some(executor) ->
+      list.flatten([
+        table_row(
+          "EXECUTOR",
+          text.truncate(text_hygiene.single_line(executor), width - 11, "…"),
+          width,
+          theme.overlay_plain(),
+        ),
+        table_row(
+          "WORKSPACE",
+          text.truncate(
+            text_hygiene.single_line(row.workspace),
+            width - 11,
+            "…",
+          ),
+          width,
+          theme.overlay_plain(),
+        ),
+      ])
+    None ->
       table_row(
         "WORKSPACE",
         fit_tail(home_relative(row.workspace), int.max(0, width - 11)),
         width,
         theme.overlay_plain(),
-      ),
+      )
+  }
+  let place =
+    list.flatten([
+      model,
+      located,
       table_row("ID", identity, width, theme.overlay_quiet()),
     ])
   list.flatten([heading, status, message, strands, [span.line_new([]), ..place]])

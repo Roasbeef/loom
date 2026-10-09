@@ -46,6 +46,7 @@ fn entry(
     subtitle: None,
     role: None,
     project: None,
+    executor: None,
   )
 }
 
@@ -88,6 +89,7 @@ fn start_with(ceiling: home.Ceiling, read: fn() -> home.Listing) -> home.Start {
     admin: None,
     who: fn(deliver) { deliver(None) },
     rename_self: None,
+    executors: [],
   )
 }
 

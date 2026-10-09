@@ -23,8 +23,8 @@ import broker/policy
 import broker/token
 import client/escalate
 import client/history
-import client/serve
 import client/wiring
+import client/workspace_policy
 import core/clock
 import core/entry
 import core/ids
@@ -306,7 +306,11 @@ fn wiring_config(
     |> result.map_error(fn(_error) { "the broker did not start" }),
   )
   let workspace = "/nonexistent/loom-memory-recall"
-  let base = serve.protecting_index(policy.workspace_default(workspace), index)
+  let base =
+    workspace_policy.protecting_index(
+      policy.workspace_default(workspace),
+      index,
+    )
   Ok(
     wiring.Config(
       observe_output: wiring.unobserved(),
@@ -571,6 +575,7 @@ fn refusing_tools() -> effects.ToolSurface {
     },
     replay_still_safe: fn(_name) { False },
     execution_mode: fn(_name) { effects.ExclusiveExecution },
+    recover: None,
   )
 }
 

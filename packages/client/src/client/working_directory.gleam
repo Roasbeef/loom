@@ -1,12 +1,15 @@
 //// Per-strand shell defaults live in reserved facts rather than process cwd.
 ////
 //// A restart reads the same canonical spelling. Each use revalidates it;
-//// symlink replacement cannot redirect a remembered directory. The supplier
-//// owns only the restartable writer capability, and updates compare the cell
-//// sequence so a stale setter cannot overwrite a concurrent decision.
+//// symlink replacement cannot redirect a remembered directory. The module
+//// reaches the session's store only through `owner_services.FactAccess`,
+//// which serves this module's own prefix and nothing else, and updates
+//// compare the cell sequence so a stale setter cannot overwrite a concurrent
+//// decision.
 
 import broker/policy
 import client/codemode
+import client/owner_services.{type FactAccess, type FactFault}
 import codemode/satellite
 import core/json
 import core/msgpack as m
@@ -21,10 +24,6 @@ import tools/codemode as code_tool
 import tools/directory_access
 import tools/fs
 import tools/working_directory as directory
-
-/// A restart-safe fact supplier assembled before the runtime starts.
-pub type Facts =
-  fn() -> Result(api.FactHandle, Nil)
 
 type ProcessScope {
   ProcessScope(
@@ -41,7 +40,7 @@ type ProcessScope {
 /// ```gleam
 /// // working_directory.door(facts)
 /// ```
-pub fn door(facts: Facts) -> directory.Door {
+pub fn door(facts: FactAccess) -> directory.Door {
   directory.Door(
     read: fn(ctx) {
       use path <- result.try(read(facts, ctx.strand, ctx.workspace))
@@ -63,22 +62,30 @@ pub fn door(facts: Facts) -> directory.Door {
 }
 
 fn key(strand: String) -> String {
-  "client/working_directory/" <> strand
+  owner_services.working_directory_prefix <> strand
 }
 
-fn handle(facts: Facts) -> Result(api.FactHandle, String) {
-  facts() |> result.replace_error("working directory store is unavailable")
+// An absent store is told apart from a failed read because the first means
+// the session is starting up or going away, and the second that a cell exists
+// which could not be read.
+fn read_failed(fault: FactFault) -> String {
+  case fault {
+    owner_services.StoreAbsent -> "working directory store is unavailable"
+
+    owner_services.Conflict
+    | owner_services.LeaseStolen(..)
+    | owner_services.Failed(..)
+    | owner_services.NotServed(..) -> "working directory could not be read"
+  }
 }
 
 fn read(
-  facts: Facts,
+  facts: FactAccess,
   strand: String,
   workspace: String,
 ) -> Result(String, String) {
-  use facts <- result.try(handle(facts))
   use cell <- result.try(
-    api.fact_cell_with(facts, key(strand))
-    |> result.map_error(fn(_) { "working directory could not be read" }),
+    facts.cell(key(strand)) |> result.map_error(read_failed),
   )
   case cell {
     None ->
@@ -94,15 +101,15 @@ fn read(
   }
 }
 
-fn write(facts: Facts, strand: String, path: String) -> Result(Nil, String) {
-  use facts <- result.try(handle(facts))
+fn write(
+  facts: FactAccess,
+  strand: String,
+  path: String,
+) -> Result(Nil, String) {
   let key = key(strand)
-  use cell <- result.try(
-    api.fact_cell_with(facts, key)
-    |> result.map_error(fn(_) { "working directory could not be read" }),
-  )
+  use cell <- result.try(facts.cell(key) |> result.map_error(read_failed))
   let expected = option.map(cell, fn(cell) { cell.seq })
-  api.put_reserved_fact_expecting_with(facts, key, json.String(path), expected:)
+  facts.put(key, json.String(path), expected)
   |> result.map(fn(_) { Nil })
   |> result.map_error(fn(_) {
     "working directory changed concurrently or could not be saved; inspect it again"
@@ -121,7 +128,7 @@ fn write(facts: Facts, strand: String, path: String) -> Result(Nil, String) {
 /// ```
 pub fn over_code_mode(
   config: codemode.Config,
-  facts: Facts,
+  facts: FactAccess,
 ) -> codemode.Config {
   let wrap = config.wrap_router
   codemode.Config(..config, wrap_router: fn(request: code_tool.Request, router) {

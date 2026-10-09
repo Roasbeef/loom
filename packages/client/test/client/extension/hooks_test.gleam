@@ -542,6 +542,7 @@ fn effects_answering(clearance: effects.Clearance) -> effects.Effects {
       run: fn(_run) { panic as "no tool is run" },
       replay_still_safe: fn(_name) { False },
       execution_mode: fn(_name) { effects.ExclusiveExecution },
+      recover: None,
     ),
     hooks: effects.default_hooks(),
   )

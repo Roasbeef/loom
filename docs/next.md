@@ -1,77 +1,230 @@
 # Current handoff
 
-This edition records the October 8, 2026 browser result work on
-`fix/browser-tool-output`, originally based on `16c3c0ee5` and now integrated
-with PR #927's readiness head `71887e1b7` and main `16f886bd0`. Claims were checked against
-the implementation and the [browser report](review/browser-large-results-2026-10-08.md).
-The primary checkout's unrelated files were preserved; work remains isolated
-in `.worktrees/browser-tool-output`. The installed client and daemon were
-not replaced or restarted.
+This edition covers the distributed runtime (issue #697) on
+`distributed/simplify`, rebuilt from `main` at `7091d5a42` after PR #819 was
+archived. An orchestrator daemon keeps a session's runtime, SQLite store and
+approvals. An executor daemon of the same release holds the checkout and runs
+the session's workspace tool calls. The two talk over TLS Erlang distribution
+with pinned leaf certificates.
+
+The branch is published as
+[PR #923](https://github.com/Roasbeef/loom/pull/923); merging it is the owner's
+call. Every claim below was verified on the code candidate
+`3318250e0` (`3318250e0b32fd9f470c611d7e2022935f73f8e9`, 195 commits over
+`7091d5a42`). The next commit, `88a70dd34`, changes one shipped test to wait for
+a file rename it raced on Linux, and the commit after it changes only this file;
+no source file differs from `3318250e0`. After that, `7628912ba` changes
+`client/distribution` so the daemon starts `epmd` when none answers, and
+`6c945a8c2` documents it (see "Rulings already made"). The gated signoff is
+green on `6c945a8c2`, and `main` was then merged into the branch as
+`3a541c1d4`. The commits up to `61429be82` add the architecture page and fix
+the Compose quick start; the cross-host run was repeated on `61429be82`. A
+second merge of `main` followed (below), with one semantic fix: the executor's
+code-mode seed ladder now verifies the workspace seed as a local daemon's does.
+
+The previous edition on `main` covered the compile and export work of
+[PR #917](https://github.com/Roasbeef/loom/pull/917); its measurements are in
+[the compile-time report](review/compile-hill-climb-2026-10-07.md).
+
+Read [the design note](design-notes/distributed-runtime.md) for the design,
+[protocol-change/078](../protocol-change/078-distributed-runtime.md) and its
+addenda for the wire and the rules, and [the setup guide](distributed-setup.md)
+for running it. `packages/client/CLAUDE.md` has one section per phase, from
+"Trusted distribution membership" to "Moving a session between orchestrators".
+
+## Merged from main
+
+A second merge of `main` (after `3a541c1d4`) brought in four PRs, each
+described in its own record. None changes the distributed runtime's rulings
+below; the two code conflicts were in `client/serve.gleam` (main's
+`usable_seed` beside this branch's move of `mixed_entropy` into
+`workspace_plane`) and the imports of `ui_route_test`.
+
+- [PR #925](https://github.com/Roasbeef/loom/pull/925): terminal large-result
+  wrapping by a linear cursor over code rows. Measurements are in
+  [the wrapping report](review/tui-large-result-wrap-2026-10-08.md).
+- [PR #926](https://github.com/Roasbeef/loom/pull/926): the web Link form hides
+  sessions that are already linked.
+- [PR #927](https://github.com/Roasbeef/loom/pull/927): code-mode and LSP
+  readiness. Automatic code-mode selection admits a workspace seed only after
+  `seed.verify` accepts it, and the LSP diagnostics scope is recorded in
+  `protocol-change/078-lsp-diagnostics-scope.md`.
+- [PR #928](https://github.com/Roasbeef/loom/pull/928): paged and downloadable
+  full tool results in the browser, keyed by immutable result records
+  ([protocol-change/079](../protocol-change/079-browser-result-records.md),
+  [the browser report](review/browser-large-results-2026-10-08.md)). Paging
+  reads one storage fragment through `serve.Resident.result_reader`, and a
+  download reads a complete bounded record under one deadline. Search in the
+  viewer applies to one page, and byte windows can split JSON syntax or lines.
+  Output summarization and whole-result browser search are not done.
+
+A third merge of `main` (after `e1dc3a77f`) brought in the web fixes queue
+[PR #933](https://github.com/Roasbeef/loom/pull/933), which pins a session's main
+model at creation
+([protocol-change/080](../protocol-change/080-session-model-choice.md)). It
+added catalogue version 10 (`catalogue_models`), so this branch's three
+migrations moved to 11 (executors), 12 (pools) and 13 (moves); main's version 10
+shipped first and keeps its number. `Registration` and `manager.Creation` now
+carry `model` beside `executor` and `pool`, the control command's `sessions.create`
+decodes all three, and `session_move.Manifest` carries the model so a moved
+session keeps the choice. The web form for a registered workspace draws no model
+select, so a registered session created from the page takes the configuration's
+roles. The proposal numbers collide: `078` is taken twice (this branch's
+distributed runtime and main's LSP diagnostics scope) and the Khepri branch's
+`080-khepri-session-ownership` shares `080` with main's model choice.
+
+Main's handoff for that work also said: run `make gen-client` after changing
+browser source, and judge every gate by its own exit code. A gate run on a
+PR's original head does not attest to a later integration head, so each merge
+checks its own current SHA.
 
 ## Where the tree is
 
-| Work | Current evidence |
+| Phase | What exists |
 | --- | --- |
-| Terminal large-result wrapping | PR #925 merged as `fa4e45f8b`; hosted CI and exact-head Linux signoff are green. |
-| Code-mode/LSP readiness | PR #927 at `71887e1b7` is included here so both changes are tested together. Original head `d72948088` passed Linux signoff; fresh integrated-head CI/signoff are pending. |
-| Browser complete-result access | Stable immutable-record URLs offer 16 KB pages and complete JSON attachments. |
-| Browser local validation | Full affected gate returned exit 0 in 329 seconds; no undeclared skip. |
-| Independent browser review | No HIGH/MEDIUM finding; two LOW cleanup findings applied. |
+| 1. One orchestrator, one executor | `ToolSurface.run` is the cut. The executor runs main's own workspace plane behind `remote/host`, with one SQLite ledger per executor (`storage/exec_ledger`, schema version 3). Scope rows carry an incarnation and an attach token; call rows are keyed by `(session, op, step, source_index)`. A session attaches once per open. A reconnect re-sends the same `Run`. Only a non-`noconnection` DOWN cancels. Recovery fences `ReplayNever` keys. An acknowledgement leaves a tombstone until the incarnation changes, so a key admitted once in an incarnation never starts again in it. Owner-bound code-mode capabilities answer over the owner port. `loom distribution` (`dist`) provisions and installs bundles, and `loomd executor release` is the operator override for a scope whose cleanup was never proven. |
+| 2. Executor pools | `[pools.<name>]` with a trial order and declared requirements. The scope record names the executor before `Attach`. The next candidate is tried only on a failed connection or `CapacityExhausted` at first open. A census that contradicts the declaration closes the scope. |
+| 3. Two orchestrators | Option C: `session_directory` is a Khepri-shaped interface backed by a 2 s parallel lookup over pinned peers, and each catalogue stays the source of truth. `not_owner` and `owner_unreachable` redirect the owner principal only, with no automatic follow. |
+| 4. Peer mail between orchestrators | A sender outbox (`client/peers/outbox/<digest>`: pending, admitted or refused) drained by a weft state machine; `PeerCommand` (Allow, Revoke, Deliver, SentReceipt) on the `loom_orchestrator` port; a typed `peer_mail.Failure`. |
+| 5. Controlled movement | `sessions.move` and `loom sessions move`. Authority is two catalogue CAS rows (v13 `catalogue_session_moves`), a write-ahead intent and the executor's token fence, over six steps with resume at boot. A committed activation is always answered `Accepted`. An imported session cannot be moved on or deleted until its origin has retired. |
+| 6. Acceptance | Two independent Fable 5.1 reviews of the assembled system (remote core; directory, peer mail and movement), each with re-verification of its fixes; a P model of remote execution and a TLA+ model of a move, both gated; the evidence below. |
 
-The previous handoff's instruction to publish the terminal PR is obsolete.
-Its measured speed results remain in the [wrapping report](review/tui-large-result-wrap-2026-10-08.md).
-Compile/export reuse PR #917 and Link-form PR #926 are already merged. The
-Darwin-only declaration records two existing broker /proc prerequisites; no
-tests or assertions changed, and both tests ran successfully on Linux. Issue #924 implementation
-and its validation are recorded in PR #927's own branch and
-[report](https://github.com/Roasbeef/loom/pull/927).
+### Evidence
 
-## What to do next
+All rows are for `3318250e0` unless marked. Mac: Darwin arm64 (macOS 15.5).
+Linux: the box described below.
 
-1. Finish PR #927's integrated-head CI and Linux signoff, then merge it as
-   authorized. **Exit:** its exact published head is green.
-2. Finish PR #928's integrated-head CI and Linux signoff, then merge it as
-   authorized. **Exit:** its exact published head is green after #927 merges.
-3. Install a reviewed release when the owner requests it. **Exit:** verify
-   behavior in the resident client/daemon; disposable tests do not establish
-   that the installed processes changed.
+| Gate | Host | Result |
+| --- | --- | --- |
+| `make check-gleam` (format, warning-free build, every package's tests and the lint package's own tests; the house-rule lint is `make lint`, below) | Mac | exit 0, 636 s. host 75, core 140, storage 256, session 65, machine 93, prompt 103, session_view 427, web_view 927, telemetry 34, runtime 190, provider 257, broker 401, executor 10, mcp 123, lsp 191, tools 680, cap 182, ext 37, codemode 381, events 47, client 3591, conformance 97, tui 1312, lint 240 |
+| `make doc-check`, `make prelude-check` | Mac | exit 0, exit 0 |
+| `make server-shipment`, `make sandbox` | Mac | exit 0, exit 0 |
+| Ten shipped modules against `bin/loomd` (`daemon_shipped_remote`, `_codemode`, `_caps`, `_tools`, `_pool`, `_strand`, `_owner_loss`, `daemon_shipped_directory`, `_peer_mail`, `daemon_shipped_remote_move`) | Mac | every one exit 0, 0 SKIP lines |
+| `make model-check` | Mac | exit 0. TLA+ `session-move`: 1179 states, 392 distinct, depth 20; four mutants each violate their invariant. P `terminal-attachment`: every case and probe. P `remote-execution`: every case and probe; seven mutants (token ignored, `noconnection` cancels, recovery without a fence, second run for a key, reply before commit, plane checked before ledger, ack deletes the row) each caught by its spec |
+| `make selftest` | Linux | exit 0, 11 layers enforced (cgroup-v2 included), none skipped |
+| `make check-gleam` | Linux | exit 0, 1698 s, the same per-package counts as the Mac row |
+| `make e2e` | Linux | exit 0, 97 tests; two gopls tests skip because the box has no gopls |
+| Ten shipped modules | Linux | every one exit 0 with 0 SKIP lines, except `daemon_shipped_remote_move_test`'s first run, which failed asserting the moved session's file was gone in the instant between the `moved` row and the rename. It passed when rerun alone, and on `88a70dd34` (the test waits for the rename) it passed three runs out of three |
+| `make model-check` | Linux | not run: the box has no Java, TLA+ jar or P tool |
+| Cross-host, both directions (Mac brains with box hands, and the reverse): file, `bash`, `fs_read` and `git` in the remote checkout and absent locally; stop then `Closed(AllRetired)`; reopen at incarnation 2; tunnel cut during a 75 s call, which ran once and was delivered after recovery | Mac and Linux | passed on `61429be82` (and earlier on `193dbd8db`), credentials from `loom distribution provision` and `install --home`. Each direction ran two cuts: a short one restored while the call was still running, and a long one restored 96 s after the cut, about 20 s after the executor finished the call. In both, the command started once and finished once, and the model received its real result after the reconnect (in the long cut, from the executor's terminal ledger row). Before each drive, the tunnelled `epmd` named the executor and `openssl s_client` showed the executor's own leaf |
+| Shipped SIGKILL restart and partition drills (`daemon_shipped_remote_test`) | Mac | in the shipped row above |
+| Gated signoff (`make signoff-remote`), fresh Linux container | Linux | green on `0e7be0b43`, the head after the second merge of `main`, and earlier on `6c945a8c2`. An earlier run in a fresh container, with no `epmd` running, found the missing `epmd` start that `7628912ba` fixes. Red runs in between found three things, all fixed with a test: an advisor goal that rested until the two-minute tick when pinned in the instant after a review ended (`ee6402c8b`, a product defect), the remote goal test stopping before the reviewer's last request (`7bceffb6e`), and the movers' tests checking the files between the `moved` row and the rename (`0e7be0b43`) |
+| `make lint` (the house rules) | Mac | exit 0 on `0e7be0b43`, 0 errors |
 
 ## Rulings already made
 
-**Keep complete terminal output.** Measured grapheme cursors consume each code
-row once. The terminal retains complete source and results; a small viewport
-does not justify discarding their text.
+**The cut.** The cut is `effects.ToolSurface.run`. Clearance and approvals stay on the
+orchestrator. The executor never sees the conversation.
 
-**Make browser access explicit.** The normal transcript stays bounded.
-Paging reads one storage fragment, and a download reads a complete bounded
-record under one deadline. Both use existing page/session authority; entry
-identity alone grants no additional read access. Protocol-change/079 records
-this decision. No component-side result ledger is required.
+**One ledger, durable outcomes.** One SQLite file per executor, short transactions,
+full sync and a digest over each stored outcome. A row is terminal before any reply.
+An unknown call is never run again. A key answered from the ledger is answered before
+any question about whether a plane exists.
 
-**Preserve matching immutable identity.** A narrative join carries the identity
-of the same result whose outcome it displays. An orphan result keeps its own
-source identity. These are regression-tested in the browser lane.
+**Phase 3 is option C** (owner, 2026-10-08). The directory is an interface, not a
+store. Creation happens on the connected orchestrator, and ids are UUIDv7, so there is
+no register step.
 
-**Separate proof scopes.** The preview bounds rendering and scanning, not all
-BEAM backing-binary retention. The real HTTP tests use an explicit fixture
-reader; the storage tests independently round-trip a real SQLite result.
-The installed session was not modified to produce either result. Original-head
-gates and signoff do not attest to a new integration head. Each merge must
-check its own current SHA.
+**Phase 5 authority is two catalogue rows, not a third store.** The owner's wording was
+"an authoritative store behind the directory". The adopted design has no third party:
+the source's `moving`/`moved` row and the receiver's `imported` row are ordered by a
+write-ahead intent, and the executor's incarnation fence is a second guard. Only an
+answer abandons a move; silence stalls. This difference was flagged to the owner.
 
-## Deliberately open
+**Unproven cleanup is released by hand.** A scope whose children could not be proven
+gone gets no automatic successor. `loomd executor release` (daemon stopped) records the
+override in the ledger's `scope_release` table, and the next open reopens at the next
+incarnation.
 
-Search in the viewer applies to one page, and byte windows can split JSON
-syntax or lines. The full attachment is the complete stored record. Output
-summarization, whole-result browser search and installed-process replacement
-are outside this PR. No new FFI, dependency, process machinery or sandbox
-privilege was introduced.
+**The daemon starts `epmd`.** The daemon VM boots without a node name and starts
+distribution with `net_kernel:start/2`, and that dynamic start never launches
+`epmd`, unlike `erl -name` at boot. On a machine where nothing had started one,
+the node failed to register. `distribution.start` now asks the loopback `epmd`
+first and, when none answers, runs the release's `epmd -daemon` (or the one on
+`PATH`) and waits up to three seconds; `-start_epmd false` turns this off. The
+signoff caught the defect in a fresh container (`7628912ba`, documented in
+`6c945a8c2`).
 
-## How to verify
+**Formal models.** `make model-check` runs TLC on `session-move` and P on
+`terminal-attachment` and `remote-execution`, with probes and mutants. No directory
+model was written, because the directory holds no state of its own.
 
-The [browser report](review/browser-large-results-2026-10-08.md) records commands,
-test counts, review scope and limits. Run `make gen-client` after changing
-browser source, then `make check-affected BASE=16c3c0ee5` and required Linux
-signoff on the pushed clean head. Judge every gate by its own exit code.
-Keep code-mode worktrees outside `/tmp` and follow [execution](execution.md)
-for the remaining verification rules.
+**Trust.** An executor is a trusted Erlang peer. The TLS check binds a leaf to some
+configured pin and that pin's node name, so per-node identity between pinned peers is
+not established at the distribution layer. The owner port limits the kinds of command
+a peer can send, which is scope hygiene and not a security boundary.
+
+## Known limits and follow-ups
+
+- No failover, and no moving a session between executors. Ra/Khepri comes later.
+- After an executor restart, a session that stays open keeps failing new tool calls
+  with "attach first" until it is closed and reopened. Calls the ledger knows are
+  answered honestly. Orphan runs left by an orchestrator that died hold their budget
+  until the session is reopened and closed; there is no executor-side listing.
+- An imported session whose origin is decommissioned, renamed or reinstalled can never
+  move on, and has no override yet. The web home's delete button does not apply the
+  inbound hold that the control `sessions.delete` applies.
+- Roster and Describe are not served across orchestrators. Remote roster rows show
+  `running: true` and `exported_strands` as unavailable.
+- A message queued to a session that is saved on its owner is refused `not_running`
+  after the owner restarts (077 semantics), not delivered.
+- The TUI does not render the `moving` and `moved` members of a session view. The
+  source keeps a tombstone row, which lists as saved.
+- The receiver identifies the sender by `from_node` through its `[orchestrators]`
+  table, as claimed by the sender. Copies refused or abandoned stay in `incoming/`,
+  and a failed rename of the moved-away file is not logged.
+- `loomd executor release` leaves its own endpoint reservation behind, so `loom` may
+  report "still starting" until the next daemon starts.
+- On macOS, an executor started from a checkout looks for its code-mode seed under
+  the workspace's `build/` by default, which is wrong there. Pass `--codemode-seed`.
+- Remote sessions refuse extension tools, operator directory additions, background
+  code mode and MCP facades.
+- `remote/protocol` and `storage/exec_ledger` each keep their own `Key` and
+  `CloseOutcome` types with mappers between them.
+- Two recorded flakes: `daemon_shipped_remote_test`'s partition drill saw an
+  `options_mismatch` at executor boot once, and the macOS gate's skip census flags two
+  undeclared broker `/proc` skips. Both are filed as tasks.
+
+## The Linux box
+
+Owner-provided, used for every Linux and cross-host run: `sectional-falcon.exe.xyz`,
+user `exedev` (uid 1000), x86_64, 2 cores, kernel 6.12, OTP 29.1.1 at
+`/opt/erlang/29.1.1/bin`, gleam 1.19.0, go 1.27.1, bwrap 0.9.0, and docker (the user is
+in the `docker` group). There is no Java and no P tool, so `make model-check` cannot run
+there.
+
+- Environment: `PATH=/opt/erlang/29.1.1/bin:$HOME/.local/bin:$PATH` and
+  `ERL_FLAGS='+S 2:2'`.
+- Keep checkouts and sockets outside `/tmp`. Each candidate goes to
+  `~/loom-distributed-tests/<sha>/src` through `git archive` streamed over ssh, with
+  `LOOM_TEST_SCRATCH=~/loom-distributed-tests/<sha>/sockets`.
+- cgroups: `systemctl --user` runs and `user@1000` delegates `cpu memory pids`. Run each
+  step in a fresh scope with a fresh name,
+  `systemd-run --user --scope --unit=loom-crosshost-<step>-<sha>`. The recorded wrapper
+  (`~/loom-distributed-tests/<sha>/inner.sh`, called by `run-step.sh` and `driver.sh`)
+  creates `supervisor/` and `base/` inside its own scope, enables `+memory +pids`, and
+  sets `LOOM_CGROUP_BASE=<scope>/base`. Without it the pids-limit selftest layer is
+  skipped. Do not change global cgroups.
+- Verify read-only first (ssh, `systemctl --user`, `/run/user/1000/bus`, toolchain,
+  free space), then prepare the new candidate in its own directory and record its
+  results beside the earlier ones.
+- Cross-host: the box's ports sit behind the provider's proxy, so distribution needs
+  ssh forwards. For a box executor, forward epmd and the executor's distribution port
+  with `ssh -L` to an address the Mac's own epmd does not hold. For a box orchestrator,
+  use `ssh -R` to loopback ports, with `ERL_EPMD_PORT` set on the box side. Section 5 of
+  the setup guide has the commands. For a partition drill, kill the ssh process itself,
+  not a wrapper shell.
+
+## What to do next
+
+1. Run the gated signoff (`LOOM_SIGNOFF_HOST=gilgamesh-signoff make signoff-remote`) on
+   PR #923's exact head. Exit: green. If `daemon_shipped_remote_tools_test`'s goal check
+   fails again, treat it as a defect in the remote goal path, not as a poll budget to
+   raise.
+2. Close the cheap follow-ups above: the web delete hold, re-attach after an executor
+   restart, an override for an imported session whose origin is gone, and the TUI's
+   `moving`/`moved` rendering.
+3. Session ownership in Khepri is a separate PR stacked on this one (branch
+   `directory/khepri`, ADR-019): opt-in by a `[directory]` table, with Khepri deciding
+   moves and every session on a member recorded. Failover and executor movement remain
+   out of scope.

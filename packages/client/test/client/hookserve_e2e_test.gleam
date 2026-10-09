@@ -62,6 +62,7 @@ import client/retryconf
 import client/schedule
 import client/serve
 import client/tui_e2e_test.{type EunitTest, Timeout}
+import client/workspace_policy
 import core/clock
 import core/json
 import core/message
@@ -80,6 +81,7 @@ import provider/model
 import provider/secret
 import runtime/api
 import simplifile
+import support/local_workspace
 import support/provider as provider_test
 import telemetry/level
 import telemetry/log
@@ -534,9 +536,10 @@ fn sse(event: String, data: String) -> String {
 // handshook would otherwise fail later, inside the tool call, as a
 // clearance refusal that reads like a policy decision.
 fn complete(instance: serve.Instance) -> Result(operation.LastResult, Nil) {
-  let assert Ok(helper) = exec.checkout(instance.pool, waiting: 5000)
+  let assert Ok(helper) =
+    exec.checkout(local_workspace.pool(instance), waiting: 5000)
     as "the instance must have a real, handshaken helper"
-  exec.checkin(instance.pool, helper)
+  exec.checkin(local_workspace.pool(instance), helper)
   let assert Ok(op) =
     api.prompt(instance.runtime, [
       message.UserMessage(
@@ -569,7 +572,7 @@ fn settings(rig: Rig, script: Subject(ScriptMessage)) -> serve.Settings {
     bind_port: -1,
     token_path: rig.root <> "/transport-only/daemon.token",
     workspace: rig.workspace,
-    base_policy: serve.base_policy(rig.workspace),
+    base_policy: workspace_policy.base_policy(rig.workspace),
     helper_path: here <> "/../sandbox/loom-exec",
     helper_pool_size: 2,
     session_id: "hookserve-e2e",

@@ -32,6 +32,7 @@ fn sessions() -> List(protocol.Session) {
       1,
       protocol.RecoveryBlocked,
       option.None,
+      option.None,
     )
   })
 }
@@ -164,6 +165,7 @@ pub fn session_selector_scroll_keeps_the_selected_record_visible_test() {
         1,
         protocol.Resident("generation"),
         option.None,
+        option.None,
       )
     })
   let state =
@@ -241,6 +243,7 @@ pub fn session_picker_prefers_workspace_and_preserves_group_order_test() {
         pair.0,
         1,
         protocol.RecoveryBlocked,
+        option.None,
         option.None,
       )
     })
