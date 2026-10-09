@@ -787,7 +787,7 @@ run, an idle-hibernate policy in `weft/actor` is not justified by measurement.
 
 The 117.5 MiB `weft@state_machine` that the previous section left unattributed
 is the daemon's session admission registry, `client/daemon/manager`. Its
-`Book.slots` dictionary (`packages/client/src/client/daemon/manager.gleam:1494`)
+`Book.slots` dictionary (`packages/client/src/client/daemon/manager.gleam:1503`)
 holds one `Slot` per resident session, and each slot's `phase` field
 (`daemon/manager.gleam:279`) carries `Occupancy.Running(instance)`
 (`daemon/manager.gleam:256`), where `instance` is a whole `client/serve.Instance`
