@@ -137,10 +137,61 @@ pub fn a_workspace_with_no_legacy_directory_is_a_no_op_test() {
   let #(legacy, store) = fresh("absent")
   let report = adopt(legacy <> "/missing", store)
 
-  assert report == blobs.Report(0, 0, [], 0)
+  assert report == blobs.Report(0, 0, [], 0, 0)
 
   // No store is created for nothing to put in it.
   assert simplifile.is_directory(store) == Ok(False)
+}
+
+// Names refused for good are written to a marker in the new store, so a
+// directory of address-shaped garbage is hashed once, not at every boot.
+pub fn a_name_refused_for_good_is_not_examined_again_test() {
+  let #(legacy, store) = fresh("remembered")
+  let genuine = <<"the one real artifact among the garbage":utf8>>
+  let genuine_ref = blob.ref_for(genuine)
+  write_bits(blob.ref_path(legacy, genuine_ref), genuine)
+  let garbage =
+    list.map(["0", "1", "2"], fn(digit) {
+      "sha256-" <> string.repeat(digit, 64)
+    })
+  list.each(garbage, fn(name) {
+    write_bits(legacy <> "/" <> name, <<"not the content of ":utf8, name:utf8>>)
+  })
+
+  let first = adopt(legacy, store)
+  assert first.adopted == 1
+  assert list.length(first.rejected) == 3
+  assert first.remembered == 0
+
+  // The marker lists exactly the refused names, and nothing else.
+  let assert Ok(marker) = simplifile.read(store <> "/.legacy-rejected")
+  assert list.filter(string.split(marker, "\n"), fn(line) { line != "" })
+    == garbage
+
+  // The next pass skips them without reading: nothing is rejected again,
+  // so nothing is logged again.
+  let second = adopt(legacy, store)
+  assert second.remembered == 3
+  assert second.rejected == []
+  assert second.adopted == 0
+  assert second.already_present == 1
+}
+
+// The marker is read without trusting it: a line that is not an address is
+// dropped, and a genuine blob is copied whatever else the file says.
+pub fn a_marker_with_stray_lines_is_read_without_trusting_it_test() {
+  let #(legacy, store) = fresh("marker-lines")
+  let bytes = <<"genuine":utf8>>
+  let ref = blob.ref_for(bytes)
+  write_bits(blob.ref_path(legacy, ref), bytes)
+  let assert Ok(Nil) = simplifile.create_directory_all(store)
+  write_bits(store <> "/.legacy-rejected", <<
+    "../../etc/passwd\n\nnot a name\n":utf8,
+  >>)
+
+  let report = adopt(legacy, store)
+  assert report.adopted == 1
+  assert report.remembered == 0
 }
 
 pub fn the_pass_stops_at_its_deadline_and_a_later_pass_finishes_test() {
