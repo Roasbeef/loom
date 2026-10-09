@@ -50,6 +50,7 @@
 import broker/broker
 import broker/exec
 import broker/token
+import client/codemode
 import client/contributions
 import client/escalate
 import client/gateway
@@ -1381,7 +1382,7 @@ fn compaction_wiring(
     broker_timeout_ms: 1000,
     registry: tool_registry,
     workspace:,
-    blob_root: workspace <> "/.blobs",
+    blob_root: codemode.default_blob_root(workspace),
     base_policy: policy.workspace_default(workspace),
     escalations: escalate.none(),
     demand: exec.BestEffort,

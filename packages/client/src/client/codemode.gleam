@@ -338,9 +338,10 @@ pub type Config {
     /// artifact a program emitted and an oversized `bash` output that
     /// overflowed are the same kind of thing under the same addressing
     /// scheme, and two stores would mean an id that means one thing here
-    /// and another there. `default_config` derives it from the workspace
-    /// exactly as `client/serve` does, through the one shared
-    /// `blob_directory` constant, so the two cannot drift.
+    /// and another there. `client/serve` computes the root once and hands
+    /// the same string to this field (`into_blobs`) and to the tool
+    /// context, so the two cannot drift. `default_config` fills
+    /// `default_blob_root` for a host that has no state directory.
     blob_root: String,
     /// The ephemeral scratch store `kv.*` reads and writes.
     ///
@@ -504,7 +505,8 @@ pub fn over_jobs(config: Config, door: Option(jobseam.Door)) -> Config {
 }
 
 /// The same host configuration, writing `report.emit` artifacts into a
-/// blob root other than the one derived from the workspace.
+/// blob root other than `default_blob_root`. The daemon always does this,
+/// with the root `client/serve` computes from the session's state.
 ///
 /// ## Examples
 ///
@@ -903,16 +905,49 @@ pub const work_directory = ".codemode"
 /// 0700, and every session base masks it (`client/serve`).
 pub const runtime_directory = "run"
 
-/// Where the session's content-addressed blobs live, relative to the
-/// workspace.
+/// The name of the directory that holds a session's content-addressed
+/// blobs, relative to the directory the host keeps that session's state in.
 ///
 /// Stated once, here, and read by both the place that fills
 /// `tool.Ctx.blob_root` (`client/serve`) and the place that fills
 /// `Config.blob_root`. Two literals would be two stores the day one of
 /// them moved, and an artifact id that resolves in one and not the other
-/// is the worst shape that failure could take — it would look like a
+/// is the worst shape that failure could take: it would look like a
 /// missing artifact rather than like a misconfiguration.
-pub const blob_directory = ".blobs"
+///
+/// The directory is outside the workspace. Only the harness writes it, and
+/// a store inside the workspace had to be masked from every jail, which on
+/// macOS made it unreachable (`ls -la` exited 1 and `git status` warned)
+/// and on Linux put an empty mount in the user's checkout. `client/serve`
+/// places it under the daemon's own state, which the state-root masks
+/// already keep from every jail.
+pub const blob_directory = "blobs"
+
+/// Where earlier releases kept the blob store, relative to the workspace.
+///
+/// Nothing writes there any more. It is named so that `client/blobs` can
+/// adopt what an existing workspace left behind, and so that
+/// `client/worktree_diff` keeps those directories out of its untracked
+/// listing.
+pub const legacy_blob_directory = ".blobs"
+
+/// The blob root for a host that has no state directory of its own: beside
+/// the code-mode work directories, inside the workspace.
+///
+/// A daemon never uses this, because `client/serve` derives the root from
+/// the session's state directory. It exists so that `default_config`, the
+/// demo wiring and the tests agree on one place without each building the
+/// path by hand.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert codemode.default_blob_root("/work") == "/work/.codemode/blobs"
+/// ```
+///
+pub fn default_blob_root(workspace: String) -> String {
+  workspace <> "/" <> work_directory <> "/" <> blob_directory
+}
 
 /// The shipped configuration for a located toolchain: the vetting default,
 /// the pooled budget, the timeouts, and a work root inside the workspace.
@@ -952,7 +987,7 @@ pub fn default_config(
     fixed_deadline: None,
     wrap_router: fn(_request, router) { router },
     notes: None,
-    blob_root: workspace <> "/" <> blob_directory,
+    blob_root: default_blob_root(workspace),
     scratch: scratch.none(),
     // No scheduling plane by default, the same posture `scratch.none()`
     // and `mcp.none()` take: a host wires one deliberately, and

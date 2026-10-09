@@ -6,6 +6,7 @@
 import broker/broker
 import broker/exec
 import broker/policy
+import broker/token
 import client/advisor
 import client/catalog
 import client/codemode
@@ -64,6 +65,12 @@ import support/provider as provider_test
 import telemetry/level
 import telemetry/log
 import telemetry/record
+import tools/bash
+import tools/blob
+import tools/directory_access
+import tools/fs as tools_fs
+import tools/job
+import tools/tool
 import tui
 import tui/connection
 import tui/inbound
@@ -278,16 +285,18 @@ pub fn boot_keeps_its_workspace_directories_out_of_git_status_test() {
     <> int.to_string(ffi_os.unique_positive_integer())
   let settings = settings_under(location)
   let work_directory = settings.workspace <> "/" <> codemode.work_directory
-  let blob_directory = settings.workspace <> "/" <> codemode.blob_directory
 
-  // The first boot writes one ignore-everything file into each directory
-  // the harness owns inside the workspace.
+  // The first boot writes one ignore-everything file into the one
+  // directory the harness still owns inside the workspace. The blob store
+  // is not among them: it lives beside the session, outside the checkout.
   let assert Ok(booted) = serve.boot(settings) as "a fresh workspace boots"
   serve.shutdown(booted)
   assert simplifile.read(work_directory <> "/.gitignore")
     == Ok(serve.ignore_everything)
-  assert simplifile.read(blob_directory <> "/.gitignore")
-    == Ok(serve.ignore_everything)
+  assert simplifile.is_directory(
+      settings.workspace <> "/" <> codemode.legacy_blob_directory,
+    )
+    == Ok(False)
 
   // An operator who replaced the file keeps their rules across a reboot.
   let assert Ok(Nil) =
@@ -2162,29 +2171,21 @@ fn a_root_prefixed_toolchain() -> codemode.Toolchain {
 
 // What admission is for. Admitted as it was, the toolchain puts a
 // read-only mount of `/` into the session base, and the base refuses the
-// boot. On main it already did, for a reason that named the wrong thing:
-// the workspace's blob store is a protected entry, and `/` overlaps it,
-// so the operator read "mount / overlaps protected /work/.blobs" about a
-// toolchain layout. Without that mask — the build plane's base on a host
-// that has written no state yet — nothing refused it, and the workspace
-// came out read-only. protocol-change/057 is the refusal that names the
-// shape itself.
+// boot. The refusal names the shape itself: protocol-change/057 added the
+// policy check that a read-only mount covering a writable root is refused.
+// Before the blob store left the workspace the refusal arrived by an
+// accident, a mount overlapping the protected `<workspace>/.blobs`, and
+// named the wrong thing.
 pub fn a_root_prefixed_toolchain_would_refuse_the_boot_test() {
   let admitted =
     serve.admitting_codemode(
       serve.base_policy("/work"),
       Ok(a_root_prefixed_toolchain()),
     )
-  let assert Error(reason) = serve.base_policy_fault(admitted)
-  assert string.contains(reason, "the mount `/` overlaps the protected entry")
-
-  let unmasked =
-    serve.admitting_codemode(
-      policy.SandboxPolicy(..serve.base_policy("/work"), protected: []),
-      Ok(a_root_prefixed_toolchain()),
-    )
-  assert policy.validate(unmasked)
+  assert policy.validate(admitted)
     == Error(policy.MountShadowsWritableRoot(mount: "/", writable_root: "/work"))
+  let assert Error(reason) = serve.base_policy_fault(admitted)
+  assert string.contains(reason, "the read-only mount `/` covers the writable")
 }
 
 // So the toolchain is refused before the base is built, and the refusal
@@ -2352,14 +2353,356 @@ pub fn a_misspelled_read_scope_never_falls_back_to_host_reads_test() {
 
 pub fn protected_paths_survive_both_read_scopes_test() {
   list.each([catalog.HostReads, catalog.WorkspaceReads], fn(scope) {
-    let base = serve.base_policy_for("/work", scope)
-    assert base.protected == ["/work/.blobs"]
+    // The base protects nothing of its own: the blob store is in the
+    // daemon's state, outside every jail, so the workspace carries no
+    // `.blobs` entry for a jail to mask.
+    let plain = serve.base_policy_for("/work", scope)
+    assert plain.protected == []
+
+    // A protected entry added later is what the tools configuration must
+    // leave alone.
+    let base = serve.protecting_index(plain, "/data/loom-search.db")
     let final = serve.under_tools_config(base, catalog.default_tools())
     assert final.protected == base.protected
     assert final.readable_roots == base.readable_roots
     assert final.writable_roots == base.writable_roots
     assert policy.validate(final) == Ok(Nil)
   })
+}
+
+// --- where the blob store lives ----------------------------------------------
+
+pub fn a_standalone_blob_store_is_beside_the_session_not_in_the_workspace_test() {
+  let settings = settings_under("build/blob-location-standalone")
+  let assert Ok(store) = serve.session_blob_root(settings)
+  assert store == absolute("build/blob-location-standalone") <> "/blobs"
+  assert !policy.covers(root: settings.workspace, path: store)
+}
+
+pub fn a_managed_blob_store_is_per_workspace_under_the_state_root_test() {
+  let state = absolute("build/blob-location-managed")
+  let settings = settings_under("build/blob-location-managed-session")
+
+  // The domain directory the daemon records for a workspace-private domain
+  // (`daemon/manager.domain_record`), derived the way `workspace_data_root`
+  // derives it, so a workspace is one directory and no two share one.
+  let managed = fn(workspace: String) {
+    let domain = serve.workspace_data_root(state, workspace)
+    serve.Settings(
+      ..settings,
+      workspace:,
+      domain_paths: Some(serve.DomainPaths(
+        memory: domain <> "/loom-memory.db",
+        index: domain <> "/loom-search.db",
+      )),
+    )
+  }
+  let assert Ok(first) = serve.session_blob_root(managed("/work/a"))
+  let assert Ok(again) = serve.session_blob_root(managed("/work/a"))
+  let assert Ok(second) = serve.session_blob_root(managed("/work/b"))
+
+  assert first == again
+  assert first != second
+  assert first == serve.workspace_data_root(state, "/work/a") <> "/blobs"
+  assert string.starts_with(first, state <> "/workspaces/")
+  assert string.ends_with(first, "/blobs")
+  assert !policy.covers(root: "/work/a", path: first)
+}
+
+// The store is outside the workspace, so the base policy needs no entry
+// for it only if a state-root mask already keeps every jail out. This is
+// the place that is asserted: with the masks the daemon applies, the
+// managed store is covered by a protected entry.
+pub fn a_managed_blob_store_is_covered_by_a_state_root_mask_test() {
+  let state = absolute("build/blob-mask-state")
+  make(state <> "/workspaces")
+  make(state <> "/domains")
+  let settings = settings_under("build/blob-mask-session")
+  let domain = serve.workspace_data_root(state, settings.workspace)
+  let managed =
+    serve.Settings(
+      ..settings,
+      domain_paths: Some(serve.DomainPaths(
+        memory: domain <> "/loom-memory.db",
+        index: domain <> "/loom-search.db",
+      )),
+    )
+  let assert Ok(store) = serve.session_blob_root(managed)
+
+  let masked =
+    serve.protecting_state_root(serve.base_policy(managed.workspace), state)
+  assert list.any(masked.protected, fn(entry) {
+    policy.covers(root: entry, path: store)
+  })
+    as "a state-root mask must cover the managed blob store"
+
+  // And the session-only domain's store, under `domains/`, is covered by
+  // the same argument.
+  let session_only = state <> "/domains/sessions/abc/blobs"
+  assert list.any(masked.protected, fn(entry) {
+    policy.covers(root: entry, path: session_only)
+  })
+}
+
+// A standalone host has no state root to mask, so its store is protected
+// the way its memory files are: when a writable root reaches it. A managed
+// host adds nothing here.
+pub fn a_standalone_store_inside_the_workspace_is_protected_test() {
+  let settings = settings_under("build/blob-standalone-protect")
+  let inside = settings.workspace <> "/state/blobs"
+  let base = serve.base_policy(settings.workspace)
+
+  let protected = serve.protecting_standalone_blobs(base, settings, inside)
+  assert list.contains(protected.protected, inside)
+
+  // Unconditional, like the index database's entry: the directory is
+  // created before any jail runs, so the entry needs no existence test.
+  let elsewhere = absolute("build/blob-standalone-elsewhere/blobs")
+  let always = serve.protecting_standalone_blobs(base, settings, elsewhere)
+  assert list.contains(always.protected, elsewhere)
+
+  let managed =
+    serve.Settings(
+      ..settings,
+      domain_paths: Some(serve.DomainPaths(memory: "/d/m.db", index: "/d/i.db")),
+    )
+  assert serve.protecting_standalone_blobs(base, managed, inside) == base
+}
+
+// A standalone host with its session file inside the workspace keeps the
+// store there, so it must stay out of the operator's `git status` the way
+// `.codemode` does.
+pub fn a_standalone_store_inside_the_workspace_is_ignored_test() {
+  let location =
+    "build/serve-test-inside-"
+    <> int.to_string(ffi_os.unique_positive_integer())
+  let settings = settings_under(location)
+  let inside =
+    serve.Settings(
+      ..settings,
+      session_path: settings.workspace <> "/session.db",
+    )
+  let assert Ok(store) = serve.session_blob_root(inside)
+  assert store == settings.workspace <> "/blobs"
+
+  let assert Ok(booted) = serve.boot(inside)
+    as "a standalone host with its store in the workspace boots"
+  serve.shutdown(booted)
+
+  assert simplifile.read(store <> "/.gitignore") == Ok(serve.ignore_everything)
+  let _cleanup = simplifile.delete(absolute(location))
+}
+
+pub fn boot_adopts_the_blobs_an_earlier_release_left_in_the_workspace_test() {
+  let location =
+    "build/serve-test-adopt-" <> int.to_string(ffi_os.unique_positive_integer())
+  let settings = settings_under(location)
+  let assert Ok(store) = serve.session_blob_root(settings)
+
+  // An earlier release's store, as it was left: one genuine artifact and
+  // the ignore file.
+  let legacy = settings.workspace <> "/" <> codemode.legacy_blob_directory
+  let bytes = <<"an artifact the transcript still names":utf8>>
+  let ref = blob.ref_for(bytes)
+  make(legacy)
+  let assert Ok(Nil) = simplifile.write_bits(blob.ref_path(legacy, ref), bytes)
+  let assert Ok(Nil) = simplifile.write(legacy <> "/.gitignore", "*\n")
+
+  let assert Ok(booted) = serve.boot(settings)
+    as "a workspace with a legacy store boots"
+  serve.shutdown(booted)
+
+  // The id resolves in the new store, and the old directory is untouched.
+  assert simplifile.read_bits(blob.ref_path(store, ref)) == Ok(bytes)
+  assert simplifile.read_bits(blob.ref_path(legacy, ref)) == Ok(bytes)
+  let _cleanup = simplifile.delete(absolute(location))
+}
+
+// The symptom that moved the store. With the store at `<workspace>/.blobs`
+// and masked, `ls -la` in the workspace exited 1 on macOS (`ls: .blobs:
+// Operation not permitted`) once any artifact existed. Here the real helper
+// runs a managed session's policy, an artifact is written through the tool
+// plane's own overflow path, and the jail then lists the workspace and
+// tries the store. Linux reaches the same assertions through an empty
+// tmpfs instead of a Seatbelt denial.
+pub fn a_jailed_listing_succeeds_after_an_artifact_is_written_test() {
+  let fixture = blob_jail_fixture("listing")
+  let ctx = fixture.ctx
+
+  // Over the 64 KiB overflow threshold, so the harness writes a blob.
+  let assert Ok(blob.Overflowed(ref:, ..)) =
+    blob.bound(ctx, string.repeat("x", blob.overflow_threshold_bytes + 1))
+    as "the overflow path must write the artifact"
+  let artifact = blob.ref_path(fixture.blob_root, ref)
+  assert simplifile.is_file(artifact) == Ok(True)
+
+  let listing = jailed(ctx, "ls -la")
+  let reading = jailed(ctx, "cat '" <> artifact <> "'")
+  let planting = jailed(ctx, "printf x > '" <> fixture.blob_root <> "/planted'")
+  broker.stop(fixture.owner)
+  exec.shutdown(fixture.helper)
+
+  assert !listing.is_error as jailed_text(listing)
+  assert !string.contains(jailed_text(listing), "Operation not permitted")
+  assert !string.contains(jailed_text(listing), ".blobs")
+
+  // The store is still out of the jail's reach in both directions: the
+  // state-root mask that covers it is what the base policy relies on.
+  assert reading.is_error as "a jailed tool must not read the blob store"
+  assert planting.is_error as "a jailed tool must not write the blob store"
+  assert simplifile.is_file(fixture.blob_root <> "/planted") == Ok(False)
+  assert !string.contains(artifact, fixture.workspace)
+  let _cleanup = simplifile.delete(fixture.root)
+}
+
+type BlobJail {
+  BlobJail(
+    root: String,
+    workspace: String,
+    blob_root: String,
+    ctx: tool.Ctx,
+    owner: broker.Broker,
+    helper: exec.Helper,
+  )
+}
+
+// A managed session's composition, as far as the jail can tell: the
+// daemon's state root on disk with the entries the daemon writes before it
+// admits a session, the workspace beside it, the base policy
+// `resolve_managed` builds and `session_base` completes, and the blob
+// root `session_blob_root` answers for those settings.
+fn blob_jail_fixture(name: String) -> BlobJail {
+  let root =
+    absolute(
+      "build/blob-jail-"
+      <> name
+      <> "-"
+      <> int.to_string(ffi_os.unique_positive_integer()),
+    )
+  let state = root <> "/state"
+  let workspace = root <> "/work"
+
+  // The counter in the name restarts with the VM, so a directory a failed
+  // run left behind can have this name. Stale files would be listed by the
+  // jail and change what the test asserts.
+  let _stale = simplifile.delete(root)
+  make(workspace)
+  make(state <> "/sessions")
+  make(state <> "/run")
+  make(state <> "/domains")
+  list.each(["owner.token", "catalogue.db", "daemon.lock"], fn(entry) {
+    let assert Ok(Nil) = simplifile.write(state <> "/" <> entry, "x")
+      as "a state-root entry must be writable"
+  })
+  let domain = serve.workspace_data_root(state, workspace)
+  make(domain)
+  let assert Ok(Nil) = simplifile.write(domain <> "/loom-search.db", "x")
+    as "the search index must exist before it is masked"
+
+  let settings = settings_under("build/blob-jail-settings-" <> name)
+  let managed =
+    serve.Settings(
+      ..settings,
+      workspace:,
+      base_policy: serve.protecting_state_root(
+        serve.base_policy(workspace),
+        state,
+      ),
+      domain_paths: Some(serve.DomainPaths(
+        memory: domain <> "/loom-memory.db",
+        index: domain <> "/loom-search.db",
+      )),
+    )
+  let assert Ok(blob_root) = serve.session_blob_root(managed)
+    as "a managed session has a blob root"
+  let base =
+    serve.session_base(
+      managed,
+      domain <> "/loom-search.db",
+      domain <> "/loom-memory.db",
+      domain <> "/loom-memory.digest",
+      Error("no toolchain in this fixture"),
+    )
+    |> serve.protecting_standalone_blobs(managed, blob_root)
+    |> serve.allowing_tool_tmpdir
+  let assert Ok(Nil) = serve.base_policy_fault(base) |> result.replace(Nil)
+    as "the composed policy must be one the sandbox accepts"
+
+  let temp = serve.tool_tmp_directory(workspace)
+  make(temp)
+  make(serve.tool_home_directory(workspace))
+  let #(environment, _missing) =
+    serve.tool_environment(
+      workspace,
+      None,
+      None,
+      catalog.default_tools(),
+      reading: fn(name) { secret.lookup(secret.env(), name) },
+    )
+  let assert Ok(helper) =
+    exec.spawn_helper(exec.SpawnConfig(
+      helper_path: managed.helper_path,
+      shell_path: "/bin/sh",
+      base_policy: base,
+      helper_args: [],
+      tmp_dir: temp,
+      handshake_timeout_ms: 5000,
+      cancel_grace_ms: 3000,
+      heartbeat_interval_ms: 0,
+    ))
+    as "build the real helper with make sandbox before running this fixture"
+  let wall = clock.from_function(ffi_os.system_time_ms)
+  let assert Ok(owner) =
+    broker.start(
+      broker.BrokerConfig(
+        entropy: token.production_entropy(),
+        clock: wall,
+        checkout: fn() { Ok(helper) },
+        checkin: fn(_helper) { Nil },
+      ),
+    )
+    as "the fixture broker must start"
+  let #(op_id, _generator) = ids.mint_op(ids.generator(wall, seed: 20_261_008))
+  let ctx =
+    tool.Ctx(
+      directory_access: directory_access.none(),
+      workspace:,
+      strand: "main",
+      op_id:,
+      step_id: "blob-jail",
+      source_index: 0,
+      base_policy: base,
+      grants: [],
+      demand: exec.BestEffort,
+      env: environment,
+      clock: wall,
+      filesystem: tools_fs.real_filesystem(),
+      blob_root:,
+      clear_call: tool.broker_runner(broker: owner, waiting: 10_000),
+      raise_refusal: tool.no_raise(),
+      observe_output: tool.ignore_output(),
+    )
+  BlobJail(root:, workspace:, blob_root:, ctx:, owner:, helper:)
+}
+
+fn jailed(ctx: tool.Ctx, command: String) -> tool.ToolOutcome {
+  bash.tool(job.unavailable()).run(
+    ctx,
+    json.Object([
+      #("command", json.String(command)),
+      #("timeout_ms", json.Int(60_000)),
+    ]),
+  )
+}
+
+fn jailed_text(outcome: tool.ToolOutcome) -> String {
+  list.map(outcome.content, fn(block) {
+    case block {
+      message.ToolResultText(text:, ..) -> text
+      message.ToolResultImage(..) -> ""
+    }
+  })
+  |> string.join("\n")
 }
 
 pub fn a_sibling_path_dependency_is_mounted_read_only_test() {

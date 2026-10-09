@@ -355,8 +355,14 @@ pub fn daemon_listener_production_prepare_is_lazy_test() {
   let assert Ok(manager.Summary(occupied: 0, ..)) =
     manager.summary(serving.ready.registry)
     as "production startup opens no runtime"
-  assert simplifile.is_directory(serving.ready.state_root <> "/workspaces")
-    == Ok(False)
+
+  // The root creates the per-workspace and per-session domain directories
+  // at start so both masks are established, but no domain lives in either:
+  // preparing the daemon still creates nothing for a session.
+  assert simplifile.read_directory(serving.ready.state_root <> "/workspaces")
+    == Ok([])
+  assert simplifile.read_directory(serving.ready.state_root <> "/domains")
+    == Ok([])
   assert root.shutdown(daemon, within: 15_000) == Ok(Nil)
 }
 

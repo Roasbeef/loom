@@ -351,14 +351,26 @@ pub fn resolve_for_read(ctx: Ctx, path: String) -> Result(String, PathError) {
 // a base that `client/wiring.run_tool` already widened with the session's
 // additions is not widened twice into anything different; what this adds is
 // the grants consumed by this one call.
+//
+// The blob store is the harness's own, kept in the daemon's state and so
+// outside the workspace, and the transcript names its entries by path for
+// `fs_read` to open. It is added as a readable root here, whatever the base
+// policy's read scope says, because this policy gates the harness's own read
+// and no jail is handed the root. Only reads compose with this policy:
+// `writable_roots` is untouched, and the write path judges the unmodified
+// `protected` list, so reading the store does not make it writable.
 fn readable_policy(ctx: Ctx) -> policy.SandboxPolicy {
-  exempting_blob_root(
+  let widened =
     directory_access.widen(
       ctx.base_policy,
       directory_access.approved(ctx.directory_access, ctx.grants),
-    ),
+    )
+  let reads = exempting_blob_root(widened, ctx.blob_root)
+
+  policy.SandboxPolicy(..reads, readable_roots: [
     ctx.blob_root,
-  )
+    ..reads.readable_roots
+  ])
 }
 
 /// The read policy with the session's blob root taken off the protected

@@ -206,8 +206,9 @@ import tools/tool.{type Registry}
 /// policy and path facts.
 ///
 /// Constructor invariants: `workspace` and `blob_root` are absolute
-/// paths (`blob_root` should live under a readable workspace path so
-/// blob refs stay `fs_read`-able — spec §3.2); `env` is the
+/// paths (`blob_root` is the harness's own store, outside the workspace
+/// under the daemon, and `fs_read` opens its refs without asking because
+/// `tools/fs` treats it as a readable root — spec §3.2); `env` is the
 /// allowlist-constructed child environment for jailed executions, never
 /// an inherited one; `entropy` must never return the same seed twice
 /// within a session's lifetime (spec-gaps WP-E item 6) — production

@@ -372,13 +372,10 @@ fn with_fixture_under(
     <> int.to_string(ffi_os.unique_positive_integer())
   let workspace = root <> "/workspace"
   let home = root <> "/operator"
-  list.each(
-    [workspace <> "/.blobs", serve.tool_home_directory(workspace), home],
-    fn(path) {
-      let assert Ok(Nil) = simplifile.create_directory_all(path)
-        as "the fixture directory exists"
-    },
-  )
+  list.each([serve.tool_home_directory(workspace), home], fn(path) {
+    let assert Ok(Nil) = simplifile.create_directory_all(path)
+      as "the fixture directory exists"
+  })
   let #(environment, _) =
     serve.tool_environment(
       workspace,

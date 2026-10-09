@@ -572,7 +572,7 @@ type State {
 /// ## Examples
 ///
 /// ```gleam
-/// // jobs.blob_spill("/session/.blobs")
+/// // jobs.blob_spill("/state/workspaces/ab12/blobs")
 /// ```
 ///
 pub fn blob_spill(root root: String) -> Spill {

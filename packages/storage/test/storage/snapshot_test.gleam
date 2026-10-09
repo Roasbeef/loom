@@ -28,6 +28,16 @@ import storage/sqlite
 import storage/storage
 import support/fixtures
 
+// How long an outcome test waits for the reader's answer. These tests assert
+// what a read returns (a cut, a page, a typed refusal), never how fast, so the
+// wait is set to what only a hung reader would exceed. A wait near the read's
+// real cost turned a budget refusal into `ReadTimedOut` on a loaded machine:
+// `reference_expansion_spends_the_same_metadata_budget_test` writes and expands
+// 1024 references and once ran past a one-second wait. Timing itself is pinned
+// by `timed_out_reads_remain_queued_and_late_replies_are_isolated_test`, which
+// suspends the reader rather than racing it, and keeps its own short waits.
+const answer_wait_ms = 60_000
+
 type Backend {
   Memory
   Sqlite
@@ -138,13 +148,17 @@ pub fn dead_reader_returns_total_unavailable_for_every_operation_test() {
     let assert Ok(Nil) = process.selector_receive(departed, 1000)
       as "the original backend must exit"
     let #(entry, _) = fixtures.message_entry(fixtures.new_ctx(), None, "entry")
-    assert fixture.reader.capture(snapshot.Plan([], [], 0), 1000)
+    assert fixture.reader.capture(snapshot.Plan([], [], 0), answer_wait_ms)
       == Error(snapshot.ReaderUnavailable)
-    assert fixture.reader.page(0, 2, 1, 1000)
+    assert fixture.reader.page(0, 2, 1, answer_wait_ms)
       == Error(snapshot.ReaderUnavailable)
-    assert fixture.reader.lineage(entry.id, 2, 1, 1000)
+    assert fixture.reader.lineage(entry.id, 2, 1, answer_wait_ms)
       == Error(snapshot.ReaderUnavailable)
-    assert fixture.reader.fragment(snapshot.Descriptor(entry.id, 1, 1), 0, 1000)
+    assert fixture.reader.fragment(
+        snapshot.Descriptor(entry.id, 1, 1),
+        0,
+        answer_wait_ms,
+      )
       == Error(snapshot.ReaderUnavailable)
   })
 }
@@ -248,7 +262,7 @@ pub fn exact_key_capture_excludes_prefix_neighbors_and_omits_missing_test() {
         [],
         0,
       )
-    let assert Ok(cut) = fixture.reader.capture(plan, 1000)
+    let assert Ok(cut) = fixture.reader.capture(plan, answer_wait_ms)
       as "exact keys use the same coherent bounded cut"
     let assert [cell] = cut.cells
       as "duplicate selections union and missing keys are omitted"
@@ -293,7 +307,10 @@ pub fn prefix_selection_is_a_key_range_over_the_same_members_test() {
       let selection =
         snapshot.Selection(register.FactCustom, prefix, snapshot.All)
       let assert Ok(cut) =
-        fixture.reader.capture(snapshot.Plan([selection], [], 0), 1000)
+        fixture.reader.capture(
+          snapshot.Plan([selection], [], 0),
+          answer_wait_ms,
+        )
         as "a bounded prefix selection is readable"
       let selected =
         cut.cells
@@ -389,7 +406,7 @@ pub fn sqlite_exact_key_oversize_refuses_before_json_decode_test() {
     == Ok(Nil)
   assert fixture.reader.capture(
       snapshot.Plan([snapshot.ExactKey(register.FactCustom, "exact")], [], 0),
-      1000,
+      answer_wait_ms,
     )
     == Error(snapshot.MetadataTooLarge)
   assert sqlight.close(conn) == Ok(Nil)
@@ -419,7 +436,7 @@ pub fn recent_window_and_sparse_continuation_are_immutable_test() {
         }),
       )
     let plan = snapshot.Plan([all(register.StrandLeaf)], [], 50)
-    let assert Ok(cut) = fixture.reader.capture(plan, 1000)
+    let assert Ok(cut) = fixture.reader.capture(plan, answer_wait_ms)
       as "coherent initial window"
     assert cut.next_seq == 411
     assert cut.stats.message_count == 205
@@ -444,7 +461,7 @@ pub fn recent_window_and_sparse_continuation_are_immutable_test() {
     let pages = inventory(fixture.reader, 0, cut.next_seq, [])
     assert list.length(pages) == 205
     assert !list.any(pages, fn(item) { item.id == later.id })
-    assert fixture.reader.page(409, cut.next_seq, 7, 1000) == Ok([])
+    assert fixture.reader.page(409, cut.next_seq, 7, answer_wait_ms) == Ok([])
     assert fixture.close() == Ok(Nil)
   })
 }
@@ -455,7 +472,7 @@ fn inventory(
   before: Int,
   reversed: List(snapshot.Descriptor),
 ) -> List(snapshot.Descriptor) {
-  let assert Ok(page) = reader.page(after, before, 7, 1000)
+  let assert Ok(page) = reader.page(after, before, 7, answer_wait_ms)
     as "bounded next page"
   assert list.length(page) <= 7
   case page {
@@ -498,7 +515,7 @@ pub fn capture_metadata_stats_and_high_water_share_one_commit_cut_test() {
       let assert Ok(cut) =
         fixture.reader.capture(
           snapshot.Plan([all(register.FactName)], [], 0),
-          1000,
+          answer_wait_ms,
         )
         as "capture while writer runs"
       assert cut.next_seq == cut.stats.message_count * 2 + 1
@@ -575,7 +592,7 @@ pub fn selected_pending_cells_and_live_references_exclude_history_test() {
         ],
         0,
       )
-    let assert Ok(cut) = fixture.reader.capture(plan, 1000)
+    let assert Ok(cut) = fixture.reader.capture(plan, answer_wait_ms)
       as "only selected current metadata is copied"
     assert list.length(cut.cells) == 3
     assert list.any(cut.cells, fn(cell) {
@@ -594,26 +611,31 @@ pub fn byte_fragments_round_trip_across_unicode_boundaries_test() {
       let #(entry, _) = fixtures.message_entry(fixtures.new_ctx(), None, text)
       let _committed = write(fixture, [tx.InsertEntry(entry)])
       let assert Ok(cut) =
-        fixture.reader.capture(snapshot.Plan([], [], 1), 1000)
+        fixture.reader.capture(snapshot.Plan([], [], 1), answer_wait_ms)
         as "one descriptor"
       let assert [descriptor] = cut.recent as "one recent entry"
       let bytes = fragments(fixture.reader, descriptor, 0, <<>>)
       assert bit_array.byte_size(bytes) == descriptor.byte_length
-      assert fixture.reader.fragment(descriptor, descriptor.byte_length, 1000)
+      assert fixture.reader.fragment(
+          descriptor,
+          descriptor.byte_length,
+          answer_wait_ms,
+        )
         == Ok(<<>>)
-      assert fixture.reader.fragment(descriptor, -1, 1000)
+      assert fixture.reader.fragment(descriptor, -1, answer_wait_ms)
         == Error(snapshot.InvalidRequest)
       assert fixture.reader.fragment(
           descriptor,
           descriptor.byte_length + 1,
-          1000,
+          answer_wait_ms,
         )
         == Error(snapshot.InvalidRequest)
       list.each(range(0, 24), fn(offset) {
         let assert Ok(expected) =
           bit_array.slice(bytes, offset, snapshot.fragment_bytes_limit)
           as "expected byte slice"
-        assert fixture.reader.fragment(descriptor, offset, 1000) == Ok(expected)
+        assert fixture.reader.fragment(descriptor, offset, answer_wait_ms)
+          == Ok(expected)
       })
       let assert Ok(encoded) = bit_array.to_string(bytes)
         as "complete bytes form UTF-8"
@@ -634,7 +656,7 @@ fn fragments(
   offset: Int,
   bytes: BitArray,
 ) -> BitArray {
-  let assert Ok(part) = reader.fragment(descriptor, offset, 1000)
+  let assert Ok(part) = reader.fragment(descriptor, offset, answer_wait_ms)
     as "next byte fragment"
   assert bit_array.byte_size(part) <= snapshot.fragment_bytes_limit
   case bit_array.byte_size(part) {
@@ -665,7 +687,7 @@ pub fn metadata_count_limit_refuses_instead_of_truncating_test() {
       )
     assert fixture.reader.capture(
         snapshot.Plan([all(register.FactName)], [], 0),
-        1000,
+        answer_wait_ms,
       )
       == Error(snapshot.MetadataTooLarge)
     assert fixture.close() == Ok(Nil)
@@ -688,22 +710,26 @@ pub fn sqlite_oversized_payloads_are_refused_before_json_decode_test() {
     == Ok(Nil)
   assert fixture.reader.capture(
       snapshot.Plan([all(register.FactName)], [], 0),
-      1000,
+      answer_wait_ms,
     )
     == Error(snapshot.MetadataTooLarge)
   assert sqlight.exec("UPDATE entries SET payload=zeroblob(33554433)", on: conn)
     == Ok(Nil)
-  assert fixture.reader.page(0, 3, 1, 1000)
+  assert fixture.reader.page(0, 3, 1, answer_wait_ms)
     == Error(snapshot.RecordTooLarge(entry.id, 33_554_433))
   assert fixture.reader.fragment(
       snapshot.Descriptor(entry.id, 1, 33_554_433),
       0,
-      1000,
+      answer_wait_ms,
     )
     == Error(snapshot.RecordTooLarge(entry.id, 33_554_433))
 
   // A forged small descriptor cannot circumvent the preflighted row length.
-  assert fixture.reader.fragment(snapshot.Descriptor(entry.id, 1, 10), 0, 1000)
+  assert fixture.reader.fragment(
+      snapshot.Descriptor(entry.id, 1, 10),
+      0,
+      answer_wait_ms,
+    )
     == Error(snapshot.MissingRecord)
   assert sqlight.close(conn) == Ok(Nil)
   assert fixture.close() == Ok(Nil)
@@ -714,7 +740,8 @@ pub fn capture_is_read_only_and_does_not_pin_a_transaction_test() {
   let assert Ok(conn) = sqlight.open("build/test_db/snapshot-read-txn.db")
     as "second connection"
   assert sqlight.exec("BEGIN IMMEDIATE", on: conn) == Ok(Nil)
-  let assert Ok(cut) = fixture.reader.capture(snapshot.Plan([], [], 0), 1000)
+  let assert Ok(cut) =
+    fixture.reader.capture(snapshot.Plan([], [], 0), answer_wait_ms)
     as "reader coexists with reserved writer"
   assert cut.next_seq == 1
   assert sqlight.exec("ROLLBACK", on: conn) == Ok(Nil)
@@ -723,7 +750,10 @@ pub fn capture_is_read_only_and_does_not_pin_a_transaction_test() {
       tx.SetRegister(register.FactName, "after", register.value(json.Int(1))),
     ])
   let assert Ok(next) =
-    fixture.reader.capture(snapshot.Plan([all(register.FactName)], [], 0), 1000)
+    fixture.reader.capture(
+      snapshot.Plan([all(register.FactName)], [], 0),
+      answer_wait_ms,
+    )
     as "prior read transaction ended"
   assert next.next_seq == 2
   assert sqlight.close(conn) == Ok(Nil)
@@ -733,19 +763,23 @@ pub fn capture_is_read_only_and_does_not_pin_a_transaction_test() {
 pub fn sealed_handles_and_invalid_ranges_return_typed_errors_test() {
   list.each([Memory, Sqlite], fn(backend) {
     let fixture = open(backend, "closed")
-    assert fixture.reader.page(0, 10, 101, 1000)
+    assert fixture.reader.page(0, 10, 101, answer_wait_ms)
       == Error(snapshot.InvalidRequest)
-    assert fixture.reader.page(10, 10, 1, 1000)
+    assert fixture.reader.page(10, 10, 1, answer_wait_ms)
       == Error(snapshot.InvalidRequest)
-    assert fixture.reader.capture(snapshot.Plan([], [], 101), 1000)
+    assert fixture.reader.capture(snapshot.Plan([], [], 101), answer_wait_ms)
       == Error(snapshot.InvalidRequest)
     assert fixture.close() == Ok(Nil)
-    assert fixture.reader.capture(snapshot.Plan([], [], 0), 1000)
+    assert fixture.reader.capture(snapshot.Plan([], [], 0), answer_wait_ms)
       == Error(snapshot.StorageFailure(storage.HandleClosed))
-    assert fixture.reader.page(0, 1, 1, 1000)
+    assert fixture.reader.page(0, 1, 1, answer_wait_ms)
       == Error(snapshot.StorageFailure(storage.HandleClosed))
     let #(id, _) = fixtures.mint(fixtures.new_ctx())
-    assert fixture.reader.fragment(snapshot.Descriptor(id, 1, 1), 0, 1000)
+    assert fixture.reader.fragment(
+        snapshot.Descriptor(id, 1, 1),
+        0,
+        answer_wait_ms,
+      )
       == Error(snapshot.StorageFailure(storage.HandleClosed))
   })
 }
@@ -775,7 +809,7 @@ pub fn missing_reference_and_malformed_predicate_fail_closed_test() {
           ],
           0,
         ),
-        1000,
+        answer_wait_ms,
       )
       == Error(snapshot.MissingRecord)
     let _committed =
@@ -799,7 +833,7 @@ pub fn missing_reference_and_malformed_predicate_fail_closed_test() {
           [],
           0,
         ),
-        1000,
+        answer_wait_ms,
       )
       as "invalid status is not silently omitted"
     assert fixture.close() == Ok(Nil)
@@ -841,11 +875,14 @@ pub fn corrupt_identifiers_and_metadata_are_never_successful_cuts_test() {
     as "test corruption connection"
   assert sqlight.exec("UPDATE registers SET value=x'ff'", on: conn) == Ok(Nil)
   let assert Error(snapshot.StorageFailure(storage.CorruptRow(_))) =
-    fixture.reader.capture(snapshot.Plan([all(register.FactName)], [], 0), 1000)
+    fixture.reader.capture(
+      snapshot.Plan([all(register.FactName)], [], 0),
+      answer_wait_ms,
+    )
     as "invalid UTF-8 is stored corruption"
   assert sqlight.exec("UPDATE session SET next_seq=-1", on: conn) == Ok(Nil)
   let assert Error(snapshot.StorageFailure(storage.CorruptRow(_))) =
-    fixture.reader.capture(snapshot.Plan([], [], 0), 1000)
+    fixture.reader.capture(snapshot.Plan([], [], 0), answer_wait_ms)
     as "negative high-water is stored corruption"
   assert sqlight.exec(
       "UPDATE entries SET id=CAST(zeroblob(1048576) AS TEXT)",
@@ -853,7 +890,7 @@ pub fn corrupt_identifiers_and_metadata_are_never_successful_cuts_test() {
     )
     == Ok(Nil)
   let assert Error(snapshot.StorageFailure(storage.CorruptRow(_))) =
-    fixture.reader.page(0, 3, 1, 1000)
+    fixture.reader.page(0, 3, 1, answer_wait_ms)
     as "noncanonical ID is refused before transferring its bytes"
   assert sqlight.close(conn) == Ok(Nil)
   assert fixture.close() == Ok(Nil)
@@ -936,7 +973,7 @@ pub fn key_pages_survive_history_beyond_capture_budget_test() {
           [],
           0,
         ),
-        5000,
+        answer_wait_ms,
       )
       == Error(snapshot.MetadataTooLarge)
     let first =
@@ -945,7 +982,7 @@ pub fn key_pages_survive_history_beyond_capture_budget_test() {
         [],
         0,
       )
-    let assert Ok(cut) = fixture.reader.capture(first, 5000)
+    let assert Ok(cut) = fixture.reader.capture(first, answer_wait_ms)
       as "a small page ignores the history's total size"
     assert cut.metadata_bytes < 20_000
     assert cell_keys(cut)
@@ -961,7 +998,7 @@ pub fn key_pages_survive_history_beyond_capture_budget_test() {
         [],
         0,
       )
-    let assert Ok(cut) = fixture.reader.capture(second, 5000)
+    let assert Ok(cut) = fixture.reader.capture(second, answer_wait_ms)
       as "deleting the cursor never skips the next keys"
     assert cell_keys(cut)
       == [prefix <> "10008", prefix <> "10009", prefix <> "10010"]
@@ -973,7 +1010,7 @@ pub fn key_pages_survive_history_beyond_capture_budget_test() {
         [],
         0,
       )
-    assert fixture.reader.capture(oversized, 5000)
+    assert fixture.reader.capture(oversized, answer_wait_ms)
       == Error(snapshot.MetadataTooLarge)
     assert fixture.close() == Ok(Nil)
   })
@@ -1126,7 +1163,7 @@ pub fn reference_expansion_spends_the_same_metadata_budget_test() {
         ],
         0,
       )
-    assert fixture.reader.capture(plan, 1000)
+    assert fixture.reader.capture(plan, answer_wait_ms)
       == Error(snapshot.MetadataTooLarge)
     assert fixture.close() == Ok(Nil)
   })
@@ -1164,7 +1201,7 @@ pub fn metadata_byte_limit_includes_keys_and_reference_payloads_test() {
         ],
         0,
       )
-    assert fixture.reader.capture(plan, 1000)
+    assert fixture.reader.capture(plan, answer_wait_ms)
       == Error(snapshot.MetadataTooLarge)
     let _committed =
       write(fixture, [
@@ -1176,7 +1213,7 @@ pub fn metadata_byte_limit_includes_keys_and_reference_payloads_test() {
       ])
     assert fixture.reader.capture(
         snapshot.Plan([all(register.FactName)], [], 0),
-        1000,
+        answer_wait_ms,
       )
       == Error(snapshot.MetadataTooLarge)
     assert fixture.close() == Ok(Nil)
@@ -1213,14 +1250,15 @@ pub fn a_lineage_read_returns_one_strands_records_only_test() {
           [tx.InsertEntry(pair.0), tx.InsertEntry(pair.1)]
         }),
       )
-    let assert Ok(cut) = fixture.reader.capture(snapshot.Plan([], [], 0), 1000)
+    let assert Ok(cut) =
+      fixture.reader.capture(snapshot.Plan([], [], 0), answer_wait_ms)
     assert cut.next_seq == 301
     let assert Ok(leaf) = list.last(left)
 
     // The newest page is the newest hundred of the strand, oldest first, and
     // none of the other strand's records, though they sit between them.
     let assert Ok(page) =
-      fixture.reader.lineage(leaf.id, cut.next_seq, 100, 1000)
+      fixture.reader.lineage(leaf.id, cut.next_seq, 100, answer_wait_ms)
     assert list.length(page) == 100
     let left_ids = list.map(left, fn(held) { held.id })
     assert list.all(page, fn(item) { list.contains(left_ids, item.id) })
@@ -1232,25 +1270,28 @@ pub fn a_lineage_read_returns_one_strands_records_only_test() {
     let assert Ok(oldest) = list.first(page)
     let assert Ok(held) = list.find(left, fn(held) { held.id == oldest.id })
     let assert entry.MessageEntry(parent: Some(next), ..) = held
-    let assert Ok(rest) = fixture.reader.lineage(next, cut.next_seq, 100, 1000)
+    let assert Ok(rest) =
+      fixture.reader.lineage(next, cut.next_seq, 100, answer_wait_ms)
     assert list.map(rest, fn(item) { item.seq })
       == list.map(range(1, 50), fn(n) { 2 * n - 1 })
 
     // The high-water bounds a page: an entry at or above it is not read, and a
     // walk from one below it stops at the same place.
-    assert fixture.reader.lineage(leaf.id, 299, 100, 1000) == Ok([])
-    let assert Ok(inside) = fixture.reader.lineage(leaf.id, 300, 3, 1000)
+    assert fixture.reader.lineage(leaf.id, 299, 100, answer_wait_ms) == Ok([])
+    let assert Ok(inside) =
+      fixture.reader.lineage(leaf.id, 300, 3, answer_wait_ms)
     assert list.map(inside, fn(item) { item.seq }) == [295, 297, 299]
 
     // An entry the store does not hold is the end of a walk, not a fault, and
     // a request outside the bounds is refused before any read.
     let #(unknown, _) = ids.mint_entry(ids.generator(clock.fixed(9000), 52))
-    assert fixture.reader.lineage(unknown, cut.next_seq, 100, 1000) == Ok([])
-    assert fixture.reader.lineage(leaf.id, cut.next_seq, 0, 1000)
+    assert fixture.reader.lineage(unknown, cut.next_seq, 100, answer_wait_ms)
+      == Ok([])
+    assert fixture.reader.lineage(leaf.id, cut.next_seq, 0, answer_wait_ms)
       == Error(snapshot.InvalidRequest)
-    assert fixture.reader.lineage(leaf.id, cut.next_seq, 101, 1000)
+    assert fixture.reader.lineage(leaf.id, cut.next_seq, 101, answer_wait_ms)
       == Error(snapshot.InvalidRequest)
-    assert fixture.reader.lineage(leaf.id, 0, 10, 1000)
+    assert fixture.reader.lineage(leaf.id, 0, 10, answer_wait_ms)
       == Error(snapshot.InvalidRequest)
     assert fixture.close() == Ok(Nil)
   })
@@ -1276,7 +1317,8 @@ pub fn a_lineage_page_stops_before_the_record_that_would_pass_its_bytes_test() {
         list.map(list.reverse(chain), fn(held) { tx.InsertEntry(held) }),
       )
     let assert [newest, ..] = chain
-    let assert Ok(page) = fixture.reader.lineage(newest.id, 4, 100, 1000)
+    let assert Ok(page) =
+      fixture.reader.lineage(newest.id, 4, 100, answer_wait_ms)
 
     // Three records of nine hundred kilobytes are past the page's two
     // megabytes, so the oldest is left for the next read and the newest two
