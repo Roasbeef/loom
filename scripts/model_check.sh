@@ -9,14 +9,16 @@
 # specifications: Move.tla, the move where catalogue rows decide, and
 # KhepriMove.tla, the moves where the directory's owner record decides
 # (protocol-change/079). For each, TLC must pass the clean configuration
-# (Move.cfg, KhepriMove.cfg) and must report a violation of the invariant
+# (Move.cfg, KhepriMove.cfg) and must report a violation of the property
 # each mutant configuration (Mutant*.cfg, KhepriMutant*.cfg) names on its
-# `\* expect-violation:` line. A mutation that no longer fails means the
-# model stopped depending on the rule the mutation removes. TLC needs
-# tla2tools.jar ($TLA2TOOLS, or ~/tools/tla2tools.jar) and a Java 11 or
-# later ($TLA_JAVA, java on PATH, or a Homebrew openjdk). Without both, this
-# script prints a SKIP line, which the skip census refuses in CI, and moves
-# on to the P projects.
+# `\* expect-violation:` line: an invariant, which TLC names when it fails
+# (exit 12), or the one temporal property the configuration lists, which
+# TLC reports as a temporal violation (exit 13). A mutation that no longer
+# fails means the model stopped depending on the rule the mutation removes.
+# TLC needs tla2tools.jar ($TLA2TOOLS, or ~/tools/tla2tools.jar) and a Java
+# 11 or later ($TLA_JAVA, java on PATH, or a Homebrew openjdk). Without both,
+# this script prints a SKIP line, which the skip census refuses in CI, and
+# moves on to the P projects.
 #
 # Each directory under protocol/models with a .pproj is a P project. Its
 # README says how it is run; this script runs the same commands for every
@@ -133,6 +135,9 @@ check_tla() {
 			code=0
 			run_tla "$java" "$jar" "$spec" "$name" "$out/$name.states" "$log" || code=$?
 			if [ "$code" -eq 12 ] && grep -q "Invariant $expected is violated" "$log"; then
+				echo "   ok   $name (violates $expected: $(tla_counts "$log"))"
+			elif [ "$code" -eq 13 ] && grep -q "Temporal properties were violated" "$log" &&
+				sed -n '/^PROPERT/,$p' "$cfg" | grep -qw "$expected"; then
 				echo "   ok   $name (violates $expected: $(tla_counts "$log"))"
 			else
 				echo "   FAIL $name: TLC exited $code, expected a violation of $expected, see $log"
