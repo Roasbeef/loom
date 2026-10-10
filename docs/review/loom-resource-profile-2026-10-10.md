@@ -272,3 +272,107 @@ After committing the evidence, `make -j1 dist` passed with exit 0 at
 `6a7fe8734`. Server and client release smoke passed. The local
 `dist/manifest-macos-arm64.json` identifies that build, containing both
 optimizations. No installed process was replaced or restarted.
+
+
+## Continued probes and local gate closure
+
+The fixture repair at `36e115c7b` resolves the local gate failure without
+changing production policy or removing an assertion. Production moved blob
+storage under daemon state; `base_policy_for` deliberately no longer masks
+workspace `.blobs`, and code mode's default store is `.codemode/blobs`.
+The test still created `.blobs`, assumed its implicit protection, and read it
+through a seam configured with the different default. The repaired fixture
+explicitly protects its chosen store and passes that same root through
+`codemode.into_blobs`. Both scopes still prove native/search reads, jail
+refusal, other protected-path refusal and direct/symlink write refusal.
+The original module had 40 passes and one failure; the repaired module has
+41 passes. Independent review found the final fixture repair sound.
+
+`make check-affected BASE=c66bd27264cd8b1350ed8309be2388d22fa0d195`
+then passed, exit 0 in 563 seconds, without a concurrent shipment build.
+Static checks, preparation and every selected package lane passed:
+session-view 442, browser 942, runtime 187, conformance 98, client 3,223,
+and terminal 1,281 tests. The skip census found no undeclared skip.
+This supersedes the earlier local red results; Linux signoff remains open.
+
+The [normal lease probe](loom-resource-profile-2026-10-10/writer-normal-lease.escript)
+uses the same synthetic promoted-garbage fixture at the production 20-second
+renewal interval, with an 11-second quiet observation and another 11 seconds
+after a normal request. [Raw output](loom-resource-profile-2026-10-10/writer-normal-lease.txt)
+shows baseline idle memory 16,365,320 bytes and candidate 4,256 bytes.
+Both renew at 20,001 ms. The first wake takes 30 versus 31 microseconds and
+100 versus 168 reductions. This is one normal-period repetition in a
+disposable VM, not an installed workload comparison.
+
+A fresh Pickglass census found 334.5 MiB total BEAM memory, 245.9 MiB process
+memory, 41.7 MiB binaries and 533 processes. Bounded shape probes found a
+strand cache of about 8.83 MB flat, of which 8.27 MB was its scan/projection,
+and another of 2.90 MB flat with 2.33 MB scan/projection. These caches avoid
+repeated durable scans; flat sizes count shared structure repeatedly and do
+not establish equivalent unique resident storage. An active job waiter was
+inside `jobs.await_job` and had no system state response. No cache, job or
+history was trimmed, and no new GC was forced during this follow-up.
+
+The busiest-eight allocation selection missed most browser rendering in this
+window. Profiling browser `<0.245503.0>` directly found 19 renders in 15
+seconds. The view wrapper allocated 29.09 MB excluding the explicitly traced
+children, update 3.78 MB, and the selected Lustre diff functions about 8.02 MB.
+A subsequent helper trace found 9.90 MB in `fold_row.step_body`, 4.36 MB in
+`lane.item_element` and 2.38 MB in `transcript_image.ref`. These are cumulative
+function allocations over different windows, not additive resident totals.
+The current workload had much less sanitizer work than the earlier capture;
+this is workload variation, since the installed code is unchanged.
+
+### Browser image-key prototype
+
+The lane currently calls `transcript_image.ref` before discovering that a row
+has no drawable images. A [disposable prototype](loom-resource-profile-2026-10-10/lane_picture_prototype.escript)
+moves that computation behind the existing session/drawn-image check. It
+rewrites generated abstract forms only in a disposable VM. It has not changed
+production source or the built distribution.
+
+The [benchmark](loom-resource-profile-2026-10-10/lane_picture_bench.escript)
+applies `lane_fixture.heavy(30, 1000)` to a real page and runs operator view,
+Lustre cache and diff. Five repetitions of 1,000 unchanged renders give median
+baseline 284.865 ms and 29,793,757 reductions versus prototype 258.615 ms
+and 28,157,325 reductions: 9.2% time and 5.5% work reduction. Timings were
+collected while package checks ran and should be treated accordingly.
+The image-key function's traced allocation for 100 renders fell from
+1,920,000 bytes to zero. Other per-module allocations varied with GC.
+
+Both versions produce HTML SHA-256
+`190E15FE3D48EB23F36D05338E13E9FDD6C3AEE547FF55D456430DD6F8E13B8A`
+and empty unchanged-render patches. The raw Element-term hashes differ
+because recompiling the lane changes closure identities; they are not a
+rendered-output equivalence check. All eleven existing image-view tests also
+pass with the prototype loaded, including image positions, slash-containing
+step keys and observer/operator parity. [Baseline](loom-resource-profile-2026-10-10/lane-picture-baseline.txt)
+and [prototype](loom-resource-profile-2026-10-10/lane-picture-prototype.txt)
+outputs preserve the raw counters. Reproduction uses:
+
+```sh
+escript docs/review/loom-resource-profile-2026-10-10/lane_picture_prototype.escript \
+  packages/web_view/build/dev/erlang/web_view/ebin/web_view@view@lane.beam \
+  /path/to/prototype.beam
+escript docs/review/loom-resource-profile-2026-10-10/lane_picture_bench.escript \
+  packages/web_view/build/dev/erlang prototype /path/to/prototype.beam
+```
+
+### Separate blob-read limitation
+
+The fixture repair does not prove that native reads reach the daemon's actual
+blob store. Independent review noted that `fs.exempting_blob_root` removes
+only exact blob-root masks, while daemon state protects ancestors such as
+`workspaces` or `domains`. A [local diagnostic](loom-resource-profile-2026-10-10/blob_ancestor_probe.escript)
+creates a fixture under `state/workspaces/domain/blobs`, applies an ancestor
+mask and the production exemption/read resolver, and [confirms](loom-resource-profile-2026-10-10/blob-ancestor-probe.txt)
+that the ancestor mask survives and native read returns `ProtectedPath`.
+It performs no live daemon request and prints no contents. This is a separate
+pre-existing read-path limitation, not a jail escape and not repaired by this
+performance work. Its resolution needs its own boundary review.
+
+The two production performance changes remain locally validated and packaged
+at the previously recorded distribution SHA. The browser image-key change is
+still a prototype. Linux exact-head signoff requires publishing the branch;
+installed CPU and RSS comparison then requires an intentional release update.
+Neither action has occurred, and the goal remains active.

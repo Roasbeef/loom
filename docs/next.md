@@ -15,36 +15,36 @@ in one terminal window, each about 15 seconds. The matched small browser
 fixture saves 11% reductions and 79% sanitizer allocation. Those are allocation
 and work measurements, not proof of permanent installed RSS savings.
 
-Six focused tests and the exhaustive Unicode scalar differential passed.
-The independent review found no actionable defect. The affected gate retry
-finished red: session-view, browser and conformance passed; a separate terminal
-gate passed with exit 0 and 1,281 tests after the combined lane stopped at the
-client failure. Client had 3,222 passes and one modeled blob-jail
-refusal failure at `client/workspace_test.gleam:900`. Focused runs with both
-the candidate and saved unchanged sanitizer reproduce it. The initial attempt
-passed static checks but could not fetch preparation dependencies under
-network restrictions. Scope confirmation was requested before fixing this
-separate boundary. The aggregate gate is not green.
+The sanitizer regressions and exhaustive scalar differential pass. The writer
+regression observes actual sleep, normal-request wake, repeated renewals and
+retirement on lease loss. Synthetic promoted-garbage fixtures shrink leased
+idle heap from 13.1 to 16.4 MB down to 4 KB; the unleased thirty-second branch
+also reaches 4 KB. A further twenty-second lease probe renews at 20,001 ms
+for both versions, with 68 additional reductions on the candidate's first
+wake. These are per-process fixture results, not installed RSS savings.
 
-The follow-up writer change uses existing Weft hibernation before the next
-lease tick, without changing renewal cadence. In a disposable synthetic
-old-generation garbage fixture, leased idle heap fell from 13.1 to 16.4 MB to
-4 KB; the unleased 30-second branch also fell to 4 KB. Wake cost increased
-by 68 reductions in the leased fixture. These are per-process synthetic
-results, not installed RSS savings. All four renewal regressions pass; the
-unchanged writer fails the new hibernation assertion. Runtime's 187 tests,
-conformance's 98 tests and the corrected static checks passed. The affected gate finished red in 565 seconds: client had 3,221 passes and
-two failures, zero skips. These were the known blob refusal failure and a
-native TUI missing-module failure overlapping a concurrent distribution build.
-An isolated TUI rerun passed all five tests with exit 0 in 18.10 seconds. The corrected static lane passed separately. Independent review found no
-custody or timer defect. Linux exact-head signoff has not run.
+The full affected gate against `c66bd2726` now passes, exit 0 in 563 seconds:
+session-view 442, browser 942, runtime 187, conformance 98, client 3,223 and
+terminal 1,281 tests; no undeclared skip. Fixture repair `36e115c7b` explicitly
+configures and protects the test's blob store because production no longer
+implicitly masks workspace `.blobs`. Every assertion remains. Independent
+review found the repair sound. This supersedes the earlier red local gates.
+A separate pre-existing ancestor-mask blob-read limitation is reproduced and
+recorded in the report; the fixture repair does not prove that actual daemon
+blob reads work.
 
-Next: disposition the existing client gate failure and finish Linux signoff,
-then compare a reviewed release under matched installed workloads. The clean-tree distribution build at `6a7fe8734` passed server and client
-smoke and includes both optimizations. It has not been installed.
-Retained job history, Lustre cache/model state and supervisor restart inputs
-remain measurement candidates; none was trimmed. Stream-fragment copying was
-inactive in the follow-up probe. The resource optimization goal remains active
+Further browser probing identified image-key construction before checking
+whether a row has pictures. A disposable generated-code prototype saves 5.5%
+reductions in a thirty-turn page fixture, with identical rendered HTML and
+all eleven image-view tests passing. It has not changed production source.
+Projection caches and active job state remain measurement candidates; none
+was trimmed. The report preserves reproducible probes and raw counters.
+
+Next: publish the reviewed branch for required Linux exact-head signoff, then
+perform a controlled installed before/after comparison. Publishing and the
+installed update have not occurred. The clean-tree distribution at `6a7fe8734`
+passed server/client smoke and includes both production optimizations. The
+subsequent change is test-only. The resource optimization goal remains active
 until installed CPU and memory improvements have been verified.
 
 The prior browser-work handoff follows as inherited context. Its remote CI
