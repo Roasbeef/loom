@@ -26,10 +26,12 @@ pub fn orchestration() -> String {
 
 /// A complete `cap/lsp_sql` program that shows the shapes models get wrong:
 /// every branch of the top-level `case` returns a `report.Outcome`
-/// (`report.failure`, or `report.value` around a `report.string`), `None` and
-/// `Some` are imported only because both are used, rows are joined with
-/// `string.join`, and errors are rendered with the modules' own `error_text`
-/// functions. The codemode end-to-end test compiles this exact string.
+/// (`report.failure`, or `report.text`), rows are joined with `string.join`,
+/// and errors are rendered with the modules' own `error_text` functions.
+/// It is the whole of the answer in one call: `collect_seeds` captures and
+/// `references` runs the documented join, so the program carries no `Plan`,
+/// no `Target` and no `RowDecoder`. The codemode end-to-end test compiles
+/// this exact string.
 ///
 /// ## Examples
 ///
@@ -37,7 +39,7 @@ pub fn orchestration() -> String {
 /// // Submit lsp_sql_skeleton() as code_mode's program with seam: "workspace".
 /// ```
 pub fn lsp_sql_skeleton() -> String {
-  "import cap/lsp_sql\nimport cap/report\nimport gleam/option.{None, Some}\nimport gleam/string\n\npub fn main() -> report.Outcome {\n  let file = \"auth/multi_authenticator.go\"\n  let plan =\n    lsp_sql.Plan(\"gopls\", \".\", [file], [\n      lsp_sql.Target(\"MultiAuthenticator.AcceptForScheme\", file, None),\n      lsp_sql.Target(\"AcceptForScheme\", file, Some(69)),\n    ])\n  case lsp_sql.collect(plan) {\n    Error(error) -> report.failure(lsp_sql.error_text(error))\n    Ok(observation) ->\n      case\n        lsp_sql.query(\n          observation,\n          \"SELECT t.symbol, count(r.target_id) FROM targets t \"\n            <> \"LEFT JOIN \\\"references\\\" r ON r.target_id = t.id GROUP BY t.id\",\n          [],\n          fn(row) {\n            case row {\n              [symbol, count] ->\n                Ok(lsp_sql.cell_text(symbol) <> \": \" <> lsp_sql.cell_text(count))\n              _ -> Error(\"expected two columns\")\n            }\n          },\n        )\n      {\n        Error(error) -> report.failure(lsp_sql.query_error_text(error))\n        Ok(answer) ->\n          report.value(report.string(string.join(answer.rows, \"\\n\")))\n      }\n  }\n}\n"
+  "import cap/lsp_sql\nimport cap/report\nimport gleam/int\nimport gleam/list\nimport gleam/string\n\npub fn main() -> report.Outcome {\n  let file = \"auth/multi_authenticator.go\"\n  let seeds = [\n    lsp_sql.target(\"MultiAuthenticator.AcceptForScheme\", file),\n    lsp_sql.target_at(\"AcceptForScheme\", file, 69),\n  ]\n  case lsp_sql.collect_seeds([], seeds) {\n    Error(error) -> report.failure(lsp_sql.error_text(error))\n    Ok(observation) ->\n      case lsp_sql.references(observation) {\n        Error(error) -> report.failure(lsp_sql.query_error_text(error))\n        Ok(references) ->\n          report.text(\n            references\n            |> list.map(fn(reference) {\n              reference.symbol\n                <> \" \"\n                <> reference.path\n                <> \":\"\n                <> int.to_string(reference.line)\n                <> \": \"\n                <> string.trim(reference.text)\n            })\n            |> string.join(\"\\n\"),\n          )\n      }\n  }\n}\n"
 }
 
 /// A complete shell-probe program: independent `proc.stdout` probes whose
