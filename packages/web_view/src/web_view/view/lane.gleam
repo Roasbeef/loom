@@ -1254,6 +1254,12 @@ fn preview(text: String) -> List(Element(message)) {
 // counts the lines of the block the summary stands for and the time it took,
 // the summary is the preview, and the chevron opens the block's own text. A
 // summary alone, with no text behind it, counts and opens its own lines.
+//
+// The preview is one line, so a summary longer than that would never be read
+// whole on this page. When it is longer, the body opens with the summary in
+// full (`more_of`, the same test the lone-summary branch uses) and the block's
+// own text follows it. The heading still counts the block's own lines, because
+// the count is read from `first.text` and not from the body.
 fn summary_row(
   text: String,
   held: List(Line),
@@ -1272,7 +1278,7 @@ fn summary_row(
         step_words.Summarized,
         first.text,
         summary,
-        held,
+        list.append(more_of(summary), held),
         known,
         took,
         heir,

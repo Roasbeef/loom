@@ -810,7 +810,10 @@ page keys and nonces, and the relay into the session's gateway.
   `Reasoning`, `SummarizedReasoning`) is drawn by `lane.reasoning_row`:
   `step_words.reasoning_of` heading (`Reasoning (summarized)`, the line count
   when there is more to open, the time), a one-line preview, and the text as
-  Markdown behind the chevron. `live.Opened(elapsed_ms)` is the
+  Markdown behind the chevron. A summarized block whose label is longer than
+  that one line (`lane.summary_row`) opens with the whole label first, then
+  the block's own text; the heading still counts the block's lines.
+  `live.Opened(elapsed_ms)` is the
   row before anything streams: while the followed strand's phase is `assistant`
   or `streaming` and no stream is held, `component.live` returns it alone,
   `Thinking · <loom-elapsed offset>` (the browser counts the reading on, so no
