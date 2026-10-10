@@ -2384,7 +2384,7 @@ pub fn the_lsp_sql_schema_and_recipe_reach_the_model_test() {
     codemode.SeamOffer(
       ..workspace_offer(),
       allowed_imports: [
-        "cap/lsp_sql", "cap/report", "gleam/option", "gleam/string",
+        "cap/lsp_sql", "cap/report", "gleam/int", "gleam/list", "gleam/string",
       ],
       serviced_caps: ["lsp.snapshot"],
     )
@@ -2456,7 +2456,9 @@ pub fn the_shell_probe_recipe_appears_once_however_many_seams_admit_it_test() {
 }
 
 pub fn the_lsp_sql_recipe_appears_once_however_many_seams_admit_it_test() {
-  let imports = ["cap/lsp_sql", "cap/report", "gleam/option", "gleam/string"]
+  let imports = [
+    "cap/lsp_sql", "cap/report", "gleam/int", "gleam/list", "gleam/string",
+  ]
   let seams =
     codemode.Seams(
       default: codemode.SeamOffer(

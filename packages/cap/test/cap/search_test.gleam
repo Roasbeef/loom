@@ -527,3 +527,134 @@ pub fn read_lines_channel_down_test() {
   assert search.read_lines("p", from: 1, to: 2)
     == Error(search.SearchUnavailable("broker exited"))
 }
+
+// --- the two reductions ----------------------------------------------------
+//
+// `grep_text` and `glob_paths` are thin: the query and the call are `grep`'s
+// and `glob`'s, and the only thing they own is the reduction. So these assert
+// the rendering over a fake that answers with the same batch `grep`'s own test
+// uses, which pins that the wrapper sends the default query and renders what
+// came back — not that it reinvented the call.
+
+/// Every match becomes one `path:line:text` line, in the order the scan
+/// returned them, with the column and the context lines left out.
+pub fn grep_text_renders_one_line_per_match_test() {
+  install_fake(with: fn(_cap, _args, _deadline) {
+    Ok(
+      map([
+        #(
+          "matches",
+          msgpack.ArrayValue([
+            map([
+              #("path", text("src/app.gleam")),
+              #("line", number(12)),
+              #("column", number(3)),
+              #("text", text("  panic as \"unreachable\"")),
+              #("before", msgpack.ArrayValue([text("fn boom() {")])),
+              #("after", msgpack.ArrayValue([text("}")])),
+            ]),
+            map([
+              #("path", text("src/util.gleam")),
+              #("line", number(7)),
+              #("column", number(1)),
+              #("text", text("pub fn greet() {")),
+              #("before", msgpack.ArrayValue([])),
+              #("after", msgpack.ArrayValue([])),
+            ]),
+          ]),
+        ),
+        #("files_scanned", number(9)),
+        #("files_skipped", number(0)),
+        #("coverage", text("exhaustive")),
+      ]),
+    )
+  })
+
+  assert search.grep_text(under: "src", matching: "panic")
+    == Ok([
+      "src/app.gleam:12:  panic as \"unreachable\"",
+      "src/util.gleam:7:pub fn greet() {",
+    ])
+}
+
+/// An empty scan is `Ok([])`, not an error: no match is an answer.
+pub fn grep_text_answers_empty_for_no_matches_test() {
+  install_fake(with: fn(_cap, _args, _deadline) {
+    Ok(
+      map([
+        #("matches", msgpack.ArrayValue([])),
+        #("files_scanned", number(4)),
+        #("files_skipped", number(0)),
+        #("coverage", text("exhaustive")),
+      ]),
+    )
+  })
+
+  assert search.grep_text(under: "src", matching: "nothing") == Ok([])
+}
+
+/// A refused call stays refused with its typed error, so the wrapper adds no
+/// catch-all that would turn a refusal into an empty answer.
+pub fn grep_text_keeps_the_typed_refusal_test() {
+  install_fake(with: fn(_cap, _args, _deadline) {
+    Error(channel.Denied("invalid_argument", "pattern limit exceeded"))
+  })
+
+  assert search.grep_text(under: "src", matching: "[")
+    == Error(search.InvalidArgument("pattern limit exceeded"))
+}
+
+/// The rendering is `match_lines`, which takes the list, so it is tested
+/// without a channel at all: the wrapper's own line and the pinned batch
+/// answer the same question.
+pub fn match_lines_renders_path_line_and_text_test() {
+  assert search.match_lines([
+      search.Match("a.gleam", 1, 1, "one", [], []),
+      search.Match("b/c.gleam", 20, 5, "two", ["before"], ["after"]),
+    ])
+    == ["a.gleam:1:one", "b/c.gleam:20:two"]
+}
+
+/// `glob_paths` is `glob` with the entries reduced to their paths, in the
+/// listing's order, and it drops the `Entry` fields rather than the listing.
+pub fn glob_paths_keeps_the_listing_order_and_drops_the_fields_test() {
+  install_fake(with: fn(_cap, _args, _deadline) {
+    Ok(
+      map([
+        #(
+          "entries",
+          msgpack.ArrayValue([
+            map([
+              #("path", text("src/a.gleam")),
+              #("kind", text("file")),
+              #("size", number(10)),
+              #("mtime", number(1_700_000_000)),
+            ]),
+            map([
+              #("path", text("src/dir")),
+              #("kind", text("directory")),
+              #("size", number(0)),
+              #("mtime", number(1_700_000_001)),
+            ]),
+          ]),
+        ),
+        #("truncated", msgpack.BoolValue(False)),
+      ]),
+    )
+  })
+
+  assert search.glob_paths(under: "src", matching: "**/*")
+    == Ok(["src/a.gleam", "src/dir"])
+}
+
+/// The reduction behind `glob_paths` takes the entry list, so it is tested
+/// with a symlink beside a file: the kind is carried and not consulted, since
+/// dropping the fields is the whole of what this does.
+pub fn entry_paths_keeps_every_kind_of_entry_test() {
+  assert search.entry_paths([
+      search.Entry("a.gleam", search.File, 10, 1),
+      search.Entry("link", search.Symlink("../elsewhere"), 0, 2),
+      search.Entry("dir", search.Directory, 0, 3),
+    ])
+    == ["a.gleam", "link", "dir"]
+}

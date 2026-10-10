@@ -31,7 +31,7 @@
 ////   ec90749a5cecf84dd9562ca2ffbf5b970af787dcb0a2301e8d48183b44311f2b  packages/cap/src/cap/job.gleam
 ////   17a9601d4841ac8c598885f4e4d64ed61c44bf358f0a3d4fded9a788154a382b  packages/cap/src/cap/kv.gleam
 ////   e96e89bf306534e8ed6b6532f234b92576594e322d7424162f478be1d60301e8  packages/cap/src/cap/lsp.gleam
-////   92d8ef8e146f4085e17964c285334ca8085457c382228876d52691e5be23d3f3  packages/cap/src/cap/lsp_sql.gleam
+////   f5b100cebb72c327fb76fe9006cd2627fda68aaccbcda9aaf914c43c236b0697  packages/cap/src/cap/lsp_sql.gleam
 ////   a90f1b65b4b7a59c6fd0ac655210963b094e4a527c648b9291c54df082fc0f88  packages/cap/src/cap/mcp.gleam
 ////   bdb1c89dbfa22358935bf092c103d7bc4defa2e71e48748592d7b4f6e9d8f164  packages/cap/src/cap/net.gleam
 ////   9eec4c79212a6fb20f448392a8281ee55ca4add85b7da59d4bf1138ddd29d129  packages/cap/src/cap/notes.gleam
@@ -40,13 +40,13 @@
 ////   102f12585b03c0a8f50790e891d3420d3b04decb444aaf5bef82ccf802de7e1e  packages/cap/src/cap/report.gleam
 ////   909bbbc014278c57bb888b3e4c834ba52e405855bd52156a2ff35345283a1274  packages/cap/src/cap/runtime.gleam
 ////   3156b1ffaca196b1fec58975df71e52158b8ee298b2f1b36a4cbe9df72de3f64  packages/cap/src/cap/schedule.gleam
-////   df1e81353fbcfef3ec434f48869e35070f1ab79d0cc1354f922fd46ccc652a00  packages/cap/src/cap/search.gleam
+////   508521d05b5a63799e90cee1a2f0e4bd9f24ed8b89aa497a75f7171fc3ba402b  packages/cap/src/cap/search.gleam
 ////   982b0d1630132ae6c19e3308d16a5cbe92917715a6fbc696954c858da4f845a3  packages/cap/src/cap/strand.gleam
 ////   3196badca88c32f90b568ca3e596b048f543ddb82cc31f591563bf4db938eb15  packages/cap/src/cap/task.gleam
 ////   dade50ada67f4ac667f0b92cb10d0da213cac327897524dbb006e02cf3c90963  packages/cap/src/cap/workflow.gleam
 ////   13e21c346eea7292f312ec82b6fb42a6b86158b9211ec18f4d574186313f7f0d  scripts/gen-prelude.py
 ////
-//// Body digest (every line after the marker): 4ebe15292d1d149f7c09100879a74ba13d92b3133236d4448f0c1b2f94c68c2a
+//// Body digest (every line after the marker): 5b24f8bd2257427043f4050d4c1a1ed3710edd78f7389f5530865167d87ca7d7
 
 // --- generated body: the digests above cover every line below this one ---
 /// Every module of the capability prelude, in the order the
@@ -1291,6 +1291,11 @@ pub type QueryLimit {
 pub type QueryResult(a) {
   QueryResult(columns: List(String), rows: List(a), observation: Metadata)
 }
+/// One reference of one requested seed, as the documented join returns
+/// it.
+pub type Reference {
+  Reference(symbol: String, path: String, line: Int, column: Int, text: String)
+}
 /// A reference seed with an explicit file and optional one-based line.
 ///
 /// The language server resolves `symbol` by name within `path`. A bare
@@ -1332,6 +1337,37 @@ pub fn cell_text(Cell) -> String
 ///  ```
 ///
 pub fn collect(Plan) -> Result(Observation, Error)
+/// Captures one observation over these outline files and no reference
+/// seeds, spending one capture admission exactly as `collect` does.
+///
+/// Use this for the outline question alone: what a file declares, without
+/// asking the server for any symbol's callers.
+///
+///  ## Examples
+///
+///  ```gleam
+///  lsp_sql.collect_files([\"src/app.gleam\"])
+///  ```
+///
+///
+pub fn collect_files(List(String)) -> Result(Observation, Error)
+/// Captures one observation over these outline files and these reference
+/// seeds, spending one capture admission exactly as `collect` does.
+///
+/// The server and root are inferred from the files, as `plan` documents;
+/// a server that wants the qualified spelling of a symbol gets it only if
+/// the seed carries it.
+///
+///  ## Examples
+///
+///  ```gleam
+///  lsp_sql.collect_seeds([\"src/app.gleam\"], [
+///    lsp_sql.target(\"util.Greet\", \"src/util.gleam\"),
+///  ])
+///  ```
+///
+///
+pub fn collect_seeds(List(String), List(Target)) -> Result(Observation, Error)
 /// A one-line rendering of a capture `Error`, for a program building a
 /// report out of what went wrong.
 ///
@@ -1424,6 +1460,67 @@ pub fn query(Observation, String, List(Cell), fn(List(Cell)) -> Result(a, String
 ///
 ///
 pub fn query_error_text(QueryError) -> String
+/// Runs one bounded statement whose single column answers one value, as
+/// `Some(text)`, or `None` when the statement returned no rows.
+///
+/// A row of any other width is a `DecodeFailed`, and an answer of more
+/// than one row is an `InvalidQuery` — each rather than a silent pick:
+/// two columns where one was asked for, or two rows where one value was
+/// asked for, mean the statement and the caller disagree about the
+/// question. The budgets are `query`'s.
+///
+///  ## Examples
+///
+///  ```gleam
+///  let assert Ok(Some(count)) =
+///    lsp_sql.query_one(observation, \"SELECT count(*) FROM symbols\", [])
+///  ```
+///
+///
+pub fn query_one(Observation, String, List(Cell)) -> Result(option.Option(String), QueryError)
+/// Runs one bounded statement and renders every projected cell as text
+/// with `cell_text`, so a caller reads rows without a decoder or a column
+/// count.
+///
+/// The budget is `query`'s and unchanged: a statement that exceeds a
+/// fixed limit is refused as `QueryLimitExceeded`, never truncated into a
+/// shorter answer. `NULL` renders as the text \"NULL\", so a row's width is
+/// always the statement's projected width.
+///
+///  ## Examples
+///
+///  ```gleam
+///  let assert Ok(rows) =
+///    lsp_sql.query_text(
+///      observation,
+///      \"SELECT name, kind FROM symbols ORDER BY name\",
+///      [],
+///    )
+///  // rows is a List(List(String)); one string.join prints it.
+///  ```
+///
+///
+pub fn query_text(Observation, String, List(Cell)) -> Result(List(List(String)), QueryError)
+/// Every reference of every requested seed in the observation, ordered by
+/// seed and then by position.
+///
+/// This is the join the module doc advertises, run for you: `targets`
+/// joined to `\"references\"` on `target_id = id`. A seed that resolved to
+/// no reference contributes no row, so an empty answer means no reference
+/// was found for any requested seed during this observation, and
+/// `metadata(observation).withheld` says whether any location was
+/// withheld.
+///
+///  ## Examples
+///
+///  ```gleam
+///  let seeds = [lsp_sql.target(\"util.Greet\", \"src/util.gleam\")]
+///  let assert Ok(observation) = lsp_sql.collect_seeds([], seeds)
+///  let assert Ok(references) = lsp_sql.references(observation)
+///  ```
+///
+///
+pub fn references(Observation) -> Result(List(Reference), QueryError)
 /// The fixed tables and columns every query runs against, one table per
 /// line, so a program can print them instead of probing `sqlite_master`,
 /// which the read-only authorizer refuses.
@@ -1443,6 +1540,28 @@ pub fn query_error_text(QueryError) -> String
 ///
 ///
 pub fn schema() -> String
+/// A reference seed whose line is not known, so the server resolves the
+/// name anywhere in `path`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  lsp_sql.target(\"util.Greet\", \"src/util.gleam\")
+///  ```
+///
+///
+pub fn target(String, String) -> Target
+/// A reference seed narrowed to a one-based line, which is how two
+/// symbols of the same name in one file are told apart.
+///
+///  ## Examples
+///
+///  ```gleam
+///  lsp_sql.target_at(\"Greet\", \"src/util.gleam\", 12)
+///  ```
+///
+///
+pub fn target_at(String, String, Int) -> Target
 ",
   ),
   #(
@@ -2997,6 +3116,25 @@ pub fn error_text(SearchError) -> String
 ///
 ///
 pub fn glob(GlobQuery) -> Result(Listing, SearchError)
+/// Lists the paths under `root` matching `pattern`, and nothing else
+/// about them, with every bound at its default.
+///
+/// Paths come back in the same order as `glob`'s entries, so this is
+/// `glob` with the `Entry` fields dropped. Use `glob` when the kind, the
+/// size, the mtime or the completeness of the listing is part of the
+/// answer: a truncated walk looks like a complete one here, exactly as in
+/// `grep_text`.
+///
+/// Capability: `search.glob`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  let assert Ok(paths) = search.glob_paths(under: \"src\", matching: \"**/*.gleam\")
+///  ```
+///
+///
+pub fn glob_paths(under: String, matching: String) -> Result(List(String), SearchError)
 /// A query that walks `root` for `pattern` with every bound at its
 /// default: `default_max_entries`, `SkipHidden`, `default_prune`.
 ///
@@ -3057,6 +3195,32 @@ pub fn grep(GrepQuery) -> Result(Found, SearchError)
 ///
 ///
 pub fn grep_query(under: String, matching: String) -> GrepQuery
+/// Searches `root` for `pattern` and returns one `path:line:text` line
+/// per match, in walk order, with every bound at its default.
+///
+/// This is `grep` with the query's defaults filled in and the matches
+/// rendered, which is what a caller does with a `Found` almost every
+/// time. Use `grep` itself when any of the following is the answer rather
+/// than a detail: `coverage`, `files_scanned`, `files_skipped`, the
+/// column of a match, its context lines, or a bound other than the
+/// defaults.
+///
+/// **A capped answer looks like a complete one here.** As with
+/// `proc.stdout`, the rendering drops the coverage that says whether the
+/// scan stopped short, so a model that needs to distinguish them must
+/// read `grep`'s `Found.coverage` instead.
+///
+/// Capability: `search.grep`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  let assert Ok(lines) = search.grep_text(under: \"src\", matching: \"panic\")
+///  // Each element is one match, rendered \"path:line:text\".
+///  ```
+///
+///
+pub fn grep_text(under: String, matching: String) -> Result(List(String), SearchError)
 /// Reads the lines of `path` from `first` to `last`, both 1-based and
 /// inclusive. `last` past the end of the file is clamped and the clamped
 /// value comes back in `Lines.last`; an inverted or over-wide span is
@@ -4206,6 +4370,11 @@ pub type QueryLimit {
 /// Typed projected rows with unchanged capture provenance beside them.
 pub type QueryResult(a) {
   QueryResult(columns: List(String), rows: List(a), observation: Metadata)
+}
+/// One reference of one requested seed, as the documented join returns
+/// it.
+pub type Reference {
+  Reference(symbol: String, path: String, line: Int, column: Int, text: String)
 }
 /// A reference seed with an explicit file and optional one-based line.
 ///
