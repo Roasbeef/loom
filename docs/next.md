@@ -1,5 +1,64 @@
 # Current handoff
 
+This edition records the October 10, 2026 CPU and memory investigation on
+`codex/perf-text-hygiene`, based on `c66bd27264cd8b1350ed8309be2388d22fa0d195`.
+The [resource profile](review/loom-resource-profile-2026-10-10.md) records live
+Pickglass captures, bounded state/GC probes, and matched before/after results.
+The installed daemon and clients were not replaced or restarted.
+
+## Resource work and next steps
+
+The pure `session_view/text_hygiene.multiline` fast path avoids codepoint-list
+construction for clean text while preserving owned binary output. Live traces
+found about 258 MB of sanitizer allocation in one browser window and 130 MB
+in one terminal window, each about 15 seconds. The matched small browser
+fixture saves 11% reductions and 79% sanitizer allocation. Those are allocation
+and work measurements, not proof of permanent installed RSS savings.
+
+The sanitizer regressions and exhaustive scalar differential pass. The writer
+regression observes actual sleep, normal-request wake, repeated renewals and
+retirement on lease loss. Synthetic promoted-garbage fixtures shrink leased
+idle heap from 13.1 to 16.4 MB down to 4 KB; the unleased thirty-second branch
+also reaches 4 KB. A further twenty-second lease probe renews at 20,001 ms
+for both versions, with 68 additional reductions on the candidate's first
+wake. These are per-process fixture results, not installed RSS savings.
+
+The full affected gate against `c66bd2726` now passes, exit 0 in 563 seconds:
+session-view 442, browser 942, runtime 187, conformance 98, client 3,223 and
+terminal 1,281 tests; no undeclared skip. Fixture repair `36e115c7b` explicitly
+configures and protects the test's blob store because production no longer
+implicitly masks workspace `.blobs`. Every assertion remains. Independent
+review found the repair sound. This supersedes the earlier red local gates.
+A separate pre-existing ancestor-mask blob-read limitation is reproduced and
+recorded in the report; the fixture repair does not prove that actual daemon
+blob reads work.
+
+Further browser probing identified image-key construction before checking
+whether a row has pictures. The source follow-up moves that construction
+into the drawable-image branch. All eleven image-view tests pass; independent
+review found no actionable defect. A matched thirty-turn fixture saves 5.7%
+reductions and eliminates 1.92 MB of image-key allocation per 100 renders,
+with identical rendered HTML. The report preserves the earlier prototype and
+the source measurements. Projection caches and active job state remain
+measurement candidates; none was trimmed.
+
+[PR #945](https://github.com/Roasbeef/loom/pull/945) is open as a draft. Hosted
+CI and required Linux signoff started on `bf14af049`; they do not cover this
+source follow-up. Its full affected gate against `bf14af049` passes, exit 0
+in 546 seconds: browser 942, web-client 272, client 3,223 and conformance 98
+tests, whole-tree static checks and no undeclared skip. Linux signoff and
+hosted verdicts must match the latest published head before readiness. A clean-tree distribution at `bf14af049`
+passed server/client smoke and contains the sanitizer and writer changes.
+The installed processes remain unchanged. The resource optimization goal
+remains active until matched CPU and memory improvements are verified; an
+async question asks whether a controlled installed restart is acceptable,
+with isolated candidate measurements as the default.
+
+The prior browser-work handoff follows as inherited context. Its remote CI
+and merge claims have not been refreshed by this profiling task.
+
+# Previous handoff: browser result work
+
 This edition records the October 8, 2026 browser result work on
 `fix/browser-tool-output`, originally based on `16c3c0ee5` and now integrated
 with PR #927's readiness head `71887e1b7` and main `16f886bd0`. Claims were checked against

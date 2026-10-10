@@ -77,3 +77,49 @@ pub fn clean_text_is_unchanged_whole_and_a_rewrite_ends_the_prefix_test() {
   assert text_hygiene.unchanged_prefix("\u{1b}[31mred") == 0
   assert text_hygiene.unchanged_prefix("") == 0
 }
+
+pub fn every_unsafe_codepoint_still_rewrites_inside_clean_text_test() {
+  let unsafe =
+    codes(0, 31)
+    |> list.append(codes(0x7F, 0x9F))
+    |> list.append([0xAD, 0x061C, 0x2028, 0x2029, 0xFEFF])
+    |> list.append(codes(0x200B, 0x200F))
+    |> list.append(codes(0x202A, 0x202E))
+    |> list.append(codes(0x2060, 0x2069))
+    |> list.append(codes(0xFE00, 0xFE0F))
+    |> list.append(codes(0xE0000, 0xE007F))
+
+  list.each(unsafe, fn(code) {
+    let assert Ok(point) = string.utf_codepoint(code)
+      as "all unsafe ranges contain valid Unicode scalar values"
+    let inserted = string.from_utf_codepoints([point])
+    let rewritten = case code {
+      9 -> "    "
+      10 | 13 -> "\n"
+      _ -> "�"
+    }
+    assert text_hygiene.multiline("漢abc" <> inserted <> "漢xyz👍")
+      == "漢abc" <> rewritten <> "漢xyz👍"
+      as "the clean prefix must not bypass a later unsafe codepoint"
+  })
+}
+
+pub fn escape_sequences_and_line_endings_keep_their_existing_meaning_test() {
+  let cases = [
+    #("before\u{1b}[31mred\u{1b}[0mafter", "beforeredafter"),
+    #("before\u{1b}]title\u{7}after", "beforeafter"),
+    #("before\u{9d}title\u{9c}after", "beforeafter"),
+    #("before\u{1b}[", "before�["),
+    #("before\r\nafter\rnext\tend", "before\nafter\nnext    end"),
+  ]
+  list.each(cases, fn(pair) {
+    assert text_hygiene.multiline(pair.0) == pair.1
+  })
+}
+
+fn codes(first: Int, last: Int) -> List(Int) {
+  case first > last {
+    True -> []
+    False -> [first, ..codes(first + 1, last)]
+  }
+}

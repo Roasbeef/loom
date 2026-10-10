@@ -1,0 +1,1 @@
+ancestor_mask_survives_blob_exemption=true native_read=protected_path

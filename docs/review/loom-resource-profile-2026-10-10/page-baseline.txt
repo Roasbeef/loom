@@ -1,0 +1,9 @@
+mode=baseline page_flat_bytes=26272 initial_view_sha256=848B696EB38B05DFBD24A05F0BCDDA218700766EDD608409430D80A39902C204
+mode=baseline renders=1000 us=29690 reductions=4330893 patch={}
+mode=baseline renders=1000 us=29353 reductions=4329915 patch={}
+mode=baseline renders=1000 us=30604 reductions=4329046 patch={}
+mode=baseline renders=1000 us=30845 reductions=4329029 patch={}
+mode=baseline renders=1000 us=29860 reductions=4328535 patch={}
+mode=baseline module=web_view@operator_page renders=100 allocated_bytes=3208800
+mode=baseline module=session_view@text_hygiene renders=100 allocated_bytes=410400
+mode=baseline module=lustre@vdom@diff renders=100 allocated_bytes=1515200

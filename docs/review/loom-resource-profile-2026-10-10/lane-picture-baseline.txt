@@ -1,0 +1,11 @@
+html_sha256=190E15FE3D48EB23F36D05338E13E9FDD6C3AEE547FF55D456430DD6F8E13B8A
+mode=baseline page_flat_bytes=262504 initial_view_sha256=A04759C780F7F04A6C30F11E7E7931F45DF4E097930875E3D1694D82ECBEA7DF
+mode=baseline renders=1000 us=281824 reductions=29801995 patch={}
+mode=baseline renders=1000 us=277858 reductions=29791914 patch={}
+mode=baseline renders=1000 us=284865 reductions=29793333 patch={}
+mode=baseline renders=1000 us=285266 reductions=29793757 patch={}
+mode=baseline renders=1000 us=288233 reductions=29836363 patch={}
+mode=baseline module=web_view@operator_page renders=100 allocated_bytes=7898496
+mode=baseline module=web_view@view@lane renders=100 allocated_bytes=18898608
+mode=baseline module=session_view@transcript_image renders=100 allocated_bytes=1920000
+mode=baseline module=lustre@vdom@diff renders=100 allocated_bytes=9911184

@@ -1,0 +1,22 @@
+baseline busy [{memory,9597392},
+               {total_heap_size,1199557},
+               {current_function,{gleam_erlang_ffi,select,2}}]
+baseline busy_commits=1000 busy_us=3878 busy_reductions=106180
+baseline idle [{memory,16365320},
+               {total_heap_size,2045548},
+               {current_function,{gleam_erlang_ffi,select,2}}]
+baseline wake_us=20 wake_reductions=100
+baseline renewed_ms=[] alive=true after_wake=[{memory,16365320},
+                                              {current_function,
+                                               {gleam_erlang_ffi,select,2}}]
+candidate busy [{memory,13089880},
+                {total_heap_size,1636118},
+                {current_function,{gleam_erlang_ffi,select,2}}]
+candidate busy_commits=1000 busy_us=3881 busy_reductions=104019
+candidate idle [{memory,4024},
+                {total_heap_size,386},
+                {current_function,{erlang,hibernate,3}}]
+candidate wake_us=31 wake_reductions=165
+candidate renewed_ms=[] alive=true after_wake=[{memory,13712},
+                                               {current_function,
+                                                {gleam_erlang_ffi,select,2}}]

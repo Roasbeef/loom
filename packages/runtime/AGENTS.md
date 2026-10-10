@@ -968,3 +968,15 @@ assistant while passing the full report to the machine. A local empty
 report establishes no consumption; owner loss without a report becomes an
 unknown observation. The existing usage hook sees the committed aggregate
 row once, and context readers use the assistant's final response usage.
+
+## Writer residency
+
+A writer uses `runtime/residency.hibernate_after_ms` when it has no lease.
+For a leased session it uses the smaller of that threshold and half the
+renewal interval (at least one millisecond). The renewal remains Weft's
+fixed-delay periodic timer; hibernation neither cancels nor re-arms it.
+A message wakes the same writer, preserving commit ordering, subscribers
+and lease custody. The shorter quiet period lets a parked writer release
+transient commit/read heap before the next heartbeat wakes its mailbox.
+`writer_renewal_test` observes actual hibernation, request wake-up, repeated
+renewal and abnormal retirement after lease loss.
