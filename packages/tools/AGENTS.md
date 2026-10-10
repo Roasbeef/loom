@@ -1035,6 +1035,13 @@ execute those exact strings and compare them with docs/examples; `shell_probes`
 offer admits every module it imports. The generated
 prelude advertises report JSON conversion and bounded strand.map.
 
+The `lsp_sql` recipe is the one that moved furthest: it is now the wrapper
+form — `collect_seeds` and `references`, no `Plan`, `Target` or `RowDecoder` —
+and its required-import list moved with it (`gleam/option` out; `gleam/int`
+and `gleam/list` in), since that list decides whether the recipe is shown at
+all. The codemode end-to-end test compiles the exact string, so the program
+the description teaches is known to compile rather than merely to render.
+
 ## Virtual `fs_read` namespaces
 
 `fs.Scheme` registers a read-only namespace by name, description sentence,
