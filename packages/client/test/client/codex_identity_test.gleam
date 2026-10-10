@@ -4,11 +4,15 @@
 //// Callback cases independently prove the selected issued client cannot drift.
 
 import client/codex/credentials
+import client/codex/network
 import client/codex/oauth
 import client/codex/oidc
 import gleam/bit_array
+import gleam/erlang/process
 import gleam/json
+import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
 import gleam/string
 import gleam/time/timestamp
 import gose
@@ -87,6 +91,8 @@ pub fn codex_signed_identity_pins_key_issuer_audience_expiry_nonce_test() {
       jwks,
     )
     == Error("invalid_identity")
+
+  // A key ID the set does not hold is still refused, under its own name.
   let unknown_key = gose.with_kid(key, "unknown-key")
   assert oidc.verify_with_keys(
       signed(claims, unknown_key),
@@ -95,7 +101,7 @@ pub fn codex_signed_identity_pins_key_issuer_audience_expiry_nonce_test() {
       1_000_000,
       jwks,
     )
-    == Error("invalid_identity")
+    == Error("unknown_signing_key")
 
   // Expiry is mandatory even when the issuer, audience and signature agree.
   let assert Ok(no_expiry) =
@@ -284,4 +290,73 @@ pub fn codex_key_set_certificate_members_do_not_hide_the_signing_key_test() {
     )
     == Ok("account-one")
   assert oidc.without_certificates("not json") == "not json"
+}
+
+pub fn codex_a_key_the_set_lacks_is_named_and_fetched_again_test() {
+  let assert Ok(signing) = gose.generate_rsa(2048)
+    as "RSA fixture generation succeeds."
+  let signing = gose.with_kid(signing, "rotated-key")
+  let assert Ok(other) = gose.generate_rsa(2048)
+    as "RSA fixture generation succeeds."
+  let other = gose.with_kid(other, "retired-key")
+  let stale = published([other])
+  let fresh = published([other, signing])
+  let assert Ok(claims) =
+    jwt.claims()
+    |> jwt.with_issuer("https://auth.openai.com")
+    |> jwt.with_audience("oaiapp_loom")
+    |> jwt.with_subject("account-one")
+    |> jwt.with_expiration(timestamp.from_unix_seconds(2000))
+    |> jwt.with_claim("nonce", json.string("attempt-nonce"))
+    as "Nonce is a valid custom claim."
+  let token = signed(claims, signing)
+  let verification = oidc.Browser("attempt-nonce")
+
+  // A set that lacks the token's key says so, rather than calling the
+  // signature bad.
+  assert oidc.verify_with_keys(
+      token,
+      "oaiapp_loom",
+      verification,
+      1_000_000,
+      stale,
+    )
+    == Error("unknown_signing_key")
+
+  // A rotation the first fetch missed is absorbed by the second.
+  let #(fetch, served) = serving([stale, fresh])
+  assert oidc.verify(fetch, token, "oaiapp_loom", verification, 1_000_000)
+    == Ok("account-one")
+  assert process.receive(served, 0) == Error(Nil)
+
+  // A key that never appears costs exactly two fetches and keeps its name.
+  let #(fetch, served) = serving([stale, stale, fresh])
+  assert oidc.verify(fetch, token, "oaiapp_loom", verification, 1_000_000)
+    == Error("unknown_signing_key")
+  assert process.receive(served, 0) == Ok(fresh)
+}
+
+fn published(keys: List(gose.Key(String))) -> String {
+  let public =
+    list.map(keys, fn(key) {
+      let assert Ok(public) = gose.public_key(key)
+        as "The public verification key exists."
+      public
+    })
+  key_set.from_list(public) |> key_set.to_json |> json.to_string
+}
+
+/// A key endpoint that answers each fetch with the next queued body, and the
+/// queue, so a test can count the fetches it made.
+fn serving(
+  bodies: List(String),
+) -> #(fn(a, Int) -> Result(network.Response, String), process.Subject(String)) {
+  let queue = process.new_subject()
+  list.each(bodies, process.send(queue, _))
+  let fetch = fn(_request, _limit) {
+    process.receive(queue, 0)
+    |> result.replace_error("no_more_fixtures")
+    |> result.map(network.Response(200, _))
+  }
+  #(fetch, queue)
 }

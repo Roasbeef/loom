@@ -4,6 +4,14 @@
 //// requires a matching published key ID, and verifies issuer, audience and
 //// expiry before this module inspects subject and attempt nonce. The network
 //// path loads keys from the fixed issuer, never a token-controlled URL.
+////
+//// A token that names a key the published set does not hold is refused as
+//// `unknown_signing_key` rather than `invalid_identity`, and the network path
+//// fetches the set once more before refusing. The issuer rotates and reshapes
+//// its keys without notice, and on 2026-10-08 a change in how it published
+//// them read here as a bad signature; the distinct code says which of the two
+//// happened, and the second fetch absorbs a rotation that reached the token
+//// before the copy of the set this request was served.
 
 import client/codex/network
 import gleam/bit_array
@@ -54,6 +62,27 @@ pub fn verify(
   verification: Verification,
   now_ms: Int,
 ) -> Result(String, String) {
+  let check = fn(jwks) {
+    verify_with_keys(token, client_id, verification, now_ms, jwks)
+  }
+  use jwks <- result.try(published_keys(fetch))
+
+  // A key the set did not hold earns exactly one more fetch, so a rotation
+  // that reached the token first costs one request rather than a login, and
+  // a key that never appears costs no more than that.
+  case check(jwks) {
+    Error(reason) if reason == unknown_signing_key ->
+      published_keys(fetch) |> result.try(check)
+    answer -> answer
+  }
+}
+
+/// The refusal for a token whose key ID the published set does not hold.
+const unknown_signing_key = "unknown_signing_key"
+
+fn published_keys(
+  fetch: fn(http.HttpRequest, Int) -> Result(network.Response, String),
+) -> Result(String, String) {
   use response <- result.try(fetch(
     http.HttpRequest(
       "GET",
@@ -67,7 +96,7 @@ pub fn verify(
     when: response.status != 200,
     return: Error("identity_unavailable"),
   )
-  verify_with_keys(token, client_id, verification, now_ms, response.body)
+  Ok(response.body)
 }
 
 /// Validates a signed token against an injected published key set.
@@ -92,6 +121,13 @@ pub fn verify_with_keys(
   use keys <- result.try(
     key_set.from_json(without_certificates(jwks))
     |> result.replace_error("invalid_identity"),
+  )
+
+  // Asked before the verifier, whose own refusal of a missing key ID is the
+  // same `invalid_identity` a forged signature earns.
+  use <- bool.guard(
+    when: names_unpublished_key(token, keys),
+    return: Error(unknown_signing_key),
   )
   let options =
     jwt.JwtValidationOptions(
@@ -203,6 +239,24 @@ fn certificate_free_key(key: dict.Dict(String, Option(String))) -> json.Json {
     }
   })
   |> json.object
+}
+
+/// Whether the token names a key ID that the published set does not hold.
+///
+/// A token that will not parse, or names no key, is left to the verifier,
+/// which refuses it as `invalid_identity`; only a readable key ID absent from
+/// the set is the issuer's change rather than the token's fault.
+fn names_unpublished_key(token: String, keys: key_set.JwkSet) -> Bool {
+  let named =
+    jwt.parse(token)
+    |> result.replace_error(Nil)
+    |> result.try(jwt.kid)
+
+  case named {
+    Ok(kid) ->
+      !list.any(key_set.to_list(keys), fn(key) { gose.kid(key) == Ok(kid) })
+    Error(Nil) -> False
+  }
 }
 
 fn identity_decoder() -> decode.Decoder(Identity) {
