@@ -212,3 +212,44 @@ pub fn a_missing_or_unknown_saved_tab_is_no_choice_test() {
   assert layout_rule.restored_tab(Ok("jobs")) == None
   assert layout_rule.restored_tab(Ok("Changes")) == None
 }
+
+pub fn a_panel_width_is_kept_under_one_item_for_the_browser_test() {
+  assert layout_rule.width_key == "loom.panel.width.v1"
+  assert layout_rule.encode_width(480) == "480"
+}
+
+pub fn a_stored_width_in_range_is_restored_test() {
+  assert layout_rule.restored_width(Ok("480")) == Some(480)
+  assert layout_rule.restored_width(Ok("280")) == Some(280)
+  assert layout_rule.restored_width(Ok("4000")) == Some(4000)
+}
+
+// Text from storage is whatever anything wrote, so a width this release
+// would not choose, or no number at all, leaves the default standing.
+pub fn a_stored_width_out_of_range_or_malformed_is_ignored_test() {
+  assert layout_rule.restored_width(Error(Nil)) == None
+  assert layout_rule.restored_width(Ok("")) == None
+  assert layout_rule.restored_width(Ok("wide")) == None
+  assert layout_rule.restored_width(Ok("340px")) == None
+  assert layout_rule.restored_width(Ok("34.5")) == None
+  assert layout_rule.restored_width(Ok("279")) == None
+  assert layout_rule.restored_width(Ok("4001")) == None
+  assert layout_rule.restored_width(Ok("-340")) == None
+  assert layout_rule.restored_width(Ok("0")) == None
+  assert layout_rule.restored_width(Ok("99999999999999999999")) == None
+}
+
+pub fn every_width_in_range_round_trips_test() {
+  assert list.all(sweep(280, 4000), fn(width) {
+    layout_rule.restored_width(Ok(layout_rule.encode_width(width)))
+    == Some(width)
+  })
+}
+
+// Every integer from `low` to `high`, for the sweeps above.
+fn sweep(low: Int, high: Int) -> List(Int) {
+  case low > high {
+    True -> []
+    False -> [low, ..sweep(low + 1, high)]
+  }
+}
