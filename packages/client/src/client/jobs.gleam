@@ -2601,6 +2601,13 @@ fn listing(state: State, strand: String) -> List(Listed) {
       deadline_ms: held.record.deadline_ms,
     )
   })
+  // Youngest first, because every reader of a listing asks the same
+  // question first — what is still running — and `dict.values` order is
+  // the hash table's, which is no order at all. A cut anywhere in this
+  // list (`job_poll`'s `limit`, a program's own `list.take`) is
+  // deterministic only if the order is, so the sort lives where the
+  // rows are made rather than in each reader that needs it.
+  |> list.sort(fn(a, b) { int.compare(a.age_ms, b.age_ms) })
 }
 
 // The cancel ladder, asked for and recorded.

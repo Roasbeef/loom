@@ -246,6 +246,24 @@ pub type Listed {
   Listed(id: String, state: JobState, age_ms: Int, deadline_ms: Int)
 }
 
+/// Which jobs a listing shows.
+///
+/// The split the poll loop already reads — `is_pending` — named as a
+/// request the model can make, because "what is still running" is the
+/// question a strand with many jobs is asking and the terminal rows are
+/// what stack up. `AllJobs` is the default so the listing an
+/// unqualified call reads is unchanged.
+pub type ListingState {
+  /// Every job the strand owns, live and terminal alike.
+  AllJobs
+
+  /// Only the jobs worth polling again.
+  PendingJobs
+
+  /// Only the jobs that have ended.
+  TerminalJobs
+}
+
 /// Whether a write to a job's stdin closes it.
 ///
 /// A two-variant type rather than the JSON boolean the model writes,
@@ -435,7 +453,9 @@ fn poll_tool(
     name: poll_tool_name,
     description: "Read a background job: its state, and whatever it has "
       <> "printed since you last looked. Call it with no `job_id` to list "
-      <> "every job this strand owns. A job that is still running is a "
+      <> "every job this strand owns, youngest first (at most 100; pass "
+      <> "`limit` to narrow or `state` to filter). A job that is "
+      <> "still running is a "
       <> "**successful** answer, not a failure — do other work and poll "
       <> "again, or pass `wait_ms` to block for a while first (clamped to "
       <> int.to_string(max_wait_ms)
@@ -476,6 +496,26 @@ fn poll_tool(
             <> "job has finished, where `fs_read` reads it",
           ),
         ),
+        #(
+          "state",
+          tool.enum_property(
+            ["pending", "terminal", "all"],
+            "which jobs a listing (no `job_id`) shows: `pending` only the "
+              <> "ones still worth polling, `terminal` only the finished "
+              <> "ones, `all` (the default) every one of them. Ignored "
+              <> "when a `job_id` is given",
+          ),
+        ),
+        #(
+          "limit",
+          tool.integer_property(
+            "how many jobs a listing (no `job_id`) shows at most, "
+            <> "youngest first; clamped to 100, with 0 listing none and "
+            <> "naming the count in the answer instead. The rest are "
+            <> "counted in the answer rather than listed. Ignored when a "
+            <> "`job_id` is given",
+          ),
+        ),
       ],
       [],
     ),
@@ -496,14 +536,23 @@ fn run_poll(
   use job_id <- tool.with_arg(tool.optional_string(args, "job_id"))
   use wait_ms <- tool.with_arg(tool.optional_int(args, "wait_ms"))
   use since <- tool.with_arg(tool.optional_string(args, "since"))
+  use named_state <- tool.with_arg(tool.optional_string(args, "state"))
+  use limit <- tool.with_arg(tool.optional_int(args, "limit"))
 
   // No id is the listing, which is why there is no fourth tool. The two
   // wait and cursor arguments are silently unused there rather than
   // refused: a model that polls one job and then drops the id to see
   // them all is doing something sensible, and a refusal over a leftover
-  // argument would teach it not to.
+  // argument would teach it not to. The listing's own two arguments
+  // mirror that from the other side: ignored when an id is given, so
+  // one schema serves both questions without a leftover-argument
+  // refusal in either direction.
   case job_id {
-    None -> run_list(list_jobs, ctx)
+    None -> {
+      use state <- tool.with_arg(requested_listing_state(named_state))
+      use limit <- tool.with_arg(requested_limit(limit))
+      run_list(list_jobs, ctx, state, limit)
+    }
     Some(id) -> run_poll_one(poll, max_wait_ms, ctx, id, wait_ms, since)
   }
 }
@@ -528,35 +577,125 @@ fn run_poll_one(
 fn run_list(
   list_jobs: fn(Ctx) -> Result(List(Listed), Refusal),
   ctx: Ctx,
+  state: ListingState,
+  limit: Int,
 ) -> ToolOutcome {
   use listed <- tool.or_outcome(list_jobs(ctx), refusal_outcome)
-  case listed {
-    [] ->
-      tool.success(render_listed([]))
-      |> tool.with_details(json.Object([#("jobs", json.Array([]))]))
 
-    rows ->
-      tool.success(render_listed(rows))
-      |> tool.with_details(
-        json.Object([#("jobs", json.Array(list.map(rows, listed_json)))]),
-      )
-  }
+  // The filter runs before the count and the cut, so `total` in the
+  // details names how many jobs matched what was asked for rather than
+  // how many the strand owns altogether — the number a model passing
+  // `state: "pending"` and `limit: 5` wants is "I have narrowed it to
+  // these", not "the pool is bigger than you think". The sort is the
+  // tool's own promise rather than the door's: the door happens to list
+  // youngest first today, but a `limit` cut is only fair against an
+  // order this layer guarantees, so it is made here.
+  let matched =
+    list.filter(listed, fn(row) { shows(state, row.state) })
+    |> list.sort(fn(a, b) { int.compare(a.age_ms, b.age_ms) })
+  let shown = list.take(matched, limit)
+  let hidden = list.length(matched) - list.length(shown)
+  tool.success(render_listed(shown, hidden, state))
+  |> tool.with_details(
+    json.Object([
+      #("jobs", json.Array(list.map(shown, listed_json))),
+      #("total", json.Int(list.length(matched))),
+      #("limit", json.Int(limit)),
+    ]),
+  )
 }
 
 /// Render the owner-visible job list for a tool or virtual read.
 ///
+/// `hidden` is how many matched jobs a `limit` cut from the listing,
+/// so a bounded answer still says the pool is bigger than it looks.
+/// `state` tells the empty case apart: no rows because nothing matched
+/// a filter is a different sentence from no rows because the strand
+/// owns nothing, and a model that asked for `state: "pending"` must not
+/// be told to go start a job when it has three still running.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// assert string.contains(job.render_listed([]), "no background jobs")
+/// assert string.contains(
+///   job.render_listed([], 0, job.AllJobs),
+///   "no background jobs",
+/// )
 /// ```
 ///
-pub fn render_listed(rows: List(Listed)) -> String {
-  case rows {
-    [] ->
-      "you have no background jobs. Start one with `bash` and "
+pub fn render_listed(
+  rows: List(Listed),
+  hidden: Int,
+  state: ListingState,
+) -> String {
+  case rows, hidden {
+    [], 0 ->
+      case state {
+        AllJobs ->
+          "you have no background jobs. Start one with `bash` and "
+          <> "`mode: \"background\"`."
+
+        PendingJobs | TerminalJobs ->
+          "none of your background jobs are "
+          <> side_word(state)
+          <> ". Use `state: \"all\"` to see them, or start one with `bash` "
+          <> "and `mode: \"background\"`."
+      }
+
+    [], _ ->
+      // Zero rows can mean two things, and only `hidden` says which: a
+      // filter that matched nothing, or a limit that cut everything —
+      // most sharply `limit: 0`, which asks only the count. The trailing
+      // line names the second, so the wording stays true for both.
+      "none of your background jobs matched. Start one with `bash` and "
       <> "`mode: \"background\"`."
-    _ -> string.join(list.map(rows, describe_listed), "\n")
+      <> hidden_line(hidden)
+
+    _, _ ->
+      string.join(list.map(rows, describe_listed), "\n") <> hidden_line(hidden)
+  }
+}
+
+// The half of the empty-filter sentence that names which side of
+// is_pending was asked for. `ListingState` has three constructors and
+// both of these name one, so the filter is total by construction.
+fn side_word(state: ListingState) -> String {
+  case state {
+    PendingJobs -> "still worth polling"
+    TerminalJobs -> "finished"
+    AllJobs -> ""
+  }
+}
+
+/// The unbounded rendering a `job://` read uses: every row, none hidden,
+/// and in the order this layer promises rather than the door's — the
+/// same reason `run_list` sorts before it cuts, applied to the reader
+/// that never cuts.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.contains(job.render_whole_list([]), "no background jobs")
+/// ```
+///
+pub fn render_whole_list(rows: List(Listed)) -> String {
+  render_listed(
+    list.sort(rows, fn(a, b) { int.compare(a.age_ms, b.age_ms) }),
+    0,
+    AllJobs,
+  )
+}
+
+// The count that keeps a bounded listing honest. It names how many
+// matched jobs the limit cut, so a model that asked for five of twenty
+// knows the other fifteen exist without re-asking with no limit.
+fn hidden_line(hidden: Int) -> String {
+  case hidden {
+    0 -> ""
+    _ ->
+      "\nand "
+      <> int.to_string(hidden)
+      <> " more. Raise `limit` or narrow `state` to see them."
   }
 }
 
@@ -876,6 +1015,56 @@ fn end_name(end: StdinEnd) -> String {
   }
 }
 
+// The listing's two arguments, read the way `eof` is: a closed
+// vocabulary and a bound, each naming what it does at the call site.
+// The default of `state` is the milder answer — everything — and the
+// default of `limit` is the door's own ceiling below, so an unqualified
+// listing call reads exactly what it read before either argument existed.
+fn requested_listing_state(
+  named: Option(String),
+) -> Result(ListingState, String) {
+  case named {
+    None | Some("all") -> Ok(AllJobs)
+    Some("pending") -> Ok(PendingJobs)
+    Some("terminal") -> Ok(TerminalJobs)
+
+    Some(other) ->
+      Error(
+        "`state` must be \"pending\", \"terminal\" or \"all\", not \""
+        <> other
+        <> "\"",
+      )
+  }
+}
+
+// The bound on a listing. The door's own ceiling is the maximum because
+// the actor holds every row in memory already — the limit exists to
+// bound what the model reads, not what the harness stores — and a
+// negative number is refused rather than clamped, for the reason a
+// negative cursor is: it is a number the schema never offered. Zero is
+// accepted rather than refused, because a model asking `limit: 0` is
+// asking how many jobs matched, and `total` in the details answers it.
+const listing_ceiling = 100
+
+fn requested_limit(limit: Option(Int)) -> Result(Int, String) {
+  case limit {
+    None -> Ok(listing_ceiling)
+    Some(asked) if asked < 0 -> Error("`limit` must not be negative")
+    Some(asked) -> Ok(int.min(asked, listing_ceiling))
+  }
+}
+
+// One filter question, answered through `is_pending` so the split stays
+// the one the poll loop already reads: a state added to `JobState` fails
+// to compile here until someone decides which side of the question it is.
+fn shows(state: ListingState, job: JobState) -> Bool {
+  case state {
+    AllJobs -> True
+    PendingJobs -> is_pending(job)
+    TerminalJobs -> !is_pending(job)
+  }
+}
+
 // --- cursors ----------------------------------------------------------------
 
 /// Renders a pair of cursors as the opaque token the model hands back.
@@ -1187,8 +1376,11 @@ fn read_job(
 ) -> Result(String, fs.SchemeRefusal) {
   case string.is_empty(reference) {
     True ->
+      // The scheme has no arguments to carry a filter in, so the virtual
+      // read lists everything the strand owns and hides none of it: the
+      // bounded listing is `job_poll`'s, where `state` and `limit` live.
       jobs.list(ctx)
-      |> result.map(render_listed)
+      |> result.map(render_whole_list)
       |> result.map_error(scheme_refusal)
 
     False ->
