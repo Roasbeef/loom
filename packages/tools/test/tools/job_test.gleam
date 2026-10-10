@@ -565,6 +565,58 @@ pub fn a_listing_limit_of_zero_answers_the_count_test() {
   assert string.contains(first_text(outcome), "and 3 more")
 }
 
+pub fn a_filter_that_matches_nothing_names_the_side_it_asked_for_test() {
+  let asked = recorder()
+  // A pool of terminal rows only, asked for the pending ones. The strand
+  // owns jobs, so "you have no background jobs" would be a lie; the
+  // answer names the side of the split that came back empty and how to
+  // see the rest.
+  let visible = answering(asked, job.Running)
+  let only_done =
+    job.Jobs(..visible, list: fn(_ctx) {
+      process.send(asked, ListAsked)
+      Ok([job.Listed(id: "done", state: finished, age_ms: 5000, deadline_ms: 0)])
+    })
+  let outcome =
+    run(
+      only_done,
+      "job_poll",
+      json.Object([#("state", json.String("pending"))]),
+    )
+  assert !outcome.is_error
+  assert detail(outcome, "total") == json.Int(0)
+  let text = first_text(outcome)
+  assert string.contains(text, "none of your background jobs are")
+  assert string.contains(text, "still worth polling")
+  assert string.contains(text, "state: \"all\"")
+}
+
+pub fn a_pending_only_pool_asked_for_terminal_names_the_side_test() {
+  let asked = recorder()
+  let visible = answering(asked, job.Running)
+  let only_live =
+    job.Jobs(..visible, list: fn(_ctx) {
+      process.send(asked, ListAsked)
+      Ok([
+        job.Listed(
+          id: "live",
+          state: job.Running,
+          age_ms: 1000,
+          deadline_ms: 1_000_000,
+        ),
+      ])
+    })
+  let outcome =
+    run(
+      only_live,
+      "job_poll",
+      json.Object([#("state", json.String("terminal"))]),
+    )
+  assert !outcome.is_error
+  let text = first_text(outcome)
+  assert string.contains(text, "none of your background jobs are finished")
+}
+
 // --- kill and send ----------------------------------------------------------
 
 pub fn a_kill_reports_the_state_it_settled_into_test() {

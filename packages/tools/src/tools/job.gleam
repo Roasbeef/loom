@@ -453,11 +453,11 @@ fn poll_tool(
     name: poll_tool_name,
     description: "Read a background job: its state, and whatever it has "
       <> "printed since you last looked. Call it with no `job_id` to list "
-      <> "every job this strand owns, youngest first; `state` and `limit` "
-      <> "narrow that listing when a strand has many jobs. A job that is "
-      <> "still running is a **successful** answer, not a failure — do "
-      <> "other work and poll again, or pass `wait_ms` to block for a "
-      <> "while first (clamped to "
+      <> "every job this strand owns, youngest first (at most 100; pass "
+      <> "`limit` to narrow or `state` to filter). A job that is "
+      <> "still running is a "
+      <> "**successful** answer, not a failure — do other work and poll "
+      <> "again, or pass `wait_ms` to block for a while first (clamped to "
       <> int.to_string(max_wait_ms)
       <> "). Pass the `cursor` from the previous poll back as `since` to "
       <> "get only what is new; the cursor is an opaque token, so hand it "
@@ -510,8 +510,10 @@ fn poll_tool(
           "limit",
           tool.integer_property(
             "how many jobs a listing (no `job_id`) shows at most, "
-            <> "youngest first; the rest are counted in the answer "
-            <> "rather than listed. Ignored when a `job_id` is given",
+            <> "youngest first; clamped to 100, with 0 listing none and "
+            <> "naming the count in the answer instead. The rest are "
+            <> "counted in the answer rather than listed. Ignored when a "
+            <> "`job_id` is given",
           ),
         ),
       ],
@@ -593,7 +595,7 @@ fn run_list(
     |> list.sort(fn(a, b) { int.compare(a.age_ms, b.age_ms) })
   let shown = list.take(matched, limit)
   let hidden = list.length(matched) - list.length(shown)
-  tool.success(render_listed(shown, hidden))
+  tool.success(render_listed(shown, hidden, state))
   |> tool.with_details(
     json.Object([
       #("jobs", json.Array(list.map(shown, listed_json))),
@@ -607,18 +609,38 @@ fn run_list(
 ///
 /// `hidden` is how many matched jobs a `limit` cut from the listing,
 /// so a bounded answer still says the pool is bigger than it looks.
+/// `state` tells the empty case apart: no rows because nothing matched
+/// a filter is a different sentence from no rows because the strand
+/// owns nothing, and a model that asked for `state: "pending"` must not
+/// be told to go start a job when it has three still running.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert string.contains(job.render_listed([], 0), "no background jobs")
+/// assert string.contains(
+///   job.render_listed([], 0, job.AllJobs),
+///   "no background jobs",
+/// )
 /// ```
 ///
-pub fn render_listed(rows: List(Listed), hidden: Int) -> String {
+pub fn render_listed(
+  rows: List(Listed),
+  hidden: Int,
+  state: ListingState,
+) -> String {
   case rows, hidden {
     [], 0 ->
-      "you have no background jobs. Start one with `bash` and "
-      <> "`mode: \"background\"`."
+      case state {
+        AllJobs ->
+          "you have no background jobs. Start one with `bash` and "
+          <> "`mode: \"background\"`."
+
+        PendingJobs | TerminalJobs ->
+          "none of your background jobs are "
+          <> side_word(state)
+          <> ". Use `state: \"all\"` to see them, or start one with `bash` "
+          <> "and `mode: \"background\"`."
+      }
 
     [], _ ->
       // Zero rows can mean two things, and only `hidden` says which: a
@@ -634,16 +656,34 @@ pub fn render_listed(rows: List(Listed), hidden: Int) -> String {
   }
 }
 
-/// The unbounded rendering a `job://` read uses: every row, none hidden.
+// The half of the empty-filter sentence that names which side of
+// is_pending was asked for. `ListingState` has three constructors and
+// both of these name one, so the filter is total by construction.
+fn side_word(state: ListingState) -> String {
+  case state {
+    PendingJobs -> "still worth polling"
+    TerminalJobs -> "finished"
+    AllJobs -> ""
+  }
+}
+
+/// The unbounded rendering a `job://` read uses: every row, none hidden,
+/// and in the order this layer promises rather than the door's — the
+/// same reason `run_list` sorts before it cuts, applied to the reader
+/// that never cuts.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // job.render_whole_list(rows)
+/// assert string.contains(job.render_whole_list([]), "no background jobs")
 /// ```
 ///
 pub fn render_whole_list(rows: List(Listed)) -> String {
-  render_listed(rows, 0)
+  render_listed(
+    list.sort(rows, fn(a, b) { int.compare(a.age_ms, b.age_ms) }),
+    0,
+    AllJobs,
+  )
 }
 
 // The count that keeps a bounded listing honest. It names how many
