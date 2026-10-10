@@ -427,6 +427,18 @@ pub fn query_one_refuses_a_wider_row_test() {
   assert reason == "expected exactly one column"
 }
 
+/// A statement that answers more than one row is an `InvalidQuery` for the
+/// same reason a wider row is a `DecodeFailed`: a legitimate single-value
+/// statement answers one, and a silent first-row pick would hide the
+/// disagreement in a value that looks ordinary.
+pub fn query_one_refuses_more_than_one_row_test() {
+  let assert Ok(observation) =
+    referenced_observation(fn() { lsp_sql.collect_files(["src/app.gleam"]) })
+  let assert Error(lsp_sql.InvalidQuery(reason)) =
+    lsp_sql.query_one(observation, "SELECT path FROM \"references\"", [])
+  assert reason == "expected one row, the statement returned more"
+}
+
 /// The budget is `query`'s and is passed through unchanged: a statement that
 /// asks for more than thirty-two columns is refused, not quietly shortened, so
 /// a wrapper never turns a refusal into a shorter answer.

@@ -31,7 +31,7 @@
 ////   ec90749a5cecf84dd9562ca2ffbf5b970af787dcb0a2301e8d48183b44311f2b  packages/cap/src/cap/job.gleam
 ////   17a9601d4841ac8c598885f4e4d64ed61c44bf358f0a3d4fded9a788154a382b  packages/cap/src/cap/kv.gleam
 ////   e96e89bf306534e8ed6b6532f234b92576594e322d7424162f478be1d60301e8  packages/cap/src/cap/lsp.gleam
-////   8cc7f484df453a852eedda476fa564413fdf60ae56cf89212e550ed0ca960e66  packages/cap/src/cap/lsp_sql.gleam
+////   f5b100cebb72c327fb76fe9006cd2627fda68aaccbcda9aaf914c43c236b0697  packages/cap/src/cap/lsp_sql.gleam
 ////   a90f1b65b4b7a59c6fd0ac655210963b094e4a527c648b9291c54df082fc0f88  packages/cap/src/cap/mcp.gleam
 ////   bdb1c89dbfa22358935bf092c103d7bc4defa2e71e48748592d7b4f6e9d8f164  packages/cap/src/cap/net.gleam
 ////   9eec4c79212a6fb20f448392a8281ee55ca4add85b7da59d4bf1138ddd29d129  packages/cap/src/cap/notes.gleam
@@ -46,7 +46,7 @@
 ////   dade50ada67f4ac667f0b92cb10d0da213cac327897524dbb006e02cf3c90963  packages/cap/src/cap/workflow.gleam
 ////   13e21c346eea7292f312ec82b6fb42a6b86158b9211ec18f4d574186313f7f0d  scripts/gen-prelude.py
 ////
-//// Body digest (every line after the marker): 2ed89b11bd90d4db685becb83d89dafe3bf752b0d253cf010072f43e7a3bf2c7
+//// Body digest (every line after the marker): 5b24f8bd2257427043f4050d4c1a1ed3710edd78f7389f5530865167d87ca7d7
 
 // --- generated body: the digests above cover every line below this one ---
 /// Every module of the capability prelude, in the order the
@@ -1463,10 +1463,11 @@ pub fn query_error_text(QueryError) -> String
 /// Runs one bounded statement whose single column answers one value, as
 /// `Some(text)`, or `None` when the statement returned no rows.
 ///
-/// A row of any other width is a `DecodeFailed` rather than a silent pick
-/// of its first cell: two columns where one was asked for means the
-/// statement and the caller disagree about the question. The budgets are
-/// `query`'s.
+/// A row of any other width is a `DecodeFailed`, and an answer of more
+/// than one row is an `InvalidQuery` — each rather than a silent pick:
+/// two columns where one was asked for, or two rows where one value was
+/// asked for, mean the statement and the caller disagree about the
+/// question. The budgets are `query`'s.
 ///
 ///  ## Examples
 ///

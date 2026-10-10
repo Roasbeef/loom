@@ -477,9 +477,11 @@ pub fn query_text(
 /// Runs one bounded statement whose single column answers one value, as
 /// `Some(text)`, or `None` when the statement returned no rows.
 ///
-/// A row of any other width is a `DecodeFailed` rather than a silent pick of
-/// its first cell: two columns where one was asked for means the statement
-/// and the caller disagree about the question. The budgets are `query`'s.
+/// A row of any other width is a `DecodeFailed`, and an answer of more
+/// than one row is an `InvalidQuery` — each rather than a silent pick:
+/// two columns where one was asked for, or two rows where one value was
+/// asked for, mean the statement and the caller disagree about the
+/// question. The budgets are `query`'s.
 ///
 /// ## Examples
 ///
@@ -504,7 +506,16 @@ pub fn query_one(
   use answer <- result.try(query(observation, sql, params, one_cell))
   case answer.rows {
     [] -> Ok(None)
-    [only, ..] -> Ok(Some(only))
+
+    [only] -> Ok(Some(only))
+
+    // More than one row is the same disagreement a wider row is, and is
+    // refused for the same reason: no legitimate single-value statement
+    // answers several, and picking one would hide the disagreement in a
+    // value that looks ordinary. The order rows arrive in carries no
+    // meaning, so "first" would not even be a deterministic pick.
+    _more ->
+      Error(InvalidQuery("expected one row, the statement returned more"))
   }
 }
 
