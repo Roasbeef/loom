@@ -748,8 +748,8 @@ type Probe {
 }
 
 // The session policy as `client/serve` builds it for a daemon whose state
-// root is `state`: the scope's readable roots, the blob directory masked,
-// and the daemon's secrets masked.
+// root is `state`: the scope's readable roots and daemon secrets masked.
+// A fixture configuring a separate blob store protects that store explicitly.
 fn session_policy(
   root: String,
   state: String,
@@ -765,8 +765,8 @@ fn session_policy(
 
 // A workspace with a sibling directory, a daemon state root beside it, a
 // protected directory inside it, and three symlinks: onto a protected file,
-// onto the sibling, and onto the daemon's token. The blob root is protected
-// too and is the one entry a native read may open; its own test follows.
+// onto the sibling, and onto the daemon's token. The separate blob exemption
+// test adds protection for the store it configures.
 fn read_fixture(name: String) -> #(String, List(Probe)) {
   let root = fresh(name)
   let outside = root <> "-outside"
@@ -884,10 +884,20 @@ pub fn the_blob_root_is_the_one_protected_entry_native_reads_open_test() {
   write(root, ".blobs/b", "blob\n")
   link(to: root <> "/.blobs/b", from: root <> "/link_blob")
   list.each([catalog.HostReads, catalog.WorkspaceReads], fn(scope) {
-    let session = session_policy(root, state, scope)
+    let base = session_policy(root, state, scope)
+
+    // The daemon now stores blobs under its masked state root. This fixture
+    // configures a workspace store, so it must protect that exact store as a
+    // standalone host does; base_policy no longer masks legacy `.blobs`.
+    let session =
+      policy.SandboxPolicy(..base, protected: [
+        root <> "/.blobs",
+        ..base.protected
+      ])
     let request =
       codemode_tool.Request(..request_over(root), base_policy: session)
-    let seam = codemode.workspace_seam(config_over(root), request)
+    let config = config_over(root) |> codemode.into_blobs(root <> "/.blobs")
+    let seam = codemode.workspace_seam(config, request)
     let search =
       codemode.search_seam_with_access(root, session, root <> "/.blobs")
 
