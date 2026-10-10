@@ -1019,13 +1019,10 @@ fn item_element(
         since,
         list.append(
           fold_row.step_body(standing, words, rows, draw),
-          list.append(
-            pictures(session, transcript_image.ref(key), images),
-            case result_source {
-              None -> []
-              Some(id) -> [tool_result.links(session, id)]
-            },
-          ),
+          list.append(pictures(session, key, images), case result_source {
+            None -> []
+            Some(id) -> [tool_result.links(session, id)]
+          }),
         ),
       )
     }
@@ -1120,11 +1117,7 @@ fn block_element(
     list.append(
       rows,
       list.append(
-        pictures(
-          session,
-          transcript_image.ref(block.key),
-          transcript_image.of_block(block),
-        ),
+        pictures(session, block.key, transcript_image.of_block(block)),
         case turns.block_result(block) {
           None -> []
           Some(id) -> [tool_result.links(session, id)]
@@ -1335,10 +1328,11 @@ fn result_report(report: String) -> Element(message) {
 // row's text. An image the page does not draw (a type outside the raster
 // four) keeps its position, so the pictures that are drawn are named by the
 // place their image holds in the row and not by how many came before. With no
-// session there is no address to draw, and none is.
+// session there is no address to draw, and none is. Build the row's address
+// key only after finding a picture to draw; most transcript rows have none.
 fn pictures(
   session: String,
-  ref: String,
+  key: String,
   images: List(Image),
 ) -> List(Element(message)) {
   let drawn =
@@ -1347,12 +1341,15 @@ fn pictures(
     |> list.filter(fn(entry) { image.drawn(entry.0) })
   case session, drawn {
     "", _ | _, [] -> []
-    _, _ -> [
-      html.div(
-        [attribute.class("pictures")],
-        list.map(drawn, fn(entry) { thumbnail(session, ref, entry.1) }),
-      ),
-    ]
+    _, _ -> {
+      let ref = transcript_image.ref(key)
+      [
+        html.div(
+          [attribute.class("pictures")],
+          list.map(drawn, fn(entry) { thumbnail(session, ref, entry.1) }),
+        ),
+      ]
+    }
   }
 }
 
