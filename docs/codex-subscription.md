@@ -337,6 +337,13 @@ If discovery works but inference fails, record the exact model ID and the
 in-band error; do not infer model support from visibility. API reference costs
 in the UI are estimates and do not show actual plan allowance remaining.
 
+`unknown_signing_key` means the ID token named a signing key that the
+issuer's published key set did not contain, even after Loom fetched the set a
+second time. It points at the issuer's key publication, not at the account or
+the saved grant, so signing in again does not help. `invalid_identity` covers
+the remaining token checks: signature, issuer, audience, expiry, nonce and
+subject.
+
 ## Refresh and logout
 
 Each operation acquires a bounded cross-process lock for its profile, rereads
