@@ -258,7 +258,8 @@ pub fn job_poll_requires_nothing_test() {
   let asked = recorder()
   let jobs = answering(asked, job.Running)
   assert required(jobs, "job_poll") == json.Array([])
-  assert properties(jobs, "job_poll") == ["job_id", "wait_ms", "since"]
+  assert properties(jobs, "job_poll")
+    == ["job_id", "wait_ms", "since", "state", "limit"]
 }
 
 pub fn job_kill_and_send_require_their_job_test() {
@@ -299,6 +300,26 @@ pub fn the_eof_argument_is_a_closed_vocabulary_test() {
     as "job_send declares eof"
   assert list.key_find(eof, "enum")
     == Ok(json.Array([json.String("open"), json.String("close")]))
+}
+
+pub fn the_state_argument_is_a_closed_vocabulary_test() {
+  let asked = recorder()
+  let assert Ok(json.Object(props)) =
+    list.key_find(
+      schema_of(answering(asked, job.Running), "job_poll"),
+      "properties",
+    )
+    as "job_poll declares properties"
+  let assert Ok(json.Object(state)) = list.key_find(props, "state")
+    as "job_poll declares state"
+  assert list.key_find(state, "enum")
+    == Ok(
+      json.Array([
+        json.String("pending"),
+        json.String("terminal"),
+        json.String("all"),
+      ]),
+    )
 }
 
 // --- pending is an answer ---------------------------------------------------
@@ -428,6 +449,120 @@ pub fn a_poll_with_no_id_lists_test() {
   assert drain(asked) == [ListAsked]
   assert string.contains(first_text(outcome), job_id)
   assert detail(outcome, "jobs") != json.Array([])
+  // The unqualified listing hides nothing and counts everything, which
+  // is what it read before `state` and `limit` existed.
+  assert detail(outcome, "total") == json.Int(1)
+  assert detail(outcome, "limit") == json.Int(100)
+}
+
+// A door with a pool worth filtering: one live row and two terminal
+// ones, in a deliberately unsorted order so a test that limits cannot
+// pass by accident of the door's own order. Ages are chosen so youngest
+// first is a different order from the door's.
+fn pooled(asked: Subject(Asked)) -> job.Jobs {
+  let visible = answering(asked, job.Running)
+  job.Jobs(..visible, list: fn(_ctx) {
+    process.send(asked, ListAsked)
+    Ok([
+      job.Listed(id: "old", state: finished, age_ms: 9000, deadline_ms: 0),
+      job.Listed(
+        id: "live",
+        state: job.Running,
+        age_ms: 1000,
+        deadline_ms: 1_000_000,
+      ),
+      job.Listed(id: "done", state: finished, age_ms: 5000, deadline_ms: 0),
+    ])
+  })
+}
+
+pub fn a_listing_can_show_only_pending_jobs_test() {
+  let asked = recorder()
+  let outcome =
+    run(
+      pooled(asked),
+      "job_poll",
+      json.Object([#("state", json.String("pending"))]),
+    )
+  assert !outcome.is_error
+  let assert json.Array([row]) = detail(outcome, "jobs")
+  let assert Ok(json.String(shown)) =
+    list.key_find(
+      case row {
+        json.Object(fields) -> fields
+        _ -> []
+      },
+      "job_id",
+    )
+  assert shown == "live"
+  assert detail(outcome, "total") == json.Int(1)
+}
+
+pub fn a_listing_can_show_only_terminal_jobs_test() {
+  let asked = recorder()
+  let outcome =
+    run(
+      pooled(asked),
+      "job_poll",
+      json.Object([#("state", json.String("terminal"))]),
+    )
+  assert !outcome.is_error
+  assert detail(outcome, "total") == json.Int(2)
+  let text = first_text(outcome)
+  assert string.contains(text, "old")
+  assert string.contains(text, "done")
+  assert !string.contains(text, "live")
+}
+
+pub fn a_listing_limit_cuts_youngest_first_and_says_the_rest_test() {
+  let asked = recorder()
+  let outcome =
+    run(pooled(asked), "job_poll", json.Object([#("limit", json.Int(2))]))
+  assert !outcome.is_error
+  assert detail(outcome, "total") == json.Int(3)
+  let text = first_text(outcome)
+  // The two youngest of the three, and the third counted rather than
+  // listed. Age is the only order the tool is promised.
+  assert string.contains(text, "live")
+  assert string.contains(text, "done")
+  assert !string.contains(text, "\nold")
+  assert string.contains(text, "and 1 more")
+}
+
+pub fn a_listing_refuses_a_limit_the_schema_never_offered_test() {
+  let asked = recorder()
+  let outcome =
+    run(pooled(asked), "job_poll", json.Object([#("limit", json.Int(-1))]))
+  assert outcome.is_error
+  assert string.contains(first_text(outcome), "`limit` must not be negative")
+  // A refused argument never reaches the door.
+  assert drain(asked) == []
+}
+
+pub fn a_listing_refuses_a_state_outside_the_vocabulary_test() {
+  let asked = recorder()
+  let outcome =
+    run(
+      pooled(asked),
+      "job_poll",
+      json.Object([#("state", json.String("running"))]),
+    )
+  assert outcome.is_error
+  assert string.contains(first_text(outcome), "`state` must be")
+  assert drain(asked) == []
+}
+
+pub fn a_listing_limit_of_zero_answers_the_count_test() {
+  let asked = recorder()
+  let outcome =
+    run(pooled(asked), "job_poll", json.Object([#("limit", json.Int(0))]))
+  // Zero is the count-only question: the pool is named in `total`, the
+  // rows are named nowhere, and the trailing line says all of them are
+  // hidden rather than listing three jobs the caller chose not to read.
+  assert !outcome.is_error
+  assert detail(outcome, "total") == json.Int(3)
+  assert detail(outcome, "jobs") == json.Array([])
+  assert string.contains(first_text(outcome), "and 3 more")
 }
 
 // --- kill and send ----------------------------------------------------------
