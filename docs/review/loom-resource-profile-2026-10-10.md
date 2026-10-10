@@ -266,3 +266,9 @@ head; that signoff has not run. The earlier `make dist` smoke passed at
 `6e311b94c866d10dd2e049279b845ff520037340`, which contains the sanitizer change
 only. Those artifacts do not include this writer change. Installed clients
 and daemon remain unchanged, and the resource optimization goal stays active.
+
+
+After committing the evidence, `make -j1 dist` passed with exit 0 at
+`6a7fe8734`. Server and client release smoke passed. The local
+`dist/manifest-macos-arm64.json` identifies that build, containing both
+optimizations. No installed process was replaced or restarted.

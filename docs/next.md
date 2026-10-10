@@ -40,8 +40,8 @@ An isolated TUI rerun passed all five tests with exit 0 in 18.10 seconds. The co
 custody or timer defect. Linux exact-head signoff has not run.
 
 Next: disposition the existing client gate failure and finish Linux signoff,
-then compare a reviewed release under matched installed workloads. The earlier
-successful distribution build at `6e311b94c` includes only the sanitizer patch.
+then compare a reviewed release under matched installed workloads. The clean-tree distribution build at `6a7fe8734` passed server and client
+smoke and includes both optimizations. It has not been installed.
 Retained job history, Lustre cache/model state and supervisor restart inputs
 remain measurement candidates; none was trimmed. Stream-fragment copying was
 inactive in the follow-up probe. The resource optimization goal remains active
