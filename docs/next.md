@@ -1,5 +1,43 @@
 # Current handoff
 
+This edition records the October 10, 2026 CPU and memory investigation on
+`codex/perf-text-hygiene`, based on `c66bd27264cd8b1350ed8309be2388d22fa0d195`.
+The [resource profile](review/loom-resource-profile-2026-10-10.md) records live
+Pickglass captures, bounded state/GC probes, and matched before/after results.
+The installed daemon and clients were not replaced or restarted.
+
+## Resource work and next steps
+
+The pure `session_view/text_hygiene.multiline` fast path avoids codepoint-list
+construction for clean text while preserving owned binary output. Live traces
+found about 258 MB of sanitizer allocation in one browser window and 130 MB
+in one terminal window, each about 15 seconds. The matched small browser
+fixture saves 11% reductions and 79% sanitizer allocation. Those are allocation
+and work measurements, not proof of permanent installed RSS savings.
+
+Six focused tests and the exhaustive Unicode scalar differential passed.
+The independent review found no actionable defect. The affected gate retry
+finished red: session-view, browser and conformance passed; a separate terminal
+gate passed with exit 0 and 1,281 tests after the combined lane stopped at the
+client failure. Client had 3,222 passes and one modeled blob-jail
+refusal failure at `client/workspace_test.gleam:900`. Focused runs with both
+the candidate and saved unchanged sanitizer reproduce it. The initial attempt
+passed static checks but could not fetch preparation dependencies under
+network restrictions. Scope confirmation was requested before fixing this
+separate boundary. The aggregate gate is not green.
+
+Next: disposition the existing gate failure, then compare a reviewed release
+under matched installed workloads. Retained job history, Lustre cache/model state, and
+supervisor restart inputs are documented candidates for further measurement;
+none was removed or trimmed. Stream-fragment copying was inactive in the
+follow-up probe. The resource optimization goal remains active until installed
+CPU and memory improvements have been verified.
+
+The prior browser-work handoff follows as inherited context. Its remote CI
+and merge claims have not been refreshed by this profiling task.
+
+# Previous handoff: browser result work
+
 This edition records the October 8, 2026 browser result work on
 `fix/browser-tool-output`, originally based on `16c3c0ee5` and now integrated
 with PR #927's readiness head `71887e1b7` and main `16f886bd0`. Claims were checked against
