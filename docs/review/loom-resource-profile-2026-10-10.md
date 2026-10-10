@@ -376,3 +376,58 @@ at the previously recorded distribution SHA. The browser image-key change is
 still a prototype. Linux exact-head signoff requires publishing the branch;
 installed CPU and RSS comparison then requires an intentional release update.
 Neither action has occurred, and the goal remains active.
+
+### Source follow-up: defer unused image keys
+
+After opening [PR #945](https://github.com/Roasbeef/loom/pull/945), we applied
+the measured prototype to `web_view/view/lane` source. Both block and step
+callers pass their original key to `pictures`, which encodes it only after
+finding a drawable image and a nonempty session. The existing image indexing
+and address builder are unchanged. All eleven image-view tests pass, and an
+independent report-only review found no actionable defect or broader capture.
+
+The same thirty-turn fixture, using the compiled source against the saved
+baseline lane, gives median 269.780 ms and 29,788,613 reductions at baseline
+versus 265.285 ms and 28,086,524 reductions with the source change: 1.7% less
+wall time and 5.7% fewer reductions. Timing overlaps across five runs, so the
+reduction and allocation counters are the stronger evidence. Image-key
+allocation falls from 1,920,000 bytes to zero per 100 renders. Rendered HTML
+has the same SHA-256 recorded above, and every diff patch is empty. The
+[baseline](loom-resource-profile-2026-10-10/lane-picture-source-baseline.txt)
+and [source](loom-resource-profile-2026-10-10/lane-picture-source-candidate.txt)
+outputs preserve all runs. This is additional browser work saved; it does
+not establish installed CPU or RSS savings.
+
+### Empty-session release comparison: no material memory gain
+
+A matched pair of disposable release daemons used the `bf14af049` distribution,
+private HOME/state/workspace roots, the release smoke configuration with a
+loopback port-1 provider, and the bundled session-admission probe. The baseline
+loaded the saved original `runtime@writer` and `session_view@text_hygiene`
+modules before starting the daemon; every other release module was identical.
+The candidate used the unmodified built release. No prompt or provider request
+was sent. Both runs admitted two sessions, stopped one, waited 35 seconds,
+and took a final separate full-GC cut. The existing
+`scripts/daemon_memory_probe.sh` supplied the census and cleanup; its local
+copy fixed the repository root, refused an existing profile directory, and
+added the baseline module load before `client@@main:run(client)`. The temporary
+runner and full raw outputs remain in `/private/tmp/loom-profile-20261010/`
+as `release-matched-probe.sh` and `release-matched-{baseline,candidate}.txt`.
+
+The [aggregate counters](loom-resource-profile-2026-10-10/release-matched-empty-summary.txt)
+show no material improvement in this single pair. At the idle cut, BEAM total
+is 69.913 MiB at baseline and 69.849 MiB for the candidate; process allocation
+is 19.684 versus 19.643 MiB. RSS is 112.375 versus 113.344 MiB. After full GC,
+BEAM total is 66.407 versus 66.399 MiB. The candidate's RSS is slightly higher,
+and these small differences do not establish a gain or regression. Empty
+admission does not reproduce the live writers' large reclaimable heaps.
+The writer fixture proves the release mechanism, while a matched active
+workload or controlled installed comparison is still required for the memory
+claim. Neither installed processes nor their stores were used by this probe.
+
+The source follow-up's full affected gate against `bf14af049` passed, exit 0
+in 546 seconds: browser 942, web-client 272, client 3,223 and conformance 98
+tests, whole-tree static checks and no undeclared skip. The initial attempt
+stopped for formatting and sandbox-blocked Hex resolution; after formatting,
+regenerating the asset source stamp and allowing dependency access, the gate
+passed. The stylesheet body is unchanged.

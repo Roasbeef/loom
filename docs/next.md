@@ -34,18 +34,25 @@ recorded in the report; the fixture repair does not prove that actual daemon
 blob reads work.
 
 Further browser probing identified image-key construction before checking
-whether a row has pictures. A disposable generated-code prototype saves 5.5%
-reductions in a thirty-turn page fixture, with identical rendered HTML and
-all eleven image-view tests passing. It has not changed production source.
-Projection caches and active job state remain measurement candidates; none
-was trimmed. The report preserves reproducible probes and raw counters.
+whether a row has pictures. The source follow-up moves that construction
+into the drawable-image branch. All eleven image-view tests pass; independent
+review found no actionable defect. A matched thirty-turn fixture saves 5.7%
+reductions and eliminates 1.92 MB of image-key allocation per 100 renders,
+with identical rendered HTML. The report preserves the earlier prototype and
+the source measurements. Projection caches and active job state remain
+measurement candidates; none was trimmed.
 
-Next: publish the reviewed branch for required Linux exact-head signoff, then
-perform a controlled installed before/after comparison. Publishing and the
-installed update have not occurred. The clean-tree distribution at `6a7fe8734`
-passed server/client smoke and includes both production optimizations. The
-subsequent change is test-only. The resource optimization goal remains active
-until installed CPU and memory improvements have been verified.
+[PR #945](https://github.com/Roasbeef/loom/pull/945) is open as a draft. Hosted
+CI and required Linux signoff started on `bf14af049`; they do not cover this
+source follow-up. Its full affected gate against `bf14af049` passes, exit 0
+in 546 seconds: browser 942, web-client 272, client 3,223 and conformance 98
+tests, whole-tree static checks and no undeclared skip. Linux signoff and
+hosted verdicts must match the latest published head before readiness. A clean-tree distribution at `bf14af049`
+passed server/client smoke and contains the sanitizer and writer changes.
+The installed processes remain unchanged. The resource optimization goal
+remains active until matched CPU and memory improvements are verified; an
+async question asks whether a controlled installed restart is acceptable,
+with isolated candidate measurements as the default.
 
 The prior browser-work handoff follows as inherited context. Its remote CI
 and merge claims have not been refreshed by this profiling task.
