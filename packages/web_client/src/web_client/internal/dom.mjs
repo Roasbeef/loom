@@ -109,6 +109,10 @@ export function offset_height(element) {
   return element.offsetHeight;
 }
 
+export function offset_width(element) {
+  return element.offsetWidth;
+}
+
 export function bounding_top(element) {
   return element.getBoundingClientRect().top;
 }

@@ -78,7 +78,9 @@ page keys and nonces, and the relay into the session's gateway.
   `data-dismiss="keep"` and is followed by an empty `<loom-dismiss>` sibling
   (`web_client/dismiss`), which closes it on an outside press or Escape; it is a
   sibling and not a wrapper so the buttons keep their tree paths. The panel's
-  fixed position stops short of the 340 px strand column from 980 px up. A usage
+  fixed position stops short of the strand column from 980 px up (its right edge is
+  `calc(var(--panel-width, 340px) + 12px)`: `<loom-shell>` sets `--panel-width` on
+  its frame, 340 px until the reader drags the panel's grip, `0px` while closed). A usage
   row inside the 30 s pacing window is deferred to the window's end
   (`context_view.State.deferred_until_ms`), and `rearm` wakes the page for it.
 - `component.Msg(socket)`: `Opened`, `Refused`, `TimerArmed`, `Arrived`

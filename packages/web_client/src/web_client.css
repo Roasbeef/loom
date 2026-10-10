@@ -231,8 +231,9 @@
      padding: the dock carries its own, so it sits flush with the edge it is
      pinned to.
 
-     The widths: the sidebar is 232px, the panel 340px, and the transcript at
-     most 780px. Each side column is dropped where it would leave the
+     The widths: the sidebar is 232px, the panel 340px until the reader drags
+     its grip (280px at least, and never so wide that the transcript falls under
+     360px, see .shell-centre), and the transcript at most 780px. Each side column is dropped where it would leave the
      transcript under 640px: the sidebar below 1212px (232 + 340 + 640), and
      the panel, which then becomes a row of cards beneath the bar, below 980px
      (340 + 640). Where the sidebar is dropped it is a drawer: the same
@@ -264,9 +265,8 @@
   .session-head details.ctx > summary:hover{color:var(--color-fg);}
   .session-head details.ctx > summary:focus-visible{outline:2px solid var(--color-current);outline-offset:2px;}
   .ctx-panel{position:fixed;z-index:40;top:48px;right:12px;box-sizing:border-box;width:min(420px,calc(100vw - 24px));max-height:calc(100dvh - 60px);overflow-y:auto;overscroll-behavior:contain;padding:12px 14px;border:1px solid var(--color-divider);border-radius:10px;background:var(--color-bg-raised);color:var(--color-fg);font:13px/1.45 var(--font-sans);white-space:normal;}
-  /* Where the strand panel is a column (980px and up) the panel stops short of it, so the tabs stay reachable: the column is 340px wide, with the page's 12px margin beyond it. */
-  @media (min-width:980px){.ctx-panel{right:352px;width:min(420px,calc(100vw - 364px));}
-  loom-shell:has(.region-panel.closed) .ctx-panel{right:12px;width:min(420px,calc(100vw - 24px));}}
+  /* Where the strand panel is a column (980px and up) the panel stops short of it, so the tabs stay reachable: the column is as wide as --panel-width, which <loom-shell> sets on its frame (340px until the reader drags the grip, 0px while the panel is closed) but never so wide that the 360px transcript floor is crossed, since the column shrinks to that floor where the window cannot hold the saved width, with the page's 12px margin beyond it. */
+  @media (min-width:980px){.ctx-panel{right:calc(min(var(--panel-width,340px),100vw - 372px) + 12px);width:min(420px,calc(100vw - min(var(--panel-width,340px),100vw - 372px) - 24px));}}
   .ctx-actions{display:flex;justify-content:flex-end;gap:8px;margin:0 0 8px 0;}
   .ctx-button{margin:0;padding:3px 10px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:var(--color-fg);font:12px/1.4 var(--font-sans);cursor:pointer;}
   .ctx-button:hover{background:var(--color-bg-sunk);}
@@ -304,11 +304,13 @@
   .shell-bar{flex:0 0 auto;display:flex;align-items:stretch;min-width:0;background:var(--color-bg-raised);border-bottom:1px solid var(--color-divider);}
   .shell-body{position:relative;flex:1 1 0;display:flex;min-height:0;min-width:0;}
   .shell-centre{flex:1 1 0;display:flex;min-width:0;min-height:0;}
-  .region{flex:0 0 auto;min-height:0;overflow:hidden;transition:width 180ms ease;}
+  /* Where the panel is a column the transcript keeps 360px (grip_rule.centre_floor), and the panel, which may shrink, gives way when a window cannot hold its width and that floor. */
+  @media (min-width:980px){.shell-centre{min-width:360px;}}
+  .region{flex:0 0 auto;min-height:0;overflow:hidden;transition:width 180ms ease,min-width 180ms ease;}
   .region-sidebar{width:232px;}
   /* The panel's column holds the tab bar above the slot. It carries the
      column's border and background, so the bar and the panes share them. */
-  .region-panel{width:340px;display:flex;flex-direction:column;box-sizing:border-box;background:var(--color-bg);border-left:1px solid var(--color-divider);}
+  .region-panel{flex:0 1 auto;width:var(--panel-width,340px);min-width:280px;display:flex;flex-direction:column;box-sizing:border-box;background:var(--color-bg);border-left:1px solid var(--color-divider);}
   .panel-body{flex:1 1 0;min-height:0;}
   /* The tab bar (web_client/shell): one real button per tab, the shown one
      underlined. The Strands tab's badge counts the strands that wait on a
@@ -319,11 +321,18 @@
   .panel-tab[aria-pressed="true"]{color:var(--color-fg);border-bottom-color:var(--color-fg);font-weight:500;}
   .panel-tab:focus-visible{outline:2px solid var(--color-current);outline-offset:-2px;}
   .tab-badge{padding:0 6px;border:0;border-radius:999px;background:var(--color-danger);color:var(--color-on-danger);font:600 11px/1.5 var(--font-sans);font-variant-numeric:tabular-nums;}
-  .region.closed{width:0;visibility:hidden;transition:width 180ms ease,visibility 0s linear 180ms;}
+  .region.closed{width:0;min-width:0;visibility:hidden;transition:width 180ms ease,min-width 180ms ease,visibility 0s linear 180ms;}
   /* While the saved layout is being restored (web_client/shell, `Still`) the
      columns change at once, so a column saved as closed does not slide shut
      on every load. The class is removed after that frame is painted. */
   .shell.still .region,.shell.still .region.closed{transition:none;}
+  /* The panel's grip (web_client/shell): a 9px target straddling the panel's border, with no width of its own in the row. Only a hairline shows, on hover, focus and while it is held; the frame is not selectable and the width follows the pointer without easing for the length of a drag. */
+  .panel-grip{position:relative;z-index:6;flex:0 0 auto;width:9px;margin:0 -4px 0 -5px;cursor:col-resize;touch-action:none;outline:none;}
+  .panel-grip::after{content:"";position:absolute;top:0;bottom:0;left:3px;width:3px;background:transparent;transition:background-color 120ms;}
+  .panel-grip:hover::after{background:var(--color-fg-faint);}
+  .panel-grip:focus-visible::after,.shell.dragging .panel-grip::after{background:var(--color-current);}
+  .shell.dragging{cursor:col-resize;user-select:none;-webkit-user-select:none;}
+  .shell.dragging .region,.shell.dragging .region.closed{transition:none;}
   /* The buttons: a real button at each end of the bar, drawn as a small
      window with its side column filled while the column is open. */
   .toggle-hint{margin:0;color:var(--color-fg-quiet);font:11px/1.4 var(--font-sans);}
@@ -517,11 +526,11 @@
   /* The home page (web_view/home, protocol-change/065): the same frame with
      no strand panel. The frame's element draws the panel's column and its
      button around an empty slot, so the host's `loom-home` class leaves both
-     out. The sidebar leads with a "Home" entry marked as the page on screen,
+     out, and the panel's grip with them. The sidebar leads with a "Home" entry marked as the page on screen,
      and the centre is a table for each workspace: name, whether a process
      runs the session, and when it was created. The table scrolls in the
      centre, which does not scroll itself. */
-  :host(.loom-home) .region-panel,:host(.loom-home) .toggle-panel{display:none;}
+  :host(.loom-home) .region-panel,:host(.loom-home) .panel-grip,:host(.loom-home) .toggle-panel{display:none;}
   .sidebar-home{display:flex;align-items:center;gap:8px;margin:0 0 12px 0;padding:4px 7px;border-radius:6px;font:13px/1.4 var(--font-sans);}
   .sidebar-home[aria-current]{background:color-mix(in srgb,var(--color-current) 10%,var(--color-bg-raised));}
   .nav-glyph{width:14px;height:14px;flex:0 0 auto;fill:none;stroke:currentColor;stroke-width:1.4;stroke-linecap:round;stroke-linejoin:round;}
@@ -1465,7 +1474,8 @@
   }
   @media (max-width:979px){
     .shell-body{flex-direction:column;}
-    .region-panel{order:-1;width:auto;height:auto;overflow:visible;border-left:0;border-bottom:1px solid var(--color-divider);}
+    .panel-grip{display:none;}
+    .region-panel{order:-1;width:auto;min-width:0;height:auto;overflow:visible;border-left:0;border-bottom:1px solid var(--color-divider);}
     .region-panel.closed{width:auto;height:0;overflow:hidden;transition:none;}
     .panel-body{flex:0 0 auto;}
     aside.panel{width:auto;height:auto;max-height:132px;padding:8px 16px;}

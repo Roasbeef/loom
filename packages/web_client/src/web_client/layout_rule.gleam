@@ -1,6 +1,6 @@
 //// What `<loom-shell>` keeps in the browser's storage between page loads:
-//// the two side columns' open state per workspace, and the panel's active tab
-//// and the page's theme per browser.
+//// the two side columns' open state per workspace, and the panel's active tab,
+//// the panel's width and the page's theme per browser.
 ////
 //// The storage itself is two calls in `web_client/internal/ffi_dom`, one that
 //// reads an item and one that writes an item, which answer a `Result`
@@ -30,11 +30,13 @@
 //// storage decision in protocol-change/051 has the rest.
 
 import gleam/dynamic/decode
+import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import web_client/grip_rule
 import web_client/shell_rule.{
   type Layout, type State, type Tab, Changes, Closed, Layout, Open, Session,
   Strands, Trace,
@@ -50,6 +52,12 @@ pub const theme_key = "loom.theme.v1"
 /// The layout's own `tab` field is still written, and is what a page uses
 /// when this item is missing.
 pub const tab_key = "loom.panel.tab.v1"
+
+/// The item the panel's width lives in. How wide the reader likes the panel is
+/// a habit of the reader's screen and not a fact about a workspace, so it is
+/// kept per browser, like the tab: a width chosen to read a diff is still there
+/// on the next session's page.
+pub const width_key = "loom.panel.width.v1"
 
 /// Which workspace a page belongs to, as far as storage is concerned.
 pub type Workspace {
@@ -158,6 +166,43 @@ pub fn encode_tab(tab: Tab) -> String {
 /// ```
 pub fn restored_tab(stored: Result(String, Nil)) -> Option(Tab) {
   stored |> result.try(tab_of) |> option.from_result
+}
+
+/// The text stored under `width_key` for a panel width: the pixels as a
+/// decimal integer.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert layout_rule.encode_width(480) == "480"
+/// ```
+pub fn encode_width(width: Int) -> String {
+  int.to_string(width)
+}
+
+/// The panel width the browser's saved item names, or nothing when the item is
+/// missing, blocked, not a plain integer, or outside what the rule accepts
+/// (`grip_rule.least_width` to `grip_rule.most_width`), so the default stands.
+/// Text from storage is never trusted to be one this release wrote.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert layout_rule.restored_width(Ok("480")) == Some(480)
+/// assert layout_rule.restored_width(Ok("90000")) == None
+/// assert layout_rule.restored_width(Ok("wide")) == None
+/// assert layout_rule.restored_width(Error(Nil)) == None
+/// ```
+pub fn restored_width(stored: Result(String, Nil)) -> Option(Int) {
+  stored
+  |> result.try(int.parse)
+  |> result.try(fn(width) {
+    case width >= grip_rule.least_width && width <= grip_rule.most_width {
+      True -> Ok(width)
+      False -> Error(Nil)
+    }
+  })
+  |> option.from_result
 }
 
 /// The layout a page starts with, given what the storage answered for its
