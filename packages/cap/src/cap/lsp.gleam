@@ -160,6 +160,11 @@ pub type Query {
 
 /// A query for `name` anywhere in the project.
 ///
+/// With no `in`, the search covers one server's project root, which is the
+/// session's own checkout. It never covers a git worktree or sibling clone
+/// of that project, so for code that lives there pass a file inside it with
+/// `in`.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -172,6 +177,13 @@ pub fn symbol(name: String) -> Query {
 }
 
 /// Narrows a query to one file.
+///
+/// The path also chooses the tree: the server is rooted at the nearest
+/// ancestor of `path` that holds a project marker such as `go.mod`. When
+/// the code you are editing is in a git worktree, give a path inside that
+/// worktree (`.worktrees/pr-117/peer/brontide.go`), or the query answers
+/// about the main checkout and cannot see symbols added only in the
+/// worktree.
 ///
 /// ## Examples
 ///
@@ -409,8 +421,9 @@ pub type LspError {
   /// A query with no `path` searches one server's project root, and
   /// `searched` names it ("the go server rooted at /work/app"). An empty
   /// answer from that search says nothing about any other tree, such as a
-  /// sibling clone of the same project, so read `searched` before taking
-  /// the answer for the code you meant. It is `None` when the query named a
+  /// sibling clone or git worktree of the same project, so read `searched`
+  /// before taking the answer for the code you meant. If it names a tree
+  /// other than yours, repeat the query with `in` and a file in your tree. It is `None` when the query named a
   /// file, because the path already says where the harness looked.
   NotFound(symbol: String, searched: Option(String))
 

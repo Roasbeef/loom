@@ -30,7 +30,7 @@
 ////   862cacde4152ef13b16e817de8ff0d3d73d4e5f53b751b2346e5e47cf89f2c54  packages/cap/src/cap/git.gleam
 ////   ec90749a5cecf84dd9562ca2ffbf5b970af787dcb0a2301e8d48183b44311f2b  packages/cap/src/cap/job.gleam
 ////   17a9601d4841ac8c598885f4e4d64ed61c44bf358f0a3d4fded9a788154a382b  packages/cap/src/cap/kv.gleam
-////   8b96a19ff255ccef4624d7f331eadd846694d28e6db3f5edb7e3d98d3392f9ce  packages/cap/src/cap/lsp.gleam
+////   e96e89bf306534e8ed6b6532f234b92576594e322d7424162f478be1d60301e8  packages/cap/src/cap/lsp.gleam
 ////   92d8ef8e146f4085e17964c285334ca8085457c382228876d52691e5be23d3f3  packages/cap/src/cap/lsp_sql.gleam
 ////   a90f1b65b4b7a59c6fd0ac655210963b094e4a527c648b9291c54df082fc0f88  packages/cap/src/cap/mcp.gleam
 ////   bdb1c89dbfa22358935bf092c103d7bc4defa2e71e48748592d7b4f6e9d8f164  packages/cap/src/cap/net.gleam
@@ -46,7 +46,7 @@
 ////   dade50ada67f4ac667f0b92cb10d0da213cac327897524dbb006e02cf3c90963  packages/cap/src/cap/workflow.gleam
 ////   13e21c346eea7292f312ec82b6fb42a6b86158b9211ec18f4d574186313f7f0d  scripts/gen-prelude.py
 ////
-//// Body digest (every line after the marker): 2dae3a8e88e28b3573f305c939ef11f8b321ce492d0f79e5446c8834100e6acd
+//// Body digest (every line after the marker): 4ebe15292d1d149f7c09100879a74ba13d92b3133236d4448f0c1b2f94c68c2a
 
 // --- generated body: the digests above cover every line below this one ---
 /// Every module of the capability prelude, in the order the
@@ -920,9 +920,11 @@ pub type LspError {
   /// A query with no `path` searches one server's project root, and
   /// `searched` names it (\"the go server rooted at /work/app\"). An empty
   /// answer from that search says nothing about any other tree, such as a
-  /// sibling clone of the same project, so read `searched` before taking
-  /// the answer for the code you meant. It is `None` when the query named
-  /// a file, because the path already says where the harness looked.
+  /// sibling clone or git worktree of the same project, so read
+  /// `searched` before taking the answer for the code you meant. If it
+  /// names a tree other than yours, repeat the query with `in` and a file
+  /// in your tree. It is `None` when the query named a file, because the
+  /// path already says where the harness looked.
   NotFound(symbol: String, searched: option.Option(String))
   /// More than one distinct definition matched. Narrow the query with
   /// `in` or `at_line` using one of these.
@@ -1102,6 +1104,13 @@ pub fn error_text(LspError) -> String
 pub fn hover(Query) -> Result(String, LspError)
 /// Narrows a query to one file.
 ///
+/// The path also chooses the tree: the server is rooted at the nearest
+/// ancestor of `path` that holds a project marker such as `go.mod`. When
+/// the code you are editing is in a git worktree, give a path inside that
+/// worktree (`.worktrees/pr-117/peer/brontide.go`), or the query answers
+/// about the main checkout and cannot see symbols added only in the
+/// worktree.
+///
 ///  ## Examples
 ///
 ///  ```gleam
@@ -1170,6 +1179,11 @@ pub fn references(Query) -> Result(Found(Reference), LspError)
 ///
 pub fn rename(Query, String, RenameMode) -> Result(RenameReport, LspError)
 /// A query for `name` anywhere in the project.
+///
+/// With no `in`, the search covers one server's project root, which is
+/// the session's own checkout. It never covers a git worktree or sibling
+/// clone of that project, so for code that lives there pass a file inside
+/// it with `in`.
 ///
 ///  ## Examples
 ///
@@ -4008,9 +4022,11 @@ pub type LspError {
   /// A query with no `path` searches one server's project root, and
   /// `searched` names it (\"the go server rooted at /work/app\"). An empty
   /// answer from that search says nothing about any other tree, such as a
-  /// sibling clone of the same project, so read `searched` before taking
-  /// the answer for the code you meant. It is `None` when the query named
-  /// a file, because the path already says where the harness looked.
+  /// sibling clone or git worktree of the same project, so read
+  /// `searched` before taking the answer for the code you meant. If it
+  /// names a tree other than yours, repeat the query with `in` and a file
+  /// in your tree. It is `None` when the query named a file, because the
+  /// path already says where the harness looked.
   NotFound(symbol: String, searched: option.Option(String))
   /// More than one distinct definition matched. Narrow the query with
   /// `in` or `at_line` using one of these.
