@@ -2276,3 +2276,17 @@ The registry copy itself is 155 KiB `code_mode`, of which 136 KiB is
 `client/codemode`'s `Config` twice, because `tools/codemode.CodeMode` has two
 closure slots that each capture it. `docs/design-notes/startup-and-memory.md`
 has the measurement method and the rest of that work.
+
+
+## 2026-10-10: a writer sleeps between lease renewals
+
+The earlier residency census excluded writers because renewal ticks defeated
+the shared thirty-second quiet threshold. A live targeted GC now found two
+writers with small state but 13–19 MB heaps. The follow-up uses a quiet
+threshold of half the lease renewal interval, capped by the shared residency
+threshold; it preserves the existing periodic renewal. The unleased writer
+uses the shared thirty seconds. Matched disposable experiments reclaim inflated
+idle heaps while normal calls, repeated renewals and lease-loss retirement
+continue. The [October resource report](../review/loom-resource-profile-2026-10-10.md)
+records fixtures, wake costs, validation and limits. This updates the earlier
+writer exclusion; it does not establish installed daemon RSS savings.

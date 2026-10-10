@@ -26,12 +26,26 @@ passed static checks but could not fetch preparation dependencies under
 network restrictions. Scope confirmation was requested before fixing this
 separate boundary. The aggregate gate is not green.
 
-Next: disposition the existing gate failure, then compare a reviewed release
-under matched installed workloads. Retained job history, Lustre cache/model state, and
-supervisor restart inputs are documented candidates for further measurement;
-none was removed or trimmed. Stream-fragment copying was inactive in the
-follow-up probe. The resource optimization goal remains active until installed
-CPU and memory improvements have been verified.
+The follow-up writer change uses existing Weft hibernation before the next
+lease tick, without changing renewal cadence. In a disposable synthetic
+old-generation garbage fixture, leased idle heap fell from 13.1 to 16.4 MB to
+4 KB; the unleased 30-second branch also fell to 4 KB. Wake cost increased
+by 68 reductions in the leased fixture. These are per-process synthetic
+results, not installed RSS savings. All four renewal regressions pass; the
+unchanged writer fails the new hibernation assertion. Runtime's 187 tests,
+conformance's 98 tests and the corrected static checks passed. The affected gate finished red in 565 seconds: client had 3,221 passes and
+two failures, zero skips. These were the known blob refusal failure and a
+native TUI missing-module failure overlapping a concurrent distribution build.
+An isolated TUI rerun passed all five tests with exit 0 in 18.10 seconds. The corrected static lane passed separately. Independent review found no
+custody or timer defect. Linux exact-head signoff has not run.
+
+Next: disposition the existing client gate failure and finish Linux signoff,
+then compare a reviewed release under matched installed workloads. The earlier
+successful distribution build at `6e311b94c` includes only the sanitizer patch.
+Retained job history, Lustre cache/model state and supervisor restart inputs
+remain measurement candidates; none was trimmed. Stream-fragment copying was
+inactive in the follow-up probe. The resource optimization goal remains active
+until installed CPU and memory improvements have been verified.
 
 The prior browser-work handoff follows as inherited context. Its remote CI
 and merge claims have not been refreshed by this profiling task.

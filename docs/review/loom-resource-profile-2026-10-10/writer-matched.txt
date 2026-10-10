@@ -1,0 +1,72 @@
+baseline busy [{memory,9597392},
+               {total_heap_size,1199557},
+               {current_function,{gleam_erlang_ffi,select,2}}]
+baseline busy_commits=1000 busy_us=3178 busy_reductions=106244
+baseline idle [{memory,16365320},
+               {total_heap_size,2045548},
+               {current_function,{gleam_erlang_ffi,select,2}}]
+baseline wake_us=39 wake_reductions=100
+baseline renewed_ms=[1501,3002] alive=true after_wake=[{memory,16365496},
+                                                       {current_function,
+                                                        {gleam_erlang_ffi,
+                                                         select,2}}]
+candidate busy [{memory,13089880},
+                {total_heap_size,1636118},
+                {current_function,{gleam_erlang_ffi,select,2}}]
+candidate busy_commits=1000 busy_us=3241 busy_reductions=104015
+candidate idle [{memory,4256},
+                {total_heap_size,415},
+                {current_function,{erlang,hibernate,3}}]
+candidate wake_us=39 wake_reductions=168
+candidate renewed_ms=[1501,3002] alive=true after_wake=[{memory,13712},
+                                                        {current_function,
+                                                         {gleam_erlang_ffi,
+                                                          select,2}}]
+candidate busy [{memory,13089880},
+                {total_heap_size,1636118},
+                {current_function,{gleam_erlang_ffi,select,2}}]
+candidate busy_commits=1000 busy_us=4047 busy_reductions=104012
+candidate idle [{memory,4256},
+                {total_heap_size,415},
+                {current_function,{erlang,hibernate,3}}]
+candidate wake_us=22 wake_reductions=168
+candidate renewed_ms=[1501,3002] alive=true after_wake=[{memory,13712},
+                                                        {current_function,
+                                                         {gleam_erlang_ffi,
+                                                          select,2}}]
+baseline busy [{memory,13089880},
+               {total_heap_size,1636118},
+               {current_function,{gleam_erlang_ffi,select,2}}]
+baseline busy_commits=1000 busy_us=4886 busy_reductions=106023
+baseline idle [{memory,13089880},
+               {total_heap_size,1636118},
+               {current_function,{gleam_erlang_ffi,select,2}}]
+baseline wake_us=30 wake_reductions=100
+baseline renewed_ms=[1501,3002] alive=true after_wake=[{memory,13090056},
+                                                       {current_function,
+                                                        {gleam_erlang_ffi,
+                                                         select,2}}]
+baseline busy [{memory,13089880},
+               {total_heap_size,1636118},
+               {current_function,{gleam_erlang_ffi,select,2}}]
+baseline busy_commits=1000 busy_us=2994 busy_reductions=106012
+baseline idle [{memory,13089880},
+               {total_heap_size,1636118},
+               {current_function,{gleam_erlang_ffi,select,2}}]
+baseline wake_us=16 wake_reductions=100
+baseline renewed_ms=[1501,3002] alive=true after_wake=[{memory,13090056},
+                                                       {current_function,
+                                                        {gleam_erlang_ffi,
+                                                         select,2}}]
+candidate busy [{memory,13089880},
+                {total_heap_size,1636118},
+                {current_function,{gleam_erlang_ffi,select,2}}]
+candidate busy_commits=1000 busy_us=3693 busy_reductions=104009
+candidate idle [{memory,4256},
+                {total_heap_size,415},
+                {current_function,{erlang,hibernate,3}}]
+candidate wake_us=22 wake_reductions=168
+candidate renewed_ms=[1501,3003] alive=true after_wake=[{memory,13712},
+                                                        {current_function,
+                                                         {gleam_erlang_ffi,
+                                                          select,2}}]

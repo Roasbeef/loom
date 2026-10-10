@@ -12,7 +12,7 @@ old code. Permanent resident-memory savings have not been established.
 ## Scope and builds
 
 Source base: `c66bd27264cd8b1350ed8309be2388d22fa0d195`; candidate code: `0caf6b4b72fa445577da7d2f6992609bea5df5eb`
-on `codex/perf-text-hygiene`. Production changes are confined to
+on `codex/perf-text-hygiene`. The first production change is confined to
 `packages/session_view/src/session_view/text_hygiene.gleam`. The installed
 daemon PID 90963 and active terminal PID 97352 use release `91dbdef947ca9afa0bffeb77f82d0f6df92efb53`.
 Tests and benchmarks use Gleam 1.19.0 and OTP 29 / ERTS 17.0.5, 8-byte words. The disposable
@@ -177,3 +177,92 @@ and active/idle/released observation cuts. That needs an intentional release
 update with its session-lifecycle implications. Do not claim the current
 patch permanently shrinks the installed daemon, or replace an allocation fix
 with periodic full GC based on this variable workload.
+
+
+## Follow-up: writer residency
+
+Writer source and regressions: `6c70583079c39b86c9307cadf04d34726f6c5793`.
+
+The next probe followed the two writers whose heaps collapsed under targeted
+GC. The installed writers did not consistently regrow those large heaps in
+later observations, so 32 MB is not a sustained daemon saving. Nevertheless,
+the reachable cause is clear: an idle writer has no hibernation policy, and a
+lease heartbeat normally arrives every 20 seconds. The common 30-second
+receive timeout would never fire between those heartbeats.
+
+The candidate uses existing Weft hibernation with the common threshold for
+unleased writers, and the smaller of that threshold and half the renewal
+interval for leased writers (at least one millisecond). The lease timer and
+its cadence stay unchanged. A normal request or renewal wakes the same actor;
+commit ordering, subscriptions and custody remain in the actor's state. No
+new process machinery, production FFI, dependency or public interface is added.
+
+The [leased benchmark](loom-resource-profile-2026-10-10/writer_matched.escript)
+loads saved baseline and candidate writer modules into one disposable VM in
+alternating order. Its post-commit callback promotes a temporary 500,000-item
+list through two minor collections before dropping it. This deliberately
+creates old-generation garbage, rather than reproducing the installed session.
+It then issues 1,000 empty commits and observes a quiet writer without waking
+it. Three runs per version produced the following [raw results](loom-resource-profile-2026-10-10/writer-matched.txt):
+
+| Metric | Baseline | Candidate |
+| --- | --- | --- |
+| Idle process memory | 13,089,880 to 16,365,320 bytes | 4,256 bytes |
+| Idle current function | receive/select | `erlang:hibernate/3` |
+| Renewal times, 1,500 ms period | 1,501 / 3,002 ms | 1,501 / 3,002 to 3,003 ms |
+| First request after quiet | 16 to 39 microseconds; 100 reductions | 22 to 39 microseconds; 168 reductions |
+| 1,000 active commits | 2.994 to 4.886 ms; 106,012 to 106,244 reductions | 3.241 to 4.047 ms; 104,009 to 104,015 reductions |
+
+The fixture demonstrates over 99.9% reclamation of an idle writer's inflated
+heap. It does not establish whole-daemon memory savings. Hibernation has a
+wake cost, including 68 additional reductions in this fixture. Millisecond
+active timings are noisy, and these three repetitions do not establish an
+active CPU improvement or a latency guarantee.
+
+The [unleased benchmark](loom-resource-profile-2026-10-10/writer_unleased.escript)
+uses the same temporary allocation and 1,000-commit fixture with a memory
+session and a 31-second quiet wait. Its [raw results](loom-resource-profile-2026-10-10/writer-unleased.txt)
+show baseline 16,365,320 bytes versus candidate 4,024 bytes, no renewals, and a
+normal request waking the candidate in 31 microseconds versus 20 at baseline.
+This separately exercises the default 30-second branch.
+
+Reproduction requires a test build of runtime and a saved pre-change writer
+BEAM. Each script accepts these three arguments:
+
+```sh
+escript docs/review/loom-resource-profile-2026-10-10/writer_matched.escript \
+  packages/runtime/build/dev/erlang /path/to/baseline-writer.beam \
+  packages/runtime/build/dev/erlang/runtime/ebin/runtime@writer.beam
+```
+
+Substitute `writer_unleased.escript` to run the longer unleased probe. The
+leased script exports test fixture helpers only inside its disposable VM;
+it does not change production exports or attach to the installed daemon.
+
+All four writer renewal tests passed. The new regression observes actual
+hibernation without system messages, wakes the writer with a normal request,
+checks repeated renewal and sleep, and then verifies abnormal retirement on
+lease loss. Loading the saved unchanged writer makes this regression fail
+specifically on the missing hibernation assertion. The independent review
+found no actionable timer or custody defect. Runtime's full local package
+gate passed with 187 tests and conformance passed with 98. Corrected whole-tree
+static checks passed: a moved code-tour line reference caused the initial
+static failure and was repaired before the separate successful rerun.
+
+The affected gate finished RED in 565 seconds (make exit 2). The client lane
+exited 1 after 470.69 seconds: 3,221 passed, two failed, zero skipped. One is
+the previously baseline-reproduced blob refusal failure. The other is the real
+TUI end-to-end fixture: it exited with an undefined `tui/image_drain.drain`
+while the investigation concurrently rebuilt the TUI shipment through
+`make dist`. That overlap invalidates this run as evidence of a TUI regression;
+an isolated rerun passed all five module tests, exit 0 in 18.10 seconds. The aggregate itself remains red.
+The skip census found no undeclared skip. The static lane's original failure
+is retained in that aggregate; the corrected static rerun separately exited 0.
+
+The candidate distribution build passed server and client smoke, then refused
+packaging because these new evidence files were uncommitted. No installed
+release was changed. Daemon changes additionally require Linux signoff on a published
+head; that signoff has not run. The earlier `make dist` smoke passed at
+`6e311b94c866d10dd2e049279b845ff520037340`, which contains the sanitizer change
+only. Those artifacts do not include this writer change. Installed clients
+and daemon remain unchanged, and the resource optimization goal stays active.
