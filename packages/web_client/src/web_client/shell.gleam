@@ -212,8 +212,9 @@ pub type Model {
 }
 
 /// A drag in progress: where it began and the document listeners that follow
-/// the pointer. The listeners arrive a turn after the press, so until then
-/// `hooks` is `None`.
+/// the pointer. `hooks` is `None` from the press until the effect that
+/// registers them has reported back, which the runtime does in the same turn,
+/// before any pointer event can be heard.
 pub type Grip {
   Grip(drag: grip_rule.Drag, hooks: Option(Hooks))
 }
@@ -515,14 +516,15 @@ fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       effect.batch([stop_grip(model.grip), follow_pointer()]),
     )
 
-    // The listeners are registered a turn after the press. A release that came
-    // first has already ended the drag, and listeners that arrive for no drag
-    // are stopped at once rather than left on the document.
+    // The listeners are registered by the effect the press returned, and the
+    // runtime reports back before it hears another event, so a drag is there
+    // to take them. The arm for no drag keeps the match total and stops the
+    // listeners rather than leave them on the document.
     GripHooked(hooks:) ->
       case model.grip {
         Some(grip) -> #(
           Model(..model, grip: Some(Grip(..grip, hooks: Some(hooks)))),
-          stop_grip(Some(grip)),
+          effect.none(),
         )
         None -> #(model, stop_hooks(hooks))
       }

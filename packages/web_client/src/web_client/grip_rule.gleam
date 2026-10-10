@@ -118,7 +118,8 @@ pub type Adjustment {
 /// The widest the panel may be in `room`: what the two columns share, less the
 /// floor the transcript keeps. It is never under `least_width`, so a window too
 /// small for both floors keeps the panel usable and lets the stylesheet shrink
-/// the transcript's column instead.
+/// the transcript's column instead, and never over `most_width`, so a width the
+/// reader chose on an enormous window is one storage will give back.
 ///
 /// ## Examples
 ///
@@ -127,7 +128,7 @@ pub type Adjustment {
 /// assert grip_rule.ceiling(grip_rule.Room(panel: 340, centre: 100)) == 280
 /// ```
 pub fn ceiling(room: Room) -> Int {
-  int.max(least_width, room.panel + room.centre - centre_floor)
+  int.clamp(room.panel + room.centre - centre_floor, least_width, most_width)
 }
 
 /// `width` held between `least_width` and `ceiling`.

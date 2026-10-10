@@ -436,7 +436,8 @@ time builds anything.
   DOM and holds the decisions: `Room(panel, centre)` (the two columns' rendered
   widths, which the shell measures from the event: `room_of`), `ceiling` (what
   the pair shares less `centre_floor`, 360, which the stylesheet also gives the
-  centre column as `min-width` from 980 px up; never under `least_width`, 280),
+  centre column as `min-width` from 980 px up; never under `least_width`, 280, and
+  never over `most_width`, 4000),
   `Drag(origin, start, ceiling)` from `begin`, `dragged` (computed from the start
   of the drag, so overshooting a limit and returning has no dead zone),
   `contact` (`Pressing` | `Lifted`, from the move's `buttons`), `adjustment`

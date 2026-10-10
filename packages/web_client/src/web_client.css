@@ -265,8 +265,8 @@
   .session-head details.ctx > summary:hover{color:var(--color-fg);}
   .session-head details.ctx > summary:focus-visible{outline:2px solid var(--color-current);outline-offset:2px;}
   .ctx-panel{position:fixed;z-index:40;top:48px;right:12px;box-sizing:border-box;width:min(420px,calc(100vw - 24px));max-height:calc(100dvh - 60px);overflow-y:auto;overscroll-behavior:contain;padding:12px 14px;border:1px solid var(--color-divider);border-radius:10px;background:var(--color-bg-raised);color:var(--color-fg);font:13px/1.45 var(--font-sans);white-space:normal;}
-  /* Where the strand panel is a column (980px and up) the panel stops short of it, so the tabs stay reachable: the column is as wide as --panel-width, which <loom-shell> sets on its frame (340px until the reader drags the grip, 0px while the panel is closed), with the page's 12px margin beyond it. */
-  @media (min-width:980px){.ctx-panel{right:calc(var(--panel-width,340px) + 12px);width:min(420px,calc(100vw - var(--panel-width,340px) - 24px));}}
+  /* Where the strand panel is a column (980px and up) the panel stops short of it, so the tabs stay reachable: the column is as wide as --panel-width, which <loom-shell> sets on its frame (340px until the reader drags the grip, 0px while the panel is closed) but never so wide that the 360px transcript floor is crossed, since the column shrinks to that floor where the window cannot hold the saved width, with the page's 12px margin beyond it. */
+  @media (min-width:980px){.ctx-panel{right:calc(min(var(--panel-width,340px),100vw - 372px) + 12px);width:min(420px,calc(100vw - min(var(--panel-width,340px),100vw - 372px) - 24px));}}
   .ctx-actions{display:flex;justify-content:flex-end;gap:8px;margin:0 0 8px 0;}
   .ctx-button{margin:0;padding:3px 10px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:var(--color-fg);font:12px/1.4 var(--font-sans);cursor:pointer;}
   .ctx-button:hover{background:var(--color-bg-sunk);}
@@ -306,7 +306,7 @@
   .shell-centre{flex:1 1 0;display:flex;min-width:0;min-height:0;}
   /* Where the panel is a column the transcript keeps 360px (grip_rule.centre_floor), and the panel, which may shrink, gives way when a window cannot hold its width and that floor. */
   @media (min-width:980px){.shell-centre{min-width:360px;}}
-  .region{flex:0 0 auto;min-height:0;overflow:hidden;transition:width 180ms ease;}
+  .region{flex:0 0 auto;min-height:0;overflow:hidden;transition:width 180ms ease,min-width 180ms ease;}
   .region-sidebar{width:232px;}
   /* The panel's column holds the tab bar above the slot. It carries the
      column's border and background, so the bar and the panes share them. */
@@ -321,7 +321,7 @@
   .panel-tab[aria-pressed="true"]{color:var(--color-fg);border-bottom-color:var(--color-fg);font-weight:500;}
   .panel-tab:focus-visible{outline:2px solid var(--color-current);outline-offset:-2px;}
   .tab-badge{padding:0 6px;border:0;border-radius:999px;background:var(--color-danger);color:var(--color-on-danger);font:600 11px/1.5 var(--font-sans);font-variant-numeric:tabular-nums;}
-  .region.closed{width:0;min-width:0;visibility:hidden;transition:width 180ms ease,visibility 0s linear 180ms;}
+  .region.closed{width:0;min-width:0;visibility:hidden;transition:width 180ms ease,min-width 180ms ease,visibility 0s linear 180ms;}
   /* While the saved layout is being restored (web_client/shell, `Still`) the
      columns change at once, so a column saved as closed does not slide shut
      on every load. The class is removed after that frame is painted. */

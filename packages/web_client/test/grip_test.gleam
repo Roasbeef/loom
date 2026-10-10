@@ -2,7 +2,6 @@
 //// (`web_client/grip_rule`): the ceiling a window allows, how far a drag moves
 //// the panel, and what the keys on the grip do.
 
-import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import web_client/grip_rule.{
@@ -27,6 +26,13 @@ pub fn a_small_window_never_takes_the_ceiling_under_the_least_width_test() {
   assert grip_rule.ceiling(Room(panel: 340, centre: 100))
     == grip_rule.least_width
   assert grip_rule.ceiling(Room(panel: 0, centre: 0)) == grip_rule.least_width
+}
+
+// A drag on a window wider than the stored bound still saves a width that
+// reading accepts, so the ceiling stops at `most_width`.
+pub fn the_ceiling_never_passes_the_widest_stored_width_test() {
+  assert grip_rule.ceiling(Room(panel: 340, centre: 9000))
+    == grip_rule.most_width
 }
 
 pub fn a_width_is_held_between_the_least_and_the_ceiling_test() {
@@ -186,7 +192,7 @@ pub fn no_key_takes_the_width_out_of_range_test() {
     list.all(adjustments, fn(adjustment) {
       list.all(sweep(0, 40), fn(step) {
         let width = grip_rule.adjusted(step * 50, adjustment, room)
-        width >= grip_rule.least_width && width <= int.max(ceiling, 280)
+        width >= grip_rule.least_width && width <= ceiling
       })
     })
   })
