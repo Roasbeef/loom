@@ -254,3 +254,34 @@ pub fn codex_authorize_pkce_and_returning_client_are_bound_test() {
   assert string.contains(returning, "client_id=oaiapp_saved")
   assert !string.contains(returning, "agent_name_hint")
 }
+
+pub fn codex_key_set_certificate_members_do_not_hide_the_signing_key_test() {
+  let assert Ok(key) = gose.generate_rsa(2048)
+    as "RSA fixture generation succeeds."
+  let key = gose.with_kid(key, "certified-key")
+  let assert Ok(public) = gose.public_key(key)
+    as "The public verification key exists."
+  let plain = key_set.from_list([public]) |> key_set.to_json |> json.to_string
+  // The issuer began attaching a certificate chain to its keys on 2026-10-08.
+  let certified = string.replace(plain, "{\"", "{\"x5c\":[\"AAAA\"],\"")
+  let assert Ok(claims) =
+    jwt.claims()
+    |> jwt.with_issuer("https://auth.openai.com")
+    |> jwt.with_audience("oaiapp_loom")
+    |> jwt.with_subject("account-one")
+    |> jwt.with_expiration(timestamp.from_unix_seconds(2000))
+    |> jwt.with_claim("nonce", json.string("attempt-nonce"))
+    as "Nonce is a valid custom claim."
+  let token = signed(claims, key)
+
+  assert string.contains(certified, "x5c")
+  assert oidc.verify_with_keys(
+      token,
+      "oaiapp_loom",
+      oidc.Browser("attempt-nonce"),
+      1_000_000,
+      certified,
+    )
+    == Ok("account-one")
+  assert oidc.without_certificates("not json") == "not json"
+}

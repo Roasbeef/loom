@@ -9,7 +9,9 @@ import client/codex/network
 import gleam/bit_array
 import gleam/bool
 import gleam/crypto
+import gleam/dict
 import gleam/dynamic/decode
+import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -88,7 +90,8 @@ pub fn verify_with_keys(
     return: Error("invalid_identity"),
   )
   use keys <- result.try(
-    key_set.from_json(jwks) |> result.replace_error("invalid_identity"),
+    key_set.from_json(without_certificates(jwks))
+    |> result.replace_error("invalid_identity"),
   )
   let options =
     jwt.JwtValidationOptions(
@@ -151,6 +154,55 @@ pub fn verify_with_keys(
       }
   })
   Ok(claims.subject)
+}
+
+/// Drops the X.509 members from every key of a published key set.
+///
+/// Gose refuses any JWK that carries `x5u`, `x5c`, `x5t` or `x5t#S256`, and
+/// `key_set.from_json` skips a refused key without saying so. The issuer began
+/// publishing `x5c` on its signing keys on 2026-10-08, so every key a new token
+/// names vanished from the set and verification failed as an unknown key ID.
+/// The certificate chain adds nothing here: trust comes from the fixed issuer
+/// URL and the key's own `n` and `e`, never from the chain. A body that is not
+/// a key set is returned unchanged, so the caller's parse reports it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // oidc.without_certificates("{\"keys\":[{\"kid\":\"a\",\"x5c\":[\"AA\"]}]}")
+/// ```
+@internal
+pub fn without_certificates(jwks: String) -> String {
+  // A member that is not a string is dropped; every member an RSA signing
+  // key needs is a string, and the arrays are the certificate chain.
+  let member =
+    decode.one_of(decode.map(decode.string, Some), [decode.success(None)])
+  let keys_decoder = {
+    use keys <- decode.field(
+      "keys",
+      decode.list(decode.dict(decode.string, member)),
+    )
+    decode.success(keys)
+  }
+
+  case json.parse(jwks, keys_decoder) {
+    Ok(keys) ->
+      json.object([#("keys", json.array(keys, certificate_free_key))])
+      |> json.to_string
+    Error(_) -> jwks
+  }
+}
+
+fn certificate_free_key(key: dict.Dict(String, Option(String))) -> json.Json {
+  dict.to_list(key)
+  |> list.filter_map(fn(entry) {
+    case entry {
+      #("x5u", _) | #("x5c", _) | #("x5t", _) | #("x5t#S256", _) -> Error(Nil)
+      #(name, Some(value)) -> Ok(#(name, json.string(value)))
+      #(_, None) -> Error(Nil)
+    }
+  })
+  |> json.object
 }
 
 fn identity_decoder() -> decode.Decoder(Identity) {
