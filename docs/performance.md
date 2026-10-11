@@ -1,5 +1,36 @@
 # Performance on Gleam and the BEAM
 
+## Jailed command latency
+
+Run `make bench-tool-latency` to measure the real helper, broker and jail
+without a provider or a live session. Run it outside an existing Loom jail:
+macOS cannot apply a second Seatbelt profile. `LOOM_BENCH_OUT` selects the
+JSONL output path, relative to `packages/broker` unless absolute; the default
+is `packages/broker/build/bench-exec.jsonl`, overwritten on each run.
+
+The short mode uses production `PlatformEnforcement`, ten fresh-pool no-op
+commands, and thirty warmed commands per workload: no output, five bytes,
+4 KiB and 1 MiB. A warm helper still creates a fresh jail per command.
+Every response must exit successfully, deliver exactly the expected bytes,
+and remain untruncated. The output includes enforcement reports, raw samples,
+and nearest-rank p50/p95/min/max values. Startup has thirty separate samples.
+
+Total latency starts before broker clearance and ends when the caller receives
+settlement. `clearance` ends at the admission acknowledgement; `first_output`
+ends at the first nonempty chunk received by that caller; `tail_settlement`
+starts at the last nonempty chunk. These are caller observations, including
+scheduling and any output already queued during admission. `helper_wall_ms`
+uses the helper's millisecond clock interval and is diagnostic, not an exact
+phase subtraction. Empty commands have no output or tail samples.
+
+This isolates executor overhead. It excludes bash job polling, durable result
+storage, code-mode compilation and satellite startup, provider request
+encoding, networking and client rendering. The longer `make bench-exec`
+retains its separate BestEffort fault, cancellation, flood and Linux process
+census workloads. Compare repeated runs on the same host and runtime before
+optimizing; the [October 9 baseline](review/tool-latency-2026-10-09.md) records
+the first measurements and the polling path worth measuring next.
+
 Performance work in Loom starts with a process, a workload, and a measurement.
 An Activity Monitor row named `beam.smp` is not enough: a development machine
 can have a server, a terminal client, a test node, and yesterday's forgotten

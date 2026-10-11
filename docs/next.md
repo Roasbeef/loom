@@ -1,5 +1,26 @@
 # Current handoff
 
+## Tool latency work
+
+
+The isolated `5086/loom` worktree starts at `91dbdef947ca9afa0bffeb77f82d0f6df92efb53`.
+Its uncommitted benchmark addition is `make bench-tool-latency`, extending the
+existing broker benchmark with production platform enforcement, cold/warm
+commands, response sizes, and caller-observed phase timings. Two real macOS
+runs passed; warmed commands took 18 to 23 ms median. The broker suite passed
+all 401 tests, with two existing Linux `/proc` probes skipped on Darwin.
+Targeted lint and warning-free build passed, and independent review found no
+actionable findings. No production behavior or installed process changed.
+
+Read the [baseline and raw samples](review/tool-latency-2026-10-09.md) before
+optimizing. Next, measure real bash Auto completion against broker settlement:
+`jobseam.poll_for` uses doubling sleeps of 25 to 250 ms, which may dominate
+these executor timings. Exit: attribute that delay on one clock before
+changing notification or polling. Code-mode compilation, storage, provider
+encoding, Linux timings, hosted CI and full repository validation remain open.
+
+## Distributed runtime handoff from main
+
 This edition covers the distributed runtime (issue #697) on
 `distributed/simplify`, rebuilt from `main` at `7091d5a42` after PR #819 was
 archived. An orchestrator daemon keeps a session's runtime, SQLite store and

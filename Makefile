@@ -401,6 +401,13 @@ bench-exec: sandbox ## Benchmark the exec helper pool against the real helper (L
 	@LOOM_BENCH_EXEC=1 LOOM_TEST_TIMEOUT_SECONDS="$${LOOM_TEST_TIMEOUT_SECONDS:-600}" \
 		bash scripts/test.sh broker --match broker@bench_exec_test:
 
+# Response latency without the Linux-only census and fault-injection probes.
+# PlatformEnforcement is the same demand the ordinary server uses.
+.PHONY: bench-tool-latency
+bench-tool-latency: sandbox ## Measure cold/warm jailed commands and response sizes (LOOM_BENCH_OUT=path)
+	@LOOM_BENCH_EXEC=latency LOOM_TEST_TIMEOUT_SECONDS="$${LOOM_TEST_TIMEOUT_SECONDS:-600}" \
+		bash scripts/test.sh broker --match broker@bench_exec_test:
+
 .PHONY: dev
 dev: ## Build a scratch daemon and open its session picker (interactive)
 	@scripts/dev.sh
