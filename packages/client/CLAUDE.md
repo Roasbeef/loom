@@ -7728,3 +7728,55 @@ VM-wide singleton); the `Recorded` cases of `session_mover_test`,
 `distribution_provision_test`; and the shipped member variants of
 `daemon_shipped_remote_move_test`, `daemon_shipped_directory_test` and
 `daemon_shipped_peer_mail_test`, with `daemon_shipped_directory_quorum_test`.
+
+## Reading the deployment (protocol-change/085)
+
+`deployment.status` is an owner-only control command that says which of the
+nodes the daemon is configured with answer its own connection attempts, before
+any session is placed on one. `docs/architecture/distributed.md` ("Reading the
+deployment") is the account and `docs/client-protocol.md` §3.29 the wire.
+
+- `client/deployment` is the whole read. `targets` lists the daemon's
+  `[orchestrators]` rows and then its `[executors]` rows (a `Target` with its
+  `Kind`), `only` narrows them to a configuration key, and `probe` connects to
+  every target at once in one weft run (`connect_ms` 1000 each, `deadline_ms`
+  3000 in all). `Reach(self, dial)` is how it connects: `over(membership, self)`
+  is `distribution.peer` then `distribution.connect`, and `alone(self)`, for a
+  daemon with no `[distribution]`, connects to nobody. A task that returns
+  `Error(why)` is a `Failed` outcome carrying `why`, a task the deadline cut off
+  is `Down(TimedOut)`, and a crash is `Down(Unavailable)`: a node nothing was
+  heard from is never assumed up.
+- The only names ever dialled are `Target.node` values from the daemon's own
+  tables. The request's `node` is a key: `status` resolves it with `only` before
+  `probe` runs, so a key the configuration lacks returns `Error(Nil)` and nothing
+  was dialled. `protocol.node_field` holds it to the shape of a key first
+  (`bad_request` otherwise). `daemon_deployment_test` and `deployment_test` assert
+  the dial record is empty in both cases.
+- `Health` is `Reachable | Down(Why)` with `Why` = `TimedOut | Unreachable |
+  Unavailable` (wire words `timeout`, `unreachable`, `unavailable`). A node is
+  `ok` or `down`; `degraded` is reserved on the wire and arrives with the node
+  reports, which need a `Report` constructor on the orchestrator port and are not
+  built. Every node member beyond `node`, `name`, `roles`, `state` and `reason`
+  (when `down`) is optional so that report adds members and replaces none. The
+  whole deployment's `state` is that of its worst node.
+- `Snapshot` is `Overview` (the asking daemon as a `Node`, `others`, `edges`,
+  `placements`) or `Selected` (only the named nodes), so a reply with a `node`
+  filter cannot carry edges or placements. Edges are `Serves` (executors) and
+  `Peers` (orchestrators), each with the asking daemon's own `Link`. Placements
+  are `ready | down` for an executor in this slice, and a pool lists
+  `pools.candidates` in its trial order with `eligible` the reachable ones; the
+  pool is never reordered by health.
+- `server.Config.deployment` is the `Reach`; `main.deployment_reach` builds it
+  from `Config.membership` and the node's own name. `server.deployment_status`
+  adds `MemberRole` to the asking daemon when `directory.standing` is `Member`,
+  and the owner check comes before any connection, so a member cannot make the
+  daemon dial. The orchestrators come from `Control.orchestrators` (the movers'
+  list, which is the `[orchestrators]` table on a daemon with distribution).
+
+Tests: `deployment_test` (the pure read and the weft fan-out with a scripted
+`dial`, including a stuck connection cut by the deadline and a crash),
+`daemon_deployment_test` (the control socket: the owner's reply, a member's
+`forbidden`, a key narrowing the read, an unconfigured key and a malformed one
+dialling nobody), the `deployment.status` cases of `daemon_protocol_test`, and
+`daemon_shipped_deployment_test` (two real daemons; the executor's process ends
+and the next read says `down`).

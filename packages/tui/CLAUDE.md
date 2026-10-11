@@ -3305,3 +3305,36 @@ session then restarts, so the conversation socket closes: the existing
 the daemon is still stopping it is spent with the pointer to `/sessions`.
 `tui/profile_command_test` pins the parse, palette, help text, frames, lane
 acceptance and transcript lines.
+
+## `loom deployment` (protocol-change/085)
+
+`loom deployment status [--json]` and `loom deployment executors [--json]` read
+`deployment.status` over one owner control connection, the way `loom sessions`
+reaches the daemon: `tui.run_deployment` takes `sessions_host`'s ladder, sends
+`protocol.DeploymentStatus` through `selection.deployment`, and prints through
+`print_outcome` (one report to standard output, or one `loom deployment: <reason>`
+line to standard error and exit status 1), the path `run_sessions` now shares.
+`--json` is a switch taken anywhere after the verb; `launch_deployment` is the
+test seam for the parse.
+
+- `protocol.DeploymentStatus` is a read with an empty body, and `DeploymentReply`
+  keeps the daemon's document whole, so `--json` prints what the daemon sent
+  (`tui.format_deployment`) even when the view could not read it.
+- `tui/deployment_view` is the terminal's reading of the document, with a
+  decoder of its own because the launcher cannot import the daemon's types.
+  `decode` is total: `self`, `state` and `nodes` are required, a node needs
+  `node`, `name`, `roles` and `state`, a state word outside the protocol's
+  (`ok|degraded|down`, `ready|degraded|full|down`) is an `Error` and never a
+  guess, text and lists are bounded, and an optional member that is absent,
+  malformed or unknown is left out. `status_text` draws the verdict, a node
+  table and the links (`==` connected, `..` not connected, `--` not observable
+  from the asking daemon); `executors_text` draws the executors with their state,
+  declaration, pools and the reason a down one gave, then the pools in trial
+  order with the reachable ones. Every drawn string goes through
+  `text_hygiene.single_line`.
+- `selection.deployment_failure` words a daemon that does not know the command
+  (`bad_request`, `unsupported control command`) as "this daemon does not have
+  deployment views" and leaves every other failure to `failure`.
+
+Tests: `deployment_command_test` (the parse, the frame, the decoder's total
+cases, goldens for both views, a hostile reply, and `--json`).

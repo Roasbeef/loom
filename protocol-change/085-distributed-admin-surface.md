@@ -431,3 +431,47 @@ port: a changed field or constructor is an upgrade of every node, the same rule 
 Not changed: `sessions.create`, the wire of `sessions.move`, `directory.status`,
 the executor host's messages, `protocol.version`, the catalogue, configuration, the
 Erlang FFI, formal models.
+
+## Implementation notes: `deployment.status` without the port
+
+The command shipped ahead of the orchestrator port constructors, so a reachable
+node is `ok` with no optional members. Where the code differs from the text
+above, or settles something the text left open, it is recorded here.
+
+- **The reason word of a `down` node** is one of `timeout`, `unreachable` and
+  `unavailable`, chosen from the connection layer's fault in
+  `client/deployment.why_of`. The text above says "the word `distribution.describe`
+  gives", but `describe` returns an operator's sentence with a remedy, and the
+  example reply shows `"reason":"timeout"`. The three words follow the example.
+  `TimedOut` is `timeout`, `Unavailable` (a refused handshake, a wrong pin, an
+  unreachable host) is `unreachable`, and every other fault, together with a node
+  the daemon did not pin and a daemon with no distribution, is `unavailable`.
+- **The deployment's `state`** is the worst node state, as the table above says.
+  Both examples in this proposal and in the design note show `degraded` for a
+  deployment in which one node is `down`, which that rule would call `down`; the
+  code follows the rule, and the examples need a ruling. If a deployment with one
+  unreachable optional executor should read `degraded`, the change is one
+  function (`deployment.worst`).
+- **The `node` filter** is implemented in this slice, although the plan lists it
+  with the node reports. It has nothing to select among but `node`, `name`,
+  `roles` and `state` until the reports exist, and the rule that a name from a
+  request is never connected to is worth having tested from the first command.
+  `deployment.status` resolves the key against `[executors]` and
+  `[orchestrators]` before any connection, and a key that matches nothing is
+  `not_found`. A key shaped unlike a configuration key is `bad_request`. A key
+  that matches an executor and an orchestrator selects both.
+- **The asking daemon's node** has `name` equal to its node name, the "bare node
+  when it has none" rule, and `roles` `["orchestrator"]`, with `"member"` added
+  when `directory.standing` is `Member`. It is never connected to and is always
+  `ok`.
+- **What is not in the reply yet:** the `directory` and `moves` members, `member`
+  edges, `sessions` counts on a `serves` edge, and the `imports` and `serves`
+  members of an `orchestrators` entry. All need node reports or a directory read
+  that is part of the next slice. `orchestrators` entries carry `name`, `node` and
+  `state`. An executor placement carries `name`, `node`, `state` (`ready` or `down`)
+  and `declared`; `free_scopes` and `contradiction` are absent. A pool placement
+  lists the executors `pools.candidates` admits, which are fewer than the pool's
+  `executors` key when its requirements reject one.
+- **`server.Config`** gains a `deployment` field, the daemon's node name and the
+  function it connects with, so a test can script the connections. Nothing else of
+  the daemon's configuration changes, and no `loom.toml` key is added.

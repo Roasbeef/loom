@@ -44,14 +44,14 @@ question that only the owner can settle.
 
 **Choosing an executor.** `sessions.create` decodes `executor` and `pool` as
 exclusive names and then reads `workspace` as a registered name, not a path
-(`created_workspace`, `client/daemon/protocol.gleam:929`; `executor_field`,
-`client/daemon/protocol.gleam:891`; `pool_field`, `client/daemon/protocol.gleam:911`).
+(`created_workspace`, `client/daemon/protocol.gleam:938`; `executor_field`,
+`client/daemon/protocol.gleam:891`; `pool_field`, `client/daemon/protocol.gleam:920`).
 The daemon holds the names from its `[executors.<name>]` and `[pools.<name>]`
 tables, with each executor's declared platform, enforcement and toolchains
 (`Executor`, `client/executors.gleam:68`). The web home is told only the names
 (`HomeAttachment`, `client/daemon/server.gleam:240`, whose `executors` field is
 `List(String)`), draws them in a select, and asks the owner to type the workspace
-name (`CreatingRemote`, `web_view/home.gleam:688`). The terminal builds a
+name (`CreatingRemote`, `web_view/home.gleam:730`). The terminal builds a
 `Placement` from launch flags (`Placement`, `tui/placement.gleam:31`) and cannot
 change it inside a running terminal. Neither client can show whether an executor
 answers, is full, or contradicts its declaration. That is learned at the attach,
@@ -61,7 +61,7 @@ same way. [The setup guide](../distributed-setup.md) tells an operator to check 
 connection with `epmd -names`, `lsof` or `ss`.
 
 **The session list.** `sessions.list` reads this daemon's catalogue
-(`ListSessions`, `client/daemon/server.gleam:3056`). The orchestrator port answers
+(`ListSessions`, `client/daemon/server.gleam:3096`). The orchestrator port answers
 `Owns` and the move messages (`Message`, `client/remote/orchestrator_port.gleam:69`).
 Nothing answers "what sessions do you hold".
 
@@ -74,7 +74,7 @@ reason that goes to one log line (`Stalled`, `client/session_mover.gleam:233`) a
 is forgotten, and the movers keep only the time the stall began (`Entry`,
 `client/session_movers.gleam:140`). `directory.status` reports the configured
 members, Ra's members with their votes, the leader and this member's applied index
-(`directory_status_json`, `client/daemon/server.gleam:2539`). It does not compare
+(`directory_status_json`, `client/daemon/server.gleam:2546`). It does not compare
 the applied index with the leader's, so it cannot say whether this copy has caught
 up. The only "not caught up" signal today is `voter: false`, which holds while a
 joining member is a non-voter.
