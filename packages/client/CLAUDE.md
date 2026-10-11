@@ -7773,10 +7773,26 @@ deployment") is the account and `docs/client-protocol.md` §3.29 the wire.
   daemon dial. The orchestrators come from `Control.orchestrators` (the movers'
   list, which is the `[orchestrators]` table on a daemon with distribution).
 
+- The home page's creation panel reads the same placements without the rest of
+  the deployment (protocol-change/085, `docs/architecture/web-view.md`,
+  "Executors and pools"). `deployment.placed` connects to the executors alone,
+  and `deployment.for_page` reduces the result to `web_view/placements` (a state,
+  the operator's declaration, a pool's trial order and its reachable members; no
+  node name or address). `server.HomeAttachment` gains `pools` (the startup
+  capture of the `[pools]` names, like `executors`) and `placements`, the blocking
+  read, which `ui_socket.upgrade_home` hands the page as
+  `read_task(deliver, attachment.placements)` only where the page holds the
+  creation capability. `ui_socket.create_for` accepts `creations.Pooled`: the pool
+  and no executor reach `manager.Creation` (`pool_of`), the scope is session-only,
+  and the daemon's `pool_unknown` is `creations.UnknownPool`.
+
 Tests: `deployment_test` (the pure read and the weft fan-out with a scripted
-`dial`, including a stuck connection cut by the deadline and a crash),
+`dial`, including a stuck connection cut by the deadline and a crash, and
+`placed` and `for_page`),
 `daemon_deployment_test` (the control socket: the owner's reply, a member's
 `forbidden`, a key narrowing the read, an unconfigured key and a malformed one
 dialling nobody), the `deployment.status` cases of `daemon_protocol_test`, and
 `daemon_shipped_deployment_test` (two real daemons; the executor's process ends
-and the next read says `down`).
+and the next read says `down`). For the creation panel: `ui_route_test` (a pooled
+creation and `pool_unknown`) and `ui_socket_test` (a card needs no new event
+class).

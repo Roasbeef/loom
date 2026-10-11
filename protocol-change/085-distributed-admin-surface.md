@@ -475,3 +475,52 @@ above, or settles something the text left open, it is recorded here.
 - **`server.Config`** gains a `deployment` field, the daemon's node name and the
   function it connects with, so a test can script the connections. Nothing else of
   the daemon's configuration changes, and no `loom.toml` key is added.
+
+## Implementation notes: the cards in the creation form
+
+The owner's home draws a card for each executor and each pool in the panel that
+"New session on an executor" opens. The cards follow the design note's section 5
+and differ from it in these ways.
+
+- **The reads.** The page is given the executor and pool names when it opens
+  (`Start.executors`, and `Start.pools`, which is new) and starts a read of their
+  states when the panel opens, as `Start.placements`. The note called the read
+  `Start.deployment`. It is `client/deployment.placed`: the daemon connects to its
+  executors and to nothing else, since the orchestrators are no part of a
+  creation. The read runs in a weft task (`ui_socket.read_task`) and the answer is
+  numbered, so an older read cannot overwrite a newer one. The panel is drawn at
+  once from the names, with each card marked "not checked", and the answer
+  replaces them. A read that gives nothing leaves the names and says so; the page
+  has a value for that (`placements.Unreported`) that the daemon does not yet send.
+- **A state is advice.** A `down` executor is drawn with that word and its Choose
+  button works, as the note's section 3 decides. The panel says this above the
+  cards.
+- **What a card says.** The name, the kind, a pill in the existing `online`,
+  `pending` or `ended` tint (`ready` is `online`, `degraded` and `full` are
+  `pending`, `down` is `ended`), and what the executor's operator declared. The
+  declaration is worded as the operator's claim ("Declared: ...") because no
+  census has been read. "N scopes free" and the contradiction text are drawn when
+  the daemon supplies them, and this slice's daemon supplies neither. A pool's card
+  says how many of its admitted executors were reached and the order they are
+  tried in, and its pill is `ready` when at least one was reached and `down`
+  otherwise.
+- **The workspace is typed.** The executor's registered workspace names come with
+  the node reports, so the form under the chosen card is today's typed field. The
+  choice of card is the page's own state: a card's button sends the placement it
+  was drawn for, and the form's submit carries the workspace and session names
+  only. That differs from the old form, whose executor was a select field, and a
+  forged `executor` or `pool` field is now an extra field that refuses the event.
+- **Pools create sessions.** `creations.Place` gains `Pooled(pool, workspace)`,
+  next to `Registered`, rather than widening `Registered`. `create_for` passes the
+  pool and no executor to the creation, the scope is session-only, and the daemon's
+  `pool_unknown` is a fixed refusal (`creations.UnknownPool`).
+- **Local stays the default.** The panel is opened by its own button, and the
+  forms under a workspace and for a typed folder create local sessions as before.
+  There is no "this machine" card.
+- **No new event class.** A card's button is a click beneath the sessions list's
+  section, where the owner's socket already admits one.
+- **The stylesheet** is regenerated (`make gen-client`) because the page's
+  stylesheet records the digest of every `web_view` source. A branch that changes
+  any other `web_view` source and regenerates it too will conflict in
+  `packages/web_view/priv/static/web_client.css`'s header, and the conflict is
+  resolved by running `make gen-client` once after the merge.

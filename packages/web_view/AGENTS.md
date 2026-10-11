@@ -1509,38 +1509,79 @@ opened is `creations.UnknownModel`, whose fixed words say to reload the page.
 
 ## Sessions on an executor (protocol 078)
 
-`Start.executors` is the list of `[executors.<name>]` names the daemon was
-configured with, `[]` unless `Start.create` is `Some` (`ui_socket.upgrade_home`
-copies `server.HomeAttachment.executors`, the daemon's startup capture, so no read
-is made). When it is not empty the section for folders
-(`view/folders`) draws a second button, "New session on an executor", and
-`create.State` gains `Remote` (form open) and `Dispatching` (creation out), which
-behave as `Elsewhere` and `Sending` do. The form (`create.remote_form`) is an
-executor select, a text field for the registered workspace name (`name=workspace`,
-at most 128 bytes) and the optional session name; there is no Shareable box and
-no profile or model select, because the daemon makes a session on an executor
-session-only and a registered session takes the configuration's default roles
-(`creations.default_roles`) from this form.
-The executor follows the profile's rule exactly: the option's value is its position
-in `Start.executors`, its label is the name as a text node, and
-`create.remote_fields` turns the position back into the name, accepting exactly one
-`executor`, `workspace` and `name` and refusing a position outside the list, a
-name, a repeat, an extra field and any submit when the list is empty. The messages
-are `home.OpeningRemote` and `home.CreatingRemote(executor, workspace, name)`; the
-component asks only from the open form and only for an executor in
-`Start.executors`.
+`Start.executors` and `Start.pools` are the `[executors.<name>]` and
+`[pools.<name>]` names the daemon was configured with, `[]` unless `Start.create`
+is `Some` (`ui_socket.upgrade_home` copies `server.HomeAttachment.executors` and
+`.pools`, the daemon's startup capture, so no read is made for the names). When
+either is not empty the section for folders (`view/folders`) draws a second
+button, "New session on an executor", and `create.State` gains `Remote` (panel
+open, nothing chosen), `Chosen(choice)` (a card chosen, its form drawn) and
+`Dispatching(choice)` (creation out), which behave as `Elsewhere` and `Sending`
+do. The form (`create.remote_form`) is a text field for the registered workspace
+name (`name=workspace`, at most 128 bytes) and the optional session name; there is
+no Shareable box and no profile or model select, because the daemon makes a
+session on an executor or in a pool session-only and a registered session takes
+the configuration's default roles (`creations.default_roles`) from this form.
 
-`creations.Place` gains `Registered(executor, workspace)`. `creations.registered_name`
-is the one rule for the text (trimmed, 1 to 128 bytes, no `/`, no control,
-zero-width or direction-changing character), applied by the daemon
-(`ui_socket.placed`) and not by the page, whose text field is the browser's. The
-daemon never statts, canonicalizes or creates the name on its own host; the
-executor is judged by `server.create_session`, whose `executor_unknown` is
-`creations.UnknownExecutor`, and a bad name is `creations.InvalidWorkspaceName`.
-`ui_socket.create_for` forces the session-only scope for a registered place
-whatever the sharing was. A session made and not opened (the executor unreachable)
-is the existing `Unstarted`, which shows the owner's own startup reason, for
-example `executor_unavailable: ...`.
+## Executor and pool cards (protocol-change/085)
+
+The panel draws a card for each executor and each pool (`create.panel`,
+`executor_card`, `pool_card`), in the configuration's order, executors first: the
+name, the kind, a state pill, the facts, and a Choose button. The cards come from
+`placements.Cards`: `placements.listed` builds them from the names alone
+(`Readiness` `Checking`), and the daemon's read replaces them
+(`placements.after`; `Checked` with a report, `Unchecked` when the read gave
+nothing). The state is `placements.State` (`Ready`, `Degraded`, `Full`, `Down`)
+drawn in the three pill tints the page already has (`placements.pill_class`:
+`online`, `pending`, `ended`), so no colour is added. A state is advice: the panel
+never refuses a card because of it, a `Down` executor can be chosen, and the
+panel says so in a line above the cards; the daemon decides again when the
+session opens. The facts of an executor are the free scope count when it
+reported one, what its operator declared (worded as a claim) and the
+contradiction between the claim and a census, when there is one; a pool's are how
+many of its admitted executors were reached and the order a first open tries
+them, which health does not change.
+
+`Start.placements` starts the read: `home.OpeningRemote` numbers it
+(`Model.place_reads`) and runs it through `placing`, an `effect.from` that hands
+the daemon a function and returns at once; the answer is
+`home.PlacementsRead(serial, read)`, dropped when a newer read overtook it, and
+no browser can send it. The daemon side is `ui_socket.upgrade_home`, which gives
+the page `read_task(deliver, attachment.placements)`, so the up to one second the
+connections take is spent in a weft run and never in the page's runtime. The
+read is `server.HomeAttachment.placements`, which is
+`client/deployment.placed` (the executors alone) reduced by
+`deployment.for_page`; the page is told a state, a declaration and a trial order
+and no node name, address or key.
+
+A card's button sends `home.ChoosingPlace(choice)`, with `placements.Choice` =
+`OnExecutor(name)` | `InPool(name)` built by the server from the names it holds,
+so the browser names no text; the component honours it only while the panel is
+open, no creation is out, and `placements.offers` finds the card. The chosen
+placement is the page's state, not a field of the form: `create.remote_fields`
+accepts exactly one `workspace` and one `name`, so a forged `executor` or `pool`
+field is an extra field and refuses the event, and `home.CreatingRemote(workspace,
+name)` asks the daemon only from `Chosen`. The cards are a keyed list whose keys
+are positions (`e0`, `p1`), never a name: the lists are the daemon's startup
+capture and cannot change while the page is open. No event class is added: a card
+is a click beneath the sessions list's section, where the home already admits
+one (`ui_socket_test.a_card_needs_no_new_event_class_test`). Every name, platform
+and contradiction is a text node and no class is built from one.
+
+`creations.Place` gains `Registered(executor, workspace)` and
+`Pooled(pool, workspace)`. `creations.registered_name` is the one rule for the
+text (trimmed, 1 to 128 bytes, no `/`, no control, zero-width or
+direction-changing character), applied by the daemon (`ui_socket.placed`) and not
+by the page, whose text field is the browser's. The daemon never statts,
+canonicalizes or creates the name on its own host; the executor or pool is judged
+by `server.create_session`, whose `executor_unknown` and `pool_unknown` are
+`creations.UnknownExecutor` and `creations.UnknownPool`, and a bad name is
+`creations.InvalidWorkspaceName`. `ui_socket.create_for` forces the session-only
+scope for either place whatever the sharing was, and a pooled creation carries
+the pool and no executor (`ui_socket.pool_of`), so the daemon picks the executor
+when the session first opens. A session made and not opened (the executor
+unreachable) is the existing `Unstarted`, which shows the owner's own startup
+reason, for example `executor_unavailable: ...`.
 
 `sessions.Entry` gains `executor: Option(String)`, filled from the registration
 (`ui_socket.listed_entry`) and never from a page. A remote entry's group key and
@@ -1549,8 +1590,10 @@ register `app` are two groups; it has no project (`ui_socket.with_projects` skip
 it) and no worktree, and its group draws no "New session" button, because a
 directory's button creates a `Drawn` place and the daemon would refuse a name it
 holds no folder for. The sidebar and the home draw the key as the heading.
-Tests are `executor_form_test` (the form, the messages, the decoder, the lists)
-and, in `client`, `ui_route_test` and `ui_socket_test` (the daemon's half).
+Tests are `executor_form_test` (the cards, their states, the choice, the
+messages, the decoder, the lists, a stale read) and, in `client`, `ui_route_test`
+(`create_for` for an executor and a pool), `ui_socket_test` (admission) and
+`deployment_test` (`placed` and `for_page`), the daemon's half.
 
 ## Large result access
 
