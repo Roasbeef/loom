@@ -4,6 +4,7 @@
 //// once, then observes only the returned operation within the same epoch.
 //// Losing admission's reply is reported as an unknown outcome, never retried.
 
+import core/json
 import gleam/bit_array
 import gleam/bool
 import gleam/erlang/process
@@ -249,6 +250,7 @@ fn open_selected(host: Host, selected: protocol.Session) {
     | protocol.AccessListingReply(_)
     | protocol.AccessChangeReply(_)
     | protocol.ActivityReply(_)
+    | protocol.DeploymentReply(_)
     | protocol.UiLinkReply(..) ->
       Error("open returned an unexpected control reply")
   })
@@ -321,6 +323,7 @@ pub fn create_named(
     | protocol.AccessListingReply(_)
     | protocol.AccessChangeReply(_)
     | protocol.ActivityReply(_)
+    | protocol.DeploymentReply(_)
     | protocol.UiLinkReply(..) ->
       Error("create returned an unexpected control reply")
   }
@@ -456,6 +459,7 @@ fn remove_using(
     | protocol.AccessListingReply(_)
     | protocol.AccessChangeReply(_)
     | protocol.ActivityReply(_)
+    | protocol.DeploymentReply(_)
     | protocol.UiLinkReply(..) ->
       Error("stop returned an unexpected control reply; session kept")
   })
@@ -536,6 +540,7 @@ fn await_retirement(session, operation, request) {
         | Ok(protocol.AccessListingReply(_))
         | Ok(protocol.AccessChangeReply(_))
         | Ok(protocol.ActivityReply(_))
+        | Ok(protocol.DeploymentReply(_))
         | Ok(protocol.UiLinkReply(..)) ->
           poll.Fail(
             "stop observation returned an unexpected reply; session kept",
@@ -577,8 +582,63 @@ pub fn list(host: Host, after: String) -> Result(protocol.Page, String) {
     | protocol.AccessListingReply(_)
     | protocol.AccessChangeReply(_)
     | protocol.ActivityReply(_)
+    | protocol.DeploymentReply(_)
     | protocol.UiLinkReply(..) ->
       Error("listing returned an unexpected control reply")
+  }
+}
+
+/// Reads which of the nodes the daemon is configured with answer its own
+/// connection attempts (protocol-change/085), as the document the daemon sent.
+///
+/// The daemon connects to each node at once and gives the whole read three
+/// seconds, so the request waits longer than that. A daemon built before the
+/// command existed refuses it as an unsupported control command, and that is
+/// worded as the absence of the view and not as a fault.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // selection.deployment(host)
+/// ```
+pub fn deployment(host: Host) -> Result(json.JsonValue, String) {
+  use reply <- result.try(
+    daemon.request(host.control, protocol.DeploymentStatus, 10_000)
+    |> result.map_error(deployment_failure),
+  )
+  case reply {
+    protocol.DeploymentReply(document) -> Ok(document)
+    protocol.StatusReply(_)
+    | protocol.SessionsReply(_)
+    | protocol.SessionReply(_)
+    | protocol.LifecycleReply(_)
+    | protocol.DeletedReply(_)
+    | protocol.MovedReply(..)
+    | protocol.ShutdownReply
+    | protocol.PeersInspectionReply(_)
+    | protocol.PeersMutationReply(_)
+    | protocol.AccessListingReply(_)
+    | protocol.AccessChangeReply(_)
+    | protocol.ActivityReply(_)
+    | protocol.UiLinkReply(..) ->
+      Error("deployment returned an unexpected control reply")
+  }
+}
+
+/// The words for a failed deployment read: `failure`'s, except that a daemon
+/// which does not know the command is said not to have the view.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert selection.deployment_failure(daemon.Refused("bad_request", "unsupported control command"))
+///   == "this daemon does not have deployment views"
+/// ```
+pub fn deployment_failure(reason: daemon.Failure) -> String {
+  case reason {
+    daemon.Refused("bad_request", "unsupported control command") ->
+      "this daemon does not have deployment views"
+    other -> failure(other)
   }
 }
 
@@ -641,6 +701,7 @@ fn selected_row(reply) {
     | protocol.AccessListingReply(_)
     | protocol.AccessChangeReply(_)
     | protocol.ActivityReply(_)
+    | protocol.DeploymentReply(_)
     | protocol.UiLinkReply(..) ->
       Error("selection returned an unexpected control reply")
   }
@@ -709,6 +770,7 @@ fn await(host: Host, session, operation) {
         | Ok(protocol.AccessListingReply(_))
         | Ok(protocol.AccessChangeReply(_))
         | Ok(protocol.ActivityReply(_))
+        | Ok(protocol.DeploymentReply(_))
         | Ok(protocol.UiLinkReply(..)) ->
           poll.Fail("operation returned an unexpected control reply")
       }

@@ -348,6 +348,12 @@ pub type Command {
     /// keeps their order.
     sessions: List(String),
   )
+
+  /// Asks which of the nodes the daemon is configured with answer its own
+  /// connection attempts, and which executors and pools a session may be placed
+  /// on (`protocol-change/085`). Owner-only. A daemon built before the command
+  /// existed refuses it `bad_request`.
+  DeploymentStatus
 }
 
 /// The most sessions one `SessionActivity` request may name.
@@ -627,6 +633,15 @@ pub type Reply {
     /// One row per resident session.
     activity: List(Activity),
   )
+
+  /// What the daemon found of each node it is configured with
+  /// (`protocol-change/085`). The body is kept whole: `--json` prints it as the
+  /// daemon sent it, and `tui/deployment_view` reads it with a total decoder
+  /// where it is drawn.
+  DeploymentReply(
+    /// The daemon's reply body, unread.
+    document: json.JsonValue,
+  )
 }
 
 /// One validated server envelope; uncorrelated hello is the only handshake.
@@ -720,6 +735,7 @@ pub fn name(command: Command) -> String {
     RevokeMembership(..) -> "sessions.revoke"
     RevokeCredentials(..) -> "credentials.revoke"
     SessionActivity(..) -> "sessions.activity"
+    DeploymentStatus -> "deployment.status"
     Shutdown -> "daemon.shutdown"
   }
 }
@@ -743,6 +759,7 @@ pub fn mutates(command: Command) -> Bool {
     | InspectPeers(..)
     | ListPrincipals(..)
     | PrincipalMemberships(..)
+    | DeploymentStatus
     | SessionActivity(..) -> False
     SetDefault(..)
     | RenameSession(..)
@@ -797,7 +814,7 @@ pub fn encode(
 fn command_fields(command: Command, epoch: Epoch) {
   let Epoch(epoch_value) = epoch
   case command {
-    Status -> Ok([])
+    Status | DeploymentStatus -> Ok([])
     ListSessions(after, revision) | ListArchivedSessions(after, revision) -> {
       use Nil <- result.try(case after {
         "" -> Ok(Nil)
@@ -1229,6 +1246,7 @@ fn decode_reply(event: String, body: json.JsonValue) {
     "sessions.set_role" | "sessions.revoke" | "credentials.revoke" ->
       Ok(AccessChangeReply(body))
     "sessions.activity" -> result.map(activity(body), ActivityReply)
+    "deployment.status" -> Ok(DeploymentReply(body))
     "daemon.shutdown" ->
       case field(body, "state") {
         Ok(json.String("draining")) -> Ok(ShutdownReply)
