@@ -30,6 +30,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import session_view/text_hygiene
 
 /// Maximum complete control message size before JSON parsing.
 pub const max_bytes = 65_536
@@ -425,6 +426,19 @@ pub type Lifecycle {
 
   /// Metadata is registered without a running session.
   Saved
+
+  /// The session is being handed to the orchestrator `to`
+  /// (`protocol-change/078`, phase 5). It is stopped, as a saved session is,
+  /// and this daemon will not open it: the move ends in the session living on
+  /// `to`, or in an abandoned move that makes it an ordinary saved session
+  /// again. The daemon reports it as a saved session with a `moving` member,
+  /// and this is how the client reads the two together, so no code that draws a
+  /// row or offers an open can forget the member.
+  Moving(
+    /// The name of the destination in the daemon's `[orchestrators.<name>]`
+    /// table, with control characters removed, so any row may print it.
+    to: String,
+  )
 
   /// Startup has been accepted under this operation identity.
   Opening(
@@ -1264,13 +1278,29 @@ fn page(body: json.JsonValue) {
       }
     _ -> Error("invalid session page")
   })
-  use sessions <- result.try(list.try_map(values, session))
+  use decoded <- result.try(list.try_map(values, listed))
+  let sessions = option.values(decoded)
   use after <- result.try(case field(body, "after") {
     Ok(json.Null) -> Ok(None)
     Ok(json.String(id)) -> result.map(valid_id(id), fn(_) { Some(id) })
     _ -> Error("invalid continuation")
   })
   Ok(Page(revision, sessions, after))
+}
+
+// One record of a listing, or nothing for a session this daemon no longer
+// serves. A record that carries `moved` is the tombstone the source keeps for a
+// session another orchestrator owns now: the conversation is not here, nothing
+// here can open it, and its new owner lists it. It is not a row, so the page
+// leaves it out, and no consumer of a page has to remember to
+// (`protocol-change/085`). The member is read as present or absent, and its
+// destination is not needed, so a tombstone whose `to` is damaged is still not
+// listed as a session that can be opened.
+fn listed(body: json.JsonValue) -> Result(Option(Session), String) {
+  case field(body, "moved") {
+    Ok(_) -> Ok(None)
+    Error(_) -> result.map(session(body), Some)
+  }
 }
 
 fn session(body: json.JsonValue) {
@@ -1286,10 +1316,24 @@ fn session(body: json.JsonValue) {
     workspace,
     name,
     created,
-    status,
+    moving_status(body, status),
     subtitle_of(body),
     executor_of(body),
   )
+}
+
+// The optional `moving` member, which reads over the `saved` the daemon reports
+// beside it. Like the subtitle it is a display aid, so a member that is not an
+// object with a destination reads as absent and the row keeps the status it
+// came with. The daemon refuses an open of the row either way.
+fn moving_status(body: json.JsonValue, status: Lifecycle) -> Lifecycle {
+  let destination =
+    field(body, "moving")
+    |> result.try(text_at(_, "to", 64))
+  case destination {
+    Ok(to) -> Moving(text_hygiene.single_line(to))
+    Error(_) -> status
+  }
 }
 
 // The optional executor of a remote session. Like the subtitle it is a display

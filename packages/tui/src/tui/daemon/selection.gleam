@@ -210,6 +210,16 @@ pub fn open(host: Host, session: String) -> Result(Target, String) {
         <> "retry its creation or delete it instead of opening it",
       )
 
+    // The daemon refuses an open while the move lasts, and the row already says
+    // it is moving. Saying so here spares the round trip and words the refusal
+    // with the destination, which the daemon's `moving` error also carries.
+    protocol.Moving(to) ->
+      Error(
+        "this session is moving to "
+        <> to
+        <> "; it cannot be opened here until the move ends",
+      )
+
     protocol.Saved
     | protocol.Opening(_)
     | protocol.Stopping(_)
@@ -450,7 +460,7 @@ fn remove_using(
       Error("stop returned an unexpected control reply; session kept")
   })
   use _ <- result.try(case status {
-    protocol.Saved | protocol.Reserved -> Ok(Nil)
+    protocol.Saved | protocol.Reserved | protocol.Moving(_) -> Ok(Nil)
     protocol.Stopping(operation) ->
       await_retirement(session, operation, request)
     protocol.RecoveryBlocked -> Error("cleanup is not confirmed; session kept")
@@ -503,7 +513,8 @@ fn await_retirement(session, operation, request) {
           }
         Ok(protocol.SessionReply(row)) if row.session_id == session -> {
           case row.status {
-            protocol.Saved | protocol.Reserved -> poll.Done(Nil)
+            protocol.Saved | protocol.Reserved | protocol.Moving(_) ->
+              poll.Done(Nil)
             protocol.Stopping(current) if current == operation -> poll.Retry
             protocol.RecoveryBlocked ->
               poll.Fail("cleanup is not confirmed; session kept")
@@ -589,6 +600,7 @@ fn target(
     protocol.Opening(operation) -> await(host, session, operation)
     protocol.Reserved
     | protocol.Saved
+    | protocol.Moving(_)
     | protocol.Stopping(_)
     | protocol.RecoveryBlocked ->
       Error("selected session is not available for attachment")
@@ -679,6 +691,7 @@ fn await(host: Host, session, operation) {
             protocol.Opening(_) -> poll.Retry
             protocol.Reserved
             | protocol.Saved
+            | protocol.Moving(_)
             | protocol.Stopping(_)
             | protocol.RecoveryBlocked ->
               poll.Fail(

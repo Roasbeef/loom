@@ -3236,6 +3236,22 @@ sessions list` shows `executor:name` in its WORKSPACE column, in the styled tabl
 and in the plain, script-read format (`placement.label`), and a local row is
 byte-identical to before.
 
+The `moving` and `moved` members of a `sessions.list` record
+(protocol-change/078, phase 5; protocol-change/085) are read in `protocol.page`.
+A record with a `moving` member decodes to the lifecycle `Moving(to)`, which
+replaces the `saved` the daemon reports beside it, so every `case` on a
+lifecycle has to say what a session that is leaving does: the table prints
+`moving to <to>` and keeps it in the resident track, `selection.open` refuses it
+in words that name the destination, and the picker draws it as an inactive row
+that offers no Enter. A record with a `moved` member is the source's tombstone
+for a session another orchestrator owns, and `protocol.listed` leaves it out of
+the page, so no consumer of a page (the table, the picker, the peer-link
+chooser, the job runner) can offer it. A `moving` member without a destination
+reads as absent and a malformed `moved` still hides the row, because a row the
+daemon refuses to open is never worth offering. The destination arrives with
+control characters removed. Neither member is drawn for the receiver's row,
+which waits for the elsewhere group (protocol-change/085).
+
 `selection.failure` words the two refusals a remote creation can meet:
 `executor_unknown` (the daemon's configuration has no such executor, with the
 flag's own words appended because the refusal does not repeat the name) and a
