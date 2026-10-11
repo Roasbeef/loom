@@ -2,13 +2,13 @@
 
 Status: **direction ruled by the owner, 2026-10-09. Design only; nothing
 here is built.** The wire and durable formats it would add are drafted in
-[protocol-change/082](../../protocol-change/082-remote-subagents.md). It
+[protocol-change/084](../../protocol-change/084-remote-subagents.md). It
 builds on the distributed runtime of PR #923
 ([the design note](distributed-runtime.md),
 [the architecture page](../architecture/distributed.md),
 [protocol-change/078](../../protocol-change/078-distributed-runtime.md)) and
 is meant to work with and without the Khepri directory of PR #934
-(protocol-change/081).
+(protocol-change/083).
 
 ## 1. The question
 
@@ -230,7 +230,7 @@ policy checks.
 
 So a laptop should be made a spawner only when its owner would also make it
 an orchestrator of the deployment, because that is the privilege it gets.
-Protocol-change/082 records the stronger alternative that was considered and
+Protocol-change/084 records the stronger alternative that was considered and
 rejected: the laptop as a client of the remote's control endpoint with a
 scoped principal, where the remote's checks would bind even a compromised
 laptop.
@@ -904,7 +904,7 @@ note.
 1. **Transport:** TLS distribution, over the orchestrator port, reusing peer
    mail's outbox, drainer, `Endpoint` and failure split. The trust model is
    #923's; the control-connection alternative is recorded as rejected in
-   protocol-change/082.
+   protocol-change/084.
 2. **Child shape:** a strand in one delegate session per (parent
    orchestrator, parent session).
 3. **Approvals:** the parent's operator approves within a ceiling the remote

@@ -1,4 +1,4 @@
-# protocol-change/082: subagents on another orchestrator
+# protocol-change/084: subagents on another orchestrator
 
 **Status**: PROPOSED 2026-10-09, direction ruled by the owner the same day
 (transport, child shape, approvals, who spawns, and the defaults). Nothing
@@ -8,7 +8,7 @@ in phase 1, `ChildSend` in phase 2, `ChildEscalation` and `Resolve` in phase
 3), `loom.toml` (a `[spawners.<name>]` table on the remote, and one key,
 `subagents`, on an `[orchestrators.<name>]` row of the spawning daemon), the
 remote daemon's catalogue (one table for delegate sessions and one for spend,
-at the next version after 078 and 081), the model-facing `agent_spawn` (one
+at the next version after 078 and 083), the model-facing `agent_spawn` (one
 argument, `on`) and its handle text, `cap/strand` (one assignment field, phase
 2), two new kinds of row in the session outbox, and durable cells that are not
 Part 1 interfaces: the parent's `remote-child/` stub, an optional
@@ -22,7 +22,7 @@ via TLS distribution".
 **Builds on**: [protocol-change/078](078-distributed-runtime.md) (remote
 workspaces, pools, the orchestrator port, peer mail between orchestrators and
 the sender outbox), [076](076-config-profiles.md) (profiles) and, where
-present, protocol-change/081 on PR #934 (the Khepri directory).
+present, protocol-change/083 on PR #934 (the Khepri directory).
 
 ## Problem
 
@@ -93,7 +93,7 @@ anyway, and every other peer-facing table (peers, executors, pools,
 orchestrators) is configuration validated at boot.
 
 **`[orchestrators.<laptop>.spawn]`.** The owner's suggestion, beside the
-existing peer table. Not taken: under protocol-change/081 every
+existing peer table. Not taken: under protocol-change/083 every
 `[orchestrators.<name>]` node of a Khepri member daemon must itself be a
 member, which would make a sleeping, roaming laptop hold a replica of the store
 that decides session ownership. `[orchestrators]` also means whom a daemon asks
