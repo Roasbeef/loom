@@ -42,6 +42,7 @@ fn entry(
     subtitle: None,
     role: None,
     project: None,
+    executor: None,
   )
 }
 
@@ -108,6 +109,7 @@ fn home_start(manage: Option(Ask)) -> home.Start {
     admin: None,
     who: fn(deliver) { deliver(None) },
     rename_self: None,
+    executors: [],
   )
 }
 

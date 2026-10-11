@@ -222,3 +222,105 @@ pub fn stored_directory_cannot_be_retargeted_through_a_symlink_test() {
   assert result.is_error(directories.read(opened))
   let assert Ok(Nil) = session.close(opened) as "the session must close"
 }
+
+fn addition_root(name: String) -> String {
+  let assert Ok(here) = simplifile.current_directory()
+    as "the test workspace must be known"
+  let root = here <> "/build/directories-" <> name
+  let _stale = simplifile.delete(root)
+  let assert Ok(Nil) = simplifile.create_directory_all(root <> "/lib")
+    as "the addition's parent must exist"
+  root
+}
+
+/// Resolving an addition is the half of `add-dir` which needs the files: it
+/// takes a relative request against the workspace and answers the
+/// canonical path to record, without touching a session.
+pub fn an_addition_resolves_against_the_workspace_filesystem_test() {
+  let root = addition_root("resolves")
+  let resolved = directories.resolve_addition(root, [], "lib", "read")
+  assert result.is_ok(resolved)
+  assert resolved
+    == directories.resolve_addition(root, [], root <> "/lib", "read")
+}
+
+/// A request that names no directory is refused in the words the gateway
+/// has always used, and a writable addition may not reach a protected path.
+pub fn an_addition_refuses_a_missing_file_or_protected_path_test() {
+  let root = addition_root("refuses")
+  let assert Ok(Nil) = simplifile.write(root <> "/file.txt", "text")
+    as "a file is not a directory"
+  assert directories.resolve_addition(root, [], "nothing", "read")
+    == Error("add-dir requires an existing directory")
+  assert directories.resolve_addition(root, [], "file.txt", "read")
+    == Error("add-dir requires an existing directory")
+  assert directories.resolve_addition(root, [root <> "/lib"], "lib", "write")
+    == Error("directory could not be resolved or is protected")
+}
+
+/// The door over a resolver records what the resolver answers, which is the
+/// path on the workspace's machine, and not the path the operator typed.
+pub fn the_door_over_a_resolver_commits_the_resolvers_answer_test() {
+  let id = ids.mint_session(ids.generator(clock.fixed(1000), 643)).0
+  let harness = gateway_test.reserved_fixture(id)
+  let facts = api.fact_handle(harness.runtime)
+  let asked = process.new_subject()
+  let admin =
+    directories.admin_over(
+      harness.runtime.session,
+      fn() { Ok(facts) },
+      fn(requested, mode) {
+        process.send(asked, #(requested, mode))
+        Ok("/the/workspaces/canonical/lib")
+      },
+    )
+
+  let answer =
+    admin.add(
+      json.Object([
+        #("path", json.String("lib")),
+        #("access", json.String("read")),
+      ]),
+      None,
+    )
+
+  assert process.receive(asked, within: 0) == Ok(#("lib", "read"))
+  assert answer
+    == Ok(
+      json.Array([
+        json.Object([
+          #("path", json.String("/the/workspaces/canonical/lib")),
+          #("access", json.String("read")),
+        ]),
+      ]),
+    )
+  assert api.close(harness.runtime) == Ok(Nil)
+}
+
+/// A refusal from the workspace's machine is the operator's answer, word for
+/// word, and the session's facts are not touched.
+pub fn the_door_over_a_resolver_passes_its_refusal_through_untouched_test() {
+  let id = ids.mint_session(ids.generator(clock.fixed(1000), 644)).0
+  let harness = gateway_test.reserved_fixture(id)
+  let touched = process.new_subject()
+  let admin =
+    directories.admin_over(
+      harness.runtime.session,
+      fn() {
+        process.send(touched, Nil)
+        Error(Nil)
+      },
+      fn(_requested, _mode) { Error("that machine has no such directory") },
+    )
+
+  assert admin.add(
+      json.Object([
+        #("path", json.String("lib")),
+        #("access", json.String("read")),
+      ]),
+      None,
+    )
+    == Error("that machine has no such directory")
+  assert process.receive(touched, within: 0) == Error(Nil)
+  assert api.close(harness.runtime) == Ok(Nil)
+}

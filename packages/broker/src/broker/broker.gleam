@@ -726,6 +726,41 @@ pub fn pid(broker: Broker) -> Result(Pid, Nil) {
   process.subject_owner(broker.subject)
 }
 
+/// The broker actor's subject, as plain data that may cross to another
+/// trusted node.
+///
+/// A `Broker` holds a clock, which is a function and cannot travel. A session
+/// whose workspace runs on an executor sends only this subject to its
+/// orchestrator, which rebuilds a handle with `over` and its own clock. The
+/// `Msg` vocabulary is plain data, so every call works across the node
+/// boundary unchanged.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let subject = broker.subject(running)
+/// ```
+///
+pub fn subject(broker: Broker) -> Subject(Msg) {
+  broker.subject
+}
+
+/// A handle over a broker actor that may live on another trusted node.
+///
+/// `clock` charges congestion waits from the borrower's side, as a local
+/// handle does; deadlines inside a `CallSpec` remain the caller's to
+/// express on the clock the broker enforces against.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let remote = broker.over(census_subject, clock)
+/// ```
+///
+pub fn over(subject: Subject(Msg), clock: Clock) -> Broker {
+  Broker(subject:, clock:)
+}
+
 /// How many operations the broker holds an abort epoch for. Exists so
 /// a test can pin the growth law of that table — one entry per
 /// operation *ever aborted*, not one per abort — which is the whole of

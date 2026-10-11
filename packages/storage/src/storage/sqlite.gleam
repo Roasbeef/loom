@@ -71,6 +71,7 @@ import core/tx.{
 }
 import gleam/bit_array
 import gleam/bool
+import gleam/crypto
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode.{type Decoder}
 import gleam/erlang/process.{type Pid, type Subject}
@@ -1166,14 +1167,14 @@ pub type Rewrite {
   Rewrite(generation: Int, entries_rewritten: Int)
 }
 
-/// Why a precise rewrite refused or failed. In every failure case the
-/// original session file's *content* is untouched: the rewrite works on a
-/// copy and only an atomic rename replaces the original. (A failed
-/// rewrite also releases the writer lease it held while running.)
+/// Why a precise rewrite or an export refused or failed. In every failure
+/// case the original session file's *content* is untouched: both work on a
+/// copy, and only a rewrite's atomic rename replaces the original. (A failed
+/// run also releases the writer lease it held while running.)
 pub type RewriteError {
   /// A writer holds an unexpired lease on the session file — or stole it
-  /// mid-rewrite after the rewrite's own lease expired. A rewrite is an
-  /// offline admin operation; close (or let expire) the writer first.
+  /// mid-rewrite after the rewrite's own lease expired. A rewrite or an
+  /// export is an offline operation; close (or let expire) the writer first.
   RewriteLeaseHeld(owner: String, expires_at_ms: Int)
 
   /// A stored payload failed its total decode, the file is not a
@@ -1188,14 +1189,15 @@ pub type RewriteError {
 
 // The reserved lease identity a precise rewrite holds while it runs.
 // Writer configs must not use this owner id, or their lease is
-// indistinguishable from a rewrite's.
+// indistinguishable from a rewrite's. The same goes for any id an export
+// is given (`move:<op>` in the session-move protocol).
 const rewrite_owner = "rewrite"
 
-// The rewrite's lease TTL. Generous, because it must cover the whole
-// copy-transform-vacuum-swap pass; bounded, so a crashed rewrite does not
-// lock the file out forever — the lease expires and the next opener
+// The lease TTL of a rewrite or an export. Generous, because it must cover
+// the whole copy-transform-vacuum-swap pass; bounded, so a crashed run does
+// not lock the file out forever — the lease expires and the next opener
 // steals it with a bumped fence.
-const rewrite_lease_ttl_ms = 600_000
+const closed_lease_ttl_ms = 600_000
 
 /// Precisely rewrites a **closed** session file. The rewrite first claims
 /// the writer lease in the original under the reserved `"rewrite"` owner
@@ -1257,10 +1259,154 @@ pub fn rewrite_into(
   }
 }
 
-// Everything up to (but not including) the swap: claim the lease in the
-// original, retire its WAL, take the copy, transform it, and re-verify
-// the lease. On any failure after the claim the lease is released and the
-// temp copy removed, leaving the original exactly as it was found.
+/// Cuts a coherent, unleased copy of a **closed** session file at `to` and
+/// returns the copy's SHA-256 as lowercase hex. This is the first half of
+/// the precise rewrite, with the transform left out, and `rewrite_into`
+/// calls the same code: the export first claims the writer lease in the
+/// original under `owner` (a session move uses `move:<op>`), so a
+/// concurrent `open` is refused with `LeaseHeld` instead of committing past
+/// the cut. It then retires the original's WAL, copies the file with
+/// `VACUUM INTO`, and deletes the `writer_lease` rows from the copy, so the
+/// copy starts unleased wherever it is opened. A leftover copy at `to` from
+/// a crashed run is removed first, and it is the lease holder that reaps it,
+/// so a refused export never deletes a live one's copy. The digest is taken
+/// over the file after the lease rows are gone, and it is the digest of the
+/// bytes a receiver must hold.
+///
+/// On success the original's lease stays held under `owner` until its TTL
+/// lapses, which is what keeps every other opener out while the copy is
+/// sent. The same owner may export again over its own unexpired claim: a
+/// mover restarted after a crash re-cuts without waiting out the old lease.
+/// Any other unexpired holder refuses the export with `RewriteLeaseHeld`.
+/// On any failure the claim is released and no copy is left behind.
+///
+/// The whole copy is read into memory to hash it, so peak memory is the size
+/// of one session file. A move is rare and a session file is bounded by its
+/// conversation, so this is accepted rather than streamed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // sqlite.export_closed(path: "/state/s.db", to: "/state/s.db.move.op1",
+/// //   owner: "move:op1", clock:)
+/// // -> Ok("9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08")
+/// ```
+///
+pub fn export_closed(
+  path path: String,
+  to copy: String,
+  owner owner: String,
+  clock clock: Clock,
+) -> Result(String, RewriteError) {
+  let #(now, _clock) = clock.read(clock)
+  use Nil <- result.try(require_session_file(path))
+  use Nil <- result.try(case copy == path {
+    True ->
+      Error(RewriteFailed(reason: "the export destination is the session file"))
+    False -> Ok(Nil)
+  })
+  case sqlight.open(path) {
+    Error(error) ->
+      Error(RewriteFailed(reason: "sqlite open: " <> describe_sqlight(error)))
+    Ok(conn) -> {
+      let exported = {
+        use fence <- result.try(cut_closed(
+          conn,
+          now:,
+          to: copy,
+          owner:,
+          reclaim: ReclaimOwn,
+        ))
+        case digest_of(copy) {
+          Ok(digest) -> Ok(digest)
+          Error(error) -> {
+            let _ = remove_copy(copy)
+            let _ = release_closed_lease(conn, owner, fence)
+            Error(error)
+          }
+        }
+      }
+      let _ = sqlight.close(conn)
+      exported
+    }
+  }
+}
+
+/// Releases the writer lease that `export_closed` left held in the original
+/// under `owner`, so the file can be opened again before the TTL lapses. A move
+/// that aborts calls it to give the session back, and a move that finishes calls
+/// it before the original is set aside.
+///
+/// Only a lease held by `owner` is removed: another owner's claim, or no claim at
+/// all, is left as it was and the call still succeeds. A path that holds no file
+/// is also success, since there is nothing to release.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // sqlite.release_export(path: "/state/s.db", owner: "move:op1") == Ok(Nil)
+/// ```
+///
+pub fn release_export(
+  path path: String,
+  owner owner: String,
+) -> Result(Nil, RewriteError) {
+  case simplifile.is_file(path) {
+    Ok(False) -> Ok(Nil)
+    Error(error) ->
+      Error(RewriteFailed(reason: simplifile.describe_error(error)))
+    Ok(True) ->
+      case sqlight.open(path) {
+        Error(error) ->
+          Error(RewriteFailed(
+            reason: "sqlite open: " <> describe_sqlight(error),
+          ))
+        Ok(conn) -> {
+          let released = {
+            use Nil <- result.try(
+              sqlite_policy.configure_connection(conn, sqlite_policy.defaults())
+              |> result.map_error(fn(error) {
+                RewriteFailed(
+                  reason: "busy_timeout: " <> describe_sqlight(error),
+                )
+              }),
+            )
+            sqlight.exec(
+              "DELETE FROM writer_lease WHERE owner_id = " <> sql_quote(owner),
+              on: conn,
+            )
+            |> result.map_error(fn(error) {
+              RewriteFailed(reason: "release: " <> describe_sqlight(error))
+            })
+          }
+          let _ = sqlight.close(conn)
+          released
+        }
+      }
+  }
+}
+
+// The SHA-256 of a whole file, as lowercase hex.
+fn digest_of(path: String) -> Result(String, RewriteError) {
+  case simplifile.read_bits(path) {
+    Ok(bytes) ->
+      Ok(
+        crypto.hash(crypto.Sha256, bytes)
+        |> bit_array.base16_encode
+        |> string.lowercase,
+      )
+    Error(error) ->
+      Error(RewriteFailed(
+        reason: "digest " <> path <> ": " <> simplifile.describe_error(error),
+      ))
+  }
+}
+
+// Everything up to (but not including) the swap: cut the closed original
+// into the temp copy (`cut_closed`: claim the lease, retire the WAL, take
+// the unleased copy), transform it, and re-verify the lease. On any
+// failure after the claim the lease is released and the temp copy removed,
+// leaving the original exactly as it was found.
 fn stage_rewrite(
   conn: Connection,
   path: String,
@@ -1268,6 +1414,60 @@ fn stage_rewrite(
   rewrite: fn(Entry) -> Result(Option(Entry), CorruptionReport),
   rewrite_value: fn(JsonValue) -> Result(Option(JsonValue), CorruptionReport),
 ) -> Result(#(String, Int, Rewrite), RewriteError) {
+  let temp = path <> ".rewrite"
+  use fence <- result.try(cut_closed(
+    conn,
+    now:,
+    to: temp,
+    owner: rewrite_owner,
+    reclaim: RefuseOwn,
+  ))
+  let staged = {
+    use outcome <- result.try(rewrite_copy(temp, rewrite, rewrite_value))
+
+    // Re-verify immediately before the swap: if the rewrite outlived its
+    // TTL and a writer stole the lease, that writer's commits are in the
+    // original and the copy is stale — abort rather than discard them
+    // with the rename.
+    use Nil <- result.map(verify_closed_lease(conn, rewrite_owner, fence))
+    #(temp, fence, outcome)
+  }
+  case staged {
+    Ok(ok) -> Ok(ok)
+    Error(error) -> {
+      let _ = simplifile.delete(temp)
+      let _ = release_closed_lease(conn, rewrite_owner, fence)
+      Error(error)
+    }
+  }
+}
+
+// Whether a claim may take over an unexpired lease the same owner already
+// holds. A precise rewrite never may: its owner id is shared by every
+// rewrite, so reclaiming would let two of them run at once. A move names
+// its owner after its own operation, so the only holder with that id is the
+// mover's own earlier incarnation, which a restart must be able to resume
+// without waiting out the previous run's TTL.
+type Reclaim {
+  RefuseOwn
+  ReclaimOwn
+}
+
+// The first half of every operation on a closed session file, shared by the
+// precise rewrite and the export: claim the writer lease in the original
+// under `owner`, reap a leftover copy from a crashed run, retire the
+// original's WAL, take the copy coherently with `VACUUM INTO`, and clear
+// the lease table in the copy so it starts unleased. On success the lease
+// stays held in the original and its fence is returned, so the caller can
+// verify or release exactly that claim. On any failure the copy is removed
+// and the claim released, leaving the original as it was found.
+fn cut_closed(
+  conn: Connection,
+  now now: Int,
+  to copy: String,
+  owner owner: String,
+  reclaim reclaim: Reclaim,
+) -> Result(Int, RewriteError) {
   // The claim transaction below contends with concurrent open probes;
   // without a busy timeout it would fail spuriously instead of waiting.
   use Nil <- result.try(
@@ -1276,33 +1476,61 @@ fn stage_rewrite(
       RewriteFailed(reason: "busy_timeout: " <> describe_sqlight(error))
     }),
   )
-  use fence <- result.try(claim_rewrite_lease(conn, now))
-  let temp = path <> ".rewrite"
-  let staged = {
-    // Only a lease holder reaps a leftover copy from a crashed rewrite,
-    // so a refused rewrite can never delete a live one's temp file.
-    use Nil <- result.try(remove_file(temp, "stale rewrite copy"))
+  use fence <- result.try(claim_closed_lease(conn, now, owner, reclaim))
+  let cut = {
+    // Only a lease holder reaps a leftover copy from a crashed run, so a
+    // refused operation can never delete a live one's copy.
+    use Nil <- result.try(remove_copy(copy))
     use Nil <- result.try(retire_wal(conn))
     use Nil <- result.try(
-      run(conn, "VACUUM INTO " <> sql_quote(temp), [], decode.dynamic)
+      run(conn, "VACUUM INTO " <> sql_quote(copy), [], decode.dynamic)
       |> result.map_error(rewrite_fail)
       |> result.replace(Nil),
     )
-    use outcome <- result.try(rewrite_copy(temp, rewrite, rewrite_value))
-
-    // Re-verify immediately before the swap: if the rewrite outlived its
-    // TTL and a writer stole the lease, that writer's commits are in the
-    // original and the copy is stale — abort rather than discard them
-    // with the rename.
-    use Nil <- result.map(verify_rewrite_lease(conn, fence))
-    #(temp, fence, outcome)
+    clear_copy_lease(copy)
   }
-  case staged {
-    Ok(ok) -> Ok(ok)
+  case cut {
+    Ok(Nil) -> Ok(fence)
     Error(error) -> {
-      let _ = simplifile.delete(temp)
-      let _ = release_rewrite_lease(conn, fence)
+      let _ = remove_copy(copy)
+      let _ = release_closed_lease(conn, owner, fence)
       Error(error)
+    }
+  }
+}
+
+// Removes a copy and the journal siblings a crashed cut can leave beside
+// it, so the next `VACUUM INTO` meets an absent destination.
+fn remove_copy(copy: String) -> Result(Nil, RewriteError) {
+  use Nil <- result.try(remove_file(copy, "stale copy"))
+  use Nil <- result.try(remove_file(copy <> "-journal", "stale copy journal"))
+  use Nil <- result.try(remove_file(copy <> "-wal", "stale copy wal"))
+  remove_file(copy <> "-shm", "stale copy shm")
+}
+
+// The lease this operation holds lives in the *original* and dies with it;
+// the copy must not carry it over. Rollback-journal mode is set first, so
+// the copy is one self-contained file once the connection closes and its
+// bytes do not depend on a WAL that was or was not checkpointed. Secure
+// delete zeroes the removed row, because SQLite otherwise leaves a deleted
+// cell's bytes in its page: the copy would then differ between two cuts of
+// the same session by the lease's fence and expiry, and its digest would
+// not name the session's content.
+fn clear_copy_lease(copy: String) -> Result(Nil, RewriteError) {
+  case sqlight.open(copy) {
+    Error(error) ->
+      Error(RewriteFailed(reason: "sqlite open: " <> describe_sqlight(error)))
+    Ok(conn) -> {
+      let cleared =
+        sqlight.exec(
+          "PRAGMA secure_delete=ON; PRAGMA journal_mode=DELETE; DELETE FROM writer_lease",
+          on: conn,
+        )
+        |> result.map_error(fn(error) {
+          RewriteFailed(reason: "clear lease: " <> describe_sqlight(error))
+        })
+      let _ = sqlight.close(conn)
+      cleared
     }
   }
 }
@@ -1333,7 +1561,7 @@ fn swap(
       // The rename never happened, so the original is intact: release the
       // rewrite's lease from it before reporting.
       let _ = simplifile.delete(temp)
-      let _ = release_rewrite_lease(conn, fence)
+      let _ = release_closed_lease(conn, rewrite_owner, fence)
       let _ = sqlight.close(conn)
       Error(RewriteFailed(reason: "swap: " <> simplifile.describe_error(error)))
     }
@@ -1382,26 +1610,28 @@ fn retire_wal(conn: Connection) -> Result(Nil, RewriteError) {
   }
 }
 
-// Admission for the rewrite, in one immediate transaction: verify the
-// file is a current-version session with exactly one catalog row, then
-// claim the writer lease under the reserved owner — refusing an unexpired
-// holder, stealing an expired one with a bumped fence. Unlike the
-// sample-once check this replaces (M3-02), the claim *holds*: from here
-// until the swap, or a failure's release, a concurrent `open` is refused
-// with `LeaseHeld` instead of committing into a file the rename is about
-// to discard.
-fn claim_rewrite_lease(
+// Admission for a cut, in one immediate transaction: verify the file is a
+// current-version session with exactly one catalog row, then claim the
+// writer lease under `owner` — refusing an unexpired holder (the claimant's
+// own earlier claim too, unless `reclaim` allows it), stealing an expired
+// one with a bumped fence. Unlike the sample-once check this replaces
+// (M3-02), the claim *holds*: from here until the swap, or a failure's
+// release, a concurrent `open` is refused with `LeaseHeld` instead of
+// committing into a file the rename is about to discard.
+fn claim_closed_lease(
   conn: Connection,
   now: Int,
+  owner: String,
+  reclaim: Reclaim,
 ) -> Result(Int, RewriteError) {
   use Nil <- result.try(begin_immediate(conn) |> result.map_error(rewrite_fail))
   let claimed = {
     use Nil <- result.try(check_source_version(conn))
     let lease_decoder = {
-      use owner <- decode.field(0, decode.string)
+      use holder <- decode.field(0, decode.string)
       use fence <- decode.field(1, decode.int)
       use expires_at_ms <- decode.field(2, decode.int)
-      decode.success(#(owner, fence, expires_at_ms))
+      decode.success(#(holder, fence, expires_at_ms))
     }
     use rows <- result.try(
       run(
@@ -1412,11 +1642,12 @@ fn claim_rewrite_lease(
       )
       |> result.map_error(rewrite_fail),
     )
-    use fence <- result.try(case rows {
-      [] -> Ok(1)
-      [#(_, fence, expires_at_ms)] if expires_at_ms <= now -> Ok(fence + 1)
-      [#(owner, _, expires_at_ms), ..] ->
-        Error(RewriteLeaseHeld(owner:, expires_at_ms:))
+    use fence <- result.try(case rows, reclaim {
+      [], _ -> Ok(1)
+      [#(_, fence, expires_at_ms)], _ if expires_at_ms <= now -> Ok(fence + 1)
+      [#(holder, fence, _)], ReclaimOwn if holder == owner -> Ok(fence + 1)
+      [#(holder, _, expires_at_ms), ..], _ ->
+        Error(RewriteLeaseHeld(owner: holder, expires_at_ms:))
     })
     use _ <- result.try(
       run(conn, "DELETE FROM writer_lease", [], decode.dynamic)
@@ -1427,9 +1658,9 @@ fn claim_rewrite_lease(
         conn,
         "INSERT INTO writer_lease(owner_id, fence, expires_at_ms) VALUES (?1, ?2, ?3)",
         [
-          sqlight.text(rewrite_owner),
+          sqlight.text(owner),
           sqlight.int(fence),
-          sqlight.int(now + rewrite_lease_ttl_ms),
+          sqlight.int(now + closed_lease_ttl_ms),
         ],
         decode.dynamic,
       )
@@ -1447,17 +1678,18 @@ fn claim_rewrite_lease(
   }
 }
 
-// Re-reads the lease: it must still be the claim this rewrite made.
+// Re-reads the lease: it must still be the claim this operation made.
 // Anything else means the TTL lapsed and another owner took over.
-fn verify_rewrite_lease(
+fn verify_closed_lease(
   conn: Connection,
+  owner: String,
   fence: Int,
 ) -> Result(Nil, RewriteError) {
   let lease_decoder = {
-    use owner <- decode.field(0, decode.string)
+    use holder <- decode.field(0, decode.string)
     use held_fence <- decode.field(1, decode.int)
     use expires_at_ms <- decode.field(2, decode.int)
-    decode.success(#(owner, held_fence, expires_at_ms))
+    decode.success(#(holder, held_fence, expires_at_ms))
   }
   use rows <- result.try(
     run(
@@ -1469,22 +1701,26 @@ fn verify_rewrite_lease(
     |> result.map_error(rewrite_fail),
   )
   case rows {
-    [#(owner, held_fence, _)] if owner == rewrite_owner && held_fence == fence ->
+    [#(holder, held_fence, _)] if holder == owner && held_fence == fence ->
       Ok(Nil)
-    [#(owner, _, expires_at_ms), ..] ->
-      Error(RewriteLeaseHeld(owner:, expires_at_ms:))
-    [] -> Error(RewriteFailed(reason: "writer lease vanished during rewrite"))
+    [#(holder, _, expires_at_ms), ..] ->
+      Error(RewriteLeaseHeld(owner: holder, expires_at_ms:))
+    [] -> Error(RewriteFailed(reason: "writer lease vanished during the cut"))
   }
 }
 
-// Best-effort release scoped to this rewrite's own claim; runs on every
-// failure path where the original file survives. Issued through `exec` —
-// the busy-total path — with program-constant operands, because no
-// transaction protects this statement from cross-process contention.
-fn release_rewrite_lease(conn: Connection, fence: Int) -> Result(Nil, Nil) {
+// Best-effort release scoped to one claim; runs on every failure path where
+// the original file survives. Issued through `exec` — the busy-total path —
+// with program-constant operands, because no transaction protects this
+// statement from cross-process contention.
+fn release_closed_lease(
+  conn: Connection,
+  owner: String,
+  fence: Int,
+) -> Result(Nil, Nil) {
   sqlight.exec(
     "DELETE FROM writer_lease WHERE owner_id = "
-      <> sql_quote(rewrite_owner)
+      <> sql_quote(owner)
       <> " AND fence = "
       <> int.to_string(fence),
     on: conn,
@@ -1584,9 +1820,9 @@ fn check_source_version(conn: Connection) -> Result(Nil, RewriteError) {
 // `rewrite_value` (the audit contract covers every store a needle can
 // reach, not just entries: queued pending messages, tool arguments,
 // compaction preparation, facts, and usage details are exactly where a
-// leaked secret also lands) — clears the lease table so the swapped-in
-// file starts unleased, bumps the generation, then vacuums so no replaced
-// bytes survive in free pages.
+// leaked secret also lands) — bumps the generation, then vacuums so no
+// replaced bytes survive in free pages. The copy is already unleased
+// (`cut_closed` cleared it), so the swapped-in file starts unleased.
 fn rewrite_copy(
   temp: String,
   rewrite: fn(Entry) -> Result(Option(Entry), CorruptionReport),
@@ -1604,7 +1840,7 @@ fn rewrite_copy(
 }
 
 // The whole rewrite transaction over the copy: both transforms, then the
-// lease-table clear and generation bump, committed together; on any
+// generation bump, committed together; on any
 // failure the transaction rolls back before the error is reported. Only
 // a committed rewrite is vacuumed, so the replaced bytes never survive in
 // free pages of an aborted attempt.
@@ -1632,12 +1868,6 @@ fn rewrite_copy_transaction(
     use Nil <- result.try(rewrite_registers(conn, rewrite_value))
     use Nil <- result.try(rewrite_usage_details(conn, rewrite_value))
 
-    // The lease this rewrite holds lives in the *original* and dies
-    // with it at the swap; the copy must not carry it over.
-    use _ <- result.try(
-      run(conn, "DELETE FROM writer_lease", [], decode.dynamic)
-      |> result.map_error(rewrite_fail),
-    )
     use generation <- result.try(bump_generation(conn))
     use Nil <- result.map(commit_sql(conn) |> result.map_error(rewrite_fail))
     Rewrite(generation:, entries_rewritten: rewritten)

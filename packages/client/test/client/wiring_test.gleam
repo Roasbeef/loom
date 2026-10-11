@@ -33,8 +33,10 @@ import core/message
 import core/register
 import core/tx
 import events/bus
+import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
 import gleam/string
 import machine/operation
 import machine/planner
@@ -976,4 +978,422 @@ pub fn held_run_without_a_holder_fails_in_band_test() {
   ) = held.tools.run(halt_run())
     as "a missing holder is an in-band failure in the usual shape"
   assert string.contains(text, "configuration is gone")
+}
+
+// --- the authority split ---------------------------------------------------
+
+// `run_tool` used to read the stored authority and check it against the
+// filesystem in one breath (`directories.read`, `permissions.read_for`). It is
+// now `read_authority` on the session's owner and `run_workspace_tool` beside
+// the files, and the two must agree with the fused readers on every input:
+// the same value when the authority is sound, the same refusal when it is not.
+// The reference below is the old path, written out with the fused readers
+// which remain in the tree for other callers.
+
+fn fused_authority(
+  opened: session.Session,
+  run: effects.ToolRun,
+) -> Result(wiring.Authority, String) {
+  use access <- result.try(directories.read(opened))
+  use standing <- result.try(permissions.read_for(
+    opened,
+    run.strand,
+    run.call.name,
+    run.arguments,
+  ))
+  Ok(wiring.Authority(access:, standing:))
+}
+
+// The split path as `run_workspace_tool` takes it, up to the point where the
+// authority widens a policy: the owner's read, then the node-local checks.
+fn split_authority(
+  opened: session.Session,
+  run: effects.ToolRun,
+) -> Result(wiring.Authority, String) {
+  use stored <- result.try(wiring.read_authority(opened, run))
+  use access <- result.try(directories.revalidate(stored.access))
+  use standing <- result.try(permissions.revalidate(stored.standing))
+  Ok(wiring.Authority(access:, standing:))
+}
+
+fn commit_register(
+  opened: session.Session,
+  key: String,
+  value: json.JsonValue,
+) -> Nil {
+  let assert Ok(_) =
+    storage.commit(
+      opened.store,
+      tx.Tx(
+        [tx.SetRegister(register.FactCustom, key, register.value(value))],
+        [],
+      ),
+    )
+    as "the authority fixture must commit"
+  Nil
+}
+
+fn commit_authority(
+  opened: session.Session,
+  access: directory_access.Access,
+  standing: List(policy.Grant),
+) -> Nil {
+  commit_register(
+    opened,
+    directories.key,
+    json.Object([#("directories", directories.encode(access))]),
+  )
+  commit_register(
+    opened,
+    permissions.key,
+    json.Object([#("grants", json.Array(list.map(standing, grants.encode)))]),
+  )
+}
+
+// A fresh directory under `build/` for one case, cleared first so an earlier
+// run's symlinks cannot leak in.
+fn authority_root(name: String) -> String {
+  let assert Ok(here) = simplifile.current_directory()
+    as "the fixture directory must be known"
+  let root = here <> "/build/authority-split-" <> name
+  let _cleared = simplifile.delete(root)
+  let assert Ok(Nil) = simplifile.create_directory_all(root)
+    as "the case directory must exist"
+  root
+}
+
+fn text_of(outcome: effects.ToolOutcome) -> String {
+  let assert effects.ToolCompleted(
+    result: message.ToolResultMessage(content:, ..),
+    ..,
+  ) = outcome
+    as "a tool always completes in band"
+  content
+  |> list.filter_map(fn(block) {
+    case block {
+      message.ToolResultText(text:, ..) -> Ok(text)
+      _ -> Error(Nil)
+    }
+  })
+  |> string.join(with: "\n")
+}
+
+pub fn the_split_equals_the_fused_read_for_sound_authority_test() {
+  let root = authority_root("valid")
+  let shared = root <> "/shared"
+  let assert Ok(Nil) = simplifile.create_directory_all(shared)
+    as "the added directory must exist"
+  let opened = memory_session()
+  commit_authority(opened, directory_access.Access([shared], [shared]), [
+    policy.GrantWritableRoot(shared <> "/output"),
+    policy.GrantNetwork(policy.NetworkFull),
+  ])
+  let run = tool_run([])
+  let assert Ok(fused) = fused_authority(opened, run)
+    as "sound authority must read"
+  assert fused.access == directory_access.Access([shared], [shared])
+  assert split_authority(opened, run) == Ok(fused)
+}
+
+pub fn the_split_equals_the_fused_read_without_any_grants_test() {
+  let opened = memory_session()
+  let run = tool_run([])
+  assert fused_authority(opened, run)
+    == Ok(wiring.Authority(access: directory_access.none(), standing: []))
+  assert split_authority(opened, run) == fused_authority(opened, run)
+}
+
+pub fn the_split_equals_the_fused_read_for_a_missing_directory_test() {
+  let root = authority_root("missing")
+  let shared = root <> "/shared"
+  let assert Ok(Nil) = simplifile.create_directory_all(shared)
+    as "the added directory must exist"
+  let opened = memory_session()
+  commit_authority(opened, directory_access.Access([shared], []), [])
+  let assert Ok(Nil) = simplifile.delete(shared)
+    as "the directory goes away after it was recorded"
+  let run = tool_run([])
+  let assert Error(reason) = fused_authority(opened, run)
+    as "a recorded directory which is gone must refuse"
+  assert split_authority(opened, run) == Error(reason)
+}
+
+pub fn the_split_equals_the_fused_read_for_a_renamed_directory_test() {
+  let root = authority_root("renamed")
+  let shared = root <> "/shared"
+  let elsewhere = root <> "/elsewhere"
+  let assert Ok(Nil) = simplifile.create_directory_all(shared)
+    as "the added directory must exist"
+  let assert Ok(Nil) = simplifile.create_directory_all(elsewhere)
+    as "the other target must exist"
+  let opened = memory_session()
+  commit_authority(opened, directory_access.Access([shared], [shared]), [])
+  let assert Ok(Nil) = simplifile.delete(shared)
+    as "the recorded name is replaced"
+  let assert Ok(Nil) = simplifile.create_symlink(elsewhere, shared)
+    as "by a symlink to a different target"
+  let run = tool_run([])
+  let assert Error(reason) = fused_authority(opened, run)
+    as "a renamed canonical target must refuse"
+  assert string.contains(reason, "canonical target")
+  assert split_authority(opened, run) == Error(reason)
+
+  // The owner's half never looks at the disk, so it still succeeds: the
+  // refusal belongs to the node which can stat the path.
+  assert result.is_ok(wiring.read_authority(opened, run))
+}
+
+pub fn the_split_equals_the_fused_read_for_a_renamed_permission_root_test() {
+  let root = authority_root("renamed-grant")
+  let shared = root <> "/shared"
+  let elsewhere = root <> "/elsewhere"
+  let assert Ok(Nil) = simplifile.create_directory_all(shared)
+    as "the granted directory must exist"
+  let assert Ok(Nil) = simplifile.create_directory_all(elsewhere)
+    as "the other target must exist"
+  let opened = memory_session()
+  commit_authority(opened, directory_access.none(), [
+    policy.GrantReadableRoot(shared),
+  ])
+  let assert Ok(Nil) = simplifile.delete(shared)
+    as "the recorded name is replaced"
+  let assert Ok(Nil) = simplifile.create_symlink(elsewhere, shared)
+    as "by a symlink to a different target"
+  let run = tool_run([])
+  let assert Error(reason) = fused_authority(opened, run)
+    as "a renamed granted root must refuse"
+  assert string.contains(reason, "canonical target")
+  assert split_authority(opened, run) == Error(reason)
+}
+
+pub fn the_split_equals_the_fused_read_for_corrupt_state_test() {
+  let opened = memory_session()
+  commit_register(opened, permissions.key, json.Object([]))
+  let run = tool_run([])
+  let assert Error(reason) = fused_authority(opened, run)
+    as "malformed standing authority must refuse"
+  assert split_authority(opened, run) == Error(reason)
+}
+
+pub fn remembered_action_consent_is_in_the_stored_authority_test() {
+  let opened = memory_session()
+  let run = tool_run([])
+  let allowed = [policy.GrantLimit(policy.WallSeconds, 0)]
+  let digest = escalate.action_digest(run.arguments)
+  commit_register(
+    opened,
+    permissions.action_prefix
+      <> escalate.action_digest(
+      json.Array([
+        json.String(run.strand),
+        json.String(run.call.name),
+        json.String(digest),
+      ]),
+    ),
+    json.Object([#("grants", json.Array(list.map(allowed, grants.encode)))]),
+  )
+  assert fused_authority(opened, run)
+    == Ok(wiring.Authority(access: directory_access.none(), standing: allowed))
+  assert split_authority(opened, run) == fused_authority(opened, run)
+}
+
+// The refusal reaches the model in band with the fused reader's own words,
+// whichever half noticed it.
+pub fn a_stale_directory_refuses_the_call_in_band_with_the_fused_words_test() {
+  let root = authority_root("in-band")
+  let shared = root <> "/shared"
+  let assert Ok(Nil) = simplifile.create_directory_all(shared)
+    as "the added directory must exist"
+  let configured =
+    wiring.Config(
+      ..config(),
+      workspace: root,
+      blob_root: root <> "/.blobs",
+      base_policy: policy.workspace_default(root),
+    )
+  commit_authority(
+    configured.session,
+    directory_access.Access([shared], [shared]),
+    [],
+  )
+  let assert Ok(Nil) = simplifile.delete(shared)
+    as "the directory goes away after it was recorded"
+  let run = tool_run([])
+  let assert Error(reason) = fused_authority(configured.session, run)
+    as "the fused reader refuses"
+  let outcome = wiring.run_tool(configured, run)
+  let assert effects.ToolCompleted(
+    result: message.ToolResultMessage(is_error: True, ..),
+    ..,
+  ) = outcome
+    as "the call must complete in band as an error"
+  assert string.contains(text_of(outcome), reason)
+}
+
+// The mutation which makes the split worth testing: a workspace half which
+// forgot to revalidate would widen the policy from a stale name and run the
+// tool. It must be refused before dispatch instead.
+pub fn the_workspace_half_revalidates_before_it_dispatches_test() {
+  let root = authority_root("revalidates")
+  let shared = root <> "/shared"
+  let elsewhere = root <> "/elsewhere"
+  let assert Ok(Nil) = simplifile.create_directory_all(elsewhere)
+    as "the other target must exist"
+  let assert Ok(Nil) = simplifile.create_symlink(elsewhere, shared)
+    as "the recorded name is a symlink to another target"
+  let configured =
+    wiring.Config(
+      ..config(),
+      registry: tool.registry([terminating_tool(tool.ContinueRun)]),
+    )
+  let stale =
+    wiring.Authority(
+      access: directory_access.Access([shared], []),
+      standing: [],
+    )
+  let outcome =
+    wiring.run_workspace_tool(
+      wiring.workspace_view(configured),
+      configured.escalations.refused,
+      configured.observe_output,
+      halt_run(),
+      stale,
+    )
+  let assert effects.ToolCompleted(
+    result: message.ToolResultMessage(is_error: True, ..),
+    ..,
+  ) = outcome
+    as "stale authority must refuse before the tool runs"
+  assert string.contains(text_of(outcome), "canonical target")
+}
+
+// --- calls routed to the half that runs them --------------------------------
+
+// A tool of the given name which says where it ran.
+fn marking_tool(name: String, ran: String) -> tool.Tool {
+  tool.Tool(
+    name:,
+    description: "Says where it ran.",
+    prompt_snippet: None,
+    schema: tool.object_schema([], []),
+    replay: tool.Safe,
+    execution_mode: tool.Concurrent,
+    requirements: fn(_workspace) { policy.workspace_default("/nonexistent") },
+    run: fn(_ctx, _args) { tool.success(ran) },
+  )
+}
+
+fn placed_run_for(
+  opened: session.Session,
+  reached: process.Subject(String),
+) -> fn(effects.ToolRun) -> effects.ToolOutcome {
+  let owner_config =
+    wiring.Config(
+      ..config(),
+      registry: tool.registry([
+        marking_tool("agent_spawn", "ran on the owner"),
+        marking_tool("bash", "the owner's registry must not run this"),
+      ]),
+    )
+  let workspace_config =
+    wiring.Config(
+      ..config(),
+      registry: tool.registry([marking_tool("bash", "ran on the workspace")]),
+    )
+  let on_workspace = fn(run: effects.ToolRun, authority: wiring.Authority) {
+    process.send(reached, run.call.name)
+    wiring.run_workspace_tool(
+      wiring.workspace_view(workspace_config),
+      workspace_config.escalations.refused,
+      workspace_config.observe_output,
+      run,
+      authority,
+    )
+  }
+  let assert Ok(workspace) = tool_holder.start(on_workspace)
+    as "the workspace's run holder must start"
+  wiring.run_placed(
+    fn(run) { wiring.run_tool(owner_config, run) },
+    workspace,
+    opened,
+    clock.fixed(at: 0),
+  )
+}
+
+fn named_run(name: String) -> effects.ToolRun {
+  let run = tool_run([])
+  effects.ToolRun(..run, call: message.ToolCall(..run.call, name:))
+}
+
+/// A workspace-side name runs on the plane, and the owner's registry, which
+/// holds a tool of that name too in this fixture, is not reached.
+pub fn a_workspace_side_call_runs_on_the_plane_test() {
+  let reached = process.new_subject()
+  let routed = placed_run_for(memory_session(), reached)
+  let outcome = routed(named_run("bash"))
+  assert text_of(outcome) == "ran on the workspace"
+  assert process.receive(reached, 0) == Ok("bash")
+}
+
+/// An owner-side name takes the path every call took before the halves were
+/// separate, and never touches the plane.
+pub fn an_owner_side_call_never_reaches_the_plane_test() {
+  let reached = process.new_subject()
+  let routed = placed_run_for(memory_session(), reached)
+  let outcome = routed(named_run("agent_spawn"))
+  assert text_of(outcome) == "ran on the owner"
+  assert process.receive(reached, 0) == Error(Nil)
+}
+
+/// An extension's tool is placed nowhere, so a session with a local
+/// workspace runs it on the owner, as it always has.
+pub fn an_unplaced_call_takes_the_owner_path_test() {
+  let reached = process.new_subject()
+  let routed = placed_run_for(memory_session(), reached)
+  let outcome = routed(named_run("websearch"))
+  assert string.contains(text_of(outcome), "unavailable")
+  assert process.receive(reached, 0) == Error(Nil)
+}
+
+/// The authority is read before the plane is asked, and a record which
+/// cannot be read refuses the call in the words `run_tool` uses, with the
+/// plane never reached.
+pub fn an_unreadable_authority_refuses_before_the_plane_is_asked_test() {
+  let opened = memory_session()
+  commit_register(opened, directories.key, json.String("not a record"))
+  let reached = process.new_subject()
+  let routed = placed_run_for(opened, reached)
+  let outcome = routed(named_run("bash"))
+  assert string.contains(text_of(outcome), "malformed")
+  assert process.receive(reached, 0) == Error(Nil)
+  assert text_of(outcome)
+    == text_of(wiring.run_tool(config_over(opened), named_run("bash")))
+}
+
+fn config_over(opened: session.Session) -> wiring.Config {
+  wiring.Config(..config(), session: opened)
+}
+
+/// A workspace whose run holder is gone is a tool failure in band, worded
+/// like the configuration holder's, and not a crash of the effect process.
+pub fn a_missing_plane_holder_is_an_in_band_failure_test() {
+  let assert Ok(workspace) =
+    tool_holder.start(fn(run: effects.ToolRun, _authority: wiring.Authority) {
+      wiring.run_tool(config(), run)
+    })
+    as "the holder must start"
+  let assert Ok(Nil) = tool_holder.stop(workspace)
+    as "the holder is retired before the call"
+  let routed =
+    wiring.run_placed(
+      fn(run) { wiring.run_tool(config(), run) },
+      workspace,
+      memory_session(),
+      clock.fixed(at: 0),
+    )
+  let outcome = routed(named_run("bash"))
+  assert string.contains(
+    text_of(outcome),
+    "the tool `bash` did not run: the session's workspace is gone",
+  )
 }

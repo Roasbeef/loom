@@ -31,6 +31,7 @@ import client/daemon/main as entrypoint
 import client/memory
 import client/owned_assembly_test
 import client/serve
+import client/workspace_policy
 import core/clock
 import core/ids
 import filepath
@@ -58,7 +59,10 @@ pub fn explicit_lockdown_flags_reach_managed_session_policy_test() {
   let settings = resolved_with(root, workspace, flags.session_defaults)
   assert settings.base_policy.readable_roots == [workspace]
   assert settings.base_policy.writable_roots == [workspace]
-  assert serve.under_tools_config(settings.base_policy, settings.tools).network
+  assert workspace_policy.under_tools_config(
+      settings.base_policy,
+      settings.tools,
+    ).network
     == policy.NetworkOff
   assert settings.tools.network == catalog.ToolNetworkOff
   assert list.contains(settings.base_policy.protected, root <> "/owner.token")
@@ -67,7 +71,10 @@ pub fn explicit_lockdown_flags_reach_managed_session_policy_test() {
   // explicit flag takes precedence over the selected file in either direction.
   let ordinary = resolved(root, workspace: workspace)
   assert ordinary.base_policy.readable_roots == ["/"]
-  assert serve.under_tools_config(ordinary.base_policy, ordinary.tools).network
+  assert workspace_policy.under_tools_config(
+      ordinary.base_policy,
+      ordinary.tools,
+    ).network
     == policy.NetworkFull
   let assert Ok(Nil) =
     simplifile.write(
@@ -78,12 +85,18 @@ pub fn explicit_lockdown_flags_reach_managed_session_policy_test() {
     as "the operator can persist a restricted profile"
   let restricted = resolved(root, workspace: workspace)
   assert restricted.base_policy.readable_roots == [workspace]
-  assert serve.under_tools_config(restricted.base_policy, restricted.tools).network
+  assert workspace_policy.under_tools_config(
+      restricted.base_policy,
+      restricted.tools,
+    ).network
     == policy.NetworkOff
   let explicit =
     resolved_with(root, workspace, ["--read-scope", "host", "--network", "full"])
   assert explicit.base_policy.readable_roots == ["/"]
-  assert serve.under_tools_config(explicit.base_policy, explicit.tools).network
+  assert workspace_policy.under_tools_config(
+      explicit.base_policy,
+      explicit.tools,
+    ).network
     == policy.NetworkFull
 }
 
@@ -108,7 +121,7 @@ pub fn the_daemon_masks_its_secrets_and_not_its_root_test() {
 
   // And the policy is one this server will boot on, which the whole-root
   // mask was not for this workspace.
-  assert serve.base_policy_fault(settings.base_policy) == Ok(Nil)
+  assert workspace_policy.base_policy_fault(settings.base_policy) == Ok(Nil)
 }
 
 pub fn a_session_on_a_masked_entry_is_refused_at_creation_test() {
@@ -118,7 +131,8 @@ pub fn a_session_on_a_masked_entry_is_refused_at_creation_test() {
   // session whose every tool call fails on its own directory.
   let root = fake_state_root("refusal")
   let settings = resolved(root, workspace: root <> "/sessions")
-  let assert Error(reason) = serve.base_policy_fault(settings.base_policy)
+  let assert Error(reason) =
+    workspace_policy.base_policy_fault(settings.base_policy)
     as "a workspace on the sessions directory is refused"
   assert string.contains(reason, root <> "/sessions")
   assert string.contains(reason, "Choose another directory")
@@ -149,7 +163,7 @@ pub fn an_ordinary_workspace_still_masks_the_lazy_entries_test() {
   // the branch exists to remove.
   assert !list.contains(protected, root)
     as "the state root is still not masked wholesale"
-  assert serve.base_policy_fault(settings.base_policy) == Ok(Nil)
+  assert workspace_policy.base_policy_fault(settings.base_policy) == Ok(Nil)
 }
 
 // A workspace outside the state root: the ordinary arrangement, where no
@@ -198,7 +212,7 @@ fn jailed_readings(base: policy.SandboxPolicy, root: String) -> Nil {
   let assert Ok(helper) =
     exec.spawn_helper(exec.SpawnConfig(
       helper_path: helper_path,
-      shell_path: serve.shell_path,
+      shell_path: workspace_policy.shell_path,
       base_policy: base,
       helper_args: exec.unenforced_helper_args(exec.host_platform()),
       tmp_dir: root <> "/.tmp",
@@ -249,7 +263,7 @@ fn jailed(
     exec.run(
       helper,
       exec.ExecRequest(
-        argv: [serve.shell_path, "-c", command],
+        argv: [workspace_policy.shell_path, "-c", command],
         env: [],
         cwd: cwd,
         policy: Some(base),
@@ -391,6 +405,8 @@ fn resolved_with(
       catalogue.Saved,
       profile: option.None,
       model: option.None,
+      executor: "",
+      pool: "",
       subtitle: option.None,
     )
   let selected =

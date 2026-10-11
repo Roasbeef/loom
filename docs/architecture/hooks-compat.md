@@ -138,7 +138,7 @@ gaps.
    command string.
 
    Every variable the hook process requires is also granted on the session
-   base (`serve.allowing_imported_hook_env`). The runner requires exactly
+   base (`workspace_policy.allowing_imported_hook_env`). The runner requires exactly
    the keys of that environment, and a name the base withholds refuses the
    call instead of arriving empty.
 

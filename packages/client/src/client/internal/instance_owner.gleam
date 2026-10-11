@@ -45,6 +45,11 @@ pub type Part {
   /// Jailed helpers, after the broker no longer lends them out.
   Helpers
 
+  /// A workspace on an executor: its scope closed and its owner port ended,
+  /// after every call that could reach it has drained. A session with a
+  /// local workspace has no such part; it has `Broker` and `Helpers`.
+  Workspace
+
   /// External MCP clients, after runtime calls have drained.
   Mcp
 
@@ -368,7 +373,10 @@ fn block(
 fn clean(
   cleanups: Dict(Part, fn() -> Result(Nil, String)),
 ) -> Result(Nil, Failure) {
-  [Runtime, ToolConfig, Services, Broker, Helpers, Mcp, Storage, Namespace]
+  [
+    Runtime, ToolConfig, Services, Broker, Helpers, Workspace, Mcp, Storage,
+    Namespace,
+  ]
   |> list.try_each(fn(part) {
     case dict.get(cleanups, part) {
       Error(Nil) -> Ok(Nil)

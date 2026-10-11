@@ -267,6 +267,15 @@ refuse a retry, even when the original message was admitted. A receipt proves
 that the message was stored; it does not prove that the model read it or finished
 the requested task.
 
+If the recipient's owner is on another orchestrator and cannot be reached,
+`peer_send` returns `{"state": "queued", ...}` instead of a receipt. The message
+is recorded in the sender's session and delivered when the owner answers.
+Keep the same message ID and do not send the text again under a new one:
+sending with the same ID returns the receipt once the message is admitted, and
+`cap/peer.sent_receipt` reads it from the sender's own record. A program calling
+`cap/peer.send` receives the denial code `peer_queued` in that case. See the
+[sender outbox](architecture/messaging.md#the-sender-outbox).
+
 The harness stores the sender's session and strand as a `PeerOrigin` on the
 placed conversation entry. The entry codec preserves that identity through
 storage and replay, and provider rendering labels it as a peer-agent message.

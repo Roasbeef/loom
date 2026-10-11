@@ -8,7 +8,7 @@ import client/daemon/limits
 import client/daemon/manager
 import client/daemon/root
 import client/internal/instance_owner as custody
-import client/serve
+import client/workspace_policy
 import core/clock
 import core/ids
 import gleam/bit_array
@@ -92,6 +92,8 @@ fn saved(path: String) {
       state: catalogue.Reserved,
       profile: option.None,
       model: option.None,
+      executor: "",
+      pool: "",
       subtitle: option.None,
     )
   // Explicit opens require the same durable domain mapping as production
@@ -170,7 +172,10 @@ pub fn a_fresh_state_root_masks_both_domain_directories_test() {
   // A workspace-private session admitted now has no session-only domain
   // yet, and still masks where one will appear.
   let masked =
-    serve.protecting_state_root(serve.base_policy(path <> "-work"), path)
+    workspace_policy.protecting_state_root(
+      workspace_policy.base_policy(path <> "-work"),
+      path,
+    )
   assert list.contains(masked.protected, path <> "/domains")
   assert list.contains(masked.protected, path <> "/workspaces")
   assert root.shutdown(daemon, within: 5000) == Ok(Nil)

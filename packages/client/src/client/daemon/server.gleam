@@ -53,8 +53,14 @@ import client/daemon/ui_relay
 import client/daemon/ui_result
 import client/daemon/ui_sessions
 import client/daemon/upgrade_log
+import client/executors
+import client/orchestrators
 import client/peer_mail
 import client/peers
+import client/pools
+import client/remote/orchestrator_port
+import client/session_directory
+import client/session_movers
 import core/ids
 import core/json.{type JsonValue}
 import gleam/bit_array
@@ -93,6 +99,22 @@ pub type Config(instance) {
     peer_endpoint: fn(instance) -> Option(peer_mail.Endpoint),
     /// Captured owner domain config reference; empty explicitly selects no file.
     domain_configuration: String,
+    /// The `[executors.<name>]` the owner configured, read once at startup. A
+    /// creation that names an executor outside this list is refused before
+    /// anything is reserved (protocol-change/078).
+    executors: List(executors.Executor),
+    /// The `[pools.<name>]` the owner configured, read once at startup. A
+    /// creation that names a pool outside this list is refused before anything
+    /// is reserved (protocol-change/078).
+    pools: List(pools.Pool),
+    /// The other orchestrators a session this daemon does not hold may live on
+    /// (protocol-change/078, phase 3). It is asked only after the daemon's own
+    /// catalogue missed, and only for the owner principal.
+    directory: session_directory.Directory,
+    /// How an owner starts handing a session to another orchestrator, and the
+    /// orchestrators it may name (protocol-change/078, phase 5).
+    /// `session_movers.idle()` when there are none.
+    movers: session_movers.Control,
     /// Fresh entropy-seeded generator for explicit creation.
     generator: fn() -> ids.Generator,
     /// A v2-only conversation adapter, responsible for transferring its permit.
@@ -259,6 +281,13 @@ pub type HomeAttachment(instance) {
     /// bounded as `profiles` is, and a key is only a name: nothing else of a
     /// `[models.<key>]` entry is ever handed to a page.
     models: fn() -> List(String),
+    /// The `[executors.<name>]` names of the daemon's configuration, in the
+    /// order the configuration lists them, which the owner's page offers a form
+    /// for a registered workspace on (protocol-change/078). They are the
+    /// daemon's startup capture (`Config.executors`) and never reread, so unlike
+    /// the profiles they cost no read. A page learns them once, when it opens,
+    /// and only an owner's page that holds the creation capability is told.
+    executors: List(String),
   )
 }
 
@@ -572,6 +601,7 @@ fn home_upgrade(
               profiles.model_keys(config.domain_configuration)
               |> result.unwrap([])
             },
+            executors: list.map(config.executors, fn(executor) { executor.name }),
           ),
           open,
           seen,
@@ -1751,6 +1781,10 @@ fn registry_refusal(error: manager.Error) -> Option(String) {
     manager.StaleOperation -> Some("operation was overtaken")
     manager.StartFailed(_) -> Some("session start failed")
     manager.Preparation(_) -> Some("session preparation failed")
+    manager.SessionMoving(..) ->
+      Some("session is moving to another orchestrator")
+    manager.SessionMoved(..) ->
+      Some("session was moved to another orchestrator")
   }
 }
 
@@ -2161,11 +2195,11 @@ fn control(
             control_use(request.command),
             within: 1000,
           )
-          |> result.replace_error(#("unavailable", "request refused")),
+          |> result.replace_error(control_refusal("unavailable")),
         )
         use principal <- result.try(
           manager.authenticate(current.registry, digest)
-          |> result.replace_error(#("unauthorized", "request refused")),
+          |> result.replace_error(control_refusal("unauthorized")),
         )
         dispatch(config, state, digest, principal, request.id, request.command)
       }
@@ -2208,12 +2242,13 @@ fn control(
             | protocol.CreateSession(..)
             | protocol.OpenSession(..)
             | protocol.StopSession(..)
+            | protocol.MoveSession(..)
             | protocol.DeleteSession(..) -> KeepServing
           }
           #(protocol.event(Some(request.id), event, body), after)
         }
-        Error(#(code, message)) -> #(
-          refusal(protocol.Fault(Some(request.id), code, message)),
+        Error(Refused(code:, message:, detail:)) -> #(
+          refusal_with(protocol.Fault(Some(request.id), code, message), detail),
           KeepServing,
         )
       }
@@ -2256,18 +2291,27 @@ fn control_use(command: protocol.Command) {
     | protocol.CreateSession(..)
     | protocol.OpenSession(..)
     | protocol.StopSession(..)
+    | protocol.MoveSession(..)
     | protocol.DeleteSession(..)
     | protocol.Shutdown(_) -> root.ControlMutation
   }
 }
 
 fn refusal(fault: protocol.Fault) {
+  refusal_with(fault, [])
+}
+
+// A refusal frame with more members than the code and the words. The two
+// redirect codes of protocol-change/078 name where the session lives, and every
+// other refusal passes an empty list.
+fn refusal_with(fault: protocol.Fault, detail: List(#(String, JsonValue))) {
   protocol.event(
     fault.reply_to,
     "error",
     json.Object([
       #("code", json.String(fault.code)),
       #("message", json.String(fault.message)),
+      ..detail
     ]),
   )
 }
@@ -2321,7 +2365,7 @@ fn dispatch(
   principal: access.Principal,
   reply_to: Int,
   command: protocol.Command,
-) -> Result(#(String, JsonValue), #(String, String)) {
+) -> Result(#(String, JsonValue), Refused) {
   case command {
     protocol.GetOperation(id, operation, supplied) -> {
       use Nil <- result.try(
@@ -2333,26 +2377,163 @@ fn dispatch(
       manager.operation(state.registry, id, operation)
       |> result.map_error(fn(error) {
         case error {
-          manager.StartFailed(reason) -> #("start_failed", reason)
+          manager.StartFailed(reason) -> Refused("start_failed", reason, [])
           other -> control_refusal(error_code(other))
         }
       })
       |> result.map(fn(view) { #("operations.get", view_json(view)) })
     }
-    protocol.CreateSession(_, _, _, configuration, profile, model, _) ->
+    protocol.CreateSession(_, _, _, configuration, profile, model, _, _, _) ->
       dispatch_class(config, state, digest, principal, reply_to, command)
       |> result.map_error(fn(code) {
         choice_refusal(config, configuration, profile, model, code)
       })
+
+    // A session this daemon's catalogue does not hold may be one that another
+    // orchestrator owns. The miss comes out of the authorization step as
+    // `not_found`, and for the owner principal that is the one place the
+    // directory is asked (protocol-change/078, phase 3). A session this
+    // daemon handed away is held here as a tombstone, and `open` on it says
+    // where it went and, while it is on its way, that it is moving (phase 5).
+    protocol.GetSession(id) | protocol.OpenSession(id, _) ->
+      dispatch_class(config, state, digest, principal, reply_to, command)
+      |> result.map_error(control_refusal)
+      |> result.map_error(redirected(config, principal, id, _))
+      |> result.map_error(in_flight(state, id, _))
+
+    // Archiving, restoring and deleting a session that moved away name the new
+    // owner from the tombstone, and ask no one: the directory is not consulted
+    // for a session this daemon never held.
+    protocol.ArchiveSession(id, _)
+    | protocol.RestoreSession(id, _)
+    | protocol.DeleteSession(id, _) ->
+      dispatch_class(config, state, digest, principal, reply_to, command)
+      |> result.map_error(control_refusal)
+      |> result.map_error(tombstoned(config, principal, id, _))
     _ ->
       dispatch_class(config, state, digest, principal, reply_to, command)
       |> result.map_error(control_refusal)
   }
 }
 
-fn control_refusal(code: String) -> #(String, String) {
-  #(code, "request refused")
+// A refusal as the control socket sends it: the code and its words, and any
+// members beyond them. Only the two redirect codes carry members.
+type Refused {
+  Refused(code: String, message: String, detail: List(#(String, JsonValue)))
 }
+
+fn control_refusal(code: String) -> Refused {
+  Refused(code, "request refused", [])
+}
+
+/// The code `sessions.get` and `sessions.open` answer when the session is not in
+/// this daemon's catalogue but another configured orchestrator holds it
+/// (protocol-change/078, phase 3).
+pub const not_owner_code = "not_owner"
+
+/// The code `sessions.get` and `sessions.open` answer when the session is not in
+/// this daemon's catalogue, no orchestrator said it holds it, and some could not
+/// be asked (protocol-change/078, phase 3).
+pub const owner_unreachable_code = "owner_unreachable"
+
+// The refusal for a session this daemon does not hold. Only the owner principal
+// is redirected: a member's standing on the session is the owning daemon's to
+// judge, and this one cannot vouch for it. A miss that no orchestrator explains
+// stays `not_found`, and so does a directory that says the session is here after
+// all, which can only be a creation that landed between the two reads and which
+// the client's retry finds.
+fn redirected(
+  config: Config(instance),
+  principal: access.Principal,
+  id: String,
+  refused: Refused,
+) -> Refused {
+  case refused.code, principal.kind {
+    "not_found", access.OwnerPrincipal ->
+      case config.directory.lookup(id) {
+        Ok(session_directory.Elsewhere(owner)) -> not_owner(owner)
+        Error(session_directory.Unreachable(names)) -> owner_unreachable(names)
+        Ok(session_directory.Here) | Error(session_directory.Unknown) -> refused
+      }
+    code, access.OwnerPrincipal if code == not_owner_code ->
+      tombstoned(config, principal, id, refused)
+    _, _ -> refused
+  }
+}
+
+// The refusal for a session this daemon handed to another orchestrator. Only the
+// owner is told where it went, as for any redirect, and the answer comes from
+// the daemon's own tombstone: the directory answers a session it holds a
+// tombstone for without asking a peer. Anything else is left as it was.
+fn tombstoned(
+  config: Config(instance),
+  principal: access.Principal,
+  id: String,
+  refused: Refused,
+) -> Refused {
+  case refused.code, principal.kind {
+    code, access.OwnerPrincipal if code == not_owner_code ->
+      case config.directory.lookup(id) {
+        Ok(session_directory.Elsewhere(owner)) -> not_owner(owner)
+        Ok(session_directory.Here) | Error(_) -> refused
+      }
+    _, _ -> refused
+  }
+}
+
+/// The code `sessions.open` answers while the session is being handed to
+/// another orchestrator (protocol-change/078, phase 5). It names the
+/// orchestrator the session is going to and the move.
+pub const moving_code = "moving"
+
+// A session whose move is in flight cannot be opened, and the refusal says where
+// it is going and which move it is, so a client can wait and then ask again.
+fn in_flight(
+  state: root.Ready(instance),
+  id: String,
+  refused: Refused,
+) -> Refused {
+  case refused.code {
+    code if code == moving_code ->
+      case manager.custody(state.registry, id) {
+        Ok(catalogue.Moving(op:, to:)) ->
+          Refused(
+            moving_code,
+            "this session is being moved to another orchestrator",
+            [
+              #("orchestrator", json.String(to)),
+              #("op", json.String(op)),
+            ],
+          )
+        Ok(_) | Error(_) -> refused
+      }
+    _ -> refused
+  }
+}
+
+fn not_owner(owner: orchestrators.Orchestrator) -> Refused {
+  let address = case owner.address {
+    Some(address) -> [#("address", json.String(address))]
+    None -> []
+  }
+  Refused(not_owner_code, "this session is owned by another orchestrator", [
+    #("orchestrator", json.String(owner.name)),
+    ..address
+  ])
+}
+
+fn owner_unreachable(names: List(String)) -> Refused {
+  Refused(
+    owner_unreachable_code,
+    "the orchestrator that owns this session could not be reached",
+    [#("orchestrators", json.Array(list.map(names, json.String)))],
+  )
+}
+
+/// The code `sessions.move` answers when the destination is not one of the
+/// `[orchestrators.<name>]` the daemon's configuration defines (protocol-change/078,
+/// phase 5).
+pub const orchestrator_unknown_code = "orchestrator_unknown"
 
 /// The code `create_session` answers when the profile a creation names is not
 /// one its configuration defines.
@@ -2362,25 +2543,35 @@ pub const unknown_profile_code = "unknown_profile"
 /// one its configuration defines (protocol-change/080).
 pub const unknown_model_code = "unknown_model"
 
+/// The code `create_session` answers when a creation names an executor that
+/// the daemon's configuration does not define (protocol-change/078).
+pub const executor_unknown_code = "executor_unknown"
+
+/// The code `create_session` answers when a creation names a pool that the
+/// daemon's configuration does not define (protocol-change/078).
+pub const pool_unknown_code = "pool_unknown"
+
 /// The code `create_session` answers when a creation names a profile or a model
 /// and the configuration it would load cannot be read or parsed. Nothing was
 /// looked up, so `unknown_profile` would blame the name for the file.
 pub const unusable_configuration_code = "unusable_configuration"
 
-// A refused creation's code and message. An unknown profile, an unknown model
-// and an unusable configuration are the refusals that say more than "request
-// refused": the owner who mistyped a name needs the names that exist, and the
-// owner whose file does not parse needs the key it names. The caller is the
-// owner because `create_session` checks that first. The message is worded again
-// here, from the same check, rather than carried out of `create_session`, so
-// that function's error stays the single code the home page's creation shares.
+// A refused creation's code and message. An unknown profile, an unknown model,
+// an unusable configuration, an unknown executor and an unknown pool are the
+// refusals that say more than "request refused": the owner who mistyped a name
+// needs the names that exist, the owner whose file does not parse needs the key
+// it names, and the owner who named an executor or a pool needs to know it is
+// the configuration that lacks it. The caller is the owner because
+// `create_session` checks that first. The message is worded again here, from
+// the same check, rather than carried out of `create_session`, so that
+// function's error stays the single code the home page's creation shares.
 fn choice_refusal(
   config: Config(instance),
   configuration: String,
   profile: Option(String),
   model: Option(String),
   code: String,
-) -> #(String, String) {
+) -> Refused {
   case code {
     "unknown_profile" | "unknown_model" | "unusable_configuration" -> {
       let canonical = case configuration {
@@ -2397,8 +2588,19 @@ fn choice_refusal(
         Error(refusal) -> profiles.refusal_message(refusal)
         Ok(Nil) -> "request refused"
       }
-      #(code, words)
+      Refused(code, words, [])
     }
+
+    "executor_unknown" ->
+      Refused(
+        code,
+        "no executor with that name is configured on this daemon",
+        [],
+      )
+
+    "pool_unknown" ->
+      Refused(code, "no pool with that name is configured on this daemon", [])
+
     _ -> control_refusal(code)
   }
 }
@@ -2442,7 +2644,9 @@ fn dispatch_class(
       use Nil <- result.try(owner(principal))
       use Nil <- result.try(epoch(state, supplied))
       use source <- result.try(peer_endpoint(config, state.registry, source))
-      use target <- result.try(peer_endpoint(config, state.registry, target))
+      use target <- result.try(
+        link_target(config, state.registry, target) |> peer_mail.plain,
+      )
       peers.link(source, target, from, to, wake)
       |> result.map(fn(value) { #("peers.link", value) })
     }
@@ -2820,7 +3024,7 @@ fn dispatch_class(
       |> result.map_error(error_code)
       |> result.try(fn(view) {
         use body <- result.map(owner_view(state, principal, view))
-        #("sessions.get", body)
+        #("sessions.get", with_custody(state, id, body))
       })
     }
     protocol.WorkspaceDefault(workspace) -> {
@@ -2842,6 +3046,8 @@ fn dispatch_class(
       configuration,
       profile,
       model,
+      executor,
+      pool,
       scope,
     ) ->
       create_session(
@@ -2849,7 +3055,16 @@ fn dispatch_class(
         state.registry,
         state.sessions_directory,
         principal,
-        manager.Creation(key, workspace, name, configuration, profile, model),
+        manager.Creation(
+          key,
+          workspace,
+          name,
+          configuration,
+          profile,
+          model,
+          option.unwrap(executor, ""),
+          option.unwrap(pool, ""),
+        ),
         scope,
       )
       |> result.map(fn(view) { #("sessions.create", view_json(view)) })
@@ -2868,7 +3083,68 @@ fn dispatch_class(
       |> result.map_error(error_code)
       |> result.map(fn(status) { #("sessions.stop", status_json(status)) })
     }
+    protocol.MoveSession(id, to, supplied) -> {
+      use Nil <- result.try(owner(principal))
+      use Nil <- result.try(epoch(state, supplied))
+      use _destination <- result.try(
+        orchestrators.find(config.movers.orchestrators, to)
+        |> result.replace_error(orchestrator_unknown_code),
+      )
+
+      use Nil <- result.try(
+        inbound_settled(config.movers, state.registry, id)
+        |> result.replace_error(
+          admin_error_code(manager.AdminNotMovable(
+            "the move in from the session's origin has not finished",
+          )),
+        ),
+      )
+
+      // Each asker mints an operation of its own, and the registry keeps the
+      // first: a second request toward the same orchestrator answers the stored
+      // one, so two owners asking at once start one move.
+      let #(minted, _) = ids.mint_op(config.generator())
+      use custody <- result.try(
+        manager.begin_move(
+          state.registry,
+          digest,
+          supplied,
+          id,
+          to:,
+          op: ids.op_id_to_string(minted),
+        )
+        |> result.map_error(admin_error_code),
+      )
+      case custody {
+        catalogue.Moving(op:, to: heading) -> {
+          config.movers.begin(catalogue.Pending(session: id, op:, to: heading))
+          Ok(#(
+            "sessions.move",
+            json.Object([
+              #("session_id", json.String(id)),
+              #("op", json.String(op)),
+              #("to", json.String(heading)),
+              #("state", json.String("moving")),
+            ]),
+          ))
+        }
+        catalogue.Moved(to: owner, ..) ->
+          Error(admin_error_code(manager.AdminMoved(to: owner)))
+        catalogue.Resident | catalogue.Imported(..) -> Error("unavailable")
+      }
+    }
     protocol.DeleteSession(id, supplied) -> {
+      // A session imported from an orchestrator that has not retired its move is
+      // busy: deleting it would be undone by that orchestrator's retry. The
+      // question crosses the network, so only the owner holding a current epoch
+      // may cause it; the registry decides both again inside its own turn.
+      use Nil <- result.try(owner(principal))
+      use Nil <- result.try(epoch(state, supplied))
+      use Nil <- result.try(
+        inbound_settled(config.movers, state.registry, id)
+        |> result.replace_error(admin_error_code(manager.AdminBusy)),
+      )
+
       // Owner, epoch and the busy check are all re-decided inside the
       // registry's own dispatch; the check here would only widen the window
       // between deciding and removing.
@@ -2909,6 +3185,51 @@ fn dispatch_class(
   }
 }
 
+// A session this daemon imported cannot be handed on, or deleted, until the
+// orchestrator it came from has retired the move that brought it here. Until
+// then that orchestrator still holds the session as `moving`, and its mover may
+// yet ask this one to activate it. Beginning a move here replaces the `imported`
+// row with `moving`, and a move that is then abandoned deletes that row, so the
+// activation of the first move would be refused for a conflict and the source
+// would abandon its move as well: both sides resident. A delete removes the row
+// outright, so the source's retry finds nothing, sends the file again and
+// imports it afresh, and the delete is undone. The origin's port answers `Moved`
+// only after its own row says so, and a retired source never holds the session
+// again under that move, so one answer decides and there is no race to lose. The
+// ask runs here, outside the registry's turn, because it crosses the network.
+// Silence, an origin this daemon no longer lists, and any other answer say the
+// session is not settled yet, and the caller refuses in the words of its own
+// command: the owner asks again later.
+fn inbound_settled(
+  movers: session_movers.Control,
+  registry: manager.Manager(instance),
+  id: String,
+) -> Result(Nil, Unsettled) {
+  case manager.custody(registry, id) {
+    Ok(catalogue.Imported(from:, ..)) ->
+      case orchestrators.find(movers.orchestrators, from) {
+        Ok(origin) ->
+          case movers.holds(origin, id) {
+            Ok(orchestrator_port.Moved(..)) -> Ok(Nil)
+            Ok(orchestrator_port.Owned)
+            | Ok(orchestrator_port.NotOwned)
+            | Error(Nil) -> Error(Unsettled)
+          }
+        Error(Nil) -> Error(Unsettled)
+      }
+    Ok(catalogue.Resident)
+    | Ok(catalogue.Moving(..))
+    | Ok(catalogue.Moved(..))
+    | Error(_) -> Ok(Nil)
+  }
+}
+
+// The origin of an imported session has not said it retired the move. It is a
+// value of its own so each command can name the refusal its contract has.
+type Unsettled {
+  Unsettled
+}
+
 /// The control command `sessions.create`, as a function of what it needs, so
 /// the control socket and a home page's creation (`ui_socket.create_for`) run
 /// one path. The caller must be the owner; the workspace is canonicalized on
@@ -2941,10 +3262,29 @@ pub fn create_session(
   scope: domain.Scope,
 ) -> Result(manager.View, String) {
   use Nil <- result.try(owner(principal))
-  use workspace <- result.try(
-    bootstrap.canonical_directory(request.workspace)
-    |> result.replace_error("invalid_workspace"),
-  )
+
+  // A local workspace is a path on this host and is canonicalized here. A
+  // registered one is a name that only the executor can resolve, so it is kept
+  // exactly as sent and is never statted, canonicalized or created on this
+  // host: the executor or the pool must be configured, and nothing more is asked
+  // of it. A creation names one of the two, never both: a pool picks the
+  // executor when the session first opens.
+  use workspace <- result.try(case request.executor, request.pool {
+    "", "" ->
+      bootstrap.canonical_directory(request.workspace)
+      |> result.replace_error("invalid_workspace")
+    executor, "" ->
+      case executors.find(config.executors, executor) {
+        Ok(_) -> Ok(request.workspace)
+        Error(Nil) -> Error(executor_unknown_code)
+      }
+    "", pool ->
+      case pools.find(config.pools, pool) {
+        Ok(_) -> Ok(request.workspace)
+        Error(Nil) -> Error(pool_unknown_code)
+      }
+    _, _ -> Error("bad_request")
+  })
   use configuration <- result.try(
     case request.configuration {
       // Absence is a registration choice, not the daemon's current path.
@@ -2988,7 +3328,11 @@ pub fn create_session(
   // The folder is remembered once the session exists, under the canonical text
   // the catalogue holds, so the home can offer it again after every session in
   // it is gone (protocol-change/074). A creation that failed leaves no trace.
-  manager.remember_folder(registry, workspace)
+  // A registered name is no folder on this host, so it is never offered.
+  case request.executor, request.pool {
+    "", "" -> manager.remember_folder(registry, workspace)
+    _, _ -> Nil
+  }
   created
 }
 
@@ -3091,6 +3435,10 @@ fn rename_error_code(error) {
     | manager.AdminUnavailable
     | manager.AdminForeignPath
     | manager.AdminBusy
+    | manager.AdminMoving(..)
+    | manager.AdminMoved(..)
+    | manager.AdminNotMovable(..)
+    | manager.AdminFailed(..)
     | manager.AdminMetadata(_) -> admin_error_code(error)
   }
 }
@@ -3103,7 +3451,44 @@ fn admin_error_code(error) {
     manager.AdminUnavailable -> "unavailable"
     manager.AdminForeignPath -> "unavailable"
     manager.AdminBusy -> "busy"
+    manager.AdminMoving(..) -> "moving"
+    manager.AdminMoved(..) -> not_owner_code
+    manager.AdminNotMovable(..) -> "not_movable"
+    manager.AdminFailed(..) -> "unavailable"
     manager.AdminMetadata(error) -> error_code(manager.Catalogue(error))
+  }
+}
+
+// The move a session is in, if any, as members of its view
+// (protocol-change/078, phase 5). A session that is not moving and has not moved
+// carries neither, so its view is byte for byte what a daemon without moves
+// sends. `moving` names the move and where it goes, and `moved` names where the
+// session went; a session that is moving is also still stopped and `saved`.
+fn with_custody(
+  state: root.Ready(instance),
+  id: String,
+  body: JsonValue,
+) -> JsonValue {
+  case manager.custody(state.registry, id), body {
+    Ok(catalogue.Moving(op:, to:)), json.Object(fields) ->
+      json.Object(
+        list.append(fields, [
+          #(
+            "moving",
+            json.Object([
+              #("op", json.String(op)),
+              #("to", json.String(to)),
+            ]),
+          ),
+        ]),
+      )
+    Ok(catalogue.Moved(to:, ..)), json.Object(fields) ->
+      json.Object(
+        list.append(fields, [
+          #("moved", json.Object([#("to", json.String(to))])),
+        ]),
+      )
+    _, _ -> body
   }
 }
 
@@ -3127,6 +3512,7 @@ fn owner_view(
           #("created_at", json.Int(view.registration.created_at)),
           #("status", status_json(view.status)),
           #("domain_scope", json.String(scope_text(selected.scope))),
+          ..placement_fields(view.registration)
         ]),
       )
     }
@@ -3314,8 +3700,32 @@ pub fn view_json(view: manager.View) -> JsonValue {
     #("name", json.String(view.registration.name)),
     #("created_at", json.Int(view.registration.created_at)),
     #("status", status_json(view.status)),
-    ..subtitle_field(view.registration.subtitle)
+    ..list.append(
+      subtitle_field(view.registration.subtitle),
+      placement_fields(view.registration),
+    )
   ])
+}
+
+// The optional `executor` and `pool` of `protocol-change/078`. A local session
+// omits both fields, so its frame is byte-for-byte what a daemon without
+// executors sent, and a client that does not know them reads the rest as before.
+// A session in a pool has no executor until its first open chooses one, so it
+// carries the pool alone until then.
+fn placement_fields(
+  registration: catalogue.Registration,
+) -> List(#(String, JsonValue)) {
+  list.append(
+    named("executor", registration.executor),
+    named("pool", registration.pool),
+  )
+}
+
+fn named(key: String, name: String) -> List(#(String, JsonValue)) {
+  case name {
+    "" -> []
+    present -> [#(key, json.String(present))]
+  }
 }
 
 // The optional `subtitle` of `protocol-change/067`. A session with none omits
@@ -3364,6 +3774,8 @@ fn error_code(error) {
     manager.SessionArchived -> "session_archived"
     manager.NotInitialized -> "not_initialized"
     manager.Unavailable | manager.Preparation(_) -> "unavailable"
+    manager.SessionMoving(..) -> "moving"
+    manager.SessionMoved(..) -> not_owner_code
     manager.Catalogue(catalogue.Missing) -> "not_found"
     manager.Catalogue(catalogue.Conflict) -> "conflict"
     manager.Catalogue(catalogue.Invalid(_)) -> "bad_request"
@@ -3414,7 +3826,7 @@ fn activity(
     |> list.map(fn(pair) {
       case pair.1 {
         Some(peer_mail.Endpoint(call:, ..)) -> fn() { call(peer_mail.Overview) }
-        None -> fn() { Error("peer_service_unavailable") }
+        None -> fn() { Error(peer_mail.Refused("peer_service_unavailable")) }
       }
     })
     |> weft.new
@@ -3556,20 +3968,49 @@ fn unknown_row(id: String) -> JsonValue {
   ])
 }
 
-// The daemon's resident-only peer lookups, which the control commands and an
-// owner's web page share so that both resolve a session the same way.
+// The daemon's peer lookups, which the control commands and an owner's web
+// page share so that both resolve a session the same way. A session resident
+// here resolves to its Agency, and one a configured orchestrator owns resolves
+// to that orchestrator's port (`peers.routed`); discovery is the catalogue's.
 fn peer_directory(
   config: Config(instance),
   registry: manager.Manager(instance),
 ) -> peers.Directory {
   peers.Directory(
-    resolve: fn(id) { peer_endpoint(config, registry, id) },
+    resolve: peers.routed(
+      fn(id) { peer_endpoint(config, registry, id) |> peer_mail.refused },
+      config.directory,
+    ),
     describe: fn(id) {
       manager.get(registry, id)
       |> result.map(view_json)
       |> result.map_error(error_code)
     },
   )
+}
+
+// The recipient of a link. A lookup bounds one connection at a second and a
+// half, and the first TLS handshake to a loaded orchestrator can take longer:
+// the lookup then finds the owner silent although only its first connection is
+// still being made, and the handshake goes on in the background. A send has its
+// outbox to retry from and a client's `sessions.get` can ask again, but a link
+// is one operator command with nothing behind it. So a link that finds the owner
+// silent waits once, bounded, for the connections to settle
+// (`Directory.settle`), and asks again; an owner that is truly down is still
+// unreachable, a few seconds later.
+fn link_target(
+  config: Config(instance),
+  registry: manager.Manager(instance),
+  target: String,
+) -> Result(peer_mail.Endpoint, peer_mail.Failure) {
+  let directory = peer_directory(config, registry)
+  case directory.resolve(target) {
+    Error(peer_mail.Unreachable) -> {
+      config.directory.settle()
+      directory.resolve(target)
+    }
+    answer -> answer
+  }
 }
 
 fn peer_endpoint(

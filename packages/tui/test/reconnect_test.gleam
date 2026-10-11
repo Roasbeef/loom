@@ -25,6 +25,7 @@ import tui/effect
 import tui/inbound
 import tui/job
 import tui/model as tui_model
+import tui/placement
 import tui/runtime
 import tui/session_control
 import tui/view_set
@@ -41,6 +42,7 @@ fn options() -> bootstrap.Options {
     state_directory: "/state",
     config: "",
     profile: "",
+    placement: placement.OnThisHost,
   )
 }
 

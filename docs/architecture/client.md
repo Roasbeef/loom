@@ -1572,6 +1572,8 @@ or `/healthz`.
 | `client/jobs.gleam` | Existing job lifecycle owner and explicit, strand-scoped live-job observations. |
 | `client/server.gleam` | The historical v1 transport retained for internal host/test callers, not the default listener. |
 | `client/serve.gleam` | Session assembly, domain resource construction, and independent runtime configuration resolution. |
+| `client/workspace_plane.gleam` | The workspace half of a session built alone: `prepare` reads the machine into a plain-data census, `start_local` starts the helper pool, executor, broker, jobs, scratch and language-server wiring and the workspace's tools, and the owner holds the resulting `WorkspacePlane`. |
+| `client/workspace_policy.gleam` | The session base policy, tool environment and directory layout as functions of plain values, shared by the workspace half and the owner. |
 | `client/catalog.gleam` | The `loom.toml` model catalogue: strict parser, role chains, the provider-gateway builder, name lookups. |
 | `client/grants.gleam` | The bridge between the runtime's stored escalation JSON and typed `broker/policy.Grant`; `first_unwanted`, the approval subset check. |
 | `client/wiring.gleam` | The production effect seam over the real provider gateway, broker, and tool registry. |

@@ -42,6 +42,7 @@ import client/extension/source
 import client/internal/ffi_os
 import client/lsp/profile
 import client/serve
+import client/workspace_policy
 import codemode/build
 import codemode/compile
 import codemode/enforcement
@@ -582,7 +583,7 @@ fn check_setup(flags: Flags) -> check.Setup {
   check.Setup(
     helper: flags.helper,
     demand: demand(flags),
-    places: serve.lsp_places(),
+    places: workspace_policy.lsp_places(),
     reading: fn(name) { secret.lookup(secret.env(), name) },
     clock: wall_clock(),
     entropy: ffi_os.unique_positive_integer,

@@ -695,3 +695,59 @@ pub fn provider_http_fixture_cleans_listener_after_callback_failure_test() {
     as "the failure happened after actual listener startup"
   closed(url)
 }
+
+fn failed_result_body(text: String) -> String {
+  raw_body([
+    [
+      result_block(
+        json.String("fixture-call"),
+        [text_block(text)],
+        json.Bool(True),
+      ),
+    ],
+  ])
+}
+
+pub fn provider_http_fixture_admits_an_error_result_when_asked_test() {
+  let #(url, report) =
+    peer.with_server_for(
+      [
+        tool_step(),
+        peer.ComputedExchange(
+          peer.AwaitFailedToolResult("fixture-call"),
+          fn(_seen) { peer.ReplyText("saw the failure") },
+        ),
+      ],
+      peer.AlsoFailed,
+      30_000,
+      fn(url) {
+        assert post(url, peer.dummy_key, body(["start A"])).0 == 200
+        assert post(url, peer.dummy_key, failed_result_body("it broke")).0
+          == 200
+        url
+      },
+    )
+  let assert Ok([_prompt, second]) = report
+    as "the error result is recorded as the second request"
+  assert second.latest == peer.FailedToolResult("fixture-call", "it broke")
+  closed(url)
+}
+
+pub fn provider_http_fixture_error_result_does_not_answer_a_successful_step_test() {
+  let #(url, report) =
+    peer.with_server_for(
+      [tool_step(), peer.ToolResultExchange("fixture-call", "done", "finished")],
+      peer.AlsoFailed,
+      30_000,
+      fn(url) {
+        assert post(url, peer.dummy_key, body(["start A"])).0 == 200
+        let #(status, reason) =
+          post(url, peer.dummy_key, failed_result_body("done"))
+        assert status == 400
+        assert reason == "unexpected latest user text or extra request"
+        url
+      },
+    )
+  assert report == Error("unexpected latest user text or extra request")
+  closed(url)
+}

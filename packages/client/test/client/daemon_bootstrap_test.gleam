@@ -23,6 +23,7 @@ import tui/bootstrap
 import tui/daemon
 import tui/daemon/bootstrap as daemon_bootstrap
 import tui/daemon/protocol
+import tui/placement
 import weft/poll
 
 fn paths() {
@@ -71,6 +72,7 @@ fn options(paths: endpoint.Paths, workspace) {
     paths.root,
     "/missing/operator/config",
     "",
+    placement.OnThisHost,
   )
 }
 

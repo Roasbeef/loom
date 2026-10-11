@@ -1326,6 +1326,7 @@ fn scripted_tools() -> effects.ToolSurface {
     },
     replay_still_safe: fn(_name) { True },
     execution_mode: fn(_name) { effects.ConcurrentExecution },
+    recover: None,
   )
 }
 

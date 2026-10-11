@@ -27,6 +27,30 @@ terminal retain its bounded streamed answer until the exact durable entry is
 visible; request completion alone is not a presentation handoff. See
 `protocol-change/036-stream-response-handoff.md`.
 
+## Orphan recovery through the tool surface
+
+`effects.ToolSurface.recover: Option(fn(ToolRun) -> Recovery)` lets a surface
+that keeps its own record of finished calls (a remote executor's ledger) say
+what became of an orphaned call: intent durable as `CallEffectPending`, no live
+effect in this incarnation. `None`, every local surface, leaves `tool_key`
+resolving to `planner.ObservedToolOrphaned` exactly as before. With `Some(f)`,
+`tool_key` returns `KeySpawned` after `spawn_recovery` starts an effect, built
+by the same `spawn_tool_worker` as `spawn_tool`, under the call's own
+`ToolEffect` token. So `has_live_tool`, `KeyWait` and the abort path treat it as
+the tool it stands in for. It calls `f` with the run a replay would use: the
+effective arguments from `op.tool_args`, the replay policy persisted in the
+`CallEffectPending`, no grants. `f` may block; the driver is not parked on it.
+The answer arrives as `ToolRecovered` and `recovery_done` maps it without any
+change to `machine`: `Recovered(outcome)` settles through `settle_tool`, the
+path a fresh run's `ToolDone` takes; `OutcomeUnknown` is the orphan observation
+with `replay_still_safe: False`; `NotStarted` is that observation with `True`
+when the persisted policy is `ReplaySafe` and the current registration still
+says so, otherwise a `ToolFailed("the call never reached the executor and did
+not run")`. A recovery effect killed by abort, or one that dies unanswered,
+takes `effect_exit`'s ordinary tool path. `runtime` reads the argument key
+through `machine/internal/build.tool_args_key`, the one place that format is
+spelled. See `protocol-change/078`.
+
 ## Purpose
 
 The orchestration plane's live half: the OTP tree that turns an open

@@ -33,6 +33,7 @@
 
 import filepath
 import gleam/bit_array
+import gleam/bool
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
@@ -45,7 +46,9 @@ const pointer_limit = 4096
 /// The project of one workspace read from the disk now: the workspace itself for
 /// a plain checkout, the main repository's directory for a git worktree that the
 /// repository registers, and nothing for a directory that is no repository or
-/// whose pointer cannot be followed and confirmed.
+/// whose pointer cannot be followed and confirmed. A workspace that is not an
+/// absolute path, which is how a workspace registered on an executor is
+/// stored, has no project and is never read.
 ///
 /// ## Examples
 ///
@@ -55,6 +58,10 @@ const pointer_limit = 4096
 /// assert ui_project.locate("/work/tree") == Some("/work/repo")
 /// ```
 pub fn locate(workspace: String) -> Option(String) {
+  // A workspace registered on an executor is a name, which has no `/` and so
+  // is never an absolute path; joined to `.git` it would be read relative to
+  // the daemon's own directory. Only a path on this host has a disk to read.
+  use <- bool.guard(!string.starts_with(workspace, "/"), None)
   let marker = filepath.join(workspace, ".git")
   case simplifile.file_info(marker) {
     Ok(info) ->

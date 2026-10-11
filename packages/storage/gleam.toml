@@ -8,6 +8,7 @@ core = { path = "../core" }
 # The Hex binding selects the repaired native dependency through Rebar.
 sqlight_loom = "== 1.2.1"
 parrot = ">= 2.3.0 and < 3.0.0"
+gleam_crypto = ">= 1.0.0 and < 2.0.0"
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
 gleam_otp = ">= 1.0.0 and < 2.0.0"
 simplifile = ">= 2.0.0 and < 3.0.0"

@@ -19,7 +19,7 @@
 
 import broker/exec
 import broker/policy
-import client/serve
+import client/workspace_policy
 import filepath
 import gleam/bit_array
 import gleam/bool
@@ -64,11 +64,11 @@ pub fn probe(server: String, label: String) -> Enforcement {
   let assert Ok(helper_path) = native.find_executable(helper_path)
     as "a configured shipped server must have its sibling loom-exec executable"
   let directory = private_directory()
-  let base = serve.base_policy(directory)
+  let base = workspace_policy.base_policy(directory)
   let assert Ok(helper) =
     exec.spawn_helper(exec.SpawnConfig(
       helper_path: helper_path,
-      shell_path: serve.shell_path,
+      shell_path: workspace_policy.shell_path,
       base_policy: base,
       helper_args: exec.unenforced_helper_args(exec.host_platform()),
       tmp_dir: directory <> "/tmp",
@@ -110,7 +110,7 @@ fn verdict(
     exec.run(
       helper,
       exec.ExecRequest(
-        argv: [serve.shell_path, "-c", ":"],
+        argv: [workspace_policy.shell_path, "-c", ":"],
         env: [],
         cwd: directory,
         policy: Some(base),

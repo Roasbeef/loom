@@ -1609,6 +1609,7 @@ pub fn wire(
         cleared(bus, clear(query), query)
       },
       run: fn(run) { ran(bus, run_tool(run)) },
+      recover: tools.recover,
     ),
   )
 }

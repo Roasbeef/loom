@@ -239,10 +239,13 @@ its handoff and records every ruling the engine has made. That range is
 currently an exact pin, `weft = "== 0.4.6"` in all ten direct consumers,
 because `e9b46e1f` ("build: lock daemon runtime dependencies") locked the
 whole shared host graph to the revisions the daemon work reviewed. Why an
-exact pin rather than `">= 0.4.5 and < 0.5.0"`, which would admit a patch
+exact pin rather than `">= 0.4.6 and < 0.5.0"`, which would admit a patch
 release while still excluding the breaking `0.5.0`, was never written
 down; treat the `==` as a standing ruling with an unrecorded rationale
-rather than an oversight to loosen in passing. Two things the
+rather than an oversight to loosen in passing. `gleam_mcp`, a git
+dependency of `client` and `mcp`, pins weft exactly as well, so a weft bump
+lands in `Roasbeef/gleam-mcp` first and the `ref` here moves with it;
+otherwise the resolver cannot satisfy both pins. Two things the
 resolver does not do by itself when a path dependency changes: refresh
 the requirement lists of local packages in every manifest that lists
 them, and add the entry to a manifest that reaches weft only

@@ -41,6 +41,7 @@ pub fn completed_rename_page_refresh_preserves_selected_identity_test() {
       1,
       protocol.Saved,
       option.None,
+      option.None,
     )
   let page = protocol.Page(9, [row], None)
   let #(model, key) = tui_model.allocate_job(model)

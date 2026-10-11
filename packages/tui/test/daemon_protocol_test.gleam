@@ -126,6 +126,8 @@ pub fn request_scalar_limits_and_stale_operation_epoch_test() {
         string.repeat("x", 257),
         "/config",
         "",
+        "",
+        "",
       ),
       epoch,
     )
@@ -287,7 +289,7 @@ pub fn creation_allows_empty_configuration_but_bounds_explicit_paths_test() {
   let assert Ok(encoded) =
     protocol.encode(
       1,
-      protocol.CreateSession("key", "/work", "New session", "", ""),
+      protocol.CreateSession("key", "/work", "New session", "", "", "", ""),
       epoch,
     )
     as "omitted config can reach the daemon's inherited defaults"
@@ -300,6 +302,8 @@ pub fn creation_allows_empty_configuration_but_bounds_explicit_paths_test() {
         "/work",
         "New session",
         string.repeat("x", 4097),
+        "",
+        "",
         "",
       ),
       epoch,
@@ -481,6 +485,33 @@ pub fn a_session_row_reads_its_optional_subtitle_test() {
   assert subtitles_of(session_frame(",\"subtitle\":\"Fix the retry test\""))
     == [Some("Fix the retry test")]
   assert subtitles_of(session_frame(",\"subtitle\":null")) == [None]
+}
+
+fn executors_of(frame: String) {
+  let assert Ok(protocol.Answer(_, _, protocol.SessionsReply(page))) =
+    protocol.decode(frame)
+    as "the frame decodes whatever its executor holds"
+  list.map(page.sessions, fn(session) { session.executor })
+}
+
+// Protocol-change/078. A remote session's row names its executor and a local
+// one's, or an older daemon's, has no member; a member that is not a bounded
+// string is a display aid that does not fail the page.
+pub fn a_session_row_reads_its_optional_executor_test() {
+  assert executors_of(session_frame("")) == [None]
+  assert executors_of(session_frame(",\"executor\":\"build-box\""))
+    == [Some("build-box")]
+  list.each(
+    [
+      ",\"executor\":null",
+      ",\"executor\":7",
+      ",\"executor\":\"\"",
+      ",\"executor\":\"" <> string.repeat("x", 65) <> "\"",
+    ],
+    fn(extra) {
+      assert executors_of(session_frame(extra)) == [None]
+    },
+  )
 }
 
 pub fn a_malformed_subtitle_reads_as_absent_and_never_fails_the_page_test() {

@@ -9,9 +9,13 @@ import client/daemon/manager
 import client/daemon/peer_cli
 import client/daemon/root
 import client/daemon/server
+import client/executors
 import client/gateway_test
 import client/peer_mail
 import client/peers
+import client/pools
+import client/session_directory
+import client/session_movers
 import core/clock
 import core/ids
 import core/json
@@ -57,6 +61,85 @@ fn fixture_with_limits(connection_limits: limits.Limits, run) {
 }
 
 fn fixture_with_peers(connection_limits: limits.Limits, peer_endpoint, run) {
+  fixture_building(
+    connection_limits,
+    peer_endpoint,
+    fn(record, _domain, _services, _owner, _directory) { Ok(record.id) },
+    run,
+  )
+}
+
+/// The wire fixture with a session builder of the test's choosing, for a test
+/// that needs the registry to reach the real resolver. The daemon is
+/// configured with one executor, `build-box`, whose node is a placeholder, and
+/// one pool of it, `builders`: nothing here connects to either.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fixture_building(limits.defaults, fn(_) { None }, build, run)
+/// ```
+@internal
+pub fn fixture_building(
+  connection_limits: limits.Limits,
+  peer_endpoint,
+  build,
+  run,
+) {
+  fixture_directing(
+    connection_limits,
+    peer_endpoint,
+    build,
+    session_directory.none(),
+    run,
+  )
+}
+
+/// `fixture_building` with the session directory the daemon asks about a
+/// session its own catalogue lacks, for a test of the redirect codes. The
+/// default is `session_directory.none()`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fixture_directing(limits.defaults, fn(_) { None }, build, stub, run)
+/// ```
+@internal
+pub fn fixture_directing(
+  connection_limits: limits.Limits,
+  peer_endpoint,
+  build,
+  asked: session_directory.Directory,
+  run,
+) {
+  fixture_moving(
+    connection_limits,
+    peer_endpoint,
+    build,
+    asked,
+    session_movers.idle(),
+    run,
+  )
+}
+
+/// `fixture_directing` with the control the daemon's owner commands use to hand
+/// a session to another orchestrator, for a test of `sessions.move`. The default
+/// is `session_movers.idle()`, which lists no destination.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fixture_moving(limits.defaults, fn(_) { None }, build, stub, movers, run)
+/// ```
+@internal
+pub fn fixture_moving(
+  connection_limits: limits.Limits,
+  peer_endpoint,
+  build,
+  asked: session_directory.Directory,
+  movers: session_movers.Control,
+  run,
+) {
   let directory =
     "build/test_db/daemon-wire-"
     <> bit_array.base16_encode(token.production_entropy()(8))
@@ -67,7 +150,7 @@ fn fixture_with_peers(connection_limits: limits.Limits, peer_endpoint, run) {
       root.Config(directory, "Owner", 2, connection_limits),
       manager.Assembly(
         domain_build: fn(_, _, _) { Ok(domain_service.inert()) },
-        build: fn(record, _domain, _services, _, _directory) { Ok(record.id) },
+        build:,
         drain: fn(_, _) { Nil },
         fatal: fn(_) { [] },
       ),
@@ -82,6 +165,18 @@ fn fixture_with_peers(connection_limits: limits.Limits, peer_endpoint, run) {
       peer_endpoint:,
       daemon:,
       domain_configuration: "",
+      executors: [executors.plain("build-box", "executor@10.0.0.2")],
+      pools: [
+        pools.Pool(
+          name: "builders",
+          executors: ["build-box"],
+          platform: None,
+          enforcement: None,
+          toolchains: [],
+        ),
+      ],
+      directory: asked,
+      movers:,
       generator: fn() { ids.generator(clock.fixed(1_700_000_000_000), 123) },
       session_upgrade: fn(_, _) {
         response.new(501)
@@ -197,6 +292,20 @@ pub fn frame(socket: Socket, within_ms within_ms: Int) {
 /// forwards it unchanged to the read that follows the write.
 @internal
 pub fn send(socket, id, command, body, within_ms within_ms: Int) {
+  post(socket, id, command, body)
+  frame(socket, within_ms:)
+}
+
+/// Writes one v2 command and reads nothing, for a test whose daemon may end
+/// before it answers.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // daemon_server_test.post(socket, 9, "sessions.move", body)
+/// ```
+@internal
+pub fn post(socket, id, command, body) -> Nil {
   let text =
     json.to_string(
       json.Object([
@@ -213,7 +322,6 @@ pub fn send(socket, id, command, body, within_ms within_ms: Int) {
     False -> <<0x81, 0xfe, size:16, 0:32, bytes:bits>>
   }
   assert ffi_daemon_socket.send(socket, masked) == Ok(Nil)
-  frame(socket, within_ms:)
 }
 
 /// One request, answered past whatever the daemon pushed around it.
@@ -399,7 +507,16 @@ pub fn member_authority_is_checked_again_on_each_control_request_test() {
     let assert Ok(visible) =
       manager.create(
         ready.registry,
-        manager.Creation("visible", ready.state_root, "Visible", "", None, None),
+        manager.Creation(
+          "visible",
+          ready.state_root,
+          "Visible",
+          "",
+          None,
+          None,
+          "",
+          "",
+        ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 100),
       )
@@ -407,7 +524,16 @@ pub fn member_authority_is_checked_again_on_each_control_request_test() {
     let assert Ok(hidden) =
       manager.create(
         ready.registry,
-        manager.Creation("hidden", ready.state_root, "Hidden", "", None, None),
+        manager.Creation(
+          "hidden",
+          ready.state_root,
+          "Hidden",
+          "",
+          None,
+          None,
+          "",
+          "",
+        ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 101),
       )
@@ -804,6 +930,8 @@ pub fn a_member_cannot_delete_a_session_it_can_read_test() {
           "",
           None,
           None,
+          "",
+          "",
         ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 200),
@@ -859,6 +987,8 @@ pub fn owner_archives_and_restores_through_the_control_socket_test() {
         catalogue.Reserved,
         profile: option.None,
         model: option.None,
+        executor: "",
+        pool: "",
         subtitle: option.None,
       )
     assert catalogue.reserve(store, registration) == Ok(registration)
@@ -1007,7 +1137,12 @@ pub fn peer_send_control_routes_bound_identity_and_refuses_unlinked_or_saved_tes
             process.send(delivered, #(session, source, target, id, text))
             Ok(json.Object([#("message_id", json.String(id))]))
           }
-          _ -> Error("unexpected peer command")
+
+          // The sender's outbox is the Agency's; this stub only has to accept
+          // the rows `peers.send` records around the delivery it observes.
+          peer_mail.OutboxClaim(..) | peer_mail.OutboxSettle(..) ->
+            Ok(json.Null)
+          _ -> Error(peer_mail.Refused("unexpected peer command"))
         }
       }),
     )
@@ -1016,7 +1151,16 @@ pub fn peer_send_control_routes_bound_identity_and_refuses_unlinked_or_saved_tes
     let assert Ok(source) =
       manager.create(
         ready.registry,
-        manager.Creation("source", ready.state_root, "Source", "", None, None),
+        manager.Creation(
+          "source",
+          ready.state_root,
+          "Source",
+          "",
+          None,
+          None,
+          "",
+          "",
+        ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 400),
       )
@@ -1024,7 +1168,16 @@ pub fn peer_send_control_routes_bound_identity_and_refuses_unlinked_or_saved_tes
     let assert Ok(target) =
       manager.create(
         ready.registry,
-        manager.Creation("target", ready.state_root, "Target", "", None, None),
+        manager.Creation(
+          "target",
+          ready.state_root,
+          "Target",
+          "",
+          None,
+          None,
+          "",
+          "",
+        ),
         directory: ready.sessions_directory,
         generator: generator,
       )
@@ -1152,7 +1305,8 @@ pub fn peer_cli_routes_inspect_link_send_and_partial_unlink_test() {
           peer_mail.Activity(_) -> Ok(json.Object([]))
           peer_mail.Deliver(_, _, id, _) ->
             Ok(json.Object([#("message_id", json.String(id))]))
-          peer_mail.Revoke(_) -> Error("recipient unavailable")
+          peer_mail.Revoke(_) ->
+            Error(peer_mail.Refused("recipient unavailable"))
           peer_mail.Allow(_)
           | peer_mail.Link(_, _, _)
           | peer_mail.Unlink(_, _, _)
@@ -1165,7 +1319,11 @@ pub fn peer_cli_routes_inspect_link_send_and_partial_unlink_test() {
           | peer_mail.History(..)
           | peer_mail.Received(..)
           | peer_mail.ReceivedGet(..)
-          | peer_mail.SentReceipt(..) -> Ok(json.Null)
+          | peer_mail.SentReceipt(..)
+          | peer_mail.OutboxClaim(..)
+          | peer_mail.OutboxSettle(..)
+          | peer_mail.OutboxDue
+          | peer_mail.OutboxReceipt(..) -> Ok(json.Null)
         }
       }),
     )
@@ -1181,6 +1339,8 @@ pub fn peer_cli_routes_inspect_link_send_and_partial_unlink_test() {
           "",
           None,
           None,
+          "",
+          "",
         ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 701),
@@ -1196,6 +1356,8 @@ pub fn peer_cli_routes_inspect_link_send_and_partial_unlink_test() {
           "",
           None,
           None,
+          "",
+          "",
         ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 702),
@@ -1355,7 +1517,7 @@ pub fn peer_cli_collects_bounded_inspection_pages_test() {
           peer_mail.Activity(_) -> Ok(json.Object([]))
           peer_mail.Links(_) -> Ok(json.Array([]))
           peer_mail.Grants(_) -> Ok(json.Array(grants))
-          _ -> Error("unexpected peer command")
+          _ -> Error(peer_mail.Refused("unexpected peer command"))
         }
       }),
     )
@@ -1371,6 +1533,8 @@ pub fn peer_cli_collects_bounded_inspection_pages_test() {
           "",
           None,
           None,
+          "",
+          "",
         ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 703),
@@ -1412,19 +1576,21 @@ pub fn session_activity_reports_residents_and_omits_saved_sessions_test() {
         Some(
           peer_mail.Endpoint(instance, fn(command) {
             peer_mail.handle(runtime, clock.fixed(0), command)
+            |> peer_mail.refused
           }),
         )
       False, True ->
         Some(
           peer_mail.Endpoint(instance, fn(command) {
             peer_mail.handle(other_runtime, clock.fixed(0), command)
+            |> peer_mail.refused
           }),
         )
       False, False ->
         Some(
           peer_mail.Endpoint(instance, fn(_) {
             process.sleep_forever()
-            Error("never answers")
+            Error(peer_mail.Refused("never answers"))
           }),
         )
     }
@@ -1434,7 +1600,16 @@ pub fn session_activity_reports_residents_and_omits_saved_sessions_test() {
       let assert Ok(created) =
         manager.create(
           ready.registry,
-          manager.Creation(pair.0, ready.state_root, pair.0, "", None, None),
+          manager.Creation(
+            pair.0,
+            ready.state_root,
+            pair.0,
+            "",
+            None,
+            None,
+            "",
+            "",
+          ),
           directory: ready.sessions_directory,
           generator: ids.generator(clock.fixed(0), pair.1),
         )
@@ -1556,7 +1731,16 @@ pub fn session_activity_reports_residents_and_omits_saved_sessions_test() {
     let assert Ok(_) =
       manager.create(
         ready.registry,
-        manager.Creation(other_id, ready.state_root, other_id, "", None, None),
+        manager.Creation(
+          other_id,
+          ready.state_root,
+          other_id,
+          "",
+          None,
+          None,
+          "",
+          "",
+        ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 804),
       )
@@ -1705,13 +1889,14 @@ pub fn a_homes_activity_read_is_a_state_word_for_each_held_answer_test() {
         Some(
           peer_mail.Endpoint(instance, fn(command) {
             peer_mail.handle(runtime, clock.fixed(0), command)
+            |> peer_mail.refused
           }),
         )
       False ->
         Some(
           peer_mail.Endpoint(instance, fn(_) {
             process.sleep_forever()
-            Error("never answers")
+            Error(peer_mail.Refused("never answers"))
           }),
         )
     }
@@ -1724,7 +1909,16 @@ pub fn a_homes_activity_read_is_a_state_word_for_each_held_answer_test() {
         let assert Ok(_) =
           manager.create(
             ready.registry,
-            manager.Creation(pair.0, ready.state_root, pair.0, "", None, None),
+            manager.Creation(
+              pair.0,
+              ready.state_root,
+              pair.0,
+              "",
+              None,
+              None,
+              "",
+              "",
+            ),
             directory: ready.sessions_directory,
             generator: ids.generator(clock.fixed(0), pair.1),
           )
@@ -1743,6 +1937,10 @@ pub fn a_homes_activity_read_is_a_state_word_for_each_held_answer_test() {
           peer_endpoint: endpoint,
           daemon:,
           domain_configuration: "",
+          executors: [],
+          pools: [],
+          directory: session_directory.none(),
+          movers: session_movers.idle(),
           generator: fn() { ids.generator(clock.fixed(1_700_000_000_000), 123) },
           session_upgrade: fn(_, _) {
             response.new(501)
@@ -1894,7 +2092,16 @@ pub fn a_browser_row_authenticates_on_no_v2_route_test() {
     let assert Ok(visible) =
       manager.create(
         ready.registry,
-        manager.Creation("visible", ready.state_root, "Visible", "", None, None),
+        manager.Creation(
+          "visible",
+          ready.state_root,
+          "Visible",
+          "",
+          None,
+          None,
+          "",
+          "",
+        ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 100),
       )

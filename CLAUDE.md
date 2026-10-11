@@ -280,8 +280,9 @@ one.
 - **Architecture, per plane and subsystem** — `docs/architecture/`.
   The three planes: `durability`, `orchestration`, `effects` (with
   `executor`, the execution service over its helper pool). The
-  process and its sessions: `daemon`, `sessions`, `client`,
-  `terminal`, `web-view`, `multiplayer`. What the model sees and does: `prompt`,
+  process and its sessions: `daemon`, `sessions`, `distributed` (a
+  session's runtime on an orchestrator and its tool calls on an
+  executor), `client`, `terminal`, `web-view`, `multiplayer`. What the model sees and does: `prompt`,
   `tools`, `lsp`, `approvals`, `models`, `compaction`, `memory`.
   Programs and extensions: `code-mode`, `extensions`, `mcp`,
   `async-collaboration`. Strands and automation: `messaging`,

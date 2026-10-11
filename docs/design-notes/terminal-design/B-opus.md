@@ -34,7 +34,7 @@ index is in section 14.
 [light](B-opus-before-picker-120x40-light.png) ·
 [80×24 png](B-opus-before-picker-80x24-dark.png)
 
-The before frames were rendered from `render` at `tui/session_selector.gleam:783` with six fixture sessions, because `--demo` has no daemon and
+The before frames were rendered from `render` at `tui/session_selector.gleam:815` with six fixture sessions, because `--demo` has no daemon and
 answers `←` with "daemon control is unavailable". What is wrong with it:
 
 - **Alignment.** A row is the name, then ` · ` and the short identity, so the
@@ -95,12 +95,12 @@ answers `←` with "daemon control is unavailable". What is wrong with it:
 ### Data
 
 Everything drawn is already in the control protocol. A row is
-`Session` at `tui/daemon/protocol.gleam:431`: identity, workspace, name,
+`Session` at `tui/daemon/protocol.gleam:452`: identity, workspace, name,
 `created_at` and lifecycle. The state words and counts come from
-`Activity` at `tui/daemon/protocol.gleam:335`: state, strands, working,
+`Activity` at `tui/daemon/protocol.gleam:356`: state, strands, working,
 approvals, last outcome, last message and model, with up to four
-`GlanceLine` at `tui/daemon/protocol.gleam:355` rows. The filter counts are
-`counts` at `tui/session_selector.gleam:701`. "Created" uses `created_at`. A
+`GlanceLine` at `tui/daemon/protocol.gleam:376` rows. The filter counts are
+`counts` at `tui/session_selector.gleam:736`. "Created" uses `created_at`. A
 "last active" column would need a new control field, which is a
 protocol-change; this concept does not ask for one (question 6).
 
@@ -411,7 +411,7 @@ record would need a new control command.
 | Session tab: jobs, viewers | jobs board, presence | `jobs` at `session_view/session_summary.gleam:99`, `viewers` at `session_view/session_summary.gleam:122` |
 | Code mode block, Trace tab | program, status, result | `code_mode_program` at `session_view/transcript_lines.gleam:3574`, `code_mode_result_lines` at `session_view/transcript_lines.gleam:3817`; the call list has no data and needs a new wire record |
 | Peer messages | authenticated origin | `PeerOrigin` at `core/message.gleam:43`, `peer_message_lines` at `session_view/transcript_lines.gleam:2633` |
-| Strand messages | harness text frame | `frame_message` at `client/agency.gleam:1777`; not recognised by `session_view` today |
+| Strand messages | harness text frame | `frame_message` at `client/agency.gleam:1877`; not recognised by `session_view` today |
 | Images | mime type and bytes | `Image` at `session_view/transcript_image.gleam:29` |
 
 Every row above is either drawn today or a change inside `session_view` or
@@ -495,7 +495,7 @@ that heading.
 **Local strand messages are weaker.** A message from another strand in the
 same session arrives as a user turn with no origin. Its sender is written by
 the harness into a text frame, `[message from <strand>]` … `[end message. …]`
-(`frame_message` at `client/agency.gleam:1777`). Today `session_view` does not
+(`frame_message` at `client/agency.gleam:1877`). Today `session_view` does not
 recognise the frame, so these messages are drawn as `› User` turns, which is
 one of the pain points in the owner's recordings. Concept B recognises the
 frame by both its header and its footer, as advisor frames are recognised,

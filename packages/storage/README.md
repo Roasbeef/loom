@@ -347,6 +347,14 @@ swap with failures propagated rather than discarded. Every rewrite bumps a
 `generation` counter, which is how an external index learns its cursors
 are invalid.
 
+`sqlite.export_closed` shares the first half of that path. It claims the
+lease under a caller-chosen owner, retires the WAL, takes the `VACUUM INTO`
+copy at a destination, clears the copy's lease rows (with secure delete on,
+so the copy's bytes do not depend on the lease's fence or expiry), and
+returns the copy's SHA-256. A session move uses it to cut the file it sends
+to another orchestrator. The original keeps the claim until its owner calls
+`sqlite.release_export`, which a move that aborts or finishes does.
+
 ## Beside the session file
 
 ### Bounded snapshot reads
@@ -393,7 +401,7 @@ Three modules share one `storage/catalogue.Catalogue` connection:
   index paths a session reads from and writes to.
 
 The catalogue schema is versioned with `PRAGMA user_version`, currently
-4; versions 1 to 3 migrate on open, each applying every schema it lacks
+13; older versions migrate on open, each applying every schema it lacks
 in one transaction. `storage/sqlite_policy` holds the
 connection and journal settings that session files, the catalogue and
 the `events` search index share, plus the rule that refuses a path

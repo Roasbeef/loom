@@ -184,7 +184,7 @@ pub fn with_live_control(
 pub fn open(host: Host, session: String) -> Result(Target, String) {
   use selected <- result.try(
     daemon.request(host.control, protocol.GetSession(session), 5000)
-    |> result.map_error(failure)
+    |> result.map_error(failure_for(session, _))
     |> result.try(selected_row),
   )
   case selected.status {
@@ -195,6 +195,7 @@ pub fn open(host: Host, session: String) -> Result(Target, String) {
         host,
         session,
         selected.workspace,
+        selected.executor,
         selected.name,
         None,
         selected.status,
@@ -231,6 +232,7 @@ fn open_selected(host: Host, selected: protocol.Session) {
     | protocol.SessionsReply(_)
     | protocol.SessionReply(_)
     | protocol.DeletedReply(_)
+    | protocol.MovedReply(..)
     | protocol.ShutdownReply
     | protocol.PeersInspectionReply(_)
     | protocol.PeersMutationReply(_)
@@ -244,6 +246,7 @@ fn open_selected(host: Host, selected: protocol.Session) {
     host,
     selected.session_id,
     selected.workspace,
+    selected.executor,
     selected.name,
     None,
     status,
@@ -258,7 +261,7 @@ fn open_selected(host: Host, selected: protocol.Session) {
 /// ## Examples
 ///
 /// ```gleam
-/// // selection.create_named(host, key, project.path, workspace.session_name(project), config, "")
+/// // selection.create_named(host, key, project.path, workspace.session_name(project), config, "", "", "")
 /// ```
 pub fn create_named(
   host: Host,
@@ -267,11 +270,21 @@ pub fn create_named(
   name: String,
   configuration: String,
   profile: String,
+  executor: String,
+  pool: String,
 ) -> Result(Target, String) {
   use reply <- result.try(
     daemon.request(
       host.control,
-      protocol.CreateSession(key, workspace, name, configuration, profile),
+      protocol.CreateSession(
+        key,
+        workspace,
+        name,
+        configuration,
+        profile,
+        executor,
+        pool,
+      ),
       10_000,
     )
     |> result.map_error(failure),
@@ -282,6 +295,7 @@ pub fn create_named(
         host,
         row.session_id,
         row.workspace,
+        row.executor,
         row.name,
         Some(key),
         row.status,
@@ -290,6 +304,7 @@ pub fn create_named(
     | protocol.SessionsReply(_)
     | protocol.LifecycleReply(_)
     | protocol.DeletedReply(_)
+    | protocol.MovedReply(..)
     | protocol.ShutdownReply
     | protocol.PeersInspectionReply(_)
     | protocol.PeersMutationReply(_)
@@ -368,6 +383,32 @@ pub fn archive_using(
   remove_using(session, KeepHistory, request)
 }
 
+/// Hands a session to another orchestrator and answers once the daemon has
+/// accepted the move (protocol-change/078, phase 5). The daemon carries it to its
+/// end, so the answer is the move's identity and destination, not its outcome.
+/// Asking again for the same destination answers the same identity.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // selection.move(host, selected_id, "laptop")
+/// ```
+pub fn move(
+  host: Host,
+  session: String,
+  to: String,
+) -> Result(#(String, String), String) {
+  use reply <- result.try(
+    daemon.request(host.control, protocol.MoveSession(session, to), 10_000)
+    |> result.map_error(failure_for(session, _)),
+  )
+  case reply {
+    protocol.MovedReply(session_id, op, destination) if session_id == session ->
+      Ok(#(op, destination))
+    _ -> Error("move returned an unexpected control reply")
+  }
+}
+
 /// Restores metadata without opening or selecting the session as a default.
 ///
 /// ## Examples
@@ -398,6 +439,7 @@ fn remove_using(
     | protocol.SessionsReply(_)
     | protocol.SessionReply(_)
     | protocol.DeletedReply(_)
+    | protocol.MovedReply(..)
     | protocol.ShutdownReply
     | protocol.PeersInspectionReply(_)
     | protocol.PeersMutationReply(_)
@@ -476,6 +518,7 @@ fn await_retirement(session, operation, request) {
         | Ok(protocol.SessionReply(_))
         | Ok(protocol.LifecycleReply(_))
         | Ok(protocol.DeletedReply(_))
+        | Ok(protocol.MovedReply(..))
         | Ok(protocol.ShutdownReply)
         | Ok(protocol.PeersInspectionReply(_))
         | Ok(protocol.PeersMutationReply(_))
@@ -516,6 +559,7 @@ pub fn list(host: Host, after: String) -> Result(protocol.Page, String) {
     | protocol.SessionReply(_)
     | protocol.LifecycleReply(_)
     | protocol.DeletedReply(_)
+    | protocol.MovedReply(..)
     | protocol.ShutdownReply
     | protocol.PeersInspectionReply(_)
     | protocol.PeersMutationReply(_)
@@ -527,7 +571,19 @@ pub fn list(host: Host, after: String) -> Result(protocol.Page, String) {
   }
 }
 
-fn target(host: Host, session, workspace, name, creation_key, status) {
+// A session on an executor has a registered name where a local one has a path.
+// The name is never probed for a repository: `discover_from` would read it
+// relative to the terminal's own working directory and could show a branch of
+// an unrelated local folder that happens to share the name.
+fn target(
+  host: Host,
+  session,
+  workspace,
+  executor: Option(String),
+  name,
+  creation_key,
+  status,
+) {
   use incarnation <- result.try(case status {
     protocol.Resident(incarnation) -> Ok(incarnation)
     protocol.Opening(operation) -> await(host, session, operation)
@@ -549,7 +605,11 @@ fn target(host: Host, session, workspace, name, creation_key, status) {
     uri.to_string(address),
     host.token,
     snapshot.Expected(session, epoch, incarnation),
-    workspace.Context(..workspace.discover_from(workspace), path: workspace),
+    case executor {
+      Some(_) -> workspace.Context(path: workspace, branch: None)
+      None ->
+        workspace.Context(..workspace.discover_from(workspace), path: workspace)
+    },
     name,
     creation_key,
   ))
@@ -562,6 +622,7 @@ fn selected_row(reply) {
     | protocol.SessionsReply(_)
     | protocol.LifecycleReply(_)
     | protocol.DeletedReply(_)
+    | protocol.MovedReply(..)
     | protocol.ShutdownReply
     | protocol.PeersInspectionReply(_)
     | protocol.PeersMutationReply(_)
@@ -628,6 +689,7 @@ fn await(host: Host, session, operation) {
         | Ok(protocol.SessionsReply(_))
         | Ok(protocol.LifecycleReply(_))
         | Ok(protocol.DeletedReply(_))
+        | Ok(protocol.MovedReply(..))
         | Ok(protocol.ShutdownReply)
         | Ok(protocol.PeersInspectionReply(_))
         | Ok(protocol.PeersMutationReply(_))
@@ -653,6 +715,19 @@ fn await(host: Host, session, operation) {
 /// assert selection.failure(daemon.Busy) == "daemon control is busy"
 /// ```
 pub fn failure(reason: daemon.Failure) -> String {
+  failure_for("<session-id>", reason)
+}
+
+/// `failure` for a request that names `session`, so that a redirect to another
+/// orchestrator can print the launch line that reaches it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert selection.failure_for("0198c0de-0000-7000-8000-000000000001", daemon.Busy)
+///   == "daemon control is busy"
+/// ```
+pub fn failure_for(session: String, reason: daemon.Failure) -> String {
   case reason {
     daemon.Invalid(reason) -> reason
     daemon.HandshakeFailed -> "daemon authentication did not complete"
@@ -664,13 +739,73 @@ pub fn failure(reason: daemon.Failure) -> String {
     // startup reason after its owner has retired. A creation refused because
     // its configuration cannot load is the same cause one step earlier, before
     // any session was reserved, so it is worded the same way.
+    //
+    // A session on an executor can fail before it has a workspace: the daemon
+    // is not configured for distribution, the executor is not a pinned peer, or
+    // it refused the attach. The daemon leads that reason with
+    // `executor_unavailable:`, which is the cause rather than a detail, so it is
+    // moved into the sentence and the daemon's reason follows it.
+    daemon.Refused("start_failed", "executor_unavailable:" <> reason) ->
+      "session startup failed (executor_unavailable):" <> reason
     daemon.Refused("start_failed", message)
     | daemon.Refused("unusable_configuration", message) ->
       "session startup failed: " <> message
 
+    // The daemon's refusal does not repeat the name it was sent, so the words
+    // of the launch flag complete the sentence.
+    daemon.Refused("executor_unknown", message) ->
+      "executor_unknown: "
+      <> message
+      <> "; --executor must be an [executors.<name>] key of the daemon's configuration"
+
+    daemon.Refused("pool_unknown", message) ->
+      "pool_unknown: "
+      <> message
+      <> "; --pool must be a [pools.<name>] key of the daemon's configuration"
+
     daemon.Refused(code, message) -> code <> ": " <> message
+
+    // The daemon does not hold the session and says who does. It never
+    // forwards the terminal, and this terminal holds no credential for another
+    // daemon, so the words are the launch that reaches the owner, on the
+    // machine whose owner token it needs.
+    daemon.Redirected(redirect) -> redirect_words(session, redirect)
     daemon.UnknownOutcome(command) ->
       "unknown outcome for " <> command <> "; request was not retried"
+  }
+}
+
+// What the terminal tells the operator when the daemon points elsewhere.
+fn redirect_words(session: String, redirect: protocol.Redirect) -> String {
+  let launch = fn(address: String) {
+    "loom --addr "
+    <> address
+    <> " --session "
+    <> session
+    <> " --token-file <owner token file on that host>"
+  }
+  case redirect {
+    protocol.NotOwner(orchestrator, Some(address)) ->
+      "session "
+      <> session
+      <> " is owned by orchestrator "
+      <> orchestrator
+      <> "; connect to it with: "
+      <> launch(address)
+    protocol.NotOwner(orchestrator, None) ->
+      "session "
+      <> session
+      <> " is owned by orchestrator "
+      <> orchestrator
+      <> ", which has no address in this daemon's configuration; connect to it with: "
+      <> launch("<its control address>")
+    protocol.OwnerUnreachable(orchestrators) ->
+      "session "
+      <> session
+      <> " is not on this daemon, and the orchestrators that may own it did "
+      <> "not answer: "
+      <> string.join(orchestrators, ", ")
+      <> "; retry, or connect to one of them directly"
   }
 }
 

@@ -41,6 +41,8 @@ fn registration(seed: Int) -> catalogue.Registration {
     state: catalogue.Reserved,
     profile: option.None,
     model: option.None,
+    executor: "",
+    pool: "",
     subtitle: option.None,
   )
 }
@@ -152,6 +154,8 @@ pub fn rename_requires_owner_epoch_and_preserves_residency_test() {
         record.configuration,
         option.None,
         option.None,
+        "",
+        "",
       ),
       directory: "/unused-creation-retry",
       generator: ids.generator(clock.fixed(at: 1), seed: 1),
@@ -225,6 +229,8 @@ pub fn archive_requires_owner_and_stopped_custody_test() {
         record.configuration,
         option.None,
         option.None,
+        "",
+        "",
       ),
       directory: "/unused-creation-retry",
       generator: ids.generator(clock.fixed(1), 1),
@@ -370,6 +376,8 @@ pub fn domain_configuration_is_selected_at_creation_not_open_test() {
             example.2,
             option.None,
             option.None,
+            "",
+            "",
           ),
           directory: "/domain-selection/sessions",
           generator: ids.generator(clock.fixed(1), example.0),
@@ -680,6 +688,8 @@ pub fn creation_retry_preserves_reservation_before_and_after_assembly_test() {
       "",
       option.None,
       option.None,
+      "",
+      "",
     )
   let generator = ids.generator(clock.fixed(at: 1_700_000_000_000), seed: 411)
   let assert Ok(manager.View(record, manager.Opening(operation))) =
@@ -710,6 +720,25 @@ pub fn creation_retry_preserves_reservation_before_and_after_assembly_test() {
       generator: later,
     )
     == Error(manager.Catalogue(catalogue.Conflict))
+
+  // The model, the executor and the pool are each part of the request, so a
+  // retry that changes any of them is another request under the same key.
+  list.each(
+    [
+      manager.Creation(..request, model: option.Some("fast")),
+      manager.Creation(..request, executor: "box"),
+      manager.Creation(..request, pool: "fleet"),
+    ],
+    fn(changed) {
+      assert manager.create(
+          registry,
+          changed,
+          directory: "/private/sessions",
+          generator: later,
+        )
+        == Error(manager.Catalogue(catalogue.Conflict))
+    },
+  )
   assert process.receive(arrivals, 0) == Error(Nil)
   process.send(release, Nil)
   await_status(registry, record.id, manager.Resident(operation))
@@ -761,6 +790,8 @@ pub fn reserved_creation_requires_explicit_retry_after_capacity_refusal_test() {
       "",
       option.None,
       option.None,
+      "",
+      "",
     )
   let generator = ids.generator(clock.fixed(at: 1_700_000_000_000), seed: 413)
   assert manager.create(
@@ -1983,4 +2014,444 @@ pub fn every_open_builds_from_the_model_the_registration_stores_test() {
   await_status(registry, pinned.id, manager.Resident(second))
   stop(registry)
   assert catalogue.close(store) == Ok(Nil)
+}
+
+// --- handing a session to another orchestrator (phase 5) ----------------------
+
+const op_a = "0192f3c1-7b0e-7d2a-9c11-4f5a6b7c8d9e"
+
+const op_b = "0192f3c1-7b0e-7d2a-9c11-4f5a6b7c8d9f"
+
+// A saved registration on the executor `box`, whose workspace is a registered
+// name, with the session-only mapping such a session has. The path is never
+// opened.
+fn remote_saved(
+  store: catalogue.Catalogue,
+  seed: Int,
+) -> catalogue.Registration {
+  let base = registration(seed)
+  let record =
+    catalogue.Registration(..base, workspace: "repo", executor: "box")
+  assert catalogue.reserve(store, record) == Ok(record)
+  let assert Ok(record) = catalogue.confirm(store, record.id)
+    as "fixture represents initialized metadata without opening its path"
+  let selected =
+    domain.Domain(
+      domain.key(domain.SessionOnly, "repo", record.id),
+      domain.SessionOnly,
+      "repo",
+      "",
+      "/fixture-domains/" <> record.id <> "/memory.db",
+      "/fixture-domains/" <> record.id <> "/search.db",
+    )
+  assert domain.bind(store, record.id, selected) == Ok(selected)
+  record
+}
+
+fn owner_and_member(store: catalogue.Catalogue) {
+  let assert Ok(owner) = access.credential_digest(string.repeat("a", 64))
+    as "owner digest"
+  let assert Ok(member) = access.credential_digest(string.repeat("b", 64))
+    as "member digest"
+  let assert Ok(_) = access.bootstrap_owner(store, "owner", "Owner", owner)
+    as "owner exists"
+  let assert Ok(_) = access.create_member(store, "member", "Member", member)
+    as "member exists"
+  #(owner, member)
+}
+
+pub fn only_the_owner_moves_a_session_that_lives_on_an_executor_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let #(owner, member) = owner_and_member(store)
+  let local = saved(store, 920)
+  let remote = remote_saved(store, 921)
+  let registry = start(store, 2, fn(record, _) { Ok(record.id) })
+
+  // The owner's authority and epoch are decided in the registry's own turn, as
+  // for every administration, before anything is read or written.
+  assert manager.begin_move(
+      registry,
+      owner,
+      "stale",
+      remote.id,
+      to: "laptop",
+      op: op_a,
+    )
+    == Error(manager.AdminStaleEpoch)
+  assert manager.begin_move(
+      registry,
+      member,
+      "daemon-test",
+      remote.id,
+      to: "laptop",
+      op: op_a,
+    )
+    == Error(manager.AdminForbidden)
+
+  // A session whose checkout is a directory on this machine has nothing an
+  // executor could hold for the receiver, so it cannot move.
+  let assert Error(manager.AdminNotMovable(_)) =
+    manager.begin_move(
+      registry,
+      owner,
+      "daemon-test",
+      local.id,
+      to: "laptop",
+      op: op_a,
+    )
+  assert manager.custody(registry, local.id) == Ok(catalogue.Resident)
+  assert manager.custody(registry, remote.id) == Ok(catalogue.Resident)
+  assert manager.begin_move(
+      registry,
+      owner,
+      "daemon-test",
+      "0192f3c1-0000-7000-8000-000000000001",
+      to: "laptop",
+      op: op_a,
+    )
+    == Error(manager.AdminMetadata(catalogue.Missing))
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn an_archived_session_is_restored_before_it_moves_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let #(owner, _member) = owner_and_member(store)
+  let remote = remote_saved(store, 922)
+  let registry = start(store, 1, fn(record, _) { Ok(record.id) })
+  let assert Ok(_) =
+    manager.set_visibility(
+      registry,
+      owner,
+      "daemon-test",
+      remote.id,
+      catalogue.Archived,
+    )
+  let assert Error(manager.AdminNotMovable(_)) =
+    manager.begin_move(
+      registry,
+      owner,
+      "daemon-test",
+      remote.id,
+      to: "laptop",
+      op: op_a,
+    )
+  assert manager.custody(registry, remote.id) == Ok(catalogue.Resident)
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn beginning_a_move_commits_the_intent_and_stops_the_slot_together_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let #(owner, _member) = owner_and_member(store)
+  let remote = remote_saved(store, 923)
+  let registry = start(store, 1, fn(record, _) { Ok(record.id) })
+  let assert Ok(manager.Opening(operation)) = manager.open(registry, remote.id)
+  await_status(registry, remote.id, manager.Resident(operation))
+
+  // One reply commits `Moving` and cancels the running slot. The row is
+  // durable by the time the reply is sent, whatever the drain is doing.
+  let moving = catalogue.Moving(op: op_a, to: "laptop")
+  assert manager.begin_move(
+      registry,
+      owner,
+      "daemon-test",
+      remote.id,
+      to: "laptop",
+      op: op_a,
+    )
+    == Ok(moving)
+  assert catalogue.custody(store, remote.id) == Ok(moving)
+  await_status(registry, remote.id, manager.Saved)
+
+  // No runtime may open the store while the move is in flight, and the owner
+  // cannot change the session's visibility or remove it from under the mover.
+  assert manager.open(registry, remote.id)
+    == Error(manager.SessionMoving(op: op_a, to: "laptop"))
+  assert manager.set_visibility(
+      registry,
+      owner,
+      "daemon-test",
+      remote.id,
+      catalogue.Archived,
+    )
+    == Error(manager.AdminMoving(op: op_a, to: "laptop"))
+  assert manager.delete_session(
+      registry,
+      owner,
+      "daemon-test",
+      remote.id,
+      "/unused",
+    )
+    == Error(manager.AdminMoving(op: op_a, to: "laptop"))
+
+  // A second request toward the same orchestrator is the same move, and it
+  // answers the stored operation and not the one it offered. Toward another
+  // orchestrator it is a conflict.
+  assert manager.begin_move(
+      registry,
+      owner,
+      "daemon-test",
+      remote.id,
+      to: "laptop",
+      op: op_b,
+    )
+    == Ok(moving)
+  assert manager.begin_move(
+      registry,
+      owner,
+      "daemon-test",
+      remote.id,
+      to: "desk",
+      op: op_b,
+    )
+    == Error(manager.AdminMetadata(catalogue.Conflict))
+  assert manager.moving_sessions(registry)
+    == Ok([catalogue.Pending(session: remote.id, op: op_a, to: "laptop")])
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn an_aborted_move_gives_the_session_back_to_admission_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let #(owner, _member) = owner_and_member(store)
+  let remote = remote_saved(store, 924)
+  let registry = start(store, 1, fn(record, _) { Ok(record.id) })
+  let assert Ok(_) =
+    manager.begin_move(
+      registry,
+      owner,
+      "daemon-test",
+      remote.id,
+      to: "laptop",
+      op: op_a,
+    )
+  assert manager.abort_move(registry, remote.id, op: op_b)
+    == Error(manager.Catalogue(catalogue.Conflict))
+  assert manager.abort_move(registry, remote.id, op: op_a)
+    == Ok(catalogue.Resident)
+  assert manager.moving_sessions(registry) == Ok([])
+  let assert Ok(manager.Opening(operation)) = manager.open(registry, remote.id)
+  await_status(registry, remote.id, manager.Resident(operation))
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn a_finished_move_leaves_a_tombstone_that_answers_for_the_session_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let #(owner, _member) = owner_and_member(store)
+  let remote = remote_saved(store, 925)
+  let registry = start(store, 1, fn(record, _) { Ok(record.id) })
+  let assert Ok(_) =
+    manager.begin_move(
+      registry,
+      owner,
+      "daemon-test",
+      remote.id,
+      to: "laptop",
+      op: op_a,
+    )
+  let moved = catalogue.Moved(op: op_a, to: "laptop")
+  assert manager.finish_move(registry, remote.id, op: op_a) == Ok(moved)
+  assert manager.finish_move(registry, remote.id, op: op_a) == Ok(moved)
+  assert manager.moving_sessions(registry) == Ok([])
+
+  // Open, restore, delete and a second move all answer with the new owner, and
+  // none of them opens a slot or touches a file. The late abort of the move
+  // that finished cannot undo it.
+  assert manager.open(registry, remote.id)
+    == Error(manager.SessionMoved(to: "laptop"))
+  assert manager.set_visibility(
+      registry,
+      owner,
+      "daemon-test",
+      remote.id,
+      catalogue.Active,
+    )
+    == Error(manager.AdminMoved(to: "laptop"))
+  assert manager.delete_session(
+      registry,
+      owner,
+      "daemon-test",
+      remote.id,
+      "/unused",
+    )
+    == Error(manager.AdminMoved(to: "laptop"))
+  assert manager.begin_move(
+      registry,
+      owner,
+      "daemon-test",
+      remote.id,
+      to: "desk",
+      op: op_b,
+    )
+    == Error(manager.AdminMoved(to: "laptop"))
+  assert manager.abort_move(registry, remote.id, op: op_a)
+    == Error(manager.Catalogue(catalogue.Conflict))
+  assert manager.custody(registry, remote.id) == Ok(moved)
+  let assert Ok(view) = manager.get(registry, remote.id)
+  assert view.status == manager.Saved
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+// A scratch directory for the files an import places.
+fn scratch(label: String) -> String {
+  let assert Ok(here) = simplifile.current_directory()
+    as "the working directory is known"
+  let directory =
+    here
+    <> "/build/test_db/move-"
+    <> label
+    <> "-"
+    <> int.to_string(ffi_os.unique_positive_integer())
+  let _removed = simplifile.delete_all([directory])
+  let assert Ok(Nil) = simplifile.create_directory_all(directory)
+    as "scratch directory exists"
+  directory
+}
+
+fn imported(seed: Int, directory: String, received: String) -> manager.Import {
+  let base = registration(seed)
+  let registration =
+    catalogue.Registration(
+      ..base,
+      path: directory <> "/" <> base.id <> ".db",
+      workspace: "repo",
+      executor: "box",
+      configuration: "",
+      state: catalogue.Reserved,
+    )
+  manager.Import(
+    registration:,
+    mapping: domain.Domain(
+      domain.key(domain.SessionOnly, "repo", registration.id),
+      domain.SessionOnly,
+      "repo",
+      "",
+      "/fixture-domains/" <> registration.id <> "/memory.db",
+      "/fixture-domains/" <> registration.id <> "/search.db",
+    ),
+    op: op_a,
+    from: "desk",
+    received:,
+    subtitle: option.Some("first words"),
+  )
+}
+
+pub fn an_import_registers_records_and_places_the_file_in_one_turn_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let registry = start(store, 1, fn(record, _) { Ok(record.id) })
+  let directory = scratch("import")
+  let received = directory <> "/incoming"
+  let assert Ok(Nil) = simplifile.write(received, "the session file")
+  let request = imported(926, directory, received)
+  let id = request.registration.id
+  let imported_row = catalogue.Imported(op: op_a, from: "desk")
+  assert manager.import_session(registry, request) == Ok(imported_row)
+
+  // The registration is saved with the subtitle the source showed, the file is
+  // where the registration says, and the copy is no longer waiting.
+  let assert Ok(view) = manager.get(registry, id)
+  assert view.registration.state == catalogue.Saved
+  assert view.registration.subtitle == option.Some("first words")
+  assert simplifile.read(request.registration.path) == Ok("the session file")
+  assert simplifile.is_file(received) == Ok(False)
+  assert manager.custody(registry, id) == Ok(imported_row)
+
+  // The same import arriving again, as a source does when the reply was lost,
+  // answers the stored row and leaves the placed file alone. A copy that waits
+  // beside it is a late duplicate, and it is removed and never put over the
+  // file the session may have run on.
+  assert manager.import_session(registry, request) == Ok(imported_row)
+  assert simplifile.read(request.registration.path) == Ok("the session file")
+  let assert Ok(Nil) = simplifile.write(received, "a late duplicate")
+  assert manager.import_session(registry, request) == Ok(imported_row)
+  assert simplifile.read(request.registration.path) == Ok("the session file")
+  assert simplifile.is_file(received) == Ok(False)
+
+  // The imported session is this catalogue's now: it opens, and it can move on
+  // under a new op once it is stopped.
+  let assert Ok(manager.Opening(operation)) = manager.open(registry, id)
+  await_status(registry, id, manager.Resident(operation))
+
+  // A repeat of the committed import is answered the row while the session
+  // runs, and a late duplicate beside it is removed. A refusal here would be a
+  // refusal after the commit, which the source takes as final. An import under
+  // another operation would replace the file under a running session, and the
+  // open slot refuses it.
+  let assert Ok(Nil) = simplifile.write(received, "a late duplicate")
+  assert manager.import_session(registry, request) == Ok(imported_row)
+  assert simplifile.read(request.registration.path) == Ok("the session file")
+  assert simplifile.is_file(received) == Ok(False)
+  assert manager.import_session(registry, manager.Import(..request, op: op_b))
+    == Error(manager.AdminBusy)
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+  let _removed = simplifile.delete_all([directory])
+  Nil
+}
+
+pub fn an_import_whose_copy_is_gone_is_refused_and_leaves_nothing_placed_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let registry = start(store, 1, fn(record, _) { Ok(record.id) })
+  let directory = scratch("import-gone")
+  let request = imported(927, directory, directory <> "/never-received")
+  let assert Error(manager.AdminFailed(_)) =
+    manager.import_session(registry, request)
+  assert simplifile.is_file(request.registration.path) == Ok(False)
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+  let _removed = simplifile.delete_all([directory])
+  Nil
+}
+
+pub fn an_import_that_committed_before_its_rename_is_finished_by_its_repeat_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let registry = start(store, 1, fn(record, _) { Ok(record.id) })
+  let directory = scratch("import-crash")
+  let received = directory <> "/incoming"
+  let assert Ok(Nil) = simplifile.write(received, "the session file")
+  let request = imported(928, directory, received)
+
+  // What a crash between the commit and the rename leaves: the row is written
+  // and the copy still waits where it was received.
+  let assert Ok(_) =
+    domain.import_session(
+      store,
+      request.registration,
+      request.mapping,
+      op: op_a,
+      from: "desk",
+    )
+  assert simplifile.is_file(request.registration.path) == Ok(False)
+
+  // The source asks again, and the rename is done.
+  assert manager.import_session(registry, request)
+    == Ok(catalogue.Imported(op: op_a, from: "desk"))
+  assert simplifile.read(request.registration.path) == Ok("the session file")
+  assert simplifile.is_file(received) == Ok(False)
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+  let _removed = simplifile.delete_all([directory])
+  Nil
+}
+
+pub fn a_new_import_replaces_a_stale_file_at_the_sessions_path_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let registry = start(store, 1, fn(record, _) { Ok(record.id) })
+  let directory = scratch("import-stale")
+  let received = directory <> "/incoming"
+  let assert Ok(Nil) = simplifile.write(received, "the session file")
+  let request = imported(929, directory, received)
+
+  // An orphan from an earlier attempt that left no row is not the session.
+  let assert Ok(Nil) = simplifile.write(request.registration.path, "orphan")
+  assert manager.import_session(registry, request)
+    == Ok(catalogue.Imported(op: op_a, from: "desk"))
+  assert simplifile.read(request.registration.path) == Ok("the session file")
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+  let _removed = simplifile.delete_all([directory])
+  Nil
 }

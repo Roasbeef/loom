@@ -24,6 +24,7 @@ import gleam/int
 import gleam/list
 import session_view/text_hygiene
 import tui/daemon/protocol as control_protocol
+import tui/placement
 import tui/theme
 
 // The gap between columns, in cells.
@@ -111,7 +112,7 @@ fn cells(row: control_protocol.Session) -> List(#(String, style.Style)) {
   [
     #(row.session_id, theme.inline_code()),
     state(row.status),
-    #(row.workspace, style.default_style()),
+    #(placement.label(row.executor, row.workspace), style.default_style()),
     #(text_hygiene.single_line(row.name), style.default_style()),
   ]
 }

@@ -346,7 +346,15 @@ fn group(
         | Some(Under(..))
         | None -> element.none()
       },
-      create.button(offer, group.workspace),
+
+      // A registered workspace is a name on an executor, which a directory's
+      // "New session" cannot create in (the daemon refuses it as unknown), so
+      // a remote group has no button. A session there is made from the form
+      // for an executor in the section below the lists.
+      case sessions.executor_of(group) {
+        Some(_) -> element.none()
+        None -> create.button(offer, group.workspace)
+      },
     ]),
     create.form(offer, group.workspace),
 

@@ -23,6 +23,7 @@ fn session(
     created_at: 0,
     status:,
     subtitle: option.None,
+    executor: option.None,
   )
 }
 

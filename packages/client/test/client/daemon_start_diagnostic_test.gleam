@@ -19,6 +19,7 @@ import gleam/bytes_tree
 import gleam/erlang/process
 import gleam/http/response
 import gleam/int
+import gleam/list
 import gleam/option.{Some}
 import gleam/string
 import host/bootstrap
@@ -77,6 +78,8 @@ pub fn daemon_start_diagnostic_classifies_missing_helper_without_raw_error_test(
         configuration,
         option.None,
         option.None,
+        "",
+        "",
       ),
       directory: ready.sessions_directory,
       generator: ids.generator(clock.fixed(1000), 992),
@@ -214,6 +217,8 @@ fn rejected_configuration(defect: ConfigDefect) {
         configuration,
         option.None,
         option.None,
+        "",
+        "",
       ),
       directory: ready.sessions_directory,
       generator: ids.generator(clock.fixed(1000), 993),
@@ -322,4 +327,52 @@ fn rejected_configuration(defect: ConfigDefect) {
       field.text("class", "configuration_rejected"),
       field.text("reason", reason),
     ]
+}
+
+// An unreachable executor was logged as a bare `assembly_failed`, so an
+// operator could not tell a network failure from a pin or a capacity refusal
+// without asking `operations.get`. The reason is a fixed sentence here, so it
+// is the field that makes the record actionable.
+pub fn daemon_start_diagnostic_carries_the_executor_reason_test() {
+  let reason =
+    "executor_unavailable: OTP could not start distribution or reach the peer; "
+    <> "check that epmd is reachable"
+  assert main.start_class(main.RuntimeAssembly, reason)
+    == #("runtime_assembly", "executor_unavailable", [
+      field.text(
+        "reason",
+        "OTP could not start distribution or reach the peer; "
+          <> "check that epmd is reachable",
+      ),
+    ])
+}
+
+// Two kinds of executor reason can carry a path: a storage error, rendered
+// with the session's own database path, and a sentence the executor wrote. A
+// reason with a separator is dropped whole, and the class stays.
+pub fn daemon_start_diagnostic_drops_an_executor_reason_that_names_a_path_test() {
+  let private_detail = "/var/loom/state/sessions/0198/session.db"
+  let storage =
+    "executor_unavailable: the remote scope record was not written: "
+    <> "OpenFailed(\""
+    <> private_detail
+    <> "\")"
+  let remote =
+    "executor_unavailable: the executor failed: cannot open " <> private_detail
+  let windows = "executor_unavailable: the executor failed: C:\\work\\project"
+  [storage, remote, windows]
+  |> list.each(fn(reason) {
+    assert main.start_class(main.RuntimeAssembly, reason)
+      == #("runtime_assembly", "executor_unavailable", [])
+  })
+}
+
+// Part of the reason is written by another machine, so the field has a bound.
+pub fn daemon_start_diagnostic_bounds_the_executor_reason_test() {
+  let reason = "executor_unavailable: " <> string.repeat("x", 4000)
+  let assert #(_, "executor_unavailable", [logged]) =
+    main.start_class(main.RuntimeAssembly, reason)
+    as "a long path-free reason is kept, clipped"
+  assert logged
+    == field.text("reason", glance.clip(string.repeat("x", 4000), 512))
 }

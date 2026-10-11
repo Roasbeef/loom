@@ -279,6 +279,7 @@ fn start(setup: Setup) -> Harness {
           run: fn(run) { wiring.run_tool(config, run) },
           replay_still_safe: fn(_name) { False },
           execution_mode: fn(_name) { effects.ExclusiveExecution },
+          recover: None,
         ),
         hooks: effects.default_hooks(),
       ),

@@ -285,3 +285,20 @@ pub fn with_no_seed_anywhere_the_workspace_path_is_still_named_test() {
     )
   assert chosen == "/ws/build/codemode-seed"
 }
+
+pub fn a_directory_that_is_not_a_seed_does_not_outrank_the_bundled_one_test() {
+  // `/tmp` exists and is a directory, so the older existence check would
+  // have taken it as the workspace's seed and shadowed the release's.
+  // Verification refuses it, which lets the ladder fall to the bundled rung.
+  assert install.existing_directory("/tmp") == Ok("/tmp")
+  assert serve.usable_seed("/tmp") == Error(Nil)
+
+  let chosen =
+    serve.seed_ladder(
+      None,
+      in_workspace: fn() { serve.usable_seed("/tmp") },
+      bundled: fn() { Ok("/release/share/codemode-seed") },
+      otherwise: "/ws/build/codemode-seed",
+    )
+  assert chosen == "/release/share/codemode-seed"
+}

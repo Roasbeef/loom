@@ -24,7 +24,7 @@ import tui/workspace
 import weft
 
 fn session(id: String, workspace: String, status) -> protocol.Session {
-  protocol.Session(id, workspace, id, 1, status, option.None)
+  protocol.Session(id, workspace, id, 1, status, option.None, option.None)
 }
 
 fn activity(id: String, state) -> protocol.Activity {
@@ -68,7 +68,10 @@ fn press(state, key) -> session_selector.State {
 pub fn rows_group_by_workspace_in_page_order_test() {
   let state = observed()
   assert list.map(session_selector.groups(state), fn(group) { group.0 })
-    == ["/work/loom", "/work/lnd"]
+    == [
+      session_selector.Directory("/work/loom"),
+      session_selector.Directory("/work/lnd"),
+    ]
   assert ids(session_selector.visible(state))
     == ["waiting", "busy", "saved", "quiet"]
 

@@ -27,6 +27,7 @@ import tui/interaction
 import tui/job
 import tui/job_runner
 import tui/model as tui_model
+import tui/placement
 import tui/runtime
 import tui/session_control
 import tui/session_selector
@@ -122,7 +123,8 @@ pub fn session_configuration_resolves_trusted_default_and_explicit_paths_test() 
     as "fixture workspace exists"
   assert simplifile.write(filepath.join(workspace, "loom.toml"), "untrusted")
     == Ok(Nil)
-  let options = bootstrap.Options(workspace, "", "", root, "", "")
+  let options =
+    bootstrap.Options(workspace, "", "", root, "", "", placement.OnThisHost)
   assert bootstrap.session_configuration(options) == Ok("")
 
   let path = bootstrap.default_catalogue_path(root)
@@ -401,7 +403,16 @@ fn run_real_server_lifecycle(server: String) -> Nil {
     )
     as "a deterministic launch never uses environment-backed maintenance"
   let assert Ok(configuration) = host_bootstrap.absolute_path(configuration)
-  let options = bootstrap.Options(workspace, "", server, state, "", "")
+  let options =
+    bootstrap.Options(
+      workspace,
+      "",
+      server,
+      state,
+      "",
+      "",
+      placement.OnThisHost,
+    )
   assert bootstrap.session_configuration(options) == Ok(configuration)
   let terminal = process.self()
   let launched =

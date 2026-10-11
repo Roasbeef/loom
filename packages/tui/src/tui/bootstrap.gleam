@@ -43,6 +43,7 @@ import session_view/connection_event
 import session_view/protocol
 import tui/connection
 import tui/daemon/bootstrap as daemon_bootstrap
+import tui/placement.{type Placement}
 import weft/poll
 
 const endpoint_version = 2
@@ -221,6 +222,12 @@ pub type Options {
     /// created with, and the daemon refuses a name its configuration does not
     /// define.
     profile: String,
+    /// Where a newly created session's workspace lives. It affects creation
+    /// only, as `profile` does, and never the daemon the launcher starts or
+    /// reuses: `OnExecutor` names a workspace registered on an executor
+    /// (protocol-change/078), which is a name and not a path, so it must not
+    /// reach `resolve`'s canonicalization of `workspace` above.
+    placement: Placement,
   )
 }
 
@@ -288,7 +295,7 @@ type ProcessMatch {
 /// ## Examples
 ///
 /// ```gleam
-/// bootstrap.resolve(bootstrap.Options("", "", "", "", "", ""))
+/// bootstrap.resolve(bootstrap.Options("", "", "", "", "", "", placement.OnThisHost))
 /// // -> Ok(bootstrap.Target(..))
 /// ```
 pub fn resolve(options: Options) -> Result(Target, String) {

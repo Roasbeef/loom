@@ -362,3 +362,30 @@ fn unused_limits() -> schedule.Limits {
     max_expires_after_s: 604_800,
   )
 }
+
+// A described tool is the six fields a machine which does not hold the tool
+// needs to offer it, schedule its calls and index it in the prompt. Every
+// field is copied from the tool and nothing is derived or defaulted.
+pub fn describe_keeps_exactly_the_declared_fields_test() {
+  let described = tool.describe(grep.tool())
+  assert described
+    == tool.Described(
+      name: grep.tool().name,
+      description: grep.tool().description,
+      prompt_snippet: grep.tool().prompt_snippet,
+      schema: grep.tool().schema,
+      replay: grep.tool().replay,
+      execution_mode: grep.tool().execution_mode,
+    )
+}
+
+// Describing a registry's tools in registration order is how a workspace
+// tells its owner what it offers, so the order is the registration order and
+// not the sorted one `names` gives.
+pub fn describing_the_registered_tools_keeps_registration_order_test() {
+  let registry = tool.registry([grep.tool(), bash.tool(job.unavailable())])
+  assert list.map(tool.registered(registry), fn(each) {
+      tool.describe(each).name
+    })
+    == ["grep", "bash"]
+}

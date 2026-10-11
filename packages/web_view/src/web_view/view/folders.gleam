@@ -89,6 +89,11 @@ pub fn view(
               html.text("Other folders"),
             ]),
             create.elsewhere_button(offer),
+
+            // The daemon's executors, when it has any, give the section a
+            // second way to start a session where the owner has no folder: a
+            // workspace registered on one of them (protocol-change/078).
+            create.remote_button(offer),
           ]),
 
           // The refusal sits under the heading row and not in it: a sentence
@@ -98,6 +103,7 @@ pub fn view(
             None -> element.none()
           },
           create.elsewhere_form(offer),
+          create.remote_form(offer),
           keyed.ul(
             [attribute.class("home-list")],
             list.map(recent, fn(entry) {

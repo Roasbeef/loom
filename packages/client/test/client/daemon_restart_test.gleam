@@ -39,6 +39,8 @@ fn saved(store: catalogue.Catalogue, seed: Int) -> catalogue.Registration {
       state: catalogue.Reserved,
       profile: None,
       model: None,
+      executor: "",
+      pool: "",
       subtitle: None,
     )
   assert catalogue.reserve(store, record) == Ok(record)

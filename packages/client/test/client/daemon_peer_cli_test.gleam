@@ -99,7 +99,7 @@ pub fn peer_inspection_pages_both_directions_with_bounded_frames_test() {
         peer_mail.Activity(_) -> Ok(json.Object([]))
         peer_mail.Links(_) -> Ok(json.Array(links))
         peer_mail.Grants(_) -> Ok(json.Array(grants))
-        _ -> Error("unexpected test command")
+        _ -> Error(peer_mail.Refused("unexpected test command"))
       }
     })
   let directory =
@@ -119,7 +119,7 @@ pub fn peer_inspection_pages_both_directions_with_bounded_frames_test() {
                     }),
                   ),
                 )
-              _ -> Error("unexpected test command")
+              _ -> Error(peer_mail.Refused("unexpected test command"))
             }
           }),
         )
@@ -197,13 +197,16 @@ pub fn peer_inspection_refuses_an_oversized_single_row_test() {
             ]),
           )
         peer_mail.Grants(_) -> Ok(json.Array([]))
-        _ -> Error("unexpected test command")
+        _ -> Error(peer_mail.Refused("unexpected test command"))
       }
     })
   let directory =
-    peers.Directory(resolve: fn(_) { Error("unavailable") }, describe: fn(_) {
-      Ok(json.Object([#("label", json.String(string.repeat("x", 60_000)))]))
-    })
+    peers.Directory(
+      resolve: fn(_) { Error(peer_mail.Refused("unavailable")) },
+      describe: fn(_) {
+        Ok(json.Object([#("label", json.String(string.repeat("x", 60_000)))]))
+      },
+    )
   let wiring = peers.Wiring(endpoint, json.Object([]), Some(directory))
   assert peers.inspect(wiring, "main", None, 59_000)
     == Error("metadata_too_large")

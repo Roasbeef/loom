@@ -65,6 +65,7 @@ import tui/daemon/protocol
 import tui/daemon/selection
 import tui/model as tui_model
 import tui/peer_links
+import tui/placement
 import tui/workspace
 import weft
 import weft/actor
@@ -316,6 +317,7 @@ fn exercise_peer_fixture(
       paths.root,
       configuration,
       "",
+      placement.OnThisHost,
     )
   let assert Ok(connected) =
     bootstrap.resolve_daemon(options, process.self(), 40_000)
@@ -333,6 +335,8 @@ fn exercise_peer_fixture(
       workspace.session_name(workspace.Context(source_workspace, None)),
       configuration,
       "",
+      "",
+      "",
     )
   let assert Ok(target) =
     selection.create_named(
@@ -341,6 +345,8 @@ fn exercise_peer_fixture(
       target_workspace,
       workspace.session_name(workspace.Context(target_workspace, None)),
       configuration,
+      "",
+      "",
       "",
     )
   let source_id = source.expected.session
@@ -428,7 +434,15 @@ fn exercise(
     )
     as "normal provider configuration selects the loopback peer with maintenance off"
   let options =
-    bootstrap.Options(workspace, "", server, paths.root, configuration, "")
+    bootstrap.Options(
+      workspace,
+      "",
+      server,
+      paths.root,
+      configuration,
+      "",
+      placement.OnThisHost,
+    )
   let assert Ok(connected) =
     bootstrap.resolve_daemon(options, process.self(), 40_000)
     as "the supplied shipped executable authenticates through native bootstrap"
@@ -447,6 +461,8 @@ fn exercise(
       workspace,
       workspace.session_name(workspace.Context(workspace, None)),
       configuration,
+      "",
+      "",
       "",
     )
     as "explicit creation opens the fixture session"
@@ -492,6 +508,8 @@ fn exercise(
       foreign_workspace,
       workspace.session_name(workspace.Context(foreign_workspace, None)),
       configuration,
+      "",
+      "",
       "",
     )
     as "the owner creates an independently resident uninvited session"
@@ -747,6 +765,8 @@ fn live_tool_switches(
       workspace,
       workspace.session_name(workspace.Context(workspace, None)),
       configuration,
+      "",
+      "",
       "",
     )
     as "A2 is a separate durable session in A1's actual workspace"

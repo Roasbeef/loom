@@ -91,7 +91,7 @@ the rest of the note can say "wire X" and mean something checkable.
 ## Inert in production — the three unplugged seams
 
 `client/serve.gleam:674` builds effects through `wiring.build_effects`,
-which installed `effects.default_hooks()` (`client/wiring.gleam:123`),
+which installed `effects.default_hooks()` (`client/wiring.gleam:130`),
 wrapped only by `agency.reaping_hooks` for child-reaping. The defaults
 (`runtime/effects.gleam:288`):
 

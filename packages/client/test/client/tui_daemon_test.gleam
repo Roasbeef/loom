@@ -31,6 +31,7 @@ import tui/daemon/selection
 import tui/effect
 import tui/job
 import tui/model as tui_model
+import tui/placement
 import tui/runtime
 import tui/session_selector
 import tui/workspace
@@ -63,6 +64,7 @@ fn retired_control_model(control, port) {
           "",
           "gleam.toml",
           "",
+          placement.OnThisHost,
         )),
         overlay: tui_model.DaemonSelector(session_selector.new(
           protocol.Page(1, [], None),
@@ -210,6 +212,8 @@ pub fn tui_daemon_real_control_create_default_stop_lazy_open_test() {
         ready.state_root,
         "Terminal session",
         ready.state_root <> "/tui-config.toml",
+        "",
+        "",
         "",
       )
     let assert Ok(protocol.SessionReply(created)) =
@@ -363,12 +367,14 @@ pub fn tui_daemon_encoders_agree_with_server_decoder_test() {
     ),
     #(protocol.SetDefault("/work", id), server_protocol.SetDefault("/work", id)),
     #(
-      protocol.CreateSession("key", "/work", "é \\\"", "/config", ""),
+      protocol.CreateSession("key", "/work", "é \\\"", "/config", "", "", ""),
       server_protocol.CreateSession(
         "key",
         "/work",
         "é \\\"",
         "/config",
+        None,
+        None,
         None,
         None,
         domain.WorkspacePrivate,
@@ -647,6 +653,8 @@ pub fn tui_daemon_disconnect_leaves_mutation_outcome_unknown_test() {
               "/work",
               "Name",
               "/config",
+              "",
+              "",
               "",
             ),
             1000,

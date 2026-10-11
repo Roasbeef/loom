@@ -25,10 +25,12 @@ import client/hooktrust
 import client/hookwire
 import client/internal/ffi_os
 import client/serve
+import client/workspace_policy
 import core/clock.{type Clock}
 import core/ids.{type OpId}
 import core/json
 import core/message.{type AgentMessage}
+import gleam/bit_array
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
@@ -39,6 +41,7 @@ import machine/strand
 import runtime/effects
 import simplifile
 import support/internal/ffi_memory
+import support/remote_fixtures as fixtures
 import weft/actor
 
 // A settings file of the ordinary shape: hooks under their own key,
@@ -114,6 +117,32 @@ pub fn wrappers_do_not_copy_unrelated_slots_test() {
     > ffi_memory.flat_words(small.hooks.run_end) + 4096
   assert ffi_memory.flat_words(other.hooks.run_start)
     == ffi_memory.flat_words(small.hooks.run_start)
+}
+
+/// A remote session's surface offers recovery, and the imported-hook layer
+/// wraps that surface after it is composed. Rebuilding the record without the
+/// slot would silently turn recovery off for exactly the sessions that need it.
+pub fn a_wrapped_surface_keeps_its_recovery_test() {
+  let rig = rig()
+  let serving = load(rig, None)
+  let base = effects_placing(None)
+  let remote =
+    effects.Effects(
+      ..base,
+      tools: effects.ToolSurface(
+        ..base.tools,
+        recover: Some(fn(_run) { effects.OutcomeUnknown }),
+      ),
+    )
+
+  let assert Ok(wrapped) =
+    hookserve.wire(remote, serving, rig.clock, fn(_) { False })
+  let assert Ok(local) =
+    hookserve.wire(base, serving, rig.clock, fn(_) { False })
+
+  let assert Some(recover) = wrapped.tools.recover
+  assert recover(fixtures.tool_run("call_1", 0)) == effects.OutcomeUnknown
+  assert option.is_none(local.tools.recover)
 }
 
 // --- the load ----------------------------------------------------------------
@@ -431,9 +460,11 @@ fn jailed_rig() -> #(Rig, exec.Helper) {
   let assert Ok(here) = simplifile.current_directory()
     as "the test process must know where it is"
   let assert Ok(Nil) =
-    simplifile.create_directory_all(serve.tool_home_directory(ground.workspace))
+    simplifile.create_directory_all(workspace_policy.tool_home_directory(
+      ground.workspace,
+    ))
     as "the jail home must be creatable"
-  let temp = serve.tool_tmp_directory(ground.workspace)
+  let temp = workspace_policy.tool_tmp_directory(ground.workspace)
   let assert Ok(Nil) = simplifile.create_directory_all(temp)
     as "the jail temp directory must be creatable"
 
@@ -509,10 +540,10 @@ fn ground() -> Ground {
 // *before* a helper is asked for, and the gate tests would count zero
 // for a reason that has nothing to do with what they assert.
 fn hook_base(workspace: String) -> policy.SandboxPolicy {
-  serve.base_policy(workspace)
-  |> serve.merging_mounts
-  |> serve.allowing_tool_tmpdir
-  |> serve.allowing_imported_hook_env
+  workspace_policy.base_policy(workspace)
+  |> workspace_policy.merging_mounts
+  |> workspace_policy.allowing_tool_tmpdir
+  |> workspace_policy.allowing_imported_hook_env
 }
 
 // One rig over a broker that is already standing. The runner's
@@ -542,7 +573,7 @@ fn assembled(
       step_id: "hookserve-fixture",
       workspace: ground.workspace,
       env: serve.hook_environment(
-        serve.session_environment(ground.workspace, None, None),
+        workspace_policy.session_environment(ground.workspace, None, None),
         Some(ground.home),
         ground.workspace,
       ),
@@ -611,6 +642,7 @@ fn clearing_unless(rig: Rig, forbidden: String) -> effects.Effects {
             )
         }
       },
+      recover: None,
     ),
   )
 }
@@ -635,6 +667,7 @@ fn wrapping_clearance(rig: Rig) -> effects.Effects {
           replay: operation.ReplayNever,
         )
       },
+      recover: None,
     ),
   )
 }
@@ -767,6 +800,7 @@ fn effects_placing(follow_up: Option(AgentMessage)) -> effects.Effects {
       run: fn(_run) { panic as "no tool is run" },
       replay_still_safe: fn(_name) { False },
       execution_mode: fn(_name) { effects.ExclusiveExecution },
+      recover: None,
     ),
     hooks: effects.Hooks(..effects.default_hooks(), run_end: fn(_operation) {
       follow_up
@@ -782,4 +816,149 @@ fn follow_up() -> AgentMessage {
     timestamp: 1_700_000_000_000,
     origin: None,
   )
+}
+
+// --- sources read on another machine -----------------------------------------
+
+fn load_gathered(
+  rig: Rig,
+  trust_root: Option(String),
+  workspace_files: List(#(String, hookserve.Contents)),
+) -> hookserve.Serving {
+  hookserve.load_from(
+    hookserve.gather(
+      hookserve.locations(Some(rig.home), rig.workspace),
+      workspace_files,
+    ),
+    trust_root,
+    hookwire.Wiring(
+      config: hookcompat.Config(
+        entries: [],
+        source: hookcompat.Source(label: "none", origin: hookcompat.LoomInline),
+      ),
+      session_id: "hookserve-fixture",
+      transcript_path: rig.workspace <> "/session.db",
+      workspace: rig.workspace,
+    ),
+    rig.runner,
+  )
+}
+
+fn bytes_of(text: String) -> hookserve.Contents {
+  hookserve.Bytes(bit_array.from_string(text))
+}
+
+/// The workspace's files arrive as bytes and are parsed and trusted exactly
+/// as files read from disk are: the same source gives the same answer
+/// whichever machine it was read on.
+pub fn a_source_sent_as_bytes_loads_as_the_same_source_read_from_disk_test() {
+  let rig = rig()
+  write(rig.workspace <> "/.claude", "settings.json", settings_with_hooks)
+  let from_disk = load(rig, Some(rig.trust_root))
+  let path = rig.workspace <> "/.claude/settings.json"
+
+  let sent =
+    load_gathered(rig, Some(rig.trust_root), [
+      #(path, bytes_of(settings_with_hooks)),
+    ])
+
+  assert sent.skipped == from_disk.skipped
+  assert sent.notes == from_disk.notes
+  assert sent.wiring.config == from_disk.wiring.config
+}
+
+/// Trust is decided on the owner. A project source sent as bytes with no
+/// record asks first, in the words a source read here does, and the bytes
+/// being valid hooks changes nothing about that.
+pub fn a_project_source_sent_as_bytes_still_needs_a_record_test() {
+  let rig = rig()
+  let path = rig.workspace <> "/.claude/settings.json"
+
+  let serving =
+    load_gathered(rig, Some(rig.trust_root), [
+      #(path, bytes_of(settings_with_hooks)),
+    ])
+
+  let assert [skipped] = serving.skipped as "the project source is the one skip"
+  assert skipped.path == path
+  assert string.contains(skipped.reason, "no trust record at")
+  assert !hookserve.has_matching(serving, hookcompat.PreToolUse, "Bash")
+}
+
+/// The operator's own file is not the workspace's to send. It is read on the
+/// owner whatever the workspace's files say, so a workspace cannot supply a
+/// user-level source.
+pub fn the_users_file_is_read_here_and_never_taken_from_the_workspace_test() {
+  let rig = rig()
+  write(rig.home <> "/.claude", "settings.json", settings_with_hooks)
+  let users = rig.home <> "/.claude/settings.json"
+
+  let serving =
+    load_gathered(rig, Some(rig.trust_root), [
+      #(users, bytes_of("{\"hooks\":{}}")),
+    ])
+
+  assert serving.skipped == []
+  assert hookserve.has_matching(serving, hookcompat.PreToolUse, "Bash")
+}
+
+/// A path the workspace did not send is a file that is not there, which is
+/// no diagnostic.
+pub fn a_workspace_file_not_sent_is_absent_test() {
+  let rig = rig()
+  write(rig.workspace <> "/.claude", "settings.json", settings_with_hooks)
+
+  let serving = load_gathered(rig, Some(rig.trust_root), [])
+
+  assert serving.skipped == []
+  assert serving.wiring.config.entries == []
+}
+
+/// Bytes which are not UTF-8 are refused in the words a file read from disk
+/// is refused in.
+pub fn bytes_that_are_not_text_are_refused_like_a_file_that_is_not_text_test() {
+  let rig = rig()
+  let path = rig.workspace <> "/.claude/settings.json"
+  write(rig.workspace <> "/.claude", "settings.json", "")
+  let assert Ok(Nil) = simplifile.write_bits(path, <<255, 254, 253>>)
+    as "the fixture file must be writable"
+  let from_disk = load(rig, Some(rig.trust_root))
+
+  let sent =
+    load_gathered(rig, Some(rig.trust_root), [
+      #(path, hookserve.Bytes(<<255, 254, 253>>)),
+    ])
+
+  let assert [skipped] = sent.skipped as "unreadable bytes are the one skip"
+  assert string.contains(skipped.reason, "the file could not be read")
+  assert sent.skipped == from_disk.skipped
+}
+
+/// A file the workspace could not read is carried with its reason, and
+/// refused with it.
+pub fn an_unreadable_file_is_refused_with_its_reason_test() {
+  let rig = rig()
+  let path = rig.workspace <> "/.claude/settings.json"
+
+  let serving =
+    load_gathered(rig, Some(rig.trust_root), [
+      #(path, hookserve.Unreadable("permission denied")),
+    ])
+
+  let assert [skipped] = serving.skipped
+    as "the unreadable file is the one skip"
+  assert skipped.reason == "the file could not be read: permission denied"
+}
+
+/// Reading a file from this machine distinguishes the three outcomes the
+/// loader acts on.
+pub fn reading_contents_from_disk_gives_missing_bytes_or_unreadable_test() {
+  let rig = rig()
+  write(rig.workspace, "a.json", "{}")
+  assert hookserve.read_contents(rig.workspace <> "/a.json")
+    == hookserve.Bytes(bit_array.from_string("{}"))
+  assert hookserve.read_contents(rig.workspace <> "/nope.json")
+    == hookserve.Missing
+  let assert hookserve.Unreadable(..) = hookserve.read_contents(rig.workspace)
+    as "a directory is not a readable file"
 }

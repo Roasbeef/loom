@@ -42,6 +42,7 @@ import tui/effect
 import tui/image_drop
 import tui/job
 import tui/model as tui_model
+import tui/placement
 import tui/runtime
 import tui/session_control
 import tui/session_selector
@@ -130,7 +131,15 @@ pub fn an_oversized_image_reports_the_error_the_step_reported_before_test() {
 // Launch options whose `--config` names a file that does not exist, so
 // resolving them fails with the error the step used to report itself.
 fn absent_config() -> bootstrap.Options {
-  bootstrap.Options("/work", "", "", "build", "build/s6-absent/loom.toml", "")
+  bootstrap.Options(
+    "/work",
+    "",
+    "",
+    "build",
+    "build/s6-absent/loom.toml",
+    "",
+    placement.OnThisHost,
+  )
 }
 
 // A terminal at the session picker, with local launch options and a
@@ -236,6 +245,8 @@ pub fn a_resolved_configuration_continues_the_creation_test() {
         "/work",
         "work",
         "/cfg/loom.toml",
+        "",
+        "",
         "",
       ),
       90_000,
@@ -403,6 +414,8 @@ pub fn a_creation_carries_the_launch_profile_test() {
         "work",
         "/cfg/loom.toml",
         "deepseek",
+        "",
+        "",
       ),
       90_000,
     )

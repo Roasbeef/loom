@@ -59,6 +59,8 @@ main = [\"session_b\"]
       catalogue.Saved,
       profile: option.None,
       model: option.None,
+      executor: "",
+      pool: "",
       subtitle: option.None,
     )
   let selected =
@@ -148,6 +150,8 @@ fn resolve_profiled(
       catalogue.Saved,
       profile:,
       model:,
+      executor: "",
+      pool: "",
       subtitle: option.None,
     )
   let selected =
@@ -214,6 +218,8 @@ pub fn a_session_with_a_profile_needs_a_config_file_test() {
       catalogue.Saved,
       profile: option.Some("alt"),
       model: option.None,
+      executor: "",
+      pool: "",
       subtitle: option.None,
     )
   let selected =
@@ -250,16 +256,18 @@ fn stored_registration(
   let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
   let record =
     catalogue.Registration(
-      id,
-      fixture.session_path,
-      fixture.workspace,
-      "Switched",
-      config,
-      1,
-      "switched-" <> id,
-      catalogue.Reserved,
+      id:,
+      path: fixture.session_path,
+      workspace: fixture.workspace,
+      name: "Switched",
+      configuration: config,
       profile:,
       model: option.None,
+      executor: "",
+      pool: "",
+      created_at: 1,
+      request_key: "switched-" <> id,
+      state: catalogue.Reserved,
       subtitle: option.None,
     )
   let assert Ok(_) = catalogue.reserve(store, record) as "reserved"
@@ -406,6 +414,8 @@ pub fn a_session_with_a_model_needs_a_config_file_test() {
       catalogue.Saved,
       profile: option.None,
       model: option.Some("alt"),
+      executor: "",
+      pool: "",
       subtitle: option.None,
     )
   let selected =

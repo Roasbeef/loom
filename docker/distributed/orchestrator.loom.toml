@@ -1,0 +1,25 @@
+# The orchestrator's model catalogue. docker/distributed/compose.yaml mounts
+# this file at /config/loom.toml on the orchestrator, and the entrypoint copies
+# it to ~/.loom/loom.toml before `loomd distribution install` appends the
+# bundle's [distribution] and [executors.*] tables. Put nothing from those
+# tables here: the install owns them.
+#
+# The orchestrator runs the agent loop and calls the model, so it is the only
+# node that needs a catalogue and a key. The executor has neither.
+#
+# api_key_env names a variable of the orchestrator container's environment, not
+# a secret. Put the key itself in docker/distributed/orchestrator.env (one line,
+# ANTHROPIC_API_KEY=...), which compose.yaml passes to the orchestrator when it
+# exists and which .gitignore keeps out of version control. Edit the model
+# below, or add more tables, as docs/configuration.md describes. Set
+# ORCHESTRATOR_CONFIG to mount a different file.
+
+[models.main]
+dialect = "anthropic"
+api_key_env = "ANTHROPIC_API_KEY"
+model_id = "claude-opus-5"
+context_window = 1000000
+max_output_tokens = 32000
+
+[roles]
+main = ["main"]

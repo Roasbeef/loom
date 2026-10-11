@@ -20,7 +20,7 @@ import broker/policy
 import client/catalog
 import client/codemode
 import client/scratch
-import client/serve
+import client/workspace_policy
 import codemode/artifact
 import codemode/launch
 import codemode/search as search_router
@@ -756,7 +756,10 @@ fn session_policy(
   scope: catalog.ReadScope,
 ) -> policy.SandboxPolicy {
   let base =
-    serve.protecting_state_root(serve.base_policy_for(root, scope), state)
+    workspace_policy.protecting_state_root(
+      workspace_policy.base_policy_for(root, scope),
+      state,
+    )
   policy.SandboxPolicy(..base, protected: [
     root <> "/.private",
     ..base.protected
@@ -946,7 +949,7 @@ pub fn code_mode_reads_and_searches_a_sibling_under_host_reads_test() {
   let outside = root <> "-outside"
   make_directory(outside <> "/lib")
   write(outside, "lib/s.txt", "needle in the sibling\n")
-  let session = serve.base_policy_for(root, catalog.HostReads)
+  let session = workspace_policy.base_policy_for(root, catalog.HostReads)
   let request =
     codemode_tool.Request(..request_over(root), base_policy: session)
   let seam = codemode.workspace_seam(config_over(root), request)
@@ -971,7 +974,7 @@ pub fn code_mode_refuses_a_sibling_under_workspace_reads_and_says_how_in_test() 
   let outside = root <> "-outside"
   make_directory(outside)
   write(outside, "s.txt", "needle in the sibling\n")
-  let session = serve.base_policy_for(root, catalog.WorkspaceReads)
+  let session = workspace_policy.base_policy_for(root, catalog.WorkspaceReads)
   let request =
     codemode_tool.Request(..request_over(root), base_policy: session)
   let seam = codemode.workspace_seam(config_over(root), request)
@@ -1037,7 +1040,7 @@ pub fn host_reads_leave_code_mode_writes_inside_the_workspace_test() {
   let root = fresh("host-writes")
   let outside = root <> "-outside"
   make_directory(outside)
-  let session = serve.base_policy_for(root, catalog.HostReads)
+  let session = workspace_policy.base_policy_for(root, catalog.HostReads)
   let request =
     codemode_tool.Request(..request_over(root), base_policy: session)
   let seam = codemode.workspace_seam(config_over(root), request)
