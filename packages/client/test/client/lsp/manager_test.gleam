@@ -968,6 +968,27 @@ pub fn a_relative_path_still_means_the_workspace_test() {
   Nil
 }
 
+pub fn a_question_about_a_protected_file_is_refused_test() {
+  // The manager reads the file a question names, so the session's protected
+  // list applies to it as it does to `fs_read`; the rig protects the
+  // project's `.git`.
+  let workspace = scratch("protected-question")
+  let _root = project(workspace, "app")
+  let hidden = workspace <> "/app/.git/hooked.gleam"
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace <> "/app/.git")
+    as "the protected directory must be creatable"
+  let assert Ok(Nil) = simplifile.write(hidden, "pub fn greet() { 1 }\n")
+    as "the protected file must be writable"
+  let rig = rig(workspace, no_search, outline_script)
+  let assert Error(query.NoServer(reason:)) = rig.door.outline(hidden)
+    as "a protected file is refused"
+  assert string.contains(reason, "protected path")
+  assert started(rig) == []
+  manager.stop(rig.manager)
+  let _ = simplifile.delete_all([workspace])
+  Nil
+}
+
 pub fn an_empty_bare_name_search_says_which_tree_it_searched_test() {
   let workspace = scratch("searched-root")
   let root = project(workspace, "app")

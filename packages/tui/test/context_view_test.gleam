@@ -8,6 +8,7 @@ import core/ids
 import core/json
 import core/message
 import core/register
+import core/usage_evidence
 import etui/backend
 import etui/geometry
 import etui/widgets/textarea
@@ -335,6 +336,7 @@ fn cut_metadata(cells) {
         None,
         0,
         message.UsageCost(0.0, 0.0, 0.0, 0.0, 0.0),
+        usage_evidence.none(),
       )),
     ),
     #(
@@ -458,6 +460,7 @@ fn usage_row() -> message.Usage {
     None,
     2,
     message.UsageCost(0.0, 0.0, 0.0, 0.0, 0.0),
+    usage_evidence.reported(usage_evidence.Api),
   )
 }
 

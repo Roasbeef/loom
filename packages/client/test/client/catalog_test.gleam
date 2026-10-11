@@ -5,7 +5,9 @@
 import client/catalog
 import client/mcp
 import core/clock
+import core/json
 import core/message
+import core/usage_evidence
 import gleam/erlang/process
 import gleam/float
 import gleam/list
@@ -14,6 +16,7 @@ import gleam/string
 import mcp/name
 import provider/gateway as provider_gateway
 import provider/http
+import provider/internal/wire
 import provider/model
 import provider/pricing
 import provider/secret
@@ -188,6 +191,7 @@ pub fn the_gateway_prices_only_the_annotated_entries_test() {
         cache_write: 0.0,
         total: 0.0,
       ),
+      evidence: usage_evidence.priced_api(),
     )
   let assert Ok(entry) = catalog.find(example(), "baseten-kimi")
   let assert Some(card) = entry.pricing
@@ -284,6 +288,17 @@ fn responses_catalogue(fields: String) -> String {
   |> string.replace("api_key_env = \"KEY\"", fields)
 }
 
+// Subscription configuration starts without an API-key field, so a test
+// can add one deliberately and prove the parser refuses it.
+fn subscription_catalogue(fields: String) -> String {
+  minimal
+  |> string.replace(
+    "dialect = \"anthropic\"",
+    "dialect = \"codex-subscription\"",
+  )
+  |> string.replace("api_key_env = \"KEY\"", fields)
+}
+
 pub fn responses_defaults_and_trailing_slashes_test() {
   let text = responses_catalogue("auth = \"api-key\"\napi_key_env = \"KEY\"")
   let assert Ok(parsed) = catalog.parse(text)
@@ -348,20 +363,248 @@ pub fn responses_auth_configuration_is_closed_test() {
   )
 }
 
-pub fn responses_headers_and_subscription_are_explicitly_refused_test() {
+pub fn responses_headers_are_explicitly_refused_test() {
   let assert Error("models.one: per-model headers are not supported" <> _) =
     catalog.parse(responses_catalogue(
       "auth = \"api-key\"\napi_key_env = \"KEY\"\nheaders = { Authorization = \"not-a-credential\" }",
     ))
     as "Responses must not acquire an arbitrary credential header path"
-  assert catalog.parse(
-      minimal
-      |> string.replace(
-        "dialect = \"anthropic\"",
-        "dialect = \"codex-subscription\"",
+}
+
+pub fn subscription_profile_is_distinct_from_api_keys_test() {
+  let assert Ok(parsed) =
+    catalog.parse(subscription_catalogue(
+      "auth = \"codex\"\nprofile = \"default\"",
+    ))
+    as "a complete subscription profile must parse"
+  let assert Ok(entry) = catalog.find(parsed, "one")
+    as "the subscription entry keeps its own catalogue identity"
+  assert entry.dialect == catalog.CodexSubscription(profile: "default")
+  assert catalog.dialect_to_string(entry.dialect) == "codex-subscription"
+  assert entry.base_url == ""
+  assert entry.api_key_env == ""
+  assert catalog.resolved(entry).provider == "one"
+}
+
+pub fn subscription_auth_configuration_is_closed_test() {
+  list.each(
+    [
+      #("auth = \"codex\"", "models.one.profile is required"),
+      #(
+        "auth = \"codex\"\nprofile = \"\"",
+        "models.one.profile must be non-empty",
+      ),
+      #("auth = \"codex\"\nprofile = 1", "models.one.profile must be a string"),
+      #("profile = \"default\"", "models.one.auth is required"),
+      #(
+        "auth = \"\"\nprofile = \"default\"",
+        "models.one.auth must be non-empty",
+      ),
+      #("auth = 1\nprofile = \"default\"", "models.one.auth must be a string"),
+      #(
+        "auth = \"api-key\"\nprofile = \"default\"",
+        "models.one.auth must be \"codex\" for codex-subscription",
+      ),
+      #(
+        "auth = \"unknown\"\nprofile = \"default\"",
+        "models.one.auth must be \"codex\" for codex-subscription",
+      ),
+      #(
+        "auth = \"codex\"\nprofile = \"default\"\napi_key_env = \"KEY\"",
+        "models.one.api_key_env is not supported for codex-subscription",
+      ),
+      #(
+        "auth = \"codex\"\nprofile = \"default\"\napi_key_env = \"\"",
+        "models.one.api_key_env is not supported for codex-subscription",
+      ),
+      #(
+        "auth = \"codex\"\nprofile = \"default\"\napi_key_env = 1",
+        "models.one.api_key_env is not supported for codex-subscription",
+      ),
+      #(
+        "auth = \"codex\"\nprofile = \"default\"\nbase_url = \"https://evil.example\"",
+        "models.one.base_url is not supported for codex-subscription",
+      ),
+      #(
+        "auth = \"codex\"\nprofile = \"default\"\nbase_url = \"\"",
+        "models.one.base_url is not supported for codex-subscription",
+      ),
+      #(
+        "auth = \"codex\"\nprofile = \"default\"\nbase_url = 1",
+        "models.one.base_url is not supported for codex-subscription",
+      ),
+    ],
+    fn(example) {
+      assert catalog.parse(subscription_catalogue(example.0))
+        == Error(example.1)
+    },
+  )
+  let assert Error("models.one: per-model headers are not supported" <> _) =
+    catalog.parse(subscription_catalogue(
+      "auth = \"codex\"\nprofile = \"default\"\nheaders = { Authorization = \"Bearer pasted-token\" }",
+    ))
+    as "a subscription token must not enter the model catalogue"
+}
+
+pub fn subscription_profile_uses_the_helpers_portable_name_grammar_test() {
+  list.each(
+    ["a", "9", "Work_2-prod", string.repeat("a", times: 64)],
+    fn(profile) {
+      let assert Ok(_) =
+        catalog.parse(subscription_catalogue(
+          "auth = \"codex\"\nprofile = \"" <> profile <> "\"",
+        ))
+        as "every helper-valid profile must pass catalogue loading"
+    },
+  )
+  list.each(
+    [
+      ".",
+      "../default",
+      "a/b",
+      "a\\\\b",
+      "a.b",
+      "a b",
+      " a",
+      "é",
+      "aé",
+      "_start",
+      "-start",
+      string.repeat("a", times: 65),
+    ],
+    fn(profile) {
+      assert catalog.parse(subscription_catalogue(
+          "auth = \"codex\"\nprofile = \"" <> profile <> "\"",
+        ))
+        == Error(
+          "models.one.profile must be 1-64 ASCII letters, digits, underscores or hyphens, starting with a letter or digit",
+        )
+    },
+  )
+}
+
+pub fn parsed_subscription_catalogue_dispatches_its_profile_test() {
+  let assert Ok(parsed) =
+    catalog.parse(subscription_catalogue("auth = \"codex\"\nprofile = \"work\""))
+    as "a subscription profile must load before dispatch"
+  let profiles = process.new_subject()
+  let gateway =
+    catalog.gateway(
+      parsed,
+      transport: provider_test.silent(),
+      secrets: secret.from_list([]),
+      clock: clock.fixed(0),
+    )
+    |> provider_gateway.with_codex_transport(
+      provider_gateway.CodexTransport(
+        prepare_streaming: fn(profile, _request, _events) {
+          process.send(profiles, profile)
+          Error("intentional test refusal")
+        },
       ),
     )
-    == Error("models.one: Codex subscription authentication is not supported")
+  let handle =
+    provider_gateway.request(
+      gateway,
+      model.ProviderRequest(
+        target: model.ForRole(model.Main, None),
+        system: None,
+        messages: [],
+        tools: [],
+        max_output_tokens: None,
+      ),
+    )
+  let assert Ok(#(_, stream.Failed(_, _))) =
+    stream.await_terminal(handle, within: 2000)
+    as "the deliberate helper refusal must settle the subscription request"
+  assert process.receive(profiles, within: 1000) == Ok("work")
+}
+
+// A session role profile changes routing while both native entries retain the
+// independently named credential profile. The default catalogue stays Baseten.
+pub fn role_profile_routes_native_workers_and_summaries_test() {
+  let text =
+    "
+[models.baseten]
+dialect = \"openai\"
+api_key_env = \"BASETEN_API_KEY\"
+model_id = \"default-model\"
+context_window = 128000
+max_output_tokens = 8192
+[models.codex-worker]
+dialect = \"codex-subscription\"
+auth = \"codex\"
+profile = \"personal\"
+model_id = \"worker-model\"
+context_window = 128000
+max_output_tokens = 8192
+[models.codex-summary]
+dialect = \"codex-subscription\"
+auth = \"codex\"
+profile = \"personal\"
+model_id = \"summary-model\"
+context_window = 128000
+max_output_tokens = 8192
+[roles]
+main = [\"baseten\"]
+subagent = [\"baseten\"]
+summarize = [\"baseten\"]
+[profiles.codex.roles]
+subagent = [\"codex-worker\"]
+summarize = [\"codex-summary\"]
+"
+  let assert Ok(defaults) = catalog.parse(text)
+    as "The split profile must parse beside the default routes."
+  let assert Ok(selected) = catalog.select_profile(defaults, "codex")
+    as "The named Codex role profile must be selectable."
+  assert catalog.routed_roles(defaults, "baseten")
+    == ["main", "subagent", "summarize"]
+  let admitted = process.new_subject()
+  let gateway =
+    catalog.gateway(
+      selected,
+      transport: provider_test.silent(),
+      secrets: secret.from_list([]),
+      clock: clock.fixed(0),
+    )
+    |> provider_gateway.with_codex_transport(
+      provider_gateway.CodexTransport(
+        prepare_streaming: fn(profile, _request, _events) {
+          process.send(admitted, profile)
+          Error("intentional test refusal")
+        },
+      ),
+    )
+
+  // The inherited main stays on Baseten. Each native role resolves its own
+  // model entry and reaches the same protected login profile at admission.
+  let assert Ok(main) = provider_gateway.resolve(gateway, model.Main)
+    as "The split profile must inherit the default main route."
+  assert main.provider == "baseten"
+  list.each(
+    [#(model.Subagent, "codex-worker"), #(model.Summarize, "codex-summary")],
+    fn(pair) {
+      let #(role, provider) = pair
+      let assert Ok(target) = provider_gateway.resolve(gateway, role)
+        as "Each native role must resolve its configured entry."
+      assert target.provider == provider
+      let handle =
+        provider_gateway.request(
+          gateway,
+          model.ProviderRequest(
+            target: model.ForRole(role, None),
+            system: None,
+            messages: [],
+            tools: [],
+            max_output_tokens: None,
+          ),
+        )
+      let assert Ok(#(_, stream.Failed(_, _))) =
+        stream.await_terminal(handle, within: 2000)
+        as "The scripted refusal must settle after native admission."
+      assert process.receive(admitted, within: 1000) == Ok("personal")
+    },
+  )
 }
 
 pub fn existing_dialects_keep_their_auth_contract_test() {
@@ -445,7 +688,7 @@ pub fn parsed_responses_catalogue_dispatches_through_its_adapter_test() {
         max_output_tokens: None,
       ),
     )
-  let assert Ok(#(_, stream.Failed(_))) =
+  let assert Ok(#(_, stream.Failed(_, _))) =
     stream.await_terminal(handle, within: 2000)
     as "the deliberate HTTP refusal must settle the configured request"
   let assert Ok(sent) = process.receive(requests, within: 1000)
@@ -1286,7 +1529,7 @@ pub fn configured_image_limit_reaches_gateway_before_secret_lookup_test() {
       max_output_tokens: None,
     )
   let handle = provider_gateway.request(gw, request)
-  let assert Ok(#([], stream.Failed(error:))) =
+  let assert Ok(#([], stream.Failed(error:, accounting: _))) =
     stream.await_terminal(handle, within: 2000)
     as "the configured image limit must fail before missing credentials"
   let assert stream.StreamError(api_error_type: "image_limit", message:) =
@@ -1417,6 +1660,120 @@ pub fn an_unknown_profile_names_the_known_ones_test() {
     == Error("unknown profile \"quick\"; the configuration defines no profiles")
 }
 
+const retargeting =
+  "
+[models.sol]
+dialect = \"openai\"
+api_key_env = \"KEY\"
+model_id = \"m-sol\"
+context_window = 1000
+max_output_tokens = 100
+
+[models.luna]
+dialect = \"openai\"
+api_key_env = \"KEY\"
+model_id = \"m-luna\"
+context_window = 1000
+max_output_tokens = 100
+
+[models.astra]
+dialect = \"openai\"
+api_key_env = \"KEY\"
+model_id = \"m-astra\"
+context_window = 1000
+max_output_tokens = 100
+
+[models.blue]
+dialect = \"openai\"
+api_key_env = \"KEY\"
+model_id = \"m-blue\"
+context_window = 1000
+max_output_tokens = 100
+
+[roles]
+main = [\"blue\"]
+subagent = [\"luna\"]
+summarize = [\"luna\"]
+
+[profiles.codex.roles]
+main = [\"sol\"]
+advisor = [\"astra\"]
+
+[profiles.codex-blue.roles]
+main = [\"blue\"]
+advisor = [\"astra\"]
+"
+
+fn retarget_pairs(
+  parsed: catalog.Catalog,
+  leaving: String,
+  entering: String,
+) -> List(#(model.Role, String, String)) {
+  let select = fn(name) {
+    case name == catalog.default_profile {
+      True -> parsed
+      False -> {
+        let assert Ok(selected) = catalog.select_profile(parsed, name)
+        selected
+      }
+    }
+  }
+  catalog.retargets(select(leaving), select(entering))
+  |> list.map(fn(retarget) {
+    #(retarget.role, retarget.from.name, retarget.to.name)
+  })
+}
+
+pub fn retargets_list_the_strand_roles_whose_head_moves_test() {
+  let assert Ok(parsed) = catalog.parse(retargeting)
+
+  // Main and advisor move; subagent is inherited by both and stays.
+  assert retarget_pairs(parsed, "default", "codex")
+    == [
+      #(model.Main, "blue", "sol"),
+    ]
+  assert retarget_pairs(parsed, "codex", "codex-blue")
+    == [
+      #(model.Main, "sol", "blue"),
+    ]
+}
+
+pub fn retargets_include_the_advisor_once_both_tables_route_one_test() {
+  let assert Ok(parsed) = catalog.parse(retargeting)
+
+  // The default table routes no advisor, so there is no head to move from.
+  assert retarget_pairs(parsed, "default", "codex-blue") == []
+  assert retarget_pairs(parsed, "codex", "default")
+    == [#(model.Main, "sol", "blue")]
+}
+
+pub fn retargets_of_a_table_with_itself_are_empty_test() {
+  let assert Ok(parsed) = catalog.parse(retargeting)
+  assert retarget_pairs(parsed, "codex", "codex") == []
+  assert retarget_pairs(parsed, "default", "default") == []
+}
+
+pub fn retargets_follow_the_advisor_head_between_profiles_test() {
+  let text =
+    string.replace(
+      retargeting,
+      "[profiles.codex-blue.roles]\nmain = [\"blue\"]\nadvisor = [\"astra\"]",
+      "[profiles.codex-blue.roles]\nmain = [\"blue\"]\nadvisor = [\"luna\"]",
+    )
+  let assert Ok(parsed) = catalog.parse(text)
+  assert retarget_pairs(parsed, "codex", "codex-blue")
+    == [
+      #(model.Main, "sol", "blue"),
+      #(model.Custom("advisor"), "astra", "luna"),
+    ]
+}
+
+pub fn default_is_reserved_so_a_profile_cannot_shadow_it_test() {
+  let text = with_profiles <> "\n[profiles.default.roles]\nmain = [\"fast\"]\n"
+  let assert Error("profiles.default is reserved" <> _rest) =
+    catalog.parse(text)
+}
+
 pub fn a_profile_naming_an_undefined_model_refuses_the_file_test() {
   let text = with_profiles <> "\n[profiles.broken.roles]\nmain = [\"ghost\"]\n"
   let assert Error("profiles.broken.roles.main names \"ghost\"" <> _rest) =
@@ -1478,6 +1835,150 @@ pub fn a_non_table_profiles_entry_is_refused_test() {
   let text = "profiles = \"quick\"\n" <> minimal
   assert catalog.parse(text)
     == Error("profiles must be a table of [profiles.<name>.roles] entries")
+}
+
+pub fn cyber_access_values_are_typed_and_dialect_scoped_test() {
+  let public = responses_catalogue("auth = \"api-key\"\napi_key_env = \"KEY\"")
+  list.each(
+    [
+      #("standard", model.StandardCyberAccess),
+      #("daybreak_blue", model.DaybreakBlue),
+      #("daybreak_red", model.DaybreakRed),
+    ],
+    fn(pair) {
+      let #(value, expected) = pair
+      let assert Ok(parsed) =
+        catalog.parse(string.replace(
+          public,
+          "model_id =",
+          "cyber_access = \"" <> value <> "\"\nmodel_id =",
+        ))
+        as "Every documented access value must parse as a typed selection."
+      let assert Ok(entry) = catalog.main_model(parsed)
+        as "The configured main entry must exist."
+      assert entry.cyber_access == Some(expected)
+    },
+  )
+
+  // Absence leaves entitlement defaults to the server. Invalid values and
+  // other dialects refuse the configuration instead of dropping the option.
+  let assert Ok(defaults) = catalog.parse(public)
+    as "Existing Responses catalogues must still load."
+  let assert Ok(entry) = catalog.main_model(defaults)
+    as "The default entry must exist."
+  assert entry.cyber_access == None
+  list.each(["1", "\"unknown\""], fn(value) {
+    let assert Error(_) =
+      catalog.parse(string.replace(
+        public,
+        "model_id =",
+        "cyber_access = " <> value <> "\nmodel_id =",
+      ))
+      as "Invalid access values must be refused."
+  })
+  list.each(["anthropic", "openai", "gemini"], fn(dialect) {
+    let text =
+      minimal
+      |> string.replace(
+        "dialect = \"anthropic\"",
+        "dialect = \"" <> dialect <> "\"",
+      )
+      |> string.replace(
+        "model_id =",
+        "cyber_access = \"daybreak_blue\"\nmodel_id =",
+      )
+    assert catalog.parse(text)
+      == Error(
+        "models.one.cyber_access is only supported for Responses dialects",
+      )
+  })
+}
+
+pub fn cyber_access_dispatches_each_entry_for_role_and_resolved_test() {
+  let text =
+    "
+[models.plain]
+dialect = \"openai-responses\"
+auth = \"api-key\"
+api_key_env = \"KEY\"
+model_id = \"gpt-6-sol\"
+context_window = 272000
+max_output_tokens = 8192
+cyber_access = \"standard\"
+[models.blue]
+dialect = \"codex-subscription\"
+auth = \"codex\"
+profile = \"personal\"
+model_id = \"gpt-6-sol\"
+context_window = 272000
+max_output_tokens = 8192
+cyber_access = \"daybreak_blue\"
+[roles]
+main = [\"blue\"]
+plan = [\"plain\"]
+"
+  let assert Ok(parsed) = catalog.parse(text)
+    as "Same model IDs can have distinct named access selections."
+  let requests = process.new_subject()
+  let transport =
+    provider_test.transport(fn(sent, events) {
+      process.send(requests, sent)
+      process.send(events, http.ResponseStatus(403, []))
+      process.send(events, http.ResponseEnd)
+    })
+  let gateway =
+    catalog.gateway(
+      parsed,
+      transport:,
+      secrets: secret.from_list([#("KEY", "fixture-key")]),
+      clock: clock.fixed(0),
+    )
+    |> provider_gateway.with_codex_transport(
+      provider_gateway.CodexTransport(
+        prepare_streaming: fn(profile, sent, _events) {
+          assert profile == "personal"
+          process.send(requests, sent)
+          Error("intentional native admission refusal")
+        },
+      ),
+    )
+
+  // The program belongs to the named endpoint, so the same underlying model
+  // selects correctly through both role resolution and pinned identity dispatch.
+  list.each(
+    [#(model.Main, "daybreak_blue"), #(model.Plan, "standard")],
+    fn(pair) {
+      let #(role, program) = pair
+      let assert Ok(resolved) = provider_gateway.resolve(gateway, role)
+        as "Both routes must resolve."
+      list.each(
+        [model.ForRole(role, None), model.ForResolved(resolved)],
+        fn(target) {
+          let handle =
+            provider_gateway.request(
+              gateway,
+              model.ProviderRequest(
+                target:,
+                system: None,
+                messages: [],
+                tools: [],
+                max_output_tokens: None,
+              ),
+            )
+          let assert Ok(#(_, stream.Failed(_, _))) =
+            stream.await_terminal(handle, within: 2000)
+            as "Each intentional refusal must settle."
+          let assert Ok(sent) = process.receive(requests, within: 1000)
+            as "Each dispatch must reach the intended transport."
+          let assert Ok(body) = json.parse(sent.body)
+            as "Requests must be valid JSON."
+          assert wire.field(body, "model") == Ok(json.String("gpt-6-sol"))
+          assert wire.field(body, "access_programs")
+            == Ok(json.Object([#("cyber", json.String(program))]))
+        },
+      )
+    },
+  )
 }
 
 // --- model choice (protocol-change/080) --------------------------------------

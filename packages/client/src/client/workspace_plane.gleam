@@ -126,6 +126,18 @@ pub type WorkspaceSpec {
   WorkspaceSpec(
     /// The absolute workspace root.
     workspace: String,
+    /// The directory the session's content-addressed blobs are written to
+    /// and read from: the overflow of a large tool result, and the
+    /// artifacts a code-mode program emits.
+    ///
+    /// The caller chooses it, and it is an input so that the plane never
+    /// derives a place from the workspace. A blob store inside the
+    /// checkout would have to be masked from every jail and would sit in
+    /// the operator's tree. The caller also chooses who protects it: a
+    /// path inside a directory the base policy already masks needs no
+    /// entry of its own, and any other needs one in `base_policy` before it
+    /// gets here (`workspace_policy.protecting_blobs`).
+    blob_root: String,
     /// Where the helpers keep their private scratch. Locally this is
     /// derived from the owner's session path. A workspace elsewhere would
     /// choose its own.
@@ -185,6 +197,11 @@ pub type Census {
     /// The workspace root, opaque to the owner: it names a path on the
     /// workspace's machine and is never opened by the owner.
     workspace: String,
+    /// The directory the workspace's machine keeps the session's blobs in,
+    /// opaque to the owner like `workspace`. A blob reference in a tool
+    /// result names a path under it, and the owner needs the root to
+    /// recognise one; it is never opened by the owner.
+    blob_root: String,
     /// The discovered code-mode toolchain as this session may use it, or
     /// the reason there is none.
     toolchain: Result(codemode_wiring.Toolchain, String),
@@ -235,8 +252,6 @@ pub type Prepared {
     /// The places a language profile's `~/` and `<cache>/` roots resolve
     /// against, read from this machine's environment once.
     places: profile.Places,
-    /// The content-addressed overflow directory under the workspace.
-    blob_root: String,
   )
 }
 
@@ -480,11 +495,10 @@ pub fn prepare(
   // the first tool call. See `base_policy_fault`.
   use Nil <- result.try(workspace_policy.base_policy_fault(base))
   use Nil <- result.try(workspace_policy.go_cache_fault(basis, base))
-  let blob_root = spec.workspace <> "/" <> codemode_wiring.blob_directory
   use Nil <- result.try(workspace_policy.prepare_directories(
     None,
     spec.workspace,
-    blob_root,
+    spec.blob_root,
     spec.scratch_dir,
     tool_directories(spec),
   ))
@@ -504,6 +518,7 @@ pub fn prepare(
     spec:,
     census: Census(
       workspace: spec.workspace,
+      blob_root: spec.blob_root,
       toolchain:,
       lsp_servers:,
       extensions: discovered,
@@ -518,7 +533,6 @@ pub fn prepare(
     ),
     reading:,
     places:,
-    blob_root:,
   ))
 }
 
@@ -867,6 +881,9 @@ fn code_mode_host(
     workspace: spec.workspace,
     toolchain:,
   )
+  // `report.emit` artifacts land in the store the tool context names, so
+  // the one root the spec carries reaches both and they cannot disagree.
+  |> codemode_wiring.into_blobs(spec.blob_root)
   |> codemode_wiring.over_scratch(doors.scratch)
   |> codemode_wiring.over_jobs(Some(doors.jobs))
   |> codemode_wiring.sockets_under(spec.codemode_sockets)
@@ -926,7 +943,7 @@ fn plane_over(
       broker_timeout_ms:,
       registry:,
       workspace:,
-      blob_root: prepared.blob_root,
+      blob_root: prepared.spec.blob_root,
       base_policy: census.base_policy,
       demand: spec.demand,
       env: census.env,
@@ -1261,8 +1278,8 @@ fn jobs_wiring(
       waiting: jobs_clearance_ms,
     ),
     clearance_ms: jobs_clearance_ms,
-    spill: jobs.blob_spill(root: prepared.blob_root),
-    blob_root: prepared.blob_root,
+    spill: jobs.blob_spill(root: prepared.spec.blob_root),
+    blob_root: prepared.spec.blob_root,
   )
 }
 

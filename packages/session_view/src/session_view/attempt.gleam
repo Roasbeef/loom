@@ -334,6 +334,8 @@ fn decode_selection(kind, fields) {
     | "goal_resume"
     | "schedules"
     | "schedule_cancel"
+    | "profile_get"
+    | "profile_set"
     | "permissions"
     | "permission_forget"
     | "prompt"

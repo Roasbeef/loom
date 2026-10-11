@@ -4,23 +4,24 @@
 
 import client/daemon/transfer
 import client/protocol
+import core/accounting
 import core/clock
 import core/ids
 import core/json
 import core/register
+import core/usage_evidence
 import gleam/bit_array
 import gleam/list
 import gleam/option.{None}
 import gleam/result
 import gleam/string
-import runtime/effects
 import storage/snapshot
 import storage/storage
 
 fn cut(recent) {
   snapshot.Cut(
     101,
-    storage.SessionStats(0, effects.zero_usage()),
+    storage.SessionStats(0, accounting.unknown_usage(usage_evidence.Other)),
     [],
     0,
     recent,

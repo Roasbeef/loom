@@ -1,5 +1,7 @@
+import core/accounting
 import core/json
 import core/message
+import core/usage_evidence
 import etui/backend
 import etui/buffer
 import etui/geometry.{Position}
@@ -124,6 +126,7 @@ pub fn usage_footer_keeps_input_output_cache_and_cost_visible_test() {
       reasoning: Some(40),
       total_tokens: 103_146,
       cost: message.UsageCost(0.01, 0.02, 0.003, 0.004, 0.037),
+      evidence: usage_evidence.priced_api(),
     )
 
   assert transcript_lines.usage_summary(usage)
@@ -137,13 +140,21 @@ pub fn usage_footer_keeps_input_output_cache_and_cost_visible_test() {
 
   // Tokens were spent and none was priced: the figure is unknown, not zero.
   let unpriced =
-    message.Usage(..usage, cost: message.UsageCost(0.0, 0.0, 0.0, 0.0, 0.0))
+    message.Usage(
+      ..usage,
+      cost: message.UsageCost(0.0, 0.0, 0.0, 0.0, 0.0),
+      evidence: usage_evidence.reported(usage_evidence.Other),
+    )
   assert transcript_lines.cost_words(unpriced) == "est —"
   assert string.contains(transcript_lines.usage_summary(unpriced), "est — ·")
 
-  // Nothing spent yet has priced nothing either: unpriced, not a zero.
+  // A zero token total cannot supply missing price evidence.
   let fresh = message.Usage(..unpriced, total_tokens: 0)
   assert transcript_lines.cost_words(fresh) == "est —"
+
+  // No admitted inference carries explicit no-expense evidence.
+  let idle = accounting.zero_usage()
+  assert transcript_lines.cost_words(idle) == "est $0.00"
 }
 
 pub fn elapsed_label_reads_like_a_clock_test() {

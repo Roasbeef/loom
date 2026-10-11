@@ -1,5 +1,6 @@
 import core/json
 import core/message
+import core/usage_evidence
 import gleam/bit_array
 import gleam/list
 import gleam/option.{None, Some}
@@ -130,6 +131,7 @@ pub fn assistant_boundaries_preserve_answers_and_tool_continuations_test() {
       response_id: None,
       diagnostics: None,
       usage: message.Usage(
+        evidence: usage_evidence.reported(usage_evidence.Api),
         input: 0,
         output: 0,
         cache_read: 0,

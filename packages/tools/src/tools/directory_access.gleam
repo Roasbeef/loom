@@ -1,7 +1,9 @@
 //// Explicit directory access shared by native tools and jailed invocations.
 ////
-//// The jail may read host libraries without giving native file tools host
-//// access. This value records only additions to the native workspace scope.
+//// This value records explicit additions to a session's readable and writable
+//// roots. Native reads are judged against the base policy's `readable_roots`
+//// widened by these additions (`widen`); native writes against the workspace
+//// plus `writable`.
 //// Session additions and call-bound approvals use the same representation,
 //// but their owners retain their distinct lifetimes.
 
@@ -18,7 +20,7 @@ pub type Access {
   )
 }
 
-/// Preserves native tools' workspace-only default.
+/// No additions.
 ///
 /// ## Examples
 ///

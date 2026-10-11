@@ -2319,7 +2319,9 @@ fn shell_probe_recipe(offers: List(SeamOffer)) -> String {
 // keeps only the prose before a doc's first heading, and a recipe is the
 // one place the description already carries a whole compiling program.
 fn lsp_sql_recipe(offers: List(SeamOffer)) -> String {
-  let needed = ["cap/lsp_sql", "cap/report", "gleam/option", "gleam/string"]
+  let needed = [
+    "cap/lsp_sql", "cap/report", "gleam/int", "gleam/list", "gleam/string",
+  ]
   let admits = fn(offer: SeamOffer) {
     list.all(needed, fn(name) { list.contains(offer.allowed_imports, name) })
   }

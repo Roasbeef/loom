@@ -9,6 +9,7 @@ import core/entry
 import core/ids
 import core/json
 import core/message
+import core/usage_evidence
 import gleam/list
 import gleam/option.{None, Some}
 import session_view/tool_activity
@@ -39,6 +40,7 @@ fn assistant(content: List(message.AssistantBlock)) -> message.AgentMessage {
       None,
       0,
       message.UsageCost(0.0, 0.0, 0.0, 0.0, 0.0),
+      usage_evidence.none(),
     ),
     message.Stop,
     None,

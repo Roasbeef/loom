@@ -5,6 +5,8 @@
 //// Keeping the fixture executable lets a reviewer reproduce narrow layouts,
 //// navigation, draft ownership, and palette behavior in a real terminal.
 
+import core/usage_evidence
+
 import core/clock
 import core/codec as core_codec
 import core/entry
@@ -454,6 +456,10 @@ fn fixture_goal() -> goal_view.Board {
     token_budget: 400_000,
     tokens_used: 51_200,
     cost_used: 0.42,
+    cost_evidence: usage_evidence.with_price(
+      usage_evidence.reported(usage_evidence.Api),
+      usage_evidence.ApiRates,
+    ),
     continuations: 3,
     created_ms: 1_000_000,
     updated_ms: 1_060_000,

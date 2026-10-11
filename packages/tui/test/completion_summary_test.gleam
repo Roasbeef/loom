@@ -6,6 +6,7 @@ import core/ids
 import core/json
 import core/message
 import core/register
+import core/usage_evidence
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
@@ -48,6 +49,7 @@ fn assistant(n, parent, content) {
         None,
         0,
         message.UsageCost(0.0, 0.0, 0.0, 0.0, 0.0),
+        usage_evidence.none(),
       ),
       stop_reason: message.Stop,
       deferred: None,

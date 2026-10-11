@@ -6,6 +6,7 @@
 //// planning, so each step is also a crash-restore; the §0.5 test makes
 //// the crash explicit by discarding everything but the store.
 
+import core/accounting
 import core/entry
 import core/ids
 import core/json
@@ -92,6 +93,7 @@ pub fn slack_thread_scenario_test() {
       world,
       ObservedAssistantSettled(
         settled: fixture.settled(response),
+        accounting: fixture.report(fixture.settled(response)),
         overflow_preparation: None,
       ),
       opts(),
@@ -155,6 +157,7 @@ pub fn slack_thread_scenario_test() {
       world,
       ObservedAssistantSettled(
         settled: fixture.settled(answer),
+        accounting: fixture.report(fixture.settled(answer)),
         overflow_preparation: None,
       ),
       opts(),
@@ -208,6 +211,7 @@ pub fn crash_mid_tool_scenario_test() {
       world,
       ObservedAssistantSettled(
         settled: fixture.settled(response),
+        accounting: fixture.report(fixture.settled(response)),
         overflow_preparation: None,
       ),
       opts(),
@@ -351,6 +355,7 @@ pub fn overflow_one_shot_scenario_test() {
       world,
       ObservedAssistantSettled(
         settled: fixture.settled(overflow),
+        accounting: fixture.report(fixture.settled(overflow)),
         overflow_preparation: Some(Prepared(preparation: fixture.preparation())),
       ),
       opts(),
@@ -403,7 +408,9 @@ pub fn overflow_one_shot_scenario_test() {
   let assert Ok(#(world, writes)) =
     scenario.step_writes(
       world,
-      ObservedSummaryReturned(usage: fixture.usage_of(3000, 200)),
+      ObservedSummaryReturned(
+        accounting: accounting.from_usage(fixture.usage_of(3000, 200)),
+      ),
       opts(),
     )
   assert writes == ["insert:usage", "set:op.state"]
@@ -431,6 +438,7 @@ pub fn overflow_one_shot_scenario_test() {
       world,
       ObservedAssistantSettled(
         settled: fixture.settled(second),
+        accounting: fixture.report(fixture.settled(second)),
         overflow_preparation: None,
       ),
       opts(),
@@ -480,6 +488,7 @@ pub fn abort_normalizes_settlement_test() {
       world,
       ObservedAssistantSettled(
         settled: fixture.settled(finished),
+        accounting: fixture.report(fixture.settled(finished)),
         overflow_preparation: None,
       ),
       opts(),

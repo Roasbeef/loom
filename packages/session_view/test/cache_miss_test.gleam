@@ -6,6 +6,7 @@
 //// framework, which this package does not depend on.
 
 import core/message
+import core/usage_evidence
 import gleam/float
 import gleam/int
 import gleam/list
@@ -39,6 +40,7 @@ fn row(input: Int, cache_read: Int, cache_write: Int) -> message.Usage {
       cache_write: int.to_float(cache_write) *. write_rate,
       total: 0.0,
     ),
+    evidence: usage_evidence.priced_api(),
   )
 }
 

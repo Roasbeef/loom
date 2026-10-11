@@ -6,7 +6,6 @@ import core/message
 import etui/span
 import etui/style
 import etui/text
-import gleam/float
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -16,6 +15,7 @@ import machine/operation
 import session_view/completion_summary
 import session_view/live_jobs
 import session_view/text_hygiene
+import session_view/transcript_lines
 import tui/theme
 
 /// The independently scrollable summary section.
@@ -231,8 +231,8 @@ fn usage_lines(
   list.flatten([
     [heading("CUMULATIVE SESSION USAGE · ALL STRANDS", width)],
     styled(
-      "Estimated cost $"
-        <> float.to_string(usage.cost.total)
+      "Cost "
+        <> transcript_lines.cost_words(usage)
         <> " · total tokens "
         <> int.to_string(usage.total_tokens),
       theme.overlay_current(),

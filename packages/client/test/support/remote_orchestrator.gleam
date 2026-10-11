@@ -59,6 +59,7 @@ pub fn census_over(
   RemoteCensus(
     census: workspace_plane.Census(
       workspace: executor_root,
+      blob_root: executor_root <> "/blobs",
       toolchain: Error("the fake executor has no toolchain"),
       lsp_servers: [],
       extensions: [],

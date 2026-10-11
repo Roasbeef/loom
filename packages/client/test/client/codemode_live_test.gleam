@@ -1723,7 +1723,7 @@ fn run_bridge(ready: Ready) -> Nil {
   // The artifact is a real file, at the address the program was told, in
   // the blob root this host derives from the workspace — the same one
   // `tool.Ctx.blob_root` names.
-  let path = blob.ref_path(rig.workspace <> "/" <> codemode.blob_directory, id)
+  let path = blob.ref_path(codemode.default_blob_root(rig.workspace), id)
   assert simplifile.read_bits(path) == Ok(<<bridged_artifact:utf8>>)
   // And the id really is the content address of those bytes rather than
   // a name the harness invented, which is what makes a re-emission free.
@@ -2072,7 +2072,7 @@ fn run_orchestration_emit(ready: Ready) -> Nil {
   // Same store, same address: an artifact minted from an orchestration
   // program and one minted from a workspace program are the same kind of
   // thing, which is what "one mechanism" has to mean to be worth saying.
-  let path = blob.ref_path(rig.workspace <> "/" <> codemode.blob_directory, id)
+  let path = blob.ref_path(codemode.default_blob_root(rig.workspace), id)
   assert simplifile.read_bits(path) == Ok(<<bridged_artifact:utf8>>)
   assert string.contains(text, id)
   io.println(
@@ -2636,7 +2636,7 @@ const searched_link = "sfind/away"
 
 // The two labels the refusal legs report. Written as labels rather than
 // asserted on the harness's sentence because the claim is that the
-// *program* observed `PermissionDenied` and `InvalidArgument` — a
+// *program* observed `outside_readable_roots` and `InvalidArgument` — a
 // substring of a message would pass on any refusal at all.
 const escape_denied = "escape-denied"
 
@@ -2699,7 +2699,7 @@ pub fn search_program_source() -> String {
   <> "  let escaped = case search.read_lines(\""
   <> searched_link
   <> "/secret.gleam\", from: 1, to: 1) {\n"
-  <> "    Error(search.PermissionDenied(_path)) -> \""
+  <> "    Error(search.SearchFailed(code: \"outside_readable_roots\", message: _message)) -> \""
   <> escape_denied
   <> "\"\n"
   <> "    Error(_other) -> \""
@@ -2782,7 +2782,13 @@ pub fn a_program_navigates_and_searches_through_the_bridge_test() {
 // widened itself would still produce a green count.
 fn run_search(ready: Ready) -> Nil {
   let rig = rig(ready, under: ready.root)
-  let outside = ready.root <> "/outside-the-workspace"
+
+  // The escape target is a sibling of the rig root rather than a child of
+  // it: the rig's base reads `[root]`, and native reads follow the base
+  // policy, so a target under the root would be readable and the escape
+  // leg would prove nothing. A sibling sharing the root as a string prefix
+  // also holds the containment check to whole path components.
+  let outside = ready.root <> "-outside"
   let assert Ok(Nil) = simplifile.create_directory_all(outside)
     as "the escape target must be creatable"
   let assert Ok(Nil) =
@@ -2851,6 +2857,9 @@ fn run_search(ready: Ready) -> Nil {
     <> "the real pipeline; the hidden tree and the escaping link stayed out",
   )
   stop_rig(rig)
+  let assert Ok(Nil) = simplifile.delete_all([outside])
+    as "the escape target sits outside the rig root, so it is removed here"
+  Nil
 }
 
 // Two real jailed programs, separated by SQLite close/reopen, prove that

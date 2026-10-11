@@ -19,10 +19,18 @@ import gleam/string
 /// assert text_hygiene.multiline("one\r\ntwo") == "one\ntwo"
 /// ```
 pub fn multiline(text: String) -> String {
-  text
-  |> string.replace("\r\n", "\n")
-  |> string.replace("\r", "\n")
-  |> strip_terminal_sequences
+  case unchanged_prefix(text) == string.byte_size(text) {
+    // Most displayed labels and transcript text need no rewrite. The empty
+    // second segment makes concat copy on the BEAM even for a single input,
+    // so a small slice cannot keep a large incoming frame alive. The scan
+    // avoids building and reversing a codepoint list just to copy safe text.
+    True -> string.concat([text, ""])
+    False ->
+      text
+      |> string.replace("\r\n", "\n")
+      |> string.replace("\r", "\n")
+      |> strip_terminal_sequences
+  }
 }
 
 // Complete terminal escape sequences are formatting instructions rather than

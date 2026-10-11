@@ -6625,7 +6625,10 @@ pub fn panel(
     ),
     session_tab.view(
       option.map(goal(model), goal_view.row) |> option.unwrap([]),
-      cost_figure(model),
+      // The cost row's label says estimate, so it takes the figure without
+      // the `est` marker: an unpriced session still reads "—" rather than
+      // "$0.00", and a reference rate keeps its "API ref" qualifier.
+      transcript_lines.cost_figure(model.shared.usage),
       jobs(model),
       viewers,
       option.map(model.view.label, fn(label) { label.workspace }),
@@ -6857,7 +6860,7 @@ pub fn heading(
     tone: status_tone(model.view.status),
     context: context_figure(model),
     breakdown: context_breakdown.panel(model.shared.context, context_actions),
-    cost: cost_text(model),
+    cost: transcript_lines.cost_words(model.shared.usage),
     notice: ended.view(ended_ending(model.view.status), model.shared.session),
   )
 }
@@ -6874,22 +6877,6 @@ fn context_figure(model: Model(socket)) -> String {
   {
     True -> ""
     False -> words
-  }
-}
-
-// The session's running cost as the top bar and the Session tab word it,
-// which is the terminal's footer's own words.
-fn cost_text(model: Model(socket)) -> String {
-  transcript_lines.cost_words(model.shared.usage)
-}
-
-// The session's cost as a figure alone, for a row whose label says estimate:
-// the same words as `cost_text` without their leading "est", so an unpriced
-// session still reads "—" rather than a misleading "$0.00".
-fn cost_figure(model: Model(socket)) -> String {
-  case cost_text(model) {
-    "est " <> figure -> figure
-    words -> words
   }
 }
 

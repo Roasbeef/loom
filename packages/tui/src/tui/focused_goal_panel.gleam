@@ -14,13 +14,13 @@ import etui/style
 import etui/widgets/block
 import etui/widgets/paragraph
 import gleam/bool
-import gleam/float
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import session_view/goal_view
 import session_view/text_hygiene
+import session_view/usage_display
 import tui/theme
 
 /// Whether the command lane already owns a goal request.
@@ -356,6 +356,7 @@ fn board_lines(
       token_budget:,
       tokens_used:,
       cost_used:,
+      cost_evidence:,
       continuations:,
       created_ms:,
       updated_ms:,
@@ -399,7 +400,7 @@ fn board_lines(
               <> " of "
               <> int.to_string(token_budget)
               <> " tokens consumed · "
-              <> money(cost_used)
+              <> usage_display.estimate(cost_used, cost_evidence)
               <> " · "
               <> int.to_string(continuations)
               <> " continuations",
@@ -569,12 +570,4 @@ fn duration(milliseconds: Int) -> String {
     value if value < 3600 -> int.to_string(value / 60) <> "m"
     value -> int.to_string(value / 3600) <> "h"
   }
-}
-
-fn money(value: Float) -> String {
-  let cents = int.max(0, float.round(value *. 100.0))
-  "$"
-  <> int.to_string(cents / 100)
-  <> "."
-  <> string.pad_start(int.to_string(cents % 100), 2, "0")
 }

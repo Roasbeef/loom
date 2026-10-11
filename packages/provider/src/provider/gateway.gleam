@@ -3,7 +3,8 @@
 //// `resolve(gw, role)` and `request(gw, req)`.
 ////
 //// The gateway is pure data plus injected effects: a `Transport` (HTTP),
-//// a `SecretStore` (API keys), and a `Clock` (timestamps). Construction
+//// an optional isolated Codex transport, a `SecretStore` (API keys), and a
+//// `Clock` (timestamps). Construction
 //// is the builder pattern; `prepare` allocates only a parked owner, and
 //// nothing resolves a route, reads a secret, or touches the network until its
 //// begin permit is granted. `request` is the synchronous facade which grants
@@ -44,20 +45,22 @@
 //// 4. The begin permit reaches `begin_request`, which spawns the pump parked
 ////    (`parked_pump`); `release_pump` adopts it through `adopt_pump` and only
 ////    then lets it run.
-//// 5. `pump` hands the request to `dispatch_role` for a role, or straight to
-////    `attempt` for one resolved identity; `usable_chain` and `overlaid`
-////    decide the targets walked.
+//// 5. `pump` gathers the per-request constants into one `Walk` and hands it to
+////    `dispatch_role` for a role, or straight to `attempt` for one resolved
+////    identity; `usable_chain` and `overlaid` decide the targets walked.
 //// 6. `attempt` walks the chain one target at a time. `attempt_one` limits
 ////    images, looks up the provider and secret, and runs the adapter through
-////    `stream.run_tracked`; `continue_or_deliver` falls back to the next
-////    target only for a retryable failure.
+////    `tracked`, which calls `stream.run_tracked`; `continue_or_deliver` falls
+////    back to the next target only for a retryable failure.
 //// 7. Back in the guard, `forward_or_settle` relays deltas and sends a
 ////    terminal to `settle`, which waits for the attempt's exit proof and
 ////    publishes through `publish_settled`; `reap` and `abandon` handle the
 ////    pump or consumer dying first.
 
+import core/accounting.{type RequestAccounting}
 import core/clock.{type Clock}
 import core/message.{type Usage, AssistantMessage}
+import core/usage_evidence
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -71,8 +74,9 @@ import provider/http.{type RunningRequest, type Transport}
 import provider/image_budget
 import provider/internal/diagnostic
 import provider/model.{
-  type MissingIdentity, type ProviderRequest, type ResolvedModel, type Role,
-  type ThinkingLevel, ForResolved, ForRole, MissingIdentity, ResolvedModel,
+  type CyberAccessProgram, type MissingIdentity, type ProviderRequest,
+  type ResolvedModel, type Role, type ThinkingLevel, ForResolved, ForRole,
+  MissingIdentity, ResolvedModel,
 }
 import provider/pricing.{type Pricing}
 import provider/retry.{Retryable, Terminal}
@@ -120,13 +124,45 @@ type AttemptRegistration {
   AttemptRegistration(
     running: RunningRequest,
     permit: process.Subject(AttemptPermit),
+    billing: usage_evidence.Billing,
   )
+}
+
+/// The pump replaces its retained report after each completed attempt.
+/// These updates share its registration channel, so custody and evidence arrive
+/// in sender order without an additional acknowledgement protocol.
+type PumpUpdate {
+  TransportPrepared(registration: AttemptRegistration)
+
+  ReportRetained(report: RequestAccounting)
 }
 
 /// The guard's answer to a registration: begin the transport, or do not.
 type AttemptPermit {
   BeginAttempt
   RejectAttempt
+}
+
+/// What stays fixed while the pump walks one request's route chain.
+///
+/// Every function on the walk (`attempt`, `attempt_one`, the keyed and
+/// subscription dispatches, the fallback decision) needs the same seven values
+/// and none of them changes between targets: the gateway, the caller's
+/// request, the clock reading, the three channels to the guard and the
+/// consumer to watch. Only the ordinal, the remaining targets and the retained
+/// report change per target, so those stay ordinary parameters. Built once by
+/// `pump`, which keeps a new constant a one-field change here rather than a
+/// signature change in each function.
+type Walk {
+  Walk(
+    gateway: Gateway,
+    request: ProviderRequest,
+    now: Int,
+    events: process.Subject(StreamEvent),
+    attempts: process.Subject(PumpUpdate),
+    control: process.Subject(Control),
+    consumer: process.Pid,
+  )
 }
 
 /// One configured provider endpoint. The variant selects the adapter
@@ -160,9 +196,29 @@ pub type ProviderConfig {
     api_key_secret: String,
   )
 
+  /// An experimental subscription profile owned by the trusted Codex bridge.
+  /// The profile is a name, never a credential, path, or endpoint URL.
+  CodexSubscriptionProvider(name: String, profile: String)
+
   /// A Gemini `generateContent` endpoint (the Gemini Developer API, or
   /// any host speaking that dialect).
   GeminiProvider(name: String, base_url: String, api_key_secret: String)
+}
+
+/// A parked request bridge which owns the Codex credential and fixed host.
+///
+/// Its prepared owner must satisfy `http.Transport`'s drain contract. The
+/// gateway supplies only a profile and a relative, uncredentialed request;
+/// this function adds authentication outside the gateway and returns a
+/// monitorable owner before any outbound work begins.
+pub type CodexTransport {
+  CodexTransport(
+    prepare_streaming: fn(
+      String,
+      http.HttpRequest,
+      process.Subject(http.HttpEvent),
+    ) -> Result(http.PreparedRequest, String),
+  )
 }
 
 /// The gateway registry. Built with `new` and the pipeable setters;
@@ -172,7 +228,7 @@ pub opaque type Gateway {
   /// name shadow earlier ones via first-match lookup order); `routes`
   /// map each role to its ordered fallback chain, best target first;
   /// `prices` carries at most one rate card per provider name and a
-  /// provider absent from it is unpriced, which costs zero. `image_limits`
+  /// provider absent from it has unavailable pricing evidence. `image_limits`
   /// holds explicit endpoint/model limits; absent entries use eight images.
   /// `protected_images` belongs to a request-scoped copy, never shared state.
   /// `attempt_timeout_ms` is positive and bounds one attempt from transport
@@ -182,8 +238,11 @@ pub opaque type Gateway {
     routes: List(#(Role, List(ResolvedModel))),
     prices: List(#(String, Pricing)),
     image_limits: List(#(#(String, String), Int)),
+    /// Each provider name owns its optional Responses access selection.
+    cyber_access: List(#(String, CyberAccessProgram)),
     protected_images: Int,
     transport: Transport,
+    codex_transport: Option(CodexTransport),
     secrets: SecretStore,
     clock: Clock,
     attempt_timeout_ms: Int,
@@ -328,7 +387,7 @@ type Guard {
       #(process.Subject(Control), process.Subject(Nil)),
     ),
     pump_events: process.Subject(StreamEvent),
-    pump_attempts: process.Subject(AttemptRegistration),
+    pump_attempts: process.Subject(PumpUpdate),
     /// `None` once the consumer's death has stopped mattering, so a later
     /// `Down` cannot be mistaken for one of the guard's live monitors.
     consumer_watch: Option(process.Monitor),
@@ -336,6 +395,10 @@ type Guard {
     custodian: Option(custodian.Custodian),
     pump: Pump,
     attempt: Attempt,
+    /// Completed attempts retained before any fallback can begin.
+    report: RequestAccounting,
+    /// A permitted attempt whose observation has not reached this custodian.
+    pending_usage: Option(Usage),
   )
 }
 
@@ -366,6 +429,9 @@ type Event {
 
   /// The pump published a prepared transport and is blocked on its permit.
   Registered(registration: AttemptRegistration)
+
+  /// The pump replaced its bounded report after one distinct attempt.
+  AccountingUpdated(report: RequestAccounting)
 
   /// The direct consumer exited.
   ConsumerExited
@@ -417,12 +483,29 @@ pub fn new(
     routes: [],
     prices: [],
     image_limits: [],
+    cyber_access: [],
     protected_images: 0,
     transport:,
+    codex_transport: None,
     secrets:,
     clock:,
     attempt_timeout_ms: 300_000,
   )
+}
+
+/// Attaches the isolated subscription transport to this gateway.
+/// Without it, subscription dispatch fails locally and opens no socket.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.with_codex_transport(gw, bridge)
+/// ```
+pub fn with_codex_transport(
+  gateway: Gateway,
+  transport: CodexTransport,
+) -> Gateway {
+  Gateway(..gateway, codex_transport: Some(transport))
 }
 
 /// Registers a provider endpoint.
@@ -463,6 +546,27 @@ pub fn with_image_limit(
   Gateway(..gateway, image_limits: [
     #(key, limit),
     ..list.filter(gateway.image_limits, fn(entry) { entry.0 != key })
+  ])
+}
+
+/// Selects the Responses access program for one configured provider.
+///
+/// The attempt reads its own provider's selection, so a fallback cannot borrow
+/// another entry's program. Other dialects do not send this setting.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway |> gateway.with_cyber_access("sol-blue", model.DaybreakBlue)
+/// ```
+pub fn with_cyber_access(
+  gateway: Gateway,
+  provider: String,
+  program: CyberAccessProgram,
+) -> Gateway {
+  Gateway(..gateway, cyber_access: [
+    #(provider, program),
+    ..list.filter(gateway.cyber_access, fn(entry) { entry.0 != provider })
   ])
 }
 
@@ -508,8 +612,8 @@ pub fn route(
 /// Pricing hangs off the provider name rather than off `ProviderConfig`
 /// because it is not a wire fact: the adapter's request is byte-identical
 /// whether or not the operator wrote down what the endpoint charges. A
-/// provider with no card is unpriced and its settlements keep the zero
-/// cost the adapters write.
+/// provider with no card retains unavailable pricing evidence; its numeric
+/// zero cannot establish that the request was free.
 ///
 /// ## Examples
 ///
@@ -681,9 +785,10 @@ pub fn prepare(
     Error(Nil) -> {
       process.send(
         events,
-        Failed(stream.TransportFailed(
-          reason: "provider request owner did not start",
-        )),
+        Failed(
+          stream.TransportFailed(reason: "provider request owner did not start"),
+          accounting.empty(),
+        ),
       )
       stream.PreparedStream(
         handle: stream.immediate(events:, cancel: fn() { Nil }),
@@ -735,6 +840,8 @@ fn start_guard(
           custodian: None,
           pump: NoPump,
           attempt: NoAttempt,
+          report: accounting.empty(),
+          pending_usage: None,
         )
       sm.initialised(Parked, guard)
       |> sm.selecting(guard_selector(
@@ -775,7 +882,7 @@ fn guard_selector(
   begin: process.Subject(RequestStart),
   pump_ready: process.Subject(#(process.Subject(Control), process.Subject(Nil))),
   pump_events: process.Subject(StreamEvent),
-  pump_attempts: process.Subject(AttemptRegistration),
+  pump_attempts: process.Subject(PumpUpdate),
 ) -> process.Selector(Signal) {
   process.new_selector()
   |> process.select_map(begin, fn(message) {
@@ -792,8 +899,11 @@ fn guard_selector(
     Told(PumpAdmitted(control:, begin:))
   })
   |> process.select_map(pump_events, fn(streamed) { Told(FromPump(streamed:)) })
-  |> process.select_map(pump_attempts, fn(registration) {
-    Told(Registered(registration:))
+  |> process.select_map(pump_attempts, fn(update) {
+    case update {
+      TransportPrepared(registration) -> Told(Registered(registration:))
+      ReportRetained(report) -> Told(AccountingUpdated(report:))
+    }
   })
   |> process.select_monitors(Watched)
 }
@@ -909,6 +1019,19 @@ fn entered(
 // carry a stale-deadline arm and a re-read of its own phase.
 fn step(phase: Phase, guard: Guard, event: Event) -> Step {
   case phase, event {
+    // Replacing a report never renews a phase deadline. A later registration
+    // reopens the frontier only after this sender-ordered update was retained.
+    Parked, AccountingUpdated(report)
+    | Starting, AccountingUpdated(report)
+    | Requesting, AccountingUpdated(report)
+    | Cancelling, AccountingUpdated(report)
+    | Settling(_), AccountingUpdated(report)
+    | Reaping(_), AccountingUpdated(report)
+    | ClosingPump, AccountingUpdated(report)
+    | Abandoning, AccountingUpdated(report)
+    | ClosingActive, AccountingUpdated(report)
+    -> sm.keep(Guard(..guard, report:, pending_usage: None))
+
     // The permit publishes the custodian, so the pump can be spawned,
     // adopted, and only then released.
     Parked, Begin(custodian:) -> begin_request(guard, custodian)
@@ -985,7 +1108,14 @@ fn step(phase: Phase, guard: Guard, event: Event) -> Step {
         PumpStoppedEarly -> stream.TransportExit
         PumpGoneAfterCancel -> stream.CancellationRequested
       }
-      emit(guard, gateway_failure(stream.CancellationUnconfirmed, initiator))
+      emit(
+        guard,
+        gateway_failure(
+          stream.CancellationUnconfirmed,
+          initiator,
+          retained_accounting(guard),
+        ),
+      )
       close_attempt(guard)
     }
 
@@ -1176,7 +1306,7 @@ fn parked_pump(
   now: Int,
   ready: process.Subject(#(process.Subject(Control), process.Subject(Nil))),
   events: process.Subject(StreamEvent),
-  attempts: process.Subject(AttemptRegistration),
+  attempts: process.Subject(PumpUpdate),
   guard: process.Pid,
 ) -> Nil {
   let pump_control = process.new_subject()
@@ -1306,7 +1436,7 @@ fn forward_cancelled(guard: Guard, streamed: StreamEvent) -> Step {
       close_pump(guard)
     }
 
-    Failed(error) ->
+    Failed(error, _) ->
       case stream.underlying_error(error) {
         stream.CancellationUnconfirmed -> {
           emit(guard, streamed)
@@ -1342,15 +1472,19 @@ fn publish_settled(
 
 // Lost custody changes the error class, not the event which began cleanup.
 fn lost_terminal_proof(terminal: StreamEvent) -> StreamEvent {
+  let report = stream.terminal_accounting(terminal)
   case terminal {
-    Failed(error) ->
-      Failed(list.fold(
-        list.reverse(stream.failure_context(error)),
-        stream.DrainProofLost,
-        stream.with_context,
-      ))
+    Failed(error, _) ->
+      Failed(
+        list.fold(
+          list.reverse(stream.failure_context(error)),
+          stream.DrainProofLost,
+          stream.with_context,
+        ),
+        report,
+      )
     Settled(..) | Delta(..) ->
-      gateway_failure(stream.DrainProofLost, stream.TransportExit)
+      gateway_failure(stream.DrainProofLost, stream.TransportExit, report)
   }
 }
 
@@ -1369,7 +1503,11 @@ fn reap(guard: Guard, cause: ReapCause) -> Step {
 fn publish_reaped(guard: Guard, cause: ReapCause, exit: ActiveExit) -> Step {
   emit(guard, case exit {
     ActiveProofLost ->
-      gateway_failure(stream.DrainProofLost, stream.TransportExit)
+      gateway_failure(
+        stream.DrainProofLost,
+        stream.TransportExit,
+        retained_accounting(guard),
+      )
     ActiveDrained ->
       case cause {
         PumpStoppedEarly ->
@@ -1378,11 +1516,13 @@ fn publish_reaped(guard: Guard, cause: ReapCause, exit: ActiveExit) -> Step {
               reason: "provider request pump stopped before a terminal response",
             ),
             stream.TransportExit,
+            retained_accounting(guard),
           )
         PumpGoneAfterCancel ->
           gateway_failure(
             stream.CancellationUnconfirmed,
             stream.CancellationRequested,
+            retained_accounting(guard),
           )
       }
   })
@@ -1398,11 +1538,16 @@ fn expire_cancellation(guard: Guard) -> Step {
   cancel_attempt(guard.attempt)
   emit(guard, case guard.attempt {
     ExitedAttempt(outcome: ActiveProofLost) ->
-      gateway_failure(stream.DrainProofLost, stream.TransportExit)
+      gateway_failure(
+        stream.DrainProofLost,
+        stream.TransportExit,
+        retained_accounting(guard),
+      )
     ExitedAttempt(outcome: ActiveDrained) | NoAttempt | LiveAttempt(..) ->
       gateway_failure(
         stream.CancellationUnconfirmed,
         stream.CancellationRequested,
+        retained_accounting(guard),
       )
   })
   close_pump(guard)
@@ -1448,20 +1593,24 @@ fn close_attempt(guard: Guard) -> Step {
 // Adopts a freshly registered transport and permits it, unless the
 // custodian has already begun teardown.
 fn admit_attempt(guard: Guard, registration: AttemptRegistration) -> Step {
-  let AttemptRegistration(running:, permit:) = registration
+  let AttemptRegistration(running:, permit:, billing:) = registration
   let guard = hold_attempt(guard, running)
   let accepted = adopt_running(guard, running)
   process.send(permit, case accepted {
     True -> BeginAttempt
     False -> RejectAttempt
   })
-  sm.keep(guard)
+  let pending_usage = case accepted {
+    True -> Some(accounting.unknown_usage(billing))
+    False -> None
+  }
+  sm.keep(Guard(..guard, pending_usage:))
 }
 
 // Adopts a registration and refuses it. Adoption still happens, because a
 // transport the custodian does not know about is one it cannot wait for.
 fn refuse_attempt(guard: Guard, registration: AttemptRegistration) -> Guard {
-  let AttemptRegistration(running:, permit:) = registration
+  let AttemptRegistration(running:, permit:, billing: _) = registration
   let guard = hold_attempt(guard, running)
   let _accepted = adopt_running(guard, running)
   process.send(permit, RejectAttempt)
@@ -1551,35 +1700,15 @@ fn pump(
   request: ProviderRequest,
   now: Int,
   events: process.Subject(StreamEvent),
-  attempts: process.Subject(AttemptRegistration),
+  attempts: process.Subject(PumpUpdate),
   control: process.Subject(Control),
   consumer: process.Pid,
 ) -> Nil {
+  let walk =
+    Walk(gateway:, request:, now:, events:, attempts:, control:, consumer:)
   case request.target {
-    ForResolved(resolved:) ->
-      attempt(
-        gateway,
-        request,
-        now,
-        1,
-        [resolved],
-        events,
-        attempts,
-        control,
-        consumer,
-      )
-    ForRole(role:, thinking:) ->
-      dispatch_role(
-        gateway,
-        request,
-        now,
-        role,
-        thinking,
-        events,
-        attempts,
-        control,
-        consumer,
-      )
+    ForResolved(resolved:) -> attempt(walk, 1, [resolved], accounting.empty())
+    ForRole(role:, thinking:) -> dispatch_role(walk, role, thinking)
   }
 }
 
@@ -1588,37 +1717,23 @@ fn pump(
 // here rather than by `attempt` so the reported failure names the role,
 // not a generic exhaustion.
 fn dispatch_role(
-  gateway: Gateway,
-  request: ProviderRequest,
-  now: Int,
+  walk: Walk,
   role: Role,
   thinking: Option(ThinkingLevel),
-  events: process.Subject(StreamEvent),
-  attempts: process.Subject(AttemptRegistration),
-  control: process.Subject(Control),
-  consumer: process.Pid,
 ) -> Nil {
-  case stop_requested(control, consumer, events) {
+  case stop_requested(walk, accounting.empty()) {
     True -> Nil
     False ->
-      case usable_chain(gateway, role) {
+      case usable_chain(walk.gateway, role) {
         [] ->
           process.send(
-            events,
-            Failed(NoIdentity(role: model.role_to_string(role))),
+            walk.events,
+            Failed(
+              NoIdentity(role: model.role_to_string(role)),
+              accounting.empty(),
+            ),
           )
-        chain ->
-          attempt(
-            gateway,
-            request,
-            now,
-            1,
-            overlaid(chain, thinking),
-            events,
-            attempts,
-            control,
-            consumer,
-          )
+        chain -> attempt(walk, 1, overlaid(chain, thinking), accounting.empty())
       }
   }
 }
@@ -1644,49 +1759,29 @@ fn overlaid(
 // target only on a retryable failure. The last attempt's terminal event
 // is delivered as-is, so an exhausted chain surfaces the real error.
 fn attempt(
-  gateway: Gateway,
-  request: ProviderRequest,
-  now: Int,
+  walk: Walk,
   ordinal: Int,
   targets: List(ResolvedModel),
-  events: process.Subject(StreamEvent),
-  attempts: process.Subject(AttemptRegistration),
-  control: process.Subject(Control),
-  consumer: process.Pid,
+  report: RequestAccounting,
 ) -> Nil {
-  case stop_requested(control, consumer, events) {
+  case stop_requested(walk, report) {
     True -> Nil
     False ->
       case targets {
         [] ->
           // Unreachable from `pump` (chains are non-empty), kept total.
-          process.send(events, Failed(NoIdentity(role: "exhausted chain")))
-        [target, ..rest] -> {
-          let outcome =
-            attempt_one(
-              gateway,
-              request,
-              now,
-              ordinal,
-              target,
-              events,
-              attempts,
-              control,
-              consumer,
-            )
-          continue_or_deliver(
-            gateway,
-            request,
-            now,
-            ordinal,
-            outcome,
-            rest,
-            events,
-            attempts,
-            control,
-            consumer,
+          process.send(
+            walk.events,
+            Failed(NoIdentity(role: "exhausted chain"), report),
           )
-        }
+        [target, ..rest] ->
+          continue_or_deliver(
+            walk,
+            ordinal,
+            attempt_one(walk, ordinal, target),
+            report,
+            rest,
+          )
       }
   }
 }
@@ -1695,171 +1790,147 @@ fn attempt(
 // the remaining chain on a retryable failure, otherwise deliver whatever
 // came back (a settlement, or a terminal failure) as-is.
 fn continue_or_deliver(
-  gateway: Gateway,
-  request: ProviderRequest,
-  now: Int,
+  walk: Walk,
   ordinal: Int,
   outcome: AttemptOutcome,
+  previous: RequestAccounting,
   rest: List(ResolvedModel),
-  events: process.Subject(StreamEvent),
-  attempts: process.Subject(AttemptRegistration),
-  control: process.Subject(Control),
-  consumer: process.Pid,
 ) -> Nil {
+  let report = accounting.combine(previous, outcome_accounting(outcome))
+
+  // The surviving guard retains the priced prefix before another target starts.
+  // Repeated stream snapshots never pass this point as separate attempts.
+  process.send(walk.attempts, ReportRetained(report))
   case outcome {
-    AttemptCancelled(context) ->
+    AttemptCancelled(context, _) ->
       process.send(
-        events,
-        Failed(stream.with_context(ProviderCancelled, context)),
+        walk.events,
+        Failed(stream.with_context(ProviderCancelled, context), report),
       )
-    AttemptCancellationUnconfirmed(context) ->
+    AttemptCancellationUnconfirmed(context, _) ->
       process.send(
-        events,
-        Failed(stream.with_context(stream.CancellationUnconfirmed, context)),
+        walk.events,
+        Failed(
+          stream.with_context(stream.CancellationUnconfirmed, context),
+          report,
+        ),
       )
-    AttemptDrainProofLost(context) ->
+    AttemptDrainProofLost(context, _) ->
       process.send(
-        events,
-        Failed(stream.with_context(stream.DrainProofLost, context)),
+        walk.events,
+        Failed(stream.with_context(stream.DrainProofLost, context), report),
       )
-    ConsumerGone -> Nil
+    ConsumerGone(_) -> Nil
     AttemptTerminal(terminal:) ->
-      continue_terminal(
-        gateway,
-        request,
-        now,
-        ordinal,
-        terminal,
-        rest,
-        events,
-        attempts,
-        control,
-        consumer,
-      )
+      continue_terminal(walk, ordinal, terminal, report, rest)
   }
 }
 
 fn continue_terminal(
-  gateway: Gateway,
-  request: ProviderRequest,
-  now: Int,
+  walk: Walk,
   ordinal: Int,
   terminal: StreamEvent,
+  report: RequestAccounting,
   rest: List(ResolvedModel),
-  events: process.Subject(StreamEvent),
-  attempts: process.Subject(AttemptRegistration),
-  control: process.Subject(Control),
-  consumer: process.Pid,
 ) -> Nil {
   case terminal, rest {
-    Failed(error:), [_, ..] ->
+    Failed(error:, ..), [_, ..] ->
       case retry.classify(error) {
         Retryable(backoff_hint_ms: _) ->
-          attempt(
-            gateway,
-            request,
-            now,
-            ordinal + 1,
-            rest,
-            events,
-            attempts,
-            control,
-            consumer,
-          )
-        Terminal -> process.send(events, terminal)
+          attempt(walk, ordinal + 1, rest, report)
+        Terminal -> process.send(walk.events, with_accounting(terminal, report))
       }
-    _, _ -> process.send(events, terminal)
+    _, _ -> process.send(walk.events, with_accounting(terminal, report))
   }
 }
 
 // Runs one attempt against one target, delivering deltas as they stream
 // and returning the attempt's terminal event.
 fn attempt_one(
-  gateway: Gateway,
-  request: ProviderRequest,
-  now: Int,
+  walk: Walk,
   ordinal: Int,
   target: ResolvedModel,
-  events: process.Subject(StreamEvent),
-  attempts: process.Subject(AttemptRegistration),
-  control: process.Subject(Control),
-  consumer: process.Pid,
 ) -> AttemptOutcome {
+  let gateway = walk.gateway
+  let now = walk.now
   let limit =
     list.key_find(gateway.image_limits, #(target.provider, target.model_id))
     |> result.unwrap(image_budget.default_max_images)
   use messages <- or_image_failure(
-    image_budget.project(request.messages, limit, gateway.protected_images),
+    image_budget.project(walk.request.messages, limit, gateway.protected_images),
     fn(reason) {
-      AttemptTerminal(
-        Failed(stream.StreamError(
+      AttemptTerminal(Failed(
+        stream.StreamError(
           api_error_type: "image_limit",
           message: target.provider <> "/" <> target.model_id <> ": " <> reason,
-        )),
-      )
+        ),
+        accounting.empty(),
+      ))
     },
   )
-  let request = model.ProviderRequest(..request, messages:)
-  let deliver = fn(delta) { process.send(events, Delta(delta:)) }
+  let request = model.ProviderRequest(..walk.request, messages:)
   use config <- or_failure(find_provider(gateway, target.provider), fn() {
-    AttemptTerminal(Failed(UnknownProvider(provider: target.provider)))
+    AttemptTerminal(Failed(
+      UnknownProvider(provider: target.provider),
+      accounting.empty(),
+    ))
   })
-  use api_key <- or_failure(
-    secret.lookup(gateway.secrets, config.api_key_secret),
-    fn() {
-      AttemptTerminal(
-        Failed(NoSecret(
-          provider: config.name,
-          secret_name: config.api_key_secret,
-        )),
-      )
-    },
-  )
+  let cyber_access =
+    option.from_result(list.key_find(gateway.cyber_access, target.provider))
   let outcome = case config {
-    AnthropicProvider(name: _, base_url:, api_key_secret: _) ->
-      stream.run_tracked(
-        gateway.transport,
-        anthropic.build_request(base_url:, api_key:, resolved: target, request:),
+    AnthropicProvider(name:, base_url:, api_key_secret:) ->
+      keyed_attempt(
+        walk,
+        name,
+        api_key_secret,
+        fn(api_key) {
+          anthropic.build_request(
+            base_url:,
+            api_key:,
+            resolved: target,
+            request:,
+          )
+        },
         anthropic.response_machine(target, now:),
-        deliver,
-        fn(running) { register_attempt(attempts, running, consumer) },
-        control:,
-        consumer:,
-        within: gateway.attempt_timeout_ms,
       )
-    OpenAiCompatibleProvider(name: _, base_url:, api_key_secret: _) ->
-      stream.run_tracked(
-        gateway.transport,
-        openai.build_request(base_url:, api_key:, resolved: target, request:),
+    OpenAiCompatibleProvider(name:, base_url:, api_key_secret:) ->
+      keyed_attempt(
+        walk,
+        name,
+        api_key_secret,
+        fn(api_key) {
+          openai.build_request(base_url:, api_key:, resolved: target, request:)
+        },
         openai.response_machine(target, now:),
-        deliver,
-        fn(running) { register_attempt(attempts, running, consumer) },
-        control:,
-        consumer:,
-        within: gateway.attempt_timeout_ms,
       )
-    OpenAiResponsesProvider(name: _, base_url:, api_key_secret: _) ->
-      stream.run_tracked(
-        gateway.transport,
-        responses.build_request(base_url:, api_key:, resolved: target, request:),
+    OpenAiResponsesProvider(name:, base_url:, api_key_secret:) ->
+      keyed_attempt(
+        walk,
+        name,
+        api_key_secret,
+        fn(api_key) {
+          responses.build_request_with_access(
+            base_url,
+            api_key,
+            target,
+            request,
+            cyber_access,
+          )
+        },
         responses.response_machine(target, now:),
-        deliver,
-        fn(running) { register_attempt(attempts, running, consumer) },
-        control:,
-        consumer:,
-        within: gateway.attempt_timeout_ms,
       )
-    GeminiProvider(name: _, base_url:, api_key_secret: _) ->
-      stream.run_tracked(
-        gateway.transport,
-        gemini.build_request(base_url:, api_key:, resolved: target, request:),
+    GeminiProvider(name:, base_url:, api_key_secret:) ->
+      keyed_attempt(
+        walk,
+        name,
+        api_key_secret,
+        fn(api_key) {
+          gemini.build_request(base_url:, api_key:, resolved: target, request:)
+        },
         gemini.response_machine(target, now:),
-        deliver,
-        fn(running) { register_attempt(attempts, running, consumer) },
-        control:,
-        consumer:,
-        within: gateway.attempt_timeout_ms,
       )
+    CodexSubscriptionProvider(name: _, profile:) ->
+      subscription_attempt(walk, profile, target, request)
   }
 
   // Costing sits between the adapter and the walk's terminal, which is the
@@ -1870,7 +1941,104 @@ fn attempt_one(
   // priced record without a second costing pass anywhere above the seam.
   priced(gateway, outcome, target)
   |> annotate_attempt(ordinal, gateway.attempt_timeout_ms)
+}
+
+// API-key dispatch remains the only branch that reads a secret. Scrubbing
+// happens before the fallback walk can inspect or retain a remote failure.
+fn keyed_attempt(
+  walk: Walk,
+  name: String,
+  secret_name: String,
+  build: fn(String) -> http.HttpRequest,
+  machine: stream.ResponseMachine(state),
+) -> AttemptOutcome {
+  use api_key <- or_failure(
+    secret.lookup(walk.gateway.secrets, secret_name),
+    fn() {
+      AttemptTerminal(Failed(
+        NoSecret(provider: name, secret_name:),
+        accounting.empty(),
+      ))
+    },
+  )
+  tracked(
+    walk,
+    walk.gateway.transport,
+    build(api_key),
+    machine,
+    usage_evidence.Api,
+  )
   |> scrub_attempt(api_key)
+}
+
+// The optional bridge is never substituted with the public API-key transport.
+// A missing bridge or profile fails before request preparation.
+fn subscription_attempt(
+  walk: Walk,
+  profile: String,
+  target: ResolvedModel,
+  request: ProviderRequest,
+) -> AttemptOutcome {
+  case profile, walk.gateway.codex_transport {
+    "", _ ->
+      AttemptTerminal(Failed(
+        stream.StreamError(
+          api_error_type: "codex_profile_missing",
+          message: "Codex subscription profile is empty",
+        ),
+        accounting.empty(),
+      ))
+    _, None ->
+      AttemptTerminal(Failed(
+        stream.StreamError(
+          api_error_type: "codex_transport_unavailable",
+          message: "Codex subscription transport is unavailable",
+        ),
+        accounting.empty(),
+      ))
+    profile, Some(CodexTransport(prepare_streaming:)) ->
+      tracked(
+        walk,
+        http.Transport(prepare_streaming: fn(built, events) {
+          prepare_streaming(profile, built, events)
+        }),
+        responses.build_subscription_request_with_access(
+          target,
+          request,
+          option.from_result(list.key_find(
+            walk.gateway.cyber_access,
+            target.provider,
+          )),
+        ),
+        responses.subscription_response_machine(target, now: walk.now),
+        usage_evidence.ChatGptPlan,
+      )
+  }
+}
+
+// Both dispatch shapes run the same tracked attempt: deltas go straight to the
+// consumer, the transport is registered with the guard before it begins, and
+// the attempt is bounded by the gateway's attempt timeout. Only the transport,
+// the built request and the billing basis differ.
+fn tracked(
+  walk: Walk,
+  transport: Transport,
+  built: http.HttpRequest,
+  machine: stream.ResponseMachine(state),
+  billing: usage_evidence.Billing,
+) -> AttemptOutcome {
+  stream.run_tracked(
+    transport,
+    built,
+    machine,
+    fn(delta) { process.send(walk.events, Delta(delta:)) },
+    fn(running) {
+      register_attempt(walk.attempts, running, walk.consumer, billing)
+    },
+    control: walk.control,
+    consumer: walk.consumer,
+    within: walk.gateway.attempt_timeout_ms,
+  )
 }
 
 // The ordinal names this route walk, independently of the machine's retries.
@@ -1892,79 +2060,85 @@ fn annotate_attempt(
           None,
         ),
       ))
-    AttemptCancelled(context) ->
+    AttemptCancelled(context, report) ->
       AttemptCancelled(
         stream.FailureObservation(..context, attempt: Some(ordinal)),
+        report,
       )
-    AttemptCancellationUnconfirmed(context) ->
+    AttemptCancellationUnconfirmed(context, report) ->
       AttemptCancellationUnconfirmed(
         stream.FailureObservation(..context, attempt: Some(ordinal)),
+        report,
       )
-    AttemptDrainProofLost(context) ->
+    AttemptDrainProofLost(context, report) ->
       AttemptDrainProofLost(
         stream.FailureObservation(..context, attempt: Some(ordinal)),
+        report,
       )
-    ConsumerGone -> ConsumerGone
+    ConsumerGone(report) -> ConsumerGone(report)
   }
 }
 
 fn gateway_failure(
   error: stream.ProviderError,
   cause: stream.FailureCause,
+  report: RequestAccounting,
 ) -> StreamEvent {
-  Failed(stream.with_context(
-    error,
-    stream.FailureObservation(
-      stream.GatewaySource,
-      cause,
-      None,
-      None,
-      Some(request_cancel_grace_ms),
-      None,
+  Failed(
+    stream.with_context(
+      error,
+      stream.FailureObservation(
+        stream.GatewaySource,
+        cause,
+        None,
+        None,
+        Some(request_cancel_grace_ms),
+        None,
+      ),
     ),
-  ))
+    report,
+  )
 }
 
-// Rewrites a settled attempt's usage with the target provider's rate card.
-// A failure, a cancellation, or an unpriced provider passes through
-// untouched — the last because a zero card would produce the same zeros
-// the adapter already wrote, at the cost of rebuilding the message.
+// Each attempt is priced under its actual target before the fallback fold.
+// Failures retain reported consumption too; an absent card keeps the
+// estimate unavailable instead of certifying the adapter's numeric zero.
 fn priced(
   gateway: Gateway,
   outcome: AttemptOutcome,
   target: ResolvedModel,
 ) -> AttemptOutcome {
-  case outcome, list.key_find(gateway.prices, target.provider) {
-    AttemptTerminal(Settled(message: settled, usage:)), Ok(card) ->
-      AttemptTerminal(Settled(
-        message: repriced(settled, usage, card),
-        usage: pricing.price(usage, card),
-      ))
-
-    AttemptTerminal(terminal:), _ -> AttemptTerminal(terminal:)
-    AttemptCancelled(context), _ -> AttemptCancelled(context)
-    AttemptCancellationUnconfirmed(context), _ ->
-      AttemptCancellationUnconfirmed(context)
-    AttemptDrainProofLost(context), _ -> AttemptDrainProofLost(context)
-    ConsumerGone, _ -> ConsumerGone
+  case list.key_find(gateway.prices, target.provider) {
+    Error(Nil) -> outcome
+    Ok(card) -> {
+      let report = price_attempt(outcome_accounting(outcome), card)
+      case outcome {
+        AttemptTerminal(Settled(message: settled, ..)) ->
+          AttemptTerminal(Settled(repriced(settled, card), report))
+        AttemptTerminal(Failed(error:, ..)) ->
+          AttemptTerminal(Failed(error, report))
+        AttemptTerminal(Delta(..) as delta) -> AttemptTerminal(delta)
+        AttemptCancelled(context, _) -> AttemptCancelled(context, report)
+        AttemptCancellationUnconfirmed(context, _) ->
+          AttemptCancellationUnconfirmed(context, report)
+        AttemptDrainProofLost(context, _) ->
+          AttemptDrainProofLost(context, report)
+        ConsumerGone(_) -> ConsumerGone(report)
+      }
+    }
   }
 }
 
-// `Settled.usage` is documented to equal the usage inside the settled
-// message, so pricing has to rewrite both halves or break that invariant.
-// The unwrap cannot fire: the message came out of a `Settled` event, so it
-// is an assistant message with a settled stop reason, and a record update
-// changes neither fact. Leaving the original in place is still the right
-// answer if it somehow did, because an unpriced record is a smaller lie
-// than a dropped settlement.
+// Context readers consume only the final assistant's usage, while the report
+// owns the request sum. Pricing this message separately preserves that split.
+// Updating usage cannot change its settled stop reason, so settle succeeds.
 fn repriced(
   settled: stream.SettledAssistantMessage,
-  usage: Usage,
   card: pricing.Pricing,
 ) -> stream.SettledAssistantMessage {
   case stream.message(settled) {
     AssistantMessage(..) as assistant ->
-      AssistantMessage(..assistant, usage: pricing.price(usage, card))
+      AssistantMessage(..assistant, usage: pricing.price(assistant.usage, card))
       |> stream.settle
       |> result.unwrap(settled)
 
@@ -1978,14 +2152,18 @@ fn repriced(
 // another lifetime or a later diagnostic.
 fn scrub_attempt(outcome: AttemptOutcome, api_key: String) -> AttemptOutcome {
   case outcome {
-    AttemptTerminal(Failed(error:)) ->
-      AttemptTerminal(Failed(error: diagnostic.scrub_error(error, api_key)))
+    AttemptTerminal(Failed(error:, accounting: report)) ->
+      AttemptTerminal(Failed(
+        error: diagnostic.scrub_error(error, api_key),
+        accounting: report,
+      ))
     AttemptTerminal(terminal:) -> AttemptTerminal(terminal:)
-    AttemptCancelled(context) -> AttemptCancelled(context)
-    AttemptCancellationUnconfirmed(context) ->
-      AttemptCancellationUnconfirmed(context)
-    AttemptDrainProofLost(context) -> AttemptDrainProofLost(context)
-    ConsumerGone -> ConsumerGone
+    AttemptCancelled(context, report) -> AttemptCancelled(context, report)
+    AttemptCancellationUnconfirmed(context, report) ->
+      AttemptCancellationUnconfirmed(context, report)
+    AttemptDrainProofLost(context, report) ->
+      AttemptDrainProofLost(context, report)
+    ConsumerGone(report) -> ConsumerGone(report)
   }
 }
 
@@ -1996,13 +2174,17 @@ fn scrub_attempt(outcome: AttemptOutcome, api_key: String) -> AttemptOutcome {
 // Rejection cancels the prepared owner before `run_tracked` sends its begin
 // message; per-sender ordering prevents the underlying transport from starting.
 fn register_attempt(
-  attempts: process.Subject(AttemptRegistration),
+  attempts: process.Subject(PumpUpdate),
   running: RunningRequest,
   guard: process.Pid,
+  billing: usage_evidence.Billing,
 ) -> Nil {
   let permit = process.new_subject()
   let guard_monitor = process.monitor(guard)
-  process.send(attempts, AttemptRegistration(running:, permit:))
+  process.send(
+    attempts,
+    TransportPrepared(AttemptRegistration(running:, permit:, billing:)),
+  )
   let permit =
     process.new_selector()
     |> process.select(permit)
@@ -2020,17 +2202,13 @@ fn register_attempt(
 // Cancellation is checked before any target starts, including a fallback.
 // A live consumer receives the one cancellation terminal; a dead consumer
 // needs no terminal and only suppresses new work.
-fn stop_requested(
-  control: process.Subject(Control),
-  consumer: process.Pid,
-  events: process.Subject(StreamEvent),
-) -> Bool {
-  case process.is_alive(consumer) {
+fn stop_requested(walk: Walk, report: RequestAccounting) -> Bool {
+  case process.is_alive(walk.consumer) {
     False -> True
     True ->
-      case process.receive(control, within: 0) {
+      case process.receive(walk.control, within: 0) {
         Ok(Cancel) -> {
-          process.send(events, Failed(ProviderCancelled))
+          process.send(walk.events, Failed(ProviderCancelled, report))
           True
         }
         Error(Nil) -> False
@@ -2063,5 +2241,50 @@ fn or_image_failure(
   case result {
     Ok(value) -> next(value)
     Error(reason) -> failure(reason)
+  }
+}
+
+// A custodian can retain only observations it received. Its permitted current
+// attempt is unknown when the pump dies before replacing that observation.
+fn retained_accounting(guard: Guard) -> RequestAccounting {
+  case guard.pending_usage {
+    None -> guard.report
+    Some(usage) -> accounting.append(guard.report, usage)
+  }
+}
+
+fn outcome_accounting(outcome: AttemptOutcome) -> RequestAccounting {
+  case outcome {
+    AttemptTerminal(terminal) -> stream.terminal_accounting(terminal)
+    AttemptCancelled(accounting: report, ..)
+    | AttemptCancellationUnconfirmed(accounting: report, ..)
+    | AttemptDrainProofLost(accounting: report, ..)
+    | ConsumerGone(accounting: report) -> report
+  }
+}
+
+fn with_accounting(
+  event: StreamEvent,
+  report: RequestAccounting,
+) -> StreamEvent {
+  case event {
+    Settled(message:, ..) -> Settled(message, report)
+    Failed(error:, ..) -> Failed(error, report)
+    Delta(..) -> event
+  }
+}
+
+// This boundary sees exactly one target's report: `stream.run_tracked` never returns
+// more than one attempt, so the report's `last` is the whole attempt and
+// pricing it alone prices everything the target consumed. Pricing precedes
+// route-fold addition, so fallback models can have different rates without
+// repricing history.
+fn price_attempt(
+  report: RequestAccounting,
+  card: Pricing,
+) -> RequestAccounting {
+  case accounting.last(report) {
+    None -> report
+    Some(usage) -> accounting.from_usage(pricing.price(usage, card))
   }
 }

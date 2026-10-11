@@ -1,11 +1,13 @@
 //// Shared message and preparation fixtures for the machine suite.
 
+import core/accounting
 import core/json
 import core/message.{
   type AgentMessage, type DeferredHandle, type StopReason, type Usage,
   AssistantMessage, AssistantText, AssistantToolCall, DeferredHandle, ToolCall,
   ToolResultMessage, ToolResultText, Usage, UsageCost, UserMessage, UserText,
 }
+import core/usage_evidence
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import machine/classification.{type SettledAssistantMessage}
@@ -40,6 +42,7 @@ pub fn usage_of(input: Int, output: Int) -> Usage {
       cache_write: 0.0,
       total: 0.0,
     ),
+    evidence: usage_evidence.priced_api(),
   )
 }
 
@@ -181,4 +184,22 @@ pub fn preparation() -> StructuralPreparation {
       keep_recent_tokens: 500,
     ),
   )
+}
+
+/// A one-attempt report for a settled fixture's final response.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fixture.report(fixture.settled(fixture.assistant(message.Stop, "done", 3)))
+/// ```
+pub fn report(
+  settled: SettledAssistantMessage,
+) -> accounting.RequestAccounting {
+  case classification.message(settled) {
+    AssistantMessage(usage:, ..) -> accounting.from_usage(usage)
+    message.UserMessage(..)
+    | message.ToolResultMessage(..)
+    | message.CustomMessage(..) -> accounting.empty()
+  }
 }

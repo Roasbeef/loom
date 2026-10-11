@@ -10,7 +10,6 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import simplifile
-import tools/directory_access
 import tools/fs
 import tools/permissions
 import tools/tool.{type Ctx}
@@ -68,9 +67,8 @@ fn select_path(door: Door, ctx: Ctx, path: String) -> Result(String, String) {
         False -> result.map(door.read(ctx), fn(base) { base <> "/" <> path })
       }
   })
-  let access = directory_access.approved(ctx.directory_access, ctx.grants)
   use canonical <- result.try(
-    fs.resolve_readable(ctx.filesystem, ctx.workspace, access.readable, chosen)
+    fs.resolve_for_read(ctx, chosen)
     |> result.map_error(fn(error) { "invalid cwd: " <> string.inspect(error) }),
   )
   use exists <- result.try(

@@ -5,6 +5,8 @@
 //// tokens at $3.00/M is exactly $3.00 in binary floating point, while a
 //// fractional-cent result is not exactly anything a literal can spell.
 
+import core/usage_evidence
+
 import core/message
 import gleam/option.{None}
 import provider/pricing
@@ -18,6 +20,7 @@ fn usage(
   cache_write: Int,
 ) -> message.Usage {
   message.Usage(
+    evidence: usage_evidence.reported(usage_evidence.Api),
     input:,
     output:,
     cache_read:,

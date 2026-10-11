@@ -208,6 +208,7 @@ import lsp/text
 import lsp/transport.{type Transport}
 import simplifile
 import tools/blob
+import tools/fs
 import tools/grep
 import tools/tool.{type RunningCall}
 import weft
@@ -1791,13 +1792,39 @@ fn still_loading(titles: List(String)) -> String {
 }
 
 fn owned(manager: Manager, path: String) -> Result(Owned, QueryError) {
-  resolve.owner(manager.servers, manager.workspace, path)
-  |> result.map_error(fn(unowned) {
-    case unowned {
-      resolve.NoOwner(reason:) | resolve.Refused(reason:) ->
-        query.NoServer(reason:)
-    }
-  })
+  use owner <- result.try(
+    resolve.owner(manager.servers, manager.workspace, path)
+    |> result.map_error(fn(unowned) {
+      case unowned {
+        resolve.NoOwner(reason:) | resolve.Refused(reason:) ->
+          query.NoServer(reason:)
+      }
+    }),
+  )
+  use Nil <- result.try(refuse_protected(manager, owner.path))
+  Ok(owner)
+}
+
+// A question about a file reads it, so the file is judged like any other
+// native read: the path is resolved to where it really leads, and a
+// protected entry that covers it refuses the question. `resolve.owner`
+// places a path under a workspace and finds its server; it does not apply
+// the protected list, which `resolve.admit` applies only to the files a
+// server itself names.
+fn refuse_protected(manager: Manager, path: String) -> Result(Nil, QueryError) {
+  let filesystem = fs.real_filesystem()
+  let real = result.unwrap(fs.resolve_real(filesystem, "/", path), or: path)
+  case fs.refuse_protected_read(filesystem, manager.protected, path, real) {
+    Ok(_resolved) -> Ok(Nil)
+    Error(fs.ProtectedPath(path:, protected:)) ->
+      Error(query.NoServer(reason: fs.protected_read_text(path, protected)))
+    Error(fs.ProtectionMisconfigured(path:, protected:)) ->
+      Error(query.NoServer(reason: fs.misconfigured_read_text(path, protected)))
+    Error(fs.EmptyPath)
+    | Error(fs.EscapesWorkspace(_))
+    | Error(fs.Unresolvable(..))
+    | Error(fs.JailReplaced(..)) -> Ok(Nil)
+  }
 }
 
 // Turns a question into a position, by the three rules ADR-015 §5 names:

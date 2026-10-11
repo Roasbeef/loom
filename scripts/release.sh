@@ -119,6 +119,9 @@ if [ "$SMOKE" = 1 ]; then
 
   [ -f "$SMOKE_SUPPORT/client@release_probe_test.beam" ] || {
     echo "release.sh: missing release smoke probe; rebuild with make release" >&2; exit 1; }
+  # Native account management must run from the shipped server with a private
+  # home, without spending usage or borrowing an operator login.
+  python3 scripts/codex_subscription_smoke.py "$REL/bin/loomd"
   STATE="$REL_ROOT/smoke/state"
   WORKSPACE="$REL_ROOT/smoke/work"
   rm -rf "$REL_ROOT/smoke"; mkdir -p "$STATE" "$WORKSPACE"
@@ -339,6 +342,7 @@ if [ "$SMOKE" = 1 ]; then
   echo "            shared-domain distillation after admission, clean close on SIGTERM,"
   echo "            the helper found beside the binary with no --helper injected,"
   echo "            and an explicit --helper still winning"
+  echo "            plus native ChatGPT status reporting logged out without credentials"
   if [ -d "$REL/share/codemode-seed" ]; then
     echo "            plus code_mode registered from the bundled toolchain"
   else

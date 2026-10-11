@@ -409,11 +409,12 @@ time builds anything.
   `Prevention`, `Repetition`), `intent` (`ToggleSidebar | TogglePanel |
   LeaveStrand`, or nothing), `cancels`, `candidate`, `title`, `shortcuts` and
   `crumb_link`, and
-  `shell.Model(layout, sidebar, needing, workspace, keys)` and `shell.Msg`
-  (`Toggled(region)`, `Chosen(tab)`, `SidebarChanged(presence)`,
+  `shell.Model(layout, sidebar, needing, workspace, keys, ..., width, grip)` and
+  `shell.Msg` (`Toggled(region)`, `Chosen(tab)`, `SidebarChanged(presence)`,
   `NeedingChanged(count)`, `Relayed(relay)`, `Pressed(intent)`, `Connected`,
   `Disconnected`, `Listening(listener)`, `ThemeCycled`,
-  `Restored(workspace, saved, theme)`).
+  `Restored(workspace, saved, theme, tab, width)`, `GripPressed`, `GripHooked`,
+  `GripMoved`, `GripReleased`, `GripAdjusted`).
   `Listening` stops any listener the model still holds as it keeps the new
   one, because `listen` registers after the paint and can arrive after a
   later `Connected`. The
@@ -425,6 +426,35 @@ time builds anything.
   from `shell_rule.label` and `shell_rule.tab_label`. A tab press changes
   the custom state and nothing else: closing and reopening the panel keeps the
   tab.
+- `grip_rule` and the panel's grip. A separator (`role="separator"`,
+  focusable, `aria-valuenow`/`valuemin`) on the panel column's left edge, drawn
+  by `<loom-shell>` between the centre and the column while the panel is open,
+  lets the reader widen the panel to read a Changes diff: drag left to widen,
+  right to narrow, arrow keys by `fine_step` (24 px), with Shift by
+  `coarse_step` (96 px), Home and End to the narrowest and widest, a double click
+  to go back to `default_width` (340). `grip_rule` imports neither Lustre nor the
+  DOM and holds the decisions: `Room(panel, centre)` (the two columns' rendered
+  widths, which the shell measures from the event: `room_of`), `ceiling` (what
+  the pair shares less `centre_floor`, 360, which the stylesheet also gives the
+  centre column as `min-width` from 980 px up; never under `least_width`, 280, and
+  never over `most_width`, 4000),
+  `Drag(origin, start, ceiling)` from `begin`, `dragged` (computed from the start
+  of the drag, so overshooting a limit and returning has no dead zone),
+  `contact` (`Pressing` | `Lifted`, from the move's `buttons`), `adjustment`
+  (`Wider` | `Narrower` | `Widest` | `Narrowest` | `Reset`; any other key is
+  the browser's, Tab included) and `adjusted`. A drag listens on the document
+  (`pointermove`, `pointerup` and `pointercancel`, `shell.Hooks`), registered after
+  the press and removed on release, cancel, a move with no button down and
+  disconnect; listeners that arrive after the drag ended are stopped on arrival
+  (`GripHooked`). The frame's root carries the width as the custom property
+  `--panel-width` (`0px` while the panel is closed) and the class `dragging`
+  while held (width transition and text selection off); the column, `.ctx-panel`
+  (a slotted element, which inherits from its slot's ancestors) and the stylesheet
+  read the property. The width is kept per browser under `layout_rule.width_key`
+  (`loom.panel.width.v1`, a decimal integer; `restored_width` accepts 280 to
+  4000 and nothing else), written once at the end of a gesture and on each key.
+  Below 980 px the panel is a row of cards and the grip is not shown. The one new
+  DOM binding is `ffi_dom.offset_width`.
 - `shell_rule.Frame` (`Wide` | `Narrow`), `narrow_query` (`(max-width: 1211px)`,
   the stylesheet's breakpoint), `sidebar_state`, `sidebar_pressed`,
   `Dismissal` (`Dismiss` | `Leave`), `dismissal`, `scrimmed` and

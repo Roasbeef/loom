@@ -41,6 +41,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import session_view/composer
 import session_view/protocol
 import session_view/transcript_lines.{type Block}
 import session_view/turns.{type Item, type Piece}
@@ -349,8 +350,12 @@ fn item_size(item: Item) -> Int {
   }
 }
 
-// The rows a piece draws outside a fold. A message another party wrote is its
-// own lines, because that is what the page retains for it.
+// The rows a piece draws outside a fold. A report or a nudge another party
+// wrote is its own lines, because that is what the page retains for it. A
+// peer's or a strand's message is drawn as the line the composer shortens it
+// to and opens in place, so it weighs that line and not its whole text: a
+// long brief would otherwise fill the page's row limit on its own and push
+// the turn out of the window.
 fn rows(piece: Piece) -> Int {
   case piece {
     turns.Plain(block:, ..) | turns.Prompt(block:, ..) ->
@@ -360,12 +365,12 @@ fn rows(piece: Piece) -> Int {
     turns.Commentary(..) -> 0
     turns.Returned(report:, ..) -> 1 + lines(report)
     turns.Nudged(body:, ..) -> 1 + lines(body)
-    turns.Peer(text:, ..) -> 1 + lines(text)
+    turns.Peer(text:, ..) -> 1 + lines(composer.transcript_text(text, False))
     turns.Sibling(text:, trailer:, ..) ->
       1
-      + lines(text)
+      + lines(composer.transcript_text(text, False))
       + case trailer {
-        Some(trailer) -> lines(trailer)
+        Some(trailer) -> lines(composer.transcript_text(trailer, False))
         None -> 0
       }
   }

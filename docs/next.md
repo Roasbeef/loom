@@ -73,6 +73,22 @@ roles. The proposal numbers collide: `078` is taken twice (this branch's
 distributed runtime and main's LSP diagnostics scope) and the Khepri branch's
 `080-khepri-session-ownership` shares `080` with main's model choice.
 
+A fourth merge of `main` (through `89d252605`) brought in
+[PR #935](https://github.com/Roasbeef/loom/pull/935), which moves a session's
+blob store out of the workspace and into the daemon's state
+(`serve.session_blob_root`, `client/blobs.adopt_legacy`, `fs_read` authorizing
+the blob root). This branch had moved the workspace half into
+`client/workspace_plane`, so the root became an input to the plane:
+`WorkspaceSpec.blob_root`, with `Census.blob_root` carrying it back to an
+owner whose workspace is elsewhere. A local session passes
+`serve.session_blob_root` and adopts a legacy `.blobs` after `prepare`, as main
+does. An executor keeps a remote session's blobs in `<state>/blobs/<session>`,
+which a close does not remove, masks it from every jail with
+`workspace_policy.protecting_blobs`, and does not adopt a legacy directory,
+because no release ever wrote a registered session's store into a checkout.
+Main added protocol-change `081` and `082` and no catalogue version, so the
+numbers above still hold.
+
 Main's handoff for that work also said: run `make gen-client` after changing
 browser source, and judge every gate by its own exit code. A gate run on a
 PR's original head does not attest to a later integration head, so each merge

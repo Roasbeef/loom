@@ -5,8 +5,11 @@
 //// that cancellation can retire the published owner before route resolution,
 //// secret lookup, or transport startup becomes possible.
 
+import core/accounting
 import core/clock
+import core/json
 import core/message
+import core/usage_evidence
 import gleam/bit_array
 import gleam/erlang/process
 import gleam/list
@@ -15,6 +18,7 @@ import gleam/string
 import provider/fixture.{sse_event}
 import provider/gateway
 import provider/http
+import provider/internal/wire
 import provider/model
 import provider/pricing
 import provider/secret
@@ -152,8 +156,9 @@ pub fn happy_dispatch_settles_test() {
       fixture.transport(fixture.ok_response(happy_transcript("Hello"))),
     )
   let handle = gateway.request(gw, main_request())
-  let assert Ok(#(deltas, stream.Settled(message: settled, usage:))) =
+  let assert Ok(#(deltas, stream.Settled(message: settled, accounting: report))) =
     stream.await_terminal(handle, within: 2000)
+  let usage = accounting.total(report)
   assert deltas == [stream.TextDelta(index: 0, text: "Hello")]
   let assert message.AssistantMessage(
     model: model_id,
@@ -182,29 +187,31 @@ pub fn a_priced_provider_settles_with_a_real_cost_test() {
     )
     |> gateway.price("primary", card)
   let handle = gateway.request(gw, main_request())
-  let assert Ok(#(_deltas, stream.Settled(message: settled, usage:))) =
+  let assert Ok(#(_deltas, stream.Settled(message: settled, accounting: report))) =
     stream.await_terminal(handle, within: 2000)
+  let usage = accounting.total(report)
 
   assert usage.cost.total >. 0.0
   assert usage.cost == pricing.price(usage, card).cost
 
-  // The frozen contract says the event's usage equals the usage inside the
-  // settled message, so the message's copy has to be repriced too or a
-  // consumer reading either one would see a different bill.
+  // A one-attempt report equals the final message's usage. Pricing must
+  // update both observations so either reader receives the same estimate.
   let assert message.AssistantMessage(usage: inner, ..) =
     stream.message(settled)
   assert inner == usage
 }
 
-pub fn an_unpriced_provider_settles_at_zero_test() {
+pub fn an_unpriced_provider_retains_unavailable_estimate_test() {
   let gw =
     two_provider_gateway(
       fixture.transport(fixture.ok_response(happy_transcript("Hello"))),
     )
   let handle = gateway.request(gw, main_request())
-  let assert Ok(#(_deltas, stream.Settled(message: _, usage:))) =
+  let assert Ok(#(_deltas, stream.Settled(message: _, accounting: report))) =
     stream.await_terminal(handle, within: 2000)
+  let usage = accounting.total(report)
   assert usage.cost.total == 0.0
+  assert usage.evidence == usage_evidence.partial(usage_evidence.Api)
 }
 
 pub fn a_card_prices_only_the_provider_it_names_test() {
@@ -224,9 +231,11 @@ pub fn a_card_prices_only_the_provider_it_names_test() {
       ),
     )
   let handle = gateway.request(gw, main_request())
-  let assert Ok(#(_deltas, stream.Settled(message: _, usage:))) =
+  let assert Ok(#(_deltas, stream.Settled(message: _, accounting: report))) =
     stream.await_terminal(handle, within: 2000)
+  let usage = accounting.total(report)
   assert usage.cost.total == 0.0
+  assert usage.evidence == usage_evidence.partial(usage_evidence.Api)
 }
 
 pub fn gemini_provider_dispatches_through_its_adapter_test() {
@@ -255,8 +264,9 @@ pub fn gemini_provider_dispatches_through_its_adapter_test() {
     |> gateway.route(model.Main, [target("google", "gemini-3.5-flash")])
     |> gateway.with_attempt_timeout(2000)
   let handle = gateway.request(gw, main_request())
-  let assert Ok(#(deltas, stream.Settled(message: settled, usage:))) =
+  let assert Ok(#(deltas, stream.Settled(message: settled, accounting: report))) =
     stream.await_terminal(handle, within: 2000)
+  let usage = accounting.total(report)
   assert deltas == [stream.TextDelta(index: 0, text: "Hello")]
   let assert message.AssistantMessage(api:, provider:, ..) =
     stream.message(settled)
@@ -320,9 +330,10 @@ pub fn responses_provider_dispatches_with_exact_endpoint_and_credentials_test() 
       target: model.ForResolved(target("responses", "model-b")),
     )
   let handle = gateway.request(responses_gateway(transport), request)
-  let assert Ok(#([], stream.Settled(message: settled, usage:))) =
+  let assert Ok(#([], stream.Settled(message: settled, accounting: report))) =
     stream.await_terminal(handle, within: 2000)
     as "the Responses adapter must settle its own lifecycle stream"
+  let usage = accounting.total(report)
   let assert message.AssistantMessage(api:, provider:, model: model_id, ..) =
     stream.message(settled)
     as "a Responses settlement retains its durable identity"
@@ -397,7 +408,7 @@ pub fn retryable_failure_walks_the_chain_test() {
       }
     })
   let handle = gateway.request(two_provider_gateway(transport), main_request())
-  let assert Ok(#(_deltas, stream.Settled(message: settled, usage: _))) =
+  let assert Ok(#(_deltas, stream.Settled(message: settled, accounting: _))) =
     stream.await_terminal(handle, within: 2000)
   let assert message.AssistantMessage(model: model_id, provider:, ..) =
     stream.message(settled)
@@ -411,7 +422,7 @@ pub fn exhausted_chain_fails_in_band_with_last_error_test() {
       two_provider_gateway(fixture.transport(overloaded_response())),
       main_request(),
     )
-  let assert Ok(#([], stream.Failed(error))) =
+  let assert Ok(#([], stream.Failed(error, _))) =
     stream.await_terminal(handle, within: 2000)
   assert stream.underlying_error(error)
     == stream.HttpError(
@@ -433,7 +444,7 @@ pub fn terminal_failure_does_not_walk_the_chain_test() {
       }
     })
   let handle = gateway.request(two_provider_gateway(transport), main_request())
-  let assert Ok(#([], stream.Failed(error))) =
+  let assert Ok(#([], stream.Failed(error, _))) =
     stream.await_terminal(handle, within: 2000)
   let assert stream.HttpError(status: 400, ..) = stream.underlying_error(error)
     as "context preserves the exact underlying failure"
@@ -453,7 +464,7 @@ pub fn reflected_secret_is_scrubbed_from_http_error_test() {
       ),
       main_request(),
     )
-  let assert Ok(#([], stream.Failed(error))) =
+  let assert Ok(#([], stream.Failed(error, _))) =
     stream.await_terminal(handle, within: 2000)
   let rendered = stream.describe_error(error)
   assert !string.contains(rendered, secret_value)
@@ -476,7 +487,7 @@ pub fn reflected_secret_is_scrubbed_from_sse_error_test() {
         target: model.ForResolved(target("primary", "model-a")),
       ),
     )
-  let assert Ok(#([], stream.Failed(error))) =
+  let assert Ok(#([], stream.Failed(error, _))) =
     stream.await_terminal(handle, within: 2000)
   let rendered = stream.describe_error(error)
   assert !string.contains(rendered, secret_value)
@@ -491,7 +502,7 @@ pub fn reflected_secret_is_scrubbed_from_malformed_response_test() {
       two_provider_gateway(fixture.transport(response)),
       main_request(),
     )
-  let assert Ok(#([], stream.Failed(error))) =
+  let assert Ok(#([], stream.Failed(error, _))) =
     stream.await_terminal(handle, within: 2000)
   let rendered = stream.describe_error(error)
   assert !string.contains(rendered, secret_value)
@@ -511,7 +522,7 @@ pub fn remote_diagnostics_are_bounded_by_bytes_not_graphemes_test() {
       ),
       main_request(),
     )
-  let assert Ok(#([], stream.Failed(error))) =
+  let assert Ok(#([], stream.Failed(error, _))) =
     stream.await_terminal(handle, within: 2000)
   let rendered = stream.describe_error(error)
   assert bit_array.byte_size(bit_array.from_string(rendered)) < 1024
@@ -546,7 +557,7 @@ pub fn cancellation_is_terminal_and_prevents_fallback_test() {
     == Ok("https://primary.test/v1/messages")
   stream.cancel(handle)
   stream.cancel(handle)
-  let assert Ok(#([], stream.Failed(error))) =
+  let assert Ok(#([], stream.Failed(error, _))) =
     stream.await_terminal(handle, within: 1000)
   let assert stream.ProviderCancelled = stream.underlying_error(error)
     as "context preserves the exact underlying failure"
@@ -641,8 +652,8 @@ pub fn cancellation_racing_retryable_failure_stops_fallback_test() {
     as "the cancellation deadline must reach the retryable attempt"
   let assert Ok(#([], terminal)) = stream.await_terminal(handle, within: 1000)
   assert case bare_event(terminal) {
-    stream.Failed(stream.ProviderCancelled)
-    | stream.Failed(stream.CancellationUnconfirmed) -> True
+    stream.Failed(stream.ProviderCancelled, _)
+    | stream.Failed(stream.CancellationUnconfirmed, _) -> True
     _ -> False
   }
     as "the retryable error must not escape the cancellation race"
@@ -730,7 +741,7 @@ pub fn transport_prepare_crash_fails_closed_test() {
       panic as "transport seam crashed"
     })
   let handle = gateway.request(two_provider_gateway(crashing), main_request())
-  let assert Ok(#([], stream.Failed(error))) =
+  let assert Ok(#([], stream.Failed(error, _))) =
     stream.await_terminal(handle, within: 1000)
   let assert stream.TransportFailed(..) = stream.underlying_error(error)
     as "context preserves the exact underlying failure"
@@ -765,7 +776,7 @@ pub fn abnormal_transport_owner_reports_lost_drain_proof_test() {
       )
     })
   let handle = gateway.request(two_provider_gateway(transport), main_request())
-  let assert Ok(#([], stream.Failed(error))) =
+  let assert Ok(#([], stream.Failed(error, _))) =
     stream.await_terminal(handle, within: 1000)
   let assert stream.DrainProofLost = stream.underlying_error(error)
     as "context preserves the exact underlying failure"
@@ -803,7 +814,7 @@ pub fn abnormal_attempt_owner_outlives_a_dead_pump_test() {
     })
   let handle = gateway.request(two_provider_gateway(transport), main_request())
   assert process.receive(registered, within: 1000) == Ok(Nil)
-  let assert Ok(#([], stream.Failed(error))) =
+  let assert Ok(#([], stream.Failed(error, _))) =
     stream.await_terminal(handle, within: 2500)
   let assert stream.DrainProofLost = stream.underlying_error(error)
     as "context preserves the exact underlying failure"
@@ -845,7 +856,7 @@ pub fn cancellation_during_transport_start_keeps_drain_witness_test() {
   let assert Ok(start_gate) = process.receive(entered, within: 1000)
   stream.cancel(handle)
   assert stream.await_drain(drain_witness, within: 20) == stream.TimedOut
-  let assert Ok(#([], stream.Failed(error))) =
+  let assert Ok(#([], stream.Failed(error, _))) =
     stream.await_terminal(handle, within: 2500)
   let assert stream.CancellationUnconfirmed = stream.underlying_error(error)
     as "context preserves the exact underlying failure"
@@ -908,7 +919,7 @@ pub fn cancellation_expiry_rejects_late_attempt_registration_test() {
     process.receive(prepare_entered, within: 1000)
 
   stream.cancel(handle)
-  let assert Ok(#([], stream.Failed(error))) =
+  let assert Ok(#([], stream.Failed(error, _))) =
     stream.await_terminal(handle, within: 2500)
   let assert stream.CancellationUnconfirmed = stream.underlying_error(error)
     as "context preserves the exact underlying failure"
@@ -965,7 +976,7 @@ pub fn cancellation_rejected_registration_stays_terminal_test() {
     process.receive(prepare_entered, within: 1000)
 
   stream.cancel(handle)
-  let assert Ok(#([], stream.Failed(error))) =
+  let assert Ok(#([], stream.Failed(error, _))) =
     stream.await_terminal(handle, within: 2500)
   let assert stream.CancellationUnconfirmed = stream.underlying_error(error)
     as "context preserves the exact underlying failure"
@@ -1079,7 +1090,7 @@ pub fn unroutable_role_fails_in_band_test() {
       target: model.ForRole(model.Vision, None),
     )
   let handle = gateway.request(gw, request)
-  let assert Ok(#([], stream.Failed(error))) =
+  let assert Ok(#([], stream.Failed(error, _))) =
     stream.await_terminal(handle, within: 2000)
   let assert stream.NoIdentity(role: "vision") = stream.underlying_error(error)
     as "context preserves the exact underlying failure"
@@ -1176,7 +1187,7 @@ pub fn for_resolved_dispatches_exactly_once_test() {
       target: model.ForResolved(target("primary", "model-a")),
     )
   let handle = gateway.request(two_provider_gateway(transport), request)
-  let assert Ok(#([], stream.Failed(error))) =
+  let assert Ok(#([], stream.Failed(error, _))) =
     stream.await_terminal(handle, within: 2000)
   let assert stream.HttpError(status: 529, ..) = stream.underlying_error(error)
     as "context preserves the exact underlying failure"
@@ -1196,7 +1207,7 @@ pub fn missing_secret_fails_with_name_only_test() {
     ))
     |> gateway.route(model.Main, [target("anthropic", "model-a")])
   let handle = gateway.request(gw, main_request())
-  let assert Ok(#([], stream.Failed(error))) =
+  let assert Ok(#([], stream.Failed(error, _))) =
     stream.await_terminal(handle, within: 2000)
   assert stream.underlying_error(error)
     == stream.NoSecret(provider: "anthropic", secret_name: "ANTHROPIC_API_KEY")
@@ -1210,7 +1221,7 @@ pub fn unknown_provider_in_resolved_identity_fails_in_band_test() {
       target: model.ForResolved(target("ghost", "phantom-model")),
     )
   let handle = gateway.request(gw, request)
-  let assert Ok(#([], stream.Failed(error))) =
+  let assert Ok(#([], stream.Failed(error, _))) =
     stream.await_terminal(handle, within: 2000)
   let assert stream.UnknownProvider(provider: "ghost") =
     stream.underlying_error(error)
@@ -1254,14 +1265,15 @@ pub fn secret_never_appears_in_any_produced_structure_test() {
 pub fn described_errors_never_carry_the_secret_test() {
   let failing = two_provider_gateway(fixture.transport(overloaded_response()))
   let handle = gateway.request(failing, main_request())
-  let assert Ok(#(_deltas, stream.Failed(error))) =
+  let assert Ok(#(_deltas, stream.Failed(error, _))) =
     stream.await_terminal(handle, within: 2000)
   assert !string.contains(stream.describe_error(error), secret_value)
 }
 
 fn bare_event(event) {
   case event {
-    stream.Failed(error) -> stream.Failed(stream.underlying_error(error))
+    stream.Failed(error, report) ->
+      stream.Failed(stream.underlying_error(error), report)
     _ -> event
   }
 }
@@ -1342,7 +1354,7 @@ pub fn oversized_active_image_turn_never_opens_transport_test() {
       ),
     ])
   let handle = gateway.request(gw, request)
-  let assert Ok(#([], stream.Failed(error:))) =
+  let assert Ok(#([], stream.Failed(error:, accounting: _))) =
     stream.await_terminal(handle, within: 2000)
     as "the default eight-image limit must refuse nine active images locally"
   let assert stream.StreamError(api_error_type: "image_limit", message:) =
@@ -1350,4 +1362,287 @@ pub fn oversized_active_image_turn_never_opens_transport_test() {
     as "image limits are terminal local failures"
   assert string.contains(message, "current turn contains 9 images")
   assert process.receive(bodies, within: 0) == Error(Nil)
+}
+
+// These Responses scripts report complete, disjoint usage buckets. The first
+// output includes three reasoning tokens; they remain a subset of its five
+// output tokens rather than an additional charge.
+fn measured_failure_transcript() -> String {
+  sse_event(
+    "response.failed",
+    "{\"type\":\"response.failed\",\"response\":{\"id\":\"failed_attempt\",\"model\":\"model-a\",\"status\":\"failed\",\"error\":{\"code\":\"server_error\"},\"usage\":{\"input_tokens\":12,\"output_tokens\":5,\"total_tokens\":17,\"input_tokens_details\":{\"cached_tokens\":2},\"output_tokens_details\":{\"reasoning_tokens\":3}}}}",
+  )
+}
+
+fn measured_success_transcript() -> String {
+  sse_event(
+    "response.created",
+    "{\"type\":\"response.created\",\"response\":{\"id\":\"successful_attempt\",\"model\":\"model-b\",\"status\":\"in_progress\",\"output\":[]}}",
+  )
+  <> sse_event(
+    "response.completed",
+    "{\"type\":\"response.completed\",\"response\":{\"id\":\"successful_attempt\",\"model\":\"model-b\",\"status\":\"completed\",\"output\":[],\"error\":null,\"usage\":{\"input_tokens\":20,\"output_tokens\":7,\"total_tokens\":27,\"input_tokens_details\":{\"cached_tokens\":4}}}}",
+  )
+}
+
+fn measured_failure_usage() -> message.Usage {
+  message.Usage(
+    ..accounting.zero_usage(),
+    input: 10,
+    cache_read: 2,
+    output: 5,
+    reasoning: Some(3),
+    total_tokens: 17,
+    evidence: usage_evidence.reported(usage_evidence.Api),
+  )
+  |> pricing.price(pricing.Pricing(2.0, 3.0, 1.0, 0.0))
+}
+
+fn mixed_accounting_gateway(
+  public: http.Transport,
+  bridge: gateway.CodexTransport,
+) -> gateway.Gateway {
+  gateway.new(public, secrets(), clock.fixed(123))
+  |> gateway.add_provider(gateway.OpenAiResponsesProvider(
+    name: "primary",
+    base_url: "https://primary.test/v1",
+    api_key_secret: "PRIMARY_KEY",
+  ))
+  |> gateway.add_provider(gateway.CodexSubscriptionProvider(
+    name: "subscription",
+    profile: "personal",
+  ))
+  |> gateway.with_codex_transport(bridge)
+  |> gateway.route(model.Main, [
+    target("primary", "model-a"),
+    target("subscription", "model-b"),
+  ])
+  |> gateway.price("primary", pricing.Pricing(2.0, 3.0, 1.0, 0.0))
+  |> gateway.price("subscription", pricing.Pricing(5.0, 7.0, 2.0, 0.0))
+  |> gateway.with_attempt_timeout(2000)
+}
+
+pub fn fallback_retains_each_actual_target_price_and_final_context_usage_test() {
+  let requests = process.new_subject()
+  let public =
+    fixture.routing_transport(fn(sent) {
+      process.send(requests, sent.url)
+      fixture.ok_response(measured_failure_transcript())
+    })
+  let bridge =
+    gateway.CodexTransport(prepare_streaming: fn(profile, sent, events) {
+      process.send(requests, profile <> sent.url)
+      let http.Transport(prepare_streaming:) =
+        fixture.transport(fixture.ok_response(measured_success_transcript()))
+      prepare_streaming(sent, events)
+    })
+  let handle =
+    gateway.request(mixed_accounting_gateway(public, bridge), main_request())
+  let assert Ok(#([], stream.Settled(settled, report))) =
+    stream.await_terminal(handle, within: 2000)
+    as "the retryable measured failure must reach the subscription fallback"
+  let assert message.AssistantMessage(usage: last, api:, provider:, ..) =
+    stream.message(settled)
+    as "the final message retains the actual successful target"
+  let total = accounting.total(report)
+
+  // The request total counts both attempts exactly once. Context overflow
+  // decisions still receive only the final attempt's twenty prompt tokens.
+  assert accounting.attempts(report) == 2
+  assert accounting.last(report) == Some(last)
+  assert #(total.input, total.cache_read, total.output, total.total_tokens)
+    == #(26, 6, 12, 44)
+  assert total.reasoning == Some(3)
+  assert #(last.input, last.cache_read, last.output, last.total_tokens)
+    == #(16, 4, 7, 27)
+  assert #(api, provider) == #("codex-subscription", "subscription")
+  assert last.evidence
+    == usage_evidence.with_price(
+      usage_evidence.reported(usage_evidence.ChatGptPlan),
+      usage_evidence.ChatGptReferenceRates,
+    )
+
+  // Each card applies before aggregation. Subscription prices are reference
+  // estimates and cannot be presented as ChatGPT plan charges or allowances.
+  let expected_last =
+    message.Usage(
+      ..accounting.zero_usage(),
+      input: 16,
+      cache_read: 4,
+      output: 7,
+      total_tokens: 27,
+      evidence: usage_evidence.reported(usage_evidence.ChatGptPlan),
+    )
+    |> pricing.price(pricing.Pricing(5.0, 7.0, 2.0, 0.0))
+  assert last == expected_last
+  assert total == accounting.add_usage(measured_failure_usage(), expected_last)
+  assert total.evidence
+    == usage_evidence.Remote(
+      usage_evidence.Other,
+      usage_evidence.Reported(
+        usage_evidence.Complete,
+        usage_evidence.Priced(
+          usage_evidence.Complete,
+          usage_evidence.MixedRates,
+        ),
+      ),
+    )
+  assert process.receive(requests, within: 0)
+    == Ok("https://primary.test/v1/responses")
+  assert process.receive(requests, within: 0) == Ok("personal/responses")
+  assert process.receive(requests, within: 0) == Error(Nil)
+}
+
+pub fn fallback_owner_loss_retains_measured_prefix_and_unknown_attempt_test() {
+  let entered = process.new_subject()
+  let public =
+    fixture.transport(fixture.ok_response(measured_failure_transcript()))
+  let bridge =
+    gateway.CodexTransport(prepare_streaming: fn(_profile, _sent, _events) {
+      // This is the existing abnormal-owner failure shape, reached only after
+      // a real first terminal has been drained and handed to the guard.
+      let owner = process.spawn_unlinked(fn() { process.kill(process.self()) })
+      let gone = process.monitor(owner)
+      let _down =
+        process.new_selector()
+        |> process.select_specific_monitor(gone, fn(_down) { Nil })
+        |> process.selector_receive(1000)
+      process.demonitor_process(gone)
+      Ok(
+        http.PreparedRequest(
+          running: http.RunningRequest(owner:, cancel: fn() { Nil }),
+          begin: fn() {
+            process.send(entered, Nil)
+            panic as "fallback begin crashed after registration"
+          },
+        ),
+      )
+    })
+  let handle =
+    gateway.request(mixed_accounting_gateway(public, bridge), main_request())
+  assert process.receive(entered, within: 1000) == Ok(Nil)
+  let assert Ok(#([], stream.Failed(error, report))) =
+    stream.await_terminal(handle, within: 2500)
+    as "the guard must settle the failed fallback with its retained prefix"
+  assert stream.underlying_error(error) == stream.DrainProofLost
+  let total = accounting.total(report)
+  let assert Some(last) = accounting.last(report)
+    as "the admitted fallback is retained as an unknown attempt"
+
+  // The known first attempt is a lower bound, not a complete request bill.
+  // An unknown fallback cannot disappear as a free or undispatched attempt.
+  assert accounting.attempts(report) == 2
+  assert #(total.input, total.cache_read, total.output, total.total_tokens)
+    == #(10, 2, 5, 17)
+  assert total.cost == measured_failure_usage().cost
+  assert total.evidence
+    == usage_evidence.Remote(
+      usage_evidence.Other,
+      usage_evidence.Reported(
+        usage_evidence.Partial,
+        usage_evidence.Priced(usage_evidence.Partial, usage_evidence.ApiRates),
+      ),
+    )
+  assert last.evidence == usage_evidence.unknown(usage_evidence.ChatGptPlan)
+}
+
+pub fn local_secret_refusal_has_empty_accounting_and_never_prepares_transport_test() {
+  let prepared = process.new_subject()
+  let transport =
+    http.Transport(prepare_streaming: fn(request, events) {
+      process.send(prepared, Nil)
+      let http.Transport(prepare_streaming:) = fixture.transport([])
+      prepare_streaming(request, events)
+    })
+  let gw =
+    gateway.new(transport, secret.from_list([]), clock.fixed(0))
+    |> gateway.add_provider(gateway.OpenAiResponsesProvider(
+      name: "primary",
+      base_url: "https://primary.test/v1",
+      api_key_secret: "MISSING_KEY",
+    ))
+    |> gateway.route(model.Main, [target("primary", "model-a")])
+  let handle = gateway.request(gw, main_request())
+  let assert Ok(#([], stream.Failed(error, report))) =
+    stream.await_terminal(handle, within: 1000)
+    as "missing credentials are refused before remote admission"
+  assert stream.underlying_error(error)
+    == stream.NoSecret("primary", "MISSING_KEY")
+  assert report == accounting.empty()
+  assert accounting.attempts(report) == 0
+  assert accounting.last(report) == None
+  assert accounting.total(report).evidence == usage_evidence.none()
+  assert process.receive(prepared, within: 0) == Error(Nil)
+}
+
+pub fn cyber_access_fallback_uses_each_entry_and_denial_stops_test() {
+  list.each([403, 503], fn(status) {
+    let observed = process.new_subject()
+    let transport =
+      fixture.routing_transport(fn(sent) {
+        process.send(observed, sent)
+        case sent.url {
+          "https://blue.test/v1/responses" ->
+            fixture.error_response(
+              status,
+              [],
+              "{\"error\":{\"type\":\"permission_error\",\"code\":\"access_program_not_enabled\"}}",
+            )
+          "https://plain.test/v1/responses" ->
+            fixture.ok_response(responses_transcript())
+          _other -> fixture.error_response(400, [], "{}")
+        }
+      })
+    let configured =
+      gateway.new(transport, secrets(), clock.fixed(123))
+      |> gateway.add_provider(gateway.OpenAiResponsesProvider(
+        name: "blue",
+        base_url: "https://blue.test/v1",
+        api_key_secret: "PRIMARY_KEY",
+      ))
+      |> gateway.add_provider(gateway.OpenAiResponsesProvider(
+        name: "plain",
+        base_url: "https://plain.test/v1",
+        api_key_secret: "BACKUP_KEY",
+      ))
+      |> gateway.with_cyber_access("blue", model.DaybreakBlue)
+      |> gateway.with_cyber_access("plain", model.StandardCyberAccess)
+      |> gateway.route(model.Main, [
+        target("blue", "model-b"),
+        target("plain", "model-b"),
+      ])
+    let handle = gateway.request(configured, main_request())
+    let assert Ok(#(_, terminal)) = stream.await_terminal(handle, within: 2000)
+      as "The selected route must settle or refuse within the fixture deadline."
+    let assert Ok(first) = process.receive(observed, within: 1000)
+      as "The Daybreak head must be attempted."
+    let assert Ok(first_body) = json.parse(first.body)
+      as "The head body must parse."
+    assert wire.field(first_body, "access_programs")
+      == Ok(json.Object([#("cyber", json.String("daybreak_blue"))]))
+
+    // A denied program is terminal. A retryable service failure may walk an
+    // operator-configured fallback, whose own program must replace the head's.
+    case status {
+      403 -> {
+        let assert stream.Failed(_, report) = terminal
+          as "A Daybreak permission denial must remain a failure."
+        assert accounting.attempts(report) == 1
+        assert process.receive(observed, within: 20) == Error(Nil)
+      }
+      503 -> {
+        let assert stream.Settled(_, report) = terminal
+          as "A retryable failure must reach the configured fallback."
+        assert accounting.attempts(report) == 2
+        let assert Ok(second) = process.receive(observed, within: 1000)
+          as "The fallback must actually execute."
+        let assert Ok(second_body) = json.parse(second.body)
+          as "The fallback body must parse."
+        assert wire.field(second_body, "access_programs")
+          == Ok(json.Object([#("cyber", json.String("standard"))]))
+      }
+      _other ->
+        panic as "Only the permission and retryable statuses are exercised."
+    }
+  })
 }

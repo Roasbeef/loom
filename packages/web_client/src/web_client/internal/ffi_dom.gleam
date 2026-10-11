@@ -281,6 +281,16 @@ pub fn offset_top(element: Element) -> Float
 @external(javascript, "./dom.mjs", "offset_height")
 pub fn offset_height(element: Element) -> Float
 
+/// The element's layout width, in pixels (`offsetWidth`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ffi_dom.offset_width(column)
+/// ```
+@external(javascript, "./dom.mjs", "offset_width")
+pub fn offset_width(element: Element) -> Float
+
 /// The top edge of the element's box in the viewport, in pixels
 /// (`getBoundingClientRect().top`).
 ///

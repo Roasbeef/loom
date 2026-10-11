@@ -1,12 +1,24 @@
 # provider
 
+## Responses cybersecurity access
+
+`client/catalog.CatalogModel.cyber_access` holds an optional typed
+`provider/model.CyberAccessProgram` selected by `[models.<name>].cyber_access`.
+Only `openai-responses` and `codex-subscription` accept the key. The catalogue
+attaches it through `provider/gateway.with_cyber_access`; the opaque gateway
+indexes selections by provider name, and each actual attempt passes that
+entry's option into the Responses request encoder. Missing options omit
+`access_programs`; explicit options send the bounded `cyber` value. Provider
+approval remains remote. A 403 denial is terminal, and retryable fallback uses
+its own entry's selection. The frozen resolved identity and request types keep
+their existing shape.
+
 ## Purpose
 
 The provider SDK: a typed registry of provider configurations and role
 routes, a pure incremental server-sent-events parser, four wire adapters
-(Anthropic Messages, OpenAI chat-completions, Gemini generateContent, public
-OpenAI Responses), retry
-and overflow
+(Anthropic Messages, OpenAI chat-completions, Gemini generateContent, and
+OpenAI Responses for public API and subscription transports), retry and overflow
 classification, and the secret-injection seam. SSE parsing and adapter folds
 are pure Gleam; the gateway custodian and native transport owner are the small
 processful shell around that sans-io core. WP-F.
@@ -37,12 +49,18 @@ not split the batch. These are transient wire projections.
 
 - `provider/gateway.Gateway` — opaque, built with the builder pattern
   (`new`, `add_provider`, `route`, `price`, `with_attempt_timeout`,
-  `with_image_limit`); exposes the
+  `with_image_limit`, `with_codex_transport`); exposes the
   frozen contract `resolve(gw, role)` and `request(gw, req)`. `prepare`
   additionally exposes the internal prepare-publish-begin seam: it returns a
   parked owner before route resolution, secret lookup, or network work starts.
   That owner is the request guard, a `weft/state_machine` over `Phase` and
   `Guard`; see **Traffic** for its states and its three state timeouts.
+- `gateway.CodexSubscriptionProvider(name, profile)` carries only a profile
+  name. `gateway.CodexTransport.prepare_streaming` is an optional, separately
+  injected bridge from that profile and an uncredentialed relative
+  `/responses` request to a parked, monitorable `http.PreparedRequest`. With no
+  bridge, subscription dispatch fails locally before network work. The public
+  Responses provider still uses the API-key `http.Transport` and secret store.
 - `provider/image_budget.{count, project, default_max_images}` bounds the total
   `UserImage` and `ToolResultImage` blocks in one request. Each actual gateway
   attempt uses its own endpoint/model limit (default eight), always starting
@@ -206,7 +224,14 @@ not split the batch. These are transient wire projections.
     records must agree with the deltas and final output. Requests post to
     `/responses` with flat function definitions, `store: false`, and
     caller-owned input history. API-key authentication uses the existing
-    HTTP transport owner, not a Codex helper or subscription credential.
+    HTTP transport owner. The subscription variant uses the same semantic
+    fold and replay projection, but sends a relative, uncredentialed request
+    through `CodexTransport`. Its body omits the public output ceiling and
+    public-only tool controls. It groups functions in the `loom` namespace
+    and admits `response.completed` as its terminal event when accumulated
+    content passes the same witness checks; legacy `response.done` is rejected.
+    Only this variant sends `namespace` on replayed function calls; the
+    API-key request removes it from history recorded by either route.
   - Anthropic requests carry four `cache_control` breakpoints — one-hour
     on the last tool definition and on the system block, five-minute on
     the last block of each of the final two user turns. The system prompt
@@ -220,9 +245,9 @@ not split the batch. These are transient wire projections.
     `thinkingConfig` whose knob follows the model generation
     (`thinkingLevel` for Gemini 3, `thinkingBudget` for 2.5). The key
     travels in `x-goog-api-key`.
-  - `api_name` constants pin the four dialects: `"anthropic-messages"`,
+  - `api_name` constants pin the five dialect identities: `"anthropic-messages"`,
     `"openai-completions"`, `"gemini-generate-content"`,
-    `"openai-responses"`.
+    `"openai-responses"`, `"codex-subscription"`.
 
 ## Invariants
 
@@ -236,13 +261,16 @@ not split the batch. These are transient wire projections.
   adapter writes `UsageCost(0.0, ...)`, because an adapter knows the wire
   dialect and not the commercial arrangement behind the endpoint — the same
   dialect is spoken by a first-party host, a reseller and a local proxy at
-  three different prices. `gateway.attempt_one` rewrites a settled attempt's
-  usage through `pricing.price` before the fallback walk sees it: the one
-  point every settlement passes through exactly once, and the last point at
-  which the target that produced it is still known. A provider with no card
-  is unpriced and keeps the adapter's zeros. Both halves of `Settled` are
-  repriced together, because `Settled.usage` is contractually equal to the
-  usage inside the settled message.
+  three different prices. `gateway.attempt_one` prices each returned attempt's
+  report before fallback aggregation, including failed attempts. Settlement
+  also prices the final message's own usage. Missing rates leave numeric
+  zeros with unavailable estimate evidence; an explicit zero card is priced.
+  The terminal report covers the request, while the message usage covers its
+  final attempt. Subscription prices remain labelled API reference estimates.
+- **Local refusals prove no inference dispatch.** Only the trusted local
+  admission path emits `http.RequestRefused`. The stream decodes its redacted
+  error and waits for the original owner to drain before publishing an empty
+  report. A remote error or missing usage retains unknown consumption.
 - **Secrets exist only in request memory.** A key is read from the
   `SecretStore` at dispatch, copied into one outbound header, and appears
   nowhere else locally — not in the gateway value, not in an accumulator, and
@@ -355,9 +383,17 @@ not split the batch. These are transient wire projections.
 - **Responses has one local conversation owner.** The request carries
   reconstructed history, never `conversation` or `previous_response_id`.
   Encrypted reasoning is opaque replay data, not an authentication token.
-  Subscription inference is deliberately deferred under ADR-012; adding a
-  dialect name or reading a Codex credential file would not satisfy its
-  support gate.
+  The subscription variant keeps the same Loom-owned history and semantic
+  fold. Its credential owner and fixed host sit behind the injected transport,
+  so neither a token nor an account-routing header enters this package. The
+  private backend remains experimental under ADR-012's support gate.
+- **Subscription terminal output may be empty after item closure.** Live plan
+  streams close their output items before a terminal envelope with `output: []`.
+  Only the subscription dialect may use those canonical closing witnesses in
+  place of that empty array. Every item and part must have closed, indices must
+  be contiguous, response identity and terminal status must agree, and a populated
+  terminal array must still match exactly. The initial item status may already
+  be `completed`; that metadata never substitutes for streamed closure.
 - **Responses replay is bounded metadata plus durable content.** The
   namespaced hint retains item IDs, statuses, message phases, part boundaries, annotations,
   and the permutation between provider order and delta block order. It does
@@ -420,6 +456,9 @@ not split the batch. These are transient wire projections.
 
 ## Deep Docs
 
+- [docs/architecture/codex-subscription.md](../../docs/architecture/codex-subscription.md)
+  — the experimental helper transport, account-bound credentials, and
+  remaining interoperability and support gates.
 - [docs/adr/012-responses-and-subscription-boundaries.md](../../docs/adr/012-responses-and-subscription-boundaries.md)
   — public API inference, the deferred subscription support gate, and the
   distinction between model argument mistakes and provider corruption.
@@ -429,3 +468,21 @@ not split the batch. These are transient wire projections.
   the settled-message home, fallback semantics, the quantified "negligible
   output", wire leniency, deferred keychain backends.
 - [Root CLAUDE.md](../../CLAUDE.md) — repo ground rules and the doc graph.
+
+## Retained consumption (protocol 081)
+
+`stream.Settled(message, accounting)` and `stream.Failed(error, accounting)`
+carry a request report independently of final-response context usage. Each
+adapter's `ResponseMachine.usage` reads its latest snapshot; the snapshot
+is replaced on new wire evidence rather than added repeatedly. A terminal
+can therefore retain usage when semantic validation, a remote failure, or
+a disconnect prevents a successful response. Missing cache partitions keep
+partial evidence, so a numeric prompt total cannot certify its allocation.
+
+The gateway prices each attempt under its actual target before folding a
+fallback report. Its surviving guard receives the completed prefix before
+the next attempt begins; owner loss adds an unknown observation to the
+retained prefix. Local refusals before dispatch return an empty report.
+An absent rate card leaves pricing unavailable, and a subscription card
+provides an API reference estimate, never measured ChatGPT credit usage.
+The settled assistant retains only final-attempt usage.

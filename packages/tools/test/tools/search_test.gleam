@@ -154,7 +154,12 @@ pub fn glob_returns_sorted_entries_test() {
   write(root <> "/sub/c.txt", "c")
 
   let assert Ok(Listing(entries:, completeness:)) =
-    search.glob(workspace: root, root: root, query: pattern_query("*.txt"))
+    search.glob(
+      workspace: root,
+      root: root,
+      protected: [],
+      query: pattern_query("*.txt"),
+    )
     as "a glob over a plain tree must succeed"
 
   assert completeness == Complete
@@ -166,7 +171,12 @@ pub fn glob_reports_directories_with_their_kind_test() {
   make_dir(root <> "/sub")
 
   let assert Ok(Listing(entries:, completeness: _)) =
-    search.glob(workspace: root, root: root, query: pattern_query("sub"))
+    search.glob(
+      workspace: root,
+      root: root,
+      protected: [],
+      query: pattern_query("sub"),
+    )
     as "a glob may match a directory"
 
   let assert [Entry(path:, kind:, size: _, mtime_seconds: _)] = entries
@@ -183,7 +193,12 @@ pub fn glob_skips_hidden_entries_by_default_test() {
   write(root <> "/.hidden/inside.txt", "i")
 
   let assert Ok(Listing(entries:, completeness: _)) =
-    search.glob(workspace: root, root: root, query: pattern_query("*.txt"))
+    search.glob(
+      workspace: root,
+      root: root,
+      protected: [],
+      query: pattern_query("*.txt"),
+    )
     as "the default walk must succeed"
 
   assert paths(entries) == ["visible.txt"]
@@ -198,7 +213,7 @@ pub fn glob_includes_hidden_entries_on_request_test() {
 
   let query = GlobQuery(..pattern_query("*.txt"), hidden: IncludeHidden)
   let assert Ok(Listing(entries:, completeness: _)) =
-    search.glob(workspace: root, root: root, query:)
+    search.glob(workspace: root, root: root, protected: [], query:)
     as "an include-hidden walk must succeed"
 
   assert paths(entries) == [".hidden/inside.txt", ".secret.txt", "visible.txt"]
@@ -211,7 +226,12 @@ pub fn glob_does_not_descend_into_a_pruned_directory_test() {
   write(root <> "/node_modules/buried.txt", "b")
 
   let assert Ok(Listing(entries:, completeness: _)) =
-    search.glob(workspace: root, root: root, query: pattern_query("*.txt"))
+    search.glob(
+      workspace: root,
+      root: root,
+      protected: [],
+      query: pattern_query("*.txt"),
+    )
     as "a pruned walk must succeed"
 
   assert paths(entries) == ["kept.txt"]
@@ -225,7 +245,7 @@ pub fn an_empty_prune_list_descends_everything_test() {
 
   let query = GlobQuery(..pattern_query("*.txt"), prune: [])
   let assert Ok(Listing(entries:, completeness: _)) =
-    search.glob(workspace: root, root: root, query:)
+    search.glob(workspace: root, root: root, protected: [], query:)
     as "an unpruned walk must succeed"
 
   assert paths(entries) == ["kept.txt", "node_modules/buried.txt"]
@@ -239,7 +259,7 @@ pub fn glob_reports_a_symlinked_directory_and_never_descends_it_test() {
 
   let query = GlobQuery(..pattern_query("**"), prune: [])
   let assert Ok(Listing(entries:, completeness: _)) =
-    search.glob(workspace: root, root: root, query:)
+    search.glob(workspace: root, root: root, protected: [], query:)
     as "a walk over a tree with a symlink must succeed"
 
   // The link is reported with its stored target, unresolved.
@@ -262,7 +282,7 @@ pub fn glob_truncates_at_max_entries_with_exactly_that_many_test() {
 
   let query = GlobQuery(..pattern_query("*.txt"), max_entries: 3)
   let assert Ok(Listing(entries:, completeness:)) =
-    search.glob(workspace: root, root: root, query:)
+    search.glob(workspace: root, root: root, protected: [], query:)
     as "a bounded walk must succeed"
 
   assert completeness == Truncated
@@ -282,7 +302,7 @@ pub fn glob_that_fills_max_entries_exactly_is_complete_test() {
 
   let query = GlobQuery(..pattern_query("*.txt"), max_entries: 3)
   let assert Ok(Listing(entries:, completeness:)) =
-    search.glob(workspace: root, root: root, query:)
+    search.glob(workspace: root, root: root, protected: [], query:)
     as "a walk that fills its bound exactly must succeed"
 
   assert completeness == Complete
@@ -300,7 +320,7 @@ pub fn glob_with_one_match_past_the_bound_is_truncated_test() {
 
   let query = GlobQuery(..pattern_query("*.txt"), max_entries: 3)
   let assert Ok(Listing(entries:, completeness:)) =
-    search.glob(workspace: root, root: root, query:)
+    search.glob(workspace: root, root: root, protected: [], query:)
     as "a walk one match past its bound must succeed"
 
   assert completeness == Truncated
@@ -315,7 +335,7 @@ pub fn glob_is_complete_when_max_entries_is_never_reached_test() {
 
   let query = GlobQuery(..pattern_query("*.txt"), max_entries: 4)
   let assert Ok(Listing(entries:, completeness:)) =
-    search.glob(workspace: root, root: root, query:)
+    search.glob(workspace: root, root: root, protected: [], query:)
     as "an unbounded-in-practice walk must succeed"
 
   assert completeness == Complete
@@ -328,7 +348,8 @@ pub fn max_entries_at_the_ceiling_is_accepted_test() {
 
   let query =
     GlobQuery(..pattern_query("*.txt"), max_entries: search.max_entries_ceiling)
-  assert search.glob(workspace: root, root: root, query:) |> is_ok()
+  assert search.glob(workspace: root, root: root, protected: [], query:)
+    |> is_ok()
 }
 
 pub fn max_entries_past_the_ceiling_is_refused_rather_than_clamped_test() {
@@ -341,7 +362,7 @@ pub fn max_entries_past_the_ceiling_is_refused_rather_than_clamped_test() {
       max_entries: search.max_entries_ceiling + 1,
     )
   let assert Error(InvalidQuery(message:)) =
-    search.glob(workspace: root, root: root, query:)
+    search.glob(workspace: root, root: root, protected: [], query:)
     as "a bound past its ceiling must be refused"
   assert string.contains(message, "max_entries")
 }
@@ -351,13 +372,19 @@ pub fn max_entries_below_one_is_refused_test() {
   write(root <> "/one.txt", "x")
 
   let query = GlobQuery(..pattern_query("*.txt"), max_entries: 0)
-  assert search.glob(workspace: root, root: root, query:) |> is_error()
+  assert search.glob(workspace: root, root: root, protected: [], query:)
+    |> is_error()
 }
 
 pub fn a_bad_glob_refuses_the_whole_call_test() {
   let root = fresh_dir("glob-bad-pattern")
   let assert Error(InvalidQuery(message:)) =
-    search.glob(workspace: root, root: root, query: pattern_query("a**b"))
+    search.glob(
+      workspace: root,
+      root: root,
+      protected: [],
+      query: pattern_query("a**b"),
+    )
     as "an uncompilable glob must refuse the call"
   assert string.contains(message, "whole path segment")
 }
@@ -368,7 +395,12 @@ pub fn a_glob_root_that_is_a_file_is_not_a_directory_test() {
   write(file, "x")
 
   let assert Error(NotADirectory(path:)) =
-    search.glob(workspace: root, root: file, query: pattern_query("*"))
+    search.glob(
+      workspace: root,
+      root: file,
+      protected: [],
+      query: pattern_query("*"),
+    )
     as "a file root must answer NotADirectory"
   assert path == file
 }
@@ -382,6 +414,7 @@ pub fn glob_renders_paths_relative_to_the_workspace_not_the_root_test() {
     search.glob(
       workspace:,
       root: workspace <> "/src",
+      protected: [],
       query: pattern_query("*.gleam"),
     )
     as "a walk under a sub-root must succeed"
@@ -389,14 +422,61 @@ pub fn glob_renders_paths_relative_to_the_workspace_not_the_root_test() {
   assert paths(entries) == ["src/inner/app.gleam"]
 }
 
+pub fn read_lines_refuses_a_device_test() {
+  assert search.read_lines(path: "/dev/zero", from: 1, to: 1)
+    == Error(NotAFile(path: "/dev/zero"))
+}
+
+pub fn glob_skips_a_protected_subtree_test() {
+  // The session masks a protected path from every jail, so a walk over its
+  // parent must not offer anything under it, and the entry itself is not
+  // reported either.
+  let root = fresh_dir("glob-protected")
+  make_dir(root <> "/.blobs")
+  write(root <> "/.blobs/b", "x")
+  write(root <> "/kept.txt", "x")
+
+  let assert Ok(Listing(entries:, completeness: _)) =
+    search.glob(
+      workspace: root,
+      root: root,
+      protected: [root <> "/.blobs"],
+      query: GlobQuery(..pattern_query("**"), hidden: IncludeHidden),
+    )
+    as "a walk over a parent of a protected entry must succeed"
+  assert paths(entries) == ["kept.txt"]
+}
+
 // --- grep -------------------------------------------------------------------
+
+pub fn grep_does_not_read_a_protected_subtree_test() {
+  let root = fresh_dir("grep-protected")
+  make_dir(root <> "/.blobs")
+  write(root <> "/.blobs/b", "needle in a protected file\n")
+  write(root <> "/kept.txt", "needle in a kept file\n")
+
+  let assert Ok(Found(matches:, ..)) =
+    search.grep(
+      workspace: root,
+      root: root,
+      protected: [root <> "/.blobs"],
+      query: GrepQuery(..regex_query("needle"), hidden: IncludeHidden),
+    )
+    as "a search over a parent of a protected entry must succeed"
+  assert list.map(matches, fn(match) { match.path }) == ["kept.txt"]
+}
 
 pub fn grep_reports_line_column_and_text_test() {
   let root = fresh_dir("grep-basic")
   write(root <> "/a.txt", "first\nsecond needle here\nthird\n")
 
   let assert Ok(Found(matches:, files_scanned:, files_skipped:, coverage:)) =
-    search.grep(workspace: root, root: root, query: regex_query("needle"))
+    search.grep(
+      workspace: root,
+      root: root,
+      protected: [],
+      query: regex_query("needle"),
+    )
     as "a plain grep must succeed"
 
   assert coverage == Exhaustive
@@ -420,7 +500,12 @@ pub fn grep_columns_count_graphemes_not_bytes_test() {
   write(root <> "/a.txt", "héllo needle\n")
 
   let assert Ok(Found(matches:, ..)) =
-    search.grep(workspace: root, root: root, query: regex_query("needle"))
+    search.grep(
+      workspace: root,
+      root: root,
+      protected: [],
+      query: regex_query("needle"),
+    )
     as "a grep over non-ASCII text must succeed"
 
   let assert [found] = matches as "exactly one match"
@@ -433,7 +518,7 @@ pub fn grep_returns_context_on_both_sides_test() {
 
   let query = GrepQuery(..regex_query("needle"), context: 1)
   let assert Ok(Found(matches:, ..)) =
-    search.grep(workspace: root, root: root, query:)
+    search.grep(workspace: root, root: root, protected: [], query:)
     as "a grep with context must succeed"
 
   let assert [found] = matches as "exactly one match"
@@ -447,7 +532,7 @@ pub fn grep_context_is_clipped_at_the_edges_of_a_file_test() {
 
   let query = GrepQuery(..regex_query("needle"), context: 2)
   let assert Ok(Found(matches:, ..)) =
-    search.grep(workspace: root, root: root, query:)
+    search.grep(workspace: root, root: root, protected: [], query:)
     as "a grep at the file edges must succeed"
 
   let assert [first, last] = matches as "two matches"
@@ -463,11 +548,18 @@ pub fn context_at_the_cap_is_accepted_and_one_over_is_refused_test() {
 
   let at_cap =
     GrepQuery(..regex_query("needle"), context: search.max_context_lines)
-  assert search.grep(workspace: root, root: root, query: at_cap) |> is_ok()
+  assert search.grep(workspace: root, root: root, protected: [], query: at_cap)
+    |> is_ok()
 
   let over_cap =
     GrepQuery(..regex_query("needle"), context: search.max_context_lines + 1)
-  assert search.grep(workspace: root, root: root, query: over_cap) |> is_error()
+  assert search.grep(
+      workspace: root,
+      root: root,
+      protected: [],
+      query: over_cap,
+    )
+    |> is_error()
 }
 
 pub fn grep_caps_the_match_list_and_says_so_test() {
@@ -476,7 +568,7 @@ pub fn grep_caps_the_match_list_and_says_so_test() {
 
   let query = GrepQuery(..regex_query("needle"), max_matches: 2)
   let assert Ok(Found(matches:, coverage:, ..)) =
-    search.grep(workspace: root, root: root, query:)
+    search.grep(workspace: root, root: root, protected: [], query:)
     as "a capped grep must succeed"
 
   assert coverage == MatchesCapped
@@ -493,7 +585,7 @@ pub fn grep_is_exhaustive_when_the_matches_fill_the_cap_exactly_test() {
   // that do not exist.
   let query = GrepQuery(..regex_query("needle"), max_matches: 2)
   let assert Ok(Found(matches:, coverage:, ..)) =
-    search.grep(workspace: root, root: root, query:)
+    search.grep(workspace: root, root: root, protected: [], query:)
     as "an exactly filled grep must succeed"
 
   assert coverage == Exhaustive
@@ -506,7 +598,7 @@ pub fn grep_is_exhaustive_when_the_cap_is_never_reached_test() {
 
   let query = GrepQuery(..regex_query("needle"), max_matches: 3)
   let assert Ok(Found(matches:, coverage:, ..)) =
-    search.grep(workspace: root, root: root, query:)
+    search.grep(workspace: root, root: root, protected: [], query:)
     as "an uncapped grep must succeed"
 
   assert coverage == Exhaustive
@@ -519,14 +611,21 @@ pub fn max_matches_past_the_ceiling_is_refused_test() {
 
   let at_cap =
     GrepQuery(..regex_query("needle"), max_matches: search.max_matches_ceiling)
-  assert search.grep(workspace: root, root: root, query: at_cap) |> is_ok()
+  assert search.grep(workspace: root, root: root, protected: [], query: at_cap)
+    |> is_ok()
 
   let over_cap =
     GrepQuery(
       ..regex_query("needle"),
       max_matches: search.max_matches_ceiling + 1,
     )
-  assert search.grep(workspace: root, root: root, query: over_cap) |> is_error()
+  assert search.grep(
+      workspace: root,
+      root: root,
+      protected: [],
+      query: over_cap,
+    )
+    |> is_error()
 }
 
 pub fn grep_globs_choose_which_files_are_read_test() {
@@ -536,7 +635,7 @@ pub fn grep_globs_choose_which_files_are_read_test() {
 
   let query = GrepQuery(..regex_query("needle"), globs: ["*.gleam"])
   let assert Ok(Found(matches:, files_scanned:, ..)) =
-    search.grep(workspace: root, root: root, query:)
+    search.grep(workspace: root, root: root, protected: [], query:)
     as "a filtered grep must succeed"
 
   assert files_scanned == 1
@@ -549,7 +648,12 @@ pub fn grep_counts_a_non_utf8_file_as_skipped_test() {
   write_bytes(root <> "/binary.bin", <<0xff, 0xfe, 0x00>>)
 
   let assert Ok(Found(files_scanned:, files_skipped:, ..)) =
-    search.grep(workspace: root, root: root, query: regex_query("needle"))
+    search.grep(
+      workspace: root,
+      root: root,
+      protected: [],
+      query: regex_query("needle"),
+    )
     as "a grep over a tree with binary must succeed"
 
   assert files_scanned == 1
@@ -565,7 +669,12 @@ pub fn grep_counts_an_oversized_file_as_skipped_test() {
   write(root <> "/huge.txt", string.repeat("x", fs.max_read_bytes + 1))
 
   let assert Ok(Found(files_scanned:, files_skipped:, ..)) =
-    search.grep(workspace: root, root: root, query: regex_query("needle"))
+    search.grep(
+      workspace: root,
+      root: root,
+      protected: [],
+      query: regex_query("needle"),
+    )
     as "a grep over a tree with an oversized file must succeed"
 
   assert files_scanned == 1
@@ -578,7 +687,12 @@ pub fn grep_never_reads_through_a_symlinked_file_test() {
   symlink(to: "real.txt", from: root <> "/link.txt")
 
   let assert Ok(Found(matches:, files_scanned:, ..)) =
-    search.grep(workspace: root, root: root, query: regex_query("needle"))
+    search.grep(
+      workspace: root,
+      root: root,
+      protected: [],
+      query: regex_query("needle"),
+    )
     as "a grep over a tree with a symlinked file must succeed"
 
   assert files_scanned == 1
@@ -588,7 +702,12 @@ pub fn grep_never_reads_through_a_symlinked_file_test() {
 pub fn an_invalid_regex_carries_the_engine_message_test() {
   let root = fresh_dir("grep-bad-regex")
   let assert Error(InvalidQuery(message:)) =
-    search.grep(workspace: root, root: root, query: regex_query("("))
+    search.grep(
+      workspace: root,
+      root: root,
+      protected: [],
+      query: regex_query("("),
+    )
     as "an uncompilable regex must refuse the call"
   assert message != ""
 }
@@ -599,7 +718,12 @@ pub fn a_grep_root_that_is_a_file_is_not_a_directory_test() {
   write(file, "needle\n")
 
   let assert Error(NotADirectory(path:)) =
-    search.grep(workspace: root, root: file, query: regex_query("needle"))
+    search.grep(
+      workspace: root,
+      root: file,
+      protected: [],
+      query: regex_query("needle"),
+    )
     as "a file root must answer NotADirectory"
   assert path == file
 }

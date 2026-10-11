@@ -4,6 +4,7 @@
 
 import broker/policy
 import client/context_view
+import core/accounting
 import core/clock
 import core/entry
 import core/ids
@@ -11,13 +12,13 @@ import core/json
 import core/message
 import core/register
 import core/tx
+import core/usage_evidence
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import machine/codec
 import machine/operation
 import machine/strand
-import runtime/effects
 import runtime/hooks
 import session/session
 import session_view/context_view as terminal
@@ -40,7 +41,7 @@ fn answer(tokens) {
     response_id: None,
     diagnostics: None,
     usage: message.Usage(
-      ..effects.zero_usage(),
+      ..accounting.unknown_usage(usage_evidence.Other),
       input: tokens - 1,
       output: 1,
       total_tokens: tokens,

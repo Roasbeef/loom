@@ -1,0 +1,52 @@
+otp=29 erts=17.0.5 word_bytes=8
+unicode_differential_cases=1112064
+hygiene_baseline ascii calls=2000 bytes=1110 us=78913 reductions=27622582
+hygiene_baseline ascii calls=2000 bytes=1110 us=80493 reductions=27622335
+hygiene_baseline ascii calls=2000 bytes=1110 us=77857 reductions=27622335
+hygiene_baseline ascii calls=2000 bytes=1110 us=78303 reductions=27622335
+hygiene_baseline ascii calls=2000 bytes=1110 us=79007 reductions=27622334
+hygiene_baseline ascii allocation_calls=200 words=1796633 bytes=14373064
+session_view@text_hygiene ascii calls=2000 bytes=1110 us=7368 reductions=2250115
+session_view@text_hygiene ascii calls=2000 bytes=1110 us=6335 reductions=2250053
+session_view@text_hygiene ascii calls=2000 bytes=1110 us=6573 reductions=2250053
+session_view@text_hygiene ascii calls=2000 bytes=1110 us=6658 reductions=2250053
+session_view@text_hygiene ascii calls=2000 bytes=1110 us=6629 reductions=2250052
+session_view@text_hygiene ascii allocation_calls=200 words=3000 bytes=24000
+hygiene_baseline unicode calls=2000 bytes=810 us=45288 reductions=12002423
+hygiene_baseline unicode calls=2000 bytes=810 us=44031 reductions=12003719
+hygiene_baseline unicode calls=2000 bytes=810 us=43344 reductions=12003718
+hygiene_baseline unicode calls=2000 bytes=810 us=43883 reductions=12003718
+hygiene_baseline unicode calls=2000 bytes=810 us=43482 reductions=12003718
+hygiene_baseline unicode allocation_calls=200 words=788603 bytes=6308824
+session_view@text_hygiene unicode calls=2000 bytes=810 us=12431 reductions=1904018
+session_view@text_hygiene unicode calls=2000 bytes=810 us=10745 reductions=1897127
+session_view@text_hygiene unicode calls=2000 bytes=810 us=10861 reductions=1897127
+session_view@text_hygiene unicode calls=2000 bytes=810 us=10716 reductions=1897127
+session_view@text_hygiene unicode calls=2000 bytes=810 us=10737 reductions=1897127
+session_view@text_hygiene unicode allocation_calls=200 words=491400 bytes=3931200
+hygiene_baseline dirty_tail calls=2000 bytes=1112 us=80703 reductions=27561035
+hygiene_baseline dirty_tail calls=2000 bytes=1112 us=78993 reductions=27561283
+hygiene_baseline dirty_tail calls=2000 bytes=1112 us=77751 reductions=27561283
+hygiene_baseline dirty_tail calls=2000 bytes=1112 us=77870 reductions=27561282
+hygiene_baseline dirty_tail calls=2000 bytes=1112 us=79240 reductions=27561282
+hygiene_baseline dirty_tail allocation_calls=200 words=1793800 bytes=14350400
+session_view@text_hygiene dirty_tail calls=2000 bytes=1112 us=83430 reductions=29718359
+session_view@text_hygiene dirty_tail calls=2000 bytes=1112 us=85261 reductions=29717581
+session_view@text_hygiene dirty_tail calls=2000 bytes=1112 us=84231 reductions=29717581
+session_view@text_hygiene dirty_tail calls=2000 bytes=1112 us=82550 reductions=29717580
+session_view@text_hygiene dirty_tail calls=2000 bytes=1112 us=81456 reductions=29717580
+session_view@text_hygiene dirty_tail allocation_calls=200 words=1796400 bytes=14371200
+hygiene_baseline dirty_front calls=2000 bytes=1105 us=78865 reductions=27433349
+hygiene_baseline dirty_front calls=2000 bytes=1105 us=78288 reductions=27433600
+hygiene_baseline dirty_front calls=2000 bytes=1105 us=77712 reductions=27433600
+hygiene_baseline dirty_front calls=2000 bytes=1105 us=79675 reductions=27433600
+hygiene_baseline dirty_front calls=2000 bytes=1105 us=77779 reductions=27433600
+hygiene_baseline dirty_front allocation_calls=200 words=1785200 bytes=14281600
+session_view@text_hygiene dirty_front calls=2000 bytes=1105 us=75035 reductions=27431987
+session_view@text_hygiene dirty_front calls=2000 bytes=1105 us=75905 reductions=27431903
+session_view@text_hygiene dirty_front calls=2000 bytes=1105 us=75137 reductions=27431903
+session_view@text_hygiene dirty_front calls=2000 bytes=1105 us=73721 reductions=27431903
+session_view@text_hygiene dirty_front calls=2000 bytes=1105 us=75801 reductions=27431903
+session_view@text_hygiene dirty_front allocation_calls=200 words=1788200 bytes=14305600
+hygiene_baseline owned_slice_bytes=200
+session_view@text_hygiene owned_slice_bytes=200

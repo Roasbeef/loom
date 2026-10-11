@@ -101,7 +101,8 @@
 //// # Failure
 ////
 //// Every failure degrades to the terminal's digest. A summarizer that
-//// fails, times out or answers nothing usable writes nothing and pushes
+//// fails, times out or answers nothing usable retains its request accounting
+//// but writes no summary and pushes
 //// nothing; the first failure this machine sees is logged at warning level
 //// and later ones at debug level. The machine never touches the strand it
 //// describes, and a restart forgets only the requests it had out.
@@ -1412,8 +1413,29 @@ pub fn ask_for(
   Nil
 }
 
+// Accounting commits before parsing or publication, even when the answer
+// failed or proves unusable. The text fallback owns no authority to erase spend.
 fn ask(wiring: Wiring, source: Source, text: String) -> Result(String, String) {
-  use answer <- result.try(wiring.route.summarizer.ask(request(source, text)))
+  use answer <- result.try(
+    case wiring.route.summarizer.ask(request(source, text)) {
+      Ok(answer) -> {
+        use Nil <- result.try(distill.record_request(
+          wiring.session,
+          answer.accounting,
+          "block-summary",
+        ))
+        Ok(answer)
+      }
+      Error(failure) -> {
+        use Nil <- result.try(distill.record_request(
+          wiring.session,
+          failure.accounting,
+          "block-summary",
+        ))
+        Error(failure.reason)
+      }
+    },
+  )
   parse(answer.text)
   |> result.replace_error("the summarizer's answer was empty")
 }

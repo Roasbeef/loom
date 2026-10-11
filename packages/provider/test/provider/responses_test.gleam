@@ -2,15 +2,19 @@
 //// Each negative changes one semantic witness, rather than merely making the
 //// outer JSON invalid. Chunk tests hold the transcript fixed and vary bytes.
 
+import core/accounting
 import core/codec
 import core/json.{type JsonValue}
 import core/message
+import core/usage_evidence
 import gleam/bit_array
+import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import provider/adapter/responses
 import provider/fixture
+import provider/internal/responses_request
 import provider/internal/wire
 import provider/model
 import provider/retry
@@ -138,7 +142,8 @@ fn settled(events: List(stream.StreamEvent)) -> message.AgentMessage {
 }
 
 fn malformed(events: List(stream.StreamEvent)) -> Nil {
-  let assert Ok(stream.Failed(stream.MalformedStream(_))) = list.last(events)
+  let assert Ok(stream.Failed(stream.MalformedStream(_), accounting: _)) =
+    list.last(events)
     as "the changed provider witness fails as malformed"
   Nil
 }
@@ -351,7 +356,8 @@ pub fn responses_sequence_and_unknown_semantics_fail_test() {
 
 pub fn responses_eof_never_settles_partial_test() {
   let events = run(list.take(text_events("partial", "output_text"), 7))
-  let assert Ok(stream.Failed(stream.StreamDisconnected(_))) = list.last(events)
+  let assert Ok(stream.Failed(stream.StreamDisconnected(_), accounting: _)) =
+    list.last(events)
     as "all item closures still need response terminal"
 }
 
@@ -498,13 +504,13 @@ pub fn responses_incomplete_and_failure_mapping_test() {
       assert raw == pair.0
     },
   )
-  let assert [stream.Failed(stream.UnmappedStopReason(_))] =
+  let assert [stream.Failed(stream.UnmappedStopReason(_), accounting: _)] =
     run([
       created(),
       event("response.incomplete", [#("response", response("incomplete", []))]),
     ])
     as "unknown incomplete reasons fail"
-  let assert [stream.Failed(stream.StreamError(_, _))] =
+  let assert [stream.Failed(stream.StreamError(_, _), accounting: _)] =
     run([created(), event("response.failed", [])])
     as "provider failure is in-band"
 }
@@ -930,12 +936,12 @@ pub fn responses_stream_and_http_errors_preserve_retry_without_remote_text_test(
           #("message", json.String("secret-canary")),
         ])
       let body = put(response("failed", []), "error", error)
-      let assert [stream.Failed(failure)] =
+      let assert [stream.Failed(failure, accounting: _)] =
         run([event("response.failed", [#("response", body)])])
         as "failure is one terminal"
       assert retry.classify(failure) == retry.Retryable(None)
       assert !string.contains(stream.describe_error(failure), "secret-canary")
-      let assert [stream.Failed(top)] =
+      let assert [stream.Failed(top, accounting: _)] =
         run([
           event("error", [
             #("code", json.String(code)),
@@ -946,7 +952,7 @@ pub fn responses_stream_and_http_errors_preserve_retry_without_remote_text_test(
       assert retry.classify(top) == retry.Retryable(None)
     },
   )
-  let assert [stream.Failed(error)] =
+  let assert [stream.Failed(error, accounting: _)] =
     fixture.drive(machine(), 429, [#("retry-after", "2")], [
       bit_array.from_string(
         "{\"error\":{\"code\":\"rate_limit_exceeded\",\"message\":\"secret-canary\"}}",
@@ -1039,4 +1045,438 @@ pub fn responses_reasoning_cipher_is_stored_once_and_replays_losslessly_test() {
   assert wire.string_field(reasoning, "id") == Ok("rs_fixture")
   assert wire.string_field(reasoning, "encrypted_content") == Ok(cipher)
   assert wire.array_field(reasoning, "summary") == Ok(parts)
+}
+
+fn namespaced_call_events(namespace: JsonValue) -> List(String) {
+  let item = put(call_item("{}"), "namespace", namespace)
+  let events = call_events("{}")
+  list.index_map(events, fn(original, index) {
+    case index {
+      1 ->
+        event("response.output_item.added", [
+          #("output_index", json.Int(0)),
+          #(
+            "item",
+            put(
+              put(item, "arguments", json.String("")),
+              "status",
+              json.String("in_progress"),
+            ),
+          ),
+        ])
+      4 ->
+        event("response.output_item.done", [
+          #("output_index", json.Int(0)),
+          #("item", item),
+        ])
+      5 -> completed([item])
+      _ -> original
+    }
+  })
+}
+
+fn subscription_run(events: List(String)) -> List(stream.StreamEvent) {
+  fixture.drive_ok(
+    responses.subscription_response_machine(resolved(), now: 123),
+    string.concat(events),
+  )
+}
+
+pub fn responses_namespace_survives_stream_codec_and_subscription_replay_test() {
+  let events = subscription_run(namespaced_call_events(json.String("loom")))
+  let assert [
+    stream.Delta(stream.ToolCallDelta(0, "call_fixture", "read", "{}")),
+    stream.Settled(_, _),
+  ] = events
+    as "namespace does not replace the function name in display deltas"
+  let assistant = settled(events)
+  let assert message.AssistantMessage(
+    content: [message.AssistantToolCall(call)],
+    ..,
+  ) = assistant
+    as "the completed call retains durable namespace metadata"
+  assert call.namespace == Some("loom")
+  assert call.name == "read"
+  let assert Ok(restored) =
+    codec.decode_message(codec.encode_message(assistant))
+    as "durable message codec retains namespace"
+  assert restored == assistant
+
+  let output =
+    message.ToolResultMessage(
+      tool_call_id: call.id,
+      tool_name: call.name,
+      content: [message.ToolResultText("result", None)],
+      details: None,
+      usage: None,
+      added_tool_names: None,
+      is_error: False,
+      timestamp: 124,
+    )
+  let request =
+    model.ProviderRequest(..fixture.request_for(resolved()), messages: [
+      restored,
+      output,
+    ])
+  let assert Ok(body) =
+    json.parse(responses_request.subscription_body(resolved(), request))
+    as "next subscription request is JSON"
+  let assert Ok([tool, result]) = wire.array_field(body, "input")
+    as "call and linked result both replay"
+  assert wire.string_field(tool, "namespace") == Ok("loom")
+  assert wire.string_field(tool, "name") == Ok("read")
+  assert wire.string_field(result, "call_id") == Ok(call.id)
+  assert wire.string_field(result, "type") == Ok("function_call_output")
+}
+
+pub fn responses_subscription_terminal_can_omit_closed_output_test() {
+  let calls = namespaced_call_events(json.String("loom"))
+  let assistant =
+    settled(subscription_run(list.append(list.take(calls, 5), [completed([])])))
+  let assert message.AssistantMessage(
+    content: [message.AssistantToolCall(call)],
+    stop_reason: message.ToolUse,
+    ..,
+  ) = assistant
+    as "The streamed closing witness retains the namespaced call."
+  assert call.id == "call_fixture"
+  assert call.name == "read"
+  assert call.namespace == Some("loom")
+  assert call.arguments == json.Object([])
+
+  let text = text_events("live subscription text", "output_text")
+  let assert message.AssistantMessage(
+    content: [message.AssistantText("live subscription text", None)],
+    stop_reason: message.Stop,
+    ..,
+  ) =
+    settled(subscription_run(list.append(list.take(text, 7), [completed([])])))
+    as "A subscription terminal does not need to repeat closed text."
+}
+
+pub fn responses_subscription_empty_terminal_still_requires_closed_items_test() {
+  let calls = namespaced_call_events(json.String("loom"))
+  malformed(subscription_run(list.append(list.take(calls, 4), [completed([])])))
+  let text = text_events("live subscription text", "output_text")
+  malformed(subscription_run(list.append(list.take(text, 6), [completed([])])))
+  malformed(run(list.append(list.take(text, 7), [completed([])])))
+
+  // A populated terminal remains an independent witness, including for the
+  // subscription dialect. It cannot replace the content already streamed.
+  malformed(
+    subscription_run(
+      list.append(list.take(text, 7), [
+        completed([text_item("completed", [part("output_text", "changed")])]),
+      ]),
+    ),
+  )
+}
+
+pub fn responses_subscription_completed_start_still_streams_and_closes_test() {
+  let text = text_events("live subscription text", "output_text")
+  let start =
+    event("response.output_item.added", [
+      #("output_index", json.Int(0)),
+      #("item", text_item("completed", [])),
+    ])
+  let transcript =
+    list.append([created(), start], list.drop(list.take(text, 7), 2))
+  let events = subscription_run(list.append(transcript, [completed([])]))
+  let assert [
+    stream.Delta(stream.TextDelta(0, "live subscription text")),
+    stream.Settled(_, _),
+  ] = events
+    as "A completed start status does not stand in for content closure."
+  let assert message.AssistantMessage(
+    content: [message.AssistantText("live subscription text", None)],
+    stop_reason: message.Stop,
+    ..,
+  ) = settled(events)
+    as "Only the fully streamed and closed content becomes durable."
+  malformed(
+    subscription_run(list.append(list.take(transcript, 6), [completed([])])),
+  )
+}
+
+pub fn responses_namespace_witness_changes_fail_test() {
+  let events = namespaced_call_events(json.String("loom"))
+  list.each([1, 4, 5], fn(index) {
+    malformed(
+      subscription_run(
+        list.index_map(events, fn(event, position) {
+          case position == index {
+            True ->
+              string.replace(
+                event,
+                "\"namespace\":\"loom\"",
+                "\"namespace\":\"foreign\"",
+              )
+            False -> event
+          }
+        }),
+      ),
+    )
+  })
+  list.each([2, 3], fn(index) {
+    let changed =
+      event(
+        case index {
+          2 -> "response.function_call_arguments.delta"
+          _ -> "response.function_call_arguments.done"
+        },
+        [
+          #("output_index", json.Int(0)),
+          #("item_id", json.String("fc_fixture")),
+          #("namespace", json.String("foreign")),
+          #(
+            case index {
+              2 -> "delta"
+              _ -> "arguments"
+            },
+            json.String("{}"),
+          ),
+        ],
+      )
+    malformed(
+      subscription_run(
+        list.index_map(events, fn(original, position) {
+          case position == index {
+            True -> changed
+            False -> original
+          }
+        }),
+      ),
+    )
+  })
+}
+
+pub fn responses_subscription_rejects_absent_or_malformed_namespace_test() {
+  malformed(subscription_run(call_events("{}")))
+  list.each(
+    [json.Null, json.Int(1), json.String(""), json.String("foreign")],
+    fn(namespace) {
+      malformed(subscription_run(namespaced_call_events(namespace)))
+    },
+  )
+
+  // The API-key fold retains valid foreign metadata without relabelling it.
+  let assert message.AssistantMessage(
+    content: [message.AssistantToolCall(call)],
+    ..,
+  ) = settled(run(namespaced_call_events(json.String("foreign"))))
+    as "generic Responses accepts opaque namespace metadata"
+  assert call.namespace == Some("foreign")
+}
+
+pub fn responses_subscription_rejects_legacy_terminal_event_test() {
+  malformed(
+    subscription_run([
+      created(),
+      event("response.done", [#("response", response("completed", []))]),
+    ]),
+  )
+}
+
+// --- independent usage witnesses -----------------------------------------
+
+fn measured_usage(input: Int, output: Int, cached: Int) -> JsonValue {
+  json.Object([
+    #("input_tokens", json.Int(input)),
+    #("output_tokens", json.Int(output)),
+    #("total_tokens", json.Int(input + output)),
+    #(
+      "input_tokens_details",
+      json.Object([#("cached_tokens", json.Int(cached))]),
+    ),
+    #(
+      "output_tokens_details",
+      json.Object([#("reasoning_tokens", json.Int(int.min(output, 2)))]),
+    ),
+  ])
+}
+
+pub fn responses_failed_usage_is_retained_independent_of_output_test() {
+  let body = put(response("failed", []), "usage", measured_usage(10, 3, 4))
+  let assert [stream.Failed(_, accounting: report)] =
+    run([
+      event("response.failed", [#("response", body)]),
+    ])
+    as "a failed response still reports its spending"
+  let usage = accounting.total(report)
+  assert #(usage.input, usage.cache_read, usage.output, usage.total_tokens)
+    == #(6, 4, 3, 13)
+  assert usage.reasoning == Some(2)
+  assert accounting.attempts(report) == 1
+  assert accounting.last(report) == Some(usage)
+  assert usage.evidence == usage_evidence.reported(usage_evidence.Api)
+}
+
+pub fn responses_missing_and_reported_zero_usage_are_distinct_test() {
+  let assert [stream.Failed(_, accounting: missing)] =
+    run([
+      event("response.failed", [#("response", response("failed", []))]),
+    ])
+    as "missing usage does not establish a free request"
+  let body = put(response("failed", []), "usage", measured_usage(0, 0, 0))
+  let assert [stream.Failed(_, accounting: zero)] =
+    run([
+      event("response.failed", [#("response", body)]),
+    ])
+    as "reported zero remains a provider measurement"
+  assert accounting.total(missing).total_tokens == 0
+  assert accounting.total(zero).total_tokens == 0
+  assert accounting.total(missing).evidence
+    == usage_evidence.unknown(usage_evidence.Api)
+  assert accounting.total(zero).evidence
+    == usage_evidence.reported(usage_evidence.Api)
+  assert accounting.attempts(missing) == 1
+  assert accounting.attempts(zero) == 1
+}
+
+pub fn responses_malformed_present_usage_fails_test() {
+  list.each(
+    [
+      json.String("invalid"),
+      put(measured_usage(10, 3, 4), "input_tokens", json.String("invalid")),
+      put(measured_usage(10, 3, 4), "input_tokens_details", json.Array([])),
+    ],
+    fn(invalid) {
+      let body = put(response("failed", []), "usage", invalid)
+      let assert [stream.Failed(stream.MalformedStream(_), accounting: report)] =
+        run([
+          event("response.failed", [#("response", body)]),
+        ])
+        as "present malformed usage cannot be interpreted as missing"
+      assert accounting.total(report).evidence
+        == usage_evidence.unknown(usage_evidence.Api)
+      assert accounting.attempts(report) == 1
+    },
+  )
+}
+
+pub fn responses_incomplete_usage_survives_unsupported_reason_test() {
+  let body = put(response("incomplete", []), "usage", measured_usage(10, 3, 4))
+  let assert [stream.Failed(stream.UnmappedStopReason(_), accounting: report)] =
+    run([
+      created(),
+      event("response.incomplete", [#("response", body)]),
+    ])
+    as "stop-reason validation cannot discard usage"
+  assert accounting.total(report).total_tokens == 13
+  assert accounting.total(report).evidence
+    == usage_evidence.reported(usage_evidence.Api)
+}
+
+pub fn responses_invalid_output_retains_independent_terminal_usage_test() {
+  let body =
+    put(
+      response("completed", [
+        text_item("completed", [part("output_text", "unobserved")]),
+      ]),
+      "usage",
+      measured_usage(10, 3, 4),
+    )
+  let assert [stream.Failed(stream.MalformedStream(_), accounting: report)] =
+    run([
+      created(),
+      event("response.completed", [#("response", body)]),
+    ])
+    as "output witness failure cannot erase a measured terminal"
+  assert accounting.total(report).total_tokens == 13
+  assert accounting.total(report).evidence
+    == usage_evidence.reported(usage_evidence.Api)
+}
+
+pub fn responses_repeated_snapshots_replace_usage_and_disconnect_is_partial_test() {
+  let first =
+    put(response("in_progress", []), "usage", measured_usage(10, 1, 4))
+  let next = put(response("in_progress", []), "usage", measured_usage(10, 3, 4))
+  let assert [stream.Failed(stream.StreamDisconnected(_), accounting: report)] =
+    run([
+      event("response.created", [#("response", first)]),
+      event("response.in_progress", [#("response", next)]),
+      event("response.in_progress", [#("response", next)]),
+    ])
+    as "the last snapshot is one attempt, not three charges"
+  assert accounting.total(report).total_tokens == 13
+  assert accounting.attempts(report) == 1
+  assert accounting.total(report).evidence
+    == usage_evidence.partial(usage_evidence.Api)
+}
+
+pub fn responses_missing_cache_partition_is_provisional_test() {
+  let body =
+    put(
+      response("failed", []),
+      "usage",
+      json.Object([
+        #("input_tokens", json.Int(10)),
+        #("output_tokens", json.Int(3)),
+      ]),
+    )
+  let assert [stream.Failed(_, accounting: report)] =
+    run([
+      event("response.failed", [#("response", body)]),
+    ])
+    as "missing cache allocation does not establish a complete rate estimate"
+  assert accounting.total(report).total_tokens == 13
+  assert accounting.total(report).evidence
+    == usage_evidence.partial(usage_evidence.Api)
+}
+
+pub fn responses_subscription_usage_has_plan_billing_identity_test() {
+  let body = put(response("failed", []), "usage", measured_usage(10, 3, 4))
+  let events =
+    fixture.drive_ok(
+      responses.subscription_response_machine(resolved(), now: 123),
+      event("response.failed", [#("response", body)]),
+    )
+  let assert [stream.Failed(_, accounting: report)] = events
+    as "subscription uses the same failed-response usage decoder"
+  assert accounting.total(report).total_tokens == 13
+  assert accounting.total(report).evidence
+    == usage_evidence.reported(usage_evidence.ChatGptPlan)
+}
+
+pub fn responses_cyber_access_is_explicit_and_defaults_are_omitted_test() {
+  let request = fixture.request_for(resolved())
+  list.each(
+    [
+      #(model.StandardCyberAccess, "standard"),
+      #(model.DaybreakBlue, "daybreak_blue"),
+      #(model.DaybreakRed, "daybreak_red"),
+    ],
+    fn(pair) {
+      let #(access, value) = pair
+      list.each(
+        [
+          responses_request.body_with_access(resolved(), request, Some(access)),
+          responses_request.subscription_body_with_access(
+            resolved(),
+            request,
+            Some(access),
+          ),
+        ],
+        fn(text) {
+          let assert Ok(body) = json.parse(text)
+            as "Both dialect bodies must be valid JSON."
+          assert wire.field(body, "access_programs")
+            == Ok(json.Object([#("cyber", json.String(value))]))
+          assert wire.field(body, "model")
+            == Ok(json.String(resolved().model_id))
+        },
+      )
+    },
+  )
+  list.each(
+    [
+      responses_request.body(resolved(), request),
+      responses_request.subscription_body(resolved(), request),
+    ],
+    fn(text) {
+      let assert Ok(body) = json.parse(text)
+        as "Existing bodies must remain valid."
+      assert wire.field(body, "access_programs") == Error(Nil)
+    },
+  )
 }

@@ -8,6 +8,7 @@
 //// complete 480 by 280 PNG, a bar chart in flat colours that is under two
 //// kilobytes, so a picture drawn at the wrong size or place is obvious.
 
+import core/accounting
 import core/clock
 import core/entry
 import core/ids
@@ -18,7 +19,6 @@ import gleam/option.{None}
 import session_view/model as _
 import session_view/protocol
 import session_view/shared_set
-import tui/inbound
 import tui/model.{type Model, Model}
 
 /// The demo model with the image's three entries added to main's records.
@@ -68,7 +68,7 @@ fn entries() -> List(entry.Entry) {
         None,
         None,
         None,
-        inbound.zero_usage(),
+        accounting.zero_usage(),
         message.Stop,
         None,
         None,

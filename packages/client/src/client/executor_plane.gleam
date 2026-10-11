@@ -29,6 +29,26 @@
 //// session. The scope directory is created fresh at attach and removed at
 //// close, and a directory left by a previous VM is replaced, not reused.
 ////
+//// ## Where the blobs live, and why not in the scope
+////
+//// A remote session's content-addressed blobs (the overflow of a large tool
+//// result, and the artifacts a code-mode program emits) are written on the
+//// executor, and the session's transcript names them by path. They live in
+//// `<state root>/blobs/<session>`, outside the scope directory and outside
+//// the checkout. The scope directory is removed when a scope retires
+//// cleanly, and a reopened session must still read what its transcript
+//// references, so the store has to outlive a close. It is never removed here:
+//// an operator who retires a session for good removes its directory. The
+//// store is kept out of the checkout for the reason the daemon keeps its own
+//// out of the workspace, and every jail on the executor masks it
+//// (`workspace_policy.protecting_blobs`), so only the harness writes it.
+////
+//// Legacy adoption (`client/blobs.adopt_legacy`) is not applied. It copies a
+//// store an earlier release left inside a workspace so that an older
+//// transcript's references resolve, and no release ever wrote a remote
+//// session's store into a checkout: registered sessions exist only from this
+//// design on, and a session's placement is fixed when it is created.
+////
 //// ## Why the build collects its cleanups
 ////
 //// `workspace_plane.start` hands each started resource to a `Retain` function
@@ -254,8 +274,9 @@ fn build(
       <> reason
     }),
   )
+  use blob_root <- result.try(blob_directory(machine.state_root, spec.session))
   use scope <- result.try(scope_directory(machine.state_root, spec.session))
-  let outcome = start(machine, root, scope, spec)
+  let outcome = start(machine, root, scope, blob_root, spec)
   case outcome {
     Ok(plane) -> Ok(plane)
     Error(reason) -> {
@@ -265,16 +286,32 @@ fn build(
   }
 }
 
+// The session's blob store, created if it is not there and private. Unlike
+// the scope it is adopted when it exists: a reopened session reads what its
+// transcript names, so nothing here is cleared at attach or removed at
+// close.
+fn blob_directory(
+  state_root: String,
+  session: String,
+) -> Result(String, String) {
+  use Nil <- result.try(usable_session(session))
+  let blobs = state_root <> "/" <> blob_directory_name
+  let store = blobs <> "/" <> session
+  use Nil <- result.try(bootstrap.ensure_private_directory(blobs))
+  use Nil <- result.try(bootstrap.ensure_private_directory(store))
+  Ok(store)
+}
+
+// The state root's directory of per-session blob stores.
+const blob_directory_name = "blobs"
+
 // The scope's directory, created fresh and private. A directory left by an
 // earlier VM held another build's scratch, so it is replaced and not adopted.
 fn scope_directory(
   state_root: String,
   session: String,
 ) -> Result(String, String) {
-  use Nil <- result.try(case safe_component(session) {
-    True -> Ok(Nil)
-    False -> Error("the session name is not usable as a directory name")
-  })
+  use Nil <- result.try(usable_session(session))
   let scopes = state_root <> "/scopes"
   let scope = scopes <> "/" <> session
   let _removed = simplifile.delete(scope)
@@ -284,6 +321,13 @@ fn scope_directory(
 }
 
 // A session name arrives from a peer, so it is judged before it names a path.
+fn usable_session(session: String) -> Result(Nil, String) {
+  case safe_component(session) {
+    True -> Ok(Nil)
+    False -> Error("the session name is not usable as a directory name")
+  }
+}
+
 fn safe_component(name: String) -> Bool {
   let graphemes = string.to_graphemes(name)
   name != ""
@@ -303,15 +347,20 @@ fn start(
   machine: Machine,
   root: String,
   scope: String,
+  blob_root: String,
   spec: host.AttachSpec,
 ) -> Result(host.Plane(remote_census.RemoteCensus), String) {
+  // The store is in the state root but in no directory the state-root masks
+  // name, so it takes its own entry. It exists by now, which is all the
+  // unconditional entry waits for.
   let base =
     workspace_policy.base_policy_for(root, machine.workspace.read_scope)
     |> workspace_policy.admitting_config_mounts(machine.workspace.mounts)
     |> workspace_policy.protecting_state_root(machine.state_root)
+    |> workspace_policy.protecting_blobs(blob_root)
   use prepared <- result.try(
     workspace_plane.prepare(
-      workspace_spec(machine, root, scope, base),
+      workspace_spec(machine, root, scope, blob_root, base),
       reading: fn(name) { secret.lookup(machine.secrets, name) },
     ),
   )
@@ -342,10 +391,12 @@ fn workspace_spec(
   machine: Machine,
   root: String,
   scope: String,
+  blob_root: String,
   base: policy.SandboxPolicy,
 ) -> workspace_plane.WorkspaceSpec {
   workspace_plane.WorkspaceSpec(
     workspace: root,
+    blob_root:,
     scratch_dir: scope <> "/tmp",
     helper_path: machine.helper_path,
     helper_pool_size: machine.helper_pool_size,

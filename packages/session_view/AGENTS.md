@@ -287,7 +287,8 @@ for a host with no surfaces.
   `Returned` rows for sub-agents, `Nudged` for a delivered advisor frame,
   `Peer` for another session's message, `Sibling` for a message a strand of
   the same session sent (stored origin `StrandOrigin`, framing removed by
-  `strand_framing.strip`, a brief's result-contract trailer kept apart),
+  `strand_framing.strip`, a brief's result-contract trailer kept apart; `Peer`
+  and `Sibling` keep the whole text and the host shortens it when it draws),
   `Missed` for a cache notice and `Commentary` for the advisor's board (reviews that
   stand next to each other are one piece with a `reviews` count). A feed or goal
   feed sent to the advisor is an input, since the advisor's strand has no other:
@@ -841,6 +842,21 @@ states that this consent permits only the captured action on its strand; the
 wire still echoes the exact action, grant subset, and displayed sequence.
 The client gateway owns persistence and matching; this pure UI grants nothing.
 
+## Usage projection (protocol 081)
+
+`protocol.UsageChanged` separates aggregate usage from `last_usage`. The
+aggregate contributes to cumulative consumption; cache watches, output rate,
+and context observations use the final attempt. A present malformed final
+observation is refused, while a historical omitted field describes its
+single usage observation. Captures own network cumulative totals; a pushed
+observation is never another adder.
+
+`usage_display.estimate` supplies the same words to conversation bars and
+goal inspectors. Unavailable pricing shows `est —`, partial estimates name
+their coverage, and ChatGPT plan rates show `API ref`. The goal board carries
+`cost_evidence` beside `cost_used`, preserving uncertainty through restart
+and replay without introducing a ChatGPT allowance counter.
+
 ## Immutable result identities
 
 `turns.Item.Step.result_source` retains the result entry identity independently
@@ -848,3 +864,14 @@ of its host-capped expansion. Narrative joins keep the identity alongside the
 exact joined outcome; compact groups already carry it in `tool_activity.Call`.
 `turns.block_result` reads an orphan result identity from its existing source.
 These are portable, pure projection facts and contain no I/O or result reader.
+
+## Profile commands (protocol 082)
+
+`command.ProfileShow` and `command.ProfileSelect` are session commands for
+`/profile` and its alias `/model-profile`. `commands.dispatch` sends
+`protocol.profile_get` and `protocol.profile_set` (an absent `profile` is the
+default roles). The lane classifies `profile_get` as a read and `profile_set` as a
+mutation, and both are answered by `protocol.ProfileSnapshot`
+(`session_channel.matching_presentation`). `event_fold.append_profile` writes the
+current profile and the names, with `default` first, or the switch confirmation
+that says the session is restarting. `attempt` accepts both names in a recording.

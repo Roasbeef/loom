@@ -10,6 +10,7 @@
 import core/codec
 import core/json
 import core/message
+import core/usage_evidence
 import etui/backend
 import etui/widgets/textarea
 import gleam/bit_array
@@ -56,6 +57,7 @@ fn metadata() {
           None,
           0,
           message.UsageCost(0.0, 0.0, 0.0, 0.0, 0.0),
+          usage_evidence.none(),
         )),
       ),
       #(
@@ -690,6 +692,7 @@ pub fn a_legacy_usage_push_cannot_double_count_the_captured_total_test() {
       None,
       412,
       message.UsageCost(0.01, 0.004, 0.0, 0.0, 0.014),
+      usage_evidence.priced_api(),
     )
   let legacy =
     push([
@@ -721,6 +724,7 @@ pub fn a_pushed_usage_row_reaches_the_terminal_in_every_phase_test() {
       option.None,
       250_400,
       message.UsageCost(0.0, 0.004, 0.25, 0.0, 0.254),
+      usage_evidence.priced_api(),
     )
   let auxiliary =
     session_channel.Auxiliary(protocol.UsageChanged(
@@ -728,6 +732,7 @@ pub fn a_pushed_usage_row_reaches_the_terminal_in_every_phase_test() {
       seq: Some(11),
       operation: None,
       usage: reported,
+      last_usage: Some(reported),
     ))
 
   // In Ready: handed straight to the terminal, moving neither phase nor
@@ -775,6 +780,7 @@ pub fn a_pushed_usage_row_folds_into_the_terminal_model_test() {
       option.Some(400),
       250_400,
       message.UsageCost(0.0, 0.004, 0.25, 0.0, 0.254),
+      usage_evidence.priced_api(),
     )
   let settled =
     inbound.accept_connection_message(model, usage_push("main", reported))
@@ -826,6 +832,7 @@ pub fn an_old_operation_cannot_reseed_the_cache_after_a_model_switch_test() {
       None,
       250_400,
       message.UsageCost(0.0, 0.004, 0.25, 0.0, 0.254),
+      usage_evidence.priced_api(),
     )
   let assert #(_, Some(watch)) = cache_miss.observe(None, row, 0)
   let selected =
@@ -887,6 +894,7 @@ pub fn a_remote_switch_before_the_first_row_still_fences_the_old_operation_test(
       None,
       250_400,
       message.UsageCost(0.0, 0.004, 0.25, 0.0, 0.254),
+      usage_evidence.priced_api(),
     )
   let old =
     cache_cut(
@@ -935,6 +943,7 @@ pub fn a_remote_switch_capture_cancels_an_early_usage_comparison_test() {
       None,
       250_400,
       message.UsageCost(0.0, 0.004, 0.25, 0.0, 0.254),
+      usage_evidence.priced_api(),
     )
   let cold =
     message.Usage(
@@ -946,6 +955,7 @@ pub fn a_remote_switch_capture_cancels_an_early_usage_comparison_test() {
       None,
       250_400,
       message.UsageCost(1.25, 0.004, 0.0, 0.0, 1.254),
+      usage_evidence.priced_api(),
     )
   let assert #(_, Some(watch)) = cache_miss.observe(None, prior, 0)
   let captured =
@@ -998,6 +1008,7 @@ pub fn an_initial_cut_fences_an_operation_running_under_an_older_model_test() {
       None,
       250_400,
       message.UsageCost(0.0, 0.004, 0.25, 0.0, 0.254),
+      usage_evidence.priced_api(),
     )
   let model = {
     let base = attached()
@@ -1044,6 +1055,7 @@ pub fn an_initial_cut_ignores_a_late_push_from_a_finished_old_operation_test() {
       None,
       250_400,
       message.UsageCost(0.0, 0.004, 0.25, 0.0, 0.254),
+      usage_evidence.priced_api(),
     )
   let model = {
     let base = attached()

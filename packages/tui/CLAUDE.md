@@ -3271,3 +3271,17 @@ bound to the daemon that minted them, and `loom ui <session>` is a terminal
 command that opens the session first, so its wording is this one. Tests are
 `orchestrator_redirect_test` (the decoder, its fallbacks and the three
 sentences).
+## `/profile` and `/model-profile` (protocol 082)
+
+Both spellings parse in `session_view/command` to a session command
+(`ProfileShow`, `ProfileSelect(Option(String))`; `default` is `None`), so the
+terminal runs them through the shared step and needs no surface of its own. The
+palette lists `/profile` and `/model-profile`, and `/profile ` completes
+`default`; the daemon's names are not known to the client until `/profile` is
+answered, so they are not completions. The answer is a `ProfileSnapshot` that
+`event_fold` writes as transcript lines. A switch's reply carries `moved`, and the
+session then restarts, so the conversation socket closes: the existing
+`begin_reconnect` reattaches the same session, and a reattach that arrives while
+the daemon is still stopping it is spent with the pointer to `/sessions`.
+`tui/profile_command_test` pins the parse, palette, help text, frames, lane
+acceptance and transcript lines.

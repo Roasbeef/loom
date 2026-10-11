@@ -21,11 +21,12 @@ import core/entry
 import core/json.{type JsonValue}
 import core/message
 import core/register
+import core/usage_evidence
 import gleam/bit_array
 import gleam/erlang/process
 import gleam/int
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import machine/operation
@@ -48,12 +49,44 @@ const tool_name = "fixture_answer"
 
 const model_id = "responses-fixture-model"
 
+type Dialect {
+  PublicResponses
+  CodexSubscription
+}
+
+fn api_name(dialect: Dialect) -> String {
+  case dialect {
+    PublicResponses -> "openai-responses"
+    CodexSubscription -> "codex-subscription"
+  }
+}
+
+fn tool_namespace(dialect: Dialect) -> Option(String) {
+  case dialect {
+    PublicResponses -> None
+    CodexSubscription -> Some("loom")
+  }
+}
+
 /// Runs two provider settlements around one real runtime tool dispatch.
 ///
 /// ## Examples
 ///
 /// Run `scripts/test.sh conformance --match responses_e2e`.
 pub fn responses_tool_turn_replays_reasoning_without_credentials_test() -> Nil {
+  run_tool_turn(PublicResponses)
+}
+
+/// Runs the same durable tool turn over the uncredentialed subscription seam.
+///
+/// ## Examples
+///
+/// Run `scripts/test.sh conformance --match codex_subscription`.
+pub fn codex_subscription_tool_turn_replays_reasoning_test() -> Nil {
+  run_tool_turn(CodexSubscription)
+}
+
+fn run_tool_turn(dialect: Dialect) -> Nil {
   let requests = process.new_subject()
   let executions = process.new_subject()
   let assert Ok(sess) = session.open_memory(clock.stepping(1000, 1))
@@ -68,7 +101,8 @@ pub fn responses_tool_turn_replays_reasoning_without_credentials_test() -> Nil {
       ),
     )
     as "the helperless broker must start"
-  let effects = wiring.build_effects(config(sess, brk, requests, executions))
+  let effects =
+    wiring.build_effects(config(sess, brk, requests, executions, dialect))
   let configuration =
     strand.StrandConfiguration(
       model: strand.ModelIdentity("responses", model_id),
@@ -108,9 +142,9 @@ pub fn responses_tool_turn_replays_reasoning_without_credentials_test() -> Nil {
   let assert Ok(usage_rows) = ledger as "durable usage must decode"
   let assert Ok(registers) = register_rows
     as "every durable namespace must remain readable"
-  assert_conversation(entries)
+  assert_conversation(entries, dialect)
   assert list.map(usage_rows, fn(row) { row.usage })
-    == [usage(80, 20, 20, 7), usage(110, 12, 40, 3)]
+    == [usage(dialect, 80, 20, 20, 7), usage(dialect, 110, 12, 40, 3)]
 
   // Exactly one trusted tool invocation and two outbound requests distinguish
   // an actual continuation from duplicated settlement or a canned final reply.
@@ -122,8 +156,8 @@ pub fn responses_tool_turn_replays_reasoning_without_credentials_test() -> Nil {
   let assert Ok(second) = process.receive(requests, 1000)
     as "the continuation HTTP request must be captured"
   assert process.receive(requests, 0) == Error(Nil)
-  assert_request(first)
-  assert_request(second)
+  assert_request(first, dialect)
+  assert_request(second, dialect)
   let assert Ok(initial) = json.parse(first.body)
     as "the initial request must decode"
   assert field(initial, "input")
@@ -136,7 +170,7 @@ pub fn responses_tool_turn_replays_reasoning_without_credentials_test() -> Nil {
         ),
       ]),
     ])
-  assert_replay(second.body)
+  assert_replay(second.body, dialect)
 
   let stored =
     list.map(entries, codec.encode_entry)
@@ -150,6 +184,7 @@ fn config(
   brk: broker.Broker,
   requests: process.Subject(http.HttpRequest),
   executions: process.Subject(JsonValue),
+  dialect: Dialect,
 ) -> wiring.Config {
   let resolved =
     model.ResolvedModel(
@@ -164,7 +199,7 @@ fn config(
       process.send(requests, request)
       let continuation = string.contains(request.body, "function_call_output")
       let frames = case continuation {
-        False -> first_turn()
+        False -> first_turn(dialect)
         True -> final_turn()
       }
       process.send(events, http.ResponseStatus(200, []))
@@ -179,11 +214,35 @@ fn config(
       secret.from_list([#("FIXTURE_KEY", canary)]),
       clock.stepping(1000, 1),
     )
-    |> gateway.add_provider(gateway.OpenAiResponsesProvider(
-      name: "responses",
-      base_url: "https://responses.invalid/v1",
-      api_key_secret: "FIXTURE_KEY",
-    ))
+  let gw = case dialect {
+    PublicResponses ->
+      gateway.add_provider(
+        gw,
+        gateway.OpenAiResponsesProvider(
+          name: "responses",
+          base_url: "https://responses.invalid/v1",
+          api_key_secret: "FIXTURE_KEY",
+        ),
+      )
+    CodexSubscription -> {
+      let http.Transport(prepare_streaming:) = transport
+      gw
+      |> gateway.add_provider(gateway.CodexSubscriptionProvider(
+        name: "responses",
+        profile: "personal",
+      ))
+      |> gateway.with_codex_transport(
+        gateway.CodexTransport(prepare_streaming: fn(profile, built, events) {
+          case profile {
+            "personal" -> prepare_streaming(built, events)
+            _ -> Error("unexpected subscription profile")
+          }
+        }),
+      )
+    }
+  }
+  let gw =
+    gw
     |> gateway.route(model.Main, [resolved])
     |> gateway.with_attempt_timeout(2000)
   let registry =
@@ -211,10 +270,10 @@ fn config(
     gateway: gw,
     role: model.Main,
     facts: fn(_identity) {
-      Ok(#(resolved, "openai-responses", catalog.ReadsImages))
+      Ok(#(resolved, api_name(dialect), catalog.ReadsImages))
     },
     system: Some("Use the supplied tool once."),
-    api: "openai-responses",
+    api: api_name(dialect),
     fallback_context_window: 200_000,
     fallback_max_output_tokens: 4096,
     provider_timeout_ms: 3000,
@@ -234,13 +293,22 @@ fn config(
   )
 }
 
-fn assert_request(request: http.HttpRequest) -> Nil {
+fn assert_request(request: http.HttpRequest, dialect: Dialect) -> Nil {
   assert request.method == "POST"
-  assert request.url == "https://responses.invalid/v1/responses"
-  assert list.filter(request.headers, fn(header) {
+  let authorization =
+    list.filter(request.headers, fn(header) {
       string.lowercase(header.0) == "authorization"
     })
-    == [#("authorization", "Bearer " <> canary)]
+  case dialect {
+    PublicResponses -> {
+      assert request.url == "https://responses.invalid/v1/responses"
+      assert authorization == [#("authorization", "Bearer " <> canary)]
+    }
+    CodexSubscription -> {
+      assert request.url == "/responses"
+      assert authorization == []
+    }
+  }
   assert !string.contains(request.body, canary)
   let assert Ok(body) = json.parse(request.body) as "request JSON must decode"
   assert field(body, "model") == json.String(model_id)
@@ -248,9 +316,48 @@ fn assert_request(request: http.HttpRequest) -> Nil {
   assert field(body, "stream") == json.Bool(True)
   assert field(body, "include")
     == json.Array([json.String("reasoning.encrypted_content")])
+
+  // The subscription namespace wraps exactly the same local function schema.
+  // Its wire grouping must survive both requests without widening execution.
+  let function =
+    json.Object([
+      #("type", json.String("function")),
+      #("name", json.String(tool_name)),
+      #("description", json.String("Return the fixed fixture answer.")),
+      #(
+        "parameters",
+        json.Object([
+          #("type", json.String("object")),
+          #("properties", json.Object([])),
+        ]),
+      ),
+    ])
+  let tools = case dialect {
+    PublicResponses -> [function]
+    CodexSubscription -> [
+      json.Object([
+        #("type", json.String("namespace")),
+        #("name", json.String("loom")),
+        #(
+          "description",
+          json.String("Tools executed by Loom under its local policy."),
+        ),
+        #("tools", json.Array([function])),
+      ]),
+    ]
+  }
+  assert field(body, "tools") == json.Array(tools)
+  case dialect {
+    PublicResponses -> {
+      assert field(body, "max_output_tokens") == json.Int(4096)
+    }
+    CodexSubscription -> {
+      assert field(body, "max_output_tokens") == json.Null
+    }
+  }
 }
 
-fn assert_replay(body: String) -> Nil {
+fn assert_replay(body: String, dialect: Dialect) -> Nil {
   let assert Ok(value) = json.parse(body) as "continuation JSON must decode"
   let assert json.Array(input) = field(value, "input")
     as "input must be an array"
@@ -283,13 +390,18 @@ fn assert_replay(body: String) -> Nil {
   assert field(call, "call_id") == json.String("call_fixture")
   assert field(call, "name") == json.String(tool_name)
   assert field(call, "arguments") == json.String("{}")
+  assert field(call, "namespace")
+    == case tool_namespace(dialect) {
+      None -> json.Null
+      Some(namespace) -> json.String(namespace)
+    }
   assert field(output, "type") == json.String("function_call_output")
   assert field(output, "call_id") == json.String("call_fixture")
   assert field(output, "output")
     == json.Array([text_part("input_text", "fixture result")])
 }
 
-fn assert_conversation(entries: List(entry.Entry)) -> Nil {
+fn assert_conversation(entries: List(entry.Entry), dialect: Dialect) -> Nil {
   let assert [
     entry.MessageEntry(id: user_id, message: message.UserMessage(..), ..),
     entry.MessageEntry(
@@ -321,10 +433,11 @@ fn assert_conversation(entries: List(entry.Entry)) -> Nil {
         id: "call_fixture",
         name: "fixture_answer",
         arguments: json.Object([]),
+        namespace: call_namespace,
         ..,
       )),
     ],
-    api: "openai-responses",
+    api: first_api,
     provider: "responses",
     model: "responses-fixture-model",
     response_id: Some("resp_first"),
@@ -333,8 +446,10 @@ fn assert_conversation(entries: List(entry.Entry)) -> Nil {
     ..,
   ) = first
     as "the complete first settlement must retain reasoning, text and call"
+  assert first_api == api_name(dialect)
+  assert call_namespace == tool_namespace(dialect)
   assert signature == encrypted
-  assert first_usage == usage(80, 20, 20, 7)
+  assert first_usage == usage(dialect, 80, 20, 20, 7)
   let assert message.ToolResultMessage(
     tool_call_id: "call_fixture",
     tool_name: "fixture_answer",
@@ -345,7 +460,7 @@ fn assert_conversation(entries: List(entry.Entry)) -> Nil {
     as "the real tool must commit its exact successful result"
   let assert message.AssistantMessage(
     content: [message.AssistantText("Finished.", ..)],
-    api: "openai-responses",
+    api: final_api,
     provider: "responses",
     model: "responses-fixture-model",
     response_id: Some("resp_final"),
@@ -354,10 +469,12 @@ fn assert_conversation(entries: List(entry.Entry)) -> Nil {
     ..,
   ) = last
     as "the continuation must commit the final answer"
-  assert final_usage == usage(110, 12, 40, 3)
+  assert final_api == api_name(dialect)
+  assert final_usage == usage(dialect, 110, 12, 40, 3)
 }
 
 fn usage(
+  dialect: Dialect,
   input: Int,
   output: Int,
   cached: Int,
@@ -372,6 +489,10 @@ fn usage(
     reasoning: Some(reasoning),
     total_tokens: input + cached + output,
     cost: message.UsageCost(0.0, 0.0, 0.0, 0.0, 0.0),
+    evidence: usage_evidence.reported(case dialect {
+      PublicResponses -> usage_evidence.Api
+      CodexSubscription -> usage_evidence.ChatGptPlan
+    }),
   )
 }
 
@@ -398,7 +519,7 @@ fn stored_registers(
 // These builders emit the real event vocabulary, including every closing
 // witness. Each event is a separate HTTP chunk, so no parser shortcut can rely
 // on the final response being the only document delivered.
-fn first_turn() -> List(String) {
+fn first_turn(dialect: Dialect) -> List(String) {
   let reasoning =
     json.Object([
       #("id", json.String("rs_fixture")),
@@ -406,7 +527,7 @@ fn first_turn() -> List(String) {
       #("summary", json.Array([text_part("summary_text", "Use the tool.")])),
       #("encrypted_content", json.String(encrypted)),
     ])
-  let call = call_item("completed", "{}")
+  let call = call_item("completed", "{}", dialect)
   [
     response_event(
       "response.created",
@@ -459,7 +580,11 @@ fn first_turn() -> List(String) {
     ),
     item_event("response.output_item.done", 0, reasoning),
     ..list.append(text_events("msg_first", 1, "commentary", "Checking."), [
-      item_event("response.output_item.added", 2, call_item("in_progress", "")),
+      item_event(
+        "response.output_item.added",
+        2,
+        call_item("in_progress", "", dialect),
+      ),
       event("response.function_call_arguments.delta", [
         #("item_id", json.String("fc_fixture")),
         #("output_index", json.Int(2)),
@@ -592,15 +717,22 @@ fn message_item(
   ])
 }
 
-fn call_item(status: String, arguments: String) -> JsonValue {
-  json.Object([
-    #("id", json.String("fc_fixture")),
-    #("type", json.String("function_call")),
-    #("status", json.String(status)),
-    #("call_id", json.String("call_fixture")),
-    #("name", json.String(tool_name)),
-    #("arguments", json.String(arguments)),
-  ])
+fn call_item(status: String, arguments: String, dialect: Dialect) -> JsonValue {
+  let namespace = case tool_namespace(dialect) {
+    None -> []
+    Some(name) -> [#("namespace", json.String(name))]
+  }
+  json.Object(list.append(
+    [
+      #("id", json.String("fc_fixture")),
+      #("type", json.String("function_call")),
+      #("status", json.String(status)),
+      #("call_id", json.String("call_fixture")),
+      #("name", json.String(tool_name)),
+      #("arguments", json.String(arguments)),
+    ],
+    namespace,
+  ))
 }
 
 fn response_event(

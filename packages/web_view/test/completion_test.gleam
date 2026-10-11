@@ -9,6 +9,7 @@
 import core/json
 import gleam/erlang/process
 import gleam/list
+import gleam/option
 import gleam/string
 import lustre/element
 import page_fixture
@@ -24,6 +25,8 @@ fn terminal() -> List(command.Suggestion) {
     command.suggestions("/"),
     command.suggestions("/effort "),
     command.suggestions("/goal "),
+    command.suggestions("/profile "),
+    command.suggestions("/model-profile "),
   ])
 }
 
@@ -69,6 +72,32 @@ pub fn the_argument_rows_are_offered_test() {
   assert list.contains(offered, "/effort max")
   assert list.contains(offered, "/goal check")
   assert list.contains(offered, "/goal --budget")
+}
+
+// `/profile` is a session command, so the page runs it exactly as the terminal
+// does, under both spellings, and offers the one argument it can know, `default`.
+// The profile names are the daemon's text and the table is an attribute, so they
+// are never rows (the page prints them when `/profile` is answered).
+pub fn the_profile_commands_are_offered_under_both_spellings_test() {
+  let rows = completion.rows()
+  let offered = commands(rows)
+  list.each(
+    ["/profile", "/model-profile", "/profile default", "/model-profile default"],
+    fn(name) {
+      assert list.contains(offered, name)
+    },
+  )
+  let assert Ok(head) = list.find(rows, fn(row) { row.command == "/profile" })
+  assert head.takes_argument
+}
+
+pub fn the_page_carries_the_profile_commands_as_session_commands_test() {
+  assert component.page_command(command.parse("/profile"))
+    == Ok(command.ProfileShow)
+  assert component.page_command(command.parse("/model-profile codex"))
+    == Ok(command.ProfileSelect(option.Some("codex")))
+  assert component.page_command(command.parse("/profile default"))
+    == Ok(command.ProfileSelect(option.None))
 }
 
 // The page refuses a terminal surface and adding a directory, and does not

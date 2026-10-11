@@ -55,6 +55,7 @@
 ////    taken for the loop to perform.
 
 import argv
+import core/accounting
 import etui/app
 import etui/backend
 import etui/backend/default
@@ -667,7 +668,7 @@ pub fn new_model_with_clock(
       replay_inbox: buffered.new(process.new_subject()),
       replay_error: None,
       next_id: 1,
-      usage: inbound.zero_usage(),
+      usage: accounting.zero_usage(),
       generation_started_ms: None,
       output_rate_tps: None,
       details_expanded: False,

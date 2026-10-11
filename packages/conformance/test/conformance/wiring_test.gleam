@@ -413,7 +413,7 @@ pub fn poll_requests_settle_in_band_as_unsupported_test() {
       configuration: configuration_for("acme", "loom-1"),
       stream_options: json.Object([]),
     ))
-  let assert Ok(#([], stream.Failed(error))) =
+  let assert Ok(#([], stream.Failed(error, _))) =
     stream.await_terminal(handle, within: 1000)
   let assert stream.StreamError(api_error_type: _, message: reason) = error
   assert string.contains(reason, "deferred polls")

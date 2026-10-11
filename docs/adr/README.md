@@ -56,3 +56,5 @@ document ever cited them under the old ones.
 - [018](018-go-helper-keeps-its-protocol-code.md): the Go helper keeps its
   protocol code, and the tag vocabulary is pinned by a test rather than
   generated (issue #696).
+- [019](019-native-reads-follow-read-scope.md): native reads follow the
+  session's read policy, and protected paths are refused on reads.

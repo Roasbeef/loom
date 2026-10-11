@@ -17,6 +17,7 @@ import core/json
 import core/message
 import core/register
 import core/todo_list
+import core/usage_evidence
 import gleam/bit_array
 import gleam/dict
 import gleam/int
@@ -126,6 +127,7 @@ fn usage() -> message.Usage {
     None,
     0,
     message.UsageCost(0.0, 0.0, 0.0, 0.0, 0.0),
+    usage_evidence.none(),
   )
 }
 
@@ -707,6 +709,36 @@ pub fn siblings() -> session_channel.Update {
   )
 }
 
+/// A capture of `main` holding a prompt and then one message from the strand
+/// `sub:main/x`, framed as the Agency frames it, whose words are `body`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.sibling_saying("done")
+/// ```
+pub fn sibling_saying(body: String) -> session_channel.Update {
+  capture_of(
+    [
+      item(1, 10_000, said("start", Some(message.Origin("p", "Alice")))),
+      item(
+        2,
+        11_000,
+        said(
+          strand_framing.message_head("sub:main/x")
+            <> body
+            <> "\n"
+            <> strand_framing.message_foot,
+          Some(message.StrandOrigin("sub:main/x")),
+        ),
+      ),
+    ],
+    None,
+    [],
+    [],
+  )
+}
+
 /// The records `from` to `to` of the same conversation as `conversation`,
 /// as the window of an older page of history.
 ///
@@ -1127,11 +1159,8 @@ pub fn usage_push(
   cache_write: Int,
   hour: Int,
 ) -> session_channel.Update {
-  session_channel.Auxiliary(protocol.UsageChanged(
-    strand:,
-    seq: None,
-    operation: None,
-    usage: message.Usage(
+  let usage =
+    message.Usage(
       input: 200,
       output: 400,
       cache_read:,
@@ -1146,7 +1175,49 @@ pub fn usage_push(
         int_cost(cache_write, 0.00000375),
         0.0,
       ),
-    ),
+      evidence: usage_evidence.priced_api(),
+    )
+
+  session_channel.Auxiliary(protocol.UsageChanged(
+    strand:,
+    seq: None,
+    operation: None,
+    usage:,
+    last_usage: Some(usage),
+  ))
+}
+
+/// A usage push for `main` whose cost total is `total` dollars under
+/// `evidence`, for the figures that word a price and its coverage.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.priced_push(0.42, usage_evidence.none())
+/// ```
+pub fn priced_push(
+  total: Float,
+  evidence: usage_evidence.Evidence,
+) -> session_channel.Update {
+  let usage =
+    message.Usage(
+      input: 200,
+      output: 400,
+      cache_read: 0,
+      cache_write: 0,
+      cache_write_1h: None,
+      reasoning: None,
+      total_tokens: 600,
+      cost: message.UsageCost(0.0, 0.0, 0.0, 0.0, total),
+      evidence:,
+    )
+
+  session_channel.Auxiliary(protocol.UsageChanged(
+    strand: "main",
+    seq: None,
+    operation: None,
+    usage:,
+    last_usage: Some(usage),
   ))
 }
 

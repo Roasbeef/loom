@@ -80,7 +80,7 @@ file is ever mounted into a jail.
 | Orchestrator (brains) | Executor (hands) |
 |---|---|
 | Session SQLite: conversation tree, registers, facts (per-strand working directory, `job/<id>` records), approvals, grants, budgets, notes | The checkout: files, `.git`, worktrees, uncommitted edits |
-| Catalogue and session registrations, peer mail, memory and history index | `.blobs` (Bash overflow, code-mode reports), code-mode work directories, build seed, capability sockets |
+| Catalogue and session registrations, peer mail, memory and history index | The blob store in the executor's state directory (`<state>/blobs/<session>`: Bash overflow, code-mode reports), code-mode work directories, build seed, capability sockets |
 | Provider credentials, MCP clients and their secrets | Toolchains, Go and Gleam caches, language servers and their caches |
 | User configuration: `~/.loom`, user-level `~/.claude/settings.json` hooks, the hook trust record, skills | Helper pool and jail, background job processes, their staging and spill files |
 | | Project hook files and guidance files, read here and sent to the orchestrator as text |
@@ -102,7 +102,7 @@ step, source index, strand, the call, its arguments, the persisted replay
 policy and the consumed grants going out; a finished `AgentMessage` or a
 failure reason coming back. No closure, port or local handle crosses.
 
-`wiring.run_tool` (`client/wiring.gleam:1763`) is two functions in sequence.
+`wiring.run_tool` (`client/wiring.gleam:1770`) is two functions in sequence.
 `read_authority` reads the call's authority from SQLite (directory additions
 and standing grants, no filesystem), then `run_workspace_tool` builds a
 `tool.Ctx` and dispatches the tool. For a session whose workspace lives on an
@@ -138,7 +138,7 @@ orchestrator:
    shape: get, compare-and-set, and a prefix listing the jobs actor uses at
    boot (`client/jobs.gleam:2772`). Only those reserved prefixes are served.
 3. **Notices.** A finished background job tells its strand through the
-   owner's `notify` function (`client/jobs.gleam:2964`), which locally is
+   owner's `notify` function (`client/jobs.gleam:2971`), which locally is
    `notice.deliver` (`client/notice.gleam:162-174`) and writes to the
    conversation; the executor sends the notice text and the orchestrator
    delivers it.
@@ -201,7 +201,7 @@ PR #819's parallel reimplementation lost.
 When a workspace host starts it returns what the orchestrator needs to build
 the prompt and the tool table: platform and enforcement level, the toolchain
 probe, available language servers, helper degradation, the shell, the Git
-program (`host_git.program`, `workspace_plane.gleam:515`, probes the host it runs on),
+program (`host_git.program`, `workspace_plane.gleam:530`, probes the host it runs on),
 the workspace root as an opaque string, the guidance files' text, the project
 hook files' bytes and the base policy summary. The orchestrator renders and
 pins the prompt from it, exactly as it pins guidance today, and checks the
@@ -246,7 +246,7 @@ known places that do today, and where each goes:
 | `ui_project.locate` reads `.git` every 30 s for web lists | Taken from the census, refreshed on attach |
 | `session_base` reads `.git`, `gitdir`, `commondir` and manifests to widen roots | Built on the executor |
 | `codemode_wiring.discover`, toolchain and seed probes | Census |
-| `prepare_directories` creates `.blobs`, work and tmp directories, writes `.gitignore` | Executor |
+| `prepare_directories` creates the blob store, work and tmp directories, writes `.gitignore` | Executor |
 | `system_prompt` reads guidance on first render | Census text |
 | `hookserve.locations` reads project hook files | Census bytes; trust check stays on the orchestrator |
 | `directories.read` re-validates stored roots on every call | Orchestrator reads the stored roots, executor validates them |

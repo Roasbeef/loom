@@ -9,6 +9,7 @@ import core/entry
 import core/ids
 import core/json
 import core/message
+import core/usage_evidence
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -42,6 +43,7 @@ fn usage() -> message.Usage {
     None,
     0,
     message.UsageCost(0.0, 0.0, 0.0, 0.0, 0.0),
+    usage_evidence.none(),
   )
 }
 

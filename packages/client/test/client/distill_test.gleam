@@ -11,12 +11,14 @@
 import client/distill
 import client/memory
 import client/rules
+import core/accounting
 import core/clock
 import core/entry.{type Entry}
 import core/ids.{type EntryId}
 import core/json
 import core/message.{type AgentMessage}
 import core/tx.{InsertEntry, Tx}
+import core/usage_evidence
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{None, Some}
@@ -531,9 +533,23 @@ pub fn a_failed_extraction_advances_no_cursor_and_claims_no_provenance_test() {
             string.contains(prompt, "consolidating the durable memory"),
             string.contains(prompt, "cbor")
           {
-            True, _ -> Ok(distill.Answer(text: consolidated, usage: usage(4)))
-            False, True -> Error("the model refused this one")
-            False, False -> Ok(distill.Answer(text: extracted, usage: usage(4)))
+            True, _ ->
+              Ok(distill.Answer(
+                text: consolidated,
+                usage: usage(4),
+                accounting: accounting.from_usage(usage(4)),
+              ))
+            False, True ->
+              Error(distill.Failure(
+                "the model refused this one",
+                accounting.from_usage(usage(3)),
+              ))
+            False, False ->
+              Ok(distill.Answer(
+                text: extracted,
+                usage: usage(4),
+                accounting: accounting.from_usage(usage(4)),
+              ))
           }
         }),
         clock: a_clock(),
@@ -551,6 +567,13 @@ pub fn a_failed_extraction_advances_no_cursor_and_claims_no_provenance_test() {
     as "the source that answered must have a cursor"
   let assert Ok(None) = memory.cell(opened, memory.cursor_key(bad))
     as "the source whose extraction failed must have no cursor"
+
+  let assert Ok(rows) =
+    storage.scan_usage(opened.session.store, storage.usage_scan())
+    as "Failed extraction must retain its request ledger observation."
+  assert list.length(rows) == 3
+  assert list.fold(rows, 0, fn(total, row) { total + row.usage.total_tokens })
+    == 11
 
   // And no row claims the failed source.
   let assert Ok(stored) = raw_rows(opened) as "the raw rows must read"
@@ -584,7 +607,11 @@ pub fn a_run_that_extracts_nothing_still_advances_its_cursors_test() {
   let nothing =
     distill.Distiller(ask: fn(prompt) {
       record(asked, prompt)
-      Ok(distill.Answer(text: "nothing", usage: usage(2)))
+      Ok(distill.Answer(
+        text: "nothing",
+        usage: usage(2),
+        accounting: accounting.from_usage(usage(2)),
+      ))
     })
   let assert Ok(report) =
     distill.run(
@@ -621,7 +648,11 @@ pub fn a_run_that_extracts_nothing_still_advances_its_cursors_test() {
         root,
         distill.Distiller(ask: fn(prompt) {
           record(again, prompt)
-          Ok(distill.Answer(text: "nothing", usage: usage(2)))
+          Ok(distill.Answer(
+            text: "nothing",
+            usage: usage(2),
+            accounting: accounting.from_usage(usage(2)),
+          ))
         }),
         clock: a_clock(),
         entropy: fn() { 43 },
@@ -705,8 +736,18 @@ pub fn a_runs_lease_is_not_stolen_while_it_waits_on_the_model_test() {
       // The opener that arrives while the run is thinking.
       process.send(arrivals, interloper(root))
       case string.contains(prompt, "consolidating the durable memory") {
-        True -> Ok(distill.Answer(text: consolidated, usage: usage(3)))
-        False -> Ok(distill.Answer(text: extracted, usage: usage(3)))
+        True ->
+          Ok(distill.Answer(
+            text: consolidated,
+            usage: usage(3),
+            accounting: accounting.from_usage(usage(3)),
+          ))
+        False ->
+          Ok(distill.Answer(
+            text: extracted,
+            usage: usage(3),
+            accounting: accounting.from_usage(usage(3)),
+          ))
       }
     })
   let assert Ok(report) =
@@ -831,8 +872,18 @@ pub fn an_unusable_consolidation_leaves_memory_alone_test() {
         root,
         distill.Distiller(ask: fn(prompt) {
           case string.contains(prompt, "consolidating the durable memory") {
-            True -> Ok(distill.Answer(text: "I have no idea", usage: usage(1)))
-            False -> Ok(distill.Answer(text: extracted, usage: usage(1)))
+            True ->
+              Ok(distill.Answer(
+                text: "I have no idea",
+                usage: usage(1),
+                accounting: accounting.from_usage(usage(1)),
+              ))
+            False ->
+              Ok(distill.Answer(
+                text: extracted,
+                usage: usage(1),
+                accounting: accounting.from_usage(usage(1)),
+              ))
           }
         }),
         clock: a_clock(),
@@ -851,6 +902,73 @@ pub fn an_unusable_consolidation_leaves_memory_alone_test() {
   let assert Ok(None) = memory.cell(after, memory.cursor_key(more))
     as "a refused run must not advance the new source's cursor"
   memory.close(after)
+}
+
+pub fn a_failed_consolidation_retains_fallback_accounting_once_test() {
+  let root = fresh_root("failed-accounting")
+  let source =
+    write_source(root <> "/a.db", 37, [assistant("we chose msgpack")])
+  let uncertain =
+    message.Usage(
+      ..accounting.zero_usage(),
+      evidence: usage_evidence.unknown(usage_evidence.Other),
+    )
+  let report = accounting.from_usage(usage(11)) |> accounting.append(uncertain)
+  let distiller =
+    distill.Distiller(ask: fn(prompt) {
+      case string.contains(prompt, "consolidating the durable memory") {
+        True -> Error(distill.Failure("the consolidation failed", report))
+        False ->
+          Ok(distill.Answer(
+            extracted,
+            usage(7),
+            accounting.from_usage(usage(7)),
+          ))
+      }
+    })
+  let assert Error(reason) =
+    distill.run(
+      distill.config_for(root, distiller, clock: a_clock(), entropy: fn() { 53 }),
+    )
+    as "A failed consolidation must refuse the pass."
+  assert reason == "the consolidation failed"
+  let assert Ok(opened) = open_memory(root) as "The memory ledger must reopen."
+  let assert Ok(rows) =
+    storage.scan_usage(opened.session.store, storage.usage_scan())
+    as "The request ledger must read cleanly."
+  let assert [extraction, consolidation] = rows
+    as "Each ask must produce one row, including a failed fallback request."
+  assert extraction.usage.total_tokens == 7
+  assert consolidation.usage.total_tokens == 11
+  assert accounting.decode_row(consolidation) == Ok(report)
+  let assert Some(json.Object(fields)) = consolidation.details
+    as "The report must retain its phase metadata."
+  assert list.key_find(fields, "phase") == Ok(json.String("consolidate"))
+  let assert Ok(#(head, _seq)) = memory.head(opened)
+    as "The failed consolidation must leave the head readable."
+  assert head == []
+  assert memory.cell(opened, memory.cursor_key(source)) == Ok(None)
+  memory.close(opened)
+}
+
+pub fn local_distiller_refusal_does_not_invent_remote_consumption_test() {
+  let root = fresh_root("local-refusal")
+  let _source = write_source(root <> "/a.db", 41, [assistant("remember this")])
+  let assert Ok(result) =
+    distill.run(
+      distill.config_for(
+        root,
+        distill.no_distiller(),
+        clock: a_clock(),
+        entropy: fn() { 59 },
+      ),
+    )
+    as "Local refusal must use the existing skipped-source path."
+  assert result.sources == 0
+  assert result.skipped == 1
+  let assert Ok(opened) = open_memory(root) as "The memory ledger must reopen."
+  assert usage_rows(opened) == 0
+  memory.close(opened)
 }
 
 // --- #115: the first-order erasure cascade -----------------------------------
@@ -1586,8 +1704,18 @@ fn scripted(prompts: Subject(Recorder)) -> distill.Distiller {
   distill.Distiller(ask: fn(prompt) {
     record(prompts, prompt)
     case string.contains(prompt, "consolidating the durable memory") {
-      True -> Ok(distill.Answer(text: consolidated, usage: usage(11)))
-      False -> Ok(distill.Answer(text: extracted, usage: usage(7)))
+      True ->
+        Ok(distill.Answer(
+          text: consolidated,
+          usage: usage(11),
+          accounting: accounting.from_usage(usage(11)),
+        ))
+      False ->
+        Ok(distill.Answer(
+          text: extracted,
+          usage: usage(7),
+          accounting: accounting.from_usage(usage(7)),
+        ))
     }
   })
 }
@@ -1762,6 +1890,7 @@ fn usage(tokens: Int) -> message.Usage {
       cache_write: 0.0,
       total: 0.0,
     ),
+    evidence: usage_evidence.priced_api(),
   )
 }
 
@@ -1825,6 +1954,46 @@ fn gateway_routing(roles: List(model.Role)) -> provider_gateway.Gateway {
       )),
     fn(gateway, role) { provider_gateway.route(gateway, role, [identity]) },
   )
+}
+
+pub fn gateway_distiller_failure_retains_usage_observed_before_disconnect_test() {
+  let transport =
+    provider_test.transport(fn(_request, events) {
+      process.send(
+        events,
+        http.ResponseStatus(200, [#("content-type", "text/event-stream")]),
+      )
+      let body =
+        "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_distill\",\"model\":\"loom-1\",\"usage\":{\"input_tokens\":100,\"output_tokens\":7}}}\n\n"
+      process.send(events, http.ResponseChunk(<<body:utf8>>))
+      process.send(events, http.RequestFailed("disconnected"))
+    })
+  let gateway =
+    provider_gateway.new(
+      transport:,
+      secrets: secret.from_list([#("ACME_KEY", "test")]),
+      clock: clock.fixed(at: 0),
+    )
+    |> provider_gateway.add_provider(provider_gateway.AnthropicProvider(
+      name: "acme",
+      base_url: "https://acme.invalid",
+      api_key_secret: "ACME_KEY",
+    ))
+    |> provider_gateway.route(model.Main, [
+      model.ResolvedModel("acme", "loom-1", model.ThinkingOff, 100_000, 4096),
+    ])
+  let distiller =
+    distill.gateway_distiller(
+      gateway,
+      model.ForRole(model.Main, None),
+      timeout_ms: 1000,
+    )
+  let assert Error(failure) = distiller.ask("remember this")
+    as "A disconnect must return a typed failure."
+  assert accounting.attempts(failure.accounting) == 1
+  assert accounting.total(failure.accounting).total_tokens == 107
+  assert accounting.total(failure.accounting).evidence
+    == usage_evidence.partial(usage_evidence.Api)
 }
 
 pub fn gateway_distiller_cancels_a_timed_out_request_test() {
@@ -1891,7 +2060,8 @@ pub fn gateway_distiller_cancels_a_timed_out_request_test() {
     as "the next distillation step must wait for this owner to drain"
   process.send(release, Nil)
   let assert Ok(Error(reason)) = process.receive(answered, within: 1000)
-  assert string.contains(reason, "timeout")
+  assert string.contains(reason.reason, "timeout")
+  assert accounting.attempts(reason.accounting) == 1
 }
 
 pub fn gateway_distiller_retains_fast_cancel_exit_reason_test() {
@@ -1949,7 +2119,8 @@ pub fn gateway_distiller_retains_fast_cancel_exit_reason_test() {
 
   let assert Error(reason) = distiller.ask("remember this")
     as "a fast normal cancel must remain distinguishable from lost proof"
-  assert string.contains(reason, "timeout")
+  assert string.contains(reason.reason, "timeout")
+  assert accounting.attempts(reason.accounting) == 1
 }
 
 // --- small helpers ----------------------------------------------------------

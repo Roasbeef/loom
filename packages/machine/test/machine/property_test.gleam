@@ -149,6 +149,7 @@ fn respond(world: World, key: EffectKey, script: Script) -> Observation {
       }
       ObservedAssistantSettled(
         settled: fixture.settled(response),
+        accounting: fixture.report(fixture.settled(response)),
         overflow_preparation: Some(Prepared(preparation: fixture.preparation())),
       )
     }
@@ -198,6 +199,9 @@ fn respond(world: World, key: EffectKey, script: Script) -> Observation {
     planner.PollKey(..) ->
       ObservedAssistantSettled(
         settled: fixture.settled(fixture.assistant(message.Stop, "done", 5)),
+        accounting: fixture.report(
+          fixture.settled(fixture.assistant(message.Stop, "done", 5)),
+        ),
         overflow_preparation: None,
       )
     planner.DecisionKey(..) ->

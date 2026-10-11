@@ -249,7 +249,7 @@ document is unchanged by 057, so `v` stays 2.
 ```gleam
 pub fn request(gw, req: ProviderRequest) -> StreamHandle
 pub fn cancel(handle: StreamHandle) -> Nil
-// events: Delta(TextDelta|ToolCallDelta|ThinkingDelta) | Settled(SettledAssistantMessage, Usage) | Failed(ProviderError)
+// events: Delta(TextDelta|ToolCallDelta|ThinkingDelta) | Settled(SettledAssistantMessage, RequestAccounting) | Failed(ProviderError, RequestAccounting)
 // StreamHandle = {events: Subject(StreamEvent), cancel: fn() -> Nil,
 //                 owner: Option(Pid)}
 // ProviderError includes ProviderCancelled, CancellationUnconfirmed and DrainProofLost;
@@ -257,6 +257,15 @@ pub fn cancel(handle: StreamHandle) -> Nil
 pub fn resolve(gw, role: Role) -> Result(ResolvedModel, MissingIdentity)
 // Role = Main | Subagent | Plan | Summarize | Vision | Custom(String)
 ```
+
+[Protocol 081](../protocol-change/081-request-usage-accounting.md) separates
+request accounting from final-response usage. Terminal reports retain every
+attempt's measured usage and uncertainty, priced under its actual target.
+The assistant retains only final-attempt usage; one ledger row records the
+aggregate and bounded final-attempt metadata. `Usage.evidence` distinguishes
+missing measurements, reported zero, incomplete estimates, and subscription
+API reference rates. Live usage frames carry the final observation separately
+from the request total.
 
 [Protocol 028](../protocol-change/028-provider-failure-context.md) adds a
 normalized `WithContext` envelope to the error vocabulary. Its at most four

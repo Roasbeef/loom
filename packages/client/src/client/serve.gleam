@@ -61,11 +61,13 @@ import client/advisor
 import client/agency
 import client/async_codemode
 import client/async_runs
+import client/blobs
 import client/blocksummary
 import client/blocksummarybook
 import client/catalog
 import client/checkpoint
 import client/codemode as codemode_wiring
+import client/codex/transport as codex_transport
 import client/context_view
 import client/contributions
 import client/daemon/domain as domain_service
@@ -107,6 +109,7 @@ import client/owner_services
 import client/peer_mail
 import client/peer_outbox_drain
 import client/peers
+import client/profile_switch
 import client/remote/owner_port
 import client/remote/workspace as remote_workspace
 import client/retryconf
@@ -384,6 +387,12 @@ pub type Settings {
     /// once, so the daemon can seed the catalogue's subtitle
     /// (`protocol-change/067`). `None` for a host with no catalogue.
     first_prompt: Option(fn(String) -> Nil),
+    /// What the session's hub needs from the daemon to read and switch its
+    /// model profile (`protocol-change/082`): the names, a loader for the
+    /// catalogue a profile would route by, the registration write and the
+    /// restart. `None` for a host with no daemon, whose hub then answers the
+    /// profile commands as unsupported.
+    profile_desk: Option(profile_switch.Desk),
     /// Where code-mode cap sockets are bound: `<state root>/run` for a
     /// daemon-managed session, `None` to bind them under the workspace's
     /// `.codemode`. A field because only the daemon knows its state root,
@@ -1152,6 +1161,7 @@ pub fn build_domain(
       secrets: secret_store,
       clock:,
     )
+    |> provider_gateway.with_codex_transport(codex_transport.transport())
   domain_service.build(
     domain_service.Config(
       history: history.SharedConfig(
@@ -1393,6 +1403,7 @@ fn resolve(flags: Flags, placement: Placement) -> Result(Settings, String) {
       secrets: secret_store,
       clock:,
     )
+    |> provider_gateway.with_codex_transport(codex_transport.transport())
 
   Ok(
     Settings(
@@ -1405,6 +1416,7 @@ fn resolve(flags: Flags, placement: Placement) -> Result(Settings, String) {
       peer_directory: None,
       peer_defaults: None,
       first_prompt: None,
+      profile_desk: None,
       codemode_sockets: None,
       base_policy: workspace_policy.admitting_config_mounts(
         workspace_policy.base_policy_for(
@@ -1633,6 +1645,7 @@ fn adapter_api(dialect: catalog.Dialect) -> String {
     catalog.Anthropic -> anthropic.api_name
     catalog.OpenAiCompatible -> openai.api_name
     catalog.OpenAiResponses -> responses.api_name
+    catalog.CodexSubscription(profile: _) -> responses.subscription_api_name
     catalog.Gemini -> gemini.api_name
   }
 }
@@ -1982,6 +1995,7 @@ fn env_catalog() -> catalog.Catalog {
         // `vision` key.
         vision: catalog.ReadsImages,
         max_images: 8,
+        cyber_access: None,
       ),
     ],
     roles: [#(model.Main, ["anthropic"])],
@@ -2285,22 +2299,34 @@ fn session_label(
 /// here, which keeps it beside the session file a local owner already
 /// cleans up; a workspace elsewhere would choose its own.
 ///
+/// `blob_root` is the store `session_blob_root` computed, passed in so that
+/// the plane, the tool context and code mode name one directory. A store
+/// outside the daemon's state root is protected in the spec's base policy
+/// (`protecting_standalone_blobs`), so the plane's own base composition
+/// carries the entry.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// // workspace_plane.prepare(serve.workspace_spec(settings, option.None), reading: env)
+/// // workspace_plane.prepare(serve.workspace_spec(settings, option.None, blob_root), reading: env)
 /// ```
 pub fn workspace_spec(
   settings: Settings,
   files: Option(workspace_policy.OwnerFiles),
+  blob_root: String,
 ) -> workspace_plane.WorkspaceSpec {
   workspace_plane.WorkspaceSpec(
     workspace: settings.workspace,
+    blob_root:,
     scratch_dir: settings.session_path <> ".tmp",
     helper_path: settings.helper_path,
     helper_pool_size: settings.helper_pool_size,
     demand: settings.demand,
-    base_policy: settings.base_policy,
+    base_policy: protecting_standalone_blobs(
+      settings.base_policy,
+      settings,
+      blob_root,
+    ),
     tools: settings.tools,
     deactivated_tools: settings.deactivated_tools,
     go_caches: settings.go_caches,
@@ -3138,7 +3164,7 @@ fn here(
     executor: Some(local.executor),
     lsp: local.lsp,
     code_mode_host: local.code_mode_host,
-    blob_root: prepared.blob_root,
+    blob_root: prepared.spec.blob_root,
     call_clock: clock,
     recover: None,
   )
@@ -3172,9 +3198,7 @@ fn there(
     executor: None,
     lsp: None,
     code_mode_host: None,
-    blob_root: hands.plane.census.workspace
-      <> "/"
-      <> codemode_wiring.blob_directory,
+    blob_root: hands.plane.census.blob_root,
     call_clock: hands.clock,
     recover: Some(hands.recover),
   )
@@ -3253,19 +3277,40 @@ fn assemble_in(
   // the registered workspace on this machine's disk.
   use home <- result.try(case registered {
     Some(placement) -> Ok(There(placement))
-    None ->
-      workspace_plane.prepare(
-        workspace_spec(
-          settings,
-          Some(workspace_policy.OwnerFiles(
-            index: index_path,
-            memory_store:,
-            memory_digest:,
-          )),
+    None -> {
+      // The blob store is computed once, here, and the spec hands the same
+      // string to the tool context, the code-mode emitter and the jobs
+      // spill. See `session_blob_root` for where it is and why.
+      use blob_root <- result.try(session_blob_root(settings))
+      use prepared <- result.try(
+        workspace_plane.prepare(
+          workspace_spec(
+            settings,
+            Some(workspace_policy.OwnerFiles(
+              index: index_path,
+              memory_store:,
+              memory_digest:,
+            )),
+            blob_root,
+          ),
+          reading: fn(name) { secret.lookup(settings.secrets, name) },
         ),
-        reading: fn(name) { secret.lookup(settings.secrets, name) },
       )
-      |> result.map(Here)
+
+      // A workspace used before the store moved still holds the artifacts
+      // its transcript names. They are copied once the new store exists
+      // (`prepare` made it) and before any tool can run, so an id from an
+      // old session resolves on the first prompt. The pass stops at its own
+      // deadline rather than holding the boot. It belongs to the local
+      // placement: a registered workspace has no earlier release's
+      // directory to adopt.
+      blobs.adopt_legacy(
+        workspace: settings.workspace,
+        into: blob_root,
+        logger:,
+      )
+      Ok(Here(prepared))
+    }
   })
   use Nil <- result.try(
     workspace_policy.create_directories(
@@ -4332,6 +4377,7 @@ fn assemble_in(
             |> hub.with_live_jobs(live_jobs)
             |> hub.with_catalog(hub_catalog)
             |> with_first_prompt(settings.first_prompt)
+            |> with_profile_desk(settings.profile_desk)
             |> hub.with_registry(tool_registry)
             |> hub.with_extension_refusals(extension_refusals)
             |> hub.with_skills(skills)
@@ -5097,6 +5143,72 @@ fn beside_session_file(
   }
 }
 
+/// Where this session keeps its content-addressed blobs: an absolute
+/// directory named `blobs` in the session's own state directory, never in
+/// the workspace.
+///
+/// Under the daemon the state directory is the session's domain
+/// (`resolve_managed`): `<state root>/workspaces/<digest of the canonical
+/// workspace path>` for a workspace-private domain, so every session on a
+/// workspace shares one store and no other workspace can resolve its ids,
+/// or `<state root>/domains/sessions/<id>` for a session-only domain. Both
+/// sit under entries `state_root_mask_candidates` names, so no jail can
+/// read or write the store, and the base policy needs no entry for it. A
+/// host with no domain (`domain_paths` is `None`) keeps it beside the
+/// session file, like its memory and index.
+///
+/// The one function computes the root for every reader (the tool context,
+/// code-mode `report.emit`, the jobs spill), so they cannot name different
+/// stores. The store used to be `<workspace>/.blobs`, which had to be
+/// masked from every jail: on macOS the mask made the directory
+/// unreachable, so `ls` in the workspace exited 1 and `git status` warned,
+/// and on Linux it left an empty mount in the user's checkout.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // With domain paths under "/state/workspaces/ab12":
+/// // serve.session_blob_root(settings) == Ok("/state/workspaces/ab12/blobs")
+/// ```
+///
+pub fn session_blob_root(settings: Settings) -> Result(String, String) {
+  beside_session(settings, codemode_wiring.blob_directory)
+}
+
+/// The base policy with a standalone host's blob store protected where a
+/// jail could write it.
+///
+/// Under the daemon the store sits in the state root, whose masks already
+/// keep every jail out, and this adds nothing. A host with no domain keeps
+/// the store beside its session file, outside any state root, so it takes
+/// `workspace_policy.protecting_blobs`, which says why the entry is
+/// unconditional.
+///
+/// If the session file sits inside the workspace, the store is protected
+/// there too, with the cost the daemon avoids by keeping it out: a jail
+/// cannot reach `<workspace>/blobs`, so `ls` reports it on macOS. That shape
+/// is a test fixture's, not the daemon's, and
+/// `workspace_policy.prepare_directories` still writes the ignore file into
+/// the directory.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.protecting_standalone_blobs(base, settings, "/s/blobs").protected
+/// ```
+///
+@internal
+pub fn protecting_standalone_blobs(
+  base: policy.SandboxPolicy,
+  settings: Settings,
+  blob_root: String,
+) -> policy.SandboxPolicy {
+  case settings.domain_paths {
+    Some(_) -> base
+    None -> workspace_policy.protecting_blobs(base, blob_root)
+  }
+}
+
 // The recall seam, or nothing and one line saying why.
 //
 // An index that will not open is not a boot failure: recall is a
@@ -5508,6 +5620,17 @@ fn with_first_prompt(
 ) -> hub.Options {
   case report {
     Some(report) -> hub.with_first_prompt(options, report)
+    None -> options
+  }
+}
+
+// The daemon's door for the session's model profile, when it supplied one.
+fn with_profile_desk(
+  options: hub.Options,
+  desk: Option(profile_switch.Desk),
+) -> hub.Options {
+  case desk {
+    Some(desk) -> hub.with_profile_desk(options, desk)
     None -> options
   }
 }

@@ -25,12 +25,11 @@ import tools/directory_access
 import tools/fs
 import tools/working_directory as directory
 
+// The directory a `proc.run` may start in is judged by the same read policy
+// as every other native read: the session base widened by this call's
+// additions and grants.
 type ProcessScope {
-  ProcessScope(
-    workspace: String,
-    access: directory_access.Access,
-    grants: List(policy.Grant),
-  )
+  ProcessScope(workspace: String, reads: policy.SandboxPolicy)
 }
 
 /// Builds the native tool store, binding the strand from each tool context.
@@ -89,7 +88,12 @@ fn read(
   )
   case cell {
     None ->
-      fs.resolve_readable(fs.real_filesystem(), workspace, [], workspace)
+      fs.resolve_readable(
+        fs.real_filesystem(),
+        workspace,
+        policy.workspace_default(workspace),
+        workspace,
+      )
       |> result.map_error(fn(_) { "workspace directory could not be resolved" })
     Some(api.FactCell(json.String(path), _seq)) ->
       case string.starts_with(path, "/") {
@@ -134,7 +138,13 @@ pub fn over_code_mode(
   codemode.Config(..config, wrap_router: fn(request: code_tool.Request, router) {
     let default = read(facts, request.strand, request.workspace)
     let scope =
-      ProcessScope(request.workspace, request.directory_access, request.grants)
+      ProcessScope(
+        request.workspace,
+        directory_access.widen(
+          request.base_policy,
+          directory_access.approved(request.directory_access, request.grants),
+        ),
+      )
     let inner = wrap(request, router)
     fn(call: satellite.CapRequest) {
       case call.cap {
@@ -207,12 +217,11 @@ fn checked_directory(
   scope: ProcessScope,
   path: String,
 ) -> Result(String, String) {
-  let access = directory_access.approved(scope.access, scope.grants)
   use canonical <- result.try(
     fs.resolve_readable(
       fs.real_filesystem(),
       scope.workspace,
-      access.readable,
+      scope.reads,
       path,
     )
     |> result.map_error(fn(error) { "invalid cwd: " <> string.inspect(error) }),

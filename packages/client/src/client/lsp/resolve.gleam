@@ -275,7 +275,8 @@ fn real(
         Refused(reason: path <> " does not resolve: " <> reason)
       fs.EmptyPath -> Refused(reason: "an empty path names no file")
       fs.ProtectedPath(path: _, protected: _)
-      | fs.ProtectionMisconfigured(path: _, protected: _) ->
+      | fs.ProtectionMisconfigured(path: _, protected: _)
+      | fs.JailReplaced(path: _, root: _) ->
         Refused(reason: path <> " is protected")
     }
   })
@@ -444,6 +445,8 @@ pub fn admit(
         path <> " lies under the protected path " <> protected
       fs.ProtectionMisconfigured(path: _, protected:) ->
         "the session's protected list holds the relative entry " <> protected
+      fs.JailReplaced(path: _, root:) ->
+        path <> " lies under " <> root <> ", which the jail replaces"
     }
   })
 }

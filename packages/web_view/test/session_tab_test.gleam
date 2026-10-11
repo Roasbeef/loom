@@ -9,6 +9,7 @@
 //// observer's page draws the jobs and never the viewers.
 
 import core/message
+import core/usage_evidence
 import gleam/erlang/process
 import gleam/int
 import gleam/list
@@ -223,6 +224,30 @@ pub fn no_roster_means_no_viewers_row_test() {
 
   assert !string.contains(html, "Viewers")
   assert !string.contains(html, "attached")
+}
+
+// The Session tab's row is labelled as an estimate, so it drops the `est`
+// marker but keeps the coverage and rate-basis qualifiers. A subscription
+// total that is only partly measured must not read as a billed price. The page
+// is drawn from a usage push, so this exercises the component's own wording of
+// the row rather than the pane's rows in isolation.
+pub fn the_cost_row_keeps_reference_rates_and_partial_coverage_test() {
+  let measured =
+    usage_evidence.with_price(
+      usage_evidence.reported(usage_evidence.ChatGptPlan),
+      usage_evidence.ChatGptReferenceRates,
+    )
+  let partial =
+    usage_evidence.add(
+      measured,
+      usage_evidence.unknown(usage_evidence.ChatGptPlan),
+    )
+  let page =
+    component.new(page_fixture.start())
+    |> component.apply([lane_fixture.priced_push(1.0, partial)])
+  let html = element.to_string(component.view(page))
+
+  assert string.contains(html, "API ref partial $1.00")
 }
 
 pub fn the_view_carries_no_handler_test() {

@@ -11,6 +11,8 @@
 //// `clear` unpins a goal, and an objective read as a budget pins work to a
 //// spend nobody chose.
 
+import core/usage_evidence
+
 import core/json
 import core/message
 import etui/backend
@@ -86,6 +88,13 @@ fn wire(status: String, reason: json.JsonValue) -> json.JsonValue {
     #("token_budget", json.Int(400_000)),
     #("tokens_used", json.Int(51_200)),
     #("cost_used", json.Float(0.42)),
+    #(
+      "cost_evidence",
+      usage_evidence.encode(usage_evidence.with_price(
+        usage_evidence.reported(usage_evidence.Api),
+        usage_evidence.ApiRates,
+      )),
+    ),
     #("continuations", json.Int(3)),
     #("created_ms", json.Int(1_000_000)),
     #("updated_ms", json.Int(1_060_000)),
@@ -152,6 +161,10 @@ fn noted(status: goal_view.Status, note: Option(String)) -> goal_view.Board {
     token_budget: 400_000,
     tokens_used: 51_200,
     cost_used: 0.42,
+    cost_evidence: usage_evidence.with_price(
+      usage_evidence.reported(usage_evidence.Api),
+      usage_evidence.ApiRates,
+    ),
     continuations: 3,
     created_ms: 1_000_000,
     updated_ms: 1_060_000,
@@ -567,6 +580,10 @@ fn checked(
     token_budget: 400_000,
     tokens_used: 51_200,
     cost_used: 0.42,
+    cost_evidence: usage_evidence.with_price(
+      usage_evidence.reported(usage_evidence.Api),
+      usage_evidence.ApiRates,
+    ),
     continuations: 3,
     created_ms: 1_000_000,
     updated_ms: 1_060_000,
@@ -876,6 +893,10 @@ pub fn the_small_goal_card_pages_through_the_actual_viewport_test() {
       token_budget: 400_000,
       tokens_used: 51_200,
       cost_used: 0.42,
+      cost_evidence: usage_evidence.with_price(
+        usage_evidence.reported(usage_evidence.Api),
+        usage_evidence.ApiRates,
+      ),
       continuations: 3,
       created_ms: 1_000_000,
       updated_ms: 1_060_000,

@@ -19,8 +19,8 @@
 //// wording of the same fact is a wording that will drift.
 
 import core/json
+import core/usage_evidence
 import gleam/bool
-import gleam/float
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -28,6 +28,7 @@ import gleam/result
 import gleam/string
 import session_view/live_jobs
 import session_view/text_hygiene
+import session_view/usage_display
 
 /// How many bytes of board this terminal will accept.
 ///
@@ -148,6 +149,8 @@ pub type Board {
     tokens_used: Int,
     /// The accounted cost of that spend.
     cost_used: Float,
+    /// Coverage and rate basis of the estimate, retained across goal restarts.
+    cost_evidence: usage_evidence.Evidence,
     /// How many consecutive turns the loop has taken without the operator.
     continuations: Int,
     /// The server's clock when the goal was pinned.
@@ -248,6 +251,7 @@ fn pinned(
   use budget <- result.try(number(fields, "token_budget"))
   use used <- result.try(number(fields, "tokens_used"))
   use spent <- result.try(cost(fields, "cost_used"))
+  use cost_evidence <- result.try(decode_cost_evidence(fields))
   use continuations <- result.try(number(fields, "continuations"))
   use <- bool.guard(
     budget <= 0 || used < 0 || continuations < 0,
@@ -268,6 +272,7 @@ fn pinned(
     token_budget: budget,
     tokens_used: used,
     cost_used: spent,
+    cost_evidence:,
     continuations:,
     created_ms: created,
     updated_ms: updated,
@@ -445,7 +450,7 @@ pub fn lines(board: Board) -> List(String) {
             <> " of "
             <> int.to_string(board.token_budget)
             <> " tokens · "
-            <> money(board.cost_used)
+            <> usage_display.estimate(board.cost_used, board.cost_evidence)
             <> " · "
             <> int.to_string(board.continuations)
             <> " continuations",
@@ -627,17 +632,6 @@ fn age(stamp: Int, observed: Int) -> String {
   live_jobs.duration(observed - stamp)
 }
 
-// The accounted cost, to the cent. The footer formats its own totals the
-// same way, privately; repeating four lines here is cheaper than a shared
-// module whose only member is this.
-fn money(value: Float) -> String {
-  let cents = int.max(0, float.round(value *. 100.0))
-  "$"
-  <> int.to_string(cents / 100)
-  <> "."
-  <> string.pad_start(int.to_string(cents % 100), 2, "0")
-}
-
 fn object(
   value: json.JsonValue,
 ) -> Result(List(#(String, json.JsonValue)), String) {
@@ -717,5 +711,18 @@ fn cost(
     Ok(json.Float(value)) -> Ok(value)
     Ok(json.Int(value)) -> Ok(int.to_float(value))
     _ -> Error("invalid goal cost: " <> name)
+  }
+}
+
+// Older servers expose an estimate without the measurement that supports it.
+// The display keeps that uncertainty instead of inferring it from the number.
+fn decode_cost_evidence(
+  fields: List(#(String, json.JsonValue)),
+) -> Result(usage_evidence.Evidence, String) {
+  case list.key_find(fields, "cost_evidence") {
+    Error(Nil) -> Ok(usage_evidence.unknown(usage_evidence.Other))
+    Ok(value) ->
+      usage_evidence.decode(value)
+      |> result.map_error(fn(_) { "invalid goal cost evidence" })
   }
 }

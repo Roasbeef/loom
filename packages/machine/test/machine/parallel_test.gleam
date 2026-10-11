@@ -60,6 +60,7 @@ fn start_two_call_batch() -> World {
       world,
       ObservedAssistantSettled(
         settled: fixture.settled(response),
+        accounting: fixture.report(fixture.settled(response)),
         overflow_preparation: None,
       ),
       opts(),
@@ -252,6 +253,7 @@ pub fn repeated_tool_turns_consume_steering_before_generation_test() {
       world,
       ObservedAssistantSettled(
         settled: fixture.settled(response),
+        accounting: fixture.report(fixture.settled(response)),
         overflow_preparation: None,
       ),
       opts(),

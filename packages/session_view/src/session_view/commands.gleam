@@ -527,6 +527,18 @@ fn dispatch(
       |> session_model.record_surface(TranscriptCleared)
       |> session_model.invalidate_transcript
     command.Model(name) -> select_model(cleared, name)
+
+    // Both profile commands are the daemon's to answer: the names are the
+    // configuration's and the switch restarts the session. The transcript
+    // line comes with the reply, which says what was saved, so a refusal
+    // such as a running strand is not preceded by a claim that a switch began.
+    command.ProfileShow ->
+      outbound.send_frame(cleared, protocol.profile_get(cleared.next_id))
+    command.ProfileSelect(profile) ->
+      outbound.send_frame(
+        cleared,
+        protocol.profile_set(cleared.next_id, profile),
+      )
     command.Schedules ->
       outbound.send_frame(cleared, protocol.schedules(cleared.next_id))
     command.Unschedule(name:, target:) -> {
@@ -697,6 +709,8 @@ fn submit_with_images(
   case command {
     command.Empty | command.Prompt(_) -> send_image_prompt(shared, draft)
     command.Model(_)
+    | command.ProfileShow
+    | command.ProfileSelect(_)
     | command.Schedules
     | command.Unschedule(..)
     | command.Approvals(_)

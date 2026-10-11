@@ -1,6 +1,6 @@
 # cap
 
-## Inferred LSP plans and caller examples
+## Inferred LSP plans and question-shaped helpers
 
 `lsp_sql.plan(outlines, targets)` asks the host to infer the configured server
 and root from explicit workspace-relative sources. All sources must agree;
@@ -8,6 +8,22 @@ and root from explicit workspace-relative sources. All sources must agree;
 documentation, including `path` columns and the quoted `references` table.
 Function examples remain in on-demand capability documentation. `report.list`
 accepts structured values, so strings are mapped through `report.string`.
+
+One question is asked with one expression. `target`/`target_at` build a
+reference seed, `collect_files`/`collect_seeds` capture without hand-building a
+`Plan`, and `query_text`, `query_one` and `references` answer without a
+`RowDecoder` — `references` running the `targets`-join-`"references"` statement
+the module doc already advertised, into the typed `Reference`. They are thin
+compositions over the same `lsp.snapshot` call and the same satellite-local
+SQL, so no budget moves: an over-limit statement is still refused rather than
+truncated, and `query_text`'s doc says which of the coverage it does not carry.
+
+`search.grep_text` and `search.glob_paths` are the same idea for the two
+search reductions, each also naming the call to read when a bound matters.
+Both modules open with a `//// ## Flow` spine and a `//// ## Examples`
+block, since a rendered `## Examples` is what a model reads as its
+instructions.
+
 Production `proc.run` inherits the calling strand's shell directory, and
 `proc.in_dir` overrides one command through the host wrapper.
 

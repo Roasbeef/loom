@@ -121,6 +121,8 @@
 //// on it: a monitor installed after the owner has exited can report only
 //// `noproc` and cannot tell drain from lost proof.
 
+import core/accounting
+import core/usage_evidence
 import gleam/erlang/process.{type Monitor, type Pid, type Subject}
 import gleam/list
 import gleam/option.{None, Some}
@@ -599,7 +601,10 @@ fn failed_prepared(
 ) -> stream.PreparedStream {
   process.send(
     outer,
-    stream.Failed(error: stream.TransportFailed(reason: reason)),
+    stream.Failed(
+      error: stream.TransportFailed(reason: reason),
+      accounting: accounting.empty(),
+    ),
   )
   stream.PreparedStream(
     handle: stream.immediate(events: outer, cancel: fn() { Nil }),
@@ -734,9 +739,14 @@ fn handle(phase: Phase, data: Data, message: Msg) -> sm.Next(Phase, Data, Msg) {
       process.send(
         relay.outer,
         stream.contextual_event(
-          stream.Failed(error: stream.TransportFailed(
-            reason: "provider relay worker stopped before a terminal response",
-          )),
+          stream.Failed(
+            error: stream.TransportFailed(
+              reason: "provider relay worker stopped before a terminal response",
+            ),
+            accounting: accounting.from_usage(accounting.unknown_usage(
+              usage_evidence.Other,
+            )),
+          ),
           relay.context,
         ),
       )
@@ -747,7 +757,12 @@ fn handle(phase: Phase, data: Data, message: Msg) -> sm.Next(Phase, Data, Msg) {
       process.send(
         relay.outer,
         stream.contextual_event(
-          stream.Failed(error: stream.DrainProofLost),
+          stream.Failed(
+            error: stream.DrainProofLost,
+            accounting: accounting.from_usage(accounting.unknown_usage(
+              usage_evidence.Other,
+            )),
+          ),
           relay.context,
         ),
       )
@@ -761,7 +776,12 @@ fn handle(phase: Phase, data: Data, message: Msg) -> sm.Next(Phase, Data, Msg) {
       process.send(
         relay.outer,
         stream.contextual_event(
-          stream.Failed(error: stream.CancellationUnconfirmed),
+          stream.Failed(
+            error: stream.CancellationUnconfirmed,
+            accounting: accounting.from_usage(accounting.unknown_usage(
+              usage_evidence.Other,
+            )),
+          ),
           relay.context,
         ),
       )
@@ -1295,7 +1315,12 @@ fn unconfirmed(relay: Relay) -> sm.Next(Phase, Data, Msg) {
   process.send(
     relay.outer,
     stream.contextual_event(
-      stream.Failed(error: stream.CancellationUnconfirmed),
+      stream.Failed(
+        error: stream.CancellationUnconfirmed,
+        accounting: accounting.from_usage(accounting.unknown_usage(
+          usage_evidence.Other,
+        )),
+      ),
       relay.context,
     ),
   )

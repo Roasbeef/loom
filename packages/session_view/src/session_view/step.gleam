@@ -28,7 +28,7 @@
 //// units, and a test holds `update` to that order
 //// (`docs/design-notes/step-extraction.md`, question 12).
 
-import core/message
+import core/accounting
 import gleam/bool
 import gleam/dict
 import gleam/int
@@ -292,22 +292,7 @@ pub fn new(
     replay_inbox:,
     replay_error: None,
     next_id: 1,
-    usage: message.Usage(
-      input: 0,
-      output: 0,
-      cache_read: 0,
-      cache_write: 0,
-      cache_write_1h: None,
-      reasoning: None,
-      total_tokens: 0,
-      cost: message.UsageCost(
-        input: 0.0,
-        output: 0.0,
-        cache_read: 0.0,
-        cache_write: 0.0,
-        total: 0.0,
-      ),
-    ),
+    usage: accounting.zero_usage(),
     generation_started_ms: None,
     output_rate_tps: None,
     details_expanded: False,

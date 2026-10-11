@@ -89,11 +89,26 @@ normal dependency remain unchanged. Return to Hex when a release carries the
 fix. Both release scripts retain relx output so assembly errors appear in CI.
 
 The public `openai-responses` adapter is Gleam code inside the existing
-provider application. It adds no release component or native helper and
-uses the same HTTP transport as the other API-key adapters. The release
-does not read Codex credential files, refresh subscription credentials, or
-bundle Codex App Server. [ADR-012](adr/012-responses-and-subscription-boundaries.md)
-records why subscription inference remains deferred.
+provider application and uses a Platform API key. The opt-in
+`codex-subscription` dialect uses native Sign in with ChatGPT authentication
+in `client/codex` and the public Responses API. The native modules belong in
+the server's BEAM artifact; they need no separate authentication executable
+or installed Codex CLI. Browser login binds an ephemeral literal loopback
+port, validates the signed identity, and saves a dedicated issued-client and
+host binding. [Operator instructions](codex-subscription.md) cover profiles,
+permissions, refresh, logout, and forwarding that port to a remote host.
+
+Native subscription authentication ships in the server's BEAM closure.
+The obsolete Go executable and its FFI are removed. Release assembly runs
+`scripts/codex_subscription_smoke.py` against bundled `loomd codex status`
+with private HOME and XDG_CONFIG_HOME and no development OTP on PATH. It
+requires the exact redacted logged-out line, a private native profile root,
+and no credential record created by status.
+
+Native custody needs the worker-cleanup ordering in Weft 0.4.6, which every
+direct consumer pins.
+[ADR-012](adr/012-responses-and-subscription-boundaries.md) records the public
+SIWC boundary.
 
 The build places one compiled test probe in `build/release/smoke-support`,
 outside the distributed `loom` tree. The smoke runs that probe on the bundled

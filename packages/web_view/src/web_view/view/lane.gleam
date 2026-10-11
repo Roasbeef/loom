@@ -732,7 +732,7 @@ fn piece_element(
           ]),
           html.span([attribute.class("receipt")], [html.text("stored")]),
         ]),
-        card_body(text),
+        message_body(text),
         ..peer_actions(replies, key, session)
       ])
 
@@ -747,9 +747,9 @@ fn piece_element(
             html.text("strand · " <> strand),
           ]),
         ]),
-        card_body(text),
+        message_body(text),
         ..case trailer {
-          Some(instruction) -> [card_body(instruction)]
+          Some(instruction) -> [message_body(instruction)]
           None -> []
         }
       ])
@@ -856,6 +856,43 @@ fn open_button(
 fn card_body(body: String) -> Element(message) {
   use <- element.memo([element.ref(body)])
   parsed_card_body(body)
+}
+
+// The words of a message another strand or session sent. One the composer
+// would shorten (a long paste, an injected note) is drawn as the line the
+// terminal shows for it, opened in place to the whole text; anything else is
+// its body. The opening is the page's own `<loom-expand>`, so it asks the
+// daemon for nothing: the piece holds the whole text (`turns.Peer`, `turns.Sibling`), and
+// the body is cut as every expansion is, since the closed form still sits in
+// the page. Both reach the page as text nodes through the Markdown view.
+fn message_body(text: String) -> Element(message) {
+  use <- element.memo([element.ref(text)])
+  let shown =
+    composer.without_expand_hint(composer.transcript_text(text, False))
+  case shown == text {
+    True -> parsed_card_body(text)
+    False ->
+      fold_row.reading(preview_line(shown), [parsed_card_body(cut(text))])
+  }
+}
+
+// The line a shortened message is opened from. A preview whose first line
+// opens a code fence, a rule or a table parses to nothing as a one-line
+// Markdown, which would leave the fold a bare chevron, so the words are
+// drawn plain then.
+fn preview_line(shown: String) -> List(Element(message)) {
+  case markdown_view.line(shown, step_words.result_limit) {
+    [] -> [html.text(shown)]
+    line -> line
+  }
+}
+
+// The text of a message cut to the page's bound for one expanded row, with
+// the line that says so at the end when anything was left out.
+fn cut(text: String) -> String {
+  expansion.capped([transcript_line.Line(transcript_line.User, text)])
+  |> list.map(fn(line) { line.text })
+  |> string.join("\n")
 }
 
 // A report keeps its preview and body in one leaf memo. Drawing the body
@@ -982,13 +1019,10 @@ fn item_element(
         since,
         list.append(
           fold_row.step_body(standing, words, rows, draw),
-          list.append(
-            pictures(session, transcript_image.ref(key), images),
-            case result_source {
-              None -> []
-              Some(id) -> [tool_result.links(session, id)]
-            },
-          ),
+          list.append(pictures(session, key, images), case result_source {
+            None -> []
+            Some(id) -> [tool_result.links(session, id)]
+          }),
         ),
       )
     }
@@ -1083,11 +1117,7 @@ fn block_element(
     list.append(
       rows,
       list.append(
-        pictures(
-          session,
-          transcript_image.ref(block.key),
-          transcript_image.of_block(block),
-        ),
+        pictures(session, block.key, transcript_image.of_block(block)),
         case turns.block_result(block) {
           None -> []
           Some(id) -> [tool_result.links(session, id)]
@@ -1298,10 +1328,11 @@ fn result_report(report: String) -> Element(message) {
 // row's text. An image the page does not draw (a type outside the raster
 // four) keeps its position, so the pictures that are drawn are named by the
 // place their image holds in the row and not by how many came before. With no
-// session there is no address to draw, and none is.
+// session there is no address to draw, and none is. Build the row's address
+// key only after finding a picture to draw; most transcript rows have none.
 fn pictures(
   session: String,
-  ref: String,
+  key: String,
   images: List(Image),
 ) -> List(Element(message)) {
   let drawn =
@@ -1310,12 +1341,15 @@ fn pictures(
     |> list.filter(fn(entry) { image.drawn(entry.0) })
   case session, drawn {
     "", _ | _, [] -> []
-    _, _ -> [
-      html.div(
-        [attribute.class("pictures")],
-        list.map(drawn, fn(entry) { thumbnail(session, ref, entry.1) }),
-      ),
-    ]
+    _, _ -> {
+      let ref = transcript_image.ref(key)
+      [
+        html.div(
+          [attribute.class("pictures")],
+          list.map(drawn, fn(entry) { thumbnail(session, ref, entry.1) }),
+        ),
+      ]
+    }
   }
 }
 

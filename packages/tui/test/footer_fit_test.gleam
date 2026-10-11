@@ -4,6 +4,7 @@
 //// pin the fitting rule and paint both footers with realistic numbers.
 
 import core/message
+import core/usage_evidence
 import etui/backend
 import etui/geometry
 import gleam/list
@@ -29,6 +30,7 @@ fn usage() -> message.Usage {
     reasoning: None,
     total_tokens: 2_138_000,
     cost: message.UsageCost(1.1, 2.2, 0.3, 0.4, 4.0),
+    evidence: usage_evidence.priced_api(),
   )
 }
 

@@ -14,6 +14,7 @@ import core/ids
 import core/json
 import core/message
 import core/register
+import core/usage_evidence
 import gleam/bit_array
 import gleam/dict
 import gleam/dynamic
@@ -65,6 +66,7 @@ fn usage() -> message.Usage {
     None,
     0,
     message.UsageCost(0.0, 0.0, 0.0, 0.0, 0.0),
+    usage_evidence.none(),
   )
 }
 

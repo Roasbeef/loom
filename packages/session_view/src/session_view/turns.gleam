@@ -326,13 +326,17 @@ pub type Piece {
   )
 
   /// A message another session's strand sent to this one. The daemon only
-  /// knows it was stored, never that it was read.
+  /// knows it was stored, never that it was read. `text` is the whole
+  /// message: a host that shortens a long one (the web view opens it in
+  /// place) does so when it draws, since a piece that kept only the
+  /// shortened form could never offer the rest.
   Peer(key: String, session: String, strand: String, text: String)
 
   /// A message a strand of this same session sent through the Agency. Its
   /// text has the Agency's framing removed; `trailer` is the harness's
   /// result-contract instruction after a spawn brief, drawn apart from the
-  /// sender's words, and `None` for every other message.
+  /// sender's words, and `None` for every other message. Both are the whole
+  /// text, shortened or not by the host that draws them, as for `Peer`.
   Sibling(key: String, strand: String, text: String, trailer: Option(String))
 
   /// A cache miss this client noticed after the turn that paid for it.
@@ -1081,10 +1085,7 @@ fn entry_kind(
               block.key,
               session,
               strand,
-              composer.without_expand_hint(composer.transcript_text(
-                transcript_lines.user_body(content),
-                False,
-              )),
+              transcript_lines.user_body(content),
             ),
             at,
           ),
@@ -1097,23 +1098,7 @@ fn entry_kind(
           let framed =
             strand_framing.strip(transcript_lines.user_body(content), strand)
           [
-            Input(
-              Sibling(
-                block.key,
-                strand,
-                composer.without_expand_hint(composer.transcript_text(
-                  framed.body,
-                  False,
-                )),
-                option.map(framed.trailer, fn(trailer) {
-                  composer.without_expand_hint(composer.transcript_text(
-                    trailer,
-                    False,
-                  ))
-                }),
-              ),
-              at,
-            ),
+            Input(Sibling(block.key, strand, framed.body, framed.trailer), at),
           ]
         }
         None, Some(message.Origin(principal:, name:)) ->

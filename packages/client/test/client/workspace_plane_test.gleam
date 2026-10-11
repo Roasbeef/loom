@@ -58,9 +58,10 @@ fn files(settings: serve.Settings) -> workspace_policy.OwnerFiles {
 }
 
 fn prepared(settings: serve.Settings) -> workspace_plane.Prepared {
+  let assert Ok(blob_root) = serve.session_blob_root(settings)
   let assert Ok(prepared) =
     workspace_plane.prepare(
-      serve.workspace_spec(settings, Some(files(settings))),
+      serve.workspace_spec(settings, Some(files(settings)), blob_root),
       reading: workspace_policy.env_text,
     )
     as "a workspace with no toolchain still prepares"
@@ -139,7 +140,7 @@ pub fn prepare_reads_the_machine_and_makes_its_directories_test() {
   assert census.lsp_servers == []
   assert census.warnings == []
   assert simplifile.is_directory(settings.workspace) == Ok(True)
-  assert simplifile.is_directory(prepared.blob_root) == Ok(True)
+  assert simplifile.is_directory(prepared.spec.blob_root) == Ok(True)
   assert simplifile.is_directory(settings.session_path <> ".tmp") == Ok(True)
   assert list.key_find(census.env, "PATH") |> result.is_ok
     as "the tool environment is built at prepare, not at start"
@@ -177,9 +178,10 @@ pub fn prepare_refuses_a_base_the_sandbox_cannot_enforce_before_any_directory_te
       ..settings,
       base_policy: workspace_policy.base_policy("relative/workspace"),
     )
+  let assert Ok(blob_root) = serve.session_blob_root(broken)
   let refused =
     workspace_plane.prepare(
-      serve.workspace_spec(broken, None),
+      serve.workspace_spec(broken, None, blob_root),
       reading: workspace_policy.env_text,
     )
   assert result.is_error(refused)

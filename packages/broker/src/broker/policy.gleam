@@ -822,6 +822,23 @@ pub fn covers(root root: String, path path: String) -> Bool {
   root == "/" || root == path || string.starts_with(path, root <> "/")
 }
 
+/// Where a "tmpfs" scratch policy mounts its scratch area inside the jail.
+/// Mirrors `ScratchMount` in `packages/sandbox/internal/jail/bwrap.go`.
+pub const jail_scratch_mount = "/tmp"
+
+/// The roots the jail replaces with its own, so the host's versions are
+/// never visible to a jailed process: a fresh procfs at `/proc`, a minimal
+/// device tree at `/dev` (both in `packages/sandbox/internal/jail/bwrap.go`,
+/// the `--proc` and `--dev` mounts) and the scratch tmpfs at `/tmp`.
+///
+/// This is a list of replaced roots, not of masks. It must not be added to
+/// `SandboxPolicy.protected`: bwrap refuses a mask laid over these. Native
+/// reads consult it instead (`tools/fs`), so the harness's own tools do not
+/// read the host's `/proc/self/environ` through a path no jailed command can
+/// see. A path under the session workspace is exempt, since a workspace may
+/// itself live under `/tmp`.
+pub const jail_replaced_roots = ["/proc", "/dev", jail_scratch_mount]
+
 fn meet_network(
   base: NetworkPolicy,
   requested: NetworkPolicy,

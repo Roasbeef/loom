@@ -2,6 +2,8 @@
 //// replay authority in durable blocks. These structural matrices distinguish
 //// caller content from optional provider metadata without a live transport.
 
+import core/usage_evidence
+
 import core/json.{type JsonValue}
 import core/message
 import core/origin
@@ -11,6 +13,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/string
 import provider/adapter/responses
 import provider/fixture
+import provider/internal/responses_request
 import provider/internal/wire
 import provider/model
 import provider/stream
@@ -34,6 +37,16 @@ fn build(request: model.ProviderRequest) -> JsonValue {
 fn input(messages: List(message.AgentMessage)) -> List(JsonValue) {
   let body =
     build(model.ProviderRequest(..fixture.request_for(target()), messages:))
+  let assert Ok(values) = wire.array_field(body, "input") as "input is an array"
+  values
+}
+
+fn subscription_input(messages: List(message.AgentMessage)) -> List(JsonValue) {
+  let request =
+    model.ProviderRequest(..fixture.request_for(target()), messages:)
+  let assert Ok(body) =
+    json.parse(responses_request.subscription_body(target(), request))
+    as "subscription request body is JSON"
   let assert Ok(values) = wire.array_field(body, "input") as "input is an array"
   values
 }
@@ -220,6 +233,7 @@ fn usage() -> message.Usage {
     None,
     10,
     message.UsageCost(0.0, 0.0, 0.0, 0.0, 0.0),
+    usage_evidence.reported(usage_evidence.Api),
   )
 }
 
@@ -360,6 +374,21 @@ pub fn compact_template_replays_long_answer_and_required_reasoning_identity_test
   assert wire.string_field(part, "text") == Ok(long)
 }
 
+pub fn subscription_settlement_replays_verified_responses_metadata_test() {
+  let original =
+    assistant(
+      responses.subscription_api_name,
+      [message.AssistantText("subscription answer", None)],
+      Some(metadata([message_template()], [0])),
+    )
+  let assert [answer] = input([original])
+    as "subscription identity must retain the same verified replay template"
+  assert wire.string_field(answer, "id") == Ok("msg-required")
+  let assert Ok([part]) = wire.array_field(answer, "content")
+    as "the replayed answer contains its original content part"
+  assert wire.string_field(part, "text") == Ok("subscription answer")
+}
+
 pub fn invalid_replay_metadata_cannot_inject_calls_or_unsigned_reasoning_test() {
   let injected =
     json.Object([
@@ -420,4 +449,214 @@ pub fn foreign_signatures_never_become_responses_reasoning_test() {
         ]
     },
   )
+}
+
+// The namespace is a transport shape. The function schema and local name remain
+// identical to the public API request so broker lookup retains its meaning.
+pub fn subscription_request_namespace_and_restrictions_are_exact_test() {
+  let schema = json.Object([#("type", json.String("object"))])
+  let request =
+    model.ProviderRequest(
+      ..fixture.request_for(target()),
+      max_output_tokens: Some(123),
+      tools: [model.ToolSpec("read", "Read a path.", schema)],
+    )
+  let assert Ok(body) =
+    json.parse(responses_request.subscription_body(target(), request))
+    as "subscription request is JSON"
+  assert body
+    == json.Object([
+      #("model", json.String("responses-model")),
+      #("instructions", json.String("You are a helpful assistant.")),
+      #("input", json.Array([])),
+      #(
+        "tools",
+        json.Array([
+          json.Object([
+            #("type", json.String("namespace")),
+            #("name", json.String("loom")),
+            #(
+              "description",
+              json.String("Tools executed by Loom under its local policy."),
+            ),
+            #(
+              "tools",
+              json.Array([
+                json.Object([
+                  #("type", json.String("function")),
+                  #("name", json.String("read")),
+                  #("description", json.String("Read a path.")),
+                  #("parameters", schema),
+                ]),
+              ]),
+            ),
+          ]),
+        ]),
+      ),
+      #("include", json.Array([json.String("reasoning.encrypted_content")])),
+      #("store", json.Bool(False)),
+      #("stream", json.Bool(True)),
+    ])
+}
+
+fn call(namespace: Option(String)) -> message.AssistantBlock {
+  message.AssistantToolCall(message.ToolCall(
+    id: "call-local",
+    name: "read",
+    arguments: json.Object([]),
+    thought_signature: None,
+    namespace:,
+  ))
+}
+
+fn call_template(namespace: Option(String)) -> JsonValue {
+  let fields = [
+    #("id", json.String("fc-local")),
+    #("type", json.String("function_call")),
+    #("call_id", json.String("call-local")),
+    #("name", json.String("read")),
+    #("arguments", json.String("")),
+  ]
+  json.Object(
+    list.append(fields, case namespace {
+      None -> []
+      Some(name) -> [#("namespace", json.String(name))]
+    }),
+  )
+}
+
+pub fn subscription_history_namespaces_only_known_legacy_tools_test() {
+  list.each([None, Some("loom"), Some("foreign")], fn(namespace) {
+    let original =
+      assistant(responses.subscription_api_name, [call(namespace)], None)
+    let request =
+      model.ProviderRequest(
+        ..fixture.request_for(target()),
+        messages: [original],
+        tools: [model.ToolSpec("read", "Read a path.", json.Object([]))],
+      )
+    let assert Ok(body) =
+      json.parse(responses_request.subscription_body(target(), request))
+      as "historical calls project to JSON"
+    let assert Ok([value]) = wire.array_field(body, "input")
+      as "one historical call projects"
+    assert wire.string_field(value, "namespace")
+      == case namespace {
+        None -> Ok("loom")
+        Some(name) -> Ok(name)
+      }
+    assert wire.string_field(value, "name") == Ok("read")
+
+    // The namespace is a subscription transport shape, so the public request
+    // sends none of it, whatever route recorded the call.
+    let assert [public] = input([original]) as "public call remains readable"
+    assert wire.field(public, "namespace") == Error(Nil)
+    assert wire.string_field(public, "name") == Ok("read")
+  })
+  let request =
+    model.ProviderRequest(..fixture.request_for(target()), messages: [
+      assistant(responses.subscription_api_name, [call(None)], None),
+    ])
+  let assert Ok(body) =
+    json.parse(responses_request.subscription_body(target(), request))
+    as "unoffered legacy call is still historical data"
+  let assert Ok([value]) = wire.array_field(body, "input")
+    as "historical call remains readable"
+  assert wire.field(value, "namespace") == Error(Nil)
+}
+
+pub fn namespaced_replay_keeps_reasoning_and_rejects_changed_metadata_test() {
+  let content = [
+    message.AssistantThinking("summary", Some("cipher"), False),
+    call(Some("loom")),
+  ]
+  let diagnostics =
+    metadata([reasoning_template(), call_template(Some("loom"))], [0, 1])
+  let assert [thought, tool] =
+    subscription_input([
+      assistant(responses.subscription_api_name, content, Some(diagnostics)),
+    ])
+    as "reasoning and its namespaced call replay together"
+  assert wire.string_field(thought, "id") == Ok("rs-required")
+  assert wire.string_field(thought, "encrypted_content") == Ok("cipher")
+  assert wire.string_field(tool, "id") == Ok("fc-local")
+  assert wire.string_field(tool, "namespace") == Ok("loom")
+
+  // A namespace disagreement invalidates the whole hint. Durable call metadata
+  // still projects, but the hint cannot substitute its foreign namespace.
+  let changed = metadata([call_template(Some("foreign"))], [0])
+  let assert [tool] =
+    subscription_input([
+      assistant(
+        responses.subscription_api_name,
+        [call(Some("loom"))],
+        Some(changed),
+      ),
+    ])
+    as "the durable call is the fallback authority"
+  assert wire.field(tool, "id") == Error(Nil)
+  assert wire.string_field(tool, "namespace") == Ok("loom")
+}
+
+// A session can move from the subscription route to an API-key route. Both the
+// stored-hint replay and the durable-call fallback must drop the namespace the
+// subscription route recorded, and keep every other field of the item.
+pub fn public_replay_of_subscription_history_carries_no_namespace_test() {
+  let content = [
+    message.AssistantThinking("summary", Some("cipher"), False),
+    call(Some("loom")),
+  ]
+  let diagnostics =
+    metadata([reasoning_template(), call_template(Some("loom"))], [0, 1])
+
+  // The hint replays the item verbatim, ID included.
+  let assert [thought, tool] =
+    input([
+      assistant(responses.subscription_api_name, content, Some(diagnostics)),
+    ])
+    as "reasoning and its call replay through the public request"
+  assert wire.string_field(thought, "id") == Ok("rs-required")
+  assert wire.string_field(tool, "id") == Ok("fc-local")
+  assert wire.string_field(tool, "name") == Ok("read")
+  assert wire.field(tool, "namespace") == Error(Nil)
+
+  // Without a hint the durable call is the authority and gets the same shape.
+  let assert [tool] =
+    input([
+      assistant(responses.subscription_api_name, [call(Some("loom"))], None),
+    ])
+    as "the durable call projects through the public request"
+  assert wire.string_field(tool, "call_id") == Ok("call-local")
+  assert wire.field(tool, "namespace") == Error(Nil)
+}
+
+// A refreshed grant reads plain old assistant records and verified legacy item
+// hints. Namespace migration applies after hint validation, preserving item IDs.
+pub fn subscription_legacy_hint_and_plain_assistant_project_test() {
+  let diagnostics = metadata([call_template(None)], [0])
+  let legacy =
+    assistant(responses.subscription_api_name, [call(None)], Some(diagnostics))
+  let plain =
+    assistant(
+      responses.subscription_api_name,
+      [message.AssistantText("historical answer", None)],
+      None,
+    )
+  let request =
+    model.ProviderRequest(
+      ..fixture.request_for(target()),
+      messages: [plain, legacy],
+      tools: [model.ToolSpec("read", "Read a path.", json.Object([]))],
+    )
+  let assert Ok(body) =
+    json.parse(responses_request.subscription_body(target(), request))
+    as "old subscription history is readable for the new grant"
+  let assert Ok([answer, tool]) = wire.array_field(body, "input")
+    as "plain text and the validated legacy call both project"
+  assert wire.string_field(answer, "role") == Ok("assistant")
+  assert wire.field(answer, "content")
+    == Ok(json.Array([text("output_text", "historical answer")]))
+  assert wire.string_field(tool, "id") == Ok("fc-local")
+  assert wire.string_field(tool, "namespace") == Ok("loom")
+  assert wire.string_field(tool, "name") == Ok("read")
 }

@@ -29,11 +29,32 @@
 //// descended nor searched — so a tree cannot be made to loop or to widen
 //// itself through a link. `read_lines` and `fs.read` do resolve through
 //// a link, because there the target is checked for containment first.
+////
+//// ## Flow
+////
+//// `glob_query` → `glob` → `glob_paths` | `grep_query` → `grep` →
+//// `grep_text` | `stat` | `read_lines`
+////
+//// 1. `glob_query` and `grep_query` fill in every bound at its default; a
+////    caller widens one field with record update syntax.
+//// 2. `glob` and `grep` are the bounded calls, and `stat` and `read_lines`
+////    are the single-path ones that need no walk.
+//// 3. `glob_paths` and `grep_text` are the common reductions: the paths of a
+////    listing, and one `path:line:text` line per match.
+////
+//// ## Examples
+////
+//// ```gleam
+//// let assert Ok(paths) = search.glob_paths(under: "src", matching: "**/*.gleam")
+//// let assert Ok(lines) = search.grep_text(under: "src", matching: "panic")
+//// ```
 
 import cap/internal/channel.{type CallError, Denied, Unreachable}
 import cap/internal/dispatch
 import cap/internal/wire
 import core/msgpack.{type MsgPackValue}
+import gleam/int
+import gleam/list
 import gleam/result
 
 /// The number of entries a `glob_query` asks for when the caller does not
@@ -455,6 +476,94 @@ pub fn read_lines(
   |> result.map_error(fn(reason) {
     SearchUnavailable("bad search.read_lines result: " <> reason)
   })
+}
+
+/// Searches `root` for `pattern` and returns one `path:line:text` line per
+/// match, in walk order, with every bound at its default.
+///
+/// This is `grep` with the query's defaults filled in and the matches
+/// rendered, which is what a caller does with a `Found` almost every time.
+/// Use `grep` itself when any of the following is the answer rather than a
+/// detail: `coverage`, `files_scanned`, `files_skipped`, the column of a
+/// match, its context lines, or a bound other than the defaults.
+///
+/// **A capped answer looks like a complete one here.** As with
+/// `proc.stdout`, the rendering drops the coverage that says whether the
+/// scan stopped short, so a model that needs to distinguish them must read
+/// `grep`'s `Found.coverage` instead.
+///
+/// Capability: `search.grep`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(lines) = search.grep_text(under: "src", matching: "panic")
+/// // Each element is one match, rendered "path:line:text".
+/// ```
+///
+pub fn grep_text(
+  under root: String,
+  matching pattern: String,
+) -> Result(List(String), SearchError) {
+  use found <- result.try(grep(grep_query(under: root, matching: pattern)))
+  Ok(match_lines(found.matches))
+}
+
+/// The rendering behind `grep_text`, over an already-obtained match list, so
+/// it can be tested without a capability channel.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let match = search.Match("src/a.gleam", 3, 1, "let x = 1", [], [])
+/// assert search.match_lines([match]) == ["src/a.gleam:3:let x = 1"]
+/// ```
+///
+@internal
+pub fn match_lines(matches: List(Match)) -> List(String) {
+  list.map(matches, fn(match) {
+    match.path <> ":" <> int.to_string(match.line) <> ":" <> match.text
+  })
+}
+
+/// Lists the paths under `root` matching `pattern`, and nothing else about
+/// them, with every bound at its default.
+///
+/// Paths come back in the same order as `glob`'s entries, so this is `glob`
+/// with the `Entry` fields dropped. Use `glob` when the kind, the size, the
+/// mtime or the completeness of the listing is part of the answer: a
+/// truncated walk looks like a complete one here, exactly as in
+/// `grep_text`.
+///
+/// Capability: `search.glob`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(paths) = search.glob_paths(under: "src", matching: "**/*.gleam")
+/// ```
+///
+pub fn glob_paths(
+  under root: String,
+  matching pattern: String,
+) -> Result(List(String), SearchError) {
+  use listing <- result.try(glob(glob_query(under: root, matching: pattern)))
+  Ok(entry_paths(listing.entries))
+}
+
+/// The reduction behind `glob_paths`, over an already-obtained entry list, so
+/// it can be tested without a capability channel.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let entry = search.Entry("src/a.gleam", search.File, 10, 1_700_000_000)
+/// assert search.entry_paths([entry]) == ["src/a.gleam"]
+/// ```
+///
+@internal
+pub fn entry_paths(entries: List(Entry)) -> List(String) {
+  list.map(entries, fn(entry) { entry.path })
 }
 
 // --- total decoders ------------------------------------------------------

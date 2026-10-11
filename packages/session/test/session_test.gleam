@@ -8,6 +8,7 @@ import core/message.{
 }
 import core/register as core_register
 import core/tx.{InsertEntry, SetRegister, Tx}
+import core/usage_evidence
 import gleam/option.{None, Some}
 import gleeunit
 import machine/strand.{
@@ -64,6 +65,7 @@ fn assistant(text: String, stop: message.StopReason) -> message.AgentMessage {
         cache_write: 0.0,
         total: 0.0,
       ),
+      evidence: usage_evidence.priced_api(),
     ),
     stop_reason: stop,
     deferred: None,

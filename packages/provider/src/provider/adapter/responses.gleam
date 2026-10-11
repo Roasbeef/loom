@@ -28,9 +28,11 @@
 ////    assistant message. `fail` and `malformed` move the machine to
 ////    `Terminal` so only one terminal event ever escapes.
 
+import core/accounting
 import core/corruption
 import core/json.{type JsonValue}
 import core/message
+import core/usage_evidence
 import gleam/bit_array
 import gleam/bool
 import gleam/int
@@ -41,6 +43,7 @@ import provider/http
 import provider/internal/diagnostic
 import provider/internal/responses_items as items
 import provider/internal/responses_request
+import provider/internal/usage_witness
 import provider/internal/wire
 import provider/model.{type ProviderRequest, type ResolvedModel}
 import provider/retry
@@ -48,6 +51,9 @@ import provider/stream.{type StreamEvent}
 
 /// The distinct durable API identity for this adapter.
 pub const api_name = "openai-responses"
+
+/// The durable dialect identity of a Codex subscription settlement.
+pub const subscription_api_name = "codex-subscription"
 
 /// Builds a stateless streaming Responses request. The base includes the API
 /// root; the gateway normalizes its trailing slash before dispatch.
@@ -64,6 +70,23 @@ pub fn build_request(
   resolved resolved: ResolvedModel,
   request request: ProviderRequest,
 ) -> http.HttpRequest {
+  build_request_with_access(base_url, api_key, resolved, request, None)
+}
+
+/// Builds an API-key request with an explicit operator access selection.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // build_request_with_access(base, key, resolved, request, Some(model.DaybreakBlue))
+/// ```
+pub fn build_request_with_access(
+  base_url: String,
+  api_key: String,
+  resolved: ResolvedModel,
+  request: ProviderRequest,
+  access: Option(model.CyberAccessProgram),
+) -> http.HttpRequest {
   http.HttpRequest(
     method: "POST",
     url: base_url <> "/responses",
@@ -72,7 +95,49 @@ pub fn build_request(
       #("content-type", "application/json"),
       #("accept", "text/event-stream"),
     ],
-    body: responses_request.body(resolved, request),
+    body: responses_request.body_with_access(resolved, request, access),
+  )
+}
+
+/// Builds an uncredentialed request for the trusted subscription bridge.
+/// Its relative path cannot redirect an OAuth token to a configured host.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // responses.build_subscription_request(resolved, request)
+/// ```
+pub fn build_subscription_request(
+  resolved: ResolvedModel,
+  request: ProviderRequest,
+) -> http.HttpRequest {
+  build_subscription_request_with_access(resolved, request, None)
+}
+
+/// Builds a subscription request with an explicit operator access selection.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // build_subscription_request_with_access(resolved, request, Some(model.DaybreakBlue))
+/// ```
+pub fn build_subscription_request_with_access(
+  resolved: ResolvedModel,
+  request: ProviderRequest,
+  access: Option(model.CyberAccessProgram),
+) -> http.HttpRequest {
+  http.HttpRequest(
+    method: "POST",
+    url: "/responses",
+    headers: [
+      #("content-type", "application/json"),
+      #("accept", "text/event-stream"),
+    ],
+    body: responses_request.subscription_body_with_access(
+      resolved,
+      request,
+      access,
+    ),
   )
 }
 
@@ -121,6 +186,7 @@ type ItemKind {
   Function(
     call_id: String,
     name: String,
+    namespace: Option(String),
     block: Int,
     arguments: String,
     closure: Closure,
@@ -148,6 +214,8 @@ pub opaque type Accumulator {
   /// One attempt's parser and validation state; no request or credential is
   /// retained here. The response byte count includes discarded SSE framing.
   Accumulator(
+    /// The fixed API dialect selected before any remote bytes arrive.
+    api: String,
     /// Configured identity and limits, not the remote model's claims.
     resolved: ResolvedModel,
     /// Injected settlement timestamp.
@@ -172,6 +240,10 @@ pub opaque type Accumulator {
     next_block: Int,
     /// Total delivered body bytes for this attempt.
     bytes: Int,
+    /// Latest measured snapshot, never the sum of repeated provider reports.
+    usage: message.Usage,
+    /// Fixed count paths whose omission a later snapshot cannot erase.
+    witness: usage_witness.Witness,
   )
 }
 
@@ -187,8 +259,31 @@ pub fn response_machine(
   resolved: ResolvedModel,
   now now: Int,
 ) -> stream.ResponseMachine(Accumulator) {
+  machine_for(resolved, now, api_name)
+}
+
+/// Supplies the same verified Responses fold with subscription identity.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // responses.subscription_response_machine(resolved, now: 1000)
+/// ```
+pub fn subscription_response_machine(
+  resolved: ResolvedModel,
+  now now: Int,
+) -> stream.ResponseMachine(Accumulator) {
+  machine_for(resolved, now, subscription_api_name)
+}
+
+fn machine_for(
+  resolved: ResolvedModel,
+  now: Int,
+  api: String,
+) -> stream.ResponseMachine(Accumulator) {
   stream.ResponseMachine(
     init: Accumulator(
+      api:,
       resolved:,
       now:,
       status: 0,
@@ -201,6 +296,8 @@ pub fn response_machine(
       items: [],
       next_block: 0,
       bytes: 0,
+      usage: accounting.unknown_usage(billing(api)),
+      witness: usage_witness.new(),
     ),
     on_status: fn(acc, status, headers) {
       case acc.life {
@@ -210,24 +307,21 @@ pub fn response_machine(
       }
     },
     on_chunk: on_chunk,
+    usage: fn(acc) { acc.usage },
     on_end: fn(acc) {
-      case acc.life, acc.status {
-        Terminal, _ -> []
-        Streaming, 200 -> [
-          stream.Failed(stream.StreamDisconnected(
-            "Responses ended before a verified terminal",
-          )),
-        ]
-        Streaming, status -> [stream.Failed(http_error(acc, status))]
+      case acc.status {
+        200 ->
+          fail(
+            acc,
+            stream.StreamDisconnected(
+              "Responses ended before a verified terminal",
+            ),
+          ).1
+        status -> fail(acc, http_error(acc, status)).1
       }
     },
     on_failure: fn(acc, _) {
-      case acc.life {
-        Terminal -> []
-        Streaming -> [
-          stream.Failed(stream.TransportFailed("Responses transport failed")),
-        ]
-      }
+      fail(acc, stream.TransportFailed("Responses transport failed")).1
     },
   )
 }
@@ -286,7 +380,9 @@ fn fail(
 ) -> #(Accumulator, List(StreamEvent)) {
   case acc.life {
     Terminal -> #(acc, [])
-    Streaming -> #(Accumulator(..acc, life: Terminal), [stream.Failed(error)])
+    Streaming -> #(Accumulator(..acc, life: Terminal), [
+      stream.Failed(error, accounting.from_usage(acc.usage)),
+    ])
   }
 }
 
@@ -355,6 +451,10 @@ fn dispatch(
   case kind {
     "response.created" | "response.in_progress" -> {
       use response <- or_malformed(wire.field(value, "response"), acc)
+      use acc <- or_malformed(
+        record_usage(acc, response, usage_evidence.Partial),
+        acc,
+      )
       use identity <- or_malformed(identity(acc, response), acc)
       use <- bool.lazy_guard(
         wire.string_field(response, "status") != Ok("in_progress"),
@@ -381,16 +481,19 @@ fn dispatch(
     "response.output_item.done" -> close_item(acc, value)
     "response.completed" | "response.incomplete" | "response.cancelled" ->
       terminal(acc, kind, value)
-    "response.failed" | "error" -> {
-      let error = case kind {
-        "response.failed" ->
-          value
-          |> wire.field("response")
-          |> result.try(wire.field(_, "error"))
-          |> result.unwrap(json.Null)
-        _ -> value
-      }
+    "response.failed" -> {
+      let response =
+        result.unwrap(wire.field(value, "response"), json.Object([]))
+      use acc <- or_malformed(
+        record_usage(acc, response, usage_evidence.Complete),
+        acc,
+      )
+      let error = result.unwrap(wire.field(response, "error"), json.Null)
       let #(code, description) = error_fields(error)
+      fail(acc, stream.StreamError(code, description))
+    }
+    "error" -> {
+      let #(code, description) = error_fields(value)
       fail(acc, stream.StreamError(code, description))
     }
     _ -> malformed(acc)
@@ -466,8 +569,13 @@ fn add_item(
     acc,
   )
   use start_status <- or_malformed(items.optional_string(value, "status"), acc)
+
+  // Message items can arrive marked completed before their parts stream. That
+  // metadata never closes our item: every content and item witness is required.
   use <- bool.lazy_guard(
-    start_status != None && start_status != Some("in_progress"),
+    start_status != None
+      && start_status != Some("in_progress")
+      && start_status != Some("completed"),
     fn() { malformed(acc) },
   )
   use <- bool.lazy_guard(
@@ -496,6 +604,14 @@ fn add_item(
       "function_call" -> {
         use call_id <- result.try(items.nonempty(value, "call_id"))
         use name <- result.try(items.nonempty(value, "name"))
+        use namespace <- result.try(items.function_namespace(value))
+
+        // A subscription request offers only the fixed local namespace. A
+        // remote label cannot turn another namespace into Loom authority.
+        use <- bool.guard(
+          acc.api == subscription_api_name && namespace != Some("loom"),
+          Error(Nil),
+        )
         use <- bool.guard(
           wire.string_field(value, "arguments") != Ok(""),
           Error(Nil),
@@ -512,6 +628,7 @@ fn add_item(
         Ok(Function(
           call_id:,
           name:,
+          namespace:,
           block: acc.next_block,
           arguments: "",
           closure: Open,
@@ -834,18 +951,23 @@ fn arguments(
   use item <- or_malformed(find_item(acc, value), acc)
   use fields <- or_malformed(
     case item.kind {
-      Function(call_id:, name:, block:, arguments:, closure: Open) ->
-        Ok(#(call_id, name, block, arguments))
+      Function(call_id:, name:, namespace:, block:, arguments:, closure: Open) ->
+        Ok(#(call_id, name, namespace, block, arguments))
       _ -> Error(Nil)
     },
     acc,
   )
-  let #(call_id, name, block, previous) = fields
+  let #(call_id, name, namespace, block, previous) = fields
   use named <- or_malformed(items.optional_string(value, "name"), acc)
   use called <- or_malformed(items.optional_string(value, "call_id"), acc)
+  use namespaced <- or_malformed(items.function_namespace(value), acc)
+
+  // Deltas may omit the namespace, but an explicit witness must agree with
+  // the item that allocated this block before any arguments were emitted.
   use <- bool.lazy_guard(
     { named != None && named != Some(name) }
-      || { called != None && called != Some(call_id) },
+      || { called != None && called != Some(call_id) }
+      || { namespaced != None && namespaced != namespace },
     fn() { malformed(acc) },
   )
   let done = event == "response.function_call_arguments.done"
@@ -868,7 +990,14 @@ fn arguments(
       acc,
       Item(
         ..item,
-        kind: Function(call_id:, name:, block:, arguments:, closure:),
+        kind: Function(
+          call_id:,
+          name:,
+          namespace:,
+          block:,
+          arguments:,
+          closure:,
+        ),
       ),
     ),
     events,
@@ -931,11 +1060,12 @@ fn verify_item(item: Item, canonical: JsonValue) -> Result(Nil, Nil) {
     Error(Nil),
   )
   case item.kind {
-    Function(call_id:, name:, arguments:, closure: TextDone, ..) -> {
+    Function(call_id:, name:, namespace:, arguments:, closure: TextDone, ..) -> {
       use <- bool.guard(
         wire.string_field(canonical, "type") != Ok("function_call")
           || wire.string_field(canonical, "call_id") != Ok(call_id)
           || wire.string_field(canonical, "name") != Ok(name)
+          || items.function_namespace(canonical) != Ok(namespace)
           || wire.string_field(canonical, "arguments") != Ok(arguments),
         Error(Nil),
       )
@@ -974,14 +1104,20 @@ fn contiguous(parts: List(Part)) -> Bool {
   )
 }
 
-// The response body is the final independent witness: same identity, exact
-// closed output items, consistent status and no error. EOF is never this proof.
+// A terminal proves response identity, status and absence of error. Subscription
+// terminals may carry an empty output array after streaming the item witnesses;
+// every item must still have closed. A populated array must match those items.
+// EOF is never this proof.
 fn terminal(
   acc: Accumulator,
   event: String,
   value: JsonValue,
 ) -> #(Accumulator, List(StreamEvent)) {
   use response <- or_malformed(wire.field(value, "response"), acc)
+  use acc <- or_malformed(
+    record_usage(acc, response, usage_evidence.Complete),
+    acc,
+  )
   use identity <- or_malformed(identity(acc, response), acc)
   use <- bool.lazy_guard(
     acc.identity == None || wire.field(response, "error") != Error(Nil),
@@ -997,6 +1133,14 @@ fn terminal(
         None -> Error(Nil)
       }
     })
+
+  // Live plan inference does not repeat output in its terminal envelope. Only
+  // this dialect may use the already validated closing witnesses in its place;
+  // the count below still refuses any item whose closing witness never arrived.
+  let output = case acc.api, output {
+    "codex-subscription", [] -> expected
+    _, _ -> output
+  }
   use <- bool.lazy_guard(
     output != expected
       || list.length(output) != list.length(ordered)
@@ -1086,13 +1230,12 @@ fn settle(
   acc: Accumulator,
   identity: #(String, String),
   output: List(JsonValue),
-  response: JsonValue,
+  _response: JsonValue,
   stop: message.StopReason,
   raw: String,
   error: Option(String),
 ) -> #(Accumulator, List(StreamEvent)) {
-  let usage =
-    usage(result.unwrap(wire.field(response, "usage"), json.Object([])))
+  let usage = acc.usage
   let prompt = usage.input + usage.cache_read + usage.cache_write
   let #(stop, error) = case
     prompt > acc.resolved.context_window && usage.output <= 64
@@ -1130,7 +1273,7 @@ fn settle(
   let assistant =
     message.AssistantMessage(
       content:,
-      api: api_name,
+      api: acc.api,
       provider: acc.resolved.provider,
       model: acc.resolved.model_id,
       response_model: Some(identity.1),
@@ -1145,7 +1288,9 @@ fn settle(
       timestamp: acc.now,
     )
   use settled <- or_malformed(stream.settle(assistant), acc)
-  #(Accumulator(..acc, life: Terminal), [stream.Settled(settled, usage)])
+  #(Accumulator(..acc, life: Terminal), [
+    stream.Settled(settled, accounting.from_usage(usage)),
+  ])
 }
 
 // Wire output order and delta arrival order can differ under interleaving.
@@ -1169,29 +1314,161 @@ fn block_order(item: Item) -> List(Int) {
   }
 }
 
+// The credential channel determines billing identity, independently of model
+// names or configured rate cards. Subscription tokens do not measure credits.
+fn billing(api: String) -> usage_evidence.Billing {
+  case api == subscription_api_name {
+    True -> usage_evidence.ChatGptPlan
+    False -> usage_evidence.Api
+  }
+}
+
+// A terminal replaces the previous snapshot. Missing final usage retains any
+// measured prefix as partial; absence never establishes a remote zero cost.
+fn record_usage(
+  acc: Accumulator,
+  response: JsonValue,
+  coverage: usage_evidence.Coverage,
+) -> Result(Accumulator, Nil) {
+  case wire.field(response, "usage") {
+    Error(Nil) -> Ok(acc)
+    Ok(value) -> {
+      use Nil <- result.try(validate_usage(value))
+      let required = [
+        "input_tokens",
+        "output_tokens",
+        "input_tokens_details.cached_tokens",
+      ]
+      let witness = usage_witness.observe(acc.witness, value, required)
+      let evidence =
+        response_usage_evidence(witness, value, coverage, billing(acc.api))
+      Ok(Accumulator(..acc, witness:, usage: usage(value, evidence, acc.usage)))
+    }
+  }
+}
+
+// Final output must be present in the terminal itself; an initial zero output
+// cannot establish that the provider did no work after its created event.
+fn response_usage_evidence(
+  witness: usage_witness.Witness,
+  value: JsonValue,
+  coverage: usage_evidence.Coverage,
+  source: usage_evidence.Billing,
+) -> usage_evidence.Evidence {
+  case coverage, wire.int_field(value, "output_tokens") {
+    usage_evidence.Complete, Ok(_) ->
+      usage_witness.finished(
+        witness,
+        ["input_tokens", "output_tokens", "input_tokens_details.cached_tokens"],
+        source,
+      )
+    usage_evidence.Complete, Error(Nil) | usage_evidence.Partial, _ ->
+      usage_witness.snapshot(witness, source)
+  }
+}
+
+// Present malformed counts cannot masquerade as omitted counts. Compatible
+// endpoints may omit fields; integer bounds retain the shared clamping policy.
+fn validate_usage(value: JsonValue) -> Result(Nil, Nil) {
+  use fields <- result.try(case value {
+    json.Object(fields:) -> Ok(fields)
+    json.Null
+    | json.Bool(_)
+    | json.Int(_)
+    | json.Float(_)
+    | json.String(_)
+    | json.Array(_) -> Error(Nil)
+  })
+  use Nil <- result.try(
+    validate_counts(fields, ["input_tokens", "output_tokens", "total_tokens"]),
+  )
+  use Nil <- result.try(
+    validate_details(fields, "input_tokens_details", [
+      "cached_tokens",
+      "cache_write_tokens",
+    ]),
+  )
+  validate_details(fields, "output_tokens_details", ["reasoning_tokens"])
+}
+
+fn validate_details(
+  fields: List(#(String, JsonValue)),
+  name: String,
+  counts: List(String),
+) -> Result(Nil, Nil) {
+  case list.key_find(fields, name) {
+    Error(Nil) | Ok(json.Null) -> Ok(Nil)
+    Ok(json.Object(fields:)) -> validate_counts(fields, counts)
+    Ok(json.Bool(_))
+    | Ok(json.Int(_))
+    | Ok(json.Float(_))
+    | Ok(json.String(_))
+    | Ok(json.Array(_)) -> Error(Nil)
+  }
+}
+
+fn validate_counts(
+  fields: List(#(String, JsonValue)),
+  names: List(String),
+) -> Result(Nil, Nil) {
+  use _ <- result.map(
+    list.try_map(names, fn(name) {
+      case list.key_find(fields, name) {
+        Error(Nil) | Ok(json.Null) | Ok(json.Int(_)) -> Ok(Nil)
+        Ok(json.Bool(_))
+        | Ok(json.Float(_))
+        | Ok(json.String(_))
+        | Ok(json.Array(_))
+        | Ok(json.Object(_)) -> Error(Nil)
+      }
+    }),
+  )
+  Nil
+}
+
 // Reported input includes cache reads and writes. Clamp before subtracting so
 // the split conserves the whole prompt even when a proxy reports impossible counts.
-fn usage(value: JsonValue) -> message.Usage {
-  let prompt = wire.count_field_or(value, "input_tokens", 0)
-  let output = wire.count_field_or(value, "output_tokens", 0)
+fn usage(
+  value: JsonValue,
+  evidence: usage_evidence.Evidence,
+  previous: message.Usage,
+) -> message.Usage {
+  let prompt =
+    wire.count_field_or(
+      value,
+      "input_tokens",
+      previous.input + previous.cache_read + previous.cache_write,
+    )
+  let output = wire.count_field_or(value, "output_tokens", previous.output)
   let input_details =
     result.unwrap(wire.field(value, "input_tokens_details"), json.Null)
   let output_details =
     result.unwrap(wire.field(value, "output_tokens_details"), json.Null)
   let cache_read =
-    int.min(prompt, wire.count_field_or(input_details, "cached_tokens", 0))
+    int.min(
+      prompt,
+      wire.count_field_or(input_details, "cached_tokens", previous.cache_read),
+    )
   let cache_write =
     int.min(
       prompt - cache_read,
-      wire.count_field_or(input_details, "cache_write_tokens", 0),
+      wire.count_field_or(
+        input_details,
+        "cache_write_tokens",
+        previous.cache_write,
+      ),
     )
   message.Usage(
+    evidence:,
     input: prompt - cache_read - cache_write,
     output:,
     cache_read:,
     cache_write:,
     cache_write_1h: None,
-    reasoning: wire.optional_count_field(output_details, "reasoning_tokens"),
+    reasoning: option.or(
+      wire.optional_count_field(output_details, "reasoning_tokens"),
+      previous.reasoning,
+    ),
     total_tokens: wire.count_field_or(value, "total_tokens", prompt + output),
     cost: message.UsageCost(0.0, 0.0, 0.0, 0.0, 0.0),
   )

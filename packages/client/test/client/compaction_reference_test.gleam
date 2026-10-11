@@ -2,10 +2,12 @@
 //// The fixture uses the production preparation transform, then serializes the
 //// resulting request through every supported provider adapter.
 
+import core/accounting
 import core/clock
 import core/ids
 import core/json
 import core/message
+import core/usage_evidence
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
@@ -133,14 +135,8 @@ fn assistant_text(text: String) -> message.AgentMessage {
 
 fn empty_usage() -> message.Usage {
   message.Usage(
-    input: 0,
-    output: 0,
-    cache_read: 0,
-    cache_write: 0,
-    cache_write_1h: None,
-    reasoning: None,
-    total_tokens: 0,
-    cost: message.UsageCost(0.0, 0.0, 0.0, 0.0, 0.0),
+    ..accounting.zero_usage(),
+    evidence: usage_evidence.priced_api(),
   )
 }
 

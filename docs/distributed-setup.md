@@ -743,7 +743,7 @@ tar -C ./myproj -c . | docker compose -f docker/distributed/compose.yaml exec -T
 
 Do not use `docker compose cp` for this (the failure is **Verified**, from the
 first run of this section on commit `23a39695a`). It keeps the files' host owner, the daemon
-cannot create its `.blobs` directory beside them, and the session fails with
+cannot create its `.codemode` directory beside them, and the session fails with
 `executor_unavailable` and `Eacces`. If you set `EXECUTOR_CHECKOUT` to a host
 directory instead of the volume, that directory must be writable by uid 10000.
 
@@ -974,11 +974,13 @@ clients.
 with a scripted provider). The same four tool calls ran, and the file landed in the
 registered workspace on the executor and nowhere under the orchestrator's home. One
 machine cannot show a different host name, so that part of the check needs two
-machines. The `bash` call that ran `ls -la` exited 1 with `Operation not
-permitted` for `.blobs/`, because the executor's sandbox protects that directory,
-so the terminal summarised the turn as `1 failed`; the model's other calls and the
-turn itself succeeded. The executor creates `.blobs/` and `.codemode/` in the
-workspace root, each with its own `.gitignore`, so `git status` there stays clean.
+machines. On that run the `bash` call that ran `ls -la` exited 1 with `Operation
+not permitted` for `.blobs/`, because the executor's sandbox protected that
+directory inside the checkout, so the terminal summarised the turn as `1 failed`;
+the model's other calls and the turn itself succeeded. The blob store has since
+moved out of the checkout (it is `<state>/blobs/<session>` on the executor), so a
+listing of the workspace no longer meets it. The executor creates `.codemode/` in
+the workspace root with its own `.gitignore`, so `git status` there stays clean.
 Stopping the session and opening it again reattached at the next incarnation, and
 a command in a second turn read the file written in the first.
 
@@ -1212,8 +1214,10 @@ cannot resume, and the daemon logs `daemon.moves_cannot_resume` at startup.
 Where things land on a remote session (**Verified** for the files, same run): the
 checkout and the files a tool writes are on the executor, under the workspace root.
 The conversation database, approvals and `~/.loom` stay on the orchestrator. The
-`.blobs` and `.codemode` work directories are in the workspace root on the executor
-too (**Verified**, local provisioning run `46a3d0112`).
+`.codemode` work directory is in the workspace root on the executor too
+(**Verified**, local provisioning run `46a3d0112`). A session's blob store is
+`<state>/blobs/<session>` in the executor's state directory, kept across a close
+and reopen.
 
 The daemon prints JSON lines to its standard output. When a boot check fails, it
 prints one plain line first (see below) and exits with status 1.

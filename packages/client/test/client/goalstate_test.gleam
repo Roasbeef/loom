@@ -20,6 +20,7 @@ import client/goalstate.{type Goal}
 import core/clock
 import core/ids.{type OpId}
 import core/json
+import core/usage_evidence
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
@@ -244,9 +245,9 @@ pub fn the_stored_form_is_the_documented_object_test() {
   assert list.map(fields, fn(field) { field.0 })
     == [
       "objective", "status", "reason", "phase", "token_budget", "tokens_used",
-      "accounted_through_seq", "cost_used", "continuations", "zero_progress",
-      "unanswered_feeds", "created_ms", "updated_ms", "reviewer_note", "check",
-      "last_check",
+      "accounted_through_seq", "cost_used", "cost_evidence", "continuations",
+      "zero_progress", "unanswered_feeds", "created_ms", "updated_ms",
+      "reviewer_note", "check", "last_check",
     ]
   assert list.key_find(fields, "status") == Ok(json.String("active"))
   assert list.key_find(fields, "reason") == Ok(json.Null)
@@ -388,7 +389,7 @@ pub fn the_status_and_its_reason_must_belong_together_test() {
 // The fields that may be absent are the ones whose zero value means
 // "nothing recorded yet": the five counters, the cost and the two
 // nullable strings. A payload carrying only what the owner always writes
-// decodes to a goal with everything else zeroed.
+// decodes to zero counters and unknown historical estimate coverage.
 pub fn the_optional_fields_take_the_defaults_test() {
   let stored =
     json.Object([
@@ -418,6 +419,7 @@ pub fn the_optional_fields_take_the_defaults_test() {
     == goalstate.Goal(
       ..expected,
       status: goalstate.Paused(by: goalstate.ByOperator),
+      cost_evidence: usage_evidence.unknown(usage_evidence.Other),
     )
 }
 
@@ -464,6 +466,7 @@ pub fn a_null_note_reads_as_none_test() {
       goalstate.Goal(
         ..goalstate.new("land the migration", 400_000, 1000, accounted_from: 0),
         updated_ms: 2000,
+        cost_evidence: usage_evidence.unknown(usage_evidence.Other),
       ),
     )
 }
@@ -1073,4 +1076,33 @@ pub fn the_doc_examples_hold_test() {
   let example =
     goalstate.new("make the race test pass", 400_000, 1000, accounted_from: 0)
   assert goalstate.decode(goalstate.encode(example)) == Ok(example)
+}
+
+// A historical display number has no measurement witness to recover.
+pub fn historical_goal_cost_remains_unknown_test() {
+  let goal = working_goal()
+  assert goal.cost_evidence == usage_evidence.unknown(usage_evidence.Other)
+}
+
+// A current writer must not erase evidence by emitting a malformed field.
+pub fn malformed_present_goal_evidence_is_refused_test() {
+  let assert json.Object(fields) = goalstate.encode(working_goal())
+    as "the goal writer emits an object"
+  let malformed =
+    json.Object([
+      #("cost_evidence", json.String("complete")),
+      ..list.filter(fields, fn(field) { field.0 != "cost_evidence" })
+    ])
+  assert goalstate.decode(malformed) == Error("invalid goal cost evidence")
+}
+
+// A restart preserves a partial plan reference estimate exactly.
+pub fn goal_cost_evidence_round_trips_test() {
+  let evidence =
+    usage_evidence.with_price(
+      usage_evidence.partial(usage_evidence.ChatGptPlan),
+      usage_evidence.ChatGptReferenceRates,
+    )
+  let goal = goalstate.Goal(..working_goal(), cost_evidence: evidence)
+  assert goalstate.decode(goalstate.encode(goal)) == Ok(goal)
 }

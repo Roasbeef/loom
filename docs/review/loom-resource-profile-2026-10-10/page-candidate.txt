@@ -1,0 +1,9 @@
+mode=candidate page_flat_bytes=26272 initial_view_sha256=848B696EB38B05DFBD24A05F0BCDDA218700766EDD608409430D80A39902C204
+mode=candidate renders=1000 us=27684 reductions=3862265 patch={}
+mode=candidate renders=1000 us=25469 reductions=3859027 patch={}
+mode=candidate renders=1000 us=24039 reductions=3857501 patch={}
+mode=candidate renders=1000 us=25775 reductions=3857502 patch={}
+mode=candidate renders=1000 us=25732 reductions=3857495 patch={}
+mode=candidate module=web_view@operator_page renders=100 allocated_bytes=3208968
+mode=candidate module=session_view@text_hygiene renders=100 allocated_bytes=87200
+mode=candidate module=lustre@vdom@diff renders=100 allocated_bytes=1515200

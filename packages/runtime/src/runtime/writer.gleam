@@ -41,11 +41,13 @@ import core/register.{type RegisterNs}
 import core/tx.{type CommitError, type CommitResult, type Tx}
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/supervision.{type ChildSpecification}
 import gleam/result
 import runtime/internal/ffi_sup
+import runtime/residency
 import session/session.{type Session}
 import storage/storage.{type StorageError}
 import weft/actor
@@ -164,6 +166,7 @@ pub fn start(
   })
   |> actor.addressed(name)
   |> actor.on_message(handle)
+  |> actor.hibernate_after(residency.hibernate_after_ms)
   |> renewing(options.session)
   |> actor.start
 }
@@ -185,8 +188,16 @@ fn renewing(
   session: Session,
 ) -> actor.Builder(State, Message, Subject(Message)) {
   case session.lease_interval_ms {
-    Some(interval) ->
-      actor.periodic(builder, every: interval, sending: RenewTick)
+    Some(interval) -> {
+      // A renewal wakes the mailbox even when the writer has no work. Sleep
+      // before that next tick so the last commit's garbage can be reclaimed;
+      // the periodic timer keeps its original cadence and wakes the writer.
+      let quiet_ms =
+        int.min(residency.hibernate_after_ms, int.max(1, interval / 2))
+      builder
+      |> actor.hibernate_after(quiet_ms)
+      |> actor.periodic(every: interval, sending: RenewTick)
+    }
     None -> builder
   }
 }

@@ -61,5 +61,8 @@
 /// prompt, which may be hours away. Half a minute reaches that inside the
 /// minute an operator would call parked.
 ///
-/// A site with a stated reason to differ may differ. None does today.
+/// A site with a stated reason to differ may differ. A leased writer uses
+/// the smaller of this interval and half its renewal period, because a
+/// renewal arriving first would prevent the receive timeout from expiring.
+/// Its lease timer keeps the original period and wakes it from hibernation.
 pub const hibernate_after_ms = 30_000

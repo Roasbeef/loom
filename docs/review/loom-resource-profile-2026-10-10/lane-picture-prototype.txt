@@ -1,0 +1,11 @@
+html_sha256=190E15FE3D48EB23F36D05338E13E9FDD6C3AEE547FF55D456430DD6F8E13B8A
+mode=prototype page_flat_bytes=262504 initial_view_sha256=0E92845E6BDFDC9700F125946E01BD783E327BCB1F0D6139853998952A8B09AD
+mode=prototype renders=1000 us=269822 reductions=28169275 patch={}
+mode=prototype renders=1000 us=258615 reductions=28119418 patch={}
+mode=prototype renders=1000 us=255512 reductions=28117278 patch={}
+mode=prototype renders=1000 us=259776 reductions=28157325 patch={}
+mode=prototype renders=1000 us=258241 reductions=28159498 patch={}
+mode=prototype module=web_view@operator_page renders=100 allocated_bytes=7768448
+mode=prototype module=web_view@view@lane renders=100 allocated_bytes=18914064
+mode=prototype module=session_view@transcript_image renders=100 allocated_bytes=0
+mode=prototype module=lustre@vdom@diff renders=100 allocated_bytes=10032608

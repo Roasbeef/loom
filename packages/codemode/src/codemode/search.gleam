@@ -373,7 +373,8 @@ pub fn denial(refusal: SearchRefusal) -> CapDenial {
     // The path vocabulary is `codemode/workspace`'s and is reused rather
     // than restated: `resolve_real` is one boundary, so the sentence a
     // refusal from it carries must be one sentence.
-    PathRefused(error:) -> workspace.fs_denial(workspace.PathRefused(error:))
+    PathRefused(error:) ->
+      workspace.fs_denial(workspace.ReadPathRefused(error:))
 
     QueryRefused(error:) -> query_denial(error)
   }

@@ -83,9 +83,14 @@ of running it on the orchestrator.
 The executor runs the workspace plane: the broker, the helper pool and its
 jail, the executor service, the workspace tools (`fs_*`, `bash`, `grep`,
 `working_directory`, `code_mode` and the job tools), the jobs actor, the LSP
-manager and the code-mode host. It holds the checkout, the `.blobs` and
-`.codemode` work directories, toolchains and caches, and its own machine
+manager and the code-mode host. It holds the checkout, the `.codemode` work
+directory, toolchains and caches, a session's blob store, and its own machine
 configuration (`[tools]`, `[workspace]`, `[lsp]`, `[jobs]`, `[secrets]`). The
+blob store (the overflow of a large tool result, and the artifacts a code-mode
+program emits) is `<state>/blobs/<session>` in the executor's state directory,
+outside the checkout and outside the scope directory. A close removes the scope
+directory but not the blobs, because a reopened session still reads the blobs
+its transcript names, and every jail on the executor masks the directory. The
 rule behind the split is that configuration naming a path on a machine lives on
 that machine. The orchestrator never interprets an executor path, and the
 executor never opens the conversation store.

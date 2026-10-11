@@ -530,6 +530,41 @@ pub fn a_path_outside_the_workspace_keeps_the_tools_own_vocabulary_test() {
   assert string.contains(message, "outside the workspace root")
 }
 
+pub fn a_read_outside_the_readable_roots_says_how_to_get_access_test() {
+  // A read refusal travels under a code of its own: `cap/fs` decodes
+  // `permission_denied` to a variant that drops the sentence, and the
+  // sentence is what names `permissions.readable_roots` and `/add-dir`.
+  let assert framing.CapErr(code:, message:) =
+    serviced(
+      refusing(workspace.ReadPathRefused(fs.EscapesWorkspace(path: "../loop"))),
+      "fs.read",
+      map([#("path", text("../loop"))]),
+    )
+    as "a read outside the roots is refused in band"
+  assert code == workspace.outside_readable_roots_code
+  assert string.contains(message, "../loop")
+  assert string.contains(message, "permissions.readable_roots")
+  assert string.contains(message, "/add-dir")
+}
+
+pub fn a_read_of_a_protected_path_says_no_grant_opens_it_test() {
+  let assert framing.CapErr(code:, message:) =
+    serviced(
+      refusing(
+        workspace.ReadPathRefused(fs.ProtectedPath(
+          path: "/w/.blobs/x",
+          protected: "/w/.blobs",
+        )),
+      ),
+      "fs.read",
+      map([#("path", text("/w/.blobs/x"))]),
+    )
+    as "a protected read is refused in band"
+  assert code == workspace.protected_path_code
+  assert string.contains(message, "protected")
+  assert string.contains(message, "no approval")
+}
+
 pub fn each_read_refusal_keeps_its_own_code_test() {
   // The whole table at once, because what matters is the
   // *correspondence*: a code `cap/fs` does not decode arrives as the
@@ -545,6 +580,15 @@ pub fn each_read_refusal_keeps_its_own_code_test() {
       workspace.PathRefused(fs.ProtectedPath(path: "x", protected: ".git")),
       workspace.permission_denied_code,
     ),
+    #(
+      workspace.ReadPathRefused(fs.EscapesWorkspace(path: "x")),
+      workspace.outside_readable_roots_code,
+    ),
+    #(
+      workspace.ReadPathRefused(fs.ProtectedPath(path: "x", protected: ".git")),
+      workspace.protected_path_code,
+    ),
+    #(workspace.ReadPathRefused(fs.EmptyPath), workspace.invalid_argument_code),
     #(
       workspace.PathRefused(fs.Unresolvable(path: "x", reason: "loop")),
       workspace.unresolvable_code,

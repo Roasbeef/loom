@@ -248,3 +248,15 @@ Differences from pi are explicit policy amendments recorded in
 - [protocol-change/](../../protocol-change/) — amendments to the frozen
   interfaces this package implements.
 - [Root CLAUDE.md](../../CLAUDE.md) — repo ground rules and the doc graph.
+
+## Request settlement accounting (protocol 081)
+
+`planner.ObservedAssistantSettled`, `ObservedDeferredSettled`, and
+`ObservedSummaryReturned` retain the provider's request report.
+`build.request_usage_row` writes its aggregate under the existing reserved
+usage ID and puts bounded final-attempt metadata in the row's details. The
+same transaction advances the operation state, so replay cannot add the
+request a second time. Assistant entries retain final-attempt usage for
+context projection. Orphan recovery records unknown coverage; replacement
+polls and summaries charge that uncertainty once under their abandoned
+request's reserved ID. A wait for admission writes no uncertainty row.

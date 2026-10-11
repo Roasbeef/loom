@@ -8,6 +8,7 @@
 
 import core/json
 import core/message
+import core/usage_evidence
 import gleam/dict
 import gleam/int
 import gleam/list
@@ -118,6 +119,7 @@ fn captured(peers: List(snapshot_view.Peer)) {
         None,
         0,
         message.UsageCost(0.0, 0.0, 0.0, 0.0, 0.0),
+        usage_evidence.none(),
       ),
       snapshot_view.RunSettings("one_at_a_time", "parallel", None),
       peers,

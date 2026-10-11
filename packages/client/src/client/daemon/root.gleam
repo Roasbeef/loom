@@ -942,6 +942,18 @@ fn directories(config: Config) {
   use Nil <- result.try(bootstrap.ensure_private_directory(
     root <> "/" <> codemode_wiring.runtime_directory,
   ))
+
+  // The per-workspace and per-session domain directories, mode 0700. Every
+  // session base masks both (`client/serve.established_masks`), and a mask
+  // is only built over a path that exists or whose parent a jail may
+  // write. Left to be created by the first domain of each kind, a session
+  // admitted before a session-only domain exists would run with no
+  // `domains/` mask for its whole life, while a later domain put its
+  // memory, index and blob store where that jail could read them.
+  use Nil <- result.try(bootstrap.ensure_private_directory(
+    root <> "/workspaces",
+  ))
+  use Nil <- result.try(bootstrap.ensure_private_directory(root <> "/domains"))
   use Nil <- result.try(unaliased_file(paths.lock))
   use Nil <- result.try(unaliased_file(paths.catalogue))
   Ok(paths)

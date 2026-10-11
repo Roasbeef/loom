@@ -787,7 +787,7 @@ run, an idle-hibernate policy in `weft/actor` is not justified by measurement.
 
 The 117.5 MiB `weft@state_machine` that the previous section left unattributed
 is the daemon's session admission registry, `client/daemon/manager`. Its
-`Book.slots` dictionary (`packages/client/src/client/daemon/manager.gleam:1448`)
+`Book.slots` dictionary (`packages/client/src/client/daemon/manager.gleam:1487`)
 holds one `Slot` per resident session, and each slot's `phase` field
 (`daemon/manager.gleam:279`) carries `Occupancy.Running(instance)`
 (`daemon/manager.gleam:256`), where `instance` is a whole `client/serve.Instance`
@@ -1012,7 +1012,7 @@ Described, not implemented, and none of it justified by this measurement alone.
 
 The narrowest change is to stop storing the value in the registry.
 `Occupancy.Running` could carry the instance's owning pid or a `Subject` rather
-than the `serve.Instance`, and `Resolve` (`daemon/manager.gleam:2138`) would ask that
+than the `serve.Instance`, and `Resolve` (`daemon/manager.gleam:2177`) would ask that
 owner instead of reading a map. The reference already exists: the slot holds
 `host` and a monitor on the builder. The costs are real and on a hot path.
 `resolve` becomes a call with a deadline where it is now a dictionary read, a
@@ -2276,3 +2276,17 @@ The registry copy itself is 155 KiB `code_mode`, of which 136 KiB is
 `client/codemode`'s `Config` twice, because `tools/codemode.CodeMode` has two
 closure slots that each capture it. `docs/design-notes/startup-and-memory.md`
 has the measurement method and the rest of that work.
+
+
+## 2026-10-10: a writer sleeps between lease renewals
+
+The earlier residency census excluded writers because renewal ticks defeated
+the shared thirty-second quiet threshold. A live targeted GC now found two
+writers with small state but 13–19 MB heaps. The follow-up uses a quiet
+threshold of half the lease renewal interval, capped by the shared residency
+threshold; it preserves the existing periodic renewal. The unleased writer
+uses the shared thirty seconds. Matched disposable experiments reclaim inflated
+idle heaps while normal calls, repeated renewals and lease-loss retirement
+continue. The [October resource report](../review/loom-resource-profile-2026-10-10.md)
+records fixtures, wake costs, validation and limits. This updates the earlier
+writer exclusion; it does not establish installed daemon RSS savings.

@@ -300,6 +300,69 @@ pub fn close_reports_all_retired_and_reopen_builds_a_new_plane_test() {
   stop(rig)
 }
 
+// The blob store of a remote session is the executor's, and a reopened session
+// must still read the blobs its transcript names. So it sits in the state
+// root beside the scopes and not in one, outlives the clean close that
+// removes the scope, stays out of the checkout, and is masked from the jail.
+pub fn a_blob_written_before_a_close_is_readable_after_the_reopen_test() {
+  let rig = rig()
+  let first = attached(rig, 0)
+
+  // Over the 64 KiB overflow threshold, so the harness writes a blob.
+  let overflow =
+    surface.run(
+      first.surface,
+      call(
+        "bash",
+        [#("command", json.String("head -c 70000 /dev/zero | tr '\\0' x"))],
+        0,
+      ),
+    )
+  let assert Ok(_) = text_of(overflow)
+  let store = rig.state <> "/blobs/s1"
+  assert simplifile.is_directory(store) == Ok(True)
+  assert first.attached.census.census.blob_root == store
+  assert !string.starts_with(store, rig.checkout)
+  assert !string.starts_with(store, rig.state <> "/scopes")
+  assert simplifile.is_directory(rig.checkout <> "/.blobs") != Ok(True)
+  let assert Ok(entries) = simplifile.read_directory(store)
+  let assert [name] =
+    list.filter(entries, fn(entry) { string.starts_with(entry, "sha256-") })
+    as "one artifact was written"
+  let artifact = store <> "/" <> name
+
+  // The jail cannot read the artifact: its command either fails or prints
+  // nothing of the content.
+  let peeked =
+    surface.run(
+      first.surface,
+      call("bash", [#("command", json.String("cat '" <> artifact <> "'"))], 1),
+    )
+  assert case text_of(peeked) {
+    Ok(output) -> !string.contains(output, "xxxxxxxx")
+    Error(_) -> True
+  }
+    as "a jailed tool must not read the blob store"
+
+  // A clean close removes the scope and leaves the store.
+  assert close(rig, 0) == Ok(protocol.AllRetired)
+  assert simplifile.is_directory(rig.state <> "/scopes/s1") == Ok(False)
+  assert simplifile.is_file(artifact) == Ok(True)
+
+  // The reopened scope reads the artifact the first incarnation wrote.
+  let reopened = attached(rig, 1)
+  assert reopened.attached.census.census.blob_root == store
+  let read =
+    surface.run(
+      reopened.surface,
+      call("fs_read", [#("path", json.String(artifact))], 0),
+    )
+  let assert Ok(text) = text_of(read)
+  assert string.contains(text, "xxxxxxxx")
+  assert close(rig, 1) == Ok(protocol.AllRetired)
+  stop(rig)
+}
+
 pub fn a_workspace_the_executor_does_not_serve_is_refused_test() {
   let rig = rig()
   let assert Error(protocol.NoPlane(reason)) =

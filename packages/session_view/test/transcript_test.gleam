@@ -8,6 +8,7 @@ import core/entry
 import core/ids
 import core/json
 import core/message
+import core/usage_evidence
 import gleam/dict
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -55,6 +56,7 @@ fn view(leaves: List(#(String, Int))) -> snapshot_view.View {
       None,
       0,
       message.UsageCost(0.0, 0.0, 0.0, 0.0, 0.0),
+      usage_evidence.none(),
     ),
     snapshot_view.RunSettings("one_at_a_time", "parallel", None),
     [],
@@ -150,6 +152,7 @@ fn usage() -> message.Usage {
     None,
     0,
     message.UsageCost(0.0, 0.0, 0.0, 0.0, 0.0),
+    usage_evidence.none(),
   )
 }
 

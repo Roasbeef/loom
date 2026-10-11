@@ -200,6 +200,23 @@ pub type Event {
     schedules: List(ScheduleRow),
   )
 
+  /// The session's model role profile and the profiles the daemon's
+  /// configuration defines: the reply to `profile_get` and to
+  /// `profile_set` alike (protocol-change/082).
+  ProfileSnapshot(
+    /// The profile the session routes its roles by, or `None` for the
+    /// configuration's default roles.
+    current: Option(String),
+    /// The profile names the configuration defines now, sorted. The default
+    /// roles are not among them: they are the absence of a profile.
+    available: List(String),
+    /// Present only in the reply to `profile_set`: how many strands the
+    /// switch moved to the new profile's models. Its presence also says
+    /// the session is restarting to apply the profile, so the connection
+    /// is about to close.
+    switched: Option(Int),
+  )
+
   /// The active strand's effective model selection.
   ConfigSnapshot(
     /// The selected catalogue name, when one is configured.
@@ -290,8 +307,10 @@ pub type Event {
     seq: Option(Int),
     /// Operation billed by the row, when the gateway can attribute it.
     operation: Option(String),
-    /// The server-authoritative provider usage row.
+    /// The server-authoritative aggregate provider usage row.
     usage: Usage,
+    /// The final attempt alone measures context and prompt-cache behavior.
+    last_usage: Option(Usage),
   )
 
   /// A tool action awaiting an explicit operator decision.
@@ -478,6 +497,38 @@ pub fn notes(id: Int, strand: String) -> String {
 /// ```
 pub fn schedules(id: Int) -> String {
   command(id, "schedules", [])
+}
+
+/// Encodes a read of the session's model profile and of the profiles the
+/// daemon's configuration defines.
+///
+/// ## Examples
+///
+/// ```gleam
+/// protocol.profile_get(12)
+/// ```
+pub fn profile_get(id: Int) -> String {
+  command(id, "profile_get", [])
+}
+
+/// Encodes a switch of the session's model profile: a profile name, or `None`
+/// for the configuration's default roles.
+///
+/// The default is sent as an absent `profile` rather than a null or an empty
+/// string, because the server refuses both of those as malformed
+/// (protocol-change/082): a misspelled name must never read as the default.
+///
+/// ## Examples
+///
+/// ```gleam
+/// protocol.profile_set(13, Some("codex"))
+/// protocol.profile_set(14, None)
+/// ```
+pub fn profile_set(id: Int, profile: Option(String)) -> String {
+  command(id, "profile_set", case profile {
+    Some(name) -> [#("profile", json.String(name))]
+    None -> []
+  })
 }
 
 /// Encodes a cancellation of one schedule, named by the strand it fires
@@ -693,6 +744,7 @@ pub fn decode_v2_presentation(text: String) -> Result(Event, String) {
     | GoalSnapshot(_)
     | SchedulesSnapshot(_)
     | PermissionsSnapshot(_)
+    | ProfileSnapshot(..)
     | Resumed(_)
     | ServerError(..) -> Ok(event)
     FullSnapshot(..)
@@ -902,6 +954,12 @@ fn decode_snapshot(body: JsonValue) -> Result(Event, String) {
       use board <- result.try(required_value(fields, "board"))
       remembered.decode(board) |> result.map(PermissionsSnapshot)
     }
+    "profile" -> {
+      use current <- result.try(optional_string(fields, "profile"))
+      use available <- result.try(string_array(fields, "available"))
+      use switched <- result.try(optional_int(fields, "moved"))
+      Ok(ProfileSnapshot(current:, available:, switched:))
+    }
     "config" -> {
       use config <- result.try(required_object(fields, "config"))
       use model_name <- result.try(optional_string(config, "model_name"))
@@ -1074,7 +1132,15 @@ fn decode_usage(body: JsonValue, seq: Option(Int)) -> Result(Event, String) {
     codec.decode_usage(value)
     |> result.map_error(fn(report) { report.expected }),
   )
-  Ok(UsageChanged(strand:, seq:, operation:, usage:))
+  use last_usage <- result.try(case list.key_find(fields, "last_usage") {
+    Error(Nil) -> Ok(Some(usage))
+    Ok(json.Null) -> Ok(None)
+    Ok(value) ->
+      codec.decode_usage(value)
+      |> result.map(Some)
+      |> result.map_error(fn(report) { report.expected })
+  })
+  Ok(UsageChanged(strand:, seq:, operation:, usage:, last_usage:))
 }
 
 fn decode_escalation(body: JsonValue) -> Result(Event, String) {
@@ -1160,6 +1226,17 @@ fn required_int(
     Ok(json.Int(value)) -> Ok(value)
     Ok(_) -> Error(key <> " must be an integer")
     Error(Nil) -> Error(key <> " is required")
+  }
+}
+
+fn optional_int(
+  fields: List(#(String, JsonValue)),
+  key: String,
+) -> Result(Option(Int), String) {
+  case list.key_find(fields, key) {
+    Error(Nil) -> Ok(None)
+    Ok(json.Int(value)) -> Ok(Some(value))
+    Ok(_) -> Error(key <> " must be an integer")
   }
 }
 

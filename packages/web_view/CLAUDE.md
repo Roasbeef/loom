@@ -78,7 +78,9 @@ page keys and nonces, and the relay into the session's gateway.
   `data-dismiss="keep"` and is followed by an empty `<loom-dismiss>` sibling
   (`web_client/dismiss`), which closes it on an outside press or Escape; it is a
   sibling and not a wrapper so the buttons keep their tree paths. The panel's
-  fixed position stops short of the 340 px strand column from 980 px up. A usage
+  fixed position stops short of the strand column from 980 px up (its right edge is
+  `calc(var(--panel-width, 340px) + 12px)`: `<loom-shell>` sets `--panel-width` on
+  its frame, 340 px until the reader drags the panel's grip, `0px` while closed). A usage
   row inside the 30 s pacing window is deferred to the window's end
   (`context_view.State.deferred_until_ms`), and `rearm` wakes the page for it.
 - `component.Msg(socket)`: `Opened`, `Refused`, `TimerArmed`, `Arrived`
@@ -1105,7 +1107,11 @@ page keys and nonces, and the relay into the session's gateway.
   owner's link with `peer_send`, at the operator's prompt. Nothing is sent by
   `reply`. A `turns.Sibling` piece (a strand of the same session) is a
   `sibling-card` headed `strand · <id>` with no receipt and no Reply, since
-  no peer link exists to answer through. `component.pending_nudges(model)` and `component.goal(model)` read
+  no peer link exists to answer through. Peer and sibling pieces hold the
+  whole message; `lane.message_body` draws one the composer would shorten as
+  its collapsed line with a client-side `<loom-expand>` to the whole text (cut
+  by `expansion.capped`), so opening it asks the daemon for nothing.
+  `component.pending_nudges(model)` and `component.goal(model)` read
   `Shared.nudges` and `Shared.goal`.
 - `operator_page.Msg(socket)`: `Observed(component.Msg)`, `Submitted(text,
   delivery, images)`, `Decided(id, seq, answer)`, `Controlled(component.Control)` and
@@ -1529,3 +1535,14 @@ keep its preview within 8,000 UTF-8 bytes without grapheme-scanning the complete
 output. The viewer's 16,000-byte windows partition complete codepoints; its
 requests and storage reads belong to client, not to the component or this
 package. No browser websocket event or component reader was added.
+
+## `/profile` on the page (protocol 082)
+
+The page runs `/profile` and `/model-profile` because they are session commands
+(`component.page_command` passes every `command.Session`), so no component, route
+or asset changed. `completion.rows` offers both spellings and `/profile default`
+automatically, and offers no profile name: the table is an attribute and a name is
+the daemon's text (051). The answer is written to the transcript as text by the
+shared fold. A switch restarts the session, so the page shows the session-stopped
+notice and the owner reloads it, as after making a session shareable. A member
+operator is refused `forbidden` by the hub, which the page shows as the refusal.

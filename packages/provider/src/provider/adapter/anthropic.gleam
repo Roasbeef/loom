@@ -62,6 +62,7 @@
 ////    overflow rule, and emits the one settled message. `fail` ends the
 ////    stream in-band wherever the path breaks.
 
+import core/accounting
 import core/corruption.{type CorruptionReport}
 import core/json.{type JsonValue}
 import core/message.{
@@ -71,6 +72,7 @@ import core/message.{
   ToolUse, Usage, UsageCost, UserImage, UserMessage, UserText,
 }
 import core/origin
+import core/usage_evidence
 import gleam/bit_array
 import gleam/bool
 import gleam/list
@@ -79,6 +81,7 @@ import gleam/result
 import gleam/string
 import provider/http.{type HttpRequest, HttpRequest}
 import provider/internal/diagnostic
+import provider/internal/usage_witness
 import provider/internal/wire
 import provider/model.{
   type ProviderRequest, type ResolvedModel, type ToolSpec, ThinkingHigh,
@@ -127,6 +130,10 @@ pub opaque type Accumulator {
     response_id: Option(String),
     response_model: Option(String),
     done: Bool,
+    /// Fixed count paths distinguish numeric defaults from reported buckets.
+    witness: usage_witness.Witness,
+    /// Only a final usage witness can establish complete output measurement.
+    evidence: usage_evidence.Evidence,
   )
 }
 
@@ -566,6 +573,14 @@ pub fn map_stop_reason(
   }
 }
 
+// Missing cache partition counts leave allocation and pricing provisional.
+const required_usage_fields = [
+  "input_tokens",
+  "output_tokens",
+  "cache_read_input_tokens",
+  "cache_creation_input_tokens",
+]
+
 // --- response accumulation ----------------------------------------------
 
 /// The response machine for one Messages API request attempt. `now` is
@@ -604,18 +619,16 @@ pub fn response_machine(
       response_id: None,
       response_model: None,
       done: False,
+      witness: usage_witness.new(),
+      evidence: usage_evidence.unknown(usage_evidence.Api),
     ),
     on_status: fn(acc, status, headers) {
       Accumulator(..acc, status:, retry_after_ms: wire.retry_after_ms(headers))
     },
     on_chunk: on_chunk,
     on_end: on_end,
-    on_failure: fn(acc, reason) {
-      case acc.done {
-        True -> []
-        False -> [Failed(stream.TransportFailed(reason:))]
-      }
-    },
+    usage: build_usage,
+    on_failure: fn(acc, reason) { fail(acc, stream.TransportFailed(reason:)).1 },
   )
 }
 
@@ -662,12 +675,12 @@ fn on_chunk(
 fn on_end(acc: Accumulator) -> List(StreamEvent) {
   case acc.done, acc.status {
     True, _ -> []
-    False, 200 -> [
-      Failed(StreamDisconnected(
-        context: "response body ended before message_stop",
-      )),
-    ]
-    False, status -> [Failed(http_error(status, acc))]
+    False, 200 ->
+      fail(
+        acc,
+        StreamDisconnected(context: "response body ended before message_stop"),
+      ).1
+    False, status -> fail(acc, http_error(status, acc)).1
   }
 }
 
@@ -775,8 +788,17 @@ fn handle_message_start(acc: Accumulator, document: JsonValue) -> Accumulator {
 
 fn apply_message_start(acc: Accumulator, started: JsonValue) -> Accumulator {
   let usage = result.unwrap(wire.field(started, "usage"), json.Object([]))
+
+  // Initial output is an in-progress count. Only a later delta can witness
+  // the final output, even when the initial output was explicitly zero.
+  let witness =
+    usage_witness.observe(acc.witness, usage, [
+      "input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens",
+    ])
   Accumulator(
     ..acc,
+    witness:,
+    evidence: usage_witness.snapshot(witness, usage_evidence.Api),
     response_id: option.or(
       option.from_result(wire.string_field(started, "id")),
       acc.response_id,
@@ -1066,8 +1088,11 @@ fn handle_message_delta(
 }
 
 fn merge_delta_usage(acc: Accumulator, usage: JsonValue) -> Accumulator {
+  let witness = usage_witness.observe(acc.witness, usage, required_usage_fields)
   Accumulator(
     ..acc,
+    witness:,
+    evidence: usage_witness.snapshot(witness, usage_evidence.Api),
     input: wire.count_field_or(usage, "input_tokens", or: acc.input),
     output: wire.count_field_or(usage, "output_tokens", or: acc.output),
     cache_read: wire.count_field_or(
@@ -1147,7 +1172,15 @@ fn settle_with_stop(
   stop: StopReason,
 ) -> #(Accumulator, List(StreamEvent)) {
   let content = build_blocks(list.reverse(acc.blocks), [])
-  let usage = build_usage(acc)
+  let usage =
+    Usage(
+      ..build_usage(acc),
+      evidence: usage_witness.finished(
+        acc.witness,
+        required_usage_fields,
+        usage_evidence.Api,
+      ),
+    )
 
   // Adapter-computed overflow (spec §1.5): the request did not fit and
   // nothing substantive came back, so the response settles as `error`
@@ -1200,7 +1233,9 @@ fn settle_with_stop(
       "stop reason pending at message_stop",
     ))
   })
-  #(Accumulator(..acc, done: True), [Settled(message: settled, usage:)])
+  #(Accumulator(..acc, done: True, evidence: usage.evidence), [
+    Settled(message: settled, accounting: accounting.from_usage(usage)),
+  ])
 }
 
 // The settlement combinator: run `then` on success, or fail the stream
@@ -1261,6 +1296,7 @@ fn build_blocks(
 
 fn build_usage(acc: Accumulator) -> Usage {
   Usage(
+    evidence: acc.evidence,
     input: acc.input,
     output: acc.output,
     cache_read: acc.cache_read,
@@ -1290,6 +1326,8 @@ fn fail(
 ) -> #(Accumulator, List(StreamEvent)) {
   case acc.done {
     True -> #(acc, [])
-    False -> #(Accumulator(..acc, done: True), [Failed(error:)])
+    False -> #(Accumulator(..acc, done: True), [
+      Failed(error:, accounting: accounting.from_usage(build_usage(acc))),
+    ])
   }
 }

@@ -260,3 +260,11 @@ carries the periodic timeout kind and the injected clock for `weft/poll`,
 and 0.4.2 carries the injectable timer source that let the last
 hand-rolled generation tag in this tree
 (`client/schedulescan`'s) be deleted rather than documented.
+
+### Worker-custody fix in 0.4.6
+
+Weft 0.4.6 changes how an unreported managed worker crash cleans up its
+adopted owners: it now starts their cancellation before waiting for their
+drain proofs. Before, the engine could wait for a proof that only that
+cancellation could produce. Native ChatGPT HTTP exposed the ordering; the fix
+keeps the original drain witnesses and the existing public API.

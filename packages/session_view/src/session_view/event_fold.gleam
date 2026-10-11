@@ -52,6 +52,7 @@
 //// `GoalChanged` is already consumed by the lane before this fold.
 //// An interrupt marker can retire here while the captured queue stays held.
 
+import core/accounting
 import core/entry
 import core/json
 import core/message
@@ -69,6 +70,7 @@ import session_view/agent_roster
 import session_view/block_summary
 import session_view/cache_miss
 import session_view/cache_watch
+import session_view/command
 import session_view/composer
 import session_view/context_view
 import session_view/history_view
@@ -195,6 +197,8 @@ pub fn apply_event(
     }
     protocol.SchedulesSnapshot(schedules:) ->
       append_schedules(shared, schedules)
+    protocol.ProfileSnapshot(current:, available:, switched:) ->
+      append_profile(shared, current, available, switched)
 
     // The page's own read of what the session remembers, so the board is kept
     // for the host to draw and nothing is written to the transcript.
@@ -432,11 +436,17 @@ pub fn apply_event(
         False -> updated
       }
     }
-    protocol.UsageChanged(strand:, seq:, operation:, usage: settled) ->
+    protocol.UsageChanged(
+      strand:,
+      seq:,
+      operation:,
+      usage: settled,
+      last_usage:,
+    ) ->
       case seq {
         Some(seq) ->
-          receive_usage_observation(shared, strand, seq, operation, settled)
-        None -> receive_usage(shared, strand, settled)
+          receive_usage_observation(shared, strand, seq, operation, last_usage)
+        None -> receive_usage(shared, strand, settled, last_usage)
       }
 
     protocol.EscalationPending(id:, tool:, preview: _) ->
@@ -502,6 +512,7 @@ pub fn apply_event(
     | protocol.GoalSnapshot(..)
     | protocol.SchedulesSnapshot(..)
     | protocol.PermissionsSnapshot(..)
+    | protocol.ProfileSnapshot(..)
     | protocol.ConfigSnapshot(..)
     | protocol.EntryAdded(..)
     | protocol.StreamDelta(..)
@@ -619,6 +630,43 @@ fn append_schedules(
         listed,
         int.to_string(list.length(rows)) <> " schedules",
       )
+    }
+  }
+}
+
+// The reply to `/profile`, in the words an operator reads back. A read lists
+// the profile the session routes by and the names it may switch to; the reply
+// to a switch says what was saved and that the connection is about to close,
+// because the daemon restarts the session to build the new profile's gateway
+// (protocol-change/082). `default` is listed with the names although the
+// daemon does not send it: it is the word that returns to the default roles.
+fn append_profile(
+  shared: Shared(socket, recorder, source, replay_source),
+  current: Option(String),
+  available: List(String),
+  switched: Option(Int),
+) -> Shared(socket, recorder, source, replay_source) {
+  let name = option.unwrap(current, "default roles")
+  case switched {
+    Some(moved) -> {
+      let summary =
+        "model profile set to "
+        <> name
+        <> " · "
+        <> int.to_string(moved)
+        <> " strand(s) moved · restarting the session to apply it"
+      session_model.append_system(shared, summary)
+      |> shared_set.notice("model profile: " <> name)
+    }
+    None -> {
+      let names = [command.default_profile, ..available]
+      session_model.append_system(shared, "model profile: " <> name)
+      |> session_model.append_system(
+        "available: "
+        <> string.join(names, ", ")
+        <> " · /profile <name> switches the session",
+      )
+      |> shared_set.notice("model profile: " <> name)
     }
   }
 }
@@ -947,14 +995,30 @@ fn retire_recorded_tail(
 //
 // The row arrives once per settled generation, so this is both the moment
 // the output rate is known and the moment the prompt cache can be judged.
+// An unknown zero snapshot carries accounting uncertainty but no new reading.
 // Both readings are per event rather than cumulative, which is why they sit
 // here rather than in the status-line arithmetic over `model.usage`.
 fn receive_usage(
   shared: Shared(socket, recorder, source, replay_source),
   strand: String,
   settled: message.Usage,
+  last_usage: Option(message.Usage),
 ) -> Shared(socket, recorder, source, replay_source) {
-  let usage = add_usage(shared.usage, settled)
+  let usage = accounting.add_usage(shared.usage, settled)
+  case option.then(last_usage, accounting.observed_usage) {
+    None -> Shared(..shared, usage:)
+    Some(last) -> receive_final_usage(shared, strand, last, usage)
+  }
+}
+
+// A fallback total updates the ledger, while output rate and cache readings
+// belong only to the final attempt retained beside it.
+fn receive_final_usage(
+  shared: Shared(socket, recorder, source, replay_source),
+  strand: String,
+  settled: message.Usage,
+  usage: message.Usage,
+) -> Shared(socket, recorder, source, replay_source) {
   let updated =
     settle_usage(
       shared,
@@ -974,6 +1038,20 @@ fn receive_usage(
 // Which rows the ledger admits, holds and compares is `cache_watch`'s rule,
 // shared with the web view.
 fn receive_usage_observation(
+  shared: Shared(socket, recorder, source, replay_source),
+  strand: String,
+  seq: Int,
+  operation: Option(String),
+  last_usage: Option(message.Usage),
+) -> Shared(socket, recorder, source, replay_source) {
+  case option.then(last_usage, accounting.observed_usage) {
+    None -> shared
+    Some(settled) ->
+      receive_final_observation(shared, strand, seq, operation, settled)
+  }
+}
+
+fn receive_final_observation(
   shared: Shared(socket, recorder, source, replay_source),
   strand: String,
   seq: Int,
@@ -1216,47 +1294,6 @@ fn note_cache_miss(
       )
       |> session_model.invalidate_transcript
       |> session_model.invalidate_frame
-  }
-}
-
-fn add_usage(left: message.Usage, right: message.Usage) -> message.Usage {
-  let message.UsageCost(
-    input: left_cost_input,
-    output: left_cost_output,
-    cache_read: left_cost_cache_read,
-    cache_write: left_cost_cache_write,
-    total: left_cost_total,
-  ) = left.cost
-  let message.UsageCost(
-    input: right_cost_input,
-    output: right_cost_output,
-    cache_read: right_cost_cache_read,
-    cache_write: right_cost_cache_write,
-    total: right_cost_total,
-  ) = right.cost
-  message.Usage(
-    input: left.input + right.input,
-    output: left.output + right.output,
-    cache_read: left.cache_read + right.cache_read,
-    cache_write: left.cache_write + right.cache_write,
-    cache_write_1h: add_optional_int(left.cache_write_1h, right.cache_write_1h),
-    reasoning: add_optional_int(left.reasoning, right.reasoning),
-    total_tokens: left.total_tokens + right.total_tokens,
-    cost: message.UsageCost(
-      input: left_cost_input +. right_cost_input,
-      output: left_cost_output +. right_cost_output,
-      cache_read: left_cost_cache_read +. right_cost_cache_read,
-      cache_write: left_cost_cache_write +. right_cost_cache_write,
-      total: left_cost_total +. right_cost_total,
-    ),
-  )
-}
-
-fn add_optional_int(left: Option(Int), right: Option(Int)) -> Option(Int) {
-  case left, right {
-    None, None -> None
-    Some(value), None | None, Some(value) -> Some(value)
-    Some(left), Some(right) -> Some(left + right)
   }
 }
 

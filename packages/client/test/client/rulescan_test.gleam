@@ -21,6 +21,7 @@
 
 import client/rules
 import client/rulescan
+import core/accounting
 import core/clock
 import core/entry
 import core/ids
@@ -28,6 +29,7 @@ import core/json
 import core/message.{type AgentMessage}
 import core/register
 import core/tx
+import core/usage_evidence
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -509,14 +511,22 @@ fn settle(events: Subject(stream.StreamEvent), reply: AgentMessage) -> Nil {
     Ok(settled) ->
       process.send(
         events,
-        stream.Settled(message: settled, usage: effects.zero_usage()),
+        stream.Settled(
+          message: settled,
+          accounting: accounting.from_usage(accounting.unknown_usage(
+            usage_evidence.Other,
+          )),
+        ),
       )
     Error(Nil) ->
       process.send(
         events,
-        stream.Failed(error: stream.TransportFailed(
-          reason: "the scripted settlement was not settleable",
-        )),
+        stream.Failed(
+          error: stream.TransportFailed(
+            reason: "the scripted settlement was not settleable",
+          ),
+          accounting: accounting.empty(),
+        ),
       )
   }
 }
@@ -530,7 +540,7 @@ fn answer(text: String) -> AgentMessage {
     response_model: None,
     response_id: None,
     diagnostics: None,
-    usage: effects.zero_usage(),
+    usage: accounting.unknown_usage(usage_evidence.Other),
     stop_reason: message.Stop,
     deferred: None,
     error_message: None,

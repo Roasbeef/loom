@@ -1,0 +1,66 @@
+mode=baseline
+## listening, no session
+os_rss_kib=99792 os_vsz_kib=412892192
+  total                      55.575 MiB
+  processes                  14.803 MiB
+  processes_used             14.799 MiB
+  binary                      0.077 MiB
+  code                        8.305 MiB
+  ets                         0.953 MiB
+## two sessions admitted, one stopped
+os_rss_kib=128112 os_vsz_kib=413055568
+  total                      71.784 MiB
+  processes                  21.471 MiB
+  processes_used             21.429 MiB
+  binary                      1.432 MiB
+  code                       14.345 MiB
+  ets                         1.224 MiB
+## after 35s idle
+os_rss_kib=115072 os_vsz_kib=413029056
+  total                      69.913 MiB
+  processes                  19.684 MiB
+  processes_used             19.684 MiB
+  binary                      1.353 MiB
+  code                       14.345 MiB
+  ets                         1.224 MiB
+## after a forced full collection
+os_rss_kib=115152 os_vsz_kib=413029056
+  total                      66.407 MiB
+  processes                  16.347 MiB
+  processes_used             16.347 MiB
+  binary                      1.182 MiB
+  code                       14.345 MiB
+  ets                         1.224 MiB
+mode=candidate
+## listening, no session
+os_rss_kib=98704 os_vsz_kib=413030432
+  total                      55.525 MiB
+  processes                  14.796 MiB
+  processes_used             14.794 MiB
+  binary                      0.078 MiB
+  code                        8.274 MiB
+  ets                         0.951 MiB
+## two sessions admitted, one stopped
+os_rss_kib=127936 os_vsz_kib=413450864
+  total                      71.700 MiB
+  processes                  21.422 MiB
+  processes_used             21.384 MiB
+  binary                      1.408 MiB
+  code                       14.337 MiB
+  ets                         1.223 MiB
+## after 35s idle
+os_rss_kib=116064 os_vsz_kib=413424832
+  total                      69.849 MiB
+  processes                  19.643 MiB
+  processes_used             19.621 MiB
+  binary                      1.339 MiB
+  code                       14.337 MiB
+  ets                         1.223 MiB
+## after a forced full collection
+os_rss_kib=116288 os_vsz_kib=413424832
+  total                      66.399 MiB
+  processes                  16.358 MiB
+  processes_used             16.336 MiB
+  binary                      1.173 MiB
+  code                       14.337 MiB
+  ets                         1.223 MiB

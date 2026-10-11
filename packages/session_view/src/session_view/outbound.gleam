@@ -354,6 +354,7 @@ pub fn mutating_submission(
   case command {
     command.Prompt(_)
     | command.Model(_)
+    | command.ProfileSelect(_)
     | command.Unschedule(..)
     | command.Fork(_)
     | command.Effort(_)
@@ -369,6 +370,7 @@ pub fn mutating_submission(
     command.Approve(_) | command.Deny(_) | command.AddDirectory(..) -> True
     command.Empty -> shared.attachments != []
     command.Schedules
+    | command.ProfileShow
     | command.Approvals(_)
     | command.GoalBudgetInvalid(_)
     | command.GoalObjectiveTooLong(_)

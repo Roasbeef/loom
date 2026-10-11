@@ -8,6 +8,7 @@
 
 import core/json
 import core/message
+import core/usage_evidence
 import etui/backend
 import etui/geometry
 import etui/widgets/textarea
@@ -59,6 +60,7 @@ fn held_prefix() -> message.Usage {
       cache_write: 0.0,
       total: 0.254,
     ),
+    evidence: usage_evidence.priced_api(),
   )
 }
 
@@ -81,6 +83,7 @@ fn re_read_prefix() -> message.Usage {
       cache_write: 1.25,
       total: 1.254,
     ),
+    evidence: usage_evidence.priced_api(),
   )
 }
 

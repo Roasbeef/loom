@@ -266,6 +266,18 @@ pub const kv_unavailable_code = "kv_unavailable"
 /// operator misconfiguration, is the diagnosis.
 pub const protection_misconfigured_code = "protection_misconfigured"
 
+/// A read of a path outside the session's readable roots. Distinct from
+/// `permission_denied` so the guidance in the message reaches the program.
+pub const outside_readable_roots_code = "outside_readable_roots"
+
+/// A read of a path the session masks from every jail. Distinct from
+/// `permission_denied` for the same reason.
+pub const protected_path_code = "protected_path"
+
+/// A read under a root the jail replaces (`/proc`, `/dev`, `/tmp`). Distinct
+/// from `permission_denied` for the same reason.
+pub const jail_replaced_code = "jail_replaced"
+
 /// A capability name this seam does not service.
 pub const unsupported_cap_code = "unsupported_cap"
 
@@ -294,6 +306,12 @@ pub type FsRefusal {
   /// `resolve_real` refused the path — or, on the write arms,
   /// `resolve_writable` did, which adds the protected-path refusal.
   PathRefused(error: fs.PathError)
+
+  /// `fs.resolve_readable` refused a path that was being read: it lies
+  /// outside the session's readable roots, or under a protected entry. Its
+  /// own variant because the advice differs from a write's, and because the
+  /// code it travels under must carry the sentence to the program.
+  ReadPathRefused(error: fs.PathError)
 
   /// The path resolved and the read did not produce text.
   ReadRefused(error: fs.ReadError)
@@ -996,6 +1014,7 @@ fn fs_refused(refusal: FsRefusal) -> CapOutcome {
 pub fn fs_denial(refusal: FsRefusal) -> CapDenial {
   case refusal {
     PathRefused(error:) -> path_denial(error)
+    ReadPathRefused(error:) -> read_path_denial(error)
     ReadRefused(error:) -> read_denial(error)
     ListRefused(error:) ->
       CapDenial(code: fs_error_code(error), message: fs_error_text(error))
@@ -1074,11 +1093,8 @@ fn path_denial(error: fs.PathError) -> CapDenial {
         message: "path `" <> path <> "` resolves outside the workspace root",
       )
 
-    // Reads are not refused by the protected list — the harness's own
-    // `fs_read` does not consult it either, and an unreadable `.git` would
-    // make most of what a program is asked to do impossible. This arm is
-    // here because the variant exists and an exhaustive match is how the
-    // compiler will find this spot the day a read *is* protected.
+    // The write arms' answer. A read of a protected path takes
+    // `read_path_denial`, which uses a code that keeps the sentence.
     fs.ProtectedPath(path:, protected:) ->
       CapDenial(
         code: permission_denied_code,
@@ -1092,6 +1108,11 @@ fn path_denial(error: fs.PathError) -> CapDenial {
       CapDenial(
         code: unresolvable_code,
         message: "path `" <> path <> "` could not be resolved: " <> reason,
+      )
+    fs.JailReplaced(path:, root:) ->
+      CapDenial(
+        code: permission_denied_code,
+        message: fs.jail_replaced_text(path, root),
       )
 
     // The session's own `protected` list cannot be applied, so the write
@@ -1113,6 +1134,38 @@ fn path_denial(error: fs.PathError) -> CapDenial {
           <> "`, so no write can be judged against it. This is an operator "
           <> "misconfiguration, not something the program can repair",
       )
+  }
+}
+
+// A refusal from the read boundary. The two refusals a program can act on
+// travel under codes of their own: `cap/fs` and `cap/search` decode
+// `permission_denied` to a variant carrying only the path, and the sentence
+// here is the part a program or a model needs — how to get access, or that
+// no access exists. An unknown code reaches the program as `FsFailed` or
+// `SearchFailed` with the message verbatim.
+fn read_path_denial(error: fs.PathError) -> CapDenial {
+  case error {
+    fs.EscapesWorkspace(path:) ->
+      CapDenial(
+        code: outside_readable_roots_code,
+        message: fs.outside_readable_text(path),
+      )
+    fs.ProtectedPath(path:, protected:) ->
+      CapDenial(
+        code: protected_path_code,
+        message: fs.protected_read_text(path, protected),
+      )
+    fs.ProtectionMisconfigured(path:, protected:) ->
+      CapDenial(
+        code: protection_misconfigured_code,
+        message: fs.misconfigured_read_text(path, protected),
+      )
+    fs.JailReplaced(path:, root:) ->
+      CapDenial(
+        code: jail_replaced_code,
+        message: fs.jail_replaced_text(path, root),
+      )
+    fs.EmptyPath | fs.Unresolvable(..) -> path_denial(error)
   }
 }
 

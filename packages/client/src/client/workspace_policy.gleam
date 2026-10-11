@@ -1041,18 +1041,26 @@ pub fn go_cache_fault(
 }
 
 /// Makes the directories a workspace half needs before it starts, and
-/// keeps the harness's own two out of the repository's `git status`.
+/// keeps the harness's own out of the repository's `git status`.
 ///
 /// `owner_directory` is the directory the owner keeps its session file in,
 /// when the owner shares this machine; a workspace whose owner is elsewhere
-/// passes `None`. The rest are the workspace itself, the blob overflow
-/// directory, the helper scratch directory and the tool directories. The
-/// first that cannot be created refuses the lot, naming it.
+/// passes `None`. The rest are the workspace itself, the blob store, the
+/// helper scratch directory and the tool directories. The first that cannot
+/// be created refuses the lot, naming it.
+///
+/// The code-mode work directory is the harness's, not the operator's, and
+/// without an ignore file it sits in every `git status` of the repository a
+/// session works in, and every `rg` walks the module caches beneath the tool
+/// home. The blob store needs no such file because it is normally outside
+/// the workspace. A store a host chose to keep inside the checkout, as a
+/// standalone host does when its session file is there, is the harness's
+/// directory in the operator's tree and gets the same file.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // workspace_policy.prepare_directories(None, "/work", "/work/.blobs", "/s.tmp", [])
+/// // workspace_policy.prepare_directories(None, "/work", "/s/blobs", "/s.tmp", [])
 /// // -> Ok(Nil)
 /// ```
 ///
@@ -1072,17 +1080,11 @@ pub fn prepare_directories(
   let directories = list.append(option.values(wanted), tool_dirs)
   use Nil <- result.try(create_directories(directories))
 
-  // Both workspace directories are the harness's, not the operator's,
-  // and without this they sit in every `git status` of the repository a
-  // session works in, and every `rg` walks the module caches beneath
-  // the tool home.
-  list.each(
-    [
-      blob_root,
-      workspace <> "/" <> codemode_wiring.work_directory,
-    ],
-    ignore_directory,
-  )
+  ignore_directory(workspace <> "/" <> codemode_wiring.work_directory)
+  case policy.covers(root: workspace, path: blob_root) {
+    True -> ignore_directory(blob_root)
+    False -> Nil
+  }
   Ok(Nil)
 }
 
@@ -1155,11 +1157,11 @@ pub fn parent_directory(path: String) -> Option(String) {
 /// Search snippets are read back into *future* sessions' contexts, so an
 /// index a model can write is a channel from one execution's output into
 /// a later execution's input — prompt injection with a persistence
-/// layer. Writing is the whole of the poisoning path: `protected` bars
-/// writes and leaves reads alone, which is exactly the asymmetry wanted,
-/// since the harness's own indexing never goes through `resolve_writable`
-/// and a model reading the file learns nothing it could not ask
-/// `history_search` for.
+/// layer. Writing is the whole of the poisoning path, and `protected` bars
+/// it. It bars native reads of the file too (ADR-019), because the jail
+/// masks the path and the harness's tools are no wider than the jail; the
+/// harness's own indexing never goes through `resolve_writable` or the
+/// native read check.
 ///
 /// ## Examples
 ///
@@ -1182,6 +1184,38 @@ pub fn protecting_index(
     always: [index_path],
     where_maskable: sqlite_side_files(index_path),
   )
+}
+
+/// The base policy with a blob store protected where a jail could write it.
+///
+/// Content-addressed artifacts are written only by the harness, and a jailed
+/// tool that could replace one would change what its hash names. Under the
+/// daemon the store sits in the state root, whose masks already keep every
+/// jail out, and this adds nothing there: an entry beneath a directory that
+/// is itself masked would name a path that does not exist in the jail's view,
+/// which is the shape the jail declines to build. A store outside the state
+/// root, beside a standalone host's session file or in an executor's state
+/// directory, takes this entry instead.
+///
+/// The entry is unconditional, like the index database's. The caller creates
+/// the directory before any jail is spawned, which is the only thing the
+/// existence-conditional half of `protecting` exists to wait for.
+///
+/// Reading is unaffected. `tools/fs` takes the session's blob root off the
+/// protected list for its own reads, so the store stays readable by
+/// `fs_read` while no jail can reach it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // workspace_policy.protecting_blobs(base, "/state/blobs/s1").protected
+/// ```
+///
+pub fn protecting_blobs(
+  base: policy.SandboxPolicy,
+  blob_root: String,
+) -> policy.SandboxPolicy {
+  protecting(base, always: [blob_root], where_maskable: [])
 }
 
 /// The base policy with this repository's memory protected: the digest
@@ -1253,10 +1287,10 @@ pub fn protecting_memory(
 /// alone, because masking it buys nothing and costs the operator a
 /// directory they may want to work in.
 ///
-/// The blob store is masked too, one layer up rather than here:
-/// `base_policy` protects `<workspace>/.blobs` for every workspace, so a
-/// session whose workspace *is* the state root already has it, and a
-/// second entry naming the same path would be a duplicate mask.
+/// The blob store needs no entry of its own. It is `blobs` inside the
+/// session's domain directory, which lives under `workspaces/` or
+/// `domains/`, so the masks below already cover it. It used to be
+/// `<workspace>/.blobs`, protected by `base_policy` for every workspace.
 ///
 /// ## Examples
 ///
@@ -1334,6 +1368,19 @@ fn established_masks(state_root: String) -> List(String) {
     // connects by path regardless, so on macOS the unlisted digest name
     // is what keeps another jail from the socket.
     state_root <> "/" <> codemode_wiring.runtime_directory,
+
+    // Per-workspace domain state: the memory store and search index every
+    // session on that workspace injects from, and now its blob store.
+    // `protecting_memory` states why a model-writable digest is the
+    // cleanest injection channel in the tree; this is the same door for
+    // *other* workspaces. Created with the root, so it needs no existence
+    // question.
+    state_root <> "/workspaces",
+
+    // The session-scoped half of the same domain state. Also created with
+    // the root: a session admitted before the first session-only domain
+    // exists would otherwise run without this mask for its whole life.
+    state_root <> "/domains",
   ]
 }
 
@@ -1365,16 +1412,6 @@ fn lazy_masks(state_root: String) -> List(String) {
       // The launcher's per-endpoint locks, on `daemon.lock`'s argument:
       // the daemon's exclusion, not the model's to take or break.
       state_root <> "/locks",
-
-      // Per-workspace domain state — the memory store and search index
-      // every session on that workspace injects from. `protecting_memory`
-      // states why a model-writable digest is the cleanest injection
-      // channel in the tree; this is the same door for *other*
-      // workspaces.
-      state_root <> "/workspaces",
-
-      // The session-scoped half of the same domain state.
-      state_root <> "/domains",
 
       // The endpoint records, and the one the daemon publishes. They
       // carry no secret — `host/endpoint`'s schema deliberately holds no
@@ -1568,9 +1605,12 @@ pub fn base_policy_for(
       catalog.WorkspaceReads -> [workspace]
     },
     network: policy.NetworkFull,
-    // Content-addressed artifacts are written only by their harness owner.
-    // Broad reads must never let a jailed tool replace one behind its hash.
-    protected: [workspace <> "/" <> codemode_wiring.blob_directory],
+    // No blob entry: content-addressed artifacts live outside the
+    // workspace, in the daemon's state or an executor's, and the host that
+    // chose the place protects it (`protecting_blobs`). A jailed tool
+    // cannot replace one behind its hash, and the workspace holds no
+    // directory that needs a mask.
+    protected: [],
   )
 }
 
@@ -1580,20 +1620,16 @@ pub fn base_policy_for(
 /// which `start_build_plane` admits once discovery has said where the
 /// toolchain is.
 ///
-/// Separate from `base_policy` because the blob mask is the one thing a
-/// build plane must not inherit. A session's blob store exists — `boot`
-/// creates it before it spawns a jail — and a session's jails are
-/// writable in the workspace that holds it, so the mask is both
-/// buildable and load-bearing there. An install has no blob store at
-/// all: nothing under the extensions root is content-addressed, no
-/// jailed step here emits a blob, and `codemode/build.build_requirements`
-/// narrows the one writable root down to the build directory. The
-/// inherited entry was therefore a mask over a path that did not exist,
-/// under a parent the composed policy no longer let anyone write, which
-/// is precisely the shape bwrap declines to build — and its refusal took
-/// every jailed compile with it. Not constructing the entry is what
-/// keeps that state out of reach; dropping it later would leave the same
-/// mistake one composition step away.
+/// Separate from `base_policy` because a build plane has different
+/// needs: its one writable root is the build directory, it has no network,
+/// and its reads are not widened to the host. It also carries no blob
+/// entry. An install has no blob store, nothing under the extensions root
+/// is content-addressed, and a session's store is outside any root this
+/// plane can write. An entry naming a path that does not exist, under a
+/// parent the composed policy does not let anyone write, is the shape
+/// bwrap declines to build, and its refusal took every jailed compile with
+/// it. Not constructing such an entry is what keeps that state out of
+/// reach.
 ///
 /// The state root is the other half of that lesson applied the other
 /// way. A build step is a jailed compile of code an operator fetched

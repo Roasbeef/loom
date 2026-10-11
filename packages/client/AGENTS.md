@@ -1,5 +1,18 @@
 # client
 
+## Responses cybersecurity access
+
+`client/catalog.CatalogModel.cyber_access` holds an optional typed
+`provider/model.CyberAccessProgram` selected by `[models.<name>].cyber_access`.
+Only `openai-responses` and `codex-subscription` accept the key. The catalogue
+attaches it through `provider/gateway.with_cyber_access`; the opaque gateway
+indexes selections by provider name, and each actual attempt passes that
+entry's option into the Responses request encoder. Missing options omit
+`access_programs`; explicit options send the bounded `cyber` value. Provider
+approval remains remote. A 403 denial is terminal, and retryable fallback uses
+its own entry's selection. The frozen resolved identity and request types keep
+their existing shape.
+
 ## Per-strand shell directories
 
 `client/working_directory` stores canonical shell defaults under reserved
@@ -1162,8 +1175,48 @@ catalogue without opening runtimes. Explicit admission invokes
   `auth = "api-key"` and a nonempty `api_key_env`, and defaults to
   `https://api.openai.com/v1`. The existing `openai` spelling remains
   Chat Completions. Older dialects still refuse `auth`; all API-key entries
-  refuse `profile` and arbitrary `headers`. `codex-subscription` is
-  explicitly unsupported under issue #117's deferred support-boundary gate.
+  refuse `profile` and arbitrary `headers`.
+- `catalog.CodexSubscription(profile)` requires `auth = "codex"` and a
+  bounded ASCII profile name for the compatibility `codex-subscription`
+  spelling. It rejects `api_key_env`, `base_url`, and arbitrary `headers`.
+  `catalog.gateway` registers a
+  `provider/gateway.CodexSubscriptionProvider`; `serve.adapter_api` keeps the
+  distinct `"codex-subscription"` durable identity. Inference uses the fixed
+  public Responses API with the native SIWC grant. Authenticated `/v1/models`
+  exposes account-visible IDs only; context and reasoning properties remain
+  catalogue configuration.
+- `client/codex/profile_control.{Command, ControlEvent}` is the native operator
+  vocabulary, passed over an in-VM `Subject` and never over a wire.
+  `Status`, `LoginBrowser`, `Logout`, and `Models` enter
+  `codex/transport.command`; the CLI monitors its parked `http.PreparedRequest`
+  before calling `begin` and accepts completion only after normal owner drain.
+  Events are closed types: `Permission` (`PlanEnabled`, `IdentityOnly`) and
+  `SignIn` (`SignedOut`, `SignedIn(permission)`) replace status strings.
+  `LoginInstructions` carries the bound loopback port, and the CLI builds the
+  literal `/auth/start` URL from it with `oauth.start_url`, never the issuer
+  redirect or returning identity hint. There is no device command.
+- `client/codex/transport.{transport, command, prepare_with}` owns each native
+  operation in one witnessed managed task. Its worker creates and publishes
+  its own begin subject before preparation returns. The same `weft.Ledger`
+  covers authentication HTTP, the callback listener, and inference HTTP;
+  every owner is adopted before admission and its original drain witness
+  remains required after cancellation or worker loss.
+- `client/codex/credentials.{Binding, Grant}` keeps issued client, stable host
+  URI, verified subject, and optional grant in a bounded private versioned
+  record. `profile.{auth, execute}` acquires an existing kernel launch lock
+  for each bounded credential operation, rereads the record, and saves
+  rotation atomically. It releases the lock before inference starts, permits
+  several profiles without a VM-global token cache, and allows control while
+  a stream is active. Login holds the lock for the browser attempt; contending
+  operations can report `profile_busy`.
+- `client/codex/oauth.{Services, Attempt, Callback}` owns browser PKCE,
+  dynamic-to-issued client registration, state, nonce, refresh and revocation.
+  `oidc.Verification` distinguishes browser nonce validation from refresh
+  subject continuity. Gose pins RS256 to the fixed issuer JWKS and validates
+  issuer, issued-client audience, expiry and subject; multiple audiences
+  require a matching authorized party. Identity-only grants are saved,
+  including grants without a refresh token, while plan inference requires
+  `resource.invoke` and `chatgpt.tokens.use.direct`.
 - `client/demo.run` — the M3 acceptance flow end to end, executed as a
   test and runnable as `gleam run -m client/demo`.
 - `test/client/tui_e2e_test` + `test/support/terminal` — the real
@@ -1347,7 +1400,7 @@ catalogue without opening runtimes. Explicit admission invokes
   hermetic test can hold still.
 - `client/codemode.{workspace_seam, workspace_seam_for, search_seam_for,
   over_scratch,
-  over_jobs, into_blobs, blob_directory}` — the harness-side capability
+  over_jobs, into_blobs, blob_directory, default_blob_root}` — the harness-side capability
   bridge (issue #16), and
   the half of it that lives on this side of the seam. `workspace_seam`
   builds the eight closures `codemode/workspace`'s router calls: `fs_read`
@@ -1374,10 +1427,17 @@ catalogue without opening runtimes. Explicit admission invokes
   `read_lines` resolves the whole path exactly as `fs_read` does, and
   `stat` resolves the path's **parent** and lstats the leaf beneath it,
   because a `stat` that resolved the leaf would follow the very link it
-  was asked to report. `blob_directory` is the one
-  place `.blobs` is written down, read by both this module and
-  `client/serve`, so an artifact a program emits and an oversized `bash`
-  output that overflowed land in one store under one address. Listing is
+  was asked to report. `blob_directory` (`blobs`) is the one
+  place the store's name is written down. `client/serve.session_blob_root`
+  computes the root once, in the session's state directory outside the
+  workspace, and hands the same string to the tool context, to
+  `into_blobs` and to the jobs spill, so an artifact a program emits and
+  an oversized `bash` output that overflowed land in one store under one
+  address. `default_blob_root` (`<workspace>/.codemode/blobs`) is for a
+  host with no state directory, which in practice means tests and the
+  demo; a daemon never uses it. `legacy_blob_directory` (`.blobs`) names
+  where earlier releases kept the store, for `client/blobs` and
+  `worktree_diff`. Listing is
   the one operation with no counterpart in the tool set — `tool.FileSystem`
   has no primitive for it — so the enumeration is `simplifile`'s, on a
   path `resolve_real` has already contained, bounded before it is
@@ -2986,7 +3046,7 @@ catalogue without opening runtimes. Explicit admission invokes
   not hygiene: snippets from that index are read back into *future*
   sessions' contexts, so an index a model can write is a channel from one
   execution's output into a later execution's input. `protected` bars
-  writes and leaves reads alone, which is exactly the asymmetry wanted.
+  writes; since ADR-019 it bars native reads as well, matching the jail's mask.
   `assemble` composes it before `base_policy_fault` validates, so the
   addition is checked by the same gate every other path is.
 - `client/workspace_policy.protecting_memory(SandboxPolicy, String, String)` — the
@@ -3021,10 +3081,13 @@ catalogue without opening runtimes. Explicit admission invokes
   its one directory (`client/codemode.reaching_socket`). Not masked: the
   `loom*.toml` catalogues, which name environment variables rather than
   holding secrets, `extensions/`, `logs/` and `daemon.log`. The blob store
-  is masked one layer up, by `base_policy`'s `<workspace>/.blobs`, so a
-  session whose workspace *is* the state root already has it and a second
-  entry would be a duplicate mask. Adding an entry that the daemon creates
-  lazily means adding it to `lazy_masks`, not `established_masks`: the
+  needs no entry: it is `blobs/` inside the session's domain directory
+  (`workspaces/<digest>/` or `domains/sessions/<id>/`), so the `workspaces/`
+  and `domains/` masks already cover it, and the base policy protects
+  nothing inside the workspace. `workspaces/` and `domains/` are created by `daemon/root.directories`
+  and sit in `established_masks`, so a session admitted before the first
+  domain of either kind still masks both. Adding an entry that the daemon
+  creates lazily means adding it to `lazy_masks`, not `established_masks`: the
   jail refuses to mask a *missing* protected path under a read-only
   parent, and that refusal is a refusal of every jailed call. `lazy_masks`
   is filtered on **existence or a writable root**, never on writability
@@ -3044,8 +3107,9 @@ catalogue without opening runtimes. Explicit admission invokes
   here, `established_masks` included, because an install may be the first
   thing that ever runs on a host and a mask over a path a daemon has not
   yet written, under a parent the narrowed build may not write, is the
-  refusal that took every jailed compile with it in #304. The blob mask is
-  still not constructed at all: an install has no content-addressed store.
+  refusal that took every jailed compile with it in #304. No blob mask is
+  constructed either: an install has no content-addressed store, and a
+  session's store is in the state root, not in a root the plane can write.
   `serve.start_build_plane` therefore takes a `state_root` argument, and
   `client/extension/cli` derives it as the parent of the extensions root,
   which is the inverse of `record.root_for`.
@@ -3082,7 +3146,10 @@ catalogue without opening runtimes. Explicit admission invokes
   flag select between them. There is no language-specific admission list
   and session assembly does not infer read grants from package manifests.
   Writes remain scoped to the workspace, linked Git metadata, and explicit
-  writable mounts. HOME and TMPDIR remain under the workspace, so build
+  writable mounts. Native reads (`fs_read`, code mode's `fs.*` and
+  `search.*`) are judged by the same policy value: `codemode.workspace_seam_*`
+  and `search_seam_*` take the session base policy and widen it with the
+  request's additions (ADR-019). HOME and TMPDIR remain under the workspace, so build
   caches do not require host-home writes. A configured mount overlapping
   a protected path refuses assembly. Protocol-change/020's addendum records
   why the minimal view is now an explicit restriction.
@@ -3831,7 +3898,10 @@ these forks because they define the same modules.
   `mist` + `gleam_http` (the websocket transport), `simplifile` (the
   token file, the pack file, and the session's instruction files),
   `weft` (the bounded concurrent run `client/mcp.start` fans server
-  bring-up out over).
+  bring-up out over, native subscription witnessed tasks and custody ledgers,
+  and per-profile lock polling), `gleam_crypto` (PKCE entropy and constant-time
+  state/nonce comparisons), and `gose` (maintained JWT/JWK signature and claim
+  validation).
 - The spec DAG (§0.1) writes `L → A,C,E,K`. The `B`, `D`, `F`, and `G`
   edges are real and load-bearing — catch-up scans storage directly,
   compaction and navigation build `machine/acceptance` plans, the delta
@@ -3868,8 +3938,47 @@ these forks because they define the same modules.
   `sys:terminate/3` for stopping the service supervisor the way OTP
   stops one, and the documented exit-code halt. Test-side, `client_test_ffi.erl` is a
   minimal websocket probe for the boot smoke.
+- **Native subscription effects** reuse `host/bootstrap` private bounded
+  reads, atomic writes and kernel launch locks, `provider/http` native HTTP
+  ownership, and `client/daemon/listener`'s parked Mist listener. No custom
+  subscription FFI or authentication helper is needed by `client/codex`.
+  The pinned Weft revision starts cancelling adopted owners when a worker
+  exits unreported, which the transport's custody tests rely on.
 
 ## Traffic
+
+- `serve` injects `codex_transport.transport()` into assembled catalogue
+  gateways. `gateway.CodexTransport.prepare_streaming` requests a parked
+  `http.PreparedRequest`; the gateway publishes its owner before `begin`.
+  Inside that operation, `profile.auth(profile, ledger)` acquires the durable
+  credential lock, obtains an authorized bearer, and releases the lock before
+  the fixed public `/v1/responses` request is prepared. The transport adopts the
+  prepared native HTTP owner into the same ledger before starting it.
+  `http.ResponseStatus`, `ResponseChunk`, and `ResponseEnd` reach the existing
+  provider stream pump. A fixed local authentication refusal becomes a
+  redacted 401 response; no saved token or account subject enters those events.
+- `codex/transport.command` runs `profile.execute` with
+  `codex/profile_control.Command` and a `Subject(ControlEvent)`. Browser login adopts
+  `daemon/listener.Listener`, opens ephemeral literal loopback, and emits
+  `LoginInstructions` only after the bound port is known. The attempt worker
+  checks each request's Host against that actual authority before issuing the
+  private redirect or consuming the state-checked callback. The ten-minute
+  browser budget is absolute. The issued client registration is saved with the
+  grant only after the code exchange and identity verification succeed, and
+  that save precedes `LoginComplete`.
+  Model discovery decodes the subscription endpoint's `models[].slug` and
+  `visibility` fields, validates the whole bounded catalogue, and projects only
+  listed identifiers in server order. Model instructions and unknown metadata
+  never enter the operator event; the Platform API's `data[].id` is not this
+  endpoint's subscription response.
+  `Models` calls authenticated public `/v1/models`, bounds its body, and emits
+  only validated IDs through `ModelCatalogue`.
+- `Logout` attempts refresh-token revocation, clears the grant locally, and
+  retains issued client, host and verified subject. An unconfirmed upstream
+  revocation produces `LogoutRevocationUnconfirmed` rather than retaining local
+  tokens. It does not retract a request already admitted to HTTP. Temporary
+  refresh failures preserve the durable grant; terminal refresh failure clears
+  tokens while preserving registration. Each later operation rereads disk.
 
 - `protocol.ListSkills(offset)` is a subscribed read available to observers.
   `SkillsSnapshot(board)` returns bounded consecutive metadata rows with a next
@@ -4123,6 +4232,45 @@ these forks because they define the same modules.
   Seatbelt system view grants `/Library` but not `/Applications`, so an
   Xcode.app toolchain's Git is unreadable there; it was already unreachable
   through the shim, which execs the same binary.
+- **The blob store lives in the daemon's state, not the workspace.**
+  Content-addressed artifacts (oversized tool output, `report.emit`, job
+  spill) used to be `<workspace>/.blobs`, protected from every jail. On
+  macOS Seatbelt renders `protected` as unreachable, so once an artifact
+  existed a model's `ls -la` in the workspace exited 1 (`ls: .blobs:
+  Operation not permitted`) and `git status` warned; Linux masked it with an
+  empty tmpfs and left a mount point in the checkout. `serve.session_blob_root`
+  now answers `blobs/` beside the session's domain files:
+  `<state root>/workspaces/<sha256 of the canonical workspace path>/blobs`
+  for a workspace-private domain (one store per workspace, so no other
+  workspace resolves its ids), `<state root>/domains/sessions/<id>/blobs`
+  for a session-only domain, and `<session dir>/blobs` for a standalone host
+  with no domain. The state-root masks `workspaces/` and `domains/` already
+  keep every jail out, so `base_policy` carries no `protected` entry and the
+  workspace holds no harness directory but `.codemode`. A standalone host
+  has no state root, so `protecting_standalone_blobs` protects the store
+  unconditionally (`workspace_policy.protecting_blobs`), like the index
+  database, since `prepare_directories` creates it before any jail runs. The
+  root is an input to the workspace half, not something the plane derives:
+  `serve.assemble_in` computes it once, `serve.workspace_spec` puts it in
+  `WorkspaceSpec.blob_root` (with the standalone protection already applied to
+  the spec's base policy), and `workspace_plane` hands the one string to the
+  tool context, the code-mode `into_blobs` and the jobs spill. The census
+  carries it back as `Census.blob_root`, which is how an owner whose workspace
+  is on an executor learns where that machine keeps the store. `tools/fs` treats `Ctx.blob_root` as a readable root for its
+  authorization, because the store is outside the workspace and `fs_read`
+  opens refs by path under `read_scope = "workspace"`; writing it is not
+  granted. `client/blobs.adopt_legacy` runs in `serve.assemble_in` right after
+  `workspace_plane.prepare` has made the store, for a local workspace only: it
+  copies each `sha256-<64 hex>` file from a workspace's old `.blobs` into the
+  new store after checking that the bytes hash to the name, skips (and logs)
+  one that does not, a link, a non-file or one over 256 MiB, stops after 5 s
+  and continues at the next start, and never deletes anything. It refuses a
+  `.blobs` that is itself a link (`link_info`, not `is_directory`), which a
+  jail could point at another workspace's store, and remembers lasting
+  refusals in `.legacy-rejected` in the new store so planted garbage is not
+  re-hashed at every start. The old
+  directory is an ordinary directory afterwards, and nothing reads it:
+  `worktree_diff` still excludes it from the untracked listing.
 - **A jailed Go tool's caches live outside the checkout, per workspace.**
   `client/gocache` locates `<cache>/loom/workspace/<sha256 of the
   workspace path>` (`<cache>` as `lsp_places` resolves it) and
@@ -5099,6 +5247,21 @@ these forks because they define the same modules.
   `catalogue_facts`. The client listing carries the distinct dialect through
   its existing open string; neither the wire version nor the durable
   `{catalogue-name, model_id}` identity changes.
+- **Subscription profiles select credentials, never endpoints.** Catalogue
+  validation requires `auth = "codex"`, bounds the profile name, and refuses
+  API-key and URL fields. `codex/transport.validate_request` admits only the
+  relative `POST /responses` shape with its fixed non-secret headers. The
+  native profile owns token and signed subject binding; the bearer reaches
+  only the fixed public Responses HTTP authorization boundary. Control events,
+  durable messages and logs carry no token or account subject. Missing plan
+  permission is explicit; an identity-only login cannot authorize inference.
+  Native and installed Codex CLI credential stores remain separate.
+- **The native subscription worker lives through HTTP drain.** The HTTP owner
+  monitors the worker that prepared it even after begin. `codex_bridge` therefore
+  monitors that owner before begin and keeps its creating worker alive until
+  the owner exits. Its surviving Weft scope independently retains cancellation
+  and drain proof; a normal worker return cannot cancel a still-admitted stream,
+  and an abnormal native exit cannot become a clean scope exit.
 - **A checkpoint never publishes a blank.** A strand with no notes is
   told, in the checkpoint, that it wrote none and where notes go; a
   checkpoint whose inputs would not read is declined rather than
@@ -5350,6 +5513,9 @@ connects these paths to held queue projection and shared request ownership.
 
 ## Deep Docs
 
+- [docs/architecture/codex-subscription.md](../../docs/architecture/codex-subscription.md)
+  — the opt-in helper, credential, request, and drain boundaries and the
+  remaining live interoperability and support gates.
 - [docs/architecture/orchestration.md](../../docs/architecture/orchestration.md)
   — the runtime surface the hub dispatches onto.
 - [docs/architecture/durability.md](../../docs/architecture/durability.md)
@@ -5389,12 +5555,13 @@ connects these paths to held queue projection and shared request ownership.
 
 The worktree observer enumerates tracked status separately from untracked
 files. Its untracked query excludes only Loom's canonical generated
-`.codemode` and `.blobs` directories before enumeration, so toolchain caches
-cannot consume the observation budget. Tracked changes under those directories
-still appear. Both outputs retain NUL-framed path identity and the existing
+`.codemode` directory and the legacy `.blobs` directory before enumeration,
+so toolchain caches cannot consume the observation budget. Nothing writes
+`.blobs` any more; the exclude covers workspaces an earlier release used.
+Tracked changes under those directories still appear. Both outputs retain NUL-framed path identity and the existing
 read-only broker, deadline and byte bounds; no repository ignore file is edited.
 
-Session assembly keeps the same two directories out of the operator's own
+Session assembly keeps `.codemode` out of the operator's own
 `git status` without editing a repository file either: `prepare_directories`
 writes `workspace_policy.ignore_everything` as `.gitignore` inside each, where none
 exists. An ignore file inside an untracked directory hides the directory
@@ -6092,6 +6259,25 @@ and only for a page that holds the creation capability; `ui_socket.create_for`
 takes the chosen profile and maps `unknown_profile` to
 `creations.UnknownProfile`.
 
+## Request accounting
+
+Provider settlement and failure carry `core/accounting.RequestAccounting`.
+The relay preserves that report through terminal delivery and uses an empty
+report for refusals before dispatch. Goal accounting adds aggregate usage and
+folds `cost_evidence` alongside the durable cursor; uncached token goals count
+`input + output`, since input already excludes cache buckets. Client usage
+pushes carry aggregate consumption and optional `last_usage` separately.
+Context readers suppress only unknown all-zero final observations, retaining
+historical nonzero readings and reported zero measurements.
+
+`distill.Answer` keeps the final attempt's usage apart from request accounting;
+`distill.Failure` retains the same report without an answer. Extraction and
+consolidation persist failed request consumption in the memory ledger.
+Glance and block summary requests commit one aggregate row with phase details
+before parsing or publishing the text. A ledger commit failure prevents that
+publication; an empty report writes no row. These auxiliary rows do not
+replace the primary operation's context measurement.
+
 ### Pinned main model (protocol 080)
 
 A session can also be created on one `[models.<key>]` entry. The key is a second
@@ -6709,8 +6895,8 @@ local fixtures).
 
 What `assemble_in` does not do for a registered workspace, and which is why
 nothing touches the registered name: `workspace_plane.prepare` is skipped (it
-discovers the toolchain, composes the base, creates the workspace's blob, tool
-home, tmp and scratch directories); `start_local` is replaced by the attach (the
+discovers the toolchain, composes the base, creates the blob store, tool
+home, tmp and scratch directories, and `blobs.adopt_legacy` does not run); `start_local` is replaced by the attach (the
 helper pool, executor, broker, jobs, scratch, LSP and code-mode host live on the
 executor); `code_mode_mcp` is replaced by a skipped-MCP notice; extension
 discovery and registration are skipped; `resolve` skips `find_helper` and
@@ -6755,13 +6941,27 @@ A `loomd` whose `--config` file has `[distribution]` and at least one
   `[lsp]`, `[jobs]`, `[secrets]` tables). `factory` resolves the workspace name
   against the rows, canonicalizes the root, creates `<state>/scopes/<session>`
   fresh (the helpers' scratch lives there; the session name is validated before
-  it names a path), and calls `workspace_plane.prepare` then `start` with the
+  it names a path), creates the session's blob store (below), and calls
+  `workspace_plane.prepare` then `start` with the
   `OwnerServices` from the `AttachSpec`, `owner_codemode.over_owner` as the
   owner's code-mode arms and `codemode_wiring.seam` with
   `owner_codemode.advertising_peers` as the `code_mode` tool. The census it
   returns is
   `RemoteCensus` (plain data plus the broker's subject; the prompt facts are read
-  once, at attach). `workspace_plane` itself is unchanged.
+  once, at attach). `workspace_plane` itself is unchanged apart from `WorkspaceSpec.blob_root`.
+- **A remote session's blobs.** They live in `<state>/blobs/<session>`, passed as
+  `WorkspaceSpec.blob_root`. Not in `<state>/scopes/<session>`, which is removed
+  when a scope retires cleanly while a reopened session must still read the
+  blobs its transcript names; and not in the checkout, for the reason the
+  daemon keeps its own out of the workspace. `blob_directory` validates the
+  session name like the scope directory does and creates the store private if
+  it is not there, adopting it if it is, and nothing removes it. The base the
+  factory composes carries `workspace_policy.protecting_blobs` for it, so every
+  jail on the executor masks it (the state-root masks name the entries the
+  daemon writes, not this directory), and `tools/fs` still reads it. The
+  census carries it (`Census.blob_root`), so the owner sees the root. No
+  `adopt_legacy`: it copies what an earlier release left in a workspace, and
+  no release wrote a registered session's store into a checkout.
 - The plane's cleanups cannot go to custody, because the factory runs in a
   short-lived weft run. The `Retain` it passes files each `(Part, cleanup)` in the
   build process and calls `transfer` (unlinking the build from the resource).
@@ -6777,7 +6977,8 @@ A `loomd` whose `--config` file has `[distribution]` and at least one
   each attach.
 
 Tests: `executor_plane_test` runs the factory over a temp checkout with the
-shipped helper (write then read, `bash`, close then reopen, an unknown
+shipped helper (write then read, `bash`, close then reopen, a blob written in
+one incarnation read after the reopen and kept out of the checkout, an unknown
 workspace, the census walk for function values and its `term_to_binary` round
 trip, an 8 MiB read, the `code_mode` description listing the owner-bound
 capabilities where a seed exists, a real program whose `strand.roster` and
@@ -7138,3 +7339,32 @@ The manager owns one package server at a time. `diagnostics(None)` always return
 a partial `Unsettled` snapshot, while explicit file queries retain their own
 server acquisition and settlement. A healthy control cannot certify unavailable
 owners elsewhere in the workspace. Protocol 078 records that scope contract.
+
+## Switching a session's profile (protocol 082)
+
+`profile_get` and `profile_set` are session commands
+([protocol 082](../../protocol-change/082-session-profile-switch.md)), answered
+by a `profile` snapshot (`protocol.ProfileSnapshot`: `current`, `available`, and
+`switched` only in the reply to a switch). The decoder reads an absent `profile`
+as the default roles and refuses null, the empty string and a malformed name
+(`optional_profile`). `ProfileSet` is owner-only (`gateway.owner_only` now
+answers the refusal words) and is not a read.
+
+The hub reaches the daemon through `profile_switch.Desk`, which
+`serve.Settings.profile_desk` carries from the daemon's builder
+(`daemon/main.profile_desk`) to `gateway.with_profile_desk`. A hub with no desk
+answers `unsupported`. `gateway.set_profile` refuses while `State.live` is
+non-empty, answers the listing for the profile the session already has, loads
+the entering catalogue (`desk.load` → `daemon/profiles.load`), computes the
+strands to move with `catalog.retargets` against `State.catalog`, saves the name
+(`desk.save` → `manager.set_profile` → `catalogue.set_profile`), rewrites the
+moved strands' models in one commit through `apply_changes` (the half of
+`apply_config` after validation), replies, and calls `desk.restart`
+(`daemon/restart.begin`: a `spawn_unlinked` stop and open that outlives the
+session, because every weft start is linked to its caller). A strand follows a
+role while its model is that role's head; a model chosen with `/model` heads no
+role and stays. `default` is reserved: `catalog.default_profile`, refused as a
+profile table name at load.
+
+`Settings` gained `profile_desk`, so every `serve.Settings` literal in the tests
+carries `profile_desk: None`.

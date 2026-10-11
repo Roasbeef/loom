@@ -13,6 +13,7 @@ import core/message.{
   type UserBlock,
 }
 import core/msgpack.{type MsgPackValue}
+import core/usage_evidence
 import gleam/bit_array
 import gleam/int
 import gleam/list
@@ -344,6 +345,9 @@ pub fn usage(seed: Seed) -> #(Usage, Seed) {
   let #(cache_write, seed) = token_count(seed)
   let #(cache_write_1h, seed) = option_of(seed, token_count)
   let #(reasoning, seed) = option_of(seed, token_count)
+  let cache_write_1h =
+    option.map(cache_write_1h, fn(count) { int.min(count, cache_write) })
+  let reasoning = option.map(reasoning, fn(count) { int.min(count, output) })
   let #(cost_input, seed) = money(seed)
   let #(cost_output, seed) = money(seed)
   let #(cost_cache_read, seed) = money(seed)
@@ -364,6 +368,10 @@ pub fn usage(seed: Seed) -> #(Usage, Seed) {
         cache_read: cost_cache_read,
         cache_write: cost_cache_write,
         total: cost_total,
+      ),
+      evidence: usage_evidence.with_price(
+        usage_evidence.reported(usage_evidence.Api),
+        usage_evidence.ApiRates,
       ),
     ),
     seed,

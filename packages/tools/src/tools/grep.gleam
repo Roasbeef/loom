@@ -25,7 +25,6 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import tools/blob
-import tools/directory_access
 import tools/fs
 import tools/tool.{type Ctx, type ToolOutcome}
 
@@ -154,13 +153,8 @@ fn search_root(ctx: Ctx, path: Option(String)) -> Result(String, ToolOutcome) {
   case path {
     None -> Ok(ctx.workspace)
     Some(path) ->
-      fs.resolve_readable(
-        ctx.filesystem,
-        ctx.workspace,
-        directory_access.approved(ctx.directory_access, ctx.grants).readable,
-        path,
-      )
-      |> result.map_error(fs.path_outcome)
+      fs.resolve_for_read(ctx, path)
+      |> result.map_error(fs.read_path_outcome)
   }
 }
 

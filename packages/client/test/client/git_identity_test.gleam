@@ -378,7 +378,6 @@ fn with_fixture_under(
   let home = root <> "/operator"
   list.each(
     [
-      workspace <> "/.blobs",
       workspace_policy.tool_home_directory(workspace),
       home,
     ],

@@ -50,6 +50,7 @@
 //// 6. Consumers read the other side of the handle with `next`,
 ////    `await_terminal` and `await_stopped`; `cancel` only requests teardown.
 
+import core/accounting.{type RequestAccounting}
 import core/corruption.{type CorruptionReport}
 import core/json
 import core/message.{type AgentMessage, type Usage, AssistantMessage, Pending}
@@ -94,19 +95,28 @@ pub type Delta {
 /// One event on a provider stream, per the frozen contract (spec §1.5).
 ///
 /// Constructor invariants: a stream delivers zero or more `Delta`s and
-/// then exactly one `Settled` or `Failed`; `Settled.usage` equals the
-/// usage inside the settled message and is repeated for direct ledger
-/// writes; `Failed` errors carry redacted context only — never request
+/// then exactly one `Settled` or `Failed`; accounting covers the whole
+/// request while the settled message retains the final attempt's usage; `Failed` errors carry redacted context only — never request
 /// headers, bodies, or secrets.
 pub type StreamEvent {
   /// A streamed fragment of the in-progress response.
   Delta(delta: Delta)
 
   /// The response settled completely.
-  Settled(message: SettledAssistantMessage, usage: Usage)
+  Settled(
+    /// The final response, whose usage describes its own context measurement.
+    message: SettledAssistantMessage,
+    /// Every returned attempt's reported usage, including prior fallbacks.
+    accounting: RequestAccounting,
+  )
 
   /// The request failed before settling; in-band, never a crash.
-  Failed(error: ProviderError)
+  Failed(
+    /// Redacted failure classification, independent of accounting evidence.
+    error: ProviderError,
+    /// Reported consumption survives failure without inventing missing usage.
+    accounting: RequestAccounting,
+  )
 }
 
 /// A provider response that has finished streaming: an assistant
@@ -367,7 +377,8 @@ pub fn contextual_event(
   observation: FailureObservation,
 ) -> StreamEvent {
   case event {
-    Failed(error) -> Failed(with_context(error, observation))
+    Failed(error, accounting) ->
+      Failed(with_context(error, observation), accounting)
     Delta(_) | Settled(..) -> event
   }
 }
@@ -814,6 +825,8 @@ pub type ResponseMachine(state) {
     on_end: fn(state) -> List(StreamEvent),
     /// Applied when the transport fails.
     on_failure: fn(state, String) -> List(StreamEvent),
+    /// Reports the current attempt without finalizing or adding snapshots.
+    usage: fn(state) -> Usage,
   )
 }
 
@@ -925,7 +938,7 @@ pub fn owned(
 ///
 /// ```gleam
 /// let events = process.new_subject()
-/// process.send(events, stream.Failed(error: stream.ProviderCancelled))
+/// process.send(events, stream.Failed(error: stream.ProviderCancelled, accounting: report))
 /// let handle = stream.immediate(events:, cancel: fn() { Nil })
 /// assert stream.await_stopped(handle, within: 0) == stream.Drained
 /// ```
@@ -1129,7 +1142,7 @@ pub fn next(
 ///
 /// ```gleam
 /// // stream.await_terminal(handle, within: 30_000)
-/// // -> Ok(#([...deltas], stream.Settled(message, usage)))
+/// // -> Ok(#([...deltas], stream.Settled(message, accounting)))
 /// ```
 ///
 pub fn await_terminal(
@@ -1167,16 +1180,30 @@ pub type AttemptOutcome {
   AttemptTerminal(terminal: StreamEvent)
 
   /// Cancellation was acknowledged before another terminal won the race.
-  AttemptCancelled(context: FailureObservation)
+  AttemptCancelled(
+    /// The initiating local event, preserved through transport teardown.
+    context: FailureObservation,
+    /// The latest snapshot belongs to this attempt once, even without drain proof.
+    accounting: RequestAccounting,
+  )
 
   /// Cancellation began, but no terminal acknowledged it within the grace.
-  AttemptCancellationUnconfirmed(context: FailureObservation)
+  AttemptCancellationUnconfirmed(
+    context: FailureObservation,
+    accounting: RequestAccounting,
+  )
 
   /// The transport owner died without proving its descendants drained.
-  AttemptDrainProofLost(context: FailureObservation)
+  AttemptDrainProofLost(
+    context: FailureObservation,
+    accounting: RequestAccounting,
+  )
 
   /// The process which could consume deltas exited, so the attempt was drained.
-  ConsumerGone
+  ConsumerGone(
+    /// Retained evidence is available to custody even after the observer exits.
+    accounting: RequestAccounting,
+  )
 }
 
 type AttemptEvent {
@@ -1280,7 +1307,7 @@ pub fn run_tracked(
   case prepare_streaming(request, http_events) {
     Error(reason) -> {
       AttemptTerminal(contextual_event(
-        Failed(TransportFailed("start failed: " <> reason)),
+        Failed(TransportFailed("start failed: " <> reason), accounting.empty()),
         FailureObservation(..context, cause: TransportExit),
       ))
     }
@@ -1331,51 +1358,59 @@ fn run_loop(
 ) -> AttemptOutcome {
   case process.selector_receive_forever(selector) {
     DeadlineExpired -> {
+      let report = accounting.from_usage(machine.usage(state))
       let context = FailureObservation(..context, cause: RequestDeadline)
       finish_outcome(
         deadline_timer,
         case stop_attempt(running, consumer_monitor, transport_monitor) {
           Drained ->
             AttemptTerminal(contextual_event(
-              Failed(TransportFailed(
-                reason: "timed out waiting for the provider",
-              )),
+              Failed(
+                TransportFailed(reason: "timed out waiting for the provider"),
+                report,
+              ),
               context,
             ))
-          TimedOut -> AttemptCancellationUnconfirmed(context)
-          ProofLost -> AttemptDrainProofLost(context)
+          TimedOut -> AttemptCancellationUnconfirmed(context, report)
+          ProofLost -> AttemptDrainProofLost(context, report)
         },
       )
     }
     Cancelled -> {
+      let report = accounting.from_usage(machine.usage(state))
       let context = FailureObservation(..context, cause: CancellationRequested)
       finish_outcome(
         deadline_timer,
         case stop_attempt(running, consumer_monitor, transport_monitor) {
-          Drained -> AttemptCancelled(context)
-          TimedOut -> AttemptCancellationUnconfirmed(context)
-          ProofLost -> AttemptDrainProofLost(context)
+          Drained -> AttemptCancelled(context, report)
+          TimedOut -> AttemptCancellationUnconfirmed(context, report)
+          ProofLost -> AttemptDrainProofLost(context, report)
         },
       )
     }
     ConsumerExited(down: _) -> {
+      let report = accounting.from_usage(machine.usage(state))
       let _stopped = stop_attempt(running, consumer_monitor, transport_monitor)
-      finish_outcome(deadline_timer, ConsumerGone)
+      finish_outcome(deadline_timer, ConsumerGone(report))
     }
     TransportExited(down:) -> {
+      let report = accounting.from_usage(machine.usage(state))
       let context = FailureObservation(..context, cause: TransportExit)
       process.demonitor_process(consumer_monitor)
       process.demonitor_process(transport_monitor)
       finish_outcome(deadline_timer, case drain_outcome(down) {
         Drained ->
           AttemptTerminal(contextual_event(
-            Failed(TransportFailed(
-              reason: "provider transport stopped before a terminal response",
-            )),
+            Failed(
+              TransportFailed(
+                reason: "provider transport stopped before a terminal response",
+              ),
+              report,
+            ),
             context,
           ))
-        TimedOut -> AttemptCancellationUnconfirmed(context)
-        ProofLost -> AttemptDrainProofLost(context)
+        TimedOut -> AttemptCancellationUnconfirmed(context, report)
+        ProofLost -> AttemptDrainProofLost(context, report)
       })
     }
     Http(http.ResponseStatus(status:, headers:)) ->
@@ -1413,14 +1448,39 @@ fn run_loop(
       let terminal = case forward(machine.on_end(state), deliver) {
         Some(terminal) -> terminal
         None ->
-          Failed(StreamDisconnected(context: "response ended without settling"))
+          Failed(
+            StreamDisconnected(context: "response ended without settling"),
+            accounting.from_usage(machine.usage(state)),
+          )
+      }
+      let report = terminal_accounting(terminal)
+      finish_outcome(
+        deadline_timer,
+        case finish_attempt(consumer_monitor, transport_monitor) {
+          Drained -> AttemptTerminal(contextual_event(terminal, context))
+          TimedOut -> AttemptCancellationUnconfirmed(context, report)
+          ProofLost -> AttemptDrainProofLost(context, report)
+        },
+      )
+    }
+    Http(http.RequestRefused(status:, body:)) -> {
+      // This trusted admission event proves inference never started. Decode
+      // its redacted error through the adapter, retaining the empty report
+      // independently of the adapter's missing remote-usage default.
+      let refused = machine.on_status(state, status, [])
+      let #(refused, _) = machine.on_chunk(refused, body)
+      let report = accounting.empty()
+      let terminal = case forward(machine.on_end(refused), deliver) {
+        Some(Failed(error, _)) -> Failed(error, report)
+        Some(Settled(_, _)) | Some(Delta(_)) | None ->
+          Failed(TransportFailed("local request refused"), report)
       }
       finish_outcome(
         deadline_timer,
         case finish_attempt(consumer_monitor, transport_monitor) {
           Drained -> AttemptTerminal(contextual_event(terminal, context))
-          TimedOut -> AttemptCancellationUnconfirmed(context)
-          ProofLost -> AttemptDrainProofLost(context)
+          TimedOut -> AttemptCancellationUnconfirmed(context, report)
+          ProofLost -> AttemptDrainProofLost(context, report)
         },
       )
     }
@@ -1431,14 +1491,19 @@ fn run_loop(
       // answers with no events, so this default only fires pre-settlement.
       let terminal = case forward(machine.on_failure(state, reason), deliver) {
         Some(terminal) -> terminal
-        None -> Failed(TransportFailed(reason:))
+        None ->
+          Failed(
+            TransportFailed(reason:),
+            accounting.from_usage(machine.usage(state)),
+          )
       }
+      let report = terminal_accounting(terminal)
       finish_outcome(
         deadline_timer,
         case finish_attempt(consumer_monitor, transport_monitor) {
           Drained -> AttemptTerminal(contextual_event(terminal, context))
-          TimedOut -> AttemptCancellationUnconfirmed(context)
-          ProofLost -> AttemptDrainProofLost(context)
+          TimedOut -> AttemptCancellationUnconfirmed(context, report)
+          ProofLost -> AttemptDrainProofLost(context, report)
         },
       )
     }
@@ -1469,19 +1534,25 @@ fn run_chunk(
 ) -> AttemptOutcome {
   let response_bytes = response_bytes + bit_array.byte_size(chunk)
   case response_bytes > max_response_bytes {
-    True ->
+    True -> {
+      let report = accounting.from_usage(machine.usage(state))
       finish_outcome(
         deadline_timer,
         case stop_attempt(running, consumer_monitor, transport_monitor) {
-          Drained -> AttemptTerminal(response_too_large())
-          TimedOut -> AttemptCancellationUnconfirmed(context)
-          ProofLost -> AttemptDrainProofLost(context)
+          Drained -> AttemptTerminal(response_too_large(report))
+          TimedOut -> AttemptCancellationUnconfirmed(context, report)
+          ProofLost -> AttemptDrainProofLost(context, report)
         },
       )
+    }
     False -> {
       let #(state, events) = machine.on_chunk(state, chunk)
       case forward(events, deliver) {
-        Some(terminal) ->
+        Some(terminal) -> {
+          // The terminal carries the accounting the machine settled with, so a
+          // lost drain proof reports it instead of whatever the accumulator
+          // happened to retain.
+          let report = terminal_accounting(terminal)
           finish_outcome(
             deadline_timer,
             case
@@ -1492,10 +1563,11 @@ fn run_chunk(
               )
             {
               Drained -> AttemptTerminal(contextual_event(terminal, context))
-              TimedOut -> AttemptCancellationUnconfirmed(context)
-              ProofLost -> AttemptDrainProofLost(context)
+              TimedOut -> AttemptCancellationUnconfirmed(context, report)
+              ProofLost -> AttemptDrainProofLost(context, report)
             },
           )
+        }
         None ->
           run_loop(
             selector,
@@ -1514,7 +1586,25 @@ fn run_chunk(
   }
 }
 
-fn response_too_large() -> StreamEvent {
+/// Returns the accounting a terminal event carries. A parsed terminal is the
+/// strongest usage witness even if transport cleanup subsequently loses its
+/// drain proof, so cleanup outcomes report it instead of re-reading the
+/// machine's accumulator. A `Delta` is not a terminal and carries none.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert stream.terminal_accounting(stream.Delta(delta))
+///   == accounting.empty()
+/// ```
+pub fn terminal_accounting(event: StreamEvent) -> RequestAccounting {
+  case event {
+    Settled(accounting:, ..) | Failed(accounting:, ..) -> accounting
+    Delta(_) -> accounting.empty()
+  }
+}
+
+fn response_too_large(report: RequestAccounting) -> StreamEvent {
   Failed(
     MalformedStream(corruption.report(
       at: "provider/stream.run",
@@ -1522,6 +1612,7 @@ fn response_too_large() -> StreamEvent {
       expected: "at most " <> int.to_string(max_response_bytes) <> " bytes",
       context: "provider response exceeded its cumulative byte budget",
     )),
+    report,
   )
 }
 

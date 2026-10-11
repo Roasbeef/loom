@@ -20,6 +20,9 @@ WHERE session_id = ? AND pool != '' AND executor = '';
 -- name: ConfirmRegistration :exec
 UPDATE catalogue_sessions SET state = 'saved' WHERE session_id = ?;
 
+-- name: SetRegistrationProfile :exec
+UPDATE catalogue_sessions SET profile = ? WHERE session_id = ?;
+
 -- name: RegistrationDisplayName :many
 SELECT name FROM catalogue_session_names WHERE session_id = ?;
 

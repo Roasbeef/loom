@@ -6,17 +6,18 @@
 //// strings a model could plausibly send.
 
 import client/glanceslice.{Reply, Titled, Untitled}
+import core/accounting
 import core/clock
 import core/entry.{type Entry}
 import core/glance
 import core/ids.{type EntryId}
 import core/json
 import core/message
+import core/usage_evidence
 import gleam/int
 import gleam/list
 import gleam/option.{None}
 import gleam/string
-import runtime/effects
 
 // --- gathering -----------------------------------------------------------------
 
@@ -212,7 +213,7 @@ fn an_assistant(seq: Int, content: List(message.AssistantBlock)) -> Entry {
       response_model: None,
       response_id: None,
       diagnostics: None,
-      usage: effects.zero_usage(),
+      usage: accounting.unknown_usage(usage_evidence.Other),
       stop_reason: message.ToolUse,
       deferred: None,
       error_message: None,

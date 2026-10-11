@@ -75,6 +75,7 @@
 //// option to follow symlinks, no case-insensitive matching, and no
 //// character classes or brace alternation in the glob language.
 
+import broker/policy
 import gleam/bool
 import gleam/int
 import gleam/list
@@ -586,6 +587,11 @@ type Walker(acc) {
   Walker(
     hidden: Hidden,
     prune: List(String),
+    // Every form of every protected entry (`fs.protected_forms`), resolved
+    // once per search. An entry under one is neither offered to the visitor
+    // nor descended into, so a walk over a directory that holds a protected
+    // subtree cannot read it.
+    protected: List(String),
     visit: fn(WalkEntry, acc) -> Step(acc),
   )
 }
@@ -647,9 +653,9 @@ fn walk_names(
   }
 }
 
-// The hidden rule and the visit budget, in that order: a dot-entry the
-// caller excluded is not an entry the walk touched, so it must not
-// spend a visit.
+// The hidden rule, the protected rule and the visit budget, in that order:
+// a dot-entry the caller excluded, or an entry the session masks from every
+// jail, is not an entry the walk touched, so it must not spend a visit.
 fn walk_name(
   dir: String,
   prefix: String,
@@ -660,10 +666,18 @@ fn walk_name(
   use <- bool.lazy_guard(when: hidden_here(name, walker.hidden), return: fn() {
     cursor
   })
+  use <- bool.lazy_guard(
+    when: under_protected(dir <> "/" <> name, walker.protected),
+    return: fn() { cursor },
+  )
   case cursor.visited >= max_visited {
     True -> Cursor(..cursor, limit: VisitLimit)
     False -> visit_name(dir, prefix, name, walker, cursor)
   }
+}
+
+fn under_protected(absolute: String, protected: List(String)) -> Bool {
+  list.any(protected, fn(root) { policy.covers(root:, path: absolute) })
 }
 
 fn hidden_here(name: String, hidden: Hidden) -> Bool {
@@ -798,6 +812,7 @@ type Collected {
 /// glob(
 ///   workspace: "/work",
 ///   root: "/work/src",
+///   protected: [],
 ///   query: GlobQuery(
 ///     pattern: "**/*.gleam",
 ///     max_entries: default_max_entries,
@@ -811,6 +826,7 @@ type Collected {
 pub fn glob(
   workspace workspace: String,
   root root: String,
+  protected protected: List(String),
   query query: GlobQuery,
 ) -> Result(Listing, SearchError) {
   use <- bool.lazy_guard(
@@ -830,6 +846,7 @@ pub fn glob(
     Walker(
       hidden: query.hidden,
       prune: query.prune,
+      protected: fs.protected_forms(fs.real_filesystem(), protected),
       visit: glob_visitor(
         compiled,
         display_prefix(workspace:, root:),
@@ -960,6 +977,7 @@ type Scan {
 /// grep(
 ///   workspace: "/work",
 ///   root: "/work",
+///   protected: [],
 ///   query: GrepQuery(
 ///     pattern: "pub fn resolve_real",
 ///     globs: ["*.gleam"],
@@ -975,6 +993,7 @@ type Scan {
 pub fn grep(
   workspace workspace: String,
   root root: String,
+  protected protected: List(String),
   query query: GrepQuery,
 ) -> Result(Found, SearchError) {
   use <- bool.lazy_guard(
@@ -1004,6 +1023,7 @@ pub fn grep(
     Walker(
       hidden: query.hidden,
       prune: query.prune,
+      protected: fs.protected_forms(fs.real_filesystem(), protected),
       visit: grep_visitor(
         expression,
         filters,
@@ -1310,12 +1330,13 @@ pub fn read_lines(
 
   // The kind is settled before the read so a directory answers
   // `NotAFile`, which names the call that was wanted, rather than
-  // whatever errno reading a directory produces on this system.
+  // whatever errno reading a directory produces on this system, and so a
+  // device or a FIFO is refused before anything can block on it.
   use info <- result.try(
     simplifile.link_info(path) |> result.map_error(missing_or_backend(path, _)),
   )
   use <- bool.guard(
-    when: simplifile.file_info_type(info) == simplifile.Directory,
+    when: simplifile.file_info_type(info) != simplifile.File,
     return: Error(NotAFile(path:)),
   )
 
@@ -1394,12 +1415,18 @@ fn backend_error(path: String, error: simplifile.FileError) -> SearchError {
 
 // --- paths ----------------------------------------------------------------
 
-// The prefix that turns a root-relative path into a workspace-relative
-// one. A root that is the workspace itself contributes nothing; a root
-// below it contributes its own workspace-relative path and a separator.
+// The prefix that turns a root-relative path into one a program can hand
+// straight back to another call. A root that is the workspace itself
+// contributes nothing; a root below it contributes its own
+// workspace-relative path and a separator; a root elsewhere on the host
+// (readable under host reads or an added directory) contributes its
+// absolute path, because a path relative to that root would resolve
+// against the workspace instead and name a different file.
 fn display_prefix(workspace workspace: String, root root: String) -> String {
-  case string.starts_with(root, workspace <> "/") {
-    True -> string.drop_start(root, string.length(workspace) + 1) <> "/"
-    False -> ""
+  use <- bool.guard(when: root == workspace, return: "")
+  case string.starts_with(root, workspace <> "/"), root {
+    True, _ -> string.drop_start(root, string.length(workspace) + 1) <> "/"
+    False, "/" -> "/"
+    False, _ -> root <> "/"
   }
 }

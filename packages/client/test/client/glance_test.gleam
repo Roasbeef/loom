@@ -12,11 +12,13 @@
 import client/distill
 import client/glance
 import client/glancepace
+import core/accounting
 import core/clock
 import core/entry
 import core/glance as glance_cell
 import core/ids.{type OpId}
 import core/message
+import core/usage_evidence
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{None, Some}
@@ -33,6 +35,7 @@ import runtime/api
 import runtime/effects
 import runtime/hooks
 import session/session
+import storage/storage
 import support/addresses
 import support/provider as provider_test
 import telemetry/log
@@ -57,6 +60,47 @@ pub fn the_primary_and_the_advisor_are_not_watched_test() {
 pub fn the_context_is_the_rows_whole_prompt_and_answer_test() {
   assert glance.context_of(a_row(False)) == Some(100 + 30 + 5 + 7)
   assert glance.context_of(a_row(True)) == None
+}
+
+pub fn unknown_final_usage_does_not_reset_context_to_zero_test() {
+  let row = a_row(False)
+  let missing =
+    message.Usage(
+      ..accounting.zero_usage(),
+      evidence: usage_evidence.unknown(usage_evidence.Api),
+    )
+  let report = accounting.from_usage(row.usage) |> accounting.append(missing)
+  let fallback =
+    entry.UsageRow(
+      ..row,
+      usage: accounting.total(report),
+      details: Some(accounting.details(report, [])),
+    )
+  assert glance.context_of(fallback) == None
+  let complete =
+    message.Usage(
+      ..missing,
+      evidence: usage_evidence.reported(usage_evidence.Api),
+    )
+  let measured = accounting.from_usage(complete)
+  assert glance.context_of(
+      entry.UsageRow(
+        ..row,
+        usage: complete,
+        details: Some(accounting.details(measured, [])),
+      ),
+    )
+    == Some(0)
+  let historical =
+    message.Usage(
+      ..row.usage,
+      evidence: usage_evidence.unknown(usage_evidence.Other),
+    )
+  assert glance.context_of(
+      entry.UsageRow(..row, usage: historical, details: None),
+    )
+    == Some(142)
+  assert glance.context_of(entry.UsageRow(..fallback, adjustment: True)) == None
 }
 
 // A new user with no role table still gets a glance: the summarizer
@@ -138,8 +182,39 @@ pub fn a_later_step_is_summarized_on_the_wake_test() {
 
 // --- the rig -------------------------------------------------------------------
 
+pub fn a_failed_glance_retains_one_request_row_without_a_fact_test() {
+  let final = accounting.unknown_usage(usage_evidence.Other)
+  let first = message.Usage(..final, input: 17, total_tokens: 17)
+  let report = accounting.from_usage(first) |> accounting.append(final)
+  let assert Ok(rig) =
+    a_rig_with_summarizer(glancepace.default_pace, fixed_clock(), fn(asked) {
+      distill.Distiller(ask: fn(request) {
+        process.send(asked, request)
+        Error(distill.Failure("failed", report))
+      })
+    })
+    as "The glance rig must boot."
+  let hooked = glance.hooks(hooks.build(hooks.new()), rig.name)
+  hooked.usage(rig.child, a_row(False))
+  let assert poll.Answered(value: rows) =
+    poll.until(within: 5000, every: 20, attempt: fn() {
+      case storage.scan_usage(rig.session.store, storage.usage_scan()) {
+        Ok([row]) -> poll.Done([row])
+        Ok(_) | Error(_) -> poll.Retry
+      }
+    })
+    as "The failed glance's report must commit."
+  let assert [row] = rows as "One ask must own exactly one ledger row."
+  assert accounting.decode_row(row) == Ok(report)
+  assert glance_of(rig, sub) == Error(Nil)
+  let assert [_request] = requests(rig)
+    as "The failure must not dispatch another request implicitly."
+  stop(rig)
+}
+
 type Rig {
   Rig(
+    session: session.Session,
     runtime: api.Runtime,
     name: address.Address(glance.Message),
     primary: OpId,
@@ -154,6 +229,14 @@ type Rig {
 fn a_rig(
   pace: glancepace.Pace,
   loop_clock: clock.Clock,
+) -> Result(Rig, String) {
+  a_rig_with_summarizer(pace, loop_clock, scripted)
+}
+
+fn a_rig_with_summarizer(
+  pace: glancepace.Pace,
+  loop_clock: clock.Clock,
+  summarize: fn(Subject(String)) -> distill.Distiller,
 ) -> Result(Rig, String) {
   use opened <- result.try(
     session.open_memory(fixed_clock())
@@ -196,7 +279,7 @@ fn a_rig(
     glance.start(glance.Wiring(
       session: opened,
       runtime: fn() { Ok(runtime) },
-      summarizer: scripted(asked),
+      summarizer: summarize(asked),
       clock: loop_clock,
       pace:,
       logger: log.discard(),
@@ -204,7 +287,7 @@ fn a_rig(
     ))
     |> result.replace_error("the glance machine did not start"),
   )
-  Ok(Rig(runtime:, name:, primary:, child:, asked:))
+  Ok(Rig(session: opened, runtime:, name:, primary:, child:, asked:))
 }
 
 // Titles the task on a first request and says something new on each later
@@ -218,7 +301,13 @@ fn scripted(asked: Subject(String)) -> distill.Distiller {
         <> "NOW: Reading fundeeProcessOpenChannel in manager.go"
       False -> "NOW: Editing funding.go"
     }
-    Ok(distill.Answer(text:, usage: effects.zero_usage()))
+    Ok(distill.Answer(
+      text:,
+      usage: accounting.unknown_usage(usage_evidence.Other),
+      accounting: accounting.from_usage(accounting.unknown_usage(
+        usage_evidence.Other,
+      )),
+    ))
   })
 }
 
@@ -283,7 +372,7 @@ fn a_row(adjustment: Bool) -> entry.UsageRow {
     entry_id: None,
     adjustment:,
     usage: message.Usage(
-      ..effects.zero_usage(),
+      ..accounting.unknown_usage(usage_evidence.Other),
       input: 100,
       cache_read: 30,
       cache_write: 5,

@@ -11,7 +11,9 @@
 //// null in a historical fixture does not invent an authenticated author.
 
 import client/protocol
+import core/usage_evidence
 import gleam/list
+import gleam/option.{None, Some}
 import gleam/string
 import simplifile
 
@@ -290,4 +292,39 @@ pub fn block_summary_subject_is_total_test() {
       "{\"v\":2,\"event\":\"block_summary\",\"body\":{"
       <> "\"subject\":\"block\",\"entry\":\"e\",\"text\":\"x\"}}",
     )
+}
+
+pub fn historical_usage_has_unknown_evidence_and_retains_its_observation_test() {
+  let assert Ok(protocol.EventEnvelope(
+    event: protocol.UsageEvent(usage:, last_usage:, ..),
+    ..,
+  )) = protocol.decode_event(usage_frame(""))
+    as "Historical usage frames remain readable under protocol 081."
+  assert usage.input == 3
+  assert usage.evidence == usage_evidence.unknown(usage_evidence.Other)
+  assert last_usage == Some(usage)
+}
+
+pub fn explicit_missing_final_usage_is_not_the_aggregate_test() {
+  let assert Ok(protocol.EventEnvelope(
+    event: protocol.UsageEvent(usage:, last_usage:, ..),
+    ..,
+  )) = protocol.decode_event(usage_frame(",\"last_usage\":null"))
+    as "An explicit null final observation leaves the aggregate intact."
+  assert usage.input == 3
+  assert last_usage == None
+}
+
+pub fn malformed_present_final_usage_is_refused_test() {
+  let assert Error(protocol.BadEnvelope(..)) =
+    protocol.decode_event(usage_frame(",\"last_usage\":{}"))
+    as "A malformed present observation cannot become a historical default."
+}
+
+fn usage_frame(last_field: String) -> String {
+  "{\"v\":2,\"event\":\"usage\",\"body\":{\"strand\":\"main\",\"usage\":{"
+  <> "\"input\":3,\"output\":2,\"cacheRead\":0,\"cacheWrite\":0,\"totalTokens\":5,"
+  <> "\"cost\":{\"input\":0.0,\"output\":0.0,\"cacheRead\":0.0,\"cacheWrite\":0.0,\"total\":0.0}}"
+  <> last_field
+  <> "}}"
 }

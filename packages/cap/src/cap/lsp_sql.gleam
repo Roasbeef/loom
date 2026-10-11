@@ -16,6 +16,32 @@
 //// line,column,text,anchor). Reference targets are separate from outline symbols:
 //// an anti-join proves absence only for explicitly requested targets, during
 //// this observation interval, and server-withheld results remain visible.
+//// ## Flow
+////
+//// `collect` → `query` → `query_text` | `query_one` | `references`
+////
+//// 1. `target` and `target_at` name a reference seed; `plan` infers the
+////    server and root from the files.
+//// 2. `collect`, `collect_files` or `collect_seeds` spends one capture
+////    admission and returns the immutable `Observation`.
+//// 3. `query` runs one local statement against it with the caller's own
+////    decoder; `query_text` renders cells as text and `query_one` reads a
+////    single value, so neither needs a decoder at all.
+//// 4. `references` runs the documented `targets JOIN "references"` statement
+////    and decodes the typed rows.
+////
+//// ## Examples
+////
+//// ```gleam
+//// let seeds = [lsp_sql.target("util.Greet", "src/util.gleam")]
+//// use observation <- result.try(lsp_sql.collect_seeds([], seeds))
+//// use references <- result.try(lsp_sql.references(observation))
+//// report.value(
+////   report.list(list.map(references, fn(reference) {
+////     report.string(reference.path <> ":" <> int.to_string(reference.line))
+////   })),
+//// )
+//// ```
 
 import cap/internal/channel
 import cap/internal/dispatch
@@ -74,6 +100,32 @@ pub type Plan {
 /// ```
 pub fn plan(outlines: List(String), targets: List(Target)) -> Plan {
   Plan(server: "", root: "", outlines:, targets:)
+}
+
+/// A reference seed whose line is not known, so the server resolves the name
+/// anywhere in `path`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lsp_sql.target("util.Greet", "src/util.gleam")
+/// ```
+///
+pub fn target(symbol: String, path: String) -> Target {
+  Target(symbol:, path:, line: None)
+}
+
+/// A reference seed narrowed to a one-based line, which is how two symbols of
+/// the same name in one file are told apart.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lsp_sql.target_at("Greet", "src/util.gleam", 12)
+/// ```
+///
+pub fn target_at(symbol: String, path: String, line: Int) -> Target {
+  Target(symbol:, path:, line: Some(line))
 }
 
 /// Scope and provenance that survive every SQL projection.
@@ -143,6 +195,22 @@ pub type QueryResult(a) {
     rows: List(a),
     /// Provenance retained outside the SQL projection.
     observation: Metadata,
+  )
+}
+
+/// One reference of one requested seed, as the documented join returns it.
+pub type Reference {
+  Reference(
+    /// The spelling of the seed this reference answers.
+    symbol: String,
+    /// The referencing file's canonical path.
+    path: String,
+    /// The one-based line of the reference.
+    line: Int,
+    /// The one-based codepoint column of the reference.
+    column: Int,
+    /// The whole line the reference sits on.
+    text: String,
   )
 }
 
@@ -263,6 +331,44 @@ pub fn collect(plan: Plan) -> Result(Observation, Error) {
   decode(value) |> result.map_error(Unavailable)
 }
 
+/// Captures one observation over these outline files and no reference seeds,
+/// spending one capture admission exactly as `collect` does.
+///
+/// Use this for the outline question alone: what a file declares, without
+/// asking the server for any symbol's callers.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lsp_sql.collect_files(["src/app.gleam"])
+/// ```
+///
+pub fn collect_files(outlines: List(String)) -> Result(Observation, Error) {
+  collect(plan(outlines, []))
+}
+
+/// Captures one observation over these outline files and these reference
+/// seeds, spending one capture admission exactly as `collect` does.
+///
+/// The server and root are inferred from the files, as `plan` documents;
+/// a server that wants the qualified spelling of a symbol gets it only if
+/// the seed carries it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lsp_sql.collect_seeds(["src/app.gleam"], [
+///   lsp_sql.target("util.Greet", "src/util.gleam"),
+/// ])
+/// ```
+///
+pub fn collect_seeds(
+  outlines: List(String),
+  targets: List(Target),
+) -> Result(Observation, Error) {
+  collect(plan(outlines, targets))
+}
+
 /// Returns the declared scope and checked observation interval.
 ///
 /// ## Examples
@@ -337,6 +443,106 @@ pub fn query(
   Ok(QueryResult(columns: projected.0, rows:, observation: observation.metadata))
 }
 
+/// Runs one bounded statement and renders every projected cell as text with
+/// `cell_text`, so a caller reads rows without a decoder or a column count.
+///
+/// The budget is `query`'s and unchanged: a statement that exceeds a fixed
+/// limit is refused as `QueryLimitExceeded`, never truncated into a shorter
+/// answer. `NULL` renders as the text "NULL", so a row's width is always the
+/// statement's projected width.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(rows) =
+///   lsp_sql.query_text(
+///     observation,
+///     "SELECT name, kind FROM symbols ORDER BY name",
+///     [],
+///   )
+/// // rows is a List(List(String)); one string.join prints it.
+/// ```
+///
+pub fn query_text(
+  observation: Observation,
+  sql: String,
+  params: List(Cell),
+) -> Result(List(List(String)), QueryError) {
+  use answer <- result.try(
+    query(observation, sql, params, fn(row) { Ok(list.map(row, cell_text)) }),
+  )
+  Ok(answer.rows)
+}
+
+/// Runs one bounded statement whose single column answers one value, as
+/// `Some(text)`, or `None` when the statement returned no rows.
+///
+/// A row of any other width is a `DecodeFailed`, and an answer of more
+/// than one row is an `InvalidQuery` — each rather than a silent pick:
+/// two columns where one was asked for, or two rows where one value was
+/// asked for, mean the statement and the caller disagree about the
+/// question. The budgets are `query`'s.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(Some(count)) =
+///   lsp_sql.query_one(observation, "SELECT count(*) FROM symbols", [])
+/// ```
+///
+pub fn query_one(
+  observation: Observation,
+  sql: String,
+  params: List(Cell),
+) -> Result(Option(String), QueryError) {
+  // A single-column row as its text. Any other width is a refusal rather
+  // than a silent pick of the first cell.
+  let one_cell = fn(row: List(Cell)) {
+    case row {
+      [only] -> Ok(cell_text(only))
+      _other -> Error("expected exactly one column")
+    }
+  }
+  use answer <- result.try(query(observation, sql, params, one_cell))
+  case answer.rows {
+    [] -> Ok(None)
+
+    [only] -> Ok(Some(only))
+
+    // More than one row is the same disagreement a wider row is, and is
+    // refused for the same reason: no legitimate single-value statement
+    // answers several, and picking one would hide the disagreement in a
+    // value that looks ordinary. The order rows arrive in carries no
+    // meaning, so "first" would not even be a deterministic pick.
+    _more ->
+      Error(InvalidQuery("expected one row, the statement returned more"))
+  }
+}
+
+/// Every reference of every requested seed in the observation, ordered by
+/// seed and then by position.
+///
+/// This is the join the module doc advertises, run for you: `targets` joined
+/// to `"references"` on `target_id = id`. A seed that resolved to no
+/// reference contributes no row, so an empty answer means no reference was
+/// found for any requested seed during this observation, and
+/// `metadata(observation).withheld` says whether any location was withheld.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let seeds = [lsp_sql.target("util.Greet", "src/util.gleam")]
+/// let assert Ok(observation) = lsp_sql.collect_seeds([], seeds)
+/// let assert Ok(references) = lsp_sql.references(observation)
+/// ```
+///
+pub fn references(
+  observation: Observation,
+) -> Result(List(Reference), QueryError) {
+  use answer <- result.try(query(observation, reference_sql, [], reference_row))
+  Ok(answer.rows)
+}
+
 fn decode_rows(
   rows: List(List(Cell)),
   decoder: RowDecoder(a),
@@ -378,7 +584,7 @@ fn optional_int(value: Option(Int)) -> m.MsgPackValue {
   }
 }
 
-fn target(value: m.MsgPackValue) -> Result(Target, String) {
+fn decode_target(value: m.MsgPackValue) -> Result(Target, String) {
   use symbol <- result.try(wire.string_field(value, "symbol"))
   use path <- result.try(wire.string_field(value, "path"))
   use raw <- result.try(wire.field(value, "line"))
@@ -436,7 +642,7 @@ fn decode(value: m.MsgPackValue) -> Result(Observation, String) {
   use started_ms <- result.try(wire.int_field(value, "started_ms"))
   use finished_ms <- result.try(wire.int_field(value, "finished_ms"))
   use outlined <- result.try(wire.array_of(value, "outlined", text))
-  use targets <- result.try(wire.array_of(value, "asked_targets", target))
+  use targets <- result.try(wire.array_of(value, "asked_targets", decode_target))
 
   // The counts describe complete capture and withheld locations, independently
   // of the SQL projection a caller will choose later.
@@ -621,5 +827,32 @@ fn limit_text(limit: QueryLimit) -> String {
     Memory -> "memory"
     Instructions -> "instructions"
     Time -> "time"
+  }
+}
+
+// The join the module doc advertises and `references` runs: one row per
+// reference, carrying the seed it answers. `"references"` is quoted because
+// it is an SQL keyword, and the order groups one seed's rows together so a
+// reader printing them sees the answer seed by seed.
+const reference_sql =
+  "SELECT t.symbol, r.path, r.line, r.column, r.text "
+  <> "FROM targets t JOIN \"references\" r ON r.target_id = t.id "
+  <> "ORDER BY t.symbol, r.path, r.line"
+
+// The join's five columns, in its projection order. Each is refused unless
+// it holds the storage class the schema declares: a NULL where the schema
+// says NOT NULL means these two ends disagree about the facts, which is not
+// a reference with an empty field.
+fn reference_row(row: List(Cell)) -> Result(Reference, String) {
+  case row {
+    [Text(symbol), Text(path), Integer(line), Integer(column), Text(text)] ->
+      Ok(Reference(symbol:, path:, line:, column:, text:))
+
+    // A column of the wrong storage class is a disagreement about the
+    // facts rather than a missing field, and every one of these is NOT NULL
+    // in the schema: inventing an empty path for a NULL would read as a
+    // reference at no file.
+    [_, _, _, _, _] -> Error("a reference column held the wrong storage class")
+    _other -> Error("expected five columns")
   }
 }
