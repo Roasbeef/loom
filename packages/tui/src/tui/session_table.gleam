@@ -87,6 +87,35 @@ pub fn state(status: control_protocol.Lifecycle) -> #(String, style.Style) {
   }
 }
 
+/// The state as one token with no whitespace, for the plain listing that scripts
+/// split on whitespace.
+///
+/// Every lifecycle is its table word except a session being moved, whose
+/// destination rides in the same token as `moving:<orchestrator>`. That is the
+/// shape `placement.label` gives a remote workspace, `executor:name`: a key, a
+/// colon and a value in one token, so a parser that splits on whitespace still
+/// gets the state and its value together. An orchestrator name has no whitespace
+/// or colon.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert session_table.state_token(control_protocol.Saved) == "saved"
+/// assert session_table.state_token(control_protocol.Moving("laptop"))
+///   == "moving:laptop"
+/// ```
+pub fn state_token(status: control_protocol.Lifecycle) -> String {
+  case status {
+    control_protocol.Moving(to) -> "moving:" <> to
+    control_protocol.Saved
+    | control_protocol.Reserved
+    | control_protocol.Opening(_)
+    | control_protocol.Resident(_)
+    | control_protocol.Stopping(_)
+    | control_protocol.RecoveryBlocked -> state(status).0
+  }
+}
+
 /// Whether a lifecycle belongs to the resident track `loom sessions list`
 /// shows by default.
 ///

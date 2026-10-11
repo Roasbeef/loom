@@ -30,7 +30,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
-import session_view/text_hygiene
+import tui/placement
 
 /// Maximum complete control message size before JSON parsing.
 pub const max_bytes = 65_536
@@ -436,7 +436,8 @@ pub type Lifecycle {
   /// row or offers an open can forget the member.
   Moving(
     /// The name of the destination in the daemon's `[orchestrators.<name>]`
-    /// table, with control characters removed, so any row may print it.
+    /// table. A name outside that grammar never reaches this type, so it holds
+    /// no whitespace or control character.
     to: String,
   )
 
@@ -1324,14 +1325,23 @@ fn session(body: json.JsonValue) {
 
 // The optional `moving` member, which reads over the `saved` the daemon reports
 // beside it. Like the subtitle it is a display aid, so a member that is not an
-// object with a destination reads as absent and the row keeps the status it
-// came with. The daemon refuses an open of the row either way.
+// object with an orchestrator name reads as absent and the row keeps the status
+// it came with. The daemon refuses an open of the row either way. The name is
+// held to the grammar of an `[orchestrators.<name>]` key, so it has no
+// whitespace or control character: it prints into a table cell and into one
+// token of the plain listing without being cleaned again.
 fn moving_status(body: json.JsonValue, status: Lifecycle) -> Lifecycle {
   let destination =
     field(body, "moving")
     |> result.try(text_at(_, "to", 64))
+    |> result.try(fn(to) {
+      case placement.is_orchestrator_name(to) {
+        True -> Ok(to)
+        False -> Error("invalid orchestrator name")
+      }
+    })
   case destination {
-    Ok(to) -> Moving(text_hygiene.single_line(to))
+    Ok(to) -> Moving(to)
     Error(_) -> status
   }
 }

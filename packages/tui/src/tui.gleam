@@ -1744,7 +1744,7 @@ fn registration_rows(
 fn registration_line(row: control_protocol.Session) -> String {
   row.session_id
   <> "  "
-  <> session_table.state(row.status).0
+  <> session_table.state_token(row.status)
   <> "  "
   <> placement.label(row.executor, row.workspace)
   <> "  "

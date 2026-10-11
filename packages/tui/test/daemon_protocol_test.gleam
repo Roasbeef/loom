@@ -547,15 +547,25 @@ pub fn a_session_row_reads_the_move_it_is_in_test() {
     == [protocol.Moving("laptop")]
 }
 
-// A destination is drawn in a terminal row, so it arrives with control
-// characters already removed.
-pub fn a_destination_with_control_characters_is_cleaned_at_decode_test() {
-  let assert [protocol.Moving(to)] =
-    statuses_of(session_frame(
-      ",\"moving\":{\"op\":\"a\",\"to\":\"lap\\u001b[2Jtop\"}",
-    ))
-    as "a destination with a control character still names a move"
-  assert !string.contains(to, "\u{001B}")
+// A destination is drawn in a table cell and in one whitespace-free token of the
+// plain listing, so a name outside the orchestrator grammar (whitespace, a
+// control character, uppercase, a colon) reads as absent.
+pub fn a_destination_outside_the_name_grammar_reads_as_absent_test() {
+  list.each(
+    [
+      "lap top",
+      "lap\\u001b[2Jtop",
+      "Laptop",
+      "lap:top",
+      "lap\\ttop",
+    ],
+    fn(to) {
+      assert statuses_of(session_frame(
+          ",\"moving\":{\"op\":\"a\",\"to\":\"" <> to <> "\"}",
+        ))
+        == [protocol.Saved]
+    },
+  )
 }
 
 // The member is a display aid, so one that does not name a destination reads as

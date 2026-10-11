@@ -3247,9 +3247,13 @@ that offers no Enter. A record with a `moved` member is the source's tombstone
 for a session another orchestrator owns, and `protocol.listed` leaves it out of
 the page, so no consumer of a page (the table, the picker, the peer-link
 chooser, the job runner) can offer it. A `moving` member without a destination
-reads as absent and a malformed `moved` still hides the row, because a row the
-daemon refuses to open is never worth offering. The destination arrives with
-control characters removed. Neither member is drawn for the receiver's row,
+in the orchestrator-name grammar (`placement.is_orchestrator_name`) reads as
+absent, and a malformed `moved` still hides the row, because a row the daemon
+refuses to open is never worth offering. A destination therefore has no
+whitespace or control character. The plain `loom sessions list` keeps one
+whitespace-free token per state: `session_table.state_token` gives
+`moving:<orchestrator>`, the `key:value` shape `placement.label` uses for
+`executor:name`, and the table keeps "moving to <orchestrator>". Neither member is drawn for the receiver's row,
 which waits for the elsewhere group (protocol-change/085).
 
 `selection.failure` words the two refusals a remote creation can meet:

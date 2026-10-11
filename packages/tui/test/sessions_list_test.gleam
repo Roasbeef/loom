@@ -149,5 +149,5 @@ pub fn a_moving_session_stays_in_the_default_view_test() {
   assert !string.contains(printed, "s-saved")
   assert string.ends_with(printed, "1 saved not shown (use --all)")
   assert tui.format_listing(rows, tui.ResidentOnly, Error("not a tty"))
-    == "s-moving  moving to laptop  /w  n"
+    == "s-moving  moving:laptop  /w  n"
 }
