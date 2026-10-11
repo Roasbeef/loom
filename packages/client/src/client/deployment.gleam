@@ -32,6 +32,15 @@
 //// reaches the connection layer. A filter that names nothing configured
 //// connects to nobody.
 ////
+//// ## The creation panel
+////
+//// The owner's home page draws a card for each executor and pool when the form
+//// for a registered workspace opens (protocol-change/085). `placed` is the read
+//// it makes: the same connection attempts, to the executors alone, and the same
+//// placements `status` reports. `for_page` reduces them to what the page may
+//// know (`web_view/placements`), which is a state, a declaration and a trial
+//// order and no node name.
+////
 //// ## Flow
 ////
 //// `status` → `targets` → `only` → `probe` → `overview` or `selected` →
@@ -55,6 +64,7 @@ import core/json.{type JsonValue}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import web_view/placements as page
 import weft
 
 /// How long one connection attempt may take. A first TLS handshake to a loaded
@@ -534,6 +544,70 @@ fn edge_of(self: String, found: #(Target, Health)) -> Edge {
       Reachable -> Connected
       Down(_) -> Unlinked
     },
+  )
+}
+
+/// The executors and pools a session may be placed on, with the state of each,
+/// without the rest of the deployment: the daemon connects to its executors and
+/// to nothing else. This is the read the web page's creation panel makes when it
+/// opens, which has no use for the orchestrators and should not wait on them.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let reach = deployment.alone("alpha@10.0.0.1")
+/// assert deployment.placed(reach, [], []) == deployment.Placements([], [])
+/// ```
+pub fn placed(
+  reach: Reach,
+  executors: List(Executor),
+  pools: List(Pool),
+) -> Placements {
+  placements(executors, pools, probe(reach, targets([], executors)))
+}
+
+/// Placements as the home page draws them (`web_view/placements`): the page
+/// learns each executor's state and what its operator declared, each pool's
+/// trial order and which of its executors were reached, and no node name,
+/// address or key. `free_scopes` and `contradiction` stay absent until the
+/// executors' own reports exist.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert deployment.for_page(deployment.Placements([], []))
+///   == page.Placements([], [])
+/// ```
+pub fn for_page(placed: Placements) -> page.Placements {
+  page.Placements(
+    executors: list.map(placed.executors, fn(entry) {
+      page.Executor(
+        name: entry.executor.name,
+        report: Some(page.Report(
+          state: case entry.health {
+            Reachable -> page.Ready
+            Down(_) -> page.Down
+          },
+          free_scopes: None,
+          platform: entry.executor.platform,
+          enforcement: option.map(
+            entry.executor.enforcement,
+            executors.enforcement_word,
+          ),
+          toolchains: entry.executor.toolchains,
+          contradiction: None,
+        )),
+      )
+    }),
+    pools: list.map(placed.pools, fn(entry) {
+      page.Pool(
+        name: entry.name,
+        report: Some(page.PoolReport(
+          executors: entry.executors,
+          eligible: entry.eligible,
+        )),
+      )
+    }),
   )
 }
 

@@ -220,6 +220,7 @@ import web_view/names
 import web_view/operator_page
 import web_view/page
 import web_view/peer_links
+import web_view/placements
 import web_view/remembered
 import web_view/renames
 import web_view/sessions
@@ -828,6 +829,25 @@ pub fn upgrade_home(
     None -> []
   }
 
+  // The pools are told the same way and checked again the same way
+  // (`UnknownPool`). The state of each executor and pool, which the creation
+  // panel draws on its cards (protocol-change/085), is the one thing here that
+  // costs a read: the daemon connects to its executors, so the read runs in a
+  // task of its own, started when the owner opens the panel, and the page's
+  // runtime never waits for it. A page without the creation capability is given
+  // no pools and a read that asks nobody.
+  let pools = case creating {
+    Some(_) -> attachment.pools
+    None -> []
+  }
+  let read_placements = attachment.placements
+  let placing = fn(deliver) {
+    case creating {
+      Some(_) -> read_task(deliver, read_placements)
+      None -> Nil
+    }
+  }
+
   // The owner's recent folders (protocol-change/074) go with the creation, since
   // they exist to start one from. A read or a forget runs in a task of its own
   // and the daemon's home directory is read there too, so the runtime never
@@ -935,6 +955,8 @@ pub fn upgrade_home(
       profiles,
       models,
       executors,
+      pools,
+      placing,
       folders,
       signing,
       administering,
@@ -1240,6 +1262,8 @@ fn admit_home(
   profiles: List(String),
   models: List(String),
   executors: List(String),
+  pools: List(String),
+  placing: fn(fn(placements.Read) -> Nil) -> Nil,
   folders: Option(home.Folders),
   signing: Signing,
   administering: Option(fn(fn(sessions.Answer) -> Nil) -> Nil),
@@ -1283,6 +1307,8 @@ fn admit_home(
       profiles:,
       models:,
       executors:,
+      pools:,
+      placements: placing,
       folders:,
       signins: fn(deliver) { read_task(deliver, signing.read) },
       login: signing.login,

@@ -17,6 +17,7 @@ import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import web_view/placements as page
 
 const self = "alpha@10.0.0.1"
 
@@ -480,4 +481,87 @@ pub fn a_daemon_without_distribution_names_itself_and_connects_to_nobody_test() 
   let assert Ok(deployment.Overview(self: asking, others: [], edges: [], ..)) =
     deployment.status(alone, [OrchestratorRole], [], [], [], None)
   assert asking.node == "nonode@nohost"
+}
+
+// The creation panel's read connects to the executors and to nothing else: the
+// orchestrators are not its business, and a slow one must not delay the cards.
+pub fn the_creation_panel_reads_the_executors_alone_test() {
+  let asked = process.new_subject()
+  let placed =
+    deployment.placed(
+      reach(
+        [#("box@10.0.0.2", Ok(Nil)), #("exec2@10.0.0.9", Error(TimedOut))],
+        asked,
+      ),
+      [box(), exec2()],
+      [builders()],
+    )
+  assert list.sort(dialled(asked), string.compare)
+    == ["box@10.0.0.2", "exec2@10.0.0.9"]
+  assert placed.executors
+    == [
+      deployment.ExecutorEntry(box(), Reachable),
+      deployment.ExecutorEntry(exec2(), Down(TimedOut)),
+    ]
+  assert placed.pools
+    == [
+      deployment.PoolEntry(
+        name: "builders",
+        executors: ["exec2", "box"],
+        eligible: ["box"],
+      ),
+    ]
+}
+
+// What the page is told: each executor's state and what its operator declared,
+// each pool's trial order and reachable members, and no node name, address or
+// key. The report has nothing for a free scope count or a contradiction yet.
+pub fn the_page_is_told_states_and_declarations_and_no_node_test() {
+  let placed =
+    deployment.Placements(
+      executors: [
+        deployment.ExecutorEntry(box(), Reachable),
+        deployment.ExecutorEntry(exec2(), Down(Unreachable)),
+      ],
+      pools: [
+        deployment.PoolEntry(
+          name: "builders",
+          executors: ["exec2", "box"],
+          eligible: ["box"],
+        ),
+      ],
+    )
+  assert deployment.for_page(placed)
+    == page.Placements(
+      executors: [
+        page.Executor(
+          "box",
+          Some(page.Report(
+            state: page.Ready,
+            free_scopes: None,
+            platform: None,
+            enforcement: None,
+            toolchains: [],
+            contradiction: None,
+          )),
+        ),
+        page.Executor(
+          "exec2",
+          Some(page.Report(
+            state: page.Down,
+            free_scopes: None,
+            platform: Some("linux/x86_64"),
+            enforcement: Some("enforced"),
+            toolchains: ["codemode"],
+            contradiction: None,
+          )),
+        ),
+      ],
+      pools: [
+        page.Pool(
+          "builders",
+          Some(page.PoolReport(executors: ["exec2", "box"], eligible: ["box"])),
+        ),
+      ],
+    )
 }

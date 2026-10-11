@@ -91,6 +91,7 @@ import storage/snapshot as storage_snapshot
 import web_view/ending.{type Ending}
 import web_view/image
 import web_view/page
+import web_view/placements
 import web_view/sessions as listed_sessions
 import web_view/tool_result
 import weft
@@ -297,6 +298,18 @@ pub type HomeAttachment(instance) {
     /// the profiles they cost no read. A page learns them once, when it opens,
     /// and only an owner's page that holds the creation capability is told.
     executors: List(String),
+    /// The `[pools.<name>]` names of the configuration, in the order it lists
+    /// them, told to the same pages for the same reason and checked again when a
+    /// creation runs (`create_session` answers `pool_unknown`). They are the
+    /// daemon's startup capture and cost no read.
+    pools: List(String),
+    /// Reads the placements the creation panel draws as cards
+    /// (protocol-change/085): the daemon connects to its executors, each bounded
+    /// at one second and all at once, and answers the state of each executor and
+    /// pool as the page may know it. It blocks for that time, so the page never
+    /// calls it from its runtime (`ui_socket.read_task`), and it is asked each
+    /// time the panel opens and not cached.
+    placements: fn() -> placements.Read,
   )
 }
 
@@ -611,6 +624,16 @@ fn home_upgrade(
               |> result.unwrap([])
             },
             executors: list.map(config.executors, fn(executor) { executor.name }),
+            pools: list.map(config.pools, fn(pool) { pool.name }),
+            placements: fn() {
+              deployment.placed(
+                config.deployment,
+                config.executors,
+                config.pools,
+              )
+              |> deployment.for_page
+              |> placements.Reported
+            },
           ),
           open,
           seen,

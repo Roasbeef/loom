@@ -68,6 +68,8 @@ fn start(
     who: fn(deliver) { deliver(None) },
     rename_self:,
     executors: [],
+    pools: [],
+    placements: fn(_) { Nil },
   )
 }
 

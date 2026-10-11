@@ -90,6 +90,8 @@ fn start_with(ceiling: home.Ceiling, read: fn() -> home.Listing) -> home.Start {
     who: fn(deliver) { deliver(None) },
     rename_self: None,
     executors: [],
+    pools: [],
+    placements: fn(_) { Nil },
   )
 }
 

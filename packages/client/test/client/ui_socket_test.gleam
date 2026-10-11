@@ -1087,6 +1087,30 @@ pub fn the_home_socket_admits_a_rename_submit_only_for_an_owner_test() {
   )
 }
 
+// The creation panel's cards (protocol-change/085) add buttons and no event
+// class. A click on a card's Choose button is a click beneath the sessions
+// list's section, where the home already admits a click, and the owner's home
+// admits it as the member's does, since the page draws the panel only for an
+// owner and the component refuses the message from any other page. What the
+// panel could not use stays dropped: the page names its placement itself, so no
+// change or input event from a field is admitted for it, and a click outside
+// the section is no more welcome than it was.
+pub fn a_card_needs_no_new_event_class_test() {
+  let card_button = home.table_path <> "\t2\t1\t2\t0\t1"
+  assert ui_socket.home_owner_accepts(click_on(card_button))
+  assert ui_socket.home_accepts(click_on(card_button))
+  list.each(["change", "input", "keydown", "focus"], fn(name) {
+    assert !ui_socket.home_owner_accepts(
+      "{\"kind\":1,\"path\":\""
+      <> card_button
+      <> "\",\"name\":\""
+      <> name
+      <> "\"}",
+    )
+  })
+  assert !ui_socket.home_owner_accepts(click_on("0\t0\t0"))
+}
+
 // The home's capability to create a session is the owner's on a page minted to
 // operate, as the rename capability is, and the two are separate: each is given
 // by its own function and neither implies the other.
