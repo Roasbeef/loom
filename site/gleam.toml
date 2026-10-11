@@ -1,0 +1,12 @@
+name = "loom_site"
+version = "0.1.0"
+description = "The Loom website: a client-side Lustre single-page app."
+target = "javascript"
+gleam = ">= 1.18.0"
+
+[javascript]
+typescript_declarations = false
+
+[dependencies]
+gleam_stdlib = ">= 1.0.0 and < 2.0.0"
+lustre = "== 5.7.1"
