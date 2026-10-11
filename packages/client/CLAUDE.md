@@ -517,7 +517,8 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   custody once (`manager.custodies`) and applies `with_moves`: a session in a
   move becomes `sessions.Moving(to)` and a tombstone is left out
   (protocol-change/085); a failed custody read leaves the rows as the catalogue
-  says them. The admin snapshot still lists with `listed_entry` alone.
+  says them. The admin drawer lists through `admin_rows`, the same `held_entries`
+  plus the views it draws, so it reads no summary for a tombstone.
   The owner's home creates a session (protocol-change/065, the fourth addendum).
   `home_create_capability(principal, ceiling, ask)` is `Some` for the owner at
   Operator ceiling only, `upgrade_home` passes it as `Start.create` beside

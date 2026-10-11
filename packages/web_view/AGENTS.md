@@ -370,7 +370,8 @@ page keys and nonces, and the relay into the session's gateway.
   (`Live | Saved | Blocked | Moving(to)`; `Blocked` is a saved row no page may
   resume, and `Moving` is a saved row the daemon is handing to the orchestrator
   `to`, drawn as text that says "moving to <to>" with no resume, archive, delete
-  or stop; a session that has moved is not an entry, since its new owner lists
+  or stop (the Admin drawer's row says "moving to <to>" and offers no Make
+  shareable); a session that has moved is not an entry, since its new owner lists
   it),
   `Group` and `grouped(entries)` (groups by project: `Entry.project`
   is the repository root the daemon found for the workspace, `None` for one that is

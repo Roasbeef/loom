@@ -1531,6 +1531,21 @@ pub fn the_question_says_what_a_saved_session_does_test() {
   assert !string.contains(drawn(blocked), "Make shareable")
 }
 
+// A session being handed to another orchestrator says where it goes in its row,
+// as text, and offers no Make shareable, which the registry would refuse until
+// the move ends.
+pub fn a_moving_session_says_where_it_goes_and_offers_nothing_test() {
+  let moving =
+    private_page(
+      sessions.Moving("bravo"),
+      process.new_subject(),
+      grants.Changed,
+    )
+  let html = drawn(moving)
+  assert string.contains(html, "moving to bravo")
+  assert !string.contains(html, "Make shareable")
+}
+
 // While the task runs the page says so and offers no button; the ask is out
 // once, and a second confirm asks nothing.
 pub fn a_running_make_shareable_is_worded_and_blocks_a_second_press_test() {

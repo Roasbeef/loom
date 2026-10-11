@@ -4724,11 +4724,12 @@ fn admin_snapshot(
   use selection <- result.try(chosen_members(attachment, chosen))
   use logins <- result.try(admin_logins(attachment, people.entries))
   let listed = list.take(views, sessions.listed_limit)
-  use summaries <- result.map(admin_summaries(attachment, listed))
+  let #(entries, shown) = admin_rows(attachment.registry, listed)
+  use summaries <- result.map(admin_summaries(attachment, shown))
   grants.Snapshot(
     principals: owner_first(list.map(people.entries, listed_principal)),
     more_principals: more_of(people.remainder),
-    sessions: list.map(listed, listed_entry),
+    sessions: entries,
     selection:,
     logins:,
     summaries:,
@@ -5589,6 +5590,29 @@ pub fn with_moves(
         Ok(entry)
     }
   })
+}
+
+/// The rows the admin drawer lists for a page of the catalogue: the entries, as
+/// the home lists them (`held_entries`), and the views of the sessions that are
+/// drawn, so the drawer reads a summary for no row it leaves out. A session in a
+/// move reads as moving, and a session that has moved is not drawn.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let #(entries, shown) = ui_socket.admin_rows(registry, views)
+/// ```
+@internal
+pub fn admin_rows(
+  registry: manager.Manager(instance),
+  views: List(manager.View),
+) -> #(List(sessions.Entry), List(manager.View)) {
+  let entries = held_entries(registry, views)
+  let shown =
+    list.filter(views, fn(view) {
+      list.any(entries, fn(entry) { entry.id == view.registration.id })
+    })
+  #(entries, shown)
 }
 
 /// The entries with the project of each one's workspace, read from the host's

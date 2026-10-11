@@ -158,12 +158,24 @@ fn pick(
         ]),
         html.span([attribute.class("admin-sub")], [
           html.text(
-            heading.shorten_path(entry.workspace) <> summary(entry, summaries),
+            heading.shorten_path(entry.workspace)
+            <> moving_words(entry)
+            <> summary(entry, summaries),
           ),
         ]),
       ],
     ),
   ])
+}
+
+// The words after a session's path for one being handed to another
+// orchestrator, which the registry will not open until the move ends. The
+// destination is the operator's own configuration, in a text node.
+fn moving_words(entry: Entry) -> String {
+  case entry.residency {
+    sessions.Moving(to) -> " · moving to " <> to
+    sessions.Live | sessions.Saved | sessions.Blocked -> ""
+  }
 }
 
 // The words after a session's path: its people and scope when the registry

@@ -1030,7 +1030,7 @@ The directory holds no state of its own, so it has no model.
   of one daemon only, so they do not reach a session on another orchestrator.
 - **Moves** do not resume inside a file, carry running processes, the memory
   domain, memberships or claims. `sessions.list` records carry the `moving` and
-  `moved` members; the terminal and the web home draw a moving session with its
+  `moved` members; the terminal, the web home and the Admin drawer draw a moving session with its
   destination and leave a moved one out, and the receiver's row is listed only
   on the receiver until the elsewhere group lands.
 - **Provisioning is one-shot.** Certificate rotation and adding a node without

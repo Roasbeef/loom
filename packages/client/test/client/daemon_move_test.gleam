@@ -475,7 +475,7 @@ pub fn the_session_list_marks_a_move_in_flight_and_one_that_finished_test() {
   })
 }
 
-pub fn the_web_listing_marks_a_move_and_leaves_out_a_tombstone_test() {
+pub fn the_web_listing_and_the_admin_drawer_mark_a_move_and_leave_out_a_tombstone_test() {
   moving(fn(ready, port, credential, _recorder) {
     let going = remote(ready, "going")
     let #(socket, _) = wire.connect(port, credential, "/v2/control")
@@ -503,6 +503,17 @@ pub fn the_web_listing_marks_a_move_and_leaves_out_a_tombstone_test() {
         [#(going, sessions.Moving("laptop")), #(stays, sessions.Live)],
         fn(left, right) { string.compare(left.0, right.0) },
       )
+
+    // The admin drawer lists the same rows, and reads a summary for no session
+    // it leaves out.
+    let #(drawn, shown) = ui_socket.admin_rows(ready.registry, views)
+    assert list.map(drawn, fn(entry) { #(entry.id, entry.residency) })
+      == list.map(ui_socket.held_entries(ready.registry, views), fn(entry) {
+        #(entry.id, entry.residency)
+      })
+    assert list.map(shown, fn(view) { view.registration.id })
+      == list.map(drawn, fn(entry) { entry.id })
+    assert !list.any(drawn, fn(entry) { entry.id == gone })
     let _ = ffi_ws.tcp_close(socket)
     Nil
   })
