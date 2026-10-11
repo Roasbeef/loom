@@ -184,8 +184,9 @@ a peer can send, which is scope hygiene and not a security boundary.
   next attempt, up to five minutes later once the backoff has grown; nothing tells
   the sender's drainer that a recipient opened. A message queued while the drainer
   is backed off for older messages waits for the same tick.
-- The TUI does not render the `moving` and `moved` members of a session view. The
-  source keeps a tombstone row, which lists as saved.
+- A session that moved is not listed on its source: `sessions.list` carries `moved`
+  and both clients leave the tombstone out. It lists only on the receiver, until the
+  elsewhere group (protocol-change/085) shows it from the source's side.
 - The receiver identifies the sender by `from_node` through its `[orchestrators]`
   table, as claimed by the sender. Copies refused or abandoned stay in `incoming/`,
   and a failed rename of the moved-away file is not logged.

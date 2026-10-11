@@ -1029,8 +1029,10 @@ The directory holds no state of its own, so it has no model.
   waits for the same tick. Default links (`[peers] default_links`) join sessions
   of one daemon only, so they do not reach a session on another orchestrator.
 - **Moves** do not resume inside a file, carry running processes, the memory
-  domain, memberships or claims, or appear in the web view. The terminal does
-  not render the `moving` and `moved` members of a session view.
+  domain, memberships or claims. `sessions.list` records carry the `moving` and
+  `moved` members; the terminal and the web home draw a moving session with its
+  destination and leave a moved one out, and the receiver's row is listed only
+  on the receiver until the elsewhere group lands.
 - **Provisioning is one-shot.** Certificate rotation and adding a node without
   reissuing the others are later work.
 - **The ledger is one SQLite file per executor.** Corruption affects every

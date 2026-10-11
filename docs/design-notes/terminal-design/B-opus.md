@@ -95,7 +95,7 @@ answers `←` with "daemon control is unavailable". What is wrong with it:
 ### Data
 
 Everything drawn is already in the control protocol. A row is
-`Session` at `tui/daemon/protocol.gleam:452`: identity, workspace, name,
+`Session` at `tui/daemon/protocol.gleam:466`: identity, workspace, name,
 `created_at` and lifecycle. The state words and counts come from
 `Activity` at `tui/daemon/protocol.gleam:356`: state, strands, working,
 approvals, last outcome, last message and model, with up to four
