@@ -94,6 +94,13 @@ pub type Place {
   /// shape (`registered_name`) and that the executor is configured. Whether the
   /// executor has a workspace by that name is learned when the session opens.
   Registered(executor: String, workspace: String)
+
+  /// A workspace registered on every executor of a pool (protocol-change/078,
+  /// 085). The pool is one the page drew from the names the daemon gave it, and
+  /// the workspace is the name the owner typed, judged as a registered
+  /// workspace's is. The daemon picks the executor when the session first opens,
+  /// in the pool's order.
+  Pooled(pool: String, workspace: String)
 }
 
 /// The most bytes a registered workspace name may hold, which is the
@@ -201,6 +208,12 @@ pub type Reason {
   /// opened, so this is a frame the page did not draw (protocol-change/078).
   UnknownExecutor
 
+  /// The pool the form chose is not a `[pools.<name>]` of the daemon's
+  /// configuration. As for an executor, the page offers only the pools it was
+  /// given when it opened, so this is a frame the page did not draw
+  /// (protocol-change/085).
+  UnknownPool
+
   /// The registered workspace name is empty, longer than
   /// `registered_name_limit` bytes, or holds a slash or a control, zero-width or
   /// direction-changing character. A path is refused here as well, because a
@@ -251,6 +264,8 @@ pub fn reason_words(reason: Reason) -> String {
       "That model is not in the configuration now. Reload the page."
     UnknownExecutor ->
       "That executor is not in the daemon's configuration now. Reload the page."
+    UnknownPool ->
+      "That pool is not in the daemon's configuration now. Reload the page."
     InvalidWorkspaceName ->
       "Use the name the workspace is registered under on the executor: up to 128 bytes, with no slash or control characters. It is a name, not a path."
     TooMany -> "You have created many sessions this hour. Try again later."

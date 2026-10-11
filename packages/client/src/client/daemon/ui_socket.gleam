@@ -2633,7 +2633,7 @@ pub fn create_for(
       roles.profile,
       roles.model,
       executor_of(place),
-      "",
+      pool_of(place),
     )
     |> create(principal, _, scope_of(place, sharing))
     |> result.map(fn(view) { #(principal, view) })
@@ -2773,7 +2773,7 @@ fn placed(
     // canonicalized here: only its shape is judged, so a name that could be
     // taken for a path is refused. The executor is judged by the creation, which
     // knows the daemon's configuration.
-    creations.Registered(workspace:, ..) ->
+    creations.Registered(workspace:, ..) | creations.Pooled(workspace:, ..) ->
       creations.registered_name(workspace)
       |> result.replace_error(creations.InvalidWorkspaceName)
     creations.Drawn(workspace:) ->
@@ -2842,18 +2842,32 @@ fn scope_of(
   sharing: creations.Sharing,
 ) -> domain.Scope {
   case place, sharing {
-    creations.Registered(..), _ | _, creations.Shareable -> domain.SessionOnly
+    creations.Registered(..), _
+    | creations.Pooled(..), _
+    | _, creations.Shareable
+    -> domain.SessionOnly
     creations.Drawn(_), creations.Private
     | creations.Typed(_), creations.Private
     -> domain.WorkspacePrivate
   }
 }
 
-// The executor a creation names, or the empty string for a place on this host.
+// The executor a creation names, or the empty string for a place on this host or
+// in a pool.
 fn executor_of(place: creations.Place) -> String {
   case place {
     creations.Registered(executor:, ..) -> executor
-    creations.Drawn(_) | creations.Typed(_) -> ""
+    creations.Pooled(..) | creations.Drawn(_) | creations.Typed(_) -> ""
+  }
+}
+
+// The pool a creation names, or the empty string for any other place. A creation
+// names an executor or a pool, never both: the daemon picks a pool's executor
+// when the session first opens.
+fn pool_of(place: creations.Place) -> String {
+  case place {
+    creations.Pooled(pool:, ..) -> pool
+    creations.Registered(..) | creations.Drawn(_) | creations.Typed(_) -> ""
   }
 }
 
@@ -2869,6 +2883,7 @@ fn creation_refusal(code: String) -> creations.Reason {
     "unknown_profile" -> creations.UnknownProfile
     "unknown_model" -> creations.UnknownModel
     "executor_unknown" -> creations.UnknownExecutor
+    "pool_unknown" -> creations.UnknownPool
     _ -> creations.Unavailable
   }
 }
