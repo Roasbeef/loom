@@ -1,0 +1,83 @@
+# The Loom website, concept B: the explainer
+
+This directory is a separate Gleam project. It compiles to JavaScript and runs in the browser as a single-page [Lustre](https://hexdocs.pm/lustre/) application. It is not part of Loom's daemon, and nothing in `packages/` depends on it.
+
+The landing page is a guided read. Each section explains one idea in a few short paragraphs, and a figure beside the text advances with the scroll position. The same figure has Back, Play and Next buttons, one dot per step and arrow-key handling, so it works without scrolling. The documentation pages are Markdown files that the app fetches and renders.
+
+## Build
+
+You need Gleam (1.18 or later; the repository uses 1.19.0), Erlang/OTP to run the Gleam compiler, and `rsync`.
+
+```sh
+./build.sh
+```
+
+The script runs `gleam build --target javascript`, then writes `dist/`:
+
+| In `dist/` | From |
+|---|---|
+| `index.html` | `index.html` |
+| `site.css`, `content/*.md`, `img/*` | `public/` |
+| `js/<package>/*.mjs` | the compiled modules under `build/dev/javascript` |
+| `.nojekyll` | created, so GitHub Pages serves the files as they are |
+
+There is no bundler. `index.html` loads `js/loom_site/loom_site.mjs` as an ES module, and the browser follows the relative imports. `lustre_dev_tools` is not used, because a copy is enough.
+
+## Preview
+
+```sh
+python3 -m http.server 8702 --directory dist
+```
+
+Then open `http://127.0.0.1:8702/`. Any static file server works. The page cannot be opened from `file://`, because browsers refuse ES modules there.
+
+## Routes
+
+Routes live in the URL fragment, so a deep link loads the single file that GitHub Pages serves.
+
+| Fragment | Page |
+|---|---|
+| `#/` | The landing page. |
+| `#/docs` | The documentation index. |
+| `#/docs/<page>` | One documentation page, for example `#/docs/code-mode`. |
+| `#/docs/<page>/<section>` | The same page, scrolled to a heading, for example `#/docs/code-mode/why-this-is-safe-to-run`. |
+| `#/install` | Alias for `#/docs/getting-started`. |
+
+## Layout of the source
+
+| Path | What it holds |
+|---|---|
+| `src/loom_site.gleam` | The application: model, update, view. |
+| `src/loom_site_ffi.mjs` | The only JavaScript: hash, timers, `fetch`, scrolling and the scroll spy. |
+| `src/site/route.gleam` | Parsing and printing of fragments. |
+| `src/site/inline.gleam`, `markdown.gleam` | Inline marks and the Markdown subset the docs use. |
+| `src/site/figure.gleam`, `svgx.gleam` | The step-through figure and SVG helpers. |
+| `src/site/fig_*.gleam` | One figure each: its drawing and the words of every step. |
+| `src/site/landing.gleam`, `docs.gleam`, `ui.gleam` | Pages and shared chrome. |
+| `public/site.css` | All styling, with a light theme and a dark theme from `prefers-color-scheme`. |
+| `public/content/*.md` | The documentation pages. |
+
+To add a documentation page, write `public/content/<slug>.md` and add a `Page` to `pages()` in `src/site/docs.gleam`. A line `::figure crash` embeds a figure (`crash`, `approval`, `code-mode` or `migration`).
+
+## Accuracy
+
+Every figure names the repository document it follows in the comment at the top of its module. The wording of a step uses the names that document uses. The migration figure follows `docs/architecture/distributed.md` on the distributed-runtime branches (issue #697, PR #923), which is not on `main`, and the site says so where it appears.
+
+## Deploy to GitHub Pages
+
+All asset URLs are relative, so the site works from a project path such as `https://roasbeef.github.io/loom/` as well as from a custom domain. No server rewrite is needed.
+
+This repository does not carry a workflow for it. A workflow would do the following on a push to the branch that Pages publishes:
+
+1. Check out the repository.
+2. Install Erlang/OTP 29 and Gleam 1.19.0 (for example with `erlef/setup-beam`).
+3. Run `site/build.sh`.
+4. Upload `site/dist` with `actions/upload-pages-artifact` and publish it with `actions/deploy-pages`.
+
+Set the repository's Pages source to GitHub Actions. To publish by hand instead, copy the contents of `site/dist` to the `gh-pages` branch.
+
+## Dependencies
+
+The project depends on `gleam_stdlib` and `lustre` (pinned to 5.7.1, the version of the daemon's web view). Lustre brings `gleam_json`, `gleam_otp`, `gleam_erlang`, `exception` and `houdini` in `manifest.toml`, and the browser loads a few of their modules because `lustre.mjs` imports them. There is no JavaScript dependency.
+
+The page loads about 100 small module files, 1.3 MB unminified, from `dist/js`. That is fine over HTTP/2, which GitHub Pages uses. If it ever matters, bundle `js/loom_site/loom_site.mjs` with a tool such as esbuild as a last build step and point `index.html` at the result.
