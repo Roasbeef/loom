@@ -9,6 +9,7 @@
 import client/daemon/limits
 import client/daemon/manager
 import client/daemon/root
+import client/daemon/ui_socket
 import client/daemon_server_test as wire
 import client/orchestrators
 import client/remote/orchestrator_port
@@ -23,11 +24,13 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import host/bootstrap
+import host/claim
 import simplifile
 import storage/access
 import storage/catalogue
 import storage/domain
 import support/internal/ffi_ws
+import web_view/sessions
 import weft/actor
 
 fn field(value, key) {
@@ -467,6 +470,39 @@ pub fn the_session_list_marks_a_move_in_flight_and_one_that_finished_test() {
     let assert Ok(_) = manager.abort_move(ready.registry, going, op: going_op)
     let again = listed(socket, 9, going)
     assert !has(again, "moving")
+    let _ = ffi_ws.tcp_close(socket)
+    Nil
+  })
+}
+
+pub fn the_web_listing_marks_a_move_and_leaves_out_a_tombstone_test() {
+  moving(fn(ready, port, credential, _recorder) {
+    let going = remote(ready, "going")
+    let #(socket, _) = wire.connect(port, credential, "/v2/control")
+    let _hello = wire.frame(socket, within_ms: 1000)
+    let _ = move(socket, 1, going, "laptop", ready.epoch)
+    let gone = remote(ready, "gone-away-list")
+    let finishing = move(socket, 2, gone, "laptop", ready.epoch)
+    let assert json.String(op) = field(field(finishing, "body"), "op")
+    let assert Ok(_) = manager.finish_move(ready.registry, gone, op:)
+    let stays = local(ready, "stays-put")
+
+    // The home and the sidebar read the same page the terminal does and apply
+    // the page's custody to it: the session on its way is a moving row, the
+    // tombstone is not listed, and the session that never moved is untouched.
+    let assert Ok(digest) = access.credential_digest(claim.digest(credential))
+      as "the owner's digest is valid"
+    let assert Ok(#(_, views)) =
+      manager.authorized_page(ready.registry, digest, after: "")
+    let rows =
+      list.map(ui_socket.held_entries(ready.registry, views), fn(entry) {
+        #(entry.id, entry.residency)
+      })
+    assert list.sort(rows, fn(left, right) { string.compare(left.0, right.0) })
+      == list.sort(
+        [#(going, sessions.Moving("laptop")), #(stays, sessions.Live)],
+        fn(left, right) { string.compare(left.0, right.0) },
+      )
     let _ = ffi_ws.tcp_close(socket)
     Nil
   })

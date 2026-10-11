@@ -513,6 +513,11 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   is `deliver(answer)`, which the component dispatches as `Linked`. `resumed_for`
   is the socket's gate: an observer role is refused `NotHeld` before any task.
   `listed_entry` maps `Reserved` and `RecoveryBlocked` to `sessions.Blocked`.
+  The home and the sidebar list through `held_entries`, which reads the page's
+  custody once (`manager.custodies`) and applies `with_moves`: a session in a
+  move becomes `sessions.Moving(to)` and a tombstone is left out
+  (protocol-change/085); a failed custody read leaves the rows as the catalogue
+  says them. The admin snapshot still lists with `listed_entry` alone.
   The owner's home creates a session (protocol-change/065, the fourth addendum).
   `home_create_capability(principal, ceiling, ask)` is `Some` for the owner at
   Operator ceiling only, `upgrade_home` passes it as `Start.create` beside

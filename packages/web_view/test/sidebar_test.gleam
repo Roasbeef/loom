@@ -937,3 +937,22 @@ pub fn the_activity_is_read_on_its_own_faster_cadence_test() {
   let _ = run(model, component.Ticked)
   assert process.receive(asked, 0) == Ok(["B", "A"])
 }
+
+// A session being handed to another orchestrator is in the saved region, says
+// where it goes in place of "saved", and draws no resume press, which the
+// registry would refuse until the move ends. A saved row beside it keeps its
+// press.
+pub fn a_moving_row_says_where_it_goes_and_has_no_press_test() {
+  let rows = [
+    entry("A", "web ui", "/src/loom", 100, Live),
+    entry("Y", "older", "/src/weft", 60, Saved),
+    entry("Z", "leaving", "/src/weft", 50, sessions.Moving("bravo")),
+  ]
+  let drawn = operator_html(listed_page(rows))
+  let assert Ok(sidebar) = sidebar_of(drawn)
+  assert string.contains(sidebar, "leaving")
+  assert string.contains(sidebar, "moving to bravo")
+  assert list.length(string.split(sidebar, "title=\"Resume this session\""))
+    == 2
+  assert string.contains(sidebar, ">2 saved<")
+}

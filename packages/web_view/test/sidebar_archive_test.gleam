@@ -23,6 +23,7 @@ import web_view/home
 import web_view/operator_page
 import web_view/sessions.{type Entry, Blocked, Entry, Live, Saved}
 import web_view/signins
+import web_view/view/archiving
 
 @external(erlang, "page_events_ffi", "handlers")
 fn handlers(view: Element(message)) -> List(String)
@@ -503,4 +504,27 @@ pub fn a_busy_rows_question_says_it_is_mid_turn_test() {
   let html = home_html(run(idle, home.SidebarArchiveAsked("B")))
   assert string.contains(html, "Stop this session, then archive it?")
   assert !string.contains(html, "mid-turn")
+}
+
+// A session being handed to another orchestrator draws no archive button, since
+// the registry refuses to archive it until the move ends. The rows beside it
+// keep theirs, and a press forged for it asks for the archive the registry then
+// refuses as moving.
+pub fn a_moving_row_draws_no_archive_button_test() {
+  let asked = process.new_subject()
+  let rows = [
+    entry("C", "hex release", "/src/weft", Saved),
+    entry("Z", "leaving", "/src/weft", sessions.Moving("bravo")),
+  ]
+  let owner =
+    opened(
+      home.Start(..home_start(Some(answering(asked))), sessions: fn(deliver) {
+        deliver(home.Listed(rows))
+      }),
+    )
+  let sidebar = sidebar_of(home_html(owner))
+  assert string.contains(sidebar, "moving to bravo")
+  assert list.length(string.split(sidebar, "class=\"session-archive\"")) == 2
+  assert archiving.action(entry("Z", "leaving", "/", sessions.Moving("bravo")))
+    == actions.Archive
 }

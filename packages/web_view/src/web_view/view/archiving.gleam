@@ -40,7 +40,7 @@ import lustre/element.{type Element}
 import lustre/element/html
 import lustre/event
 import web_view/actions.{type Action, type Stage}
-import web_view/sessions.{type Entry, Blocked, Live, Saved}
+import web_view/sessions.{type Entry, Blocked, Live, Moving, Saved}
 
 /// What a page offers for archiving a sidebar row.
 pub type Archiving(message) {
@@ -76,7 +76,9 @@ pub type Turn {
 
 /// The action a press on `entry`'s button means: a running row is stopped and
 /// archived, and a saved or blocked one is archived. It is read from the
-/// catalogue's entry when the page asks, and never from the browser.
+/// catalogue's entry when the page asks, and never from the browser. A moving
+/// row draws no button, so a press for one is stale or forged, and asks for the
+/// archive the registry refuses as `moving`.
 ///
 /// ## Examples
 ///
@@ -86,7 +88,7 @@ pub type Turn {
 pub fn action(entry: Entry) -> Action {
   case entry.residency {
     Live -> actions.StopArchive
-    Saved | Blocked -> actions.Archive
+    Saved | Blocked | Moving(_) -> actions.Archive
   }
 }
 
@@ -140,7 +142,9 @@ pub fn stage(archiving: Archiving(message)) -> Stage {
   }
 }
 
-/// The quiet button of a row, or nothing. It is a 24px square holding one
+/// The quiet button of a row, or nothing: a row whose session is moving has none,
+/// since the registry refuses to archive it until the move ends. It is a 24px
+/// square holding one
 /// glyph, so it can sit at the row's right edge and never lie over the name,
 /// the dot or the activity word. Its `aria-label` and `title` say what it does:
 /// "Stop and archive" on a running row and "Archive" otherwise. The glyph
@@ -159,16 +163,16 @@ pub fn button(
   archiving: Archiving(message),
   entry: Entry,
 ) -> List(Element(message)) {
-  case archiving {
-    Never -> []
-    Offered(ask:, stage:, ..) -> {
-      let #(label, title, glyph) = case entry.residency {
+  case archiving, entry.residency {
+    Never, _ | Offered(..), Moving(_) -> []
+    Offered(ask:, stage:, ..), residency -> {
+      let #(label, title, glyph) = case residency {
         Live -> #(
           "Stop and archive",
           "Stop this session, then archive it: hide it and keep its history",
           "■",
         )
-        Saved | Blocked -> #(
+        Saved | Blocked | Moving(_) -> #(
           "Archive",
           "Archive this session: hide it and keep its history",
           "×",

@@ -1379,7 +1379,7 @@ fn home_read(
     manager.authorized_page(attachment.registry, attachment.digest, after: "")
     |> result.map_error(authentication_failure),
   )
-  let entries = list.map(views, listed_entry)
+  let entries = held_entries(attachment.registry, views)
 
   // A failed read of the roles leaves the rows without one, which is the owner's
   // case too: a row that says less than it could is the safe way to be wrong.
@@ -1744,7 +1744,7 @@ fn listed(attachment: server.Attachment(instance)) -> List(sessions.Entry) {
   case
     manager.authorized_page(attachment.registry, attachment.digest, after: "")
   {
-    Ok(#(_, views)) -> list.map(views, listed_entry) |> with_projects
+    Ok(#(_, views)) -> held_entries(attachment.registry, views) |> with_projects
     Error(_) -> []
   }
 }
@@ -5538,6 +5538,57 @@ pub fn listed_entry(view: manager.View) -> sessions.Entry {
       executor -> Some(executor)
     },
   )
+}
+
+/// The entries of a page of the catalogue that this daemon still serves, with
+/// the move each is in: the page's custody is read once
+/// (`manager.custodies`) and applied by `with_moves`. A failed read leaves the
+/// rows as the catalogue says them, which is the safe way to be wrong, since the
+/// registry refuses an open, archive or delete of a session in a move on its own.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.held_entries(registry, views)
+/// ```
+@internal
+pub fn held_entries(
+  registry: manager.Manager(instance),
+  views: List(manager.View),
+) -> List(sessions.Entry) {
+  let entries = list.map(views, listed_entry)
+  case manager.custodies(registry, list.map(entries, fn(entry) { entry.id })) {
+    Ok(custodies) -> with_moves(entries, custodies)
+    Error(_) -> entries
+  }
+}
+
+/// The entries with their moves applied. A session this catalogue is handing to
+/// another orchestrator becomes a `Moving` row naming the destination, and a
+/// session it has handed over is dropped: the conversation lives on the other
+/// orchestrator, which lists it, and the tombstone here is not something a page
+/// can open (protocol-change/085). A session with no custody pair, a resident
+/// one and an imported one keep their rows.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.with_moves(entries, [#(id, catalogue.Moving(op: "a", to: "bravo"))])
+/// ```
+@internal
+pub fn with_moves(
+  entries: List(sessions.Entry),
+  custodies: List(#(String, catalogue.Custody)),
+) -> List(sessions.Entry) {
+  list.filter_map(entries, fn(entry) {
+    case list.key_find(custodies, entry.id) {
+      Ok(catalogue.Moving(to:, ..)) ->
+        Ok(sessions.Entry(..entry, residency: sessions.Moving(to:)))
+      Ok(catalogue.Moved(..)) -> Error(Nil)
+      Ok(catalogue.Resident) | Ok(catalogue.Imported(..)) | Error(Nil) ->
+        Ok(entry)
+    }
+  })
 }
 
 /// The entries with the project of each one's workspace, read from the host's

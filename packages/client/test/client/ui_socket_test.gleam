@@ -1425,6 +1425,32 @@ pub fn a_row_says_the_role_the_membership_holds_test() {
   assert ui_socket.with_roles([entry], []) == [entry]
 }
 
+// A move applies to the rows by session identity. A session this catalogue is
+// handing away becomes a `Moving` row naming the destination, one it has handed
+// over is left out because its new owner lists it, and a resident session, an
+// imported one and one with no custody pair keep their rows.
+pub fn a_move_marks_a_row_and_a_tombstone_is_left_out_test() {
+  let entry = ui_socket.listed_entry(view(manager.Saved))
+  let row = fn(id) { sessions.Entry(..entry, id:) }
+  let custodies = [
+    #("going", catalogue.Moving(op: "a", to: "bravo")),
+    #("gone", catalogue.Moved(op: "b", to: "bravo")),
+    #("here", catalogue.Resident),
+    #("arrived", catalogue.Imported(op: "c", from: "bravo")),
+  ]
+  assert ui_socket.with_moves(
+      [row("going"), row("gone"), row("here"), row("arrived"), row("unread")],
+      custodies,
+    )
+    == [
+      sessions.Entry(..row("going"), residency: sessions.Moving("bravo")),
+      row("here"),
+      row("arrived"),
+      row("unread"),
+    ]
+  assert ui_socket.with_moves([entry], []) == [entry]
+}
+
 // Protocol-change/065, the tenth pull request: the home's "Your name" form is
 // beneath the account panel, so every home's socket admits a submit there, alone
 // or in a batch, and only there. The panel's own path, a sibling that shares its

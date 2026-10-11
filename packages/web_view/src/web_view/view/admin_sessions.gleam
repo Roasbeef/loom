@@ -308,7 +308,8 @@ fn make_shareable(
         presses,
         busy,
       )
-    _, Some(sessions.Blocked) | _, None -> element.none()
+    _, Some(sessions.Blocked) | _, Some(sessions.Moving(_)) | _, None ->
+      element.none()
   }
 }
 
