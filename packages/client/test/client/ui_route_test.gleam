@@ -26,6 +26,7 @@ import client/daemon/ui_sessions
 import client/daemon/ui_socket
 import client/daemon_claim_test
 import client/daemon_server_test
+import client/deployment
 import client/gateway
 import client/peer_mail
 import client/peers
@@ -212,6 +213,7 @@ fn fixture_lasting(
       pools: [],
       directory: session_directory.none(),
       movers: session_movers.idle(),
+      deployment: deployment.alone("nonode@nohost"),
       generator: fn() { ids.generator(clock.fixed(1_700_000_000_000), 123) },
       session_upgrade: fn(_, _) { stub(501, "v2 adapter absent") },
       ui: Some(server.Ui(

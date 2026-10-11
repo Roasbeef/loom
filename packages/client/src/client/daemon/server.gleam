@@ -53,6 +53,7 @@ import client/daemon/ui_relay
 import client/daemon/ui_result
 import client/daemon/ui_sessions
 import client/daemon/upgrade_log
+import client/deployment
 import client/directory/deletion
 import client/directory/member
 import client/directory/store
@@ -119,6 +120,10 @@ pub type Config(instance) {
     /// orchestrators it may name (protocol-change/078, phase 5).
     /// `session_movers.idle()` when there are none.
     movers: session_movers.Control,
+    /// How this daemon connects to the nodes of its own configuration, and what
+    /// it calls itself, which `deployment.status` reads (protocol-change/085).
+    /// `deployment.alone` when the daemon has no distribution.
+    deployment: deployment.Reach,
     /// Fresh entropy-seeded generator for explicit creation.
     generator: fn() -> ids.Generator,
     /// A v2-only conversation adapter, responsible for transferring its permit.
@@ -2217,6 +2222,7 @@ fn control(
           let after = case request.command {
             protocol.Shutdown(_) -> DrainDaemon
             protocol.DirectoryStatus -> KeepServing
+            protocol.DeploymentStatus(_) -> KeepServing
             protocol.InspectPeers(..)
             | protocol.LinkPeers(..)
             | protocol.UnlinkPeers(..)
@@ -2280,6 +2286,7 @@ fn control_use(command: protocol.Command) {
     | protocol.GetSession(_)
     | protocol.WorkspaceDefault(_)
     | protocol.DirectoryStatus
+    | protocol.DeploymentStatus(_)
     | protocol.GetOperation(..) -> root.ControlRead
     protocol.LinkPeers(..)
     | protocol.UnlinkPeers(..)
@@ -2581,6 +2588,39 @@ fn directory_status_json(status: member.Status) -> JsonValue {
       },
     ]),
   )
+}
+
+// The `deployment.status` read. The daemon connects only to the nodes of its own
+// configuration: the request's `node` key is resolved against that configuration
+// before anything is dialled, so an unknown key is `not_found` and connects to
+// nobody. The daemon is an orchestrator, and a directory member as well when it
+// stands in the cluster.
+fn deployment_status(
+  config: Config(instance),
+  node: Option(String),
+) -> Result(#(String, JsonValue), String) {
+  let roles = case config.directory.standing {
+    session_directory.Member(..) -> [
+      deployment.OrchestratorRole,
+      deployment.MemberRole,
+    ]
+    session_directory.NotMember -> [deployment.OrchestratorRole]
+  }
+  deployment.status(
+    config.deployment,
+    roles,
+    config.movers.orchestrators,
+    config.executors,
+    config.pools,
+    node,
+  )
+  |> result.replace_error("not_found")
+  |> result.map(fn(snapshot) {
+    #(
+      "deployment.status",
+      deployment.to_json(snapshot, bootstrap.system_time_ms()),
+    )
+  })
 }
 
 fn no_quorum(reason: String) -> Refused {
@@ -3301,6 +3341,10 @@ fn dispatch_class(
         session_directory.Member(status:) ->
           Ok(#("directory.status", directory_status_json(status())))
       }
+    }
+    protocol.DeploymentStatus(node) -> {
+      use Nil <- result.try(owner(principal))
+      deployment_status(config, node)
     }
     protocol.Shutdown(supplied) -> {
       use Nil <- result.try(owner(principal))

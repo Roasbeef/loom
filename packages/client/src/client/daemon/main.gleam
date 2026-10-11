@@ -38,6 +38,7 @@ import client/daemon/ui_assets
 import client/daemon/ui_login
 import client/daemon/ui_sessions
 import client/daemon/ui_socket
+import client/deployment
 import client/directory/deletion
 import client/directory/member
 import client/directory/migrate
@@ -768,6 +769,17 @@ fn session_directory_of(
   }
 }
 
+// How `deployment.status` connects to the nodes of this daemon's own
+// configuration: over the distribution it started, under its own node name. A
+// daemon with no `[distribution]` table has no peers to connect to.
+fn deployment_reach(config: Config) -> deployment.Reach {
+  let self = atom.to_string(node.name(node.self()))
+  case config.membership {
+    Some(membership) -> deployment.over(membership, self)
+    None -> deployment.alone(self)
+  }
+}
+
 // The record writes, for a member that is an orchestrator: one that places
 // sessions on executors or lists another orchestrator. An executor member
 // lists neither, and so has no writes.
@@ -1454,6 +1466,7 @@ pub fn listen_moving(
       pools: config.pools,
       directory: session_directory_of(config, ready.registry),
       movers:,
+      deployment: deployment_reach(config),
       generator: fn() {
         ids.generator(
           clock.from_function(ffi_os.system_time_ms),

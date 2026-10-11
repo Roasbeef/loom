@@ -9,6 +9,7 @@ import client/daemon/manager
 import client/daemon/peer_cli
 import client/daemon/root
 import client/daemon/server
+import client/deployment
 import client/executors
 import client/gateway_test
 import client/peer_mail
@@ -140,6 +141,38 @@ pub fn fixture_moving(
   movers: session_movers.Control,
   run,
 ) {
+  fixture_reaching(
+    connection_limits,
+    peer_endpoint,
+    build,
+    asked,
+    movers,
+    deployment.alone("nonode@nohost"),
+    run,
+  )
+}
+
+/// `fixture_moving` with the way the daemon connects to the nodes of its own
+/// configuration, for a test of `deployment.status`. The default is
+/// `deployment.alone`, which connects to nobody. The daemon's executor is
+/// `build-box` on a placeholder node, and the test's `Reach` says which nodes
+/// answer.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fixture_reaching(limits.defaults, fn(_) { None }, build, stub, movers, reach, run)
+/// ```
+@internal
+pub fn fixture_reaching(
+  connection_limits: limits.Limits,
+  peer_endpoint,
+  build,
+  asked: session_directory.Directory,
+  movers: session_movers.Control,
+  reach: deployment.Reach,
+  run,
+) {
   let directory =
     "build/test_db/daemon-wire-"
     <> bit_array.base16_encode(token.production_entropy()(8))
@@ -177,6 +210,7 @@ pub fn fixture_moving(
       ],
       directory: asked,
       movers:,
+      deployment: reach,
       generator: fn() { ids.generator(clock.fixed(1_700_000_000_000), 123) },
       session_upgrade: fn(_, _) {
         response.new(501)
@@ -1977,6 +2011,7 @@ pub fn a_homes_activity_read_is_a_state_word_for_each_held_answer_test() {
           pools: [],
           directory: session_directory.none(),
           movers: session_movers.idle(),
+          deployment: deployment.alone("nonode@nohost"),
           generator: fn() { ids.generator(clock.fixed(1_700_000_000_000), 123) },
           session_upgrade: fn(_, _) {
             response.new(501)
