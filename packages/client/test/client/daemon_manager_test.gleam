@@ -2295,6 +2295,52 @@ pub fn a_finished_move_leaves_a_tombstone_that_answers_for_the_session_test() {
   assert catalogue.close(store) == Ok(Nil)
 }
 
+pub fn one_custody_read_answers_for_a_whole_page_of_sessions_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let #(owner, _member) = owner_and_member(store)
+  let going = remote_saved(store, 926)
+  let gone = remote_saved(store, 927)
+  let staying = remote_saved(store, 928)
+  let registry = start(store, 1, fn(record, _) { Ok(record.id) })
+  let assert Ok(_) =
+    manager.begin_move(
+      registry,
+      owner,
+      "daemon-test",
+      going.id,
+      to: "laptop",
+      op: op_a,
+    )
+  let assert Ok(_) =
+    manager.begin_move(
+      registry,
+      owner,
+      "daemon-test",
+      gone.id,
+      to: "desk",
+      op: op_b,
+    )
+  let assert Ok(_) = manager.finish_move(registry, gone.id, op: op_b)
+
+  // Each identity is paired with what `custody` says of it, in the order asked.
+  // A session that has not moved is `Resident`, and one the catalogue does not
+  // hold has no pair, so a listing never fails on a row it cannot read.
+  assert manager.custodies(registry, [
+      going.id,
+      "not-a-session",
+      staying.id,
+      gone.id,
+    ])
+    == Ok([
+      #(going.id, catalogue.Moving(op: op_a, to: "laptop")),
+      #(staying.id, catalogue.Resident),
+      #(gone.id, catalogue.Moved(op: op_b, to: "desk")),
+    ])
+  assert manager.custodies(registry, []) == Ok([])
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
 // A scratch directory for the files an import places.
 fn scratch(label: String) -> String {
   let assert Ok(here) = simplifile.current_directory()

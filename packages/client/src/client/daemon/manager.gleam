@@ -639,6 +639,13 @@ type Message(instance) {
   /// this catalogue does not hold is `Catalogue(Missing)`.
   Visibility(String, Subject(Result(catalogue.Visibility, Error)))
 
+  /// Who serves each of a page of sessions, read in one registry turn, for a
+  /// listing that marks the sessions that are moving or have moved.
+  Custodies(
+    List(String),
+    Subject(Result(List(#(String, catalogue.Custody)), Error)),
+  )
+
   /// The owner's request to hand a session to the orchestrator named, under the
   /// operation identity the caller minted: the caller, the epoch, the session,
   /// the destination and the identity.
@@ -1983,6 +1990,31 @@ pub fn visibility(
   |> result.unwrap(Error(Unavailable))
 }
 
+/// Reads who serves each of the sessions named, in one registry turn, so a
+/// listing of a page marks the moving and moved sessions with one call and not
+/// one for each row.
+///
+/// The answer pairs each identity with what `custody` would say of it, in the
+/// order asked. A session the catalogue does not hold, and one whose stored move
+/// row does not decode, has no pair: a listing is a display, and a row that
+/// shows less than it could is the safe way to be wrong, since `open`, `restore`
+/// and `delete` read the row again and refuse on their own.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.custodies(registry, [session_id])
+/// //   == Ok([#(session_id, catalogue.Resident)])
+/// ```
+@internal
+pub fn custodies(
+  manager: Manager(instance),
+  ids: List(String),
+) -> Result(List(#(String, catalogue.Custody)), Error) {
+  call.try_call(manager.commands, waiting: 5000, sending: Custodies(ids, _))
+  |> result.unwrap(Error(Unavailable))
+}
+
 /// Begins handing a session to the orchestrator `to` under the move `op`, as
 /// the owner, in one registry turn: the intent is committed and the session's
 /// slot is stopped together, so no runtime can open the store after the intent
@@ -2670,6 +2702,16 @@ fn handle(
         reply,
         catalogue.visibility(book.catalogue, id) |> result.map_error(Catalogue),
       )
+      sm.keep(book)
+    }
+    Custodies(ids, reply) -> {
+      let read =
+        list.filter_map(ids, fn(id) {
+          catalogue.custody(book.catalogue, id)
+          |> result.map(fn(custody) { #(id, custody) })
+          |> result.replace_error(Nil)
+        })
+      process.send(reply, Ok(read))
       sm.keep(book)
     }
     BeginMove(caller, epoch, id, to, op, reply) -> {

@@ -525,6 +525,8 @@ Each session record:
 | `subtitle` | string | optional | The first line of the first prompt a person sent the session, at most 60 characters, derived once by the daemon and never changed ([protocol-change/067](../protocol-change/067-session-subtitle.md)). Omitted when the session has none. A client that does not know the member ignores it; a client that does treats a value that is not a nonblank string of at most 60 characters as absent. |
 | `executor` | string | optional | The executor the session's `workspace` is registered on ([protocol-change/078](../protocol-change/078-distributed-runtime.md)). Present only for a session created with an `executor`, so the record of a local session is unchanged. When it is present `workspace` is a name and not a path on the daemon's host. A client that does not know the member ignores it. |
 | `pool` | string | optional | The executor pool the session was created in ([protocol-change/078](../protocol-change/078-distributed-runtime.md), the addendum on pools). Present only for a session created with a `pool`. Such a session has no `executor` member until its first open chooses one, and carries both afterwards. A client that does not know the member ignores it. |
+| `moving` | object | optional | While a move to another orchestrator is in flight: `op` and `to`, as section 3.5 gives them. The session is stopped and still reads `saved`, and it cannot be opened here. |
+| `moved` | object | optional | After the move finished: `to`, the orchestrator that owns the session now. The record is this daemon's tombstone, and a client does not list it as a session it can open ([protocol-change/085](../protocol-change/085-distributed-admin-surface.md)). |
 
 Source: (`client/daemon/server.gleam:829-837`).
 
@@ -576,7 +578,9 @@ Errors: `forbidden` when the credential has no membership,
 A session whose move to another orchestrator is in flight or finished carries
 one more member (protocol-change/078, phase 5). Neither member is present for a
 session that is not moving and has not moved, so its record is what it was
-before moves existed.
+before moves existed. `sessions.list` (section 3.4) carries the same two members
+on its records, worded alike, so a client draws a move from a listing without a
+`sessions.get` for each row.
 
 | Member | Type | Presence | Meaning |
 |---|---|---|---|

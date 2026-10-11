@@ -2771,8 +2771,8 @@ fn dispatch_class(
         |> result.map_error(admin_error_code),
       )
       use Nil <- result.try(check_revision(revision, current))
-      use bounded <- result.try(page_prefix(views, 60_000, []))
-      Ok(#("sessions.archived", page_body(bounded, current)))
+      use bounded <- result.try(page_prefix(views, 60_000, [], view_json))
+      Ok(#("sessions.archived", page_body(bounded, current, view_json)))
     }
     protocol.IsolateSession(id, supplied) -> {
       use selected <- result.try(
@@ -3059,8 +3059,19 @@ fn dispatch_class(
         |> result.map_error(error_code),
       )
       use Nil <- result.try(check_revision(revision, current))
-      use bounded <- result.try(page_prefix(views, 60_000, []))
-      Ok(#("sessions.list", page_body(bounded, current)))
+
+      // One custody read for the page, so the byte bound below counts the
+      // `moving` and `moved` members a row carries.
+      use custodies <- result.try(
+        manager.custodies(
+          state.registry,
+          list.map(views, fn(view) { view.registration.id }),
+        )
+        |> result.map_error(error_code),
+      )
+      let encode = listed_json(custodies)
+      use bounded <- result.try(page_prefix(views, 60_000, [], encode))
+      Ok(#("sessions.list", page_body(bounded, current, encode)))
     }
     protocol.SessionActivity(sessions, supplied) -> {
       use Nil <- result.try(epoch(state, supplied))
@@ -3694,26 +3705,52 @@ fn with_custody(
   id: String,
   body: JsonValue,
 ) -> JsonValue {
-  case manager.custody(state.registry, id), body {
-    Ok(catalogue.Moving(op:, to:)), json.Object(fields) ->
-      json.Object(
-        list.append(fields, [
-          #(
-            "moving",
-            json.Object([
-              #("op", json.String(op)),
-              #("to", json.String(to)),
-            ]),
-          ),
-        ]),
-      )
-    Ok(catalogue.Moved(to:, ..)), json.Object(fields) ->
-      json.Object(
-        list.append(fields, [
-          #("moved", json.Object([#("to", json.String(to))])),
-        ]),
-      )
-    _, _ -> body
+  case manager.custody(state.registry, id) {
+    Ok(custody) -> with_custody_members(body, custody)
+    Error(_) -> body
+  }
+}
+
+// The members one custody adds to a record, which `sessions.get` and
+// `sessions.list` share so the two cannot word a move differently. A resident
+// session, and one this catalogue imported, add none.
+fn with_custody_members(
+  body: JsonValue,
+  custody: catalogue.Custody,
+) -> JsonValue {
+  case body {
+    json.Object(fields) ->
+      json.Object(list.append(fields, custody_members(custody)))
+    other -> other
+  }
+}
+
+fn custody_members(custody: catalogue.Custody) -> List(#(String, JsonValue)) {
+  case custody {
+    catalogue.Moving(op:, to:) -> [
+      #(
+        "moving",
+        json.Object([#("op", json.String(op)), #("to", json.String(to))]),
+      ),
+    ]
+    catalogue.Moved(to:, ..) -> [
+      #("moved", json.Object([#("to", json.String(to))])),
+    ]
+    catalogue.Resident | catalogue.Imported(..) -> []
+  }
+}
+
+// The encoder of a `sessions.list` record: the plain view, with the move
+// members of the custody read for its page. A session with no entry in
+// `custodies` is encoded as a plain view.
+fn listed_json(
+  custodies: List(#(String, catalogue.Custody)),
+) -> fn(manager.View) -> JsonValue {
+  fn(view: manager.View) {
+    case list.key_find(custodies, view.registration.id) {
+      Ok(custody) -> with_custody_members(view_json(view), custody)
+      Error(Nil) -> view_json(view)
+    }
   }
 }
 
@@ -3759,28 +3796,42 @@ fn check_revision(expected, actual) {
   }
 }
 
-fn page_body(views: List(manager.View), revision) {
+fn page_body(
+  views: List(manager.View),
+  revision,
+  encode: fn(manager.View) -> JsonValue,
+) {
   let continuation = case list.last(views) {
     Ok(view) -> json.String(view.registration.id)
     Error(Nil) -> json.Null
   }
   json.Object([
     #("revision", json.Int(revision)),
-    #("sessions", json.Array(list.map(views, view_json))),
+    #("sessions", json.Array(list.map(views, encode))),
     #("after", continuation),
   ])
 }
 
 // Stop on an authorized record boundary; the next request resumes after the
 // final emitted ID. The reserve covers envelope, revision, and continuation.
-fn page_prefix(views: List(manager.View), remaining: Int, accumulated) {
+fn page_prefix(
+  views: List(manager.View),
+  remaining: Int,
+  accumulated,
+  encode: fn(manager.View) -> JsonValue,
+) {
   case views {
     [] -> Ok(list.reverse(accumulated))
     [view, ..rest] -> {
-      let bytes = view_json(view) |> json.to_string |> string.byte_size
+      let bytes = encode(view) |> json.to_string |> string.byte_size
       case bytes <= remaining, accumulated {
         True, _ ->
-          page_prefix(rest, remaining - bytes - 1, [view, ..accumulated])
+          page_prefix(
+            rest,
+            remaining - bytes - 1,
+            [view, ..accumulated],
+            encode,
+          )
         False, [] -> Error("metadata_too_large")
         False, [_, ..] -> Ok(list.reverse(accumulated))
       }

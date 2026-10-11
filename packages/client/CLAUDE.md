@@ -7432,7 +7432,9 @@ the protocol-change/078 addendum on moving a session have the protocol.
   `Config.movers.orchestrators`, then `inbound_settled` for an imported session,
   then `manager.begin_move`, then
   `Config.movers.begin`), the `moving` and `moved` members of `sessions.get`
-  (`with_custody`), `moving` on `open` (`in_flight`), and `not_owner` from the
+  (`with_custody`) and of every `sessions.list` record (`listed_json`, which reads
+  one `manager.custodies` for the page and encodes with the same
+  `custody_members`), `moving` on `open` (`in_flight`), and `not_owner` from the
   tombstone for open, archive, restore and delete (`tombstoned`). `daemon/main`
   builds the movers in `start_movers`, gives the port its importer, and reads
   `LOOM_MOVE_CRASH_AFTER`.
