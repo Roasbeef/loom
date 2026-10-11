@@ -12,16 +12,16 @@ not worked on the distributed runtime. Read
 [the distributed runtime design note](../design-notes/distributed-runtime.md)
 first for the two roles (an orchestrator holds a session's conversation, an
 executor holds its checkout) and for how a tool call crosses between them.
-[ADR-019](../adr/019-khepri-for-session-ownership.md) records why Khepri was
+[ADR-020](../adr/020-khepri-for-session-ownership.md) records why Khepri was
 chosen and what the spikes measured, and
-[protocol-change/081](../../protocol-change/081-khepri-session-ownership.md)
+[protocol-change/083](../../protocol-change/083-khepri-session-ownership.md)
 specifies the interfaces. [The plan](../design-notes/khepri-ownership.md)
 ordered the implementation, and
 [`protocol/models/session-move`](../../protocol/models/session-move/README.md)
 holds the formal model, `KhepriMove.tla`.
 
 **Status: implemented.** The code named here is on `main` once
-protocol-change/081 lands; the shipped tests that run it are listed at the
+protocol-change/083 lands; the shipped tests that run it are listed at the
 end.
 
 ## Two kinds of deployment
@@ -173,7 +173,7 @@ each executor pin the other as well. The order of `members` does not matter.
 every node hidden today. A hidden connection does not appear in `nodes()`, and
 Ra relies on `nodes()` in three places: the leader sends a snapshot only to a
 node listed there, its node monitor reports only visible nodes, and its failure
-detector sends heartbeats only to visible nodes. The spike in ADR-019 showed the
+detector sends heartbeats only to visible nodes. The spike in ADR-020 showed the
 consequence. Over hidden connections, a member that fell behind a snapshot never
 caught up, and a member restarted after a quorum loss never reconnected.
 
@@ -259,7 +259,7 @@ real one.
 
 The control command `directory.status` reports the configured members, Ra's
 members and which of them are voters, the leader, this member's applied index,
-and whether its store is joined (protocol-change/081 has the reply). When the configured list and Ra's list differ,
+and whether its store is joined (protocol-change/083 has the reply). When the configured list and Ra's list differ,
 Ra's is the one in force: membership lives in Raft's log, and `members` only
 tells a daemon whom to join and whom to keep connected.
 
@@ -274,7 +274,7 @@ lag the leader, most of all right after the member restarts.
 **A consistent read** first waits for the member's copy to catch up with
 everything the leader has committed (`khepri:fence/2`), then reads. It needs a
 quorum, and it runs in a weft task under a deadline because Khepri's consistent
-path ignores its own timeout when the majority is gone (ADR-019).
+path ignores its own timeout when the majority is gone (ADR-020).
 
 ### What a stale local read may decide
 

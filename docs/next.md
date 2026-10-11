@@ -266,14 +266,14 @@ there.
    restart, an override for an imported session whose origin is gone, and the TUI's
    `moving`/`moved` rendering.
 3. Session ownership in Khepri is a separate PR stacked on this one (branch
-   `directory/khepri`, ADR-019): opt-in by a `[directory]` table, with Khepri deciding
+   `directory/khepri`, ADR-020): opt-in by a `[directory]` table, with Khepri deciding
    moves and every session on a member recorded. Failover and executor movement remain
    out of scope.
 
 ## The session directory in Khepri (`directory/khepri`)
 
 This section covers `directory/khepri`, built on top of the tree this handoff
-describes: the session directory in Khepri (protocol-change/081). Everything
+describes: the session directory in Khepri (protocol-change/083). Everything
 above still describes the distributed runtime it builds on. What the branch adds is a deployment option, a `[directory]`
 table, under which the orchestrators and executors form one Khepri cluster that
 holds the single authoritative record of which orchestrator owns each remote
@@ -282,17 +282,17 @@ sessions are recorded too, as lookup hints.
 
 The branch is PR #934, built on PR #923. An independent implementation review
 was done; its confirmed findings and the owner's ruling on local sessions were
-fixed in a second pass (ADR-019's addendum lists them), a third pass made a
+fixed in a second pass (ADR-020's addendum lists them), a third pass made a
 missing record after the seed set the source's copy aside instead of reverting,
 and a fourth made a receiver that owns the record answer `Failed` rather than
-`Refused`. The branch is rebased onto PR #923's head (`3150c12f4`, after its
-third merge of main). Its proposal is protocol-change 081, since main took 079
-and 080, and its catalogue migration is version 14, after #923's 11 to 13 and
+`Refused`. The branch is rebased onto PR #923's head (`8dee702e5`, after its
+latest merge of main). Its proposal is protocol-change 083, since main took 079
+through 082, and its catalogue migration is version 14, after #923's 11 to 13 and
 main's 10. The link's settle came from this branch and now lives on #923.
 
 Read [the session directory](architecture/directory.md) for the design,
-[ADR-019](adr/019-khepri-for-session-ownership.md) for the choice of Khepri and
-what the spikes measured, [protocol-change/081](../protocol-change/081-khepri-session-ownership.md)
+[ADR-020](adr/020-khepri-for-session-ownership.md) for the choice of Khepri and
+what the spikes measured, [protocol-change/083](../protocol-change/083-khepri-session-ownership.md)
 for the interfaces, [the plan](design-notes/khepri-ownership.md) for how the work
 was ordered, and the section "The session directory" in
 [the setup guide](distributed-setup.md) for running it. `packages/client/CLAUDE.md`
@@ -314,7 +314,7 @@ has a section, "The session directory in Khepri".
 #### Evidence
 
 On the rebase onto PR #923's head `823530f28` (after its third merge of main,
-with this branch's proposal at 081 and its catalogue migration at 14), every
+with this branch's proposal at 083 and its catalogue migration at 14), every
 gate passed: `make lint` (0 errors), `make doc-check`, `make prelude-check`,
 `make model-check` (`KhepriMove` 332,902 states, nine mutants caught), `make
 server-shipment` and `make sandbox`, the shipped `remote_move`, `directory`,

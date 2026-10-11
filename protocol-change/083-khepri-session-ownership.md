@@ -1,4 +1,4 @@
-# protocol-change/081: Khepri holds session ownership
+# protocol-change/083: Khepri holds session ownership
 
 **Status**: ACCEPTED 2026-10-08 on the owner's rulings, after an independent
 review of the first draft; implemented. The spellings below are the
@@ -18,7 +18,7 @@ move authority as well as the directory, with orchestrators and executors as
 members; members use visible distribution; Khepri decides and the catalogue rows
 stay as local memory.
 **Design**: [docs/architecture/directory.md](../docs/architecture/directory.md),
-[ADR-019](../docs/adr/019-khepri-for-session-ownership.md).
+[ADR-020](../docs/adr/020-khepri-for-session-ownership.md).
 **Amends**: [protocol-change/078](078-distributed-runtime.md), the addenda on two
 orchestrators, on session movement (catalogue storage) and on moving a session
 between orchestrators, for member daemons.

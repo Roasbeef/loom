@@ -46,7 +46,7 @@
 //// machine that did not answer. Only when every peer answered that it does not
 //// hold the session is it `Unknown`.
 ////
-//// ## The directory backing (protocol-change/081)
+//// ## The directory backing (protocol-change/083)
 ////
 //// A daemon that is a member of the session directory's Khepri cluster asks
 //// no peer at all. `khepri` reads this member's own copy of the session's
@@ -132,7 +132,7 @@ pub type Miss {
   )
 
   /// The directory store on this member is not running or has not joined, so
-  /// its copy of the record cannot be read (protocol-change/081).
+  /// its copy of the record cannot be read (protocol-change/083).
   Unavailable(
     /// What went wrong, for the refusal's message.
     reason: String,
@@ -140,7 +140,7 @@ pub type Miss {
 }
 
 /// Whether this daemon is a member of the session directory's Khepri cluster
-/// (protocol-change/081).
+/// (protocol-change/083).
 pub type Standing {
   /// The daemon is not a member; `directory.status` is refused.
   NotMember
@@ -178,7 +178,7 @@ pub type Directory {
     /// connects to nobody does nothing.
     settle: fn() -> Nil,
     /// The writes to the directory's owner records, on an orchestrator that is
-    /// a directory member; `None` everywhere else (protocol-change/081).
+    /// a directory member; `None` everywhere else (protocol-change/083).
     ownership: Option(ownership.Ownership),
     /// Whether this daemon is a directory member.
     standing: Standing,
@@ -379,7 +379,7 @@ pub fn peers(
   }
 }
 
-/// The directory of a member daemon (protocol-change/081): lookups read this
+/// The directory of a member daemon (protocol-change/083): lookups read this
 /// member's copy of the owner record. `local` is this daemon's node name, and
 /// `listed` its configured orchestrators, through which an owner's node is
 /// named to a client.

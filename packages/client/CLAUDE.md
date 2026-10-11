@@ -7545,7 +7545,7 @@ profile table name at load.
 `Settings` gained `profile_desk`, so every `serve.Settings` literal in the tests
 carries `profile_desk: None`.
 
-## The session directory in Khepri (protocol-change/081)
+## The session directory in Khepri (protocol-change/083)
 
 A deployment may add a `[directory]` table, which makes the listed orchestrators
 and executors the members of one Khepri cluster. Khepri then holds the single
@@ -7555,7 +7555,7 @@ that record. Local sessions are recorded too, as lookup hints that never decide
 anything. The catalogue rows stay as each daemon's local write-ahead memory.
 A daemon without `[directory]` runs phases 3 and 5 exactly as the two sections
 above describe. `docs/architecture/directory.md` is the design,
-ADR-019 the choice of Khepri and its measurements, and
+ADR-020 the choice of Khepri and its measurements, and
 `protocol/models/session-move/KhepriMove.tla` the model.
 
 - `internal/ffi_khepri` and `client_khepri_ffi.erl` are the only calls into

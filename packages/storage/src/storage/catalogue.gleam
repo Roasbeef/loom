@@ -1290,7 +1290,7 @@ pub type Pending {
   Pending(session: String, op: String, to: String)
 }
 
-/// Whether a session's deletion has begun (protocol-change/081).
+/// Whether a session's deletion has begun (protocol-change/083).
 pub type Deletion {
   /// No deletion has begun.
   NotDeleting

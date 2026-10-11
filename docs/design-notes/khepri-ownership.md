@@ -1,10 +1,10 @@
 # Khepri session ownership: the model and the implementation plan
 
-Status: **implemented, 2026-10-08.** This note ordered the work that [protocol-change/081](../../protocol-change/081-khepri-session-ownership.md)
+Status: **implemented, 2026-10-08.** This note ordered the work that [protocol-change/083](../../protocol-change/083-khepri-session-ownership.md)
 specifies and [docs/architecture/directory.md](../architecture/directory.md)
 describes. It has three parts: the TLA+ model of a move under the record, the
 implementation slices in order with what each became, and what is left open.
-[ADR-019](../adr/019-khepri-for-session-ownership.md) has the spikes.
+[ADR-020](../adr/020-khepri-for-session-ownership.md) has the spikes.
 
 ## 1. The model
 
@@ -140,7 +140,7 @@ member variants.
 
 ### Slice 9: documentation
 
-The architecture page and 081 at the implemented spellings, the package
+The architecture page and 083 at the implemented spellings, the package
 `CLAUDE.md` files through `/doc-gardening`, `docs/distributed-setup.md`,
 `docs/configuration.md` and `docs/next.md`.
 
@@ -166,7 +166,7 @@ The architecture page and 081 at the implemented spellings, the package
 ## 4. After the implementation review
 
 The review found two problems around a move that the model did not cover, and
-three smaller ones; ADR-019's addendum records the changes. The give-up now
+three smaller ones; ADR-020's addendum records the changes. The give-up now
 waits for this daemon's seed, and a given-up move whose receiver already owns
 the session retires only on the receiver's answer, because a receiver that
 crashed between its compare-and-set and its import finishes the import only
