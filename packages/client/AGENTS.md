@@ -7574,14 +7574,14 @@ views and refusals across the real control socket), and
 `daemon_shipped_remote_move_test` (three shipped daemons, a clean move and the
 source lost after each step). The terminal's side is `tui`'s `sessions_move_test`.
 
-## Subagents on another orchestrator (protocol 084, slices S1 to S3)
+## Subagents on another orchestrator (protocol 084, slices S1 to S4)
 
 Slice S1 of phase 1 is the policy and the messages. Slice S2 is the box's side:
 the delegate session and the Agency that serves a remote parent. Slice S3 is the
 laptop's side: the stub, the sending end, the second drainer, and the Agency's
 spawn, wait and roster. A remote child is always detached, so the laptop has no
-run-end path. The deadline tick and the retention sweep are
-S4, and the shipped two-orchestrator test is S5.
+run-end path. Slice S4 is the box's deadline tick and retention sweep. The
+shipped two-orchestrator test is S5.
 
 - `spawners` is the `[spawners.<name>]` table, read by `daemon/main.prepare_startup`
   into `Config.spawners` and validated by `catalog.parse` too. A `Spawner` has its
@@ -7742,23 +7742,50 @@ The laptop's side (slice S3):
   `Backlog` is public. `serve` supervises both beside each other in the
   restartable service tier, rung by name (`outbox_queued`, `remote_queued`).
 
-Not in S3: the box's deadline tick and retention sweep (S4), the shipped test and
-the P model (S5), remote token metering (a child nobody waits on runs to its
+Not in S3: the shipped test and the P model (S5), remote token metering (a child nobody waits on runs to its
 `within_ms`, bounded by `max_within_s`), the stub's usage counting against a
 goal's token budget or appearing in a status bar, releasing a child early (phase
 2), and refusing `sessions.move` for a parent that holds a live stub.
 
+The box's deadline and retention (slice S4):
+
+- The deadline tick. `agency.Config.deadline_tick_ms` is `None` for every session
+  but a delegate session, whose `serve.Settings.deadline_tick_ms` the daemon sets
+  from `main.deadline_tick_of`: `Some(agency.delegate_deadline_tick_ms)` (15 s,
+  provisional) when `manager.delegate_of` finds the session's catalogue row. The
+  holder then runs `actor.periodic` with `DeadlineTick`, which reads the ledger
+  and calls `reap_overdue`, writing the same durable `BudgetExpired` mark a wait
+  writes. It is a periodic timeout on the holder actor and not a separate
+  `weft/state_machine`, which the design note first named: the holder is already
+  an actor, and a fixed delay is all the shape needs. The first pass is one
+  interval after the session opens, and the session opens on the next `Spawn` or
+  `Join` after a restart, so a child that went overdue while the daemon was down
+  is stopped at that first pass and the time spent down counts.
+- The retention sweep. `catalogue.delegates` lists the rows, and
+  `manager.sweep_delegates(retain_ms, now_ms, sessions)` deletes, in one registry
+  turn, every delegate whose last contact is older than `retain_ms(spawner)` and
+  that holds no slot, through the same `remove_registration` a delete uses. A
+  failed deletion is skipped for the next sweep. `spawners.retention_ms` gives a
+  spawner's `retain_s` in milliseconds, and `default_retain_s` for a spawner whose
+  table is gone. `daemon/main.sweep_delegate_sessions` runs it once at boot, before
+  the orchestrator port starts, and logs `daemon.delegate_sweep`. There is no
+  periodic sweep: a daemon that stays up keeps an idle delegate session until its
+  next boot. The sweep does not remove a directory-member record (#934).
+
 Tests: `spawners_test` (a valid table, defaults, every refusal, the catalogue
-parser), `orchestrators_test` (the `@` and `#` refusal),
+parser, `retention_ms`), `orchestrators_test` (the `@` and `#` refusal),
 `remote/orchestrator_port_test` (each message reaches the host with its origin,
 refusals, a slow answer not delaying `Owns`, a crashing host),
 `remote_spawn_test` (the pure half), `daemon_spawn_host_test` (the production
 host's answers and what the Agency is told), `delegate_host_test` (the creation
-for each placement, the cap, an invalid parent, a session that cannot open),
+for each placement, the cap, an invalid parent, a session that cannot open, the
+boot sweep over a restarted registry, a resident session kept, and which session
+gets a tick),
 `daemon_manager_test` (the registry's half and `not_movable`) and `agency_test`
 (a remote parent against a live Agency: adoption, the fence, run end, join with
 usage, the cap on a join's window, the ceiling, the caps, and the whole path
-through a real port). For the laptop's side, `agency_test` runs the parent against
+through a real port, and the tick reaping an unwatched overdue child, with the
+control that it does not without one). For the laptop's side, `agency_test` runs the parent against
 `support/fake_orchestrators` (a table from call site to child, with `Up`, `Down`,
 `LosesReplies`, `Refuses` and counted modes, and a record of the spawn and join
 windows it was given): the stub written ahead, resends that leave one child, the

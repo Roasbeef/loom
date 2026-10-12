@@ -1164,6 +1164,33 @@ Five slices. Each lands on `origin/main` alone, and none needs #934.
   - For each open delegate session, a `weft/state_machine` whose periodic
     timeout calls `reap_overdue`.
   - A boot sweep that deletes delegate sessions idle past `retain_s`.
+
+  As built in S4, where the code differs from the sections above:
+
+  - **The tick is the holder's periodic timeout, not a separate state machine.**
+    The delegate session's Agency holder is a `weft/actor`, and
+    `actor.periodic(every: 15 s, sending: DeadlineTick)` is the fixed-delay shape
+    the tick needs, so no second process or state type was added. It is set only
+    for a delegate session (`agency.Config.deadline_tick_ms`, filled by
+    `main.deadline_tick_of` from the catalogue's delegate row). The cadence is
+    fixed and not recomputed from the earliest deadline, because a pass is one
+    read of the ledger and the bound a child runs under is its deadline plus at
+    most one interval.
+  - **The tick starts when the session opens, as section 8.3 says.** A delegate
+    session is not reopened at boot (section 7), so a restart arms no timer. The
+    next `Spawn` or `Join` for the pair opens the session, recovery resumes its
+    children, and the first pass, one interval later, stops the ones already
+    overdue. Nothing runs in a closed session, so there is nothing for the boot
+    sweep to reap.
+  - **The boot sweep only deletes.** `manager.sweep_delegates` removes every
+    delegate session whose last contact is older than the spawner's `retain_s`
+    (`spawners.default_retain_s` when the table is gone) and that holds no slot.
+    It runs once, before the orchestrator port starts, and a failed deletion is
+    left for the next boot. There is no periodic sweep.
+  - **A directory-member record is not removed.** With #934 landed, deleting a
+    remote session also deletes its directory record. The sweep uses the
+    registry's local delete only, as no member daemon holds delegate sessions
+    until #934 does.
 - **S5. A shipped two-orchestrator test and the P model.**
   - The test is modelled on `daemon_shipped_peer_mail_test`. It spawns three
     children, joins them and reads structured results and usage, then kills

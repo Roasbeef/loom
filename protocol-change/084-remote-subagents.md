@@ -451,8 +451,9 @@ Phase 1 has five slices, each of which lands on `origin/main` alone.
   settled stub; counting it against a goal and refusing `sessions.move` for a
   parent that holds a live stub are not built. The design note's section 15 lists
   the differences.
-- **S4. Deadline tick and retention.** The per-delegate-session
-  `weft/state_machine` calling `reap_overdue`, and the boot sweep.
+- **S4. Deadline tick and retention.** The per-delegate-session periodic timeout
+  calling `reap_overdue` (as built, on the Agency holder actor), and the boot
+  sweep that deletes delegate sessions idle past `retain_s`.
 - **S5. A shipped two-orchestrator test and the P model.** The test is modelled
   on `daemon_shipped_peer_mail_test`: three children spawned, joined, with
   structured results and usage; the laptop killed mid-spawn; the link cut

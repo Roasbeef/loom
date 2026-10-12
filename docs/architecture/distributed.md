@@ -1478,8 +1478,9 @@ The directory holds no state of its own, so it has no model.
   in a status bar. A message to a remote child is refused, and a remote child's
   message upward reads that its parent is elsewhere. A parent session that holds a
   live stub is not yet refused by `sessions.move`, and a parent session's deletion
-  leaves its children until their deadlines on the box. The box's deadline tick and
-  retention sweep are a later slice.
+  leaves its children until their deadlines on the box. The box enforces those
+  deadlines with a periodic tick on each delegate session's Agency (15 s), and a
+  boot sweep deletes delegate sessions idle past the spawner's `retain_s`.
 - **Moves** do not resume inside a file, carry running processes, the memory
   domain, memberships or claims. `sessions.list` records carry the `moving` and
   `moved` members; the terminal, the web home and the Admin drawer draw a moving session with its
