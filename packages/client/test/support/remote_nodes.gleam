@@ -81,6 +81,7 @@ pub fn host(
       max_result_bytes: 65_536,
       clock: clock.fixed(at: 1000),
       factory: fixtures.factory(probe, mode, protocol.AllRetired),
+      execution_result_bytes: host.default_execution_result_bytes,
     )
   use _started <- result.try(
     host.start(config) |> result.map_error(string.inspect),
@@ -135,6 +136,8 @@ pub fn orchestrate(
       clock: clock.fixed(at: 1000),
       settled: fn(_key) { False },
       reconcile_every_ms: 60_000,
+      executions: owner_port.no_executions(),
+      mcp: protocol.McpPlan(served: [], expected: []),
     )),
   )
   use attachment <- result.try(
@@ -256,6 +259,7 @@ pub fn workspace_host(directory: String) -> Result(WorkspaceHandle, String) {
       secrets: secret.env(),
       home: None,
       logger: log.discard(),
+      mcp_servers: [],
     )
   let config =
     host.Config(
@@ -265,6 +269,7 @@ pub fn workspace_host(directory: String) -> Result(WorkspaceHandle, String) {
       max_result_bytes: host.default_max_result_bytes,
       clock: clock.from_function(ffi_os.system_time_ms),
       factory: executor_plane.factory(machine, [Workspace("proj", checkout)]),
+      execution_result_bytes: host.default_execution_result_bytes,
     )
   use _started <- result.try(
     host.start(config) |> result.map_error(string.inspect),
@@ -299,6 +304,8 @@ pub fn orchestrate_workspace(peer: distribution.Peer) -> Result(Nil, String) {
       clock: clock.fixed(at: 1000),
       settled: fn(_key) { False },
       reconcile_every_ms: 60_000,
+      executions: owner_port.no_executions(),
+      mcp: protocol.McpPlan(served: [], expected: []),
     )),
   )
   use attachment <- result.try(

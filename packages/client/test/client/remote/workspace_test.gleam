@@ -8,6 +8,7 @@
 
 import client/extension/hooks as extension_hooks
 import client/jobstate
+import client/remote/owner_port
 import client/remote/protocol
 import client/remote/scope
 import client/remote/workspace
@@ -691,4 +692,36 @@ pub fn an_executor_that_refuses_the_close_is_told_apart_from_one_that_is_silent_
     == Error(workspace.CloseUnanswered)
   assert fixtures.closes(probe) == 0
   rig.stop(executor)
+}
+
+pub fn an_execution_row_is_settled_only_once_its_record_is_closed_test() {
+  let opened = store()
+  let #(operation, _) = ids.mint_op(ids.generator(clock.fixed(at: 0), seed: 6))
+  let standing_of = fn(standing) {
+    workspace.settled_by_kind(
+      opened,
+      owner_port.Executions(..owner_port.no_executions(), standing: fn(_key) {
+        standing
+      }),
+    )
+  }
+  let execution = protocol.execution_key("s", operation, "ab12")
+
+  // The tool call rule would call this key settled at once, because no batch
+  // lists an `async/` step. The record decides instead: a value the worker has
+  // not read yet must not be acknowledged away.
+  assert workspace.settled(opened, execution)
+  assert !standing_of(owner_port.RecordLive)(execution)
+  assert !standing_of(owner_port.RecordClosing)(execution)
+  assert standing_of(owner_port.RecordClosed)(execution)
+
+  // A tool call's key keeps the tool call rule whatever the records say.
+  let call =
+    protocol.Key(
+      session: "s",
+      op: ids.op_id_to_string(operation),
+      step: "turn-1",
+      source_index: 0,
+    )
+  assert standing_of(owner_port.RecordLive)(call)
 }

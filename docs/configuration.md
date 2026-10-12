@@ -238,6 +238,15 @@ decision. There is no flag, discovery or live reload. See
 | --- | --- | --- | --- | --- |
 | `command` | array of strings | required | non-empty, each element non-empty | The server's argv, executable first. Never a shell string. |
 | `api_key_env` | string | none | an environment variable name | A host variable read when the server process starts and injected into its environment under the same name. |
+| `runs_on` | string | `"orchestrator"` | `"orchestrator"`, `"executor"` | Where the server runs for a session whose workspace is on an executor. `"orchestrator"` spawns it here with the key this machine holds, and a program on the executor reaches it through the owner port. `"executor"` names a server the executor runs from its own `[mcp.<name>]` table, with that table's `command` and `api_key_env`; this table's `command` is then used only by local sessions. A local session ignores the key and starts every server here. |
+
+A session whose workspace is on an executor reports, at attach, how each
+server it expects the executor to run fared: the orchestrator logs `mcp.ready`
+or `mcp.unavailable` with `placement: executor`, and an executor with no table
+for the name refuses it with a reason that says so. An executor's own
+`[mcp.<name>]` table is read the same way, and `runs_on` means nothing there,
+since a server in the executor's file can only run on the executor. See
+[distributed](architecture/distributed.md#background-code-mode-and-mcp-on-a-remote-session).
 
 ## `[lsp.<name>]`
 

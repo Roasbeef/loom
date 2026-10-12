@@ -224,7 +224,11 @@ Two code-mode features are also left local-only for now. Background code mode
 session registers `code_mode` without it. MCP façades need the orchestrator's
 MCP clients and secrets inside the executor's hermetic build; a remote
 session's `code_mode` omits them until the MCP layer is split into the data an
-executor needs and the clients that stay on the orchestrator.
+executor needs and the clients that stay on the orchestrator. The
+protocol-change/078 addendum on background code mode and MCP façades is the
+design for both, since built at protocol version 3: the orchestrator keeps the
+execution record and the executor runs the program, and each MCP server is
+placed on one side by its `runs_on` key.
 
 The remaining placement questions follow the rule in section 3. The `[tools]
 env` table is resolved on the executor from its own configuration and secret
@@ -470,10 +474,10 @@ call that was `admitted` into `unknown`, as for any executor restart.
 
 **The 16 MiB per-call reservation inside the 512 MiB budget.** Admission
 reserves `default_max_result_bytes` for every call, 16 MiB, twice the largest
-file `fs_read` returns (`client/remote/host.gleam:202`). The daemon passes it as
+file `fs_read` returns (`client/remote/host.gleam:229`). The daemon passes it as
 `max_result_bytes` (`client/daemon/main.gleam:495`) and the host hands it to
-`exec_ledger.admit` (`client/remote/host.gleam:761`). The ledger's byte budget
-is `default_max_ledger_bytes`, 512 MiB (`storage/exec_ledger.gleam:423`), and
+`exec_ledger.admit` (`client/remote/host.gleam:901`). The ledger's byte budget
+is `default_max_ledger_bytes`, 512 MiB (`storage/exec_ledger.gleam:440`), and
 `require_budget` refuses a call when the bytes held by `admitted` and
 `terminal` rows plus the new reservation would pass it
 (`storage/exec_ledger.gleam:978`). The refusal is `BudgetExhausted`, and its
