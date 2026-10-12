@@ -156,10 +156,19 @@ fn row(name: String, value: tom.Toml) -> Result(Workspace, String) {
   }
 }
 
-// A root has to name one directory unambiguously. A relative path would mean
-// whatever the daemon's working directory happens to be, and a `..` segment
-// would let the text say one place while the resolved path is another.
-fn absolute(root: String) -> Result(Nil, String) {
+/// Checks that text names one directory unambiguously: an absolute path with no
+/// `..` segment. A relative path would mean whatever the daemon's working
+/// directory happens to be, and a `..` segment would let the text say one place
+/// while the resolved path is another. The refusal is a phrase that completes
+/// "`<key>` ...", and `client/spawners` reuses the rule for its `directory`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert workspaces.absolute("/srv/loom") == Ok(Nil)
+/// assert workspaces.absolute("loom") == Error("must be an absolute path")
+/// ```
+pub fn absolute(root: String) -> Result(Nil, String) {
   case
     string.starts_with(root, "/"),
     list.contains(string.split(root, "/"), "..")
