@@ -71,6 +71,7 @@ import session_view/event_fold
 import session_view/generation_rate
 import session_view/history_view
 import session_view/inbox
+import session_view/memory_overview
 import session_view/model.{
   type Interrupt, type Peer, type Shared, type UnconfirmedSubmission,
   AgentMessagesCaptured, ApprovalSettled, ApprovalsPresented, Attached,
@@ -1502,6 +1503,19 @@ fn apply_request_refused(
       |> session_model.invalidate_frame
     },
   )
+
+  // The memory overview words its own refusal beside the pane. The send
+  // stamped the read time, so a view that stays open asks again at the next
+  // minute, after a refusal or an `unsupported` as after a reply: one frame a
+  // minute per open view. A hung reply is stamped the same way, which keeps
+  // requests from piling up behind it.
+  use <- bool.lazy_guard(command == "memory_get", fn() {
+    shared_set.memory_notice(
+      shared,
+      memory_overview.refusal_words(code, message),
+    )
+    |> session_model.invalidate_frame
+  })
 
   // A notes read refused while no notes surface is open was the todo
   // panel's seed. An older daemon refuses it, and an error row would report

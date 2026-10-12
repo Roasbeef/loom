@@ -215,6 +215,13 @@ pub fn apply_event(
       shared
       |> shared_set.proposals(Some(board))
       |> shared_set.proposals_notice("")
+
+    // The memory overview, kept for the host to draw. A board that arrives
+    // clears the last refusal, as the proposals board does.
+    protocol.MemorySnapshot(board:) ->
+      shared
+      |> shared_set.memory(Some(board))
+      |> shared_set.memory_notice("")
     protocol.ConfigSnapshot(model_name:, directories:) -> {
       let shared = case model_name {
         Some(name) -> {
@@ -538,6 +545,7 @@ pub fn apply_event(
     | protocol.SchedulesSnapshot(..)
     | protocol.PermissionsSnapshot(..)
     | protocol.ProposalsSnapshot(..)
+    | protocol.MemorySnapshot(..)
     | protocol.ProfileSnapshot(..)
     | protocol.ConfigSnapshot(..)
     | protocol.EntryAdded(..)

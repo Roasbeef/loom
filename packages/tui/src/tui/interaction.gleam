@@ -83,12 +83,13 @@ import tui/image_drain
 import tui/inbound
 import tui/job
 import tui/layout
+import tui/memory_panel
 import tui/model.{
   type Model, type ScrollDirection, AccessManager, AgentInspector,
   ApprovalInspector, Caches, DaemonSelector, DiffHidden, DiffVisible, FrameCache,
-  GoalInspector, Model, ModelSelector, Newer, NoClipboard, NoOverlay, Older,
-  PeerLinkManager, ProposalReview, ReconnectAttempting, ReconnectIdle,
-  ReconnectSpent, TerminalClipboard, View,
+  GoalInspector, MemoryOverview, Model, ModelSelector, Newer, NoClipboard,
+  NoOverlay, Older, PeerLinkManager, ProposalReview, ReconnectAttempting,
+  ReconnectIdle, ReconnectSpent, TerminalClipboard, View,
 } as tui_model
 import tui/model_selector
 import tui/note_panel
@@ -139,6 +140,7 @@ pub fn handle_paste(
     | ApprovalInspector(_)
     | PeerLinkManager(_)
     | ProposalReview(_)
+    | MemoryOverview(_)
     | AccessManager(_) -> model
   }
 }
@@ -573,6 +575,7 @@ fn update_normal_key(key: keys.Key, model: Model) -> Model {
         AccessManager(state) ->
           session_control.update_access_overlay(key, model, state)
         ProposalReview(state) -> update_proposal_review(key, model, state)
+        MemoryOverview(state) -> update_memory_overview(key, model, state)
         ApprovalInspector(panel) ->
           case approval_panel.update(key, panel) {
             approval_panel.Close ->
@@ -587,6 +590,40 @@ fn update_normal_key(key: keys.Key, model: Model) -> Model {
           }
         NoOverlay -> update_main_key(key, model)
       }
+  }
+}
+
+// A key in the memory overview. The board is the shared record's and there is
+// nothing to decide, so a key scrolls or closes. The shared step's
+// once-a-minute read follows the overlay (`tick.watch_memory`), so closing
+// it is all that stops the read.
+fn update_memory_overview(
+  key: keys.Key,
+  model: Model,
+  state: memory_panel.State,
+) -> Model {
+  case
+    memory_panel.update(
+      key,
+      state,
+      model.shared.memory,
+      layout.model_goal_inspector_area(model),
+    )
+  {
+    memory_panel.Close ->
+      Model(
+        ..model,
+        view: model.view
+          |> view_set.overlay(NoOverlay)
+          |> view_set.toggle_repaint,
+      )
+    memory_panel.Continue(next) ->
+      Model(
+        ..model,
+        view: model.view
+          |> view_set.overlay(MemoryOverview(next))
+          |> view_set.toggle_repaint,
+      )
   }
 }
 
@@ -1444,6 +1481,10 @@ fn update_main_key_composing(key: keys.Key, model: Model) -> Model {
     // queue. It is bound before the generic Alt rule, which would otherwise
     // interrupt the run and insert the letter.
     _, _, keys.Alt("p") -> side_surfaces.open_proposals(model)
+
+    // Alt+M opens the memory overview, bound before the generic Alt rule for
+    // the same reason.
+    _, _, keys.Alt("m") -> side_surfaces.open_memory(model)
 
     // Ctrl+O ("open agents") is the chord a hand already on the keyboard
     // reaches; F2 stays for anyone who learned it. Ctrl+A was the other

@@ -47,6 +47,7 @@ import session_view/btw
 import session_view/context_view
 import session_view/goal_view
 import session_view/live_jobs
+import session_view/memory_overview
 import session_view/notes_view
 import session_view/proposals
 import session_view/queued_input
@@ -202,6 +203,10 @@ pub type Event {
   /// the reply to a `proposals_get` and to a `proposal_decide` alike
   /// (protocol-change/086).
   ProposalsSnapshot(board: proposals.Board)
+
+  /// What the daemon remembers for this workspace and what each run receives
+  /// of it: the reply to a `memory_get` (protocol-change/087).
+  MemorySnapshot(board: memory_overview.Board)
 
   /// A proposal was queued, or decided by another peer. The board is read
   /// again; this push carries nothing to draw.
@@ -633,6 +638,17 @@ pub fn proposal_decide(
   ])
 }
 
+/// Encodes a read of the memory overview (protocol-change/087).
+///
+/// ## Examples
+///
+/// ```gleam
+/// protocol.memory_get(16)
+/// ```
+pub fn memory_get(id: Int) -> String {
+  command(id, "memory_get", [])
+}
+
 /// Requests one strand's effective configuration without changing it.
 ///
 /// `set_config` with an empty object is the frozen protocol's readback form:
@@ -790,6 +806,7 @@ pub fn decode_v2_presentation(text: String) -> Result(Event, String) {
     | SchedulesSnapshot(_)
     | PermissionsSnapshot(_)
     | ProposalsSnapshot(_)
+    | MemorySnapshot(_)
     | ProfileSnapshot(..)
     | Resumed(_)
     | ServerError(..) -> Ok(event)
@@ -1015,6 +1032,10 @@ fn decode_snapshot(body: JsonValue) -> Result(Event, String) {
     "proposals" -> {
       use board <- result.try(required_value(fields, "board"))
       proposals.decode(board) |> result.map(ProposalsSnapshot)
+    }
+    "memory" -> {
+      use board <- result.try(required_value(fields, "board"))
+      memory_overview.decode(board) |> result.map(MemorySnapshot)
     }
     "profile" -> {
       use current <- result.try(optional_string(fields, "profile"))

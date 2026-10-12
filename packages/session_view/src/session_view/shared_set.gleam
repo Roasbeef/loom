@@ -617,6 +617,78 @@ pub fn proposals_notice(
   Shared(..shared, proposals_notice:)
 }
 
+/// Replaces `Shared.memory`; the record documents the field.
+///
+/// ## Examples
+///
+/// ```gleam
+/// shared_set.memory(model.shared, value)
+/// ```
+@internal
+pub fn memory(shared: Shared(a, b, c, d), memory) -> Shared(a, b, c, d) {
+  Shared(..shared, memory:)
+}
+
+/// Replaces `Shared.memory_refresh`; the record documents the field.
+///
+/// ## Examples
+///
+/// ```gleam
+/// shared_set.memory_refresh(model.shared, value)
+/// ```
+@internal
+pub fn memory_refresh(
+  shared: Shared(a, b, c, d),
+  memory_refresh,
+) -> Shared(a, b, c, d) {
+  Shared(..shared, memory_refresh:)
+}
+
+/// Replaces `Shared.memory_notice`; the record documents the field.
+///
+/// ## Examples
+///
+/// ```gleam
+/// shared_set.memory_notice(model.shared, value)
+/// ```
+@internal
+pub fn memory_notice(
+  shared: Shared(a, b, c, d),
+  memory_notice,
+) -> Shared(a, b, c, d) {
+  Shared(..shared, memory_notice:)
+}
+
+/// Replaces `Shared.memory_read_ms`; the record documents the field.
+///
+/// ## Examples
+///
+/// ```gleam
+/// shared_set.memory_read_ms(model.shared, value)
+/// ```
+@internal
+pub fn memory_read_ms(
+  shared: Shared(a, b, c, d),
+  memory_read_ms,
+) -> Shared(a, b, c, d) {
+  Shared(..shared, memory_read_ms:)
+}
+
+/// Replaces `Shared.memory_watch`; the record documents the field.
+///
+/// ## Examples
+///
+/// ```gleam
+/// shared_set.memory_watch(model.shared, value)
+/// ```
+@internal
+pub fn memory_watch(
+  shared: Shared(a, b, c, d),
+  memory_watch,
+) -> Shared(a, b, c, d) {
+  Shared(..shared, memory_watch:)
+}
+
 /// Replaces `Shared.agent_messages`; the record documents the field.
 ///
 /// ## Examples

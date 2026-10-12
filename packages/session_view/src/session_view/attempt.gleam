@@ -341,6 +341,7 @@ fn decode_selection(kind, fields) {
     | "permissions"
     | "permission_forget"
     | "proposals_get"
+    | "memory_get"
     | "proposal_decide"
     | "prompt"
     | "prompt_content"

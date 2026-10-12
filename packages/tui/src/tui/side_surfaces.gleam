@@ -25,10 +25,11 @@ import session_view/surfaces
 import session_view/worktree_view
 import tui/agents
 import tui/focused_goal_panel
+import tui/memory_panel
 import tui/model.{
   type Model, AccessManager, AgentInspector, ApprovalInspector, DaemonSelector,
-  GoalInspector, Model, ModelSelector, NoOverlay, PeerLinkManager,
-  ProposalReview,
+  GoalInspector, MemoryOverview, Model, ModelSelector, NoOverlay,
+  PeerLinkManager, ProposalReview,
 } as tui_model
 import tui/proposal_panel
 import tui/queue_editor
@@ -62,6 +63,7 @@ pub fn notes_surface(model: Model) -> Bool {
     | False, PeerLinkManager(_)
     | False, AccessManager(_)
     | False, ProposalReview(_)
+    | False, MemoryOverview(_)
     | False, AgentInspector(_)
     | False, ApprovalInspector(_)
     -> False
@@ -194,6 +196,35 @@ pub fn open_proposals(model: Model) -> Model {
       |> shared_set.proposals_notice(""),
     view: model.view
       |> view_set.overlay(ProposalReview(state))
+      |> view_set.toggle_repaint,
+  )
+}
+
+/// Opens the memory overview and asks for a fresh board.
+///
+/// The read is the owner's, and a daemon refuses it to anyone else. The
+/// refusal's words are kept in the shared record and the overlay draws them,
+/// so a terminal that is not the owner's opens an overview that says so. The
+/// overlay is also what makes the shared step read the board again once a
+/// minute (`tick.watch_memory`), because a change to memory pushes nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // side_surfaces.open_memory(model)
+/// ```
+@internal
+pub fn open_memory(model: Model) -> Model {
+  let state = case model.view.overlay {
+    MemoryOverview(state) -> state
+    _ -> memory_panel.new()
+  }
+  Model(
+    shared: model.shared
+      |> shared_set.memory_refresh(worktree_view.Requested)
+      |> shared_set.memory_notice(""),
+    view: model.view
+      |> view_set.overlay(MemoryOverview(state))
       |> view_set.toggle_repaint,
   )
 }

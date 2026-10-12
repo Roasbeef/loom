@@ -984,6 +984,7 @@ fn apply_pushed(
     | protocol.SchedulesSnapshot(..)
     | protocol.PermissionsSnapshot(..)
     | protocol.ProposalsSnapshot(..)
+    | protocol.MemorySnapshot(..)
     | protocol.ProfileSnapshot(..)
     | protocol.EntryAdded(..)
     | protocol.OperationChanged(..)
@@ -1355,6 +1356,10 @@ fn matching_presentation(name, intent, event) {
     // A decision answers with the board as it now stands, so one round trip
     // both acts and redraws (protocol-change/086).
     "proposals_get", Read, protocol.ProposalsSnapshot(_) -> True
+
+    // The memory overview is a read with one reply, a snapshot of the board
+    // (protocol-change/087).
+    "memory_get", Read, protocol.MemorySnapshot(_) -> True
     "proposal_decide", Mutation, protocol.ProposalsSnapshot(_) -> True
     _, _, _ -> False
   }
@@ -1971,6 +1976,7 @@ pub fn is_read(command: String) -> Bool {
     | "profile_get"
     | "permissions"
     | "proposals_get"
+    | "memory_get"
     | "notes"
     | "queued_input"
     | "btw"

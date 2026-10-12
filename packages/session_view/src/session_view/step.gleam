@@ -90,11 +90,12 @@ pub fn settle(
 /// Sends whichever of the side surfaces' waiting reads the lane allows, in
 /// the order the tick has always serviced them: the queue, the worktree,
 /// the notes, the todo seed, the live jobs, the context, the advisor's
-/// pending nudges, the goal, the remembered permissions and the proposals.
+/// pending nudges, the goal, the remembered permissions, the proposals and
+/// the memory overview.
 ///
 /// The reads share the lane's one command slot, so the order decides which
 /// waiting read is sent first. Each reads and writes the shared record
-/// alone, so the ten run as one chain and a host stores the result once.
+/// alone, so the eleven run as one chain and a host stores the result once.
 ///
 /// ## Examples
 ///
@@ -117,6 +118,7 @@ pub fn service_reads(
   |> surfaces.service_goal_read
   |> surfaces.service_remembered_read
   |> surfaces.service_proposals_read
+  |> surfaces.service_memory_read
 }
 
 /// Advances the active strand's activity clock and the generation clock to
@@ -256,6 +258,11 @@ pub fn new(
     proposals: None,
     proposals_refresh: worktree_view.Settled,
     proposals_notice: "",
+    memory: None,
+    memory_refresh: worktree_view.Settled,
+    memory_notice: "",
+    memory_read_ms: None,
+    memory_watch: session_model.NotWatchingMemory,
     nudges: None,
     nudges_refresh: worktree_view.Settled,
     nudges_awaiting: None,

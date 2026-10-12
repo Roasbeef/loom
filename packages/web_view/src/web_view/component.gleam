@@ -168,6 +168,7 @@ import session_view/goal_view
 import session_view/history_view
 import session_view/inbox
 import session_view/lane_fold
+import session_view/memory_overview as memory_words
 import session_view/model.{type Shared, Shared} as session_model
 import session_view/msg
 import session_view/notice_words
@@ -4516,6 +4517,77 @@ pub fn may_review_proposals(model: Model(socket)) -> Bool {
   }
 }
 
+/// Marks the memory overview as wanted and watched on the owner's page.
+///
+/// The page calls this after every message it takes, and it is the owner's
+/// page alone that does: the daemon refuses the read to anyone else. The
+/// first call owes the first read, which the shared step sends once the lane
+/// is ready (`surfaces.service_memory_read`); once a read has been sent, the
+/// page is marked as watching, and the shared step reads again whenever the
+/// board is `memory_overview.backstop_ms` old, because a change to memory
+/// pushes nothing (protocol-change/087).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.want_memory(model)
+/// ```
+pub fn want_memory(model: Model(socket)) -> Model(socket) {
+  case may_review_proposals(model) {
+    False -> model
+    True ->
+      case model.shared.memory_read_ms, model.shared.memory_refresh {
+        None, worktree_view.Settled ->
+          Model(
+            ..model,
+            shared: Shared(
+              ..model.shared,
+              memory_refresh: worktree_view.Requested,
+              memory_watch: session_model.WatchingMemory,
+            ),
+          )
+        _, _ ->
+          Model(
+            ..model,
+            shared: Shared(
+              ..model.shared,
+              memory_watch: session_model.WatchingMemory,
+            ),
+          )
+      }
+  }
+}
+
+/// The memory overview as the daemon last gave it, or `None` while the page
+/// has not read it, or may not.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.memory_kept(model)
+/// ```
+pub fn memory_kept(model: Model(socket)) -> Option(memory_words.Board) {
+  case may_review_proposals(model) {
+    True -> model.shared.memory
+    False -> None
+  }
+}
+
+/// The words of the last refusal of a memory read, empty when there is none or
+/// the page may not read it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.memory_notice(model)
+/// ```
+pub fn memory_notice(model: Model(socket)) -> String {
+  case may_review_proposals(model) {
+    True -> model.shared.memory_notice
+    False -> ""
+  }
+}
+
 /// Marks the proposals board as wanted when the page has never read it, or last
 /// wanted it `proposing.refresh_ms` or more ago.
 ///
@@ -7280,6 +7352,7 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
       element.none(),
       element.none(),
       element.none(),
+      element.none(),
     ),
     needing(model),
     proposals_pending(model),
@@ -7340,12 +7413,14 @@ pub fn switch(model: Model(socket)) -> Element(message) {
 /// every other page passes as `element.none()`, and `remembered` the operator's
 /// list of remembered permissions (`view/remembered`), likewise, and `peers` the
 /// owner's peer-link section (`peer_links_section`), likewise, and `proposals` the
-/// owner's review of proposed standing rules (`view/proposals`), likewise.
+/// owner's review of proposed standing rules (`view/proposals`), likewise, and
+/// `memory` the owner's read-only overview of the daemon's memory
+/// (`view/memory`), likewise.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // component.panel(model, FocusRequested, None, element.none(), element.none(), element.none(), element.none(), element.none(), element.none())
+/// // component.panel(model, FocusRequested, None, element.none(), element.none(), element.none(), element.none(), element.none(), element.none(), element.none())
 /// ```
 pub fn panel(
   model: Model(socket),
@@ -7358,6 +7433,7 @@ pub fn panel(
   remembered: Element(message),
   peers: Element(message),
   proposals: Element(message),
+  memory: Element(message),
 ) -> Element(message) {
   panel.view(
     strip.count(model.view.strip),
@@ -7387,6 +7463,7 @@ pub fn panel(
       remembered,
       peers,
       proposals,
+      memory,
     ),
     trace.view(trace(model)),
     nudges.view(pending_nudges(model)),

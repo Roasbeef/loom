@@ -84,6 +84,7 @@ import web_view/view/archiving
 import web_view/view/context_breakdown
 import web_view/view/controls
 import web_view/view/lane
+import web_view/view/memory as memory_view
 import web_view/view/peer_links as peer_links_view
 import web_view/view/proposals as proposals_view
 import web_view/view/remembered as remembered_view
@@ -296,7 +297,8 @@ pub fn update(
       held,
       model
         |> component.want_permissions
-        |> component.want_proposals,
+        |> component.want_proposals
+        |> component.want_memory,
     )
   let effects = effect.batch([effects, judged])
 
@@ -460,6 +462,14 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
               keep: CancellingApproval,
               reject: Rejecting,
             ),
+          )
+        False -> element.none()
+      },
+      case component.may_review_proposals(model) {
+        True ->
+          memory_view.view(
+            component.memory_kept(model),
+            component.memory_notice(model),
           )
         False -> element.none()
       },

@@ -1386,6 +1386,25 @@
   .proposals-notice{margin:0 0 8px 0;color:var(--color-danger-text);}
   button.proposal-approve,button.proposal-reject{font-size:12px;}
   .tab-badge.tab-badge-proposals{background:var(--color-signal);color:var(--color-on-danger);}
+  /* The owner's read-only memory overview, the Session pane's ninth and last
+     child (web_view/view/memory). It is placed after the proposals review.
+     The counts and each note or rule are tinted blocks with a hairline
+     border, never a bar down an edge and never a shadow. */
+  .pane-session > section.memory{order:12;margin:14px 0 0 0;padding:0;border-top:0;font-size:13px;}
+  .memory-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(96px,1fr));gap:8px;margin:0 0 10px 0;}
+  .memory-tile{display:flex;flex-direction:column;padding:8px 10px;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg-sunk);}
+  .memory-tile-value{font:500 18px/1.3 var(--font-sans);}
+  .memory-tile-label{font:11px/1.4 var(--font-sans);color:var(--color-fg-quiet);}
+  .memory-heading{margin:12px 0 4px 0;font:500 11px/1.4 var(--font-sans);text-transform:uppercase;letter-spacing:.06em;color:var(--color-fg-quiet);}
+  ul.memory-files-list,ul.memory-list{list-style:none;margin:0 0 6px 0;padding:0;}
+  ul.memory-files-list li{margin:0 0 4px 0;font:12px/1.5 var(--font-mono);overflow-wrap:anywhere;}
+  li.memory-file-idle,li.memory-file-missing{color:var(--color-fg-quiet);}
+  li.memory-file-unreadable{color:var(--color-danger-text);}
+  li.memory-row{margin:0 0 6px 0;padding:6px 10px;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg-sunk);}
+  .memory-row-head{display:block;font:12px/1.5 var(--font-mono);color:var(--color-fg-quiet);overflow-wrap:anywhere;}
+  .memory-row-text{display:block;overflow-wrap:anywhere;}
+  .memory-notice,.memory-unavailable{margin:0 0 8px 0;color:var(--color-danger-text);}
+  .memory-files{margin:10px 0 0 0;}
   /* The owner's peer-link section, the Session pane's last child
      (web_view/view/peer_links). It is placed beside the People group, ahead of
      the invitation control. */
