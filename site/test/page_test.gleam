@@ -105,8 +105,8 @@ pub fn the_page_shows_the_version_label_test() {
   assert string.contains(landing_html(), release.label())
 }
 
-pub fn the_footer_says_the_licence_is_not_chosen_test() {
-  assert string.contains(landing_html(), "License: TBD")
+pub fn the_footer_names_the_mit_licence_test() {
+  assert string.contains(landing_html(), "MIT License")
 }
 
 // WHAT THE PAGE CLAIMS ---------------------------------------------------------
