@@ -28,7 +28,7 @@ import site/figure
 import site/figures
 import site/inline
 import site/model.{type Model} as m
-import site/msg.{type FigureId, type Msg}
+import site/msg.{type FigureId, type Msg, type ShotView}
 import site/release
 import site/replay_view
 import site/route
@@ -122,7 +122,7 @@ pub fn view(model: Model) -> Element(Msg) {
             ],
             msg.Migration,
           ),
-          clients(),
+          clients(model),
           more(),
           status(),
           install(model),
@@ -306,7 +306,7 @@ fn story(
   ])
 }
 
-fn clients() -> Element(Msg) {
+fn clients(model: Model) -> Element(Msg) {
   html.section([attribute.class("story"), attribute.id("clients")], [
     html.div([attribute.class("story-head")], [
       html.p([attribute.class("kicker")], [element.text("Terminal and browser")]),
@@ -334,13 +334,75 @@ fn clients() -> Element(Msg) {
         "The web session view with a live transcript, collapsible tool steps, subagent status and the advisor review rail.",
         "The web session view: a live transcript with collapsible tool steps, reasoning blocks, subagent status and the advisor review rail.",
       ),
-      shot(
-        "./img/code-mode.png",
-        "The terminal client running a code-mode program that reads three files concurrently and returns their line counts.",
+      terminal_shot(model.shot_view),
+    ]),
+  ])
+}
+
+/// The terminal capture, collapsed by default, with a pair of buttons that
+/// swap in the capture with the tool details expanded. Both images are 2x
+/// renders shown at half their pixel size, so the text stays sharp on a
+/// high-density screen. The figure keeps one `img` at a time; the buttons
+/// are `aria-pressed` toggles so a screen reader hears the current choice.
+fn terminal_shot(chosen: ShotView) -> Element(Msg) {
+  let #(src, alt, width, height) = case chosen {
+    msg.Compact -> #(
+      "./img/code-mode-compact.png",
+      "The terminal client after a code-mode program read three files concurrently, with the tool call collapsed to a card showing the first lines of the program, the three reads and the result.",
+      1312,
+      1140,
+    )
+    msg.Expanded -> #(
+      "./img/code-mode.png",
+      "The terminal client with the code-mode tool call expanded: the whole Gleam program, the JSON result with the line count of each of three files, and the three file reads.",
+      1312,
+      1646,
+    )
+  }
+  html.figure([attribute.class("shot")], [
+    html.div(
+      [
+        attribute.class("shot-toggle"),
+        attribute("role", "group"),
+        attribute("aria-label", "Terminal screenshot detail"),
+      ],
+      [
+        shot_button("Compact", msg.Compact, chosen),
+        shot_button("Expanded", msg.Expanded, chosen),
+      ],
+    ),
+    html.img([
+      attribute.src(src),
+      attribute.alt(alt),
+      attribute.width(width),
+      attribute.height(height),
+      attribute.loading("lazy"),
+    ]),
+    html.figcaption([], [
+      element.text(
         "The terminal client running a code-mode program. A scripted local provider supplies the demo; compilation, sandboxed execution and file reads are real.",
       ),
     ]),
   ])
+}
+
+fn shot_button(
+  label: String,
+  option: ShotView,
+  chosen: ShotView,
+) -> Element(Msg) {
+  html.button(
+    [
+      attribute.class("btn btn-play"),
+      attribute.type_("button"),
+      attribute("aria-pressed", case option == chosen {
+        True -> "true"
+        False -> "false"
+      }),
+      event.on_click(msg.ShotViewChosen(option)),
+    ],
+    [element.text(label)],
+  )
 }
 
 fn shot(src: String, alt: String, caption: String) -> Element(Msg) {

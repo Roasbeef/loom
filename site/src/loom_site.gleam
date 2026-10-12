@@ -232,6 +232,11 @@ fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       effect.none(),
     )
 
+    msg.ShotViewChosen(view) -> #(
+      Model(..model, shot_view: view),
+      effect.none(),
+    )
+
     msg.ToggleContents -> #(
       Model(..model, contents_open: !model.contents_open),
       effect.none(),

@@ -18,6 +18,13 @@ pub type Decision {
   Deny
 }
 
+/// How much of a tool call the terminal screenshot shows: the default
+/// collapsed card, or the details expanded with Ctrl+G.
+pub type ShotView {
+  Compact
+  Expanded
+}
+
 /// Everything that can change the page.
 pub type Msg {
   /// The URL fragment changed.
@@ -64,6 +71,8 @@ pub type Msg {
   CopyDone(String)
   /// The "Copied" label of a sample has been up long enough.
   CopyReset(String)
+  /// The reader chose the collapsed or the expanded terminal screenshot.
+  ShotViewChosen(ShotView)
   /// A key press that nothing uses.
   Ignore
 }
