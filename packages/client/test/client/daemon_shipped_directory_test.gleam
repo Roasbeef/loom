@@ -80,6 +80,7 @@ import gleam/option.{Some}
 import host/bootstrap as native
 import support/remote_daemons
 import support/remote_duo
+import weft/poll
 
 const skip_label = "shipped remote directory"
 
@@ -146,6 +147,43 @@ fn timed(attempt: fn() -> a) -> a {
   answer
 }
 
+// The first `sessions.get` that asks a peer pays for the TLS distribution
+// connection to it, because `bravo` connects on demand. A lookup gives that
+// connection 1.5 s under a 2 s deadline, and a first handshake on a loaded
+// host can outlast both: the lookup then reports the peer silent, which is
+// `owner_unreachable`, while the handshake goes on in the background and
+// completes. That answer says nothing about the redirect these tests exist to
+// check, so the first read of a peer retries while it is `owner_unreachable`
+// and returns the first answer that is not. Only that code is retried, so
+// every other answer, a wrong one included, is returned at once, and a peer
+// that stays unreachable fails the test at the bound. The later
+// `owner_unreachable` assertions, made with the peer killed, do not use it.
+fn get_once_reachable(
+  control: remote_daemons.Control,
+  first_id: Int,
+  session: String,
+) -> JsonValue {
+  let verdict =
+    poll.fold_until(
+      clock: poll.monotonic(),
+      within: 30_000,
+      every: poll.Fixed(250),
+      from: first_id,
+      attempt: fn(id) {
+        let read = get(control, id, session)
+        case code_of_any(read) == json.String("owner_unreachable") {
+          True -> poll.Pending(id + 1)
+          False -> poll.Settled(read)
+        }
+      },
+    )
+  case verdict {
+    poll.Answer(read) -> read
+    poll.Failure(..) | poll.RanOut(..) ->
+      panic as "the peer stayed unreachable for the whole bound"
+  }
+}
+
 pub fn a_session_is_found_on_the_orchestrator_that_owns_it_test_() -> EunitTest {
   remote_duo.shipped(skip_label, fn(duo) {
     let keys = remote_duo.provision(duo)
@@ -176,7 +214,7 @@ pub fn a_session_is_found_on_the_orchestrator_that_owns_it_test_() -> EunitTest 
 
     // `bravo` does not hold `alpha`'s session, and says who does with the
     // address its own configuration gives for `alpha`.
-    let read = get(on_bravo, 10, session)
+    let read = get_once_reachable(on_bravo, 10, session)
     assert code_of(read) == json.String("not_owner")
     assert remote_daemons.field(body_of(read), "orchestrator")
       == json.String("alpha")
@@ -238,7 +276,7 @@ pub fn a_session_is_found_on_the_orchestrator_that_owns_it_test_() -> EunitTest 
     // `alpha` comes back, and the next lookup finds it again: `bravo` kept no
     // record of the failure and made no attempt of its own in between.
     let _alpha = remote_daemons.start(duo.alpha)
-    let found = get(on_bravo, 30, session)
+    let found = get_once_reachable(on_bravo, 30, session)
     assert code_of(found) == json.String("not_owner")
     assert remote_daemons.field(body_of(found), "orchestrator")
       == json.String("alpha")
