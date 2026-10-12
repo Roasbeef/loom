@@ -135,8 +135,8 @@ catalogue and none of which reads a daemon-wide table:
 | the `models` listing's role columns | `gateway.catalog_listing` over the session's catalogue |
 
 One consumer is not per session and does not use the profile: the shared
-workspace domain's maintenance (`serve.build_domain`, which distills notes
-for a workspace). It is built from the configuration the domain was created with,
+workspace domain (`serve.build_domain`, which loads the configuration the
+domain was created with only to validate it). It is built from the configuration the domain was created with,
 with the default roles, because several sessions on different profiles share one
 workspace domain. A test pins that two sessions built from one file with
 different profiles route different main models, and that neither affects the other.

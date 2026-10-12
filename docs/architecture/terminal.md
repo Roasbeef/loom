@@ -808,6 +808,8 @@ already have.
 | Model selector | `/model` | The model catalogue; selection sends `set_config` | `model_selector` |
 | Session picker | `/sessions`, and at a `Local` launch | One authorized catalogue page; Enter opens a session, while `l` links the attached strand to the selected resident session | `session_selector`, `daemon/selection`, `peer_links` |
 | Access overlay | `/access` (owner only) | `principals.list` and `principals.memberships` pages; set-role, revoke and revoke-credentials after a y/N review | `access_overlay`, `daemon/protocol`, `host/access` |
+| Proposals review | `Alt+p` (owner only), or the `proposals N` badge on the input frame's bottom rule | The `proposals_get` board: proposed standing rules newest first, one as a red and green diff, with approve and reject | `proposals` (in `session_view`), `proposal_panel` |
+| Memory overview | `Alt+m` (owner only) | The `memory_get` board, read-only (protocol-change/087): the `[memory] inject` mode and the size of each file a run reads, the newest typed notes, the approved rules and the pending proposal count; arrows and page keys scroll, `Esc` closes. The shared step reads it again once a minute while the overlay is open (`tick.watch_memory`) | `memory_overview` (in `session_view`), `memory_panel` |
 
 The peer-link path starts in `tui/interaction`: `l` on a resident `/sessions`
 row passes that row to `tui/session_control` without attaching its session.
@@ -839,6 +841,23 @@ pass through it. A member who opens the overlay receives `forbidden` from the
 daemon and sees one line saying the overlay is for the owner. `/access` is a
 surface command, so the web page refuses it with the rest, which keeps owner
 administration in the terminal.
+
+The proposals review (protocol-change/086) is the owner's way to decide the
+standing rules the model suggests with its `propose` tool. The board is the
+shared record's (`Shared.proposals`, decoded totally by `session_view/proposals`),
+not the overlay's: `tui/proposal_panel` keeps only where the reader is, so a
+decision's reply, or the daemon's `proposals_changed` push, redraws the open
+proposal with its new state, including `stale` when the rules file moved. The
+terminal asks for the board once per attachment and again after each push. A
+refusal (`forbidden` for a member or an observer, `unsupported` for a daemon
+with no queue) leaves no board and so no badge, and is worded inside the
+overlay if it is opened anyway. `Alt+p` opens the list; `Enter` opens a row,
+which shows the rationale, the source session, and the edit as removed text in
+red and added text in green; `a` then `y` approves, `r` rejects, and `Esc` goes
+back. A row that is no longer pending shows what became of it and offers no
+action. The panel says that an approval writes `loom-rules.md`, which only
+sessions opened afterwards read, and that the workspace's `AGENTS.md` is never
+edited. The daemon, not the overlay, decides who may decide.
 
 A few rules apply to every surface. An open overlay owns focus, so ordinary
 prompt editing is inert while it is up, and `Ctrl+C` stays global. Overlay
@@ -1121,7 +1140,7 @@ Paths are relative to the package's source root: `tui/...` is under
 | `tui/job` | Jobs as data: `Key`, the slot type `Awaiting`, `Spec`, and the keyed `Arrival`. |
 | `tui/job_runner` | The runtime's table of running jobs: starts a spec as a weft run, cancels by key, receives every job's replies. |
 | `tui/buffered` | `Inbox`: a terminal-owned subject with the messages already received from it, `waiting` and `push` before the step, `take` in it, `receive` outside it. |
-| `session_view/transcript_lines` | Transcript rows from durable entries, streams, tool calls and advisor frames. |
+| `session_view/transcript_lines` | Transcript rows from durable entries, streams, tool calls and advisor frames. A settled `history_search` draws its query and filters on the call row, then one literal result row with a hit to a line (short session, short entry, kind, UTC date, snippet) decoded totally from the result's `details` by `session_view/recall_view`; the collapsed row keeps three hits and Ctrl+g shows all, and details of any other shape keep the plain result row. |
 | `tui/layout` | Screen rectangles for painting and hit-testing, including the todo panel's rows. |
 | `tui/render` | `view`, `cached_frame` and `render_frame`. |
 | `tui/inbound` | The terminal's loop over the lane's updates, and settling the surface facts each recorded. |

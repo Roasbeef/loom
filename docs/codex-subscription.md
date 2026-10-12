@@ -213,11 +213,8 @@ Separate credential profiles have independent registration and grant records,
 but do not create extra plan allowance for the same account.
 
 The per-session `summarize` route serves structural block summaries and agent
-activity descriptions. Shared workspace-domain memory maintenance uses the
-configuration's default roles, because several sessions may share that domain.
-Thus the split above keeps shared-domain distillation on Baseten. Current
-compaction builds local notes and checkpoints; configuring `summarize` does not
-add a model call to that compaction path.
+activity descriptions. Current compaction builds local notes and checkpoints;
+configuring `summarize` does not add a model call to that compaction path.
 
 Responses requests opt into `reasoning.summary = "auto"`. The readable thinking
 blocks contain the provider's reasoning summary; encrypted reasoning remains

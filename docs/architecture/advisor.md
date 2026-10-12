@@ -708,22 +708,22 @@ strand switch away. That visibility is deliberate: the isolation is
 between the two models, not between the harness and the person running
 it.
 
-**Extensions and the memory digest** reach the advisor's runs too. The
+**Extensions and the memory index** reach the advisor's runs too. The
 extension hook bus is composed over the advisor's four slots. An
 extension's `context` fold therefore receives and may rewrite the
 advisor's brief, its tool gate is consulted on the `advise` call, and
 `AgentEnd` and usage fire for the advisor's runs beside the primary's.
 (That last point is the same fact the step counter has to filter on,
-seen from the other side.) The memory digest is not strand-scoped either:
-`memory.digest_hooks` runs at every strand's run start, so the operator's
-distilled memory is appended to the advisor's branch as well.
+seen from the other side.) The memory context is not strand-scoped either:
+`memory.notes_hooks` runs at every strand's run start, so the notes index is
+appended to the advisor's branch as well.
 
 Neither is an accident. An extension is installed by the operator and
 runs with the operator's authority, which is the whole extension trust
 model. A configured extension can already rewrite the primary's context
 and gate the primary's tools, and an advisor it could not touch would be
 a plane outside the operator's control rather than a safer one. The
-memory digest is the operator's own standing text, and a reviewer reading
+notes index is the operator's own standing text, and a reviewer reading
 what the operator wants remembered is a feature. Neither changes the
 isolation the design rests on, which is between the two *models*:
 nothing here lets the primary address the advisor or read its cells. One

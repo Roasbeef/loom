@@ -202,8 +202,7 @@ across workspaces. At startup the daemon opens its catalogue and its stable
 owner credential, and it restores session metadata without opening every
 conversation. An explicit create or open request admits an independent session
 assembly, which owns one conversation database, runtime, gateway, broker, and
-helper pool. Sessions in the same persisted domain share history and
-maintenance owners. [Sessions](sessions.md) gives the ownership and shutdown
+helper pool. Sessions in the same persisted domain share a history owner. [Sessions](sessions.md) gives the ownership and shutdown
 rules, and [multiplayer](multiplayer.md) gives identity and sharing policy.
 Both describe the unreleased implementation, not the older shipped baseline in
 the historical sections. [The daemon process](daemon.md) describes `loomd`
@@ -831,8 +830,7 @@ it. See [models](models.md) for the catalogue and runtime model selection.
 `client/serve` assembles the helper pool, broker, provider and tool wiring, and
 session runtime, and then starts the gateway hub and WebSocket listener. The
 runtime acquires the session's writer lease and restores its durable state.
-The service supervisor owns the hub and the configured background services;
-memory distillation has its own lifecycle, described in [memory](memory.md).
+The service supervisor owns the hub and the configured background services.
 Boot-time memory scanning of other saved sessions does not make those sessions
 gateways on this listener.
 

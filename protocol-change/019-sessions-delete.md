@@ -40,7 +40,7 @@ database and the files SQLite keeps beside it — `-wal`, `-shm`,
 `-journal`, and a `.tmp` scratch directory — are unlinked after the
 transaction commits.
 
-**What survives.** The domain record and everything distilled into it:
+**What survives.** The domain record and everything remembered into it:
 the memory store, its index, and shared-history rows derived from the
 session. These belong to the workspace, not to the conversation.
 

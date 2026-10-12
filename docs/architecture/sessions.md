@@ -21,7 +21,7 @@ shutdown, for an implementer. The main pieces are:
 - the per-session **instance**: one supervision tree from the
   [orchestration plane](orchestration.md), one gateway, one conversation
   database, and the broker and helper pool behind its effects;
-- the per-**domain** shared resources (history and memory maintenance),
+- the per-**domain** shared resources (the shared history index),
   where a domain is the memory and search scope the catalogue maps each
   session to.
 
@@ -436,7 +436,7 @@ restarts the conversation. See
 The catalogue also stores each session's domain mapping.
 `workspace_private` preserves the owner's canonical workspace aggregate;
 `session_only` assigns fresh memory and index paths for that session. The
-record captures the selected maintenance configuration reference at
+record captures the selected configuration reference at
 creation, including an explicit no-config choice. Opening sessions in a
 different order cannot replace it. Listing, restoring, or isolating this
 metadata does not open conversation, memory, index, or configuration
@@ -444,8 +444,9 @@ files.
 
 That reference does not replace each session's runtime configuration. A
 session can select different providers and tools while retaining the same
-owner-private domain paths; shared maintenance uses the domain's own
-configuration binding.
+owner-private domain paths. The domain build loads the domain's own
+configuration binding only to refuse a file no session could open under;
+nothing else about the shared domain reads it.
 
 The registration also stores the name of the model profile the session was
 created under, or none ([protocol 076](../../protocol-change/076-config-profiles.md)).
@@ -457,8 +458,8 @@ can be replaced while the session runs, by the owner's `profile_set` command
 ([protocol 082](../../protocol-change/082-session-profile-switch.md)): the hub
 saves it, moves the strands that followed the old profile, and the daemon stops
 and opens the session again in a process the session does not own
-(`daemon/restart`). The hub refuses the switch while any strand runs. Shared
-domain maintenance does not use it.
+(`daemon/restart`). The hub refuses the switch while any strand runs. The
+shared domain does not use it.
 
 It likewise stores the key of the `[models.<key>]` entry the session's `main`
 role was pinned to, or none ([protocol 080](../../protocol-change/080-session-model-choice.md)).
@@ -467,7 +468,7 @@ no longer defines refuses the open.
 
 Only saved registrations appear in paged domain source enumeration.
 Reserved registrations are excluded before the page limit is applied, so
-maintenance cannot create their missing databases by opening them.
+the history owner cannot create their missing databases by opening them.
 Owner-authorized isolation requires no retained runtime slot and copies no
 old aggregate files; see [sharing scope](multiplayer.md#sharing-scope) for
 its transcript caveat. Runtime resource admission consumes this mapping
@@ -476,8 +477,7 @@ metadata alone would not establish that integration.
 
 ### Shared domain resources
 
-The manager owns one history coordinator and optional maintenance cadence
-per admitted domain. It captures the immutable domain record before
+The manager owns one history coordinator per admitted domain. It captures the immutable domain record before
 preparing the host, publishes cleanup before starting effects, and passes
 the original shared history capability to each session. Session commit
 forwarders notify that owner with the committing session's ID. History
@@ -485,42 +485,35 @@ checks the current domain source list before returning ranked results or
 reading an exact entry; stored index locators do not authorize reads.
 
 The domain book (the manager's bounded table of domains) has the same
-capacity as the session book. Preparing, quiescing, closing, and blocked
+capacity as the session book. Preparing, closing, and blocked
 domains remain counted, so repeatedly opening distinct session-only
 domains cannot grow an unbounded retained map. Sessions waiting for domain
 preparation occupy their own session slots. Listing and restoring saved
 metadata still start no domain resources.
 
 Closing one session leaves its shared domain available to other resident
-sessions. The session's original normal custody witness triggers a
-clean-close maintenance notification. Domain retirement then proceeds in
-order:
+sessions. Domain retirement starts when the last dependency retires, and
+proceeds in order:
 
-1. After the last dependency retires, the manager quiesces current and
-   coalesced maintenance.
-2. The manager cancels the domain host.
-3. Ordered cleanup retires maintenance before shared history.
-4. Only the original domain witness's normal exit releases the domain's
+1. The manager cancels the domain host.
+2. Ordered cleanup retires shared history.
+3. Only the original domain witness's normal exit releases the domain's
    reservation; failed cleanup retains capacity.
 
-While daemon admission remains open, an explicit session open can revive a
-quiescing domain before cancellation starts. The revival resumes
-maintenance and replaces the domain's settle subject. A late reply to the
-withdrawn fence cannot settle a later close, even if the worker decided
-that reply before processing the resume.
-
-Once cancellation has started, an explicit open instead reserves a parked
-session and receives `Opening`. The reservation consumes session capacity
-while the retiring domain continues to consume domain capacity. Only the
-original domain witness's normal exit permits replacement, and the accepted
-session builder starts after the replacement services publish. Shutdown
-and blocked cleanup cancel parked waiters and never permit revival.
+Cancellation is not withdrawable, so a domain with no dependent session is
+cancelled at once and its services are never handed to a later session. An
+explicit open that arrives while the domain is closing instead reserves a
+parked session and receives `Opening`. The reservation consumes session
+capacity while the retiring domain continues to consume domain capacity. Only
+the original domain witness's normal exit permits replacement, and the
+accepted session builder starts after the replacement services publish.
+Shutdown and blocked cleanup cancel parked waiters.
 
 The control `status` response reports `domain_capacity`,
 `domain_occupied`, and `domain_blocked` separately from session counts, so
 a `Saved` session can coexist with a retained closing domain. Normal daemon
 shutdown waits for both books to empty. A later explicit admission creates
-a fresh domain owner and may run another cursor-based maintenance pass. The
+a fresh domain owner. The
 catalogue remains the source of the domain's paths, configuration, and
 authorized source IDs.
 
@@ -531,11 +524,6 @@ creates a new history owner. Separate public-custody tests cover blocked
 cleanup, and cancellation of domain preparation with two waiting sessions.
 The precise cross-sender DOWN-before-result ordering is source-reviewed
 rather than deterministically scheduled by those tests.
-
-A joined cadence test also holds the initial pass while two sessions
-close. The accepted coalesced pass still runs, and the original history
-and maintenance owners stay alive while it is held. Releasing that final
-pass permits normal domain retirement and releases domain capacity.
 
 ### Instance resources
 

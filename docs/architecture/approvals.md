@@ -506,6 +506,44 @@ record written, because the seam borrows the runtime before it raises. A
 missing audit line is the accepted cost; the alternative is a holder that
 does more work and has more ways to fail.
 
+## Proposals are not approvals
+
+A model can suggest a standing rule with `propose`, and that looks like an
+approval question and is not one. An approval answers a refused call that is
+parked, holding a run open until someone decides. A proposal is filed in a
+durable queue and the call returns at once with `queued as <id>`. It never
+parks a run, never raises an escalation record, never takes a grant and writes
+no file. Nothing in this document's machinery (the question, the claim, the
+action digest, the consume) is involved, and a test pins that a `propose` call
+leaves no escalation record behind.
+
+What a person decides is a different object with a different lifetime. A
+proposal is a row under `proposal/` in the domain's memory store (not in any session's file, so no snapshot capture copies it) with the states
+`pending`, `approved`, `rejected` and `stale`, and the owner decides it with the
+session commands `proposals_get` and `proposal_decide`. An approval writes
+`loom-rules.md`, a file the host owns beside the domain's memory store, and only
+after checking that the file still has the digest the proposal was written
+against and that the text to replace still matches exactly once. The file is
+protected from every jail and reaches the system prompt of sessions opened
+afterwards, after the operator's own instruction files, in its own
+`origin=approved-proposal` fence. The queue holds at most 64 pending proposals
+and refuses the next in band, and it keeps the newest 100 decided ones. Two
+sessions on one workspace domain share `loom-rules.md` and each gateway
+serialises only its own decisions, so two owner pages approving in different
+sessions at the same instant could both pass the digest check and the second
+write erase the first; the odds are very small and routing writes through the
+domain owner is not done. The design is in
+`protocol-change/086-memory-proposals.md`.
+
+Both hosts review the queue as the owner. The terminal opens `Alt+p`
+(`tui/proposal_panel`, with a `proposals N` badge on the input frame while any
+wait) and the web page draws a Proposals section in the Session pane with a
+badge on the Session tab (`web_view/view/proposals`). Each shows the edit as a
+red and green diff, asks before it approves and lets a rejection go at once;
+both read the one board `session_view/proposals` decodes, and a `stale` answer
+is shown as what it is. [The terminal doc](terminal.md) and
+[the web view doc](web-view.md) describe the surfaces.
+
 ## Invariants
 
 - **An approval widens one execution of one call.** The consume is a

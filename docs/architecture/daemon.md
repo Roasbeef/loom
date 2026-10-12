@@ -166,7 +166,7 @@ flowchart TD
     Wit["lifetime witness<br/>Weft scope, client/daemon/lifetime"]
     Reg["registry<br/>client/daemon/manager"]
     DH["domain host and custody owner<br/>one per active domain"]
-    DS["history coordinator,<br/>maintenance cadence"]
+    DS["history coordinator"]
     SH["session host and custody owner<br/>one per open session"]
     Inst["session instance: gateway, broker, helper pool,<br/>MCP clients, storage, runtime tree"]
     Orch["SessionSupervisor and strands<br/>see orchestration.md"]
@@ -322,10 +322,9 @@ In more detail:
    must keep answering authorization questions for every attached socket.
 4. **Domain services.** If the domain was not already running, its host
    runs `serve.build_domain` through the `domain_build` callback, which
-   starts the shared history coordinator and, if configured, the
-   maintenance cadence. When the services publish, the registry releases
+   starts the shared history coordinator. When the services publish, the registry releases
    every session builder waiting on that domain. [Sessions](sessions.md)
-   ("Shared domain resources") covers domain reuse, revival and retirement.
+   ("Shared domain resources") covers domain reuse and retirement.
 5. **Session assembly.** The released builder asks the registry for its
    domain's services, then runs the `build` callback that `main.prepare`
    supplied. That callback resolves settings with `serve.resolve_managed`,
@@ -336,11 +335,6 @@ In more detail:
    state-root masks to the sandbox policy. It attaches a peer directory, then calls
    `serve.assemble_in_domain`, which builds the session's storage, broker,
    helper pool, services, gateway and runtime tree under the custody owner.
-   The domain's first distillation pass starts in step 4 and harvests the
-   domain's sessions under their ordinary writer leases, so it can hold
-   this very session's lease when the storage opens. The open waits that
-   harvest out, until it closes or its short lease expires, and logs
-   `session.harvest_wait`; any other lease holder refuses the open at once.
    The result is projected to `serve.Resident`, which holds only the
    gateway's address, the peer endpoint, the fatal process list and a drain
    handle. The registry therefore never copies a whole session graph.
@@ -520,8 +514,8 @@ The root then runs these steps:
    deadlock.
 3. **Cut session sockets and cancel the registry.** When the task reports,
    the root kills every Observer and Operator socket and cancels the Weft
-   scope. The registry stops every slot, fences its domains for retirement
-   (a domain fenced here is never revived), and exits normally once every
+   scope. The registry stops every slot, retires its domains,
+   and exits normally once every
    session and domain has drained.
 4. **Close the rest.** The witness's normal exit is the root's cue to kill
    the remaining control sockets and close the listener. The listener asks
@@ -607,7 +601,7 @@ the daemon stays blocked until a person restarts it.
 | `client/daemon/ui_http.gleam`, `ui_sessions.gleam`, `ui_socket.gleam`, `ui_relay.gleam` | The web view, with `--ui`: request checks, the ticket and UI-session actor, the page's socket and component, and the relay into the gateway. |
 | `web_view/component.gleam`, `web_view/operator_page.gleam`, `web_view/page.gleam` | The Lustre server components a page runs, and the documents served around them. |
 | `client/daemon/protocol.gleam` | The v2 control envelope and command decoder. |
-| `client/daemon/domain.gleam` | One domain's shared history and maintenance services. |
+| `client/daemon/domain.gleam` | One domain's shared history services. |
 | `client/daemon/limits.gleam` | The `[daemon]` table and its refusal messages. |
 | `client/daemon/transfer.gleam` | Stop-and-wait snapshot transfer state. |
 | `client/daemon/admin.gleam` | The one-shot `loomd access` command, over `host/access`. |

@@ -403,9 +403,9 @@ stateDiagram-v2
 
 A notice arriving in `Ready` starts a catch-up at once. A notice arriving
 while a request is in flight sets a one-bit mark, `Refresh.Due`, and
-`send_queued` (`session_view/session_channel.gleam:1781`) starts the catch-up at the
+`send_queued` (`session_view/session_channel.gleam:1788`) starts the catch-up at the
 next transition to `Ready`. That is sooner than the idle refresh in
-`tick` (`session_view/session_channel.gleam:1384`) would have started it. The mark is a
+`tick` (`session_view/session_channel.gleam:1391`) would have started it. The mark is a
 bit rather than a count because a notice carries no state, so any number
 of them mean the same thing: capture when free.
 
@@ -568,7 +568,7 @@ retained runtime or a failed-cleanup slot must retire before isolation
 can proceed.
 
 The catalogue records this policy without opening stores. Runtime recall
-and maintenance must use the same mappings; the accepted domain addendum
+and shared history must use the same mappings; the accepted domain addendum
 in [protocol 015](../../protocol-change/015-daemon-control-and-session-attachments.md)
 defines them.
 

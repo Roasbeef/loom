@@ -89,3 +89,55 @@ Run affected package and static gates, hosted CI, and exact-head strict Linux
 signoff through the confirmed `gilgamesh-signoff` alias. Its `obelisk` hostname
 and separate account are intentional. The owner authorizes merge once all these
 gates are green on the published head; prior-head green results never substitute.
+
+## Memory as recall
+
+[The memory page](architecture/memory.md) is the account of how it works and
+[the decision record](design-notes/memory-recall.md) is the reason.
+
+**What landed.** Memory is now recall, not a digest. `history_search` is the
+memory tool: it takes `syntax` (`words` with prefix terms and `OR`, or `raw`),
+`kind`, `before` and, for `read`, `around`, and every hit carries its kind and
+date. `remember` writes typed notes (`title`, `description`, `kind`, `note`),
+indexes them under kind `note`, and rebuilds the 1 KiB `loom-memory.notes`
+index that each run carries by default (`[memory] inject = "notes"`), and a
+session open rebuilds that index from the store without taking the lease. The
+digest and the distillation pass that produced it were removed; `distill =
+"off"` still parses and does nothing, and an old store's leftover rows and
+digest file are not read or deleted. `propose` queues a standing rule and
+`loom-rules.md` changes only when the daemon's owner approves it
+(protocol-change/086); the prompt carries the file last, in an
+`origin=approved-proposal` fence, and only new sessions read it. The
+transcript draws a search as a step with its hits, and the owner reviews
+proposals with `Alt+p` in the terminal or in the Session pane on the web page.
+
+**Left open on purpose.**
+
+- A Memory overview pane (notes, counters, the rules file) in either host.
+- A proposal kind that edits configuration, and one that targets the global
+  `AGENTS.md`. Both stay out until there is an edit door for them.
+- Owner-only admission of the web proposals pane at the operator socket, by
+  teaching `ui_socket.owner_accepts` the path. Today the socket admits it like
+  remembered permissions, and the daemon is the gate.
+- Notes search on the standalone host. Only the daemon adds the memory store
+  to the history owner's sources.
+- A logger with session context for `memory.search_called`. `serve` calls
+  `history.seam` and `history.seam_for`, which log through the Erlang logger,
+  where `seam_with_logger` and `seam_for_with_logger` already take one.
+- A guard for the 512-source bound. The memory store is one source in the
+  list, so a domain with 512 saved sessions and a store refuses shared history.
+
+The proposal queue is the domain's, in `loom-memory.db`, and every write
+holds the store's writer lease, so a review in any session shows every
+proposal and two approvals cannot erase each other. A `propose` or a decision
+that finds the lease held is answered busy and is not retried. The notes index
+is rebuilt from the store when a session opens. The usage counter for notes is `note_hits` on
+`memory.search_called`; `memory.proposal` records each proposal transition.
+
+**The first number to watch.** Whether any of the owner's eight existing notes
+is ever returned by a search. Read `note_hits` on `memory.search_called` over
+the first two weeks; zero means the index and the search are not earning their
+cost. The recall test's figures (6 of 30 paraphrase wordings found by exact
+quoted words, 16 of 30 by prefix terms with `OR`) come from a synthetic corpus
+and say nothing about real use.
+

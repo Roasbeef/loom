@@ -496,9 +496,11 @@ erasing it. See the [goals guide](docs/architecture/goals.md).
 - **Long-running context.** Compact conversations while preserving their durable
   history, and search earlier sessions when an older decision matters.
   [Compaction guide](docs/architecture/compaction.md).
-- **Workspace memory.** Retain facts, lessons, and preferences across sessions,
-  with provenance and an explicit `remember` tool. Memory is private to the owner
-  by default; session isolation controls sharing. [Memory guide](docs/architecture/memory.md).
+- **Workspace memory.** The agent searches earlier sessions with
+  `history_search`, keeps typed notes with `remember`, and proposes standing
+  rules with `propose`, which take effect only after the owner approves them.
+  Memory is private to the owner by default; session isolation controls
+  sharing. [Memory guide](docs/architecture/memory.md).
 - **Scheduled follow-ups.** Durable schedules can deliver prompts to strands
   under operator policy, for periodic checks or later follow-up while the session
   is running. [Schedule configuration](docs/examples/loom.toml).
