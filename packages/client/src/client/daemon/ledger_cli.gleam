@@ -1088,6 +1088,10 @@ fn checked_revoke(
           refusal_section(name, "would break the link graph", links),
           refusal_section(name, "may strand sessions", stranded),
           refusal_section(name, "would leave too few directory voters", voters),
+          case voters {
+            [] -> []
+            _ -> [wedge_warning]
+          },
           ["Nothing was signed. Pass --force to revoke anyway."],
         ]),
         "
@@ -1109,6 +1113,13 @@ fn refusal_section(
     ]
   }
 }
+
+// What an operator forcing a revoke below three voters needs to know before
+// choosing which voter: with two voters, revoking the leader leaves a directory
+// that cannot elect, and revoking the follower does not. Giving the leader the
+// standing `none` by hand does the same, since the leader is then removed.
+const wedge_warning =
+  "With --force and two voters, revoke the follower and not the leader: revoking the leader (or giving it the standing `none` by hand) leaves a directory that cannot elect."
 
 // The sentence of a forced revoke: nothing was looked at.
 fn unchecked_text(name: String) -> String {

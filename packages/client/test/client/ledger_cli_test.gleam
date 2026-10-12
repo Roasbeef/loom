@@ -783,6 +783,7 @@ pub fn an_enrollment_seats_a_learner_and_a_revoke_keeps_three_voters_test() {
     })
   assert string.contains(reason, "would leave too few directory voters")
   assert string.contains(reason, "left with 2 voters")
+  assert string.contains(reason, "revoke the follower and not the leader")
   assert string.contains(reason, "Nothing was signed")
   assert head_of(handle) == head
   assert list.length(copy_of(deployed)) == head + 1
