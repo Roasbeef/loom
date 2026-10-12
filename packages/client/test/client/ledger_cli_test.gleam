@@ -757,7 +757,7 @@ fn directory_seats(handle: Handle) -> List(seats.Place) {
 
 pub fn an_enrollment_seats_a_learner_and_a_revoke_keeps_three_voters_test() {
   let deployed = deployment.provision("cli-directory", directory_plan)
-  let handle = hub(deployed)
+  let handle = holding_nothing(hub(deployed))
   let assert Ok(report) =
     ledger_cli.run_with(
       "enroll",
@@ -781,6 +781,7 @@ pub fn an_enrollment_seats_a_learner_and_a_revoke_keeps_three_voters_test() {
     ledger_cli.run_with("revoke", arguments, fn(_) {
       deployment.daemon_over(handle)
     })
+  assert string.contains(reason, "would leave too few directory voters")
   assert string.contains(reason, "left with 2 voters")
   assert string.contains(reason, "Nothing was signed")
   assert head_of(handle) == head
@@ -801,6 +802,40 @@ pub fn an_enrollment_seats_a_learner_and_a_revoke_keeps_three_voters_test() {
       deployment.daemon_over(handle)
     })
   assert string.contains(report, "Revoked hub2")
+}
+
+// The three checks of a revoke are independent, so a revoke that fails more
+// than one reports each in the same refusal, and `--force` skips and names all
+// three.
+pub fn a_revoke_reports_the_voters_beside_the_sessions_and_force_skips_all_three_test() {
+  let deployed = deployment.provision("cli-all-checks", directory_plan)
+  let asked =
+    asking(hub(deployed), fn(node) {
+      case node {
+        "loom@hub2.example" -> Ok(Held(sessions: 2, placed: []))
+        _ -> Ok(Held(sessions: 0, placed: []))
+      }
+    })
+  let arguments = ["hub2", "--wait", "0", ..deployment.signing(deployed)]
+  let head = head_of(asked)
+  let assert Error(reason) =
+    ledger_cli.run_with("revoke", arguments, fn(_) {
+      deployment.daemon_over(asked)
+    })
+  assert string.contains(reason, "may strand sessions")
+  assert string.contains(reason, "hub2 owns 2 sessions")
+  assert string.contains(reason, "would leave too few directory voters")
+  assert string.contains(reason, "left with 2 voters")
+  assert string.contains(reason, "Nothing was signed")
+  assert head_of(asked) == head
+
+  let assert Ok(report) =
+    ledger_cli.run_with("revoke", list.append(arguments, ["--force"]), fn(_) {
+      deployment.daemon_over(asked)
+    })
+  assert string.contains(report, "Revoked hub2")
+  assert string.contains(report, "Not checked (--force)")
+  assert string.contains(report, "the directory's voters")
 }
 
 pub fn an_enrollment_with_no_standing_stays_outside_the_directory_test() {
