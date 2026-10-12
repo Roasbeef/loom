@@ -50,7 +50,8 @@ reinstall of the other nodes and no restart, and what that costs.
    fixed by the signer. A node accepts an entry from any peer when the
    signature and the chain check, so a peer is not trusted to relay honestly.
    Two different signed entries at one sequence number are a fork. A node
-   refuses the second, stops extending its log and reports the fork.
+   refuses the second, records the refusal, and keeps applying entries that
+   extend its own chain.
 4. **Nodes learn the log by anti-entropy over the existing pinned
    distribution.** Each node stores the log in a local file. When two nodes
    connect they exchange their head (sequence number and entry hash), and the
@@ -68,6 +69,15 @@ reinstall of the other nodes and no restart, and what that costs.
 7. **Reprovision once to migrate.** A deployment created before the ledger is
    provisioned again by the new version, which emits the genesis entry and the
    first members. A converter is not worth its second code path.
+
+**Two member lists.** The ledger lists the nodes that are trusted: every
+enrolled node, laptops included, with its pin. Khepri has its own, shorter list
+of Ra voters (and learners), a subset of the servers that replicate the session
+directory. The ledger owns the first list and Ra follows it, never the reverse.
+A trust change therefore never waits for a quorum. That is the reason the ledger
+is not stored in Khepri: with the log in the store, a majority loss would stop
+the entries that restore trust. Section 11.3 gives the order between the two
+lists and what the ledger cannot recover.
 
 The remainder of the note gives the reasons, the mechanism, the holes found
 while arguing it, and the phases.
@@ -93,7 +103,7 @@ The facts the design leans on, each of which is in the tree:
   uses and the other orchestrators. An executor pins only the orchestrators
   that use it. Two executors do not pin each other unless Khepri makes both
   members. A design that replaced this with "every enrolled node trusts every
-  other" would widen the blast radius of a lost laptop from the executors it
+  other" would widen what a lost laptop can reach from the executors it
   uses to all of them, so the ledger carries the edges (section 4).
 - The cookie is one value for the deployment, written to
   `$HOME/.erlang.cookie` by `install`. It is a second check behind TLS.
@@ -124,20 +134,21 @@ entry. Entry 0 is `genesis` and its `prev` is 32 zero bytes. A body after
 genesis is one of two kinds.
 
 ```json
-{"format":"loom-membership-ledger/1","seq":4,"prev":"9f2c...","time":"2026-10-11T18:02:11Z","kind":"member","name":"laptop2","node":"loom@laptop2.example.net","host":"laptop2.example.net","role":"orchestrator","directory":"none","links":["hub","devbox"],"pins":["3a7b..."]}
-{"format":"loom-membership-ledger/1","seq":5,"prev":"c4e1...","time":"2026-10-11T19:40:02Z","kind":"revoke","name":"laptop2","pins":["3a7b..."],"reason":"laptop lost"}
+{"format":"loom-membership-ledger/1","seq":4,"prev":"9f2c...","time":"2026-10-11T18:02:11Z","kind":"member","name":"laptop2","node":"loom@laptop2.example.net","host":"laptop2.example.net","role":"orchestrator","directory":"none","links":["hub","devbox"],"pin":"3a7b..."}
+{"format":"loom-membership-ledger/1","seq":5,"prev":"c4e1...","time":"2026-10-11T19:40:02Z","kind":"revoke","name":"laptop2","pin":"3a7b...","reason":"laptop lost"}
 ```
 
 A `member` entry is an upsert keyed by `name`, which is the plan name and the
 bundle name. It sets the member's Erlang node name, host, optional listen port,
 one `role` (`orchestrator` or `executor`, the roles of the existing plan), a
 `directory` standing (`voter`, `learner` or `none`), the `links` that name the
-other members it may connect to, and one or two `pins`. The first entry for a
-name enrolls it. A later entry with the same pins amends its role or links. A
-later entry with different pins renews it, and carrying two pins lets the old
-and the new certificate both be accepted while the node switches, after which a
-third entry drops the old one. A `revoke` removes a member and records the pins
-it held, for the audit trail. Revoking a name that is not an active member is
+other members it may connect to, and one `pin`. The first entry for a name
+enrolls it. A later entry with the same pin amends its role or links. A later
+entry with a different pin renews it: the old certificate is refused at its next
+handshake, so the node must install the new bundle and restart, and connections
+that exist stay up because a pin is checked only at handshake. A `revoke` removes
+a member and records the pin it held, for the audit trail; the pin is not
+compared with the member's. Revoking a name that is not an active member is
 invalid. Re-enrolling a revoked name is an ordinary `member` entry.
 
 The owner's sketch had `Enroll {node, pin, roles}` and `Revoke {node, pin}`.
@@ -159,10 +170,10 @@ field is the operator's clock and is informational; no rule reads it.
 ### 4.2 The fold
 
 The state of the ledger is a deterministic fold over its entries: the active
-members by name, plus the set of every name ever enrolled. The fold rejects an
+members by name, plus the set of every name ever enrolled. The fold refuses an
 entry that would break an invariant, and the operator's tool runs the same fold
-before it signs, so a rejection by a node means the signer was buggy or
-compromised.
+before it signs, so a refusal by a node means the signer was buggy or
+compromised. A refused entry is never written to the file.
 
 - Node names pass the grammar `distribution.check_node_name` already applies,
   and are unique among active members. A pin appears under at most one active
@@ -187,8 +198,8 @@ enrolled with `--links hub,devbox` and no other executor will accept it.
 If `N`'s own name is not an active member, `N` does not start distribution and
 says it is not enrolled. If `N` applies a `revoke` naming itself, it stops
 dialing, disconnects its peers and reports that it was revoked. That is how a
-revoked node that was offline learns its fate when a peer it can still reach
-tells it.
+revoked node that was offline finds out: a peer it can still reach sends it
+the entry.
 
 ## 5. The authority key
 
@@ -207,8 +218,9 @@ prefix on every ledger signature separates the two uses cryptographically.
 Open question 1 records the alternative.
 
 **Custody.** `provision` writes the authority key encrypted under a passphrase
-to a private directory on the operator's machine (`~/.loom/authority` by
-default), with the operator's copy of the ledger beside it. The key is read
+to a private directory on the operator's machine
+(`~/.loom/authority/<deployment id>` by default, so one machine can hold several
+deployments), with the operator's copy of the ledger beside it. The key is read
 only by `enroll`, `revoke` and `provision`, never by a daemon, and no node
 holds it. The operator can run the deployment with the operator's machine off:
 membership changes are the only thing that needs the key. `provision
@@ -226,16 +238,19 @@ node accepts it. Nodes cannot tell the difference, because the signature is the
 only evidence of operator intent. Recovery is `provision` again with a new
 authority, followed by reinstalling every bundle. Two observations bound this.
 A thief with the file but not the passphrase has an offline guessing problem.
-And the new risk is on the operator's machine, which already holds the bundles
-and the cookie in the clear while they are being delivered.
+The operator's machine is often an enrolled laptop. If it is lost, the authority
+key is lost with it, and revoking the laptop does not help, because the key is
+the thing that was taken. The response is `provision` again, not `revoke`. The new
+risk sits on a machine that already holds the bundles and the cookie in the clear
+while they are being delivered.
 
 **Rotation.** In the first phases rotating the key costs what it costs today:
 a new authority means new certificates, so every node gets a new bundle. The
 reason is not the ledger. The authority certificate is the TLS trust root in
 every node's options file, and a node reads that file once. Section 14.2
-describes how pin-rooted TLS removes the reason, after which a `rekey` entry
-signed by the old key could name the new one. That is later work, and the
-phases do not depend on it.
+sketches how a later change to pin-rooted TLS would remove the reason, after
+which a `rekey` entry signed by the old key could name the new one. The phases do
+not depend on it.
 
 ## 6. How nodes learn the log
 
@@ -250,38 +265,40 @@ are relayed.
 
 ```gleam
 pub type Message {
-  /// What the sender holds. Sent when a connection comes up and on a timer.
+  /// What the sender holds. Sent by both ends when a connection comes up and
+  /// on a timer.
   Head(seq: Int, id: BitArray)
   /// Entries after `after`, at most `limit` (clamped to 1 through 64).
   Pull(after: Int, limit: Int, reply: Subject(Entries))
-  /// Entries the receiver is missing, offered unasked.
-  Offer(lines: List(BitArray))
 }
 ```
 
 The rules are these.
 
-1. When two nodes connect, each sends the other its `Head`. A node that
-   receives a `Head` with a higher sequence number pulls the missing entries
-   and applies them in order. A node that receives a `Head` with a lower
-   number offers the next page. So either side converges the pair, and a node
-   that dials a stale node does not need the stale node to ask.
+1. Both ends of a connection send the other a `Head` when it comes up, and every
+   60 seconds afterwards. A node that receives a `Head` with a higher sequence
+   number pulls the missing entries and applies them in order. The node that is
+   behind always pulls, whichever end dialed, so there is no push message. A
+   `Pull` carries a reply deadline of 5 seconds, because a peer in static mode has
+   no `loom_ledger` process and drops the message without replying.
 2. A node applies an entry only after it checks the signature, the chain
    (`seq` is the head plus one and `prev` is the head's identity) and the fold
    (section 4.2), and it makes the entry durable before it publishes the new
    table.
 3. After it applies entries, a node sends its new `Head` to every connected
-   peer except the one it learned from. Connected peers also exchange heads
-   every 60 seconds, which repairs a lost message.
+   peer except the one it learned from. The 60-second exchange repairs a lost
+   message.
 4. Equal sequence numbers with different identities are a fork (section 6.3).
 
-An orchestrator also keeps, for each member it is linked to, the last head that
-member reported. Members that have not reported the current head are pending,
-and the orchestrator dials them, with a retry interval that starts at 5 seconds
-and doubles to a ceiling of 5 minutes. Only orchestrators dial, as in
-protocol-change/078. An executor learns when an orchestrator connects, which is
-the same event that lets the orchestrator see the executor's head. The
-reported heads are what `enroll`, `revoke` and `log` print.
+An orchestrator also keeps, for each executor it is linked to, the last head that
+executor reported. An executor that has not reported the current head is pending,
+and the orchestrator dials it and sends its `Head`, with a retry interval that
+starts at 5 seconds and doubles to a ceiling of 5 minutes. Only orchestrators dial,
+as in protocol-change/078, and only executors are dialed this way: a laptop dials
+in when it wakes, and orchestrators exchange heads on the connections they
+already make. An executor learns when an orchestrator connects, which is the same
+event that lets the orchestrator see the executor's head. The reported heads are
+what `enroll`, `revoke` and `log` print.
 
 The messages travel on connections the deployment already makes, in both
 directions of a link, with no new port. A deployment with one orchestrator and
@@ -295,18 +312,20 @@ locally under a file lock. They then hand the entry to one daemon through an
 owner-only control command (`ledger.append`) on that daemon's control socket,
 and wait up to a deadline for confirmations. The daemon verifies the entry like
 any other, so the command adds no trust in the caller beyond the ordinary owner
-check. If no daemon is reachable, the operator copies the ledger file to any
-member and runs `loom distribution import` there, which verifies and adopts a
-longer valid chain. That path needs no network machinery and is the fallback
-for a node that nothing else can reach (section 9.2).
+check. If no daemon is reachable, the operator copies the ledger file to a
+member's machine and runs `loom distribution import` there. `import` is a
+client-side command: it reads the file and feeds its lines to the local daemon's
+`ledger.append` in pages of 64, so a node has one way to adopt entries. That is
+the fallback for a node that nothing else can reach (section 9.2).
 
 Before it signs, the tool asks the daemon it is about to use for its head. If
 the daemon's head is ahead of the operator's copy, the tool pulls the missing
-entries first, and if the daemon holds an entry the operator's copy does not
-contain at a sequence number the operator's copy already has, the tool refuses.
-This is the only way a single operator forks the log by accident: restoring the
-key and an old copy of the ledger from a backup on a new machine. The check
-costs one round trip and turns that case into a refusal.
+entries with `ledger.entries`, a read with the same page shape as `Pull`, and
+verifies them before it continues. If the daemon holds an entry at a sequence
+number the operator's copy already has, with a different identity, the tool
+refuses. This is the only way a single operator forks the log by accident:
+restoring the key and an old copy of the ledger from a backup on a new machine.
+The check costs one round trip and turns that case into a refusal.
 
 ### 6.3 Forks
 
@@ -314,19 +333,30 @@ A fork needs two signatures over different bodies at one sequence number. A
 single operator tool that locks its own file does not produce one. A fork means
 the key signed in two places, through a backup restored at an old head or
 through theft. A node that holds an entry at sequence `n` and receives a
-different valid entry at `n` keeps what it has, refuses the other, writes both
-identities to a marker file, stops applying further entries, and reports the
-fork in `log`, in its logs and through the control protocol. Entries that build
-on the other branch fail the chain check on that node anyway. The operator
-resolves a fork by choosing the branch that is right and running a local
-`loom distribution reset --to SEQ` on each node that took the other branch,
-which truncates its log to before the fork point; the node then syncs again.
-If the fork came from theft, the answer is section 5. Detecting a fork is cheap,
-and resolving one is manual because the cause is not a routine event.
+different valid entry at `n` refuses it and records the refusal: the sequence
+number, both identities and the step that failed. The record appears in
+`ledger.status`, in `log` and in the daemon's log, and the next refusal replaces
+it. The node keeps its table and keeps applying entries that extend its own
+chain. Entries that build on the other branch fail the chain check on that node.
+Refusals do not spread: a node does not relay a line it refused, and a `Head`
+carries only the identity of a chain the node applied.
+
+Making a fork a sticky state was considered and dropped. A sticky state would
+travel on the 60-second head exchange to nodes on the right branch, and would
+stop the operator's next revoke from being applied, at the moment a fork suggests
+the key may be stolen. An entry that is invalid under the fold needs no state
+either, because it is refused before it is written.
+
+The operator resolves a fork by choosing the branch that is right. On each node
+that took the other branch, the operator stops the daemon, truncates the ledger
+file to the lines before the fork point (for example `head -n N ledger.log`
+written to a new file that replaces the old one), and starts the daemon, which
+then syncs from its peers. There is no command for this, because the cause is not
+routine. If the fork came from theft, the answer is section 5.
 
 ### 6.4 The pin table and node names
 
-The verify function reads the table from one row of an ETS table owned by the
+The verify function reads the table from one row of a protected ETS table owned by the
 ledger process. The row holds the whole immutable table and is replaced by a
 single insert, so a handshake sees the old table or the new one and never a
 mixture. The options file holds no pins in ledger mode; its verify state is the
@@ -350,25 +380,33 @@ certificate has no pin. Removal is enforced by the table and by disconnecting.
 
 ### 6.5 Disconnecting on revoke
 
-Applying a `revoke` publishes the new table and then disconnects the node
-by name. A handshake that read the old table just before the swap can finish
-just after it, so the sweep runs once more after the longest a handshake may
-take. `distribution.start` sets `net_setuptime` to 5 seconds, so the second
-sweep runs at 6. After that every connection that exists was accepted under the
-new table.
+Applying a `revoke` publishes the new table, and in the same step the ledger
+process disconnects every connected node whose name is not in the new table. The
+process also subscribes to node-up events with `net_kernel:monitor_nodes` for all
+node types, since the nodes are hidden. It needs that subscription in any case, to
+send a `Head` when a connection comes up. On each node-up it disconnects the node
+if its name is not in the current table. A handshake that read the old table and
+finishes after the publish therefore ends as a node-up that the process handles
+after the publish. Publishing and node-up handling are messages to one process
+handled in order, so the design needs no timing assumption about how long a
+handshake may take.
 
 This disconnects by claimed name, which has a limit already recorded on the
 architecture page: the verify function does not bind the certificate's name to
 the name the peer claims in the handshake. A revoked holder that connected under
 another pinned node's name is not disconnected by this sweep. New handshakes
 with the revoked certificate are refused, and the connection ends when it
-drops. Section 8 says what that means for a compromised member.
+drops. Binding the connection to the certificate would mean changing
+`inet_tls_dist`, which owns the TLS socket and reads the peer certificate itself,
+and the verify function runs before the distribution handshake carries any node
+name. This design does not change `inet_tls_dist`. Section 8 says what the limit
+means for a compromised member.
 
 ## 7. Storing the ledger in Khepri instead
 
 With the Khepri directory of #934 present, the log could be stored in the
 Khepri tree and replicated by Ra, and the ledger would need no anti-entropy of
-its own. The question is whether a second mechanism earns its place.
+its own. The question is whether a second mechanism is worth having.
 
 What Khepri would add is a commit acknowledgement: a write returns when a
 majority of voters have it, and a consistent read says whether this copy is
@@ -389,7 +427,8 @@ What it costs, ordered by weight:
    note is for.
 3. **Quorum loss blocks revocation.** A write needs a majority. A lost
    laptop is revoked when the operator may be least able to bring back a
-   majority. With gossip the operator appends at any one reachable daemon.
+   majority. With gossip the operator appends at any one reachable daemon, and
+   section 11.3 gives the consequence for the two member lists.
 4. **The store is not signed.** Any member with write access to the store could
    write a membership change. The signed chain makes every copy verifiable
    without trusting the writer or the relay.
@@ -546,7 +585,7 @@ owns, and for an executor which scopes it holds, and it refuses while there
 are any unless `--force`. The ledger does not veto because nothing in a log
 fold can see sessions, and a veto at apply time would give two nodes different
 tables from the same log. The refusal is a safety check on the operator. The
-revoke is reversible, since enrolling the same node again restores its pins,
+revoke is reversible, since enrolling the same node again restores its pin,
 and it destroys no session.
 
 ### 11.2 Executor pools
@@ -561,22 +600,39 @@ revoke and edit the file at leisure.
 
 ### 11.3 Khepri and Ra
 
-A node with a `directory` standing is a member of the Ra cluster. A reconciler
-on each directory member compares the ledger's `voter` and `learner` members with
-`ra:members` and issues the difference to the leader: it adds a member that is
-missing (as `promotable`, the form #934 already uses, for a voter), and removes a
-member that is no longer in the ledger. Two members racing issue the same
-idempotent command, and `cluster_change_not_permitted` while a change is in
-flight is retried. #934 has no command to remove a Khepri member and needs
-none for this: the `revoke` is the removal command.
+A deployment with a directory has two member lists, and they are different lists.
+The ledger's is the list of trusted nodes: every enrolled node, laptops included,
+each with its pin. Khepri's is the list of Ra voters and learners, a subset of the
+servers that replicate the session directory. A node's `directory` standing says
+whether it is on the second list. The ledger owns the first, Ra owns the second,
+and the second follows the first. A trust change never waits for a quorum.
 
-The order is deliberate. The pin table changes first, so the revoked node stops
-being reachable at once, which Ra sees as a down member. The Ra change follows.
-Removing a voter needs a majority of the current configuration to commit, so a
-revoke that arrives when the voters are already below a majority cannot remove
-the node until the majority returns. That is the situation Raft always has, and
-it is not made worse. The tool checks the voter count (three to seven in
-protocol-change/083) before it signs a change that touches a voter.
+A reconciler runs on the Ra leader only. `ra:members` names the leader, and the
+reconciler on that node compares the ledger's `voter` and `learner` members with
+Ra's membership and issues one change at a time: it adds a member the ledger names
+and Ra lacks (a voter as `promotable`, the form #934 already uses, and a learner as
+`non_voter`), and removes a Ra member the ledger does not name. A node that is not
+the leader does nothing. The leader recomputes the difference after each change and
+after a leader change. #934 has no command to remove a Khepri member and needs none
+for this: the `revoke` is the removal command.
+
+The order between the lists is fixed, and it has three consequences.
+
+1. **Enroll.** The pin enters the tables first and the Ra add follows. A voter is
+   added as `promotable`, which does not count toward the quorum until Ra promotes
+   it, so a member whose pin has not yet reached every voter does not hold up
+   commits.
+2. **Revoke.** The pin is cut and the node disconnected at once, and the Ra removal
+   follows. Until `ra:remove_member` commits, the revoked voter is still in Ra's
+   configuration and still counts toward the quorum. With three voters, the two
+   that remain must both be up to commit the removal. The tool checks the voter
+   count (three to seven in protocol-change/083) before it signs a change that
+   touches a voter.
+3. **After a majority loss.** Enrolling a replacement restores trust, because the
+   entry spreads without a quorum. Ra cannot add the replacement, because the add
+   needs a majority of the old configuration. Recovering the directory then needs
+   a Ra forced reconfiguration. The ledger does not perform one, and the operator
+   uses Ra's own tools.
 
 **Non-voting members.** Ra supports them. Reading the Ra 3.2.0 source in
 #934's build tree: the membership type is `voter | promotable | non_voter | unknown`,
@@ -595,11 +651,13 @@ So the `directory` standing decides the Ra role: `voter` is added as
 `promotable` and becomes a voter, `learner` is added as `non_voter` and stays
 one, and `none` is not a Ra member. An always-on executor or orchestrator is a
 voter. A laptop is `none` by default, and `learner` when its owner wants local
-reads of the directory. `enroll` warns when it is asked to make an
-orchestrator a voter. The rule in protocol-change/083, that every
+reads of the directory. The rule in protocol-change/083, that every
 `[orchestrators.<name>]` node on a member daemon is itself a member, is the
 reason a laptop would be a learner and not simply absent: if a member daemon
 names the laptop as an orchestrator, the laptop must be a member of some kind.
+Before phase 3 there is one voter list, `[directory] members`, so `enroll` refuses
+a `--directory` other than `none` and the ledger is never a second source of
+voters.
 
 ## 12. The `[orchestrators]` and `[executors]` tables
 
@@ -632,18 +690,18 @@ commands keep their meaning in static mode.
 
 | Command | What it does |
 |---|---|
-| `provision PLAN OUT` | Writes the genesis entry and one `member` entry per plan node, one `/2` bundle each, and `system.json`. Keeps the authority key encrypted in the operator directory and the operator's copy of the ledger there. `--drop-authority` restores the one-shot behavior. |
-| `enroll NAME --node N --role R [--directory D] [--links A,B] [--out DIR]` | Mints the node's certificate under the kept authority, signs a `member` entry, appends it locally, hands it to a daemon, writes `NAME.loombundle`, and prints which nodes have confirmed the head. |
+| `provision PLAN OUT` | Writes the genesis entry and one `member` entry per plan node, one `/2` bundle each, and `system.json`. Keeps the authority key encrypted in `~/.loom/authority/<deployment id>` with the operator's copy of the ledger. `--drop-authority` restores the one-shot behavior. |
+| `enroll NAME --node N --role R [--directory D] [--links A,B] [--out DIR]` | Mints the node's certificate under the kept authority, signs a `member` entry, appends it locally, hands it to a daemon, writes `NAME.loombundle`, and prints which nodes have confirmed the head. Until phase 3 it refuses a `--directory` other than `none`. |
 | `revoke NAME [--force] [--wait SECONDS]` | Checks sessions and the link graph (sections 9.2, 11.1), signs a `revoke`, appends it, and prints confirmations. |
-| `renew NAME` | Mints a new certificate for an existing member and signs a `member` entry carrying both pins; `renew NAME --finish` drops the old pin. |
-| `log [--json]` | Prints the entries with their identities and, when a daemon is reachable, each member's last reported head. |
-| `import FILE` | On any node: verifies a ledger file and adopts it if it extends the local chain. A file that disagrees with the local chain at some sequence number is refused as a fork. |
-| `reset --to SEQ` | On a node: truncates the local ledger after a fork (section 6.3). |
+| `renew NAME` | Mints a new certificate for an existing member, signs a `member` entry with the new pin, and writes a new bundle. After the node installs it and restarts, it presents the new certificate. Existing connections stay up; until the restart the node's new handshakes are refused. |
+| `log [--json]` | Prints the entries with their identities, the last refusal if any, and, when a daemon is reachable, each member's last reported head. |
+| `import FILE` | Client-side: reads a ledger file and feeds it to the local daemon's `ledger.append` in pages of 64 lines. |
 
-The daemon gains two owner-only control commands in the client protocol,
-`ledger.append` (a list of entry lines) and `ledger.status` (the local head,
-state, member list and each member's reported head). If protocol-change/085
-lands, its `deployment.status` report carries the head too and
+The daemon gains three owner-only control commands in the client protocol:
+`ledger.append` (a list of entry lines), `ledger.entries` (a page of entries after
+a sequence number, the same shape as `Pull`) and `ledger.status` (the local head,
+state, last refusal, member list and each member's reported head). If
+protocol-change/085 lands, its `deployment.status` report carries the head too and
 `ledger.status` stays the detailed read.
 
 ## 14. Migration
@@ -670,23 +728,21 @@ roots, and nothing secret.
 
 Static mode remains. A daemon with `[[distribution.peers]]` and no `ledger` key
 works as now, and the table refuses both together. Static mode is what the
-tests and a hand-built two-node setup use. It is retired in phase 3, when
-`provision` has emitted ledgers for long enough.
+tests and a hand-built two-node setup use. It is retired once `provision`
+has emitted ledgers for a release.
 
-### 14.2 Pin-rooted TLS, later
+### 14.2 Pin-rooted TLS and key rotation, in a later note
 
 Today the verify function requires the PKIX chain to a trust root and a pin.
 Once the ledger holds the pins, the chain adds nothing: a pin of the exact
-certificate is stronger than trust in any issuer. A later phase can accept the
-two chain failures that mean "issuer unknown" (`unknown_ca` and
-`selfsigned_peer`) when the pin and name match, and keep every other failure,
-so expiry and key usage are still enforced. Then the authority certificate is no
-longer a TLS trust root and only the ledger signs with it. Two things follow.
-The authority key can be rotated with a `rekey` entry signed by the old key,
-because no options file names the old one. And a node can generate its own key
-and certificate and send the operator only the certificate, so the private key
-never travels in a bundle. This needs a spike (does `ssl` accept a verify
-function that resolves an unknown issuer without a CA file?), so it is phase 3.
+certificate is stronger than trust in any issuer. A later change could accept the
+two chain failures that mean "issuer unknown" (`unknown_ca` and `selfsigned_peer`)
+when the pin and name match, keep every other failure, and so stop using the
+authority certificate as a TLS trust root. A `rekey` entry could then rotate the
+signing key, and a node could generate its own key and send the operator only its
+certificate. That change alters what the verify function accepts and needs a spike
+of its own (does `ssl` accept an unknown issuer without a CA file?). It is not part
+of the phases below and gets its own note.
 
 ## 15. Alternatives considered
 
@@ -722,22 +778,19 @@ two-laptop deployment. Rejected until a deployment has more than one operator.
 ## 16. Phasing and cost
 
 **Phase 0, a spike (a few days).** Check the things this note could not read from
-the tree: that the verify function reads a live table during a real
-`inet_tls` handshake, that a new pin is accepted and a removed pin refused without
-a restart, that the pin-less options file passes the boot check, that
-`net_kernel:allow/1` growth behaves as documented, whether the peer certificate of
-an established connection can be read after the handshake (which would let the
-sweep and the name check bind a connection to a pin), and that a `non_voter`
-Ra member works through Khepri's own reads. The answers decide open questions 5
-and 6 and the shape of phase 3.
+the tree: that the verify function reads a live table during a real `inet_tls`
+handshake, that a new pin is accepted and a removed pin refused without a restart,
+that the pin-less options file passes the boot check, that `net_kernel:allow/1`
+growth behaves as documented, and that a `non_voter` Ra member works through
+Khepri's own reads.
 
 **Phase 1, the ledger (the bulk of the work).** The pure module (entries, total
 decoders, chain, fold, pin table; no I/O, so it is property-testable: replay
 equals incremental apply, any prefix of a valid log is valid, a flipped bit or
 a swapped pair is refused, two nodes that apply the same log have the same
 table), the file store with atomic append and tail repair, the `loom_ledger`
-process, anti-entropy, the live verify function and disconnect sweep, the bundle
-`/2`, `provision`, `enroll`, `revoke`, `log`, `import`, `reset` and the two
+process, anti-entropy, the live verify function and the disconnects, the bundle
+`/2`, `provision`, `enroll`, `revoke`, `renew`, `log`, `import` and the three
 control commands. The architecture page's existing provisioning modules are
 about 2,700 lines of source in this tree; this phase is a comparable amount of
 source and more tests, which I estimate at three to four weeks for one person
@@ -748,14 +801,16 @@ subscription and a disconnect if `gleam_erlang` exposes neither. Each goes in
 an `internal/ffi_*` module with the reason no pure alternative exists, as the
 FFI rule requires.
 
-**Phase 2, configuration and status (about a week).** Derived
-`[executors]` and `[orchestrators]` rows, the revoke checks (owned sessions, link
-graph, voter count), the head in `deployment.status`, and the documentation of
-the new keys.
+**Phase 2, configuration and status (about a week).** Derived `[executors]` and
+`[orchestrators]` rows, the revoke checks (owned sessions, link graph), the head in
+`deployment.status`, and the documentation of the new keys.
 
-**Phase 3, Khepri and renewal (two to three weeks).** The Ra reconciler and the
-`directory` standing, `[directory] members` derived from the ledger, `renew`,
-the spike-dependent pin-rooted TLS and `rekey`, and retiring static mode.
+**Phase 3, the directory (one to two weeks).** The Ra leader's reconciler, the
+`directory` standing accepted by `enroll`, the voter-count check in `revoke`, and
+`[directory] members` derived from the ledger.
+
+**Later, in their own notes.** Pin-rooted TLS and `rekey` (section 14.2), and
+retiring static mode.
 
 **What it costs the project.** One more process on every daemon that has
 distribution. A second durable file per node. A signing key on the operator's
@@ -775,13 +830,14 @@ Each has a recommendation.
 1. **One key or two?** One authority key signs certificates and ledger entries.
    *Recommendation: one.* Two keys would sit in the same file for the same
    command and double the custody work without adding independent protection.
-2. **Make TLS pin-rooted?** *Recommendation: yes, in phase 3, after the spike.*
-   It makes key rotation cheap and lets nodes keep their private keys. It is not
-   needed for phases 1 and 2, and a relaxation of the verify function belongs
-   behind a measurement.
+2. **Make TLS pin-rooted?** *Recommendation: yes, in a later note after its own
+   spike (section 14.2).* It makes key rotation cheap and lets nodes keep their
+   private keys. It is not needed for phases 1 to 3, and a relaxation of the verify
+   function belongs behind a measurement.
 3. **Keep static `[[distribution.peers]]` alongside the ledger?** *Recommendation:
-   keep it through phase 2, refuse both together, and retire it in phase 3.* A
-   hand-built setup and the test fixtures need a mode with no signing key.
+   keep it, refuse both together, and retire it once `provision` has emitted
+   ledgers for a release.* A hand-built setup and the test fixtures need a mode
+   with no signing key.
 4. **How is the authority key stored?** *Recommendation: a passphrase-encrypted
    file in phase 1,* with the signing step behind a one-function seam so a
    keychain or hardware token can replace it. OTP `crypto` has PBKDF2 and AES-GCM.
@@ -789,11 +845,10 @@ Each has a recommendation.
 5. **Should a revoke refuse while the node owns sessions?** *Recommendation: yes
    in the operator's tool, with `--force`, and never in the ledger.* The ledger
    cannot see sessions, and revoke is reversible.
-6. **Can a connection be bound to its pin?** If the spike shows that the peer
-   certificate is readable after the handshake, bind the claimed node name to
-   the pin and disconnect on mismatch. That fixes the revoke sweep and the
-   impersonation the architecture page notes. *Recommendation: do it if the spike
-   shows it is a few lines; otherwise document the limit as section 6.5 does.*
+6. **Can a connection be bound to its pin?** *Answer: not without changing
+   `inet_tls_dist`.* It owns the TLS socket and reads the peer certificate itself,
+   and the verify function runs before the distribution handshake carries a node
+   name. *Recommendation: keep the documented limit of section 6.5.*
 7. **Compact the log?** *Recommendation: no.* The cap of 10,000 entries is far
    beyond one operator's changes, and `provision` is the compaction. A signed
    checkpoint entry adds a second way to start a chain.
@@ -804,13 +859,13 @@ Each has a recommendation.
 10. **Converter or reprovision?** *Recommendation: reprovision,* revisited if a
     deployment other than the owner's exists when phase 1 lands.
 11. **Does a laptop join the Khepri cluster?** *Recommendation: `none` by
-    default, `learner` on request, `voter` only for always-on machines,* with
-    `enroll` warning on the last. The default follows the owner's rule that a
-    sleeping laptop must not count toward the majority.
+    default, `learner` on request, `voter` only for always-on machines.* The
+    default follows the owner's rule that a sleeping laptop must not count toward
+    the majority.
 12. **Where do `enroll` and `revoke` get the daemon to hand the entry to?**
-    *Recommendation: the owner's control socket of any daemon they can reach,
-    and `import` for any node nothing can reach.* The operator's machine need
-    not run a daemon.
+    *Recommendation: the owner's control socket of any daemon they can reach, and
+    `import` against the local daemon of any node nothing else can reach.* The
+    operator's machine need not run a daemon.
 13. **Should a node refuse inbound connections until it has synced once after
     waking?** *Recommendation: no.* A laptop behind NAT is not dialable, it dials
     out and syncs within seconds, and the machinery would address a rare, cheap
