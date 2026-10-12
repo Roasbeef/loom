@@ -14,11 +14,11 @@
 //// ## The state is the applied prefix
 ////
 //// A `Ledger` is the fold of entries `0..n`: the active members by name, the
-//// set of every name ever enrolled, the head, and the identity of each applied
-//// entry. It is immutable. A refused entry returns an error and the caller
-//// keeps the `Ledger` it had, which is how a fork leaves a node's state
-//// unchanged. Nothing hides a half-applied entry, because there is no
-//// mutation to leave half done.
+//// set of every name ever enrolled, the set of every node a member entry has
+//// named, the head, and the identity of each applied entry. It is immutable. A
+//// refused entry returns an error and the caller keeps the `Ledger` it had,
+//// which is how a fork leaves a node's state unchanged. Nothing hides a
+//// half-applied entry, because there is no mutation to leave half done.
 ////
 //// ## Flow
 ////
@@ -98,6 +98,7 @@ pub opaque type Ledger {
     applied: Dict(Int, EntryId),
     members: Dict(String, Member),
     ever: Set(String),
+    ever_nodes: Set(String),
   )
 }
 
@@ -230,6 +231,7 @@ pub fn start(signed: SignedEntry) -> Result(Ledger, Refusal) {
         applied: dict.from_list([#(0, signed.id)]),
         members: dict.new(),
         ever: set.new(),
+        ever_nodes: set.new(),
       ))
     }
 
@@ -404,8 +406,20 @@ fn fold(ledger: Ledger, entry: Entry, id: EntryId) -> Result(Ledger, Refusal) {
       applied: dict.insert(ledger.applied, entry.seq, id),
       members:,
       ever:,
+      ever_nodes: named_nodes(ledger.ever_nodes, entry.kind),
     ),
   )
+}
+
+// Every node a member entry has named stays in the set, whether the member was
+// revoked or re-enrolled under another node. A configuration that names such a
+// node was once right about the deployment, which is the difference
+// `ever_named` reports between a stale row and a mistyped one.
+fn named_nodes(nodes: Set(String), kind: membership_entry.Kind) -> Set(String) {
+  case kind {
+    Upsert(member:) -> set.insert(nodes, member.node)
+    Genesis(..) | Revoke(..) -> nodes
+  }
 }
 
 fn apply_kind(
@@ -568,6 +582,25 @@ pub fn member(ledger: Ledger, name: String) -> Result(Member, Nil) {
 pub fn member_at(ledger: Ledger, node: String) -> Result(Member, Nil) {
   dict.values(ledger.members)
   |> list.find(fn(member) { member.node == node })
+}
+
+/// Whether any member entry of the ledger has named this Erlang node, whether
+/// the member is still active or not. A node that was enrolled and then revoked
+/// is named; one that no entry mentions is not.
+///
+/// A table of the node's configuration that names a node can be wrong in two
+/// ways. It can name a typo or a machine of another deployment, which no entry
+/// has named, or it can name a member that was revoked after the file was
+/// written. The first is the operator's mistake and the second is the ledger
+/// having moved on, so the daemon refuses one and tolerates the other.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert !membership_ledger.ever_named(ledger, "loom@ghost.example")
+/// ```
+pub fn ever_named(ledger: Ledger, node: String) -> Bool {
+  set.contains(ledger.ever_nodes, node)
 }
 
 /// Whether a node's own name is enrolled, revoked or unknown to the ledger.

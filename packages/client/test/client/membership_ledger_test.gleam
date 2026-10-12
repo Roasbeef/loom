@@ -380,6 +380,25 @@ pub fn enrollment_distinguishes_never_revoked_and_active_test() {
   assert membership_ledger.enrollment(ledger, "stranger") == NotEnrolled
 }
 
+pub fn a_node_stays_named_after_its_member_is_revoked_or_moved_test() {
+  let log =
+    history.genesis()
+    |> history.enroll("hub", [])
+    |> history.enroll("old", [])
+    |> history.revoke("old")
+    |> history.must_push(Upsert(
+      Member(..fixture.member("hub", []), node: "loom@moved.example.net"),
+    ))
+  let ledger = log.ledger
+
+  // The active node, the revoked member's node and the node a member left are
+  // all named. A node no entry mentions is not.
+  assert membership_ledger.ever_named(ledger, "loom@moved.example.net")
+  assert membership_ledger.ever_named(ledger, "loom@old.example.net")
+  assert membership_ledger.ever_named(ledger, "loom@hub.example.net")
+  assert !membership_ledger.ever_named(ledger, "loom@stranger.example.net")
+}
+
 // --- the bounds ----------------------------------------------------------------
 
 pub fn at_most_64_members_are_active_test() {
