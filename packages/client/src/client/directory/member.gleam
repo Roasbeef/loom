@@ -19,10 +19,12 @@
 //// membership. A store without the marker has never joined, or lost its disk:
 //// on each tick, until one attempt succeeds, the actor asks the first member
 //// whose store answers to take this node in as a non-voter, which Ra promotes
-//// once it has caught up (`store.join`). Only then is the marker written. While
-//// the store is not joined, every store call answers that the store is not
-//// running, which the callers report as no quorum, and nothing is served from a
-//// store that has not joined.
+//// once it has caught up (`store.join`). Only then is the marker written, and
+//// `store.mark_joined` writes Ra's record of the server to disk before it, so
+//// that a marker on disk always has a server to restart (`store.restart`
+//// refuses to create one if it has not). While the store is not joined, every
+//// store call answers that the store is not running, which the callers report
+//// as no quorum, and nothing is served from a store that has not joined.
 ////
 //// The actor creates no cluster. `loomd directory bootstrap` does that once, by
 //// hand, because a rule that let a member create one would let a member that
@@ -135,8 +137,10 @@ type State {
 
 /// Starts the store and the actor. A store already joined is started here and
 /// must start, because a joined member that cannot open its own store has lost
-/// data an operator has to look at. A store that has not joined is left for the
-/// actor to join.
+/// data an operator has to look at. It is restarted, never created: when Ra has
+/// no record of the member's server the start is refused, because creating a
+/// store there would make a second cluster of one member. A store that has not
+/// joined is left for the actor to join.
 ///
 /// ## Examples
 ///
@@ -151,13 +155,8 @@ pub fn start(config: Config) -> Result(Member, String) {
   }
   use Nil <- result.try(case joining {
     Joined ->
-      store.boot(30_000)
-      |> result.map_error(fn(reason) {
-        "the directory store in "
-        <> config.directory
-        <> " is marked joined but did not start: "
-        <> reason
-      })
+      store.restart(30_000)
+      |> result.map_error(fn(refusal) { restart_refusal(config, refusal) })
     NotJoined -> Ok(Nil)
   })
   let peers =
@@ -200,6 +199,32 @@ pub fn start(config: Config) -> Result(Member, String) {
     }
     Error(error) ->
       Error("the directory member did not start: " <> string.inspect(error))
+  }
+}
+
+// The message for a joined store that did not start. A store Ra has no record
+// of is not started at all, because starting it would create a second cluster,
+// and the way back depends on whether the cluster has other members to rejoin.
+fn restart_refusal(config: Config, refusal: store.RestartRefusal) -> String {
+  let marked =
+    "the directory store in " <> config.directory <> " is marked joined but "
+  case refusal {
+    store.CouldNotStart(reason:) -> marked <> "did not start: " <> reason
+    store.NoServerRecord ->
+      marked
+      <> "Ra has no record of its server, and starting it would create a"
+      <> " second cluster. "
+      <> case list.any(config.members, fn(name) { name != config.local }) {
+        True ->
+          "Remove "
+          <> store.joined_marker(config.directory)
+          <> " and start the daemon again: the member then rejoins the"
+          <> " cluster as a non-voter and the other members send it the data."
+        False ->
+          "This cluster has no other member to rejoin, so remove "
+          <> config.directory
+          <> " and run `loomd directory bootstrap` again."
+      }
   }
 }
 

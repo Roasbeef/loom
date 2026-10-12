@@ -14,7 +14,8 @@
 %% restarts the server through khepri:start/2 so Khepri records the store. A
 %% Khepri upgrade must re-check server_config/2 against that function.
 -module(client_khepri_ffi).
--export([start_system/1, stop_system/0, boot/1, forget_local/0,
+-export([start_system/1, stop_system/0, boot/1, restart/1, sync_server_record/0,
+         forget_local/0,
          join_start/0, join_remove/2, join_add/3, join_promoted/2,
          join_finish/1,
          read/2, consistent/3, create/3, swap/4, delete_if/3, put/3,
@@ -64,6 +65,40 @@ boot(TimeoutMs) ->
         {ok, ?STORE} -> {ok, nil};
         Other -> {error, describe(Other)}
     catch Class:Reason -> {error, describe({Class, Reason})}
+    end.
+
+%% Starts a store this member has joined before, and refuses to create one.
+%% Khepri's start answers a server Ra does not know by creating a fresh
+%% one-member store and electing it, which is `boot` for a bootstrap and a
+%% second, silent cluster for a member that was already in one: its voters would
+%% be itself alone. Ra's directory is where `ra:restart_server/2` looks the
+%% server up, and `ra_directory:uid_of/2` is the same lookup without the
+%% start, so the refusal is made before Khepri's start can create anything. Ra
+%% offers no other call that says whether it knows a server. A Ra upgrade must
+%% re-check this against `khepri_cluster:ensure_server_started_locked/3`.
+restart(TimeoutMs) ->
+    case safe(fun() -> ra_directory:uid_of(?SYSTEM, ?STORE) end) of
+        undefined -> {error, no_server_record};
+        {'EXIT', Why} -> {error, {could_not_start, describe(Why)}};
+        _UId ->
+            case boot(TimeoutMs) of
+                {ok, nil} -> {ok, nil};
+                {error, Reason} -> {error, {could_not_start, Reason}}
+            end
+    end.
+
+%% Writes Ra's record of this member's server to disk. Ra adds a server to its
+%% directory table (`names.dets`) when the server starts, and the table reaches
+%% the disk on a timer of 500 ms, not when the server is registered. A process
+%% killed in between restarts without the record, and Khepri then creates a new
+%% store for it (see `restart/1`). Ra syncs everything else a restart needs (the
+%% server's configuration, its log and its term and vote) before it relies on it.
+sync_server_record() ->
+    try
+        {ok, Table} = ra_system:lookup_name(?SYSTEM, directory_rev),
+        ok = dets:sync(Table),
+        {ok, nil}
+    catch Class:Why -> {error, describe({Class, Why})}
     end.
 
 %% The non-voter join, one primitive per Ra call. client/directory/store

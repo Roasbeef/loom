@@ -75,6 +75,32 @@ pub fn await_voter(
   }
 }
 
+/// How many members Ra lists from this member, once the list holds `want` of
+/// them or 8 seconds pass. A member restarted into the cluster it left sees
+/// the others; one restarted into a cluster of its own sees only itself, and
+/// the count it ends on is what the caller reads.
+pub fn count_members(handle: member.Member, want: Int) -> Int {
+  let outcome =
+    poll.until(within: 8000, every: 100, attempt: fn() {
+      case member.status(handle).ra {
+        Ok(store.Membership(members:, ..)) ->
+          case list.length(members) >= want {
+            True -> poll.Done(list.length(members))
+            False -> poll.Retry
+          }
+        Error(_) -> poll.Retry
+      }
+    })
+  case outcome {
+    poll.Answered(count) -> count
+    poll.Failed(_) | poll.Expired ->
+      case member.status(handle).ra {
+        Ok(store.Membership(members:, ..)) -> list.length(members)
+        Error(_) -> 0
+      }
+  }
+}
+
 /// Writes `count` payloads of `bytes` bytes under test paths, ending with a
 /// counter that holds `count`. Khepri asks Ra for a snapshot once the commands
 /// since the last one add up to 20 MiB in their external format, and no sooner

@@ -245,6 +245,56 @@ run(<<"directory_rejoin">>, Root) ->
     after close_port(PortA) end,
     ok;
 
+%% A member killed the moment it has joined (the directory's durability order).
+%% The first member bootstraps; the second joins through the real member actor
+%% and its emulator is killed with SIGKILL as soon as its `joined` marker
+%% exists, before Ra's own bookkeeping files have had time to reach the disk.
+%% It is then started again from the same directory and must come back into the
+%% cluster it joined, listing both members. Without the fix the restart found no
+%% record of the server and listed only itself: a cluster of its own. The kill
+%% lands inside the 500 ms in which Ra has not yet written its server record, and
+%% did so in every round of the runs made when this was written. One round is
+%% kept because a round costs several emulator starts, and the ordering itself
+%% is pinned without an emulator by store_test.
+run(<<"directory_join_kill">>, Root) ->
+    Cycles = 1,
+    Ca = root_cert("fixture ca"),
+    Cookie = cookie("shared"),
+    A = provision(Root, "seed", Ca, name("seed"), same, Cookie),
+    B = provision(Root, "second", Ca, name("second"), same, Cookie),
+    Members = [name_of(A), name_of(B)],
+    ConfigA = config_all(A, [B], none),
+    ConfigB = config_all(B, [A], none),
+    [write_options(N, Cfg) || {N, Cfg} <- [{A, ConfigA}, {B, ConfigB}]],
+    Dir = fun(#{home := Home}) -> filename:join(Home, "directory") end,
+    Aux = fun(N) -> #{members => Members, directory => bin(Dir(N)),
+                      lifetime => 300000} end,
+    Isolated = ["-kernel", "connect_all", "false"],
+    PortA = open_vm(A, ConfigA, dir_seed, Aux(A), Isolated),
+    try
+        await_text(PortA, <<"FIXTURE_READY">>, 60000),
+        Round = fun(Cycle) ->
+            _ = file:del_dir_r(Dir(B)),
+            PortB = open_vm(B, ConfigB, dir_member, Aux(B), Isolated),
+            ok = await_file(filename:join(Dir(B), "joined"), PortB, 120000),
+            kill_hard(PortB),
+            await_unregistered(name_of(B), 15000),
+            PortB2 = open_vm(B, ConfigB, dir_member_restart, Aux(B), Isolated),
+            try
+                Outcome = await_restart(PortB2),
+                true = port_command(PortB2, <<"stop\n">>),
+                await_complete(PortB2, <<>>),
+                await_unregistered(name_of(B), 15000),
+                {Cycle, Outcome}
+            after close_port(PortB2) end
+        end,
+        Outcomes = [Round(Cycle) || Cycle <- lists:seq(1, Cycles)],
+        [] = [Bad || {_, Seen} = Bad <- Outcomes, Seen =/= {members, 2}],
+        true = port_command(PortA, <<"stop\n">>),
+        await_complete(PortA, <<>>)
+    after close_port(PortA) end,
+    ok;
+
 %% Boot-precondition and credential refusals, one emulator each.
 run(<<"start_refusals">>, Root) ->
     Ca = root_cert("fixture ca"),
@@ -775,6 +825,17 @@ role(dir_member, Config, #{members := Members, directory := Dir}) ->
     {ok, nil} = ?NODES:await_voter(Handle, Local),
     ready(),
     directory_commands(Handle);
+role(dir_member_restart, Config, #{members := Members, directory := Dir}) ->
+    {ok, Membership} = ?DIST:start(Config, {member, Members}),
+    Local = atom_to_binary(node(), utf8),
+    case ?NODES:member(Dir, Members, Local, Membership) of
+        {ok, Handle} ->
+            io:format("RESTART members ~p~n",
+                      [?NODES:count_members(Handle, length(Members))]);
+        {error, Reason} ->
+            io:format("RESTART refused ~s~n", [Reason])
+    end,
+    ready_and_stop();
 role(serve, Config, _Aux) ->
     {ok, _} = ?DIST:start(Config, not_member),
     true = register(loom_dist_probe, self()),
@@ -937,6 +998,54 @@ await_unregistered_loop(Short, Deadline) ->
             case erlang:monotonic_time(millisecond) >= Deadline of
                 true -> error({still_registered, Short});
                 false -> timer:sleep(100), await_unregistered_loop(Short, Deadline)
+            end
+    end.
+
+%% Waits for a file to exist, failing if the child exits first.
+await_file(Path, Port, TimeoutMs) ->
+    Deadline = erlang:monotonic_time(millisecond) + TimeoutMs,
+    await_file_loop(Path, Port, Deadline).
+
+await_file_loop(Path, Port, Deadline) ->
+    case filelib:is_regular(Path) of
+        true -> ok;
+        false ->
+            receive
+                {Port, {exit_status, Status}} -> error({early_exit, Path, Status})
+            after 2 ->
+                case erlang:monotonic_time(millisecond) >= Deadline of
+                    true -> error({file_timeout, Path});
+                    false -> await_file_loop(Path, Port, Deadline)
+                end
+            end
+    end.
+
+%% Ends the child's emulator with SIGKILL, so nothing it holds is flushed or
+%% closed, and waits for it to be gone.
+kill_hard(Port) ->
+    {os_pid, Pid} = erlang:port_info(Port, os_pid),
+    _ = os:cmd("kill -9 " ++ integer_to_list(Pid)),
+    receive {Port, {exit_status, _}} -> ok after 15000 -> error(kill_timeout) end.
+
+%% What a restarted member reports: the number of Ra members it lists, or that
+%% it refused to start.
+await_restart(Port) ->
+    await_restart(Port, <<>>).
+
+await_restart(Port, Acc) ->
+    case re:run(Acc, "RESTART members ([0-9]+)", [{capture, all_but_first, list}]) of
+        {match, [Count]} -> {members, list_to_integer(Count)};
+        nomatch ->
+            case re:run(Acc, "RESTART refused ([^\n]*)", [{capture, all_but_first, binary}]) of
+                {match, [Reason]} -> {refused, Reason};
+                nomatch ->
+                    receive
+                        {Port, {data, Data}} ->
+                            await_restart(Port, <<Acc/binary, Data/binary>>);
+                        {Port, {exit_status, Status}} ->
+                            error({early_exit, Status, Acc})
+                    after 120000 -> error({restart_timeout, Acc})
+                    end
             end
     end.
 
