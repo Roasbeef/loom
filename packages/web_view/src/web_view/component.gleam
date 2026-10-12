@@ -77,7 +77,11 @@
 //// the strand's own parent links through the lane's lineage read
 //// (`history_lineage`, protocol-change/072), so what other strands wrote in
 //// between costs the page nothing. The limit and `Paging` are this page's view
-//// state.
+//// state. At the cap, `browse_at` freezes the displayed ancestry and `browsed`
+//// draws a bounded historical page; `historical_blocks` splits compact tool
+//// groups only at safe entry boundaries. `latest_at` retires that endpoint and
+//// restores the latest capture. Live metadata continues through the shared
+//// step in either mode; historical records never supply authority.
 ////
 //// What the page draws is derived from the shared record by `refreshed`, which
 //// runs at the end of every message and rebuilds a projection only when the
@@ -182,6 +186,7 @@ import session_view/step_words
 import session_view/strand_card
 import session_view/surfaces
 import session_view/text_hygiene
+import session_view/tool_activity
 import session_view/trace_view
 import session_view/transcript
 import session_view/transcript_image.{type Image}
@@ -268,11 +273,9 @@ pub const live_rows = 150
 /// older ones: twice `live_rows`.
 ///
 /// Loading older rows raises the page's limit from `live_rows` to this.
-/// The page still holds the newest rows, so new ones keep arriving at the
-/// bottom, and once the page is at this limit it loads no more
-/// (`lane.Full`). Refusing at the limit, rather than dropping the newest
-/// rows to make room, keeps the page live without a second mode that
-/// stops following the session.
+/// At this limit Load older switches to a frozen ancestry endpoint. Older
+/// pages then evict newer rows, while Jump to latest restores following.
+/// Live captures keep supplying operation and authorization metadata.
 pub const held_rows = 300
 
 /// The Lustre event path of the lane's "Load older" button, on both pages:
@@ -285,6 +288,15 @@ pub const held_rows = 300
 /// addendum on history paging). `page_events_test` fails if the view moves
 /// the button, so the two cannot drift apart.
 pub const older_path = "0\t2\t1\t0\t0"
+
+/// The read-only return from historical browsing, beside Load older.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.latest_path
+/// ```
+pub const latest_path = "0\t2\t1\t0\t1"
 
 /// The Lustre event path of the strand panel's card list, on both pages: the
 /// panel is the fourth and last child of the page's frame (`view/shell`); its
@@ -790,9 +802,8 @@ pub type Control {
   CompactStrand
 }
 
-/// How much of the strand's history the page holds. It only moves forward:
-/// a page that has loaded older rows keeps the larger limit, and a page
-/// that reached it stays full, unless the running turn alone crowded it.
+/// The transcript's retention and following mode. The live tail keeps turn
+/// summaries; browsing keeps a bounded frozen ancestry window.
 pub type Paging {
   /// The newest `live_rows` rows; the reader has not asked for older ones.
   Tail
@@ -801,13 +812,17 @@ pub type Paging {
   Paged
 
   /// The page held more than `held_rows` rows while paged, so it keeps the
-  /// newest `held_rows` and loads no more.
+  /// newest `held_rows`; the next older press enters `Browsing`.
   Full
 
   /// The running turn, drawn open with every row, took the room that older
-  /// turns held, so the page keeps the newest `held_rows` and loads no more for
-  /// now. The turn settles into one divider, and the page is `Paged` again.
+  /// turns held. Another older press enters `Browsing` without waiting for
+  /// the turn to settle into its divider.
   Crowded
+
+  /// A frozen ancestry window. Older pages evict newer records, and only an
+  /// explicit return adopts the live tail again.
+  Browsing
 }
 
 // Whether rows older than the oldest one the page holds exist.
@@ -1158,6 +1173,9 @@ pub type Msg(socket) {
   /// page may carry it (protocol-change/051, the addendum on history
   /// paging). It is the one message a browser can send an observer's page.
   OlderRequested
+
+  /// Return from historical browsing to the latest authoritative capture.
+  LatestRequested
 
   /// The divider of a settled turn's work was pressed: open the fold if it
   /// is closed, close it if it is open. The fold is named by the number the
@@ -1541,6 +1559,7 @@ pub fn update(
       |> reobserved(at)
 
     OlderRequested -> older_at(model, at)
+    LatestRequested -> latest_at(model, at)
 
     ContextRefreshRequested -> context_refresh_at(model, at)
 
@@ -2095,7 +2114,10 @@ pub fn apply(
 // moved, the strip when its inputs or a drawn cache label did, and the
 // status follows the lane.
 fn refreshed(model: Model(socket)) -> Model(socket) {
-  let model = resumed(model)
+  let model = case model.view.paging {
+    Browsing -> model
+    Tail | Paged | Full | Crowded -> resumed(model)
+  }
   let model = case
     projected_of(
       model.shared,
@@ -2331,7 +2353,12 @@ fn resumed(model: Model(socket)) -> Model(socket) {
 fn relaned(model: Model(socket)) -> Model(socket) {
   let laid = case model.shared.captured {
     None -> settled_projection(model)
-    Some(#(cut, view)) -> relaid(model, cut, view, 4) |> settled_projection
+    Some(#(cut, view)) ->
+      case model.view.paging {
+        Browsing -> browsed(model, cut, view) |> settled_projection
+        Tail | Paged | Full | Crowded ->
+          relaid(model, cut, view, 4) |> settled_projection
+      }
   }
   labels_wanted(laid)
 }
@@ -2353,6 +2380,172 @@ fn labels_wanted(model: Model(socket)) -> Model(socket) {
       turn_labels.keys(model.view.pieces),
     )
   Model(..model, shared: Shared(..model.shared, summaries:))
+}
+
+// A historical page draws the oldest blocks that fit. Its raw record window
+// is already bounded by history_view; lowering its endpoint to the last drawn
+// record ensures the next older read can evict the newer end without skipping
+// anything that was never on screen. The newest historical group stays open
+// even if the live operation settles, since this endpoint can cut a turn.
+fn browsed(
+  model: Model(socket),
+  cut: snapshot.Captured,
+  view: snapshot_view.View,
+) -> Model(socket) {
+  let scrollback = model.shared.scrollback
+  let branch = history_view.branch(scrollback, view)
+  let all =
+    transcript.branch_blocks(
+      branch,
+      snapshot.Captured(..cut, window: scrollback.window),
+      view,
+      model.shared.active_strand,
+      model.shared.cache_notices,
+    )
+    |> historical_blocks(branch.records)
+  let blocks = oldest_blocks(all, held_rows, 0, [])
+  let excluded =
+    all
+    |> list.drop(list.length(blocks))
+    |> list.first
+    |> result.try(transcript_lines.block_seq)
+  let records = case excluded {
+    Ok(seq) ->
+      list.filter(branch.records, fn(record) { record.entry.seq < seq })
+    Error(Nil) -> branch.records
+  }
+  let scrollback = case records {
+    [newest, ..] -> {
+      let items =
+        list.filter(scrollback.window.items, fn(item) {
+          snapshot.sequence(item) <= newest.entry.seq
+        })
+      let bytes =
+        list.fold(items, 0, fn(sum, item) {
+          case item {
+            snapshot.Loaded(_, bytes) -> sum + bytes
+            snapshot.Unloaded(..) -> sum
+          }
+        })
+      history_view.State(
+        ..scrollback,
+        leaf: Some(newest.entry.id),
+        window: snapshot.Window(items, bytes, None),
+      )
+    }
+    [] -> scrollback
+  }
+  Model(
+    shared: Shared(..model.shared, scrollback:),
+    view: View(
+      ..model.view,
+      blocks:,
+      pieces: turns.pieces(
+          blocks,
+          view.strands,
+          turns.Running,
+          turns.Expand(expansion.capped),
+        )
+        |> fold_budget.draw(model.view.folds, dict.new())
+        |> turns.attributed(turns.authors(view.peers)),
+    ),
+  )
+}
+
+// Tool groups are a compact presentation, not a paging boundary. Split them
+// at call ownership boundaries only after every preceding call's result, so
+// an older page can retain a small prefix without orphaning a result or
+// discarding calls hidden behind an oversized group.
+fn historical_blocks(
+  blocks: List(transcript_lines.Block),
+  records: List(protocol.EntryRecord),
+) -> List(transcript_lines.Block) {
+  let sequences =
+    dict.from_list(
+      list.map(records, fn(record) { #(record.entry.id, record.entry.seq) }),
+    )
+  list.flat_map(blocks, fn(block) {
+    case block.source {
+      transcript_lines.FromTools(calls) ->
+        historical_calls(calls, sequences, 0, [], [])
+        |> list.map(fn(calls) {
+          let seq =
+            calls
+            |> list.first
+            |> result.try(fn(call) { dict.get(sequences, call.source) })
+            |> result.unwrap(0)
+          let key = int.to_string(seq) <> ".0"
+          let rows =
+            calls
+            |> list.flat_map(transcript_lines.activity_call_lines)
+            |> list.index_map(fn(line, index) {
+              #(key <> ":" <> int.to_string(index), line)
+            })
+          transcript_lines.Block(key, transcript_lines.FromTools(calls), rows)
+        })
+      _ -> [block]
+    }
+  })
+}
+
+// Calls sharing an entry or overlapping outcomes stay indivisible. The next
+// entry may begin a fresh block only beyond the outcomes already joined.
+fn historical_calls(
+  calls: List(tool_activity.Call),
+  sequences: dict.Dict(ids.EntryId, Int),
+  through: Int,
+  held: List(tool_activity.Call),
+  groups: List(List(tool_activity.Call)),
+) -> List(List(tool_activity.Call)) {
+  case calls {
+    [] ->
+      list.reverse([list.reverse(held), ..groups])
+      |> list.filter(fn(xs) { xs != [] })
+    [call, ..rest] -> {
+      let seq = dict.get(sequences, call.source) |> result.unwrap(0)
+      let end =
+        call.result_source
+        |> option.then(fn(id) { option.from_result(dict.get(sequences, id)) })
+        |> option.unwrap(seq)
+      case seq > through, held {
+        True, [_, ..] ->
+          historical_calls(rest, sequences, end, [call], [
+            list.reverse(held),
+            ..groups
+          ])
+        True, [] | False, _ ->
+          historical_calls(
+            rest,
+            sequences,
+            int.max(through, end),
+            [call, ..held],
+            groups,
+          )
+      }
+    }
+  }
+}
+
+// An indivisible entry or overlapping call batch can exceed the row limit.
+// Keep it whole rather than silently advancing past something never shown;
+// the record and expansion limits still bound this exceptional page.
+fn oldest_blocks(
+  blocks: List(transcript_lines.Block),
+  limit: Int,
+  rows: Int,
+  kept: List(transcript_lines.Block),
+) -> List(transcript_lines.Block) {
+  case blocks {
+    [] -> list.reverse(kept)
+    [block, ..rest] -> {
+      let next = rows + list.length(block.rows)
+      case next > limit, list.length(block.rows) > limit {
+        True, True -> list.reverse([block, ..kept])
+        True, False -> list.reverse(kept)
+        False, _ -> oldest_blocks(rest, limit, next, [block, ..kept])
+      }
+    }
+  }
 }
 
 // One pass of the projection, and another when the read the pass chose was
@@ -3154,18 +3347,19 @@ pub fn paged(
     Beyond, _ ->
       case paging {
         Paged | Crowded -> Full
-        Tail | Full -> paging
+        Tail | Full | Browsing -> paging
       }
     Within, Beyond ->
       case paging, latest {
         Paged, turns.Running | Crowded, turns.Running -> Crowded
         Paged, turns.Settled | Crowded, turns.Settled -> Full
-        Tail, _ | Full, _ -> paging
+        Tail, _ | Full, _ | Browsing, _ -> paging
       }
     Within, Within ->
       case paging, latest {
         Crowded, turns.Settled -> Paged
-        Crowded, turns.Running | Tail, _ | Paged, _ | Full, _ -> paging
+        Crowded, turns.Running | Tail, _ | Paged, _ | Full, _ | Browsing, _ ->
+          paging
       }
   }
 }
@@ -3553,7 +3747,7 @@ fn below_origin(
 fn limit(paging: Paging) -> Int {
   case paging {
     Tail -> live_rows
-    Paged | Full | Crowded -> held_rows
+    Paged | Full | Crowded | Browsing -> held_rows
   }
 }
 
@@ -5448,7 +5642,12 @@ fn focus_at(
       let parked =
         Shared(
           ..shared,
-          scrollback: history_view.resume(shared.scrollback),
+          scrollback: case model.view.paging {
+            Browsing ->
+              history_view.cancel(shared.scrollback) |> history_view.scan_end
+            Tail | Paged | Full | Crowded ->
+              history_view.resume(shared.scrollback)
+          },
           notice: "",
           answer: "",
         )
@@ -5544,6 +5743,127 @@ pub fn older(model: Model(socket)) -> #(Model(socket), Effect(Msg(socket))) {
   older_at(model, model.view.transport.now())
 }
 
+// A capped page changes direction rather than refusing history. Start at the
+// oldest displayed turn, or keep the running window when no summary is held.
+// Summaries are deliberately not adopted as records: the range read restores
+// the immutable ancestry before it is drawn.
+fn browse_at(
+  model: Model(socket),
+  view: snapshot_view.View,
+  at: Int,
+) -> #(Model(socket), Effect(Msg(socket))) {
+  let held =
+    model.shared.scrollback
+    |> history_view.cancel
+    |> history_view.scan_end
+    |> history_view.resume
+  let scrollback = case list.last(model.view.sealed) {
+    Ok(oldest) ->
+      history_view.State(
+        ..held,
+        window: snapshot.empty(),
+        leaf: option.from_result(ids.parse_entry_id(oldest.end.id)),
+        before_seq: oldest.end.seq + 1,
+      )
+    Error(Nil) -> {
+      let first =
+        model.view.blocks
+        |> list.first
+        |> result.try(transcript_lines.block_seq)
+      case first {
+        Ok(seq) -> history_view.retain_from(held, seq)
+        Error(Nil) -> held
+      }
+    }
+  }
+  let scrollback = history_view.freeze(scrollback)
+  let branch = history_view.branch(scrollback, view)
+  let scrollback = history_view.older(scrollback, branch.unloaded)
+  stepping(
+    Model(
+      shared: Shared(..model.shared, scrollback:),
+      view: View(
+        ..model.view,
+        paging: Browsing,
+        sealed: [],
+        folds: [],
+        steps: dict.new(),
+        purpose: Resting,
+        older: Unasked,
+      ),
+    ),
+    [tick_at(at)],
+    at,
+  )
+}
+
+// Returning retires the exact historical request before merging the newest
+// capture. A late history reply cannot attach to this endpoint. Summaries are
+// rebuilt from that capture, so no gap from the historical page is sealed.
+fn latest_at(
+  model: Model(socket),
+  at: Int,
+) -> #(Model(socket), Effect(Msg(socket))) {
+  case model.view.paging {
+    Browsing -> {
+      let scrollback = case model.shared.captured {
+        Some(#(cut, view)) ->
+          history_view.capture(
+            history_view.empty(),
+            cut.window,
+            view,
+            model.shared.active_strand,
+          )
+        None -> history_view.empty()
+      }
+      finished(
+        Model(
+          shared: Shared(..model.shared, scrollback:),
+          view: View(
+            ..model.view,
+            paging: Tail,
+            sealed: [],
+            folds: [],
+            steps: dict.new(),
+            purpose: Resting,
+            older: Unasked,
+            completion: Untried,
+            floor: Unheld,
+          ),
+        ),
+        [],
+        at,
+      )
+    }
+    Tail | Paged | Full | Crowded -> #(model, effect.none())
+  }
+}
+
+/// The return control only while a historical endpoint is on screen.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.latest_action(model, LatestRequested)
+/// ```
+pub fn latest_action(model: Model(socket), action: message) -> Option(message) {
+  case model.view.paging {
+    Browsing -> Some(action)
+    Tail | Paged | Full | Crowded -> None
+  }
+}
+
+/// Whether the transcript has a frozen historical endpoint.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.browsing(model)
+/// ```
+pub fn browsing(model: Model(socket)) -> Bool {
+  model.view.paging == Browsing
+}
+
 // `older` at the reading `update` took at its top.
 //
 // The press is a want. It raises the page's limit and asks the page to read
@@ -5553,7 +5873,24 @@ fn older_at(
   model: Model(socket),
   at: Int,
 ) -> #(Model(socket), Effect(Msg(socket))) {
+  let reverse_window =
+    model.view.paging == Full
+    || model.view.paging == Crowded
+    || { activity(model) == Busy && row_count(model.view.blocks) >= live_rows }
   case top(model), model.shared.captured, model.view.status {
+    lane.Earlier, Some(#(_, view)), Connected if model.view.paging == Browsing -> {
+      let branch = history_view.branch(model.shared.scrollback, view)
+      let scrollback =
+        history_view.older(model.shared.scrollback, branch.unloaded)
+      stepping(
+        Model(..model, shared: Shared(..model.shared, scrollback:)),
+        [tick_at(at)],
+        at,
+      )
+    }
+    lane.Earlier, Some(#(_, view)), Connected if reverse_window -> {
+      browse_at(model, view, at)
+    }
     lane.Earlier, Some(_), Connected ->
       stepping(
         Model(
@@ -5804,6 +6141,22 @@ fn is_fold(piece: turns.Piece, fold: Int) -> Bool {
 /// // component.top(model) == lane.Earlier
 /// ```
 pub fn top(model: Model(socket)) -> lane.Top {
+  case model.view.paging, model.shared.captured {
+    Browsing, Some(#(_, view)) -> {
+      let branch = history_view.branch(model.shared.scrollback, view)
+      case model.shared.scrollback.request, branch.unloaded {
+        history_view.Wanted, _ | history_view.Pending(_), _ -> lane.Loading
+        history_view.Quiet, Some(_) -> lane.Earlier
+        history_view.Quiet, None -> lane.Beginning
+      }
+    }
+    _, _ -> live_top(model)
+  }
+}
+
+// The tail's turn summaries keep their existing boundary while browsing has
+// its own ancestry endpoint and pending range.
+fn live_top(model: Model(socket)) -> lane.Top {
   case model.view.status {
     // Until the first cut arrives the page knows nothing of the strand, and
     // saying the conversation begins would be a statement about a session it
@@ -5813,8 +6166,10 @@ pub fn top(model: Model(socket)) -> lane.Top {
       case reading_older(model), model.view.earlier, model.view.paging {
         True, _, _ -> lane.Loading
         False, Reached, _ -> lane.Beginning
-        False, Unheld, Full -> lane.Full(held_rows)
-        False, Unheld, Crowded -> lane.Crowded
+        False, Unheld, Full
+        | False, Unheld, Crowded
+        | False, Unheld, Browsing
+        -> lane.Earlier
         False, Unheld, Tail | False, Unheld, Paged -> lane.Earlier
       }
   }
@@ -5976,6 +6331,15 @@ pub fn pieces(model: Model(socket)) -> List(turns.Piece) {
 /// // lane.view(component.pieces(model), component.live(model), ..)
 /// ```
 pub fn live(model: Model(socket)) -> List(live.Row) {
+  case model.view.paging {
+    Browsing -> []
+    Tail | Paged | Full | Crowded -> live_rows_of(model)
+  }
+}
+
+// Live previews belong only below the live endpoint, never below a historical
+// page that may end in the middle of another turn.
+fn live_rows_of(model: Model(socket)) -> List(live.Row) {
   let shared = model.shared
   let elapsed_ms =
     option.map(shared.generation_started_ms, fn(started) {
@@ -6502,11 +6866,12 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
     shell.Unlisted,
     [
       crumb(model),
-      lane.view(
+      lane.navigable(
         pieces(model),
         live(model),
         top(model),
         OlderRequested,
+        latest_action(model, LatestRequested),
         lane.NoReplies,
         marks(model),
         lane.Folds(FoldToggled, MessageToggled, expanded(model)),

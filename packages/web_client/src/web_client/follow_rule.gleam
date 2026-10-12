@@ -507,3 +507,30 @@ pub fn keyed(
     }
   }
 }
+
+/// Which server endpoint the browser is showing or has asked to restore.
+pub type Endpoint {
+  /// The server is showing its live tail.
+  Live
+
+  /// The server is showing a frozen historical window.
+  Historical
+
+  /// An explicit return is waiting for the live endpoint's patch. The final
+  /// scroll runs after that patch, so a transient shrink cannot undo it.
+  Returning
+}
+
+/// Latches an explicit request to leave a historical endpoint.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert follow_rule.returning(follow_rule.Historical) == follow_rule.Returning
+/// ```
+pub fn returning(endpoint: Endpoint) -> Endpoint {
+  case endpoint {
+    Live -> Live
+    Historical | Returning -> Returning
+  }
+}

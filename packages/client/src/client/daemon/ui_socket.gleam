@@ -350,6 +350,7 @@ fn observer_click() -> decode.Decoder(Bool) {
 // paths `fold_click` and `message_click` name.
 fn observer_path(path: String) -> Bool {
   path == component.older_path
+  || path == component.latest_path
   || path == component.home_path
   || path == component.context_refresh_path
   || string.starts_with(path, component.strip_path <> "\t")

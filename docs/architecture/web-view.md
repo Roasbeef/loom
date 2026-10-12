@@ -666,17 +666,37 @@ frame. The alternative, a fold the browser opens by itself, left every step in
 the server's retained tree; the cost of this one is a round trip on a press, and
 steps that find-in-page cannot see until the fold is open.
 
-**The cap.** Loading older rows raises the page's limit to
-`component.held_rows` (300). The page still holds the newest rows, so new
-rows keep arriving at the bottom. When the page, paged, has to cut a whole
-turn to stay within 300 drawn rows, it is `Full`: it keeps its newest 300 rows
-and loads no more, and the lane says so. When the running turn's own rows, drawn
-open, are what cut it, the page is `Crowded` and says that older turns come back
-when the turn finishes, since the limit is not permanent, and is paged again once
-the turn settles into one divider. The page refuses rather than
-dropping its newest rows because dropping them would stop it following the
-session and need a second mode to return to the tail, which the terminal
-has and the page does not.
+**The cap and historical browsing.** Loading older turns raises the live
+summary view's limit to `component.held_rows` (300). A page whose live rows or
+closed-summary bytes reach that limit continues offering Load older. Another
+press enters a frozen historical endpoint (`component.Browsing`), as does a
+press when a running turn already fills the 150-row tail. There is no wait for
+turn completion. The initial running window keeps the displayed suffix, so a
+read prepends adjacent history rather than skipping an unseen interval. Older
+range replies extend that ancestry; drawing keeps its oldest blocks within
+300 rows and drops newer records when necessary. `history_view` also bounds
+raw retention to 600 records and 16 MiB. Compact tool groups are split at
+entry boundaries after their joined results, so a large group cannot hide calls
+behind the row cap. Calls with overlapping results stay together. An indivisible
+entry or overlapping batch exceeding the row allowance is retained whole, with
+the record and per-row expansion bounds still applying.
+
+Live captures continue supplying current session metadata, approvals and
+operation state while the displayed endpoint stays frozen. Live fragments are
+not drawn under historical rows. The last historical group stays open because
+the endpoint can end partway through a turn. The mode and window park together
+when the reader changes strands.
+
+Jump to latest discards the historical endpoint and its request, clears the
+page's historical summaries and folds, and projects the latest captured tail.
+Correlated late history replies cannot move that tail. Both roles draw a real
+return button beside Load older at `component.latest_path`; the observer socket
+admits only its click. The browser's floating jump activates that button, and
+stays offered on a frozen page even when the scroll gap is zero. A composer
+send uses the same return. The browser keeps the return intent until the
+server changes `history` from `reading` to `live`, then follows after paint;
+a transient shrink while the old page is replaced cannot cancel the return.
+An ordinary resize only scrolls the current window.
 
 **Keeping the reader's place.** Rows loaded above the reader would move
 everything they are reading down by the height of what arrived. The

@@ -103,7 +103,11 @@
 //// the tail if it was left at the bottom or never seen. Nothing is stored
 //// outside the element.
 ////
-//// The element takes one attribute, `data-strand-key`, read as a whole
+//// The element also reads `history`, one of the fixed words `live` and
+//// `reading`. A reading endpoint keeps the jump offered even at offset zero;
+//// its press activates the server return button before following again.
+////
+//// The strand attribute, `data-strand-key`, is read as a whole
 //// number; anything else is ignored. Its shadow root holds one default slot,
 //// through which the server's lane is shown as the server rendered and
 //// escaped it, and, while the reader is away from the bottom, one button
@@ -126,8 +130,9 @@ import lustre/element/html
 import lustre/event
 import web_client/fold
 import web_client/follow_rule.{
-  type Extent, type Memory, type Reader, Detached, Displaced, Extent, Following,
-  Leading, Reading, Restored, Waiting,
+  type Endpoint, type Extent, type Memory, type Reader, Detached, Displaced,
+  Extent, Following, Historical, Leading, Live, Reading, Restored, Returning,
+  Waiting,
 }
 import web_client/internal/ffi_dom
 
@@ -200,6 +205,8 @@ pub type Model {
     divider: Option(Divider),
     key: Option(Int),
     memory: Memory,
+    /// Whether the server is showing a frozen ancestry endpoint.
+    endpoint: Endpoint,
   )
 }
 
@@ -247,6 +254,9 @@ pub type Msg {
   /// The reader pressed "Jump to latest".
   Jumped
 
+  /// The reader activated the server's historical return control.
+  Returned
+
   /// The reader sent a message from the composer.
   Sent
 
@@ -261,6 +271,9 @@ pub type Msg {
 
   /// The server drew the transcript of the strand with this numeric key.
   Keyed(key: Int)
+
+  /// The server's return control appeared or left the lane.
+  EndpointChanged(endpoint: Endpoint)
 }
 
 // A click whose target carries the marker `name` (a `dataset` key), whatever
@@ -291,6 +304,7 @@ pub fn register() -> Result(Nil, lustre.Error) {
     component.on_connect(Connected),
     component.on_disconnect(Disconnected),
     component.on_attribute_change(follow_rule.key_attribute, keyed),
+    component.on_attribute_change("history", endpoint_changed),
   ])
   |> lustre.register(name)
 }
@@ -299,6 +313,15 @@ pub fn register() -> Result(Nil, lustre.Error) {
 // else is none.
 fn keyed(value: String) -> Result(Msg, Nil) {
   int.parse(value) |> result.map(Keyed)
+}
+
+// Only the server's two fixed endpoint words are accepted.
+fn endpoint_changed(value: String) -> Result(Msg, Nil) {
+  case value {
+    "reading" -> Ok(EndpointChanged(Historical))
+    "live" -> Ok(EndpointChanged(Live))
+    _ -> Error(Nil)
+  }
 }
 
 fn init(_: Nil) -> #(Model, Effect(Msg)) {
@@ -310,6 +333,7 @@ fn init(_: Nil) -> #(Model, Effect(Msg)) {
       divider: None,
       key: None,
       memory: follow_rule.forgotten(),
+      endpoint: Live,
     ),
     effect.none(),
   )
@@ -386,6 +410,30 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
             None -> #(model, measure(model.watching))
           }
       }
+    EndpointChanged(endpoint:) ->
+      case model.endpoint, endpoint {
+        Returning, Live -> #(
+          Model(
+            ..model,
+            endpoint: Live,
+            reader: follow_rule.jumped(model.reader),
+            anchor: None,
+            divider: None,
+          ),
+          arrive(model.watching, follow_rule.Tail),
+        )
+        _, _ -> #(Model(..model, endpoint:), effect.none())
+      }
+    Returned -> #(
+      Model(
+        ..model,
+        reader: follow_rule.jumped(model.reader),
+        endpoint: follow_rule.returning(model.endpoint),
+        anchor: None,
+        divider: None,
+      ),
+      to_bottom(model.watching),
+    )
     Measured(gap:) -> #(
       Model(..model, reader: follow_rule.measured(model.reader, gap)),
       effect.none(),
@@ -448,10 +496,11 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       Model(
         ..model,
         reader: follow_rule.jumped(model.reader),
+        endpoint: follow_rule.returning(model.endpoint),
         anchor: None,
         divider: None,
       ),
-      to_bottom(model.watching),
+      jump_to_latest(model.watching),
     )
 
     // A send is the same request made from the composer. The reader's own
@@ -462,10 +511,11 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       Model(
         ..model,
         reader: follow_rule.jumped(model.reader),
+        endpoint: follow_rule.returning(model.endpoint),
         anchor: None,
         divider: None,
       ),
-      to_bottom(model.watching),
+      jump_to_latest(model.watching),
     )
   }
 }
@@ -578,6 +628,22 @@ fn to_bottom(watching: Option(Watching)) -> Effect(Msg) {
     None -> effect.none()
     Some(Watching(host:, ..)) -> {
       use _ <- effect.from
+      ffi_dom.set_scroll_top(host, ffi_dom.scroll_height(host))
+    }
+  }
+}
+
+// The shadow button activates the server's read-only return handler before
+// following. A normal resize scroll must never retire a historical endpoint.
+fn jump_to_latest(watching: Option(Watching)) -> Effect(Msg) {
+  case watching {
+    None -> effect.none()
+    Some(Watching(host:, ..)) -> {
+      use _ <- effect.from
+      case ffi_dom.query_selector(host, "[data-loom-latest]") {
+        Ok(button) -> ffi_dom.click(button)
+        Error(Nil) -> Nil
+      }
       ffi_dom.set_scroll_top(host, ffi_dom.scroll_height(host))
     }
   }
@@ -751,13 +817,20 @@ fn view(model: Model) -> Element(Msg) {
         event.on(fold.toggled_event, decode.success(Folded)),
         event.on(
           "click",
-          decode.one_of(marked("loomOlder", Paged), [divided()]),
+          decode.one_of(marked("loomOlder", Paged), [
+            marked("loomLatest", Returned),
+            divided(),
+          ]),
         ),
       ],
       [],
     )
 
-  case follow_rule.jump(model.reader.position, model.reader.gap) {
+  let jump = case model.endpoint {
+    Historical | Returning -> follow_rule.Offered
+    Live -> follow_rule.jump(model.reader.position, model.reader.gap)
+  }
+  case jump {
     follow_rule.Offered ->
       element.fragment([
         slot,

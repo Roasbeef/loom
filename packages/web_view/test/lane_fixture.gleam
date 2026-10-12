@@ -2711,3 +2711,27 @@ pub fn cut(
     })
   capture_leaves(held, newest, leaves, operation, [], [])
 }
+
+/// A single turn whose assistant notes continue while its operation runs.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.long_running(1001, 1600, Some(lane_fixture.main_op()))
+/// ```
+pub fn long_running(
+  from: Int,
+  to: Int,
+  operation: Option(String),
+) -> session_channel.Update {
+  let items =
+    int.range(from: to, to: from - 1, with: [], run: fn(items, seq) {
+      let body = case seq {
+        1 -> said("start a long run", None)
+        _ ->
+          assistant([message.AssistantText("step " <> int.to_string(seq), None)])
+      }
+      [item(seq, 10_000 + seq, body), ..items]
+    })
+  capture_of(items, operation, [], [])
+}
