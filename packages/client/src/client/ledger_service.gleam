@@ -60,6 +60,12 @@
 //// change what the node says in its next `Head`. A peer that answers with
 //// garbage therefore costs one recorded refusal and one batch, and the
 //// machine returns to `Quiet`.
+////
+//// All pulls are answered on one shared subject. A reply that arrives after
+//// its pull's deadline, while a later pull is open, is therefore attributed to
+//// the open pull. That costs at most one extra `Pull`, because the lines are
+//// applied through the same acceptance procedure whoever sent them, so it can
+//// never apply a wrong entry. No per-pull subject is kept for that.
 
 import client/internal/ffi_nodes
 import client/internal/ffi_remote
@@ -748,10 +754,18 @@ fn pull(
   }
 }
 
-// The node a peer's inbox lives on, which names the peer. A subject with no
-// owner process cannot be pulled from or recorded.
+// The node a peer's inbox lives on, which names the peer. A report is
+// attributed to the node that owns `from`, never to a name the sender claims.
+// A named subject is refused: it resolves against this node's own registry, so
+// a peer could aim a `Pull` at any local process by sending a name, and sending
+// to it would panic if the name were unregistered in between. Only a subject
+// with an owner process of its own can be pulled from or recorded.
 fn owner_of(from: Subject(Message)) -> Result(String, Nil) {
-  process.subject_owner(from) |> result.map(ffi_nodes.owner_name)
+  case process.subject_name(from) {
+    Ok(_) -> Error(Nil)
+    Error(Nil) ->
+      process.subject_owner(from) |> result.map(ffi_nodes.owner_name)
+  }
 }
 
 fn remember(

@@ -293,6 +293,12 @@ pub type Entries {
 }
 ```
 
+`from` is the sender's own inbox, a subject owned by a process on the sender's
+node. The receiver attributes a `Head` to the node that owns `from` and never to
+a name the sender states, and it ignores a `Head` whose `from` is a named subject,
+which would resolve against the receiver's own registry. A peer that never sends
+a `Head`, such as a static-mode node, is listed as never having reported.
+
 There is no push message. A node that receives `Head` with a higher `seq` pulls
 from its current head and applies the lines in order, through the acceptance steps
 above, until it reaches that `seq` or a step fails. The node that is behind always

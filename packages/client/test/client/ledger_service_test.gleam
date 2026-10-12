@@ -352,6 +352,18 @@ pub fn a_pull_that_is_never_answered_ends_at_its_deadline_test() {
   let #(_, _, _) = expect_pull(live, 5000)
 }
 
+pub fn a_head_from_a_named_subject_is_neither_pulled_from_nor_recorded_test() {
+  let r = rig.start("service-named", [genesis_line()], rig.patient, [])
+  let wire = ledger_service.wire(r.service)
+
+  // A named subject resolves against this node's own registry, so a peer
+  // could aim a pull at any local process with it. The head is ignored.
+  let named = process.named_subject(process.new_name("ledger_peer"))
+  process.send(wire, head_of(5, named))
+  assert status(r).reported == []
+  assert rig.head_seq(r) == 0
+}
+
 pub fn a_head_that_would_start_a_second_pull_waits_for_the_first_test() {
   let r = rig.start("service-postponed", [genesis_line()], rig.patient, [])
   let wire = ledger_service.wire(r.service)
