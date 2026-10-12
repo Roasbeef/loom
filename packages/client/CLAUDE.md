@@ -8065,7 +8065,8 @@ modules yet except their tests, and static pins are unchanged.
 - Tests: `membership_entry_test` (golden body strings, every malformed shape),
   `membership_ledger_test` (each refusal, the bounds, the pin table),
   `membership_ledger_property_test` (replay equals stepwise apply, prefixes,
-  flipped bits, swapped and removed entries, forks, equal tables, totality over
+  flipped bits, swapped and removed entries, forks, equal tables, the pin table
+  against a model, symmetric links, no pin of a revoked name, totality over
   arbitrary bytes) over `support/membership_fixture` (an HMAC stand-in for the
   signature, so the laws need no key) and `support/membership_log` (a log builder
   and a seeded generator that keeps the random operations the real fold accepts),
