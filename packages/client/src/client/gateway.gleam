@@ -194,6 +194,7 @@ import client/goal_pending
 import client/goalcommand
 import client/grants
 import client/internal/session_owner
+import client/memory_overview
 import client/notes_view
 import client/permissions
 import client/profile_switch
@@ -368,6 +369,8 @@ pub type Options {
     schedules: Option(scheduleadmin.Admin),
     /// The operator's half of the proposal queue, when this host has one.
     proposals: Option(proposals.Admin),
+    /// The operator's read of the memory overview, when this host has one.
+    memory_overview: Option(memory_overview.Admin),
     /// Operator-owned additions to this session's filesystem authority.
     directories: Option(directories.Admin),
     /// The effect plane's own sweep of an aborted operation, called by
@@ -531,6 +534,8 @@ type State {
     schedules: Option(scheduleadmin.Admin),
     // The operator's half of the proposal queue, when this host has one.
     proposals: Option(proposals.Admin),
+    // The operator's read of the memory overview, when this host has one.
+    memory_overview: Option(memory_overview.Admin),
     /// Operator-owned additions to this session's filesystem authority.
     directories: Option(directories.Admin),
   )
@@ -559,6 +564,7 @@ pub fn default_options(session_id: String, runtime: api.Runtime) -> Options {
     extension_refusals: [],
     schedules: None,
     proposals: None,
+    memory_overview: None,
     directories: None,
     effect_abort: None,
     goal_control: None,
@@ -799,6 +805,25 @@ pub fn with_schedules(options: Options, admin: scheduleadmin.Admin) -> Options {
 ///
 pub fn with_proposals(options: Options, admin: proposals.Admin) -> Options {
   Options(..options, proposals: Some(admin))
+}
+
+/// Supplies the operator's read of the memory overview, which the
+/// `memory_get` command answers from. Pass the admin built over the files
+/// this host already reads for its runs, so the overview cannot describe a
+/// file the runs do not (protocol-change/087).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.default_options("sess-01", runtime)
+/// // |> gateway.with_memory_overview(memory_overview.admin(wiring))
+/// ```
+///
+pub fn with_memory_overview(
+  options: Options,
+  admin: memory_overview.Admin,
+) -> Options {
+  Options(..options, memory_overview: Some(admin))
 }
 
 /// Supplies the effect plane's sweep of an aborted operation — in
@@ -1248,6 +1273,7 @@ fn start_with_delivery(
         extension_refusals: options.extension_refusals,
         schedules: options.schedules,
         proposals: options.proposals,
+        memory_overview: options.memory_overview,
         directories: options.directories,
       )
 
@@ -2318,6 +2344,7 @@ fn network_command(
     | protocol.PermissionForget(..)
     | protocol.ProposalsGet
     | protocol.ProposalDecide(..)
+    | protocol.MemoryGet
     | protocol.ProfileGet
     | protocol.ProfileSet(..)
     | protocol.UnknownCommand(..) -> run_command(state, connection, id, command)
@@ -3232,6 +3259,8 @@ fn owner_only(command: Command) -> Option(String) {
       Some("only the session owner may switch the session's model profile")
     protocol.ProposalsGet | protocol.ProposalDecide(..) ->
       Some("only the session owner may review proposed rules")
+    protocol.MemoryGet ->
+      Some("only the session owner may read the memory overview")
     _ -> None
   }
 }
@@ -3315,6 +3344,7 @@ fn read_only(command: Command) {
     | protocol.PermissionForget(..)
     | protocol.ProposalsGet
     | protocol.ProposalDecide(..)
+    | protocol.MemoryGet
     | protocol.ProfileSet(..)
     | protocol.UnknownCommand(..) -> False
   }
@@ -5207,6 +5237,7 @@ fn run_command(
     protocol.PermissionForget(target:, expected_seq:), Subscribed ->
       forget_permissions(state, connection, id, target, expected_seq)
     protocol.ProposalsGet, Subscribed -> list_proposals(state, connection, id)
+    protocol.MemoryGet, Subscribed -> read_memory(state, connection, id)
     protocol.ProposalDecide(id: proposal, decision:), Subscribed ->
       decide_proposal(state, connection, id, proposal, decision)
   }
@@ -7811,6 +7842,39 @@ fn unsupported_proposals(state: State, connection: Int, id: Int) -> State {
     "this server has no proposal queue",
   )
   state
+}
+
+// --- the memory overview (protocol-change/087) ------------------------------
+
+// `memory_get`: the overview as `client/memory_overview` reads it, one
+// snapshot. An owner's read. A host with no overview answers unsupported
+// rather than an empty board, because an empty board would read as "no notes".
+// The read takes no lease and never waits on a writer, so answering it here
+// cannot hold up the strand.
+fn read_memory(state: State, connection: Int, id: Int) -> State {
+  case state.memory_overview {
+    None -> {
+      reply_error(
+        state,
+        connection,
+        id,
+        protocol.code_unsupported,
+        "this server keeps no memory overview",
+      )
+      state
+    }
+    Some(admin) -> {
+      reply(
+        state,
+        connection,
+        id,
+        protocol.SnapshotEvent(
+          protocol.MemorySnapshot(board: memory_overview.board(admin.read())),
+        ),
+      )
+      state
+    }
+  }
 }
 
 // --- remembered permissions (protocol-change/073) --------------------------

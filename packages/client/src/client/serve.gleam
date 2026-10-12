@@ -105,6 +105,7 @@ import client/jobs
 import client/mcp as mcp_wiring
 import client/memory
 import client/memory_config
+import client/memory_overview
 import client/notes
 import client/owner_codemode
 import client/owner_services
@@ -4534,7 +4535,21 @@ fn assemble_in(
             // has no reviewer.
             |> with_goal_control(advisor_wiring)
             |> with_schedule_admin(schedule_admin)
-            |> hub.with_proposals(proposals.admin(proposal_wiring)),
+            |> hub.with_proposals(proposals.admin(proposal_wiring))
+            |> hub.with_memory_overview(
+              memory_overview.admin(
+                memory_overview.Wiring(
+                  store_path: memory_store,
+                  notes_path: memory_notes,
+                  rules_path:,
+                  memory: settings.memory,
+                  pending: fn() {
+                    proposals.listing(proposal_wiring)
+                    |> result.map(fn(held) { held.pending })
+                  },
+                ),
+              ),
+            ),
           name,
         )
       }),

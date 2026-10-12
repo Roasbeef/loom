@@ -901,3 +901,40 @@ pub fn a_proposals_changed_push_round_trips_with_an_empty_body_test() {
       event: protocol.ProposalsChanged,
     ))
 }
+
+pub fn the_memory_command_has_its_documented_wire_form_test() {
+  assert protocol.encode_command(protocol.CommandEnvelope(
+      id: 9,
+      command: protocol.MemoryGet,
+    ))
+    == "{\"v\":2,\"id\":9,\"cmd\":\"memory_get\",\"body\":{}}"
+  assert protocol.decode_command(
+      "{\"v\":2,\"id\":9,\"cmd\":\"memory_get\",\"body\":{}}",
+    )
+    == Ok(protocol.CommandEnvelope(id: 9, command: protocol.MemoryGet))
+}
+
+pub fn a_memory_snapshot_round_trips_test() {
+  let event =
+    protocol.SnapshotEvent(
+      protocol.MemorySnapshot(
+        board: json.Object([
+          #("inject", json.String("notes")),
+        ]),
+      ),
+    )
+  let encoded =
+    protocol.encode_event(protocol.EventEnvelope(
+      reply_to: Some(5),
+      seq: None,
+      event:,
+    ))
+  assert protocol.decode_event(encoded)
+    == Ok(protocol.EventEnvelope(reply_to: Some(5), seq: None, event:))
+}
+
+pub fn a_memory_snapshot_without_a_board_is_refused_test() {
+  assert result.is_error(protocol.decode_event(
+    "{\"v\":2,\"event\":\"snapshot\",\"body\":{\"mode\":\"memory\"}}",
+  ))
+}

@@ -359,6 +359,15 @@ pub type Command {
   /// snapshot shows it.
   ProposalDecide(id: String, decision: ProposalDecision)
 
+  /// Reads the memory overview: what each run is handed of the workspace's
+  /// memory, its notes, its approved rules and how many proposals wait.
+  /// Answered by a `memory` snapshot.
+  ///
+  /// Owner-only and not an observer's read, for the reason `ProposalsGet`
+  /// is: the rows are model-authored text and the rules are standing
+  /// instructions (`protocol-change/087`).
+  MemoryGet
+
   /// A well-formed envelope with an unknown command name, kept as data.
   UnknownCommand(cmd: String, body: JsonValue)
 }
@@ -476,6 +485,10 @@ pub type Snapshot {
   /// `proposals` and `proposal_decide`, so one reply redraws the review
   /// list after a decision (protocol-change/086).
   ProposalsSnapshot(board: JsonValue)
+
+  /// The memory overview (`client/memory_overview.board`): the reply to
+  /// `memory_get` (protocol-change/087).
+  MemorySnapshot(board: JsonValue)
 
   /// The session's model role profile and the profiles the configuration
   /// defines: the reply to both `profile_get` and `profile_set`
@@ -1136,6 +1149,7 @@ fn command_body(command: Command) -> #(String, JsonValue) {
       ]),
     )
     ProposalsGet -> #("proposals_get", json.Object([]))
+    MemoryGet -> #("memory_get", json.Object([]))
     ProposalDecide(id:, decision:) -> #(
       "proposal_decide",
       json.Object([
@@ -1583,6 +1597,7 @@ fn decode_command_body(
       Ok(PermissionForget(target:, expected_seq:))
     }
     "proposals_get" -> Ok(ProposalsGet)
+    "memory_get" -> Ok(MemoryGet)
     "proposal_decide" -> {
       use fields <- result.try(body_fields(body))
       use id <- result.try(required_string(fields, "id"))
@@ -1888,6 +1903,8 @@ fn encode_snapshot(snapshot: Snapshot) -> JsonValue {
       json.Object([#("mode", json.String("permissions")), #("board", board)])
     ProposalsSnapshot(board:) ->
       json.Object([#("mode", json.String("proposals")), #("board", board)])
+    MemorySnapshot(board:) ->
+      json.Object([#("mode", json.String("memory")), #("board", board)])
     ProfileSnapshot(current:, available:, switched:) ->
       json.Object(
         list.flatten([
@@ -2567,6 +2584,13 @@ fn decode_snapshot(body: JsonValue) -> Result(Event, String) {
         |> result.replace_error("missing proposals board"),
       )
       Ok(SnapshotEvent(ProposalsSnapshot(board:)))
+    }
+    "memory" -> {
+      use board <- result.try(
+        list.key_find(fields, "board")
+        |> result.replace_error("missing memory board"),
+      )
+      Ok(SnapshotEvent(MemorySnapshot(board:)))
     }
     "profile" -> {
       use current <- result.try(optional_string(fields, "profile"))

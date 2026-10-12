@@ -15,6 +15,8 @@ import client/escalate
 import client/gateway
 import client/goalcommand
 import client/grants
+import client/memory_config
+import client/memory_overview
 import client/permissions
 import client/profile_switch
 import client/proposals
@@ -7566,6 +7568,101 @@ pub fn only_the_owner_may_read_or_decide_proposals_test() {
   let assert protocol.SnapshotEvent(protocol.ProposalsSnapshot(..)) =
     next_reply(harness, 972, 20).event
     as "the owner reads the queue"
+}
+
+// --- the memory overview (protocol-change/087) -----------------------------
+
+// A scripted overview, so the gateway's mapping is what is tested. What the
+// overview reads from disk is `memory_overview_test`'s.
+fn scripted_overview() -> memory_overview.Admin {
+  memory_overview.Admin(read: fn() {
+    memory_overview.Overview(
+      inject: memory_config.InjectsNotes,
+      receives: [
+        memory_overview.Receives(
+          file: "loom-rules.md",
+          bytes: 12,
+          reach: memory_overview.Injected,
+        ),
+      ],
+      notes: memory_overview.Listed(
+        rows: [
+          memory_overview.Note(
+            kind: "fact",
+            date: "2026-10-11",
+            title: "Tabs",
+            description: "Use tabs",
+            typing: memory_overview.Typed,
+          ),
+        ],
+        total: 1,
+      ),
+      rules: memory_overview.Unavailable(reason: "the rules file is unreadable"),
+      waiting: memory_overview.Waiting(count: 3),
+    )
+  })
+}
+
+fn start_harness_with_memory_overview() -> Harness {
+  start_harness_adjusted(
+    None,
+    None,
+    None,
+    None,
+    SettlingProvider,
+    None,
+    None,
+    gateway.with_memory_overview(_, scripted_overview()),
+  )
+}
+
+pub fn memory_get_answers_the_overview_board_test() {
+  let harness = start_harness_with_memory_overview()
+  subscribe(harness)
+  send(harness, 80, protocol.MemoryGet)
+  let envelope = next(harness)
+  assert envelope.reply_to == Some(80)
+  let assert protocol.SnapshotEvent(protocol.MemorySnapshot(board:)) =
+    envelope.event
+    as "a memory snapshot was expected"
+  assert board == memory_overview.board(scripted_overview().read())
+  let assert json.Object(fields) = board
+  let assert Ok(json.Object(rules)) = list.key_find(fields, "rules")
+  assert list.key_find(rules, "state") == Ok(json.String("unavailable"))
+}
+
+pub fn a_host_with_no_overview_answers_unsupported_test() {
+  let harness = start_harness()
+  subscribe(harness)
+  send(harness, 81, protocol.MemoryGet)
+  expect_error(harness, 81, protocol.code_unsupported)
+}
+
+// The overview lists model-written notes and the standing rules, so it is the
+// owner's: a member operator and an observer are both refused.
+pub fn only_the_owner_may_read_the_memory_overview_test() {
+  let harness = start_harness_with_memory_overview()
+  let #(member, _, _) =
+    authenticated(harness, access.Participant(access.Operator), process.self())
+  let #(observer, _, _) =
+    authenticated(harness, access.Participant(access.Observer), process.self())
+  list.each([member, observer], fn(handle) {
+    gateway.connection_text(
+      handle,
+      protocol.encode_command(protocol.CommandEnvelope(980, protocol.MemoryGet)),
+    )
+    let assert protocol.ErrorEvent(code: "forbidden", ..) =
+      next_reply(harness, 980, 20).event
+      as "only the owner reads the memory overview"
+  })
+  let #(owner, _, _) = authenticated_owner(harness, process.self())
+  gateway.connection_text(
+    owner,
+    protocol.encode_command(protocol.CommandEnvelope(981, protocol.MemoryGet)),
+  )
+  let assert protocol.SnapshotEvent(protocol.MemorySnapshot(..)) =
+    next_reply(harness, 981, 20).event
+    as "the owner reads the overview"
 }
 
 fn proposals_fixture_id() -> ids.SessionId {
