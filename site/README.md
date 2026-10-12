@@ -13,7 +13,8 @@ You need Gleam (1.18 or later; the repository uses 1.19.0), Erlang/OTP to run th
 ```sh
 make -C site build      # compile and assemble site/dist
 make -C site test       # gleeunit, on the JavaScript target
-make -C site check      # test, copy-check and build
+make -C site fmt        # format the Gleam sources
+make -C site check      # format check, test, copy-check and build
 make -C site serve      # build, then serve site/dist on PORT (default 8702)
 ```
 

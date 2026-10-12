@@ -310,6 +310,12 @@
 .dgm-layout {
   position: relative;
   width: 100%;
+  isolation: isolate;
+}
+
+.dgm-wide {
+  max-width: 620px;
+  margin: 0 auto;
 }
 
 .dgm-narrow {
@@ -329,6 +335,7 @@
 }
 
 .dgm-lines {
+  z-index: 1;
   position: absolute;
   inset: 0;
   width: 100%;
@@ -384,6 +391,8 @@
 }
 
 .dz-title {
+  z-index: 3;
+  text-shadow: 0 0 4px var(--paper), 0 0 4px var(--paper), 0 0 4px var(--paper);
   position: absolute;
   left: 10px;
   top: 4px;
@@ -406,6 +415,7 @@
 }
 
 .dbox {
+  z-index: 2;
   padding: 8px;
   border: 1px solid var(--rule-strong);
   border-radius: 6px;

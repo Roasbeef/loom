@@ -282,7 +282,7 @@ fn step_0() -> Frame {
       state("b_row", "none", Quiet),
       state("b_file", "none", Quiet),
       state("b_run", "none", Quiet),
-      state("exec", "scope open, incarnation n\nattached with A's token", Quiet),
+      state("exec", "scope open\nincarnation n\nA's token attached", Quiet),
     ],
     [],
   )
@@ -298,7 +298,7 @@ fn step_1() -> Frame {
       state("b_row", "none", Quiet),
       state("b_file", "none", Quiet),
       state("b_run", "none", Quiet),
-      state("exec", "scope open, incarnation n", Quiet),
+      state("exec", "scope open\nincarnation n", Quiet),
     ],
     [],
   )
@@ -399,7 +399,7 @@ fn step_7() -> Frame {
       state("b_run", "open", Live),
       state(
         "exec",
-        "scope reopened at incarnation n + 1\nB's token; A's refused",
+        "reopened at\nincarnation n + 1\nB's token; A's refused",
         Live,
       ),
     ],
