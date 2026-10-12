@@ -1,6 +1,6 @@
 # Approvals and sandboxing
 
-Every command that Loom runs on your behalf runs in a kernel sandbox, under a policy that the session sets. When a call needs more access than the policy grants, Loom refuses it before anything runs, and you decide whether to widen the policy for that one call. This page explains the sandbox, the policy, and the approval flow.
+Every command that Loom runs on a model's behalf runs in a kernel sandbox, under a policy that the session sets. When a call needs more access than the policy grants, Loom refuses it before anything runs, and you decide whether to widen the policy for that one call. This page explains the sandbox, the policy, and the approval flow.
 
 ## What Loom defends against
 
@@ -9,7 +9,7 @@ Loom defends against four threats, in increasing order of difficulty:
 - **Accidents**: a delete in the wrong directory, a force-push, a `.env` file swept into a commit.
 - **Prompt injection**: hostile repository, web or tool content that steers the model toward exfiltration or destruction.
 - **Malicious generated code**: a program the model wrote that attempts escape or persistence.
-- **Compromised third-party tools**: a malicious language server or MCP server.
+- **Compromised third-party tools**: a malicious language server, which runs jailed.
 
 It does not defend against a hostile user on their own machine, and it does not defend against kernel zero-days.
 
@@ -47,9 +47,9 @@ A call runs under a policy composed from the session's base policy, the tool's o
 | Environment | The allowlists intersect. |
 | Protected paths | They union, and no grant can remove one. |
 
-The default base lets a command write inside the workspace and read most of the host except protected paths. For tighter reads, set `read_scope = "workspace"` under `[workspace]`.
+The default base lets a command write inside the workspace and read most of the host except protected paths. For tighter reads, set `read_scope = "workspace"` under `[workspace]`. With the defaults, a jailed command can read most of the host and reach any host on the network, so set `network = "off"` and `read_scope = "workspace"` where that matters.
 
-Every effect passes through one function in the harness, the broker's `clear_call`. It composes the policy, refuses or narrows the call, reserves a slot against a pooled cap, mints a token, borrows a helper and dispatches. From that point the caller receives exactly one settlement, however the execution ends. The token binds the operation, step, policy and deadline, and settling revokes it. An abort revokes every token of an operation and signals the whole process group, so no orphaned process is left.
+Every command and every code-mode capability call passes through one function in the harness, the broker's `clear_call`. The native file tools run in the harness and enforce their own path containment. It composes the policy, refuses or narrows the call, reserves a slot against a pooled cap, mints a token, borrows a helper and dispatches. From that point the caller receives exactly one settlement, however the execution ends. The token binds the operation, step, policy and deadline, and settling revokes it. An abort revokes every token of an operation and signals the whole process group, so no orphaned process is left.
 
 ## Asking for more access
 
@@ -80,7 +80,7 @@ Two kinds of authority outlive a single call.
 
 ## Crashes and restarts
 
-An approval is a durable record. If the daemon dies while a call waits, nothing runs without a fresh decision. A crash between spending an approval and dispatching the command spends the approval without running it, which is the safe direction.
+An approval is a durable record. If the daemon dies while a call waits, the call is not run again, and the question stays pending. An answer is spent only by a call with the same want and the same action. A crash between spending an approval and dispatching the command spends the approval without running it, which is the safe direction.
 
 ## Read more
 

@@ -63,7 +63,7 @@ The owner can invite people to a session as operators, who can direct the work a
 
 ## Compaction and memory
 
-A compaction is itself an entry: a self-contained checkpoint that carries the retained part of the conversation. Context assembly never reads past a compaction, and the full history stays in the file. Loom can also search earlier sessions and keep workspace memory. Memory is private to the owner by default. The repository's `docs/architecture/compaction.md` and `docs/architecture/memory.md` describe both.
+A compaction is itself an entry: a self-contained checkpoint that carries the retained part of the conversation. Context assembly never reads past a compaction, and the full history stays in the file. Loom can also search earlier sessions and keep workspace memory. The repository's `docs/architecture/compaction.md` and `docs/architecture/memory.md` describe both.
 
 ## Read more
 

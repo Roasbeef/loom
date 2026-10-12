@@ -100,7 +100,7 @@ pub fn spec() -> Spec {
         caption: "The same tree boots again and the strand reads its registers.",
         heading: "Recovery and a cold start are the same code",
         body: [
-          "After a daemon restart every session stays closed until someone opens it. Opening boots the same tree, with the writer first. Once the old lease has expired the new writer takes it and bumps the fence, so the old owner cannot commit again.",
+          "After a daemon restart every session stays closed until someone opens it. Opening boots the same tree, with the writer before the strand factories. Once the old lease has expired the new writer takes it and bumps the fence, so the old owner cannot commit again.",
           "The strand reads `op.state` and validates the rows it names. A row that does not decode is reported as corruption instead of being trusted.",
         ],
         state: [

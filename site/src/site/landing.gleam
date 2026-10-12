@@ -95,8 +95,8 @@ pub fn view(model: Model) -> Element(Msg) {
             "Sandboxing and approval",
             "Commands run in a kernel sandbox, and widening it takes your answer",
             [
-              "BEAM processes isolate faults, not untrusted code: any process in the VM can run `os:cmd` or open the network. So Loom's first rule, Rule Zero, is that nothing the model influences runs in the harness VM. Commands, agent-written programs and extensions run in separate OS processes under kernel enforcement: bubblewrap, Landlock and seccomp on Linux, and Seatbelt on macOS.",
-              "Every effect leaves the harness through one door, the broker. When a call needs more access than the session grants, it is refused before anything runs, and the refusal can become a question for you. The figure follows one such question from the model to the sandbox.",
+              "BEAM processes isolate faults, not untrusted code: any process in the VM can run `os:cmd` or open the network. So Loom's first rule, Rule Zero, is that nothing the model influences runs in the harness VM. Commands, agent-written programs and extensions run in separate OS processes under kernel enforcement: bubblewrap, Landlock and a seccomp network filter on Linux, and Seatbelt on macOS.",
+              "Every command and every code-mode capability call goes through one door, the broker, and the native file tools check their own paths in the harness. When a call needs more access than the session grants, it is refused before anything runs, and the refusal can become a question for you. The figure follows one such question from the model to the sandbox.",
             ],
             msg.Approval,
           ),
@@ -118,7 +118,7 @@ pub fn view(model: Model) -> Element(Msg) {
             "A session's runtime and its tool calls can run on different machines, and the session can move",
             [
               "A distributed Loom runs one session on two machines. The orchestrator keeps the conversation: the runtime, the session's SQLite store, approvals and provider keys. The executor keeps the checkout and runs the session's workspace tool calls beside it. They join over TLS Erlang distribution with pinned certificates. Executors can be grouped into pools, and two orchestrators can list each other as peers.",
-              "An owner can hand the conversation to another orchestrator with `loom sessions move`. Ownership is two catalogue rows ordered by a write-ahead intent, and a TLA+ model of the protocol checks that two orchestrators never serve the session at once. The figure has eight frames: the state before, the six steps of the protocol in order, and the state after. [The distributed runtime page](#/docs/distributed-runtime) lists what a remote session cannot do yet.",
+              "An owner can hand the conversation to another orchestrator with `loom sessions move`. Ownership is two catalogue rows ordered by a write-ahead intent, and a TLA+ model of one move, with a crash possible between any two writes, checks that two orchestrators never serve the session at once. The figure has eight frames: the state before, the six steps of the protocol in order, and the state after. [The distributed runtime page](#/docs/distributed-runtime) lists what a remote session cannot do yet.",
             ],
             msg.Migration,
           ),
@@ -199,7 +199,7 @@ fn facts() -> Element(Msg) {
             ),
             #(
               "Interfaces",
-              "A terminal client, `loom`, and a web view, both served by one local daemon, `loomd`.",
+              "A terminal client, `loom`, and an opt-in web view. Both attach to one local daemon, `loomd`.",
             ),
             #(
               "Sandbox",
@@ -324,7 +324,7 @@ fn clients() -> Element(Msg) {
       html.p(
         [],
         inline.render(
-          "Several people can work in one session. The owner invites them as operators, who can direct the work and answer approvals, or as observers, who can follow without changing anything. The daemon binds to loopback only; a browser on another machine reaches it through a tunnel such as `ssh -L`.",
+          "Several people can work in one session. The owner invites them as operators, who can direct the work and answer approvals, or as observers, who can follow without changing anything. The daemon's web listener binds to loopback only; a browser on another machine reaches it through a tunnel such as `ssh -L`. The web view is off until you start the daemon with `--ui`.",
         ),
       ),
     ]),
@@ -412,7 +412,7 @@ fn status() -> Element(Msg) {
         ]),
         html.h2([], [
           element.text(
-            "Loom releases cover Linux and macOS, and the distributed runtime is in the main branch",
+            "The release workflow builds Linux and macOS, and the distributed runtime is in the main branch",
           ),
         ]),
         html.p(
@@ -430,7 +430,7 @@ fn status() -> Element(Msg) {
         [
           "Linux x86_64",
           "Built twice on separate runners and compared byte for byte.",
-          "bubblewrap, Landlock, seccomp, cgroup v2 limits.",
+          "bubblewrap and Landlock, seccomp when the network is off, cgroup v2 limits where a cgroup is delegated.",
           "Built and smoke-tested in CI.",
         ],
         [
@@ -442,7 +442,7 @@ fn status() -> Element(Msg) {
         [
           "Linux arm64",
           "None. The release workflow does not build it.",
-          "As on Linux x86_64.",
+          "The sandbox code targets arm64. It has never been run.",
           "The release build has never been run.",
         ],
         [

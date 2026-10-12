@@ -16,7 +16,7 @@ With no file at all, Loom builds a one-entry catalogue from environment variable
 
 **The reader is strict.** An unknown key, an unknown table, a value of the wrong type, or a model name that no entry defines is an error. The error names the file, the table and the key, and the daemon or session does not start. A typo is an error and not a setting that quietly does nothing.
 
-**There is no live reload.** A session reads the file when it is created, opened or resumed, and keeps what it read. To apply an edit, stop the session and open it again. The `[daemon]` and `[peers]` tables are read once when the daemon starts, so they need a daemon restart.
+**There is no live reload.** A session reads the file when it is created, opened or resumed, and keeps what it read. To apply an edit, stop the session and open it again. Seven tables are read once when the daemon starts, so they need a daemon restart: `[daemon]`, `[peers]`, `[distribution]`, `[executors.<name>]`, `[pools.<name>]`, `[workspaces.<name>]` and `[orchestrators.<name>]`.
 
 **Secrets stay out of the file.** A model entry names an environment variable with `api_key_env`, and the daemon reads that variable when it dispatches a request. A missing key does not stop the daemon. The request fails with an error that the model and the terminal can read.
 
@@ -96,7 +96,7 @@ These tables decide what a session may reach. The defaults suit development on y
 
 For lockdown, the command-line flags `--read-scope workspace` and `--network off` override the file.
 
-Two more tables are written by hand and are an operator's alone: `[[rule]]`, which injects a paragraph of instruction when a literal phrase appears in the model's own text, and `[[schedule]]`, which delivers a prompt to a strand on a clock. The model cannot edit or list either one.
+Two more tables are written by hand and are an operator's alone: `[[rule]]`, which injects a paragraph of instruction when a literal phrase appears in the model's own text, and `[[schedule]]`, which delivers a prompt to a strand on a clock. A model cannot edit, list or cancel a `[[schedule]]`.
 
 ## Next
 

@@ -95,7 +95,7 @@ loom claim --addr wss://loom.example.com/v2/control
 
 Invitees without `loom` installed can redeem a claim in a browser at `/ui/claim` on the daemon. After a claim is redeemed, compare the credential's fingerprint with the invitee over a second channel before you rely on the new member. `loom access list` and `loom access show <name>` show who holds access.
 
-A browser on another machine reaches the daemon through a tunnel such as `ssh -L`. The daemon never listens on anything but loopback.
+A browser on another machine reaches the daemon through a tunnel such as `ssh -L`. The daemon's HTTP and WebSocket listener binds only to loopback. A distributed executor also listens for TLS Erlang distribution on its own port.
 
 ## Read more
 

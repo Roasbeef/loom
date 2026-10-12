@@ -45,7 +45,7 @@ loom distribution show out              # print the deployment, with no secrets
 loom distribution install box.loombundle    # on each machine, install its bundle
 ```
 
-A plan lists each node, its role and its Erlang node name (`name@host`, with a dot in the host). An executor also lists its workspaces, each a short name and an absolute path on that machine. `provision` writes one bundle per node. A bundle holds the node's private key and the shared cookie, so copy each to its machine over a channel you trust. `install` puts the certificates in place and merges the role tables into `loom.toml`.
+`install` prints the command that starts the daemon with `LOOM_DISTRIBUTION_OPTFILE` set, and a plain `loomd` does not start distribution. The orchestrator also needs `[models]` and `[roles]` as for any session. A plan lists each node, its role and its Erlang node name (`name@host`, with a dot in the host). An executor also lists its workspaces, each a short name and an absolute path on that machine. `provision` writes one bundle per node. A bundle holds the node's private key and the shared cookie, so copy each to its machine over a channel you trust. `install` puts the certificates in place and merges the role tables into `loom.toml`.
 
 Then create a remote session from the orchestrator:
 
@@ -60,6 +60,8 @@ A remote session shows its workspace as `box:proj`. With more than one executor,
 A pool is a list of executors that the orchestrator tries in order. An executor can declare its platform, its enforcement level and its toolchains, and a pool can require them. The declarations are the operator's claims, and the balance is order, not load.
 
 A deployment can also run two orchestrators, each with its own catalogue. A session belongs to the orchestrator that created it. To find a session that another orchestrator owns, the daemon asks each configured peer at once, under a two-second deadline, and answers `not_owner` with the owner's name when a peer holds it. Nothing follows the redirect for you: the terminal prints the launch line for the owning orchestrator. Peer mail between sessions on different orchestrators goes through a durable outbox on the sender, which retries every five seconds for up to an hour.
+
+The setup guide marks what has been run by hand: provisioning and sessions on one executor have been run on real hosts, and the shipped tests cover pools and `loom sessions move` over the control protocol, but those two commands have not been run by hand on real hosts.
 
 ## One tool call, end to end
 
@@ -100,9 +102,9 @@ Some of the cases that the architecture page lists, in the words of what you see
 
 | Failure | What the system does |
 |---|---|
-| The orchestrator crashes during a call | The call keeps running on the executor. On reopen the orchestrator attaches at the same incarnation with a new token, and the model receives the stored outcome. The tool ran once. |
+| The orchestrator crashes during a call | The call keeps running on the executor. On reopen the orchestrator attaches at the same incarnation with a new token, and after the dead daemon's writer lease lapses (up to 60 seconds) the model receives the stored outcome. The tool ran once. |
 | The network drops during a call | The orchestrator reconnects and re-sends the same `Run`. The call completes once. |
-| The executor restarts | Every in-flight call becomes unknown, and the model is told the call may have run. A session that stays open fails new calls until it is closed and reopened, and the reopen needs the operator to release the old scope with the `executor release` command on the stopped executor. |
+| The executor restarts | Every in-flight call becomes unknown, and the model is told the call may have run. A session that stays open fails new calls until it is closed and reopened, and the reopen needs the operator to release the old scope with `loomd executor release SESSION` on the stopped executor. |
 | The source crashes during a move | The `moving` row survives. The restarted daemon resumes the mover, which asks the receiver how far the move got. The shipped test halts the source after each of the six steps. |
 | The receiver is unreachable during a move | The mover stalls and retries every five seconds. It never abandons on silence. |
 | An executor is full | The attach is refused before anything is built. A first open in a pool moves on to the next executor. |

@@ -101,10 +101,11 @@ fn uses(path: String) -> Result(Int, fs.FsError) {
   list.length(string.split(text, \"parse_config\")) - 1
 }"
 
-/// The layers the helper reports for a command that may not use the network.
-/// The names are the ones in `docs/architecture/executor.md`.
+/// The layers the helper reports under the default posture, which allows the
+/// network, so there is no `seccomp-net` entry. The names are the ones in
+/// `docs/architecture/executor.md`.
 const layers =
-  "enforced: bwrap, mounts, landlock, no-new-privs, seccomp-net, rlimit-cpu, rlimit-fsize"
+  "enforced: bwrap, mounts, landlock, no-new-privs, cgroup-v2, rlimit-cpu, rlimit-fsize"
 
 /// The script.
 pub fn steps() -> List(Step) {
@@ -113,7 +114,7 @@ pub fn steps() -> List(Step) {
       chip: "Ask",
       title: "You send a prompt",
       body: fn(_) {
-        "The prompt is committed to the session's SQLite file as entries in the conversation tree. In this example the session is distributed: its runtime is on an orchestrator named `alpha`, and its checkout and its tools are on an executor named `box`."
+        "The prompt is committed to the session's SQLite file as entries in the conversation tree. In this example the session is distributed: its runtime is on an orchestrator named `alpha`, and its checkout and its workspace tools are on an executor named `box`."
       },
       lines: fn(_) {
         [
@@ -195,7 +196,7 @@ pub fn steps() -> List(Step) {
       body: fn(decision) {
         case decision {
           None ->
-            "`make test` writes a cache outside the workspace. The broker refused the call before it spent budget or started a process, and the refusal became a stored question. The dialog selects nothing when it opens, and your answer applies to this exact action."
+            "The model's `make test` call declares that it needs write access to a cache outside the workspace. The broker refused it before it spent budget or started a process, and the refusal became a stored question. The dialog selects nothing when it opens, and your answer applies to this exact action."
           Some(AllowOnce) ->
             "You chose allow once. That approval authorizes one run of this one call."
           Some(AllowSession) ->
@@ -213,7 +214,10 @@ pub fn steps() -> List(Step) {
         }
         [
           AgentLine("Now the tests."),
-          ToolLine("bash", "make test"),
+          ToolLine(
+            "bash",
+            "make test, permissions: writable_roots /home/dev/.cache/fixtures",
+          ),
           WarnLine(
             "Refused by policy: wants write access to /home/dev/.cache/fixtures",
             500,
@@ -238,7 +242,7 @@ pub fn steps() -> List(Step) {
           Some(AllowSession) ->
             "The approval was spent once and the call was cleared again under the wider policy. Because you chose the session, the next call that wants the same access finds the stored grant and does not ask. A call that is already running keeps the authority it started with."
           _ ->
-            "The approval was spent once, and the call was cleared again under the wider policy. The helper, `loom-exec`, restricted itself with bubblewrap mounts, Landlock, a seccomp filter and limits, and only then ran the command. The next call that wants the same access asks again."
+            "The approval was spent once, and the call was cleared again under the wider policy. The helper, `loom-exec`, restricted itself with bubblewrap mounts, Landlock and limits, and only then ran the command. With the network off it would also have installed a seccomp filter. The next call that wants the same access asks again."
         }
       },
       lines: fn(decision) {

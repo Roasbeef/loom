@@ -12,12 +12,12 @@ Open [the latest release](https://github.com/Roasbeef/loom/releases/latest) and 
 | `loom-{{version}}-<platform>.tar.gz` | The terminal client with its own BEAM runtime. This is the one to download if you have no Erlang. |
 | `loom-slim-{{version}}-<platform>.tar.gz` | The terminal client without a runtime. It uses the Erlang/OTP 29 on your `PATH`, which is the shape a package manager wants. |
 | `manifest-<platform>.json` | The commit-bound manifest. It lists the three archives with their exact sizes and SHA-256 values. `loom update` verifies it. |
-| `SHA256SUMS` | One checksum line for every file in the release. |
+| `SHA256SUMS` | One checksum line for every other file in the release. |
 | `reproduction.json` | The record of the byte-for-byte comparison between the two independent builds of each platform. |
 
 Most people want the server and the self-contained client. The server and the client are separate downloads because they belong in different places: the client may run on a different machine from the server.
 
-The release may also carry `manifest-<platform>.json.asc`, an armored OpenPGP signature of the manifest. No production signing keys are bundled, and unsigned manifests are allowed, so the HTTPS source is what vouches for an unsigned release.
+The release workflow does not sign anything. If the maintainers sign a manifest, they publish `manifest-<platform>.json.asc`, an armored OpenPGP signature of it. No production signing keys are bundled and unsigned manifests are allowed, so the HTTPS source is what vouches for an unsigned release.
 
 ## Verify the download
 
@@ -95,7 +95,7 @@ loom update --install-only        # Install, and leave the daemon restart to you
 
 Every archive must match its manifest's exact size and SHA-256. With `--keyring FILE --require-signature`, a signed manifest must also verify against your local keyring. Selecting the latest release refuses a known downgrade. An explicit tag is a deliberate choice and can move backwards.
 
-A client that you unpacked by hand is unmanaged, so give it a prefix: `loom update --prefix DIR`. After that, `loom update` installs fresh trees under the prefix and switches the `server` and `client` links atomically, the same way `make install` does.
+A client that you unpacked by hand is unmanaged, so give it a prefix: `loom update --prefix DIR`. That makes `DIR` a managed install with its own `bin`, `lib/loom/server` and `lib/loom/client`, and the update restarts the daemon from `DIR/bin/loomd`. The trees you unpacked by hand are left alone, so put `DIR/bin` first on your `PATH` afterwards.
 
 The updater waits up to 90 seconds for the old daemon to retire, then starts the new one and checks its commit. It never force-kills the old daemon. A daemon serves several workspaces, so coordinate the restart with anyone else who uses it. The repository's `docs/updating.md` covers rollback and cleanup.
 

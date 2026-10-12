@@ -49,7 +49,7 @@ pub fn view(model: Model) -> Element(Msg) {
       ]),
       html.p([], [
         element.text(
-          "This is a recording of the terminal client, played from a script. Nothing in it runs, and the project, the file names and the counts are examples. Press Play or step through it. When the approval dialog appears, playback stops until you answer, and your answer changes the steps after it.",
+          "This is a recording of the terminal client, played from a script. Nothing in it runs, and the project, the file names and the counts are examples. Press Play or step through it. When the approval dialog appears, playback stops until you answer, and your answer changes the steps after it. The dialog's wording is simplified.",
         ),
       ]),
     ]),

@@ -1,8 +1,7 @@
 //// Figure: moving a session between orchestrators with `sessions.move`.
 ////
 //// Source: the section "Moving a session between orchestrators" of
-//// `docs/architecture/distributed.md`, which is on the distributed-runtime
-//// branches (issue #697, PR #923) and not yet on `main`. The six steps, the
+//// `docs/architecture/distributed.md`, which is on `main` (issue #697, PR #923). The six steps, the
 //// row names (`resident`, `moving(op, to)`, `moved(to)`, `imported(op, from)`)
 //// and the three rules are that document's.
 ////
