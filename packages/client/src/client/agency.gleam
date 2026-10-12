@@ -2434,6 +2434,8 @@ fn describe_create(error: api.CreateStrandError) -> String {
     api.SeedFailed(reason:) -> reason
     api.StartFailed(reason:) -> reason
     api.BriefRejected(error:) -> describe_api(error)
+    api.InvalidStrandName(name:) ->
+      "the strand name " <> name <> " is reserved for a parent reference"
   }
 }
 

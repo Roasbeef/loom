@@ -422,6 +422,66 @@ pub fn put_fact_refuses_the_summary_prefix_test() {
   process.kill(rt.tree.supervisor)
 }
 
+// A delegate session's records are closed to the model's own door.
+//
+// `delegate/ended/{operation}` says a run of a remote parent has ended, and
+// spawn admission refuses every later spawn for that run (protocol-change/084).
+// A model that could write one would end a run it does not own, and one that
+// could remove one would let a spawn create a child nobody will reap.
+pub fn put_fact_refuses_the_delegate_prefix_test() {
+  let rt = fact_runtime()
+  assert api.reserved_fact_key("delegate/ended/op-1")
+  assert api.reserved_fact_key(api.delegate_fact_prefix)
+  assert !api.reserved_fact_key("agent/main/delegate")
+
+  let assert Error(api.ReservedFactKey(key: "delegate/ended/op-1")) =
+    api.put_fact(rt, "delegate/ended/op-1", json.Null)
+    as "a delegate cell is not the model's to write"
+  let assert Ok(Nil) =
+    api.put_reserved_fact(rt, "delegate/ended/op-1", json.Null)
+    as "the harness door writes the same key"
+  let assert Ok(Some(json.Null)) = api.fact(rt, "delegate/ended/op-1")
+    as "the harness door reads it back"
+  let assert Ok(Nil) = api.delete_reserved_fact(rt, "delegate/ended/op-1")
+    as "and the harness door can remove it"
+  process.kill(rt.tree.supervisor)
+}
+
+// A strand name beginning with `^` is the reference to a parent strand on
+// another orchestrator, never a strand of this session. Both creation doors
+// refuse it, the one that accepts a brief and the one that does not, and
+// neither seeds a register for it.
+pub fn a_strand_name_cannot_be_a_parent_reference_test() {
+  let rt = answering_runtime()
+  let assert Error(api.InvalidStrandName(name: "^main")) =
+    api.create_idle_strand(
+      rt,
+      named: "^main",
+      configuration: harness.configuration(),
+      at: None,
+    )
+  let assert Error(api.InvalidStrandName(name: "^")) =
+    api.create_strand(
+      rt,
+      named: "^",
+      configuration: harness.configuration(),
+      at: None,
+      brief: [fake.user("hello")],
+    )
+  let assert Ok(strands) = api.strands(rt)
+  assert strands == ["main"]
+
+  // The prefix is the whole rule: a caret anywhere else is an ordinary name.
+  let assert Ok(Nil) =
+    api.create_idle_strand(
+      rt,
+      named: "sub:a^b",
+      configuration: harness.configuration(),
+      at: None,
+    )
+  process.kill(rt.tree.supervisor)
+}
+
 // The goal loop's one cell is closed to the model's own door.
 //
 // `goal/state` is the session's persistent objective with its status
