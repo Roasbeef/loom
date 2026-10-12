@@ -74,6 +74,10 @@ pub type CallSite {
 /// `detached` removes parent run-end custody. `reaped` is a legacy original-run
 /// marker. New cancellation decisions live in `child_run.Run`, keyed by the
 /// exact operation, so a stopped run cannot mark every continuation stopped.
+/// `orchestrator` names the other orchestrator a remote child runs on
+/// (protocol-change/084) and is `None` for a strand of this session. A cell with
+/// one records an edge to a child that has no strand here, so nothing that reads
+/// a local strand's state may be asked about it.
 pub type Lineage {
   Lineage(
     strand: String,
@@ -87,6 +91,7 @@ pub type Lineage {
     deadline: Option(Int),
     detached: Bool,
     reaped: Bool,
+    orchestrator: Option(String),
   )
 }
 
@@ -136,7 +141,20 @@ pub fn strand_of_key(key: String) -> Result(String, Nil) {
 /// ```
 ///
 pub fn encode(cell: Lineage) -> JsonValue {
-  json.Object([
+  json.Object(list.append(base_fields(cell), orchestrator_field(cell)))
+}
+
+// A local cell is written exactly as it was before the field existed, so a
+// session that holds no remote child keeps the bytes it always had.
+fn orchestrator_field(cell: Lineage) -> List(#(String, JsonValue)) {
+  case cell.orchestrator {
+    None -> []
+    Some(name) -> [#("orchestrator", json.String(name))]
+  }
+}
+
+fn base_fields(cell: Lineage) -> List(#(String, JsonValue)) {
+  [
     #("strand", json.String(cell.strand)),
     #("parent", json.String(cell.parent)),
     #("depth", json.Int(cell.depth)),
@@ -163,7 +181,7 @@ pub fn encode(cell: Lineage) -> JsonValue {
     }),
     #("detached", json.Bool(cell.detached)),
     #("reaped", json.Bool(cell.reaped)),
-  ])
+  ]
 }
 
 /// Decodes a stored lineage payload. Total: anything malformed is a
@@ -192,6 +210,7 @@ pub fn decode(payload: JsonValue) -> Result(Lineage, CorruptionReport) {
       use deadline <- result.try(decode_deadline(fields, where))
       use detached <- result.try(require_bool(fields, "detached", where))
       use reaped <- result.try(require_bool(fields, "reaped", where))
+      use orchestrator <- result.try(decode_orchestrator(fields, where))
       Ok(Lineage(
         strand:,
         parent:,
@@ -203,6 +222,7 @@ pub fn decode(payload: JsonValue) -> Result(Lineage, CorruptionReport) {
         deadline:,
         detached:,
         reaped:,
+        orchestrator:,
       ))
     }
     other ->
@@ -210,6 +230,27 @@ pub fn decode(payload: JsonValue) -> Result(Lineage, CorruptionReport) {
         at: where,
         on: "payload",
         expected: "a lineage object",
+        context: json.to_string(other),
+      ))
+  }
+}
+
+// A cell written before remote children existed has no orchestrator and is a
+// strand of this session. A present field must be a string: guessing "local" for
+// a malformed one would make a remote child's cell read as a strand that can be
+// asked about its state.
+fn decode_orchestrator(
+  fields: List(#(String, JsonValue)),
+  where: String,
+) -> Result(Option(String), CorruptionReport) {
+  case list.key_find(fields, "orchestrator") {
+    Error(Nil) -> Ok(None)
+    Ok(json.String(name)) -> Ok(Some(name))
+    Ok(other) ->
+      Error(corruption.report(
+        at: where,
+        on: "orchestrator",
+        expected: "absent or the name of an orchestrator",
         context: json.to_string(other),
       ))
   }

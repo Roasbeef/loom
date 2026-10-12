@@ -1062,6 +1062,7 @@ fn reconcile(
       deadline: deadline_of(config, now, request.within_ms),
       detached: request.detach,
       reaped: False,
+      orchestrator: None,
     )
 
   // Before the lineage cell, not after: the replay path keys on the

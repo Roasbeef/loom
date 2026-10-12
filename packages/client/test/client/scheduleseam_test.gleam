@@ -188,6 +188,7 @@ fn plant_child(
         deadline: None,
         detached: False,
         reaped: False,
+        orchestrator: None,
       )),
     )
     as "the ledger must accept a cell written by the harness"
