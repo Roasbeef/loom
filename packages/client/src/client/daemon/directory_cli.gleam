@@ -26,7 +26,7 @@
 //// daemon would be using the same node name and the same data directory.
 
 import client/daemon/main as daemon
-import client/directory/roster
+import client/directory/seats
 import client/directory/settings
 import client/directory/store
 import client/distribution
@@ -260,8 +260,8 @@ fn start_ledgered(
     |> result.replace_error("the ledger process did not answer"),
   )
   let local = distribution.local_node(dist)
-  let places = roster.places(status.ledger)
-  use Nil <- result.map(case roster.seat_of(places, local) {
+  let places = seats.places(status.ledger)
+  use Nil <- result.map(case seats.seat_of(places, local) {
     Ok(store.Voter) -> Ok(Nil)
     Ok(store.Learner) ->
       Error(

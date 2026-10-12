@@ -23,7 +23,7 @@
 //// publish and prove that the node-up check alone ends the connection.
 
 import client/directory/member
-import client/directory/roster
+import client/directory/seats
 import client/directory/store
 import client/distribution
 import client/distribution_plan.{type Role}
@@ -465,7 +465,7 @@ pub fn directory_member(
     directory:,
     members: member.Followed(read: fn() {
       ledger_service.status(service, 1000)
-      |> result.map(fn(status) { roster.roster(status.ledger) })
+      |> result.map(fn(status) { seats.read(status.ledger) })
       |> result.replace_error(Nil)
     }),
     local: node.local,

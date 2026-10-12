@@ -45,7 +45,7 @@ import client/directory/deletion
 import client/directory/member
 import client/directory/migrate
 import client/directory/ownership
-import client/directory/roster
+import client/directory/seats
 import client/directory/settings as directory_settings
 import client/directory/store
 import client/distribution
@@ -534,7 +534,7 @@ pub fn ledger_directory(
             found.members,
           ))
           let voters =
-            list.count(roster.places(status.ledger), fn(place) {
+            list.count(seats.places(status.ledger), fn(place) {
               place.seat == store.Voter
             })
           case
@@ -729,10 +729,6 @@ pub fn reference_rows(
   ])
 }
 
-// Each served checkout has to be a directory now, so an operator who mistyped
-// a root learns it at startup and not from the first session that attaches.
-// The plane factory checks again at every attach, because a directory can go
-// away in between.
 // The handle the `ledger.*` commands use: the process and this node's names. The
 // node is distributed by now, so its own name is the VM's.
 fn ledger_handle(
@@ -757,6 +753,10 @@ fn ledger_handle(
   }
 }
 
+// Each served checkout has to be a directory now, so an operator who mistyped
+// a root learns it at startup and not from the first session that attaches.
+// The plane factory checks again at every attach, because a directory can go
+// away in between.
 fn existing_roots(served: List(workspaces.Workspace)) -> Result(Nil, String) {
   list.try_each(served, fn(workspace) {
     bootstrap.canonical_directory(workspace.root)
@@ -873,7 +873,7 @@ fn members_of(
     Some(handle) ->
       member.Followed(read: fn() {
         ledger_service.status(handle.service, 1000)
-        |> result.map(fn(status) { roster.roster(status.ledger) })
+        |> result.map(fn(status) { seats.read(status.ledger) })
         |> result.replace_error(Nil)
       })
   }

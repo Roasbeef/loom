@@ -53,7 +53,7 @@
 //// is reversible and deletes no session, which is why a check that cannot be
 //// completed asks for a decision and does not decide.
 
-import client/directory/roster
+import client/directory/seats
 import client/directory/settings
 import client/directory/store
 import client/distribution
@@ -405,7 +405,7 @@ pub fn check_voters(before: Ledger, after: Ledger) -> Result(Nil, String) {
 }
 
 fn voters(ledger: Ledger) -> Int {
-  list.count(roster.places(ledger), fn(place) { place.seat == store.Voter })
+  list.count(seats.places(ledger), fn(place) { place.seat == store.Voter })
 }
 
 // --- what a revoke would break -----------------------------------------------

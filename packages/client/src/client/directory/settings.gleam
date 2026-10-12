@@ -21,7 +21,7 @@
 //// move never runs between a daemon that decides by the record and one that
 //// decides by its catalogue rows.
 
-import client/directory/roster
+import client/directory/seats
 import client/distribution
 import client/ledger_reference
 import client/membership_ledger.{type Ledger}
@@ -105,8 +105,8 @@ pub fn parse(text: String) -> Result(Option(Settings), String) {
 /// assert settings.from_ledger(ledger, "loom@laptop.example") == None
 /// ```
 pub fn from_ledger(ledger: Ledger, local: String) -> Option(Settings) {
-  let places = roster.places(ledger)
-  case roster.seat_of(places, local) {
+  let places = seats.places(ledger)
+  case seats.seat_of(places, local) {
     Ok(_) -> Some(Settings(members: list.map(places, fn(place) { place.node })))
     Error(Nil) -> None
   }

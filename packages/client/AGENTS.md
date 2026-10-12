@@ -8446,10 +8446,11 @@ cluster follows them. `docs/architecture/directory.md` ("Following the membershi
 ledger") is the account and the design note's "Phase 3: what was decided in the
 build" the rulings.
 
-- `directory/roster` is the pure part. `places(ledger)` reads the active members
+- `directory/seats` is the pure part (not `client/roster`, which is phase 2's rows read
+  when used). `places(ledger)` reads the active members
   whose `directory` standing is `voter` or `learner` as `Place(node, seat)`, ordered
-  by node, and `roster(ledger)` adds `named`, whether any entry has named a node.
-  `plan(roster, ra, local, up)` returns a `Verdict`: `NotLeader` (this member is not
+  by node, and `read(ledger)` gives `Seats`, which add `named`, whether any entry has named a node.
+  `plan(seats, ra, local, up)` returns a `Verdict`: `NotLeader` (this member is not
   the Ra leader), `NotSeated` (it leads and the ledger gives it no seat),
   `Remove(node, Why)` (`Unseated` or `OtherSeat`), `Held(node, Why)` (a voter whose
   removal could not commit, because a majority of the voters that remain is not in
@@ -8466,10 +8467,10 @@ build" the rulings.
   this node's own server; `client_khepri_ffi:remove_member/2` looks the name up as an
   existing atom and makes none.
 - `member.Members` is `Listed(nodes)` (every node a voter, no reconciliation) or
-  `Followed(read)` (the ledger's roster, read each tick; an unreadable ledger seats
-  no one, and a roster that seats no one removes no one because `named` is false).
-  A tick keeps links and tries the join for the roster's places, and with `Followed`
-  and a joined store runs `roster.plan` in a task and applies a `Remove` through
+  `Followed(read)` (the ledger's `Seats`, read each tick; an unreadable ledger seats
+  no one, and seats that seat no one removes no one because `named` is false).
+  A tick keeps links and tries the join for the seats' places, and with `Followed`
+  and a joined store runs `seats.plan` in a task and applies a `Remove` through
   `store.remove_member`. The decision is logged when it changes:
   `daemon.directory_member_removed`, `daemon.directory_remove_held`,
   `daemon.directory_remove_failed`, `daemon.directory_reconciled`.
@@ -8501,7 +8502,7 @@ build" the rulings.
   not named is never removed; a learner that has just joined learns the leader from
   the leader's next append (the fixture writes before it reads the learner's view);
   a revoked-then-re-enrolled directory member must remove `<state>/directory/joined`.
-- Tests: `directory/roster_test` (the plan as values), `ledger_spike_non_voter_test`
+- Tests: `directory/seats_test` (the plan as values), `ledger_spike_non_voter_test`
   (the production learner join and `remove_member` over two scenarios in
   `client_ledger_spike_ra_fixture_ffi`), `ledger_operator_directory_test` and the
   directory cases of `ledger_cli_test` (the voter bounds), `settings_test`,

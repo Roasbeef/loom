@@ -1208,7 +1208,7 @@ build changed:
    ledger process would drive it. The member actor already ticks every two seconds
    for the links and the join, and the observers are installed before the actor
    exists, so a push would need a mutable cell between them. The actor reads the
-   ledger process on each tick and the leader runs `roster.plan`. A leader change
+   ledger process on each tick and the leader runs `seats.plan`. A leader change
    needs no event: the new leader makes the same comparison at its next tick. The
    cost is up to two seconds between an entry and the removal.
 3. **What the leader removes and what it leaves.** A Ra member goes when the ledger

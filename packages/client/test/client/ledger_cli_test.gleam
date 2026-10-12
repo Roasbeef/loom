@@ -10,7 +10,7 @@
 //// is `ledger_operator_live_test`.
 
 import client/daemon/ledger_cli
-import client/directory/roster
+import client/directory/seats
 import client/directory/store
 import client/distribution_bundle
 import client/distribution_install.{Options}
@@ -750,9 +750,9 @@ erlang_node = \"loom@devbox.example\"
 repo = \"/home/me/src/loom\"
 "
 
-fn seats(handle: Handle) -> List(roster.Place) {
+fn directory_seats(handle: Handle) -> List(seats.Place) {
   let assert Ok(status) = ledger_service.status(handle.service, 5000)
-  roster.places(status.ledger)
+  seats.places(status.ledger)
 }
 
 pub fn an_enrollment_seats_a_learner_and_a_revoke_keeps_three_voters_test() {
@@ -765,12 +765,12 @@ pub fn an_enrollment_seats_a_learner_and_a_revoke_keeps_three_voters_test() {
       fn(_) { deployment.daemon_over(handle) },
     )
   assert string.contains(report, "Enrolled laptop2")
-  assert seats(handle)
+  assert directory_seats(handle)
     == [
-      roster.Place("loom@devbox.example", store.Voter),
-      roster.Place("loom@hub.example", store.Voter),
-      roster.Place("loom@hub2.example", store.Voter),
-      roster.Place("loom@laptop2.example.net", store.Learner),
+      seats.Place("loom@devbox.example", store.Voter),
+      seats.Place("loom@hub.example", store.Voter),
+      seats.Place("loom@hub2.example", store.Voter),
+      seats.Place("loom@laptop2.example.net", store.Learner),
     ]
 
   // The directory has three voters, so none of them can be revoked without
@@ -806,10 +806,10 @@ pub fn an_enrollment_seats_a_learner_and_a_revoke_keeps_three_voters_test() {
 pub fn an_enrollment_with_no_standing_stays_outside_the_directory_test() {
   let deployed = deployment.provision("cli-voters", directory_plan)
   let handle = hub(deployed)
-  assert list.length(seats(handle)) == 3
+  assert list.length(directory_seats(handle)) == 3
   let assert Ok(_) =
     ledger_cli.run_with("enroll", enroll_laptop(deployed, []), fn(_) {
       deployment.daemon_over(handle)
     })
-  assert list.length(seats(handle)) == 3
+  assert list.length(directory_seats(handle)) == 3
 }

@@ -312,7 +312,7 @@ next append, and until then its own view of the cluster (`directory.status`'s
 `ra_members`) answers that there is no quorum. Its local reads do not.
 
 **The leader removes.** On each tick the member that Ra names leader compares the
-ledger's seats with Ra's membership (`directory/roster.plan`) and issues at most
+ledger's seats with Ra's membership (`directory/seats.plan`) and issues at most
 one `ra:remove_member`:
 
 | Ra holds | The ledger says | The leader |

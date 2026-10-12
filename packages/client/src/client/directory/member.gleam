@@ -42,7 +42,7 @@
 //// **It reconciles, on the leader.** The ledger owns the list of members and
 //// Ra follows it. A member adds itself, as above, because only it can start
 //// its server. Removal is the leader's: on each tick the member that Ra names
-//// leader asks `roster.plan` for the next change and applies it through
+//// leader asks `seats.plan` for the next change and applies it through
 //// `store.remove_member`, one at a time and only while the removal can commit.
 //// A member that is not the leader does nothing. A leader change needs no
 //// event: the next tick on the new leader compares the same ledger with the
@@ -57,7 +57,7 @@
 //// writes leaves the learner's own view of the cluster unanswered until one
 //// arrives. Its local reads are not affected.
 
-import client/directory/roster.{type Place, type Roster, type Verdict}
+import client/directory/seats.{type Place, type Seats, type Verdict}
 import client/directory/store
 import client/distribution.{type Membership, type Peer}
 import gleam/dict.{type Dict}
@@ -93,10 +93,10 @@ pub type Members {
   /// Every member is a voter, and the list never changes while the daemon runs.
   Listed(nodes: List(String))
 
-  /// The membership ledger, read again on every tick. `read` answers the roster
+  /// The membership ledger, read again on every tick. `read` answers the seats
   /// of the ledger as it stands now, or `Error` when the ledger process does
   /// not answer, in which case the tick acts on nothing.
-  Followed(read: fn() -> Result(Roster, Nil))
+  Followed(read: fn() -> Result(Seats, Nil))
 }
 
 /// What a member needs to start.
@@ -241,23 +241,23 @@ pub fn start(config: Config) -> Result(Member, String) {
   }
 }
 
-// The roster as of now. A configured list seats every node as a voter and has
+// The seats as of now. A configured list seats every node as a voter and has
 // no ledger to ask whether a node was ever named, so it names every node. A
 // ledger that does not answer seats no one.
-fn roster_of(members: Members) -> Roster {
+fn seats_of(members: Members) -> Seats {
   case members {
     Listed(nodes:) ->
-      roster.Roster(
-        places: list.map(nodes, fn(node) { roster.Place(node, store.Voter) }),
+      seats.Seats(
+        places: list.map(nodes, fn(node) { seats.Place(node, store.Voter) }),
         named: fn(_) { True },
       )
     Followed(read:) ->
-      result.unwrap(read(), roster.Roster(places: [], named: fn(_) { False }))
+      result.unwrap(read(), seats.Seats(places: [], named: fn(_) { False }))
   }
 }
 
 fn nodes_of(members: Members) -> List(String) {
-  list.map(roster_of(members).places, fn(place) { place.node })
+  list.map(seats_of(members).places, fn(place) { place.node })
 }
 
 // The message for a joined store that did not start. A store Ra has no record
@@ -313,11 +313,11 @@ pub fn status(member: Member) -> Status {
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   case message {
     Tick -> {
-      let seats = roster_of(state.config.members)
+      let wanted = seats_of(state.config.members)
       state
-      |> keep_links(seats.places)
-      |> try_join(seats.places)
-      |> reconcile(seats)
+      |> keep_links(wanted.places)
+      |> try_join(wanted.places)
+      |> reconcile(wanted)
       |> actor.continue
     }
 
@@ -381,7 +381,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   }
 }
 
-// The peers a roster seats other than this node, for the nodes the pin table
+// The peers the seats name other than this node, for the nodes the pin table
 // lists. A node it does not list yet is skipped: the ledger entry that seats it
 // has not reached this node, and the next tick asks again.
 fn peers_of(state: State, places: List(Place)) -> List(Peer) {
@@ -432,13 +432,9 @@ fn keep_links(state: State, places: List(Place)) -> State {
 }
 
 // Starts a join attempt when the store has not joined, none is running and the
-// roster gives this node a seat. The seat decides what the join makes of it.
+// ledger gives this node a seat. The seat decides what the join makes of it.
 fn try_join(state: State, places: List(Place)) -> State {
-  case
-    state.joining,
-    state.attempt,
-    roster.seat_of(places, state.config.local)
-  {
+  case state.joining, state.attempt, seats.seat_of(places, state.config.local) {
     Joined, _, _ | NotJoined, Running, _ | NotJoined, Idle, Error(Nil) -> state
     NotJoined, Idle, Ok(seat) -> {
       let inbox = state.inbox
@@ -460,7 +456,7 @@ fn try_join(state: State, places: List(Place)) -> State {
   }
 }
 
-// Joins through the first member, in roster order, whose store answers. A
+// Joins through the first member, in seat order, whose store answers. A
 // member that cannot be reached, or whose store is not running, is skipped;
 // a join that starts and fails is reported, because the next tick tries again
 // from the start of the list.
@@ -489,10 +485,10 @@ fn join_any(
   }
 }
 
-// Starts a reconciliation when the roster comes from a ledger, the store has
+// Starts a reconciliation when the seats come from a ledger, the store has
 // joined and none is running. It runs in a task of its own because it asks Ra
 // and may issue a removal, and either can wait on a quorum.
-fn reconcile(state: State, seats: Roster) -> State {
+fn reconcile(state: State, wanted: Seats) -> State {
   case state.config.members, state.joining, state.reconciling {
     Followed(..), Joined, Idle -> {
       let inbox = state.inbox
@@ -500,7 +496,7 @@ fn reconcile(state: State, seats: Roster) -> State {
       let _witness =
         weft.new([
           fn() {
-            let #(verdict, outcome) = reconcile_once(seats, local)
+            let #(verdict, outcome) = reconcile_once(wanted, local)
             process.send(inbox, Reconciled(verdict:, outcome:))
             Ok(Nil)
           },
@@ -513,27 +509,27 @@ fn reconcile(state: State, seats: Roster) -> State {
 }
 
 // One pass: Ra's membership as this member sees it, the plan against the
-// roster, and the removal the plan names. A member that cannot read Ra's
+// seats, and the removal the plan names. A member that cannot read Ra's
 // membership has no verdict to give and reports it as not the leader, which
 // does nothing and says nothing.
 fn reconcile_once(
-  seats: Roster,
+  wanted: Seats,
   local: String,
 ) -> #(Verdict, Result(Nil, String)) {
   case store.membership() {
-    Error(_) -> #(roster.NotLeader, Ok(Nil))
+    Error(_) -> #(seats.NotLeader, Ok(Nil))
     Ok(ra) -> {
       let up =
         list.map(node.visible(), fn(connected) {
           atom.to_string(node.name(connected))
         })
-      let verdict = roster.plan(seats, ra, local, up)
+      let verdict = seats.plan(wanted, ra, local, up)
       case verdict {
-        roster.Remove(node: gone, ..) -> #(verdict, store.remove_member(gone))
-        roster.NotLeader
-        | roster.NotSeated
-        | roster.Settled(..)
-        | roster.Held(..) -> #(verdict, Ok(Nil))
+        seats.Remove(node: gone, ..) -> #(verdict, store.remove_member(gone))
+        seats.NotLeader
+        | seats.NotSeated
+        | seats.Settled(..)
+        | seats.Held(..) -> #(verdict, Ok(Nil))
       }
     }
   }
@@ -548,8 +544,8 @@ fn report(
   outcome: Result(Nil, String),
 ) -> Nil {
   case verdict, outcome {
-    roster.NotLeader, _ | roster.NotSeated, _ -> Nil
-    roster.Settled(missing:, foreign:), _ ->
+    seats.NotLeader, _ | seats.NotSeated, _ -> Nil
+    seats.Settled(missing:, foreign:), _ ->
       case missing, foreign {
         [], [] -> Nil
         _, _ ->
@@ -558,18 +554,18 @@ fn report(
             field.text("foreign", string.join(foreign, ",")),
           ])
       }
-    roster.Remove(node: gone, why:), Ok(Nil) ->
+    seats.Remove(node: gone, why:), Ok(Nil) ->
       log.info(logger, "daemon.directory_member_removed", [
         field.text("node", gone),
         field.text("why", why_word(why)),
       ])
-    roster.Remove(node: gone, why:), Error(reason) ->
+    seats.Remove(node: gone, why:), Error(reason) ->
       log.warn(logger, "daemon.directory_remove_failed", [
         field.text("node", gone),
         field.text("why", why_word(why)),
         field.text("reason", reason),
       ])
-    roster.Held(node: gone, why:), _ ->
+    seats.Held(node: gone, why:), _ ->
       log.warn(logger, "daemon.directory_remove_held", [
         field.text("node", gone),
         field.text("why", why_word(why)),
@@ -581,9 +577,9 @@ fn report(
   }
 }
 
-fn why_word(why: roster.Why) -> String {
+fn why_word(why: seats.Why) -> String {
   case why {
-    roster.Unseated -> "unseated"
-    roster.OtherSeat -> "other_seat"
+    seats.Unseated -> "unseated"
+    seats.OtherSeat -> "other_seat"
   }
 }

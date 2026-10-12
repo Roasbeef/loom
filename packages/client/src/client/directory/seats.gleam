@@ -67,8 +67,8 @@ pub type Place {
 
 /// What the ledger says about the directory: the nodes it seats, and a way to
 /// ask whether it has ever named a node at all.
-pub type Roster {
-  Roster(
+pub type Seats {
+  Seats(
     /// The active members whose standing is `voter` or `learner`, ordered by
     /// node name.
     places: List(Place),
@@ -118,11 +118,11 @@ pub type Verdict {
 /// ## Examples
 ///
 /// ```gleam
-/// roster.roster(ledger).places
+/// seats.read(ledger).places
 /// // -> [Place("loom@a.example", Voter), Place("loom@b.example", Learner)]
 /// ```
-pub fn roster(ledger: Ledger) -> Roster {
-  Roster(places: places(ledger), named: membership_ledger.ever_named(ledger, _))
+pub fn read(ledger: Ledger) -> Seats {
+  Seats(places: places(ledger), named: membership_ledger.ever_named(ledger, _))
 }
 
 /// The seats of a ledger: its active members with a `directory` standing other
@@ -131,7 +131,7 @@ pub fn roster(ledger: Ledger) -> Roster {
 /// ## Examples
 ///
 /// ```gleam
-/// roster.places(ledger) // -> [Place("loom@a.example", Voter)]
+/// seats.places(ledger) // -> [Place("loom@a.example", Voter)]
 /// ```
 pub fn places(ledger: Ledger) -> List(Place) {
   membership_ledger.members(ledger)
@@ -150,7 +150,7 @@ pub fn places(ledger: Ledger) -> List(Place) {
 /// ## Examples
 ///
 /// ```gleam
-/// assert roster.seat_of(places, "loom@a.example") == Ok(Voter)
+/// assert seats.seat_of(places, "loom@a.example") == Ok(Voter)
 /// ```
 pub fn seat_of(places: List(Place), node: String) -> Result(Seat, Nil) {
   list.find(places, fn(place) { place.node == node })
@@ -172,20 +172,20 @@ pub fn seat_of(places: List(Place), node: String) -> Result(Seat, Nil) {
 /// ## Examples
 ///
 /// ```gleam
-/// roster.plan(roster, ra, "loom@a.example", ["loom@b.example"])
+/// seats.plan(wanted, ra, "loom@a.example", ["loom@b.example"])
 /// // -> Settled(missing: [], foreign: [])
 /// ```
 pub fn plan(
-  roster: Roster,
+  wanted: Seats,
   ra: Membership,
   local: String,
   up: List(String),
 ) -> Verdict {
-  case ra.leader == Some(local), seat_of(roster.places, local) {
+  case ra.leader == Some(local), seat_of(wanted.places, local) {
     False, _ -> NotLeader
     True, Error(Nil) -> NotSeated
     True, Ok(_) -> {
-      let due = removals(roster, ra, local)
+      let due = removals(wanted, ra, local)
       let voters = voting(ra)
       let reachable = fn(node: String) {
         node == local || list.contains(up, node)
@@ -197,8 +197,8 @@ pub fn plan(
             [#(node, why, _), ..] -> Held(node, why)
             [] ->
               Settled(
-                missing: missing(roster, ra),
-                foreign: foreign(roster, ra, local),
+                missing: missing(wanted, ra),
+                foreign: foreign(wanted, ra, local),
               )
           }
       }
@@ -209,7 +209,7 @@ pub fn plan(
 // The Ra members the ledger wants gone, learners before voters. The third
 // element is whether Ra counts the member toward the majority.
 fn removals(
-  roster: Roster,
+  wanted: Seats,
   ra: Membership,
   local: String,
 ) -> List(#(String, Why, ffi_khepri.Voting)) {
@@ -219,7 +219,7 @@ fn removals(
     case node == local {
       True -> Error(Nil)
       False ->
-        case seat_of(roster.places, node), roster.named(node) {
+        case seat_of(wanted.places, node), wanted.named(node) {
           Ok(seat), _ ->
             case seat_matches(seat, voting) {
               True -> Error(Nil)
@@ -286,22 +286,22 @@ fn safe(
   }
 }
 
-fn missing(roster: Roster, ra: Membership) -> List(String) {
-  roster.places
+fn missing(wanted: Seats, ra: Membership) -> List(String) {
+  wanted.places
   |> list.filter(fn(place) {
     !result.is_ok(list.key_find(ra.members, place.node))
   })
   |> list.map(fn(place) { place.node })
 }
 
-fn foreign(roster: Roster, ra: Membership, local: String) -> List(String) {
+fn foreign(wanted: Seats, ra: Membership, local: String) -> List(String) {
   ra.members
   |> list.filter_map(fn(held) {
     let #(node, _) = held
     case
       node != local
-      && !roster.named(node)
-      && seat_of(roster.places, node) == Error(Nil)
+      && !wanted.named(node)
+      && seat_of(wanted.places, node) == Error(Nil)
     {
       True -> Ok(node)
       False -> Error(Nil)
