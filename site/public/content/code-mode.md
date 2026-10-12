@@ -70,7 +70,7 @@ A program may import the capability modules below and a fixed, pure part of the 
 | `cap/proc` | Run a command in its own kernel sandbox. A non-zero exit is data, not an error. |
 | `cap/git` | Typed git status, diff and log. |
 | `cap/job` | Start, poll, feed and kill background jobs that outlive the program. |
-| `cap/net` | Outbound HTTP through a harness-owned proxy. Denied unless an operator approved the host. |
+| `cap/net` | Outbound HTTP. The broker refuses it for ordinary programs, and an installed extension can reach only the hosts its manifest declares. |
 | `cap/task` | Structured concurrency: `parallel_map`, `race`, `both`, `all`. |
 | `cap/actor` | Typed actors with bounded mailboxes, scoped to the program. |
 | `cap/report` | The result value, JSON conversion, and durable artifacts through `emit`. |
@@ -139,7 +139,7 @@ The trade-off is fluency. Models have seen far more JavaScript than Gleam, and e
 
 ## On an executor
 
-Work on the [distributed runtime](#/docs/distributed-runtime) separates the session's owner from the machine that holds the checkout. For code mode, the owner still vets the program. The executor compiles it beside the checkout and runs the satellite there, in the same jail with distribution disabled. Filesystem and language-server calls run against the executor's workspace, while notes, strand operations and reports keep the owner's session authority. This is in development and is not on `main` yet.
+Work on the [distributed runtime](#/docs/distributed-runtime) separates the session's owner from the machine that holds the checkout. For code mode, the executor compiles the program beside the checkout and runs the satellite there, in the same jail with distribution disabled. Filesystem, report, command, job and language-server calls are served on the executor, against its workspace. Notes, strand operations, schedules and peer calls go back to the owner and keep the owner's session authority. This is in development and is not on `main` yet.
 
 ## Read more
 

@@ -53,7 +53,7 @@ Then create a remote session from the orchestrator:
 loom --executor box --workspace proj
 ```
 
-A remote session shows its workspace as `box:proj`. With more than one executor, a pool lets the orchestrator choose: `loom --pool linux --workspace proj`. The pool tries executors in order and moves to the next only when the first could not hold the session. A session stays on the executor that it first landed on.
+A remote session shows its workspace as `box:proj`. With more than one executor, a pool lets the orchestrator choose: `loom --pool linux --workspace proj`. The pool tries executors in order and moves to the next only when the connection to the first fails or the first reports that it is full. A session stays on the executor that it first landed on.
 
 ## One tool call, end to end
 
@@ -96,7 +96,7 @@ Some of the cases that the architecture page lists, in the words of what you see
 |---|---|
 | The orchestrator crashes during a call | The call keeps running on the executor. On reopen the orchestrator attaches at the same incarnation with a new token, and the model receives the stored outcome. The tool ran once. |
 | The network drops during a call | The orchestrator reconnects and re-sends the same `Run`. The call completes once. |
-| The executor restarts | Every in-flight call becomes unknown, and the model is told the call may have run. A session that stays open fails new calls until it is closed and reopened, and the reopen needs `loomd executor release`. |
+| The executor restarts | Every in-flight call becomes unknown, and the model is told the call may have run. A session that stays open fails new calls until it is closed and reopened, and the reopen needs the operator to release the old scope with the `executor release` command on the stopped executor. |
 | The source crashes during a move | The `moving` row survives. The restarted daemon resumes the mover, which asks the receiver how far the move got. The shipped test halts the source after each of the six steps. |
 | The receiver is unreachable during a move | The mover stalls and retries every five seconds. It never abandons on silence. |
 | An executor is full | The attach is refused before anything is built. A first open in a pool moves on to the next executor. |

@@ -115,7 +115,7 @@ fn hero() -> Element(Msg) {
           ),
         ]),
         html.p([attribute.class("status")], [
-          element.text("Loom is under active development and has no binary releases yet. You build it from source on Linux or macOS."),
+          element.text("Loom is under active development. You build it from source on Linux or macOS. No prebuilt download is published yet."),
         ]),
       ]),
       html.div([attribute.class("hero-mark"), attribute("aria-hidden", "true")], [

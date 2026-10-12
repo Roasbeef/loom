@@ -94,7 +94,7 @@ pub fn footer() -> Element(Msg) {
         html.a([attribute.href(repo), attribute.target("_blank"), attribute.rel("noopener")], [
           element.text("github.com/Roasbeef/loom"),
         ]),
-        element.text(". It is under active development and has no binary releases yet."),
+        element.text(". It is under active development, and you build it from source."),
       ]),
       html.p([attribute.class("foot-small")], [
         element.text("This site is a client-side Lustre application written in Gleam. Its text describes the "),

@@ -1,6 +1,6 @@
 # Getting started
 
-Loom has no binary releases yet, so you build it from source on Linux or macOS. This page covers the build, the first run, and how to update. The commands come from the repository's `README.md` and `docs/distribution.md`.
+This page shows how to build Loom from source on Linux or macOS, which is how you get it today. This page covers the build, the first run, and how to update. The commands come from the repository's `README.md` and `docs/distribution.md`.
 
 ## What you need
 
@@ -34,7 +34,7 @@ export PATH="$HOME/.local/bin:$PATH"
 
 Every install writes fresh directories and switches links afterwards, so a running process keeps the files it started with.
 
-> **Packaging a release.** `make dist` builds the server tarball and both client tarballs for the platform you run it on: a self-contained client, and a slim client that uses the Erlang/OTP 29 on your `PATH`. A release is built for one platform. `docs/distribution.md` in the repository lists what each tarball carries.
+> **Packaging a release.** `make dist` writes `dist/` with a server tarball (`loomd-<version>-<platform>.tar.gz`), a self-contained client tarball (`loom-<version>-<platform>.tar.gz`), a slim client tarball (`loom-slim-<version>-<platform>.tar.gz`) that uses the Erlang/OTP 29 on your `PATH`, a commit-bound manifest and `SHA256SUMS`. A release is built for one platform. `docs/distribution.md` in the repository lists what each tarball carries.
 
 ## Check the sandbox
 
@@ -44,7 +44,7 @@ Loom runs commands in a kernel sandbox, and its helper can tell you which layers
 make selftest
 ```
 
-It prints `ENFORCED` or `SKIPPED` for each probe. By default the server refuses to start when a layer is missing: Linux must enforce everything, and macOS may lack only the three gaps that ADR-006 reports. `loomd --best-effort` accepts broader gaps for development machines, and `loomd --full-enforcement` demands the full contract on every platform.
+It prints `ENFORCED`, `SKIPPED` or `FAILED` for each probe. By default the server refuses to start when a layer is missing: Linux must enforce everything, and macOS may lack only the three gaps that ADR-006 reports. `loomd --best-effort` accepts broader gaps for development machines, and `loomd --full-enforcement` demands the full contract on every platform.
 
 ## Try the demo
 
@@ -84,7 +84,7 @@ loom update --check   # Look at published release metadata without installing.
 make update           # Build and activate the current checkout.
 ```
 
-`make update` runs from a clean, committed checkout. It builds and smoke-tests its release artifacts, installs them, and gracefully restarts the shared daemon. Reopen your terminals afterwards to use the new client. `loom update` without `--check` installs a published release, which needs one to exist for your platform. There is none yet.
+`make update` runs from a clean, committed checkout. It builds and smoke-tests its release artifacts, installs them, and gracefully restarts the shared daemon. Reopen your terminals afterwards to use the new client. `loom update` without `--check` installs a published release, when one exists for your platform.
 
 Coordinate a daemon restart with anyone else who uses the same daemon. The repository's `docs/updating.md` covers restarts and rollback.
 

@@ -82,7 +82,7 @@ pub fn spec() -> Spec {
         #("Copy", "made under the lease `move:<op>`, with a digest"),
       ],
       sample: None,
-      failure: Some("Every run of the mover starts from what is on disk, so a restart after this step makes the copy again."),
+      failure: Some("Every run of the mover starts from what is on disk, so a restart resumes from the step the source's row and the receiver's answer show."),
     ),
     Step(
       label: "Send",
