@@ -3,7 +3,7 @@
 Baselined October 11, 2026 against main
 `2ff7512ac` (PR #950), with measurements based on the earlier
 `4417fdb6a073865660bf029495a9ecf08bc9e315` tree and the tool-latency branch through
-`a226609f1`, including the failed-body memo described below. Work is on
+`9b1654af5`, including the JSON decoding follow-up described below. Work is on
 `perf/tool-latency` in the isolated `5086/loom` worktree and draft PR #949.
 The installed daemon has not been changed.
 
@@ -50,6 +50,14 @@ uses one memo leaf over its words and rows; its rows are drawn directly.
 The real Lustre cache fixture falls from four trim calls to zero on unchanged
 patches. Empty bodies remain empty; independent words and row changes
 invalidate the memo. The adjacent profile JSON records sanitized counters.
+
+The JSON lead now has a controlled [decoder comparison](review/json-decoding-allocation-2026-10-11.md).
+The parser dispatches empty runs before slicing and validates nonempty string
+runs directly, avoiding an intermediate Result pair and cursor update. Three
+alternating fresh-VM comparisons reduce measured heap allocation by 14.0% for
+128 transcript-shaped objects, 15.3% for escaped text and 53.0% for dense
+adjacent escapes. Full values and corruption reports match for 882 differential
+inputs. Final concatenation, output ownership and numeric parsing are unchanged.
 
 ## Rulings
 
@@ -111,6 +119,15 @@ with 198 existing warnings and zero errors. The follow-up full
 final web-only check includes the empty-body regression added during that
 full run.
 
+The JSON decoder follow-up passed the full local
+`LOOM_TEST_PARALLEL=8 make check` with exit 0, including 163 core, 3,835 client,
+1,331 TUI and 98 conformance tests, Go sandbox tests and zero house-lint errors.
+Documentation checks passed with the same 198 warnings. Astra reviewed parser
+correctness and the inline simplification; Sol 6.1 checked benchmark arithmetic
+and evidence. Both found no remaining actionable issue. The optional JavaScript
+comparison still has the same pre-existing non-finite-number corpus failure
+and 25 build warnings on both sides; both new regressions pass.
+
 Exact-head hosted/Linux gates are separate from the local results. Current status
 is on PR #949 and under `build/signoff/`; do not infer green from an earlier
 candidate or this handoff. The full `make check` runs outside the nested macOS
@@ -134,12 +151,14 @@ consult current code before treating historical notes as a current issue list.
 
 ## Next measurements
 
-JSON parsing is the next measured allocation lead: the bounded eight-process
-probe counted 146.7 MB of cumulative heap allocation in 5.119 seconds, with
-`core/json.cut` prominent. This is not retained memory or whole-node allocation.
-Use a controlled parser fixture and preserve total decoding, UTF-8 validation
-and corruption reports before changing it. The live daemon was not deployed
-or hotpatched; no live CPU or memory reduction is claimed for this candidate.
-Repeat the integrated local/TLS latency comparison on an isolated host, and
-only compare live resource profiles after an authorized deployment under a
-matched workload.
+The bounded live allocation probe counted 146.7 MB in 5.119 seconds over its
+selected functions and processes. The decoder follow-up measures only synthetic
+parser inputs; it cannot scale that live total or establish retained-memory
+savings. A 96-byte output in both builds still references the same roughly
+1 MiB input backing binary. Study actual selected-field lifetimes and a matched
+copy-policy fixture before changing string ownership.
+
+Repeat the integrated local/TLS latency comparison on an isolated host. Only
+compare live resource profiles after an authorized deployment under a matched
+workload. The installed daemon remains unchanged, and no live CPU or memory
+reduction is claimed for this candidate.
