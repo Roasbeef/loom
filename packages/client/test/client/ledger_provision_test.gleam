@@ -13,9 +13,7 @@ import client/distribution
 import client/distribution_bundle.{type Bundle}
 import client/distribution_install.{Options}
 import client/distribution_plan.{type Plan, Executor, Orchestrator, TomlPlan}
-import client/distribution_provision.{
-  type Provisioned, RefuseExisting, ReplaceExisting,
-}
+import client/distribution_provision.{type Provisioned, ReplaceExisting}
 import client/internal/ffi_os
 import client/internal/ffi_pki
 import client/membership_entry.{NotInDirectory, Voter}
@@ -458,23 +456,6 @@ pub fn a_ledger_bundle_writes_a_ledger_key_and_no_peers_test() {
     == Ok("/home/me/.loom/distribution/ledger.log")
   assert tom.get_string(table, ["node"]) == Ok("loom@laptop.example")
   assert dict.has_key(table, "peers") == False
-}
-
-pub fn install_does_not_take_a_ledger_bundle_yet_test() {
-  let base = scratch("install")
-  let made = provisioned(plan_of(plan_text))
-  let text = distribution_bundle.encode(bundle_named(made, "devbox"))
-  let options =
-    Options(
-      home: base <> "/home",
-      config: base <> "/home/.loom/loom.toml",
-      overwrite: RefuseExisting,
-    )
-  let assert Error(reason) = distribution_install.install(text, options)
-  assert string.contains(reason, "membership ledger")
-  assert string.contains(reason, "nothing was installed")
-  assert simplifile.is_directory(base <> "/home") == Ok(False)
-  discard(base)
 }
 
 // --- the plan limits ---------------------------------------------------------

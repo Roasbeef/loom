@@ -79,8 +79,7 @@ commands:
                                   change. Only `loomd distribution provision`
                                   can ask on the terminal; `loom distribution
                                   provision --ledger` needs --passphrase-file
-                                  or --drop-authority. `install` does not
-                                  accept a ledger bundle yet.
+                                  or --drop-authority.
   show OUT                        Print OUT/system.json as a table.
   install BUNDLE [--home DIR] [--config PATH] [--force]
                                   Run on the node's machine. Installs the
@@ -489,6 +488,7 @@ fn installed_text(installed: distribution_install.Installed) -> String {
         <> ")",
       ],
       steps,
+      snapshot_lines(installed.snapshot),
       [
         "",
         "Start the daemon with:",
@@ -499,6 +499,24 @@ fn installed_text(installed: distribution_install.Installed) -> String {
     ]),
     "\n",
   )
+}
+
+// A ledger bundle is a snapshot. The node trusts what it says until it meets a
+// peer that holds more, so the operator is told how old it is.
+fn snapshot_lines(
+  snapshot: Option(distribution_install.Snapshot),
+) -> List(String) {
+  case snapshot {
+    None -> []
+    Some(snapshot) -> [
+      "",
+      "This node trusts the ledger as of entry "
+        <> int.to_string(snapshot.seq)
+        <> " ("
+        <> snapshot.time
+        <> ") until it syncs with a peer that holds more.",
+    ]
+  }
 }
 
 fn outcome_word(outcome: distribution_install.Outcome) -> String {
