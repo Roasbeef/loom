@@ -8329,7 +8329,7 @@ replaces `[[distribution.peers]]`, and a document with both is refused by
   bundle (`enroll`, `renew`) after checking it decodes, hands over, and prints the
   confirmations. `run_with` takes the way to reach a daemon (`Connect`) so a test
   uses a ledger process in its VM; `run` uses the socket. `revoke` does not check
-  that the member owns sessions (no daemon can ask another; phase 2) and says so.
+  that the member owns sessions on its own: it asks the daemon (phase 2, below).
   `enroll` refuses a `--directory` other than `none`, and an executor with no
   `--links` (`ledger_operator.check_enrollment`: it would be linked to no
   orchestrator, and links cannot be added to a member without a revoke). `renew`
@@ -8348,3 +8348,88 @@ replaces `[[distribution.peers]]`, and a document with both is refused by
   log; the operator's requests are relayed to the node's `ledger_control`), over
   `support/ledger_deployment`, `client_ledger_operator_fixture_ffi.erl` and the
   `control` command of `client_ledger_live_fixture_ffi.erl`.
+
+## The membership ledger, configuration and status (protocol-change/086, phase 2)
+
+An orchestrator in ledger mode gets its `[executors.<name>]` and
+`[orchestrators.<name>]` rows from the ledger as well as from its file, `revoke`
+checks what it would strand, and `deployment.status` shows the ledger. The design
+note's "Phase 2: configuration and status, what was decided in the build" is the
+argument.
+
+- `client/roster` is `Roster(row)`, an opaque function that returns rows when it is
+  read (`fixed`, `reading`, `rows`). `session_importer.Context`,
+  `session_mover.Environment`, `session_movers.Control`, `server.Config.executors`,
+  `session_directory.peers`, `khepri` and `settle_over` and
+  `remote_spawner.over_distribution` hold a `Roster` where they held a list, and call
+  `roster.rows` at the moment they decide. A holder never keeps the list it read
+  across requests. `daemon/main` builds the two rosters from `Config.executors` and
+  `Config.orchestrators` (the written rows) and `Config.ledger`
+  (`executor_roster`, `orchestrator_roster`): a daemon with no ledger wraps the
+  written lists in `roster.fixed`. A per-session assembly (`workspace.fixed` and
+  `pooled`) reads the roster once for each open. `Config.executors` and
+  `Config.orchestrators` stay lists of the written rows.
+- `client/ledger_rows` derives the rows. `executors_of` and `orchestrators_of` take a
+  ledger, the node's own node name and the written rows. Only an active orchestrator
+  derives anything: the rows are the members of its pin table by role, named as the
+  ledger names them, `executors.plain` and `orchestrators.plain` (no declaration, no
+  address). An orchestrator with a directory standing derives only orchestrators that
+  have one. A written row claims its name and its node, a derived row it claims is
+  dropped, and the result is sorted by name (`combine`). `executor_roster` and
+  `orchestrator_roster` read `ledger_service.status` each time and fall back to the
+  written rows when the process does not answer in two seconds. Never call a roster
+  from an observer: observers run inside the ledger process.
+- `ledger_reference` gains `NameRow`, `InertName` and `audit_names` for the executor
+  names that pools and spawners list. `pools.from_document` and the spawner's
+  placement check a name's grammar only, in ledger mode (`ledger_reference.Ledgered`),
+  and `daemon/main.audit_started` calls `audit_executor_names` after the node audit
+  with the names of the written executor rows: a name nobody gave or an orchestrator's
+  name is an `Error`, a revoked or unlinked executor is `daemon.ledger_name_inert`.
+  `reference_names` lists the references with their keys.
+- `Holds` is the orchestrator port's new constructor: `Holds(reply: Subject(Result(Held,
+  Nil)))`, answered by a `Holder` that `start_with` takes as its last parameter and
+  runs through `detached`. `Held(sessions, placed)` counts the active registrations
+  whose custody is not `Moved`, and `Placed(executor_node, sessions)` the ones placed on
+  each executor the asker lists (at most `max_placed`, 64). `ask_holds` flattens silence
+  and a catalogue that could not be read into `Error(Nil)`. `unheld` is the holder of a
+  port with no catalogue. `client/ledger_holdings` holds the daemon side: `targets`
+  (the node itself if it is an active orchestrator, and the orchestrators in its pin
+  table), `collect` (one weft run under `deadline_ms`, 8 s; each ask is silence or a
+  `Held`), `over_distribution` (its own port for the local node, `session_directory.reached`
+  for a peer, then `ask_holds`), `silent`, and `from_catalogue`, which walks
+  `manager.page` for at most `max_pages` pages, drops `Moved` custody (one
+  `manager.custodies` call a page) and maps the executor names in the catalogue to nodes
+  through the executor roster. `ledger_control.Handle` has an `asker` (`handle` gives
+  `ledger_holdings.silent`, `asking` replaces it; `daemon/main.ledger_handle` gives it
+  `over_distribution`), and `ledger_control.holdings` is `ledger.holdings`
+  (`protocol.LedgerHoldings`, served by `server.ledger_command`).
+  `ledger_control.decode_holdings` is the operator's total decoder
+  (`AnswerView`, `HeldView`, `PlacedView`), bounded to 64 orchestrators and 64 placements
+  and refusing a negative count.
+- `ledger_operator.strandings(ledger, name, answers)` is the decision, with `Stranding`
+  = `Owns(n)` | `Placed(n, by)` | `Silent(names)` | `Unasked(reason)`.
+  An orchestrator is `Owns` when its own answer reports sessions and `Silent` when it
+  has none. An executor is `Placed` by the orchestrators linked to it that put
+  sessions on its node, and `Silent` for each of those that did not answer.
+  `describe_stranding` and `describe_clear` are the sentences. `ledger_sync.Daemon` gained
+  `holdings`. `daemon/ledger_cli.revoke` runs `checked_revoke` before it signs (unless
+  `--force`): the link graph and the strandings together, one refusal listing both. A
+  daemon that cannot be asked is `Unasked`, so an offline `revoke` now needs `--force`.
+  `sign` returns the decision's extra value beside the `Signed`, which is how the
+  sentence about what was checked reaches the output.
+- `server.deployment_status` adds `ledger` (the body of `ledger_control.status`) to a
+  whole-deployment read on a daemon with a ledger handle; a read naming a node, a daemon
+  with none and a ledger that does not answer add nothing. The terminal reads it in
+  `tui/deployment_view`.
+- Tests: `ledger_rows_test` (derivation, combination, a roster that follows a running
+  ledger process, fail-closed), `ledger_reference_test` (the name audit and the
+  ledger-mode pool and spawner parse), `ledger_holdings_test` (targets, the fan-out, a
+  real registry for `from_catalogue`: counts, placements, two names for one node, moved
+  and moving custody, a page boundary, an unreadable registry), `orchestrator_port_test`
+  (`Holds`), `ledger_control_test` and `daemon_ledger_test` (the command and its
+  decoder over the socket, `deployment.status` with and without a ledger),
+  `ledger_operator_test` (`strandings`), `ledger_cli_test` (owns, silent, placed,
+  unasked, both refusals together) and `ledger_operator_live_test` (three emulators:
+  enroll and revoke while they run, and the rows follow). The live fixture nodes run no
+  catalogue, so their `ledger.holdings` answers that every orchestrator holds nothing,
+  and `test.rows` is a fixture-only command that lists the derived rows.

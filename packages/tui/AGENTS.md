@@ -3332,7 +3332,13 @@ test seam for the parse.
   guess, text and lists are bounded, and an optional member that is absent,
   malformed or unknown is left out. `status_text` draws the verdict, a node
   table and the links (`==` connected, `..` not connected, `--` not observable
-  from the asking daemon); `executors_text` draws the executors with their state,
+  from the asking daemon), then, for a daemon that runs from a membership ledger,
+  a `LEDGER` section (protocol-change/086, phase 2): the head, how many members
+  hold it, each member's reported entry (`current`, `behind by N` or `not
+  reported`) with the age of that report on the daemon's clock, a standing line
+  when the daemon is not `ok`, and the last refusal. The `ledger` member is
+  optional: one that is absent or does not decode leaves the rest drawn, and a
+  malformed member entry is skipped. `executors_text` draws the executors with their state,
   declaration, pools and the reason a down one gave, then the pools in trial
   order with the reachable ones. Every drawn string goes through
   `text_hygiene.single_line`.

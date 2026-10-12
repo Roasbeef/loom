@@ -338,6 +338,22 @@ member while they ran; none restarts. A member that is off during an enrollment 
 a revoke learns the entry when it next connects to a node that has it, so the
 report is a status and not a wait.
 
+An orchestrator that is linked to the new member can use it at once, with no edit to
+its `loom.toml`. It lists every executor member it is linked to as an
+`[executors.<name>]` (using the name you gave to `enroll`) and every orchestrator
+member as an `[orchestrators.<name>]`, so `loom --executor box2 --workspace repo`
+works as soon as the entry has reached it, and stops working when the member is
+revoked. A table you write for the same name replaces the derived one, which is how
+you give an executor a `platform` or an orchestrator an `address`, and a pool still
+needs a line in the file because a pool is your policy; the
+[configuration reference](configuration.md#executors-that-come-from-the-ledger)
+has the rules (**Pending**: `ledger_operator_live_test` enrolls and revokes
+members on running emulators and reads the derived rows, and no run on two
+machines has repeated it). Read the same state from the orchestrator with
+`loom deployment status`: it prints the executors and orchestrators the daemon
+holds, and for a ledger deployment a `LEDGER` section with the head, which members
+have reported it and when, and the last line the daemon refused.
+
 Replace a certificate (`renew`), remove a node (`revoke`), read the ledger
 (`log`) and carry a ledger to a node nothing else reaches (`import`):
 
@@ -351,13 +367,21 @@ loom distribution import ledger.log          # on a member's machine, against it
 
 `revoke` refuses when it would leave an executor with no orchestrator linked to
 it (that executor would never hear of a later entry) or cut members off from the
-rest, and says which; `--force` overrides. It does **not** check whether the node
-owns sessions, because one daemon cannot ask another what it owns: end or move the
-sessions first. A revoked node's connections are dropped at once, and a revoked
-name can be enrolled again. If the daemon cannot be reached, the command still
-signs and keeps the entry in your copy of the ledger
-(`~/.loom/authority/<deployment id>/ledger.log`) and tells you to run `import`
-with that file on any member's machine. If a signing command says your copy
+rest, and says which; `--force` overrides. It also asks the deployment what it
+would strand. The daemon it talks to asks each orchestrator it is linked to, and
+itself, how many sessions each owns and how many it placed on each executor. It
+refuses while the orchestrator you are revoking owns sessions, or while an
+orchestrator linked to the executor you are revoking has sessions placed on it,
+and says how many; end or move the sessions first, or pass `--force`. An
+orchestrator that does not answer is unknown, not empty, so a laptop that is off
+cannot be revoked without `--force`, which is also what a lost laptop needs
+(**Pending**: the answers come from `ledger_holdings_test` and the port's own
+tests, and no run on two machines has repeated them). Archived sessions are not
+counted. A revoked node's connections are dropped at once, and a revoked name can
+be enrolled again. If no daemon can be reached, `revoke` cannot ask, and refuses
+without `--force`. With `--force` it signs and keeps the entry in your copy of the
+ledger (`~/.loom/authority/<deployment id>/ledger.log`) and tells you to run
+`import` with that file on any member's machine. If a signing command says your copy
 disagrees with the daemon (two machines holding the key signed different entries
 at the same position), copy a member's ledger file over
 `~/.loom/authority/<deployment id>/ledger.log` and run the command again.

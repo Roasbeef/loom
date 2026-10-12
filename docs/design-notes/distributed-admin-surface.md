@@ -44,25 +44,25 @@ question that only the owner can settle.
 
 **Choosing an executor.** `sessions.create` decodes `executor` and `pool` as
 exclusive names and then reads `workspace` as a registered name, not a path
-(`created_workspace`, `client/daemon/protocol.gleam:999`; `executor_field`,
-`client/daemon/protocol.gleam:891`; `pool_field`, `client/daemon/protocol.gleam:981`).
+(`created_workspace`, `client/daemon/protocol.gleam:1005`; `executor_field`,
+`client/daemon/protocol.gleam:891`; `pool_field`, `client/daemon/protocol.gleam:987`).
 The daemon holds the names from its `[executors.<name>]` and `[pools.<name>]`
 tables, with each executor's declared platform, enforcement and toolchains
-(`Executor`, `client/executors.gleam:68`). The web home is told only the names
-(`HomeAttachment`, `client/daemon/server.gleam:246`, whose `executors` field is
+(`Executor`, `client/executors.gleam:76`). The web home is told only the names
+(`HomeAttachment`, `client/daemon/server.gleam:254`, whose `executors` field is
 `List(String)`), draws them in a select, and asks the owner to type the workspace
 name (`CreatingRemote`, `web_view/home.gleam:730`). The terminal builds a
 `Placement` from launch flags (`Placement`, `tui/placement.gleam:31`) and cannot
 change it inside a running terminal. Neither client can show whether an executor
 answers, is full, or contradicts its declaration. That is learned at the attach,
-when `contradiction` (`client/executors.gleam:369`) compares the executor's census
+when `contradiction` (`client/executors.gleam:375`) compares the executor's census
 with the declaration and the open fails. A typo in a workspace name is learned the
 same way. [The setup guide](../distributed-setup.md) tells an operator to check a
 connection with `epmd -names`, `lsof` or `ss`.
 
 **The session list.** `sessions.list` reads this daemon's catalogue
-(`ListSessions`, `client/daemon/server.gleam:3177`). The orchestrator port answers
-`Owns` and the move messages (`Message`, `client/remote/orchestrator_port.gleam:107`).
+(`ListSessions`, `client/daemon/server.gleam:3214`). The orchestrator port answers
+`Owns` and the move messages (`Message`, `client/remote/orchestrator_port.gleam:113`).
 Nothing answers "what sessions do you hold".
 
 **Health.** The pieces exist and none is readable from a client. The executor's
@@ -74,7 +74,7 @@ reason that goes to one log line (`Stalled`, `client/session_mover.gleam:233`) a
 is forgotten, and the movers keep only the time the stall began (`Entry`,
 `client/session_movers.gleam:140`). `directory.status` reports the configured
 members, Ra's members with their votes, the leader and this member's applied index
-(`directory_status_json`, `client/daemon/server.gleam:2627`). It does not compare
+(`directory_status_json`, `client/daemon/server.gleam:2639`). It does not compare
 the applied index with the leader's, so it cannot say whether this copy has caught
 up. The only "not caught up" signal today is `voter: false`, which holds while a
 joining member is a non-voter.
@@ -167,15 +167,15 @@ vocabulary can halt a node ("What the closed vocabularies limit",
 that rule and add no second mechanism. Mixed builds stay unsupported, as for every
 other constructor.
 
-`Message` (`client/remote/orchestrator_port.gleam:107`) gains `Report(reply)` and
-`Sessions(after, limit, reply)`. `answer` (`client/remote/orchestrator_port.gleam:480`)
-serves both through `detached` (`client/remote/orchestrator_port.gleam:586`), the
+`Message` (`client/remote/orchestrator_port.gleam:113`) gains `Report(reply)` and
+`Sessions(after, limit, reply)`. `answer` (`client/remote/orchestrator_port.gleam:530`)
+serves both through `detached` (`client/remote/orchestrator_port.gleam:579`), the
 path `Activate` uses: the computation runs in a run that dies with the requester and
 with the port, so a read never keeps an `Owns` question waiting. The port does not
 know the catalogue, the ledger or the movers. `start_with` takes one more closure
-record, and `start_orchestrator_port` (`client/daemon/main.gleam:740`) builds it
+record, and `start_orchestrator_port` (`client/daemon/main.gleam:827`) builds it
 from the registry, the movers and the executor host, the way it builds
-`catalogue_holds` (`client/daemon/main.gleam:913`) and `peer_command`
+`catalogue_holds` (`client/daemon/main.gleam:860`) and `peer_command`
 (`client/daemon/main.gleam:651`). The function runs on every daemon that has a
 `[distribution]` table, executors included, so a pure executor answers `Report`
 too. It answers with no orchestrator facts when it has no catalogue to describe.

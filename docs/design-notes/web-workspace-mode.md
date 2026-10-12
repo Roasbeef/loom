@@ -86,7 +86,7 @@ check anywhere.
 A UI session is a `Grant` (`ui_sessions.gleam:310`) of one session, one
 credential digest, one principal and one ceiling, kept with the digests of
 the page's cookie, key and nonce in one actor. A ticket for it is minted
-only by `UiLink` (`client/daemon/server.gleam:2268`) over the principal's own
+only by `UiLink` (`client/daemon/server.gleam:2274`) over the principal's own
 control connection, after `session_authority`
 (`client/daemon/manager.gleam:936`) finds a membership, and by a page
 switching to another session (`ticket_for` (`ui_socket.gleam:1536`)). The
@@ -313,7 +313,7 @@ anyone who sees the cookie knows it, and the row's digest is the digest of
 it. The first edition of this note said a login presented as a bearer is
 refused because the daemon would hash the whole token; that was true and
 beside the point, because the daemon hashes any presented string
-(`credential` (`client/daemon/server.gleam:838`)), and `Authorization:
+(`credential` (`client/daemon/server.gleam:848`)), and `Authorization:
 Bearer <id>` would have hashed to the row and authenticated as the
 principal with no ceiling, no expiry, no key and no nonce: for the owner's
 login, owner authority on the control socket. The review of 2026-10-04
@@ -739,10 +739,10 @@ and the epoch the page was admitted in:
 2. `session_authority` finds Owner or Operator authority in the target: an
    observer member is refused with the words "ask an operator to resume
 <<<<<<< ours
-   it", the check `OpenSession` (`client/daemon/server.gleam:2286`) makes;
+   it", the check `OpenSession` (`client/daemon/server.gleam:2292`) makes;
 3. `open` (`client/daemon/manager.gleam:1727`) is called, which is the same
 =======
-   it", the check `OpenSession` (`client/daemon/server.gleam:2286`) makes;
+   it", the check `OpenSession` (`client/daemon/server.gleam:2292`) makes;
 3. `open` (`client/daemon/manager.gleam:1727`) is called, which is the same
 >>>>>>> theirs
    registry turn `sessions.open` runs: capacity, `Reserved`, archived, the

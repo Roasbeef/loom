@@ -1,6 +1,6 @@
 # Membership ledger: adding and removing nodes without reprovisioning
 
-Status: **proposed, 2026-10-11. Design only; nothing here is built.** The
+Status: **phases 0, 1 and 2 built, 2026-10-12; phase 3 (the directory) is not.** The
 owner chose the shape to explore (an operator-signed, append-only log of
 membership entries that every node replays into a live pin table); this note
 argues it, compares it with the alternatives, and records where it is weak.
@@ -821,7 +821,9 @@ FFI rule requires.
 
 **Phase 2, configuration and status (about a week).** Derived `[executors]` and
 `[orchestrators]` rows, the revoke checks (owned sessions, link graph), the head in
-`deployment.status`, and the documentation of the new keys.
+`deployment.status`, and the documentation of the new keys. **Built 2026-10-12**; the
+section "Phase 2: configuration and status, what was decided in the build" below
+records how.
 
 **Phase 3, the directory (one to two weeks).** The Ra leader's reconciler, the
 `directory` standing accepted by `enroll`, the voter-count check in `revoke`, and
@@ -1070,7 +1072,8 @@ landed. Points the proposal left open, or that the build changed:
    sessions", which needs a daemon to ask another what it owns. Phase 1 checks the
    link graph (an executor with no orchestrator left, and members cut off from the
    rest) and says in its output that sessions were not checked. The open question
-   5 recommendation stands for the day the surface exists.
+   5 recommendation stands for the day the surface exists. Phase 2 built the check
+   (see its section below).
 7. **No confirmation from a member that has not started.** `enroll` and `renew`
    list the node they just changed and do not wait for it.
 8. **A not-enrolled start names a remedy that works.** A node that applied its own
@@ -1078,6 +1081,105 @@ landed. Points the proposal left open, or that the build changed:
    install the new bundle with `--force` (a re-enrolled name gets a new
    certificate). `import` needs a running daemon, so it is not that remedy.
    `ledger_install_test` runs it.
+
+### Phase 2: configuration and status, what was decided in the build (2026-10-12)
+
+Phase 2 is built. Section 12 and section 17 item 5 said what to build; these are the
+points they left open, and the places the build departs from them.
+
+1. **Which members become rows.** Only an orchestrator derives rows. An executor
+   places no sessions and asks nobody about them, and a node the ledger does not
+   list is trusted by no one. For an orchestrator the rows are the members of its
+   pin table, so a member it is not linked to (a second executor that lists only
+   another orchestrator) has no row. Executor members become `[executors.<name>]`
+   and orchestrator members `[orchestrators.<name>]`, under the ledger's name,
+   which has the grammar of both tables. A node whose own entry has a directory
+   standing derives only the orchestrators that have one too, which is 083's rule
+   for member daemons, and which cannot arise until phase 3 lets a ledger daemon
+   join the directory. `[spawners.<name>]` is never derived: a spawner is a
+   permission to start work here, and the ledger carries identity.
+
+2. **How a written row and a derived one combine.** Section 12 said an explicit row
+   of the same name overrides the derived one. The build adds that a written row also
+   claims its node. An operator who calls a machine `build` in the file while the
+   ledger enrolled it as `box` would otherwise see it twice in every listing and in
+   the pool trial order, and `[orchestrators.<name>]` already requires a node to
+   appear once. The written row stays whole, derived rows with its name or its node
+   are dropped, and the result is sorted by name. A written row whose name is a
+   ledger member's but whose node differs wins and the ledger's node gets no row;
+   that is the operator's choice and is not warned about.
+
+3. **Rows are read when used.** The daemon parses its tables once, and passed lists
+   around for its life, which cannot follow an entry. `client/roster.Roster` is a
+   function that returns the rows. The session importer, the movers, the session
+   directory, the remote spawner and the server hold one and read it when they decide;
+   the per-session workspace assembly reads it once per open. A ledger roster asks the
+   ledger process (`ledger_service.status`), one process call. A process that does not
+   answer leaves the written rows, so a member that cannot be confirmed is not
+   offered. A session that is already open keeps the rows it was assembled with,
+   which is enough because its executor is recorded in its own scope, and a revoked
+   executor then fails as one that is down does (section 11.2). The names a
+   session's model is told as remote-subagent orchestrators are read when the session
+   opens, and the lookup of a name at a spawn reads again.
+
+4. **Pools and spawners.** Section 12 left "a pool still needs one config edit" as
+   the rule, and a pool names executors by name, so a pool naming a ledger executor
+   would have failed at parse. In ledger mode a pool member and a spawner's `executor`
+   are checked for the name's grammar at parse time and against the ledger once at
+   start (`ledger_reference.audit_names`). The outcomes are the node audit's: a name
+   nobody gave refuses the start, and a revoked or unlinked member is logged as
+   `daemon.ledger_name_inert` and skipped. A name the ledger gave to an orchestrator
+   is refused, since it can never be an executor row. A derived row declares nothing,
+   so a pool with a requirement skips it until the operator writes its row.
+
+5. **The ownership check asks orchestrators, not the revoked node.** Section 11.1
+   says the tool asks "which sessions that orchestrator owns, and for an executor
+   which scopes it holds". The reading of "scopes" the build chose is the sessions
+   that the executor's users placed on it. Asking the executor needs a read of its
+   execution ledger, which only the executor host may open and which fails exactly
+   when the executor is the lost machine. Every orchestrator already records, in its
+   catalogue's `executor` column, where each of its sessions sits. So there is one
+   question and one new port constructor, `Holds`, answered by every orchestrator with
+   how many sessions it owns and how many it placed on each executor node. An
+   orchestrator's own answer is the check for revoking it, and the sum of the
+   linked orchestrators' answers about its node is the check for revoking an
+   executor. It is the subset of 085's `Report` that the check needs
+   (`OrchestratorFacts.occupied` and `placements`), built first. 085's slice 4 can
+   fold it into `Report` and keep `ledger.holdings` as it is. 085's
+   `ExecutorFacts.scopes`, a count of scopes read from the executor, was not built
+   and is not needed.
+
+6. **Unknown is not none.** An orchestrator that does not answer (a laptop that is
+   asleep or lost, no port, a late reply, a catalogue it could not read), an
+   orchestrator the daemon cannot ask because it is not linked to it, and a daemon
+   that cannot be asked at all each refuse the revoke, as a positive count does,
+   until `--force`. The case that motivated the ledger, a lost laptop, therefore
+   always needs `--force`, and that is deliberate: the check that cannot be made is
+   reported and the operator decides. Before this phase an offline `revoke` signed
+   and kept the entry in the operator's copy. It now refuses without `--force`,
+   because a revoke that cannot ask has not checked. Counting archived sessions was
+   considered and left out: they are not listed, and they come back with the
+   orchestrator.
+
+7. **The daemon asks, the tool judges.** `ledger.holdings` returns each asked
+   orchestrator's answer and says nothing about the revoke. `client/ledger_operator`
+   reads the answers against the ledger copy and decides, so the decision is a pure
+   function with tests that need no daemon. The daemon fans the asks out in one weft
+   run under an eight second deadline, and a silent orchestrator costs the reply
+   that long at most.
+
+8. **The head in `deployment.status`.** The whole-deployment read carries the body
+   of `ledger.status` as an optional `ledger` member: the head, the standing, each
+   member with its reported head and the age of the report on the daemon's own
+   clock, and the last refusal. Nothing new is computed, so the output is bounded by
+   the 64 members of the ledger. `loom deployment status` draws a `LEDGER` section;
+   a member that has not reported to the asking daemon is drawn as not reported, not
+   as behind.
+
+Not done, on purpose: the executor's own count of scopes (point 5); a warning when a
+written row shadows a ledger member of the same name at another node; placement
+counts beyond 64 executors; carrying the ledger's name for a row in
+`deployment.status` so that a derived row can be told from a written one.
 
 ## 17. Open questions
 
