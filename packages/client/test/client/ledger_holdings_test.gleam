@@ -11,7 +11,7 @@ import client/executors
 import client/ledger_holdings.{Answer}
 import client/membership_entry.{Upsert}
 import client/membership_ledger
-import client/remote/orchestrator_port.{Held, Placed}
+import client/remote/orchestrator_port.{type Held, Held, Placed}
 import client/roster
 import core/clock
 import core/ids
@@ -275,4 +275,58 @@ pub fn a_registry_that_cannot_be_read_is_unknown_and_not_empty_test() {
   manager.shutdown(registry)
   assert ledger_holdings.from_catalogue(registry, roster.fixed([]))()
     == Error(Nil)
+}
+
+// --- the bounds -------------------------------------------------------------------
+
+pub fn a_catalogue_past_the_page_bound_is_unknown_and_not_partial_test() {
+  let #(registry, store, directory) = start()
+  let _ = registered_n(store, directory, "", catalogue.page_limit + 1)
+  let listed = roster.fixed([])
+
+  // One page holds a hundred and the catalogue has a hundred and one. A tally
+  // of the first page would read as "a hundred and no more".
+  assert ledger_holdings.from_pages(registry, listed, 1)() == Error(Nil)
+  assert ledger_holdings.from_pages(registry, listed, 2)()
+    == Ok(Held(sessions: catalogue.page_limit + 1, placed: []))
+}
+
+pub fn a_catalogue_that_fills_the_bound_exactly_is_known_test() {
+  let #(registry, store, directory) = start()
+  let _ = registered_n(store, directory, "", catalogue.page_limit)
+
+  // The bound is reached with the next page empty, so nothing was left out.
+  assert ledger_holdings.from_pages(registry, roster.fixed([]), 1)()
+    == Ok(Held(sessions: catalogue.page_limit, placed: []))
+}
+
+// Registers one session on each of `count` executors, named `e0`, `e1` and so
+// on, lists them all on nodes of their own, and answers what the catalogue
+// holds.
+fn spread(count: Int) -> Result(Held, Nil) {
+  let #(registry, store, directory) = start()
+  let names =
+    list.repeat(Nil, count)
+    |> list.index_map(fn(_, number) { "e" <> int.to_string(number) })
+  list.each(names, fn(name) {
+    let _ = registered_n(store, directory, name, 1)
+    Nil
+  })
+  let listed =
+    roster.fixed(
+      list.map(names, fn(name) {
+        executors.plain(name, "loom@" <> name <> ".example.net")
+      }),
+    )
+  ledger_holdings.from_catalogue(registry, listed)()
+}
+
+pub fn placements_on_more_executors_than_the_port_carries_are_unknown_test() {
+  assert spread(orchestrator_port.max_placed + 1) == Error(Nil)
+}
+
+pub fn placements_on_exactly_the_most_the_port_carries_are_known_test() {
+  let assert Ok(Held(sessions:, placed:)) = spread(orchestrator_port.max_placed)
+  assert sessions == orchestrator_port.max_placed
+  assert list.length(placed) == orchestrator_port.max_placed
 }

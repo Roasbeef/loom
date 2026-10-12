@@ -32,9 +32,13 @@
 //// `from_catalogue` is the daemon's side of `Holds`. It walks the active
 //// registrations a page at a time, drops those whose custody says the session
 //// was handed to another orchestrator, and counts the rest, per executor for
-//// those placed on one. It gives up after `max_pages` pages and reports what it
-//// counted, which is at least that many sessions: the check needs to tell
-//// none from some, and a catalogue past the bound is some.
+//// those placed on one. Its answer is a count the operator's tool trusts, so it
+//// is exact or it is not given. A catalogue longer than `max_pages` pages is
+//// unknown, and so is a daemon that placed sessions on more than
+//// `orchestrator_port.max_placed` distinct executors: a partial tally would
+//// read as "this many and no more", and an executor missing from it as "none
+//// placed there". Unknown is silence, and the revoke it belongs to needs
+//// `--force`.
 ////
 //// ## Flow
 ////
@@ -68,12 +72,17 @@ import storage/catalogue
 import weft
 
 /// How long the whole fan-out may take. The asks run at once, so this is the
-/// longest a silent orchestrator can hold the reply.
-pub const deadline_ms = 8000
+/// longest a silent orchestrator can hold the reply. It is shorter than the
+/// five seconds the control client waits for any reply (`host/access`), because
+/// a reply that arrives after the client gave up reads as a failure to ask, and
+/// the operator is meant to read "this orchestrator did not answer".
+pub const deadline_ms = 4000
 
 // How long an orchestrator is given to walk its catalogue and answer, once
-// connected. Connecting is bounded by `session_directory.reached`.
-const reply_ms = 6000
+// connected. Connecting is bounded by `session_directory.reached` at 1.5
+// seconds, so a slow connection and a slow answer together end at the run's
+// deadline and not after it.
+const reply_ms = 3000
 
 /// The most catalogue pages `from_catalogue` reads, of
 /// `storage/catalogue.page_limit` registrations each.
@@ -224,7 +233,9 @@ type Tally {
 /// session whose custody is `Moved` was handed to another orchestrator and is
 /// that orchestrator's. A session placed on an executor that no row lists now is
 /// counted as a session and not as a placement, since it names no node. A
-/// catalogue that cannot be read is `Error(Nil)`.
+/// catalogue that cannot be read, one longer than `max_pages` pages and one with
+/// sessions on more than `orchestrator_port.max_placed` executors are each
+/// `Error(Nil)`.
 ///
 /// ## Examples
 ///
@@ -235,18 +246,33 @@ pub fn from_catalogue(
   registry: Manager(instance),
   listed: Roster(Executor),
 ) -> Holder {
+  from_pages(registry, listed, max_pages)
+}
+
+/// The same with the bound on pages given, so that a test can reach it without
+/// a catalogue of `max_pages` pages.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ledger_holdings.from_pages(registry, executors, 1)()
+/// ```
+pub fn from_pages(
+  registry: Manager(instance),
+  listed: Roster(Executor),
+  pages: Int,
+) -> Holder {
   fn() {
-    use tally <- result.map(count(registry, "", Tally(0, dict.new()), max_pages))
-    Held(
-      sessions: tally.sessions,
-      placed: placed_on(tally.by_executor, roster.rows(listed)),
-    )
+    use tally <- result.try(count(registry, "", Tally(0, dict.new()), pages))
+    use placed <- result.map(placed_on(tally.by_executor, roster.rows(listed)))
+    Held(sessions: tally.sessions, placed:)
   }
 }
 
 // Reads the catalogue's pages in identity order, a page at a time, until one is
-// empty or the bound is reached. Each page's custody is read in one registry
-// turn.
+// empty. Each page's custody is read in one registry turn. After `pages_left`
+// pages the walk stops, and it is complete only if the next page is empty: a
+// page with registrations on it means the tally is short, which is unknown.
 fn count(
   registry: Manager(instance),
   after: String,
@@ -254,7 +280,11 @@ fn count(
   pages_left: Int,
 ) -> Result(Tally, Nil) {
   case pages_left {
-    0 -> Ok(tally)
+    0 ->
+      case manager.page(registry, after:) {
+        Ok(#(_revision, [])) -> Ok(tally)
+        Ok(#(_revision, [_, ..])) | Error(_) -> Error(Nil)
+      }
     _ ->
       case manager.page(registry, after:) {
         Error(_) -> Error(Nil)
@@ -306,11 +336,13 @@ fn add(tally: Tally, owned: List(manager.View)) -> Tally {
 
 // The placements by executor node: the names the file gave are looked up in the
 // executors this daemon lists, two names for one node are added together, and
-// the list is ordered by node and bounded.
+// the list is ordered by node. More nodes than the port carries is unknown, not
+// the first of them, because the operator's tool reads a node missing from the
+// list as a node with nothing placed on it.
 fn placed_on(
   by_name: Dict(String, Int),
   listed: List(Executor),
-) -> List(orchestrator_port.Placed) {
+) -> Result(List(orchestrator_port.Placed), Nil) {
   let by_node =
     dict.to_list(by_name)
     |> list.filter_map(fn(entry) {
@@ -320,8 +352,14 @@ fn placed_on(
     |> list.fold(dict.new(), fn(sums, entry) {
       dict.upsert(sums, entry.0, fn(seen) { option.unwrap(seen, 0) + entry.1 })
     })
-  dict.to_list(by_node)
-  |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
-  |> list.take(orchestrator_port.max_placed)
-  |> list.map(fn(entry) { Placed(executor_node: entry.0, sessions: entry.1) })
+  case dict.size(by_node) > orchestrator_port.max_placed {
+    True -> Error(Nil)
+    False ->
+      dict.to_list(by_node)
+      |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
+      |> list.map(fn(entry) {
+        Placed(executor_node: entry.0, sessions: entry.1)
+      })
+      |> Ok
+  }
 }

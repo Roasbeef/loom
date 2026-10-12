@@ -5,6 +5,7 @@
 //// that a refused line names its step, that a daemon with no ledger says so,
 //// and that a request outside the bounds is refused before the ledger sees it.
 
+import client/daemon/ledger_cli
 import client/daemon/limits
 import client/daemon/root
 import client/daemon_server_test as wire
@@ -18,6 +19,8 @@ import client/session_directory
 import client/session_movers
 import core/json
 import gleam/bit_array
+import gleam/erlang/process
+import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
@@ -25,6 +28,7 @@ import host/bootstrap
 import storage/access
 import storage/catalogue
 import support/internal/ffi_ws
+import support/ledger_deployment
 import support/ledger_rig as rig
 import support/membership_fixture as fixture
 import support/membership_log as log
@@ -333,6 +337,98 @@ pub fn a_request_outside_the_bounds_never_reaches_the_ledger_test() {
     )
     refused(6, "ledger.entries", json.Object([]))
   })
+}
+
+// The asker of a daemon whose laptop is asleep: the hub answers for itself, and
+// the laptop never answers, however long it is waited for.
+fn asleep_laptop(node: String) -> Result(orchestrator_port.Held, Nil) {
+  case node == "loom@laptop.example" {
+    True -> {
+      process.sleep(ledger_holdings.deadline_ms + 4000)
+      Ok(orchestrator_port.Held(sessions: 0, placed: []))
+    }
+    False -> Ok(orchestrator_port.Held(sessions: 0, placed: []))
+  }
+}
+
+fn owner_token_file(owner: String) -> String {
+  let assert Ok(directory) =
+    bootstrap.absolute_path(
+      "build/ledger-socket-token-" <> int.to_string(int.random(1_000_000_000)),
+    )
+  let assert Ok(Nil) = bootstrap.ensure_private_directory(directory)
+  let path = directory <> "/owner.token"
+  let assert Ok(Nil) = bootstrap.atomic_write_private(path, owner)
+  path
+}
+
+// The operator's `revoke` of an orchestrator that does not answer, run as the
+// CLI runs it: over the control socket, which waits five seconds for any reply
+// (`host/access`). The daemon's fan-out has to finish inside that wait, or the
+// reply that arrives after it is read as a failure to ask at all, and the
+// operator is told the daemon could not be asked and not that the laptop did
+// not answer.
+pub fn a_silent_orchestrator_is_reported_silent_across_the_socket_test() {
+  let deployed =
+    ledger_deployment.provision("silent-socket", ledger_deployment.plan_text)
+  let served =
+    ledger_deployment.serve(deployed, "silent", "hub", "loom@hub.example")
+  let handle = Handle(..served, asker: asleep_laptop)
+  wire.fixture_with_ledger(
+    limits.defaults,
+    fn(_) { None },
+    fn(record, _domain, _services, _owner, _directory) { Ok(record.id) },
+    session_directory.none(),
+    session_movers.idle(),
+    deployment.alone("nonode@nohost"),
+    Some(handle),
+    fn(_, _ready, port, credential) {
+      let remote = [
+        "--addr",
+        "ws://127.0.0.1:" <> int.to_string(port) <> "/v2/control",
+        "--token-file",
+        owner_token_file(credential),
+      ]
+      let signing = ledger_deployment.signing(deployed)
+
+      // A second orchestrator, linked to the hub, so that the hub asks it.
+      let assert Ok(_) =
+        ledger_cli.run(
+          "enroll",
+          list.flatten([
+            [
+              "laptop",
+              "--node",
+              "loom@laptop.example",
+              "--role",
+              "orchestrator",
+              "--links",
+              "hub",
+              "--out",
+              deployed.base <> "/bundles",
+              "--wait",
+              "0",
+            ],
+            signing,
+            remote,
+          ]),
+        )
+        as "the laptop is enrolled through the socket"
+
+      let assert Error(refusal) =
+        ledger_cli.run(
+          "revoke",
+          list.flatten([["laptop", "--wait", "0"], signing, remote]),
+        )
+        as "the revoke is refused"
+      assert string.contains(
+        refusal,
+        "whether laptop holds sessions could not be told: laptop did not answer",
+      )
+        as refusal
+      assert !string.contains(refusal, "could not be asked") as refusal
+    },
+  )
 }
 
 pub fn a_daemon_with_no_ledger_answers_not_found_test() {
