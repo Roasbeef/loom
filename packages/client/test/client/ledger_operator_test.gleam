@@ -87,6 +87,16 @@ pub fn an_enrollments_own_fields_are_checked_before_anything_is_minted_test() {
     Enrollment(..request("a", []), listen_port: Some(0)),
     "--port must be",
   )
+
+  // An executor no orchestrator is linked to could never be reached, and links
+  // cannot be added to a member later.
+  refused(
+    Enrollment(..request("box", []), role: Executor),
+    "box is an executor with no --links",
+  )
+  assert is_ok(ledger_operator.check_enrollment(
+    Enrollment(..request("box", ["hub"]), role: Executor),
+  ))
   refused(
     Enrollment(..request("a", []), workspaces: [
       distribution_plan.Workspace("repo", "/srv/repo"),
@@ -94,7 +104,7 @@ pub fn an_enrollments_own_fields_are_checked_before_anything_is_minted_test() {
     "--workspace belongs to an executor",
   )
   refused(
-    Enrollment(..request("a", []), role: Executor, workspaces: [
+    Enrollment(..request("a", ["hub"]), role: Executor, workspaces: [
       distribution_plan.Workspace("repo", "relative"),
     ]),
     "must be an absolute path",

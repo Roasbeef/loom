@@ -17,10 +17,13 @@
 ////
 //// ## Pre-flight
 ////
-//// `membership_ledger.check` runs the fold on the entry before anything is
-//// signed. A refusal there is turned into a sentence for the operator naming
-//// the member or link at fault (`describe`), so a mistake is found before a
-//// certificate is minted or a key is unlocked for nothing.
+//// `check_enrollment` refuses a request that is wrong in itself before the
+//// authority key is unlocked. `membership_ledger.check` runs the fold on the
+//// entry before it is signed, and so before anything is appended to the
+//// operator's copy or a bundle is written. It needs the entry, which carries
+//// the pin of the certificate, so it runs after the certificate is minted. A
+//// refusal is turned into a sentence for the operator naming the member or
+//// link at fault (`describe`).
 ////
 //// ## What `revoke` checks, and what it cannot
 ////
@@ -76,6 +79,13 @@ pub type Enrollment {
 
 /// Checks an enrollment's own fields, before any key is unlocked.
 ///
+/// An executor must name at least one orchestrator in `links`. A member is
+/// reached through an edge that one end lists, and `enroll` refuses a name that
+/// is already a member, so links cannot be added to an executor later without
+/// revoking it and enrolling it again. An executor enrolled with none would be
+/// reachable only by an orchestrator enrolled after it that lists it, which is
+/// a surprise worth refusing here, where the operator is reading the sentence.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -96,6 +106,17 @@ pub fn check_enrollment(request: Enrollment) -> Result(Nil, String) {
     Some(port) if port < 1 || port > 65_535 ->
       Error("--port must be 1 through 65535")
     _ -> Ok(Nil)
+  })
+  use Nil <- result.try(case request.role, request.links {
+    Executor, [] ->
+      Error(
+        request.name
+        <> " is an executor with no --links, so no orchestrator would be "
+        <> "linked to it, and links cannot be added to a member later without "
+        <> "revoking it and enrolling it again. Name at least one "
+        <> "orchestrator with --links.",
+      )
+    _, _ -> Ok(Nil)
   })
   use Nil <- result.try(case request.role, request.workspaces {
     Orchestrator, [_, ..] ->

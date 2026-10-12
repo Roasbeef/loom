@@ -115,7 +115,8 @@ commands:
                                   OUT: the current directory) and prints which
                                   members hold the new head, after at most
                                   SECONDS (default 10). --links names the
-                                  members NAME may connect to; an executor needs
+                                  members NAME may connect to; an executor
+                                  needs at least one orchestrator there, and
                                   --workspace to serve anything.
   revoke NAME [--reason TEXT] [--force] [--wait SECONDS] [COMMON]
                                   Signs a `revoke`, hands it to a daemon and

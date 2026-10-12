@@ -314,7 +314,10 @@ loom distribution enroll laptop2 --node orch2@10.0.0.3 --role orchestrator \
 
 `--links` names the members the new node may connect to; an orchestrator needs
 the executors it will use, and any other orchestrator it should reach. An
-executor also needs `--workspace NAME=ROOT` for each checkout it serves.
+executor needs `--links` too, naming at least one orchestrator, because `enroll`
+refuses a name that is already a member and links cannot be added to a member
+later without revoking it and enrolling it again. An executor also needs
+`--workspace NAME=ROOT` for each checkout it serves.
 `enroll` mints a certificate, signs a `member` entry, hands it to the daemon,
 writes `./laptop2.loombundle` and prints which members hold the new entry, after
 at most `--wait` seconds (10 by default):
