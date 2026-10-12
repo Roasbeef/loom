@@ -208,17 +208,17 @@ pub fn a_synced_session_is_findable_through_the_seam_test() {
   history.stop(name)
 }
 
-// A malformed FTS5 query is the index's own refusal, and it must reach
-// the model as an in-band refusal rather than as a dead tool call.
-pub fn a_malformed_query_refuses_in_band_test() {
+// A query is read as words, so text that is not valid FTS5 syntax is text and
+// not a refusal: no model input can be a syntax error.
+pub fn a_malformed_query_is_words_not_a_refusal_test() {
   let path = fresh_index("malformed")
   let #(store, id) = a_store(2, ["something"])
   let name = addresses.new()
   let assert Ok(_started) = history.start(config(name, path, id, store))
   let seam = history.seam(name, timeout_ms: 5000)
-  let assert Error(history_tool.IndexRefused(..)) =
-    seam.search("\"unbalanced", 10, history_tool.Repository)
-    as "a malformed query is a refusal, not a crash"
+  let assert Ok(_) =
+    seam.search("\"unbalanced a:b foo-bar", 10, history_tool.Repository)
+    as "the same text as words is never a syntax error"
   history.stop(name)
 }
 

@@ -82,6 +82,80 @@ pub fn message_entry(
   #(entry, ctx)
 }
 
+/// An assistant message entry carrying one text block.
+pub fn assistant_entry(
+  ctx: Ctx,
+  parent: Option(EntryId),
+  text: String,
+) -> #(Entry, Ctx) {
+  let #(id, ctx) = mint(ctx)
+  let reply =
+    message.AssistantMessage(
+      content: [message.AssistantText(text:, text_signature: None)],
+      api: "acme-api",
+      provider: "acme",
+      model: "loom-1",
+      response_model: None,
+      response_id: None,
+      diagnostics: None,
+      usage: zero_usage(),
+      stop_reason: message.Stop,
+      deferred: None,
+      error_message: None,
+      raw_stop_reason: None,
+      end_turn: Some(True),
+      timestamp: 0,
+    )
+  #(
+    MessageEntry(id:, parent:, seq: 0, ts: 0, message: reply, terminate: False),
+    ctx,
+  )
+}
+
+/// A tool-result entry carrying one text block.
+pub fn tool_entry(
+  ctx: Ctx,
+  parent: Option(EntryId),
+  text: String,
+) -> #(Entry, Ctx) {
+  let #(id, ctx) = mint(ctx)
+  let result =
+    message.ToolResultMessage(
+      tool_call_id: "call",
+      tool_name: "bash",
+      content: [message.ToolResultText(text:, text_signature: None)],
+      details: None,
+      usage: None,
+      added_tool_names: None,
+      is_error: False,
+      timestamp: 0,
+    )
+  #(
+    MessageEntry(id:, parent:, seq: 0, ts: 0, message: result, terminate: False),
+    ctx,
+  )
+}
+
+fn zero_usage() -> message.Usage {
+  Usage(
+    input: 0,
+    output: 0,
+    cache_read: 0,
+    cache_write: 0,
+    cache_write_1h: None,
+    reasoning: None,
+    total_tokens: 0,
+    cost: UsageCost(
+      input: 0.0,
+      output: 0.0,
+      cache_read: 0.0,
+      cache_write: 0.0,
+      total: 0.0,
+    ),
+    evidence: usage_evidence.priced_api(),
+  )
+}
+
 /// A compaction entry with the given parent and summary.
 pub fn compaction_entry(
   ctx: Ctx,

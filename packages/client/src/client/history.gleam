@@ -640,7 +640,7 @@ fn query(
   scope: history_tool.Scope,
 ) -> Result(List(history_tool.Hit), String) {
   let found = case scope {
-    history_tool.Repository -> search.query(index, text:, limit:)
+    history_tool.Repository -> search.query(index, search.words(text, limit))
 
     // Scoping is in the SQL, not over the results: `rank` and `LIMIT`
     // are applied inside the query, so a post-filter would let a
@@ -650,8 +650,7 @@ fn query(
       search.query_in_session(
         index,
         session: state.config.session,
-        text:,
-        limit:,
+        query: search.words(text, limit),
       )
   }
   found

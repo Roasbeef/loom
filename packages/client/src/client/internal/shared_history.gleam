@@ -967,10 +967,10 @@ fn finish_job(state: State, job: Job) {
         })
         case lookup {
           Matching(text, tool.ThisSession) ->
-            search.query_authorized(index, [current], text, limit)
+            search.query_authorized(index, [current], search.words(text, limit))
           Matching(text, tool.Repository) -> {
             let ids = list.map(sources, fn(item) { item.session })
-            search.query_authorized(index, ids, text, limit)
+            search.query_authorized(index, ids, search.words(text, limit))
           }
           Newest -> search.recent_in_session(index, session: current, limit:)
         }

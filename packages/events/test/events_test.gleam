@@ -1,4 +1,5 @@
 import gleam/bool
+import gleam/int
 import gleam/list
 import gleam/string
 import gleeunit
@@ -43,16 +44,35 @@ pub fn queries_match_source_test() {
 // regenerating without adding it here — fails the comparison.
 fn generated_queries() -> List(#(String, String)) {
   let #(insert_entry_text, _) =
-    sql.insert_entry_text(session_id: "", entry_id: "", text: "")
+    sql.insert_entry_text(
+      session_id: "",
+      entry_id: "",
+      kind: "",
+      ts: 0,
+      text: "",
+    )
   let #(delete_session_index, _) = sql.delete_session_index(session_id: "")
-  let #(search_entries, _, _) = sql.search_entries(text: "", limit: 0)
+  let #(search_entries, _, _) =
+    sql.search_entries(query: "", kind: "", before: "", max_hits: 0)
   let #(search_entries_in_session, _, _) =
-    sql.search_entries_in_session(text: "", session_id: "", limit: 0)
+    sql.search_entries_in_session(
+      query: "",
+      session: "",
+      kind: "",
+      before: "",
+      max_hits: 0,
+    )
   let #(recent_entries_in_session, _, _) =
     sql.recent_entries_in_session(session_id: "", limit: 0)
   let #(get_cursor, _, _) = sql.get_cursor(session_id: "")
   let #(search_authorized_entries, _, _) =
-    sql.search_authorized_entries("", "", 0)
+    sql.search_authorized_entries(
+      query: "",
+      sessions: "",
+      kind: "",
+      before: "",
+      max_hits: 0,
+    )
   let #(set_cursor, _) =
     sql.set_cursor(session_id: "", generation: 0, high_water: 0)
   let #(delete_cursor, _) = sql.delete_cursor(session_id: "")
@@ -125,19 +145,57 @@ fn query_name(line: String) -> Result(String, Nil) {
 }
 
 // The generated strings carry no statement terminator; the source file's
-// statements do. SQLC assigns these named parameters positional bindings in
-// first-use order. Preserve the positions so swapping bindings still fails.
+// statements do. SQLC assigns each named parameter a positional binding in
+// first-use order, reusing it for a repeated name. Preserve the positions so
+// swapping bindings still fails.
 fn normalize_query(sql: String) -> String {
-  let normalized =
-    sql
-    |> string.replace("@query", "?1")
-    |> string.replace("@sessions", "?2")
-    |> string.replace("@max_hits", "?3")
-    |> normalize
+  let normalized = sql |> normalize |> number_named_parameters
   case string.ends_with(normalized, ";") {
     True -> string.drop_end(normalized, 1)
     False -> normalized
   }
+}
+
+fn number_named_parameters(sql: String) -> String {
+  case string.split(sql, "@") {
+    [] -> sql
+    [first, ..segments] -> {
+      let #(_names, pieces) =
+        list.fold(segments, #([], [first]), fn(state, segment) {
+          let #(names, pieces) = state
+          let name = leading_name(segment)
+          let names = case list.contains(names, name) {
+            True -> names
+            False -> list.append(names, [name])
+          }
+          let rest = string.drop_start(segment, string.length(name))
+          let position = int.to_string(position_of(names, name))
+          #(names, [rest, "?" <> position, ..pieces])
+        })
+      pieces |> list.reverse |> string.concat
+    }
+  }
+}
+
+fn leading_name(segment: String) -> String {
+  segment
+  |> string.to_graphemes
+  |> list.take_while(fn(char) { char == "_" || is_name_char(char) })
+  |> string.concat
+}
+
+fn is_name_char(char: String) -> Bool {
+  string.contains("abcdefghijklmnopqrstuvwxyz0123456789", char)
+}
+
+// One-based position of `name` in the first-use list.
+fn position_of(names: List(String), name: String) -> Int {
+  list.index_fold(names, 0, fn(found, candidate, index) {
+    case candidate == name {
+      True -> index + 1
+      False -> found
+    }
+  })
 }
 
 fn normalize(sql: String) -> String {

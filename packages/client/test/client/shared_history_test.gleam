@@ -149,7 +149,7 @@ pub fn shared_history_commit_hint_indexes_without_query_test() {
   let expected = ids.entry_id_to_string(item.id)
   let assert poll.Answered(Nil) =
     poll.until(within: 1000, every: 5, attempt: fn() {
-      case search.query(observation, "hintonly", 10) {
+      case search.query(observation, search.words("hintonly", 10)) {
         Ok([hit]) if hit.entry == expected -> poll.Done(Nil)
         Ok(_) -> poll.Retry
         Error(error) -> poll.Fail(error)
@@ -203,7 +203,7 @@ pub fn shared_history_empty_cut_rechecks_generation_test() {
   assert prepared.retire() == Ok(Nil)
   let assert Ok(index) = search.open(root <> "/search.db")
     as "the closed projection must reopen for independent observation"
-  let assert Ok([_]) = search.query(index, "retained", 10)
+  let assert Ok([_]) = search.query(index, search.words("retained", 10))
     as "refused stale invalidation must not clear the previously indexed row"
   assert search.close(index) == Ok(Nil)
   assert sqlight.close(writer) == Ok(Nil)
