@@ -1168,8 +1168,17 @@ points they left open, and the places the build departs from them.
    orchestrator's answer and says nothing about the revoke. `client/ledger_operator`
    reads the answers against the ledger copy and decides, so the decision is a pure
    function with tests that need no daemon. The daemon fans the asks out in one weft
-   run under an eight second deadline, and a silent orchestrator costs the reply
-   that long at most.
+   run under a four second deadline, and a silent orchestrator costs the reply
+   that long at most. The first build used eight seconds, which is longer than the
+   five seconds the control client waits for any reply, so a silent laptop read as
+   a daemon that could not be asked and the documented wording was unreachable. A
+   socket test now runs the revoke against an orchestrator that never answers. A
+   count that cannot be exact is unknown, not partial: a catalogue past 20,000
+   sessions, or sessions on more than 64 executors, answers silence. The path from
+   `ledger.holdings` through the pinned connection to a port over a real catalogue
+   is exercised across two emulators (`ledger_operator_live_test`). A session
+   created between the reply and the revoke reaching the daemons is not caught,
+   and that is accepted.
 
 8. **The head in `deployment.status`.** The whole-deployment read carries the body
    of `ledger.status` as an optional `ledger` member: the head, the standing, each
@@ -1213,17 +1222,18 @@ build changed:
    cost is up to two seconds between an entry and the removal.
 3. **What the leader removes and what it leaves.** A Ra member goes when the ledger
    has named its node and seats it nowhere, or in the other seat (it then joins
-   again in the seat its entry gives it; a change of standing is not an operator
-   command, since `enroll` of a member that exists is refused, so this is a repair
-   for a ledger signed by hand). A Ra member the ledger has never named stays and
+   again in the seat its entry gives it, which it finds out by asking, as item 9
+   says; a change of standing is not an operator command, since `enroll` of a
+   member that exists is refused, so this is a repair for a ledger signed by hand). A Ra member the ledger has never named stays and
    is logged. On a leader whose ledger is behind, it may be a member enrolled a
    moment ago, and removing it would take a member out of a cluster it belongs in.
    A leader that the ledger does not seat does nothing.
 4. **A voter is removed only if the removal can commit.** Ra applies a new
    configuration when the change is appended, and the change commits when a majority
    of the voters left has it. The leader removes a voter only while a majority of
-   the remaining voters is connected, and otherwise holds, logs once, and asks again
-   at the next tick. A removal that cannot commit would otherwise sit in the log,
+   the remaining voters is replicating its log, which is Ra's own status for each
+   member (`normal`, from `members_info` on the leader) and not whether the node is
+   connected, and otherwise holds, logs once, and asks again at the next tick. A removal that cannot commit would otherwise sit in the log,
    and Ra refuses every other change until it does. The floor of three voters is the
    operator's: `revoke` refuses to leave fewer than three, and `--force` is how an
    operator shrinks the directory on purpose. The reconciler follows the ledger
@@ -1251,14 +1261,28 @@ build changed:
    answers `no_quorum` until one arrives. Its local reads are not affected. Phase 0
    asserted the learner's membership straight after the join, which held only
    because the leader still had entries to send; the fixture now writes first.
-9. **Re-enrolling a removed directory member.** A node that is revoked and enrolled
-   again keeps its `joined` marker and its Ra server, which the leader removed. It
-   is no member of the cluster it believes it is in. The remedy is the one the
-   directory already has for a store that must rejoin: remove
-   `<state root>/directory/joined` and start the daemon, and the member joins again.
-   Nothing detects the state; it needs a revoke of a directory member followed by an
-   enrollment of the same name on the same disk, and the cost of a mechanism for it
-   is more than the cost of the sentence.
+9. **A removed directory member rejoins by itself.** Ra never stops a server it
+   removes. A node that was revoked and enrolled again on the same disk, or that the
+   leader removed to repair its seat, keeps its `joined` marker and a server that is
+   in no cluster, and every store call on it waits out its deadline and reports no
+   quorum while the cluster is well. The first build left this to the operator
+   (remove the marker and restart). That was the wrong cost to leave: the state is
+   not rare after a laptop is reinstalled, and nothing told the operator. The member
+   now finds out. A node the ledger seats whose own server cannot say what the
+   cluster holds, or says and does not list the node, asks a seated peer's server,
+   which forwards `ra:members_info` to the leader. If a leader answers and its
+   membership does not list the node, the node logs `daemon.directory_not_a_member`,
+   deletes the marker and then its local server, and the join path takes it in again
+   in the seat the ledger gives it. `directory.status` reports `joined: false` and
+   says it is rejoining until then. It never resets on a timeout or on no answer,
+   and never on a node the ledger does not seat, so a healthy member on a bad
+   network does not churn; and it never creates a store, because the marker goes
+   first and the only way back is a join. The decision is `seats.rejoin`, a pure
+   function, and an emulator scenario revokes a learner, enrolls the name again on
+   the same disk and sees the other members list it, without anyone touching the
+   marker. One residual case is accepted: a deposed leader that still answers and
+   whose configuration predates this node's join would make the node rejoin once
+   for nothing, at the cost of a resync.
 10. **Not done here.** `directory.status` still reports what it reported, with
     `members` now the ledger's seated nodes; the reconciler's last verdict is not on
     the wire. A Ra forced reconfiguration after a majority loss stays the operator's

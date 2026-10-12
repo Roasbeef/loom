@@ -375,9 +375,10 @@ orchestrator linked to the executor you are revoking has sessions placed on it,
 and says how many; end or move the sessions first, or pass `--force`. An
 orchestrator that does not answer is unknown, not empty, so a laptop that is off
 cannot be revoked without `--force`, which is also what a lost laptop needs
-(**Pending**: the answers come from `ledger_holdings_test` and the port's own
-tests, and no run on two machines has repeated them). Archived sessions are not
-counted. It also refuses to take a session directory voter away when fewer than
+(**Pending**: the question and the counts are tested across two emulator nodes on
+one host, and no run on two machines has repeated them). The check is a moment in
+time: a session created after the daemon answered and before the revoke reaches
+the daemons is not caught. Archived sessions are not counted. It also refuses to take a session directory voter away when fewer than
 three would remain (see "The session directory" in section 7), and when more than one check fails it reports all
 of them together. A revoked node's connections are dropped at once, and a revoked
 name can be enrolled again. If no daemon can be reached, `revoke` cannot ask, and
@@ -1496,11 +1497,15 @@ directory, and the members are the nodes the ledger seats.
    seconds. `revoke` refuses to leave the directory with fewer than three voters
    unless you pass `--force`: until Ra commits the removal the revoked voter still
    counts toward the majority, so with three voters the two that remain must both
-   be up.
+   be up. If you do force a revoke that leaves two voters, revoke the follower and
+   not the leader: revoking the leader, or giving it the standing `none` by hand,
+   leaves a directory that cannot elect.
 
-If you enroll a name again after revoking a directory member on the same disk,
-remove `<state-dir>/directory/joined` on that machine before it starts; the cluster
-no longer lists the server it still believes it is in.
+If you enroll a name again after revoking a directory member, on the same disk,
+install the new bundle and start the daemon. The member notices that the cluster
+no longer lists it, logs `daemon.directory_not_a_member`, and joins again in the
+seat its entry gives it; `directory.status` shows it as not joined until then.
+Nothing needs to be removed by hand.
 
 **A member that loses its disk.** Stop it, give it a fresh state directory (or
 keep the catalogue and delete only `<state-dir>/directory`), and start it. It

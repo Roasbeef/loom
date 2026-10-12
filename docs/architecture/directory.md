@@ -321,12 +321,13 @@ one `ra:remove_member`:
 | Ra holds | The ledger says | The leader |
 |---|---|---|
 | a member | the node was named and is seated nowhere (revoked, or `none`) | removes it |
-| a member | the other seat | removes it, and it joins again in its seat |
+| a member | the other seat | removes it; the node finds out by asking and joins again in its seat |
 | a member | the node was never named | leaves it and logs it |
 | nothing | a seat | nothing: the node joins by itself |
 
-A voter is removed only while a majority of the voters that remain is connected to
-the leader. Ra applies the new configuration when the change is appended, and the
+A voter is removed only while a majority of the voters that remain is replicating
+the leader's log, which is Ra's own status for each member and not whether the node
+is connected. Ra applies the new configuration when the change is appended, and the
 change commits only with that majority, so a removal that could not commit would
 sit in the log and Ra would refuse every other change until it did. When no safe
 removal exists the leader logs the first one held, once, and asks again at the next
@@ -350,9 +351,18 @@ members whose standing is not `none` in a row of the table the TLS callback read
 and `distribution.connect` reads it on every connect. A node outside the directory
 starts hidden and connects hidden to everyone.
 
-A node that is revoked and enrolled again keeps its `joined` marker and a Ra
-server that the leader removed. Remove `<state root>/directory/joined` and start
-the daemon, and the member joins again; nothing detects the state.
+**A removed member rejoins by itself.** Ra never stops a server it removes, so a
+node that is revoked and enrolled again on the same disk, or removed to repair its
+seat, keeps its `joined` marker and a server that is in no cluster. On each tick a
+node the ledger seats whose own server cannot say what the cluster holds, or does
+not list the node, asks a seated peer's server, which forwards `ra:members_info` to
+the leader. When a leader answers and its membership does not list the node, the
+node logs `daemon.directory_not_a_member`, removes the marker, then deletes its
+local server (`store.reset`), and the join above takes it in again in the seat the
+ledger gives it; `directory.status` reports it as not joined, rejoining, until then.
+`seats.rejoin` decides, and it acts only on that explicit answer: a timeout, a
+missing leader and a node the ledger does not seat reset nothing. The reset never
+creates a store, since the marker goes first and a join is the only way back.
 
 ## Reading an owner
 

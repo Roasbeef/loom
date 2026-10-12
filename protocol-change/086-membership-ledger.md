@@ -405,8 +405,13 @@ the daemon itself if it is one:
 ```
 
 An entry without `sessions` is an orchestrator that did not answer, and a client
-reads it as unknown. `placed` is bounded to 64 entries. The daemon asks all of them
-at once and replies within eight seconds. The operator's `revoke` is the client.
+reads it as unknown. `placed` is bounded to 64 entries, and an orchestrator with
+sessions on more executors than that is unknown, not truncated: a list missing an
+executor would read as none placed there. The same holds for a catalogue longer than
+20,000 sessions. The daemon asks all of them at once and replies within four seconds,
+inside the five seconds the control client waits for any reply, so that an
+orchestrator that does not answer reads as silent and not as a daemon that could not
+be asked. The operator's `revoke` is the client.
 
 ### Configuration
 
@@ -575,7 +580,9 @@ daemon could not ask, and a daemon that could not be asked at all are unknown an
 refuse the revoke like a positive count, so the revoke of a laptop that is off needs
 `--force`. The refusal lists the link-graph concerns, the sessions and, from phase 3, a
 voter count below three together, and signs nothing. The output of a revoke that passes says what was checked, and one
-forced past the checks says that nothing was.
+forced past the checks says that nothing was. The answers are a moment in time: a
+session created between the holdings reply and the revoke reaching the daemons is not
+caught. That is accepted, since the revoke is reversible and deletes no session.
 
 **The head in `deployment.status`.** A whole-deployment `deployment.status` of a
 daemon that runs from a ledger gains an optional `ledger` member holding the body of
@@ -623,14 +630,24 @@ same comparison at its next tick. It compares the ledger's seats with Ra's
 membership and issues at most one removal at a time with `ra:remove_member`:
 
 - A Ra member the ledger names but seats nowhere (revoked, or standing `none`) is
-  removed, and so is one seated in the other seat; it then joins again in the seat
-  its entry gives it. A member Ra is promoting counts as a voter.
+  removed, and so is one seated in the other seat. Ra never stops a server it
+  removes, so the removed node finds out by asking: a node the ledger seats whose
+  own server cannot say what the cluster holds, or does not list the node, asks a
+  seated peer, whose server forwards `ra:members_info` to the leader. When a leader
+  answers and its membership does not list the node, the node logs
+  `daemon.directory_not_a_member`, deletes its `joined` marker and then its local
+  server, and joins again in the seat its entry gives it, which is also what a
+  revoked node enrolled again on the same disk does. A timeout, a missing leader
+  and a node the ledger does not seat reset nothing, and the reset never creates a
+  store. `directory.status` reports `joined: false` until the join ends. A member
+  Ra is promoting counts as a voter.
 - A Ra member the ledger has never named is left alone and reported. On a leader
   whose ledger is behind it may be a member enrolled a moment ago, and removing it
   could take a member out of a cluster it belongs in.
-- A voter is removed only while a majority of the voters that remain is connected
-  to the leader, because Ra applies the new configuration at once and the change
-  commits only with that majority. Otherwise the leader holds, logs it once, and
+- A voter is removed only while a majority of the voters that remain is replicating
+  the leader's log (Ra's own status for each member in `members_info`, not whether
+  the node is connected), because Ra applies the new configuration at once and the
+  change commits only with that majority. Otherwise the leader holds, logs it once, and
   asks again at the next tick. The floor of three voters is the operator's command,
   not the reconciler's.
 - A leader the ledger does not seat does nothing, and no leader removes itself.

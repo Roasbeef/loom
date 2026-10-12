@@ -1642,7 +1642,7 @@ is `null` when the line had none and `ours` and `theirs` appear only for a fork.
 
 `ledger.holdings` takes `{}`. The daemon asks each orchestrator its pin table lists,
 and itself if it is an orchestrator, what its catalogue holds, all at once and within
-eight seconds, and replies with one entry for each:
+four seconds, and replies with one entry for each:
 
 ```json
 {"v":2,"reply_to":4,"event":"ledger.holdings","body":{"orchestrators":[{"name":"hub","node":"hub@10.0.0.1","sessions":3,"placed":[{"node":"box@10.0.0.2","sessions":2}]},{"name":"laptop2","node":"loom@laptop2.example.net"}]}}
@@ -1654,8 +1654,9 @@ archived session are not counted. `placed` says how many of them are placed on e
 executor the orchestrator lists, by the executor's node, at most 64 entries. An entry
 with no `sessions` is an orchestrator that did not answer: it was unreachable, ran no
 port, answered late or could not read its catalogue. A client must read that as
-unknown and never as none. A walk of the catalogue stops after 20,000 sessions, so a
-count at that size is a lower bound. An orchestrator answers any pinned peer, and the
+unknown and never as none. A catalogue longer than 20,000 sessions, and one with sessions
+placed on more than 64 executors, answer as an orchestrator that did not answer, because
+a count cut short would read as the whole. An orchestrator answers any pinned peer, and the
 answer reveals two counts and executor nodes, no session identity. `loom distribution
 revoke` is the client: it refuses while the member owns sessions or has sessions
 placed on it, or cannot be told, unless `--force`.

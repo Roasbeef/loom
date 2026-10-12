@@ -7843,7 +7843,9 @@ ADR-020 the choice of Khepri and its measurements, and
   `create`, `begin_move`, `activate`, `abandon`, `release`, `record_local`,
   `release_local`, `mark_migrated`, `seed_moving`, the two reads and
   `migrated`. Only an orchestrator builds one (`main.ownership_of`: a daemon
-  with executors, pools or other orchestrators), so an executor member never
+  with a ledger is one when the ledger says its node is an orchestrator, because its
+  rows change while it runs and the value is built once; a daemon without one decides
+  from the executors, pools or orchestrators in its file), so an executor member never
   writes. `create` and `begin_move` answer a record already holding their
   value as committed. Tests bind two names over one shared book
   (`test/support/record_book`), because two registries in one VM share a node.
@@ -8398,10 +8400,12 @@ argument.
   and a catalogue that could not be read into `Error(Nil)`. `unheld` is the holder of a
   port with no catalogue. `client/ledger_holdings` holds the daemon side: `targets`
   (the node itself if it is an active orchestrator, and the orchestrators in its pin
-  table), `collect` (one weft run under `deadline_ms`, 8 s; each ask is silence or a
-  `Held`), `over_distribution` (its own port for the local node, `session_directory.reached`
-  for a peer, then `ask_holds`), `silent`, and `from_catalogue`, which walks
-  `manager.page` for at most `max_pages` pages, drops `Moved` custody (one
+  table), `collect` (one weft run under `deadline_ms`, 4 s, inside the 5 s the control client
+  waits for any reply; each ask is silence or a `Held`), `over_distribution` (its own port for the local node, `session_directory.reached`
+  for a peer, then `ask_holds`), `silent`, and `from_catalogue` (`from_pages` takes the bound), which walks
+  `manager.page` for at most `max_pages` pages and answers unknown, not partial, when
+  the next page is not empty or when more than `max_placed` executors hold sessions,
+  drops `Moved` custody (one
   `manager.custodies` call a page) and maps the executor names in the catalogue to nodes
   through the executor roster. `ledger_control.Handle` has an `asker` (`handle` gives
   `ledger_holdings.silent`, `asking` replaces it; `daemon/main.ledger_handle` gives it
@@ -8437,7 +8441,12 @@ argument.
   unasked, both refusals together) and `ledger_operator_live_test` (three emulators:
   enroll and revoke while they run, and the rows follow). The live fixture nodes run no
   catalogue, so their `ledger.holdings` answers that every orchestrator holds nothing,
-  and `test.rows` is a fixture-only command that lists the derived rows.
+  unless a scenario sends `serve_holdings N EXECUTOR_NODE`, which starts a port over a
+  real catalogue (`support/held_catalogue`) and makes that node ask over distribution
+  (`ledger_live.Holdings`): `ledger_operator_live_test`'s holdings scenario is the
+  whole path across two emulators. `daemon_ledger_test` runs the revoke of a silent
+  orchestrator over the real control socket, and `test.rows` is a fixture-only command
+  that lists the derived rows.
 
 ## The membership ledger, the session directory (protocol-change/086, phase 3)
 
@@ -8450,11 +8459,15 @@ build" the rulings.
   when used). `places(ledger)` reads the active members
   whose `directory` standing is `voter` or `learner` as `Place(node, seat)`, ordered
   by node, and `read(ledger)` gives `Seats`, which add `named`, whether any entry has named a node.
-  `plan(seats, ra, local, up)` returns a `Verdict`: `NotLeader` (this member is not
+  `plan(seats, ra, local)` returns a `Verdict`: `NotLeader` (this member is not
   the Ra leader), `NotSeated` (it leads and the ledger gives it no seat),
   `Remove(node, Why)` (`Unseated` or `OtherSeat`), `Held(node, Why)` (a voter whose
   removal could not commit, because a majority of the voters that remain is not in
-  `up`), or `Settled(missing, foreign)`. Learners are removed before voters. A Ra
+  `ra.up`, the members the leader's `members_info` reports with status `normal`), or
+  `Settled(missing, foreign)`. `rejoin(seats, local, answer)` is the other decision:
+  `Rejoin` only when the ledger seats the node and a leader's membership, asked
+  through a peer, answers without it; `Stay` for a timeout, no leader and an
+  unseated node. Learners are removed before voters. A Ra
   member the ledger has never named is `foreign` and stays; a seat nobody has taken
   is `missing` and the node joins by itself. The plan never adds: only the joining
   node can start the Ra server with the UId it is recorded under.
@@ -8465,15 +8478,28 @@ build" the rulings.
   had applied). `ffi_khepri.Voting` gains `Promoting` so a voter that is catching up
   is not read as a learner. `store.remove_member(name)` is `ra:remove_member` through
   this node's own server; `client_khepri_ffi:remove_member/2` looks the name up as an
-  existing atom and makes none.
+  existing atom and makes none. `store.membership_through(node)` is the same
+  `ra:members_info` addressed to a peer's server, which forwards it to the leader;
+  `store.Membership` carries `up`. `store.reset(directory)` removes the joined marker
+  first and then deletes the local server, so a stop between them leaves a node that
+  has not joined and not a marker over no server. `store.settling` is the text of the
+  refusal for a change Ra will not take until the last commits.
 - `member.Members` is `Listed(nodes)` (every node a voter, no reconciliation) or
   `Followed(read)` (the ledger's `Seats`, read each tick; an unreadable ledger seats
   no one, and seats that seat no one removes no one because `named` is false).
   A tick keeps links and tries the join for the seats' places, and with `Followed`
-  and a joined store runs `seats.plan` in a task and applies a `Remove` through
-  `store.remove_member`. The decision is logged when it changes:
-  `daemon.directory_member_removed`, `daemon.directory_remove_held`,
-  `daemon.directory_remove_failed`, `daemon.directory_reconciled`.
+  and a joined store runs `reconcile_once` in a task. A seated node whose own
+  `store.membership()` fails or does not list it asks the seated peers that are
+  connected (`first_answer`), and resets (`Reset`, then `Joining` is `Rejoining` and
+  the next tick joins in the ledger's seat) only on a leader's answer without it;
+  otherwise the pass is `seats.plan` and a `Remove` is applied through
+  `store.remove_member`. A refusal because a change is settling is logged once as
+  `daemon.directory_remove_held` and not as a failure every tick. The decision is
+  logged when it changes: `daemon.directory_member_removed`,
+  `daemon.directory_remove_held`, `daemon.directory_remove_failed`,
+  `daemon.directory_reconciled`, `daemon.directory_not_a_member`,
+  `daemon.directory_reset_failed`. `directory.status` reports `joined: false` and
+  `unavailable` while a member rejoins.
 - `directory/settings`: a `[directory]` table beside a ledger is refused;
   `from_ledger(ledger, local)` is `Some(Settings(members))` when the ledger seats the
   node; `require_orchestrators` is the `[orchestrators]` rule, called with the
@@ -8498,10 +8524,12 @@ build" the rulings.
   as `[]` and `decode` refuses a ledger bundle that lists one; `install` no longer
   refuses a directory plan.
 - Invariants: the leader never adds, never removes itself, and removes a voter only
-  while a majority of the remaining voters is connected; a Ra member the ledger has
-  not named is never removed; a learner that has just joined learns the leader from
-  the leader's next append (the fixture writes before it reads the learner's view);
-  a revoked-then-re-enrolled directory member must remove `<state>/directory/joined`.
+  while a majority of the remaining voters is replicating its log (Ra status
+  `normal`); a Ra member the ledger has not named is never removed; a learner that has
+  just joined learns the leader from the leader's next append (the fixture writes
+  before it reads the learner's view); a removed member resets only on a leader's
+  explicit answer, only when the ledger seats it, and never creates a store (the
+  marker goes before the server, and a join is the way back).
 - Tests: `directory/seats_test` (the plan as values), `ledger_spike_non_voter_test`
   (the production learner join and `remove_member` over two scenarios in
   `client_ledger_spike_ra_fixture_ffi`), `ledger_operator_directory_test` and the
@@ -8512,5 +8540,8 @@ build" the rulings.
   voters over TLS with the production member actor, enrolls a learner while they run,
   sees a revoke refused, ends the leader and watches the new leader remove the revoked
   learner (the store runs in emulators of its own, so the test VM needs no serial
-  entry; it takes about 35 s).
+  entry; it takes about 35 s), plus a scenario that revokes a learner, enrolls the
+  same name again on the same disk and sees the members list it again with nobody
+  touching the marker (about 12 s). `daemon_ledger_ownership_test` covers
+  `main.ownership_of`.
 
