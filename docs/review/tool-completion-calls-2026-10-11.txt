@@ -1,0 +1,75 @@
+tracing calls of storage@sqlite, client@jobs in 4 of 174 listed processes of the node, the busiest by reductions/s, leaving out 2 of pickglass's own agent processes (tool:pickglass): 4 processes pinned, 8 s
+traced calls of storage@sqlite, client@jobs in 4 of 174 listed processes of the node, the busiest by reductions/s, leaving out 2 of pickglass's own agent processes (tool:pickglass)
+probe 1: 17699 calls over 148 functions in 8 s, complete
+  The probe ran to the end of its window and folded 31,528 events.
+  Untraced time inside a traced function counts as exclusive: a callee that was not traced is charged to its caller.
+  Recursion deeper than one level reads as two levels.
+  Time is traced time: it includes time a process was descheduled while inside a traced function, and excludes everything outside them.
+
+top 15 functions by exclusive time of their own (284.63 ms in all)
+   flat                cum             function
+  15.1%   43.02 ms   15.1%   43.20 ms  storage@sqlite:-start_actor/4-anonymous-5-/3
+  11.7%   33.56 ms   56.5%  160.94 ms  storage@sqlite:handle_open/2
+  10.6%   30.19 ms   10.6%   30.19 ms  storage@sqlite:json_of_blob/2
+  10.0%   28.60 ms   10.0%   28.61 ms  storage@sqlite:-start_actor/4-anonymous-9-/2
+   9.6%   27.48 ms    9.9%   28.40 ms  storage@sqlite:do_get_register/3
+   8.3%   23.83 ms    8.3%   23.90 ms  storage@sqlite:-start_actor/4-anonymous-7-/3
+   5.2%   14.85 ms    5.2%   14.85 ms  storage@sqlite:run/4
+   4.5%   12.88 ms    4.8%   13.84 ms  storage@sqlite:do_list_registers/3
+   3.0%    8.76 ms    3.0%    8.80 ms  storage@sqlite:-start_actor/4-anonymous-11-/2
+   2.9%    8.52 ms    3.0%    8.55 ms  storage@sqlite:-start_actor/4-anonymous-15-/2
+   2.9%    8.44 ms    2.9%    8.46 ms  storage@sqlite:-snapshot_reader/1-anonymous-3-/5
+   1.9%    5.68 ms    1.9%    5.68 ms  storage@sqlite:-scan_window_pages/4-anonymous-0-/1
+   1.5%    4.41 ms    1.5%    4.48 ms  storage@sqlite:-do_commit/3-anonymous-4-/6
+   0.8%    2.49 ms    0.9%    2.76 ms  storage@sqlite:do_scan_usage/2
+   0.7%    2.18 ms    0.9%    2.69 ms  storage@sqlite:do_scan_entries/2
+
+call tree (share of 284.63 ms, exclusive time)
+  56.5%  storage@sqlite:handle_open/2
+  13.9%    storage@sqlite:do_scan_branch/2
+  12.1%      storage@sqlite:-do_scan_branch/2-anonymous-3-/4
+  12.1%        storage@sqlite:scan_windows/4
+   9.2%          storage@sqlite:-scan_window_pages/4-anonymous-4-/6
+   9.1%            storage@sqlite:-scan_window_pages/4-anonymous-2-/1
+   6.6%              storage@sqlite:json_of_blob/2
+   1.9%              storage@sqlite:-scan_window_pages/4-anonymous-0-/1
+   2.8%          storage@sqlite:scan_window_pages/4
+   2.7%            storage@sqlite:run/4
+   0.6%      storage@sqlite:-do_scan_branch/2-anonymous-5-/4
+   0.5%        storage@sqlite:chain_windows/5
+   0.5%          storage@sqlite:base_of/2
+   9.9%    storage@sqlite:do_get_register/3
+   8.3%    storage@sqlite:do_commit/3
+   8.0%      storage@sqlite:-do_commit/3-anonymous-10-/4
+   2.6%        storage@sqlite:-do_commit/3-anonymous-6-/5
+   2.5%          storage@sqlite:apply_write/4
+   1.0%            storage@sqlite:run/4
+   1.5%        storage@sqlite:-do_commit/3-anonymous-4-/6
+   1.1%        storage@sqlite:-do_commit/3-anonymous-8-/4
+   0.6%          storage@sqlite:read_session/1
+   0.7%        storage@sqlite:-do_commit/3-anonymous-7-/4
+   0.7%          storage@sqlite:check_expectations/2
+   0.7%            storage@sqlite:-check_expectations/2-anonymous-2-/3
+   0.7%        storage@sqlite:check_and_renew_lease/2
+   0.6%        storage@sqlite:-do_commit/3-anonymous-5-/4
+   0.5%          storage@sqlite:write_session/2
+   0.5%        storage@sqlite:-check_and_renew_lease/2-anonymous-3-/3
+   4.8%    storage@sqlite:do_list_registers/3
+   3.2%    storage@sqlite:-do_get_register/3-anonymous-6-/1
+   2.5%      storage@sqlite:json_of_blob/2
+   1.3%    storage@sqlite:do_get_entries/2
+   0.7%      storage@sqlite:-do_get_entries/2-anonymous-4-/3
+   0.6%      storage@sqlite:-do_get_entries/2-anonymous-5-/3
+   0.9%    storage@sqlite:do_scan_usage/2
+   0.9%    storage@sqlite:do_scan_entries/2
+   0.5%    storage@sqlite:-do_list_registers/3-anonymous-9-/1
+  15.1%  storage@sqlite:-start_actor/4-anonymous-5-/3
+  10.0%  storage@sqlite:-start_actor/4-anonymous-9-/2
+   8.3%  storage@sqlite:-start_actor/4-anonymous-7-/3
+   3.0%  storage@sqlite:-start_actor/4-anonymous-11-/2
+   3.0%  storage@sqlite:-start_actor/4-anonymous-15-/2
+   2.9%  storage@sqlite:-snapshot_reader/1-anonymous-3-/5
+
+
+pins released
+detached; the agent's modules are unloaded from the target

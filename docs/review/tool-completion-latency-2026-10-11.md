@@ -81,10 +81,34 @@ The 57 job tests pass, including pending output and cursor continuity,
 strand isolation, a blocked terminal write and owner death after verifying
 the caller's completion monitor is installed. The blocked-write test confirms
 a caller cannot return a terminal answer before persistence is attempted.
+It also monitors the witness directly while the terminal write is blocked,
+then requires its shutdown after the write is released. Moving witness
+shutdown before persistence makes this assertion fail; restoring the ordering
+passes. This distinguishes notification ordering from the actor serialization
+which alone could keep the final reread behind the write.
 The independent advisor review found no reachable correctness defect; its
 two test-coverage observations were corrected before the final targeted run.
 The full repository gate and exact-head hosted/Linux signoff are separate
 checks, recorded on the PR rather than inferred from these focused results.
+
+A subsequent independent review by both requested models found no actionable
+correctness defect. Both identified the original blocked-write test's narrower
+coverage; both verified the direct-monitor test correction above.
+
+An eight-second [Pickglass call trace](tool-completion-calls-2026-10-11.txt)
+of `storage@sqlite` and `client@jobs` completed during a disposable delayed
+workload: four selected processes, 17,699 calls, 31,528 events and 284.63 ms
+of traced time. Storage reads, JSON decoding and transcript scans exceed the
+commit subtree in that selection. The selected processes are pinned, and
+untraced callees and descheduling count toward their traced callers; this is
+neither total node CPU time nor a decomposition of each tool response. It
+points the next investigation toward repeated reads and transcript projection.
+The profiled workload's timings are excluded from the comparison table.
+
+A separate 101-sample Darwin process-table measurement on this host found
+1,431 rows, with median 161 microseconds and p95 514 microseconds per scan.
+Eliminating the duplicate tracker startup scan would therefore save little
+of the remaining full-path latency. No tracker change was made.
 
 ## Reproduce
 

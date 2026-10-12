@@ -77,6 +77,19 @@ those historical notes as an up-to-date issue list.
 
 ## Next measurements
 
+The follow-up independent PR reviews found no actionable defect. Their shared
+coverage observation is now closed: the blocked-write test monitors the
+completion witness directly, and fails when shutdown is moved before the
+write. Production source is unchanged by that test strengthening.
+
+The [bounded call trace](review/tool-completion-calls-2026-10-11.txt) captured
+17,699 calls in four pinned processes over eight seconds. Reads, JSON decoding
+and transcript scans exceeded the commit subtree within that selection. Next,
+attribute repeated reads and transcript projection per tool call on one clock;
+the trace is not total CPU or a per-response breakdown. A Darwin process-table
+scan measured only 161 microseconds at the median, so the duplicate startup
+scan is not a substantial remaining cost on this host.
+
 Repeat both benchmark layers on Linux and across physical hosts, preserving
 all samples and enforcement reports. Attribute any remaining response time on
 one clock before changing storage, transport or code-mode startup. Keep
