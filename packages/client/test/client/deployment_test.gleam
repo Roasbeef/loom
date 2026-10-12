@@ -298,14 +298,29 @@ pub fn the_edges_touch_the_asking_daemon_and_carry_its_own_link_test() {
     ]
 }
 
-pub fn the_whole_deployment_is_as_bad_as_its_worst_node_test() {
+pub fn the_deployment_is_down_only_when_no_configured_node_answers_test() {
   let node = fn(health) {
     deployment.Node("n@10.0.0.1", "n", [ExecutorRole], health)
   }
-  assert deployment.worst([]) == Reachable
-  assert deployment.worst([node(Reachable), node(Reachable)]) == Reachable
-  assert deployment.worst([node(Reachable), node(Down(TimedOut))])
-    == Down(TimedOut)
+
+  // Every node answered, or there is none to ask.
+  assert deployment.verdict([]) == deployment.Whole
+  assert deployment.verdict([node(Reachable), node(Reachable)])
+    == deployment.Whole
+
+  // One dead node among several is a degraded deployment, whichever comes first.
+  assert deployment.verdict([node(Reachable), node(Down(TimedOut))])
+    == deployment.Degraded
+  assert deployment.verdict([node(Down(TimedOut)), node(Reachable)])
+    == deployment.Degraded
+
+  // Only when none answered is it down, and a single node that did not is none.
+  assert deployment.verdict([node(Down(TimedOut)), node(Down(Unreachable))])
+    == deployment.Lost
+  assert deployment.verdict([node(Down(Unavailable))]) == deployment.Lost
+  assert deployment.verdict_word(deployment.Whole) == "ok"
+  assert deployment.verdict_word(deployment.Degraded) == "degraded"
+  assert deployment.verdict_word(deployment.Lost) == "down"
   assert deployment.reasons([
       node(Reachable),
       deployment.Node("x@10.0.0.9", "x", [ExecutorRole], Down(Unavailable)),
@@ -331,7 +346,7 @@ pub fn the_reply_states_each_node_its_edges_and_its_placements_test() {
     == json.Object([
       #("as_of_ms", json.Int(1_760_190_131_000)),
       #("self", json.String(self)),
-      #("state", json.String("down")),
+      #("state", json.String("degraded")),
       #(
         "reasons",
         json.Array([
@@ -564,4 +579,34 @@ pub fn the_page_is_told_states_and_declarations_and_no_node_test() {
         ),
       ],
     )
+}
+
+// The reply's `state` is the verdict on the configured nodes, and the asking
+// daemon, which is always reachable, is not one of them: with every other node
+// gone the deployment reads down and not degraded.
+pub fn the_replys_state_follows_the_verdict_on_the_configured_nodes_test() {
+  let state = fn(probed) {
+    let assert json.Object(members) =
+      deployment.overview(
+        self,
+        [OrchestratorRole],
+        probed,
+        [box(), exec2()],
+        [],
+      )
+      |> deployment.to_json(1)
+    let assert Ok(found) = list.key_find(members, "state")
+    found
+  }
+  let box_row = Target("box", "box@10.0.0.2", deployment.ExecutorRow)
+  let exec_row = Target("exec2", "exec2@10.0.0.9", deployment.ExecutorRow)
+
+  // No configured node at all, so nothing is wrong.
+  assert state([]) == json.String("ok")
+  assert state([#(box_row, Reachable), #(exec_row, Reachable)])
+    == json.String("ok")
+  assert state([#(box_row, Reachable), #(exec_row, Down(TimedOut))])
+    == json.String("degraded")
+  assert state([#(box_row, Down(Unreachable)), #(exec_row, Down(TimedOut))])
+    == json.String("down")
 }

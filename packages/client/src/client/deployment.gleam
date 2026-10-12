@@ -15,7 +15,10 @@
 //// a fixed reason word. Nothing is cached and nothing is remembered between
 //// asks: a node that did not answer is `down` in this reply and the next ask
 //// connects again. A link between two other nodes is not observable from here,
-//// so every edge in a reply touches the asking daemon.
+//// so every edge in a reply touches the asking daemon. The deployment as a whole
+//// is `ok` when every configured node is, `down` only when none is, and
+//// `degraded` between (`verdict`): one dead executor among several is a degraded
+//// deployment, not a dead one.
 ////
 //// This slice reports reachability only. A reachable node is `ok` with no
 //// further members, because what a node itself would say about its capacity or
@@ -647,21 +650,52 @@ fn placements(
   )
 }
 
-/// The worst state among the nodes: `down` when any is, otherwise `ok`.
+/// How the deployment as a whole reads, from the nodes the daemon is configured
+/// with. The asking daemon is not among them: it is always reachable, and counting
+/// it would make a deployment whose every other node is gone read degraded
+/// instead of down.
+pub type Verdict {
+  /// Every configured node answered, or there are none to ask.
+  Whole
+
+  /// Some configured node did not answer and some did. One dead executor among
+  /// several leaves a working deployment, so it is not a dead one.
+  Degraded
+
+  /// No configured node answered.
+  Lost
+}
+
+/// The wire word for a verdict: `ok`, `degraded` or `down`.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert deployment.worst([]) == deployment.Reachable
+/// assert deployment.verdict_word(deployment.Degraded) == "degraded"
 /// ```
-pub fn worst(nodes: List(Node)) -> Health {
-  list.find_map(nodes, fn(node) {
-    case node.health {
-      Down(_) as down -> Ok(down)
-      Reachable -> Error(Nil)
-    }
-  })
-  |> result.unwrap(Reachable)
+pub fn verdict_word(verdict: Verdict) -> String {
+  case verdict {
+    Whole -> "ok"
+    Degraded -> "degraded"
+    Lost -> "down"
+  }
+}
+
+/// The verdict on the configured nodes: `ok` when all answered, `down` only when
+/// none did, and `degraded` for anything between. No nodes is `ok`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert deployment.verdict([]) == deployment.Whole
+/// ```
+pub fn verdict(nodes: List(Node)) -> Verdict {
+  let #(up, down) = list.partition(nodes, fn(node) { node.health == Reachable })
+  case up, down {
+    _, [] -> Whole
+    [], [_, ..] -> Lost
+    [_, ..], [_, ..] -> Degraded
+  }
 }
 
 /// The nodes that are not `ok`, each with the word that says why.
@@ -683,9 +717,9 @@ pub fn reasons(nodes: List(Node)) -> List(#(String, String)) {
 /// Renders a snapshot as the body of the `deployment.status` reply.
 ///
 /// `as_of_ms` is the asking daemon's wall clock when the reply was built. The
-/// whole deployment's `state` is that of its worst node, in the order `down`,
-/// `ok`. A request that named a key gets no `edges`, `placements` or
-/// `orchestrators`.
+/// whole deployment's `state` is the `verdict` on its configured nodes: `ok` when
+/// all answered, `down` when none did and `degraded` otherwise. A request that
+/// named a key gets no `edges`, `placements` or `orchestrators`.
 ///
 /// ## Examples
 ///
@@ -693,14 +727,14 @@ pub fn reasons(nodes: List(Node)) -> List(#(String, String)) {
 /// // deployment.to_json(snapshot, 1_760_190_131_000)
 /// ```
 pub fn to_json(snapshot: Snapshot, as_of_ms: Int) -> JsonValue {
-  let #(self, nodes) = case snapshot {
-    Overview(self:, others:, ..) -> #(self.node, [self, ..others])
-    Selected(self:, nodes:) -> #(self, nodes)
+  let #(self, nodes, asked) = case snapshot {
+    Overview(self:, others:, ..) -> #(self.node, [self, ..others], others)
+    Selected(self:, nodes:) -> #(self, nodes, nodes)
   }
   let head = [
     #("as_of_ms", json.Int(as_of_ms)),
     #("self", json.String(self)),
-    #("state", json.String(state_word(worst(nodes)))),
+    #("state", json.String(verdict_word(verdict(asked)))),
     #(
       "reasons",
       json.Array(

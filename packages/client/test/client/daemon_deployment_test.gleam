@@ -133,7 +133,7 @@ pub fn the_owner_reads_every_configured_node_as_the_daemon_found_it_test() {
       assert field(reply, "event") == json.String("deployment.status")
       let body = field(reply, "body")
       assert field(body, "self") == json.String(self)
-      assert field(body, "state") == json.String("down")
+      assert field(body, "state") == json.String("degraded")
       assert field(body, "reasons")
         == json.Array([
           json.Object([
@@ -231,6 +231,9 @@ pub fn a_node_that_refuses_the_connection_is_down_with_the_reason_test() {
     let #(socket, _) = wire.connect(port, credential, "/v2/control")
     let _hello = wire.frame(socket, within_ms: 1000)
     let body = field(status(socket, 1, json.Object([])), "body")
+
+    // Not one configured node answered, so the deployment itself is down.
+    assert field(body, "state") == json.String("down")
     let assert json.Array(nodes) = field(body, "nodes")
     let assert [_, desk, ..] = nodes
     assert field(desk, "state") == json.String("down")

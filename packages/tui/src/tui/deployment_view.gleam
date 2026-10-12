@@ -158,7 +158,8 @@ pub type Status {
   Status(
     /// The asking daemon's node.
     self: String,
-    /// The worst state among the nodes.
+    /// The whole deployment as the daemon judged it: `ok` when every configured
+    /// node answered, `down` when none did, `degraded` between.
     state: NodeState,
     /// The nodes that are not `ok`, each with a fixed reason word.
     reasons: List(#(String, String)),

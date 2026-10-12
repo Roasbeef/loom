@@ -61,7 +61,7 @@ fn reply() -> json.JsonValue {
   json.Object([
     member("as_of_ms", json.Int(1_760_190_131_000)),
     member("self", json.String("alpha@10.0.0.1")),
-    member("state", json.String("down")),
+    member("state", json.String("degraded")),
     member(
       "reasons",
       json.Array([
@@ -231,7 +231,7 @@ pub fn the_other_refusals_keep_their_code_and_words_test() {
 pub fn a_reply_is_read_into_nodes_edges_executors_and_pools_test() {
   let assert Ok(status) = deployment_view.decode(reply())
   assert status.self == "alpha@10.0.0.1"
-  assert status.state == deployment_view.NodeDown
+  assert status.state == deployment_view.NodeDegraded
   assert status.reasons == [#("exec2@10.0.0.9", "timeout")]
   assert list.map(status.nodes, fn(each) { each.name })
     == ["alpha@10.0.0.1", "bravo", "box", "exec2"]
@@ -346,7 +346,7 @@ pub fn status_prints_the_verdict_the_nodes_and_the_links_test() {
     == string.join(
       [
         "deployment as seen from alpha@10.0.0.1, 3 of 4 nodes answered",
-        "state: down (exec2: timeout)",
+        "state: degraded (exec2: timeout)",
         "",
         "NODE   ROLE          STATE  NOTE",
         "alpha  orchestrator  ok",
