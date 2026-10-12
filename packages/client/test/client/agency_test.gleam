@@ -6221,6 +6221,29 @@ pub fn a_host_with_no_orchestrators_offers_no_placement_test() {
   close(harness)
 }
 
+// The names the tool offers are the ones the session's reach holds, in the
+// order they are configured, and a session that reaches none offers no `on`.
+pub fn the_spawn_tool_offers_the_orchestrators_the_session_reaches_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Up)
+  let gpu = fake_orchestrators.start("gpu", fake_orchestrators.Up)
+  let #(reaching, _queued) =
+    start_remote(Hangs, [box, gpu], fn(config) { config })
+  let alone = start_harness(Hangs)
+  let properties = fn(harness: Harness) {
+    let registry = tool.registry(agent.tools(harness.seam))
+    let assert Ok(spawn) = tool.lookup(registry, "agent_spawn")
+    let assert json.Object(schema) = spawn.schema
+    let assert Ok(json.Object(properties)) = list.key_find(schema, "properties")
+    properties
+  }
+  let assert Ok(json.Object(on)) = list.key_find(properties(reaching), "on")
+  assert list.key_find(on, "enum")
+    == Ok(json.Array([json.String("box"), json.String("gpu")]))
+  assert list.key_find(properties(alone), "on") == Error(Nil)
+  close(reaching)
+  close(alone)
+}
+
 pub fn a_message_to_a_remote_child_is_refused_with_how_it_reports_test() {
   let box = fake_orchestrators.start("box", fake_orchestrators.Up)
   let #(harness, _queued) = start_remote(Hangs, [box], fn(config) { config })

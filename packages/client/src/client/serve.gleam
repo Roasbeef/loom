@@ -114,6 +114,8 @@ import client/remote/owner_port
 import client/remote/protocol
 import client/remote/remote_census
 import client/remote/workspace as remote_workspace
+import client/remote_drain
+import client/remote_reach
 import client/retryconf
 import client/rules
 import client/rulescan
@@ -386,6 +388,11 @@ pub type Settings {
     /// (protocol-change/077). `None` links nothing implicitly: an embedded
     /// host, and a daemon whose `[peers]` table is absent.
     peer_defaults: Option(peer_mail.Defaults),
+    /// How the session reaches the other orchestrators it may start children on
+    /// (protocol-change/084). `None` reaches none, for an embedded host and for a
+    /// daemon with no `[orchestrators]` table, and `agent_spawn` then offers no
+    /// `on`.
+    remote_reach: Option(remote_reach.Reach),
     /// Told the first human prompt the session accepts on its main strand,
     /// once, so the daemon can seed the catalogue's subtitle
     /// (`protocol-change/067`). `None` for a host with no catalogue.
@@ -1422,6 +1429,7 @@ fn resolve(flags: Flags, placement: Placement) -> Result(Settings, String) {
       domain_paths: None,
       peer_directory: None,
       peer_defaults: None,
+      remote_reach: None,
       first_prompt: None,
       profile_desk: None,
       codemode_sockets: None,
@@ -3494,6 +3502,11 @@ fn assemble_in(
   // replaced.
   let outbox_drain_name = address.new_address(namespace)
 
+  // The second drainer instance, over the records of this session's children
+  // on other orchestrators, is reached by name for the same reason: the Agency
+  // rings it when it leaves a record pending, before any drainer exists.
+  let remote_drain_name = address.new_address(namespace)
+
   // The distillation pass, on the same arrangement and for the same
   // reason: it is a supervised child, and `client/distillpass.settled`
   // asks it by name rather than holding a pid that a restart would
@@ -3515,6 +3528,11 @@ fn assemble_in(
         peer_mail.no_defaults,
       ),
       outbox_queued: fn() { peer_outbox_drain.poke(outbox_drain_name) },
+      remote: option.unwrap(
+        settings.remote_reach,
+        remote_reach.none(settings.session_id),
+      ),
+      remote_queued: fn() { peer_outbox_drain.poke(remote_drain_name) },
       models: list.map(settings.catalog.models, fn(entry) {
         #(
           machine_strand.ModelIdentity(
@@ -4484,6 +4502,10 @@ fn assemble_in(
     // pass that reads them again, and a message sent while it restarts is
     // picked up by that pass.
     |> with_peer_outbox_drain(peer_wiring, runtime, outbox_drain_name, logger)
+    // The remote drainer is in this tier for the same reason: the stubs and
+    // run-end rows it resends are facts in the session's own store, so a
+    // replacement begins with a pass that reads them again.
+    |> with_remote_drain(agency_config, runtime, remote_drain_name, logger)
     // Started here rather than inside the boot: the pass dispatches
     // model turns, and this tier starts after the session's own writer
     // lease is held — which is what makes the live session the one file
@@ -4933,6 +4955,35 @@ fn with_peer_outbox_drain(
     peer_outbox_drain.supervised(
       peer_outbox_drain.over(
         peer_outbox_drain.peer_pass(wiring, logger),
+        runtime.effects.timers.after,
+      ),
+      name,
+    ),
+  )
+}
+
+// The second drainer instance, over this session's children on other
+// orchestrators (protocol-change/084). Like the peer-mail one it is always
+// started: whether a session will ever start a child elsewhere is not known at
+// boot, and an idle drainer holds no timer. Its first pass at session open is
+// what resends a spawn that was owed when the daemon last stopped.
+fn with_remote_drain(
+  builder: sup.Builder,
+  agency_config: agency.Config,
+  runtime: api.Runtime,
+  name: address.Address(peer_outbox_drain.Message),
+  logger: Logger,
+) -> sup.Builder {
+  sup.add(
+    builder,
+    peer_outbox_drain.supervised(
+      peer_outbox_drain.over(
+        remote_drain.pass(
+          agency.runtime_supplier(agency_config),
+          agency_config.remote,
+          agency_config.clock,
+          logger,
+        ),
         runtime.effects.timers.after,
       ),
       name,

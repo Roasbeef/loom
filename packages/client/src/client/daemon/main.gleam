@@ -61,7 +61,9 @@ import client/remote/address
 import client/remote/host as executor_host
 import client/remote/orchestrator_port
 import client/remote/remote_peer
+import client/remote/remote_spawner
 import client/remote/workspace
+import client/remote_reach
 import client/remote_spawn
 import client/serve
 import client/session_directory
@@ -799,6 +801,30 @@ pub fn catalogue_holds(
   }
 }
 
+// How one session reaches the other orchestrators it may start children on
+// (protocol-change/084). A daemon with no distribution reaches none. A session
+// may start a child elsewhere only while its owner holds it alone, which is the
+// test default peer links already use, asked at each spawn because inviting a
+// member changes the answer.
+fn reach_of(
+  config: Config,
+  registry: manager.Manager(instance),
+  session: String,
+) -> Option(remote_reach.Reach) {
+  case config.membership {
+    None -> None
+    Some(membership) ->
+      Some(
+        remote_spawner.over_distribution(
+          membership,
+          config.orchestrators,
+          session,
+          fn() { list.contains(manager.unshared_sessions(registry), session) },
+        ),
+      )
+  }
+}
+
 // The directory the control socket asks when its own catalogue misses. With no
 // distribution there is nobody to ask and the directory answers `Unknown`.
 //
@@ -1184,6 +1210,7 @@ pub fn prepare_startup(
                 manager.unshared_sessions(directory)
               }),
             ),
+            remote_reach: reach_of(config, directory, registration.id),
           )
         let settings =
           serve.Settings(
