@@ -1137,6 +1137,24 @@ pub fn moving_sessions_decoder() -> decode.Decoder(MovingSessions) {
   decode.success(MovingSessions(session_id:, op:, peer:))
 }
 
+pub type AllSessionMoves {
+  AllSessionMoves(session_id: String, op: String, peer: String, state: String)
+}
+
+pub fn all_session_moves() {
+  let sql =
+    "SELECT session_id, op, peer, state FROM catalogue_session_moves ORDER BY session_id"
+  #(sql, [], all_session_moves_decoder())
+}
+
+pub fn all_session_moves_decoder() -> decode.Decoder(AllSessionMoves) {
+  use session_id <- decode.field(0, decode.string)
+  use op <- decode.field(1, decode.string)
+  use peer <- decode.field(2, decode.string)
+  use state <- decode.field(3, decode.string)
+  decode.success(AllSessionMoves(session_id:, op:, peer:, state:))
+}
+
 pub type SessionDeletion {
   SessionDeletion(session_id: String)
 }
