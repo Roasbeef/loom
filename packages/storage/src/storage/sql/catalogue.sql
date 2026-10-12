@@ -140,6 +140,9 @@ DELETE FROM catalogue_session_moves WHERE session_id = ?;
 SELECT session_id, op, peer FROM catalogue_session_moves
 WHERE state = 'moving' ORDER BY session_id;
 
+-- name: AllSessionMoves :many
+SELECT session_id, op, peer, state FROM catalogue_session_moves ORDER BY session_id;
+
 -- name: SessionDeletion :many
 SELECT session_id FROM catalogue_session_deletions WHERE session_id = ?;
 
