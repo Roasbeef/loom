@@ -136,7 +136,7 @@ fn drive(pair: remote_pair.Pair, placement: Placement) -> Nil {
           }
           _env, _placement -> Nil
         }
-        remote_pair.converse_for(opened, "measure calls", ["measured"])
+        remote_pair.converse_for(opened, prompt(), ["measured"])
         case native.getenv("LOOM_BENCH_PROFILE"), placement {
           Ok("1"), Local -> process.sleep(20_000)
           _env, _placement -> Nil
@@ -170,9 +170,14 @@ fn drive(pair: remote_pair.Pair, placement: Placement) -> Nil {
 
 fn script(stamps: process.Subject(Stamp)) -> List(provider.Exchange) {
   let first =
-    provider.ComputedExchange(provider.AwaitPrompt("measure calls"), fn(_seen) {
-      invoke(stamps, 0)
-    })
+    provider.ComputedExchange(
+      provider.AwaitPromptPrefix("measure calls"),
+      fn(seen) {
+        let assert [request] = seen as "the initial prompt is the first request"
+        assert request.latest == provider.UserPrompt(prompt())
+        invoke(stamps, 0)
+      },
+    )
   let rest =
     list.repeat(Nil, samples + 1)
     |> list.index_map(fn(_, i) { i })
@@ -217,6 +222,7 @@ fn emit(placement: Placement, elapsed: List(Int)) -> Nil {
     json.Object([
       #("placement", json.String(label)),
       #("command", json.String(command())),
+      #("prompt_bytes", json.Int(string.byte_size(prompt()))),
       #("cold_ms", json.Int(cold)),
       #("p50_ms", json.Int(p50)),
       #("p95_ms", json.Int(p95)),
@@ -243,5 +249,14 @@ fn command() -> String {
   case native.getenv("LOOM_BENCH_TOOLS_WORKLOAD") {
     Ok("delayed") -> "sleep 0.2; printf 'ready\\n'"
     _short -> "printf 'ready\\n'"
+  }
+}
+
+// A fixed 64 KiB context exposes repeated transcript decoding independently
+// of command runtime. It stays below the fixture's request and token bounds.
+fn prompt() -> String {
+  case native.getenv("LOOM_BENCH_TOOLS_WORKLOAD") {
+    Ok("history") -> "measure calls\n" <> string.repeat("history ", 8192)
+    _short -> "measure calls"
   }
 }
