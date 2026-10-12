@@ -8234,8 +8234,8 @@ replaces `[[distribution.peers]]`, and a document with both is refused by
   which accept the atom `live` in place of a peer list). `peer_nodes` is empty in
   ledger mode, which only `client/ledger_reference.peers` reads: it answers
   `Ledgered`, so the tables that name a peer check shape only (slice 1d-ii);
-  `[directory]` is refused beside a ledger (phase 3 derives the members from
-  it). `distribution` and `distribution_plan` must never import a `membership_*` or `ledger_*`
+  `[directory]` is refused beside a ledger (the members are the ledger's, see the
+  phase 3 section). `distribution` and `distribution_plan` must never import a `membership_*` or `ledger_*`
   module (`membership_entry` imports both), which is why the mode is a type in
   `distribution` and the ledger side starts it.
 - `ledger_trust` is the observer that applies the ledger. It runs inside the

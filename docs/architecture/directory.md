@@ -288,8 +288,11 @@ There is no `[directory]` table beside a ledger, and a document with both is
 refused. The members are the active members whose standing is `voter` or `learner`,
 and a node is a member when its own entry says so. The daemon derives them from the
 ledger process at start (`daemon/main.ledger_directory`) and checks that every
-`[orchestrators.<name>]` node is one. The member actor takes them from the ledger
-again on every tick, because nodes are enrolled while the daemon runs.
+`[orchestrators.<name>]` node is one. The orchestrator rows the daemon derives from
+the ledger need no such check: a member lists only the orchestrators that are
+members too (`client/ledger_rows`), so the rule of protocol-change/083 holds for
+them by construction. The member actor takes the members from the ledger again on
+every tick, because nodes are enrolled while the daemon runs.
 
 ```mermaid
 flowchart LR
