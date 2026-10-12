@@ -5675,10 +5675,15 @@ fn second_call(caller: Caller, index: Int) -> Caller {
 
 pub fn a_remote_spawn_is_written_ahead_and_the_child_is_a_descendant_test() {
   let box = fake_orchestrators.start("box", fake_orchestrators.Up)
-  let #(harness, _queued) = start_remote(Hangs, [box], fn(config) { config })
+  let #(harness, queued) = start_remote(Hangs, [box], fn(config) { config })
   let caller = caller_on("main", "turn-1:tools", 0)
   let assert Ok(spawned) = harness.seam.spawn(caller, on_box("run suite"))
     as "the orchestrator answers the spawn"
+
+  // A running child is owed a look by the drainer, so it is rung for the stub
+  // that now records one.
+  let assert Ok(Nil) = process.receive(queued, 100)
+    as "the drainer is rung for the running child"
 
   // The orchestrator made one child, and the handle the model holds is its.
   let seen = fake_orchestrators.report(box)
@@ -5895,8 +5900,9 @@ pub fn a_refusal_heard_by_the_model_does_not_orphan_a_later_child_test() {
       remote_reach.spawn_ms,
     )
   let key = remote_child.stub_key(agent.call_site_digest(caller))
+  let #(now, _clock) = clock.read(harness.config.clock)
   let assert Ok(moved) =
-    remote_child.spawned(harness.runtime, key, refused, answer, 1000)
+    remote_child.spawned(harness.runtime, key, refused, answer, now)
 
   // The stub took the child, and the lineage cell written with it agrees.
   let assert remote_child.Spawned(placed) = moved.state
@@ -5932,7 +5938,8 @@ pub fn the_drainer_adopts_a_spawn_the_orchestrator_already_made_test() {
     list.map(stubs_of(harness), fn(stub) { stub.state })
 
   fake_orchestrators.set_mode(box, fake_orchestrators.Up)
-  assert drain(harness) == peer_outbox_drain.Clear
+  assert drain(harness) == peer_outbox_drain.Owed(peer_outbox_drain.Quick)
+    as "the adopted child is running, so the drainer keeps asking after it"
 
   // The resend was answered with the child that exists: one child, now known.
   assert list.length(fake_orchestrators.report(box).children) == 1
@@ -5994,6 +6001,128 @@ pub fn a_pass_asks_a_silent_orchestrator_once_however_many_stubs_it_owes_test() 
   close(harness)
 }
 
+pub fn a_child_that_finishes_unwaited_is_settled_by_a_pass_and_frees_its_slot_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Up)
+  let #(harness, _queued) =
+    start_remote(Hangs, [box], fn(config) {
+      agency.Config(..config, fan_out: 2)
+    })
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(first) = harness.seam.spawn(caller, on_box("first"))
+  let assert Ok(second) =
+    harness.seam.spawn(second_call(caller, 1), on_box("second"))
+
+  // Both children are running and hold the parent's two slots.
+  let assert Error(agent.FanOutCapReached(live: 2, cap: 2)) =
+    harness.seam.spawn(second_call(caller, 2), a_spawn("local"))
+
+  // A pass with nothing finished sends one zero-window join for the two
+  // children, because they share an orchestrator and a parent, and stays owed
+  // so the drainer keeps ticking while they run.
+  assert drain(harness) == peer_outbox_drain.Owed(peer_outbox_drain.Quick)
+  assert fake_orchestrators.report(box).joins == 1
+  assert fake_orchestrators.report(box).join_windows == [0]
+
+  // One finishes with nobody waiting on it. The next pass records it, and the
+  // other keeps the drainer owed.
+  fake_orchestrators.settle(box, first.handle)
+  assert drain(harness) == peer_outbox_drain.Owed(peer_outbox_drain.Quick)
+  let assert Ok(settled) =
+    remote_child.find(
+      harness.runtime,
+      remote_child.stub_key(agent.call_site_digest(caller)),
+    )
+  let assert Some(remote_child.Stub(
+    state: remote_child.Settled(usage:, outcome: agent.Completed, ..),
+    ..,
+  )) = settled
+  assert usage.input == 100
+
+  // The slot is free again without any wait.
+  let assert Ok(_) =
+    harness.seam.spawn(second_call(caller, 2), a_spawn("local"))
+
+  // When the last one finishes the pass owes nothing, and the next sends no join
+  // at all: the drainer is idle until a new child is started.
+  fake_orchestrators.settle(box, second.handle)
+  assert drain(harness) == peer_outbox_drain.Clear
+  let joins = fake_orchestrators.report(box).joins
+  assert drain(harness) == peer_outbox_drain.Clear
+  assert fake_orchestrators.report(box).joins == joins
+
+  // The stub does not keep the report; a wait reads it from the orchestrator.
+  let assert Ok([agent.Ready(report:, ..)]) =
+    harness.seam.wait(caller, [first.handle], 100)
+  assert report == "done on " <> first.strand
+  close(harness)
+}
+
+pub fn a_stub_past_its_deadline_frees_its_slot_while_the_orchestrator_is_down_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Up)
+  let #(harness, _queued) =
+    start_remote(Hangs, [box], fn(config) {
+      agency.Config(..config, fan_out: 1)
+    })
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(spawned) = harness.seam.spawn(caller, on_box("overdue"))
+  let assert Error(agent.FanOutCapReached(live: 1, cap: 1)) =
+    harness.seam.spawn(second_call(caller, 1), a_spawn("local"))
+
+  // The child's deadline falls in the past, as it does when a child runs to its
+  // budget with nobody waiting, and the machine it runs on is unreachable.
+  let key = remote_child.stub_key(agent.call_site_digest(caller))
+  let assert Ok(Some(stub)) = remote_child.find(harness.runtime, key)
+  let assert remote_child.Spawned(placed) = stub.state
+  let overdue =
+    remote_child.Stub(
+      ..stub,
+      state: remote_child.Spawned(
+        remote_child.Placed(..placed, deadline_ms: 1000),
+      ),
+    )
+  let assert Ok(Nil) =
+    api.put_reserved_fact(harness.runtime, key, remote_child.encode(overdue))
+  fake_orchestrators.set_mode(box, fake_orchestrators.Down)
+
+  // The slot is free by the clock alone, and the roster says why the child is
+  // not shown as running.
+  let assert Ok(_) =
+    harness.seam.spawn(second_call(caller, 1), a_spawn("local"))
+  let assert Ok(peers) = harness.seam.roster(caller)
+  assert list.any(peers, fn(peer) {
+    peer.handle == Some(spawned.handle)
+    && peer.placement
+    == agent.Elsewhere(orchestrator: "box", standing: agent.PastDeadline)
+  })
+
+  // Nothing is running, so the drainer owes nothing and does not ask the
+  // unreachable orchestrator.
+  assert drain(harness) == peer_outbox_drain.Clear
+  assert fake_orchestrators.report(box).joins == 0
+  close(harness)
+}
+
+pub fn a_pass_leaves_the_children_of_a_silent_orchestrator_owed_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Up)
+  let #(harness, _queued) = start_remote(Hangs, [box], fn(config) { config })
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(spawned) = harness.seam.spawn(caller, on_box("unreachable"))
+  fake_orchestrators.settle(box, spawned.handle)
+  fake_orchestrators.set_mode(box, fake_orchestrators.Down)
+
+  // The child may have finished, but nobody can say so, so it stays running in
+  // the record and the drainer keeps ticking.
+  assert drain(harness) == peer_outbox_drain.Owed(peer_outbox_drain.Quick)
+  let assert [stub] = stubs_of(harness)
+  let assert remote_child.Spawned(_) = stub.state
+
+  fake_orchestrators.set_mode(box, fake_orchestrators.Up)
+  assert drain(harness) == peer_outbox_drain.Clear
+  let assert [stub] = stubs_of(harness)
+  let assert remote_child.Settled(..) = stub.state
+  close(harness)
+}
+
 pub fn an_empty_pass_owes_nothing_test() {
   let box = fake_orchestrators.start("box", fake_orchestrators.Up)
   let #(harness, _queued) = start_remote(Hangs, [box], fn(config) { config })
@@ -6023,7 +6152,7 @@ pub fn a_run_end_sends_nothing_to_the_orchestrator_and_the_child_stays_test() {
   let assert [stub] = stubs_of(harness)
   let assert remote_child.Spawned(placed) = stub.state
   assert placed.handle == spawned.handle
-  assert remote_child.is_live(stub)
+  assert remote_child.is_live(stub, placed.deadline_ms - 1)
   let assert Error(agent.FanOutCapReached(live: 1, cap: 1)) =
     harness.seam.spawn(second_call(caller, 1), a_spawn("local"))
   close(harness)

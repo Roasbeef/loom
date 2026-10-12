@@ -849,6 +849,7 @@ pub fn a_roster_shows_where_a_remote_child_runs_and_how_its_record_stands_test()
     entry(agent.Running, option.None, option.Some(handle)),
     entry(agent.Finished, option.Some(agent.Completed), option.Some(handle)),
     entry(agent.Declined(reason: "the cap is 2"), option.None, option.None),
+    entry(agent.PastDeadline, option.None, option.Some(handle)),
   ]
   let agency =
     agent.Agency(..echoing_agency(), roster: fn(_caller) { Ok(roster) })
@@ -864,6 +865,7 @@ pub fn a_roster_shows_where_a_remote_child_runs_and_how_its_record_stands_test()
   )
   assert string.contains(text, "— completed on `box`")
   assert string.contains(text, "refused by `box`: the cap is 2")
+  assert string.contains(text, "— past its deadline, outcome not yet read")
 
   let assert option.Some(json.Object(details)) = outcome.details
   let assert Ok(json.Array(peers)) = list.key_find(details, "peers")
@@ -878,6 +880,7 @@ pub fn a_roster_shows_where_a_remote_child_runs_and_how_its_record_stands_test()
       Ok(json.String("running")),
       Ok(json.String("settled")),
       Ok(json.String("refused")),
+      Ok(json.String("past_deadline")),
     ]
 }
 

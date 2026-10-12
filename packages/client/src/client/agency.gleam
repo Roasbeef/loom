@@ -1523,7 +1523,8 @@ fn check_capacity(
   ledger: Dict(String, Lineage),
   caller: Caller,
 ) -> Result(Nil, Refusal) {
-  use stubs <- result.try(live_stubs(runtime))
+  let #(now, _clock) = clock.read(config.clock)
+  use stubs <- result.try(live_stubs(runtime, now))
   let live_cells =
     list.filter(dict.values(ledger), fn(cell) { is_live(runtime, cell) })
 
@@ -2406,17 +2407,20 @@ fn roster(config: Config, caller: Caller) -> Result(List(Peer), Refusal) {
     |> list.sort(fn(a, b) { string.compare(a.strand, b.strand) })
     |> list.try_map(fn(cell) { current_peer(runtime, cell) }),
   )
-  use elsewhere <- result.map(remote_peers(runtime, caller))
+  let #(now, _clock) = clock.read(config.clock)
+  use elsewhere <- result.map(remote_peers(runtime, caller, now))
   list.flatten([parent, children, elsewhere])
 }
 
 // The caller's children on other orchestrators, from the stubs it wrote. A
 // stub is the whole record of such a child: the lineage cell only records the
 // edge, and nothing in this session runs the child, so how it stands is how
-// the last answer left the stub.
+// the last answer left the stub, read at `now` so that a child whose deadline
+// has passed is not shown as running.
 fn remote_peers(
   runtime: api.Runtime,
   caller: Caller,
+  now: Int,
 ) -> Result(List(Peer), Refusal) {
   use kept <- result.map(
     remote_child.all(runtime) |> result.map_error(agent.PlaneFailed),
@@ -2424,11 +2428,11 @@ fn remote_peers(
   kept
   |> list.map(fn(entry) { entry.stub })
   |> list.filter(fn(stub) { stub.strand == caller.strand })
-  |> list.map(remote_peer)
+  |> list.map(remote_peer(_, now))
   |> list.sort(fn(a, b) { string.compare(a.strand, b.strand) })
 }
 
-fn remote_peer(stub: remote_child.Stub) -> Peer {
+fn remote_peer(stub: remote_child.Stub, now: Int) -> Peer {
   let orchestrator = stub.orchestrator
   let elsewhere = fn(standing) { agent.Elsewhere(orchestrator:, standing:) }
   case stub.state {
@@ -2443,7 +2447,10 @@ fn remote_peer(stub: remote_child.Stub) -> Peer {
         placement: elsewhere(agent.AwaitingAnswer),
       )
     remote_child.Spawned(placed:) ->
-      placed_peer(placed, None, elsewhere(agent.Running))
+      case remote_child.is_live(stub, now) {
+        True -> placed_peer(placed, None, elsewhere(agent.Running))
+        False -> placed_peer(placed, None, elsewhere(agent.PastDeadline))
+      }
     remote_child.Settled(placed:, outcome:, ..) ->
       placed_peer(placed, Some(outcome), elsewhere(agent.Finished))
     remote_child.Refused(reason:) ->
@@ -2602,17 +2609,20 @@ fn is_live(runtime: api.Runtime, cell: Lineage) -> Bool {
   }
 }
 
-// The stubs whose child is, or may be, running. Unreadable stubs refuse the
-// spawn: the count is a cap, and a cap that reads nothing as zero is no cap.
+// The stubs whose child is, or may be, running at `now`. A child whose deadline
+// has passed is not counted, whether or not anything has settled its stub.
+// Unreadable stubs refuse the spawn: the count is a cap, and a cap that reads
+// nothing as zero is no cap.
 fn live_stubs(
   runtime: api.Runtime,
+  now: Int,
 ) -> Result(List(remote_child.Stub), Refusal) {
   use kept <- result.map(
     remote_child.all(runtime) |> result.map_error(agent.PlaneFailed),
   )
   kept
   |> list.map(fn(entry) { entry.stub })
-  |> list.filter(remote_child.is_live)
+  |> list.filter(remote_child.is_live(_, now))
 }
 
 // A record and its CAS position travel together. Legacy brief runs have no

@@ -68,6 +68,9 @@ pub type Report {
     children: List(Spawned),
     /// The number of `Join` calls sent to it.
     joins: Int,
+    /// The window each of those `Join`s asked it to wait, in milliseconds, in
+    /// the same order.
+    join_windows: List(Int),
   )
 }
 
@@ -101,6 +104,7 @@ type State {
     windows: List(Int),
     children: Dict(String, Spawned),
     joins: Int,
+    join_windows: List(Int),
     settled: List(Handle),
   )
 }
@@ -121,6 +125,7 @@ pub fn start(name: String, mode: Mode) -> Box {
         windows: [],
         children: dict.new(),
         joins: 0,
+        join_windows: [],
         settled: [],
       ),
     )
@@ -200,6 +205,7 @@ fn handle(state: State, call: Call) -> actor.Next(State, Call) {
           windows: list.reverse(state.windows),
           children: dict.values(state.children),
           joins: state.joins,
+          join_windows: list.reverse(state.join_windows),
         ),
       )
       actor.continue(state)
@@ -324,7 +330,11 @@ fn join(
   window_ms: Int,
   reply: Subject(Result(List(Joined), peer_mail.Failure)),
 ) -> actor.Next(State, Call) {
-  let state = State(..state, joins: state.joins + 1)
+  let state =
+    State(..state, joins: state.joins + 1, join_windows: [
+      window_ms,
+      ..state.join_windows
+    ])
   case state.mode {
     Down | DownFirst(..) -> {
       process.send(reply, Error(peer_mail.Unreachable))

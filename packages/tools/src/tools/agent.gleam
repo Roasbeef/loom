@@ -566,6 +566,10 @@ pub type Standing {
   /// The orchestrator started the child and nothing has reported it settled.
   Running
 
+  /// The child's deadline has passed and nothing has reported how it ended. It
+  /// is no longer running; `agent_wait` reads its outcome from the orchestrator.
+  PastDeadline
+
   /// A join reported the child settled; the entry's `outcome` says how.
   Finished
 
@@ -2371,6 +2375,8 @@ fn peer_text(peer: Peer) -> String {
       <> "` has not answered the spawn, so the child may exist"
     Elsewhere(orchestrator:, standing: Declined(reason:)), _ ->
       " — refused by `" <> orchestrator <> "`: " <> reason
+    Elsewhere(standing: PastDeadline, ..), _ ->
+      " — past its deadline, outcome not yet read; `agent_wait` reads it"
     Here, None | Elsewhere(..), None -> " — working"
     Here, Some(outcome) | Elsewhere(..), Some(outcome) ->
       " — " <> outcome_text(outcome)
@@ -2433,7 +2439,7 @@ fn placement_json(placement: Placement) -> List(#(String, JsonValue)) {
       #("standing", json.String(standing_text(standing))),
       ..case standing {
         Declined(reason:) -> [#("reason", json.String(reason))]
-        AwaitingAnswer | Running | Finished -> []
+        AwaitingAnswer | Running | PastDeadline | Finished -> []
       }
     ]
   }
@@ -2443,6 +2449,7 @@ fn standing_text(standing: Standing) -> String {
   case standing {
     AwaitingAnswer -> "unknown"
     Running -> "running"
+    PastDeadline -> "past_deadline"
     Finished -> "settled"
     Declined(..) -> "refused"
   }

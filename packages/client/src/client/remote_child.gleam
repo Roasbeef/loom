@@ -41,6 +41,16 @@
 //// before the stub, so that by the time anything shows the model a handle the
 //// addressing rule already holds the child as a descendant.
 ////
+//// ## Liveness
+////
+//// A `Spawned` stub counts against the fan-out caps while its child may be
+//// running, and `is_live` says so from the stub and the time alone: a child
+//// whose deadline has passed is not running, so a stub frees its slot by
+//// deadline without a network call. A child that finishes sooner is settled by a
+//// join, which a wait sends or the drainer sends when nobody waits
+//// (`client/remote_drain`). The stub does not keep the join's report: a later
+//// `agent_wait` reads it again from the other orchestrator.
+////
 //// ## Flow
 ////
 //// `admit` → `spawned` | `refused` → `settled`
@@ -125,7 +135,11 @@ pub type Placed {
     /// When the child's deadline falls, as an instant on this session's clock.
     /// The other orchestrator reports a duration and clocks never cross as
     /// instants, so this is the time left at the moment of the answer added to
-    /// the time the answer was read, which makes it a display value.
+    /// the time the answer was read. It is later than the other orchestrator's
+    /// own deadline by the time the answer took to arrive, which errs toward
+    /// counting the child as running for a moment too long. It is what shows in
+    /// the roster, and `is_live` reads it to stop counting a child that can no
+    /// longer be running.
     deadline_ms: Int,
   )
 }
@@ -156,18 +170,23 @@ pub fn stub_key(digest: String) -> String {
   api.remote_child_fact_prefix <> digest
 }
 
-/// Whether a stub still counts against the fan-out caps: its child is, or may
-/// be, running. A stub whose remote has not answered counts, which errs toward
-/// refusing a spawn.
+/// Whether a stub still counts against the fan-out caps at `now`: its child is,
+/// or may be, running. A stub whose remote has not answered counts, which errs
+/// toward refusing a spawn. A `Spawned` stub counts until its child's deadline
+/// passes, and after that it does not, whatever the other orchestrator says or
+/// cannot be asked: the deadline is the bound on how long a child runs, so a
+/// stub frees its slot by the clock alone, with no message to a machine that may
+/// be down.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert remote_child.is_live(stub_in_state(remote_child.Requested))
+/// assert remote_child.is_live(stub_in_state(remote_child.Requested), 1000)
 /// ```
-pub fn is_live(stub: Stub) -> Bool {
+pub fn is_live(stub: Stub, now: Int) -> Bool {
   case stub.state {
-    Requested | Spawned(..) -> True
+    Requested -> True
+    Spawned(placed:) -> placed.deadline_ms > now
     Settled(..) | Refused(..) -> False
   }
 }

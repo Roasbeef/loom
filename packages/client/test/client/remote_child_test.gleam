@@ -143,12 +143,30 @@ pub fn a_stub_is_kept_under_the_reserved_prefix_and_its_call_site_digest_test() 
 }
 
 pub fn only_a_stub_whose_child_may_be_running_is_live_test() {
-  assert remote_child.is_live(a_stub(remote_child.Requested))
-  assert remote_child.is_live(a_stub(remote_child.Spawned(a_placed())))
+  let before = a_placed().deadline_ms - 1
+  assert remote_child.is_live(a_stub(remote_child.Requested), before)
+  assert remote_child.is_live(a_stub(remote_child.Spawned(a_placed())), before)
   assert !remote_child.is_live(
     a_stub(remote_child.Settled(a_placed(), agent.Completed, a_usage())),
+    before,
   )
-  assert !remote_child.is_live(a_stub(remote_child.Refused("no room")))
+  assert !remote_child.is_live(a_stub(remote_child.Refused("no room")), before)
+}
+
+// The deadline is the bound on how long a child runs, so a stub frees its slot
+// by the clock alone: at the deadline and after it, whatever was or was not
+// heard from the other orchestrator. A stub whose spawn is still unanswered has
+// no deadline and keeps counting.
+pub fn a_spawned_stub_stops_being_live_at_its_childs_deadline_test() {
+  let stub = a_stub(remote_child.Spawned(a_placed()))
+  let deadline = a_placed().deadline_ms
+  assert remote_child.is_live(stub, deadline - 1)
+  assert !remote_child.is_live(stub, deadline)
+  assert !remote_child.is_live(stub, deadline + 600_000)
+  assert remote_child.is_live(
+    a_stub(remote_child.Requested),
+    deadline + 600_000,
+  )
 }
 
 pub fn a_message_about_a_stub_names_this_session_and_the_parent_strand_test() {
