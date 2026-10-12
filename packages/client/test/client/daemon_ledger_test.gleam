@@ -1,0 +1,181 @@
+//// The owner's `ledger.*` commands across the real control socket
+//// (protocol-change/086). The registry is real, the session assembly is inert
+//// and the ledger is a fixture-scheme ledger over a real file, so these tests
+//// prove what the socket does: that a reply has the shape a client decodes,
+//// that a refused line names its step, that a daemon with no ledger says so,
+//// and that a request outside the bounds is refused before the ledger sees it.
+
+import client/daemon/limits
+import client/daemon_server_test as wire
+import client/deployment
+import client/ledger_control.{Handle}
+import client/session_directory
+import client/session_movers
+import core/json
+import gleam/bit_array
+import gleam/list
+import gleam/option.{None, Some}
+import support/ledger_rig as rig
+import support/membership_log as log
+
+fn field(value, key) {
+  let assert json.Object(fields) = value as "envelope is an object"
+  let assert Ok(value) = list.key_find(fields, key)
+    as "expected field is present"
+  value
+}
+
+fn text(line: BitArray) -> String {
+  let assert Ok(line) = bit_array.to_string(line)
+  line
+}
+
+// Runs `run` against a daemon whose ledger holds genesis and `hub`, with the
+// lines of the entries that come next: `laptop` enrolled, then revoked.
+fn ledgered(run: fn(Int, String, List(String)) -> Nil) {
+  let history = log.genesis() |> log.enroll("hub", [])
+  let started = rig.start("wire", log.lines(history), rig.patient, [])
+  let next = history |> log.enroll("laptop", ["hub"]) |> log.revoke("laptop")
+  let assert [_, _, laptop, gone] = log.lines(next)
+  wire.fixture_with_ledger(
+    limits.defaults,
+    fn(_) { None },
+    fn(record, _domain, _services, _owner, _directory) { Ok(record.id) },
+    session_directory.none(),
+    session_movers.idle(),
+    deployment.alone("nonode@nohost"),
+    Some(Handle(
+      service: started.service,
+      local: "loom@hub.example.net",
+      name: "hub",
+    )),
+    fn(_, _ready, port, credential) {
+      run(port, credential, [text(laptop), text(gone)])
+    },
+  )
+}
+
+fn ask(socket, id, command, body) {
+  wire.send(socket, id, command, body, within_ms: 6000)
+}
+
+pub fn the_owner_appends_reads_and_asks_for_the_status_test() {
+  ledgered(fn(port, credential, lines) {
+    let #(socket, _) = wire.connect(port, credential, "/v2/control")
+    let _hello = wire.frame(socket, within_ms: 1000)
+
+    let reply =
+      ask(
+        socket,
+        1,
+        "ledger.append",
+        json.Object([#("lines", json.Array(list.map(lines, json.String)))]),
+      )
+    assert field(reply, "event") == json.String("ledger.append")
+    let assert Ok(applied) = ledger_control.decode_applied(field(reply, "body"))
+    assert applied.applied == 2
+    assert applied.head.seq == 3
+
+    let reply =
+      ask(
+        socket,
+        2,
+        "ledger.entries",
+        json.Object([#("after", json.Int(1)), #("limit", json.Int(64))]),
+      )
+    assert field(reply, "event") == json.String("ledger.entries")
+    let assert Ok(page) = ledger_control.decode_entries(field(reply, "body"))
+    assert page.lines == lines
+    assert page.head_seq == 3
+
+    let reply = ask(socket, 3, "ledger.status", json.Object([]))
+    assert field(reply, "event") == json.String("ledger.status")
+    let assert Ok(status) = ledger_control.decode_status(field(reply, "body"))
+    assert status.self_name == "hub"
+    assert status.head.seq == 3
+  })
+}
+
+pub fn a_refused_line_is_ledger_invalid_and_names_its_step_test() {
+  ledgered(fn(port, credential, lines) {
+    let #(socket, _) = wire.connect(port, credential, "/v2/control")
+    let _hello = wire.frame(socket, within_ms: 1000)
+    let assert [_, gone] = lines
+
+    // The second entry before the first is a gap.
+    let reply =
+      ask(
+        socket,
+        1,
+        "ledger.append",
+        json.Object([#("lines", json.Array([json.String(gone)]))]),
+      )
+    assert field(reply, "event") == json.String("error")
+    let body = field(reply, "body")
+    assert field(body, "code") == json.String("ledger_invalid")
+    assert field(body, "message") == json.String("gap")
+
+    // The refusal is the connection's own and the daemon goes on serving.
+    let reply = ask(socket, 2, "ledger.status", json.Object([]))
+    assert field(reply, "event") == json.String("ledger.status")
+  })
+}
+
+pub fn a_request_outside_the_bounds_never_reaches_the_ledger_test() {
+  ledgered(fn(port, credential, _lines) {
+    let #(socket, _) = wire.connect(port, credential, "/v2/control")
+    let _hello = wire.frame(socket, within_ms: 1000)
+    let refused = fn(id, command, body) {
+      let reply = ask(socket, id, command, body)
+      assert field(field(reply, "body"), "code") == json.String("bad_request")
+    }
+    refused(1, "ledger.append", json.Object([#("lines", json.Array([]))]))
+    refused(
+      2,
+      "ledger.append",
+      json.Object([
+        #("lines", json.Array(list.repeat(json.String("x"), 65))),
+      ]),
+    )
+    refused(
+      3,
+      "ledger.append",
+      json.Object([#("lines", json.Array([json.Int(1)]))]),
+    )
+    refused(
+      4,
+      "ledger.entries",
+      json.Object([#("after", json.Int(-1)), #("limit", json.Int(1))]),
+    )
+    refused(
+      5,
+      "ledger.entries",
+      json.Object([#("after", json.Int(0)), #("limit", json.Int(0))]),
+    )
+    refused(6, "ledger.entries", json.Object([]))
+  })
+}
+
+pub fn a_daemon_with_no_ledger_answers_not_found_test() {
+  wire.fixture_moving(
+    limits.defaults,
+    fn(_) { None },
+    fn(record, _domain, _services, _owner, _directory) { Ok(record.id) },
+    session_directory.none(),
+    session_movers.idle(),
+    fn(_, _ready, port, credential) {
+      let #(socket, _) = wire.connect(port, credential, "/v2/control")
+      let _hello = wire.frame(socket, within_ms: 1000)
+      let reply = ask(socket, 1, "ledger.status", json.Object([]))
+      assert field(field(reply, "body"), "code") == json.String("not_found")
+      let reply =
+        ask(
+          socket,
+          2,
+          "ledger.append",
+          json.Object([#("lines", json.Array([json.String("x")]))]),
+        )
+      assert field(field(reply, "body"), "code") == json.String("not_found")
+    },
+  )
+}

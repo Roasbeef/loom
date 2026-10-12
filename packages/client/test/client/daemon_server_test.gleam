@@ -12,6 +12,7 @@ import client/daemon/server
 import client/deployment
 import client/executors
 import client/gateway_test
+import client/ledger_control
 import client/peer_mail
 import client/peers
 import client/pools
@@ -173,6 +174,37 @@ pub fn fixture_reaching(
   reach: deployment.Reach,
   run,
 ) {
+  fixture_with_ledger(
+    connection_limits,
+    peer_endpoint,
+    build,
+    asked,
+    movers,
+    reach,
+    None,
+    run,
+  )
+}
+
+/// `fixture_reaching` with the membership ledger the `ledger.*` commands read,
+/// for a test of them. `None` is a daemon with no ledger.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fixture_with_ledger(limits.defaults, fn(_) { None }, build, stub, movers, reach, Some(handle), run)
+/// ```
+@internal
+pub fn fixture_with_ledger(
+  connection_limits: limits.Limits,
+  peer_endpoint,
+  build,
+  asked: session_directory.Directory,
+  movers: session_movers.Control,
+  reach: deployment.Reach,
+  ledger: option.Option(ledger_control.Handle),
+  run,
+) {
   let directory =
     "build/test_db/daemon-wire-"
     <> bit_array.base16_encode(token.production_entropy()(8))
@@ -211,6 +243,7 @@ pub fn fixture_reaching(
       directory: asked,
       movers:,
       deployment: reach,
+      ledger:,
       generator: fn() { ids.generator(clock.fixed(1_700_000_000_000), 123) },
       session_upgrade: fn(_, _) {
         response.new(501)
@@ -2012,6 +2045,7 @@ pub fn a_homes_activity_read_is_a_state_word_for_each_held_answer_test() {
           directory: session_directory.none(),
           movers: session_movers.idle(),
           deployment: deployment.alone("nonode@nohost"),
+          ledger: None,
           generator: fn() { ids.generator(clock.fixed(1_700_000_000_000), 123) },
           session_upgrade: fn(_, _) {
             response.new(501)

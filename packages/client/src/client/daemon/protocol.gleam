@@ -279,6 +279,19 @@ pub type Command {
   /// reply to the nodes it names; it is looked up in the configuration and is
   /// never itself connected to.
   DeploymentStatus(node: Option(String))
+
+  /// Offers lines to the daemon's membership ledger, in order, through the
+  /// acceptance procedure a peer's line goes through (protocol-change/086).
+  /// Owner-only. A daemon with no ledger answers `not_found`.
+  LedgerAppend(lines: List(String))
+
+  /// Reads the ledger's lines after a sequence number, the control-protocol twin
+  /// of a peer's `Pull`. Owner-only.
+  LedgerEntries(after: Int, limit: Int)
+
+  /// Reports the ledger's head, this node's standing, its members' reported
+  /// heads and the last refusal. Owner-only.
+  LedgerStatus
 }
 
 /// What an invitation or rotation gives the member, as the request chose it.
@@ -650,7 +663,55 @@ fn decode_fields(
     "daemon.shutdown" -> result.map(text_field(fields, "epoch", 256), Shutdown)
     "directory.status" -> Ok(DirectoryStatus)
     "deployment.status" -> result.map(node_field(fields), DeploymentStatus)
+    "ledger.append" -> result.map(ledger_lines(fields), LedgerAppend)
+    "ledger.entries" -> ledger_entries(fields)
+    "ledger.status" -> Ok(LedgerStatus)
     _unknown -> Error("unsupported control command")
+  }
+}
+
+// The lines of a `ledger.append`: a non-empty array of at most 64 strings, each
+// of at most 8 KiB, which is more than the 4 KiB body bound allows once
+// encoded. The ledger judges the lines themselves; this reader bounds their
+// shape and number.
+fn ledger_lines(
+  fields: List(#(String, JsonValue)),
+) -> Result(List(String), String) {
+  case list.key_find(fields, "lines") {
+    Ok(json.Array(items)) -> {
+      use lines <- result.try(
+        list.try_map(items, fn(item) {
+          case item {
+            json.String(line) ->
+              case bit_array.byte_size(bit_array.from_string(line)) <= 8192 {
+                True -> Ok(line)
+                False -> Error("a ledger line is longer than 8192 bytes")
+              }
+            _ -> Error("lines must be an array of strings")
+          }
+        }),
+      )
+      case list.length(lines) {
+        0 -> Error("lines must hold at least one line")
+        count if count > 64 -> Error("lines holds more than 64 lines")
+        _ -> Ok(lines)
+      }
+    }
+    _ -> Error("lines must be an array of strings")
+  }
+}
+
+// `after` is a sequence number from 0 up (the sequence number the asker holds),
+// and `limit` is any positive integer: the ledger clamps it to a page.
+fn ledger_entries(
+  fields: List(#(String, JsonValue)),
+) -> Result(Command, String) {
+  case list.key_find(fields, "after"), list.key_find(fields, "limit") {
+    Ok(json.Int(after)), Ok(json.Int(limit))
+      if after >= 0 && after < 100_000 && limit >= 1 && limit <= 100_000
+    -> Ok(LedgerEntries(after, limit))
+    _, _ ->
+      Error("after must be a sequence number and limit a positive integer")
   }
 }
 

@@ -53,7 +53,7 @@ import client/executors
 import client/host
 import client/internal/ffi_os
 import client/ledger_boot
-import client/ledger_service
+import client/ledger_control
 import client/orchestrators
 import client/peer_defaults
 import client/peer_mail
@@ -155,11 +155,12 @@ pub type Config {
     /// reaches the peers it asks, and a daemon without it asks nobody and
     /// answers nobody.
     membership: Option(distribution.Membership),
-    /// The membership ledger's process, when `[distribution]` names a ledger
-    /// (protocol-change/086). `start_distribution` started it before
-    /// distribution, so its pin table existed before the listener did. The
-    /// control commands that append and read entries go through this handle.
-    ledger: Option(ledger_service.Service),
+    /// The membership ledger's process with this node's names, when
+    /// `[distribution]` names a ledger (protocol-change/086).
+    /// `start_distribution` started the process before distribution, so its pin
+    /// table existed before the listener did. The `ledger.*` control commands
+    /// append and read entries through this handle.
+    ledger: Option(ledger_control.Handle),
   )
 }
 
@@ -489,6 +490,21 @@ fn start_distribution(
 // a root learns it at startup and not from the first session that attaches.
 // The plane factory checks again at every attach, because a directory can go
 // away in between.
+// The handle the `ledger.*` commands use: the process and this node's names. The
+// node is distributed by now, so its own name is the VM's.
+fn ledger_handle(
+  booted: Option(ledger_boot.Booted),
+  configuration: String,
+) -> Result(Option(ledger_control.Handle), String) {
+  case option.then(booted, fn(started) { started.ledger }) {
+    None -> Ok(None)
+    Some(service) ->
+      ledger_control.handle(service, atom.to_string(node.name(node.self())))
+      |> result.map(Some)
+      |> result.map_error(fn(reason) { configuration <> ": " <> reason })
+  }
+}
+
 fn existing_roots(served: List(workspaces.Workspace)) -> Result(Nil, String) {
   list.try_each(served, fn(workspace) {
     bootstrap.canonical_directory(workspace.root)
@@ -1184,6 +1200,7 @@ pub fn prepare_startup(
     directory_settings.cluster(directory),
     logger,
   ))
+  use ledger <- result.try(ledger_handle(booted, configuration))
   let config =
     Config(
       ..config,
@@ -1196,7 +1213,7 @@ pub fn prepare_startup(
       directory:,
       spawners:,
       membership: option.map(booted, fn(started) { started.membership }),
-      ledger: option.then(booted, fn(started) { started.ledger }),
+      ledger:,
     )
   root.start(
     root.Config(
@@ -1607,6 +1624,7 @@ pub fn listen_moving(
       directory: session_directory_of(config, ready.registry),
       movers:,
       deployment: deployment_reach(config),
+      ledger: config.ledger,
       generator: fn() {
         ids.generator(
           clock.from_function(ffi_os.system_time_ms),
