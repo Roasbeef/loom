@@ -561,12 +561,11 @@ pub fn a_slow_answer_to_any_of_the_three_does_not_keep_a_lookup_waiting_test() {
       )
     })
 
-  // While they run, ownership is answered inside a tenth of that. A port that
-  // ran any of them in its own turn would answer this after it.
+  // While they run, ownership is answered inside its 500 ms deadline, half of
+  // what each of them takes. A port that ran any of them in its own turn would
+  // let that deadline pass in silence.
   process.sleep(100)
-  let started = bootstrap.monotonic_time_ms()
   assert orchestrator_port.ask(port, "owned-1", 500) == Ok(Owned)
-  assert bootstrap.monotonic_time_ms() - started < 300
 
   // None has answered yet, and then each does.
   assert process.receive(spawns, 0) == Error(Nil)
