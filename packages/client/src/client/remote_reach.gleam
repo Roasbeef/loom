@@ -36,6 +36,12 @@ import client/remote_spawn.{
 }
 import tools/agent.{type Handle}
 
+/// The longest one `Spawn` waits for its answer, in milliseconds. The first spawn
+/// for a parent opens the other orchestrator's delegate session, which on an
+/// executor placement includes an attach, so the bound is not short. A caller
+/// that has less time than this left passes the smaller number.
+pub const spawn_ms = 30_000
+
 /// Everything a session may ask of the other orchestrators.
 ///
 /// Each function takes the name of the `[orchestrators.<name>]` to ask and
@@ -54,8 +60,10 @@ pub type Reach {
     offered: fn() -> Bool,
     /// Starts a child, or has the orchestrator answer the one this call site
     /// already started. The arguments are the orchestrator, the parent, the call
-    /// site, the parent's depth, its tools and the request.
-    spawn: fn(String, Parent, CallSite, Int, List(String), Request) ->
+    /// site, the parent's depth, its tools, the request, and the most the call
+    /// may wait for an answer in milliseconds, which a caller bounded by a
+    /// window of its own sets to what is left of it.
+    spawn: fn(String, Parent, CallSite, Int, List(String), Request, Int) ->
       Result(Spawned, Failure),
     /// Waits for children and reports each one's position. The arguments are the
     /// orchestrator, the parent, the handles and the window the orchestrator
@@ -78,7 +86,7 @@ pub fn none(session: String) -> Reach {
     session:,
     orchestrators: [],
     offered: fn() { False },
-    spawn: fn(name, _parent, _site, _depth, _tools, _request) {
+    spawn: fn(name, _parent, _site, _depth, _tools, _request, _within_ms) {
       Error(not_configured(name))
     },
     join: fn(name, _parent, _handles, _window_ms) {

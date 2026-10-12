@@ -48,7 +48,8 @@ pub fn every_question_of_such_a_reach_is_a_definitive_refusal_test() {
       result_schema: None,
       detach: remote_spawn.Attached,
     )
-  assert reach.spawn("box", parent, site, 0, [], request) == Error(refused)
+  assert reach.spawn("box", parent, site, 0, [], request, 1000)
+    == Error(refused)
   assert reach.join("box", parent, [], 25_000) == Error(refused)
   assert remote_reach.not_configured("box") == refused
 }

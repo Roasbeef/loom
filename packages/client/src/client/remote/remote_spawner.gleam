@@ -38,11 +38,6 @@ import client/remote_spawn.{type SpawnRefusal}
 import gleam/list
 import gleam/result
 
-/// How long one `Spawn` waits for its answer. The first spawn for a parent opens
-/// the other orchestrator's delegate session, which on an executor placement
-/// includes an attach.
-pub const spawn_ms = 30_000
-
 // How much longer than the window it asks the receiver to wait a join's own
 // deadline is, so the receiver's answer for a window that ran out is not itself
 // cut off by the round trip.
@@ -76,7 +71,7 @@ pub fn over_distribution(
     session:,
     orchestrators: list.map(configured, fn(orchestrator) { orchestrator.name }),
     offered:,
-    spawn: fn(name, parent, site, depth, tools, request) {
+    spawn: fn(name, parent, site, depth, tools, request, within_ms) {
       use at <- result.try(reached(membership, configured, name))
       orchestrator_port.ask_spawn(
         at,
@@ -85,7 +80,7 @@ pub fn over_distribution(
         depth,
         tools,
         request,
-        spawn_ms,
+        within_ms,
       )
       |> answer
     },

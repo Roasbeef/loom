@@ -5797,6 +5797,25 @@ pub fn a_silent_orchestrator_leaves_the_stub_requested_and_rings_the_drainer_tes
   close(harness)
 }
 
+// Each attempt has a wait of its own, and the window is a bound on the whole
+// spawn. An attempt begun late in the window is told to wait only what is left,
+// so the model is not kept for nearly two windows.
+pub fn an_attempt_waits_no_longer_than_the_window_has_left_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Down)
+  let #(harness, _queued) = start_remote(Hangs, [box], fn(config) { config })
+  let assert Error(agent.RemoteSilent(..)) =
+    harness.seam.spawn(caller_on("main", "turn-1:tools", 0), on_box("clipped"))
+
+  let windows = fake_orchestrators.report(box).windows
+  let assert [first, ..rest] = windows
+  let assert Ok(last) = list.last(rest)
+  assert first <= remote_reach.spawn_ms
+  assert last < first
+  assert list.all(windows, fn(within) { within >= 1 })
+  assert windows == list.sort(windows, fn(a, b) { int.compare(b, a) })
+  close(harness)
+}
+
 pub fn a_replayed_spawn_resumes_a_stub_that_was_never_answered_test() {
   let box = fake_orchestrators.start("box", fake_orchestrators.Down)
   let #(harness, _queued) = start_remote(Hangs, [box], fn(config) { config })
@@ -5873,6 +5892,7 @@ pub fn a_refusal_heard_by_the_model_does_not_orphan_a_later_child_test() {
       refused.depth,
       refused.parent_tools,
       refused.request,
+      remote_reach.spawn_ms,
     )
   let key = remote_child.stub_key(agent.call_site_digest(caller))
   let assert Ok(moved) =

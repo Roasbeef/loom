@@ -61,6 +61,9 @@ pub type Report {
     /// Every `Spawn` sent to it, in order, including resends and the ones the
     /// network lost.
     spawns: List(CallSite),
+    /// The most each of those `Spawn`s was told it may wait for an answer, in
+    /// milliseconds, in the same order.
+    windows: List(Int),
     /// The children it holds, one per call site.
     children: List(Spawned),
     /// The number of `Join` calls sent to it.
@@ -81,6 +84,7 @@ type Ask {
     parent: remote_spawn.Parent,
     site: CallSite,
     request: Request,
+    within_ms: Int,
     reply: Subject(Result(Spawned, peer_mail.Failure)),
   )
   AskJoin(
@@ -94,6 +98,7 @@ type State {
   State(
     mode: Mode,
     spawns: List(CallSite),
+    windows: List(Int),
     children: Dict(String, Spawned),
     joins: Int,
     settled: List(Handle),
@@ -110,7 +115,14 @@ type State {
 pub fn start(name: String, mode: Mode) -> Box {
   let assert Ok(started) =
     actor.new(
-      State(mode:, spawns: [], children: dict.new(), joins: 0, settled: []),
+      State(
+        mode:,
+        spawns: [],
+        windows: [],
+        children: dict.new(),
+        joins: 0,
+        settled: [],
+      ),
     )
     |> actor.on_message(handle)
     |> actor.start
@@ -151,8 +163,10 @@ pub fn reach(
     session:,
     orchestrators: list.map(boxes, fn(box) { box.name }),
     offered:,
-    spawn: fn(name, parent, site, _depth, _tools, request) {
-      ask(boxes, name, fn(reply) { AskSpawn(parent:, site:, request:, reply:) })
+    spawn: fn(name, parent, site, _depth, _tools, request, within_ms) {
+      ask(boxes, name, fn(reply) {
+        AskSpawn(parent:, site:, request:, within_ms:, reply:)
+      })
     },
     join: fn(name, _parent, handles, window_ms) {
       ask(boxes, name, fn(reply) { AskJoin(handles:, window_ms:, reply:) })
@@ -183,14 +197,21 @@ fn handle(state: State, call: Call) -> actor.Next(State, Call) {
         reply,
         Report(
           spawns: list.reverse(state.spawns),
+          windows: list.reverse(state.windows),
           children: dict.values(state.children),
           joins: state.joins,
         ),
       )
       actor.continue(state)
     }
-    Asked(AskSpawn(parent:, site:, request:, reply:)) ->
-      spawn(state, parent, site, request, reply)
+    Asked(AskSpawn(parent:, site:, request:, within_ms:, reply:)) ->
+      spawn(
+        State(..state, windows: [within_ms, ..state.windows]),
+        parent,
+        site,
+        request,
+        reply,
+      )
     Asked(AskJoin(handles:, window_ms:, reply:)) ->
       join(state, handles, window_ms, reply)
   }

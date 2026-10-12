@@ -3229,6 +3229,7 @@ fn ask_until_answered(
 ) -> Result(Spawned, Refusal) {
   let reach = config.remote
   let parent = remote_reach.parent(reach, stub.strand)
+  let #(started, _clock) = clock.read(config.clock)
   let asked =
     poll.until_on(
       clock: timebase.on(config.clock, config.rest),
@@ -3246,6 +3247,7 @@ fn ask_until_answered(
             stub.depth,
             stub.parent_tools,
             stub.request,
+            window_left(config, started),
           )
         {
           Ok(answer) -> poll.Done(answer)
@@ -3262,6 +3264,19 @@ fn ask_until_answered(
       Error(agent.RemoteSilent(orchestrator: stub.orchestrator))
     }
   }
+}
+
+// How long one attempt may wait for its answer: what is left of the window the
+// spawn started, and never more than a single call is worth. Without the clip
+// an attempt begun just before the window closes would wait out its own full
+// bound, and the model would be kept for nearly twice the window. The floor of
+// one millisecond is the last attempt `poll` still makes at the deadline.
+fn window_left(config: Config, started: Int) -> Int {
+  let #(now, _clock) = clock.read(config.clock)
+  int.max(
+    1,
+    int.min(remote_reach.spawn_ms, remote_window_ms - { now - started }),
+  )
 }
 
 // A refusal heard where the model asked. The stub is kept as `Refused`, never
