@@ -734,8 +734,8 @@ still be running.
 | `directory` | string | one placement is required | an absolute path with no `..` segment | Place every delegate session in this directory on this machine. Does not take `workspace`. |
 | `workspace` | string | required with `executor` or `pool` | 1 to 128 bytes with no `/` and no NUL | The workspace name registered on the executor or the pool's executors. |
 | `profile` | string | required | the name of a `[profiles.<name>]` table | The profile that seeds every delegate session, so this daemon's catalogue, roles and pricing apply. |
-| `tools` | array of strings | every built-in tool except `agent_spawn`, `remember`, the `peer_*` tools and the `schedule_*` tools | a nonempty array of distinct tool names | The ceiling on a child's tools. A child's tools are narrowed by its request and by its parent's own set, and never widened past this list. |
-| `max_depth` | integer | 1 | at least 1 | The deepest child allowed. One means children may not spawn. |
+| `tools` | array of strings | every built-in tool except `agent_spawn`, `remember`, the `peer_*` tools and the `schedule_*` tools | a nonempty array of distinct tool names | The ceiling on a child's tools. A child's tools are narrowed by its request and by its parent's own set, and never widened past this list. The default ceiling never includes `agent_spawn`, so a child can spawn only if `max_depth` allows it and `agent_spawn` is listed here too. |
+| `max_depth` | integer | 1 | at least 1 | The deepest child allowed. One means children may not spawn. Nesting also needs `agent_spawn` listed in `tools`, because the default ceiling never includes it. |
 | `max_sessions` | integer | 4 | 1 to 16 | The delegate sessions this spawner may hold. Sixteen is the number of scopes an executor admits. |
 | `max_within_s` | integer | 14400 (4 hours) | at least 1 | The longest deadline a spawn may ask for, in seconds. A longer request is refused, not shortened. |
 | `default_within_s` | integer | 1800 (30 minutes) | 1 to `max_within_s` | The deadline a spawn gets when it names none, in seconds. |
