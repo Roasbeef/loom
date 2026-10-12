@@ -63,7 +63,8 @@
 //// 6. `Delivered` entries go through `offer_line` one at a time. If the head
 ////    moved and the peer has more, `delivered` requests the next batch.
 ////    Otherwise the machine is `Quiet`, and the new head is announced to
-////    every peer but the source.
+////    every peer: to the others as news, and to the source as the word that
+////    the entries it served were applied.
 //// 7. A node that dials also runs `redial` from a periodic timer, which
 ////    attempts the connections that are due.
 ////
@@ -929,7 +930,17 @@ fn delivered(
             sending: PullTimedOut,
           )
         }
-        False -> sm.transition(to: Quiet, data:)
+        False -> {
+          // The source served the entries and does not know they were applied.
+          // Telling it is what lets its `status` report this node's head, and
+          // so what lets an operator see the entry confirmed within seconds
+          // and not at the next tick.
+          case moved {
+            True -> broadcast_to(data, source)
+            False -> Nil
+          }
+          sm.transition(to: Quiet, data:)
+        }
       }
     }
   }
@@ -1125,6 +1136,16 @@ fn broadcast(data: Data, except source: Option(String)) -> Nil {
     case Some(reach.node) == source {
       True -> Nil
       False -> send_head(data, reach)
+    }
+  })
+}
+
+// The head to one connected peer, if it is still connected.
+fn broadcast_to(data: Data, node: String) -> Nil {
+  list.each(reaches(data), fn(reach) {
+    case reach.node == node {
+      True -> send_head(data, reach)
+      False -> Nil
     }
   })
 }

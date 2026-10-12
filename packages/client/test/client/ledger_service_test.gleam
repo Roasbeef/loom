@@ -13,6 +13,8 @@ import client/ledger_service.{
 import client/membership_entry.{Upsert}
 import client/membership_ledger
 import gleam/bit_array
+import gleam/erlang/atom
+import gleam/erlang/node
 import gleam/erlang/process
 import gleam/int
 import gleam/list
@@ -237,6 +239,34 @@ pub fn a_node_that_meets_a_peer_behind_it_is_pulled_from_test() {
   ledger_service.meet(ahead.service, rig.reach_to("behind", behind))
   assert rig.await_head(behind, 3) == Ok(3)
   assert rig.file(behind) == rig.text_of(lines)
+}
+
+pub fn a_node_that_pulled_from_a_peer_tells_it_so_test() {
+  // A has an entry B lacks. B pulls it, and the news B sends A is that B now
+  // holds it, which is what A's status reports as B's head. Without it A would
+  // learn B's head only at the next tick, and an operator's confirmation would
+  // wait a minute.
+  let lines = history.lines(log())
+  let assert [genesis, hub, ..] = lines
+  let a = rig.start("service-ack-a", [genesis], rig.patient, [])
+  let b = rig.start("service-ack-b", [genesis], rig.patient, [])
+  // Both rigs live in this VM, so a head says it came from this VM's node
+  // name, and that is the label that makes the source of a pull the peer.
+  let here = atom.to_string(node.name(node.self()))
+  rig.set_peers(a, [rig.reach_to(here, b)])
+  rig.set_peers(b, [rig.reach_to(here, a)])
+  assert status(a).reported == []
+
+  let assert Accepted(_) = offer(a, hub)
+  assert rig.await_head(b, 1) == Ok(1)
+  let outcome =
+    poll.until(within: 20_000, every: 20, attempt: fn() {
+      case status(a).reported {
+        [reported] if reported.seq == 1 -> poll.Done(Nil)
+        _ -> poll.Retry
+      }
+    })
+  assert outcome == poll.Answered(Nil)
 }
 
 pub fn the_tick_finds_a_peer_that_was_introduced_late_test() {
