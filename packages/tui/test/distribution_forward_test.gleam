@@ -6,6 +6,7 @@
 //// `scripts/cli_help_test.sh` runs the built binaries for the rest.
 
 import gleam/option.{None, Some}
+import gleam/string
 import tui
 
 pub fn distribution_is_forwarded_with_its_arguments_untouched_test() {
@@ -38,6 +39,56 @@ pub fn dist_is_the_same_command_as_distribution_test() {
     == Some(["distribution", "--help"])
   assert tui.server_arguments(["help", "distribution"])
     == Some(["distribution", "--help"])
+}
+
+// The forwarded `loomd` has a pipe for stdin, so it cannot ask for the
+// passphrase. The launcher says so before it spawns anything.
+pub fn a_ledger_provision_with_no_passphrase_source_is_refused_test() {
+  let refused = fn(arguments) {
+    assert tui.server_arguments(arguments) == None
+    let assert Error(reason) = tui.launch_options(arguments)
+    assert string.contains(reason, "--passphrase-file PATH or --drop-authority")
+    assert string.contains(reason, "loomd distribution provision")
+  }
+  refused(["distribution", "provision", "plan.toml", "out", "--ledger"])
+  refused(["dist", "provision", "--ledger", "plan.toml", "out", "--force"])
+}
+
+pub fn a_ledger_provision_with_a_passphrase_source_is_forwarded_test() {
+  assert tui.server_arguments([
+      "distribution",
+      "provision",
+      "plan.toml",
+      "out",
+      "--ledger",
+      "--passphrase-file",
+      "pass.txt",
+    ])
+    == Some([
+      "distribution",
+      "provision",
+      "plan.toml",
+      "out",
+      "--ledger",
+      "--passphrase-file",
+      "pass.txt",
+    ])
+  assert tui.server_arguments([
+      "distribution",
+      "provision",
+      "plan.toml",
+      "out",
+      "--ledger",
+      "--drop-authority",
+    ])
+    != None
+
+  // Without `--ledger` there is no prompt to refuse, and other commands never
+  // ask for a passphrase.
+  assert tui.server_arguments(["distribution", "provision", "plan.toml", "out"])
+    != None
+  assert tui.server_arguments(["distribution", "show", "out", "--ledger"])
+    != None
 }
 
 pub fn ext_is_still_forwarded_the_same_way_test() {

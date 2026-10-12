@@ -8203,7 +8203,16 @@ Static mode, `[[distribution.peers]]` and `/1` bundles are unchanged.
   to the change that makes the ledger the trust list.
 - `--ledger` is opt-in for now, for the same reason. `provision` checks the
   output directory and reads the passphrase before it mints, seals the key before
-  it writes the bundles, and writes `OUT/ledger.log` beside them.
+  it writes the bundles, and writes `OUT/ledger.log` beside them. `Provisioned`
+  carries the ledger text as a `String` for `keep_authority`; `Deployment.ledger`
+  stays an `Option` because `write` is shared with static mode.
+- The terminal prompt works only under `loomd distribution provision`. `loom
+  distribution …` runs `loomd` through a port whose stdin is a pipe, so the
+  prompt would answer `NoTerminal`; the launcher (`tui.forward_distribution`)
+  refuses `provision --ledger` with neither `--passphrase-file` nor
+  `--drop-authority` before it spawns, and the usage text says so. `--home` is
+  refused by static `provision` (`check_provision_home`), since only the ledger
+  path reads it; `install` keeps it.
 
 Tests: `authority_key_test` (round trip, wrong passphrase, each changed field,
 the deployment binding, the shape and weak-parameter refusals, permissions,

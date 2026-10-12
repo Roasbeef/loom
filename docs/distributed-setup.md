@@ -1544,7 +1544,10 @@ not yet do the following.
   a node or renewing a certificate means provisioning again and installing every
   bundle with `--force`. `provision --ledger` keeps the key, sealed under a
   passphrase, and signs a membership ledger so that a later release can add and
-  remove nodes without reprovisioning (protocol-change/086). It is a preview:
+  remove nodes without reprovisioning (protocol-change/086). It asks for the
+  passphrase twice on the terminal only when run as `loomd distribution
+  provision`; `loom distribution provision --ledger` needs `--passphrase-file
+  PATH` (or `--drop-authority`). It is a preview:
   `install` does not accept the bundles it writes yet, so use it only to look at
   the ledger.
 

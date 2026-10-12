@@ -1054,8 +1054,7 @@ fn parse_launch(arguments: List(String)) -> Launch {
     ["version"] | ["--version"] -> Version
     ["version", ..] | ["--version", ..] -> Invalid(version_usage())
     ["ext", ..rest] -> Forward(verb: "ext", arguments: rest)
-    ["distribution", ..rest] | ["dist", ..rest] ->
-      Forward(verb: "distribution", arguments: rest)
+    ["distribution", ..rest] | ["dist", ..rest] -> forward_distribution(rest)
     ["executor", ..rest] -> Forward(verb: "executor", arguments: rest)
     ["update", ..rest] -> Update(arguments: rest)
     ["help", "ext"] -> Forward(verb: "ext", arguments: ["--help"])
@@ -2187,8 +2186,11 @@ commands:
                                   for twice on the terminal, or read from PATH,
                                   a file only you can read. --drop-authority
                                   keeps no key, and the ledger can then never
-                                  change. `install` does not accept a ledger
-                                  bundle yet.
+                                  change. Only `loomd distribution provision`
+                                  can ask on the terminal; `loom distribution
+                                  provision --ledger` needs --passphrase-file
+                                  or --drop-authority. `install` does not
+                                  accept a ledger bundle yet.
   show OUT                        Print OUT/system.json as a table.
   install BUNDLE [--home DIR] [--config PATH] [--force]
                                   Run on the node's machine. Installs the
@@ -2264,6 +2266,31 @@ pub fn server_arguments(arguments: List(String)) -> Option(List(String)) {
   case parse_launch(arguments) {
     Forward(verb:, arguments:) -> Some([verb, ..arguments])
     _other -> None
+  }
+}
+
+// `loom distribution` forwards to `loomd`, with one refusal made here. The
+// forwarded child's stdin is a pipe, so `provision --ledger` cannot ask for the
+// authority passphrase on the terminal and would fail only after the server
+// booted. Refusing up front gives the operator the same answer and the way out,
+// and leaves the prompt to `loomd distribution provision`, which owns the
+// terminal.
+fn forward_distribution(arguments: List(String)) -> Launch {
+  let needs_prompt = case arguments {
+    ["provision", ..rest] ->
+      list.contains(rest, "--ledger")
+      && !list.contains(rest, "--passphrase-file")
+      && !list.contains(rest, "--drop-authority")
+    _other -> False
+  }
+  case needs_prompt {
+    True ->
+      Invalid(
+        "distribution provision --ledger needs --passphrase-file PATH or "
+        <> "--drop-authority here; the passphrase prompt works only when run "
+        <> "as `loomd distribution provision`",
+      )
+    False -> Forward(verb: "distribution", arguments:)
   }
 }
 

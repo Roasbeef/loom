@@ -845,7 +845,10 @@ boundaries and the split's measurements under Invariants.
   the provisioning commands implemented in `client/daemon/distribution_cli`;
   `tui.server_arguments` is the tested seam that says what the server is
   handed, and `scripts/cli_help_test.sh` runs the built binaries with a stand-in
-  server): `main`
+  server). The one refusal made here is `provision --ledger` with neither
+  `--passphrase-file` nor `--drop-authority` (`forward_distribution`, an
+  `Invalid` launch): the forwarded child's stdin is a pipe, so it could not
+  prompt for the passphrase, and only `loomd distribution provision` can. `main`
   answers it before it builds a model, so nothing draws a frame and no
   terminal state is installed on the way past. Its three help forms are
   local instead: the client-only shipment can print extension usage without

@@ -76,8 +76,11 @@ commands:
                                   for twice on the terminal, or read from PATH,
                                   a file only you can read. --drop-authority
                                   keeps no key, and the ledger can then never
-                                  change. `install` does not accept a ledger
-                                  bundle yet.
+                                  change. Only `loomd distribution provision`
+                                  can ask on the terminal; `loom distribution
+                                  provision --ledger` needs --passphrase-file
+                                  or --drop-authority. `install` does not
+                                  accept a ledger bundle yet.
   show OUT                        Print OUT/system.json as a table.
   install BUNDLE [--home DIR] [--config PATH] [--force]
                                   Run on the node's machine. Installs the
