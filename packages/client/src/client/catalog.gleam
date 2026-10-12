@@ -476,9 +476,8 @@ pub fn parse(text: String) -> Result(Catalog, String) {
   // different tables, not a typo for each other: the repeated
   // `[[schedule]]` an operator writes one of per heartbeat, and the
   // singular `[schedules]` policy table saying whether the model may
-  // write any of its own. `memory` is `client/distillpass`'s: whether
-  // this host runs the distillation pass on boot, and how long one pass
-  // may take. `jobs` is `client/jobs`'s: the ceiling a background job's
+  // write any of its own. `memory` is `client/memory_config`'s: what
+  // each run starts with. `jobs` is `client/jobs`'s: the ceiling a background job's
   // wall is clamped to, which an operator raises for a workspace whose
   // dev server has to outlive the default hour. `secrets` is
   // `client/secrets`'s: how the daemon obtains a named credential from
@@ -1879,7 +1878,7 @@ fn parse_mount_access(word: String) -> Result(MountAccess, String) {
 /// an environment wider than the three names the server owns.
 ///
 /// It reads the document itself rather than taking one `parse` already
-/// produced, the arrangement `client/rules` and `client/distillpass`
+/// produced, the arrangement `client/rules` and `client/memory_config`
 /// established: each parser owns its own table and its own worded
 /// failure, and `parse`'s top-level key check is what keeps a typoed
 /// table name from being ignored by every parser at once.
@@ -2142,7 +2141,7 @@ pub fn default_advisor() -> AdvisorConfig {
 ///
 /// It reads the document itself rather than taking one `parse` already
 /// produced, the arrangement `parse_tools`, `client/rules` and
-/// `client/distillpass` established: each parser owns its own table and
+/// `client/memory_config` established: each parser owns its own table and
 /// its own worded failure, and `parse`'s top-level key check is what
 /// keeps a typoed table name from being ignored by every parser at once.
 ///

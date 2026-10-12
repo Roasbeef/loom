@@ -8522,7 +8522,7 @@ fn last_row_usage(row: UsageRow) -> Option(message.Usage) {
   |> option.then(accounting.observed_usage)
 }
 
-// The auxiliary writers in `client/distill` commit a row with no entry and
+// The auxiliary writers in `client/auxiliary` commit a row with no entry and
 // name the work in a top-level `phase` detail. The planner's own
 // summary-request rows also carry no entry, but they are the strand's
 // requests and name no phase, so they keep their observation.

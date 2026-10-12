@@ -17,12 +17,11 @@ import client/daemon/manager
 import client/daemon/root as daemon_root
 import client/daemon/session_socket
 import client/daemon_server_test as wire
-import client/distill
-import client/distillpass
 import client/gocache
 import client/host
 import client/internal/ffi_os
 import client/jobs
+import client/memory_config
 import client/retryconf
 import client/rules
 import client/schedule
@@ -64,9 +63,7 @@ import support/addresses
 import support/internal/ffi_ws
 import support/local_workspace
 import support/provider as provider_test
-import telemetry/level
 import telemetry/log
-import telemetry/record
 import tools/bash
 import tools/blob
 import tools/directory_access
@@ -224,11 +221,7 @@ fn settings_under(root: String) -> serve.Settings {
     jobs_policy: jobs.default_policy,
     retry_policy: retryconf.default_policy,
     deactivated_tools: [],
-    // No lifecycle distillation in this rig: the pass would open the
-    // memory store this test asserts about and spend the scripted
-    // provider's turns. `memory_lifecycle_test` is where the shipped
-    // producer is exercised.
-    memory: distillpass.no_pass(),
+    memory: memory_config.default_options(),
     // Offline, three names: the jail every session had before the
     // `[tools]` table existed.
     tools: catalog.default_tools(),
@@ -1533,58 +1526,6 @@ fn await_down(monitor: process.Monitor) -> Result(process.Down, Nil) {
   |> process.selector_receive(10_000)
 }
 
-/// A boot that finds a distillation harvest holding its session file's
-/// lease waits for the harvest instead of failing.
-///
-/// The daemon starts a domain's first distillation pass as it builds the
-/// domain, and that pass harvests the very sessions the domain is about to
-/// open, each under the ordinary writer lease. A reopen after `loomd access
-/// isolate` builds a fresh domain and so raced its own harvest; the loser
-/// failed its start with `daemon.session_start_failed`. The harvest here is
-/// held open by the test and closed only once the boot has said it is
-/// waiting, so the ordering is fixed rather than timed.
-pub fn a_boot_outwaits_a_distillation_harvest_of_its_session_test() {
-  let harvest_root = "build/serve-test-harvest-wait"
-  let _stale = simplifile.delete(harvest_root)
-  let assert Ok(Nil) = simplifile.create_directory_all(harvest_root)
-  let assert Ok(harvest) =
-    session.open_sqlite(
-      path: harvest_root <> "/session.db",
-      owner: distill.distill_owner,
-      lease_ttl_ms: 60_000,
-      clock: clock.from_function(ffi_os.system_time_ms),
-    )
-
-  // The closer owns the log subject, because this process is inside the
-  // boot for as long as the boot waits.
-  let handoff = process.new_subject()
-  let _closer =
-    process.spawn(fn() {
-      let records = process.new_subject()
-      process.send(handoff, records)
-      await_event(records, serve.harvest_wait_event)
-      let _closed = session.close(harvest)
-      Nil
-    })
-  let assert Ok(records) = process.receive(handoff, within: 5000)
-  let assert Ok(booted) =
-    serve.boot_with(
-      settings_under(harvest_root),
-      logger: log.new(sink: log.to_subject(records), threshold: level.Info),
-    )
-    as "a boot beside a harvest must wait for it rather than fail"
-  serve.shutdown(booted)
-}
-
-fn await_event(records: Subject(record.Record), event: String) -> Nil {
-  let assert Ok(logged) = process.receive(records, within: 30_000)
-    as "the boot must log the event it waits under"
-  case logged.event == event {
-    True -> Nil
-    False -> await_event(records, event)
-  }
-}
-
 @external(erlang, "erlang", "suspend_process")
 fn suspend(pid: process.Pid) -> Bool
 
@@ -2676,7 +2617,7 @@ fn blob_jail_fixture(name: String) -> BlobJail {
       Some(workspace_policy.OwnerFiles(
         index: domain <> "/loom-search.db",
         memory_store: domain <> "/loom-memory.db",
-        memory_digest: domain <> "/loom-memory.digest",
+        memory_notes: domain <> "/loom-memory.notes",
       )),
       Error("no toolchain in this fixture"),
     )
@@ -3152,7 +3093,7 @@ fn owner_files(settings: serve.Settings) -> workspace_policy.OwnerFiles {
   workspace_policy.OwnerFiles(
     index: settings.session_path <> ".index",
     memory_store: settings.session_path <> ".memory",
-    memory_digest: settings.session_path <> ".digest",
+    memory_notes: settings.session_path <> ".notes",
   )
 }
 

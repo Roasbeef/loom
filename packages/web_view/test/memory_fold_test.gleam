@@ -1,9 +1,10 @@
-//// The memory context the daemon attaches to a run, as both pages draw it.
+//// The memory context a run may carry, as both pages draw it.
 ////
-//// The daemon records distilled memory as a user message of its own ahead
-//// of the owner's prompt. Drawn like a prompt it reads as the owner typing
-//// twenty kilobytes at the start of every turn, so both pages make it the
-//// first step of the turn's fold, `Memory · n lines`, and hold the whole
+//// A session saved by an older release records the distilled memory digest
+//// as a user message of its own ahead of the owner's prompt, and the notes
+//// index is attached the same way. Drawn like a prompt it reads as the owner
+//// typing twenty kilobytes at the start of every turn, so both pages make it
+//// the first step of the turn's fold, `Memory · n lines`, and hold the whole
 //// message behind that line (`<loom-expand>`). These tests check the line,
 //// that the body still holds every digest line, and that the owner's own
 //// prompt is drawn as before.

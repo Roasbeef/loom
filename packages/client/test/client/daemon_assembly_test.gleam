@@ -59,15 +59,12 @@ fn start(
             as "the domain owns its projection directory"
           let assert Ok(services) =
             domain_service.build(
-              domain_service.Config(
-                history: history.SharedConfig(
-                  selected.index_path,
-                  sources,
-                  5000,
-                  100,
-                ),
-                maintenance: fn(_) { Ok(None) },
-              ),
+              domain_service.Config(history: history.SharedConfig(
+                selected.index_path,
+                sources,
+                5000,
+                100,
+              )),
               owner,
             )
             as "real shared history starts without external maintenance"

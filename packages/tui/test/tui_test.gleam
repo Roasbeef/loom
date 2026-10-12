@@ -1256,9 +1256,10 @@ pub fn a_single_line_injection_is_left_alone_test() {
     == "[loom] something"
 }
 
-// The daemon attaches distilled memory as a user message of its own, which
-// is not owner text and can run to twenty kilobytes. It folds to a count of
-// its digest lines and reopens to exactly the text it was.
+// A session saved by an older release holds the distilled memory digest as a
+// user message of its own, which is not owner text and can run to twenty
+// kilobytes. It folds to a count of its digest lines and reopens to exactly
+// the text it was.
 pub fn a_memory_context_collapses_to_a_line_count_test() {
   let text =
     composer.memory_attribution_lead

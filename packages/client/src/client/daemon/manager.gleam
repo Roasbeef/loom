@@ -64,11 +64,10 @@
 import broker/internal/call
 import broker/internal/ffi_crypto
 import client/daemon/domain as domain_service
-import client/distill
-import client/distillpass
 import client/internal/ffi_os
 import client/internal/instance_host as host
 import client/internal/instance_owner as custody
+import client/internal/shared_history
 import client/remote_child
 import client/remote_release
 import client/spawners
@@ -302,7 +301,7 @@ pub type Assembly(instance) {
     /// Opens one domain under retained custody, outside the registry.
     domain_build: fn(
       domain.Domain,
-      fn() -> Result(List(distill.Source), String),
+      fn() -> Result(List(shared_history.Source), String),
       custody.Owner,
     ) -> Result(domain_service.Services, String),
     /// Acquires and publishes resources before their effects begin.
@@ -401,62 +400,24 @@ type Slot(instance) {
   )
 }
 
-/// Why a domain's maintenance cadence was fenced, and therefore whether the
-/// fence may be lifted again.
-///
-/// The two are not interchangeable, and the difference is the whole of what
-/// makes revival safe: a fence taken while admission is open is a pause, while
-/// one taken on the way out is a step of retirement that has already been
-/// decided.
-type Quiescence {
-  /// The domain lost its last dependent session while the daemon was still
-  /// accepting. Its services stay alive throughout, so a new session in the
-  /// same workspace may take them back.
-  Idle
-
-  /// The fence belongs to retirement — daemon shutdown, or a domain whose
-  /// cancellation the registry has already chosen. Those services must never
-  /// be handed back, because the cancellation that follows is not withdrawable.
-  Retiring
-}
-
 /// What a retained domain slot has done so far with its shared services.
 ///
 /// The legal transitions are:
 ///
 /// - `DomainPreparing` to `DomainRunning` on a published build, or to
 ///   `DomainWaitingFailure` on a refusal.
-/// - `DomainRunning` to `DomainQuiescing(Idle, _)` when the last dependent
-///   session retires while admission is open, and to
-///   `DomainQuiescing(Retiring, _)` while the daemon is draining.
-/// - `DomainQuiescing(Idle, services)` back to `DomainRunning(services)` when
-///   a new session in the same domain is admitted. This is the machine's only
-///   backwards edge, and `Retiring` is what withholds it once cancellation has
-///   been decided.
-/// - `DomainQuiescing(_, _)` to `DomainClosing` when the fenced maintenance
-///   pass settles and the host is cancelled.
+/// - `DomainRunning` to `DomainClosing` when the last dependent session
+///   retires, or the daemon is draining, and the host is cancelled.
 /// - `DomainClosing` to `DomainDrained` on the witness's normal exit.
 /// - `DomainWaitingFailure` to `DomainBlocked` once cancellation has been
 ///   issued; neither is ever admitted against again.
 ///
-/// Revival hands back the *same* services and un-fences the cadence with them
-/// (`domain_service.resume`), so a reopened workspace goes on running
-/// scheduled maintenance. Handing the services back without that would leave
-/// the maintenance worker in `Quiescing`, where it ignores every hint and
-/// schedules nothing, and a workspace closed and reopened once — the ordinary
-/// path — would distil nothing more until the domain retired and was rebuilt.
-/// The coalesced pass the fence admitted still runs to completion, and the
-/// account it produces reaches a slot that is no longer quiescing and is
-/// ignored there.
-///
-/// A cadence that refuses to resume fails the domain rather than reviving it:
-/// the worker that owns this domain's maintenance is not answering, which is
-/// the same fact a refused quiesce carries, and admitting against it would
-/// hand a session services whose custody is already in doubt.
+/// A session opened while its domain is `DomainClosing` is parked until the
+/// domain drains and is then admitted against a replacement, so a closing
+/// domain is never handed back.
 type DomainPhase {
   DomainPreparing
   DomainRunning(domain_service.Services)
-  DomainQuiescing(Quiescence, domain_service.Services)
   DomainClosing
   DomainDrained
   DomainWaitingFailure(String)
@@ -483,8 +444,6 @@ type DomainSlot {
     faults: Subject(String),
     /// A cleanup failure, after which no normal exit can follow.
     failures: Subject(custody.Failure),
-    /// Where a requested maintenance quiesce reports its settled pass.
-    settled: Subject(distillpass.Pass),
     /// How many session slots name this domain. Maintained where a slot is
     /// inserted and where one is deleted, because re-deriving it folds every
     /// slot for every domain on every lifecycle message.
@@ -522,7 +481,10 @@ type Message(instance) {
   /// hub (protocol-change/082).
   SetProfile(String, Option(String), Subject(Result(Nil, Error)))
   DomainSourceIds(String, String, Subject(Result(List(String), String)))
-  DomainSourcePaths(List(String), Subject(Result(List(distill.Source), String)))
+  DomainSourcePaths(
+    List(String),
+    Subject(Result(List(shared_history.Source), String)),
+  )
   FrameAuthority(
     String,
     String,
@@ -538,7 +500,6 @@ type Message(instance) {
   DomainOpened(String, String, Result(domain_service.Services, String))
   DomainFailed(String, String, String)
   DomainRetired(String, String, process.ExitReason)
-  DomainSettled(String, String, distillpass.Pass)
   Administer(
     access.Digest,
     String,
@@ -632,10 +593,6 @@ type Message(instance) {
     Subject(Result(access.Principal, AdminError)),
   )
   Census(Subject(Summary))
-
-  /// Answers the subject a session's domain currently settles on. Fixtures
-  /// only; see `settle_subject`.
-  SettleSubject(String, Subject(Result(Subject(distillpass.Pass), Error)))
   AuthorizedPage(
     access.Digest,
     String,
@@ -2793,32 +2750,6 @@ pub fn summary(manager: Manager(instance)) -> Result(Summary, Error) {
   |> result.replace_error(Unavailable)
 }
 
-/// Reports the subject on which a resident session's domain will settle.
-///
-/// This exists for one registry fixture: a revival replaces the slot's
-/// settle subject so that an account of the fence it withdrew cannot be
-/// taken for the next fence's settle, and the only way a test can deliver
-/// such an account is to hold the earlier subject. The holder of a settle
-/// subject can forge a settle, so this is a capability handed out on purpose
-/// to fixtures alone: it is internal, has no wire route, and nothing in
-/// production reads a settle subject back out. The registry issues each
-/// subject with its fence.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // manager.settle_subject(registry, session_id)
-/// ```
-@internal
-pub fn settle_subject(
-  manager: Manager(instance),
-  id: String,
-) -> Result(Subject(distillpass.Pass), Error) {
-  call.try_call(manager.commands, waiting: 5000, sending: SettleSubject(id, _))
-  |> result.replace_error(Unavailable)
-  |> result.flatten
-}
-
 /// Resolves only a resident instance; lookup never implicitly opens one.
 ///
 /// ## Examples
@@ -2959,8 +2890,6 @@ fn handle(
       step(phase, domain_failed(book, id, operation, reason))
     DomainRetired(id, operation, reason) ->
       step(phase, domain_retired(book, id, operation, reason))
-    DomainSettled(id, operation, _account) ->
-      step(phase, domain_settled(book, id, operation))
     DomainForSession(id, reply) -> {
       process.send(
         reply,
@@ -3379,20 +3308,6 @@ fn handle(
     }
     Census(reply) -> {
       process.send(reply, census(phase, book))
-      sm.keep(book)
-    }
-    SettleSubject(id, reply) -> {
-      let answer = {
-        use slot <- result.try(
-          dict.get(book.slots, id) |> result.replace_error(Unavailable),
-        )
-        use domain <- result.try(
-          dict.get(book.domains, slot.domain_id)
-          |> result.replace_error(Unavailable),
-        )
-        Ok(domain.settled)
-      }
-      process.send(reply, answer)
       sm.keep(book)
     }
     AuthorizedPage(digest, after, reply) -> {
@@ -4521,11 +4436,8 @@ fn census(phase: Phase, book: Book(instance)) -> Summary {
       domain_blocked: dict.fold(book.domains, 0, fn(count, _, slot) {
         case slot.phase {
           DomainWaitingFailure(_) | DomainBlocked(_) -> count + 1
-          DomainPreparing
-          | DomainRunning(_)
-          | DomainQuiescing(_, _)
-          | DomainClosing
-          | DomainDrained -> count
+          DomainPreparing | DomainRunning(_) | DomainClosing | DomainDrained ->
+            count
         }
       }),
     )
@@ -5027,13 +4939,11 @@ fn prepare_domain_slot(
   }
 }
 
-// Admission against a retained domain. A domain fenced while it had no
-// dependent session is revived here rather than refused: its services never
-// stopped, and refusing would make every open in the workspace fail for the
-// length of a maintenance pass, which by default is ten minutes. A fence taken
-// on the way to retirement is not revivable, because the cancellation that
-// follows it has already been decided. Once cancellation has begun, an open
-// instead reserves a parked session for replacement after normal retirement.
+// Admission against a retained domain. A domain that is preparing or running
+// is joined. One that is closing is joined too, as a parked session that waits
+// for the domain's normal exit and is then admitted against a replacement; the
+// cancellation already ordered is not withdrawable, so its services are never
+// handed to a new session. One that drained, failed or is blocked refuses.
 fn ensure_domain(book: Book(instance), selected: domain.Domain) {
   case dict.get(book.domains, selected.id) {
     Ok(DomainSlot(phase: DomainPreparing, operation:, ..))
@@ -5042,49 +4952,7 @@ fn ensure_domain(book: Book(instance), selected: domain.Domain) {
       book,
       Ok(operation),
     )
-    Ok(
-      DomainSlot(phase: DomainQuiescing(Idle, services), operation:, ..) as slot,
-    ) ->
-      case domain_service.resume(services) {
-        // The withdrawn fence's account, if it is ever sent, must not be
-        // taken for a later fence's settle. The worker sends a reply from its
-        // own turn, so one decided before this revival can still reach this
-        // registry after a second quiesce has been issued. A fresh subject
-        // per fence makes that account unselectable: the selector is rebuilt
-        // from the book every step, and only the current subject is in it.
-        Ok(Nil) -> #(
-          Book(
-            ..book,
-            domains: dict.insert(
-              book.domains,
-              selected.id,
-              DomainSlot(
-                ..slot,
-                phase: DomainRunning(services),
-                settled: process.new_subject(),
-              ),
-            ),
-          ),
-          Ok(operation),
-        )
-
-        // The maintenance worker did not take the resume, which says its
-        // custody is already lost. That is what a refused quiesce says too,
-        // and it is answered the same way: the domain fails, every session
-        // naming it is stopped, and this admission is refused rather than
-        // joining a domain nobody owns.
-        Error(reason) -> #(
-          domain_failed(book, selected.id, operation, reason),
-          Error(Unavailable),
-        )
-      }
-
-    // The settled pass this domain is still waiting on is answered on the
-    // slot's own `settled` subject, and `domain_settled` ignores an account
-    // whose phase is no longer quiescing, so a revived domain needs no guard
-    // against the reply it has already asked for.
-    Ok(DomainSlot(phase: DomainQuiescing(Retiring, _), ..))
-    | Ok(DomainSlot(phase: DomainDrained, ..))
+    Ok(DomainSlot(phase: DomainDrained, ..))
     | Ok(DomainSlot(phase: DomainWaitingFailure(_), ..))
     | Ok(DomainSlot(phase: DomainBlocked(_), ..)) -> #(book, Error(Unavailable))
     Error(Nil) -> prepare_shared_domain(book, selected)
@@ -5115,8 +4983,8 @@ fn prepare_shared_domain(book: Book(instance), selected: domain.Domain) {
       let failures = process.new_subject()
       let operation = book.epoch <> ":domain:" <> int.to_string(book.next)
 
-      // Enumeration runs on whichever process resolves sources — the domain
-      // builder, and later each maintenance pass — never in the registry's own
+      // Enumeration runs on whichever process resolves sources, the domain
+      // builder and later each index refresh, never in the registry's own
       // handler. The registry answers one bounded page per turn, so a domain
       // near the source cap costs a few short turns instead of one turn that
       // parks every queued authorization behind five hundred catalogue reads.
@@ -5149,7 +5017,6 @@ fn prepare_shared_domain(book: Book(instance), selected: domain.Domain) {
               results,
               faults,
               failures,
-              process.new_subject(),
               0,
             )
           let book =
@@ -5185,7 +5052,6 @@ fn services_for_builder(book: Book(instance), id: String, operation: String) {
       case domain.phase {
         DomainRunning(services) -> Ok(services)
         DomainPreparing
-        | DomainQuiescing(_, _)
         | DomainClosing
         | DomainDrained
         | DomainWaitingFailure(_)
@@ -5355,56 +5221,22 @@ fn finish_drained_release(book: Book(instance), id: String) -> Book(instance) {
   }
 }
 
-fn clean_session_retired(book: Book(instance), id, session_id) {
-  case dict.get(book.domains, id), catalogue.get(book.catalogue, session_id) {
-    Ok(DomainSlot(phase: DomainRunning(services), operation:, ..)),
-      Ok(catalogue.Registration(state: catalogue.Saved, ..))
-    ->
-      case domain_service.notify_closed(services) {
-        Ok(Nil) -> book
-        Error(reason) -> domain_failed(book, id, operation, reason)
-      }
-    _, _ -> book
-  }
-}
-
-// The admission phase decides whether a fence may later be lifted, so it is
-// passed in rather than re-derived where the fence is taken: a domain quiesced
-// while the daemon is draining must never be handed back to a new session.
-fn close_unused_domains(phase: Phase, book: Book(instance)) {
-  let quiescence = case phase {
-    Ready -> Idle
-    ShuttingDown -> Retiring
-  }
+// A domain no session depends on is cancelled at once. Whether the daemon is
+// still accepting makes no difference: the cancellation is not withdrawable,
+// so a session that opens afterwards waits for the drain and is admitted
+// against a replacement.
+fn close_unused_domains(book: Book(instance)) {
   dict.fold(book.domains, book, fn(book, id, slot) {
     case slot.dependents > 0 {
       True -> book
-      False -> close_unused_domain(book, id, slot, quiescence)
+      False -> close_unused_domain(book, id, slot)
     }
   })
 }
 
-fn close_unused_domain(
-  book: Book(instance),
-  id,
-  slot: DomainSlot,
-  quiescence: Quiescence,
-) {
+fn close_unused_domain(book: Book(instance), id, slot: DomainSlot) {
   case slot.phase {
-    DomainRunning(services) ->
-      case domain_service.quiesce(services, slot.settled) {
-        Ok(Nil) ->
-          Book(
-            ..book,
-            domains: dict.insert(
-              book.domains,
-              id,
-              DomainSlot(..slot, phase: DomainQuiescing(quiescence, services)),
-            ),
-          )
-        Error(reason) -> domain_failed(book, id, slot.operation, reason)
-      }
-    DomainPreparing -> {
+    DomainRunning(_) | DomainPreparing -> {
       host.cancel(slot.host)
       Book(
         ..book,
@@ -5427,26 +5259,7 @@ fn close_unused_domain(
         ),
       )
     }
-    DomainQuiescing(_, _) | DomainClosing | DomainBlocked(_) -> book
-  }
-}
-
-fn domain_settled(book: Book(instance), id, operation) {
-  case dict.get(book.domains, id) {
-    Ok(DomainSlot(phase: DomainQuiescing(_, _), ..) as slot)
-      if slot.operation == operation
-    -> {
-      host.cancel(slot.host)
-      Book(
-        ..book,
-        domains: dict.insert(
-          book.domains,
-          id,
-          DomainSlot(..slot, phase: DomainClosing),
-        ),
-      )
-    }
-    Ok(_) | Error(Nil) -> book
+    DomainClosing | DomainBlocked(_) -> book
   }
 }
 
@@ -5466,9 +5279,9 @@ fn collect_sources(
   commands: Subject(Message(instance)),
   id: String,
   after: String,
-  accumulated: List(distill.Source),
+  accumulated: List(shared_history.Source),
   count: Int,
-) -> Result(List(distill.Source), String) {
+) -> Result(List(shared_history.Source), String) {
   use identities <- result.try(
     call.try_call(commands, waiting: 5000, sending: DomainSourceIds(
       id,
@@ -5506,7 +5319,7 @@ fn collect_sources(
 fn source_paths(
   store: catalogue.Catalogue,
   identities: List(String),
-) -> Result(List(distill.Source), String) {
+) -> Result(List(shared_history.Source), String) {
   use <- bool.guard(
     when: list.drop(identities, source_page) != [],
     return: Error("domain source page exceeds the bounded read limit"),
@@ -5519,7 +5332,7 @@ fn source_paths(
       ids.parse_session_id(id)
       |> result.replace_error("invalid domain source identity"),
     )
-    Ok(distill.Source(session, record.path))
+    Ok(shared_history.Source(session, record.path))
   })
 }
 
@@ -5791,8 +5604,7 @@ fn retired(
               domains: depend(book.domains, slot.domain_id, -1),
             )
             |> forget_authority(id)
-          clean_session_retired(book, slot.domain_id, id)
-          |> finish_drained_release(id)
+          finish_drained_release(book, id)
         }
         _ -> failed(book, id, operation, string.inspect(reason))
       }
@@ -5826,7 +5638,7 @@ fn step(
   phase: Phase,
   book: Book(instance),
 ) -> sm.Step(Phase, Book(instance), Message(instance), sm.Postponable) {
-  let book = close_unused_domains(phase, book)
+  let book = close_unused_domains(book)
   case phase, dict.size(book.slots), dict.size(book.domains) {
     ShuttingDown, 0, 0 -> sm.stop()
     _, _, _ -> sm.transition(phase, book) |> sm.with_selector(selector(book))
@@ -5851,9 +5663,6 @@ fn selector(book: Book(instance)) -> process.Selector(Message(instance)) {
       })
       |> process.select_map(slot.failures, fn(failure) {
         DomainFailed(id, slot.operation, string.inspect(failure))
-      })
-      |> process.select_map(slot.settled, fn(account) {
-        DomainSettled(id, slot.operation, account)
       })
       |> process.select_specific_monitor(slot.watch, fn(down) {
         DomainRetired(id, slot.operation, down.reason)

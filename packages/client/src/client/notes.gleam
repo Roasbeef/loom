@@ -269,8 +269,8 @@ fn line(cell: #(String, JsonValue)) -> String {
 /// survives. Termination: a run of n leaves a longest new run of
 /// (n mod 3) + 1, at most 3, which the next pass takes to 1.
 ///
-/// `client/memory` and `client/distill` fence quoted text too and use
-/// this rather than each carrying a copy. `tools/history` keeps its own,
+/// `client/memory` fences quoted text too and uses
+/// this rather than carrying a copy. `tools/history` keeps its own,
 /// and must: `tools` depends on `core` and `broker` alone and cannot
 /// import `client` — that copy is the dependency posture, not a
 /// duplicate anybody should hoist.

@@ -53,7 +53,7 @@ fn files(settings: serve.Settings) -> workspace_policy.OwnerFiles {
   workspace_policy.OwnerFiles(
     index: settings.session_path <> ".index",
     memory_store: settings.session_path <> ".memory",
-    memory_digest: settings.session_path <> ".digest",
+    memory_notes: settings.session_path <> ".notes",
   )
 }
 
@@ -207,20 +207,20 @@ pub fn start_publishes_helpers_then_broker_to_custody_test() {
   Nil
 }
 
-// The second session base. The memory digest is masked only once the file
+// The second session base. The notes index is masked only once the file
 // exists, because the jail refuses to mask a missing path under a read-only
-// parent, and the digest sits beside the session file and outside the
+// parent, and the index sits beside the session file and outside the
 // workspace. A file which appears between `prepare` and `start_local` (the
 // owner's storage probes do this) is therefore missing from the first base
 // and must be present in the second, and the census a start returns carries
 // the second.
 pub fn start_masks_the_files_which_appeared_since_prepare_test() {
   let settings = owned_assembly_test.settings()
-  let digest = files(settings).memory_digest
+  let index = files(settings).memory_notes
   let prepared = prepared(settings)
-  assert !list.contains(prepared.census.base_policy.protected, digest)
-    as "the digest does not exist yet, so prepare cannot mask it"
-  let assert Ok(Nil) = simplifile.write(digest, "a digest")
+  assert !list.contains(prepared.census.base_policy.protected, index)
+    as "the index does not exist yet, so prepare cannot mask it"
+  let assert Ok(Nil) = simplifile.write(index, "- an index")
     as "the owner's storage creates the file after prepare"
 
   let published = process.new_subject()
@@ -235,7 +235,7 @@ pub fn start_masks_the_files_which_appeared_since_prepare_test() {
     Nil
   })
   let _stopped = address.stop(namespace)
-  assert list.contains(masked, digest)
+  assert list.contains(masked, index)
     as "the second base is the one the processes run under"
 }
 

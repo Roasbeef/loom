@@ -19,9 +19,23 @@
 //// Catalogue membership is resolved afresh before source reads and before FTS
 //// ranking. Index locators and rows are projections, never authorization. Close
 //// failure keeps the original actor blocked and its handles retained.
+////
+//// ## Flow
+////
+//// `seam` → `exchange` → `handle` → `admit` → `begin_job` → `work` →
+//// `finish_job`
+////
+//// 1. `seam` binds a session's recall closures; each sends one request to the
+////    owner through `exchange` and waits for the reply.
+//// 2. `handle` is the owner's one mailbox handler. A query or read goes to
+////    `admit`, which resolves catalogue membership and either holds the call,
+////    refuses it, or starts the job.
+//// 3. `begin_job` and `work` advance the job one source or fragment per
+////    mailbox message, publishing refreshed entries into the index.
+//// 4. `finish_job` answers a search from the refreshed index, or an exact
+////    read from the source, and returns the owner to `Ready`.
 
 import broker/internal/call
-import client/distill
 import core/codec
 import core/ids
 import core/json
@@ -42,6 +56,18 @@ import storage/snapshot
 import tools/history as tool
 import weft/actor
 
+/// A host-selected source session, whose identity is checked after opening
+/// its file.
+@internal
+pub type Source {
+  Source(
+    /// The catalogue's expected canonical conversation identity.
+    session: ids.SessionId,
+    /// The host-validated absolute conversation path.
+    path: String,
+  )
+}
+
 /// Configuration selected by the persisted domain owner, not its first guest.
 @internal
 pub type Config {
@@ -49,7 +75,7 @@ pub type Config {
     /// Canonical exclusive domain projection path.
     index_path: String,
     /// Fresh authorized catalogue sources; never a directory scan.
-    sources: fn() -> Result(List(distill.Source), String),
+    sources: fn() -> Result(List(Source), String),
     /// Foreground wait and connection busy bound, between one and 5000 ms.
     timeout_ms: Int,
     /// Descriptors per source refresh, between one and the existing page cap.
@@ -142,8 +168,8 @@ type Completeness {
 
 type Stage {
   NextSource
-  InitializeSource(distill.Source)
-  InspectSource(distill.Source)
+  InitializeSource(Source)
+  InspectSource(Source)
   Describe(source.Cut)
   Fragment(
     source.Cut,
@@ -158,7 +184,7 @@ type Stage {
 type Job {
   Job(
     request: Request,
-    remaining: List(distill.Source),
+    remaining: List(Source),
     stage: Stage,
     deadline: Int,
     completeness: Completeness,
@@ -413,7 +439,7 @@ fn authorized(config: Config) {
 }
 
 fn member(sources, id) {
-  list.find(sources, fn(item: distill.Source) { item.session == id })
+  list.find(sources, fn(item: Source) { item.session == id })
   |> result.replace_error("session is outside the current history domain")
 }
 
@@ -541,7 +567,7 @@ fn hold(state: State, request: Request) -> actor.Next(State, Message) {
   }
 }
 
-fn begin_job(state: State, request: Request, sources: List(distill.Source)) {
+fn begin_job(state: State, request: Request, sources: List(Source)) {
   let job =
     Job(
       request,

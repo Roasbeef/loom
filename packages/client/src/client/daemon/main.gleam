@@ -1861,7 +1861,7 @@ pub fn prepare_startup(
     ),
     manager.Assembly(
       domain_build: fn(selected, sources, owner) {
-        serve.build_domain(selected, sources, logger, owner)
+        serve.build_domain(selected, sources, owner)
         |> diagnose_domain_start(logger, selected.configuration)
       },
       build: fn(registration, selected, services, owner, directory) {

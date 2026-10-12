@@ -45,8 +45,8 @@
 import broker/exec
 import client/catalog
 import client/codemode
-import client/distillpass
 import client/jobs
+import client/memory_config
 import client/retryconf
 import client/schedule
 import client/serve
@@ -1106,7 +1106,7 @@ fn settings(
     jobs_policy: jobs.default_policy,
     retry_policy: retryconf.default_policy,
     deactivated_tools: [],
-    memory: distillpass.no_pass(),
+    memory: memory_config.default_options(),
     tools: catalog.default_tools(),
     advisor: None,
     go_caches: None,

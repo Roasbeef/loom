@@ -1278,9 +1278,9 @@ fn int_cost(tokens: Int, rate: Float) -> Float {
 pub const memory_digest =
   "- (fact) the gate is make check\n- (decision) keep <b>R6</b> portable"
 
-/// The message the daemon attaches to a run as distilled memory, in the
-/// shape `client/memory.wrapped` writes: the attribution, then the digest
-/// in a `loom-memory` fence.
+/// The message an older release attached to a run as distilled memory: the
+/// attribution, then the digest in a `loom-memory` fence. Nothing writes it
+/// any more, but sessions saved by that release still hold it.
 ///
 /// ## Examples
 ///
@@ -1297,8 +1297,8 @@ pub fn memory_context() -> String {
 }
 
 /// A capture of `main` holding the memory context and then the owner's
-/// prompt and an answer, which is how a run's records read when the
-/// daemon has distilled memory to attach.
+/// prompt and an answer, which is how a run's records read in a session saved
+/// while the digest existed.
 ///
 /// ## Examples
 ///

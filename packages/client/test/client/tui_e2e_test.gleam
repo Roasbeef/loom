@@ -53,10 +53,10 @@ import client/daemon/manager
 import client/daemon/root as daemon_root
 import client/daemon/session_socket
 import client/daemon_server_test as wire
-import client/distillpass
 import client/gateway as hub
 import client/internal/ffi_os
 import client/jobs
+import client/memory_config
 import client/retryconf
 import client/schedule
 import client/serve
@@ -1106,11 +1106,7 @@ fn settings_at(test_root: String) -> serve.Settings {
     jobs_policy: jobs.default_policy,
     retry_policy: retryconf.default_policy,
     deactivated_tools: [],
-    // No lifecycle distillation in this rig: the pass would open the
-    // memory store this test asserts about and spend the scripted
-    // provider's turns. `memory_lifecycle_test` is where the shipped
-    // producer is exercised.
-    memory: distillpass.no_pass(),
+    memory: memory_config.default_options(),
     // Offline, three names: the jail every session had before the
     // `[tools]` table existed.
     tools: catalog.default_tools(),

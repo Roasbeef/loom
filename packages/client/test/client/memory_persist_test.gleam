@@ -1,41 +1,34 @@
-//// Memory stage M2's exit criterion, end to end: **a preference
-//// remembered in one session reaches the next session's request bytes,
-//// fenced and attributed.**
+//// The memory plane's end to end journey: **a note remembered in one session
+//// reaches the next session's request bytes, fenced and attributed.**
 ////
-//// Three real servers' worth of machinery and one scripted thing. Two
-//// `serve.boot`s over two real SQLite session files in one directory,
-//// with the real memory plane wired by the real boot path — the memory
-//// store created by the boot's own probe, the digest read by the boot's
-//// own hook, the base policy assembled by the boot's own protection.
-//// The `remember` call goes through the production registry. The
-//// distillation run is `client/distill.run`. Only two things are
-//// scripted: the pipeline's model turns, through the `Distiller` seam,
-//// and the provider transport, which records the request body and then
-//// fails the attempt so the run drains at once.
+//// Real servers over real SQLite session files in one directory, with the
+//// real memory plane wired by the real boot path: the memory store created
+//// by the first `remember` call, the notes index rebuilt by the boot's own
+//// session open and read by the boot's own hook, the base policy assembled
+//// by the boot's own protection. The `remember` call goes through the
+//// production registry. Only the provider transport is scripted: it records
+//// the request body and then fails the attempt so the run drains at once.
 ////
-//// The assertion is on **the bytes on the wire**, not on the projection
-//// and not on the hook's return value: what matters is that the digest
-//// is in the request the second session actually sends.
+//// The assertion is on **the bytes on the wire**, not on the projection and
+//// not on the hook's return value: what matters is that the index is in the
+//// request the second session actually sends.
 
 import broker/broker
 import broker/exec
 import broker/policy
 import client/catalog
 import client/codemode
-import client/distill
-import client/distillpass
 import client/jobs
 import client/memory
+import client/memory_config
 import client/retryconf
 import client/schedule
 import client/serve
 import client/workspace_policy
-import core/accounting
 import core/clock
 import core/ids as core_ids
 import core/json as core_json
 import core/message
-import core/usage_evidence
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{None, Some}
@@ -51,6 +44,7 @@ import runtime/api
 import simplifile
 import support/provider as provider_test
 import support/tool_registry
+import telemetry/log
 import tools/directory_access
 import tools/remember
 import tools/tool
@@ -65,12 +59,9 @@ const empty_home = Some("build/no-operator-home")
 // must know about without being told.
 const preference = "the user prefers tabs over spaces in this repository"
 
-// What the scripted consolidation turn writes memory back as.
-const consolidated = "preference: " <> preference
-
 // --- the exit criterion -----------------------------------------------------
 
-pub fn a_remembered_preference_reaches_the_next_sessions_bytes_test() {
+pub fn a_remembered_note_reaches_the_next_sessions_bytes_test() {
   let root = fresh_root("persist")
 
   // --- session A: a real server, and the memory door it registers ------
@@ -80,15 +71,12 @@ pub fn a_remembered_preference_reaches_the_next_sessions_bytes_test() {
   // lists the session's tools, and `remember` is among them.
   assert string.contains(first.instance.prompt.text, remember.tool_name)
   // The boot's probe is lease-free and creates nothing: a boot that
-  // opened the store would take its writer lease, and one arriving
-  // during a distillation run would steal that run's. The door is
-  // registered anyway — an absent store is the ordinary state of a
-  // repository that has never remembered anything.
+  // opened the store would take its writer lease. The door is registered
+  // anyway, because an absent store is the ordinary state of a repository
+  // that has never remembered anything.
   let assert Ok(False) = simplifile.is_file(root <> "/loom-memory.db")
     as "the boot must not create the memory store"
-  // Nothing is injected yet: no distillation has run, so there is no
-  // sidecar and the hook has nothing to say.
-  assert memory.read_digest(root <> "/loom-memory.digest") == None
+  assert memory.read_notes_index(root <> "/loom-memory.notes") == None
 
   let outcome =
     tool.dispatch(
@@ -103,22 +91,6 @@ pub fn a_remembered_preference_reaches_the_next_sessions_bytes_test() {
     as "the first remembered note must create the memory store"
   serve.shutdown(first)
 
-  // --- the pipeline, for real ------------------------------------------
-  let assert Ok(report) =
-    distill.run(
-      distill.config_for(
-        root,
-        scripted_distiller(),
-        clock: a_clock(),
-        entropy: fn() { 8191 },
-      ),
-    )
-    as "the distillation run must succeed"
-  assert report.rows == 1
-  let assert Some(body) = memory.read_digest(root <> "/loom-memory.digest")
-    as "the run must leave a digest"
-  assert string.contains(body, preference)
-
   // --- session B: a fresh session file over the same memory ------------
   let bodies = process.new_subject()
   let assert Ok(second) =
@@ -131,32 +103,129 @@ pub fn a_remembered_preference_reaches_the_next_sessions_bytes_test() {
     as "session B must dispatch one generation"
   serve.shutdown(second)
 
-  // The exit criterion: the preference is in the bytes, inside the
-  // fence, under the attribution — and it got there without anyone
-  // telling session B about session A.
-  assert string.contains(sent, preference)
-  assert string.contains(sent, "loom-memory")
-  assert string.contains(sent, "Distilled memory from this repository")
-  assert string.contains(sent, "heuristic context")
+  // The exit criterion: the note is in the bytes, inside the fence, under
+  // the attribution, and it got there without anyone telling session B
+  // about session A.
+  assert string.contains(sent, "a note: for the tests")
+  assert string.contains(sent, "loom-notes")
+  assert string.contains(sent, "Notes saved in this repository")
+  assert string.contains(sent, "heuristic")
 }
 
-/// The other half of the same mechanism: a directory with no digest
-/// injects nothing at all. Memory is scoped to its own session
-/// directory, so a server booted anywhere else spends no tokens on it.
-pub fn a_session_with_no_digest_beside_it_injects_nothing_test() {
-  let root = fresh_root("empty")
+// --- the notes index --------------------------------------------------------
+
+// One run's request bytes from a fresh server over `root` with `memory`
+// settings: boot, send one prompt, record the body, shut down.
+fn request_bytes(
+  root: String,
+  file: String,
+  memory: memory_config.Options,
+) -> String {
   let bodies = process.new_subject()
-  let assert Ok(booted) =
-    serve.boot(settings(root, "a.db", recording_gateway(bodies)))
-    as "the server must boot"
-  let assert Ok(_op) = api.prompt(booted.instance.runtime, [user("hello")])
+  let configured =
+    serve.Settings(..settings(root, file, recording_gateway(bodies)), memory:)
+  let assert Ok(booted) = serve.boot(configured) as "the server must boot"
+  let assert Ok(_op) =
+    api.prompt(booted.instance.runtime, [user("what do you know?")])
     as "the prompt must be accepted"
   let assert Ok(sent) = process.receive(bodies, within: 10_000)
-    as "the boot must dispatch one generation"
+    as "the run must dispatch one generation"
   serve.shutdown(booted)
+  sent
+}
 
-  assert string.contains(sent, "Distilled memory from this repository") == False
-  assert string.contains(sent, memory.fence) == False
+fn remember_preference(root: String) -> Nil {
+  let outcome =
+    tool.dispatch(
+      tool_registry.built_in(None, None, None, Some(a_seam(root)), None),
+      a_ctx(root),
+      remember.tool_name,
+      core_json_note(preference),
+    )
+  assert outcome.is_error == False
+  Nil
+}
+
+fn occurrences(text: String, needle: String) -> Int {
+  list.length(string.split(text, needle)) - 1
+}
+
+/// With the default settings a repository that has notes starts each run
+/// with exactly one message carrying their index: titles and descriptions
+/// under the notes' own fence and attribution, not the notes' bodies.
+pub fn the_default_host_injects_the_notes_index_test() {
+  let root = fresh_root("notes-default")
+  remember_preference(root)
+  let sent = request_bytes(root, "b.db", memory_config.default_options())
+
+  assert occurrences(sent, "Notes saved in this repository by earlier") == 1
+  assert occurrences(sent, "```loom-notes") == 1
+  assert string.contains(sent, "a note: for the tests")
+  assert string.contains(sent, "(fact, 2025-08-24)")
+  // The index names the note; the body is fetched on demand.
+  assert !string.contains(sent, preference)
+  // And it is not the removed digest's fence.
+  assert !string.contains(sent, "```loom-memory")
+}
+
+/// A repository with no notes sees no extra message at all.
+pub fn a_repository_without_notes_sees_no_memory_message_test() {
+  let root = fresh_root("notes-none")
+  let sent = request_bytes(root, "a.db", memory_config.default_options())
+  assert !string.contains(sent, "Notes saved in this repository")
+  assert !string.contains(sent, "loom-notes")
+}
+
+/// `inject = "off"` injects nothing, notes or no notes.
+pub fn inject_off_hides_the_notes_index_test() {
+  let root = fresh_root("notes-off")
+  remember_preference(root)
+  assert simplifile.is_file(root <> "/loom-memory.notes") == Ok(True)
+  let sent =
+    request_bytes(
+      root,
+      "b.db",
+      memory_config.Options(inject: memory_config.InjectsNothing, retired: []),
+    )
+  assert !string.contains(sent, "Notes saved in this repository")
+  assert !string.contains(sent, "a note: for the tests")
+}
+
+/// Notes written before the index existed, or by a release that did not
+/// maintain it, are indexed when a session opens, so the first run already
+/// carries them. The sidecar is rebuilt from the store without a note being
+/// written.
+pub fn a_session_open_indexes_notes_written_before_the_index_test() {
+  let root = fresh_root("notes-upgrade")
+  remember_preference(root)
+  let index = root <> "/loom-memory.notes"
+  let assert Ok(Nil) = simplifile.delete(index)
+  assert simplifile.is_file(index) == Ok(False)
+
+  let sent = request_bytes(root, "b.db", memory_config.default_options())
+
+  assert simplifile.is_file(index) == Ok(True)
+  assert occurrences(sent, "Notes saved in this repository by earlier") == 1
+  assert string.contains(sent, "a note: for the tests")
+}
+
+/// With `inject = "off"` the open leaves the sidecar alone: nothing reads it,
+/// so rebuilding it would be work for no run.
+pub fn a_session_open_does_not_rebuild_the_index_when_injection_is_off_test() {
+  let root = fresh_root("notes-upgrade-off")
+  remember_preference(root)
+  let index = root <> "/loom-memory.notes"
+  let assert Ok(Nil) = simplifile.delete(index)
+
+  let sent =
+    request_bytes(
+      root,
+      "b.db",
+      memory_config.Options(inject: memory_config.InjectsNothing, retired: []),
+    )
+
+  assert simplifile.is_file(index) == Ok(False)
+  assert !string.contains(sent, "Notes saved in this repository")
 }
 
 // --- the conditional protection ---------------------------------------------
@@ -172,21 +241,21 @@ pub fn a_session_with_no_digest_beside_it_injects_nothing_test() {
 /// session's context.
 pub fn memory_is_protected_where_a_write_could_reach_it_test() {
   let store = "/repo/loom-memory.db"
-  let digest = "/repo/loom-memory.digest"
+  let notes = "/repo/loom-memory.notes"
 
   // The ordinary layout: the session directory is outside the
   // workspace, so nothing writable reaches these files and nothing is
   // added to the mask list.
   let outside = policy.workspace_default("/repo/work")
-  let unreached = workspace_policy.protecting_memory(outside, store, digest)
+  let unreached = workspace_policy.protecting_memory(outside, store, notes)
   assert unreached.protected == outside.protected
 
   // The layout where it matters: a writable root covers the session
-  // directory, so both files — and the store's WAL family — are barred.
+  // directory, so both files, and the store's WAL family, are barred.
   let inside = policy.workspace_default("/repo")
-  let reached = workspace_policy.protecting_memory(inside, store, digest)
+  let reached = workspace_policy.protecting_memory(inside, store, notes)
   assert list.contains(reached.protected, store)
-  assert list.contains(reached.protected, digest)
+  assert list.contains(reached.protected, notes)
   assert list.contains(reached.protected, store <> "-wal")
   assert list.contains(reached.protected, store <> "-shm")
   // Whatever was already protected stays protected.
@@ -195,35 +264,22 @@ pub fn memory_is_protected_where_a_write_could_reach_it_test() {
 
 // --- the rig ----------------------------------------------------------------
 
-fn scripted_distiller() -> distill.Distiller {
-  distill.Distiller(ask: fn(prompt) {
-    case string.contains(prompt, "consolidating the durable memory") {
-      True ->
-        Ok(distill.Answer(
-          text: consolidated,
-          usage: usage(9),
-          accounting: accounting.from_usage(usage(9)),
-        ))
-      False ->
-        Ok(distill.Answer(
-          text: "nothing",
-          usage: usage(3),
-          accounting: accounting.from_usage(usage(3)),
-        ))
-    }
-  })
-}
-
 fn a_seam(root: String) -> remember.Memory {
   memory.remember_seam(
     root <> "/loom-memory.db",
     clock: a_clock(),
     entropy: fn() { 7717 },
+    logger: log.discard(),
   )
 }
 
 fn core_json_note(text: String) -> core_json.JsonValue {
-  core_json.Object([#("note", core_json.String(text))])
+  core_json.Object([
+    #("title", core_json.String("a note")),
+    #("description", core_json.String("for the tests")),
+    #("kind", core_json.String("fact")),
+    #("note", core_json.String(text)),
+  ])
 }
 
 fn settings(
@@ -275,11 +331,7 @@ fn settings(
     jobs_policy: jobs.default_policy,
     retry_policy: retryconf.default_policy,
     deactivated_tools: [],
-    // No lifecycle distillation in this rig: the pass would open the
-    // memory store this test asserts about and spend the scripted
-    // provider's turns. `memory_lifecycle_test` is where the shipped
-    // producer is exercised.
-    memory: distillpass.no_pass(),
+    memory: memory_config.default_options(),
     // Offline, three names: the jail every session had before the
     // `[tools]` table existed.
     tools: catalog.default_tools(),
@@ -350,26 +402,6 @@ fn user(text: String) -> message.AgentMessage {
     content: [message.UserText(text:, text_signature: None)],
     timestamp: 0,
     origin: None,
-  )
-}
-
-fn usage(tokens: Int) -> message.Usage {
-  message.Usage(
-    input: tokens,
-    output: 0,
-    cache_read: 0,
-    cache_write: 0,
-    cache_write_1h: None,
-    reasoning: None,
-    total_tokens: tokens,
-    cost: message.UsageCost(
-      input: 0.0,
-      output: 0.0,
-      cache_read: 0.0,
-      cache_write: 0.0,
-      total: 0.0,
-    ),
-    evidence: usage_evidence.priced_api(),
   )
 }
 

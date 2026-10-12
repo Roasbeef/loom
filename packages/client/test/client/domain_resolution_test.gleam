@@ -1,6 +1,5 @@
 //// Real resolution preserves catalogue paths without starting native effects.
 
-import client/memory
 import client/owned_assembly_test
 import client/serve
 import core/clock
@@ -83,8 +82,6 @@ main = [\"session_b\"]
   assert settings.model.provider == "session_b"
   assert settings.model.model_id == "session-b-model"
   assert settings.api == api
-  assert domain.digest_beside(selected.memory_path)
-    == memory.digest_beside(selected.memory_path)
   assert settings.domain_paths
     == Some(serve.DomainPaths(selected.memory_path, selected.index_path))
   assert selected.memory_path

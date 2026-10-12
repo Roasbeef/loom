@@ -25,13 +25,14 @@
 ////
 //// # What the model can and cannot do with it
 ////
-//// It can write one short note. It cannot choose the entry type — the
-//// host writes `memory/note` and nothing else, which is half of the
-//// disjointness the distillation pipeline's own types rest on (a model
-//// can never forge a "consolidated" fact). It cannot read memory back
-//// through a tool at all: recall of memory is the digest the host
-//// injects at run start, so there is no read door to poison and no
-//// argument that could name one.
+//// It can write one short, typed note: a `title`, a one-line `description`,
+//// the `note` itself and a `kind` drawn from a closed list. A note is never
+//// held for approval; the model writes it and the owner reads the index
+//// afterwards. It cannot choose the entry type — the
+//// host writes `memory/note` and nothing else. It cannot read memory back
+//// through this tool at all: recall is the bounded index of titles the
+//// host injects at run start and `history_search kind=note`, so there is
+//// no read door here to poison and no argument that could name one.
 ////
 //// `replay: Never` — a note mints a fresh entry id per admission, so a
 //// replayed call would write the note twice and spend two of the
@@ -47,7 +48,9 @@
 import broker/policy.{type SandboxPolicy}
 import core/json.{type JsonValue}
 import gleam/int
+import gleam/list
 import gleam/option.{Some}
+import gleam/result
 import gleam/string
 import tools/tool.{type Tool, type ToolOutcome}
 
@@ -57,15 +60,8 @@ import tools/tool.{type Tool, type ToolOutcome}
 pub const tool_name = "remember"
 
 /// The custom entry type every `remember` write lands under. The only
-/// type this door can produce, and disjoint from the distillation
-/// pipeline's `memory/*` types by a test that pins the intersection
-/// empty (`client/memory.pipeline_types`).
+/// type this door can produce.
 pub const note_type = "memory/note"
-
-/// Every entry type reachable through this door — one, and the list
-/// exists so the disjointness test has two lists to intersect rather
-/// than two spellings to compare.
-pub const entry_types = [note_type]
 
 /// The most characters one note may occupy, **measured after
 /// redaction**. Two thousand characters is a long paragraph: a note is a
@@ -77,17 +73,88 @@ pub const entry_types = [note_type]
 pub const max_note_chars = 2000
 
 /// The most notes one memory session will ever accept, over its whole
-/// life. A lifetime ceiling rather than a rate: the digest that carries
+/// life. A lifetime ceiling rather than a rate: the index that carries
 /// memory into later sessions is byte-capped, so an unbounded note count
-/// does not grow the injection — it grows the file and the consolidation
-/// input, quietly, forever. Enforced by the seam against a durable
-/// counter committed in the note's own transaction.
+/// does not grow the injection — it grows the file, quietly, forever.
+/// Enforced by the seam against a durable counter committed in the note's own
+/// transaction.
 pub const max_notes = 256
+
+/// What a note is for, as a closed list so the index can show it and a
+/// search can filter on it. The model picks one; it cannot invent a fourth.
+pub type Kind {
+  /// A correction or a confirmed way of working the user asked for.
+  Feedback
+
+  /// A fact about this repository that cost effort to learn.
+  Fact
+
+  /// A choice that was made, with the reason it was made.
+  Decision
+}
+
+/// Every kind, in the order the tool's schema lists them.
+pub const kinds = [Feedback, Fact, Decision]
+
+/// The spelling of a kind in the tool's arguments, the stored entry and
+/// the index line.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert remember.kind_name(remember.Decision) == "decision"
+/// ```
+///
+pub fn kind_name(kind: Kind) -> String {
+  case kind {
+    Feedback -> "feedback"
+    Fact -> "fact"
+    Decision -> "decision"
+  }
+}
+
+/// The kind a spelling denotes, or `Error(Nil)` for anything else.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert remember.kind_named("fact") == Ok(remember.Fact)
+/// ```
+///
+/// ```gleam
+/// assert remember.kind_named("lesson") == Error(Nil)
+/// ```
+///
+pub fn kind_named(name: String) -> Result(Kind, Nil) {
+  list.find(kinds, fn(kind) { kind_name(kind) == name })
+}
+
+/// One note as the model wrote it, before the host redacts and stores it.
+///
+/// Constructor invariants: none are enforced by the type. `check_line`
+/// judges `title` and `description` after redaction, on the far side of the
+/// seam, for the reason the module doc gives.
+pub type Note {
+  Note(kind: Kind, title: String, description: String, text: String)
+}
+
+/// The most characters a note's title may occupy, after redaction.
+pub const max_title_chars = 80
+
+/// The most characters a note's one-line description may occupy, after
+/// redaction.
+pub const max_description_chars = 160
 
 /// Why a note could not be written.
 pub type Refusal {
-  /// The memory session is open for writing elsewhere — a distillation
-  /// run holds its lease. Nothing is lost by saying it again later.
+  /// A `title` or `description` is empty, runs over its limit, or spans
+  /// more than one line. The index prints each on a single line, so a
+  /// second line would let a note forge the entries around it.
+  FieldInvalid(field: String, reason: String)
+
+  /// The memory session is open for writing elsewhere, such as another
+  /// `remember` call holding its lease. Nothing is lost by saying it again
+  /// later.
   MemoryBusy(reason: String)
 
   /// The memory session could not be opened or committed to at all.
@@ -109,11 +176,11 @@ pub type Refusal {
 /// it does not crash — and it owns every cap the module doc names:
 /// redaction first, then the character limit over the redacted text,
 /// then the lifetime ceiling in the same transaction as the write. It is
-/// called with the model's text exactly as given, untrimmed, because
+/// called with the model's fields exactly as given, untrimmed, because
 /// trimming before redaction would be a second place that decides what
 /// the stored bytes are.
 pub type Memory {
-  Memory(remember: fn(String) -> Result(Nil, Refusal))
+  Memory(remember: fn(Note) -> Result(Nil, Refusal))
 }
 
 /// The `remember` tool over one memory seam.
@@ -128,33 +195,63 @@ pub fn tool(memory: Memory) -> Tool {
   tool.Tool(
     name: tool_name,
     description: "Write one durable note into this repository's memory, for "
-      <> "sessions that come after this one. Use it for a lesson, a "
-      <> "preference the user stated, or a fact about this repository that "
-      <> "cost you effort to learn — not for what is already in the files, "
-      <> "and not as a scratchpad for this conversation. Notes are "
-      <> "redacted, capped at "
+      <> "sessions that come after this one. Use it for a correction the "
+      <> "user gave, a fact about this repository that cost you effort to "
+      <> "learn, or a decision and what drove it — not for what is already "
+      <> "in the files, and not as a scratchpad for this conversation. "
+      <> "State the reason as well as the rule, and say how to apply it, so "
+      <> "a reader with none of this conversation can use the note. A note "
+      <> "is saved at once and never asks the user. Notes are redacted, "
+      <> "capped at "
       <> int.to_string(max_note_chars)
       <> " characters each, and limited to "
       <> int.to_string(max_notes)
-      <> " for the life of this repository's memory. There is no tool to "
-      <> "read them back: what memory says reaches a later session on its "
-      <> "own, as quoted context.",
+      <> " for the life of this repository's memory. Every session starts "
+      <> "with an index of titles and descriptions; `history_search` with "
+      <> "kind=note returns a note's full text.",
     prompt_snippet: Some(
-      "`remember` writes one durable note for the sessions that come after "
-      <> "this one.",
+      "`remember` saves one typed note (feedback, fact or decision) for the "
+      <> "sessions that come after this one.",
     ),
     schema: tool.object_schema(
       [
         #(
+          "title",
+          tool.string_property(
+            "a short name for the note, at most "
+            <> int.to_string(max_title_chars)
+            <> " characters, on one line",
+          ),
+        ),
+        #(
+          "description",
+          tool.string_property(
+            "one line, at most "
+            <> int.to_string(max_description_chars)
+            <> " characters, saying what the note is about so a later session "
+            <> "can decide whether to read it",
+          ),
+        ),
+        #(
+          "kind",
+          tool.enum_property(
+            list.map(kinds, kind_name),
+            "feedback: a correction or preference from the user; fact: "
+              <> "something true of this repository; decision: a choice and "
+              <> "its reason",
+          ),
+        ),
+        #(
           "note",
           tool.string_property(
             "the lesson, preference or fact to carry forward, in one or two "
-            <> "sentences; write it so it still makes sense to a reader with "
-            <> "none of this conversation's context",
+            <> "sentences, with the reason behind it and how to apply it; "
+            <> "write it so it still makes sense to a reader with none of "
+            <> "this conversation's context",
           ),
         ),
       ],
-      ["note"],
+      ["title", "description", "kind", "note"],
     ),
     replay: tool.Never,
     execution_mode: tool.Exclusive,
@@ -164,7 +261,7 @@ pub fn tool(memory: Memory) -> Tool {
 }
 
 fn run(memory: Memory, args: JsonValue) -> ToolOutcome {
-  use note <- tool.with_arg(tool.required_string(args, "note"))
+  use note <- tool.with_arg(decoded_note(args))
   use Nil <- tool.or_outcome(memory.remember(note), refusal_outcome)
   tool.success(
     "remembered. It will reach later sessions in this repository as quoted "
@@ -172,6 +269,71 @@ fn run(memory: Memory, args: JsonValue) -> ToolOutcome {
     <> "follow it.",
   )
   |> tool.with_details(json.Object([#("stored", json.Bool(True))]))
+}
+
+// A missing field, a field of the wrong type and a kind outside the list
+// are each refused in band by name, so the model can say it again.
+fn decoded_note(args: JsonValue) -> Result(Note, String) {
+  use title <- result.try(tool.required_string(args, "title"))
+  use description <- result.try(tool.required_string(args, "description"))
+  use name <- result.try(tool.required_string(args, "kind"))
+  use kind <- result.try(
+    kind_named(name)
+    |> result.replace_error(
+      "`kind` must be one of "
+      <> string.join(list.map(kinds, kind_name), ", ")
+      <> ", not `"
+      <> name
+      <> "`",
+    ),
+  )
+  use text <- result.map(tool.required_string(args, "note"))
+  Note(kind:, title:, description:, text:)
+}
+
+/// Judges one single-line field of a note, after redaction: it must say
+/// something, fit its limit, and stay on one line.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert remember.check_line("title", "Use tabs", 80) == Ok(Nil)
+/// ```
+///
+/// ```gleam
+/// assert remember.check_line("title", "a\nb", 80)
+///   == Error(remember.FieldInvalid("title", "must be a single line"))
+/// ```
+///
+pub fn check_line(
+  field: String,
+  text: String,
+  limit: Int,
+) -> Result(Nil, Refusal) {
+  case
+    says_something(text),
+    string.contains(text, "\n") || string.contains(text, "\r")
+  {
+    False, _ -> Error(FieldInvalid(field:, reason: "is empty"))
+    True, True -> Error(FieldInvalid(field:, reason: "must be a single line"))
+
+    // Whether the field is over its limit is a question about the first
+    // `limit` graphemes, so it is asked that way rather than by measuring
+    // the whole string (lint R5). The full length is measured only on the
+    // refusal path, where it is the number the model needs.
+    True, False ->
+      case string.drop_start(text, limit) {
+        "" -> Ok(Nil)
+        _over ->
+          Error(FieldInvalid(
+            field:,
+            reason: "is "
+              <> int.to_string(string.length(text))
+              <> " characters and the limit is "
+              <> int.to_string(limit),
+          ))
+      }
+  }
 }
 
 /// Renders a seam refusal as the in-band failure the model reads.
@@ -199,13 +361,14 @@ fn refusal_code(refusal: Refusal) -> String {
     NoteTooLong(..) -> "note_too_long"
     CeilingReached(..) -> "memory_full"
     NothingToRemember -> "note_empty"
+    FieldInvalid(..) -> "note_field_invalid"
   }
 }
 
 fn describe(refusal: Refusal) -> String {
   case refusal {
     MemoryBusy(reason:) ->
-      "memory is being consolidated right now ("
+      "memory is being written by another call right now ("
       <> reason
       <> "). Nothing is lost — say it again later, or carry on without it"
     MemoryUnavailable(reason:) ->
@@ -221,9 +384,10 @@ fn describe(refusal: Refusal) -> String {
     CeilingReached(limit:) ->
       "this repository's memory has taken its lifetime limit of "
       <> int.to_string(limit)
-      <> " notes and accepts no more. Distillation consolidates what is "
-      <> "already there; nothing further can be added by hand"
+      <> " notes and accepts no more. Nothing further can be added"
     NothingToRemember -> "`note` is empty. Give the lesson in a sentence or two"
+    FieldInvalid(field:, reason:) ->
+      "`" <> field <> "` " <> reason <> ". Say it again with that fixed"
   }
 }
 

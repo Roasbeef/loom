@@ -316,30 +316,43 @@ pub fn admit_attachment(
 /// standing instruction fired and let the reader open it if they care.
 pub const harness_injection_prefix = "[loom] "
 
-/// How the memory context the daemon attaches to a run begins.
+/// How the distilled-memory digest a past release attached to a run begins.
 ///
-/// `client/memory.wrapped` writes this sentence first, then a fenced body
-/// of digest lines. It is a constant here, and `client/memory` builds its
-/// attribution from it, because a client that recognises the injection
-/// by matching prose would break silently the day someone rewords the
-/// prose. Sharing the constant makes the wording and the recognition one
-/// edit.
+/// The distillation pipeline that produced the digest was removed and nothing
+/// writes this message any more. The constant stays because sessions saved by
+/// that release still hold it as a user turn, and a client must keep
+/// recognising it to collapse the turn in a transcript, rather than draw
+/// twenty kilobytes of standing context as though the owner had typed it.
 pub const memory_attribution_lead =
   "Distilled memory from this repository's earlier "
 
-/// The fence the memory context's body is wrapped in.
+/// The fence the removed digest's body was wrapped in.
 pub const memory_fence = "```loom-memory"
 
-/// How many digest lines a memory context holds, or `None` when the text
-/// is not one.
+/// How the notes index the daemon attaches to a run begins.
 ///
-/// The daemon attaches distilled memory to a run as a user message of its
-/// own, ahead of the prompt. The owner did not type it, and it can run to
-/// twenty kilobytes, so a transcript that draws it whole reads as a
-/// prompt that repeats itself every turn. A message is a memory context
-/// when it begins with `memory_attribution_lead` and carries the fence;
-/// the count is the lines between the fence's opening line and its
-/// closing one.
+/// `client/memory.notes_wrapped` writes this sentence first, then a fenced
+/// body of one line per note. It is a constant here, and `client/memory`
+/// builds its attribution from it, because a client that recognises the
+/// injection by matching prose would break silently the day someone rewords
+/// the prose. Sharing the constant makes the wording and the recognition one
+/// edit. It must not be a prefix of `memory_attribution_lead` or the other way
+/// round, so each message names one injector.
+pub const notes_attribution_lead = "Notes saved in this repository by earlier "
+
+/// The fence the notes index is wrapped in.
+pub const notes_fence = "```loom-notes"
+
+/// How many lines a memory context holds, or `None` when the text is not
+/// one.
+///
+/// The daemon attaches memory to a run as a user message of its own, ahead
+/// of the prompt: the notes index, which is about one kilobyte, or the
+/// removed digest a saved session may still hold, which ran to twenty. The
+/// owner did not type either, and a transcript that draws one whole reads as a
+/// prompt that repeats itself every turn. A message is a memory context when it begins with
+/// one injector's attribution lead and carries that injector's fence; the
+/// count is the lines between the fence's opening line and its closing one.
 ///
 /// ## Examples
 ///
@@ -353,19 +366,36 @@ pub const memory_fence = "```loom-memory"
 /// ```gleam
 /// assert composer.memory_context_lines("ordinary turn") == None
 /// ```
+///
+/// ```gleam
+/// let text =
+///   composer.notes_attribution_lead
+///   <> "sessions.\n\n```loom-notes\n- (fact, 2026-10-11) a\n```"
+/// assert composer.memory_context_lines(text) == Some(1)
+/// ```
 pub fn memory_context_lines(text: String) -> Option(Int) {
-  use <- bool.guard(
-    when: !string.starts_with(text, memory_attribution_lead),
-    return: None,
+  list.find_map(
+    [
+      #(memory_attribution_lead, memory_fence),
+      #(notes_attribution_lead, notes_fence),
+    ],
+    fn(injector) { fenced_lines(text, injector.0, injector.1) },
   )
-  case string.split_once(text, memory_fence <> "\n") {
-    Error(Nil) -> None
+  |> option.from_result
+}
+
+// The lines of `text`'s fenced body, when it begins with `lead` and carries
+// `fence`; the two together name one injector.
+fn fenced_lines(text: String, lead: String, fence: String) -> Result(Int, Nil) {
+  use <- bool.guard(when: !string.starts_with(text, lead), return: Error(Nil))
+  case string.split_once(text, fence <> "\n") {
+    Error(Nil) -> Error(Nil)
     Ok(#(_attribution, body)) -> {
-      let digest = case string.ends_with(body, "\n```") {
+      let lines = case string.ends_with(body, "\n```") {
         True -> string.drop_end(body, 4)
         False -> body
       }
-      Some(list.length(string.split(digest, "\n")))
+      Ok(list.length(string.split(lines, "\n")))
     }
   }
 }

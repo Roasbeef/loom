@@ -57,7 +57,6 @@
 //// that are already durable, and the structural anti-feedback exclusion
 //// belongs to memory stage M2 rather than here.
 
-import client/distill
 import client/internal/shared_history
 import core/codec
 import core/ids.{type SessionId}
@@ -90,7 +89,7 @@ pub type SharedConfig {
     /// Canonical domain-exclusive search database path.
     index_path: String,
     /// Fresh domain records; never a directory scanner or cached locator.
-    sources: fn() -> Result(List(distill.Source), String),
+    sources: fn() -> Result(List(shared_history.Source), String),
     /// Finite request and connection busy bound, at most five seconds.
     timeout_ms: Int,
     /// At most one hundred descriptors per source refresh.

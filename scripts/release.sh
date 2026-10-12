@@ -258,30 +258,6 @@ if [ "$SMOKE" = 1 ]; then
     esac
   fi
 
-  # #149 now belongs to the shared domain, not daemon startup or each guest.
-  # Explicit admission starts the pass. Both conversations are empty, so the
-  # pass must complete without a provider request. Whether the first pass sees
-  # a reserved or saved registration determines its skipped count; candidates
-  # and rows are zero in either ordering.
-  PASS=""
-  for _ in $(seq 1 50); do
-    PASS="$(grep -m1 '"event":"memory.distill.completed"' "$LOG" || true)"
-    if [ -n "$PASS" ]; then break; fi
-    kill -0 "$SERVER_PID" 2>/dev/null || break
-    sleep 0.2
-  done
-  [ -n "$PASS" ] || {
-    echo "release.sh: the release ran no distillation pass after admission." >&2
-    echo "  The lines it did log about memory were:" >&2
-    grep 'memory.distill' "$LOG" | sed 's/^/    /' >&2 || true
-    exit 1; }
-  case "$PASS" in
-    *'"candidates":0,"rows":0,'*) ;;
-    *) echo "release.sh: empty smoke sessions unexpectedly produced candidates or rows" >&2
-       echo "  pass: $PASS" >&2
-       exit 1 ;;
-  esac
-
   # `daemon.stopped` is emitted only after the listener, session and shared
   # domain owners have confirmed retirement, so it is
   # the witness that SIGTERM took the graceful route rather than killing a
@@ -347,7 +323,7 @@ if [ "$SMOKE" = 1 ]; then
 
   echo "release.sh: smoke ok — no erl on PATH, authenticated v2 readiness, ws 401 without a token,"
   echo "            metadata-only startup, two explicitly admitted sessions,"
-  echo "            shared-domain distillation after admission, clean close on SIGTERM,"
+  echo "            clean close on SIGTERM,"
   echo "            the helper found beside the binary with no --helper injected,"
   echo "            and an explicit --helper still winning"
   echo "            plus native ChatGPT status reporting logged out without credentials"

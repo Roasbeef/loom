@@ -2,8 +2,8 @@
 //// The mutable resolver models current catalogue authorization, not an index
 //// locator. All test exchanges have finite deadlines and retire their owners.
 
-import client/distill
 import client/history
+import client/internal/shared_history
 import core/clock
 import core/codec
 import core/entry
@@ -23,8 +23,8 @@ import weft/actor
 import weft/poll
 
 type Selection {
-  Get(process.Subject(List(distill.Source)))
-  Set(List(distill.Source), process.Subject(Nil))
+  Get(process.Subject(List(shared_history.Source)))
+  Set(List(shared_history.Source), process.Subject(Nil))
   Arm(Int, fn() -> Nil, process.Subject(Nil))
 
   /// Parks the resolver on its `after`-th remaining answer and publishes the
@@ -119,7 +119,7 @@ pub fn shared_history_bounded_refresh_and_identity_refusal_test() {
     as "the next request must continue after committed progress"
   assert hit.entry == ids.entry_id_to_string(item.id)
   let #(wrong, _) = ids.mint_session(ids.generator(clock.fixed(0), 99))
-  let alias = distill.Source(session: wrong, path: a.path)
+  let alias = shared_history.Source(session: wrong, path: a.path)
   assert process.call(selected, waiting: 1000, sending: Set([alias], _)) == Nil
   let rejected = history.seam_for(shared, wrong)
   let assert Error(tool.IndexRefused(_)) = rejected.read(wrong, item.id)
@@ -405,7 +405,7 @@ fn conversation(path, seed, text) {
   let assert Ok([stored]) =
     storage.scan_entries(opened.store, storage.entry_scan())
     as "fixture must read the stamped durable entry"
-  #(distill.Source(id, path), stored, retire)
+  #(shared_history.Source(id, path), stored, retire)
 }
 
 fn directory(lane) {

@@ -399,7 +399,7 @@ fn run_real_server_lifecycle(server: String) -> Nil {
   let assert Ok(Nil) =
     simplifile.write(
       configuration,
-      "[models.fixture]\ndialect = \"anthropic\"\napi_key_env = \"UNUSED\"\nmodel_id = \"fixture\"\ncontext_window = 100000\nmax_output_tokens = 4096\n[roles]\nmain = [\"fixture\"]\n[memory]\ndistill = \"off\"\n",
+      "[models.fixture]\ndialect = \"anthropic\"\napi_key_env = \"UNUSED\"\nmodel_id = \"fixture\"\ncontext_window = 100000\nmax_output_tokens = 4096\n[roles]\nmain = [\"fixture\"]\n",
     )
     as "a deterministic launch never uses environment-backed maintenance"
   let assert Ok(configuration) = host_bootstrap.absolute_path(configuration)

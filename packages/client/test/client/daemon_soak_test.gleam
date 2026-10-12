@@ -184,15 +184,12 @@ fn start(settings: serve.Settings) {
             ))
             as "the shared history directory is private"
           domain.build(
-            domain.Config(
-              history: history.SharedConfig(
-                selected.index_path,
-                sources,
-                5000,
-                100,
-              ),
-              maintenance: fn(_) { Ok(None) },
-            ),
+            domain.Config(history: history.SharedConfig(
+              selected.index_path,
+              sources,
+              5000,
+              100,
+            )),
             owner,
           )
         },

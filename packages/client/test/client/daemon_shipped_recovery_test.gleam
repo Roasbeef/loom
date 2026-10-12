@@ -109,9 +109,9 @@ fn exercise(server, directory, paths: endpoint.Paths) {
   let assert Ok(Nil) =
     simplifile.write(
       configuration,
-      "[models.fixture]\ndialect = \"anthropic\"\napi_key_env = \"UNUSED\"\nmodel_id = \"fixture\"\ncontext_window = 100000\nmax_output_tokens = 4096\n[roles]\nmain = [\"fixture\"]\n[memory]\ndistill = \"off\"\n",
+      "[models.fixture]\ndialect = \"anthropic\"\napi_key_env = \"UNUSED\"\nmodel_id = \"fixture\"\ncontext_window = 100000\nmax_output_tokens = 4096\n[roles]\nmain = [\"fixture\"]\n",
     )
-    as "assembly needs neither a provider request nor background distillation"
+    as "assembly needs no provider request"
   let assert Ok(first) = launch(server, paths, configuration)
     as "the shipped daemon authenticates through native bootstrap"
   let assert Ok(protocol.SessionReply(blocker)) =

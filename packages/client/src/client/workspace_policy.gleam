@@ -62,7 +62,7 @@ import simplifile
 import tom
 
 /// The files an owner keeps beside its session that a jailed process must
-/// never write: the search index, and the memory store with the digest
+/// never write: the search index, and the memory store with the notes index
 /// sidecar rendered from it.
 ///
 /// Plain paths, because masking a file needs only its name. A workspace
@@ -74,8 +74,8 @@ pub type OwnerFiles {
     index: String,
     /// The absolute path of the memory store.
     memory_store: String,
-    /// The absolute path of the memory digest sidecar.
-    memory_digest: String,
+    /// The absolute path of the notes index sidecar.
+    memory_notes: String,
   )
 }
 
@@ -865,9 +865,9 @@ fn protecting_owner_files(
 ) -> policy.SandboxPolicy {
   case files {
     None -> base
-    Some(OwnerFiles(index:, memory_store:, memory_digest:)) ->
+    Some(OwnerFiles(index:, memory_store:, memory_notes:)) ->
       protecting_index(base, index)
-      |> protecting_memory(memory_store, memory_digest)
+      |> protecting_memory(memory_store, memory_notes)
   }
 }
 
@@ -1218,45 +1218,45 @@ pub fn protecting_blobs(
   protecting(base, always: [blob_root], where_maskable: [])
 }
 
-/// The base policy with this repository's memory protected: the digest
-/// sidecar the server injects at every run start, and the store the
-/// digest is rendered from.
+/// The base policy with this repository's memory protected: the notes index
+/// sidecar the server injects at every run start, and the store the index is
+/// rendered from.
 ///
 /// The same argument `protecting_index` makes, one step further along
 /// and one degree more direct. A search snippet reaches a later session
-/// only if a model searches for it; the memory digest is injected into
+/// only if a model searches for it; the notes index is injected into
 /// **every** run of every session on this repository, unasked. A
-/// model-writable digest would therefore be the cleanest prompt-injection
+/// model-writable index would therefore be the cleanest prompt-injection
 /// channel in the tree.
 ///
 /// Both files are conditional, and unlike the index this is not a
-/// refinement but a requirement: neither exists until a distillation run
-/// has happened, and the jail refuses to mask a *missing* protected path
+/// refinement but a requirement: neither exists until the first note is
+/// written, and the jail refuses to mask a *missing* protected path
 /// under a read-only parent — the failure that once turned the index's
 /// side-file list into a refusal of every jailed call. So the mask
-/// arrives with the file. Until then there is nothing to protect: a
-/// digest that does not exist injects nothing, and under a read-only
+/// arrives with the file. Until then there is nothing to protect: an
+/// index that does not exist injects nothing, and under a read-only
 /// parent the jail makes it uncreatable.
 ///
 /// The wrapper is the other half of this bargain and does not depend on
-/// it: `client/memory.wrapped` builds the fence and the attribution at
-/// injection time, so even a digest somebody managed to write cannot
+/// it: `client/memory.notes_wrapped` builds the fence and the attribution at
+/// injection time, so even an index somebody managed to write cannot
 /// claim to be operator text.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // workspace_policy.protecting_memory(base, "/d/loom-memory.db", "/d/loom-memory.digest")
+/// // workspace_policy.protecting_memory(base, "/d/loom-memory.db", "/d/loom-memory.notes")
 /// ```
 ///
 pub fn protecting_memory(
   base: policy.SandboxPolicy,
   store_path: String,
-  digest_path: String,
+  notes_path: String,
 ) -> policy.SandboxPolicy {
   protecting(base, always: [], where_maskable: [
     store_path,
-    digest_path,
+    notes_path,
     ..sqlite_side_files(store_path)
   ])
 }
