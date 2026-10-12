@@ -323,7 +323,7 @@ run(<<"ledger_relay">>, Root) ->
     Aux = fun(#{home := Home}) ->
         Path = filename:join(Home, "ledger.log"),
         ok = file:write_file(Path, [Genesis, <<"\n">>]),
-        #{ledger => bin(Path), lifetime => 150000}
+        #{ledger => bin(Path), lifetime => 300000}
     end,
     PortC = open_vm(C, ConfigC, ledger_node, Aux(C), []),
     try
