@@ -325,7 +325,7 @@ fn keep_authority(
       deployment: authority.deployment,
       key: authority.key,
       certificate: authority.certificate,
-      ledger: option.unwrap(provisioned.deployment.ledger, ""),
+      ledger: provisioned.ledger,
     ),
     passphrase,
   )

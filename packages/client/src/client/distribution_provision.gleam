@@ -95,7 +95,14 @@ pub type Authority {
 
 /// A deployment provisioned in ledger mode and the authority that signed it.
 pub type Provisioned {
-  Provisioned(deployment: Deployment, authority: Authority)
+  Provisioned(
+    deployment: Deployment,
+    authority: Authority,
+    /// The text of the ledger file, the same text `deployment.ledger` holds. A
+    /// ledger-mode result always has one, so the caller that seals it beside the
+    /// key reads it here and never unwraps an `Option` that cannot be `None`.
+    ledger: String,
+  )
 }
 
 /// The machine-readable description of a deployment. It holds nothing private:
@@ -198,7 +205,7 @@ fn pinned_nodes(issued: List(Issued)) -> List(membership_provision.Pinned) {
 /// ## Examples
 ///
 /// ```gleam
-/// let assert Ok(Provisioned(deployment:, authority:)) =
+/// let assert Ok(Provisioned(deployment:, authority:, ledger: _)) =
 ///   distribution_provision.provision_ledger(plan, timestamp.system_time())
 /// ```
 pub fn provision_ledger(
@@ -226,17 +233,19 @@ pub fn provision_ledger(
     list.map(minted.issued, fn(entry) {
       bundle(plan, entry, minted, distribution_bundle.SignedLedger(built.lines))
     })
+  let ledger = membership_provision.file_text(built.lines)
   Ok(Provisioned(
     deployment: Deployment(
       bundles:,
       system: system(plan, minted.issued),
-      ledger: Some(membership_provision.file_text(built.lines)),
+      ledger: Some(ledger),
     ),
     authority: Authority(
       deployment: deployment_id,
       certificate: minted.authority,
       key: minted.authority_key,
     ),
+    ledger:,
   ))
 }
 
