@@ -7492,6 +7492,52 @@ views and refusals across the real control socket), and
 `daemon_shipped_remote_move_test` (three shipped daemons, a clean move and the
 source lost after each step). The terminal's side is `tui`'s `sessions_move_test`.
 
+## Subagents on another orchestrator (protocol 084, slice S1)
+
+Slice S1 of phase 1 is the policy and the messages. Nothing starts a child yet:
+the delegate session is slice S2, the laptop's side is S3, the deadline tick is
+S4 and the shipped two-orchestrator test is S5.
+
+- `spawners` is the `[spawners.<name>]` table, read by `daemon/main.prepare_startup`
+  into `Config.spawners` and validated by `catalog.parse` too. A `Spawner` has its
+  `node` (a pinned `[[distribution.peers]]` node no other spawner uses), one
+  `Placement` (`OnExecutor`, `InPool` or `InDirectory`, resolved against the
+  executors and pools), a `profile` that must be a `[profiles.<name>]`, a `tools`
+  ceiling (`default_tools` is every built-in tool except `agent_spawn`,
+  `remember`, `peer_*` and `schedule_*`), and `max_depth`, `max_sessions` (at most
+  16), `max_within_s`, `default_within_s` and `retain_s`. The decoder refuses a
+  `default_within_s` above `max_within_s` and a `retain_s` below it, naming both
+  values, because either may be a default the file never wrote. `find` and
+  `by_node` resolve a spawner; the port uses `by_node` on the node a message came
+  from. A new key means `spawners.row`, `scripts/config_keys.sh` and
+  `docs/configuration.md`.
+- The orchestrator name grammar is the profile grammar, which excludes `@` and `#`.
+  A remote handle's parse (`{strand}#{operation}@{orchestrator}`) depends on that,
+  and `orchestrators_test` pins it.
+- `remote_spawn` is the plain-data vocabulary: `Parent`, `Origin` (the sender's
+  node beside the parent), `CallSite`, `Request` with `Detach`, `Spawned`, `Joined`
+  (`Ready | Pending`), `ChildUsage`, and `SpawnRefusal` with `Cap`. It reuses
+  `tools/agent`'s `Handle`, `Minter`, `Outcome`, `TerminalResult` and
+  `ResultSchema`. `Unimplemented` is a refusal only slice S1 uses; S2 removes it.
+- `orchestrator_port.Message` gains `Spawn`, `Join` and `RunEnded`. `answer` runs
+  each through `detached`, as it does `Activate`, so none of them delays an
+  `Owns`. `detached` now hands its computation the requester's node
+  (`ffi_remote.node_of`, a stock `erlang:node/1` binding: there is no pure way to
+  ask where a pid lives). The functions behind the messages are a `SpawnHost`
+  that `start_with` takes as a fifth argument. `refusing_spawns()` is the host of
+  `start`, `start_serving` and `start_importing`, and answers `UnknownSpawner`.
+  `daemon/main.spawn_host(config.spawners)` is the production host: a node no
+  spawner names gets `UnknownSpawner(node)`, and a configured one gets
+  `Unimplemented`. A host that crashes sends nothing, so the asker's deadline
+  reads silence. `ask_spawn`, `ask_join` and `ask_run_ended` are the thin sending
+  ends the tests use; slice S3 builds the real one on `remote_peer`.
+
+Tests: `spawners_test` (a valid table, defaults, every refusal, the catalogue
+parser), `orchestrators_test` (the `@` and `#` refusal),
+`remote/orchestrator_port_test` (each message reaches the host with its origin,
+refusals, a slow answer not delaying `Owns`, a crashing host) and
+`daemon_spawn_host_test` (the production host's three answers).
+
 ## Explicit browser result reads
 
 Protocol change 079 adds keyed result-page and result-download GETs. Each request

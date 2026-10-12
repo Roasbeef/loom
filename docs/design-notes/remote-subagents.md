@@ -141,7 +141,7 @@ them in phase 1:
 |---|---|---|
 | `Spawn(parent, caller, depth, parent_tools, request, reply)` | the child's handle, or a `SpawnRefusal` | in a task, since the first spawn opens the delegate session |
 | `Join(parent, handles, within_ms, reply)` | one `Ready` or `Pending` per handle | in a task, for up to 25 s |
-| `RunEnded(parent, operation, reply)` | how many children it stopped | in the port's turn |
+| `RunEnded(parent, operation, reply)` | how many children it stopped | in a task, because it reaches into the delegate session's Agency and waits for its holder |
 
 `parent` is `{session, strand}` on the spawning orchestrator. Every value is
 plain data and a reply subject, as on the rest of the port: no closure, port

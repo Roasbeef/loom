@@ -240,8 +240,9 @@ the executor host, `OwnerMessage` to the owner port, and `orchestrator_port`'s
 `Message` between orchestrators. They hold only plain data and subjects, and no
 function, port or atom built from a peer's input. The owner port serves only
 the two reserved fact prefixes, and the orchestrator port serves only five of
-peer mail's commands and one read of the catalogue, so a peer cannot read a
-session's conversation through them. Those limits are scope hygiene: they keep each port to its job. They are
+peer mail's commands, one read of the catalogue, the session-move messages and
+the three subagent messages, so a peer cannot read a session's conversation
+through them. Those limits are scope hygiene: they keep each port to its job. They are
 not a security boundary, because a peer that wanted more could call any
 function on the node directly.
 
@@ -914,6 +915,41 @@ incarnation. A later open that rebinds the scope after an orchestrator restart
 keeps the plane and its plan, and answers with the census the plane was built
 with, so a changed plan takes effect at the next reopen.
 
+## Subagents on another orchestrator
+
+[The design note](../design-notes/remote-subagents.md) and
+[protocol-change/084](../../protocol-change/084-remote-subagents.md) give a model
+on one orchestrator, a laptop, children that run on another, the box. Only the
+box's policy and the orchestrator port's messages exist so far; nothing starts a
+child yet.
+
+The box lists each orchestrator that may spawn on it in a
+`[spawners.<name>]` table (`client/spawners`, read once at startup like
+`[executors]`). The table names the spawner's pinned node, one placement for its
+delegate sessions (an executor or a pool with a workspace, or a directory), a
+profile, a tool ceiling, `max_depth`, `max_sessions` (at most 16, an executor's
+scope limit), `max_within_s`, `default_within_s` and `retain_s`. The decoder
+requires `default_within_s <= max_within_s <= retain_s`. The limits bound an
+honest spawner and a model that spawns too much; a pinned peer is fully trusted,
+so they are not a boundary against a compromised one.
+
+The orchestrator port gains three constructors, whose plain-data vocabulary is
+`client/remote_spawn`. `Spawn` starts a child, or answers the handle of the one
+the same call site already made. `Join` waits for at most 25 seconds and answers
+one `Ready` or `Pending` per handle. `RunEnded` stops the children a finished
+run owns and counts them. Each answer is `Ok(..)` or `Error(SpawnRefusal)`, and
+a refusal is definitive. All three run in a task linked to the port and
+cancelled with the requester, as `Activate` does, so a question about ownership
+is never kept waiting behind one. The sender's node comes from the process that
+asked, and the host judges it against the spawner table.
+
+A daemon supplies the port a `SpawnHost`. One with no `[spawners]` table gives
+every message `UnknownSpawner`. In slice S1 a daemon with a matching spawner
+answers `Unimplemented`, because the delegate session that serves a spawn is
+slice S2. A host that crashes sends nothing, which the asker reports as
+`Unreachable`, and the sender resends a spawn because the receiver adopts the
+child its call site made.
+
 ## Failures
 
 This table lists each failure, what the system does, and what an operator or
@@ -1054,6 +1090,7 @@ The directory holds no state of its own, so it has no model.
 | `client/session_directory`, `client/remote/orchestrator_port` | Two orchestrators: lookup and the answering port |
 | `client/remote/remote_peer`, `client/peers`, `client/peer_outbox`, `client/peer_outbox_drain` | Peer mail across orchestrators |
 | `client/session_move`, `client/session_mover`, `client/session_movers`, `client/session_importer` | Moving a session |
+| `client/spawners`, `client/remote_spawn`; `daemon/main.spawn_host` | The `[spawners]` table, the subagent messages' vocabulary and the daemon's spawn host |
 
 `packages/client/CLAUDE.md` has one section per phase, from "Trusted
 distribution membership" to "Moving a session between orchestrators", with the

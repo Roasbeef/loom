@@ -186,7 +186,7 @@ retain_s = 604800
 | `profile` | The `[profiles.<name>]` that seeds every delegate session. |
 | `tools` | The tool ceiling. The default omits `agent_spawn`, the peer tools, `schedule_*`, `remember` and skill installation. |
 | `max_depth` | The deepest child allowed, default 1, so children cannot spawn. |
-| `max_sessions` | Delegate sessions this spawner holds, at most 16, an executor's scope limit. The live children of one delegate session are bounded by the Agency's existing `fan_out` and `session_strands`, so the spawner's total is at most `max_sessions` times `session_strands`. |
+| `max_sessions` | Delegate sessions this spawner holds, default 4, at most 16, an executor's scope limit. The live children of one delegate session are bounded by the Agency's existing `fan_out` and `session_strands`, so the spawner's total is at most `max_sessions` times `session_strands`. |
 | `max_within_s`, `default_within_s` | The deadline cap (default 4 h) and the deadline a spawn gets when it names none (default 30 min). |
 | `retain_s` | How long a delegate session with no message from its spawner is kept before the boot sweep deletes it (default 7 days). At least `max_within_s`. |
 | `approval_ceiling` | Phase 3: the grants the parent's operator may approve. Absent means none. |
@@ -249,6 +249,14 @@ the depth cap, the Agency's `fan_out` and `session_strands` caps and the
 spawner's `max_sessions` (each naming its key), a tool outside the ceiling, an
 invalid argument (including a `within_ms` above `max_within_s` and
 `context: "mine"`), `NameAlreadyMinted`, and a failure of the remote's store.
+As built in S1 (`client/remote_spawn`), the depth cap is one `Cap` beside the
+other three (`CapReached(cap, limit)`), `UnknownSpawner` carries the sender's
+node, and the sender's node is taken from the process that asked, since the
+messages above carry no origin field. S1 also has an `Unimplemented` refusal,
+which a daemon with a matching spawner returns until S2 gives it a delegate
+session; S2 removes the variant. All three messages run in a task linked to the
+port, including `RunEnded`, because S2 makes it wait on the delegate session's
+Agency holder.
 
 Phase 2 adds `Release(parent_session, reply)`, which stops every child of the
 delegate session, detached ones included, marks it released and deletes it
