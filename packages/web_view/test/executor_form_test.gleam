@@ -126,14 +126,7 @@ fn hearing(
 
 // What the daemon reports for one executor.
 fn report(state: placements.State) -> placements.Report {
-  placements.Report(
-    state:,
-    free_scopes: None,
-    platform: None,
-    enforcement: None,
-    toolchains: [],
-    contradiction: None,
-  )
+  placements.Report(state:, platform: None, enforcement: None, toolchains: [])
 }
 
 // A daemon's answer: `box` is ready and declares a platform, `gpu` is down, and
@@ -147,7 +140,6 @@ fn reported() -> placements.Read {
           Some(
             placements.Report(
               ..report(placements.Ready),
-              free_scopes: Some(12),
               platform: Some("linux/x86_64"),
               enforcement: Some("enforced"),
               toolchains: ["codemode"],
@@ -261,7 +253,6 @@ pub fn the_cards_show_the_state_the_daemon_found_test() {
   let html = drawn(run(opened(start), home.OpeningRemote))
   assert string.contains(html, "<span class=\"pill online\">ready</span>")
   assert string.contains(html, "<span class=\"pill ended\">down</span>")
-  assert string.contains(html, "12 scopes free")
   assert string.contains(html, "Declared: linux/x86_64, enforced, codemode.")
   assert string.contains(html, "Declares nothing about its machine.")
   assert string.contains(
@@ -273,47 +264,13 @@ pub fn the_cards_show_the_state_the_daemon_found_test() {
   assert !string.contains(html, "Checking which are reachable")
 }
 
-// A degraded or full executor reads as the middle tint, with its contradiction
-// in words.
-pub fn a_caveat_reads_as_the_middle_tint_with_its_words_test() {
+// While the daemon's read is out the cards carry names alone, and a person can
+// still choose one: a state is advice and its absence blocks nothing.
+pub fn a_card_is_choosable_before_the_read_arrives_test() {
   let asked = process.new_subject()
-  let read =
-    placements.Reported(
-      placements.Placements(
-        executors: [
-          placements.Executor(
-            "box",
-            Some(
-              placements.Report(
-                ..report(placements.Degraded),
-                contradiction: Some("declares enforced, census says degraded"),
-              ),
-            ),
-          ),
-          placements.Executor("gpu", Some(report(placements.Full))),
-        ],
-        pools: [],
-      ),
-    )
-  let html =
-    drawn(run(
-      opened(hearing([], ["box", "gpu"], [], answering(read), asked)),
-      home.OpeningRemote,
-    ))
-  assert string.contains(html, "<span class=\"pill pending\">degraded</span>")
-  assert string.contains(html, "<span class=\"pill pending\">full</span>")
-  assert string.contains(html, "declares enforced, census says degraded")
-}
-
-// A read that gives nothing leaves the cards as names, says so, and still lets a
-// person choose: a state is advice and its absence blocks nothing.
-pub fn a_read_that_gives_nothing_leaves_the_cards_choosable_test() {
-  let asked = process.new_subject()
-  let start = hearing([], ["box"], [], answering(placements.Unreported), asked)
+  let start = hearing([], ["box"], [], pending, asked)
   let model = run(opened(start), home.OpeningRemote)
-  let html = drawn(model)
-  assert string.contains(html, "The daemon could not say which are reachable")
-  assert string.contains(html, "not checked")
+  assert string.contains(drawn(model), "not checked")
   let model = run(model, home.ChoosingPlace(placements.OnExecutor("box")))
   assert string.contains(drawn(model), "name=\"workspace\"")
 }
@@ -581,7 +538,6 @@ pub fn a_name_is_a_text_node_and_never_an_attribute_test() {
               placements.Report(
                 ..report(placements.Ready),
                 platform: Some(hostile),
-                contradiction: Some(hostile),
               ),
             ),
           ),

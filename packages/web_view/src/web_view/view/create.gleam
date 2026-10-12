@@ -76,8 +76,8 @@
 //// said in the form's quiet line as a text node, the input's placeholder is
 //// fixed words, and nothing here is a class, a key or an identifier taken from
 //// the catalogue. The same holds on a card: an executor's or a pool's name, a
-//// declared platform and a contradiction are text nodes, and the only strings
-//// that become classes are the three pill tints `placements.pill_class` returns.
+//// declared platform are text nodes, and the only strings that become classes
+//// are the pill tints `placements.pill_class` returns.
 ////
 //// ## Flow
 ////
@@ -532,8 +532,6 @@ fn readiness_words(readiness: placements.Readiness) -> String {
       "Checking which are reachable from the daemon. You can choose one now."
     placements.Checked ->
       "This is what the daemon found just now. A state is advice: you can still choose one that is down, and the daemon decides again when the session opens."
-    placements.Unchecked ->
-      "The daemon could not say which are reachable. You can still choose one, and the daemon decides when the session opens."
   }
 }
 
@@ -583,26 +581,11 @@ fn executor_card(
   )
 }
 
-// What an executor's card says beyond its name and state: how many scopes it
-// can take, when it reported that; what its operator declared about the machine,
-// which is the operator's claim and is worded as one; and the words of a
-// contradiction between that claim and what the executor reported.
+// What an executor's card says beyond its name and state: what its operator
+// declared about the machine, which is the operator's claim and is worded as
+// one.
 fn executor_facts(report: placements.Report) -> List(Element(message)) {
-  list.flatten([
-    case report.free_scopes {
-      Some(free) -> [fact(int.to_string(free) <> " scopes free")]
-      None -> []
-    },
-    [fact(declared_words(report))],
-    case report.contradiction {
-      Some(words) -> [
-        html.p([attribute.class("home-card-fact"), attribute.class("warn")], [
-          html.text(words),
-        ]),
-      ]
-      None -> []
-    },
-  ])
+  [fact(declared_words(report))]
 }
 
 fn declared_words(report: placements.Report) -> String {

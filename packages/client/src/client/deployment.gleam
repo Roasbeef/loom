@@ -572,8 +572,8 @@ pub fn placed(
 /// Placements as the home page draws them (`web_view/placements`): the page
 /// learns each executor's state and what its operator declared, each pool's
 /// trial order and which of its executors were reached, and no node name,
-/// address or key. `free_scopes` and `contradiction` stay absent until the
-/// executors' own reports exist.
+/// address or key. The page has no member for a free scope count or a
+/// contradiction yet; the slice that produces them adds both.
 ///
 /// ## Examples
 ///
@@ -591,14 +591,12 @@ pub fn for_page(placed: Placements) -> page.Placements {
             Reachable -> page.Ready
             Down(_) -> page.Down
           },
-          free_scopes: None,
           platform: entry.executor.platform,
           enforcement: option.map(
             entry.executor.enforcement,
             executors.enforcement_word,
           ),
           toolchains: entry.executor.toolchains,
-          contradiction: None,
         )),
       )
     }),

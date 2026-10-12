@@ -1160,7 +1160,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     PlacementsRead(serial:, read:) ->
       case serial == model.place_reads, model.start.create {
         True, Some(_) -> #(
-          Model(..model, cards: placements.after(model.cards, read)),
+          Model(..model, cards: placements.after(read)),
           effect.none(),
         )
         True, None | False, _ -> #(model, effect.none())

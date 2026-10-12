@@ -33,12 +33,6 @@ pub type State {
   /// A session can be placed on it.
   Ready
 
-  /// A session can be placed on it, with a caveat the report states.
-  Degraded
-
-  /// It would refuse the next attach for lack of room.
-  Full
-
   /// The daemon's own connection attempt to it failed.
   Down
 }
@@ -48,16 +42,12 @@ pub type Report {
   Report(
     /// The state.
     state: State,
-    /// How many more scopes it can take, when it said.
-    free_scopes: Option(Int),
     /// The platform its operator declared, as `<os>/<architecture>`.
     platform: Option(String),
     /// The sandbox enforcement its operator declared.
     enforcement: Option(String),
     /// The toolchains its operator declared, possibly none.
     toolchains: List(String),
-    /// Words saying its census contradicts its declaration, when it does.
-    contradiction: Option(String),
   )
 }
 
@@ -97,13 +87,10 @@ pub type Placements {
   Placements(executors: List(Executor), pools: List(Pool))
 }
 
-/// What the daemon answers to a request for the placements.
+/// What the daemon answers to a request for the placements: it connected to the
+/// executors and describes each.
 pub type Read {
-  /// The daemon connected to the executors and describes each.
   Reported(placements: Placements)
-
-  /// The daemon could not say. The page keeps the names it was given.
-  Unreported
 }
 
 /// How far the page's knowledge of the placements has got.
@@ -113,9 +100,6 @@ pub type Readiness {
 
   /// The daemon's reply is in.
   Checked
-
-  /// The daemon's read gave nothing, so the cards carry names alone.
-  Unchecked
 }
 
 /// What the form draws its cards from.
@@ -140,7 +124,7 @@ pub type Choice {
 }
 
 /// The cards for names alone: what the page knows before the daemon's read
-/// arrives, and keeps when the read gives nothing.
+/// arrives.
 ///
 /// ## Examples
 ///
@@ -160,20 +144,17 @@ pub fn listed(executors: List(String), pools: List(String)) -> Cards {
   )
 }
 
-/// The cards after a read: the daemon's report when it gave one, and otherwise
-/// the names the page already had, marked as not checked.
+/// The cards after a read: the daemon's report, marked as checked.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// let before = placements.listed(["box"], [])
-/// assert placements.after(before, placements.Unreported).readiness
-///   == placements.Unchecked
+/// let read = placements.Reported(placements.Placements([], []))
+/// assert placements.after(read).readiness == placements.Checked
 /// ```
-pub fn after(cards: Cards, read: Read) -> Cards {
+pub fn after(read: Read) -> Cards {
   case read {
     Reported(placements:) -> Cards(placements:, readiness: Checked)
-    Unreported -> Cards(..cards, readiness: Unchecked)
   }
 }
 
@@ -218,15 +199,12 @@ pub fn any(cards: Cards) -> Bool {
 pub fn state_words(state: State) -> String {
   case state {
     Ready -> "ready"
-    Degraded -> "degraded"
-    Full -> "full"
     Down -> "down"
   }
 }
 
-/// The pill tint for a state: the three the page already has for a connection,
-/// so no colour is added. A state that is not `ready` and not `down` is a
-/// caveat, and reads as the middle tint.
+/// The pill tint for a state: the ones the page already has for a connection,
+/// so no colour is added.
 ///
 /// ## Examples
 ///
@@ -236,7 +214,6 @@ pub fn state_words(state: State) -> String {
 pub fn pill_class(state: State) -> String {
   case state {
     Ready -> "online"
-    Degraded | Full -> "pending"
     Down -> "ended"
   }
 }

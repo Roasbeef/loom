@@ -1530,17 +1530,18 @@ The panel draws a card for each executor and each pool (`create.panel`,
 name, the kind, a state pill, the facts, and a Choose button. The cards come from
 `placements.Cards`: `placements.listed` builds them from the names alone
 (`Readiness` `Checking`), and the daemon's read replaces them
-(`placements.after`; `Checked` with a report, `Unchecked` when the read gave
-nothing). The state is `placements.State` (`Ready`, `Degraded`, `Full`, `Down`)
-drawn in the three pill tints the page already has (`placements.pill_class`:
-`online`, `pending`, `ended`), so no colour is added. A state is advice: the panel
-never refuses a card because of it, a `Down` executor can be chosen, and the
-panel says so in a line above the cards; the daemon decides again when the
-session opens. The facts of an executor are the free scope count when it
-reported one, what its operator declared (worded as a claim) and the
-contradiction between the claim and a census, when there is one; a pool's are how
-many of its admitted executors were reached and the order a first open tries
-them, which health does not change.
+(`placements.after`, which marks the cards `Checked`; the daemon's read always
+carries a report, so the page has no value for a read that gave nothing). The
+state is `placements.State` (`Ready`, `Down`) drawn in the pill tints the page
+already has (`placements.pill_class`: `online`, `ended`), so no colour is added.
+Slice 4 of protocol-change/085 adds the free scope count, the contradiction and
+the states `Degraded` and `Full` to the page with the executor report that
+produces them. A state is advice: the panel never refuses a card because of it,
+a `Down` executor can be chosen, and the panel says so in a line above the
+cards; the daemon decides again when the session opens. The fact of an executor
+is what its operator declared (worded as a claim); a pool's are how many of its
+admitted executors were reached and the order a first open tries them, which
+health does not change.
 
 `Start.placements` starts the read: `home.OpeningRemote` numbers it
 (`Model.place_reads`) and runs it through `placing`, an `effect.from` that hands
@@ -1565,8 +1566,8 @@ name)` asks the daemon only from `Chosen`. The cards are a keyed list whose keys
 are positions (`e0`, `p1`), never a name: the lists are the daemon's startup
 capture and cannot change while the page is open. No event class is added: a card
 is a click beneath the sessions list's section, where the home already admits
-one (`ui_socket_test.a_card_needs_no_new_event_class_test`). Every name, platform
-and contradiction is a text node and no class is built from one.
+one (`ui_socket_test.a_card_needs_no_new_event_class_test`). Every name and platform
+is a text node and no class is built from one.
 
 `creations.Place` gains `Registered(executor, workspace)` and
 `Pooled(pool, workspace)`. `creations.registered_name` is the one rule for the

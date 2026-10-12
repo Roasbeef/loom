@@ -459,8 +459,12 @@ rest:
   entry. Until then an `orchestrators` entry carries `name`, `node` and `state`.
 - An executor placement carries `name`, `node`, `state` (`ready` or `down`) and
   `declared`. `free_scopes` and `contradiction`, and the states `degraded` and
-  `full`, wait for the executor's own report. The page already draws all four
-  states and both members when they arrive.
+  `full`, wait for the executor's own report. The web page does not carry them
+  in this slice: `web_view/placements` has the states `ready` and `down` and no
+  member for a scope count or a contradiction. Slice 4 adds the two members and
+  the two states to the page's vocabulary and to its drawing together with the
+  report that produces them. The terminal's decoder already accepts the optional
+  members and the reserved states, so that an older `loom` reads a newer daemon.
 - A node's own `degraded` state and its reasons. The whole-deployment rule counts
   a reachable node that is not `ok` as degrading the deployment, and
   `client/deployment.verdict` will be extended to read it; today it sees only
@@ -468,9 +472,9 @@ rest:
 - The registered workspace names that the `node` filter returns, and the workspace
   select that replaces the typed field in the cards' form. Today the filter
   returns the one node with the same four members as any other read.
-- A page-side value for a placement read that gave nothing
-  (`placements.Unreported`) exists and the page handles it, but this slice's
-  daemon always answers with a report.
+- The page has no value for a placement read that gave nothing, because this
+  slice's daemon always answers with a report. A daemon that can fail to answer
+  adds one with the code that produces it.
 - The asking daemon is a node named by its node name (the "bare node when it has
   none" rule) with the roles `orchestrator`, and `member` when it stands in the
   directory's cluster. It is never connected to and is always `ok`.

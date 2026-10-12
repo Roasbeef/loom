@@ -530,7 +530,7 @@ pub fn the_creation_panel_reads_the_executors_alone_test() {
 
 // What the page is told: each executor's state and what its operator declared,
 // each pool's trial order and reachable members, and no node name, address or
-// key. The report has nothing for a free scope count or a contradiction yet.
+// key. The page has no member for a free scope count or a contradiction yet.
 pub fn the_page_is_told_states_and_declarations_and_no_node_test() {
   let placed =
     deployment.Placements(
@@ -551,25 +551,25 @@ pub fn the_page_is_told_states_and_declarations_and_no_node_test() {
       executors: [
         page.Executor(
           "box",
-          Some(page.Report(
-            state: page.Ready,
-            free_scopes: None,
-            platform: None,
-            enforcement: None,
-            toolchains: [],
-            contradiction: None,
-          )),
+          Some(
+            page.Report(
+              state: page.Ready,
+              platform: None,
+              enforcement: None,
+              toolchains: [],
+            ),
+          ),
         ),
         page.Executor(
           "exec2",
-          Some(page.Report(
-            state: page.Down,
-            free_scopes: None,
-            platform: Some("linux/x86_64"),
-            enforcement: Some("enforced"),
-            toolchains: ["codemode"],
-            contradiction: None,
-          )),
+          Some(
+            page.Report(
+              state: page.Down,
+              platform: Some("linux/x86_64"),
+              enforcement: Some("enforced"),
+              toolchains: ["codemode"],
+            ),
+          ),
         ),
       ],
       pools: [
