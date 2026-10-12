@@ -7630,8 +7630,9 @@ The laptop's side (slice S3):
   (`ask_until_answered`: `poll.until_on` on the Agency's clock, doubling 50 ms to
   2 s, for `remote_window_ms` = 30 s; each attempt is told to wait only what is
   left of that window). A refusal is recorded as `Refused` (`record_refusal`) and
-  answers `RemoteRefused`; the window running out answers `RemoteSilent` and leaves
-  the stub `Requested`. Every exit that leaves the stub for the drainer, and every
+  answers `RemoteRefused`, unless the drainer was answered with a child first, and
+  then the stub says `Spawned` and the model gets the child; the window running out
+  answers `RemoteSilent` and leaves the stub `Requested`. Every exit that leaves the stub for the drainer, and every
   `Spawned` write, calls `config.remote_queued`. `is_live` is false for a cell with
   an `orchestrator`, and the stub carries the count. `context: my_conversation`, an
   unknown `on`, an unshared session and a background program are refused before
@@ -7644,19 +7645,22 @@ The laptop's side (slice S3):
   stubs, with a `Spawned` stub whose deadline has passed shown as `PastDeadline`.
   `send` to a remote child is refused by `refuse_remote_child`.
 - `remote_drain.pass` is the second `peer_outbox_drain` instance's pass, in two
-  steps. `spawn_pass` resends each `Requested` stub, skips an orchestrator that did
-  not answer earlier in the same step, keeps a refusal it learns as `Refused`, and
-  has no time to live. `join_pass` settles children nobody waits on: it groups the
+  steps over one read of the stubs, and the orchestrators the spawn step found
+  silent are skipped by the join step. `spawn_pass` resends each `Requested` stub,
+  skips an orchestrator that did not answer earlier in the same step, keeps a
+  refusal it learns as `Refused`, reports `Owed` after it records a child as
+  `Spawned` (the join step does not see that child until the next pass), and has
+  no time to live. `join_pass` settles children nobody waits on: it groups the
   `Spawned` stubs whose deadline has not passed by (orchestrator, parent strand),
-  sends one `Join` with a window of 0 for each group, and records every `Ready` with
-  `remote_child.settled`. It stores no report, since a later `agent_wait` reads it
-  again from the box. A pass is `Owed` while any child is running, so the drainer
-  ticks every 5 s, and `Clear` when none is, so it goes idle; a stub past its
-  deadline is not asked about. A refused join is logged and not retried, because
-  the deadline frees the slot. `peer_outbox_drain.Options` is `{pass, after}`;
-  `options` builds the peer-mail instance and `over` any other; `Backlog` is
-  public. `serve` supervises both beside each other in the restartable service
-  tier, rung by name (`outbox_queued`, `remote_queued`).
+  sends one `Join` with a window of 0 for each group, and records every `Ready`
+  with `remote_child.settled`. It stores no report, since a later `agent_wait`
+  reads it again from the box. A pass is `Owed` while any child is running, so the
+  drainer ticks every 5 s, and `Clear` when none is, so it goes idle; a stub past
+  its deadline is not asked about. A refused join is logged and not retried within
+  the pass; its slots are released by the deadline. `peer_outbox_drain.Options` is
+  `{pass, after}`; `options` builds the peer-mail instance and `over` any other;
+  `Backlog` is public. `serve` supervises both beside each other in the
+  restartable service tier, rung by name (`outbox_queued`, `remote_queued`).
 
 Not in S3: the box's deadline tick and retention sweep (S4), the shipped test and
 the P model (S5), remote token metering (a child nobody waits on runs to its

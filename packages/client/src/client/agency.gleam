@@ -3268,7 +3268,7 @@ fn ask_until_answered(
     )
   case asked {
     poll.Answered(answer) -> record_answer(config, key, stub, answer)
-    poll.Failed(reason) -> Error(record_refusal(config, key, stub, reason))
+    poll.Failed(reason) -> record_refusal(config, key, stub, reason)
     poll.Expired -> {
       config.remote_queued()
       Error(agent.RemoteSilent(orchestrator: stub.orchestrator))
@@ -3295,22 +3295,35 @@ fn window_left(config: Config, started: Int) -> Int {
 // answered with a child. A stub that was deleted here would leave that child
 // with a lineage cell and no stub to count it, list it or wait on it. If the
 // refusal cannot be recorded the stub stays `Requested` and the drainer is
-// rung, which asks again and hears the same refusal.
+// rung, which asks again and hears the same refusal. The drainer may have been
+// answered with a child first, and then the stub already says `Spawned` or
+// `Settled`: the child exists, so the model is given it as `record_answer`
+// would, and told no refusal.
 fn record_refusal(
   config: Config,
   key: String,
   stub: remote_child.Stub,
   reason: String,
-) -> Refusal {
+) -> Result(Spawned, Refusal) {
   let recorded = {
     use runtime <- result.try(borrow(config) |> result.replace_error(Nil))
     remote_child.refused(runtime, key, reason) |> result.replace_error(Nil)
   }
+  let refusal = agent.RemoteRefused(orchestrator: stub.orchestrator, reason:)
   case recorded {
-    Ok(_) -> Nil
-    Error(Nil) -> config.remote_queued()
+    Ok(stored) ->
+      case stored.state {
+        remote_child.Spawned(placed:) | remote_child.Settled(placed:, ..) -> {
+          config.remote_queued()
+          Ok(placed_spawn(placed))
+        }
+        remote_child.Requested | remote_child.Refused(..) -> Error(refusal)
+      }
+    Error(Nil) -> {
+      config.remote_queued()
+      Error(refusal)
+    }
   }
-  agent.RemoteRefused(orchestrator: stub.orchestrator, reason:)
 }
 
 // The answer to a spawn is written down before the model sees it. If it cannot

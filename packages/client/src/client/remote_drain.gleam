@@ -51,16 +51,20 @@
 ////
 //// `pass` → `spawn_pass` → `attempt_spawn` → `join_pass` → `join_group`
 ////
-//// 1. `pass` reads the stubs through the session's runtime, which it fetches
-////    afresh each time because the drainer outlives a restart of the runtime.
+//// 1. `pass` reads the stubs once through the session's runtime, which it
+////    fetches afresh each time because the drainer outlives a restart of the
+////    runtime, and hands the same list to both steps.
 //// 2. `spawn_pass` walks the stubs that are `Requested`, and `attempt_spawn`
-////    sends one and records the answer.
+////    sends one and records the answer. A child it starts is owed a look, so the
+////    pass reports `Owed` and the next one asks after it.
 //// 3. `join_pass` groups the stubs whose child is running by orchestrator and
 ////    parent strand, and `join_group` asks one zero-window `Join` for each group
 ////    and settles the children it reports finished.
-//// 4. An orchestrator that did not answer is not asked again in the same step,
+//// 4. An orchestrator that did not answer is not asked again in the same pass,
 ////    the way the peer-mail pass skips a silent session: every record owed to it
-////    would wait out the same deadline to learn the same thing.
+////    would wait out the same deadline to learn the same thing. The silent
+////    orchestrators pass from the spawn step to the join step, so a down
+////    orchestrator costs one connect timeout per pass, not two.
 
 import client/peer_mail
 import client/peer_outbox_drain.{type Backlog, Clear, Owed, Quick}
@@ -70,8 +74,6 @@ import client/remote_spawn.{type ChildUsage, type Joined}
 import core/clock.{type Clock}
 import gleam/dict
 import gleam/list
-import gleam/option.{type Option, None, Some}
-import gleam/string
 import runtime/api
 import telemetry/field
 import telemetry/log.{type Logger}
@@ -104,11 +106,20 @@ pub fn pass(
   fn() {
     case runtime() {
       Error(Nil) -> owed
-      Ok(open) -> {
-        let spawns = spawn_pass(open, reach, time, logger)
-        let running = join_pass(open, reach, time, logger)
-        owed_if_either(spawns, running)
-      }
+      Ok(open) ->
+        case remote_child.all(open) {
+          Error(reason) -> {
+            log.warn(logger, "remote_drain.unreadable", [
+              field.text("reason", reason),
+            ])
+            owed
+          }
+          Ok(kept) -> {
+            let #(spawns, silent) = spawn_pass(open, reach, time, logger, kept)
+            let running = join_pass(open, reach, time, logger, kept, silent)
+            owed_if_either(spawns, running)
+          }
+        }
     }
   }
 }
@@ -122,35 +133,30 @@ fn owed_if_either(first: Backlog, second: Backlog) -> Backlog {
 
 // --- spawns that have not been answered --------------------------------------
 
-// Attempts each stub that is `Requested`. A stub list that cannot be read is
-// `Owed`: the stubs may exist, and the next pass reads again.
+// Attempts each stub that is `Requested`, and returns what it owes together with
+// the orchestrators that did not answer, which the join step skips as well. The
+// stub list was read once by `pass`, which owes `Owed` when it cannot be read:
+// the stubs may exist, and the next pass reads again.
 fn spawn_pass(
   runtime: api.Runtime,
   reach: Reach,
   time: Clock,
   logger: Logger,
-) -> Backlog {
-  case remote_child.all(runtime) {
-    Error(reason) -> {
-      log.warn(logger, "remote_drain.unreadable", [field.text("reason", reason)])
-      owed
-    }
-    Ok(kept) -> {
-      let #(backlog, _silent) =
-        kept
-        |> list.filter(fn(entry) { entry.stub.state == remote_child.Requested })
-        |> list.fold(#(Clear, []), fn(so_far, entry) {
-          attempt_spawn(runtime, reach, time, logger, entry, so_far)
-        })
-      backlog
-    }
-  }
+  kept: List(Kept),
+) -> #(Backlog, List(String)) {
+  kept
+  |> list.filter(fn(entry) { entry.stub.state == remote_child.Requested })
+  |> list.fold(#(Clear, []), fn(so_far, entry) {
+    attempt_spawn(runtime, reach, time, logger, entry, so_far)
+  })
 }
 
-// One stub. An answer is recorded and finishes the stub; silence leaves it
-// pending and marks the orchestrator silent for the rest of the pass; a store
-// that would not take the record leaves the stub pending too, since the answer
-// is not lost, only unrecorded, and asking again returns it.
+// One stub. A child that answered is recorded as running, and a running child is
+// owed a look, so the pass is `Owed` whether or not the store took the record.
+// A refusal is recorded and finishes the stub. Silence leaves the stub pending
+// and marks the orchestrator silent for the rest of the pass. A store that would
+// not take the record leaves the stub pending too, since the answer is not lost,
+// only unrecorded, and asking again returns it.
 fn attempt_spawn(
   runtime: api.Runtime,
   reach: Reach,
@@ -177,22 +183,27 @@ fn attempt_spawn(
       {
         Ok(answer) -> {
           let #(now, _clock) = clock.read(time)
-          recorded(
-            remote_child.spawned(runtime, entry.key, stub, answer, now),
-            logger,
-            "remote_drain.spawned",
-            entry,
-            so_far,
-          )
+          let backlog =
+            recorded(
+              remote_child.spawned(runtime, entry.key, stub, answer, now),
+              logger,
+              "remote_drain.spawned",
+              entry,
+              owed,
+            )
+          #(backlog, silent)
         }
-        Error(peer_mail.Refused(reason)) ->
-          recorded(
-            remote_child.refused(runtime, entry.key, reason),
-            logger,
-            "remote_drain.refused",
-            entry,
-            so_far,
-          )
+        Error(peer_mail.Refused(reason)) -> {
+          let backlog =
+            recorded(
+              remote_child.refused(runtime, entry.key, reason),
+              logger,
+              "remote_drain.refused",
+              entry,
+              so_far.0,
+            )
+          #(backlog, silent)
+        }
         Error(peer_mail.Unreachable) | Error(peer_mail.NotOpen) -> #(owed, [
           stub.orchestrator,
           ..silent
@@ -201,25 +212,27 @@ fn attempt_spawn(
   }
 }
 
-// What the pass owes after the answer to one stub was recorded, or was not.
+// What the pass owes after one write to a stub: `if_written` when the store took
+// it, and `Owed` when it did not, since the report the write carried is not lost
+// and asking again returns it.
 fn recorded(
   stored: Result(remote_child.Stub, String),
   logger: Logger,
   event: String,
   entry: Kept,
-  so_far: #(Backlog, List(String)),
-) -> #(Backlog, List(String)) {
+  if_written: Backlog,
+) -> Backlog {
   case stored {
     Ok(_) -> {
       log.info(logger, event, where(entry))
-      so_far
+      if_written
     }
     Error(reason) -> {
       log.warn(logger, "remote_drain.unrecorded", [
         field.text("reason", reason),
         ..where(entry)
       ])
-      #(owed, so_far.1)
+      owed
     }
   }
 }
@@ -227,73 +240,71 @@ fn recorded(
 // --- children that are running ------------------------------------------------
 
 // Asks after every child whose stub says it is running, and settles the ones
-// that finished. The stubs are read again here and not carried over from the
-// spawn step, so a child that step has just started is asked about in the same
-// pass. A pass that leaves any child running is `Owed`, which is what keeps the
-// drainer ticking while a child runs and stops it when none does.
+// that finished. The stubs are the pass's one read, so a child the spawn step
+// started in this pass is not among them: that step reported `Owed`, and the
+// next pass asks after it. The orchestrators the spawn step found silent are not
+// asked again. A pass that leaves any child running is `Owed`, which is what
+// keeps the drainer ticking while a child runs and stops it when none does.
 fn join_pass(
   runtime: api.Runtime,
   reach: Reach,
   time: Clock,
   logger: Logger,
+  kept: List(Kept),
+  silent: List(String),
 ) -> Backlog {
-  case remote_child.all(runtime) {
-    Error(reason) -> {
-      log.warn(logger, "remote_drain.unreadable", [field.text("reason", reason)])
-      owed
-    }
-    Ok(kept) -> {
-      let #(now, _clock) = clock.read(time)
-      let #(backlog, _silent) =
-        kept
-        |> list.filter(fn(entry) { running(entry, now) })
-        |> by_parent
-        |> list.fold(#(Clear, []), fn(so_far, group) {
-          join_group(runtime, reach, logger, group, so_far)
-        })
-      backlog
-    }
-  }
+  let #(now, _clock) = clock.read(time)
+  let #(backlog, _silent) =
+    kept
+    |> list.filter_map(fn(entry) { running(entry, now) })
+    |> by_parent
+    |> list.fold(#(Clear, silent), fn(so_far, group) {
+      join_group(runtime, reach, logger, group, so_far)
+    })
+  backlog
 }
 
-// Whether the stub is `Spawned` and its child's deadline has not passed. A
-// `Requested` stub is the spawn step's, and a child past its deadline needs no
-// asking: its slot is free by the clock and `agent_wait` reads its outcome.
-fn running(entry: Kept, now: Int) -> Bool {
+// The stub with its child's handle, when the stub is `Spawned` and the child's
+// deadline has not passed. A `Requested` stub is the spawn step's, and a child
+// past its deadline needs no asking: its slot is free by the clock and
+// `agent_wait` reads its outcome.
+fn running(entry: Kept, now: Int) -> Result(#(Kept, Handle), Nil) {
   case entry.stub.state {
-    remote_child.Spawned(..) -> remote_child.is_live(entry.stub, now)
+    remote_child.Spawned(placed:) ->
+      case remote_child.is_live(entry.stub, now) {
+        True -> Ok(#(entry, placed.handle))
+        False -> Error(Nil)
+      }
     remote_child.Requested
     | remote_child.Settled(..)
-    | remote_child.Refused(..) -> False
+    | remote_child.Refused(..) -> Error(Nil)
   }
 }
 
-// The stubs grouped by the orchestrator they run on and the parent strand that
-// asked, because a `Join` names one parent and the receiver judges the handles
-// against it. The groups come in key order so that a pass asks the same way each
-// time.
-fn by_parent(entries: List(Kept)) -> List(#(#(String, String), List(Kept))) {
-  entries
-  |> list.group(fn(entry) { #(entry.stub.orchestrator, entry.stub.strand) })
+// The running children grouped by the orchestrator they run on and the parent
+// strand that asked, because a `Join` names one parent and the receiver judges
+// the handles against it.
+fn by_parent(
+  children: List(#(Kept, Handle)),
+) -> List(#(#(String, String), List(#(Kept, Handle)))) {
+  children
+  |> list.group(fn(child) { #(child.0.stub.orchestrator, child.0.stub.strand) })
   |> dict.to_list
-  |> list.sort(fn(a, b) {
-    string.compare(a.0.0 <> "/" <> a.0.1, b.0.0 <> "/" <> b.0.1)
-  })
 }
 
 // One zero-window `Join` for the running children of one parent on one
 // orchestrator. Silence marks the orchestrator silent for the rest of the pass
 // and leaves its children owed. A refusal is definitive: the orchestrator will
 // not report these children, and their deadlines release the slots, so it is
-// logged and not asked again.
+// logged and not retried within the pass.
 fn join_group(
   runtime: api.Runtime,
   reach: Reach,
   logger: Logger,
-  group: #(#(String, String), List(Kept)),
+  group: #(#(String, String), List(#(Kept, Handle))),
   so_far: #(Backlog, List(String)),
 ) -> #(Backlog, List(String)) {
-  let #(#(orchestrator, strand), entries) = group
+  let #(#(orchestrator, strand), children) = group
   let #(backlog, silent) = so_far
   case list.contains(silent, orchestrator) {
     True -> #(owed, silent)
@@ -302,12 +313,12 @@ fn join_group(
         reach.join(
           orchestrator,
           remote_reach.parent(reach, strand),
-          list.filter_map(entries, handle_of),
+          list.map(children, fn(child) { child.1 }),
           0,
         )
       {
         Ok(joined) -> #(
-          owed_if_either(backlog, settle_all(runtime, logger, joined, entries)),
+          owed_if_either(backlog, settle_all(runtime, logger, joined, children)),
           silent,
         )
         Error(peer_mail.Refused(reason)) -> {
@@ -325,15 +336,6 @@ fn join_group(
   }
 }
 
-fn handle_of(entry: Kept) -> Result(Handle, Nil) {
-  case entry.stub.state {
-    remote_child.Spawned(placed:) -> Ok(placed.handle)
-    remote_child.Requested
-    | remote_child.Settled(..)
-    | remote_child.Refused(..) -> Error(Nil)
-  }
-}
-
 // Settles each child the join reported finished, and answers `Owed` if any
 // child of the group is still running afterwards, whether the orchestrator
 // reported it pending, said nothing of it, or the settling could not be
@@ -343,17 +345,23 @@ fn settle_all(
   runtime: api.Runtime,
   logger: Logger,
   joined: List(Joined),
-  entries: List(Kept),
+  children: List(#(Kept, Handle)),
 ) -> Backlog {
-  list.fold(entries, Clear, fn(backlog, entry) {
-    let settled = case handle_of(entry) {
-      Ok(handle) -> finished(joined, handle)
-      Error(Nil) -> None
-    }
-    case settled {
-      Some(#(outcome, usage)) ->
-        owed_if_either(backlog, settle(runtime, logger, entry, outcome, usage))
-      None -> owed
+  list.fold(children, Clear, fn(backlog, child) {
+    let #(entry, handle) = child
+    case finished(joined, handle) {
+      Ok(#(outcome, usage)) ->
+        owed_if_either(
+          backlog,
+          recorded(
+            remote_child.settled(runtime, entry.key, outcome, usage),
+            logger,
+            "remote_drain.settled",
+            entry,
+            Clear,
+          ),
+        )
+      Error(Nil) -> owed
     }
   })
 }
@@ -363,7 +371,7 @@ fn settle_all(
 fn finished(
   joined: List(Joined),
   handle: Handle,
-) -> Option(#(Outcome, ChildUsage)) {
+) -> Result(#(Outcome, ChildUsage), Nil) {
   list.find_map(joined, fn(entry) {
     case entry {
       remote_spawn.Ready(handle: found, outcome:, usage:, ..)
@@ -372,31 +380,6 @@ fn finished(
       remote_spawn.Ready(..) | remote_spawn.Pending(..) -> Error(Nil)
     }
   })
-  |> option.from_result
-}
-
-// Records one child as finished. A write the store would not take leaves the
-// child owed, since asking again returns the same report.
-fn settle(
-  runtime: api.Runtime,
-  logger: Logger,
-  entry: Kept,
-  outcome: Outcome,
-  usage: ChildUsage,
-) -> Backlog {
-  case remote_child.settled(runtime, entry.key, outcome, usage) {
-    Ok(_) -> {
-      log.info(logger, "remote_drain.settled", where(entry))
-      Clear
-    }
-    Error(reason) -> {
-      log.warn(logger, "remote_drain.unrecorded", [
-        field.text("reason", reason),
-        ..where(entry)
-      ])
-      owed
-    }
-  }
 }
 
 fn where(entry: Kept) -> List(field.Field) {

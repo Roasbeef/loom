@@ -5925,6 +5925,47 @@ pub fn a_refusal_heard_by_the_model_does_not_orphan_a_later_child_test() {
   close(harness)
 }
 
+// The other ordering: the drainer is answered with a child while the model's own
+// ask is still in flight, and the model's ask is then refused. The stub already
+// says `Spawned`, the child exists, and so the model is given it as it would be
+// had its own ask been answered, and not told the spawn was refused.
+pub fn a_refusal_that_loses_to_the_drainers_child_answers_with_the_child_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Up)
+  let #(harness, queued) =
+    start_remote(Hangs, [box], fn(config) {
+      let real = config.remote
+      let runtime = agency.runtime_supplier(config)
+      let racing = fn(name, parent, site, depth, tools, request, within_ms) {
+        // The drainer's ask of this call site is answered and recorded first.
+        let assert Ok(answer) =
+          real.spawn(name, parent, site, depth, tools, request, within_ms)
+          as "the orchestrator must answer the drainer's ask"
+        let assert Ok(open) = runtime() as "the runtime must be borrowable"
+        let assert Ok([entry]) = remote_child.all(open)
+          as "the one stub must be readable"
+        let #(now, _clock) = clock.read(config.clock)
+        let assert Ok(_) =
+          remote_child.spawned(open, entry.key, entry.stub, answer, now)
+          as "the drainer's write must be taken"
+        Error(peer_mail.Refused("busy"))
+      }
+      agency.Config(..config, remote: remote_reach.Reach(..real, spawn: racing))
+    })
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(spawned) = harness.seam.spawn(caller, on_box("raced"))
+    as "a refusal that lost to a child must answer with the child"
+  let assert [child] = fake_orchestrators.report(box).children
+  assert spawned.handle == child.handle
+
+  // The stub stayed `Spawned` and the drainer was rung to look after the child.
+  let assert [stub] = stubs_of(harness)
+  let assert remote_child.Spawned(placed) = stub.state
+  assert placed.handle == child.handle
+  let assert Ok(Nil) = process.receive(queued, 100)
+    as "the drainer is rung for the running child"
+  close(harness)
+}
+
 pub fn the_drainer_adopts_a_spawn_the_orchestrator_already_made_test() {
   // The orchestrator made the child and every answer was lost, so the parent's
   // window ran out. That is the laptop-restart shape: a stub on disk, a child on

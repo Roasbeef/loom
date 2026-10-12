@@ -716,7 +716,7 @@ type or a message.
    rings the drainer after each `Spawned` write so that ticking starts. A child
    past its deadline is not asked about, so an unreachable remote does not keep
    the drainer ticking for a child that cannot be running. A refused join is
-   logged and not retried, because the deadline frees the slot.
+   logged and not retried within the pass; its slots are released by the deadline.
 
 ### 8.5 Waiting
 
