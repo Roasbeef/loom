@@ -26,6 +26,7 @@ import client/daemon/ui_sessions
 import client/daemon/ui_socket
 import client/daemon_claim_test
 import client/daemon_server_test
+import client/deployment
 import client/gateway
 import client/peer_mail
 import client/peers
@@ -212,6 +213,7 @@ fn fixture_lasting(
       pools: [],
       directory: session_directory.none(),
       movers: session_movers.idle(),
+      deployment: deployment.alone("nonode@nohost"),
       generator: fn() { ids.generator(clock.fixed(1_700_000_000_000), 123) },
       session_upgrade: fn(_, _) { stub(501, "v2 adapter absent") },
       ui: Some(server.Ui(
@@ -4478,6 +4480,101 @@ pub fn a_registered_workspace_is_created_as_a_name_on_an_executor_test() {
     assert attempt(creations.Registered("box", "  "), "", creations.Private)
       == creations.Declined(creations.InvalidWorkspaceName)
     assert process.receive(asked, 0) == Error(Nil)
+  })
+}
+
+// A creation in a pool (protocol-change/085) asks for a pooled place: the
+// workspace is a name judged as a registered one is, the pool and no executor
+// reaches the creation (the daemon picks the executor when the session first
+// opens), and the scope is session-only whatever the sharing said.
+pub fn a_pooled_workspace_is_created_as_a_name_in_a_pool_test() {
+  fixture(fn(ready, _, credential) {
+    let existing = create_session(ready, "pooled-known", 1110)
+    let #(standing, tickets) =
+      creator_standing(ready, credential, access.Operator)
+    let asked = process.new_subject()
+    let create = fn(_, creation, scope) {
+      process.send(asked, #(creation, scope))
+      manager.get(ready.registry, existing)
+      |> result.replace_error("unavailable")
+    }
+    let attempt = fn(place, name, sharing) {
+      ui_socket.create_for(
+        standing,
+        tickets,
+        page_open,
+        create,
+        no_release,
+        fn(_) { panic as "a registered name is no folder to check" },
+        place,
+        name,
+        sharing,
+        creations.default_roles,
+        within: 2000,
+      )
+    }
+
+    // The pool reaches the creation and the executor does not, the name as typed
+    // (trimmed), as the session-only session a registered workspace requires.
+    let _ =
+      attempt(creations.Pooled("builders", " app "), "", creations.Private)
+    let assert Ok(#(creation, scope)) = process.receive(asked, 0)
+    assert creation.workspace == "app"
+    assert creation.pool == "builders"
+    assert creation.executor == ""
+    assert creation.name == "app"
+    assert scope == domain.SessionOnly
+
+    // A shareable one is the same scope, and an executor's creation names no
+    // pool.
+    let _ =
+      attempt(creations.Pooled("builders", "app"), "named", creations.Shareable)
+    let assert Ok(#(creation, scope)) = process.receive(asked, 0)
+    assert creation.name == "named"
+    assert scope == domain.SessionOnly
+    let _ = attempt(creations.Registered("box", "app"), "", creations.Private)
+    let assert Ok(#(creation, _)) = process.receive(asked, 0)
+    assert creation.executor == "box"
+    assert creation.pool == ""
+
+    // A name that could be a path, or is empty, is refused before `create`, as
+    // an executor's is.
+    assert attempt(
+        creations.Pooled("builders", "/work/app"),
+        "",
+        creations.Private,
+      )
+      == creations.Declined(creations.InvalidWorkspaceName)
+    assert attempt(creations.Pooled("builders", "a/b"), "", creations.Private)
+      == creations.Declined(creations.InvalidWorkspaceName)
+    assert attempt(creations.Pooled("builders", "  "), "", creations.Private)
+      == creations.Declined(creations.InvalidWorkspaceName)
+    assert process.receive(asked, 0) == Error(Nil)
+  })
+}
+
+// The daemon's own `pool_unknown` is the page's fixed words, as an unknown
+// executor's is.
+pub fn an_unconfigured_pool_is_refused_in_fixed_words_test() {
+  fixture(fn(ready, _, credential) {
+    let _existing = create_session(ready, "unknown-pool-known", 1111)
+    let #(standing, tickets) =
+      creator_standing(ready, credential, access.Operator)
+    let refused = fn(_, _, _) { Error("pool_unknown") }
+    assert ui_socket.create_for(
+        standing,
+        tickets,
+        page_open,
+        refused,
+        no_release,
+        new_folder.check(_, ready.state_root),
+        creations.Pooled("gone", "app"),
+        "",
+        creations.Private,
+        creations.default_roles,
+        within: 2000,
+      )
+      == creations.Declined(creations.UnknownPool)
   })
 }
 

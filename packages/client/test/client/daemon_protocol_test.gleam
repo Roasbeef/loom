@@ -215,11 +215,36 @@ pub fn every_control_command_has_one_typed_decode_test() {
       protocol.MoveSession(id, "laptop", "epoch"),
     ),
     #("directory.status", [], protocol.DirectoryStatus),
+    #("deployment.status", [], protocol.DeploymentStatus(None)),
+    #(
+      "deployment.status",
+      [#("node", json.String("build-box"))],
+      protocol.DeploymentStatus(Some("build-box")),
+    ),
   ]
   list.each(cases, fn(example) {
     assert protocol.decode(envelope(7, example.0, example.1))
       == Ok(protocol.Request(7, example.2))
   })
+}
+
+pub fn a_deployment_read_names_a_node_as_a_configuration_key_does_test() {
+  let named = fn(value) {
+    protocol.decode(envelope(1, "deployment.status", [#("node", value)]))
+  }
+  assert result.is_ok(named(json.String("laptop")))
+  assert result.is_ok(named(json.String("build-box_2")))
+
+  // A value outside the grammar of an `[executors.<name>]` or
+  // `[orchestrators.<name>]` key is refused as a bad request, and is never read
+  // as "every node". Whether a well-formed key names anything is for the
+  // daemon's configuration to say.
+  assert result.is_error(named(json.String("Laptop")))
+  assert result.is_error(named(json.String("")))
+  assert result.is_error(named(json.String("exec@10.0.0.9")))
+  assert result.is_error(named(json.String("../laptop")))
+  assert result.is_error(named(json.Int(7)))
+  assert result.is_error(named(json.Null))
 }
 
 pub fn a_move_names_its_destination_as_an_orchestrator_does_test() {

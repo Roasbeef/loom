@@ -639,6 +639,13 @@ type Message(instance) {
   /// this catalogue does not hold is `Catalogue(Missing)`.
   Visibility(String, Subject(Result(catalogue.Visibility, Error)))
 
+  /// Who serves each of a page of sessions, read in one registry turn, for a
+  /// listing that marks the sessions that are moving or have moved.
+  Custodies(
+    List(String),
+    Subject(Result(List(#(String, catalogue.Custody)), Error)),
+  )
+
   /// The owner's request to hand a session to the orchestrator named, under the
   /// operation identity the caller minted: the caller, the epoch, the session,
   /// the destination and the identity.
@@ -1201,7 +1208,10 @@ pub fn rename_principal(
 /// Renames metadata after reauthenticating owner and epoch in one dispatch.
 ///
 /// This does not acquire a conversation or alter a resident runtime. The
-/// catalogue retains the original creation name for request-key equality.
+/// catalogue retains the original creation name for request-key equality. A
+/// session that is moving or has moved is refused as `AdminMoving` or
+/// `AdminMoved`, as archiving and deleting it are, because the move row is the
+/// only record of who owns it.
 ///
 /// ## Examples
 ///
@@ -1983,6 +1993,34 @@ pub fn visibility(
   |> result.unwrap(Error(Unavailable))
 }
 
+/// Reads who serves each of the sessions named, in one registry turn, so a
+/// listing of a page marks the moving and moved sessions with one call and not
+/// one for each row.
+///
+/// The answer pairs each identity with its custody, in the order asked, from one
+/// read of the move table (`catalogue.custodies`). An identity with no move row
+/// is `Resident`, which includes one the catalogue does not hold: the identities
+/// of a listing come from the catalogue's own page, so none is checked again. A
+/// stored move row that does not decode also reads as `Resident` here. A listing
+/// is a display, and a row that shows less than it could is the safe way to be
+/// wrong, since `open`, `restore` and `delete` read the row again and refuse on
+/// their own.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.custodies(registry, [session_id])
+/// //   == Ok([#(session_id, catalogue.Resident)])
+/// ```
+@internal
+pub fn custodies(
+  manager: Manager(instance),
+  ids: List(String),
+) -> Result(List(#(String, catalogue.Custody)), Error) {
+  call.try_call(manager.commands, waiting: 5000, sending: Custodies(ids, _))
+  |> result.unwrap(Error(Unavailable))
+}
+
 /// Begins handing a session to the orchestrator `to` under the move `op`, as
 /// the owner, in one registry turn: the intent is committed and the session's
 /// slot is stopped together, so no runtime can open the store after the intent
@@ -2550,6 +2588,7 @@ fn handle(
     Rename(caller, epoch, id, name, reply) -> {
       let outcome = {
         use Nil <- result.try(authorize_admin(phase, book, caller, epoch))
+        use Nil <- result.try(refuse_moved(book, id))
         use record <- result.map(
           catalogue.rename(book.catalogue, id, name)
           |> result.map_error(AdminMetadata),
@@ -2670,6 +2709,21 @@ fn handle(
         reply,
         catalogue.visibility(book.catalogue, id) |> result.map_error(Catalogue),
       )
+      sm.keep(book)
+    }
+    Custodies(ids, reply) -> {
+      // One statement reads every move row, and each asked identity is paired
+      // with its row or with `Resident`, in the order asked.
+      let read =
+        catalogue.custodies(book.catalogue)
+        |> result.map(fn(rows) {
+          let moves = dict.from_list(rows)
+          list.map(ids, fn(id) {
+            #(id, result.unwrap(dict.get(moves, id), catalogue.Resident))
+          })
+        })
+        |> result.map_error(Catalogue)
+      process.send(reply, read)
       sm.keep(book)
     }
     BeginMove(caller, epoch, id, to, op, reply) -> {

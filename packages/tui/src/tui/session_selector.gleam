@@ -302,6 +302,7 @@ pub fn presence(state: State, row: protocol.Session) -> Presence {
       }
     protocol.Reserved
     | protocol.Saved
+    | protocol.Moving(_)
     | protocol.Opening(_)
     | protocol.Stopping(_)
     | protocol.RecoveryBlocked -> Inactive
@@ -435,6 +436,7 @@ pub fn resident_ids(state: State) -> List(String) {
       protocol.Resident(_) -> Ok(row.session_id)
       protocol.Reserved
       | protocol.Saved
+      | protocol.Moving(_)
       | protocol.Opening(_)
       | protocol.Stopping(_)
       | protocol.RecoveryBlocked -> Error(Nil)
@@ -1315,6 +1317,7 @@ fn summary_phrase(
         protocol.RecoveryBlocked -> "recovery blocked"
         protocol.Reserved
         | protocol.Saved
+        | protocol.Moving(_)
         | protocol.Opening(_)
         | protocol.Resident(_)
         | protocol.Stopping(_) -> ""
@@ -1364,6 +1367,10 @@ fn reason(
       }
       case row.status {
         protocol.RecoveryBlocked -> "recovery blocked · " <> enter
+
+        // The row cannot be opened from here until the move ends, so it offers
+        // no Enter.
+        protocol.Moving(_) -> "cannot be opened until the move ends"
         protocol.Reserved
         | protocol.Saved
         | protocol.Opening(_)
@@ -1909,6 +1916,7 @@ fn lifecycle(status) {
   case status {
     protocol.Reserved -> "reserved"
     protocol.Saved -> "saved"
+    protocol.Moving(to) -> "moving to " <> to
     protocol.Opening(_) -> "opening"
     protocol.Resident(_) -> "resident"
     protocol.Stopping(_) -> "stopping"

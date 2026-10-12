@@ -43,19 +43,29 @@
 //// The field is uncontrolled and the server never writes it back, so what the
 //// owner typed is not echoed even in a refusal.
 ////
-//// When the daemon has executors (protocol-change/078), a third form creates a
-//// session in a workspace registered on one of them. It is the other place a
-//// workspace is a field, and the only one where it is a name and not a path: an
-//// executor chosen from a select, the registered name typed into a text field,
-//// and the optional session name. There is no Shareable box, because the daemon
-//// makes a session on an executor session-only whatever the form says. The
-//// executor follows the profile's rule: an option's `value` is its position in
-//// the list the page was given, its label is the name as a text node, and the
-//// decoder (`remote_fields`) turns the position back into the name from that
-//// same list, so the browser can choose among the executors the page drew and
-//// name no other. It accepts exactly one `executor`, one `workspace` and one
-//// `name`. Without executors the button, the form and the decoder's only
-//// possible answer do not exist: a list of none refuses every event.
+//// When the daemon has executors or pools (protocol-change/078, 085), a panel
+//// creates a session in a workspace registered on one of them. It draws a card
+//// for each executor and each pool, in the order the configuration lists them,
+//// with the state the daemon found when the panel opened (`ready`, `degraded`,
+//// `full` or `down`, in the three pill tints the page already has), what the
+//// executor's operator declared about it, and a Choose button. A state is
+//// advice: the daemon found it a moment ago and decides again when the session
+//// opens, so the panel never refuses a card because of it and a `down` executor
+//// can be chosen. Before the daemon's read answers, or when it gives nothing,
+//// the cards carry names alone and say so.
+////
+//// The card a person chooses is the page's own state (`Chosen`), and the form
+//// under the cards is for the workspace registered there. It is the other place
+//// a workspace is a field, and the only one where it is a name and not a path:
+//// the registered name typed into a text field and the optional session name.
+//// There is no Shareable box, because the daemon makes a session on an executor
+//// or in a pool session-only whatever the form says. The placement is not a
+//// field of the form: a card's button sends the choice it was drawn for, built
+//// by the server from the names it was given, so the browser names no executor
+//// or pool, and the decoder (`remote_fields`) accepts exactly one `workspace`
+//// and one `name`, which makes a forged `executor` or `pool` field an extra
+//// field and refuses the event. Without an executor or a pool the button and the
+//// panel do not exist.
 ////
 //// While a creation is out the form is drawn disabled with "Creating" on its
 //// button, and every other workspace's button has no handler. That is the
@@ -65,18 +75,40 @@
 //// A name and a workspace are never attributes. The workspace's folder name is
 //// said in the form's quiet line as a text node, the input's placeholder is
 //// fixed words, and nothing here is a class, a key or an identifier taken from
-//// the catalogue.
+//// the catalogue. The same holds on a card: an executor's or a pool's name, a
+//// declared platform are text nodes, and the only strings that become classes
+//// are the pill tints `placements.pill_class` returns.
+////
+//// ## Flow
+////
+//// `button` → `form` → `fields_with_roles`, and for a typed folder
+//// `elsewhere_button` → `elsewhere_form` → `typed_fields_with_roles`
+////
+//// 1. `button` opens a workspace's form and `form` draws it while it is the
+////    open one; its submit is read by `fields_with_roles`, which turns the
+////    positions of the select back into the profile and model names the page
+////    offered.
+//// 2. `elsewhere_button` and `elsewhere_form` do the same for a folder the
+////    owner types, and `typed_fields_with_roles` reads its submit.
+//// 3. `remote_button` opens the panel for a registered workspace. `remote_form`
+////    draws it: a card for each executor and pool, and, once a card is chosen,
+////    the form that `remote_fields` reads.
+//// 4. `open_for` names the workspace a form is open for, which the component
+////    uses to refuse a submit for a form that is not the open one.
 
 import gleam/dynamic/decode
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
+import lustre/element/keyed
 import lustre/event
 import web_view/creations.{type Roles, type Sharing, Private, Shareable}
+import web_view/placements.{type Cards, type Choice}
 
 /// Where the person is in making a session.
 pub type State {
@@ -97,13 +129,17 @@ pub type State {
   /// the answer arrives.
   Sending
 
-  /// The form for a workspace registered on an executor is open
-  /// (protocol-change/078).
+  /// The panel for a workspace registered on an executor or in a pool is open
+  /// (protocol-change/078, 085): the cards are drawn and none is chosen yet.
   Remote
 
-  /// The creation for a registered workspace is out. The form is drawn disabled
-  /// until the answer arrives.
-  Dispatching
+  /// A card is chosen, so the panel also draws the form for a workspace
+  /// registered there.
+  Chosen(choice: Choice)
+
+  /// The creation for a registered workspace is out. The panel is drawn
+  /// disabled, with the chosen card marked, until the answer arrives.
+  Dispatching(choice: Choice)
 }
 
 /// What a page offers for creating a session.
@@ -122,13 +158,16 @@ pub type Create(message) {
   /// names the forms offer beside the default roles, which may be none, and
   /// `models` is the model keys they offer beside the default model, which may
   /// be none. A profile or a model a submit carries is always one of them.
-  /// `remote` opens the form for a workspace registered on an executor and
-  /// `submit_remote` is what it sends, given the executor, the typed workspace
-  /// name and the typed session name; `executors` is the executor names the
-  /// daemon gave the page, which may be none, and then the page offers no such
-  /// form. The executor a submit carries is always one of them. That form draws
-  /// no profile or model select, so a registered session takes the
-  /// configuration's roles.
+  /// `remote` opens the panel for a workspace registered on an executor or in a
+  /// pool: a card for each, with its state, and the form for the card that is
+  /// chosen. `choose_place` is what a card's button sends, given the choice the
+  /// card was drawn for, and `submit_remote` is what the form sends, given the
+  /// typed workspace name and the typed session name; the placement the creation
+  /// asks for is the one the page recorded when the card was chosen, so the
+  /// browser cannot name another. `cards` is the executors and pools the daemon
+  /// gave the page and what it reported about them; with none, the page offers no
+  /// such panel. That form draws no profile or model select, so a registered
+  /// session takes the configuration's roles.
   Offered(
     choose: fn(String) -> message,
     submit: fn(String, String, Sharing, Roles) -> message,
@@ -139,8 +178,9 @@ pub type Create(message) {
     profiles: List(String),
     models: List(String),
     remote: message,
-    submit_remote: fn(String, String, String) -> message,
-    executors: List(String),
+    choose_place: fn(Choice) -> message,
+    submit_remote: fn(String, String) -> message,
+    cards: Cards,
   )
 }
 
@@ -204,11 +244,11 @@ fn opener(
   ]
   html.button(
     case state {
-      Waiting(_) | Sending | Dispatching -> [
+      Waiting(_) | Sending | Dispatching(_) -> [
         attribute.disabled(True),
         ..attributes
       ]
-      Idle | Composing(_) | Elsewhere | Remote -> [
+      Idle | Composing(_) | Elsewhere | Remote | Chosen(_) -> [
         event.on_click(press()),
         ..attributes
       ]
@@ -217,9 +257,10 @@ fn opener(
   )
 }
 
-/// The button that opens the form for a workspace registered on an executor, or
-/// nothing when the page may not create or the daemon has no executors to offer.
-/// It has a handler only while no creation is out, as the other buttons do.
+/// The button that opens the panel for a workspace registered on an executor or
+/// in a pool, or nothing when the page may not create or the daemon has neither
+/// to offer. It has a handler only while no creation is out, as the other
+/// buttons do.
 ///
 /// ## Examples
 ///
@@ -228,15 +269,21 @@ fn opener(
 /// ```
 pub fn remote_button(create: Create(message)) -> Element(message) {
   case create {
-    Offered(remote:, state:, executors: [_, ..], ..) ->
-      opener("New session on an executor\u{2026}", state, fn() { remote })
-    Offered(executors: [], ..) | Never -> element.none()
+    Offered(remote:, state:, cards:, ..) ->
+      case placements.any(cards) {
+        True ->
+          opener("New session on an executor\u{2026}", state, fn() { remote })
+        False -> element.none()
+      }
+    Never -> element.none()
   }
 }
 
-/// The form for a registered workspace when it is open, and nothing otherwise.
-/// It says in words that the workspace is a name registered on the executor and
-/// not a folder on this machine, and what a blank session name gets.
+/// The panel for a registered workspace when it is open, and nothing otherwise:
+/// one card for each executor and each pool, with the state the daemon found,
+/// and under them the form for the card that is chosen. The form says in words
+/// that the workspace is a name registered there and not a folder on this
+/// machine, and what a blank session name gets.
 ///
 /// ## Examples
 ///
@@ -246,20 +293,29 @@ pub fn remote_button(create: Create(message)) -> Element(message) {
 pub fn remote_form(create: Create(message)) -> Element(message) {
   case create {
     Never -> element.none()
-    Offered(submit_remote:, cancel:, state:, executors:, ..) ->
-      case state, executors {
-        Remote, [_, ..] ->
-          registered(submit_remote, cancel, Editable, executors)
-        Dispatching, [_, ..] ->
-          registered(submit_remote, cancel, Locked, executors)
-        Idle, _
-        | Composing(_), _
-        | Waiting(_), _
-        | Elsewhere, _
-        | Sending, _
-        | Remote, []
-        | Dispatching, []
-        -> element.none()
+    Offered(choose_place:, submit_remote:, cancel:, state:, cards:, ..) ->
+      case state {
+        Remote ->
+          panel(cards, None, choose_place, submit_remote, cancel, Editable)
+        Chosen(choice:) ->
+          panel(
+            cards,
+            Some(choice),
+            choose_place,
+            submit_remote,
+            cancel,
+            Editable,
+          )
+        Dispatching(choice:) ->
+          panel(
+            cards,
+            Some(choice),
+            choose_place,
+            submit_remote,
+            cancel,
+            Locked,
+          )
+        Idle | Composing(_) | Waiting(_) | Elsewhere | Sending -> element.none()
       }
   }
 }
@@ -287,7 +343,8 @@ pub fn form(create: Create(message), workspace: String) -> Element(message) {
         | Elsewhere
         | Sending
         | Remote
-        | Dispatching -> element.none()
+        | Chosen(_)
+        | Dispatching(_) -> element.none()
       }
   }
 }
@@ -307,8 +364,12 @@ pub fn elsewhere_form(create: Create(message)) -> Element(message) {
       case state {
         Elsewhere -> typed(submit_elsewhere, cancel, Editable, profiles, models)
         Sending -> typed(submit_elsewhere, cancel, Locked, profiles, models)
-        Idle | Composing(_) | Waiting(_) | Remote | Dispatching ->
-          element.none()
+        Idle
+        | Composing(_)
+        | Waiting(_)
+        | Remote
+        | Chosen(_)
+        | Dispatching(_) -> element.none()
       }
   }
 }
@@ -405,44 +466,295 @@ fn typed(
   )
 }
 
-// The form for a workspace registered on an executor: which executor, the name
-// the workspace is registered under there, and the optional session name. There
-// is no Shareable box, because the daemon makes a session on an executor
-// session-only (its workspace aggregate is keyed by a path on the daemon's
-// host), which is what Shareable asks for. The executor is a select whose option
-// values are positions in the list the page was given and whose labels are the
-// names as text nodes, so no executor name is ever an attribute, and the
-// decoder turns the position back into the name from that same list.
-fn registered(
-  submit: fn(String, String, String) -> message,
+// The panel for a workspace registered on an executor or in a pool: a line on
+// what the cards know, one card for each executor and each pool, and, once one
+// is chosen, the form for the workspace registered there. Nothing is chosen on
+// the page's behalf: the cards are drawn in the order the configuration lists
+// them, executors first, and the person presses one.
+//
+// The chosen placement is the page's own state and not a field of the form. A
+// card's button sends the choice it was drawn for, which the server built from
+// the names it was given, so no executor or pool name is ever an attribute, and
+// the form's submit carries only the two things a person types.
+fn panel(
+  cards: Cards,
+  chosen: Option(Choice),
+  choose: fn(Choice) -> message,
+  submit: fn(String, String) -> message,
   cancel: message,
   fields: Fields,
-  executors: List(String),
+) -> Element(message) {
+  let placed = cards.placements
+  html.section(
+    [
+      attribute.class("home-place"),
+      attribute.aria_label("Where to run the session"),
+    ],
+    [
+      html.p([attribute.class("home-create-hint")], [
+        html.text(readiness_words(cards.readiness)),
+      ]),
+      // Every card carries a handler, so the list is keyed. The keys are
+      // positions with the kind of place as a prefix, never a name: the lists
+      // are the daemon's startup capture and cannot change while the page is
+      // open, so a position names the same card for the page's life, and no
+      // text the daemon gave is ever part of a key.
+      keyed.div(
+        [attribute.class("home-cards")],
+        list.append(
+          list.index_map(placed.executors, fn(executor, position) {
+            #(
+              "e" <> int.to_string(position),
+              executor_card(executor, cards.readiness, chosen, choose, fields),
+            )
+          }),
+          list.index_map(placed.pools, fn(pool, position) {
+            #(
+              "p" <> int.to_string(position),
+              pool_card(pool, cards.readiness, chosen, choose, fields),
+            )
+          }),
+        ),
+      ),
+      case chosen {
+        Some(choice) -> registered(choice, submit, cancel, fields)
+        None -> nothing_chosen(cancel, fields)
+      },
+    ],
+  )
+}
+
+// What the cards say of how they were made. The state of each card is advice,
+// and the line says so before the person reads one.
+fn readiness_words(readiness: placements.Readiness) -> String {
+  case readiness {
+    placements.Checking ->
+      "Checking which are reachable from the daemon. You can choose one now."
+    placements.Checked ->
+      "This is what the daemon found just now. A state is advice: you can still choose one that is down, and the daemon decides again when the session opens."
+  }
+}
+
+// The row of buttons while no card is chosen: there is no form to submit, so
+// the only button is the one that closes the panel.
+fn nothing_chosen(cancel: message, fields: Fields) -> Element(message) {
+  html.div([attribute.class("home-create-actions")], [
+    html.button(
+      [
+        attribute.type_("button"),
+        attribute.class("home-create-cancel"),
+        event.on_click(cancel),
+        ..locks(fields)
+      ],
+      [html.text("Cancel")],
+    ),
+  ])
+}
+
+fn executor_card(
+  executor: placements.Executor,
+  readiness: placements.Readiness,
+  chosen: Option(Choice),
+  choose: fn(Choice) -> message,
+  fields: Fields,
+) -> Element(message) {
+  let choice = placements.OnExecutor(executor.name)
+  card(
+    "executor",
+    executor.name,
+    case executor.report {
+      Some(report) if readiness == placements.Checked ->
+        pill(
+          placements.pill_class(report.state),
+          placements.state_words(report.state),
+        )
+      Some(_) | None -> pill("pending", "not checked")
+    },
+    case executor.report {
+      Some(report) if readiness == placements.Checked -> executor_facts(report)
+      Some(_) | None -> []
+    },
+    choice,
+    chosen,
+    choose,
+    fields,
+  )
+}
+
+// What an executor's card says beyond its name and state: what its operator
+// declared about the machine, which is the operator's claim and is worded as
+// one.
+fn executor_facts(report: placements.Report) -> List(Element(message)) {
+  [fact(declared_words(report))]
+}
+
+fn declared_words(report: placements.Report) -> String {
+  let stated =
+    list.flatten([
+      stated_word(report.platform),
+      stated_word(report.enforcement),
+      report.toolchains,
+    ])
+  case stated {
+    [] -> "Declares nothing about its machine."
+    words -> "Declared: " <> string.join(words, ", ") <> "."
+  }
+}
+
+fn stated_word(word: Option(String)) -> List(String) {
+  case word {
+    Some(text) -> [text]
+    None -> []
+  }
+}
+
+fn pool_card(
+  pool: placements.Pool,
+  readiness: placements.Readiness,
+  chosen: Option(Choice),
+  choose: fn(Choice) -> message,
+  fields: Fields,
+) -> Element(message) {
+  card(
+    "pool",
+    pool.name,
+    case pool.report {
+      Some(report) if readiness == placements.Checked ->
+        case report.eligible {
+          [_, ..] -> pill("online", "ready")
+          [] -> pill("ended", "down")
+        }
+      Some(_) | None -> pill("pending", "not checked")
+    },
+    case pool.report {
+      Some(report) if readiness == placements.Checked -> pool_facts(report)
+      Some(_) | None -> []
+    },
+    placements.InPool(pool.name),
+    chosen,
+    choose,
+    fields,
+  )
+}
+
+// A pool's card says how many of its executors the daemon reached and in what
+// order a first open tries them. The order is the pool's own and is not changed
+// by health: an open moves to the next executor only for a failed connection or
+// a full one.
+fn pool_facts(report: placements.PoolReport) -> List(Element(message)) {
+  case report.executors {
+    [] -> [fact("No executor satisfies the pool's requirements.")]
+    tried -> [
+      fact(
+        int.to_string(list.length(report.eligible))
+        <> " of "
+        <> int.to_string(list.length(tried))
+        <> " executors reachable."
+        <> " Tried in order: "
+        <> string.join(tried, ", ")
+        <> ".",
+      ),
+    ]
+  }
+}
+
+fn fact(words: String) -> Element(message) {
+  html.p([attribute.class("home-card-fact")], [html.text(words)])
+}
+
+fn pill(tone: String, words: String) -> Element(message) {
+  html.span([attribute.class("pill"), attribute.class(tone)], [
+    html.text(words),
+  ])
+}
+
+// One card: the name, what kind of place it is, the state pill, the facts, and
+// the button that chooses it. The chosen card is marked by its class and by a
+// pressed button, and the buttons have no handler while a creation is out.
+fn card(
+  kind: String,
+  name: String,
+  state: Element(message),
+  facts: List(Element(message)),
+  choice: Choice,
+  chosen: Option(Choice),
+  choose: fn(Choice) -> message,
+  fields: Fields,
+) -> Element(message) {
+  let is_chosen = chosen == Some(choice)
+  html.div(
+    list.append([attribute.class("home-card")], case is_chosen {
+      True -> [attribute.class("chosen")]
+      False -> []
+    }),
+    [
+      html.div([attribute.class("home-card-head")], [
+        html.span([attribute.class("home-card-name")], [html.text(name)]),
+        html.span([attribute.class("home-card-kind")], [html.text(kind)]),
+        state,
+      ]),
+      ..list.append(facts, [
+        html.button(
+          list.flatten([
+            [
+              attribute.type_("button"),
+              attribute.class("home-new"),
+              attribute.class("home-card-choose"),
+              attribute.attribute("aria-pressed", case is_chosen {
+                True -> "true"
+                False -> "false"
+              }),
+            ],
+            case fields, is_chosen {
+              Editable, False -> [event.on_click(choose(choice))]
+              Editable, True -> []
+              Locked, _ -> [attribute.disabled(True)]
+            },
+          ]),
+          [
+            html.text(case is_chosen {
+              True -> "Chosen"
+              False -> "Choose"
+            }),
+          ],
+        ),
+      ])
+    ],
+  )
+}
+
+// The form for a workspace registered at the chosen place: the name the
+// workspace is registered under there, and the optional session name. There is
+// no Shareable box, because the daemon makes a session on an executor or in a
+// pool session-only (its workspace aggregate is keyed by a path on the daemon's
+// host), which is what Shareable asks for.
+fn registered(
+  choice: Choice,
+  submit: fn(String, String) -> message,
+  cancel: message,
+  fields: Fields,
 ) -> Element(message) {
   html.form(
     [
       attribute.class("home-create"),
       attribute.aria_label("New session on an executor"),
-      event.on("submit", remote_submitted(submit, executors))
-        |> event.prevent_default,
+      event.on("submit", remote_submitted(submit)) |> event.prevent_default,
     ],
     [
-      html.label([attribute.class("home-create-profile")], [
-        html.span([attribute.class("home-create-profile-name")], [
-          html.text("Executor"),
-        ]),
-        html.select(
-          [
-            attribute.name("executor"),
-            attribute.class("home-create-profile-select"),
-            attribute.aria_label("Executor"),
-            ..locks(fields)
-          ],
-          list.index_map(executors, fn(name, position) {
-            html.option([attribute.value(int.to_string(position))], name)
-          }),
-        ),
-      ]),
+      html.p([attribute.class("home-create-hint")], case choice {
+        placements.OnExecutor(name:) -> [
+          html.text("The session will run on executor "),
+          html.b([], [html.text(name)]),
+          html.text("."),
+        ]
+        placements.InPool(name:) -> [
+          html.text("The session will run in pool "),
+          html.b([], [html.text(name)]),
+          html.text(
+            ". The daemon picks the executor when the session first opens, trying the pool's executors in order.",
+          ),
+        ]
+      }),
       html.input([
         attribute.type_("text"),
         attribute.name("workspace"),
@@ -456,7 +768,7 @@ fn registered(
       ]),
       html.p([attribute.class("home-create-hint")], [
         html.text(
-          "The name the workspace is registered under on that executor. It is a name, not a folder: the daemon does not look for it on this machine.",
+          "The name the workspace is registered under there. It is a name, not a folder: the daemon does not look for it on this machine.",
         ),
       ]),
       name_field(fields),
@@ -619,14 +931,12 @@ fn typed_submitted(
 // The registered-workspace form's decoder, refused unless `remote_fields`
 // accepts the list.
 fn remote_submitted(
-  submit: fn(String, String, String) -> message,
-  executors: List(String),
+  submit: fn(String, String) -> message,
 ) -> decode.Decoder(message) {
   use listed <- decode.subfield(["detail", "formData"], decode.list(field()))
-  case remote_fields(listed, executors) {
-    Ok(#(executor, workspace, name)) ->
-      decode.success(submit(executor, workspace, name))
-    Error(Nil) -> decode.failure(submit("", "", ""), "executor form")
+  case remote_fields(listed) {
+    Ok(#(workspace, name)) -> decode.success(submit(workspace, name))
+    Error(Nil) -> decode.failure(submit("", ""), "registered workspace form")
   }
 }
 
@@ -785,47 +1095,29 @@ fn chosen(
   }
 }
 
-/// The executor, workspace name and session name a submitted registered-
-/// workspace form's fields stand for, given the executor names the form offered:
-/// exactly one `executor` whose value is the position of one of `executors`,
-/// which is turned back into the name here, exactly one `workspace`, exactly one
-/// `name`, and no other field. A position past the list, a negative or
-/// non-numeric one, a name where a position goes, a repeat and a missing field
-/// all refuse the event, so the browser can choose among the executors the page
-/// drew and name no other. The workspace and the session name are the browser's
-/// text and nothing else is: the daemon judges both again.
+/// The workspace name and session name a submitted registered-workspace form's
+/// fields stand for: exactly one `workspace`, exactly one `name`, and no other
+/// field. The executor or pool is not a field: it is the card the person chose,
+/// which the page recorded, so a forged `executor` or `pool` field is refused
+/// with any other extra one. The workspace and the session name are the
+/// browser's text and nothing else is: the daemon judges both again.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert create.remote_fields(
-///     [#("executor", "1"), #("workspace", "app"), #("name", "")],
-///     ["a", "b"],
-///   )
-///   == Ok(#("b", "app", ""))
-/// assert create.remote_fields(
-///     [#("executor", "2"), #("workspace", "app"), #("name", "")],
-///     ["a", "b"],
-///   )
+/// assert create.remote_fields([#("workspace", "app"), #("name", "")])
+///   == Ok(#("app", ""))
+/// assert create.remote_fields([#("workspace", "app"), #("name", ""), #("executor", "0")])
 ///   == Error(Nil)
 /// ```
 pub fn remote_fields(
   listed: List(#(String, String)),
-  executors: List(String),
-) -> Result(#(String, String, String), Nil) {
-  let chosen = list.filter(listed, fn(field) { field.0 == "executor" })
+) -> Result(#(String, String), Nil) {
   let workspaces = list.filter(listed, fn(field) { field.0 == "workspace" })
   let names = list.filter(listed, fn(field) { field.0 == "name" })
-  case chosen, workspaces, names, list.length(listed) {
-    [#(_, position)], [#(_, workspace)], [#(_, name)], 3 ->
-      case int.parse(position) {
-        Ok(index) if index >= 0 ->
-          list.drop(executors, index)
-          |> list.first
-          |> result.map(fn(executor) { #(executor, workspace, name) })
-        Ok(_) | Error(Nil) -> Error(Nil)
-      }
-    _, _, _, _ -> Error(Nil)
+  case workspaces, names, list.length(listed) {
+    [#(_, workspace)], [#(_, name)], 2 -> Ok(#(workspace, name))
+    _, _, _ -> Error(Nil)
   }
 }
 
@@ -841,7 +1133,7 @@ pub fn remote_fields(
 /// ```
 pub fn open_for(state: State) -> Option(String) {
   case state {
-    Idle | Elsewhere | Sending | Remote | Dispatching -> None
+    Idle | Elsewhere | Sending | Remote | Chosen(_) | Dispatching(_) -> None
     Composing(workspace:) | Waiting(workspace:) -> Some(workspace)
   }
 }

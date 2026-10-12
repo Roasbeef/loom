@@ -513,6 +513,12 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   is `deliver(answer)`, which the component dispatches as `Linked`. `resumed_for`
   is the socket's gate: an observer role is refused `NotHeld` before any task.
   `listed_entry` maps `Reserved` and `RecoveryBlocked` to `sessions.Blocked`.
+  The home and the sidebar list through `held_entries`, which reads the page's
+  custody once (`manager.custodies`) and applies `with_moves`: a session in a
+  move becomes `sessions.Moving(to)` and a tombstone is left out
+  (protocol-change/085); a failed custody read leaves the rows as the catalogue
+  says them. The admin drawer lists through `admin_rows`, the same `held_entries`
+  plus the views it draws, so it reads no summary for a tombstone.
   The owner's home creates a session (protocol-change/065, the fourth addendum).
   `home_create_capability(principal, ceiling, ask)` is `Some` for the owner at
   Operator ceiling only, `upgrade_home` passes it as `Start.create` beside
@@ -1221,9 +1227,14 @@ catalogue without opening runtimes. Explicit admission invokes
   test and runnable as `gleam run -m client/demo`.
 - `test/client/tui_e2e_test` + `test/support/terminal` — the real
   `loom` binary against a real `serve.boot`, in a real terminal
-  (`tmux` on a private socket, declared geometry, every wait a predicate
-  over pane content with a deadline). Neither side of the protocol is
-  fake; only the model is scripted.
+  (`tmux` on a socket minted per run from the VM's OS pid, declared
+  geometry, every wait a predicate over pane content with a deadline). Neither
+  side of the protocol is fake; only the model is scripted. The socket name
+  must stay unique per run: `tmux -L` sockets live in one per-user directory
+  shared by every checkout, and a fixed name once let a concurrent run's
+  `kill-server` end this one's pane (a `/dev/ttysNNN: No such file` line in
+  the TUI's stderr) or leave its keys and captures following the other run's
+  session.
   Skips — loudly — when `tmux` or `go` is absent.
 - `test/support/tui_driver` is the in-process real-client companion.
   Each actor owns a socket ingress and a separate model inbox, and uses
@@ -7432,7 +7443,9 @@ the protocol-change/078 addendum on moving a session have the protocol.
   `Config.movers.orchestrators`, then `inbound_settled` for an imported session,
   then `manager.begin_move`, then
   `Config.movers.begin`), the `moving` and `moved` members of `sessions.get`
-  (`with_custody`), `moving` on `open` (`in_flight`), and `not_owner` from the
+  (`with_custody`) and of every `sessions.list` record (`listed_json`, which reads
+  one `manager.custodies` for the page and encodes with the same
+  `custody_members`), `moving` on `open` (`in_flight`), and `not_owner` from the
   tombstone for open, archive, restore and delete (`tombstoned`). `daemon/main`
   builds the movers in `start_movers`, gives the port its importer, and reads
   `LOOM_MOVE_CRASH_AFTER`.
@@ -7720,3 +7733,74 @@ VM-wide singleton); the `Recorded` cases of `session_mover_test`,
 `distribution_provision_test`; and the shipped member variants of
 `daemon_shipped_remote_move_test`, `daemon_shipped_directory_test` and
 `daemon_shipped_peer_mail_test`, with `daemon_shipped_directory_quorum_test`.
+
+## Reading the deployment (protocol-change/085)
+
+`deployment.status` is an owner-only control command that says which of the
+nodes the daemon is configured with answer its own connection attempts, before
+any session is placed on one. `docs/architecture/distributed.md` ("Reading the
+deployment") is the account and `docs/client-protocol.md` §3.29 the wire.
+
+- `client/deployment` is the whole read. `targets` lists the daemon's
+  `[orchestrators]` rows and then its `[executors]` rows (a `Target` with its
+  `Kind`), `only` narrows them to a configuration key, and `probe` connects to
+  every target at once in one weft run (`connect_ms` 1000 each, `deadline_ms`
+  3000 in all). `Reach(self, dial)` is how it connects: `over(membership, self)`
+  is `distribution.peer` then `distribution.connect`, and `alone(self)`, for a
+  daemon with no `[distribution]`, connects to nobody. A task that returns
+  `Error(why)` is a `Failed` outcome carrying `why`, a task the deadline cut off
+  is `Down(TimedOut)`, and a crash is `Down(Unavailable)`: a node nothing was
+  heard from is never assumed up.
+- The only names ever dialled are `Target.node` values from the daemon's own
+  tables. The request's `node` is a key: `status` resolves it with `only` before
+  `probe` runs, so a key the configuration lacks returns `Error(Nil)` and nothing
+  was dialled. `protocol.node_field` holds it to the shape of a key first
+  (`bad_request` otherwise). `daemon_deployment_test` and `deployment_test` assert
+  the dial record is empty in both cases.
+- `Health` is `Reachable | Down(Why)` with `Why` = `TimedOut | Unreachable |
+  Unavailable` (wire words `timeout`, `unreachable`, `unavailable`). A node is
+  `ok` or `down`; `degraded` is reserved on the wire and arrives with the node
+  reports, which need a `Report` constructor on the orchestrator port and are not
+  built. Every node member beyond `node`, `name`, `roles`, `state` and `reason`
+  (when `down`) is optional so that report adds members and replaces none. The
+  whole deployment's `state` is `deployment.verdict` (`Whole`, `Degraded`,
+  `Lost`) over the configured nodes, not counting the asking daemon, which is
+  always reachable: `ok` when all answered, `down` only when none did, `degraded`
+  between. One dead executor among several is a degraded deployment.
+- `Snapshot` is `Overview` (the asking daemon as a `Node`, `others`, `edges`,
+  `placements`) or `Selected` (only the named nodes), so a reply with a `node`
+  filter cannot carry edges or placements. Edges are `Serves` (executors) and
+  `Peers` (orchestrators), each with the asking daemon's own `Link`. Placements
+  are `ready | down` for an executor in this slice, and a pool lists
+  `pools.candidates` in its trial order with `eligible` the reachable ones; the
+  pool is never reordered by health.
+- `server.Config.deployment` is the `Reach`; `main.deployment_reach` builds it
+  from `Config.membership` and the node's own name. `server.deployment_status`
+  adds `MemberRole` to the asking daemon when `directory.standing` is `Member`,
+  and the owner check comes before any connection, so a member cannot make the
+  daemon dial. The orchestrators come from `Control.orchestrators` (the movers'
+  list, which is the `[orchestrators]` table on a daemon with distribution).
+
+- The home page's creation panel reads the same placements without the rest of
+  the deployment (protocol-change/085, `docs/architecture/web-view.md`,
+  "Executors and pools"). `deployment.placed` connects to the executors alone,
+  and `deployment.for_page` reduces the result to `web_view/placements` (a state,
+  the operator's declaration, a pool's trial order and its reachable members; no
+  node name or address). `server.HomeAttachment` gains `pools` (the startup
+  capture of the `[pools]` names, like `executors`) and `placements`, the blocking
+  read, which `ui_socket.upgrade_home` hands the page as
+  `read_task(deliver, attachment.placements)` only where the page holds the
+  creation capability. `ui_socket.create_for` accepts `creations.Pooled`: the pool
+  and no executor reach `manager.Creation` (`pool_of`), the scope is session-only,
+  and the daemon's `pool_unknown` is `creations.UnknownPool`.
+
+Tests: `deployment_test` (the pure read and the weft fan-out with a scripted
+`dial`, including a stuck connection cut by the deadline and a crash, and
+`placed` and `for_page`),
+`daemon_deployment_test` (the control socket: the owner's reply, a member's
+`forbidden`, a key narrowing the read, an unconfigured key and a malformed one
+dialling nobody), the `deployment.status` cases of `daemon_protocol_test`, and
+`daemon_shipped_deployment_test` (two real daemons; the executor's process ends
+and the next read says `down`). For the creation panel: `ui_route_test` (a pooled
+creation and `pool_unknown`) and `ui_socket_test` (a card needs no new event
+class).

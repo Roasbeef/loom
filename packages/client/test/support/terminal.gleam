@@ -28,6 +28,7 @@ import gleam/int
 import gleam/list
 import gleam/result
 import gleam/string
+import simplifile
 import support/internal/ffi_proc
 
 /// A live tmux session on its own server socket.
@@ -36,8 +37,18 @@ import support/internal/ffi_proc
 /// `socket` names a server private to this test (`-L`), so nothing here
 /// can reach a developer's own tmux; `session` is the session name every
 /// verb targets.
+///
+/// `-L` sockets live in one per-user directory shared by every checkout and
+/// every concurrent test run on the host, so "private to this test" means
+/// private to one *run*: the caller must mint a name no other run can use
+/// (`tui_e2e_test` combines the VM's process id with a serial). A fixed name
+/// lets two runs share a server, and `stop` in one then ends the other's
+/// pane while its keys and captures silently follow the other run's session.
+///
+/// `socket_path` is the file tmux bound that socket to, reported by `start`
+/// so `stop` can remove it; tmux does not.
 pub type Terminal {
-  Terminal(tmux: String, socket: String, session: String)
+  Terminal(tmux: String, socket: String, session: String, socket_path: String)
 }
 
 /// The `tmux` binary, or the reason a host cannot run terminal tests.
@@ -73,11 +84,18 @@ pub fn start(
   cols cols: Int,
   rows rows: Int,
 ) -> Result(Terminal, String) {
-  let terminal = Terminal(tmux:, socket:, session:)
-  use _output <- result.try(
+  let terminal = Terminal(tmux:, socket:, session:, socket_path: "")
+
+  // `-P -F` makes `new-session` report where its socket landed, the one
+  // moment the path is certain to be answerable: a pane whose command exits
+  // takes the server with it, and tmux leaves the socket file behind.
+  use output <- result.try(
     tmux_command(terminal, [
       "new-session",
       "-d",
+      "-P",
+      "-F",
+      "#{socket_path}",
       "-s",
       session,
       "-x",
@@ -87,7 +105,7 @@ pub fn start(
       command,
     ]),
   )
-  Ok(terminal)
+  Ok(Terminal(..terminal, socket_path: string.trim(output)))
 }
 
 /// Whether the session still exists — false once the pane's command has
@@ -239,6 +257,18 @@ pub fn stop(terminal: Terminal) -> Nil {
   let _killed =
     ffi_proc.run(terminal.tmux, ["-L", terminal.socket, "kill-server"], in: ".")
   gone(terminal, 30)
+
+  // tmux leaves its socket file behind when the server exits, and a name
+  // minted per run would leave one inert file in the shared socket directory
+  // for every run. The file is removed only once no server answers on it, and
+  // only at the path tmux itself reported for this terminal.
+  case terminal.socket_path != "" && !alive(terminal) {
+    True -> {
+      let _removed = simplifile.delete_file(terminal.socket_path)
+      Nil
+    }
+    False -> Nil
+  }
 }
 
 fn gone(terminal: Terminal, attempts: Int) -> Nil {

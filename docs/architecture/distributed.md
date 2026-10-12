@@ -570,6 +570,49 @@ and the reported value. The catalogue learns the chosen executor through
 `manager.seed_executor`, which writes the executor column once and only for a
 pooled registration with none.
 
+## Reading the deployment
+
+Before this command an operator learned that an executor did not answer when a
+session placed on it failed to open. `deployment.status` (owner-only, protocol
+change 085) reads the nodes the daemon is configured with, and says which of
+them its own connection attempts reached, before any session exists.
+
+`client/deployment` makes the read. It lists the daemon's `[orchestrators]` rows
+and then its `[executors]` rows, connects to all of them at once in one weft run
+(each attempt bounded at one second, the run at three), and reports each node as
+`ok` when `distribution.connect` succeeded and `down` when it did not, with one
+of three reason words: `timeout`, `unreachable` or `unavailable`. Nothing is
+cached; the next read connects again. A first TLS handshake can outlast its
+second, in which case the node is `down` in that reply and `ok` in the next. The
+deployment as a whole is `ok` when every configured node is, `down` only when none
+is, and `degraded` between: one dead executor among several is a degraded
+deployment, not a dead one. The
+daemon asks about itself too, as the first node, and a daemon with no
+`[distribution]` table answers with itself and its executors `down`.
+
+Every statement is "as seen from this daemon", so a link is only known for edges
+that touch it: the reply has one `peer` edge to each orchestrator and one `serves`
+edge to each executor, each with the asking daemon's own link (`connected` or
+`none`). It also holds the placements a session-creation form draws: each
+executor with the state `ready` or `down` and what its operator declared, and each
+pool with the executors `pools.candidates` admits, in its trial order, and which
+of them were reachable. The pool is not reordered by health; the first open still
+tries its order and moves on only for a failed connection or `CapacityExhausted`.
+
+The request may carry `node`, a key of `[executors]` or `[orchestrators]`. The
+key is resolved against the daemon's own configuration before anything is
+connected to, so a name taken from the request body never reaches the connection
+layer; a key the configuration lacks is `not_found` and connects to nobody. A
+member principal is refused `forbidden`, as for `directory.status`.
+
+This is health from reachability only. What a node says about itself (its
+capacity, its scopes that block a reopen, its build) needs a question the
+orchestrator port does not yet carry, and every node member beyond `node`, `name`,
+`roles` and `state` is optional so that it can be added later without replacing
+anything. `loom deployment status` and `loom deployment executors` print the
+reply (`--json` prints it as sent); `tui/deployment_view` decodes it with a total
+decoder of its own.
+
 ## Two orchestrators
 
 A deployment may run two orchestrators, each with its own catalogue, and a
@@ -1029,8 +1072,10 @@ The directory holds no state of its own, so it has no model.
   waits for the same tick. Default links (`[peers] default_links`) join sessions
   of one daemon only, so they do not reach a session on another orchestrator.
 - **Moves** do not resume inside a file, carry running processes, the memory
-  domain, memberships or claims, or appear in the web view. The terminal does
-  not render the `moving` and `moved` members of a session view.
+  domain, memberships or claims. `sessions.list` records carry the `moving` and
+  `moved` members; the terminal, the web home and the Admin drawer draw a moving session with its
+  destination and leave a moved one out, and the receiver's row is listed only
+  on the receiver until the elsewhere group lands.
 - **Provisioning is one-shot.** Certificate rotation and adding a node without
   reissuing the others are later work.
 - **The ledger is one SQLite file per executor.** Corruption affects every
@@ -1054,6 +1099,7 @@ The directory holds no state of its own, so it has no model.
 | `client/session_directory`, `client/remote/orchestrator_port` | Two orchestrators: lookup and the answering port |
 | `client/remote/remote_peer`, `client/peers`, `client/peer_outbox`, `client/peer_outbox_drain` | Peer mail across orchestrators |
 | `client/session_move`, `client/session_mover`, `client/session_movers`, `client/session_importer` | Moving a session |
+| `client/deployment`; `tui/deployment_view`, `tui.run_deployment` | Reading the deployment: `deployment.status` and `loom deployment` |
 
 `packages/client/CLAUDE.md` has one section per phase, from "Trusted
 distribution membership" to "Moving a session between orchestrators", with the

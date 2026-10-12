@@ -240,12 +240,12 @@ sequenceDiagram
    `Origin`, the nonce, the cookie under the key, the credential and the
    membership, then resolves the resident session exactly as a terminal's
    socket does, with the role capped by the page's ceiling
-   (`web_socket` at `packages/client/src/client/daemon/server.gleam:404`).
+   (`web_socket` at `packages/client/src/client/daemon/server.gleam:426`).
    The parser permit it reserves counts the page against the daemon's
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:4650`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:4694`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -1104,6 +1104,36 @@ each list read (`recent_for`, which leaves out folders outside home) and forgets
 an entry by its identity (`forget_for`), each in a task after the same owner check
 as a creation. The rows are keyed by that identity, and a path is drawn only as a
 text node.
+
+#### Executors and pools
+
+A deployment with `[executors.<name>]` or `[pools.<name>]` tables adds a second
+button to the same section, "New session on an executor". It opens a panel with a
+card for each executor and each pool (protocol-change/078 and 085): the name, the
+kind, a state pill, what the executor's operator declared about it, and a Choose
+button. The state is what the daemon found a moment before the panel opened, by
+connecting to each executor under the same bounds `deployment.status` uses
+(`client/deployment.placed`), and it is advice. A `down` executor is drawn with
+that word and can still be chosen, because the daemon decides again when the
+session opens and a person may know a machine is coming back. The pill uses the
+three tints the page already has, `online`, `pending` and `ended`, so no colour is
+added.
+
+The panel opens at once, with cards drawn from the names the page was told when
+it opened (`Start.executors`, `Start.pools`, the daemon's startup capture), and
+the read of the states runs in a weft task the daemon starts
+(`ui_socket.read_task`), so the page's runtime never waits on a connection. Its
+answer replaces the cards, numbered so that an older read cannot overwrite a
+newer one; if it never comes, or gives nothing, the cards stay as names and the
+panel says so. Choosing a card is a click beneath the sessions list's section,
+where the home already admits one, so the owner's socket admits no new event
+class. The choice is the page's own state and not a field of the form that
+follows, so a submit carries only the workspace name and the session name a
+person typed, and a forged executor or pool field refuses the event. The creation
+names an executor (`creations.Registered`) or a pool (`creations.Pooled`); the
+daemon makes either session-only, checks the executor or pool against its
+configuration again (`executor_unknown`, `pool_unknown`), and for a pool picks the
+executor when the session first opens, in the pool's order.
 
 ### The admin page
 

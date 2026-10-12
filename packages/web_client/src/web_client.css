@@ -582,6 +582,21 @@
   .home-create-actions button:hover:not(:disabled){background:var(--color-bg);}
   .home-create-actions button:disabled{opacity:.5;cursor:default;}
   .home-create-actions .home-create-go{border-color:var(--color-current);background:color-mix(in srgb,var(--color-current) 14%,transparent);}
+  /* The panel for a registered workspace: a card for each executor and pool,
+     tinted and ringed by a hairline like the form it sits above, and the chosen
+     one outlined whole in the current colour. The state is one of the three
+     pill tints the page already has. No shadow, no coloured edge. */
+  .home-place{display:flex;flex-direction:column;gap:10px;margin:0 0 12px 0;}
+  .home-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px;}
+  .home-card{display:flex;flex-direction:column;gap:6px;min-width:0;padding:10px 12px;border:1px solid var(--color-divider);border-radius:8px;background:var(--color-bg-raised);}
+  .home-card.chosen{border-color:var(--color-current);background:color-mix(in srgb,var(--color-current) 10%,var(--color-bg-raised));}
+  .home-card-head{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;}
+  .home-card-name{color:var(--color-fg);font:500 14px/1.4 var(--font-sans);overflow-wrap:anywhere;}
+  .home-card-kind{color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
+  .home-card-head .pill{margin-left:auto;}
+  .home-card-fact{margin:0;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);overflow-wrap:anywhere;}
+  .home-card-fact.warn{color:var(--color-signal-text);}
+  button.home-card-choose{align-self:flex-start;margin-top:auto;}
   ul.home-list{list-style:none;margin:0;padding:0;border-top:1px solid var(--color-divider);}
   li.home-row{margin:0;border-bottom:1px solid var(--color-divider);}
   .home-open,.home-item{display:flex;align-items:center;gap:12px;width:100%;box-sizing:border-box;min-height:44px;margin:0;padding:6px 10px;border:0;border-radius:0;background:transparent;color:inherit;font:inherit;text-align:left;}

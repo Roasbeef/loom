@@ -165,7 +165,7 @@ specifies them and [the web view](architecture/web-view.md) describes them.
 Without `--ui`, every `/ui/` path returns HTTP 404.
 
 Any other path returns HTTP 404.
-Source: `handle` (`client/daemon/server.gleam:375-187`).
+Source: `handle` (`client/daemon/server.gleam:397-187`).
 
 `<session-id>` MUST be the canonical session identifier the control
 endpoint reported. A path segment that is not a canonical session id is
@@ -401,7 +401,7 @@ carries the daemon epoch that most control commands must echo.
 | `ui.path` | string | optional | Present only when the daemon was started with `--ui`: the web view's route prefix, `"/ui"`. A client that does not know the field ignores it. |
 
 Source: (`client/daemon/server.gleam:577-617`); the `ui` field is
-`hello_view` (`client/daemon/server.gleam:1876`).
+`hello_view` (`client/daemon/server.gleam:1909`).
 
 The epoch changes when the daemon restarts. A client MUST discard
 ephemeral state and re-select a session on reconnecting to a different
@@ -525,6 +525,8 @@ Each session record:
 | `subtitle` | string | optional | The first line of the first prompt a person sent the session, at most 60 characters, derived once by the daemon and never changed ([protocol-change/067](../protocol-change/067-session-subtitle.md)). Omitted when the session has none. A client that does not know the member ignores it; a client that does treats a value that is not a nonblank string of at most 60 characters as absent. |
 | `executor` | string | optional | The executor the session's `workspace` is registered on ([protocol-change/078](../protocol-change/078-distributed-runtime.md)). Present only for a session created with an `executor`, so the record of a local session is unchanged. When it is present `workspace` is a name and not a path on the daemon's host. A client that does not know the member ignores it. |
 | `pool` | string | optional | The executor pool the session was created in ([protocol-change/078](../protocol-change/078-distributed-runtime.md), the addendum on pools). Present only for a session created with a `pool`. Such a session has no `executor` member until its first open chooses one, and carries both afterwards. A client that does not know the member ignores it. |
+| `moving` | object | optional | While a move to another orchestrator is in flight: `op` and `to`, as section 3.5 gives them. The session is stopped and still reads `saved`, and it cannot be opened here. |
+| `moved` | object | optional | After the move finished: `to`, the orchestrator that owns the session now. The record is this daemon's tombstone, and a client does not list it as a session it can open ([protocol-change/085](../protocol-change/085-distributed-admin-surface.md)). |
 
 Source: (`client/daemon/server.gleam:829-837`).
 
@@ -544,7 +546,7 @@ Source: (`client/daemon/server.gleam:839-860`).
 A page stops on an authorized record boundary once its encoded size
 would exceed 60000 bytes. The next request resumes after the last
 emitted id. A single record too large for that budget is refused with
-`metadata_too_large`. Source: (`client/daemon/server.gleam:3079`).
+`metadata_too_large`. Source: (`client/daemon/server.gleam:3153`).
 
 Errors: `revision_changed` when `revision` was supplied and differs from
 the catalogue's current one; `metadata_too_large`; `unavailable`.
@@ -576,7 +578,9 @@ Errors: `forbidden` when the credential has no membership,
 A session whose move to another orchestrator is in flight or finished carries
 one more member (protocol-change/078, phase 5). Neither member is present for a
 session that is not moving and has not moved, so its record is what it was
-before moves existed.
+before moves existed. `sessions.list` (section 3.4) carries the same two members
+on its records, worded alike, so a client draws a move from a listing without a
+`sessions.get` for each row.
 
 | Member | Type | Presence | Meaning |
 |---|---|---|---|
@@ -1054,7 +1058,7 @@ While the daemon is draining, an existing control socket may still issue
 the read commands `status`, `sessions.list`, `sessions.get`,
 `sessions.default`, `operations.get`, `peers.inspect`, `sessions.activity`,
 `principals.list`, `principals.memberships`, and `ui.link`. Every mutating control command is refused. Source:
-`control_use` (`client/daemon/server.gleam:2195-1130`).
+`control_use` (`client/daemon/server.gleam:2228-1130`).
 
 That includes `sessions.delete`, which is a mutation like any other.
 
@@ -1224,7 +1228,7 @@ the `hello` states with its `ui` field. The request carries the canonical
 
 `page` is the page's ceiling: `"observer"`, which is also the value when
 the field is absent, or `"operator"`. Any other value is refused with
-`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:1033`). The
+`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:1071`). The
 ceiling caps the page's role and never grants one: the page acts with the
 smallest of the principal's membership role, the ceiling, and Operator.
 
@@ -1540,6 +1544,52 @@ Khepri cluster (protocol-change/083). A daemon that is not a member refuses it
 When `members` and `ra_members` disagree, `ra_members` is the membership in
 force: membership lives in the cluster's log, and `members` only tells a daemon
 whom to join and whom to keep connected.
+
+### 3.29 `deployment.status`
+
+Owner-only (a member is refused `forbidden`). Reports which of the nodes the
+daemon is configured with (its `[orchestrators.<name>]` and `[executors.<name>]`
+tables) its own connection attempts reach, and the executors and pools a session
+may be placed on (protocol-change/085). Every statement is as seen from the
+daemon that answers; nothing is cached, and each read connects again. The daemon
+connects to all nodes at once, each attempt bounded at one second, and the read
+as a whole at three. The request body is `{}` or `{"node": <key>}`, and it needs
+no epoch.
+
+```json
+{"v":2,"id":21,"cmd":"deployment.status","body":{}}
+{"v":2,"reply_to":21,"event":"deployment.status","body":{"as_of_ms":1760190131000,"self":"alpha@10.0.0.1","state":"degraded","reasons":[{"node":"exec2@10.0.0.9","reason":"timeout"}],"nodes":[{"node":"alpha@10.0.0.1","name":"alpha@10.0.0.1","roles":["orchestrator"],"state":"ok"},{"node":"bravo@10.0.0.4","name":"bravo","roles":["orchestrator"],"state":"ok"},{"node":"box@10.0.0.2","name":"box","roles":["executor"],"state":"ok"},{"node":"exec2@10.0.0.9","name":"exec2","roles":["executor"],"state":"down","reason":"timeout"}],"edges":[{"from":"alpha@10.0.0.1","to":"bravo@10.0.0.4","kind":"peer","link":"connected"},{"from":"alpha@10.0.0.1","to":"box@10.0.0.2","kind":"serves","link":"connected"},{"from":"alpha@10.0.0.1","to":"exec2@10.0.0.9","kind":"serves","link":"none"}],"placements":{"executors":[{"name":"box","node":"box@10.0.0.2","state":"ready","declared":{"toolchains":[]}},{"name":"exec2","node":"exec2@10.0.0.9","state":"down","declared":{"platform":"linux/x86_64","enforcement":"enforced","toolchains":["codemode"]}}],"pools":[{"name":"builders","executors":["exec2","box"],"eligible":["box"]}]},"orchestrators":[{"name":"bravo","node":"bravo@10.0.0.4","state":"ok"}]}}
+```
+
+| Member | Type | Presence | Meaning |
+|---|---|---|---|
+| `as_of_ms` | integer | always | The answering daemon's wall clock when the reply was built. |
+| `self` | string | always | The answering daemon's node. |
+| `state` | string | always | The whole deployment, from the configured nodes (not counting the answering daemon, which is always reachable): `ok` when every node is `ok`, `down` only when none is reachable, and `degraded` otherwise. One dead executor among several is a degraded deployment. |
+| `reasons` | array | always | One entry per node that is not `ok`: `node` and a fixed `reason` word. |
+| `nodes` | array | always | The answering daemon first, then its orchestrators, then its executors, each in table order. |
+| `edges` | array | without `node` | Relations, each touching the answering daemon: `kind` is `peer` (an orchestrator) or `serves` (an executor), and `link` is `connected` or `none`, the daemon's own connection. |
+| `placements` | object | without `node` | `executors`, each with `name`, `node`, a `state` of `ready` or `down` (`degraded` and `full` are reserved), and `declared` (the operator's `platform` and `enforcement` when stated, and `toolchains`); and `pools`, each with `name`, `executors` (those the pool admits, in its trial order) and `eligible` (those reachable, in the same order). |
+| `orchestrators` | array | without `node` | The configured orchestrators, each with `name`, `node` and `state`. |
+
+A node carries `node`, `name` (the daemon's key for it, or the node name when it
+has none, as for itself), `roles` and `state`, and `reason` when it is `down`.
+`state` is `ok` when the daemon connected to the node within the bound and `down`
+when it did not. The reason words are `timeout` (the connection did not settle in
+time; a first TLS handshake may outlast the bound and settle in the background,
+so the node reads `ok` on the next read), `unreachable` (refused, or the host
+could not be reached; a wrong pin and a wrong certificate read this way) and
+`unavailable` (the daemon has no distribution, or the node is not one it pinned).
+A node may carry further members in a later release, and a client treats a
+member it does not know, and an optional one that is absent, as unknown.
+
+`node` must be a key of the daemon's `[executors]` or `[orchestrators]` tables.
+It is looked up in the configuration and never itself connected to: a key the
+configuration lacks is `not_found`, and the daemon connects to nobody. A value
+that is not shaped like a key is `bad_request`. With `node`, `nodes` holds only
+the nodes the key names, and `edges`, `placements` and `orchestrators` are
+absent. A daemon built before this command refuses it `bad_request` with the
+message `unsupported control command`.
 
 ---
 
@@ -3918,7 +3968,7 @@ below have not been edited.
    `docs/loom-implementation-spec.md` §1.6 names ten control commands.
    The code implements six more: `sessions.isolate`, `sessions.invite`,
    `sessions.set_role`, `sessions.revoke`, `credentials.rotate` and
-   `credentials.revoke` (`client/daemon/protocol.gleam:482`). The
+   `credentials.revoke` (`client/daemon/protocol.gleam:494`). The
    six are specified in `protocol-change/015`'s addenda, so the gap is
    in the spec's summary rather than in the decision record.
    `protocol-change/053` adds a third route, `/v2/claim`, with its one

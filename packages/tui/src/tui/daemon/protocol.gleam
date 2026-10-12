@@ -30,6 +30,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import tui/placement
 
 /// Maximum complete control message size before JSON parsing.
 pub const max_bytes = 65_536
@@ -347,6 +348,12 @@ pub type Command {
     /// keeps their order.
     sessions: List(String),
   )
+
+  /// Asks which of the nodes the daemon is configured with answer its own
+  /// connection attempts, and which executors and pools a session may be placed
+  /// on (`protocol-change/085`). Owner-only. A daemon built before the command
+  /// existed refuses it `bad_request`.
+  DeploymentStatus
 }
 
 /// The most sessions one `SessionActivity` request may name.
@@ -425,6 +432,20 @@ pub type Lifecycle {
 
   /// Metadata is registered without a running session.
   Saved
+
+  /// The session is being handed to the orchestrator `to`
+  /// (`protocol-change/078`, phase 5). It is stopped, as a saved session is,
+  /// and this daemon will not open it: the move ends in the session living on
+  /// `to`, or in an abandoned move that makes it an ordinary saved session
+  /// again. The daemon reports it as a saved session with a `moving` member,
+  /// and this is how the client reads the two together, so no code that draws a
+  /// row or offers an open can forget the member.
+  Moving(
+    /// The name of the destination in the daemon's `[orchestrators.<name>]`
+    /// table. A name outside that grammar never reaches this type, so it holds
+    /// no whitespace or control character.
+    to: String,
+  )
 
   /// Startup has been accepted under this operation identity.
   Opening(
@@ -612,6 +633,15 @@ pub type Reply {
     /// One row per resident session.
     activity: List(Activity),
   )
+
+  /// What the daemon found of each node it is configured with
+  /// (`protocol-change/085`). The body is kept whole: `--json` prints it as the
+  /// daemon sent it, and `tui/deployment_view` reads it with a total decoder
+  /// where it is drawn.
+  DeploymentReply(
+    /// The daemon's reply body, unread.
+    document: json.JsonValue,
+  )
 }
 
 /// One validated server envelope; uncorrelated hello is the only handshake.
@@ -705,6 +735,7 @@ pub fn name(command: Command) -> String {
     RevokeMembership(..) -> "sessions.revoke"
     RevokeCredentials(..) -> "credentials.revoke"
     SessionActivity(..) -> "sessions.activity"
+    DeploymentStatus -> "deployment.status"
     Shutdown -> "daemon.shutdown"
   }
 }
@@ -728,6 +759,7 @@ pub fn mutates(command: Command) -> Bool {
     | InspectPeers(..)
     | ListPrincipals(..)
     | PrincipalMemberships(..)
+    | DeploymentStatus
     | SessionActivity(..) -> False
     SetDefault(..)
     | RenameSession(..)
@@ -782,7 +814,7 @@ pub fn encode(
 fn command_fields(command: Command, epoch: Epoch) {
   let Epoch(epoch_value) = epoch
   case command {
-    Status -> Ok([])
+    Status | DeploymentStatus -> Ok([])
     ListSessions(after, revision) | ListArchivedSessions(after, revision) -> {
       use Nil <- result.try(case after {
         "" -> Ok(Nil)
@@ -1214,6 +1246,7 @@ fn decode_reply(event: String, body: json.JsonValue) {
     "sessions.set_role" | "sessions.revoke" | "credentials.revoke" ->
       Ok(AccessChangeReply(body))
     "sessions.activity" -> result.map(activity(body), ActivityReply)
+    "deployment.status" -> Ok(DeploymentReply(body))
     "daemon.shutdown" ->
       case field(body, "state") {
         Ok(json.String("draining")) -> Ok(ShutdownReply)
@@ -1264,13 +1297,29 @@ fn page(body: json.JsonValue) {
       }
     _ -> Error("invalid session page")
   })
-  use sessions <- result.try(list.try_map(values, session))
+  use decoded <- result.try(list.try_map(values, listed))
+  let sessions = option.values(decoded)
   use after <- result.try(case field(body, "after") {
     Ok(json.Null) -> Ok(None)
     Ok(json.String(id)) -> result.map(valid_id(id), fn(_) { Some(id) })
     _ -> Error("invalid continuation")
   })
   Ok(Page(revision, sessions, after))
+}
+
+// One record of a listing, or nothing for a session this daemon no longer
+// serves. A record that carries `moved` is the tombstone the source keeps for a
+// session another orchestrator owns now: the conversation is not here, nothing
+// here can open it, and its new owner lists it. It is not a row, so the page
+// leaves it out, and no consumer of a page has to remember to
+// (`protocol-change/085`). The member is read as present or absent, and its
+// destination is not needed, so a tombstone whose `to` is damaged is still not
+// listed as a session that can be opened.
+fn listed(body: json.JsonValue) -> Result(Option(Session), String) {
+  case field(body, "moved") {
+    Ok(_) -> Ok(None)
+    Error(_) -> result.map(session(body), Some)
+  }
 }
 
 fn session(body: json.JsonValue) {
@@ -1286,10 +1335,33 @@ fn session(body: json.JsonValue) {
     workspace,
     name,
     created,
-    status,
+    moving_status(body, status),
     subtitle_of(body),
     executor_of(body),
   )
+}
+
+// The optional `moving` member, which reads over the `saved` the daemon reports
+// beside it. Like the subtitle it is a display aid, so a member that is not an
+// object with an orchestrator name reads as absent and the row keeps the status
+// it came with. The daemon refuses an open of the row either way. The name is
+// held to the grammar of an `[orchestrators.<name>]` key, so it has no
+// whitespace or control character: it prints into a table cell and into one
+// token of the plain listing without being cleaned again.
+fn moving_status(body: json.JsonValue, status: Lifecycle) -> Lifecycle {
+  let destination =
+    field(body, "moving")
+    |> result.try(text_at(_, "to", 64))
+    |> result.try(fn(to) {
+      case placement.is_orchestrator_name(to) {
+        True -> Ok(to)
+        False -> Error("invalid orchestrator name")
+      }
+    })
+  case destination {
+    Ok(to) -> Moving(to)
+    Error(_) -> status
+  }
 }
 
 // The optional executor of a remote session. Like the subtitle it is a display

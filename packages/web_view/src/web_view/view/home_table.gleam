@@ -92,8 +92,8 @@ import lustre/event
 import web_view/actions.{type Stage}
 import web_view/renames.{type Control}
 import web_view/sessions.{
-  type Activity, type Entry, type Group, Blocked, Idle, Live, NeedsYou, Saved,
-  Working,
+  type Activity, type Entry, type Group, Blocked, Idle, Live, Moving, NeedsYou,
+  Saved, Working,
 }
 import web_view/view/archiving
 import web_view/view/create.{type Create}
@@ -395,12 +395,16 @@ type Standing {
 // follow it, since a session that is working is running. A session on disk is
 // "saved", one whose open the daemon has not answered says "Opening…" and
 // nothing else, and one the daemon will not open from a page (`Blocked`) says
-// "needs attention" and carries a title that says why.
+// "needs attention" and carries a title that says why. A session being handed
+// to another orchestrator (`Moving`) says "moving to" and the destination, and
+// has no controls, since the registry refuses to open, archive or delete it
+// until the move ends.
 type State {
   Running(activity: Option(String))
   Stored
   Attention
   Waking
+  Leaving(to: String)
 }
 
 // The title of a blocked row's words. It is a fixed sentence for the closed
@@ -430,6 +434,7 @@ fn standing(
     Saved, resume.Opening, _ -> Standing("opening", "…", Waking)
     Saved, _, _ -> Standing("saved", "○", Stored)
     Blocked, _, _ -> Standing("saved", "○", Attention)
+    Moving(to), _, _ -> Standing("saved", "○", Leaving(to))
   }
 }
 
@@ -520,7 +525,8 @@ fn row(
     // running row.
     Saved, resume.Opening ->
       html.div([attribute.class("home-item")], list.append(body, [chevron()]))
-    Saved, _ | Blocked, _ -> html.div([attribute.class("home-item")], body)
+    Saved, _ | Blocked, _ | Moving(_), _ ->
+      html.div([attribute.class("home-item")], body)
   }
   let classes = [attribute.class("home-row"), attribute.class(standing.class)]
   let manage = in_row(manage)
@@ -589,7 +595,7 @@ fn offered(
 ) -> List(Element(message)) {
   case standing.state {
     Waking -> []
-    Running(_) | Stored | Attention -> acts(entry, rename, manage)
+    Running(_) | Stored | Attention | Leaving(_) -> acts(entry, rename, manage)
   }
 }
 
@@ -605,9 +611,11 @@ fn acts(
   rename: Rename(message),
   manage: Manage(message),
 ) -> List(Element(message)) {
-  let renaming = case rename {
-    Never -> []
-    Offered(edit:, ..) -> [
+  // A session being handed to another orchestrator is not this daemon's to
+  // rename, and the registry refuses it, so the row offers no Rename.
+  let renaming = case rename, entry.residency {
+    Never, _ | Offered(..), Moving(_) -> []
+    Offered(edit:, ..), _ -> [
       act("home-rename", "Rename this session", "Rename", edit(entry.id), []),
     ]
   }
@@ -629,6 +637,7 @@ fn acts(
     // whose recovery stopped does hold one: the registry refuses it as busy
     // and the row says so, because releasing a slot whose holder is still
     // alive could let a second writer open the same database.
+    Managed(..), Moving(_) -> []
     Managed(archive:, delete:, ..), Saved
     | Managed(archive:, delete:, ..), Blocked
     -> [
@@ -842,7 +851,8 @@ fn quiet_line(
 ) -> List(Element(message)) {
   let line = case standing.state {
     Waking -> [html.text("Opening…")]
-    Running(_) | Stored | Attention -> described(standing, entry, now)
+    Running(_) | Stored | Attention | Leaving(_) ->
+      described(standing, entry, now)
   }
   case note {
     Some(notice) -> list.append(line, [inline(notice)])
@@ -862,6 +872,7 @@ fn described(
     ]
     Running(None) -> [html.text("running")]
     Stored | Waking -> [html.text("saved")]
+    Leaving(to) -> [html.text("moving to " <> to)]
     Attention -> [
       html.span([attribute.title(attention_title)], [
         html.text("needs attention"),
@@ -887,7 +898,8 @@ fn described(
       let age = created(entry.created_at, sessions.ago(now, entry.created_at))
       case entry.residency {
         Live -> list.append(lead, [html.text(" · created "), age])
-        Saved | Blocked -> list.append(lead, [html.text(" · "), age])
+        Saved | Blocked | Moving(_) ->
+          list.append(lead, [html.text(" · "), age])
       }
     }
   }

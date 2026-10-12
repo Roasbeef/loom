@@ -2165,9 +2165,12 @@ pub fn beginning_a_move_commits_the_intent_and_stops_the_slot_together_test() {
   await_status(registry, remote.id, manager.Saved)
 
   // No runtime may open the store while the move is in flight, and the owner
-  // cannot change the session's visibility or remove it from under the mover.
+  // cannot rename the session, change its visibility or remove it from under
+  // the mover.
   assert manager.open(registry, remote.id)
     == Error(manager.SessionMoving(op: op_a, to: "laptop"))
+  assert manager.rename(registry, owner, "daemon-test", remote.id, "changed")
+    == Error(manager.AdminMoving(op: op_a, to: "laptop"))
   assert manager.set_visibility(
       registry,
       owner,
@@ -2261,6 +2264,8 @@ pub fn a_finished_move_leaves_a_tombstone_that_answers_for_the_session_test() {
   // that finished cannot undo it.
   assert manager.open(registry, remote.id)
     == Error(manager.SessionMoved(to: "laptop"))
+  assert manager.rename(registry, owner, "daemon-test", remote.id, "changed")
+    == Error(manager.AdminMoved(to: "laptop"))
   assert manager.set_visibility(
       registry,
       owner,
@@ -2291,6 +2296,54 @@ pub fn a_finished_move_leaves_a_tombstone_that_answers_for_the_session_test() {
   assert manager.custody(registry, remote.id) == Ok(moved)
   let assert Ok(view) = manager.get(registry, remote.id)
   assert view.status == manager.Saved
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn one_custody_read_answers_for_a_whole_page_of_sessions_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let #(owner, _member) = owner_and_member(store)
+  let going = remote_saved(store, 926)
+  let gone = remote_saved(store, 927)
+  let staying = remote_saved(store, 928)
+  let registry = start(store, 1, fn(record, _) { Ok(record.id) })
+  let assert Ok(_) =
+    manager.begin_move(
+      registry,
+      owner,
+      "daemon-test",
+      going.id,
+      to: "laptop",
+      op: op_a,
+    )
+  let assert Ok(_) =
+    manager.begin_move(
+      registry,
+      owner,
+      "daemon-test",
+      gone.id,
+      to: "desk",
+      op: op_b,
+    )
+  let assert Ok(_) = manager.finish_move(registry, gone.id, op: op_b)
+
+  // Each identity is paired with what `custody` says of it, in the order asked.
+  // A session with no move row is `Resident`, and so is an identity the
+  // catalogue does not hold, because the identities of a listing come from the
+  // catalogue's own page and the read does not check them again.
+  assert manager.custodies(registry, [
+      going.id,
+      "not-a-session",
+      staying.id,
+      gone.id,
+    ])
+    == Ok([
+      #(going.id, catalogue.Moving(op: op_a, to: "laptop")),
+      #("not-a-session", catalogue.Resident),
+      #(staying.id, catalogue.Resident),
+      #(gone.id, catalogue.Moved(op: op_b, to: "desk")),
+    ])
+  assert manager.custodies(registry, []) == Ok([])
   stop(registry)
   assert catalogue.close(store) == Ok(Nil)
 }

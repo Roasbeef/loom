@@ -174,6 +174,7 @@ pub fn generated_queries_match_the_sqlc_input_test() {
     sql.abort_session_move("", "").0,
     sql.delete_session_move("").0,
     sql.moving_sessions().0,
+    sql.all_session_moves().0,
     sql.session_deletion("").0,
     sql.insert_session_deletion("").0,
     sql.delete_session_deletion("").0,
@@ -1654,6 +1655,13 @@ pub fn a_session_with_no_move_row_is_resident_test() {
   assert catalogue.custody(store, record.id) == Error(catalogue.Missing)
   assert catalogue.reserve(store, record) == Ok(record)
   assert catalogue.custody(store, record.id) == Ok(catalogue.Resident)
+
+  // The whole-table read has no pair for it, and one pair once it moves.
+  assert catalogue.custodies(store) == Ok([])
+  let moving = catalogue.Moving(op: op_one, to: "laptop")
+  assert catalogue.begin_move(store, record.id, op: op_one, to: "laptop")
+    == Ok(moving)
+  assert catalogue.custodies(store) == Ok([#(record.id, moving)])
   assert catalogue.close(store) == Ok(Nil)
 }
 
@@ -1956,6 +1964,10 @@ pub fn a_stored_move_row_that_breaks_the_grammar_fails_the_read_test() {
     == Error(catalogue.Invalid("invalid move metadata"))
   assert catalogue.begin_move(reopened, record.id, op: op_one, to: "laptop")
     == Error(catalogue.Invalid("invalid move metadata"))
+
+  // The whole-table read leaves the damaged row out, so a listing shows the
+  // session plain while every transition above still refuses it.
+  assert catalogue.custodies(reopened) == Ok([])
   assert catalogue.close(reopened) == Ok(Nil)
 }
 
