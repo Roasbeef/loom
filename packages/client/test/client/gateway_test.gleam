@@ -7147,6 +7147,30 @@ pub fn profile_set_saves_moves_a_following_strand_and_restarts_test() {
   assert profile_snapshot(harness, 5) == #(Some("fast"), ["fast", "slow"], None)
 }
 
+pub fn a_strand_cannot_be_named_for_a_parent_reference_test() {
+  let #(harness, _reported) =
+    profile_harness(None, entering_fallback, Ok(Nil), SettlingProvider)
+  subscribe(harness)
+
+  // `^` marks the reference to a parent on another orchestrator
+  // (protocol-change/084), so a human's create and fork are refused it the same
+  // way, and neither seeds a strand.
+  send(harness, 2, protocol.CreateStrand(name: Some("^main")))
+  let envelope = next_reply(harness, 2, 8)
+  let assert protocol.ErrorEvent(code: "bad_request", message:, ..) =
+    envelope.event
+    as "a reserved name is a bad request"
+  assert message
+    == "the strand name ^main is reserved; choose a name that does not begin with ^"
+  send(harness, 3, protocol.CreateStrand(name: Some("side")))
+  let created = next_reply(harness, 3, 8)
+  let assert protocol.SnapshotEvent(protocol.StrandsSnapshot(strands:)) =
+    created.event
+    as "an ordinary name still creates a strand"
+  assert list.any(strands, fn(strand) { strand.id == "side" })
+  assert !list.any(strands, fn(strand) { strand.id == "^main" })
+}
+
 pub fn profile_set_keeps_a_strand_chosen_with_model_test() {
   let #(harness, reported) =
     profile_harness(None, entering_fallback, Ok(Nil), SettlingProvider)

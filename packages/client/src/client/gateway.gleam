@@ -6905,6 +6905,18 @@ fn seed_and_reply(
       )
       state
     }
+    Error(api.InvalidStrandName(name:)) -> {
+      reply_error(
+        state,
+        connection,
+        id,
+        protocol.code_bad_request,
+        "the strand name "
+          <> name
+          <> " is reserved; choose a name that does not begin with ^",
+      )
+      state
+    }
     Error(api.UnknownForkPoint(..))
     | Error(api.SeedFailed(..))
     | Error(api.BriefRejected(..)) -> {

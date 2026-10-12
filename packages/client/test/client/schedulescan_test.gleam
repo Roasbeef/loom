@@ -1338,6 +1338,7 @@ fn plant_lineage(
         deadline: None,
         detached: False,
         reaped:,
+        orchestrator: None,
       )),
     )
     as "the ledger must accept a cell written by the harness"

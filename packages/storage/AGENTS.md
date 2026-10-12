@@ -19,13 +19,15 @@ with these forks: they define the same modules.
 
 ## Key Types
 
-- The catalogue is at `user_version` 13. Each later version has its own embedded
+- The catalogue is at `user_version` 15. Each later version has its own embedded
   migration schema (`catalogue_names_schema`, `catalogue_archives_schema`,
   `catalogue_claims_schema`, `catalogue_subtitles_schema`,
   `catalogue_credential_kinds_schema`, `catalogue_logins_schema`,
   `catalogue_recent_folders_schema`, `catalogue_profiles_schema`,
   `catalogue_models_schema`, `catalogue_executors_schema`,
-  `catalogue_pools_schema`, `catalogue_moves_schema`), and
+  `catalogue_pools_schema`, `catalogue_moves_schema`,
+  `catalogue_deletions_schema`,
+  `catalogue_delegates_schema`), and
   `initialize_schema` applies every
   schema an
   older catalogue lacks, then moves the version, in one transaction; a fresh
@@ -125,6 +127,21 @@ with these forks: they define the same modules.
   `Visibility` was not given a `Moved` arm: archiving is the owner's choice and
   independent of custody, and a `Visibility` variant would force every
   existing archive match to decide what a moved session means.
+- `catalogue.Delegate` is the delegate session a remote orchestrator's subagents
+  run in (protocol-change/084). Version 15 adds `catalogue_delegate_sessions
+  (spawner, parent_session, session_id, last_contact_ms)`, keyed by the pair
+  `(spawner, parent_session)`, with `session_id` unique and a foreign key to
+  `catalogue_sessions`. `claim_delegate` is the one write: in one immediate
+  transaction it answers the pair's existing row and moves its contact time, or
+  records the pair for the given session unless the spawner already holds
+  `limit` rows, which answers `AtLimit(held)` and writes nothing, so two callers
+  cannot both pass `max_sessions`. A pair already bound to another session is
+  `Conflict`. `delegate_for` reads by pair and refuses a malformed pair as `Invalid` before anything else, so the registry's first step fails before it creates a session, `delegate_of` reads by session and is
+  the marker the manager refuses a move on, and `delegates_held` counts a
+  spawner's rows. A stored row that is duplicated or breaks its grammar fails the
+  read with `Invalid` and is never read as "not a delegate". `delete` removes the
+  row first, which frees the slot. Claims do not move the catalogue revision,
+  because no listing shows them.
 - `catalogue.Visibility` separates active and archived rows from initialization
   state. Schema version 3 adds `catalogue_session_archives`, migrated atomically
   from versions 1 and 2. `set_visibility` changes the overlay, clears an archived

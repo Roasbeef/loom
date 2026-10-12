@@ -35,6 +35,9 @@
 ////    session with a move row in one statement, and `begin_move`, `finish_move`,
 ////    `abort_move` and `import_session` are the compare-and-set transitions of
 ////    a session moving between orchestrators.
+//// 10. `claim_delegate` records the delegate session of a (spawner, parent
+////     session) pair under the spawner's cap, and `delegate_of` is the marker
+////     that says a session is one.
 
 import core/ids
 import gleam/bit_array
@@ -49,6 +52,7 @@ import sqlight
 import storage/catalogue_archives_schema
 import storage/catalogue_claims_schema
 import storage/catalogue_credential_kinds_schema
+import storage/catalogue_delegates_schema
 import storage/catalogue_deletions_schema
 import storage/catalogue_executors_schema
 import storage/catalogue_logins_schema
@@ -266,7 +270,7 @@ fn initialize_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
 /// raise this fails `migrations_end_at_the_current_version_test` rather than
 /// leaving a catalogue that claims a version whose migration never ran.
 @internal
-pub const current_version = 14
+pub const current_version = 15
 
 /// The migration schemas in version order, each applied to a catalogue that
 /// lacks its version.
@@ -286,6 +290,7 @@ pub fn migrations() -> List(#(Int, String)) {
     #(12, catalogue_pools_schema.schema),
     #(13, catalogue_moves_schema.schema),
     #(14, catalogue_deletions_schema.schema),
+    #(15, catalogue_delegates_schema.schema),
   ]
 }
 
@@ -1487,6 +1492,238 @@ fn insert_move(
   statement(catalogue, sql.increment_catalogue_revision())
 }
 
+/// The delegate session a remote orchestrator's subagents run in
+/// (protocol-change/084): the session this daemon created for one
+/// (spawner, parent session) pair.
+pub type Delegate {
+  Delegate(
+    /// The `[spawners.<name>]` key of the spawning orchestrator.
+    spawner: String,
+    /// The spawning orchestrator's own identity for the parent session.
+    parent_session: String,
+    /// This daemon's identity for the delegate session.
+    session_id: String,
+    /// The last message from the spawner, in Unix milliseconds.
+    last_contact_ms: Int,
+  )
+}
+
+/// What `claim_delegate` decided.
+pub type DelegateClaim {
+  /// The pair has a delegate session: the one it already had, or the one just
+  /// recorded for it.
+  Claimed(
+    /// The pair's record, with its contact time at the call's `now_ms`.
+    record: Delegate,
+  )
+
+  /// The pair has none and the spawner already holds as many as it may. Nothing
+  /// was written.
+  AtLimit(
+    /// How many delegate sessions the spawner holds.
+    held: Int,
+  )
+}
+
+/// Records, or finds, the delegate session of a (spawner, parent session)
+/// pair, under the spawner's cap on the sessions it holds.
+///
+/// A pair that already has a row answers it and moves its contact time to
+/// `now_ms`, whatever the count is: the cap bounds how many sessions a spawner
+/// opens, not how often it returns to one. A pair with no row is recorded for
+/// `session_id` unless the spawner already holds `limit` sessions, which answers
+/// `AtLimit` and writes nothing. The count and the insert share one immediate
+/// transaction, so two callers cannot both pass the cap. The session's
+/// registration must exist (`reserve`). A spawner outside the profile-name
+/// grammar, a parent or a session that is not a canonical session identity, and
+/// a negative time are `Invalid`. A pair already recorded for another session
+/// is `Conflict`: one pair has one delegate session.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.claim_delegate(store, "laptop", parent, id, limit: 4, now_ms: 1_000)
+/// // == Ok(catalogue.Claimed(catalogue.Delegate("laptop", parent, id, 1_000)))
+/// ```
+pub fn claim_delegate(
+  catalogue: Catalogue,
+  spawner: String,
+  parent_session: String,
+  session_id: String,
+  limit limit: Int,
+  now_ms now_ms: Int,
+) -> Result(DelegateClaim, Error) {
+  use Nil <- result.try(validate_delegate(
+    spawner,
+    parent_session,
+    session_id,
+    now_ms,
+  ))
+  transaction(catalogue.connection, fn() {
+    use held <- result.try(delegate_for(catalogue, spawner, parent_session))
+    case held {
+      Some(found) if found.session_id != session_id -> Error(Conflict)
+      Some(found) -> {
+        use Nil <- result.try(statement(
+          catalogue,
+          sql.touch_delegate_session(now_ms, spawner, parent_session),
+        ))
+        Ok(Claimed(Delegate(..found, last_contact_ms: now_ms)))
+      }
+      None -> {
+        use count <- result.try(delegates_held(catalogue, spawner))
+        case count >= limit {
+          True -> Ok(AtLimit(held: count))
+          False -> {
+            use Nil <- result.map(statement(
+              catalogue,
+              sql.insert_delegate_session(
+                spawner,
+                parent_session,
+                session_id,
+                now_ms,
+              ),
+            ))
+            Claimed(Delegate(
+              spawner:,
+              parent_session:,
+              session_id:,
+              last_contact_ms: now_ms,
+            ))
+          }
+        }
+      }
+    }
+  })
+}
+
+fn validate_pair(
+  spawner: String,
+  parent_session: String,
+) -> Result(Nil, Error) {
+  case
+    is_profile_name(spawner)
+    && result.is_ok(ids.parse_session_id(parent_session))
+  {
+    True -> Ok(Nil)
+    False -> Error(Invalid("invalid delegate session metadata"))
+  }
+}
+
+fn validate_delegate(
+  spawner: String,
+  parent_session: String,
+  session_id: String,
+  now_ms: Int,
+) -> Result(Nil, Error) {
+  case
+    is_profile_name(spawner)
+    && result.is_ok(ids.parse_session_id(parent_session))
+    && result.is_ok(ids.parse_session_id(session_id))
+    && now_ms >= 0
+  {
+    True -> Ok(Nil)
+    False -> Error(Invalid("invalid delegate session metadata"))
+  }
+}
+
+/// Reads the delegate session record of a (spawner, parent session) pair, or
+/// `None` when the pair has no session yet.
+///
+/// A spawner outside the profile-name grammar and a parent that is not a
+/// canonical session identity are `Invalid`. The registry reads the pair first,
+/// so a malformed one fails before it creates anything and leaves no
+/// registration behind.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.delegate_for(store, "laptop", parent) == Ok(None)
+/// ```
+pub fn delegate_for(
+  catalogue: Catalogue,
+  spawner: String,
+  parent_session: String,
+) -> Result(Option(Delegate), Error) {
+  use Nil <- result.try(validate_pair(spawner, parent_session))
+  use rows <- result.try(query(
+    catalogue,
+    sql.delegate_session(spawner, parent_session),
+  ))
+  case rows {
+    [] -> Ok(None)
+    [row] ->
+      Ok(
+        Some(Delegate(
+          spawner:,
+          parent_session:,
+          session_id: row.session_id,
+          last_contact_ms: row.last_contact_ms,
+        )),
+      )
+    [_, _, ..] -> Error(Invalid("duplicate delegate session metadata"))
+  }
+}
+
+/// Reads the delegate record of a session, or `None` for an ordinary session.
+///
+/// This is the marker the manager reads before it hands a session to another
+/// orchestrator: a delegate session serves its spawner and is never moved. A
+/// stored row that is duplicated, or whose spawner or parent is outside its
+/// grammar, is `Invalid` and is never read as "not a delegate", because that
+/// would let a damaged row release a session the design keeps in place.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.delegate_of(store, session_id) == Ok(None)
+/// ```
+pub fn delegate_of(
+  catalogue: Catalogue,
+  session_id: String,
+) -> Result(Option(Delegate), Error) {
+  use rows <- result.try(query(catalogue, sql.delegate_of_session(session_id)))
+  case rows {
+    [] -> Ok(None)
+    [row] ->
+      case
+        is_profile_name(row.spawner)
+        && result.is_ok(ids.parse_session_id(row.parent_session))
+      {
+        True ->
+          Ok(
+            Some(Delegate(
+              spawner: row.spawner,
+              parent_session: row.parent_session,
+              session_id:,
+              last_contact_ms: row.last_contact_ms,
+            )),
+          )
+        False -> Error(Invalid("invalid delegate session metadata"))
+      }
+    [_, _, ..] -> Error(Invalid("duplicate delegate session metadata"))
+  }
+}
+
+/// The number of delegate sessions a spawner holds, which its `max_sessions`
+/// bounds.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.delegates_held(store, "laptop") == Ok(0)
+/// ```
+pub fn delegates_held(
+  catalogue: Catalogue,
+  spawner: String,
+) -> Result(Int, Error) {
+  use rows <- result.try(query(catalogue, sql.count_delegate_sessions(spawner)))
+  case rows {
+    [row] -> Ok(row.count)
+    [] | [_, _, ..] -> Error(Invalid("expected one delegate count row"))
+  }
+}
+
 /// Removes one registration and every catalogue row that refers to it.
 ///
 /// The registration, its memberships, its display name and subtitle, a workspace default
@@ -1545,6 +1782,10 @@ pub fn delete(catalogue: Catalogue, id: String) -> Result(Registration, Error) {
       sql.delete_session_display_name(id),
     ))
     use Nil <- result.try(statement(catalogue, sql.delete_session_subtitle(id)))
+
+    // A delegate session's row names its registration, so it leaves first. The
+    // spawner's cap then counts one session fewer.
+    use Nil <- result.try(statement(catalogue, sql.delete_delegate_session(id)))
     use Nil <- result.try(statement(catalogue, sql.delete_registration(id)))
 
     // The revision moves so an open listing page is refused rather than

@@ -1196,6 +1196,105 @@ pub fn deleting_sessions_decoder() -> decode.Decoder(DeletingSessions) {
   decode.success(DeletingSessions(session_id:))
 }
 
+pub type DelegateSession {
+  DelegateSession(session_id: String, last_contact_ms: Int)
+}
+
+pub fn delegate_session(
+  spawner spawner: String,
+  parent_session parent_session: String,
+) {
+  let sql =
+    "SELECT session_id, last_contact_ms FROM catalogue_delegate_sessions
+WHERE spawner = ? AND parent_session = ?"
+  #(
+    sql,
+    [dev.ParamString(spawner), dev.ParamString(parent_session)],
+    delegate_session_decoder(),
+  )
+}
+
+pub fn delegate_session_decoder() -> decode.Decoder(DelegateSession) {
+  use session_id <- decode.field(0, decode.string)
+  use last_contact_ms <- decode.field(1, decode.int)
+  decode.success(DelegateSession(session_id:, last_contact_ms:))
+}
+
+pub type DelegateOfSession {
+  DelegateOfSession(
+    spawner: String,
+    parent_session: String,
+    last_contact_ms: Int,
+  )
+}
+
+pub fn delegate_of_session(session_id session_id: String) {
+  let sql =
+    "SELECT spawner, parent_session, last_contact_ms FROM catalogue_delegate_sessions
+WHERE session_id = ?"
+  #(sql, [dev.ParamString(session_id)], delegate_of_session_decoder())
+}
+
+pub fn delegate_of_session_decoder() -> decode.Decoder(DelegateOfSession) {
+  use spawner <- decode.field(0, decode.string)
+  use parent_session <- decode.field(1, decode.string)
+  use last_contact_ms <- decode.field(2, decode.int)
+  decode.success(DelegateOfSession(spawner:, parent_session:, last_contact_ms:))
+}
+
+pub type CountDelegateSessions {
+  CountDelegateSessions(count: Int)
+}
+
+pub fn count_delegate_sessions(spawner spawner: String) {
+  let sql = "SELECT COUNT(*) FROM catalogue_delegate_sessions WHERE spawner = ?"
+  #(sql, [dev.ParamString(spawner)], count_delegate_sessions_decoder())
+}
+
+pub fn count_delegate_sessions_decoder() -> decode.Decoder(
+  CountDelegateSessions,
+) {
+  use count <- decode.field(0, decode.int)
+  decode.success(CountDelegateSessions(count:))
+}
+
+pub fn insert_delegate_session(
+  spawner spawner: String,
+  parent_session parent_session: String,
+  session_id session_id: String,
+  last_contact_ms last_contact_ms: Int,
+) {
+  let sql =
+    "INSERT INTO catalogue_delegate_sessions (spawner, parent_session, session_id, last_contact_ms)
+VALUES (?, ?, ?, ?)"
+  #(sql, [
+    dev.ParamString(spawner),
+    dev.ParamString(parent_session),
+    dev.ParamString(session_id),
+    dev.ParamInt(last_contact_ms),
+  ])
+}
+
+pub fn touch_delegate_session(
+  last_contact_ms last_contact_ms: Int,
+  spawner spawner: String,
+  parent_session parent_session: String,
+) {
+  let sql =
+    "UPDATE catalogue_delegate_sessions SET last_contact_ms = ?
+WHERE spawner = ? AND parent_session = ?"
+  #(sql, [
+    dev.ParamInt(last_contact_ms),
+    dev.ParamString(spawner),
+    dev.ParamString(parent_session),
+  ])
+}
+
+pub fn delete_delegate_session(session_id session_id: String) {
+  let sql = "DELETE FROM catalogue_delegate_sessions WHERE session_id = ?"
+  #(sql, [dev.ParamString(session_id)])
+}
+
 pub type DomainById {
   DomainById(
     domain_id: String,

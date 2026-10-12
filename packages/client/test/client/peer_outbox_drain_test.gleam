@@ -22,6 +22,7 @@ import simplifile
 import support/addresses
 import support/notes_session
 import support/peer_rig.{Down, Gone, Lose, Pass, Resident, Saved}
+import weft/actor
 import weft/poll
 import weft/registry as address
 
@@ -431,4 +432,89 @@ pub fn a_reopened_sender_resumes_draining_what_it_owed_test() {
   assert api.close(second.runtime) == Ok(Nil)
   let _removed = simplifile.delete_all([root])
   Nil
+}
+
+// --- an instance over another pass -------------------------------------------
+
+type Verdicts {
+  Verdicts(left: List(peer_outbox_drain.Backlog), ran: Int)
+}
+
+type Turn {
+  Next(reply: Subject(peer_outbox_drain.Backlog))
+  Ran(reply: Subject(Int))
+}
+
+// A pass whose answers are scripted: each pass takes the next verdict, and
+// `Clear` when the script is spent. The drainer runs the pass in its own
+// process, so the script lives in an actor both can reach.
+fn scripted_pass(
+  verdicts: List(peer_outbox_drain.Backlog),
+) -> #(fn() -> peer_outbox_drain.Backlog, Subject(Turn)) {
+  let assert Ok(started) =
+    actor.new(Verdicts(left: verdicts, ran: 0))
+    |> actor.on_message(fn(state, turn: Turn) {
+      case turn {
+        Next(reply:) -> {
+          let #(next, rest) = case state.left {
+            [first, ..rest] -> #(first, rest)
+            [] -> #(peer_outbox_drain.Clear, [])
+          }
+          process.send(reply, next)
+          actor.continue(Verdicts(left: rest, ran: state.ran + 1))
+        }
+        Ran(reply:) -> {
+          process.send(reply, state.ran)
+          actor.continue(state)
+        }
+      }
+    })
+    |> actor.start
+    as "the scripted pass starts"
+  let script = started.data
+  #(fn() { process.call(script, 1000, fn(reply) { Next(reply:) }) }, script)
+}
+
+// The machine owns the timing and nothing else, so an instance over any pass
+// arms and rests exactly as the peer-mail instance does: a pass at open, one
+// interval between passes while the pass says anything is owed, and no timer at
+// all once it says nothing is.
+pub fn an_instance_over_another_pass_keeps_the_same_timing_test() {
+  let #(pass, script) =
+    scripted_pass([
+      peer_outbox_drain.Owed(peer_outbox_drain.Quick),
+      peer_outbox_drain.Owed(peer_outbox_drain.Quick),
+    ])
+  let armings = process.new_subject()
+  let name = addresses.new()
+  let options =
+    peer_outbox_drain.over(pass, fn(delay_ms, wake) {
+      process.send(armings, Arming(delay_ms:, wake:))
+    })
+  let assert Ok(_) = peer_outbox_drain.start(options, name)
+    as "the drainer starts"
+
+  let open = arming(armings)
+  assert open.delay_ms == 0
+  open.wake()
+
+  // Owed twice: two more passes, each one interval after the last.
+  let first = arming(armings)
+  assert first.delay_ms == peer_outbox_drain.retry_interval_ms
+  first.wake()
+  let second = arming(armings)
+  assert second.delay_ms == peer_outbox_drain.retry_interval_ms
+  second.wake()
+
+  // The third pass finds nothing, and nothing is armed after it.
+  assert_no_arming(armings)
+  assert process.call(script, 1000, fn(reply) { Ran(reply:) }) == 3
+
+  // A doorbell wakes the idle machine for one interval, as `peers.send` does.
+  peer_outbox_drain.poke(name)
+  let rung = arming(armings)
+  assert rung.delay_ms == peer_outbox_drain.retry_interval_ms
+  rung.wake()
+  assert_no_arming(armings)
+  assert process.call(script, 1000, fn(reply) { Ran(reply:) }) == 4
 }

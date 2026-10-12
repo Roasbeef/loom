@@ -179,6 +179,7 @@ fn a_spawn_request(purpose: String) -> agent.SpawnRequest {
     result_schema: option.None,
     context: agent.Fresh,
     detach: False,
+    on: option.None,
   )
 }
 
@@ -606,6 +607,8 @@ pub fn every_agency_refusal_keeps_its_name_test() {
       mismatch: agent.FieldMissing(name: "ok", expects: agent.BooleanField),
     ),
     agent.ToolNotHeld(tool: "agent_send"),
+    agent.RemoteRefused(orchestrator: "box", reason: "no"),
+    agent.RemoteSilent(orchestrator: "box"),
     agent.PlaneFailed(reason: "down"),
   ]
   assert list.all(cases, fn(refusal) {
@@ -644,6 +647,8 @@ fn expected_code(refusal: agent.Refusal) -> String {
     agent.ParentRunEnded(..) -> "parent_run_ended"
     agent.ResultSchemaUnmet(..) -> "result_schema_unmet"
     agent.ToolNotHeld(..) -> "tool_not_held"
+    agent.RemoteRefused(..) -> "remote_refused"
+    agent.RemoteSilent(..) -> "remote_silent"
     agent.PlaneFailed(..) -> "plane_failed"
   }
 }

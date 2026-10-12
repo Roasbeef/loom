@@ -57,11 +57,12 @@ error instead of a setting that silently does nothing.
 **There is no live reload.** A session reads the file when it is built: when it
 is created, opened, or resumed. It keeps what it read for as long as it runs, so
 an edit reaches a running session only after that session is stopped and opened
-again. Seven tables are read once, when the daemon starts, and need a daemon
+again. Eight tables are read once, when the daemon starts, and need a daemon
 restart: [`[daemon]`](#daemon), [`[peers]`](#peers) (from protocol-change 077),
 [`[distribution]`](#distribution), [`[executors.<name>]`](#executorsname),
 [`[pools.<name>]`](#poolsname), [`[workspaces.<name>]`](#workspacesname) and
-[`[orchestrators.<name>]`](#orchestratorsname) (from protocol-change 078). `[distribution]` also needs the VM booted for it.
+[`[orchestrators.<name>]`](#orchestratorsname) (from protocol-change 078) and
+[`[spawners.<name>]`](#spawnersname) (from protocol-change 084). `[distribution]` also needs the VM booted for it.
 The MCP, language-server, rule and schedule tables are trust decisions and
 have no flag, no discovery and no reload path; editing the file and reopening the
 session is the decision.
@@ -107,6 +108,7 @@ is not in this list is refused.
 | `workspaces` | table of `[workspaces.<name>]` | Checkouts this machine serves to orchestrators (from protocol-change 078). | [`[workspaces.<name>]`](#workspacesname) |
 | `orchestrators` | table of `[orchestrators.<name>]` | Other orchestrators this daemon asks who owns a session it does not know (from protocol-change 078). | [`[orchestrators.<name>]`](#orchestratorsname) |
 | `directory` | table | Membership of the session directory's Khepri cluster (from protocol-change 083). | [`[directory]`](#directory) |
+| `spawners` | table of `[spawners.<name>]` | Other orchestrators that may start subagents on this one, and on what terms (from protocol-change 084). | [`[spawners.<name>]`](#spawnersname) |
 
 ## `[models.<name>]`
 
@@ -661,12 +663,19 @@ owner is redirected. The daemon never connects a client to the other orchestrato
 itself: the client needs that machine's own credential.
 
 `<name>` is a lowercase letter, then lowercase letters, digits, `_` or `-`, at most
-32 characters, and is the name a `not_owner` refusal carries. The table requires a
+32 characters, and is the name a `not_owner` refusal carries. The grammar excludes `@`
+and `#`, which a remote subagent's handle depends on. The table requires a
 `[distribution]` table, because an orchestrator is a pinned peer, and two names may
 not share a node. List each orchestrator on the other. A daemon with a
 `[distribution]` table answers these questions for its peers whether or not it
 lists any orchestrator itself; the table only says whom this daemon asks. A daemon
 without `[orchestrators]` asks nobody.
+
+Every row is also a value of `on` in `agent_spawn`, which starts a subagent on that
+orchestrator instead of in the session. It is offered only in a session its owner
+holds alone, and the other orchestrator's `[spawners.<name>]` table, below, is the
+one authority: this table has no switch for it, and an orchestrator with no spawner
+table for this machine refuses the spawn and says so.
 
 | Key | Type | Required, default | Allowed values | Meaning |
 | --- | --- | --- | --- | --- |
@@ -695,6 +704,48 @@ booted without it is refused. Every member must pin every other member in
 | Key | Type | Required, default | Allowed values | Meaning |
 | --- | --- | --- | --- | --- |
 | `members` | array of strings | required | three to seven distinct node names: this daemon's own `[distribution] node` and `[[distribution.peers]]` nodes | The cluster's voting members, orchestrators and executors. An odd count is recommended: an even count is accepted with a warning, because it adds a member without letting the cluster survive one more failure. |
+
+## `[spawners.<name>]`
+
+(From protocol-change 084.) Optional, read once when the daemon starts, like
+`[orchestrators.<name>]`. This is the table for a deployment in which a model on one
+orchestrator, a laptop say, starts subagents on another, the box. It is written on
+the box, and each table names one spawning orchestrator and the terms on which the
+box will run its children. The box's table is the only authority: the spawning
+daemon's `[orchestrators.<name>]` rows carry no spawn switch, and a box with no table
+for the laptop refuses the spawn and says why. A daemon with no `[spawners]` table
+accepts no spawns.
+
+Every child of one spawning session runs in a delegate session that this daemon
+creates on the spawner's first spawn, placed as the table says. The limits bound an
+honest spawner and a model that spawns too much. They are not a security boundary: a
+spawner is a pinned distribution peer, which is fully trusted. The table is separate
+from `[orchestrators.<name>]` so that a spawner needs only to be a pinned peer;
+under a Khepri directory, every orchestrator a member daemon lists must itself be a
+member.
+
+`<name>` is a lowercase letter, then lowercase letters, digits, `_` or `-`, at most
+32 characters. The table requires a `[distribution]` table, and two names may not
+share a node. Exactly one placement is required: `executor` with `workspace`, `pool`
+with `workspace`, or `directory` alone. The daemon refuses a table whose
+`default_within_s` is above `max_within_s`, and one whose `retain_s` is below
+`max_within_s`, so that a delegate session past retention holds no child that could
+still be running.
+
+| Key | Type | Required, default | Allowed values | Meaning |
+| --- | --- | --- | --- | --- |
+| `node` | string | required | one of the `node` values in `[[distribution.peers]]`, used by no other spawner | The spawning orchestrator's node. A message is judged by the table whose node it came from. |
+| `executor` | string | one placement is required | the name of an `[executors.<name>]` table | Place every delegate session on this executor. Needs `workspace`. |
+| `pool` | string | one placement is required | the name of a `[pools.<name>]` table | Place every delegate session on a member of this pool. Needs `workspace`. |
+| `directory` | string | one placement is required | an absolute path with no `..` segment | Place every delegate session in this directory on this machine. Does not take `workspace`. |
+| `workspace` | string | required with `executor` or `pool` | 1 to 128 bytes with no `/` and no NUL | The workspace name registered on the executor or the pool's executors. |
+| `profile` | string | required | the name of a `[profiles.<name>]` table | The profile that seeds every delegate session, so this daemon's catalogue, roles and pricing apply. |
+| `tools` | array of strings | every built-in tool except `agent_spawn`, `remember`, the `peer_*` tools and the `schedule_*` tools | a nonempty array of distinct tool names | The ceiling on a child's tools. A child's tools are narrowed by its request and by its parent's own set, and never widened past this list. The default ceiling never includes `agent_spawn`, so a child can spawn only if `max_depth` allows it and `agent_spawn` is listed here too. |
+| `max_depth` | integer | 1 | at least 1 | The deepest child allowed. One means children may not spawn. Nesting also needs `agent_spawn` listed in `tools`, because the default ceiling never includes it. |
+| `max_sessions` | integer | 4 | 1 to 16 | The delegate sessions this spawner may hold. Sixteen is the number of scopes an executor admits. |
+| `max_within_s` | integer | 14400 (4 hours) | at least 1 | The longest deadline a spawn may ask for, in seconds. A longer request is refused, not shortened. |
+| `default_within_s` | integer | 1800 (30 minutes) | 1 to `max_within_s` | The deadline a spawn gets when it names none, in seconds. |
+| `retain_s` | integer | 604800 (7 days) | at least `max_within_s` | How long a delegate session with no message from its spawner is kept before the boot sweep deletes it, in seconds. |
 
 ## Provisioning a deployment
 

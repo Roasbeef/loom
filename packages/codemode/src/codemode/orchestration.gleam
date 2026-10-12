@@ -421,6 +421,7 @@ pub fn decode_spawn(
     result_schema:,
     context:,
     detach:,
+    on: None,
   ))
 }
 
@@ -601,7 +602,7 @@ fn decode_handle(value: MsgPackValue) -> Result(agent.Handle, CapDenial) {
 
 fn waited_value(waited: agent.Waited) -> MsgPackValue {
   case waited {
-    agent.Pending(handle:, waited_ms:) ->
+    agent.Pending(handle:, waited_ms:, ..) ->
       msgpack.MapValue([
         field("kind", msgpack.StringValue("pending")),
         field("strand", msgpack.StringValue(handle.strand)),
@@ -950,6 +951,13 @@ pub fn refusal_code(refusal: Refusal) -> String {
     agent.ToolNotHeld(..) -> "tool_not_held"
     agent.ParentRunEnded(..) -> "parent_run_ended"
     agent.ResultSchemaUnmet(..) -> "result_schema_unmet"
+
+    // Like `tool_not_held`, these reach a program as `StrandRefused` with the
+    // code verbatim. Code mode spawns nothing elsewhere until a later phase
+    // gives `strand.spawn` an orchestrator, but a wait on a remote child's
+    // handle is already routed by the Agency.
+    agent.RemoteRefused(..) -> "remote_refused"
+    agent.RemoteSilent(..) -> "remote_silent"
     agent.PlaneFailed(..) -> "plane_failed"
   }
 }

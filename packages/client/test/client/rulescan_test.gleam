@@ -446,6 +446,7 @@ fn write_lineage(
       deadline: None,
       detached: False,
       reaped:,
+      orchestrator: None,
     )
   let assert Ok(Nil) =
     api.put_reserved_fact(

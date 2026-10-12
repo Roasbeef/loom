@@ -447,7 +447,9 @@ pub type TerminalResult {
 /// deadline at spawn; `result_schema`, when present, is already parsed —
 /// a malformed one never reaches the seam, because the parent is told
 /// about its own mistake in the turn it made it rather than after
-/// waiting on a child that was never going to satisfy it.
+/// waiting on a child that was never going to satisfy it. `on`, when present,
+/// names the other orchestrator the child runs on (protocol-change/084), and
+/// the Agency checks it against the orchestrators its host reaches.
 pub type SpawnRequest {
   SpawnRequest(
     purpose: String,
@@ -459,6 +461,9 @@ pub type SpawnRequest {
     result_schema: Option(ResultSchema),
     context: Provenance,
     detach: Bool,
+    /// The configured orchestrator to run the child on, or `None` for a strand
+    /// of this session.
+    on: Option(String),
   )
 }
 
@@ -517,8 +522,10 @@ pub type Waited {
   )
 
   /// The deadline expired first. Not an error: call again, or do other
-  /// work and come back.
-  Pending(handle: Handle, waited_ms: Int)
+  /// work and come back. `unanswered` names the orchestrator that was asked
+  /// about a remote child and did not answer, so the child's state is unknown
+  /// and not merely unfinished.
+  Pending(handle: Handle, waited_ms: Int, unanswered: Option(String))
 }
 
 /// How a `send` payload landed — mirrors `runtime/api.Delivery`, which
@@ -540,6 +547,36 @@ pub type Relation {
   ChildOf
 }
 
+/// Where a roster entry runs.
+pub type Placement {
+  /// A strand of the caller's own session.
+  Here
+
+  /// A child on another orchestrator (protocol-change/084). The caller knows
+  /// it only from the stub it wrote, so `standing` says how far that record has
+  /// got.
+  Elsewhere(orchestrator: String, standing: Standing)
+}
+
+/// What the caller's own record of a remote child says.
+pub type Standing {
+  /// The spawn was sent and has not been answered, so the child may exist.
+  AwaitingAnswer
+
+  /// The orchestrator started the child and nothing has reported it settled.
+  Running
+
+  /// The child's deadline has passed and nothing has reported how it ended. It
+  /// is no longer running; `agent_wait` reads its outcome from the orchestrator.
+  PastDeadline
+
+  /// A join reported the child settled; the entry's `outcome` says how.
+  Finished
+
+  /// The orchestrator refused the spawn, and nothing was created.
+  Declined(reason: String)
+}
+
 /// One entry in the caller's roster: a durable read of the lineage
 /// ledger, not of process state, so it is correct across restarts —
 /// which is the whole point, because compaction can erase every handle
@@ -553,6 +590,8 @@ pub type Peer {
     /// The current or latest run's absolute deadline, when bounded.
     deadline_ms: Option(Int),
     tools: List(String),
+    /// Whether the entry is a strand of this session or a child elsewhere.
+    placement: Placement,
   )
 }
 
@@ -623,6 +662,16 @@ pub type Refusal {
   /// because it is policy a parent set, not a transient fault.
   ToolNotHeld(tool: String)
 
+  /// The orchestrator the child was to run on answered and said no
+  /// (protocol-change/084). Nothing was created there, and asking again
+  /// unchanged cannot succeed.
+  RemoteRefused(orchestrator: String, reason: String)
+
+  /// The orchestrator the child was to run on did not answer within the
+  /// spawn's window. The child may exist: the harness keeps asking, and the
+  /// roster shows how its record stands.
+  RemoteSilent(orchestrator: String)
+
   /// The durable plane refused or failed — a commit, a read, a decode.
   PlaneFailed(reason: String)
 }
@@ -664,6 +713,10 @@ pub type Agency {
     max_wait_ms: Int,
     /// Configured catalogue names accepted by an explicit spawn selection.
     model_names: List(String),
+    /// The orchestrators `agent_spawn` may name in `on`. Empty when this
+    /// session cannot run a child elsewhere, and the argument is then not
+    /// offered at all.
+    orchestrator_names: List(String),
     /// `Ok` when the caller's strand holds the named tool in its active set
     /// *now*. Read from the strand's durable configuration on every call,
     /// so a `set_config` that withdraws a tool takes effect on the next
@@ -692,11 +745,29 @@ pub fn handle_to_string(handle: Handle) -> String {
   handle.strand <> "#" <> ids.op_id_to_string(handle.operation)
 }
 
+/// Renders the handle of a child on another orchestrator
+/// (protocol-change/084): the local text with the orchestrator after an `@`.
+/// A configured orchestrator's name contains neither `@` nor `#`, so the
+/// suffix is unambiguous.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // agent.remote_handle_to_string(handle, "box") == "sub:^main/x-1#op_01J…@box"
+/// ```
+///
+pub fn remote_handle_to_string(handle: Handle, orchestrator: String) -> String {
+  handle_to_string(handle) <> "@" <> orchestrator
+}
+
 /// Parses a handle back. Total: a model will hand back something mangled
 /// sooner or later, and that must be a refusal rather than a crash.
 ///
 /// The split is on the **last** `#`, because a minted slug rejects `#`
-/// but an operator-created strand name is not required to.
+/// but an operator-created strand name is not required to. A handle of a child
+/// on another orchestrator carries `@{orchestrator}` after the operation; it is
+/// read and dropped, because the parent's own record of the child decides where
+/// a wait goes and a model-typed suffix is not evidence of anything.
 ///
 /// ## Examples
 ///
@@ -722,12 +793,26 @@ fn handle_from_parts(
   rest: List(String),
 ) -> Result(Handle, Refusal) {
   use operation <- result.try(
-    ids.parse_op_id(operation_text)
+    ids.parse_op_id(without_orchestrator(operation_text))
     |> result.replace_error(MalformedHandle(text:)),
   )
   case string.join(list.reverse([first, ..rest]), "#") {
     "" -> Error(MalformedHandle(text:))
     strand -> Ok(Handle(strand:, operation:))
+  }
+}
+
+// The operation half of a handle with its `@{orchestrator}` suffix removed. A
+// suffix that is empty or holds a second `@` is left in place, and the
+// operation id then fails to parse, so a mangled suffix is a malformed handle.
+fn without_orchestrator(operation_text: String) -> String {
+  case string.split_once(operation_text, "@") {
+    Ok(#(operation, orchestrator)) ->
+      case orchestrator == "" || string.contains(orchestrator, "@") {
+        True -> operation_text
+        False -> operation
+      }
+    Error(Nil) -> operation_text
   }
 }
 
@@ -1383,11 +1468,15 @@ pub fn describe(refusal: Refusal) -> String {
       <> "`, which you do not hold yourself"
     InvalidArgument(reason:) -> "invalid arguments: " <> reason
     ParentRunEnded(strand:) ->
-      "`"
-      <> strand
-      <> "` has finished its run; a message now would start a new one with "
-      <> "nobody watching, so it was not delivered. Put this in your own "
-      <> "final answer instead"
+      case string.starts_with(strand, parent_reference_prefix) {
+        True -> parent_elsewhere_text(strand)
+        False ->
+          "`"
+          <> strand
+          <> "` has finished its run; a message now would start a new one with "
+          <> "nobody watching, so it was not delivered. Put this in your own "
+          <> "final answer instead"
+      }
     ResultSchemaUnmet(schema:, received:, mismatch:) ->
       "your result does not match the schema your brief asked for: "
       <> describe_mismatch(mismatch)
@@ -1402,8 +1491,41 @@ pub fn describe(refusal: Refusal) -> String {
       <> "` was minted by a different call and is already busy with it; "
       <> "nothing was started. Ask for this with a different purpose"
     ToolNotHeld(tool:) -> "this strand does not hold the tool `" <> tool <> "`"
+    RemoteRefused(orchestrator:, reason:) ->
+      "the orchestrator `"
+      <> orchestrator
+      <> "` refused the spawn, and nothing was started: "
+      <> reason
+    RemoteSilent(orchestrator:) ->
+      "the orchestrator `"
+      <> orchestrator
+      <> "` did not answer in time, so the child may exist. The harness keeps "
+      <> "asking; agent_roster shows whether it was started, and you should "
+      <> "not spawn the same job again"
     PlaneFailed(reason:) -> "the messaging plane failed: " <> reason
   }
+}
+
+/// What a name that begins with this prefix is: the reference a child on another
+/// orchestrator holds for its parent strand, which is not a strand of the
+/// child's own session (protocol-change/084). It is restated from
+/// `runtime/api.parent_reference_prefix`, which this package cannot import.
+pub const parent_reference_prefix = "^"
+
+// The refusal a child reads when it messages its parent and the parent is on
+// another orchestrator. The same send to a parent in the same session would be
+// delivered into the parent's open run; here the parent's session is not this
+// one, and phase 1 carries no upward messages, so the words say where to put
+// the report instead.
+fn parent_elsewhere_text(parent: String) -> String {
+  "your parent `"
+  <> string.drop_start(parent, string.length(parent_reference_prefix))
+  <> "` runs on another orchestrator, and a message to it cannot be delivered "
+  <> "from here. Report through your final answer, or record it with "
+  <> "agent_note, including the `"
+  <> result_note_key
+  <> "` note if your brief asked for a result; your parent reads those when "
+  <> "it waits for you"
 }
 
 // --- the tools -------------------------------------------------------------
@@ -1430,7 +1552,7 @@ pub fn tools(agency: Agency) -> List(Tool) {
     notes_tool(agency.notes),
     roster_tool(agency.roster),
     send_tool(agency.send),
-    spawn_tool(agency.spawn, agency.model_names),
+    spawn_tool(agency.spawn, agency.model_names, agency.orchestrator_names),
     wait_tool(agency.wait, agency.max_wait_ms),
     todos.tool(todo_door(agency.todos)),
   ]
@@ -1459,6 +1581,7 @@ fn todo_door(
 pub fn spawn_tool(
   spawn: fn(Caller, SpawnRequest) -> Result(Spawned, Refusal),
   model_names: List(String),
+  orchestrator_names: List(String),
 ) -> Tool {
   tool.Tool(
     name: spawn_tool_name,
@@ -1536,6 +1659,7 @@ pub fn spawn_tool(
             "default false: the child is aborted when your run ends",
           ),
         ),
+        ..on_property(orchestrator_names)
       ],
       ["purpose", "brief"],
     ),
@@ -1544,6 +1668,32 @@ pub fn spawn_tool(
     requirements: empty_requirements,
     run: fn(ctx, args) { run_spawn(spawn, ctx, args) },
   )
+}
+
+// The `on` argument, offered only where there is somewhere to run a child. A
+// session that reaches no other orchestrator advertises none, so the wire tool
+// array a provider caches carries no argument that could only be refused.
+fn on_property(names: List(String)) -> List(#(String, JsonValue)) {
+  case names {
+    [] -> []
+    [_, ..] -> [
+      #(
+        "on",
+        tool.enum_property(
+          names,
+          "run the child on this other orchestrator instead of in this "
+            <> "session. It works on the checkout and with the machine that "
+            <> "orchestrator is set up with, under limits that orchestrator "
+            <> "sets, which can refuse the spawn. `context: my_conversation` "
+            <> "is not available with it. The handle it returns ends in "
+            <> "`@` and the orchestrator's name; give it to agent_wait as it "
+            <> "is. Ending your run does not stop the child: it runs until it "
+            <> "finishes or its deadline passes, and `detach` has no effect "
+            <> "with `on`",
+        ),
+      ),
+    ]
+  }
 }
 
 // The catalogue is the selection boundary. Advertising its names prevents
@@ -1572,6 +1722,7 @@ fn run_spawn(
   use result_schema <- tool.with_arg(decode_result_schema(args))
   use context <- tool.with_arg(decode_provenance(args))
   use detach <- tool.with_arg(tool.optional_bool(args, "detach"))
+  use on <- tool.with_arg(tool.optional_string(args, "on"))
   let request =
     SpawnRequest(
       purpose:,
@@ -1582,10 +1733,12 @@ fn run_spawn(
       result_schema:,
       context:,
       detach: option.unwrap(detach, False),
+      on:,
     )
   case spawn(caller(ctx), request) {
     Error(refusal) -> refusal_outcome(refusal)
-    Ok(spawned) ->
+    Ok(spawned) -> {
+      let handle = spawn_handle_text(spawned.handle, on)
       tool.success(
         "started `"
         <> spawned.strand
@@ -1596,19 +1749,51 @@ fn run_spawn(
         <> "`) with tools ["
         <> string.join(spawned.tools, ", ")
         <> "]. Handle: "
-        <> handle_to_string(spawned.handle)
-        <> deadline_text(spawned.deadline_ms),
+        <> handle
+        <> deadline_text(spawned.deadline_ms)
+        <> orchestrator_text(on),
       )
       |> tool.with_details(
-        json.Object([
-          #("handle", json.String(handle_to_string(spawned.handle))),
-          #("deadline_ms", deadline_json(spawned.deadline_ms)),
-          #("strand", json.String(spawned.strand)),
-          #("model", json.String(spawned.model)),
-          #("model_id", json.String(spawned.model_id)),
-          #("tools", json.Array(list.map(spawned.tools, json.String))),
-        ]),
+        json.Object(list.append(
+          [
+            #("handle", json.String(handle)),
+            #("deadline_ms", deadline_json(spawned.deadline_ms)),
+            #("strand", json.String(spawned.strand)),
+            #("model", json.String(spawned.model)),
+            #("model_id", json.String(spawned.model_id)),
+            #("tools", json.Array(list.map(spawned.tools, json.String))),
+          ],
+          orchestrator_detail(on),
+        )),
       )
+    }
+  }
+}
+
+// A child on another orchestrator is named by its handle's suffix, so the
+// model hands the whole text back to `agent_wait` and the suffix travels with
+// it. A local handle is unchanged.
+fn spawn_handle_text(handle: Handle, on: Option(String)) -> String {
+  case on {
+    Some(orchestrator) -> remote_handle_to_string(handle, orchestrator)
+    None -> handle_to_string(handle)
+  }
+}
+
+// The detail a local spawn never carried, so its details object is byte for
+// byte what it was before remote children existed.
+fn orchestrator_detail(on: Option(String)) -> List(#(String, JsonValue)) {
+  case on {
+    Some(name) -> [#("orchestrator", json.String(name))]
+    None -> []
+  }
+}
+
+fn orchestrator_text(on: Option(String)) -> String {
+  case on {
+    Some(orchestrator) ->
+      " It runs on the orchestrator `" <> orchestrator <> "`."
+    None -> ""
   }
 }
 
@@ -1670,7 +1855,11 @@ pub fn wait_tool(
       [
         #(
           "handles",
-          tool.string_array_property("handles returned by agent_spawn"),
+          tool.string_array_property(
+            "handles returned by agent_spawn, exactly as returned; a child on "
+            <> "another orchestrator has `@` and the orchestrator's name at "
+            <> "the end of its handle",
+          ),
         ),
         #(
           "within_ms",
@@ -1753,12 +1942,20 @@ fn is_pending(waited: Waited) -> Bool {
 
 fn waited_text(waited: Waited) -> String {
   case waited {
-    Pending(handle:, waited_ms:) ->
+    Pending(handle:, waited_ms:, unanswered: None) ->
       "["
       <> handle.strand
       <> " still working after "
       <> int.to_string(waited_ms)
       <> "ms]"
+    Pending(handle:, waited_ms:, unanswered: Some(orchestrator)) ->
+      "["
+      <> handle.strand
+      <> " state unknown: the orchestrator `"
+      <> orchestrator
+      <> "` did not answer within "
+      <> int.to_string(waited_ms)
+      <> "ms; the child keeps running there until its deadline, so wait again]"
     Ready(handle:, outcome:, report:, result:, notes:) ->
       "["
       <> handle.strand
@@ -1828,13 +2025,23 @@ fn outcome_text(outcome: Outcome) -> String {
 
 fn waited_json(waited: Waited) -> JsonValue {
   case waited {
-    Pending(handle:, waited_ms:) ->
-      json.Object([
-        #("handle", json.String(handle_to_string(handle))),
-        #("strand", json.String(handle.strand)),
-        #("state", json.String("pending")),
-        #("waited_ms", json.Int(waited_ms)),
-      ])
+    Pending(handle:, waited_ms:, unanswered:) ->
+      json.Object(
+        list.append(
+          [
+            #("handle", json.String(handle_to_string(handle))),
+            #("strand", json.String(handle.strand)),
+            #("state", json.String("pending")),
+            #("waited_ms", json.Int(waited_ms)),
+          ],
+          case unanswered {
+            Some(orchestrator) -> [
+              #("unanswered", json.String(orchestrator)),
+            ]
+            None -> []
+          },
+        ),
+      )
     Ready(handle:, outcome:, report:, result:, notes:) ->
       json.Object(list.append(
         [
@@ -2159,13 +2366,36 @@ fn peer_text(peer: Peer) -> String {
   <> peer.strand
   <> case peer.handle {
     None -> ""
-    Some(handle) -> " (" <> handle_to_string(handle) <> ")"
+    Some(handle) -> " (" <> peer_handle_text(handle, peer.placement) <> ")"
   }
-  <> case peer.outcome {
-    None -> " — working"
-    Some(outcome) -> " — " <> outcome_text(outcome)
+  <> case peer.placement, peer.outcome {
+    Elsewhere(orchestrator:, standing: AwaitingAnswer), _ ->
+      " — unknown: the orchestrator `"
+      <> orchestrator
+      <> "` has not answered the spawn, so the child may exist"
+    Elsewhere(orchestrator:, standing: Declined(reason:)), _ ->
+      " — refused by `" <> orchestrator <> "`: " <> reason
+    Elsewhere(standing: PastDeadline, ..), _ ->
+      " — past its deadline, outcome not yet read; `agent_wait` reads it"
+    Here, None | Elsewhere(..), None -> " — working"
+    Here, Some(outcome) | Elsewhere(..), Some(outcome) ->
+      " — " <> outcome_text(outcome)
+  }
+  <> case peer.placement {
+    Here -> ""
+    Elsewhere(orchestrator:, ..) -> " on `" <> orchestrator <> "`"
   }
   <> deadline_text(peer.deadline_ms)
+}
+
+// A child elsewhere is named by its handle with the orchestrator suffix, the
+// text `agent_spawn` printed, so the roster hands back what a wait accepts.
+fn peer_handle_text(handle: Handle, placement: Placement) -> String {
+  case placement {
+    Here -> handle_to_string(handle)
+    Elsewhere(orchestrator:, ..) ->
+      remote_handle_to_string(handle, orchestrator)
+  }
 }
 
 fn relation_text(relation: Relation) -> String {
@@ -2176,24 +2406,53 @@ fn relation_text(relation: Relation) -> String {
 }
 
 fn peer_json(peer: Peer) -> JsonValue {
-  json.Object([
-    #("strand", json.String(peer.strand)),
-    #("relation", json.String(relation_text(peer.relation))),
-    #("handle", case peer.handle {
-      None -> json.Null
-      Some(handle) -> json.String(handle_to_string(handle))
-    }),
-    #("outcome", case peer.outcome {
-      None -> json.Null
-      Some(outcome) -> outcome_json(outcome)
-    }),
-    #("abort_reason", case peer.outcome {
-      None -> json.Null
-      Some(outcome) -> abort_reason_json(outcome)
-    }),
-    #("deadline_ms", deadline_json(peer.deadline_ms)),
-    #("tools", json.Array(list.map(peer.tools, json.String))),
-  ])
+  json.Object(list.append(
+    [
+      #("strand", json.String(peer.strand)),
+      #("relation", json.String(relation_text(peer.relation))),
+      #("handle", case peer.handle {
+        None -> json.Null
+        Some(handle) -> json.String(peer_handle_text(handle, peer.placement))
+      }),
+      #("outcome", case peer.outcome {
+        None -> json.Null
+        Some(outcome) -> outcome_json(outcome)
+      }),
+      #("abort_reason", case peer.outcome {
+        None -> json.Null
+        Some(outcome) -> abort_reason_json(outcome)
+      }),
+      #("deadline_ms", deadline_json(peer.deadline_ms)),
+      #("tools", json.Array(list.map(peer.tools, json.String))),
+    ],
+    placement_json(peer.placement),
+  ))
+}
+
+// The fields a local entry never carried: where a remote child runs and how the
+// caller's record of it stands.
+fn placement_json(placement: Placement) -> List(#(String, JsonValue)) {
+  case placement {
+    Here -> []
+    Elsewhere(orchestrator:, standing:) -> [
+      #("orchestrator", json.String(orchestrator)),
+      #("standing", json.String(standing_text(standing))),
+      ..case standing {
+        Declined(reason:) -> [#("reason", json.String(reason))]
+        AwaitingAnswer | Running | PastDeadline | Finished -> []
+      }
+    ]
+  }
+}
+
+fn standing_text(standing: Standing) -> String {
+  case standing {
+    AwaitingAnswer -> "unknown"
+    Running -> "running"
+    PastDeadline -> "past_deadline"
+    Finished -> "settled"
+    Declined(..) -> "refused"
+  }
 }
 
 // --- shared plumbing -------------------------------------------------------

@@ -31,7 +31,8 @@
 #                        catalogue_executors_schema.gleam and
 #                        catalogue_pools_schema.gleam and
 #                        catalogue_moves_schema.gleam and
-#                        catalogue_deletions_schema.gleam. Each catalogue version
+#                        catalogue_deletions_schema.gleam and
+#                        catalogue_delegates_schema.gleam. Each catalogue version
 #                        after the first has its own migration schema;
 #                        runtime catalogue creation never embeds session tables.
 #                        sql/exec_ledger.sql is the executor ledger's own
@@ -81,6 +82,7 @@ gen_package() {
     sqlite3 "$tmpdb" < packages/storage/sql/catalogue_pools.sql
     sqlite3 "$tmpdb" < packages/storage/sql/catalogue_moves.sql
     sqlite3 "$tmpdb" < packages/storage/sql/catalogue_deletions.sql
+    sqlite3 "$tmpdb" < packages/storage/sql/catalogue_delegates.sql
     sqlite3 "$tmpdb" < packages/storage/sql/session.sql
     sqlite3 "$tmpdb" < packages/storage/sql/exec_ledger.sql
     sqlite3 "$tmpdb" < packages/storage/sql/exec_ledger_releases.sql
@@ -136,6 +138,9 @@ gleam format packages/storage/src/storage/catalogue_moves_schema.gleam
 python3 scripts/embed-sql-schema.py packages/storage/sql/catalogue_deletions.sql \
   packages/storage/src/storage/catalogue_deletions_schema.gleam
 gleam format packages/storage/src/storage/catalogue_deletions_schema.gleam
+python3 scripts/embed-sql-schema.py packages/storage/sql/catalogue_delegates.sql \
+  packages/storage/src/storage/catalogue_delegates_schema.gleam
+gleam format packages/storage/src/storage/catalogue_delegates_schema.gleam
 python3 scripts/embed-sql-schema.py packages/storage/sql/exec_ledger.sql \
   packages/storage/src/storage/exec_ledger_schema.gleam
 gleam format packages/storage/src/storage/exec_ledger_schema.gleam

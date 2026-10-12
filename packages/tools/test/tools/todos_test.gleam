@@ -513,6 +513,7 @@ fn refusing_agency() -> agent.Agency {
     roster: fn(_) { Error(agent.AgencyUnavailable) },
     max_wait_ms: 1000,
     model_names: [],
+    orchestrator_names: [],
     holds: fn(_caller, _tool) { Ok(Nil) },
   )
 }

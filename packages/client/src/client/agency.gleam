@@ -29,6 +29,16 @@
 //// 7. `send` and `roster` read the ledger to decide whom a strand may reach;
 ////    `note` and `notes` keep a child's notes under its own prefix.
 //// 8. `reaping_hooks` spawns `reap_run` unlinked, off the driver, at a run end.
+//// 9. `delegate_spawn`, `delegate_join` and `delegate_run_ended` are the same
+////    machinery for a parent on another orchestrator: `spawn_on` takes a
+////    `Source` that says whether the caller is a strand here or a `Delegation`,
+////    and `run_ended_in` writes the ended fence before it reaps.
+//// 10. The other direction, a child that runs on another orchestrator, is
+////     `spawn_elsewhere`: the holder's `admit_remote` writes the stub, then
+////     `ask_until_answered` sends the `Spawn` and `record_answer` writes down
+////     the reply. `wait_across` joins local and remote handles in one call,
+////     `remote_peers` lists remote children from their stubs, and
+////     `live_stubs` counts the stubs whose child may still be running.
 ////
 //// ## The bootstrap knot, and the name that unties it
 ////
@@ -53,6 +63,62 @@
 //// mutations. These operations must keep their read-check-write ordering.
 //// Blocking joins borrow the runtime and run outside the holder, so one
 //// waiting agent cannot prevent another from spawning or receiving mail.
+////
+//// ## A parent on another orchestrator
+////
+//// A subagent can run in this session for a parent that lives on another
+//// orchestrator (protocol-change/084). The session is then a delegate session,
+//// created for the pair (spawner, parent session) and used for nothing else,
+//// and the parent is not one of its strands. Its children's lineage names the
+//// reference `^main`, the parent strand with a caret in front, and strand
+//// creation refuses every name that begins with a caret, so the reference can
+//// never name a real strand. Addressing needs no change: `lineage.is_descendant`
+//// compares names, and every child's chain ends at a reference with no cell.
+////
+//// What a local spawn reads from its parent strand comes from elsewhere. The
+//// depth, the parent's tools and the spawner's terms travel in the message as a
+//// `remote_spawn.Delegation`. The base configuration is the delegate session's
+//// own `main` strand, which the spawner's profile seeded.
+////
+//// The parent's run can end while a `Spawn` for it is still in flight, because
+//// the two messages come from different processes on the other orchestrator and
+//// distribution orders only per sender. A fence handles it: `RunEnded` writes
+//// `delegate/ended/{operation}` and then reaps, and the admission of a new child
+//// reads the fence. Both run inside the holder, so whichever message arrives
+//// first decides and the other agrees with it. A child that already exists is
+//// adopted whatever the fence says, since adopting creates nothing that the run
+//// end would have to reap.
+////
+//// ## A child on another orchestrator
+////
+//// `agent_spawn` with `on` starts a child on another orchestrator
+//// (protocol-change/084). The child has no strand in this session, so what the
+//// session holds is a stub (`client/remote_child`) written before the first
+//// message, a lineage cell that names the orchestrator and is written when the
+//// orchestrator answers, and nothing in the strand registers. Four things in this
+//// module change for it.
+////
+//// - **Capacity.** `is_live` reads a strand's own state, which a remote child does
+////   not have, so `check_capacity` counts the live stubs beside the cells. A stub
+////   whose orchestrator has not answered still counts, which errs toward refusing.
+////   A stub whose child is running counts until the child's deadline passes or a
+////   join reports it finished, and the second drainer instance asks for that join
+////   when nobody waits, so a child that nobody waits on does not hold its slot
+////   for good.
+//// - **Waiting.** A handle is remote when a stub of this session holds it, and
+////   never because of the text of the handle. A wait over remote handles sends
+////   one `Join` per orchestrator, in tasks beside the local wait, so the whole is
+////   as long as the longest and not the sum.
+//// - **Listing.** The roster takes remote children from the stubs, and says how
+////   far each record has got.
+//// - **The end of a run.** A remote child is always detached. `reap_run` aborts
+////   the local children as ever and sends nothing across, so a child on another
+////   orchestrator outlives the run that started it and is bounded by its own
+////   deadline and by that orchestrator's retention sweep.
+////
+//// The network never runs in the holder. The holder only admits the spawn and
+//// writes the stub, so a slow or silent orchestrator cannot stop the session's
+//// other spawns, sends or peer mail.
 ////
 //// ## What the ledger is for
 ////
@@ -133,10 +199,14 @@
 //// rather than claimed shut.
 
 import broker/internal/call
+import client/child_usage
 import client/internal/session_owner
 import client/internal/timebase
 import client/peer_mail
 import client/peer_outbox
+import client/remote_child
+import client/remote_reach
+import client/remote_spawn
 import client/workflow_ledger
 import core/clock.{type Clock}
 import core/entry
@@ -170,6 +240,7 @@ import tools/agent.{
   type Waited, Aborted, Completed, Failed, Handle, Pending, Ready, Spawned,
 }
 import tools/todos
+import weft
 import weft/actor
 import weft/poll
 import weft/registry as address
@@ -252,6 +323,17 @@ pub type Config {
     /// no drainer leaves the no-op, and a message that could not be delivered
     /// then waits for the next session open.
     outbox_queued: fn() -> Nil,
+    /// The other orchestrators this session may start children on, and how to
+    /// ask them (protocol-change/084). `remote_reach.none` is every host that
+    /// reaches none, and `agent_spawn` then offers no `on`.
+    remote: remote_reach.Reach,
+    /// Called once after a record of a remote child is left for the second
+    /// drainer instance to act on (a spawn that was not answered, or a child
+    /// that is running and may finish unwaited), so that instance arms its retry
+    /// timer. The Agency does not own that
+    /// drainer, as it does not own the peer-mail one, so the host supplies a
+    /// closure over the drainer's name.
+    remote_queued: fn() -> Nil,
   )
 }
 
@@ -307,6 +389,8 @@ pub fn default_config(name: address.Address(Message), clock: Clock) -> Config {
     models: [],
     peer_defaults: peer_mail.no_defaults,
     outbox_queued: fn() { Nil },
+    remote: remote_reach.none(""),
+    remote_queued: fn() { Nil },
   )
 }
 
@@ -337,6 +421,31 @@ pub type Message {
     custody: Option(api.AsyncCustody),
     reply: Subject(Result(Spawned, Refusal)),
   )
+
+  /// Admits a spawn that is to run on another orchestrator: checks the caps,
+  /// counting the stubs of remote children, and writes the stub before anything
+  /// is sent. Serialized with the other admissions so the check and the write
+  /// cannot interleave with a local child's. Answers the stub's key and the stub,
+  /// which is the one an earlier attempt wrote when the call site was seen before.
+  AdmitRemote(
+    caller: Caller,
+    request: agent.SpawnRequest,
+    orchestrator: String,
+    reply: Subject(Result(#(String, remote_child.Stub), Refusal)),
+  )
+
+  /// Admits one child for a parent on another orchestrator. It is serialized
+  /// with `DelegateEnded`, which is what makes the ended fence decide.
+  DelegateSpawn(
+    delegation: remote_spawn.Delegation,
+    site: remote_spawn.CallSite,
+    request: agent.SpawnRequest,
+    reply: Subject(Result(Spawned, Refusal)),
+  )
+
+  /// Records that a run of a parent on another orchestrator ended, then stops
+  /// the children it owns. Answers how many were stopped.
+  DelegateEnded(operation: OpId, reply: Subject(Result(Int, Refusal)))
 }
 
 /// Starts the holder under `config.name`, after `api.open` has returned
@@ -374,7 +483,7 @@ pub fn start(
             workflow_ledger.reserve(state, caller, step)
             |> result.map_error(agent.PlaneFailed),
           )
-          spawn_on(config, state, caller, request, Some(custody))
+          spawn_on(config, state, caller, Local, request, Some(custody))
         }
         process.send(reply, answer)
         actor.continue(state)
@@ -400,7 +509,29 @@ pub fn start(
         actor.continue(state)
       }
       SpawnChild(caller:, request:, custody:, reply:) -> {
-        process.send(reply, spawn_on(config, state, caller, request, custody))
+        process.send(
+          reply,
+          spawn_on(config, state, caller, Local, request, custody),
+        )
+        actor.continue(state)
+      }
+      AdmitRemote(caller:, request:, orchestrator:, reply:) -> {
+        process.send(
+          reply,
+          admit_remote(config, state, caller, request, orchestrator),
+        )
+        actor.continue(state)
+      }
+      DelegateSpawn(delegation:, site:, request:, reply:) -> {
+        let caller = delegated_caller(delegation.parent, site)
+        process.send(
+          reply,
+          spawn_on(config, state, caller, Delegated(delegation), request, None),
+        )
+        actor.continue(state)
+      }
+      DelegateEnded(operation:, reply:) -> {
+        process.send(reply, run_ended_in(state, operation))
         actor.continue(state)
       }
       Borrow(reply:) -> {
@@ -475,6 +606,7 @@ fn seam_with_custody(
     roster: fn(caller) { roster(config, caller) },
     max_wait_ms: config.max_wait_ms,
     model_names: list.map(config.models, fn(entry) { entry.0.provider }),
+    orchestrator_names: config.remote.orchestrators,
     holds: fn(caller, tool) { holds(config, caller.strand, tool) },
   )
 }
@@ -495,7 +627,8 @@ fn holds(config: Config, strand: String, tool: String) -> Result(Nil, Refusal) {
 }
 
 /// Wraps a hook record so a run's end reaps the undetached children that
-/// run spawned. The only work done on the driver process is one
+/// run spawned in this session. A child on another orchestrator is always
+/// detached and is not reaped. The only work done on the driver process is one
 /// `process.spawn_unlinked`; see the module doc for why that constraint
 /// is not negotiable.
 ///
@@ -689,36 +822,105 @@ fn spawn(
   use subject <- result.try(
     address.lookup(config.name) |> result.replace_error(agent.AgencyUnavailable),
   )
-  Ok(
-    process.call(subject, config.holder_timeout_ms, fn(reply) {
-      SpawnChild(caller:, request:, custody:, reply:)
-    }),
-  )
-  |> result.flatten
+  case request.on {
+    Some(orchestrator) ->
+      spawn_elsewhere(config, subject, caller, request, orchestrator, custody)
+    None ->
+      Ok(
+        process.call(subject, config.holder_timeout_ms, fn(reply) {
+          SpawnChild(caller:, request:, custody:, reply:)
+        }),
+      )
+      |> result.flatten
+  }
+}
+
+// Where a spawn comes from. A local caller is a strand of this session, and
+// everything the spawn needs to know about it is read from that strand's cells.
+// A delegated caller is a parent on another orchestrator and is not a strand
+// here, so the same facts arrive in the message.
+type Source {
+  Local
+  Delegated(delegation: remote_spawn.Delegation)
+}
+
+// The deepest child this source may have: the Agency's own cap for a strand of
+// this session, and for a remote parent the spawner's `max_depth` but never
+// above that same cap. A remote child's own spawn is judged as a local one
+// against the cap, so a limit above it would hand the child a spawn tool that
+// every call of it would be refused.
+fn depth_limit(config: Config, source: Source) -> Int {
+  case source {
+    Local -> config.depth_cap
+    Delegated(delegation) ->
+      int.min(delegation.terms.max_depth, config.depth_cap)
+  }
 }
 
 fn spawn_on(
   config: Config,
   runtime: api.Runtime,
   caller: Caller,
+  source: Source,
   request: agent.SpawnRequest,
   custody: Option(api.AsyncCustody),
 ) -> Result(Spawned, Refusal) {
   use ledger <- result.try(read_ledger(runtime))
-  let depth = case cell_of(ledger, caller.strand) {
-    None -> 1
-    Some(parent) -> parent.depth + 1
+  let depth = case source {
+    Delegated(delegation) -> delegation.depth + 1
+    Local ->
+      case cell_of(ledger, caller.strand) {
+        None -> 1
+        Some(parent) -> parent.depth + 1
+      }
   }
-  use Nil <- result.try(case depth > config.depth_cap {
-    True -> Error(agent.DepthCapReached(depth: config.depth_cap))
+  use Nil <- result.try(case depth > depth_limit(config, source) {
+    True -> Error(agent.DepthCapReached(depth: depth_limit(config, source)))
     False -> Ok(Nil)
   })
   use name <- result.try(child_name(caller, request.purpose))
   case cell_of(ledger, name) {
     Some(existing) -> adopt(runtime, caller, existing)
-    None ->
-      reconcile(config, runtime, ledger, caller, request, name, depth, custody)
+    None -> {
+      use Nil <- result.try(admit_run(runtime, caller, source))
+      reconcile(
+        config,
+        runtime,
+        ledger,
+        caller,
+        source,
+        request,
+        name,
+        depth,
+        custody,
+      )
+    }
   }
+}
+
+// A remote parent's run that has ended owns no more children. The fence that
+// says so is read here, on the path that would create or finish a child, and
+// not on the adoption path above it: adopting hands back a child that already
+// exists and so leaves nothing for the run end to have missed.
+fn admit_run(
+  runtime: api.Runtime,
+  caller: Caller,
+  source: Source,
+) -> Result(Nil, Refusal) {
+  case source {
+    Local -> Ok(Nil)
+    Delegated(..) ->
+      case api.fact(runtime, ended_key(caller.operation)) {
+        Ok(None) -> Ok(Nil)
+        Ok(Some(_)) -> Error(agent.ParentRunEnded(strand: caller.strand))
+        Error(error) -> Error(plane_failed(error))
+      }
+  }
+}
+
+// The key of the fence for one run of a remote parent.
+fn ended_key(operation: OpId) -> String {
+  api.delegate_fact_prefix <> "ended/" <> ids.op_id_to_string(operation)
 }
 
 // A child already sits under the derived name. That is the ordinary
@@ -854,18 +1056,33 @@ fn reconcile(
   runtime: api.Runtime,
   ledger: Dict(String, Lineage),
   caller: Caller,
+  source: Source,
   request: agent.SpawnRequest,
   name: String,
   depth: Int,
   custody: Option(api.AsyncCustody),
 ) -> Result(Spawned, Refusal) {
-  use parent_configuration <- result.try(read_configuration(
-    runtime,
-    caller.strand,
-  ))
+  // The configuration a child is built on, and the tools it may narrow. For a
+  // strand of this session both are the parent's own cells. A remote parent has
+  // none, so the base is the delegate session's `main` strand, which the
+  // spawner's profile seeded, and the tools are the message's, already clamped
+  // to the spawner's ceiling.
+  use #(parent_configuration, parent_tools) <- result.try(case source {
+    Local -> {
+      use configuration <- result.map(read_configuration(runtime, caller.strand))
+      #(configuration, configuration.active_tool_names)
+    }
+    Delegated(delegation) -> {
+      use configuration <- result.map(read_configuration(
+        runtime,
+        session_main_strand,
+      ))
+      #(configuration, delegation.parent_tools)
+    }
+  })
   use tools <- result.try(child_tools(
-    config,
-    parent_configuration.active_tool_names,
+    depth_limit(config, source),
+    parent_tools,
     request.tools,
     depth,
   ))
@@ -880,6 +1097,7 @@ fn reconcile(
         config,
         runtime,
         caller,
+        source,
         request,
         name,
         parent_configuration,
@@ -901,6 +1119,7 @@ fn reconcile(
         config,
         runtime,
         caller,
+        source,
         request,
         name,
         seeded.active_tool_names,
@@ -922,6 +1141,7 @@ fn reconcile(
       deadline: deadline_of(config, now, request.within_ms),
       detached: request.detach,
       reaped: False,
+      orchestrator: None,
     )
 
   // Before the lineage cell, not after: the replay path keys on the
@@ -1016,6 +1236,7 @@ fn recover_brief(
   config: Config,
   runtime: api.Runtime,
   caller: Caller,
+  source: Source,
   request: agent.SpawnRequest,
   name: String,
   tools: List(String),
@@ -1053,6 +1274,7 @@ fn recover_brief(
         config,
         runtime,
         caller,
+        source,
         request,
         name,
         tools,
@@ -1065,6 +1287,7 @@ fn recover_ordinary_brief(
   config: Config,
   runtime: api.Runtime,
   caller: Caller,
+  source: Source,
   request: agent.SpawnRequest,
   name: String,
   tools: List(String),
@@ -1080,6 +1303,7 @@ fn recover_ordinary_brief(
             brief_message(
               config,
               caller,
+              source,
               request,
               ChildFacts(parent: caller.strand, strand: name, tools:),
             ),
@@ -1095,6 +1319,7 @@ fn create(
   config: Config,
   runtime: api.Runtime,
   caller: Caller,
+  source: Source,
   request: agent.SpawnRequest,
   name: String,
   parent_configuration: machine_strand.StrandConfiguration,
@@ -1141,6 +1366,7 @@ fn create(
           brief_message(
             config,
             caller,
+            source,
             request,
             ChildFacts(parent: caller.strand, strand: name, tools:),
           ),
@@ -1172,6 +1398,7 @@ fn accept_async_brief(
       brief_message(
         config,
         caller,
+        Local,
         request,
         ChildFacts(parent: caller.strand, strand: name, tools:),
       ),
@@ -1253,7 +1480,7 @@ fn child_configuration(
 // list renders to the wire in that order, ahead of the system prompt, as
 // the byte prefix of the provider's cached region.
 fn child_tools(
-  config: Config,
+  depth_cap: Int,
   parent_tools: List(String),
   requested: Option(List(String)),
   depth: Int,
@@ -1275,7 +1502,7 @@ fn child_tools(
       list.append(held, floor)
     }
   })
-  let chosen = case depth >= config.depth_cap {
+  let chosen = case depth >= depth_cap {
     True -> list.filter(chosen, fn(name) { name != agent.spawn_tool_name })
     False -> chosen
   }
@@ -1296,9 +1523,22 @@ fn check_capacity(
   ledger: Dict(String, Lineage),
   caller: Caller,
 ) -> Result(Nil, Refusal) {
-  let live =
+  let #(now, _clock) = clock.read(config.clock)
+  use stubs <- result.try(live_stubs(runtime, now))
+  let live_cells =
     list.filter(dict.values(ledger), fn(cell) { is_live(runtime, cell) })
-  let mine = list.filter(live, fn(cell) { cell.parent == caller.strand })
+
+  // A child on another orchestrator has a stub and no strand, so the strand
+  // registers `is_live` reads cannot see it. The stubs are counted beside the
+  // cells, under the same caps: a remote child takes a slot of its parent's
+  // `fan_out` and of the session's `session_strands` for as long as it may be
+  // running.
+  let live =
+    list.append(
+      list.map(live_cells, fn(cell) { #(cell.parent, cell.strand) }),
+      list.map(stubs, fn(stub) { #(stub.strand, stub.name) }),
+    )
+  let mine = list.filter(live, fn(child) { child.0 == caller.strand })
 
   // Both guards are lazy, and that is not a flourish: the count in the
   // refusal is the one thing here that genuinely has to walk the list,
@@ -1354,6 +1594,7 @@ fn deadline_of(
 fn brief_message(
   config: Config,
   caller: Caller,
+  source: Source,
   request: agent.SpawnRequest,
   child: ChildFacts,
 ) -> AgentMessage {
@@ -1369,8 +1610,17 @@ fn brief_message(
     timestamp: now,
     // The origin is attribution from the authenticated caller, never from
     // anything the model emitted, and it is not authority: no check may read
-    // it to grant or skip anything (protocol-change 059).
-    origin: Some(message.StrandOrigin(strand: caller.strand)),
+    // it to grant or skip anything (protocol-change 059). A remote parent is a
+    // peer whose session and strand the receiving host bound, which is what
+    // `PeerOrigin` records.
+    origin: Some(case source {
+      Local -> message.StrandOrigin(strand: caller.strand)
+      Delegated(delegation) ->
+        message.PeerOrigin(
+          session: delegation.parent.session,
+          strand: delegation.parent.strand,
+        )
+    }),
   )
 }
 
@@ -1470,10 +1720,28 @@ fn wait(
   within_ms: Int,
 ) -> Result(List(Waited), Refusal) {
   use runtime <- result.try(borrow(config))
+  use kept <- result.try(
+    remote_child.all(runtime) |> result.map_error(agent.PlaneFailed),
+  )
+  case remote_targets(kept, handles) {
+    [] -> wait_for(config, caller.strand, handles, within_ms)
+    targets -> wait_across(config, runtime, caller, handles, targets, within_ms)
+  }
+}
+
+// A wait needs only the strand that asks, to judge descent from. A remote
+// parent has no `Caller` of its own to give, only the reference `^main`.
+fn wait_for(
+  config: Config,
+  waiter: String,
+  handles: List(Handle),
+  within_ms: Int,
+) -> Result(List(Waited), Refusal) {
+  use runtime <- result.try(borrow(config))
   use ledger <- result.try(read_ledger(runtime))
   use Nil <- result.try(
     list.try_each(handles, fn(handle) {
-      case is_descendant(ledger, caller.strand, handle.strand) {
+      case is_descendant(ledger, waiter, handle.strand) {
         True -> Ok(Nil)
         False -> Error(agent.NotADescendant(strand: handle.strand))
       }
@@ -1570,7 +1838,8 @@ fn wait_loop(
   list.try_map(handles, fn(handle) {
     case dict.get(settled, agent.handle_to_string(handle)) {
       Ok(last) -> ready(runtime, handle, last)
-      Error(Nil) -> Ok(Pending(handle:, waited_ms: now - started))
+      Error(Nil) ->
+        Ok(Pending(handle:, waited_ms: now - started, unanswered: None))
     }
   })
 }
@@ -1784,6 +2053,7 @@ fn send(
       False -> Error(agent.NotAddressable(strand: to))
     },
   )
+  use Nil <- result.try(refuse_remote_child(ledger, to))
   use Nil <- result.try(case upward {
     False -> Ok(Nil)
     True ->
@@ -1859,6 +2129,29 @@ fn send(
       ))
       Ok(agent.Started(operation:, deadline_ms:))
     }
+  }
+}
+
+// A message to a child on another orchestrator cannot be delivered in phase 1:
+// the child has no strand here, and carrying a message to the other
+// orchestrator is a later phase (protocol-change/084). The refusal says how the
+// child reports instead, which is the result and the notes a wait delivers.
+fn refuse_remote_child(
+  ledger: Dict(String, Lineage),
+  to: String,
+) -> Result(Nil, Refusal) {
+  case cell_of(ledger, to) {
+    Some(Lineage(orchestrator: Some(orchestrator), ..)) ->
+      Error(agent.InvalidArgument(
+        reason: "`"
+        <> to
+        <> "` runs on the orchestrator `"
+        <> orchestrator
+        <> "`, and a message cannot reach it from here yet. It reports "
+        <> "through its final answer, its notes and its result, which "
+        <> "agent_wait delivers",
+      ))
+    Some(_) | None -> Ok(Nil)
   }
 }
 
@@ -2101,17 +2394,92 @@ fn roster(config: Config, caller: Caller) -> Result(List(Peer), Refusal) {
         outcome: None,
         deadline_ms: None,
         tools: [],
+        placement: agent.Here,
       ),
     ]
   }
   use children <- result.try(
     ledger
     |> dict.values
-    |> list.filter(fn(cell) { cell.parent == caller.strand })
+    |> list.filter(fn(cell) {
+      cell.parent == caller.strand && cell.orchestrator == None
+    })
     |> list.sort(fn(a, b) { string.compare(a.strand, b.strand) })
     |> list.try_map(fn(cell) { current_peer(runtime, cell) }),
   )
-  Ok(list.append(parent, children))
+  let #(now, _clock) = clock.read(config.clock)
+  use elsewhere <- result.map(remote_peers(runtime, caller, now))
+  list.flatten([parent, children, elsewhere])
+}
+
+// The caller's children on other orchestrators, from the stubs it wrote. A
+// stub is the whole record of such a child: the lineage cell only records the
+// edge, and nothing in this session runs the child, so how it stands is how
+// the last answer left the stub, read at `now` so that a child whose deadline
+// has passed is not shown as running.
+fn remote_peers(
+  runtime: api.Runtime,
+  caller: Caller,
+  now: Int,
+) -> Result(List(Peer), Refusal) {
+  use kept <- result.map(
+    remote_child.all(runtime) |> result.map_error(agent.PlaneFailed),
+  )
+  kept
+  |> list.map(fn(entry) { entry.stub })
+  |> list.filter(fn(stub) { stub.strand == caller.strand })
+  |> list.map(remote_peer(_, now))
+  |> list.sort(fn(a, b) { string.compare(a.strand, b.strand) })
+}
+
+fn remote_peer(stub: remote_child.Stub, now: Int) -> Peer {
+  let orchestrator = stub.orchestrator
+  let elsewhere = fn(standing) { agent.Elsewhere(orchestrator:, standing:) }
+  case stub.state {
+    remote_child.Requested ->
+      agent.Peer(
+        strand: stub.name,
+        relation: agent.ChildOf,
+        handle: None,
+        outcome: None,
+        deadline_ms: None,
+        tools: [],
+        placement: elsewhere(agent.AwaitingAnswer),
+      )
+    remote_child.Spawned(placed:) ->
+      case remote_child.is_live(stub, now) {
+        True -> placed_peer(placed, None, elsewhere(agent.Running))
+        False -> placed_peer(placed, None, elsewhere(agent.PastDeadline))
+      }
+    remote_child.Settled(placed:, outcome:, ..) ->
+      placed_peer(placed, Some(outcome), elsewhere(agent.Finished))
+    remote_child.Refused(reason:) ->
+      agent.Peer(
+        strand: stub.name,
+        relation: agent.ChildOf,
+        handle: None,
+        outcome: None,
+        deadline_ms: None,
+        tools: [],
+        placement: elsewhere(agent.Declined(reason:)),
+      )
+  }
+}
+
+fn placed_peer(
+  placed: remote_child.Placed,
+  outcome: Option(Outcome),
+  placement: agent.Placement,
+) -> Peer {
+  agent.Peer(
+    strand: placed.handle.strand,
+    relation: agent.ChildOf,
+    handle: Some(placed.handle),
+    outcome:,
+    deadline_ms: Some(placed.deadline_ms),
+    tools: placed.tools,
+    placement:,
+  )
 }
 
 // --- reaping ---------------------------------------------------------------
@@ -2142,22 +2510,50 @@ fn reap_overdue(
 fn reap_run(config: Config, operation: OpId) -> Nil {
   case borrow(config) {
     Error(_refusal) -> Nil
-    Ok(runtime) -> {
-      let _owned = drain_owned(runtime, child_run.ParentRun(operation))
-      case read_ledger(runtime) {
-        Error(_refusal) -> Nil
-        Ok(ledger) ->
-          list.each(dict.values(ledger), fn(cell) {
-            case current_run(runtime, cell) {
-              Ok(Some(run))
-                if run.record.owner == Some(child_run.ParentRun(operation))
-              -> reap(runtime, run, child_run.ParentFinished)
-              Ok(_) | Error(_) -> Nil
-            }
-          })
-      }
-    }
+    Ok(runtime) -> reap_run_in(runtime, operation)
   }
+}
+
+// `reap_run` on a runtime already in hand. The holder calls it with its own
+// state, since borrowing from inside the holder would wait on itself.
+fn reap_run_in(runtime: api.Runtime, operation: OpId) -> Nil {
+  let _owned = drain_owned(runtime, child_run.ParentRun(operation))
+  case read_ledger(runtime) {
+    Error(_refusal) -> Nil
+    Ok(ledger) ->
+      list.each(dict.values(ledger), fn(cell) {
+        case current_run(runtime, cell) {
+          Ok(Some(run))
+            if run.record.owner == Some(child_run.ParentRun(operation))
+          -> reap(runtime, run, child_run.ParentFinished)
+          Ok(_) | Error(_) -> Nil
+        }
+      })
+  }
+}
+
+// A run of a remote parent ended. The fence is written first, and the children
+// are stopped second, so a spawn that reaches the holder next finds the fence
+// and one that reached it before is a child this reap stops. The count is taken
+// before the reap, of the runs this operation owns that nobody had stopped yet,
+// so a repeated message counts nothing.
+fn run_ended_in(runtime: api.Runtime, operation: OpId) -> Result(Int, Refusal) {
+  use Nil <- result.try(
+    api.put_reserved_fact(runtime, ended_key(operation), json.Null)
+    |> result.map_error(plane_failed),
+  )
+  use ledger <- result.map(read_ledger(runtime))
+  let stopping =
+    list.count(dict.values(ledger), fn(cell) {
+      case current_run(runtime, cell) {
+        Ok(Some(run)) ->
+          run.record.owner == Some(child_run.ParentRun(operation))
+          && run.record.stop == child_run.Unstopped
+        Ok(None) | Error(_) -> False
+      }
+    })
+  reap_run_in(runtime, operation)
+  stopping
 }
 
 // A cause is written once for this operation. Losing its CAS leaves the next
@@ -2199,11 +2595,34 @@ fn reap(runtime: api.Runtime, run: ObservedRun, stop: child_run.Stop) -> Nil {
 }
 
 fn is_live(runtime: api.Runtime, cell: Lineage) -> Bool {
-  case read_strand_state(runtime, cell.strand) {
-    Ok(Some(state)) -> state.current_operation != None
-    Ok(None) -> False
-    Error(_) -> True
+  case cell.orchestrator {
+    // The child has no strand here, so its strand state says nothing. It is
+    // counted from its stub (`live_stubs`), which is where it is recorded as
+    // running.
+    Some(_) -> False
+    None ->
+      case read_strand_state(runtime, cell.strand) {
+        Ok(Some(state)) -> state.current_operation != None
+        Ok(None) -> False
+        Error(_) -> True
+      }
   }
+}
+
+// The stubs whose child is, or may be, running at `now`. A child whose deadline
+// has passed is not counted, whether or not anything has settled its stub.
+// Unreadable stubs refuse the spawn: the count is a cap, and a cap that reads
+// nothing as zero is no cap.
+fn live_stubs(
+  runtime: api.Runtime,
+  now: Int,
+) -> Result(List(remote_child.Stub), Refusal) {
+  use kept <- result.map(
+    remote_child.all(runtime) |> result.map_error(agent.PlaneFailed),
+  )
+  kept
+  |> list.map(fn(entry) { entry.stub })
+  |> list.filter(remote_child.is_live(_, now))
 }
 
 // A record and its CAS position travel together. Legacy brief runs have no
@@ -2316,6 +2735,7 @@ fn current_peer(
       _ -> deadline_ms
     },
     tools: cell.tools,
+    placement: agent.Here,
   ))
 }
 
@@ -2434,6 +2854,8 @@ fn describe_create(error: api.CreateStrandError) -> String {
     api.SeedFailed(reason:) -> reason
     api.StartFailed(reason:) -> reason
     api.BriefRejected(error:) -> describe_api(error)
+    api.InvalidStrandName(name:) ->
+      "the strand name " <> name <> " is reserved for a parent reference"
   }
 }
 
@@ -2573,5 +2995,914 @@ fn backgrounds_settled(
     list.all(records, fn(record) {
       record.operation != operation || async_execution.terminal(record.phase)
     }),
+  )
+}
+
+// --- a child on another orchestrator ----------------------------------------
+
+/// How long one `agent_spawn` keeps resending to an orchestrator that does not
+/// answer, in milliseconds. When it runs out the model is told the child may
+/// exist, and the stub stays `Requested` for the drainer to resend from.
+pub const remote_window_ms = 30_000
+
+// The pause between resends starts short, because a refused connection or a
+// dropped link answers at once and the next attempt will probably succeed, and
+// doubles to a cap, because an orchestrator that is down should not be asked a
+// hundred times in the window.
+const remote_first_pause_ms = 50
+
+const remote_last_pause_ms = 2000
+
+// How much longer than its own budget a mixed wait lets its tasks run, in
+// milliseconds. Each task bounds itself; this only stops a task that does not.
+const remote_join_slack_ms = 10_000
+
+// Starts a child on another orchestrator, or finishes the spawn an earlier
+// attempt began. The holder admits the spawn and writes the stub, so the check
+// of the caps and the write cannot interleave with another admission, and the
+// long part, the network, runs here on the caller's own process, never in the
+// holder. Replaying the same call site finds its stub: one still `Requested`
+// resumes asking, one already answered returns what it recorded.
+fn spawn_elsewhere(
+  config: Config,
+  subject: Subject(Message),
+  caller: Caller,
+  request: agent.SpawnRequest,
+  orchestrator: String,
+  custody: Option(api.AsyncCustody),
+) -> Result(Spawned, Refusal) {
+  use Nil <- result.try(refuse_unusable_placement(
+    config,
+    request,
+    orchestrator,
+    custody,
+  ))
+  use #(key, stub) <- result.try(
+    process.call(subject, config.holder_timeout_ms, fn(reply) {
+      AdmitRemote(caller:, request:, orchestrator:, reply:)
+    }),
+  )
+  case stub.state {
+    remote_child.Requested -> ask_until_answered(config, key, stub)
+    remote_child.Spawned(placed:) | remote_child.Settled(placed:, ..) ->
+      Ok(placed_spawn(placed))
+    remote_child.Refused(reason:) ->
+      Error(agent.RemoteRefused(orchestrator:, reason:))
+  }
+}
+
+// The reasons a spawn on another orchestrator is refused before anything is
+// written, said in words for the model.
+const background_refusal =
+  "a program that runs in the background cannot start a child on another orchestrator yet"
+
+const forking_refusal =
+  "`context: my_conversation` is not available with `on`: it would copy this conversation to another machine"
+
+const shared_refusal =
+  "a child can be started on another orchestrator only in a session that you hold alone"
+
+// What cannot be asked of another orchestrator, each said in words for the
+// model. A conversation is not copied to another machine, a program that runs in
+// the background has no turn to be told in, a name that is not configured has no
+// one to ask, and a session with other members may not send its work elsewhere.
+fn refuse_unusable_placement(
+  config: Config,
+  request: agent.SpawnRequest,
+  orchestrator: String,
+  custody: Option(api.AsyncCustody),
+) -> Result(Nil, Refusal) {
+  use <- bool.guard(
+    when: option.is_some(custody),
+    return: Error(agent.InvalidArgument(reason: background_refusal)),
+  )
+  use <- bool.guard(
+    when: request.context == agent.MyConversation,
+    return: Error(agent.InvalidArgument(reason: forking_refusal)),
+  )
+  use <- bool.lazy_guard(
+    when: !list.contains(config.remote.orchestrators, orchestrator),
+    return: fn() {
+      Error(agent.InvalidArgument(
+        reason: "`"
+        <> orchestrator
+        <> "` is not a configured orchestrator"
+        <> {
+          case config.remote.orchestrators {
+            [] -> "; none is configured"
+            names -> "; the configured ones are " <> string.join(names, ", ")
+          }
+        },
+      ))
+    },
+  )
+  use <- bool.guard(
+    when: !config.remote.offered(),
+    return: Error(agent.InvalidArgument(reason: shared_refusal)),
+  )
+  Ok(Nil)
+}
+
+// The holder's half: judge the spawn against the caps and write its stub. A
+// call site that already has a stub is returned that stub, after checking it is
+// this caller's own, because the stub is keyed by a digest and the digest is not
+// an ownership proof any more than a child's name is (`adopt`).
+fn admit_remote(
+  config: Config,
+  runtime: api.Runtime,
+  caller: Caller,
+  request: agent.SpawnRequest,
+  orchestrator: String,
+) -> Result(#(String, remote_child.Stub), Refusal) {
+  use ledger <- result.try(read_ledger(runtime))
+  use <- bool.guard(
+    when: parent_depth(ledger, caller) + 1 > config.depth_cap,
+    return: Error(agent.DepthCapReached(depth: config.depth_cap)),
+  )
+  let key = remote_child.stub_key(agent.call_site_digest(caller))
+  use found <- result.try(
+    remote_child.find(runtime, key) |> result.map_error(agent.PlaneFailed),
+  )
+  case found {
+    Some(stub) ->
+      case is_same_call(stub, caller, orchestrator) {
+        True -> Ok(#(key, stub))
+        False -> Error(agent.NameAlreadyMinted(strand: stub.name))
+      }
+    None -> write_stub(config, runtime, ledger, caller, request, orchestrator)
+  }
+}
+
+// How deep the strand that asks stands: zero for a strand no one spawned.
+fn parent_depth(ledger: Dict(String, Lineage), caller: Caller) -> Int {
+  case cell_of(ledger, caller.strand) {
+    None -> 0
+    Some(parent) -> parent.depth
+  }
+}
+
+fn write_stub(
+  config: Config,
+  runtime: api.Runtime,
+  ledger: Dict(String, Lineage),
+  caller: Caller,
+  request: agent.SpawnRequest,
+  orchestrator: String,
+) -> Result(#(String, remote_child.Stub), Refusal) {
+  let key = remote_child.stub_key(agent.call_site_digest(caller))
+  use Nil <- result.try(check_capacity(config, runtime, ledger, caller))
+  use configuration <- result.try(read_configuration(runtime, caller.strand))
+
+  // The child's name on the other orchestrator is derived there from its own
+  // parent reference, `^main`. The stub records it too, so the roster can name a
+  // child that has no handle yet.
+  use name <- result.try(child_name(
+    agent.Caller(..caller, strand: api.parent_reference_prefix <> caller.strand),
+    request.purpose,
+  ))
+  let stub =
+    remote_child.Stub(
+      orchestrator:,
+      strand: caller.strand,
+      site: remote_spawn.CallSite(
+        operation: caller.operation,
+        step_id: caller.step_id,
+        source_index: caller.source_index,
+        minter: caller.minter,
+      ),
+      depth: parent_depth(ledger, caller),
+      parent_tools: configuration.active_tool_names,
+      request: remote_request(request),
+      name:,
+      state: remote_child.Requested,
+    )
+  use admission <- result.map(
+    remote_child.admit(runtime, key, stub)
+    |> result.map_error(agent.PlaneFailed),
+  )
+  case admission {
+    remote_child.Fresh -> #(key, stub)
+    remote_child.Existing(found) -> #(key, found)
+  }
+}
+
+fn is_same_call(
+  stub: remote_child.Stub,
+  caller: Caller,
+  orchestrator: String,
+) -> Bool {
+  stub.orchestrator == orchestrator
+  && stub.strand == caller.strand
+  && stub.site
+  == remote_spawn.CallSite(
+    operation: caller.operation,
+    step_id: caller.step_id,
+    source_index: caller.source_index,
+    minter: caller.minter,
+  )
+}
+
+// The request as the other orchestrator is sent it. The context is dropped,
+// because a remote child's is always fresh, and the placement is the stub's own
+// orchestrator.
+//
+// A remote child is always detached, whatever `detach` the model gave. The
+// parent's run end is not sent across, so nothing could stop an attached child
+// when the run that asked for it ends, and a child that the other orchestrator
+// holds as attached would be reaped by a message that never comes. Sending it
+// detached says what will happen: it runs until it finishes or its deadline
+// passes, and the other orchestrator's retention sweep removes it after that.
+fn remote_request(request: agent.SpawnRequest) -> remote_spawn.Request {
+  remote_spawn.Request(
+    purpose: request.purpose,
+    brief: request.brief,
+    model: request.model,
+    tools: request.tools,
+    within_ms: request.within_ms,
+    result_schema: request.result_schema,
+    detach: remote_spawn.Detached,
+  )
+}
+
+// Asks until the orchestrator answers or the window runs out, resending with a
+// doubling pause. A resend is safe because the receiver adopts the child the
+// call site already made, so an answer lost on the way back is returned again.
+// A refusal is recorded on the stub as `Refused` and the stub stays, exactly as
+// it does when the drainer hears one. The window running out leaves the stub
+// `Requested`, and so does an answer or a refusal that could not be recorded; in
+// each of those cases the drainer is rung, and it keeps asking after the model
+// has moved on.
+fn ask_until_answered(
+  config: Config,
+  key: String,
+  stub: remote_child.Stub,
+) -> Result(Spawned, Refusal) {
+  let reach = config.remote
+  let parent = remote_reach.parent(reach, stub.strand)
+  let #(started, _clock) = clock.read(config.clock)
+  let asked =
+    poll.until_on(
+      clock: timebase.on(config.clock, config.rest),
+      within: remote_window_ms,
+      every: poll.Doubling(
+        from: remote_first_pause_ms,
+        to: remote_last_pause_ms,
+      ),
+      attempt: fn() {
+        case
+          reach.spawn(
+            stub.orchestrator,
+            parent,
+            stub.site,
+            stub.depth,
+            stub.parent_tools,
+            stub.request,
+            window_left(config, started),
+          )
+        {
+          Ok(answer) -> poll.Done(answer)
+          Error(peer_mail.Refused(reason)) -> poll.Fail(reason)
+          Error(peer_mail.Unreachable) | Error(peer_mail.NotOpen) -> poll.Retry
+        }
+      },
+    )
+  case asked {
+    poll.Answered(answer) -> record_answer(config, key, stub, answer)
+    poll.Failed(reason) -> record_refusal(config, key, stub, reason)
+    poll.Expired -> {
+      config.remote_queued()
+      Error(agent.RemoteSilent(orchestrator: stub.orchestrator))
+    }
+  }
+}
+
+// How long one attempt may wait for its answer: what is left of the window the
+// spawn started, and never more than a single call is worth. Without the clip
+// an attempt begun just before the window closes would wait out its own full
+// bound, and the model would be kept for nearly twice the window. The floor of
+// one millisecond is the last attempt `poll` still makes at the deadline.
+fn window_left(config: Config, started: Int) -> Int {
+  let #(now, _clock) = clock.read(config.clock)
+  int.max(
+    1,
+    int.min(remote_reach.spawn_ms, remote_window_ms - { now - started }),
+  )
+}
+
+// A refusal heard where the model asked. The stub is kept as `Refused`, never
+// removed: a refusal can be transient (a cap that clears, a store that
+// recovers), and the drainer or a replay of the same call site may still be
+// answered with a child. A stub that was deleted here would leave that child
+// with a lineage cell and no stub to count it, list it or wait on it. If the
+// refusal cannot be recorded the stub stays `Requested` and the drainer is
+// rung, which asks again and hears the same refusal. The drainer may have been
+// answered with a child first, and then the stub already says `Spawned` or
+// `Settled`: the child exists, so the model is given it as `record_answer`
+// would, and told no refusal.
+fn record_refusal(
+  config: Config,
+  key: String,
+  stub: remote_child.Stub,
+  reason: String,
+) -> Result(Spawned, Refusal) {
+  let recorded = {
+    use runtime <- result.try(borrow(config) |> result.replace_error(Nil))
+    remote_child.refused(runtime, key, reason) |> result.replace_error(Nil)
+  }
+  let refusal = agent.RemoteRefused(orchestrator: stub.orchestrator, reason:)
+  case recorded {
+    Ok(stored) ->
+      case stored.state {
+        remote_child.Spawned(placed:) | remote_child.Settled(placed:, ..) -> {
+          config.remote_queued()
+          Ok(placed_spawn(placed))
+        }
+        remote_child.Requested | remote_child.Refused(..) -> Error(refusal)
+      }
+    Error(Nil) -> {
+      config.remote_queued()
+      Error(refusal)
+    }
+  }
+}
+
+// The answer to a spawn is written down before the model sees it. If it cannot
+// be written the stub stays `Requested` and the drainer asks again, which
+// returns the same answer, so the model is told the spawn failed and the child
+// is not lost. The drainer is rung either way: after a `Spawned` write it has a
+// running child to ask about, and after a failed one it has the spawn to resend.
+fn record_answer(
+  config: Config,
+  key: String,
+  stub: remote_child.Stub,
+  answer: remote_spawn.Spawned,
+) -> Result(Spawned, Refusal) {
+  let recorded = {
+    use runtime <- result.try(borrow(config))
+    let #(now, _clock) = clock.read(config.clock)
+    remote_child.spawned(runtime, key, stub, answer, now)
+    |> result.map_error(agent.PlaneFailed)
+  }
+  config.remote_queued()
+  use stored <- result.try(recorded)
+  case stored.state {
+    remote_child.Spawned(placed:) | remote_child.Settled(placed:, ..) ->
+      Ok(placed_spawn(placed))
+    remote_child.Requested | remote_child.Refused(..) ->
+      Error(agent.PlaneFailed(
+        reason: "the answer to the spawn was not recorded; it will be asked "
+        <> "again",
+      ))
+  }
+}
+
+fn placed_spawn(placed: remote_child.Placed) -> Spawned {
+  Spawned(
+    handle: placed.handle,
+    strand: placed.handle.strand,
+    tools: placed.tools,
+    model: placed.model,
+    model_id: placed.model_id,
+    deadline_ms: Some(placed.deadline_ms),
+  )
+}
+
+// --- waiting on children across orchestrators -------------------------------
+
+// A handle that names a child on another orchestrator, and where its stub is.
+type Target {
+  Target(handle: Handle, orchestrator: String, key: String)
+}
+
+// What one task of a mixed wait brought back: the local handles' answer, or one
+// orchestrator's answer for its handles.
+type Part {
+  LocalPart(waited: List(Waited))
+  RemotePart(
+    orchestrator: String,
+    handles: List(Handle),
+    answer: Result(List(remote_spawn.Joined), peer_mail.Failure),
+  )
+}
+
+// The handles that name a child on another orchestrator, found by the parent's
+// own record of it and not by anything in the handle's text. A handle the stubs
+// do not hold is a local one, and the local wait judges it.
+fn remote_targets(
+  kept: List(remote_child.Kept),
+  handles: List(Handle),
+) -> List(Target) {
+  list.filter_map(handles, fn(handle) {
+    list.find_map(kept, fn(entry) {
+      case placed_of(entry.stub) {
+        Some(placed) if placed.handle == handle ->
+          Ok(Target(
+            handle:,
+            orchestrator: entry.stub.orchestrator,
+            key: entry.key,
+          ))
+        Some(_) | None -> Error(Nil)
+      }
+    })
+  })
+}
+
+fn placed_of(stub: remote_child.Stub) -> Option(remote_child.Placed) {
+  case stub.state {
+    remote_child.Spawned(placed:) | remote_child.Settled(placed:, ..) ->
+      Some(placed)
+    remote_child.Requested | remote_child.Refused(..) -> None
+  }
+}
+
+// One wait over local and remote handles together, against one budget. The local
+// handles are waited on as ever, in one task, and each orchestrator that holds
+// some of the handles is sent one `Join`, in a task of its own, so the waits
+// overlap and the whole is as long as the longest of them and not their sum. The
+// window an orchestrator is asked to wait is the budget cut to what one join may
+// ask. An orchestrator that does not answer leaves its handles pending, with its
+// name, and a wait is a read, so asking again is always safe.
+fn wait_across(
+  config: Config,
+  runtime: api.Runtime,
+  caller: Caller,
+  handles: List(Handle),
+  targets: List(Target),
+  within_ms: Int,
+) -> Result(List(Waited), Refusal) {
+  use ledger <- result.try(read_ledger(runtime))
+  use Nil <- result.try(
+    list.try_each(handles, fn(handle) {
+      case is_descendant(ledger, caller.strand, handle.strand) {
+        True -> Ok(Nil)
+        False -> Error(agent.NotADescendant(strand: handle.strand))
+      }
+    }),
+  )
+  let budget = clamp(within_ms, 0, config.max_wait_ms)
+  let local =
+    list.filter(handles, fn(handle) {
+      !list.any(targets, fn(target) { target.handle == handle })
+    })
+  let #(started, _clock) = clock.read(config.clock)
+  let outcomes =
+    list.append(
+      local_task(config, caller, local, within_ms),
+      list.map(by_orchestrator(targets), fn(group) {
+        remote_task(
+          config,
+          caller,
+          group.0,
+          group.1,
+          int.min(budget, remote_spawn.join_cap_ms),
+        )
+      }),
+    )
+    |> weft.new
+    |> weft.deadline(budget + remote_join_slack_ms)
+    |> weft.start
+  use parts <- result.map(
+    list.try_map(outcomes, fn(outcome) {
+      part_of(config, runtime, targets, started, outcome)
+    }),
+  )
+  in_order(handles, list.flatten(parts))
+}
+
+// The local handles' wait as a task, or none when every handle is remote.
+fn local_task(
+  config: Config,
+  caller: Caller,
+  local: List(Handle),
+  within_ms: Int,
+) -> List(fn() -> Result(Part, Refusal)) {
+  let strand = caller.strand
+  case local {
+    [] -> []
+    [_, ..] -> [
+      fn() {
+        wait_for(config, strand, local, within_ms) |> result.map(LocalPart)
+      },
+    ]
+  }
+}
+
+// One `Join` as a task. Its answer, or its silence, is data for `joined_waits`,
+// so the task itself cannot fail.
+fn remote_task(
+  config: Config,
+  caller: Caller,
+  orchestrator: String,
+  handles: List(Handle),
+  window_ms: Int,
+) -> fn() -> Result(Part, Refusal) {
+  let parent = remote_reach.parent(config.remote, caller.strand)
+  let join = config.remote.join
+  fn() {
+    Ok(RemotePart(
+      orchestrator:,
+      handles:,
+      answer: join(orchestrator, parent, handles, window_ms),
+    ))
+  }
+}
+
+// The targets grouped by orchestrator, in the order the orchestrators first
+// appear, each group keeping its handles in the order they were given.
+fn by_orchestrator(targets: List(Target)) -> List(#(String, List(Handle))) {
+  let names =
+    targets |> list.map(fn(target) { target.orchestrator }) |> list.unique
+  list.map(names, fn(name) {
+    #(
+      name,
+      list.filter_map(targets, fn(target) {
+        case target.orchestrator == name {
+          True -> Ok(target.handle)
+          False -> Error(Nil)
+        }
+      }),
+    )
+  })
+}
+
+// One task's outcome as the waits it contributes. A local wait that was refused
+// refuses the whole call, as it would alone. A task that did not finish at all
+// is the plane failing, since the remote tasks cannot fail and the local one
+// returns its refusals.
+fn part_of(
+  config: Config,
+  runtime: api.Runtime,
+  targets: List(Target),
+  started: Int,
+  outcome: weft.Outcome(Part, Refusal),
+) -> Result(List(Waited), Refusal) {
+  case outcome {
+    weft.Completed(value: LocalPart(waited:), ..) -> Ok(waited)
+    weft.Completed(value: RemotePart(orchestrator:, handles:, answer:), ..) ->
+      joined_waits(
+        config,
+        runtime,
+        targets,
+        started,
+        orchestrator,
+        handles,
+        answer,
+      )
+    weft.Failed(error:, ..) -> Error(error)
+    weft.Crashed(..)
+    | weft.Abandoned(..)
+    | weft.NeverStarted(..)
+    | weft.DrainProofLost(..)
+    | weft.CancellationUnconfirmed(..) ->
+      Error(agent.PlaneFailed(reason: "a wait on a child did not finish"))
+  }
+}
+
+fn joined_waits(
+  config: Config,
+  runtime: api.Runtime,
+  targets: List(Target),
+  started: Int,
+  orchestrator: String,
+  handles: List(Handle),
+  answer: Result(List(remote_spawn.Joined), peer_mail.Failure),
+) -> Result(List(Waited), Refusal) {
+  case answer {
+    Ok(entries) ->
+      Ok(list.map(entries, fn(entry) { settle_entry(runtime, targets, entry) }))
+    Error(peer_mail.Refused(reason)) ->
+      Error(agent.RemoteRefused(orchestrator:, reason:))
+    Error(peer_mail.Unreachable) | Error(peer_mail.NotOpen) -> {
+      let #(now, _clock) = clock.read(config.clock)
+      Ok(
+        list.map(handles, fn(handle) {
+          Pending(
+            handle:,
+            waited_ms: now - started,
+            unanswered: Some(orchestrator),
+          )
+        }),
+      )
+    }
+  }
+}
+
+// One handle's entry in a join, as the wait the tool renders. A child reported
+// finished is recorded on its stub, so the roster and the fan-out count see it
+// settled; the record is the parent's own account and the answer does not wait on
+// it, since the next wait asks the orchestrator again and gets the same answer.
+fn settle_entry(
+  runtime: api.Runtime,
+  targets: List(Target),
+  entry: remote_spawn.Joined,
+) -> Waited {
+  case entry {
+    remote_spawn.Pending(handle:, waited_ms:) ->
+      Pending(handle:, waited_ms:, unanswered: None)
+    remote_spawn.Ready(handle:, outcome:, report:, result:, notes:, usage:) -> {
+      case list.find(targets, fn(target) { target.handle == handle }) {
+        Ok(target) -> {
+          let _recorded =
+            remote_child.settled(runtime, target.key, outcome, usage)
+          Nil
+        }
+        Error(Nil) -> Nil
+      }
+      Ready(handle:, outcome:, report:, result:, notes:)
+    }
+  }
+}
+
+// The waits in the order the handles were given. An orchestrator that answered
+// for fewer handles than it was asked about leaves the rest pending.
+fn in_order(handles: List(Handle), waited: List(Waited)) -> List(Waited) {
+  let by_handle =
+    waited
+    |> list.map(fn(entry) { #(agent.handle_to_string(handle_of(entry)), entry) })
+    |> dict.from_list
+  list.map(handles, fn(handle) {
+    case dict.get(by_handle, agent.handle_to_string(handle)) {
+      Ok(entry) -> entry
+      Error(Nil) -> Pending(handle:, waited_ms: 0, unanswered: None)
+    }
+  })
+}
+
+fn handle_of(waited: Waited) -> Handle {
+  case waited {
+    Ready(handle:, ..) -> handle
+    Pending(handle:, ..) -> handle
+  }
+}
+
+// --- a parent on another orchestrator --------------------------------------
+
+/// The strand every session opens with. A delegate session's children are
+/// built on its configuration, which the spawner's profile seeded.
+const session_main_strand = "main"
+
+/// Starts one child for a parent on another orchestrator, or hands back the one
+/// its call site already started.
+///
+/// The request is judged against the spawner's terms first, outside the holder:
+/// a deadline above the cap and a tool outside the ceiling are refused without
+/// touching the session. The parent's tools are clamped to the ceiling here, so
+/// whatever the parent reports, no child can hold what the ceiling excludes.
+/// Everything that must be serialized then runs in the holder with the ended
+/// fence.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // agency.delegate_spawn(config, delegation, site, request)
+/// // == Ok(remote_spawn.Spawned(handle:, tools:, model:, model_id:, remaining_ms:))
+/// ```
+pub fn delegate_spawn(
+  config: Config,
+  delegation: remote_spawn.Delegation,
+  site: remote_spawn.CallSite,
+  request: remote_spawn.Request,
+) -> Result(remote_spawn.Spawned, remote_spawn.SpawnRefusal) {
+  use asked <- result.try(remote_spawn.agent_request(request, delegation.terms))
+  use subject <- result.try(holder(config))
+  let delegation =
+    remote_spawn.Delegation(
+      ..delegation,
+      parent_tools: remote_spawn.clamp_tools(
+        delegation.parent_tools,
+        delegation.terms,
+      ),
+    )
+  use answer <- result.try(
+    call.try_call(
+      subject,
+      waiting: config.holder_timeout_ms,
+      sending: fn(reply) {
+        DelegateSpawn(delegation:, site:, request: asked, reply:)
+      },
+    )
+    |> result.map_error(fn(_) { refused(config, agent.AgencyUnavailable) }),
+  )
+  answer
+  |> result.map(delegated_spawn(config, _))
+  |> result.map_error(refused(config, _))
+}
+
+/// Waits, for at most `within_ms`, for the named children of a remote parent,
+/// and answers each handle's position with what the settled ones cost.
+///
+/// This is `wait` with a different asker, plus the usage ledger. The window is
+/// cut to `remote_spawn.join_cap_ms` here, because the sender chooses
+/// `within_ms` and the receiver's mailbox, not the sender's good manners, is
+/// what bounds how long a task may wait. A handle that is not a descendant of
+/// the parent's reference refuses the whole join.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // agency.delegate_join(config, parent, [handle], 25_000)
+/// // == Ok([remote_spawn.Pending(handle:, waited_ms: 25_000)])
+/// ```
+pub fn delegate_join(
+  config: Config,
+  parent: remote_spawn.Parent,
+  handles: List(Handle),
+  within_ms: Int,
+) -> Result(List(remote_spawn.Joined), remote_spawn.SpawnRefusal) {
+  let window = clamp(within_ms, 0, remote_spawn.join_cap_ms)
+  joined(config, parent, handles, window)
+  |> result.map_error(refused(config, _))
+}
+
+fn joined(
+  config: Config,
+  parent: remote_spawn.Parent,
+  handles: List(Handle),
+  window: Int,
+) -> Result(List(remote_spawn.Joined), Refusal) {
+  use waited <- result.try(wait_for(
+    config,
+    api.parent_reference_prefix <> parent.strand,
+    handles,
+    window,
+  ))
+  use runtime <- result.try(borrow(config))
+  let settled =
+    list.filter_map(waited, fn(entry) {
+      case entry {
+        Ready(handle:, ..) -> Ok(handle.strand)
+        Pending(..) -> Error(Nil)
+      }
+    })
+  use usage <- result.map(
+    child_usage.of_strands(runtime, settled)
+    |> result.map_error(fn(reason) { agent.PlaneFailed(reason:) }),
+  )
+  list.map(waited, fn(entry) {
+    case entry {
+      Ready(handle:, outcome:, report:, result:, notes:) ->
+        remote_spawn.Ready(
+          handle:,
+          outcome:,
+          report:,
+          result:,
+          notes:,
+          usage: usage_of(usage, handle.strand),
+        )
+      Pending(handle:, waited_ms:, ..) ->
+        remote_spawn.Pending(handle:, waited_ms:)
+    }
+  })
+}
+
+// A settled child's usage. `child_usage.of_strands` keys every strand it is
+// asked about, so the lookup cannot miss. A `let assert` saying so would be the
+// plain form, but lint R4 bars it from `src`, so the miss arm is a zero that is
+// built lazily and never reached.
+fn usage_of(
+  usage: Dict(String, remote_spawn.ChildUsage),
+  strand: String,
+) -> remote_spawn.ChildUsage {
+  result.lazy_unwrap(dict.get(usage, strand), fn() {
+    remote_spawn.ChildUsage(
+      input: 0,
+      output: 0,
+      cache_read: 0,
+      cache_write: 0,
+      cost: 0.0,
+    )
+  })
+}
+
+/// Records that a run of a remote parent ended and stops the children it owns,
+/// answering how many it stopped.
+///
+/// The holder writes the ended fence before it reaps, so a spawn for the run
+/// that arrives afterwards is refused and one that arrived before is a child
+/// this reap stops. A repeat writes the same fence and stops nothing more.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // agency.delegate_run_ended(config, operation) == Ok(2)
+/// ```
+pub fn delegate_run_ended(
+  config: Config,
+  operation: OpId,
+) -> Result(Int, remote_spawn.SpawnRefusal) {
+  use subject <- result.try(holder(config))
+  use answer <- result.try(
+    call.try_call(
+      subject,
+      waiting: config.holder_timeout_ms,
+      sending: fn(reply) { DelegateEnded(operation:, reply:) },
+    )
+    |> result.map_error(fn(_) { refused(config, agent.AgencyUnavailable) }),
+  )
+  result.map_error(answer, refused(config, _))
+}
+
+/// The three questions a spawning orchestrator asks of a delegate session's
+/// Agency, closed over the holder's name and the few settings a wait needs.
+///
+/// The daemon's registry keeps one of these per resident session, in the
+/// projection it hands the orchestrator port (`serve.Resident`), so that a
+/// message from another orchestrator reaches the right session's Agency without
+/// the registry holding the runtime. The registry's lookup copies the
+/// projection to the process that asks, so the closures must stay small: they
+/// hold a trimmed `Config`, which keeps what the three functions read and
+/// drops the model routing and the peer outbox bell that only the holder uses.
+pub type DelegateEndpoint {
+  DelegateEndpoint(
+    /// Starts a child, or answers the one this call site already started.
+    spawn: fn(
+      remote_spawn.Delegation,
+      remote_spawn.CallSite,
+      remote_spawn.Request,
+    ) -> Result(remote_spawn.Spawned, remote_spawn.SpawnRefusal),
+    /// Waits for children and reports what they cost.
+    join: fn(remote_spawn.Parent, List(Handle), Int) ->
+      Result(List(remote_spawn.Joined), remote_spawn.SpawnRefusal),
+    /// Records a run end and stops the children the run owned.
+    run_ended: fn(OpId) -> Result(Int, remote_spawn.SpawnRefusal),
+  )
+}
+
+/// Projects the delegate questions of one session.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // agency.delegate_endpoint(config).run_ended(operation)
+/// ```
+pub fn delegate_endpoint(config: Config) -> DelegateEndpoint {
+  let trimmed =
+    Config(
+      ..config,
+      subagent_model: fn() { Error(Nil) },
+      models: [],
+      peer_defaults: peer_mail.no_defaults,
+      outbox_queued: fn() { Nil },
+      remote: remote_reach.none(""),
+      remote_queued: fn() { Nil },
+    )
+  DelegateEndpoint(
+    spawn: fn(delegation, site, request) {
+      delegate_spawn(trimmed, delegation, site, request)
+    },
+    join: fn(parent, handles, within_ms) {
+      delegate_join(trimmed, parent, handles, within_ms)
+    },
+    run_ended: fn(operation) { delegate_run_ended(trimmed, operation) },
+  )
+}
+
+// The holder's mailbox, or the refusal a spawner reads when it is not up.
+fn holder(
+  config: Config,
+) -> Result(Subject(Message), remote_spawn.SpawnRefusal) {
+  address.lookup(config.name)
+  |> result.map_error(fn(_) { refused(config, agent.AgencyUnavailable) })
+}
+
+fn refused(config: Config, refusal: Refusal) -> remote_spawn.SpawnRefusal {
+  remote_spawn.refusal_of(
+    refusal,
+    fan_out: config.fan_out,
+    session_strands: config.session_strands,
+  )
+}
+
+// The caller a remote parent's call site stands for: the reference to its
+// strand, and the planned call it is minting under, which are the coordinates a
+// local spawn derives the child's name from.
+fn delegated_caller(
+  parent: remote_spawn.Parent,
+  site: remote_spawn.CallSite,
+) -> Caller {
+  agent.Caller(
+    strand: api.parent_reference_prefix <> parent.strand,
+    operation: site.operation,
+    step_id: site.step_id,
+    source_index: site.source_index,
+    minter: site.minter,
+  )
+}
+
+// A spawn as the spawner is told of it. The deadline is an instant on this
+// session's clock and clocks never cross as instants, so it becomes the time
+// left. A child with no deadline cannot be admitted, since the terms give every
+// spawn one, so the zero for that case is never read.
+fn delegated_spawn(config: Config, spawned: Spawned) -> remote_spawn.Spawned {
+  let #(now, _clock) = clock.read(config.clock)
+  remote_spawn.Spawned(
+    handle: spawned.handle,
+    tools: spawned.tools,
+    model: spawned.model,
+    model_id: spawned.model_id,
+    remaining_ms: case spawned.deadline_ms {
+      Some(at) -> int.max(0, at - now)
+      None -> 0
+    },
   )
 }

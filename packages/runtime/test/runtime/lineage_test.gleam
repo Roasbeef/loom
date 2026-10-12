@@ -89,6 +89,7 @@ fn a_cell(strand: String, parent: String) -> lineage.Lineage {
     deadline: Some(1_700_000_000_000),
     detached: False,
     reaped: False,
+    orchestrator: None,
   )
 }
 
@@ -178,6 +179,34 @@ pub fn the_privileged_doors_refuse_the_ordinary_namespace_test() {
 pub fn a_lineage_cell_round_trips_test() {
   let cell = a_cell("sub:main/reviewer-1", "main")
   assert lineage.decode(lineage.encode(cell)) == Ok(cell)
+}
+
+// A remote child's cell names its orchestrator, and a cell written before the
+// field existed decodes as a strand of this session. The local encoding adds no
+// key, so a session that holds no remote child keeps the bytes it had.
+pub fn a_cell_names_the_orchestrator_only_when_the_child_is_remote_test() {
+  let local = a_cell("sub:main/reviewer-1", "main")
+  assert local.orchestrator == None
+  assert list.key_find(object_fields(lineage.encode(local)), "orchestrator")
+    == Error(Nil)
+
+  let remote =
+    lineage.Lineage(
+      ..a_cell("sub:^main/reviewer-1", "main"),
+      orchestrator: Some("box"),
+    )
+  assert lineage.decode(lineage.encode(remote)) == Ok(remote)
+  assert list.key_find(object_fields(lineage.encode(remote)), "orchestrator")
+    == Ok(json.String("box"))
+}
+
+pub fn a_malformed_orchestrator_is_corruption_not_a_local_strand_test() {
+  let broken =
+    json.Object([
+      #("orchestrator", json.Int(3)),
+      ..object_fields(lineage.encode(a_cell("sub:1", "main")))
+    ])
+  let assert Error(_report) = lineage.decode(broken)
 }
 
 pub fn a_corrupt_lineage_cell_reports_rather_than_crashes_test() {
