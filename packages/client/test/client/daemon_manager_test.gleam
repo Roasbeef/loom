@@ -2165,9 +2165,12 @@ pub fn beginning_a_move_commits_the_intent_and_stops_the_slot_together_test() {
   await_status(registry, remote.id, manager.Saved)
 
   // No runtime may open the store while the move is in flight, and the owner
-  // cannot change the session's visibility or remove it from under the mover.
+  // cannot rename the session, change its visibility or remove it from under
+  // the mover.
   assert manager.open(registry, remote.id)
     == Error(manager.SessionMoving(op: op_a, to: "laptop"))
+  assert manager.rename(registry, owner, "daemon-test", remote.id, "changed")
+    == Error(manager.AdminMoving(op: op_a, to: "laptop"))
   assert manager.set_visibility(
       registry,
       owner,
@@ -2261,6 +2264,8 @@ pub fn a_finished_move_leaves_a_tombstone_that_answers_for_the_session_test() {
   // that finished cannot undo it.
   assert manager.open(registry, remote.id)
     == Error(manager.SessionMoved(to: "laptop"))
+  assert manager.rename(registry, owner, "daemon-test", remote.id, "changed")
+    == Error(manager.AdminMoved(to: "laptop"))
   assert manager.set_visibility(
       registry,
       owner,

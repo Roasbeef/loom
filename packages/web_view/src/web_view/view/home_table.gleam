@@ -611,9 +611,11 @@ fn acts(
   rename: Rename(message),
   manage: Manage(message),
 ) -> List(Element(message)) {
-  let renaming = case rename {
-    Never -> []
-    Offered(edit:, ..) -> [
+  // A session being handed to another orchestrator is not this daemon's to
+  // rename, and the registry refuses it, so the row offers no Rename.
+  let renaming = case rename, entry.residency {
+    Never, _ | Offered(..), Moving(_) -> []
+    Offered(edit:, ..), _ -> [
       act("home-rename", "Rename this session", "Rename", edit(entry.id), []),
     ]
   }

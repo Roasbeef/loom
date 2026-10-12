@@ -369,8 +369,8 @@ page keys and nonces, and the relay into the session's gateway.
 - **The session sidebar.** `web_view/sessions` holds `Entry`, `Residency`
   (`Live | Saved | Blocked | Moving(to)`; `Blocked` is a saved row no page may
   resume, and `Moving` is a saved row the daemon is handing to the orchestrator
-  `to`, drawn as text that says "moving to <to>" with no resume, archive, delete
-  or stop (the Admin drawer's row says "moving to <to>" and offers no Make
+  `to`, drawn as text that says "moving to <to>" with no resume, rename, archive,
+  delete or stop (the Admin drawer's row says "moving to <to>" and offers no Make
   shareable); a session that has moved is not an entry, since its new owner lists
   it),
   `Group` and `grouped(entries)` (groups by project: `Entry.project`

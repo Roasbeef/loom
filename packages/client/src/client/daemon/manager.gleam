@@ -1208,7 +1208,10 @@ pub fn rename_principal(
 /// Renames metadata after reauthenticating owner and epoch in one dispatch.
 ///
 /// This does not acquire a conversation or alter a resident runtime. The
-/// catalogue retains the original creation name for request-key equality.
+/// catalogue retains the original creation name for request-key equality. A
+/// session that is moving or has moved is refused as `AdminMoving` or
+/// `AdminMoved`, as archiving and deleting it are, because the move row is the
+/// only record of who owns it.
 ///
 /// ## Examples
 ///
@@ -2585,6 +2588,7 @@ fn handle(
     Rename(caller, epoch, id, name, reply) -> {
       let outcome = {
         use Nil <- result.try(authorize_admin(phase, book, caller, epoch))
+        use Nil <- result.try(refuse_moved(book, id))
         use record <- result.map(
           catalogue.rename(book.catalogue, id, name)
           |> result.map_error(AdminMetadata),
