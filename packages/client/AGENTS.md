@@ -4668,7 +4668,11 @@ these forks because they define the same modules.
   It retains the same operation until those children settle. Detached children
   do not delay it. Cancelled parents retain cleanup, and overdue children are
   observed through the existing deadline enforcement. Ledger read failures
-  return a follow-up instead of permitting completion.
+  return a follow-up instead of permitting completion. If the Agency holder
+  is unavailable, the hook delegates to existing completion behavior. Shutdown
+  may already have retired the holder after persisting an answer; adding a
+  follow-up then would resurrect work on reopen. The guard therefore does not
+  protect completion during an independent holder restart.
 - **Terminal parent cleanup runs in the background.**
   The completion guard reads through the separate writer and observes overdue
   child budgets by recording stop intent and sending cancellation, without

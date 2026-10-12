@@ -637,7 +637,9 @@ pub fn reaping_hooks(hooks: effects.Hooks, config: Config) -> effects.Hooks {
   let inner = hooks.run_end
   effects.Hooks(..hooks, run_end: fn(operation) {
     case unfinished_children(config, operation) {
-      Ok([]) -> {
+      // Once the holder has retired, shutdown owns draining the runtime.
+      // A model follow-up here would survive into the next session open.
+      Ok([]) | Error(agent.AgencyUnavailable) -> {
         let _reaper =
           process.spawn_unlinked(fn() { reap_run(config, operation) })
         inner(operation)

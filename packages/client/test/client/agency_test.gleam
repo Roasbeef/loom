@@ -5452,6 +5452,25 @@ pub fn the_delegate_endpoint_answers_for_the_same_holder_test() {
   close(harness)
 }
 
+// Shutdown can retire the Agency before an already-persisted answer reaches
+// its completion hook. That boundary must not append a new turn for reopening.
+pub fn a_run_end_after_the_holder_retires_delegates_without_a_follow_up_test() {
+  let config = agency.default_config(addresses.new(), clock.fixed(at: 0))
+  let ended = process.new_subject()
+  let original = effects.default_hooks()
+  let hooks =
+    agency.reaping_hooks(
+      effects.Hooks(..original, run_end: fn(operation) {
+        process.send(ended, operation)
+        None
+      }),
+      config,
+    )
+  let operation = site_of("shutdown:tools", 0).operation
+  assert hooks.run_end(operation) == None
+  assert process.receive(ended, within: 1000) == Ok(operation)
+}
+
 pub fn an_agency_that_is_not_running_refuses_in_band_test() {
   let config = agency.default_config(addresses.new(), clock.fixed(at: 0))
   let site = site_of("turn-1:tools", 0)

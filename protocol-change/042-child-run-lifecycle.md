@@ -82,7 +82,8 @@ the parent-finalization race deterministic.
 
 ## Addendum: Parent completion and displayed causes (October 12, 2026)
 
-A natural parent completion no longer reaps active attached children. The
+While the Agency holder is available, natural parent completion no longer
+reaps active attached children. The
 run-end hook checks their current operation records and returns a born-placed
 follow-up with their current handles. The parent operation remains open so it
 can wait for results, including work resumed with `agent_send`. Detached
@@ -93,6 +94,10 @@ The completion guard uses the existing synchronous run-end hook. Its reads
 reach the separate holder, writer and session store, never the parent driver.
 It does not wait for child results inside the hook; the follow-up directs the
 parent to the existing `agent_wait` tool. Cleanup remains a background action.
+An unavailable holder retains the previous completion behavior: shutdown may
+already have retired it, and a follow-up would resurrect work on reopening.
+This leaves an availability boundary during an independent holder restart;
+readable holder responses with storage failures still refuse completion.
 
 The shared terminal and web projection displays `parent_finished` or
 `budget_expired` from the reserved lifecycle fact beside the provider's
