@@ -134,11 +134,13 @@ fn echoing_agency() -> agent.Agency {
           outcome: None,
           deadline_ms: option.None,
           tools: [],
+          placement: agent.Here,
         ),
       ])
     },
     max_wait_ms: 30_000,
     model_names: ["reviewer", "worker"],
+    orchestrator_names: [],
     holds: fn(_caller, _tool) { Ok(Nil) },
   )
 }
@@ -244,6 +246,7 @@ fn refusing_agency(refusal: agent.Refusal) -> agent.Agency {
     roster: fn(_caller) { Error(refusal) },
     max_wait_ms: 30_000,
     model_names: ["reviewer", "worker"],
+    orchestrator_names: [],
     holds: fn(_caller, _tool) { Ok(Nil) },
   )
 }
@@ -527,7 +530,11 @@ pub fn a_pending_wait_is_not_an_error_test() {
   let handle = agent.Handle(strand: "sub:a", operation: an_op(5))
   let pending =
     agent.Agency(..echoing_agency(), wait: fn(_caller, handles, _within) {
-      Ok(list.map(handles, fn(handle) { agent.Pending(handle:, waited_ms: 9) }))
+      Ok(
+        list.map(handles, fn(handle) {
+          agent.Pending(handle:, waited_ms: 9, unanswered: None)
+        }),
+      )
     })
   let outcome =
     run(
@@ -652,6 +659,226 @@ pub fn refusals_describe_themselves_test() {
     "do not hold yourself",
   )
   assert agent.refusal_outcome(agent.AgencyUnavailable).is_error
+}
+
+// --- children on another orchestrator --------------------------------------
+
+fn spawn_properties(agency: agent.Agency) -> List(#(String, json.JsonValue)) {
+  let registry = tool.registry(agent.tools(agency))
+  let assert Ok(spawn) = tool.lookup(registry, "agent_spawn")
+    as "the spawn tool must be registered"
+  let assert json.Object(schema) = spawn.schema as "the schema is an object"
+  let assert Ok(json.Object(properties)) = list.key_find(schema, "properties")
+    as "the schema declares its properties"
+  properties
+}
+
+// A session that reaches no other orchestrator advertises no `on`, so the wire
+// tool array that a provider caches holds no argument that could only be
+// refused. One that reaches some lists each as the enum, as `model` does.
+pub fn on_is_offered_only_where_there_is_somewhere_to_run_test() {
+  assert list.key_find(spawn_properties(echoing_agency()), "on") == Error(Nil)
+
+  let agency =
+    agent.Agency(..echoing_agency(), orchestrator_names: ["box", "gpu"])
+  let assert Ok(json.Object(on)) = list.key_find(spawn_properties(agency), "on")
+    as "the orchestrators must be advertised"
+  assert list.key_find(on, "enum")
+    == Ok(json.Array([json.String("box"), json.String("gpu")]))
+}
+
+fn recording_spawn(
+  seen: Subject(option.Option(String)),
+) -> fn(agent.Caller, agent.SpawnRequest) ->
+  Result(agent.Spawned, agent.Refusal) {
+  fn(caller: agent.Caller, request: agent.SpawnRequest) {
+    process.send(seen, request.on)
+    Ok(agent.Spawned(
+      handle: agent.Handle(strand: "sub:^main/x-1", operation: caller.operation),
+      strand: "sub:^main/x-1",
+      tools: [],
+      model: "default-model",
+      model_id: "provider-model-id",
+      deadline_ms: option.None,
+    ))
+  }
+}
+
+pub fn a_remote_spawn_reaches_the_seam_and_hands_back_a_suffixed_handle_test() {
+  let seen = process.new_subject()
+  let agency =
+    agent.Agency(
+      ..echoing_agency(),
+      spawn: recording_spawn(seen),
+      orchestrator_names: ["box"],
+    )
+  let outcome =
+    run(
+      "agent_spawn",
+      ctx_for("main", "turn", 0),
+      agency,
+      json.Object([
+        #("purpose", json.String("x")),
+        #("brief", json.String("b")),
+        #("on", json.String("box")),
+      ]),
+    )
+  assert !outcome.is_error
+  let assert Ok(option.Some("box")) = process.receive(seen, 100)
+    as "the seam is told where the child runs"
+
+  // The text and the details carry the handle with its orchestrator, which is
+  // what `agent_wait` is handed back.
+  let handle = agent.Handle(strand: "sub:^main/x-1", operation: an_op(11))
+  let suffixed = agent.remote_handle_to_string(handle, "box")
+  assert string.ends_with(suffixed, "@box")
+  assert string.contains(text_of(outcome), "Handle: " <> suffixed)
+  assert string.contains(text_of(outcome), "runs on the orchestrator `box`")
+  let assert option.Some(json.Object(details)) = outcome.details
+  assert list.key_find(details, "handle") == Ok(json.String(suffixed))
+  assert list.key_find(details, "orchestrator") == Ok(json.String("box"))
+}
+
+pub fn a_local_spawn_carries_no_orchestrator_detail_test() {
+  let outcome =
+    run(
+      "agent_spawn",
+      ctx_for("main", "turn", 0),
+      echoing_agency(),
+      json.Object([
+        #("purpose", json.String("x")),
+        #("brief", json.String("b")),
+      ]),
+    )
+  let assert option.Some(json.Object(details)) = outcome.details
+  assert list.key_find(details, "orchestrator") == Error(Nil)
+  assert !string.contains(text_of(outcome), "orchestrator")
+}
+
+// The orchestrator after the `@` is read and dropped: where a wait goes is
+// decided by the caller's own record of the child, so a suffix a model typed
+// is no evidence of anything. A mangled suffix is still a malformed handle.
+pub fn a_handle_may_carry_its_orchestrator_test() {
+  let handle = agent.Handle(strand: "sub:^main/x-1", operation: an_op(5))
+  let text = agent.remote_handle_to_string(handle, "box")
+  assert agent.parse_handle(text) == Ok(handle)
+  assert agent.parse_handle(agent.handle_to_string(handle)) == Ok(handle)
+
+  let assert Error(agent.MalformedHandle(..)) =
+    agent.parse_handle(agent.handle_to_string(handle) <> "@")
+  let assert Error(agent.MalformedHandle(..)) =
+    agent.parse_handle(text <> "@again")
+}
+
+pub fn a_child_reads_that_its_parent_is_on_another_orchestrator_test() {
+  let sentence = agent.describe(agent.ParentRunEnded(strand: "^main"))
+  assert string.contains(sentence, "your parent `main` runs on another")
+  assert string.contains(sentence, "final answer")
+  assert string.contains(sentence, "agent_note")
+  assert !string.contains(sentence, "was not delivered")
+
+  // A parent in the same session is told what it always was.
+  assert string.contains(
+    agent.describe(agent.ParentRunEnded(strand: "main")),
+    "was not delivered",
+  )
+}
+
+pub fn remote_refusals_name_the_orchestrator_test() {
+  assert agent.describe(agent.RemoteRefused(
+      orchestrator: "box",
+      reason: "the cap fan_out is 2",
+    ))
+    == "the orchestrator `box` refused the spawn, and nothing was started: the cap fan_out is 2"
+  let silent = agent.describe(agent.RemoteSilent(orchestrator: "box"))
+  assert string.contains(silent, "`box` did not answer in time")
+  assert string.contains(silent, "the child may exist")
+  assert string.contains(silent, "agent_roster")
+}
+
+pub fn a_wait_says_when_the_orchestrator_did_not_answer_test() {
+  let handle = agent.Handle(strand: "sub:^main/x-1", operation: an_op(5))
+  let silent =
+    agent.Agency(..echoing_agency(), wait: fn(_caller, handles, _within) {
+      Ok(
+        list.map(handles, fn(handle) {
+          agent.Pending(handle:, waited_ms: 25, unanswered: option.Some("box"))
+        }),
+      )
+    })
+  let outcome =
+    run(
+      "agent_wait",
+      ctx_for("main", "t", 0),
+      silent,
+      json.Object([
+        #(
+          "handles",
+          json.Array([
+            json.String(agent.remote_handle_to_string(handle, "box")),
+          ]),
+        ),
+      ]),
+    )
+  assert !outcome.is_error
+  let text = text_of(outcome)
+  assert string.contains(text, "state unknown")
+  assert string.contains(text, "`box` did not answer")
+  let assert option.Some(json.Object(details)) = outcome.details
+  assert list.key_find(details, "pending") == Ok(json.Bool(True))
+  let assert Ok(json.Array([json.Object(entry)])) =
+    list.key_find(details, "results")
+  assert list.key_find(entry, "unanswered") == Ok(json.String("box"))
+}
+
+pub fn a_roster_shows_where_a_remote_child_runs_and_how_its_record_stands_test() {
+  let handle = agent.Handle(strand: "sub:^main/x-1", operation: an_op(5))
+  let entry = fn(standing, outcome, handle) {
+    agent.Peer(
+      strand: "sub:^main/x-1",
+      relation: agent.ChildOf,
+      handle:,
+      outcome:,
+      deadline_ms: option.None,
+      tools: [],
+      placement: agent.Elsewhere(orchestrator: "box", standing:),
+    )
+  }
+  let roster = [
+    entry(agent.AwaitingAnswer, option.None, option.None),
+    entry(agent.Running, option.None, option.Some(handle)),
+    entry(agent.Finished, option.Some(agent.Completed), option.Some(handle)),
+    entry(agent.Declined(reason: "the cap is 2"), option.None, option.None),
+  ]
+  let agency =
+    agent.Agency(..echoing_agency(), roster: fn(_caller) { Ok(roster) })
+  let outcome =
+    run("agent_roster", ctx_for("main", "t", 0), agency, json.Object([]))
+  let text = text_of(outcome)
+  assert string.contains(text, "unknown: the orchestrator `box` has not")
+  assert string.contains(
+    text,
+    "("
+      <> agent.remote_handle_to_string(handle, "box")
+      <> ") — working on `box`",
+  )
+  assert string.contains(text, "— completed on `box`")
+  assert string.contains(text, "refused by `box`: the cap is 2")
+
+  let assert option.Some(json.Object(details)) = outcome.details
+  let assert Ok(json.Array(peers)) = list.key_find(details, "peers")
+  let standings =
+    list.map(peers, fn(peer) {
+      let assert json.Object(fields) = peer
+      list.key_find(fields, "standing")
+    })
+  assert standings
+    == [
+      Ok(json.String("unknown")),
+      Ok(json.String("running")),
+      Ok(json.String("settled")),
+      Ok(json.String("refused")),
+    ]
 }
 
 // --- the blackboard shells -------------------------------------------------

@@ -422,6 +422,7 @@ fn a_spawn(purpose: String) -> agent.SpawnRequest {
     result_schema: None,
     context: agent.Fresh,
     detach: False,
+    on: None,
   )
 }
 

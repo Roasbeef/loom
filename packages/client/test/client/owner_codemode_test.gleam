@@ -180,6 +180,7 @@ pub fn agency_over(seen: Subject(String)) -> agent.Agency {
     },
     max_wait_ms: 30_000,
     model_names: [],
+    orchestrator_names: [],
     holds: fn(_caller, _tool) { Ok(Nil) },
   )
 }

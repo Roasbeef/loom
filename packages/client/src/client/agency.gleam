@@ -534,6 +534,7 @@ fn seam_with_custody(
     roster: fn(caller) { roster(config, caller) },
     max_wait_ms: config.max_wait_ms,
     model_names: list.map(config.models, fn(entry) { entry.0.provider }),
+    orchestrator_names: [],
     holds: fn(caller, tool) { holds(config, caller.strand, tool) },
   )
 }
@@ -1739,7 +1740,8 @@ fn wait_loop(
   list.try_map(handles, fn(handle) {
     case dict.get(settled, agent.handle_to_string(handle)) {
       Ok(last) -> ready(runtime, handle, last)
-      Error(Nil) -> Ok(Pending(handle:, waited_ms: now - started))
+      Error(Nil) ->
+        Ok(Pending(handle:, waited_ms: now - started, unanswered: None))
     }
   })
 }
@@ -2270,6 +2272,7 @@ fn roster(config: Config, caller: Caller) -> Result(List(Peer), Refusal) {
         outcome: None,
         deadline_ms: None,
         tools: [],
+        placement: agent.Here,
       ),
     ]
   }
@@ -2513,6 +2516,7 @@ fn current_peer(
       _ -> deadline_ms
     },
     tools: cell.tools,
+    placement: agent.Here,
   ))
 }
 
@@ -2889,7 +2893,8 @@ fn joined(
           notes:,
           usage: usage_of(usage, handle.strand),
         )
-      Pending(handle:, waited_ms:) -> remote_spawn.Pending(handle:, waited_ms:)
+      Pending(handle:, waited_ms:, ..) ->
+        remote_spawn.Pending(handle:, waited_ms:)
     }
   })
 }

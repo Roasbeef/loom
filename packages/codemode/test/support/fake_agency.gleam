@@ -99,11 +99,13 @@ pub fn admitting(into: Subject(Seen), ready: fn(Handle) -> Waited) -> Agency {
           outcome: option.None,
           deadline_ms: option.None,
           tools: [],
+          placement: agent.Here,
         ),
       ])
     },
     max_wait_ms: 30_000,
     model_names: ["reviewer", "worker"],
+    orchestrator_names: [],
     holds: fn(_caller, _tool) { Ok(Nil) },
   )
 }
@@ -121,6 +123,7 @@ pub fn refusing(refusal: Refusal) -> Agency {
     roster: fn(_caller) { Error(refusal) },
     max_wait_ms: 30_000,
     model_names: ["reviewer", "worker"],
+    orchestrator_names: [],
     holds: fn(_caller, _tool) { Ok(Nil) },
   )
 }

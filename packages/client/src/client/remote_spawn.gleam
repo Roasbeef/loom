@@ -341,21 +341,20 @@ pub fn agent_request(
         Error(Nil) -> Ok(Nil)
       }
   })
-  Ok(
-    agent.SpawnRequest(
-      purpose: request.purpose,
-      brief: request.brief,
-      model: request.model,
-      tools: request.tools,
-      within_ms: Some(within_ms),
-      result_schema: request.result_schema,
-      context: agent.Fresh,
-      detach: case request.detach {
-        Attached -> False
-        Detached -> True
-      },
-    ),
-  )
+  Ok(agent.SpawnRequest(
+    purpose: request.purpose,
+    brief: request.brief,
+    model: request.model,
+    tools: request.tools,
+    within_ms: Some(within_ms),
+    result_schema: request.result_schema,
+    context: agent.Fresh,
+    detach: case request.detach {
+      Attached -> False
+      Detached -> True
+    },
+    on: None,
+  ))
 }
 
 /// The parent's tools that the ceiling also holds. A child's tools are narrowed
@@ -409,6 +408,8 @@ pub fn refusal_of(
     agent.MalformedHandle(..)
     | agent.NotAddressable(..)
     | agent.ResultSchemaUnmet(..)
-    | agent.ToolNotHeld(..) -> StoreFailure(reason: agent.describe(refusal))
+    | agent.ToolNotHeld(..)
+    | agent.RemoteRefused(..)
+    | agent.RemoteSilent(..) -> StoreFailure(reason: agent.describe(refusal))
   }
 }

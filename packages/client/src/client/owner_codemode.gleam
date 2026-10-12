@@ -153,6 +153,7 @@ fn stand_in(owner: OwnerServices) -> agent.Agency {
     roster: fn(_caller) { Error(agent.AgencyUnavailable) },
     max_wait_ms: 0,
     model_names: [],
+    orchestrator_names: [],
     holds: owner.holds,
   )
 }

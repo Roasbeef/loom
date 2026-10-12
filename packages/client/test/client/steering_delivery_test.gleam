@@ -139,6 +139,7 @@ pub fn local_and_remote_steering_reach_the_next_provider_context_test() {
         result_schema: None,
         context: agent.Fresh,
         detach: False,
+        on: None,
       ),
     )
     as "the recipient is a real child"
