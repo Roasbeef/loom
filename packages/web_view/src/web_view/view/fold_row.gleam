@@ -252,6 +252,8 @@ pub fn reading(
 /// names the tool the way the model spelled it. A failed step with no refusal,
 /// such as a rejected program, whose rows carry their own title and reason,
 /// keeps its rows as they are, and so does a step that is running or done.
+/// A failed body is one memo leaf over its words and rows, so an unrelated
+/// update does not rebuild its refusal or trim the full output again.
 ///
 /// ## Examples
 ///
@@ -264,31 +266,49 @@ pub fn step_body(
   rows: List(Line),
   draw: fn(Line) -> Element(message),
 ) -> List(Element(message)) {
-  case standing {
+  case standing, rows {
+    // An absent body must remain absent so the step has no empty chevron.
+    turns.Failed, [] -> []
+
     // Only a failed step replaces its result rows with a refusal sentence.
     // Successful and pending results can be large; joining and trimming them
     // here would repeat work whose result those states never use.
-    turns.Pending | turns.Done -> list.map(rows, line_row(_, draw))
+    turns.Pending, _ | turns.Done, _ -> list.map(rows, line_row(_, draw))
 
-    turns.Failed -> {
-      let #(refusal, rest) =
-        list.partition(rows, fn(row) {
-          row.speaker == transcript_line.ToolResult
-          || row.speaker == transcript_line.ToolFailure
-        })
-      let engine =
-        refusal
-        |> list.map(refused_text)
-        |> string.join("\n")
-        |> string.trim
-      case engine {
-        "" -> list.map(rows, line_row(_, draw))
-        _ -> [
-          failure(step_words.failure_sentence(words, engine), engine),
-          ..list.map(rest, line_row(_, draw))
-        ]
-      }
-    }
+    // The failed body is one leaf: its refusal preprocessing and plain rows
+    // are reused together. Nested line memos would be lost on a parent hit.
+    turns.Failed, [_, ..] -> [
+      element.memo([element.ref(words), element.ref(rows)], fn() {
+        failed_body(words, rows, draw)
+      }),
+    ]
+  }
+}
+
+// A changed failure rebuilds its body in full. Keeping the draw callbacks
+// inside this leaf avoids repeating joins and Unicode trims on other updates.
+fn failed_body(
+  words: Words,
+  rows: List(Line),
+  draw: fn(Line) -> Element(message),
+) -> Element(message) {
+  let #(refusal, rest) =
+    list.partition(rows, fn(row) {
+      row.speaker == transcript_line.ToolResult
+      || row.speaker == transcript_line.ToolFailure
+    })
+  let engine =
+    refusal
+    |> list.map(refused_text)
+    |> string.join("\n")
+    |> string.trim
+  case engine {
+    "" -> element.fragment(list.map(rows, draw))
+    _ ->
+      element.fragment([
+        failure(step_words.failure_sentence(words, engine), engine),
+        ..list.map(rest, draw)
+      ])
   }
 }
 
