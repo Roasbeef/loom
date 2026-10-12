@@ -47,6 +47,8 @@ Routes live in the URL fragment, so a deep link loads the single file that GitHu
 
 ## Layout of the source
 
+`src/site/README.md` explains how the application works: the Lustre loop, the model, routing, the figures and the replay.
+
 | Path | What it holds |
 |---|---|
 | `src/loom_site.gleam` | The application: model, update, view. |
