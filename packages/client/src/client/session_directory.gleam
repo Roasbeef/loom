@@ -382,7 +382,8 @@ pub fn peers(
 /// The directory of a member daemon (protocol-change/083): lookups read this
 /// member's copy of the owner record. `local` is this daemon's node name, and
 /// `listed` its configured orchestrators, through which an owner's node is
-/// named to a client.
+/// named to a client. Like `peers`, it reaches and describes nobody until it is
+/// given `with_reach` and `describing`.
 ///
 /// ## Examples
 ///
@@ -404,6 +405,7 @@ pub fn khepri(
       }
     },
     reach: cannot_reach,
+    describe: cannot_describe,
     activate: fn(_orchestrator, _activation) { Error(Nil) },
     settle: fn() { Nil },
     ownership: None,
