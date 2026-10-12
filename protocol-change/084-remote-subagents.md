@@ -3,9 +3,9 @@
 **Status**: PROPOSED 2026-10-09, direction ruled by the owner the same day
 (transport, child shape, approvals, who spawns, and the defaults). Phase 1 was
 simplified after review on 2026-10-11. Slices S1 (the policy and the port
-messages) and S2 (the delegate session and the box's Agency) of phase 1 are
-built; the rest is not, and every spelling below that is not built is
-provisional until phase 1 lands.
+messages), S2 (the delegate session and the box's Agency) and S3 (the laptop's
+stubs, drainer and tools) of phase 1 are built; the rest is not, and every
+spelling below that is not built is provisional until phase 1 lands.
 **Affects**: the orchestrator port's closed message type (three constructors in
 phase 1, `Spawn`, `Join` and `RunEnded`; `Release` and `ChildSend` in phase 2;
 `ChildEscalation` and `Resolve` in phase 3), `loom.toml` (a `[spawners.<name>]`
@@ -436,7 +436,18 @@ Phase 1 has five slices, each of which lands on `origin/main` alone.
   with a second instance, and `reaping_hooks` writing `remote-ended` rows;
   `agent_spawn` with `on`, `agent_wait` over mixed handles, `agent_roster` from
   stubs; `context: "mine"` refused; the upward refusal wording. Tests:
-  simulated-session tests with a fake endpoint.
+  simulated-session tests with a fake endpoint. As built, the Agency asks through
+  `client/remote_reach.Reach`, a record of the three functions, because the
+  orchestrator port sits above the Agency in the module graph;
+  `client/remote/remote_spawner` fills it. The handle's `@{orchestrator}` suffix
+  is parsed and dropped, and a wait finds a remote handle in the parent's own
+  stubs. A refusal heard where the model waits removes the stub, and one the
+  drainer learns afterwards leaves it `Refused` with the reason. The process that
+  writes a run-end row tells the orchestrator at once and leaves the row `Pending`
+  for the drainer only when nobody answered. Remote usage is recorded on the
+  settled stub; counting it against a goal and refusing `sessions.move` for a
+  parent that holds a live stub are not built. The design note's section 15 lists
+  the differences.
 - **S4. Deadline tick and retention.** The per-delegate-session
   `weft/state_machine` calling `reap_overdue`, and the boot sweep.
 - **S5. A shipped two-orchestrator test and the P model.** The test is modelled

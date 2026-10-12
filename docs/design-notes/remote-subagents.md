@@ -1,9 +1,11 @@
 # Subagents on another orchestrator
 
 Status: **direction ruled by the owner, 2026-10-09; phase 1 simplified after
-review, 2026-10-11. Slices S1 and S2 of phase 1 (the policy and the port
-messages, then the delegate session and the box's Agency) are built; the rest is
-design.** The wire and durable formats it adds are drafted in
+review, 2026-10-11. Slices S1 to S3 of phase 1 (the policy and the port
+messages, the delegate session and the box's Agency, then the laptop's stubs,
+drainer and tools) are built; the rest is design. Where S3 had to differ from
+what follows, the section says so under "As built in S3".** The wire and durable
+formats it adds are drafted in
 [protocol-change/084](../../protocol-change/084-remote-subagents.md). It
 builds on the distributed runtime of PR #923
 ([the design note](distributed-runtime.md),
@@ -1052,6 +1054,52 @@ Five slices. Each lands on `origin/main` alone, and none needs #934.
     `Join` per orchestrator within 25 s. `agent_roster` reads from stubs.
   - `context: "mine"` is refused, and the upward refusal gets its wording.
   - Tests: simulated-session tests with a fake endpoint.
+
+  As built in S3, the places where the code differs from the sections above:
+
+  - **The Agency asks through a record, `client/remote_reach.Reach`,** and not
+    through the port. The orchestrator port sits above the Agency in the module
+    graph, so the Agency cannot import it. The record holds the session id, the
+    names `on` may take, `offered` (the owner holds the session alone, asked at
+    each spawn because inviting a member changes it) and the three functions.
+    `client/remote/remote_spawner` is the sending end that fills it, over
+    `orchestrator_port.ask_spawn`, `ask_join` and `ask_run_ended`, which are no
+    longer test-only. The failures are peer mail's `Refused(reason)` and
+    `Unreachable`, with a refusal rendered as a sentence
+    (`remote_spawn.describe_refusal`).
+  - **A refusal the drainer learns keeps its stub.** Section 8.2 says a refusal
+    removes the stub and section 8.4 says it records the reason. Both are built.
+    A refusal heard where the model is waiting removes the stub, since the model
+    has it in its own result. One the drainer learns, after the model was told the
+    child may exist, leaves the stub in `Refused` with the reason, because that is
+    the only way the roster can say it. A `Refused` stub does not count against the
+    caps.
+  - **The reaper tells the orchestrator at once.** Section 8.3 has the drainer
+    send the run-end row. The process that writes it is already off the strand
+    driver, so it sends the row immediately and leaves it `Pending` for the
+    drainer only if nobody answered. A refusal ends the row as an answer does.
+  - **The suffix of a handle is dropped.** `parse_handle` reads `@{orchestrator}`
+    and discards it; the Agency finds a remote handle in the parent's own stubs. A
+    suffix a model typed is not evidence of where a child is, and the stub is the
+    record the lineage cell and the roster already rest on.
+  - **The roster has four standings,** not five: unknown (the spawn is not
+    answered, which also covers a spawn still in flight, since `agent_spawn` is
+    exclusive), running, settled with the outcome, and refused with the reason.
+  - **A wait that cannot reach an orchestrator** returns `Pending` with the name of
+    the silent orchestrator (`Waited.Pending.unanswered`), and the text says the
+    state is unknown. A refused join refuses the wait (`RemoteRefused`).
+  - **New refusals** `RemoteRefused(orchestrator, reason)` and
+    `RemoteSilent(orchestrator)` carry the two outcomes of a spawn that the Agency's
+    own refusals did not. Code mode reads them as unfamiliar codes
+    (`remote_refused`, `remote_silent`).
+  - **Usage is recorded on the stub and not yet used.** A `Ready` entry stores the
+    child's usage on its `Settled` stub. Counting it against a goal's token budget
+    and showing it in the status bar, from section 10, are not built.
+  - **`sessions.move` does not yet refuse a parent that holds a live stub** (section
+    12). It is not in the slice's list.
+  - The tools' model-facing descriptions changed (the `on` argument and the
+    `agent_wait` handle text). `make prelude-check` is unaffected, because the
+    generated prelude is rendered from `packages/cap`, not from these.
 - **S4. Deadline tick and retention.**
   - For each open delegate session, a `weft/state_machine` whose periodic
     timeout calls `reap_overdue`.

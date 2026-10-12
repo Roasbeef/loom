@@ -671,6 +671,12 @@ not share a node. List each orchestrator on the other. A daemon with a
 lists any orchestrator itself; the table only says whom this daemon asks. A daemon
 without `[orchestrators]` asks nobody.
 
+Every row is also a value of `on` in `agent_spawn`, which starts a subagent on that
+orchestrator instead of in the session. It is offered only in a session its owner
+holds alone, and the other orchestrator's `[spawners.<name>]` table, below, is the
+one authority: this table has no switch for it, and an orchestrator with no spawner
+table for this machine refuses the spawn and says so.
+
 | Key | Type | Required, default | Allowed values | Meaning |
 | --- | --- | --- | --- | --- |
 | `node` | string | required | one of the `node` values in `[[distribution.peers]]` | The peer node that answers for this orchestrator. |

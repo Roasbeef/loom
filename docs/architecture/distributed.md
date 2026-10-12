@@ -919,10 +919,11 @@ with, so a changed plan takes effect at the next reopen.
 
 [The design note](../design-notes/remote-subagents.md) and
 [protocol-change/084](../../protocol-change/084-remote-subagents.md) give a model
-on one orchestrator, a laptop, children that run on another, the box. Only the
-box's side exists so far: its policy, the orchestrator port's messages and the
-delegate sessions that serve them. The laptop's side, which sends the messages,
-is a later slice.
+on one orchestrator, a laptop, children that run on another, the box. Both sides
+exist: the box's policy, the orchestrator port's messages and the delegate
+sessions that serve them, and the laptop's stubs, drainer and tools that send the
+messages. The shipped two-orchestrator test and the formal model are a later
+slice.
 
 The box lists each orchestrator that may spawn on it in a
 `[spawners.<name>]` table (`client/spawners`, read once at startup like
@@ -1002,6 +1003,92 @@ fence first and is refused with `ParentRunEnded`. A spawn that finds the child
 its call site already made adopts it whatever the fence says, since adopting
 creates nothing for the run end to have missed.
 
+### The parent's side
+
+`agent_spawn` takes an optional `on`, an enum of the `[orchestrators.<name>]`
+keys the session reaches. The schema leaves the argument out when there are
+none, so a session that cannot use it does not carry it in the cached tool array.
+The daemon fills each session's `Config.remote` (`client/remote_reach.Reach`) from
+its membership and its orchestrators (`client/remote/remote_spawner`): three
+functions, one per message, that connect to the pinned peer on demand and answer
+`Ok`, `Refused(reason)` or `Unreachable`, as `remote_peer` does for peer mail.
+The record is in its own module because the orchestrator port sits above the
+Agency in the module graph, so the Agency cannot import the port. The reach also
+holds `offered`, asked at each spawn: it is true only in a session the owner
+holds alone (`manager.unshared_sessions`), and inviting a member makes the next
+spawn refuse.
+
+**The stub is written first.** The holder admits a remote spawn: it checks the
+depth cap and the fan-out caps and writes `remote-child/{call site digest}`
+(`client/remote_child`), a reserved fact holding the orchestrator, the parent
+strand, the call site, the parent's depth and tools, the whole request and the
+child's derived name. The write expects the cell to be absent, so a replay and an
+interrupted first attempt arrive at the same stub, and a stub whose recorded call
+site is not the caller's is refused as `NameAlreadyMinted`, as an adopted child's
+is. The network then runs on the caller's own process, not in the holder, so a
+silent orchestrator cannot hold up the session's other spawns.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Requested: holder writes the stub
+    Requested --> Spawned: Spawn answered
+    Requested --> Refused: drainer learns a refusal
+    Requested --> [*]: refused where the model hears it
+    Refused --> Spawned: a later answer names a child
+    Spawned --> Settled: a Join reports it finished
+    Refused --> [*]
+    Settled --> [*]
+```
+
+The spawn is sent, and resent with a pause that doubles from 50 ms to 2 s, for 30
+seconds. The receiver adopts the child its call site made, so a reply lost on the
+way back returns the same handle. An answer writes the lineage cell, which names
+the orchestrator, and then moves the stub to `Spawned`; every step is a
+compare-and-set that leaves a stub alone once it has left the state the step
+starts from, because the effect process and the drainer can both hear the same
+answer. A refusal heard by the model removes the stub, since nothing was created.
+When the window runs out the stub stays `Requested`, the model is told the child
+may exist (`RemoteSilent`), and the drainer is rung.
+
+**The drainer.** `peer_outbox_drain.Options` holds a `pass`, so one machine can
+drain peer mail and a second can drain this: `client/remote_drain.pass` resends
+each `Requested` stub and each `Pending` run-end row every five seconds, asks a
+silent orchestrator once per pass, and has no time to live. A refusal it learns
+after the model has moved on keeps the stub in `Refused`, with the reason, so the
+roster can show it. Neither kind of row is a peer-mail outbox row, and
+`peers.resend` and `OutboxDue` are untouched.
+
+**Capacity.** `is_live` reads a strand's own state, which a remote child lacks,
+so `check_capacity` counts live stubs (`Requested` or `Spawned`) beside the live
+cells, against the same `fan_out` and `session_strands`. A stub whose
+orchestrator has not answered still counts, which errs toward refusing a spawn.
+
+**Waiting.** `agent_wait` takes local and remote handles in one call. A handle is
+remote because a stub of this session holds it; its `@orchestrator` suffix is
+parsed and dropped, so a suffix a model typed is not evidence of anything. The
+Agency runs the local wait and one `Join` per orchestrator as tasks beside each
+other, so the whole is as long as the longest, with each join's window cut to 25
+seconds. A join that is `Unreachable` is not queued: its handles come back
+`Pending` naming the orchestrator that did not answer, and the model may wait
+again. A `Ready` entry moves the stub to `Settled` with the child's usage, which
+is recorded and not yet metered or counted against a goal.
+
+**The roster** lists remote children from the stubs with the orchestrator and how
+the record stands: unknown (no answer yet), running, settled with its outcome, or
+refused with the reason. A message to a remote child is refused with a sentence
+saying it reports through its answer and notes, and a remote child's message to
+its parent reads that its parent runs on another orchestrator. `context:
+my_conversation` is refused with `on`.
+
+**The end of a run.** The run-end hook already spawns `reap_run` off the strand
+driver. After it aborts the local children it writes
+`remote-ended/{operation}/{orchestrator}` for each orchestrator that holds a live,
+attached child or stub of the operation, tells each at once, and rings the
+drainer for any that did not answer. A refusal ends a row as an answer does. A
+child spawned with `detach` writes no row and outlives the run. A crash between a
+run's end and its row is not repaired in phase 1: the children stop at their
+deadlines on the box.
+
 ## Failures
 
 This table lists each failure, what the system does, and what an operator or
@@ -1031,6 +1118,11 @@ the model sees. "Unknown" below always means the model reads
 | Pin, name or CA mismatch | The TLS handshake is refused in whichever direction fails. | `executor_unavailable:` with a deliberately plain reason. |
 | Spawn for a run that already ended | The delegate session's `delegate/ended/{operation}` fence refuses it with `ParentRunEnded`, and no child is made. | The spawn refusal; a resend of a spawn whose child already exists is still answered with that child. |
 | Spawner past `max_sessions` | The registry refuses to create a session for a new parent. | `CapReached(MaxSessions)`; parents that have a session still reach it. |
+| Orchestrator silent during `agent_spawn` | The spawn is resent for 30 s. The stub stays `Requested` and the drainer resends from it. The receiver adopts the child the call site made. | `RemoteSilent`: the child may exist. Within the window an ordinary spawn. The roster shows the stub as unknown until the drainer settles it. |
+| Orchestrator refuses a spawn | Definitive. Where the model hears it, the stub is removed. | `RemoteRefused` with the box's reason, naming the rule or cap. |
+| Laptop restarts with a stub on disk | The drainer's first pass at session open resends each `Requested` stub, and a replayed `agent_spawn` finds its stub. | The same handle, once. |
+| Run ends while the box is unreachable | The `remote-ended` row stays `Pending` and the drainer retries every 5 s. | Nothing; the children stop when the message lands or at their deadlines. |
+| Join to an unreachable orchestrator | Not queued. | Its handles are `Pending`, naming the orchestrator. |
 | Mismatched builds | `Attach` has one shape in every version, so a different `protocol.version` is refused at attach by value, in either direction, and the host stays up. Any other message the receiver cannot match crashes the host, which is why sessions are stopped before either machine is upgraded. | At attach: `the executor speaks protocol version N and this orchestrator does not`, and the open fails. Later: `daemon.executor_lost` on the executor. |
 
 **Quorum does not apply.** No state in this design is replicated or decided by a
@@ -1118,6 +1210,13 @@ The directory holds no state of its own, so it has no model.
   opens it. A message queued while the drainer is backed off for older messages
   waits for the same tick. Default links (`[peers] default_links`) join sessions
   of one daemon only, so they do not reach a session on another orchestrator.
+- **Remote children** (phase 1) report their usage on the parent's stub and are
+  not metered: the usage is not yet counted against a goal's token budget or shown
+  in a status bar. A message to a remote child is refused, and a remote child's
+  message upward reads that its parent is elsewhere. A parent session that holds a
+  live stub is not yet refused by `sessions.move`, and a parent session's deletion
+  leaves its children until their deadlines on the box. The box's deadline tick and
+  retention sweep are a later slice.
 - **Moves** do not resume inside a file, carry running processes, the memory
   domain, memberships or claims, or appear in the web view. The terminal does
   not render the `moving` and `moved` members of a session view.
@@ -1146,6 +1245,7 @@ The directory holds no state of its own, so it has no model.
 | `client/session_move`, `client/session_mover`, `client/session_movers`, `client/session_importer` | Moving a session |
 | `client/spawners`, `client/remote_spawn`; `daemon/main.spawn_host` | The `[spawners]` table, the subagent messages' vocabulary and the daemon's spawn host |
 | `client/delegate_host`, `client/child_usage`; `agency.delegate_spawn`, `delegate_join`, `delegate_run_ended`; `manager.delegate_session`; `storage/catalogue.claim_delegate` | The delegate session of a (spawner, parent session) pair: finding or creating it, the Agency's side of a remote parent, a child's usage, and the catalogue record |
+| `client/remote_child`, `client/remote_reach`, `client/remote/remote_spawner`, `client/remote_drain`; `agency.spawn_elsewhere`, `wait_across`, `stop_remote_children`; `runtime/lineage` | The parent's side: stubs and run-end rows, the Agency's reach, its sending end, the second drainer's pass, and the lineage cell's `orchestrator` |
 
 `packages/client/CLAUDE.md` has one section per phase, from "Trusted
 distribution membership" to "Moving a session between orchestrators", with the
