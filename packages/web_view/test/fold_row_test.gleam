@@ -419,6 +419,62 @@ pub fn a_reasoning_row_opens_to_the_whole_text_as_markdown_test() {
   assert string.contains(html, "md-list")
 }
 
+// A summarized block as the lane draws it: the summarizer's label under the
+// terminal's header line, and the block's own text when the page holds it.
+fn summarized(label: String, held: List(transcript_line.Line)) -> String {
+  let thought =
+    Block("2.0", FromSpacer, [
+      #(
+        "2.0:0",
+        Line(transcript_line.SummarizedReasoning, "  [Ctrl+G]\n" <> label),
+      ),
+    ])
+  drawn([
+    work([
+      turns.Narrated(thought, dict.from_list([#("2.0:0", held)]), Some(90_000)),
+    ]),
+  ])
+}
+
+pub fn a_long_summary_opens_whole_before_the_raw_text_test() {
+  let html =
+    summarized("Found the <b>x</b> bug.\nIt lives in parse.", [
+      Line(transcript_line.Reasoning, "raw one\nraw two\nraw three"),
+    ])
+
+  // The heading still counts the raw block's lines, and the preview is the
+  // summary's first line.
+  assert string.contains(html, "· 3 lines · 1m 30s</span>")
+  assert string.contains(html, "<span class=\"subject preview\">Found the")
+
+  // The body opens with the whole summary and then the raw text, all as text.
+  let assert Ok(#(_, body)) = string.split_once(html, "slot=\"body\"")
+    as "the row has a body"
+  let assert Ok(#(summary_part, raw_part)) = string.split_once(body, "raw one")
+    as "the raw text follows"
+  assert string.contains(summary_part, "It lives in parse.")
+  assert string.contains(raw_part, "raw three")
+  assert !string.contains(html, "<b>x</b>")
+  assert string.contains(html, "&lt;b&gt;x&lt;/b&gt;")
+}
+
+pub fn a_short_summary_the_preview_shows_whole_is_not_repeated_test() {
+  let html =
+    summarized("Found it.", [
+      Line(transcript_line.Reasoning, "raw one\nraw two"),
+    ])
+  assert string.contains(html, "· 2 lines · 1m 30s</span>")
+  assert count(html, "Found it.") == 1
+  assert count(html, "raw one") == 1
+}
+
+pub fn a_summary_with_no_held_text_still_opens_its_own_lines_test() {
+  let html = summarized("Found it.\nSecond line", [])
+  assert string.contains(html, "· 2 lines · 1m 30s</span>")
+  assert string.contains(html, "slot=\"body\"")
+  assert count(html, "Second line") == 1
+}
+
 pub fn a_fold_is_one_collapsed_line_and_no_rule_test() {
   let html =
     drawn([work([step(Words("Read", Mono("a"), None), turns.Done, [])])])
