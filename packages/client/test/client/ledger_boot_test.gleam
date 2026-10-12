@@ -96,7 +96,10 @@ pub fn a_table_without_a_ledger_starts_distribution_alone_test() {
   assert process.named(ledger_service.default_name()) == Error(Nil)
 }
 
-pub fn a_ledger_cannot_serve_a_directory_member_yet_test() {
+// With a ledger the members are the ledger's, and whether this node is one is
+// the ledger's answer, so a caller that passes a list of members would be a
+// second source.
+pub fn a_ledger_takes_no_member_list_from_the_caller_test() {
   let assert Ok(Some(config)) =
     distribution.parse(document("ledger = \"/c/ledger.log\"\n"))
   let assert Error(reason) =

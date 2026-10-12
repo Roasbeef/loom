@@ -161,6 +161,20 @@ pub fn start_live(
 @external(erlang, "client_distribution_ffi", "publish_pins")
 pub fn publish_pins(pins: List(#(BitArray, String))) -> Nil
 
+/// Replaces the row that names the other members of the session directory this
+/// node is linked to, which `link` reads in ledger mode. The calling process
+/// must be the one that owns the table `publish_pins` created.
+///
+/// OTP `ets:insert/2`, for the reason `publish_pins` gives.
+///
+/// ## Examples
+///
+/// ```gleam
+/// ffi_distribution.publish_directory(["loom@hub.example"])
+/// ```
+@external(erlang, "client_distribution_ffi", "publish_directory")
+pub fn publish_directory(members: List(String)) -> Nil
+
 /// Resolves one peer name to its node. In static mode that is the node made for
 /// it at boot; in live mode it is a member the pin table lists.
 ///
@@ -178,8 +192,9 @@ pub fn peer(membership: Membership, name: String) -> Result(Node, Failure)
 /// How this node connects to a configured peer: `Visible` when both are
 /// directory members, `Hidden` otherwise.
 ///
-/// A list lookup over the members made at boot; it lives beside `start`
-/// because only the membership term knows which atoms were made for members.
+/// A list lookup over the members made at boot, or in ledger mode over the row
+/// `publish_directory` wrote; it lives beside `start` because only the
+/// membership term knows which of the two applies.
 ///
 /// ## Examples
 ///

@@ -126,3 +126,42 @@ pub fn the_table_is_bounded_by_the_ledgers_members_and_not_the_static_peer_cap_t
   // A node that is not a member has no rows.
   assert ledger_trust.pairs(full.ledger, "loom@x.example.net") == []
 }
+
+fn seated(
+  log: history.Log,
+  name: String,
+  standing: membership_entry.DirectoryStanding,
+) -> history.Log {
+  history.must_push(
+    log,
+    Upsert(Member(..fixture.member(name, []), directory: standing)),
+  )
+}
+
+// A node connects visibly to the other seated members it is linked to, and to
+// no one else, so Ra sees them in `nodes()` and nothing else does.
+pub fn a_seated_node_lists_the_other_seated_members_it_is_linked_to_test() {
+  let log =
+    history.genesis()
+    |> seated("a", membership_entry.Voter)
+    |> seated("b", membership_entry.Voter)
+    |> seated("c", membership_entry.Learner)
+    |> history.enroll("laptop", ["a"])
+  assert ledger_trust.directory_nodes(log.ledger, "loom@a.example.net")
+    == ["loom@b.example.net", "loom@c.example.net"]
+  assert ledger_trust.directory_nodes(log.ledger, "loom@c.example.net")
+    == ["loom@a.example.net", "loom@b.example.net"]
+}
+
+// A node outside the directory starts hidden, whoever is seated, and connects
+// hidden to everyone.
+pub fn a_node_outside_the_directory_lists_none_test() {
+  let log =
+    history.genesis()
+    |> seated("a", membership_entry.Voter)
+    |> seated("b", membership_entry.Voter)
+    |> history.enroll("laptop", ["a"])
+  assert ledger_trust.directory_nodes(log.ledger, laptop) == []
+  assert ledger_trust.directory_nodes(log.ledger, "loom@ghost.example.net")
+    == []
+}

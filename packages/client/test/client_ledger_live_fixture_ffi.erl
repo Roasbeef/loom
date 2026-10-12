@@ -377,6 +377,28 @@ commands(Node, Lines, State) ->
             (maps:get(release, State))(),
             say("RELEASED", []),
             commands(Node, Lines, maps:remove(release, State));
+        %% The session directory (protocol-change/086, phase 3). The seed creates
+        %% the cluster and every node then runs the member actor over its own
+        %% ledger. `await_ra` is a bounded wait inside the child for Ra to hold
+        %% exactly the members named, as this node sees them.
+        {line, "directory_seed"} ->
+            {ok, Handle} = ?LIVE:directory_seed(Node, directory_path()),
+            say("DIRECTORY seeded", []),
+            commands(Node, Lines, State#{member => Handle});
+        {line, "directory_member"} ->
+            {ok, Handle} = ?LIVE:directory_member(Node, directory_path()),
+            say("DIRECTORY started", []),
+            commands(Node, Lines, State#{member => Handle});
+        {line, "await_ra " ++ Expected} ->
+            case ?LIVE:await_ra(maps:get(member, State), list_to_binary(Expected),
+                                80000) of
+                {ok, nil} -> say("RA ok", []);
+                {error, Why} -> say("RA_FAILED ~s", [Why])
+            end,
+            commands(Node, Lines, State);
+        {line, "ra"} ->
+            say("RA_IS ~s", [?LIVE:ra_text(maps:get(member, State))]),
+            commands(Node, Lines, State);
         {line, "await_up " ++ Name} ->
             say(event(nodeup, Name, "UP"), []),
             commands(Node, Lines, State);
@@ -397,6 +419,10 @@ event(Kind, Name, Word) ->
             end
     after 60000 -> Word ++ "_FAILED"
     end.
+
+%% Where a directory member keeps its store: under its own home, which each
+%% emulator has to itself.
+directory_path() -> list_to_binary(filename:join(os:getenv("HOME"), "directory")).
 
 node_list("-") -> [];
 node_list(Names) ->

@@ -9,14 +9,25 @@
 //// starts the ledger process, publishes the pin table and starts distribution
 //// in that order, and then a few commands the parent sends over stdin.
 ////
+//// A node can also be a member of the session directory (protocol-change/086,
+//// phase 3). `directory_seed` creates the cluster the way `loomd directory
+//// bootstrap` does and `directory_member` joins it, and both then run the real
+//// member actor over the node's own ledger, so the Ra leader's reconciler is
+//// the production one. `await_ra` is the parent's way to wait for Ra to hold a
+//// stated set of members.
+////
 //// One node can be started with a hook in front of the production observer.
 //// The hook holds the ledger process in the middle of applying an entry, and
 //// the node publishes the table itself and leaves the disconnect to the
 //// node-up check, so that a scenario can order a real handshake against the
 //// publish and prove that the node-up check alone ends the connection.
 
+import client/directory/member
+import client/directory/roster
+import client/directory/store
 import client/distribution
 import client/distribution_plan.{type Role}
+import client/internal/ffi_khepri
 import client/internal/ffi_nodes
 import client/ledger_boot
 import client/ledger_control
@@ -423,4 +434,91 @@ fn failure_text(failure: ledger_control.Failure) -> String {
     ledger_control.Invalid(step:) -> "ledger_invalid: " <> step
     ledger_control.Unavailable(reason:) -> reason
   }
+}
+
+// --- the session directory ----------------------------------------------------
+
+/// Creates the directory's cluster on this node, as `loomd directory bootstrap`
+/// does, and starts the member actor over the node's ledger. The node's ledger
+/// entry must seat it as a voter.
+pub fn directory_seed(
+  node: Node,
+  directory: String,
+) -> Result(member.Member, String) {
+  use Nil <- result.try(store.start_system(directory))
+  use Nil <- result.try(store.boot(30_000))
+  use Nil <- result.try(store.mark_joined(directory))
+  directory_member(node, directory)
+}
+
+/// Starts the member actor over the node's ledger. It links to the nodes the
+/// ledger seats and joins the cluster in the seat the ledger gives this node.
+pub fn directory_member(
+  node: Node,
+  directory: String,
+) -> Result(member.Member, String) {
+  use service <- result.try(option.to_result(
+    node.booted.ledger,
+    "the node runs no ledger",
+  ))
+  member.start(member.Config(
+    directory:,
+    members: member.Followed(read: fn() {
+      ledger_service.status(service, 1000)
+      |> result.map(fn(status) { roster.roster(status.ledger) })
+      |> result.replace_error(Nil)
+    }),
+    local: node.local,
+    membership: node.booted.membership,
+    logger: log.discard(),
+  ))
+}
+
+/// Waits, within a bound, until Ra, as this member sees it, holds exactly the
+/// members in `expected`: node names with `:voter`, `:promoting` or `:learner`,
+/// comma separated.
+pub fn await_ra(
+  handle: member.Member,
+  expected: String,
+  within_ms: Int,
+) -> Result(Nil, String) {
+  let wanted = expected |> string.split(",") |> list.sort(string.compare)
+  poll.until(within: within_ms, every: 100, attempt: fn() {
+    case ra_words(handle) {
+      Ok(held) if held == wanted -> poll.Done(Nil)
+      Ok(_) | Error(Nil) -> poll.Retry
+    }
+  })
+  |> outcome("Ra did not hold " <> expected <> ", it held: " <> ra_text(handle))
+}
+
+/// The members and the leader as this member sees them, in one line.
+pub fn ra_text(handle: member.Member) -> String {
+  case member.status(handle).ra {
+    Ok(store.Membership(members:, leader:)) ->
+      "leader="
+      <> option.unwrap(leader, "-")
+      <> " "
+      <> string.join(words(members), ",")
+    Error(store.Unavailable(reason:)) -> "unavailable: " <> reason
+  }
+}
+
+fn ra_words(handle: member.Member) -> Result(List(String), Nil) {
+  case member.status(handle).ra {
+    Ok(store.Membership(members:, ..)) -> Ok(words(members))
+    Error(_) -> Error(Nil)
+  }
+}
+
+fn words(members: List(#(String, ffi_khepri.Voting))) -> List(String) {
+  list.map(members, fn(held) {
+    held.0
+    <> case held.1 {
+      ffi_khepri.Voter -> ":voter"
+      ffi_khepri.Promoting -> ":promoting"
+      ffi_khepri.NonVoter -> ":learner"
+    }
+  })
+  |> list.sort(string.compare)
 }

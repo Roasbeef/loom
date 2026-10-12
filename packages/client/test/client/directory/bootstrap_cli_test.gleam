@@ -83,6 +83,39 @@ pub fn a_member_that_already_holds_a_store_is_refused_test() {
   )
 }
 
+// With a ledger there is no `[directory]` table to ask for, and the same
+// refusal holds before anything is reserved or started.
+pub fn a_ledger_member_that_already_holds_a_store_is_refused_test() {
+  let scratch = absolute(remote_fixtures.scratch("bootstrap-ledger-held"))
+  let config = scratch <> "/loom.toml"
+  let assert Ok(Nil) =
+    simplifile.write(
+      config,
+      "[distribution]
+node = \"alpha@10.0.0.1\"
+ca = \"/etc/loom/ca.pem\"
+certificate = \"/etc/loom/cert.pem\"
+key = \"/etc/loom/key.pem\"
+cookie = \"/home/loom/.erlang.cookie\"
+ledger = \"/etc/loom/ledger.log\"
+",
+    )
+    as "written"
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(scratch <> "/state/directory/LOOMSERVER1")
+    as "a store's server directory"
+  let assert Error(reason) =
+    directory_cli.run([
+      "bootstrap",
+      "--state-dir",
+      scratch <> "/state",
+      "--config",
+      config,
+    ])
+    as "a ledger member with a store is refused"
+  assert string.contains(reason, "already holds a directory store")
+}
+
 pub fn a_missing_config_flag_is_refused_with_the_usage_test() {
   let assert Error(reason) = directory_cli.run(["bootstrap"])
     as "the config is required"

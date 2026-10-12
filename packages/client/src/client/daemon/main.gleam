@@ -496,6 +496,65 @@ fn start_distribution(
   }
 }
 
+/// The directory settings of a daemon, given the table it read: the table
+/// itself when the trust is a static peer list, and the ledger's seats when the
+/// trust is a ledger, where a node is a member exactly when its own entry gives
+/// it a `voter` or `learner` standing. Every `[orchestrators.<name>]` node of a
+/// member must be a member, the rule of protocol-change/083 that a parse
+/// cannot check against a ledger, so it is checked here with the ledger the
+/// process holds. A count of voters outside three to seven, or an even count,
+/// is logged and not refused: the ledger records a fact the operator's command
+/// already vetted.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // main.ledger_directory(None, None, "loom@a.example", [], logger) == Ok(None)
+/// ```
+@internal
+pub fn ledger_directory(
+  configured: Option(directory_settings.Settings),
+  ledger: Option(Service),
+  local: String,
+  listed: List(orchestrators.Orchestrator),
+  logger: Logger,
+) -> Result(Option(directory_settings.Settings), String) {
+  case ledger {
+    None -> Ok(configured)
+    Some(service) -> {
+      use status <- result.try(
+        ledger_service.status(service, 5000)
+        |> result.replace_error("the ledger process did not answer"),
+      )
+      case directory_settings.from_ledger(status.ledger, local) {
+        None -> Ok(None)
+        Some(found) -> {
+          use Nil <- result.map(directory_settings.require_orchestrators(
+            listed,
+            found.members,
+          ))
+          let voters =
+            list.count(roster.places(status.ledger), fn(place) {
+              place.seat == store.Voter
+            })
+          case
+            voters < directory_settings.minimum_members
+            || voters > directory_settings.maximum_members
+            || int.is_even(voters)
+          {
+            True ->
+              log.warn(logger, "daemon.directory_voters", [
+                field.count("voters", voters),
+              ])
+            False -> Nil
+          }
+          Some(found)
+        }
+      }
+    }
+  }
+}
+
 // The tables that name a peer are checked against the ledger once, here, after
 // the ledger process holds the file and before the daemon listens. Parsing them
 // never reads the ledger (`client/ledger_reference`), because a session parses
@@ -642,9 +701,9 @@ pub fn audit_references(
 }
 
 /// The node every row of the tables that name a peer names, in the order a
-/// refusal should report them. `[directory]` is not among them: a directory
-/// member cannot use a ledger yet (`client/ledger_boot`), so a configuration
-/// with both never reaches this check.
+/// refusal should report them. `[directory]` is not among them: with a ledger
+/// the directory's members are the ledger's, and `ledger_directory` checks the
+/// `[orchestrators]` rows against them.
 ///
 /// ## Examples
 ///
@@ -1459,6 +1518,16 @@ pub fn prepare_startup(
     logger,
   ))
   use ledger <- result.try(ledger_handle(booted, configuration))
+  use directory <- result.try(
+    ledger_directory(
+      directory,
+      option.then(booted, fn(started) { started.ledger }),
+      atom.to_string(node.name(node.self())),
+      orchestrators,
+      logger,
+    )
+    |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
+  )
   use Nil <- result.try(
     audit_started(
       booted,

@@ -7,6 +7,12 @@
 //// the executors. A daemon without the table is not a member, and everything
 //// about it stays as it was before the directory existed.
 ////
+//// With a membership ledger (`[distribution] ledger`) there is no `[directory]`
+//// table. The members are the ledger's active members whose `directory`
+//// standing is `voter` or `learner`, and a node is a member when its own entry
+//// says so (`from_ledger`); a document with both is refused, so there is never
+//// a second list to disagree with the ledger (protocol-change/086, phase 3).
+////
 //// The checks here are the ones a cluster cannot work without. Every member
 //// must be a pinned peer, because any member may become Raft's leader and the
 //// leader must reach every follower. The daemon's own node must be listed,
@@ -15,8 +21,10 @@
 //// move never runs between a daemon that decides by the record and one that
 //// decides by its catalogue rows.
 
+import client/directory/roster
 import client/distribution
 import client/ledger_reference
+import client/membership_ledger.{type Ledger}
 import client/orchestrators.{type Orchestrator}
 import gleam/dict.{type Dict}
 import gleam/int
@@ -84,6 +92,26 @@ pub fn parse(text: String) -> Result(Option(Settings), String) {
   from_document(document)
 }
 
+/// The settings of a node whose trust is a ledger: the nodes the ledger seats in
+/// the directory, when this node is one of them, and `None` otherwise. The
+/// ledger can seat fewer than `minimum_members` or more than `maximum_members`
+/// nodes, because a seat is a fact the ledger records and not a configuration
+/// this daemon validates; the operator's `enroll` and `revoke` keep the voters
+/// within the bounds, and the daemon logs a count it finds outside them.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert settings.from_ledger(ledger, "loom@laptop.example") == None
+/// ```
+pub fn from_ledger(ledger: Ledger, local: String) -> Option(Settings) {
+  let places = roster.places(ledger)
+  case roster.seat_of(places, local) {
+    Ok(_) -> Some(Settings(members: list.map(places, fn(place) { place.node })))
+    Error(Nil) -> None
+  }
+}
+
 /// The membership `client/distribution` starts a node with: a `Member` when the
 /// table is present, `NotMember` otherwise.
 ///
@@ -140,6 +168,15 @@ fn table(
     Some(config) -> Ok(config)
     None -> Error("directory needs a [distribution] table naming its members")
   })
+  use Nil <- result.try(case distribution.ledger_path(config) {
+    None -> Ok(Nil)
+    Some(_) ->
+      Error(
+        "directory is derived from the membership ledger: remove the "
+        <> "[directory] table, and give each member a directory standing "
+        <> "with `enroll --directory`",
+      )
+  })
   use members <- result.try(member_names(fields))
   use Nil <- result.try(counted(members))
   use Nil <- result.try(distinct(members))
@@ -164,7 +201,7 @@ fn table(
     }),
   )
   use listed <- result.try(orchestrators.from_document(document))
-  use Nil <- result.map(orchestrators_are_members(listed, members))
+  use Nil <- result.map(require_orchestrators(listed, members))
   Settings(members:)
 }
 
@@ -213,9 +250,18 @@ fn distinct(members: List(String)) -> Result(Nil, String) {
   }
 }
 
-// A daemon in a directory moves sessions by the record, and one outside moves
-// them by its catalogue rows; a move between the two would have no single rule.
-fn orchestrators_are_members(
+/// Refuses an `[orchestrators.<name>]` row whose node is not one of `members`.
+/// A daemon in a directory moves sessions by the record, and one outside moves
+/// them by its catalogue rows; a move between the two would have no single
+/// rule. The daemon calls it with the ledger's members at start, since a table
+/// parse never reads the ledger.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert settings.require_orchestrators([], ["a@h.x"]) == Ok(Nil)
+/// ```
+pub fn require_orchestrators(
   listed: List(Orchestrator),
   members: List(String),
 ) -> Result(Nil, String) {

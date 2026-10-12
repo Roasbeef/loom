@@ -13,7 +13,7 @@
 %% own test (`daemon_ledger_test`); what is new here is that the commands change
 %% the membership of nodes that are really connected.
 -module(client_ledger_operator_fixture_ffi).
--export([boot/2, step/3, control/3, stop/1]).
+-export([boot/2, boot_member/2, step/3, control/3, stop/1, kill/1]).
 
 -define(FIX, client_distribution_fixture_ffi).
 -define(LIVEFIX, client_ledger_live_fixture_ffi).
@@ -22,6 +22,15 @@
 %% Boots the node whose installation is under `Home`: its configuration is
 %% `Home/.loom/loom.toml` and its options file is the one the installer wrote.
 boot(Home, ConfigPath) ->
+    boot(Home, ConfigPath, []).
+
+%% The same boot for a node that may be a member of the session directory. Such
+%% a VM must run with `connect_all` off, so that `global` never connects it to a
+%% node because a peer is connected there; the launchers pass the flag.
+boot_member(Home, ConfigPath) ->
+    boot(Home, ConfigPath, ["-kernel", "connect_all", "false"]).
+
+boot(Home, ConfigPath, Extra) ->
     {ok, _} = application:ensure_all_started(ssl),
     {ok, Text} = file:read_file(ConfigPath),
     {ok, {some, Config}} = ?DIST:parse(Text),
@@ -29,7 +38,7 @@ boot(Home, ConfigPath) ->
                              "dist.options"]),
     Node = #{home => binary_to_list(Home), options => Options},
     Aux = #{lines => [], observation => production, lifetime => 600000},
-    Port = ?FIX:open_vm(?LIVEFIX, Node, Config, live_node, Aux, []),
+    Port = ?FIX:open_vm(?LIVEFIX, Node, Config, live_node, Aux, Extra),
     case await_text(Port, <<"FIXTURE_READY">>, 60000) of
         {ok, _} -> {ok, Port};
         {error, Why} ->
@@ -62,6 +71,12 @@ stop(Port) ->
         {ok, _} -> {ok, nil};
         {error, Why} -> {error, Why}
     end.
+
+%% Ends the node without letting it stop its store or its Ra system, as a
+%% crashed machine would. The port closes and the emulator goes with it.
+kill(Port) ->
+    ?FIX:close_port(Port),
+    {ok, nil}.
 
 %% ---------------------------------------------------------------- reading
 

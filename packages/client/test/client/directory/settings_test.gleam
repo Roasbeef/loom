@@ -5,9 +5,12 @@
 import client/catalog
 import client/directory/settings.{Settings}
 import client/distribution
+import client/membership_entry.{Member, Upsert}
 import gleam/dict
 import gleam/option.{None, Some}
 import gleam/string
+import support/membership_fixture as fixture
+import support/membership_log as history
 
 const distribution_table =
   "[distribution]
@@ -137,6 +140,51 @@ node = \"other@10.0.0.4\"
     ))
     as "an orchestrator that is a member is accepted"
   Nil
+}
+
+const ledger_table =
+  "[distribution]
+node = \"alpha@10.0.0.1\"
+ca = \"/etc/loom/ca.pem\"
+certificate = \"/etc/loom/cert.pem\"
+key = \"/etc/loom/key.pem\"
+cookie = \"/home/loom/.erlang.cookie\"
+ledger = \"/etc/loom/ledger.log\"
+"
+
+// With a ledger the members are the ledger's, so a table beside it would be a
+// second list that could disagree.
+pub fn a_directory_table_beside_a_ledger_is_refused_test() {
+  refused(ledger_table <> "\n" <> three, "derived from the membership ledger")
+  assert settings.parse(ledger_table) == Ok(None)
+}
+
+fn seated(
+  log: history.Log,
+  name: String,
+  standing: membership_entry.DirectoryStanding,
+) -> history.Log {
+  history.must_push(
+    log,
+    Upsert(Member(..fixture.member(name, []), directory: standing)),
+  )
+}
+
+// A node is a member when its own entry seats it, as a voter or a learner, and
+// the members are every seated node. The ledger sets no bound on their number.
+pub fn a_node_is_a_member_when_the_ledger_seats_it_test() {
+  let log =
+    history.genesis()
+    |> seated("a", membership_entry.Voter)
+    |> seated("b", membership_entry.Learner)
+    |> history.enroll("laptop", ["a"])
+  let members = ["loom@a.example.net", "loom@b.example.net"]
+  assert settings.from_ledger(log.ledger, "loom@a.example.net")
+    == Some(Settings(members:))
+  assert settings.from_ledger(log.ledger, "loom@b.example.net")
+    == Some(Settings(members:))
+  assert settings.from_ledger(log.ledger, "loom@laptop.example.net") == None
+  assert settings.from_ledger(log.ledger, "loom@ghost.example.net") == None
 }
 
 pub fn the_catalogue_parser_refuses_a_bad_table_too_test() {
