@@ -37,7 +37,9 @@
 //// 3. `find` resolves the pool a session names, and `candidates` returns the
 ////    executors that may hold the session, in order.
 
+import client/distribution
 import client/executors.{type Enforcement, type Executor}
+import client/ledger_reference.{type Peers}
 import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -86,7 +88,12 @@ pub fn parse(text: String) -> Result(List(Pool), String) {
 ///
 /// Omission is an empty list. Each pool needs `executors`, a nonempty list of
 /// distinct names that are each a configured `[executors.<name>]`, and may
-/// carry the three requirements. A name outside the pool grammar, a key the
+/// carry the three requirements. In ledger mode a member may also name an
+/// executor that the ledger enrolled and no table defines: parsing checks only
+/// that the name has the executor grammar, and the daemon compares it with the
+/// ledger when it starts. A derived executor declares nothing, so a pool that
+/// requires a platform, an enforcement or a toolchain still skips it, and the
+/// operator who wants it in such a pool writes its row. A name outside the pool grammar, a key the
 /// table does not know, a value of the wrong type and a member that is not a
 /// configured executor are each refused with the key's full name.
 ///
@@ -102,11 +109,26 @@ pub fn from_document(
     Error(Nil) -> Ok([])
     Ok(tom.Table(tables)) -> {
       use configured <- result.try(executors.from_document(document))
+      use peers <- result.try(peers_of(document))
       dict.to_list(tables)
       |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
-      |> list.try_map(fn(entry) { row(entry.0, entry.1, configured) })
+      |> list.try_map(fn(entry) { row(entry.0, entry.1, configured, peers) })
     }
     Ok(_) -> Error("pools must be a table of [pools.<name>] tables")
+  }
+}
+
+// What a pool's member may be named. In static mode every member is a written
+// row, so the parser finds it. In ledger mode an executor row can come from the
+// ledger, which parsing never reads (`client/ledger_reference`), so a member is
+// checked for its name's shape here and against the ledger when the daemon
+// starts (`ledger_reference.audit_names`). A document with no `[distribution]`
+// table has no ledger, and every member must be written.
+fn peers_of(document: Dict(String, tom.Toml)) -> Result(Peers, String) {
+  use found <- result.map(distribution.from_document(document))
+  case found {
+    Some(settings) -> ledger_reference.peers(settings)
+    None -> ledger_reference.Pinned([])
   }
 }
 
@@ -203,6 +225,7 @@ fn row(
   name: String,
   value: tom.Toml,
   configured: List(Executor),
+  peers: Peers,
 ) -> Result(Pool, String) {
   use Nil <- result.try(case catalogue.is_pool_name(name) {
     True -> Ok(Nil)
@@ -222,7 +245,7 @@ fn row(
         "[pools." <> name <> "]",
       ))
       let place = "pools." <> name
-      use listed <- result.try(members(fields, place, configured))
+      use listed <- result.try(members(fields, place, configured, peers))
       use platform <- result.try(executors.platform_of(fields, place))
       use enforcement <- result.try(executors.enforcement_of(fields, place))
       use toolchains <- result.map(executors.toolchains_of(fields, place))
@@ -238,6 +261,7 @@ fn members(
   fields: Dict(String, tom.Toml),
   place: String,
   configured: List(Executor),
+  peers: Peers,
 ) -> Result(List(String), String) {
   let key = place <> ".executors"
   case dict.get(fields, "executors") {
@@ -258,9 +282,23 @@ fn members(
       )
       use Nil <- result.map(
         list.try_each(names, fn(name) {
-          case executors.find(configured, name) {
-            Ok(_) -> Ok(Nil)
-            Error(Nil) ->
+          case executors.find(configured, name), peers {
+            Ok(_), _ -> Ok(Nil)
+
+            // The ledger may give this executor a row, so the name is judged
+            // by its shape here and against the ledger at the daemon's start.
+            Error(Nil), ledger_reference.Ledgered ->
+              case catalogue.is_executor_name(name) {
+                True -> Ok(Nil)
+                False ->
+                  Error(
+                    key
+                    <> " names "
+                    <> name
+                    <> ", which is not an executor name",
+                  )
+              }
+            Error(Nil), ledger_reference.Pinned(_) ->
               Error(
                 key
                 <> " names "

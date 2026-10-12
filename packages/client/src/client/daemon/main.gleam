@@ -496,11 +496,15 @@ fn start_distribution(
 // them on every create and open and a ledger changes while a daemon runs. A
 // node no entry ever named refuses the start. A node that was a member and no
 // longer is a row the daemon logs and keeps, so that a `revoke` never turns the
-// next restart into an outage of the sessions that do not use that node.
+// next restart into an outage of the sessions that do not use that node. The
+// executor names that pools and spawners list are judged the same way, because
+// the ledger can give an executor a row that no table defines.
 fn audit_started(
   booted: Option(ledger_boot.Booted),
   document: dict.Dict(String, tom.Toml),
   rows: List(ledger_reference.Row),
+  written: List(String),
+  names: List(ledger_reference.NameRow),
   logger: Logger,
 ) -> Result(Nil, String) {
   use found <- result.try(distribution.from_document(document))
@@ -508,16 +512,87 @@ fn audit_started(
     option.then(booted, fn(started) { started.ledger }),
     option.then(found, distribution.ledger_path)
   {
-    Some(service), Some(path) ->
-      audit_references(
-        service,
-        atom.to_string(node.name(node.self())),
-        path,
-        rows,
-        logger,
-      )
+    Some(service), Some(path) -> {
+      let local = atom.to_string(node.name(node.self()))
+      use Nil <- result.try(audit_references(service, local, path, rows, logger))
+      audit_executor_names(service, local, path, written, names, logger)
+    }
     _, _ -> Ok(Nil)
   }
+}
+
+/// Compares the executor names that pools and spawners list with the ledger a
+/// running ledger process holds, as `audit_references` compares nodes. A name
+/// that is neither a written `[executors.<name>]` row nor a name the ledger ever
+/// gave is an `Error` with a sentence for the operator. A name whose member was
+/// revoked, or is an executor this node is not linked to, is logged as a warning
+/// and the start goes on: the pool skips such an executor as it skips one that
+/// is down.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let assert Ok(Nil) = main.audit_executor_names(service, local, path, ["box"], names, logger)
+/// ```
+@internal
+pub fn audit_executor_names(
+  service: Service,
+  local: String,
+  path: String,
+  written: List(String),
+  names: List(ledger_reference.NameRow),
+  logger: Logger,
+) -> Result(Nil, String) {
+  use status <- result.try(
+    ledger_service.status(service, 5000)
+    |> result.replace_error("the ledger process did not answer"),
+  )
+  use inert <- result.map(ledger_reference.audit_names(
+    status.ledger,
+    local,
+    path,
+    written,
+    names,
+  ))
+  list.each(inert, fn(found) {
+    log.warn(logger, "daemon.ledger_name_inert", [
+      field.text("row", found.row.key),
+      field.text("name", found.row.name),
+      field.text("reason", found.reason),
+    ])
+  })
+}
+
+/// The executor names the pools and spawners of a configuration list, with
+/// the key each was written under, in the order a refusal should report them.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // main.reference_names([], []) == []
+/// ```
+@internal
+pub fn reference_names(
+  configured_pools: List(pools.Pool),
+  configured_spawners: List(spawners.Spawner),
+) -> List(ledger_reference.NameRow) {
+  list.flatten([
+    list.flat_map(configured_pools, fn(pool) {
+      list.map(pool.executors, fn(name) {
+        ledger_reference.NameRow("pools." <> pool.name <> ".executors", name)
+      })
+    }),
+    list.filter_map(configured_spawners, fn(spawner) {
+      case spawner.placement {
+        spawners.OnExecutor(executor:, ..) ->
+          Ok(ledger_reference.NameRow(
+            "spawners." <> spawner.name <> ".executor",
+            executor,
+          ))
+        spawners.InPool(..) | spawners.InDirectory(..) -> Error(Nil)
+      }
+    }),
+  ])
 }
 
 /// Compares the rows of the tables that name a peer with the ledger a running
@@ -1351,6 +1426,8 @@ pub fn prepare_startup(
       booted,
       document,
       reference_rows(executors, orchestrators, spawners),
+      list.map(executors, fn(row) { row.name }),
+      reference_names(pools, spawners),
       logger,
     )
     |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
