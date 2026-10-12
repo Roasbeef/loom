@@ -584,6 +584,10 @@ pub fn start(
 // fire after this one's handler returns, so a slow pass slows the ticks and
 // never queues a backlog of them. Only a delegate session has one: its
 // children belong to a spawner that may never return to wait on them.
+//
+// The 15 s beat is shorter than `residency.hibernate_after_ms` (30 s), so a
+// delegate holder never hibernates. That costs only the holder's memory and is
+// accepted.
 fn with_deadline_tick(
   builder: actor.Builder(api.Runtime, Message, Subject(Message)),
   every: Option(Int),
