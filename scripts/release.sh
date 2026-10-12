@@ -117,6 +117,14 @@ if [ "$SMOKE" = 1 ]; then
   [ -n "$SMOKE_ERTS" ] || {
     echo "release.sh: no erts-* in $REL — that is not a release" >&2; exit 1; }
 
+  # The bundled `erl` is first on a session's PATH, so a plain `erl` typed
+  # in a shell must boot, not only the launcher's explicit `-boot` form.
+  ( cd "$REL_ROOT" && env -i HOME="${HOME:-/tmp}" PATH=/usr/bin:/bin \
+      "$REL/erts-$SMOKE_ERTS/bin/erl" -noshell -eval 'halt().' ) >/dev/null 2>&1 || {
+    echo "release.sh: the bundled erl cannot boot without -boot" >&2
+    echo "  (missing bin/start.boot); see the step that installs it." >&2
+    exit 1; }
+
   [ -f "$SMOKE_SUPPORT/client@release_probe_test.beam" ] || {
     echo "release.sh: missing release smoke probe; rebuild with make release" >&2; exit 1; }
   # Native account management must run from the shipped server with a private
@@ -431,6 +439,20 @@ rm -f "$REL/releases/$VERSION/vm.args" \
   echo "release.sh: relx left no bin/no_dot_erlang.boot; the bundled escript" >&2
   echo "  cannot boot without it. See the comment above this check." >&2
   exit 1; }
+
+# A bare `erl` has to boot too. OTP's `erl` script boots `$ROOTDIR/bin/start`
+# unless told otherwise, and an OTP installation carries `bin/start.boot`.
+# relx's release does not: it ships `no_dot_erlang.boot` and nothing named
+# `start`, because the launchers below always pass `-boot` explicitly.
+# The `erl` script also prepends `erts-<vsn>/bin` to the PATH of the VM it
+# starts, and the harness puts the same directory first on a session's
+# PATH, so a model's shell that types plain `erl` found the release's and
+# died with `cannot get bootfile` on `<root>/bin/start.boot`. That is not a
+# stale path: it fails identically in the tree it was built in. The clean
+# boot script is the same boot an installation's `start.boot` performs for
+# an `erl` with no release, and it names `lib/` through `$ROOT`, so it
+# resolves wherever the tree is unpacked.
+cp "$REL/releases/$VERSION/start_clean.boot" "$REL/bin/start.boot"
 
 # The ERTS binaries arrive with their full symbol tables; beam.smp alone is
 # 53 MB of which about 42 MB is symbols and DWARF the emulator never reads.
