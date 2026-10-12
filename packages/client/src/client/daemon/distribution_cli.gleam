@@ -8,6 +8,10 @@
 //// 1. `init` writes an example plan.
 //// 2. `provision PLAN OUT` mints the authority, the certificates and the
 ////    cookie, and writes one `<node>.loombundle` per node plus `system.json`.
+////    With `--ledger` it also signs a membership ledger
+////    (protocol-change/086), puts it in every bundle and in `OUT/ledger.log`,
+////    and seals the authority key under a passphrase in
+////    `~/.loom/authority/<deployment id>` so that the ledger can be extended.
 //// 3. The operator copies each bundle, over a channel they trust, to the
 ////    machine that runs that node.
 //// 4. `install BUNDLE` on that machine puts the node in its role.
@@ -27,7 +31,9 @@
 //// No command prints a key, a cookie or any certificate. A bundle holds the
 //// first two, and its path is all a command says about it.
 
+import client/authority_key
 import client/distribution
+import client/distribution_bundle
 import client/distribution_install.{Options}
 import client/distribution_plan
 import client/distribution_provision.{
@@ -40,6 +46,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import gleam/time/timestamp
 import host/bootstrap
 import simplifile
 
@@ -53,11 +60,24 @@ file per machine, and one command on each machine. No openssl is needed.
 commands:
   init [PATH]                     Write an example plan (default
                                   distribution-plan.toml). Refuses to overwrite.
-  provision PLAN OUT [--force]    Read PLAN (.toml or .json), mint the CA, the
+  provision PLAN OUT [--force] [--ledger [--drop-authority]
+            [--passphrase-file PATH] [--home DIR]]
+                                  Read PLAN (.toml or .json), mint the CA, the
                                   node certificates and the shared cookie, and
                                   write OUT/<node>.loombundle (mode 0600) for
                                   each node plus OUT/system.json (no secrets).
                                   Refuses a non-empty OUT without --force.
+                                  With --ledger the bundles carry a signed
+                                  membership ledger (also written to
+                                  OUT/ledger.log) in place of a peer list, and
+                                  the CA key is sealed under a passphrase in
+                                  DIR/.loom/authority/<deployment id> (DIR
+                                  defaults to $HOME). The passphrase is asked
+                                  for twice on the terminal, or read from PATH,
+                                  a file only you can read. --drop-authority
+                                  keeps no key, and the ledger can then never
+                                  change. `install` does not accept a ledger
+                                  bundle yet.
   show OUT                        Print OUT/system.json as a table.
   install BUNDLE [--home DIR] [--config PATH] [--force]
                                   Run on the node's machine. Installs the
@@ -212,18 +232,126 @@ fn provision(arguments: List(String)) -> Result(String, String) {
     distribution_plan.parse(text, format)
     |> result.map_error(fn(reason) { plan_path <> ": " <> reason }),
   )
+  case parsed.mode {
+    StaticMode -> provision_static(plan, output, parsed)
+    LedgerMode -> provision_ledger(plan, output, parsed)
+  }
+}
+
+fn provision_static(
+  plan: distribution_plan.Plan,
+  output: String,
+  parsed: Parsed,
+) -> Result(String, String) {
   use deployment <- result.try(distribution_provision.provision(plan))
   use _written <- result.try(distribution_provision.write(
     deployment,
     output,
     parsed.overwrite,
   ))
-  Ok(provisioned(deployment, output))
+  Ok(provisioned(deployment, output, static_closing))
+}
+
+const static_closing =
+  "The CA key was discarded. To add or renew a node, provision again."
+
+// Ledger mode. The order leaves nothing half done. The output directory and
+// the passphrase are checked before a key exists, and the sealed key is written
+// before the bundles: a sealed key with no bundles is clutter, and bundles
+// whose ledger can never be extended are the worse failure.
+fn provision_ledger(
+  plan: distribution_plan.Plan,
+  output: String,
+  parsed: Parsed,
+) -> Result(String, String) {
+  use Nil <- result.try(distribution_provision.check_output(
+    output,
+    parsed.overwrite,
+  ))
+  use sealing <- result.try(case parsed.custody {
+    DropAuthority -> Ok(None)
+    KeepAuthority -> {
+      use passphrase <- result.try(read_passphrase(parsed.passphrase_file))
+      use home <- result.try(case parsed.home {
+        Some(home) -> bootstrap.absolute_path(home)
+        None ->
+          bootstrap.getenv("HOME")
+          |> result.replace_error("HOME is unset; pass --home DIR")
+      })
+      Ok(Some(#(passphrase, home)))
+    }
+  })
+  use made <- result.try(distribution_provision.provision_ledger(
+    plan,
+    timestamp.system_time(),
+  ))
+  let deployment = made.deployment
+  use closing <- result.try(case sealing {
+    None -> Ok(dropped_closing)
+    Some(#(passphrase, home)) ->
+      keep_authority(home, made, passphrase)
+      |> result.map(kept_closing)
+  })
+  use _written <- result.try(distribution_provision.write(
+    deployment,
+    output,
+    parsed.overwrite,
+  ))
+  Ok(provisioned(deployment, output, closing))
+}
+
+const dropped_closing =
+  "The authority key was discarded. This ledger can never be extended."
+
+fn kept_closing(directory: String) -> String {
+  "The authority key is sealed in "
+  <> directory
+  <> ". Keep its passphrase: without the key and the passphrase this ledger "
+  <> "cannot be extended."
+}
+
+// Seals the key and keeps the certificate and the operator's copy of the
+// ledger beside it. Returns the directory.
+fn keep_authority(
+  home: String,
+  provisioned: distribution_provision.Provisioned,
+  passphrase: authority_key.Passphrase,
+) -> Result(String, String) {
+  let authority = provisioned.authority
+  let directory = authority_key.default_directory(home, authority.deployment)
+  authority_key.keep(
+    directory,
+    authority_key.Kept(
+      deployment: authority.deployment,
+      key: authority.key,
+      certificate: authority.certificate,
+      ledger: option.unwrap(provisioned.deployment.ledger, ""),
+    ),
+    passphrase,
+  )
+  |> result.replace(directory)
+  |> result.map_error(authority_key.describe)
+}
+
+fn read_passphrase(
+  file: Option(String),
+) -> Result(authority_key.Passphrase, String) {
+  case file {
+    Some(path) -> {
+      use path <- result.try(bootstrap.absolute_path(path))
+      authority_key.passphrase_from_file(path)
+      |> result.map_error(authority_key.describe)
+    }
+    None ->
+      authority_key.passphrase_from_terminal(authority_key.AskTwice)
+      |> result.map_error(authority_key.describe)
+  }
 }
 
 fn provisioned(
   deployment: distribution_provision.Deployment,
   output: String,
+  closing: String,
 ) -> String {
   let rows =
     list.map(deployment.system.nodes, fn(node) {
@@ -249,12 +377,18 @@ fn provisioned(
       rows,
       [
         "  " <> output <> "/" <> distribution_provision.system_file,
+      ],
+      case deployment.ledger {
+        Some(_) -> ["  " <> output <> "/" <> distribution_bundle.ledger_file]
+        None -> []
+      },
+      [
         "",
         "Each .loombundle holds that node's private key and the deployment's "
           <> "cookie. Copy each one to its machine over a channel you trust, "
           <> "then run on that machine:",
         "  loom distribution install <node>.loombundle",
-        "The CA key was discarded. To add or renew a node, provision again.",
+        closing,
       ],
     ]),
     "\n",
@@ -290,6 +424,15 @@ fn show(arguments: List(String)) -> Result(String, String) {
 
 fn install(arguments: List(String)) -> Result(String, String) {
   use parsed <- result.try(parse_flags(arguments))
+  use Nil <- result.try(
+    case parsed.mode, parsed.custody, parsed.passphrase_file {
+      StaticMode, KeepAuthority, None -> Ok(Nil)
+      _, _, _ ->
+        Error(
+          "--ledger, --drop-authority and --passphrase-file belong to provision",
+        )
+    },
+  )
   use bundle_path <- result.try(case parsed.positional {
     [path] -> Ok(path)
     _ -> Error(usage)
@@ -365,19 +508,56 @@ fn outcome_word(outcome: distribution_install.Outcome) -> String {
 
 // --- flags -------------------------------------------------------------------
 
+// How a deployment says who is trusted: a peer list in every bundle, or a
+// signed ledger.
+type Mode {
+  StaticMode
+  LedgerMode
+}
+
+// Whether `provision` keeps the authority key it minted. A ledger can only be
+// extended by whoever holds the key.
+type Custody {
+  KeepAuthority
+  DropAuthority
+}
+
 type Parsed {
   Parsed(
     positional: List(String),
     overwrite: Overwrite,
     home: Option(String),
     config: Option(String),
+    mode: Mode,
+    custody: Custody,
+    passphrase_file: Option(String),
   )
 }
 
 // The flags may come before, between or after the positional words, as they do
 // in every other `loomd` command.
 fn parse_flags(arguments: List(String)) -> Result(Parsed, String) {
-  parse_flags_loop(arguments, Parsed([], RefuseExisting, None, None))
+  use parsed <- result.try(parse_flags_loop(
+    arguments,
+    Parsed([], RefuseExisting, None, None, StaticMode, KeepAuthority, None),
+  ))
+  check_ledger_flags(parsed)
+}
+
+// The ledger flags mean something only together. A request to drop a key that
+// static mode never keeps, or to read a passphrase for a key that is dropped,
+// is a mistake to name and not a flag to ignore.
+fn check_ledger_flags(parsed: Parsed) -> Result(Parsed, String) {
+  case parsed.mode, parsed.custody, parsed.passphrase_file {
+    StaticMode, DropAuthority, _ -> Error("--drop-authority needs --ledger")
+    StaticMode, _, Some(_) -> Error("--passphrase-file needs --ledger")
+    LedgerMode, DropAuthority, Some(_) ->
+      Error(
+        "--passphrase-file and --drop-authority cannot be combined: "
+        <> "no key is sealed",
+      )
+    _, _, _ -> Ok(parsed)
+  }
 }
 
 fn parse_flags_loop(
@@ -392,8 +572,15 @@ fn parse_flags_loop(
       parse_flags_loop(rest, Parsed(..parsed, home: Some(value)))
     ["--config", value, ..rest] ->
       parse_flags_loop(rest, Parsed(..parsed, config: Some(value)))
+    ["--passphrase-file", value, ..rest] ->
+      parse_flags_loop(rest, Parsed(..parsed, passphrase_file: Some(value)))
+    ["--ledger", ..rest] ->
+      parse_flags_loop(rest, Parsed(..parsed, mode: LedgerMode))
+    ["--drop-authority", ..rest] ->
+      parse_flags_loop(rest, Parsed(..parsed, custody: DropAuthority))
     ["--home"] -> Error("--home needs a value")
     ["--config"] -> Error("--config needs a value")
+    ["--passphrase-file"] -> Error("--passphrase-file needs a value")
     [word, ..rest] ->
       case string.starts_with(word, "--") {
         True -> Error("unknown option " <> word)

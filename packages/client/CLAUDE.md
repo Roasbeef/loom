@@ -6591,9 +6591,12 @@ each own one step:
   `System` (`system.json`), and writes `<node>.loombundle` (mode 0600) and
   `system.json` into a 0700 directory it refuses to reuse without `--force`. The
   CA key is dropped when `provision` returns. `render` is `show`.
+  `provision_ledger` is the ledger mode (below): it keeps the key, returns it as
+  an `Authority` for the caller to seal or drop, and `write` adds `ledger.log`.
 - `client/distribution_bundle` is the single-file bundle: JSON, marker
-  `loom-distribution-bundle/1`, the node's role, peers with pins, role tables
-  and the CA, certificate, key and cookie inline. `decode` is the install gate:
+  `loom-distribution-bundle/1` (or `/2`, below), the node's role, `Trust` (peers
+  with pins, or a ledger), role tables and the CA, certificate, key and cookie
+  inline. `decode` is the install gate:
   strict keys, the plan's own `check_node`, the daemon's own `configure` for the
   node and peers, the cookie rule, and `ffi_pki.inspect` (readable PEM, chain to
   the CA and validity, key matches certificate, exactly the node name as the
@@ -6611,7 +6614,10 @@ each own one step:
   same bundle changes nothing.
 - `daemon/distribution_cli` dispatches `init`, `provision`, `show`, `install`
   and `options`. `run` returns the text to print; `main` prints and halts. No
-  command prints a key, cookie or certificate.
+  command prints a key, cookie, passphrase or certificate. `provision` takes
+  `--ledger`, `--drop-authority`, `--passphrase-file` and `--home` (below); the
+  tui carries a byte-identical copy of the usage text, which
+  `scripts/cli_help_test.sh` compares.
 - `daemon/executor_cli` is `loomd executor release SESSION [--state-dir PATH]`
   (`loom executor release` forwards to it from the launcher, with the help text
   duplicated in `tui` and compared by `scripts/cli_help_test.sh`). It takes the
@@ -6623,9 +6629,12 @@ each own one step:
   release and reopens after it.
 
 The only new foreign code is `src/client_pki_ffi.erl` behind
-`client/internal/ffi_pki`: five operations (`authority`, `issue`, `pin`,
-`inspect`, `random_bytes`) over OTP `public_key` and `crypto`, because no Gleam
-library generates or signs X.509. Keys are ECDSA P-256, signatures
+`client/internal/ffi_pki`: `authority`, `issue`, `pin`, `inspect` and
+`random_bytes` over OTP `public_key` and `crypto`, because no Gleam library
+generates or signs X.509, then `sign` and `verify` for the ledger, and
+`derive_key`, `encrypt`, `decrypt` and `read_secret` for the authority key at
+rest (PBKDF2 and AES-GCM, which `gleam_crypto` lacks, and a prompt that does
+not echo). Keys are ECDSA P-256, signatures
 ecdsa-with-SHA256, the authority lasts 3650 days and node certificates 1825 days.
 Renewal, adding a node without reissuing the others, and revocation are certificate
 rotation, which is later work: today a changed deployment is provisioned again and
@@ -8025,7 +8034,8 @@ ledger that will replace the fixed `[[distribution.peers]]` list.
 `docs/design-notes/membership-ledger.md` is the argument and
 `protocol-change/086-membership-ledger.md` the normative format. This slice has
 no file, no process, no `loom.toml` key and no wire message: nothing reads these
-modules yet except their tests, and static pins are unchanged.
+modules yet except their tests and the provisioning code below, and static pins
+are unchanged.
 
 - `membership_entry` is the bytes. An `Entry` is `seq`, `prev` (an `EntryId`),
   `time` and a `Kind`: `Genesis(deployment, authority)`, `Upsert(Member)` (wire
@@ -8142,3 +8152,62 @@ and decides nothing yet.
   production TLS flags (`client_distribution_fixture_ffi` scenario
   `ledger_relay`, node side in `support/ledger_nodes`) where a revoke reaches a
   node the origin never connects to.
+
+## The membership ledger, provisioning (protocol-change/086, slice 1d-i)
+
+`provision --ledger` signs a ledger for the plan and keeps the authority key.
+Static mode, `[[distribution.peers]]` and `/1` bundles are unchanged.
+
+- `client/authority_key` is custody of the key. `keep` writes
+  `<home>/.loom/authority/<deployment id>` (directory 0700) holding `key.enc`,
+  `ca.pem` and the operator's `ledger.log` (files 0600), key last, and refuses
+  before writing anything when `key.enc` exists: a key is never replaced.
+  `key.enc` is one JSON line, format `loom-authority-key/1`, keys exactly
+  `deployment`, `iterations`, `salt`, `nonce`, `ciphertext`, `tag` (unpadded
+  URL-safe base64, canonical encodings only). The key is PBKDF2-HMAC-SHA256 at
+  600,000 iterations (the floor a reader enforces; a ceiling of ten million
+  bounds a hostile file) over a random 16-byte salt, the cipher AES-256-GCM with
+  a random 12-byte nonce, and the associated data is the format and the
+  deployment id. A fresh salt per file means one message per key, so a random
+  nonce cannot repeat. An open that fails is `Rejected`: GCM cannot tell a wrong
+  passphrase from a changed file, and the module does not claim to.
+  `signer(directory, deployment, passphrase)` is the one-function seam; a
+  keychain or token replaces it and nothing that holds a `Signer` changes.
+- A passphrase is 12 to 1024 bytes, from `passphrase_from_terminal` (the VM's
+  raw `noshell` mode, which echoes nothing; `NoTerminal` when stdin is not a
+  terminal or `TERM` is unusable) or `passphrase_from_file`, which goes through
+  `bootstrap.read_private_bounded` and so refuses a file others can read. Never
+  an argument. Nothing in the tests calls the terminal reader, because a test
+  run from a terminal would block on it; it was driven under a pty by hand.
+- `client/membership_provision.build` writes the genesis and one `member` entry
+  per plan node in plan order. `links` are the plan peers already enrolled
+  (the fold accepts a link only to an active member), one end per edge, which the
+  pin table treats as symmetric; plan directory members are `voter`, everyone
+  else `none`. Each entry passes `membership_ledger.check` before it is signed,
+  and the finished file is replayed with the authority certificate's verifier.
+  `distribution_provision.peer_pins` is the static peer list, and
+  `ledger_provision_test` holds every node's ledger pin table equal to it.
+- Bundle `/2` replaces `peers` with `ledger` (the lines, in order). `Trust` is
+  `StaticPeers | SignedLedger`, so a bundle with both cannot be built, and a
+  document with `peers` under `/2` or `ledger` under `/1` is refused for the
+  unknown key. `decode` replays the ledger with a verifier from the bundle's `ca`
+  and requires the genesis to name that CA and the node's own entry to be active
+  with the bundle's role, node name and the pin of its certificate. The peers
+  that `executors` rows and `directory` are checked against are the node's pin
+  table. `config_tables` writes `ledger = "<dir of ca>/ledger.log"` and no peer
+  row (`ledger_path`, `ledger_file`).
+- `install` decodes a `/2` bundle and then refuses it, writing nothing. Running
+  one needs `distribution.from_document` to accept a ledger with no peers,
+  `tls_options` to render the live verify state, and the `[executors]` and
+  `[orchestrators]` reference checks to read the ledger's members. Those belong
+  to the change that makes the ledger the trust list.
+- `--ledger` is opt-in for now, for the same reason. `provision` checks the
+  output directory and reads the passphrase before it mints, seals the key before
+  it writes the bundles, and writes `OUT/ledger.log` beside them.
+
+Tests: `authority_key_test` (round trip, wrong passphrase, each changed field,
+the deployment binding, the shape and weak-parameter refusals, permissions,
+overwrite refusal, the signer) and `ledger_provision_test` (the equivalence with
+static pins for a plain and a directory plan, standing defaults, the `/2` bundle
+refusals, the config tables, the install refusal, the 65-member plan, and the
+commands).

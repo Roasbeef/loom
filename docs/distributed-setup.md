@@ -1542,7 +1542,11 @@ not yet do the following.
   connection to every other member, and those connections are visible.
 - **Provisioning is one-shot.** `provision` discards the authority's key, so adding
   a node or renewing a certificate means provisioning again and installing every
-  bundle with `--force`.
+  bundle with `--force`. `provision --ledger` keeps the key, sealed under a
+  passphrase, and signs a membership ledger so that a later release can add and
+  remove nodes without reprovisioning (protocol-change/086). It is a preview:
+  `install` does not accept the bundles it writes yet, so use it only to look at
+  the ledger.
 
 The orchestrator and executor trust each other completely. Do not put an executor
 on a machine you would not trust with the orchestrator's provider keys.

@@ -2171,11 +2171,24 @@ file per machine, and one command on each machine. No openssl is needed.
 commands:
   init [PATH]                     Write an example plan (default
                                   distribution-plan.toml). Refuses to overwrite.
-  provision PLAN OUT [--force]    Read PLAN (.toml or .json), mint the CA, the
+  provision PLAN OUT [--force] [--ledger [--drop-authority]
+            [--passphrase-file PATH] [--home DIR]]
+                                  Read PLAN (.toml or .json), mint the CA, the
                                   node certificates and the shared cookie, and
                                   write OUT/<node>.loombundle (mode 0600) for
                                   each node plus OUT/system.json (no secrets).
                                   Refuses a non-empty OUT without --force.
+                                  With --ledger the bundles carry a signed
+                                  membership ledger (also written to
+                                  OUT/ledger.log) in place of a peer list, and
+                                  the CA key is sealed under a passphrase in
+                                  DIR/.loom/authority/<deployment id> (DIR
+                                  defaults to $HOME). The passphrase is asked
+                                  for twice on the terminal, or read from PATH,
+                                  a file only you can read. --drop-authority
+                                  keeps no key, and the ledger can then never
+                                  change. `install` does not accept a ledger
+                                  bundle yet.
   show OUT                        Print OUT/system.json as a table.
   install BUNDLE [--home DIR] [--config PATH] [--force]
                                   Run on the node's machine. Installs the

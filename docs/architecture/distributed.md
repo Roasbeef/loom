@@ -280,6 +280,24 @@ The plan and bundle rules call the daemon's own validators, so a bundle that
 installs is one the daemon accepts. The setup guide, section 3, has the
 commands and the files they produce.
 
+`provision --ledger` is the ledger mode of
+[protocol-change/086](../../protocol-change/086-membership-ledger.md). It mints
+the same certificates and then signs a membership ledger with the authority key:
+a genesis entry and one `member` entry per plan node, whose `links` and
+directory standing reproduce the peer lists static mode would have written. Each
+node's pin table, derived from the ledger, equals that list, and a test holds the
+two equal. Each bundle (`loom-distribution-bundle/2`) carries the ledger in place
+of the peer list, `decode` replays it against the bundle's own CA, and
+`OUT/ledger.log` holds the same file. Unlike static mode, the authority key is
+kept: `client/authority_key` seals it with PBKDF2-HMAC-SHA256 (600,000
+iterations) and AES-256-GCM under a passphrase, in
+`~/.loom/authority/<deployment id>` (directory mode 0700, files 0600), beside
+the authority certificate and the operator's copy of the ledger. The passphrase
+comes from a terminal prompt that does not echo, or from `--passphrase-file`,
+never from an argument. `--drop-authority` keeps no key, and the ledger can then
+never be extended. In this build `install` refuses a `/2` bundle, because the
+daemon does not yet run a node from a ledger.
+
 ## One tool call, end to end
 
 A remote call goes through four stages: the session open attaches once, each
@@ -1289,6 +1307,7 @@ The directory holds no state of its own, so it has no model.
 |---|---|
 | `client/distribution`, `client/internal/ffi_distribution`, `client_distribution_ffi.erl` | Membership: boot checks, TLS verify, `epmd`, hidden connect |
 | `client/distribution_plan`, `_provision`, `_bundle`, `_install`; `daemon/distribution_cli` | `loom distribution` |
+| `client/authority_key`, `client/membership_provision` | The kept authority key, and the first ledger of a `provision --ledger` run |
 | `client/executors`, `client/workspaces`, `client/pools`, `client/orchestrators` | The `[executors]`, `[workspaces]`, `[pools]` and `[orchestrators]` tables |
 | `client/tool_placement` | Which side runs each tool |
 | `client/remote/protocol`, `client/remote/address`, `client/remote/codec` | The closed node vocabulary and its transport |
