@@ -346,7 +346,7 @@ index creates nothing. A terminal golden test of the table.
 
 **Today.** Section 2. A daemon answers for the sessions it holds, and the owner is
 sent elsewhere with the launch line for the owning daemon
-(`redirect_words`, `tui/daemon/selection.gleam:785`).
+(`redirect_words`, `tui/daemon/selection.gleam:847`).
 
 **What a daemon can answer about sessions it does not own.** One thing: what the
 owning orchestrator's catalogue says. A new `Sessions` ask on the port returns a
