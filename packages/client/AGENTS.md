@@ -1227,9 +1227,14 @@ catalogue without opening runtimes. Explicit admission invokes
   test and runnable as `gleam run -m client/demo`.
 - `test/client/tui_e2e_test` + `test/support/terminal` — the real
   `loom` binary against a real `serve.boot`, in a real terminal
-  (`tmux` on a private socket, declared geometry, every wait a predicate
-  over pane content with a deadline). Neither side of the protocol is
-  fake; only the model is scripted.
+  (`tmux` on a socket minted per run from the VM's OS pid, declared
+  geometry, every wait a predicate over pane content with a deadline). Neither
+  side of the protocol is fake; only the model is scripted. The socket name
+  must stay unique per run: `tmux -L` sockets live in one per-user directory
+  shared by every checkout, and a fixed name once let a concurrent run's
+  `kill-server` end this one's pane (a `/dev/ttysNNN: No such file` line in
+  the TUI's stderr) or leave its keys and captures following the other run's
+  session.
   Skips — loudly — when `tmux` or `go` is absent.
 - `test/support/tui_driver` is the in-process real-client companion.
   Each actor owns a socket ingress and a separate model inbox, and uses
