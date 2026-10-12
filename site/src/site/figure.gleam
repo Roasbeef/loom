@@ -19,6 +19,8 @@ import lustre/element.{type Element}
 import lustre/element/html
 import lustre/element/svg
 import lustre/event
+import site/diagram.{type Diagram}
+import site/diagram_view
 import site/inline
 import site/msg.{type FigureId, type Msg}
 
@@ -55,6 +57,8 @@ pub type Spec {
     id: FigureId,
     /// The name of the figure, for the accessible label.
     title: String,
+    /// The boxes, links and per-step states of the drawing.
+    diagram: Diagram,
     steps: List(Step),
   )
 }
@@ -72,12 +76,7 @@ fn step_at(spec: Spec, index: Int) -> Step {
 }
 
 /// The landing-page layout: text blocks beside a sticky panel.
-pub fn scrolly(
-  spec: Spec,
-  active: Int,
-  playing: Bool,
-  drawing: Element(Msg),
-) -> Element(Msg) {
+pub fn scrolly(spec: Spec, active: Int, playing: Bool) -> Element(Msg) {
   html.div(
     [
       attribute.class("scrolly"),
@@ -90,57 +89,71 @@ pub fn scrolly(
           block(spec.id, step, index, count(spec), index == active)
         }),
       ),
-      panel(spec, active, playing, drawing),
+      panel(spec, active, playing),
     ],
   )
 }
 
 /// The documentation layout: the panel, then the current step's block.
-pub fn embedded(
-  spec: Spec,
-  active: Int,
-  playing: Bool,
-  drawing: Element(Msg),
-) -> Element(Msg) {
+pub fn embedded(spec: Spec, active: Int, playing: Bool) -> Element(Msg) {
   html.div([attribute.class("embedded")], [
-    panel(spec, active, playing, drawing),
+    panel(spec, active, playing),
     block(spec.id, step_at(spec, active), active, count(spec), True),
   ])
 }
 
-fn panel(
-  spec: Spec,
-  active: Int,
-  playing: Bool,
-  drawing: Element(Msg),
-) -> Element(Msg) {
+fn panel(spec: Spec, active: Int, playing: Bool) -> Element(Msg) {
   let total = count(spec)
   let step = step_at(spec, active)
   html.figure(
     [
       attribute.class("panel"),
       attribute("data-fig-panel", msg.figure_key(spec.id)),
-      attribute("aria-label", spec.title <> ", step " <> int.to_string(active + 1) <> " of " <> int.to_string(total)),
+      attribute(
+        "aria-label",
+        spec.title
+          <> ", step "
+          <> int.to_string(active + 1)
+          <> " of "
+          <> int.to_string(total),
+      ),
       attribute.tabindex(0),
       event.on_keydown(fn(key) { key_message(spec.id, active, total, key) }),
     ],
     [
-      html.div([attribute.class("panel-stage")], [drawing]),
-      html.figcaption([attribute.class("panel-caption"), attribute("aria-live", "polite")], [
-        html.span([attribute.class("panel-count")], [
-          element.text(int.to_string(active + 1) <> " / " <> int.to_string(total)),
-        ]),
-        html.strong([], [element.text(step.label <> ". ")]),
-        ..inline.render(step.caption)
+      html.div([attribute.class("panel-stage")], [
+        diagram_view.chip(spec.diagram, active),
+        diagram_view.schematic(spec.diagram, active),
       ]),
+      html.figcaption(
+        [attribute.class("panel-caption"), attribute("aria-live", "polite")],
+        [
+          html.span([attribute.class("panel-count")], [
+            element.text(
+              int.to_string(active + 1) <> " / " <> int.to_string(total),
+            ),
+          ]),
+          html.strong([], [element.text(step.label <> ". ")]),
+          ..inline.render(step.caption)
+        ],
+      ),
       controls(spec, active, playing),
+      html.div([attribute.class("panel-states")], [
+        diagram_view.states(
+          spec.diagram,
+          active,
+          "State of each part after step " <> int.to_string(active + 1),
+        ),
+        diagram_view.wire(spec.diagram, active),
+      ]),
     ],
   )
 }
 
 fn key_message(id: FigureId, active: Int, total: Int, key: String) -> Msg {
   case key {
-    "ArrowRight" | "ArrowDown" -> msg.FigureGo(id, int.min(active + 1, total - 1))
+    "ArrowRight" | "ArrowDown" ->
+      msg.FigureGo(id, int.min(active + 1, total - 1))
     "ArrowLeft" | "ArrowUp" -> msg.FigureGo(id, int.max(active - 1, 0))
     "Home" -> msg.FigureGo(id, 0)
     "End" -> msg.FigureGo(id, total - 1)
@@ -177,10 +190,13 @@ fn controls(spec: Spec, active: Int, playing: Bool) -> Element(Msg) {
       ],
       case playing {
         True -> [pause_icon(), element.text("Pause")]
-        False -> [play_icon(), element.text(case active == last {
-          True -> "Replay"
-          False -> "Play"
-        })]
+        False -> [
+          play_icon(),
+          element.text(case active == last {
+            True -> "Replay"
+            False -> "Play"
+          }),
+        ]
       },
     ),
     html.button(
@@ -204,7 +220,10 @@ fn controls(spec: Spec, active: Int, playing: Bool) -> Element(Msg) {
                 False -> "dot"
               }),
               attribute.type_("button"),
-              attribute("aria-label", "Step " <> int.to_string(index + 1) <> ": " <> step.label),
+              attribute(
+                "aria-label",
+                "Step " <> int.to_string(index + 1) <> ": " <> step.label,
+              ),
               attribute("title", step.label),
               event.on_click(msg.FigureGo(spec.id, index)),
               ..current(index == active)
@@ -340,7 +359,16 @@ fn chevron(direction: Direction) -> Element(Msg) {
       attribute("aria-hidden", "true"),
       attribute.class("icon"),
     ],
-    [svg.path([attribute("d", d), attribute("fill", "none"), attribute("stroke", "currentColor"), attribute("stroke-width", "1.8"), attribute("stroke-linecap", "round"), attribute("stroke-linejoin", "round")])],
+    [
+      svg.path([
+        attribute("d", d),
+        attribute("fill", "none"),
+        attribute("stroke", "currentColor"),
+        attribute("stroke-width", "1.8"),
+        attribute("stroke-linecap", "round"),
+        attribute("stroke-linejoin", "round"),
+      ]),
+    ],
   )
 }
 
@@ -353,7 +381,12 @@ fn play_icon() -> Element(Msg) {
       attribute("aria-hidden", "true"),
       attribute.class("icon"),
     ],
-    [svg.path([attribute("d", "M 3 2 L 12 7 L 3 12 z"), attribute("fill", "currentColor")])],
+    [
+      svg.path([
+        attribute("d", "M 3 2 L 12 7 L 3 12 z"),
+        attribute("fill", "currentColor"),
+      ]),
+    ],
   )
 }
 
@@ -367,8 +400,20 @@ fn pause_icon() -> Element(Msg) {
       attribute.class("icon"),
     ],
     [
-      svg.rect([attribute("x", "3"), attribute("y", "2"), attribute("width", "3"), attribute("height", "10"), attribute("fill", "currentColor")]),
-      svg.rect([attribute("x", "8"), attribute("y", "2"), attribute("width", "3"), attribute("height", "10"), attribute("fill", "currentColor")]),
+      svg.rect([
+        attribute("x", "3"),
+        attribute("y", "2"),
+        attribute("width", "3"),
+        attribute("height", "10"),
+        attribute("fill", "currentColor"),
+      ]),
+      svg.rect([
+        attribute("x", "8"),
+        attribute("y", "2"),
+        attribute("width", "3"),
+        attribute("height", "10"),
+        attribute("fill", "currentColor"),
+      ]),
     ],
   )
 }

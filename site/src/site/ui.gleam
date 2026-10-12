@@ -46,10 +46,13 @@ pub fn mark(size: Int) -> Element(Msg) {
 pub fn header(here: String) -> Element(Msg) {
   html.header([attribute.class("bar")], [
     html.div([attribute.class("bar-inner")], [
-      html.a([attribute.class("brand"), attribute.href(route.to_hash(route.Landing))], [
-        mark(28),
-        html.span([], [element.text("Loom")]),
-      ]),
+      html.a(
+        [attribute.class("brand"), attribute.href(route.to_hash(route.Landing))],
+        [
+          mark(28),
+          html.span([], [element.text("Loom")]),
+        ],
+      ),
       html.nav([attribute("aria-label", "Main")], [
         nav_link("Docs", route.to_hash(route.DocsHome), here == "docs"),
         nav_link("Install", route.doc("getting-started"), False),
@@ -69,11 +72,7 @@ pub fn header(here: String) -> Element(Msg) {
 
 fn nav_link(label: String, href: String, current: Bool) -> Element(Msg) {
   html.a(
-    [
-      attribute.class("nav-link"),
-      attribute.href(href),
-      ..current_page(current)
-    ],
+    [attribute.class("nav-link"), attribute.href(href), ..current_page(current)],
     [element.text(label)],
   )
 }
@@ -91,15 +90,28 @@ pub fn footer() -> Element(Msg) {
     html.div([attribute.class("foot-inner")], [
       html.p([], [
         element.text("Loom is developed in the open at "),
-        html.a([attribute.href(repo), attribute.target("_blank"), attribute.rel("noopener")], [
-          element.text("github.com/Roasbeef/loom"),
-        ]),
-        element.text(". It is under active development, and you build it from source."),
+        html.a(
+          [
+            attribute.href(repo),
+            attribute.target("_blank"),
+            attribute.rel("noopener"),
+          ],
+          [
+            element.text("github.com/Roasbeef/loom"),
+          ],
+        ),
+        element.text(
+          ". It is under active development, and you build it from source.",
+        ),
       ]),
       html.p([attribute.class("foot-small")], [
-        element.text("This site is a client-side Lustre application written in Gleam. Its text describes the "),
+        element.text(
+          "This site is a client-side Lustre application written in Gleam. Its text describes the ",
+        ),
         html.code([], [element.text("main")]),
-        element.text(" branch, except where a page says a feature is in development."),
+        element.text(
+          " branch, except where a page says a feature is in development.",
+        ),
       ]),
     ]),
   ])

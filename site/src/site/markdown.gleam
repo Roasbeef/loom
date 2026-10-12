@@ -139,8 +139,16 @@ fn is_digit(char: String) -> Bool {
 
 /// Collects `- ` items; a following line indented by two spaces continues
 /// the previous item.
-fn list_items(lines: List(String), marker: String) -> #(List(String), List(String)) {
-  collect_items(lines, fn(line) { string.starts_with(line, marker) }, marker, [])
+fn list_items(
+  lines: List(String),
+  marker: String,
+) -> #(List(String), List(String)) {
+  collect_items(
+    lines,
+    fn(line) { string.starts_with(line, marker) },
+    marker,
+    [],
+  )
 }
 
 fn numbered_items(lines: List(String)) -> #(List(String), List(String)) {

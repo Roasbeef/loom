@@ -79,13 +79,17 @@ pub fn home(model: Model) -> Element(Msg) {
     html.article([attribute.class("prose")], [
       html.h1([], [element.text("Documentation")]),
       html.p([attribute.class("lede")], [
-        element.text("These pages explain how to run Loom and how its main parts work. They are written for someone who has not read the source. The design documents in the repository go further, and each page says where."),
+        element.text(
+          "These pages explain how to run Loom and how its main parts work. They are written for someone who has not read the source. The design documents in the repository go further, and each page says where.",
+        ),
       ]),
       html.ol(
         [attribute.class("index")],
         list.map(pages(), fn(page) {
           html.li([], [
-            html.a([attribute.href(route.doc(page.slug))], [element.text(page.title)]),
+            html.a([attribute.href(route.doc(page.slug))], [
+              element.text(page.title),
+            ]),
             html.span([], [element.text(page.summary)]),
           ])
         }),
@@ -109,7 +113,9 @@ pub fn view(model: Model, slug: String) -> Element(Msg) {
             element.text("There is no documentation page called "),
             html.code([], [element.text(slug)]),
             element.text(". "),
-            html.a([attribute.href(route.to_hash(route.DocsHome))], [element.text("See all pages.")]),
+            html.a([attribute.href(route.to_hash(route.DocsHome))], [
+              element.text("See all pages."),
+            ]),
           ]),
         ])
       m.Ready(blocks) -> article(model, slug, blocks)
@@ -117,13 +123,16 @@ pub fn view(model: Model, slug: String) -> Element(Msg) {
   ])
 }
 
-fn article(model: Model, slug: String, blocks: List(markdown.Block)) -> Element(Msg) {
+fn article(
+  model: Model,
+  slug: String,
+  blocks: List(markdown.Block),
+) -> Element(Msg) {
   let outline = markdown.outline(blocks)
   let body =
-    list.append(
-      markdown.render(blocks, fn(name) { embed(model, name) }),
-      [neighbours(slug)],
-    )
+    list.append(markdown.render(blocks, fn(name) { embed(model, name) }), [
+      neighbours(slug),
+    ])
     |> insert_outline(slug, outline)
   html.article([attribute.class("prose")], body)
 }
@@ -141,17 +150,26 @@ fn insert_outline(
         [title, lede, ..rest] -> [
           title,
           lede,
-          html.nav([attribute.class("outline"), attribute("aria-label", "On this page")], [
-            html.p([attribute.class("kicker")], [element.text("On this page")]),
-            html.ul(
-              [],
-              list.map(outline, fn(entry) {
-                html.li([], [
-                  html.a([attribute.href(route.to_hash(route.Doc(slug, entry.0)))], inline.render(entry.1)),
-                ])
-              }),
-            ),
-          ]),
+          html.nav(
+            [
+              attribute.class("outline"),
+              attribute("aria-label", "On this page"),
+            ],
+            [
+              html.p([attribute.class("kicker")], [element.text("On this page")]),
+              html.ul(
+                [],
+                list.map(outline, fn(entry) {
+                  html.li([], [
+                    html.a(
+                      [attribute.href(route.to_hash(route.Doc(slug, entry.0)))],
+                      inline.render(entry.1),
+                    ),
+                  ])
+                }),
+              ),
+            ],
+          ),
           ..rest
         ]
         _ -> elements
@@ -166,7 +184,6 @@ fn embed(model: Model, name: String) -> Element(Msg) {
         figures.spec(id),
         m.step(model, id),
         m.is_playing(model, id),
-        figures.drawing(id, m.step(model, id)),
       )
     Error(Nil) -> element.none()
   }
@@ -178,16 +195,19 @@ fn neighbours(slug: String) -> Element(Msg) {
   case list.find(indexed, fn(pair) { pair.0 == slug }) {
     Error(Nil) -> element.none()
     Ok(#(_, i)) ->
-      html.nav([attribute.class("neighbours"), attribute("aria-label", "Pages")], [
-        case i > 0, list.first(list.drop(all, i - 1)) {
-          True, Ok(previous) -> link("Previous", previous)
-          _, _ -> element.none()
-        },
-        case list.first(list.drop(all, i + 1)) {
-          Ok(next) -> link("Next", next)
-          Error(Nil) -> element.none()
-        },
-      ])
+      html.nav(
+        [attribute.class("neighbours"), attribute("aria-label", "Pages")],
+        [
+          case i > 0, list.first(list.drop(all, i - 1)) {
+            True, Ok(previous) -> link("Previous", previous)
+            _, _ -> element.none()
+          },
+          case list.first(list.drop(all, i + 1)) {
+            Ok(next) -> link("Next", next)
+            Error(Nil) -> element.none()
+          },
+        ],
+      )
   }
 }
 
@@ -198,57 +218,67 @@ fn link(direction: String, page: Page) -> Element(Msg) {
   ])
 }
 
-fn layout(model: Model, current: String, content: List(Element(Msg))) -> Element(Msg) {
+fn layout(
+  model: Model,
+  current: String,
+  content: List(Element(Msg)),
+) -> Element(Msg) {
   html.div([attribute.class("page")], [
     ui.header("docs"),
-    html.main([attribute.id("main"), attribute.tabindex(-1), attribute.class("docs")], [
-      html.aside([attribute.class("docs-nav")], [
-        html.button(
-          [
-            attribute.class("menu-toggle"),
-            attribute.type_("button"),
-            attribute("aria-expanded", case model.menu_open {
-              True -> "true"
-              False -> "false"
-            }),
-            event.on_click(msg.ToggleMenu),
-          ],
-          [element.text(case current {
-            "" -> "Documentation"
-            slug -> title_of(slug)
-          }), element.text(" · All pages")],
-        ),
-        html.nav(
-          [
-            attribute.class(case model.menu_open {
-              True -> "docs-list is-open"
-              False -> "docs-list"
-            }),
-            attribute("aria-label", "Documentation"),
-          ],
-          [
-            html.ul(
-              [],
-              list.map(pages(), fn(page) {
-                html.li([], [
-                  html.a(
-                    [
-                      attribute.href(route.doc(page.slug)),
-                      ..case page.slug == current {
-                        True -> [attribute("aria-current", "page")]
-                        False -> []
-                      }
-                    ],
-                    [element.text(page.title)],
-                  ),
-                ])
+    html.main(
+      [attribute.id("main"), attribute.tabindex(-1), attribute.class("docs")],
+      [
+        html.aside([attribute.class("docs-nav")], [
+          html.button(
+            [
+              attribute.class("menu-toggle"),
+              attribute.type_("button"),
+              attribute("aria-expanded", case model.menu_open {
+                True -> "true"
+                False -> "false"
               }),
-            ),
-          ],
-        ),
-      ]),
-      ..content
-    ]),
+              event.on_click(msg.ToggleMenu),
+            ],
+            [
+              element.text(case current {
+                "" -> "Documentation"
+                slug -> title_of(slug)
+              }),
+              element.text(" · All pages"),
+            ],
+          ),
+          html.nav(
+            [
+              attribute.class(case model.menu_open {
+                True -> "docs-list is-open"
+                False -> "docs-list"
+              }),
+              attribute("aria-label", "Documentation"),
+            ],
+            [
+              html.ul(
+                [],
+                list.map(pages(), fn(page) {
+                  html.li([], [
+                    html.a(
+                      [
+                        attribute.href(route.doc(page.slug)),
+                        ..case page.slug == current {
+                          True -> [attribute("aria-current", "page")]
+                          False -> []
+                        }
+                      ],
+                      [element.text(page.title)],
+                    ),
+                  ])
+                }),
+              ),
+            ],
+          ),
+        ]),
+        ..content
+      ],
+    ),
     ui.footer(),
   ])
 }

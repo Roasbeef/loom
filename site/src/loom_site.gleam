@@ -124,7 +124,10 @@ fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
             _ -> model.docs
           },
         )
-      #(next, effect.batch([load(model, current), title(current), scroll_for(current)]))
+      #(
+        next,
+        effect.batch([load(model, current), title(current), scroll_for(current)]),
+      )
     }
 
     msg.DocLoaded(slug, result) -> {
@@ -207,7 +210,10 @@ fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         _, _ -> #(model, effect.none())
       }
 
-    msg.ToggleMenu -> #(Model(..model, menu_open: !model.menu_open), effect.none())
+    msg.ToggleMenu -> #(
+      Model(..model, menu_open: !model.menu_open),
+      effect.none(),
+    )
 
     msg.JumpTo(id) -> #(
       model,
