@@ -39,6 +39,7 @@ fn modelled(
     context: "ctx ~2%",
     breakdown: element.none(),
     cost:,
+    rate: None,
     notice: element.none(),
   )
   |> element.to_string
@@ -162,11 +163,37 @@ pub fn a_figure_with_no_value_is_not_drawn_test() {
       context: "",
       breakdown: element.none(),
       cost: "est —",
+      rate: None,
       notice: element.none(),
     )
     |> element.to_string
 
   assert string.contains(bar, "<span class=\"figures\"></span>")
+}
+
+// The output speed is drawn once a generation has been timed, as the number
+// and the unit, and not at all before that.
+pub fn the_output_rate_is_drawn_only_once_timed_test() {
+  let bar = fn(rate) {
+    heading.view(
+      session_id: "0192ab34cd",
+      home: element.none(),
+      name: None,
+      workspace: None,
+      model: None,
+      status: "connected",
+      tone: heading.Live,
+      context: "",
+      breakdown: element.none(),
+      cost: "",
+      rate:,
+      notice: element.none(),
+    )
+    |> element.to_string
+  }
+
+  assert string.contains(bar(Some(87)), "<span class=\"num\">87</span> tok/s")
+  assert !string.contains(bar(None), "tok/s")
 }
 
 // The tab's title is set by `<loom-title>` from the name the bar draws. The

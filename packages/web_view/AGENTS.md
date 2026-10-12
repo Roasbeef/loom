@@ -662,7 +662,8 @@ page keys and nonces, and the relay into the session's gateway.
   `<loom-title>` reads, and the wrapper keeps the bar's child positions), the status as a `.pill` whose class follows the `Tone`
   (`online | pending | ended`), the `ctx ~41%` estimate and the cost
   `transcript_lines.cost_words` words as `est $0.04` or `est —` when tokens
-  were spent and none priced, each as a word and a `span.num`; a figure with no
+  were spent and none priced, and the last timed generation's `87 tok/s`
+  (`Shared.output_rate_tps`, `rate`, drawn only once one has settled), each as a word and a `span.num`; a figure with no
   value is not drawn, so no `est` for an unpriced model and no `ctx` on the
   primary strand before its first turn), with the ended
   page's notice as its last child; `component.heading(model, going_home, context_actions)` reads those
