@@ -106,7 +106,7 @@
 //// body = "Run the schema gate first."
 ////
 //// [tools]                            # optional; see `parse_tools`
-//// network = "off"                    # off (default) | full
+//// network = "full"                   # full (default) | off
 //// env = ["GH_TOKEN"]                 # host env var *names*
 //// [tools.set]
 //// GH_CONFIG_DIR = "/home/me/.config/gh"

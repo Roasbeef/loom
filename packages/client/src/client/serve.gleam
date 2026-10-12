@@ -526,9 +526,10 @@ pub type Settings {
     memory: distillpass.Options,
     /// The `[tools]` table: whether jailed tool shells reach the network,
     /// and what else their environment carries. Defaults to
-    /// `catalog.default_tools()` — offline, three names — which is the
-    /// jail every session has had until an operator writes otherwise, and
-    /// is what the environment-shaped configuration path takes.
+    /// `catalog.default_tools()` — full network and no extra environment
+    /// names, paths or literals — which is the jail every session has
+    /// until an operator writes otherwise, and is what the
+    /// environment-shaped configuration path takes.
     tools: catalog.ToolsConfig,
     /// The advisor strand's resolved identity and policy, or `None` when
     /// the catalogue routes no `advisor` role. `None` is the ordinary
