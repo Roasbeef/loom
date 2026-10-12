@@ -11,7 +11,7 @@ Ordinary builds use stock Gleam; the patched compiler is only needed for reprodu
 - Gleam 1.19.0.
 - Erlang/OTP 29 or later. Only the build needs it. The installed client and server bundle their own BEAM runtime.
 - Go 1.26 or later, which builds the sandbox helper `loom-exec`.
-- `rebar3`.
+- `rebar3` and Python 3 (available as `python3`), used by shipment and seed preparation.
 - A C compiler, `make` and `strip`.
 
 ```sh

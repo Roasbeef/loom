@@ -322,7 +322,7 @@ fn install(model: Model) -> Element(Msg) {
     html.div([attribute.class("story-head")], [
       html.h2([], [element.text("Start with one prompt")]),
       inline.paragraph(
-        "Build with Gleam 1.19.0, Erlang/OTP 29+, Go 1.26+, rebar3, a C compiler, make and strip. [Read the source-build prerequisites](#/docs/getting-started/build-from-source) before running these commands.",
+        "Build with Gleam 1.19.0, Erlang/OTP 29+, Go 1.26+, rebar3, Python 3, a C compiler, make and strip. [Read the source-build prerequisites](#/docs/getting-started/build-from-source) before running these commands.",
       ),
     ]),
     code.view(

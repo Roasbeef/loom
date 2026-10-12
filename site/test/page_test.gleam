@@ -305,10 +305,12 @@ pub fn the_embedded_figure_names_exist_test() {
 /// Product proof must precede the recorded illustration and deeper mechanisms.
 pub fn product_proof_is_near_the_hero_test() {
   let html = landing_html()
-  assert position_of(html, "img/web-session.png")
-    < position_of(html, "id=\"durable\"")
-  assert position_of(html, "img/code-mode.png")
-    < position_of(html, "id=\"replay\"")
+  let web = position_of(html, "img/web-session.png")
+  let terminal = position_of(html, "img/code-mode.png")
+  assert web >= 0
+  assert terminal >= 0
+  assert web < position_of(html, "id=\"durable\"")
+  assert terminal < position_of(html, "id=\"replay\"")
   assert string.contains(html, "#/docs/sessions")
   assert string.contains(html, "#/docs/approvals-and-sandboxing")
   assert string.contains(html, "#/docs/code-mode")
