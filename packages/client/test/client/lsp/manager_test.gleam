@@ -47,6 +47,7 @@ import lsp/transport
 import provider/secret
 import simplifile
 import support/fake_lsp
+import support/internal/ffi_lsp_manager
 import support/internal/ffi_memory
 import tools/fs
 import tools/tool
@@ -152,8 +153,22 @@ fn rig_timed(
   notifier: fake_lsp.Notifier,
   timing: manager.Timing,
 ) -> Rig {
+  rig_connecting(workspace, search, script, notifier, timing, fn() { Nil })
+}
+
+// A startup gate lets a test establish which callers joined the start before
+// its transport is returned, without depending on scheduler timing.
+fn rig_connecting(
+  workspace: String,
+  search: fn(manager.Search) -> Result(List(manager.Hit), String),
+  script: fn(String, option.Option(json.JsonValue)) -> fake_lsp.Answer,
+  notifier: fake_lsp.Notifier,
+  timing: manager.Timing,
+  connecting: fn() -> Nil,
+) -> Rig {
   let starts = process.new_subject()
   let connect = fn(identity: resolve.Identity) {
+    connecting()
     let fake = fake_lsp.start_with(fake_lsp.everything(), script, notifier)
     process.send(starts, #(identity.root, fake))
     Ok(fake_lsp.seam(fake))
@@ -823,13 +838,43 @@ pub fn a_directory_link_on_the_executables_path_is_refused_test() {
 pub fn one_start_serves_every_caller_who_asked_during_it_test() {
   let workspace = scratch("one-start")
   let _root = project(workspace, "app")
-  let rig = rig(workspace, no_search, outline_script)
+  let connecting = process.new_subject()
+  let rig =
+    rig_connecting(
+      workspace,
+      no_search,
+      outline_script,
+      fn(_method, _params) { [] },
+      quick_timing(),
+      fn() {
+        let release = process.new_subject()
+        process.send(connecting, release)
+        let assert Ok(Nil) = process.receive(release, 10_000)
+          as "the test must release startup after every caller joins"
+        Nil
+      },
+    )
   let answers = process.new_subject()
   list.each([1, 2, 3], fn(_) {
     process.spawn(fn() {
       process.send(answers, rig.door.outline("app/src/a.gleam"))
     })
   })
+
+  // A spawned caller may reach Acquire after a fast server has started. Hold
+  // connect until the manager has processed all three acquisitions instead.
+  let assert Ok(release) = process.receive(connecting, 5000)
+    as "the keeper must enter the controlled startup"
+  let assert poll.Answered(Nil) =
+    poll.until(within: 3000, every: 10, attempt: fn() {
+      case ffi_lsp_manager.start_waiters(rig.manager) == 3 {
+        True -> poll.Done(Nil)
+        False -> poll.Retry
+      }
+    })
+    as "every caller must be parked in the manager before startup finishes"
+  process.send(release, Nil)
+
   let replies =
     list.map([1, 2, 3], fn(_) {
       let assert Ok(reply) = process.receive(answers, 10_000)

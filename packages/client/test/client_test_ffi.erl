@@ -11,9 +11,22 @@
          owner_label_of/1, reductions_of/1, log_capture_start/0,
          log_capture_stop/0, log/2, utf_codepoint_calls/1,
          function_values/1, wire_round_trip/1, remote_pid/0,
-         ra_names_on_disk/1, rsa_key_pem/0]).
+         ra_names_on_disk/1, rsa_key_pem/0, lsp_start_waiters/1]).
 
 -include_lib("public_key/include/public_key.hrl").
+-include_lib("client/include/client@lsp@manager_Manager.hrl").
+
+%% Only the manager's processed acquisitions establish the startup test's
+%% prerequisite. Gleam has no sys:get_state wrapper; keep this private-state
+%% observation in test support rather than adding a production inspection API.
+lsp_start_waiters(#manager{reach = Reach}) ->
+    {ok, Subject} = Reach(),
+    {ok, Pid} = 'gleam@erlang@process':subject_owner(Subject),
+    case sys:get_state(Pid, 1000) of
+        {{starting, _, _}, {data, _, _, _, Waiters, _, _}} -> length(Waiters);
+        {idle, {data, _, _, _, [], _, _}} -> 0
+    end.
+
 
 %% The server names Ra's directory table holds on disk for a Ra system rooted
 %% at Directory. The live table is not read: its file is copied as it stands and
