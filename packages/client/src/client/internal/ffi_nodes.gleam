@@ -15,6 +15,7 @@ import gleam/dynamic/decode
 import gleam/erlang/atom.{type Atom}
 import gleam/erlang/node.{type Node}
 import gleam/erlang/process.{type Pid, type Selector}
+import gleam/list
 import gleam/result
 
 // The selector of `erlang:nodes/1`. A nullary constructor compiles to the
@@ -141,6 +142,64 @@ fn node_of_pid(pid: Pid) -> Node
 /// ```
 pub fn owner_name(pid: Pid) -> String {
   name(node_of_pid(pid))
+}
+
+// OTP `net_kernel:allow/1`. It answers `ok` or `error`, atoms, and takes only
+// atoms, which is why the names are turned into them below.
+@external(erlang, "net_kernel", "allow")
+fn net_kernel_allow(nodes: List(Atom)) -> Dynamic
+
+// OTP `erlang:is_alive/0`: whether this VM is a distributed node.
+@external(erlang, "erlang", "is_alive")
+fn is_alive() -> Bool
+
+/// Adds these node names to the allow list of `net_kernel`, which can only
+/// grow (protocol-change/086). It does nothing and answers `Ok` on a VM that is
+/// not distributed yet, because there is no list to grow, and the caller
+/// allows the members once distribution is up.
+///
+/// This is the one place a node name from a ledger becomes an atom. The names
+/// reach it only from entries whose signature verified, that passed the
+/// grammar of `distribution.check_node_name`, and that are within the
+/// ledger's bound of 256 names ever enrolled.
+///
+/// ## Examples
+///
+/// ```gleam
+/// ffi_nodes.allow(["loom@hub.example"]) // -> Ok(Nil)
+/// ```
+pub fn allow(names: List(String)) -> Result(Nil, Nil) {
+  case is_alive(), names {
+    False, _ | _, [] -> Ok(Nil)
+    True, _ -> {
+      let answer =
+        decode.run(
+          net_kernel_allow(list.map(names, atom.create)),
+          atom.decoder(),
+        )
+      case result.map(answer, atom.to_string) {
+        Ok("ok") -> Ok(Nil)
+        _ -> Error(Nil)
+      }
+    }
+  }
+}
+
+// OTP `erlang:disconnect_node/1`, which answers whether a connection ended.
+@external(erlang, "erlang", "disconnect_node")
+fn disconnect_node(node: Node) -> Bool
+
+/// Ends the connection to a node, as `erlang:disconnect_node/1` does. A node
+/// that is not connected is left alone.
+///
+/// ## Examples
+///
+/// ```gleam
+/// ffi_nodes.disconnect(node)
+/// ```
+pub fn disconnect(node: Node) -> Nil {
+  let _ = disconnect_node(node)
+  Nil
 }
 
 /// The full name of a node.

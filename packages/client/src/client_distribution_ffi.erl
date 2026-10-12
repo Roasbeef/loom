@@ -28,7 +28,7 @@
 %% is not a member, stays hidden exactly as before.
 -module(client_distribution_ffi).
 -export([options/2, start/5, peer/2, link/2, connect/2, verify/4,
-         ensure_epmd/0]).
+         ensure_epmd/0, publish_pins/1]).
 -include_lib("kernel/include/file.hrl").
 -include_lib("public_key/include/public_key.hrl").
 
@@ -94,6 +94,23 @@ live_pins() ->
         _ -> unavailable
     catch error:badarg -> unavailable
     end.
+
+%% Replaces the row that live mode reads with the given pairs of a 32-byte pin
+%% and the node name it must present, using one insert so that a handshake
+%% sees the old map or the new one. The first call creates the table, so the
+%% calling process becomes its owner: the table is protected, only that process
+%% can insert, and it is deleted when that process ends. Exactly one process
+%% per VM, the ledger process, may call this. It is FFI because gleam_stdlib,
+%% gleam_erlang and gleam_otp expose no ETS table, and only this module's
+%% callback reads the row inside a handshake.
+publish_pins(Pairs) ->
+    case ets:whereis(?PIN_TABLE) of
+        undefined ->
+            ?PIN_TABLE = ets:new(?PIN_TABLE, [named_table, protected, set]);
+        _ -> ok
+    end,
+    true = ets:insert(?PIN_TABLE, {?PIN_ROW, maps:from_list(Pairs)}),
+    nil.
 
 %% Exactly one DNS name in the certificate contains an at sign, and it is the
 %% node name. Host-only names may accompany it for the TLS hostname check.
@@ -187,7 +204,8 @@ start_checked(Local, Peers, {credential_files, Ca, Cert, Key, Cookie}, Listen,
         end,
         CookieBytes = atom_to_binary(erlang:get_cookie(), utf8),
         ok = net_kernel:allow([Node || {_Name, Node} <- Nodes]),
-        {ok, {membership, LocalNode, Nodes, member_nodes(Nodes, Members)}}
+        {ok, {membership, LocalNode, mode_nodes(Peers, Nodes),
+              member_nodes(Nodes, Members)}}
     catch
         Class:Reason ->
             %% A partial boot never returns membership.
@@ -205,6 +223,12 @@ peer_nodes(Peers) -> [{Name, binary_to_atom(Name, utf8)} || {Name, _Pin} <- Peer
 failure(throw, {epmd_unavailable, _} = Refusal) -> Refusal;
 failure(throw, start_failed) -> start_failed;
 failure(_, _) -> invalid_credentials.
+
+%% What the membership value remembers of its peers: the atoms made at start in
+%% static mode, and the atom `live` in live mode, where the peers are whatever
+%% the table holds when a name is resolved.
+mode_nodes(live, _Nodes) -> live;
+mode_nodes(_Peers, Nodes) -> Nodes.
 
 %% The peers that are directory members, as the atoms made for them above. A
 %% member name that is not a configured peer makes no atom and is dropped; the
@@ -348,6 +372,15 @@ bounded_file(Path, Maximum, Privacy) ->
     true = byte_size(Bytes) > 0 andalso byte_size(Bytes) =< Maximum,
     Bytes.
 
+%% In live mode a name resolves when the table lists it, which means it is an
+%% active member linked to this node. Its atom exists because the ledger process
+%% made it with net_kernel:allow/1 when it applied the member's entry, so a name
+%% that was never enrolled cannot make an atom here.
+peer({membership, Local, live, _Members}, Name) ->
+    case erlang:node() =:= Local andalso erlang:is_alive() of
+        true -> live_peer(Name);
+        false -> {error, unavailable}
+    end;
 peer({membership, Local, Nodes, _Members}, Name) ->
     case erlang:node() =:= Local andalso erlang:is_alive() of
         true ->
@@ -356,6 +389,17 @@ peer({membership, Local, Nodes, _Members}, Name) ->
                 false -> {error, invalid_configuration}
             end;
         false -> {error, unavailable}
+    end.
+
+live_peer(Name) ->
+    case live_pins() of
+        {ok, Pins} ->
+            try lists:member(Name, maps:values(Pins)) of
+                true -> {ok, binary_to_existing_atom(Name, utf8)};
+                false -> {error, invalid_configuration}
+            catch error:badarg -> {error, unavailable}
+            end;
+        unavailable -> {error, unavailable}
     end.
 
 %% How this node connects to a peer: visibly when both are directory members,
