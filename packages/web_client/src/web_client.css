@@ -1161,6 +1161,10 @@
   .pc-member-args{color:var(--color-fg);}
   .pc-member-error{color:var(--color-danger-text);}
   .pc-member-note{margin-top:4px;font:12px/1.5 var(--font-sans);}
+  .pc-program:has(details.pc-all[open]) .pc-preview{display:none;}
+  .pc-all .pc-when-open{display:none;}
+  .pc-all[open] .pc-when-open{display:inline;}
+  .pc-all[open] .pc-when-closed{display:none;}
   .pc-more,.pc-pending{margin:4px 0 0 0;color:var(--color-fg-quiet);font:12px/1.5 var(--font-sans);}
   .pc-pending{padding:8px 10px;margin:0;border-top:1px solid var(--color-divider);}
   .pc-hint{margin:0;color:var(--color-fg-quiet);font:12.5px/1.6 var(--font-mono);overflow-wrap:anywhere;}

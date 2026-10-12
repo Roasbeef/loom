@@ -236,12 +236,26 @@ fn program_section(
     note,
     disclosure,
     list.flatten([
-      [source_lines(program.opening, program.failing_line)],
+      [
+        html.div([attribute.class("pc-preview")], [
+          source_lines(program.opening, program.failing_line),
+        ]),
+      ],
       case program.whole {
         Some(whole) if program.lines > shown -> [
+          // The stylesheet hides the preview while this is open, since the
+          // whole listing starts with the same lines, and swaps the label
+          // between its two spans by the element's own open state.
           html.details([attribute.class("pc-all")], [
             html.summary([attribute.class("pc-button")], [
-              html.text("Show all " <> int.to_string(program.lines) <> " lines"),
+              html.span([attribute.class("pc-when-closed")], [
+                html.text(
+                  "Show all " <> int.to_string(program.lines) <> " lines",
+                ),
+              ]),
+              html.span([attribute.class("pc-when-open")], [
+                html.text("Show fewer lines"),
+              ]),
             ]),
             source_lines(numbered(whole), program.failing_line),
           ]),
