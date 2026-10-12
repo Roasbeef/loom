@@ -1265,3 +1265,35 @@ h3:hover .anchor,
     gap: 0.8rem;
   }
 }
+
+/* Product proof leads the compact homepage; figures retain their docs layout. */
+.hero { padding-top: clamp(2rem, 4vw, 3.5rem); padding-bottom: 2rem; }
+.hero h1 { max-width: 15em; }
+.hero-mark { width: clamp(110px, 13vw, 160px); }
+.hero-identity { font-family: var(--sans); font-size: 0.9rem; color: var(--ink-3); }
+#clients { margin-top: 0; }
+#clients .story-head { max-width: 60rem; }
+#clients .shots { grid-template-columns: minmax(0, 1fr); gap: 2rem; margin-top: 1.5rem; }
+#clients .shot { margin: 0; }
+#clients .shot a { display: block; }
+#clients .shot figcaption { background: none; color: var(--ink-2); padding: 0.7rem 0; }
+#clients .shot img { width: 100%; }
+.differentiators { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1.6rem; padding-top: 2.5rem; }
+.landing-body .benefit { margin: 0; border-top: 2px solid var(--rule-strong); padding-top: 1rem; }
+.benefit h2 { font-size: 1.45rem; line-height: 1.2; }
+.benefit p { margin: 1rem 0; }
+.benefit a { font-family: var(--sans); font-size: 0.9rem; }
+.install > .code-block { margin-top: 1.5rem; }
+@media (max-width: 850px) {
+  .differentiators { grid-template-columns: minmax(0, 1fr); gap: 1.5rem; }
+  .hero-inner { gap: 1rem; }
+}
+@media (max-width: 600px) {
+  .hero { padding-top: 1.7rem; }
+  .hero h1 { font-size: 2.35rem; }
+  .hero .lede { margin-top: 1rem; font-size: 1.1rem; }
+  .hero .status { margin-top: 1rem; }
+  .hero-identity { font-size: 0.8rem; }
+  #clients .story-head h2 { font-size: 1.8rem; }
+  #clients .shots { gap: 1rem; }
+}

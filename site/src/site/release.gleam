@@ -1,13 +1,10 @@
 //// Where the site points a reader who wants Loom, and what it calls the
 //// release they will get.
 ////
-//// A release bump touches `tag` and nothing else in the site. Every page
-//// derives its download link, its version label and the file names it
-//// shows from the constants below. The tag is the one that
-//// `make release-tag TAG=vX.Y.Z` pushes (see `docs/distribution.md`,
-//// "Tagging and uploading a release"), and the archive names carry the
-//// same number without the `v`, because they are built from the package
-//// version in `packages/client/gleam.toml`.
+//// Publication is explicit: a version in the source tree is not proof that
+//// GitHub has downloadable assets. Until an archive release exists, all
+//// install actions lead to source-build instructions. Archive examples keep
+//// the existing tag; they are conditional documentation, not a release claim.
 
 import gleam/string
 
@@ -19,8 +16,21 @@ pub const repo = "https://github.com/Roasbeef/loom"
 /// test suite does not follow the links.
 pub const branch = "main"
 
-/// The tag of the release the site describes. Change this line, and only
-/// this line, when a new release is published.
+/// Whether an archive release has actually been published. Change to
+/// `Published` only after verifying the tagged assets on GitHub.
+pub type Availability {
+  /// Build from source; archive examples describe a future publication.
+  SourceOnly
+
+  /// The tag below identifies published, downloadable assets.
+  Published
+}
+
+/// No archive release is published at the time of this site update.
+pub const availability = SourceOnly
+
+/// The existing version used in conditional archive examples. When publishing,
+/// verify the real tag and update it together with `availability`.
 pub const tag = "v0.2.1"
 
 /// The page that lists every release.

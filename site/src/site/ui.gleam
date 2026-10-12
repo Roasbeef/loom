@@ -40,23 +40,33 @@ pub fn mark(size: Int) -> Element(Msg) {
   )
 }
 
-/// The Download button: the primary action wherever it appears. It points at
-/// the latest release and carries the version label from `site/release`.
+/// An install action that never promises an unpublished archive.
 pub fn download_button() -> Element(Msg) {
-  html.a(
-    [
-      attribute.class("button button-primary"),
-      attribute.href(release.latest_url),
-      attribute.target("_blank"),
-      attribute.rel("noopener"),
-    ],
-    [
-      element.text("Download"),
-      html.span([attribute.class("button-label")], [
-        element.text(release.label()),
-      ]),
-    ],
-  )
+  case release.availability {
+    release.SourceOnly ->
+      html.a(
+        [
+          attribute.class("button button-primary"),
+          attribute.href(route.doc("getting-started") <> "/build-from-source"),
+        ],
+        [element.text("Build from source")],
+      )
+    release.Published ->
+      html.a(
+        [
+          attribute.class("button button-primary"),
+          attribute.href(release.latest_url),
+          attribute.target("_blank"),
+          attribute.rel("noopener"),
+        ],
+        [
+          element.text("Download"),
+          html.span([attribute.class("button-label")], [
+            element.text(release.label()),
+          ]),
+        ],
+      )
+  }
 }
 
 /// The top bar.
@@ -85,11 +95,9 @@ pub fn header(here: String) -> Element(Msg) {
         html.a(
           [
             attribute.class("nav-download"),
-            attribute.href(release.latest_url),
-            attribute.target("_blank"),
-            attribute.rel("noopener"),
+            attribute.href(route.doc("getting-started") <> "/build-from-source"),
           ],
-          [element.text("Download")],
+          [element.text("Get started")],
         ),
       ]),
     ]),

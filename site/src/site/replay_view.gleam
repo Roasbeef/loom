@@ -36,20 +36,21 @@ import site/replay.{
   type Line, type Step, AgentLine, CodeBlock, NoteLine, OutLine, ShellLine,
   ToolLine, UserLine, WarnLine,
 }
+import site/route
 
 /// The section.
 pub fn view(model: Model) -> Element(Msg) {
   html.section([attribute.class("story replay"), attribute.id("replay")], [
     html.div([attribute.class("story-head")], [
       html.p([attribute.class("kicker")], [
-        element.text("1. A recorded session"),
+        element.text("A recorded task"),
       ]),
       html.h2([], [
-        element.text("One session, from a prompt to a move between machines"),
+        element.text("Rename, test, then move the conversation"),
       ]),
       html.p([], [
         element.text(
-          "This is a recording of the terminal client, played from a script. Nothing in it runs, and the project, the file names and the counts are examples. Press Play or step through it. When the approval dialog appears, playback stops until you answer, and your answer changes the steps after it. The dialog's wording is simplified.",
+          "Follow a rename from finding callers to a test result and a session move. This is a scripted illustration, not a live run; files and counts are examples. Play or step through it. At the simplified approval dialog, your answer changes the outcome.",
         ),
       ]),
     ]),
@@ -318,11 +319,17 @@ fn underneath(step: Step) -> Element(Msg) {
   case step.underneath {
     None -> element.none()
     Some(link) ->
-      html.button(
+      html.a(
         [
           attribute.class("show-step"),
-          attribute.type_("button"),
-          event.on_click(msg.ShowFigure(link.figure, link.step)),
+          attribute.href(
+            route.doc(case link.figure {
+              msg.Crash -> "sessions"
+              msg.Approval -> "approvals-and-sandboxing"
+              msg.CodeMode -> "code-mode"
+              msg.Migration -> "distributed-runtime"
+            }),
+          ),
         ],
         [element.text(link.label)],
       )

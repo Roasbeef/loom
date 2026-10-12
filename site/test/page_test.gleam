@@ -94,15 +94,13 @@ fn position_of(html: String, needle: String) -> Int {
 
 // THE RELEASE -----------------------------------------------------------------
 
-pub fn the_download_button_points_at_the_latest_release_test() {
-  assert string.contains(
-    landing_html(),
-    "href=\"https://github.com/Roasbeef/loom/releases/latest\"",
-  )
-}
-
-pub fn the_page_shows_the_version_label_test() {
-  assert string.contains(landing_html(), release.label())
+pub fn unpublished_archives_are_not_offered_test() {
+  let html = landing_html()
+  assert release.availability == release.SourceOnly
+  assert string.contains(html, "Build from source")
+  assert string.contains(html, "#/docs/getting-started/build-from-source")
+  assert !string.contains(html, "releases/latest")
+  assert !string.contains(html, release.label())
 }
 
 pub fn the_footer_says_the_licence_is_not_chosen_test() {
@@ -302,4 +300,17 @@ pub fn the_embedded_figure_names_exist_test() {
     assert msg.figure_from_key(msg.figure_key(id)) == Ok(id)
     assert figure.count(figures.spec(id)) >= 4
   })
+}
+
+/// Product proof must precede the recorded illustration and deeper mechanisms.
+pub fn product_proof_is_near_the_hero_test() {
+  let html = landing_html()
+  assert position_of(html, "img/web-session.png")
+    < position_of(html, "id=\"durable\"")
+  assert position_of(html, "img/code-mode.png")
+    < position_of(html, "id=\"replay\"")
+  assert string.contains(html, "#/docs/sessions")
+  assert string.contains(html, "#/docs/approvals-and-sandboxing")
+  assert string.contains(html, "#/docs/code-mode")
+  assert string.contains(html, "#/docs/distributed-runtime")
 }
