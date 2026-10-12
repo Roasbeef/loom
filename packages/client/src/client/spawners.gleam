@@ -334,6 +334,12 @@ fn row(name: String, value: tom.Toml, known: Known) -> Result(Spawner, String) {
       use placement <- result.try(placement_of(fields, place, known))
       use profile <- result.try(profile_of(fields, place, known.profiles))
       use tools <- result.try(tools_of(fields, place))
+
+      // The limits are what the remote enforces on an honest spawner: how deep
+      // a child may nest, how many delegate sessions the spawner holds, and
+      // the three durations (`windows` checks them against each other). They
+      // bound a model that spawns too much or for too long, and nothing here
+      // is a boundary against a compromised peer.
       use max_depth <- result.try(count_of(
         fields,
         place,
