@@ -188,8 +188,10 @@ distribution (`NotEnrolled`). Applying a `revoke` that names the node itself
 leaves it with the empty table (`Revoked`): every handshake is refused in both
 directions and every connection is dropped. Its `net_kernel` keeps running, but
 no entry can reach it over the network afterwards: its peers have swept it, it
-dials nobody and it accepts nobody. An entry that enrolls it again reaches it
-through `import` on its own machine, or through a new bundle and a restart.
+dials nobody and it accepts nobody. Enrolling the name again mints a new
+certificate that the node does not hold, so `import` of the new entry does not
+help it. The remedy is to run `enroll` for the name again, `install --force` the
+new bundle on the node and restart it.
 
 ### Accepting an entry
 

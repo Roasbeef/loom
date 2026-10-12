@@ -1014,8 +1014,9 @@ settled in the code, and one was changed.
 4. **A revoked node.** "Stops its distribution" is the empty table plus
    dropping every connection. `net_kernel` stays up, but no entry can reach the
    node over the network afterwards (its peers swept it, it dials nobody and it
-   accepts nobody), so the entry that enrolls it again arrives through `import`
-   on its own machine or through a new bundle and a restart.
+   accepts nobody). Enrolling the name again mints a new certificate that the
+   node does not hold, so `import` is no remedy: the operator runs `enroll`
+   again, installs the new bundle with `install --force` and restarts the node.
 5. **Not done here.** `[executors]`, `[orchestrators]` and `[directory]` still
    check against `[[distribution.peers]]`, so they are refused beside a ledger.
    A directory member cannot use a ledger. The `NotEnrolled` case is a start
