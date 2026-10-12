@@ -299,6 +299,33 @@ pub fn a_renewal_replaces_the_pin_and_writes_a_bundle_that_installs_test() {
     == Some(3)
 }
 
+pub fn a_renewal_keeps_the_directory_a_node_was_installed_under_test() {
+  let deployed = deployment.provision("cli-renew-dir", deployment.plan_text)
+  let handle = hub(deployed)
+  let renew = fn(extra: List(String), out: String) {
+    let assert Ok(_) =
+      ledger_cli.run_with(
+        "renew",
+        list.flatten([
+          ["devbox", "--out", deployed.base <> out, "--wait", "0"],
+          deployment.signing(deployed),
+          extra,
+        ]),
+        fn(_) { deployment.daemon_over(handle) },
+      )
+    let assert Ok(text) =
+      simplifile.read(deployed.base <> out <> "/devbox.loombundle")
+    let assert Ok(bundle) = distribution_bundle.decode(text)
+    bundle
+  }
+
+  // Without the flag the bundle names no directory, so it installs under the
+  // default one. With it, the bundle installs where the node already lives.
+  assert renew([], "/plain").bundle_dir == None
+  assert renew(["--bundle-dir", "/srv/loom/devbox"], "/placed").bundle_dir
+    == Some("/srv/loom/devbox")
+}
+
 pub fn a_copy_behind_the_daemon_catches_up_before_it_signs_test() {
   let deployed = deployment.provision("cli-behind", deployment.plan_text)
   let handle = hub(deployed)

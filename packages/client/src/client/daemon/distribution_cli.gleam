@@ -125,13 +125,16 @@ commands:
                                   rest, unless --force. It does not check
                                   whether NAME owns sessions: a daemon cannot
                                   ask another.
-  renew NAME [--out DIR] [--force] [--wait SECONDS] [COMMON]
+  renew NAME [--bundle-dir DIR] [--out DIR] [--force] [--wait SECONDS]
+         [COMMON]
                                   Mints a new certificate for a member, signs a
                                   `member` entry with the new pin and writes a
                                   new bundle. Install it with --force on the
                                   node and restart the daemon. Connections to
                                   the node are dropped when the entry is
-                                  applied.
+                                  applied. Give the same --bundle-dir the node
+                                  was enrolled with, so the bundle installs
+                                  over its credentials in place.
   log [--json] [--config PATH] [COMMON]
                                   Print the ledger's entries with their
                                   identities, then the last refusal and each

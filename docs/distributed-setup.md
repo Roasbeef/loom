@@ -340,6 +340,7 @@ Replace a certificate (`renew`), remove a node (`revoke`), read the ledger
 
 ```sh
 loom distribution renew laptop2 --out . --passphrase-file …   # install the new bundle with --force, restart the node
+                                                               # (add --bundle-dir DIR if the node was enrolled with one)
 loom distribution revoke laptop2 --reason "lost" --passphrase-file …
 loom distribution log
 loom distribution import ledger.log          # on a member's machine, against its daemon

@@ -180,7 +180,12 @@ fn flags_of(command: String) -> Flags {
       )
     "revoke" ->
       Flags(list.append(common, ["--reason", "--wait"]), ["--force"], [])
-    "renew" -> Flags(list.append(common, ["--out", "--wait"]), ["--force"], [])
+    "renew" ->
+      Flags(
+        list.append(common, ["--bundle-dir", "--out", "--wait"]),
+        ["--force"],
+        [],
+      )
     "log" -> Flags(list.append(common, ["--config"]), ["--json"], [])
     _ -> Flags(["--state-dir", "--addr", "--token-file"], [], [])
   }
@@ -897,7 +902,10 @@ fn renew(parsed: Parsed, connect: Connect) -> Result(String, String) {
 
         // The node already has its executor rows and workspaces in its
         // configuration, and a row the bundle repeated would conflict with an
-        // operator's edits to it, so a renewal's bundle carries neither.
+        // operator's edits to it, so a renewal's bundle carries neither. The
+        // ledger does not record where the node was installed, so a node
+        // installed under a custom directory is renewed in place only if the
+        // operator names that directory again.
         let bundle =
           Bundle(
             name: member.name,
@@ -905,7 +913,7 @@ fn renew(parsed: Parsed, connect: Connect) -> Result(String, String) {
             erlang_node: member.node,
             host: member.host,
             listen_port: member.listen_port,
-            bundle_dir: None,
+            bundle_dir: value(parsed, "--bundle-dir"),
             trust: distribution_bundle.SignedLedger(lines_of(signed.store)),
             executors: [],
             workspaces: [],
