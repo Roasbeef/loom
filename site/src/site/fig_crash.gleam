@@ -151,13 +151,13 @@ pub fn spec() -> Spec {
 /// The boxes, the links and the seven frames.
 pub fn diagram() -> Diagram {
   Diagram(
-    sizes: Sizes(wide_w: 480, wide_h: 300, narrow_w: 320, narrow_h: 512),
+    sizes: Sizes(wide_w: 480, wide_h: 308, narrow_w: 320, narrow_h: 512),
     nodes: [
       zone(
         "tree",
         "One session, as processes",
         Group,
-        r(0, 0, 232, 300),
+        r(0, 0, 232, 308),
         r(0, 0, 320, 300),
       ),
       node(
@@ -197,7 +197,7 @@ pub fn diagram() -> Diagram {
         "effect: bash",
         "",
         Jailed,
-        r(44, 240, 180, 54),
+        r(32, 240, 192, 66),
         r(56, 240, 256, 54),
       ),
       node(
@@ -213,7 +213,7 @@ pub fn diagram() -> Diagram {
         "Intent",
         "",
         Stage,
-        r(252, 222, 74, 72),
+        r(252, 230, 74, 72),
         r(0, 446, 100, 66),
       ),
       node(
@@ -221,7 +221,7 @@ pub fn diagram() -> Diagram {
         "Work",
         "",
         Stage,
-        r(330, 222, 74, 72),
+        r(330, 230, 74, 72),
         r(110, 446, 100, 66),
       ),
       node(
@@ -229,7 +229,7 @@ pub fn diagram() -> Diagram {
         "Settle",
         "",
         Stage,
-        r(408, 222, 72, 72),
+        r(408, 230, 72, 72),
         r(220, 446, 100, 66),
       ),
     ],
@@ -342,7 +342,7 @@ fn step_4() -> Frame {
   frame(
     [
       state("sup", "booted again", Done),
-      state("writer", "takes the lease, fence + 1", Live),
+      state("writer", "takes lease, fence + 1", Live),
       state("factory", "boots the strands", Live),
       state("strand", "reads op.state", Live),
       state("effect", "none running", Quiet),

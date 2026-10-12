@@ -1099,6 +1099,19 @@ h3:hover .anchor,
   margin-top: 0.5rem;
 }
 
+/* Mid-width screens: a slimmer sidebar so the figure keeps its width ------------------- */
+
+@media (min-width: 900px) and (max-width: 1199px) {
+  .landing {
+    grid-template-columns: 9.5rem minmax(0, 1fr);
+    gap: 1.5rem;
+  }
+
+  .toc {
+    font-size: 0.84rem;
+  }
+}
+
 /* Narrow screens: the sidebar becomes a bar ------------------------------------------- */
 
 @media (max-width: 899px) {

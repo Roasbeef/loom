@@ -180,7 +180,7 @@ pub fn diagram() -> Diagram {
     nodes: [
       zone(
         "zone_a",
-        "Orchestrator A, the source",
+        "Orchestrator A",
         Group,
         r(0, 0, 168, 286),
         r(0, 0, 320, 232),
@@ -214,7 +214,7 @@ pub fn diagram() -> Diagram {
         |> scoped("A"),
       zone(
         "zone_b",
-        "Orchestrator B, the receiver",
+        "Orchestrator B",
         Group,
         r(312, 0, 168, 286),
         r(0, 244, 320, 232),
@@ -325,7 +325,7 @@ fn step_3() -> Frame {
   frame(
     [
       state("a_row", "moving(op, to)", Quiet),
-      state("a_file", "copy cut, digested\nlease move:op", Live),
+      state("a_file", "copy cut, digest\nlease move:op", Live),
       state("a_run", "stopped", Quiet),
       state("b_row", "none", Quiet),
       state("b_file", "none", Quiet),
@@ -360,7 +360,7 @@ fn step_5() -> Frame {
       state("a_file", "original kept", Quiet),
       state("a_run", "waits for the answer", Quiet),
       state("b_row", "imported(op, from)", Live),
-      state("b_file", "<id>.db\nrenamed into place", Live),
+      state("b_file", "<id>.db\nin place", Live),
       state("b_run", "none", Quiet),
       state("exec", "scope closed, all_retired", Done),
     ],

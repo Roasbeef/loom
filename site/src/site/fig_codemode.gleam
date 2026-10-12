@@ -209,7 +209,7 @@ pub fn diagram() -> Diagram {
         "gleam build",
         "",
         Jailed,
-        r(10, 278, 202, 86),
+        r(10, 278, 190, 86),
         r(8, 336, 304, 90),
       ),
       node(
@@ -217,7 +217,7 @@ pub fn diagram() -> Diagram {
         "Satellite, a BEAM node",
         "",
         Jailed,
-        r(268, 278, 202, 86),
+        r(212, 278, 258, 86),
         r(8, 436, 304, 108),
       ),
     ],
@@ -247,7 +247,7 @@ fn idle_vet() -> NodeState {
 fn step_0() -> Frame {
   frame(
     [
-      state("model", "needs 3 line counts\ncontext: no output yet", Live),
+      state("model", "needs 3 line counts\nno output yet", Live),
       idle_vet(),
       state("broker", "idle", Quiet),
       state("build", "idle", Quiet),
@@ -295,7 +295,7 @@ fn step_3() -> Frame {
       state("broker", "idle", Quiet),
       state(
         "build",
-        "offline, warnings fail it\nvendored cap prelude\nloom_program.gleam",
+        "offline, strict build\nvendored cap prelude\nloom_program.gleam",
         Live,
       ),
       state("satellite", "not started", Quiet),
@@ -328,7 +328,7 @@ fn step_5() -> Frame {
       state("vet", "passed", Done),
       state(
         "broker",
-        "checks the execution token\nsession policy\nthat the strand holds the tool",
+        "execution token\nsession policy\nstrand holds the tool",
         Live,
       ),
       state("build", "built", Done),
@@ -344,7 +344,7 @@ fn step_5() -> Frame {
 fn step_6() -> Frame {
   frame(
     [
-      state("model", "receives one value\ncontext: 3 line counts", Done),
+      state("model", "receives one value\n3 line counts", Done),
       state("vet", "passed", Done),
       state("broker", "marshals the outcome", Live),
       state("build", "built", Done),

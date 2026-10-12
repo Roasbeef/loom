@@ -14,9 +14,9 @@ import site/figures
 
 /// The width, as a fraction of the design width, that the wide layout is
 /// shown at when the container query has just chosen it. The query switches
-/// to the narrow layout under 440 units and the wide layout is designed at
+/// to the narrow layout under 400 units and the wide layout is designed at
 /// 480, so a box is never narrower than this share of its design.
-const narrowest_percent = 91
+const narrowest_percent = 82
 
 fn all_diagrams() -> List(#(String, Diagram)) {
   list.map(figures.all(), fn(id) {

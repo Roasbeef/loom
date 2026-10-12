@@ -175,15 +175,15 @@ pub fn spec() -> Spec {
 /// The boxes, the links and the eight frames.
 pub fn diagram() -> Diagram {
   Diagram(
-    sizes: Sizes(wide_w: 480, wide_h: 304, narrow_w: 320, narrow_h: 560),
+    sizes: Sizes(wide_w: 480, wide_h: 320, narrow_w: 320, narrow_h: 560),
     nodes: [
-      node("model", "Model", "", Outside, r(0, 0, 132, 72), r(0, 0, 154, 72)),
+      node("model", "Model", "", Outside, r(0, 0, 120, 84), r(0, 0, 154, 72)),
       node(
         "broker",
         "Broker",
         "",
         Process,
-        r(168, 0, 156, 72),
+        r(136, 0, 192, 84),
         r(166, 0, 154, 72),
       ),
       node(
@@ -191,7 +191,7 @@ pub fn diagram() -> Diagram {
         "Operator",
         "",
         Outside,
-        r(348, 0, 132, 72),
+        r(344, 0, 136, 84),
         r(0, 80, 320, 58),
       ),
       node(
@@ -199,14 +199,14 @@ pub fn diagram() -> Diagram {
         "escalation record",
         "",
         Store,
-        r(240, 96, 240, 86),
+        r(240, 104, 240, 86),
         r(0, 146, 320, 90),
       ),
       zone(
         "jail",
         "Kernel jail, outside the VM",
         JailZone,
-        r(0, 206, 480, 98),
+        r(0, 214, 480, 106),
         r(0, 246, 320, 200),
       ),
       node(
@@ -214,7 +214,7 @@ pub fn diagram() -> Diagram {
         "loom-exec",
         "",
         Jailed,
-        r(10, 232, 222, 66),
+        r(10, 240, 222, 72),
         r(8, 272, 304, 80),
       ),
       node(
@@ -222,7 +222,7 @@ pub fn diagram() -> Diagram {
         "the command",
         "",
         Jailed,
-        r(248, 232, 222, 66),
+        r(248, 240, 222, 72),
         r(8, 360, 304, 80),
       ),
     ],
@@ -341,11 +341,7 @@ fn step_6() -> Frame {
       state("broker", "relays output; deadline", Quiet),
       state("operator", "answered", Quiet),
       state("record", "status: Consumed", Quiet),
-      state(
-        "helper",
-        "bwrap, cgroup v2, Landlock\nno_new_privs, seccomp: execve",
-        Live,
-      ),
+      state("helper", "bwrap, cgroup, Landlock\nseccomp, no_new_privs", Live),
       state("command", "make export: running", Live),
     ],
     [send("exec", "helper", "execve")],

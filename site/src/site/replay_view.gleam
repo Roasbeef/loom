@@ -191,7 +191,7 @@ fn line_view(line: Line) -> Element(Msg) {
       ])
     WarnLine(text, delay) ->
       html.div([attribute.class("ln ln-warn late"), delay_style(delay)], [
-        element.text("Refused: " <> text),
+        element.text(text),
       ])
     ShellLine(text, _) ->
       html.div([attribute.class("ln ln-note")], [element.text(text)])

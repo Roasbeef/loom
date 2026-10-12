@@ -299,7 +299,7 @@
 /* The drawing --------------------------------------------------------------
  *
  * Two layouts are in the markup. The container query picks the narrow one
- * when the panel is under 440px wide. Text is HTML at a fixed pixel size, so
+ * when the panel's drawing is under 400px wide. Text is HTML at a fixed pixel size, so
  * a label is 12px or 13px at every width; only the boxes scale. */
 
 .dgm {
@@ -318,7 +318,7 @@
   margin: 0 auto;
 }
 
-@container figure (max-width: 439px) {
+@container figure (max-width: 399px) {
   .dgm-wide {
     display: none;
   }
@@ -598,9 +598,14 @@
 
 /* Narrower screens ----------------------------------------------------------- */
 
-@media (max-width: 1099px) {
+@media (max-width: 1199px) {
   .scrolly {
-    grid-template-columns: minmax(0, 4fr) minmax(0, 5fr);
+    grid-template-columns: minmax(0, 3fr) minmax(0, 4fr);
+    gap: 1.25rem;
+  }
+
+  .panel {
+    padding: 10px 10px 8px;
   }
 
   .step {

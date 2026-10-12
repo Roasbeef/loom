@@ -6,7 +6,7 @@
     <title>Loom: a coding agent harness on the BEAM</title>
     <meta
       name="description"
-      content="Loom is a coding agent harness written in Gleam. It saves each step of a session to a write-once SQLite store and runs commands in kernel sandboxes."
+      content="Loom is a coding agent harness written in Gleam and running on the BEAM. Each session is a supervision tree over a write-once SQLite store, commands run in kernel sandboxes, and a distributed runtime runs a session's tool calls on executors."
     />
     <meta name="color-scheme" content="light dark" />
     <link rel="icon" type="image/svg+xml" href="./img/loom-mark.svg" />
