@@ -119,6 +119,59 @@ pub fn branch_plan_drives_from_branch_entries_test() {
   let assert Ok(Nil) = storage.close(store)
 }
 
+// Kind-filtered scans read only matching payloads. The branch index carries
+// kinds independently, so unrelated damage must not force their decoding.
+pub fn kind_filtered_scan_does_not_decode_excluded_payloads_test() {
+  let path = fresh_path("kind_payloads")
+  let assert Ok(store) =
+    sqlite.open(sqlite.config(path:, owner: "w1"), clock.fixed(at: 10_000))
+    as "the kind-filter store opens"
+  let #(old, ctx) = fixtures.message_entry(fixtures.new_ctx(), None, "old")
+  let #(checkpoint, ctx) =
+    fixtures.compaction_entry(ctx, Some(old.id), "summary")
+  let #(new, _ctx) = fixtures.message_entry(ctx, Some(checkpoint.id), "new")
+  let assert Ok(_) =
+    storage.commit(
+      store,
+      Tx(writes: list.map([old, checkpoint, new], InsertEntry), expected: []),
+    )
+    as "the indexed branch is durable"
+  let assert Ok(conn) = sqlight.open(path) as "the fixture can damage payloads"
+  let assert Ok(_) =
+    sqlight.query(
+      "UPDATE entries SET payload = ?1 WHERE id IN (?2, ?3)",
+      on: conn,
+      with: [
+        sqlight.blob(<<"invalid JSON":utf8>>),
+        sqlight.text(ids.entry_id_to_string(old.id)),
+        sqlight.text(ids.entry_id_to_string(new.id)),
+      ],
+      expecting: decode.dynamic,
+    )
+    as "both excluded message payloads are invalid"
+  let assert Ok(Nil) = sqlight.close(conn) as "the fixture mutation finishes"
+  list.each([storage.NewestFirst, storage.OldestFirst], fn(order) {
+    let query =
+      storage.branch_scan(new.id)
+      |> storage.branch_order(order)
+      |> storage.branch_stop_at_kind(storage.Compaction)
+      |> storage.branch_kind(storage.Compaction)
+      |> storage.branch_limit(1)
+    let assert Ok(found) = storage.scan_branch(store, query)
+      as "only the matching compaction payload is decoded"
+    assert list.map(found, fn(item) { item.id }) == [checkpoint.id]
+  })
+
+  // Filtering must not hide damage in a payload the caller actually requests.
+  let assert Error(storage.CorruptRow(_)) =
+    storage.scan_branch(
+      store,
+      storage.branch_scan(new.id) |> storage.branch_kind(storage.Message),
+    )
+    as "a matching malformed payload still fails the total decoder"
+  let assert Ok(Nil) = storage.close(store) as "the kind-filter store closes"
+}
+
 // A page comes back under `LIMIT fetch_cap`, and whether to fetch another
 // is decided from that page alone: a row sitting at the last place the cap
 // allows is what says the page came back full. That is a bounded question,
@@ -150,6 +203,23 @@ pub fn scan_crosses_the_page_boundary_test() {
     let assert Ok(scanned) =
       storage.scan_branch(store, storage.branch_scan(from: tip.id))
     assert list.length(scanned) == length
+
+    // Filtered pages use a different covering index, but must cross the same
+    // exact page boundary without dropping or repeating a matching row.
+    list.each([storage.NewestFirst, storage.OldestFirst], fn(order) {
+      let query =
+        storage.branch_scan(from: tip.id)
+        |> storage.branch_kind(storage.Message)
+        |> storage.branch_order(order)
+      let assert Ok(filtered) = storage.scan_branch(store, query)
+        as "kind-filtered pages traverse the whole matching chain"
+      let expected = case order {
+        storage.NewestFirst -> chain
+        storage.OldestFirst -> list.reverse(chain)
+      }
+      assert list.map(filtered, fn(item) { item.id })
+        == list.map(expected, fn(item) { item.id })
+    })
     let assert Ok(Nil) = storage.close(store)
   })
 }
