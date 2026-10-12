@@ -67,6 +67,6 @@ A compaction is itself an entry: a self-contained checkpoint that carries the re
 
 ## Read more
 
-- `docs/architecture/durability.md`: the three stores, transactions and the lease.
-- `docs/architecture/orchestration.md`: the state machine, the effect sandwich and recovery.
-- `docs/architecture/sessions.md`: the daemon, the catalogue and opening a session.
+- [`docs/architecture/durability.md`](https://github.com/Roasbeef/loom/blob/main/docs/architecture/durability.md): the three stores, transactions and the lease.
+- [`docs/architecture/orchestration.md`](https://github.com/Roasbeef/loom/blob/main/docs/architecture/orchestration.md): the state machine, the effect sandwich and recovery.
+- [`docs/architecture/sessions.md`](https://github.com/Roasbeef/loom/blob/main/docs/architecture/sessions.md): the daemon, the catalogue and opening a session.

@@ -2,13 +2,13 @@
 
 A distributed Loom runs one session on two machines. The orchestrator keeps the conversation: the runtime, the session's SQLite store, approvals and provider keys. The executor keeps the checkout and runs the session's workspace tool calls beside it. A single machine that plays both roles is the ordinary local daemon.
 
-> **In development.** The distributed runtime is not on `main` yet. It is documented on open pull requests: issue #697, PR #923 (tools on another machine), PR #937 (peer mail across orchestrators) and PR #938 (background code mode and MCP on a remote session). This page follows `docs/architecture/distributed.md` and `docs/distributed-setup.md` on those branches, and details may change before they merge.
+This page describes the distributed runtime as it is on the `main` branch. It follows [the architecture page](https://github.com/Roasbeef/loom/blob/main/docs/architecture/distributed.md) and [the setup guide](https://github.com/Roasbeef/loom/blob/main/docs/distributed-setup.md).
 
 ## The two roles
 
 | | Orchestrator | Executor |
 |---|---|---|
-| Runs | The agent loop, approvals, budgets | Tool calls, shell commands, language servers, code mode, background jobs |
+| Runs | The agent loop, approvals, budgets | Workspace tool calls (shell commands, file tools, search), language servers, foreground code mode, background jobs |
 | Holds | The conversation database, the session catalogue, approvals and grants, provider API keys, `~/.loom` and user-level hooks | The checkout, toolchains and caches, the sandbox, a ledger of tool calls in flight |
 | Talks to | Clients, the model provider and the executor | The orchestrator only |
 | Configured by | `[distribution]` and `[executors.<name>]` | `[distribution]` and `[workspaces.<name>]` |
@@ -54,6 +54,12 @@ loom --executor box --workspace proj
 ```
 
 A remote session shows its workspace as `box:proj`. With more than one executor, a pool lets the orchestrator choose: `loom --pool linux --workspace proj`. The pool tries executors in order and moves to the next only when the connection to the first fails or the first reports that it is full. A session stays on the executor that it first landed on.
+
+## Pools, and two orchestrators
+
+A pool is a list of executors that the orchestrator tries in order. An executor can declare its platform, its enforcement level and its toolchains, and a pool can require them. The declarations are the operator's claims, and the balance is order, not load.
+
+A deployment can also run two orchestrators, each with its own catalogue. A session belongs to the orchestrator that created it. To find a session that another orchestrator owns, the daemon asks each configured peer at once, under a two-second deadline, and answers `not_owner` with the owner's name when a peer holds it. Nothing follows the redirect for you: the terminal prints the launch line for the owning orchestrator. Peer mail between sessions on different orchestrators goes through a durable outbox on the sender, which retries every five seconds for up to an hour.
 
 ## One tool call, end to end
 
@@ -106,15 +112,15 @@ No state in this design is replicated or decided by a vote. Each fact has exactl
 ## Limits
 
 - There is no failover, and no moving a session between executors. A session keeps the executor that its first open chose.
-- A remote session refuses extension tools and operator-added directories.
-- A running background code-mode execution does not survive an orchestrator restart. Only one that had already finished keeps its result.
+- A remote session refuses extension tools, operator-added directories, background code mode and MCP façades in code mode. Foreground code mode works.
 - A move does not carry running processes, the memory domain, memberships or claims, and it does not appear in the web view.
+- After an executor restarts, an open session fails new calls until it is closed and reopened, and the reopen needs the operator's release.
 - Certificate provisioning is one-shot. Rotating a certificate or adding a node means provisioning again and reinstalling every bundle.
 
 ## Read more
 
-On the distributed-runtime branches of the repository:
+In the repository, on `main`:
 
-- `docs/architecture/distributed.md`: the design and its failure table.
-- `docs/distributed-setup.md`: setup in the order you would do it, with a note on how much each step has been run.
-- `protocol-change/078-distributed-runtime.md`: the wire and durable formats.
+- [`docs/architecture/distributed.md`](https://github.com/Roasbeef/loom/blob/main/docs/architecture/distributed.md): the design and its failure table.
+- [`docs/distributed-setup.md`](https://github.com/Roasbeef/loom/blob/main/docs/distributed-setup.md): setup in the order you would do it, with a note on how much each step has been run.
+- [`protocol-change/078-distributed-runtime.md`](https://github.com/Roasbeef/loom/blob/main/protocol-change/078-distributed-runtime.md): the wire and durable formats.

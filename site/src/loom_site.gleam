@@ -32,6 +32,7 @@ import site/landing
 import site/markdown
 import site/model.{type Model, Model, Replay} as m
 import site/msg.{type Msg}
+import site/release
 import site/replay
 import site/route.{type Route}
 
@@ -158,7 +159,7 @@ fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
 
     msg.DocLoaded(slug, result) -> {
       let loaded = case result {
-        Ok(text) -> m.Ready(markdown.parse(text))
+        Ok(text) -> m.Ready(markdown.parse(release.fill(text)))
         Error(Nil) -> m.Failed
       }
       let next = Model(..model, docs: dict.insert(model.docs, slug, loaded))

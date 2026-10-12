@@ -99,7 +99,7 @@ A browser on another machine reaches the daemon through a tunnel such as `ssh -L
 
 ## Read more
 
-- `docs/guide/multiplayer.md`: a step-by-step guide to working with other people.
-- `docs/architecture/terminal.md`: how the terminal client is built.
-- `docs/architecture/web-view.md`: the routes, authentication and security layers.
-- `docs/architecture/multiplayer.md`: access, roles and ordering.
+- [`docs/guide/multiplayer.md`](https://github.com/Roasbeef/loom/blob/main/docs/guide/multiplayer.md): a step-by-step guide to working with other people.
+- [`docs/architecture/terminal.md`](https://github.com/Roasbeef/loom/blob/main/docs/architecture/terminal.md): how the terminal client is built.
+- [`docs/architecture/web-view.md`](https://github.com/Roasbeef/loom/blob/main/docs/architecture/web-view.md): the routes, authentication and security layers.
+- [`docs/architecture/multiplayer.md`](https://github.com/Roasbeef/loom/blob/main/docs/architecture/multiplayer.md): access, roles and ordering.

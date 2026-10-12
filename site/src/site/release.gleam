@@ -107,3 +107,19 @@ pub fn tree(path: String) -> String {
 pub fn pull(number: Int) -> String {
   repo <> "/pull/" <> string.inspect(number)
 }
+
+/// Fills the placeholders that a documentation page may use: `{{tag}}` for
+/// the tag and `{{version}}` for the number in archive names. The pages are
+/// Markdown files that the owner edits without touching Gleam, and this is
+/// how a release bump reaches them.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert fill("loom-{{version}}.tar.gz") == "loom-0.2.1.tar.gz"
+/// ```
+pub fn fill(text: String) -> String {
+  text
+  |> string.replace("{{tag}}", tag)
+  |> string.replace("{{version}}", version())
+}

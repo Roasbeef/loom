@@ -31,6 +31,19 @@ if echo "$files" | xargs grep -n '—' 2>/dev/null; then
   status=1
 fi
 
+# Source links must name main. A link to any other branch goes stale when that
+# branch is deleted or merged, and the site describes main.
+if echo "$files" | xargs grep -n -E '/(blob|tree)/' 2>/dev/null | grep -v -E '/(blob|tree)/(main/|"|\\")' | grep -v -E '"/blob/"|/blob/"'; then
+  echo "copy-check: a source link names a branch other than main (see above)" >&2
+  status=1
+fi
+
+# The install page leads with the latest-release link.
+if ! grep -q 'github.com/Roasbeef/loom/releases/latest' "$here/public/content/getting-started.md"; then
+  echo "copy-check: the install page does not link to the latest release" >&2
+  status=1
+fi
+
 if [ "$status" -eq 0 ]; then
   echo "copy-check: clean"
 fi

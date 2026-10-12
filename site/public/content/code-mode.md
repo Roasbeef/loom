@@ -139,11 +139,11 @@ The trade-off is fluency. Models have seen far more JavaScript than Gleam, and e
 
 ## On an executor
 
-Work on the [distributed runtime](#/docs/distributed-runtime) separates the session's owner from the machine that holds the checkout. For code mode, the executor compiles the program beside the checkout and runs the satellite there, in the same jail with distribution disabled. Filesystem, report, command, job and language-server calls are served on the executor, against its workspace. Notes, strand operations, schedules and peer calls go back to the owner and keep the owner's session authority. This is in development and is not on `main` yet.
+Work on the [distributed runtime](#/docs/distributed-runtime) separates the session's owner from the machine that holds the checkout. For code mode, the executor compiles the program beside the checkout and runs the satellite there, in the same jail with distribution disabled. Filesystem, report, command, job and language-server calls are served on the executor, against its workspace. Notes, strand operations, schedules and peer calls go back to the owner and keep the owner's session authority. Foreground code mode works this way on `main`. A remote session refuses background code mode (`"mode": "launch"`) and MCP façades inside code mode.
 
 ## Read more
 
-- `docs/code-mode.md`: the overview this page follows.
-- `docs/architecture/code-mode.md`: vetting, the build, the satellite and the broker routing.
-- `docs/async-collaboration.md`: launch mode, endpoints, workflows and peer links.
-- `docs/examples/`: programs that tests run verbatim.
+- [`docs/code-mode.md`](https://github.com/Roasbeef/loom/blob/main/docs/code-mode.md): the overview this page follows.
+- [`docs/architecture/code-mode.md`](https://github.com/Roasbeef/loom/blob/main/docs/architecture/code-mode.md): vetting, the build, the satellite and the broker routing.
+- [`docs/async-collaboration.md`](https://github.com/Roasbeef/loom/blob/main/docs/async-collaboration.md): launch mode, endpoints, workflows and peer links.
+- [`docs/examples/`](https://github.com/Roasbeef/loom/tree/main/docs/examples/): programs that tests run verbatim.

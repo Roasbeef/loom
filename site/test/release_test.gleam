@@ -44,3 +44,11 @@ pub fn the_platforms_are_the_ones_the_release_workflow_builds_test() {
   assert release.platforms == ["linux-x86_64", "macos-arm64"]
   assert list.length(release.platforms) == 2
 }
+
+pub fn placeholders_in_documentation_follow_the_tag_test() {
+  assert release.fill("loom update --version {{tag}}")
+    == "loom update --version " <> release.tag
+  assert release.fill("loomd-{{version}}.tar.gz")
+    == "loomd-" <> release.version() <> ".tar.gz"
+  assert release.fill("nothing to fill") == "nothing to fill"
+}

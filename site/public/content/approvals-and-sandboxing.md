@@ -84,6 +84,6 @@ An approval is a durable record. If the daemon dies while a call waits, nothing 
 
 ## Read more
 
-- `docs/architecture/approvals.md`: the record, its states and the decision rules.
-- `docs/architecture/effects.md`: the broker, the wire, the jail and the self-test.
-- `docs/adr/006-macos-seatbelt-boundary.md`: why macOS enforces less than Linux.
+- [`docs/architecture/approvals.md`](https://github.com/Roasbeef/loom/blob/main/docs/architecture/approvals.md): the record, its states and the decision rules.
+- [`docs/architecture/effects.md`](https://github.com/Roasbeef/loom/blob/main/docs/architecture/effects.md): the broker, the wire, the jail and the self-test.
+- [`docs/adr/006-macos-seatbelt-boundary.md`](https://github.com/Roasbeef/loom/blob/main/docs/adr/006-macos-seatbelt-boundary.md): why macOS enforces less than Linux.
