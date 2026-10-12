@@ -20,6 +20,7 @@ import client/distribution_plan.{type Role}
 import client/internal/ffi_nodes
 import client/ledger_boot
 import client/ledger_control
+import client/ledger_rows
 import client/ledger_service.{type Observer}
 import client/ledger_trust
 import client/membership_entry.{
@@ -28,6 +29,7 @@ import client/membership_entry.{
 import client/membership_ledger
 import client/membership_signing
 import client/remote/orchestrator_port
+import client/roster
 import core/json
 import gleam/erlang/process.{type Subject}
 import gleam/int
@@ -386,6 +388,11 @@ pub fn control(node: Node, command: String, body: String) -> String {
         }
       "ledger.holdings" ->
         ledger_control.holdings(handle) |> result.map_error(failure_text)
+
+      // Not a daemon command: the rows this node derives from its ledger right
+      // now, which is what its sessions and its directory would see. A scenario
+      // reads it to show that an entry changed them with no restart.
+      "test.rows" -> Ok(rows(service, node.local))
       _ -> Error("unsupported control command")
     }
   }
@@ -394,6 +401,21 @@ pub fn control(node: Node, command: String, body: String) -> String {
     Error(reason) ->
       json.to_string(json.Object([#("error", json.String(reason))]))
   }
+}
+
+// The names of the executors and orchestrators a node derives from its ledger,
+// read through the same rosters the daemon builds, with no written rows.
+fn rows(service: ledger_service.Service, local: String) -> json.JsonValue {
+  let executors =
+    roster.rows(ledger_rows.executor_roster(service, local, []))
+    |> list.map(fn(row) { json.String(row.name) })
+  let orchestrators =
+    roster.rows(ledger_rows.orchestrator_roster(service, local, []))
+    |> list.map(fn(row) { json.String(row.name) })
+  json.Object([
+    #("executors", json.Array(executors)),
+    #("orchestrators", json.Array(orchestrators)),
+  ])
 }
 
 fn failure_text(failure: ledger_control.Failure) -> String {
