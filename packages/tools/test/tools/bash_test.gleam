@@ -972,3 +972,36 @@ pub fn background_captures_cwd_before_start_test() {
   assert process.receive(started, 0) == Error(Nil)
   let assert Ok(Nil) = simplifile.delete_all([root]) as "remove fixture"
 }
+
+// The required list a tool's schema declares, at the top level or inside
+// one named property.
+fn required_of(schema: json.JsonValue, inside: String) -> List(String) {
+  let assert json.Object(fields) = schema as "a schema is an object"
+  let target = case inside {
+    "" -> fields
+    name -> {
+      let assert Ok(json.Object(props)) = list.key_find(fields, "properties")
+        as "the schema has properties"
+      let assert Ok(json.Object(nested)) = list.key_find(props, name)
+        as "the property is an object schema"
+      nested
+    }
+  }
+  let assert Ok(json.Array(names)) = list.key_find(target, "required")
+    as "the schema declares required"
+  list.filter_map(names, fn(name) {
+    case name {
+      json.String(text) -> Ok(text)
+      _ -> Error(Nil)
+    }
+  })
+}
+
+pub fn permissions_and_its_fields_are_optional_test() {
+  // A provider that reads every property as required would fill the
+  // permissions object with placeholders, requesting full network and an
+  // unlimited wall on every call. Nothing but `command` may be required.
+  let tool = bash.tool(job.unavailable())
+  assert !list.contains(required_of(tool.schema, ""), "permissions")
+  assert required_of(tool.schema, "permissions") == []
+}
