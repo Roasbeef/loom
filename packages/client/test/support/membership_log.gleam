@@ -13,10 +13,11 @@ import client/membership_entry.{
   NotInDirectory, Revoke, Upsert, Voter,
 }
 import client/membership_ledger.{type Ledger}
-import gleam/dict
+import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
 import gleam/string
 import support/membership_fixture as fixture
 
@@ -231,24 +232,115 @@ pub fn pool() -> List(String) {
   names
 }
 
-/// A model of the fold that reads only the entries: the active members after
-/// the entries in order, with links to a revoked name removed. It is written
-/// apart from the ledger so a test compares two statements of the rule.
-pub fn model(entries: List(SignedEntry)) -> List(Member) {
-  list.fold(entries, dict.new(), fn(active, signed) {
+// --- a model written from the wording of 086 ----------------------------------
+
+// What the model remembers. `records` holds each active member exactly as its
+// last entry wrote it, together with the incarnation of every name it linked
+// to at that moment. `revokes` counts the revokes applied to each name, so the
+// incarnation of a name is the number of times it has been revoked.
+type Model {
+  Model(records: Dict(String, Record), revokes: Dict(String, Int))
+}
+
+type Record {
+  Record(member: Member, listed: List(#(String, Int)))
+}
+
+fn incarnation(model: Model, name: String) -> Int {
+  result.unwrap(dict.get(model.revokes, name), 0)
+}
+
+fn fold_model(entries: List(SignedEntry)) -> Model {
+  list.fold(entries, Model(dict.new(), dict.new()), fn(model, signed) {
     case signed.entry.kind {
-      Genesis(..) -> active
-      Upsert(member:) -> dict.insert(active, member.name, member)
+      Genesis(..) -> model
+      Upsert(member:) -> {
+        let listed =
+          list.map(member.links, fn(link) { #(link, incarnation(model, link)) })
+        Model(
+          ..model,
+          records: dict.insert(
+            model.records,
+            member.name,
+            Record(member:, listed:),
+          ),
+        )
+      }
       Revoke(name:, ..) ->
-        dict.delete(active, name)
-        |> dict.map_values(fn(_, member) {
-          Member(
-            ..member,
-            links: list.filter(member.links, fn(link) { link != name }),
-          )
-        })
+        Model(
+          records: dict.delete(model.records, name),
+          revokes: dict.insert(
+            model.revokes,
+            name,
+            incarnation(model, name) + 1,
+          ),
+        )
     }
   })
-  |> dict.values
+}
+
+// A link is live while its target is active and has not been revoked since the
+// link was written.
+fn is_live(model: Model, link: #(String, Int)) -> Bool {
+  let #(target, written) = link
+  dict.has_key(model.records, target) && incarnation(model, target) == written
+}
+
+/// A model of the fold, written from the wording of 086 and not from the
+/// ledger's code, so a test compares two independent statements of the rule.
+///
+/// The ledger prunes a revoked name from the stored `links` of every other
+/// member as it applies the revoke. The model stores nothing of the kind: it
+/// keeps each member as its last entry wrote it, and tags every link with how
+/// many times its target had been revoked when the link was written. A link is
+/// live at query time only if its target is active and has been revoked no more
+/// often since, which is the sentence in 086's fold: a name enrolled again holds
+/// no edge it was not given anew. A model which merely filtered `links` against
+/// the active set would give a re-enrolled name its old edges back, which 086
+/// forbids.
+///
+/// Returns the active members ordered by name, with the live links only.
+pub fn model(entries: List(SignedEntry)) -> List(Member) {
+  let model = fold_model(entries)
+  dict.values(model.records)
+  |> list.map(fn(record) {
+    let live = list.filter(record.listed, is_live(model, _))
+    Member(..record.member, links: list.map(live, fn(link) { link.0 }))
+  })
   |> list.sort(fn(a, b) { string.compare(a.name, b.name) })
+}
+
+/// The number of links, among the active members, whose target is active now
+/// but was revoked after the link was written. These are the edges the ledger
+/// must have pruned and a re-enrollment must not revive; a test uses the count
+/// to show a log exercises the rule.
+pub fn stale_edges(entries: List(SignedEntry)) -> Int {
+  let model = fold_model(entries)
+  dict.values(model.records)
+  |> list.flat_map(fn(record) { record.listed })
+  |> list.count(fn(link) {
+    dict.has_key(model.records, link.0) && !is_live(model, link)
+  })
+}
+
+/// The names of the members the node `name` accepts, ordered, per the model:
+/// the active members other than itself that it lists, that list it, or that
+/// share a directory standing with it. A name that is not active accepts none.
+pub fn model_peers(entries: List(SignedEntry), name: String) -> List(String) {
+  let members = model(entries)
+  case list.find(members, fn(member) { member.name == name }) {
+    Error(Nil) -> []
+    Ok(own) ->
+      list.filter(members, fn(other) {
+        other.name != name
+        && {
+          list.contains(own.links, other.name)
+          || list.contains(other.links, name)
+          || {
+            own.directory != NotInDirectory && other.directory != NotInDirectory
+          }
+        }
+      })
+      |> list.map(fn(other) { other.name })
+  }
 }
