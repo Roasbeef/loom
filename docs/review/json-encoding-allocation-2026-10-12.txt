@@ -1,0 +1,389 @@
+TRIAL 1
+VM otp=29 word_bytes=8 schedulers=1
+EQUIVALENCE values=398 sha256=0c776eb493a4570738b46e7bdcf12ce52bd15715f7e57925d74a4939e6757cf2
+TIME transcript16 json_encode_baseline round=1 bytes=1736 repetitions=200 us=4758 reductions=1093563
+TIME transcript16 core@json round=1 bytes=1736 repetitions=200 us=3945 reductions=928316
+TIME transcript16 core@json round=2 bytes=1736 repetitions=200 us=4073 reductions=928508
+TIME transcript16 json_encode_baseline round=2 bytes=1736 repetitions=200 us=4691 reductions=1090223
+TIME transcript16 json_encode_baseline round=3 bytes=1736 repetitions=200 us=4694 reductions=1090123
+TIME transcript16 core@json round=3 bytes=1736 repetitions=200 us=4083 reductions=928316
+TIME transcript16 core@json round=4 bytes=1736 repetitions=200 us=4094 reductions=928508
+TIME transcript16 json_encode_baseline round=4 bytes=1736 repetitions=200 us=4750 reductions=1090223
+TIME transcript16 json_encode_baseline round=5 bytes=1736 repetitions=200 us=4857 reductions=1090123
+TIME transcript16 core@json round=5 bytes=1736 repetitions=200 us=4128 reductions=928316
+TIME transcript16 core@json round=6 bytes=1736 repetitions=200 us=4112 reductions=928508
+TIME transcript16 json_encode_baseline round=6 bytes=1736 repetitions=200 us=4708 reductions=1090223
+TIME transcript16 json_encode_baseline round=7 bytes=1736 repetitions=200 us=4619 reductions=1090123
+TIME transcript16 core@json round=7 bytes=1736 repetitions=200 us=4103 reductions=928316
+TIME transcript16 core@json round=8 bytes=1736 repetitions=200 us=4082 reductions=928508
+TIME transcript16 json_encode_baseline round=8 bytes=1736 repetitions=200 us=4585 reductions=1090223
+ALLOC transcript16 json_encode_baseline bytes=1736 repetitions=100 words=577320
+ALLOC transcript16 core@json bytes=1736 repetitions=100 words=468224
+TIME transcript128 json_encode_baseline round=1 bytes=13973 repetitions=200 us=36367 reductions=8691698
+TIME transcript128 core@json round=1 bytes=13973 repetitions=200 us=36145 reductions=7566681
+TIME transcript128 core@json round=2 bytes=13973 repetitions=200 us=35282 reductions=7566809
+TIME transcript128 json_encode_baseline round=2 bytes=13973 repetitions=200 us=36662 reductions=8691593
+TIME transcript128 json_encode_baseline round=3 bytes=13973 repetitions=200 us=36299 reductions=8691693
+TIME transcript128 core@json round=3 bytes=13973 repetitions=200 us=34990 reductions=7566681
+TIME transcript128 core@json round=4 bytes=13973 repetitions=200 us=35086 reductions=7566809
+TIME transcript128 json_encode_baseline round=4 bytes=13973 repetitions=200 us=36142 reductions=8691593
+TIME transcript128 json_encode_baseline round=5 bytes=13973 repetitions=200 us=35762 reductions=8691693
+TIME transcript128 core@json round=5 bytes=13973 repetitions=200 us=35311 reductions=7566681
+TIME transcript128 core@json round=6 bytes=13973 repetitions=200 us=35646 reductions=7566809
+TIME transcript128 json_encode_baseline round=6 bytes=13973 repetitions=200 us=36459 reductions=8691593
+TIME transcript128 json_encode_baseline round=7 bytes=13973 repetitions=200 us=36405 reductions=8691693
+TIME transcript128 core@json round=7 bytes=13973 repetitions=200 us=37977 reductions=7566681
+TIME transcript128 core@json round=8 bytes=13973 repetitions=200 us=36596 reductions=7566809
+TIME transcript128 json_encode_baseline round=8 bytes=13973 repetitions=200 us=36750 reductions=8691593
+ALLOC transcript128 json_encode_baseline bytes=13973 repetitions=100 words=4610048
+ALLOC transcript128 core@json bytes=13973 repetitions=100 words=3739532
+TIME transcript1024 json_encode_baseline round=1 bytes=112558 repetitions=200 us=398056 reductions=71024210
+TIME transcript1024 core@json round=1 bytes=112558 repetitions=200 us=299028 reductions=59345704
+TIME transcript1024 core@json round=2 bytes=112558 repetitions=200 us=301310 reductions=59345444
+TIME transcript1024 json_encode_baseline round=2 bytes=112558 repetitions=200 us=405949 reductions=71014343
+TIME transcript1024 json_encode_baseline round=3 bytes=112558 repetitions=200 us=403317 reductions=71013591
+TIME transcript1024 core@json round=3 bytes=112558 repetitions=200 us=306834 reductions=59348684
+TIME transcript1024 core@json round=4 bytes=112558 repetitions=200 us=297520 reductions=59345600
+TIME transcript1024 json_encode_baseline round=4 bytes=112558 repetitions=200 us=428703 reductions=71915786
+TIME transcript1024 json_encode_baseline round=5 bytes=112558 repetitions=200 us=425535 reductions=71969223
+TIME transcript1024 core@json round=5 bytes=112558 repetitions=200 us=300495 reductions=59345148
+TIME transcript1024 core@json round=6 bytes=112558 repetitions=200 us=300202 reductions=59345140
+TIME transcript1024 json_encode_baseline round=6 bytes=112558 repetitions=200 us=425609 reductions=71915878
+TIME transcript1024 json_encode_baseline round=7 bytes=112558 repetitions=200 us=429287 reductions=71969755
+TIME transcript1024 core@json round=7 bytes=112558 repetitions=200 us=300364 reductions=59345304
+TIME transcript1024 core@json round=8 bytes=112558 repetitions=200 us=297088 reductions=59343588
+TIME transcript1024 json_encode_baseline round=8 bytes=112558 repetitions=200 us=429635 reductions=71916054
+ALLOC transcript1024 json_encode_baseline bytes=112558 repetitions=100 words=37624242
+ALLOC transcript1024 core@json bytes=112558 repetitions=100 words=29904062
+TIME wide_array json_encode_baseline round=1 bytes=20001 repetitions=200 us=83837 reductions=12721649
+TIME wide_array core@json round=1 bytes=20001 repetitions=200 us=81666 reductions=14611364
+TIME wide_array core@json round=2 bytes=20001 repetitions=200 us=80421 reductions=14610812
+TIME wide_array json_encode_baseline round=2 bytes=20001 repetitions=200 us=84289 reductions=12716719
+TIME wide_array json_encode_baseline round=3 bytes=20001 repetitions=200 us=84257 reductions=12716975
+TIME wide_array core@json round=3 bytes=20001 repetitions=200 us=88288 reductions=15201812
+TIME wide_array core@json round=4 bytes=20001 repetitions=200 us=87117 reductions=15201812
+TIME wide_array json_encode_baseline round=4 bytes=20001 repetitions=200 us=92124 reductions=12724661
+TIME wide_array json_encode_baseline round=5 bytes=20001 repetitions=200 us=85762 reductions=12722397
+TIME wide_array core@json round=5 bytes=20001 repetitions=200 us=81930 reductions=14610872
+TIME wide_array core@json round=6 bytes=20001 repetitions=200 us=81755 reductions=14611096
+TIME wide_array json_encode_baseline round=6 bytes=20001 repetitions=200 us=84718 reductions=12716587
+TIME wide_array json_encode_baseline round=7 bytes=20001 repetitions=200 us=84479 reductions=12718079
+TIME wide_array core@json round=7 bytes=20001 repetitions=200 us=88025 reductions=15201812
+TIME wide_array core@json round=8 bytes=20001 repetitions=200 us=88267 reductions=15201812
+TIME wide_array json_encode_baseline round=8 bytes=20001 repetitions=200 us=85760 reductions=12722825
+ALLOC wide_array json_encode_baseline bytes=20001 repetitions=100 words=15001600
+ALLOC wide_array core@json bytes=20001 repetitions=100 words=9001000
+TIME wide_object json_encode_baseline round=1 bytes=117789 repetitions=200 us=482099 reductions=65091935
+TIME wide_object core@json round=1 bytes=117789 repetitions=200 us=313219 reductions=53038632
+TIME wide_object core@json round=2 bytes=117789 repetitions=200 us=304615 reductions=53040204
+TIME wide_object json_encode_baseline round=2 bytes=117789 repetitions=200 us=456300 reductions=64067356
+TIME wide_object json_encode_baseline round=3 bytes=117789 repetitions=200 us=462513 reductions=64077209
+TIME wide_object core@json round=3 bytes=117789 repetitions=200 us=302735 reductions=53035160
+TIME wide_object core@json round=4 bytes=117789 repetitions=200 us=301243 reductions=53036956
+TIME wide_object json_encode_baseline round=4 bytes=117789 repetitions=200 us=459972 reductions=64071180
+TIME wide_object json_encode_baseline round=5 bytes=117789 repetitions=200 us=465203 reductions=64073225
+TIME wide_object core@json round=5 bytes=117789 repetitions=200 us=321066 reductions=53039156
+TIME wide_object core@json round=6 bytes=117789 repetitions=200 us=316795 reductions=53041624
+TIME wide_object json_encode_baseline round=6 bytes=117789 repetitions=200 us=474842 reductions=64081780
+TIME wide_object json_encode_baseline round=7 bytes=117789 repetitions=200 us=468624 reductions=64077225
+TIME wide_object core@json round=7 bytes=117789 repetitions=200 us=315501 reductions=53038976
+TIME wide_object core@json round=8 bytes=117789 repetitions=200 us=305836 reductions=53037124
+TIME wide_object json_encode_baseline round=8 bytes=117789 repetitions=200 us=455065 reductions=64067292
+ALLOC wide_object json_encode_baseline bytes=117789 repetitions=100 words=38041100
+ALLOC wide_object core@json bytes=117789 repetitions=100 words=26075031
+TIME empty json_encode_baseline round=1 bytes=2 repetitions=200 us=64 reductions=5612
+TIME empty core@json round=1 bytes=2 repetitions=200 us=8 reductions=3212
+TIME empty core@json round=2 bytes=2 repetitions=200 us=8 reductions=3212
+TIME empty json_encode_baseline round=2 bytes=2 repetitions=200 us=22 reductions=5612
+TIME empty json_encode_baseline round=3 bytes=2 repetitions=200 us=76 reductions=5612
+TIME empty core@json round=3 bytes=2 repetitions=200 us=8 reductions=3212
+TIME empty core@json round=4 bytes=2 repetitions=200 us=8 reductions=3212
+TIME empty json_encode_baseline round=4 bytes=2 repetitions=200 us=10 reductions=5612
+TIME empty json_encode_baseline round=5 bytes=2 repetitions=200 us=10 reductions=5612
+TIME empty core@json round=5 bytes=2 repetitions=200 us=8 reductions=3212
+TIME empty core@json round=6 bytes=2 repetitions=200 us=8 reductions=3212
+TIME empty json_encode_baseline round=6 bytes=2 repetitions=200 us=11 reductions=5612
+TIME empty json_encode_baseline round=7 bytes=2 repetitions=200 us=11 reductions=5612
+TIME empty core@json round=7 bytes=2 repetitions=200 us=9 reductions=3212
+TIME empty core@json round=8 bytes=2 repetitions=200 us=8 reductions=3212
+TIME empty json_encode_baseline round=8 bytes=2 repetitions=200 us=11 reductions=5612
+ALLOC empty json_encode_baseline bytes=2 repetitions=100 words=1200
+ALLOC empty core@json bytes=2 repetitions=100 words=800
+TIME scalar json_encode_baseline round=1 bytes=18 repetitions=200 us=108 reductions=5412
+TIME scalar core@json round=1 bytes=18 repetitions=200 us=91 reductions=5412
+TIME scalar core@json round=2 bytes=18 repetitions=200 us=31 reductions=5412
+TIME scalar json_encode_baseline round=2 bytes=18 repetitions=200 us=42 reductions=5412
+TIME scalar json_encode_baseline round=3 bytes=18 repetitions=200 us=43 reductions=5412
+TIME scalar core@json round=3 bytes=18 repetitions=200 us=94 reductions=5412
+TIME scalar core@json round=4 bytes=18 repetitions=200 us=28 reductions=5412
+TIME scalar json_encode_baseline round=4 bytes=18 repetitions=200 us=29 reductions=5412
+TIME scalar json_encode_baseline round=5 bytes=18 repetitions=200 us=26 reductions=5412
+TIME scalar core@json round=5 bytes=18 repetitions=200 us=26 reductions=5412
+TIME scalar core@json round=6 bytes=18 repetitions=200 us=26 reductions=5412
+TIME scalar json_encode_baseline round=6 bytes=18 repetitions=200 us=26 reductions=5412
+TIME scalar json_encode_baseline round=7 bytes=18 repetitions=200 us=27 reductions=5412
+TIME scalar core@json round=7 bytes=18 repetitions=200 us=27 reductions=5412
+TIME scalar core@json round=8 bytes=18 repetitions=200 us=27 reductions=5412
+TIME scalar json_encode_baseline round=8 bytes=18 repetitions=200 us=27 reductions=5412
+ALLOC scalar json_encode_baseline bytes=18 repetitions=100 words=2100
+ALLOC scalar core@json bytes=18 repetitions=100 words=2100
+
+TRIAL 2
+VM otp=29 word_bytes=8 schedulers=1
+EQUIVALENCE values=398 sha256=0c776eb493a4570738b46e7bdcf12ce52bd15715f7e57925d74a4939e6757cf2
+TIME transcript16 json_encode_baseline round=1 bytes=1736 repetitions=200 us=4888 reductions=1093579
+TIME transcript16 core@json round=1 bytes=1736 repetitions=200 us=4044 reductions=928316
+TIME transcript16 core@json round=2 bytes=1736 repetitions=200 us=4082 reductions=928508
+TIME transcript16 json_encode_baseline round=2 bytes=1736 repetitions=200 us=4664 reductions=1090223
+TIME transcript16 json_encode_baseline round=3 bytes=1736 repetitions=200 us=4706 reductions=1090123
+TIME transcript16 core@json round=3 bytes=1736 repetitions=200 us=4076 reductions=928316
+TIME transcript16 core@json round=4 bytes=1736 repetitions=200 us=4427 reductions=928508
+TIME transcript16 json_encode_baseline round=4 bytes=1736 repetitions=200 us=4691 reductions=1090223
+TIME transcript16 json_encode_baseline round=5 bytes=1736 repetitions=200 us=4799 reductions=1090123
+TIME transcript16 core@json round=5 bytes=1736 repetitions=200 us=4214 reductions=928316
+TIME transcript16 core@json round=6 bytes=1736 repetitions=200 us=4252 reductions=928508
+TIME transcript16 json_encode_baseline round=6 bytes=1736 repetitions=200 us=4766 reductions=1090223
+TIME transcript16 json_encode_baseline round=7 bytes=1736 repetitions=200 us=4852 reductions=1090123
+TIME transcript16 core@json round=7 bytes=1736 repetitions=200 us=4274 reductions=928316
+TIME transcript16 core@json round=8 bytes=1736 repetitions=200 us=4210 reductions=928508
+TIME transcript16 json_encode_baseline round=8 bytes=1736 repetitions=200 us=4700 reductions=1090223
+ALLOC transcript16 json_encode_baseline bytes=1736 repetitions=100 words=577320
+ALLOC transcript16 core@json bytes=1736 repetitions=100 words=468224
+TIME transcript128 json_encode_baseline round=1 bytes=13973 repetitions=200 us=36414 reductions=8691698
+TIME transcript128 core@json round=1 bytes=13973 repetitions=200 us=41123 reductions=7566681
+TIME transcript128 core@json round=2 bytes=13973 repetitions=200 us=38999 reductions=7566809
+TIME transcript128 json_encode_baseline round=2 bytes=13973 repetitions=200 us=36854 reductions=8691593
+TIME transcript128 json_encode_baseline round=3 bytes=13973 repetitions=200 us=37523 reductions=8691693
+TIME transcript128 core@json round=3 bytes=13973 repetitions=200 us=36296 reductions=7566681
+TIME transcript128 core@json round=4 bytes=13973 repetitions=200 us=36005 reductions=7566809
+TIME transcript128 json_encode_baseline round=4 bytes=13973 repetitions=200 us=37590 reductions=8691593
+TIME transcript128 json_encode_baseline round=5 bytes=13973 repetitions=200 us=37511 reductions=8691693
+TIME transcript128 core@json round=5 bytes=13973 repetitions=200 us=37566 reductions=7566681
+TIME transcript128 core@json round=6 bytes=13973 repetitions=200 us=36959 reductions=7566809
+TIME transcript128 json_encode_baseline round=6 bytes=13973 repetitions=200 us=39387 reductions=8691593
+TIME transcript128 json_encode_baseline round=7 bytes=13973 repetitions=200 us=37655 reductions=8691693
+TIME transcript128 core@json round=7 bytes=13973 repetitions=200 us=36870 reductions=7566681
+TIME transcript128 core@json round=8 bytes=13973 repetitions=200 us=36354 reductions=7566809
+TIME transcript128 json_encode_baseline round=8 bytes=13973 repetitions=200 us=37464 reductions=8691593
+ALLOC transcript128 json_encode_baseline bytes=13973 repetitions=100 words=4610048
+ALLOC transcript128 core@json bytes=13973 repetitions=100 words=3739532
+TIME transcript1024 json_encode_baseline round=1 bytes=112558 repetitions=200 us=417234 reductions=71030990
+TIME transcript1024 core@json round=1 bytes=112558 repetitions=200 us=313446 reductions=59354108
+TIME transcript1024 core@json round=2 bytes=112558 repetitions=200 us=319152 reductions=59354320
+TIME transcript1024 json_encode_baseline round=2 bytes=112558 repetitions=200 us=423311 reductions=71018691
+TIME transcript1024 json_encode_baseline round=3 bytes=112558 repetitions=200 us=420298 reductions=71017799
+TIME transcript1024 core@json round=3 bytes=112558 repetitions=200 us=315021 reductions=59354136
+TIME transcript1024 core@json round=4 bytes=112558 repetitions=200 us=330182 reductions=59354440
+TIME transcript1024 json_encode_baseline round=4 bytes=112558 repetitions=200 us=466281 reductions=71935378
+TIME transcript1024 json_encode_baseline round=5 bytes=112558 repetitions=200 us=454885 reductions=71981011
+TIME transcript1024 core@json round=5 bytes=112558 repetitions=200 us=355549 reductions=59370392
+TIME transcript1024 core@json round=6 bytes=112558 repetitions=200 us=332488 reductions=59364640
+TIME transcript1024 json_encode_baseline round=6 bytes=112558 repetitions=200 us=473695 reductions=71932654
+TIME transcript1024 json_encode_baseline round=7 bytes=112558 repetitions=200 us=471929 reductions=71986967
+TIME transcript1024 core@json round=7 bytes=112558 repetitions=200 us=310053 reductions=59351612
+TIME transcript1024 core@json round=8 bytes=112558 repetitions=200 us=307133 reductions=59348812
+TIME transcript1024 json_encode_baseline round=8 bytes=112558 repetitions=200 us=442997 reductions=71922046
+ALLOC transcript1024 json_encode_baseline bytes=112558 repetitions=100 words=37624242
+ALLOC transcript1024 core@json bytes=112558 repetitions=100 words=29904062
+TIME wide_array json_encode_baseline round=1 bytes=20001 repetitions=200 us=86118 reductions=12723757
+TIME wide_array core@json round=1 bytes=20001 repetitions=200 us=82276 reductions=14611000
+TIME wide_array core@json round=2 bytes=20001 repetitions=200 us=82075 reductions=14611104
+TIME wide_array json_encode_baseline round=2 bytes=20001 repetitions=200 us=85816 reductions=12716699
+TIME wide_array json_encode_baseline round=3 bytes=20001 repetitions=200 us=84368 reductions=12716499
+TIME wide_array core@json round=3 bytes=20001 repetitions=200 us=87782 reductions=15201812
+TIME wide_array core@json round=4 bytes=20001 repetitions=200 us=88809 reductions=15201812
+TIME wide_array json_encode_baseline round=4 bytes=20001 repetitions=200 us=84437 reductions=12724369
+TIME wide_array json_encode_baseline round=5 bytes=20001 repetitions=200 us=86939 reductions=12725233
+TIME wide_array core@json round=5 bytes=20001 repetitions=200 us=81412 reductions=14610864
+TIME wide_array core@json round=6 bytes=20001 repetitions=200 us=80323 reductions=14610460
+TIME wide_array json_encode_baseline round=6 bytes=20001 repetitions=200 us=83828 reductions=12715259
+TIME wide_array json_encode_baseline round=7 bytes=20001 repetitions=200 us=85914 reductions=12717703
+TIME wide_array core@json round=7 bytes=20001 repetitions=200 us=88491 reductions=15201812
+TIME wide_array core@json round=8 bytes=20001 repetitions=200 us=88564 reductions=15201812
+TIME wide_array json_encode_baseline round=8 bytes=20001 repetitions=200 us=85751 reductions=12724257
+ALLOC wide_array json_encode_baseline bytes=20001 repetitions=100 words=15001600
+ALLOC wide_array core@json bytes=20001 repetitions=100 words=9001000
+TIME wide_object json_encode_baseline round=1 bytes=117789 repetitions=200 us=487588 reductions=65094015
+TIME wide_object core@json round=1 bytes=117789 repetitions=200 us=305658 reductions=53030140
+TIME wide_object core@json round=2 bytes=117789 repetitions=200 us=316693 reductions=53037552
+TIME wide_object json_encode_baseline round=2 bytes=117789 repetitions=200 us=463329 reductions=64071672
+TIME wide_object json_encode_baseline round=3 bytes=117789 repetitions=200 us=471784 reductions=64076193
+TIME wide_object core@json round=3 bytes=117789 repetitions=200 us=310541 reductions=53038024
+TIME wide_object core@json round=4 bytes=117789 repetitions=200 us=310155 reductions=53038368
+TIME wide_object json_encode_baseline round=4 bytes=117789 repetitions=200 us=465484 reductions=64075340
+TIME wide_object json_encode_baseline round=5 bytes=117789 repetitions=200 us=469436 reductions=64072705
+TIME wide_object core@json round=5 bytes=117789 repetitions=200 us=307732 reductions=53027536
+TIME wide_object core@json round=6 bytes=117789 repetitions=200 us=311723 reductions=53037424
+TIME wide_object json_encode_baseline round=6 bytes=117789 repetitions=200 us=474407 reductions=64076400
+TIME wide_object json_encode_baseline round=7 bytes=117789 repetitions=200 us=477450 reductions=64081357
+TIME wide_object core@json round=7 bytes=117789 repetitions=200 us=313549 reductions=53035312
+TIME wide_object core@json round=8 bytes=117789 repetitions=200 us=317084 reductions=53041484
+TIME wide_object json_encode_baseline round=8 bytes=117789 repetitions=200 us=478213 reductions=64078772
+ALLOC wide_object json_encode_baseline bytes=117789 repetitions=100 words=38041100
+ALLOC wide_object core@json bytes=117789 repetitions=100 words=26075031
+TIME empty json_encode_baseline round=1 bytes=2 repetitions=200 us=61 reductions=5612
+TIME empty core@json round=1 bytes=2 repetitions=200 us=10 reductions=3212
+TIME empty core@json round=2 bytes=2 repetitions=200 us=8 reductions=3212
+TIME empty json_encode_baseline round=2 bytes=2 repetitions=200 us=32 reductions=5612
+TIME empty json_encode_baseline round=3 bytes=2 repetitions=200 us=78 reductions=5612
+TIME empty core@json round=3 bytes=2 repetitions=200 us=8 reductions=3212
+TIME empty core@json round=4 bytes=2 repetitions=200 us=8 reductions=3212
+TIME empty json_encode_baseline round=4 bytes=2 repetitions=200 us=13 reductions=5612
+TIME empty json_encode_baseline round=5 bytes=2 repetitions=200 us=10 reductions=5612
+TIME empty core@json round=5 bytes=2 repetitions=200 us=9 reductions=3212
+TIME empty core@json round=6 bytes=2 repetitions=200 us=11 reductions=3212
+TIME empty json_encode_baseline round=6 bytes=2 repetitions=200 us=12 reductions=5612
+TIME empty json_encode_baseline round=7 bytes=2 repetitions=200 us=10 reductions=5612
+TIME empty core@json round=7 bytes=2 repetitions=200 us=8 reductions=3212
+TIME empty core@json round=8 bytes=2 repetitions=200 us=10 reductions=3212
+TIME empty json_encode_baseline round=8 bytes=2 repetitions=200 us=12 reductions=5612
+ALLOC empty json_encode_baseline bytes=2 repetitions=100 words=1200
+ALLOC empty core@json bytes=2 repetitions=100 words=800
+TIME scalar json_encode_baseline round=1 bytes=18 repetitions=200 us=93 reductions=5412
+TIME scalar core@json round=1 bytes=18 repetitions=200 us=93 reductions=5412
+TIME scalar core@json round=2 bytes=18 repetitions=200 us=29 reductions=5412
+TIME scalar json_encode_baseline round=2 bytes=18 repetitions=200 us=41 reductions=5412
+TIME scalar json_encode_baseline round=3 bytes=18 repetitions=200 us=41 reductions=5412
+TIME scalar core@json round=3 bytes=18 repetitions=200 us=94 reductions=5412
+TIME scalar core@json round=4 bytes=18 repetitions=200 us=27 reductions=5412
+TIME scalar json_encode_baseline round=4 bytes=18 repetitions=200 us=32 reductions=5412
+TIME scalar json_encode_baseline round=5 bytes=18 repetitions=200 us=26 reductions=5412
+TIME scalar core@json round=5 bytes=18 repetitions=200 us=26 reductions=5412
+TIME scalar core@json round=6 bytes=18 repetitions=200 us=28 reductions=5412
+TIME scalar json_encode_baseline round=6 bytes=18 repetitions=200 us=27 reductions=5412
+TIME scalar json_encode_baseline round=7 bytes=18 repetitions=200 us=27 reductions=5412
+TIME scalar core@json round=7 bytes=18 repetitions=200 us=28 reductions=5412
+TIME scalar core@json round=8 bytes=18 repetitions=200 us=26 reductions=5412
+TIME scalar json_encode_baseline round=8 bytes=18 repetitions=200 us=27 reductions=5412
+ALLOC scalar json_encode_baseline bytes=18 repetitions=100 words=2100
+ALLOC scalar core@json bytes=18 repetitions=100 words=2100
+
+TRIAL 3
+VM otp=29 word_bytes=8 schedulers=1
+EQUIVALENCE values=398 sha256=0c776eb493a4570738b46e7bdcf12ce52bd15715f7e57925d74a4939e6757cf2
+TIME transcript16 json_encode_baseline round=1 bytes=1736 repetitions=200 us=5146 reductions=1093759
+TIME transcript16 core@json round=1 bytes=1736 repetitions=200 us=4309 reductions=928316
+TIME transcript16 core@json round=2 bytes=1736 repetitions=200 us=4151 reductions=928508
+TIME transcript16 json_encode_baseline round=2 bytes=1736 repetitions=200 us=4749 reductions=1090223
+TIME transcript16 json_encode_baseline round=3 bytes=1736 repetitions=200 us=4872 reductions=1090123
+TIME transcript16 core@json round=3 bytes=1736 repetitions=200 us=4107 reductions=928316
+TIME transcript16 core@json round=4 bytes=1736 repetitions=200 us=4352 reductions=928508
+TIME transcript16 json_encode_baseline round=4 bytes=1736 repetitions=200 us=4668 reductions=1090223
+TIME transcript16 json_encode_baseline round=5 bytes=1736 repetitions=200 us=4778 reductions=1090123
+TIME transcript16 core@json round=5 bytes=1736 repetitions=200 us=4167 reductions=928316
+TIME transcript16 core@json round=6 bytes=1736 repetitions=200 us=4322 reductions=928508
+TIME transcript16 json_encode_baseline round=6 bytes=1736 repetitions=200 us=4895 reductions=1090223
+TIME transcript16 json_encode_baseline round=7 bytes=1736 repetitions=200 us=4782 reductions=1090123
+TIME transcript16 core@json round=7 bytes=1736 repetitions=200 us=4381 reductions=928316
+TIME transcript16 core@json round=8 bytes=1736 repetitions=200 us=4253 reductions=928508
+TIME transcript16 json_encode_baseline round=8 bytes=1736 repetitions=200 us=4634 reductions=1090223
+ALLOC transcript16 json_encode_baseline bytes=1736 repetitions=100 words=577320
+ALLOC transcript16 core@json bytes=1736 repetitions=100 words=468224
+TIME transcript128 json_encode_baseline round=1 bytes=13973 repetitions=200 us=37600 reductions=8691698
+TIME transcript128 core@json round=1 bytes=13973 repetitions=200 us=36469 reductions=7566681
+TIME transcript128 core@json round=2 bytes=13973 repetitions=200 us=35893 reductions=7566809
+TIME transcript128 json_encode_baseline round=2 bytes=13973 repetitions=200 us=37729 reductions=8691593
+TIME transcript128 json_encode_baseline round=3 bytes=13973 repetitions=200 us=37493 reductions=8691693
+TIME transcript128 core@json round=3 bytes=13973 repetitions=200 us=36513 reductions=7566681
+TIME transcript128 core@json round=4 bytes=13973 repetitions=200 us=36284 reductions=7566809
+TIME transcript128 json_encode_baseline round=4 bytes=13973 repetitions=200 us=37482 reductions=8691593
+TIME transcript128 json_encode_baseline round=5 bytes=13973 repetitions=200 us=37405 reductions=8691693
+TIME transcript128 core@json round=5 bytes=13973 repetitions=200 us=35430 reductions=7566681
+TIME transcript128 core@json round=6 bytes=13973 repetitions=200 us=36009 reductions=7566809
+TIME transcript128 json_encode_baseline round=6 bytes=13973 repetitions=200 us=37239 reductions=8691593
+TIME transcript128 json_encode_baseline round=7 bytes=13973 repetitions=200 us=37308 reductions=8691693
+TIME transcript128 core@json round=7 bytes=13973 repetitions=200 us=35639 reductions=7566681
+TIME transcript128 core@json round=8 bytes=13973 repetitions=200 us=36142 reductions=7566809
+TIME transcript128 json_encode_baseline round=8 bytes=13973 repetitions=200 us=36752 reductions=8691593
+ALLOC transcript128 json_encode_baseline bytes=13973 repetitions=100 words=4610048
+ALLOC transcript128 core@json bytes=13973 repetitions=100 words=3739532
+TIME transcript1024 json_encode_baseline round=1 bytes=112558 repetitions=200 us=411986 reductions=71029606
+TIME transcript1024 core@json round=1 bytes=112558 repetitions=200 us=311015 reductions=59349740
+TIME transcript1024 core@json round=2 bytes=112558 repetitions=200 us=318841 reductions=59352880
+TIME transcript1024 json_encode_baseline round=2 bytes=112558 repetitions=200 us=425239 reductions=71021175
+TIME transcript1024 json_encode_baseline round=3 bytes=112558 repetitions=200 us=420718 reductions=71019075
+TIME transcript1024 core@json round=3 bytes=112558 repetitions=200 us=324098 reductions=59355184
+TIME transcript1024 core@json round=4 bytes=112558 repetitions=200 us=314914 reductions=59351764
+TIME transcript1024 json_encode_baseline round=4 bytes=112558 repetitions=200 us=447653 reductions=71920186
+TIME transcript1024 json_encode_baseline round=5 bytes=112558 repetitions=200 us=448877 reductions=71980423
+TIME transcript1024 core@json round=5 bytes=112558 repetitions=200 us=307704 reductions=59350204
+TIME transcript1024 core@json round=6 bytes=112558 repetitions=200 us=309374 reductions=59350268
+TIME transcript1024 json_encode_baseline round=6 bytes=112558 repetitions=200 us=441269 reductions=71921374
+TIME transcript1024 json_encode_baseline round=7 bytes=112558 repetitions=200 us=439196 reductions=71973479
+TIME transcript1024 core@json round=7 bytes=112558 repetitions=200 us=305237 reductions=59347976
+TIME transcript1024 core@json round=8 bytes=112558 repetitions=200 us=313969 reductions=59350096
+TIME transcript1024 json_encode_baseline round=8 bytes=112558 repetitions=200 us=455009 reductions=71926874
+ALLOC transcript1024 json_encode_baseline bytes=112558 repetitions=100 words=37624242
+ALLOC transcript1024 core@json bytes=112558 repetitions=100 words=29904062
+TIME wide_array json_encode_baseline round=1 bytes=20001 repetitions=200 us=88019 reductions=12724553
+TIME wide_array core@json round=1 bytes=20001 repetitions=200 us=82850 reductions=14611072
+TIME wide_array core@json round=2 bytes=20001 repetitions=200 us=85969 reductions=14611320
+TIME wide_array json_encode_baseline round=2 bytes=20001 repetitions=200 us=88934 reductions=12724927
+TIME wide_array json_encode_baseline round=3 bytes=20001 repetitions=200 us=89529 reductions=12719455
+TIME wide_array core@json round=3 bytes=20001 repetitions=200 us=91399 reductions=15201812
+TIME wide_array core@json round=4 bytes=20001 repetitions=200 us=89432 reductions=15201812
+TIME wide_array json_encode_baseline round=4 bytes=20001 repetitions=200 us=87980 reductions=12727117
+TIME wide_array json_encode_baseline round=5 bytes=20001 repetitions=200 us=86856 reductions=12725349
+TIME wide_array core@json round=5 bytes=20001 repetitions=200 us=82919 reductions=14610624
+TIME wide_array core@json round=6 bytes=20001 repetitions=200 us=80895 reductions=14610988
+TIME wide_array json_encode_baseline round=6 bytes=20001 repetitions=200 us=84742 reductions=12717739
+TIME wide_array json_encode_baseline round=7 bytes=20001 repetitions=200 us=83549 reductions=12716715
+TIME wide_array core@json round=7 bytes=20001 repetitions=200 us=104984 reductions=15201812
+TIME wide_array core@json round=8 bytes=20001 repetitions=200 us=88575 reductions=15201812
+TIME wide_array json_encode_baseline round=8 bytes=20001 repetitions=200 us=87954 reductions=12725461
+ALLOC wide_array json_encode_baseline bytes=20001 repetitions=100 words=15001600
+ALLOC wide_array core@json bytes=20001 repetitions=100 words=9001000
+TIME wide_object json_encode_baseline round=1 bytes=117789 repetitions=200 us=543501 reductions=65121487
+TIME wide_object core@json round=1 bytes=117789 repetitions=200 us=306815 reductions=53034996
+TIME wide_object core@json round=2 bytes=117789 repetitions=200 us=306177 reductions=53033828
+TIME wide_object json_encode_baseline round=2 bytes=117789 repetitions=200 us=472793 reductions=64079424
+TIME wide_object json_encode_baseline round=3 bytes=117789 repetitions=200 us=476678 reductions=64084953
+TIME wide_object core@json round=3 bytes=117789 repetitions=200 us=308802 reductions=53037576
+TIME wide_object core@json round=4 bytes=117789 repetitions=200 us=308094 reductions=53039252
+TIME wide_object json_encode_baseline round=4 bytes=117789 repetitions=200 us=474899 reductions=64084952
+TIME wide_object json_encode_baseline round=5 bytes=117789 repetitions=200 us=472810 reductions=64082465
+TIME wide_object core@json round=5 bytes=117789 repetitions=200 us=304161 reductions=53033836
+TIME wide_object core@json round=6 bytes=117789 repetitions=200 us=307730 reductions=53037732
+TIME wide_object json_encode_baseline round=6 bytes=117789 repetitions=200 us=474900 reductions=64083408
+TIME wide_object json_encode_baseline round=7 bytes=117789 repetitions=200 us=474177 reductions=64081225
+TIME wide_object core@json round=7 bytes=117789 repetitions=200 us=327793 reductions=53042264
+TIME wide_object core@json round=8 bytes=117789 repetitions=200 us=308532 reductions=53036436
+TIME wide_object json_encode_baseline round=8 bytes=117789 repetitions=200 us=470479 reductions=64081312
+ALLOC wide_object json_encode_baseline bytes=117789 repetitions=100 words=38041100
+ALLOC wide_object core@json bytes=117789 repetitions=100 words=26075031
+TIME empty json_encode_baseline round=1 bytes=2 repetitions=200 us=60 reductions=5612
+TIME empty core@json round=1 bytes=2 repetitions=200 us=8 reductions=3212
+TIME empty core@json round=2 bytes=2 repetitions=200 us=10 reductions=3212
+TIME empty json_encode_baseline round=2 bytes=2 repetitions=200 us=24 reductions=5612
+TIME empty json_encode_baseline round=3 bytes=2 repetitions=200 us=84 reductions=5612
+TIME empty core@json round=3 bytes=2 repetitions=200 us=8 reductions=3212
+TIME empty core@json round=4 bytes=2 repetitions=200 us=10 reductions=3212
+TIME empty json_encode_baseline round=4 bytes=2 repetitions=200 us=12 reductions=5612
+TIME empty json_encode_baseline round=5 bytes=2 repetitions=200 us=11 reductions=5612
+TIME empty core@json round=5 bytes=2 repetitions=200 us=9 reductions=3212
+TIME empty core@json round=6 bytes=2 repetitions=200 us=10 reductions=3212
+TIME empty json_encode_baseline round=6 bytes=2 repetitions=200 us=12 reductions=5612
+TIME empty json_encode_baseline round=7 bytes=2 repetitions=200 us=12 reductions=5612
+TIME empty core@json round=7 bytes=2 repetitions=200 us=10 reductions=3212
+TIME empty core@json round=8 bytes=2 repetitions=200 us=10 reductions=3212
+TIME empty json_encode_baseline round=8 bytes=2 repetitions=200 us=13 reductions=5612
+ALLOC empty json_encode_baseline bytes=2 repetitions=100 words=1200
+ALLOC empty core@json bytes=2 repetitions=100 words=800
+TIME scalar json_encode_baseline round=1 bytes=18 repetitions=200 us=92 reductions=5412
+TIME scalar core@json round=1 bytes=18 repetitions=200 us=96 reductions=5412
+TIME scalar core@json round=2 bytes=18 repetitions=200 us=28 reductions=5412
+TIME scalar json_encode_baseline round=2 bytes=18 repetitions=200 us=44 reductions=5412
+TIME scalar json_encode_baseline round=3 bytes=18 repetitions=200 us=46 reductions=5412
+TIME scalar core@json round=3 bytes=18 repetitions=200 us=91 reductions=5412
+TIME scalar core@json round=4 bytes=18 repetitions=200 us=27 reductions=5412
+TIME scalar json_encode_baseline round=4 bytes=18 repetitions=200 us=31 reductions=5412
+TIME scalar json_encode_baseline round=5 bytes=18 repetitions=200 us=35 reductions=5412
+TIME scalar core@json round=5 bytes=18 repetitions=200 us=30 reductions=5412
+TIME scalar core@json round=6 bytes=18 repetitions=200 us=27 reductions=5412
+TIME scalar json_encode_baseline round=6 bytes=18 repetitions=200 us=34 reductions=5412
+TIME scalar json_encode_baseline round=7 bytes=18 repetitions=200 us=34 reductions=5412
+TIME scalar core@json round=7 bytes=18 repetitions=200 us=33 reductions=5412
+TIME scalar core@json round=8 bytes=18 repetitions=200 us=32 reductions=5412
+TIME scalar json_encode_baseline round=8 bytes=18 repetitions=200 us=34 reductions=5412
+ALLOC scalar json_encode_baseline bytes=18 repetitions=100 words=2100
+ALLOC scalar core@json bytes=18 repetitions=100 words=2100

@@ -162,27 +162,64 @@ fn build(value: JsonValue) -> StringTree {
     Float(value:) -> string_tree.from_string(float.to_string(value))
     String(value:) -> build_string(value)
     Array(items:) ->
-      items
-      |> list.map(build)
-      |> string_tree.join(with: ",")
-      |> wrap("[", "]")
+      build_items_loop(list.reverse(items), [string_tree.from_string("]")])
     Object(fields:) ->
-      fields
-      |> list.map(fn(field) {
-        let #(name, field_value) = field
-        build_string(name)
-        |> string_tree.append(":")
-        |> string_tree.append_tree(build(field_value))
-      })
-      |> string_tree.join(with: ",")
-      |> wrap("{", "}")
+      build_fields_loop(list.reverse(fields), [string_tree.from_string("}")])
   }
 }
 
-fn wrap(tree: StringTree, open: String, close: String) -> StringTree {
-  tree
-  |> string_tree.prepend(open)
-  |> string_tree.append(close)
+// Work backwards so each item and separator can be prepended directly to the
+// final fragment list. This replaces map plus intersperse's reversed accumulator
+// without a recursive frame per sibling on either target. The closing delimiter
+// is already present; only the first textual item omits a preceding comma.
+fn build_items_loop(
+  reversed: List(JsonValue),
+  fragments: List(StringTree),
+) -> StringTree {
+  case reversed {
+    [] -> string_tree.concat([string_tree.from_string("["), ..fragments])
+    [item] ->
+      string_tree.concat([
+        string_tree.from_string("["),
+        build(item),
+        ..fragments
+      ])
+    [item, ..rest] ->
+      build_items_loop(rest, [
+        string_tree.from_string(","),
+        build(item),
+        ..fragments
+      ])
+  }
+}
+
+// Keys and values use the unchanged scalar encoders. A field contributes its
+// three fragments directly, rather than building nested append trees and then
+// mapping and interspersing a second list of field trees. Reversing traversal
+// preserves emitted field order, including hand-built duplicate keys.
+fn build_fields_loop(
+  reversed: List(#(String, JsonValue)),
+  fragments: List(StringTree),
+) -> StringTree {
+  case reversed {
+    [] -> string_tree.concat([string_tree.from_string("{"), ..fragments])
+    [#(name, value)] ->
+      string_tree.concat([
+        string_tree.from_string("{"),
+        build_string(name),
+        string_tree.from_string(":"),
+        build(value),
+        ..fragments
+      ])
+    [#(name, value), ..rest] ->
+      build_fields_loop(rest, [
+        string_tree.from_string(","),
+        build_string(name),
+        string_tree.from_string(":"),
+        build(value),
+        ..fragments
+      ])
+  }
 }
 
 fn build_string(text: String) -> StringTree {
