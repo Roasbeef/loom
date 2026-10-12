@@ -1,14 +1,19 @@
 # Current handoff
 
 Baselined October 11, 2026 against main
-`4417fdb6a073865660bf029495a9ecf08bc9e315` and the tool-latency branch through
+`2ff7512ac` (PR #950), with measurements based on the earlier
+`4417fdb6a073865660bf029495a9ecf08bc9e315` tree and the tool-latency branch through
 `4839fd7d8`, including the transcript-read changes recorded below. Work is on
 `perf/tool-latency` in the isolated `5086/loom` worktree and draft PR #949.
 The installed daemon has not been changed.
 
 ## What moved
 
-Distributed runtime PR #923 merged at the main baseline above. Its boundary is
+Distributed runtime PR #923 merged at the earlier measurement baseline.
+PR #950 subsequently brought peer mail and remote code-mode/MCP support from
+PRs #937 and #938 onto main. Integration conflicts only in this handoff; the
+admission, indexed scan and completion-witness source changes have no overlaps.
+The execution boundary remains
 `runtime/effects.ToolSurface.run`: the orchestrator owns sessions, SQLite,
 providers and approvals; the executor owns the workspace plane, including its
 broker, jailed commands, jobs, LSP and code mode. The optimizations use those
@@ -72,7 +77,24 @@ around the 256-row boundary. Independent review found no remaining actionable
 defect. A benchmark count observation was corrected, and both scan timings
 were rerun on the exact 128-message fixture.
 
-Full repository and exact-head hosted/Linux gates are separate. Current status
+The full pre-integration `make check` passed with exit 0: client 3,749, TUI
+1,331 and conformance 98, followed by Go sandbox tests, house lint and the
+configuration-key self-test. The parallel Linux signoff on an older head found
+two TUI fixtures sharing a credential path. Their three calls now own distinct
+paths; the full 14-test module passed 100 parallel runs. The exact failing Linux
+interleaving remains inferred, since twenty local baseline pair runs passed.
+
+The full integrated `LOOM_TEST_PARALLEL=8 make check` also passed with exit 0:
+storage 271, client 3,835, TUI 1,331 and conformance 98, plus all remaining
+packages and static gates. Three subsequent shipped history runs passed, but
+their full-round medians varied substantially (local 56 / 57 / 65 ms and TLS
+55 / 59 / 74 ms, candidate / read-baseline / candidate). A following host
+snapshot showed load around 19 with unrelated compilers and VMs consuming CPU.
+The earlier 18–29% full-path reductions are observations; an isolated host is
+needed to establish a repeatable integrated speedup. All samples are retained
+in the storage report.
+
+Exact-head hosted/Linux gates are separate from the local results. Current status
 is on PR #949 and under `build/signoff/`; do not infer green from an earlier
 candidate or this handoff. The full `make check` runs outside the nested macOS
 sandbox so jailed conformance cases can create their capability sockets.
@@ -89,6 +111,6 @@ from timing comparisons and capability sockets outside `/tmp`.
 Read [distributed architecture](architecture/distributed.md),
 [the setup guide](distributed-setup.md) and
 [protocol-change/078](../protocol-change/078-distributed-runtime.md) for the
-shipped system. This task did not re-audit its reattachment, session movement
-or extension/MCP limitations; consult current code before treating historical
-notes as a current issue list.
+shipped system. PR #950 adds remote background code mode and executor-placed MCP servers. This
+task did not re-audit the remaining reattachment and session movement limits;
+consult current code before treating historical notes as a current issue list.

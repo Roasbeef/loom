@@ -12,7 +12,8 @@ execution use these paths. There is no wire, schema or frozen interface change.
 The baseline is `90849fb1e7f00a0088daea03b84071b3479b4dc7`, which already
 contains the completion-witness optimization. Candidate `4839fd7d8` adds the two read
 optimizations. The benchmark fixtures are identical on both sides. Timing runs
-were separate from profiling and full repository checks. All observations,
+were separate from our profiling and full repository checks; host exclusivity
+was not established. All observations,
 including the first call and tails, are in the [raw artifact](tool-storage-latency-2026-10-11.json).
 
 | Measurement | Before p50 / p95 | After p50 / p95 | After repeat p50 / p95 |
@@ -21,8 +22,8 @@ including the first call and tails, are in the [raw artifact](tool-storage-laten
 | Full tool round, local, 65,550-byte prompt | 62 / 70 ms | 51 / 58 ms | 47 / 50 ms |
 | Full tool round, loopback TLS, same prompt | 70 / 80 ms | 50 / 53 ms | 51 / 62 ms |
 
-The scan median falls 98.8%. Full-round medians fall 18–24% locally and 27–29%
-over loopback TLS. These are additional improvements over the earlier completion
+The scan median falls 98.8%. In these earlier paired observations, full-round
+medians fall 18–24% locally and 27–29% over loopback TLS. These are additional improvements over the earlier completion
 optimization, measured with a larger prompt. The combined full-path comparison
 does not attribute an exact number of milliseconds to either read optimization.
 
@@ -84,3 +85,40 @@ were rerun with the corrected 128-message fixture. The ordinary sandbox blocked
 nine jailed conformance cases with permission errors; the full repository gate
 is rerun outside that nested sandbox. Current exact-head gate status is recorded
 on the PR, separately from these focused results and measurements.
+
+## Integration and host-load limit
+
+Main through PR #950 (`2ff7512ac`) was integrated at `0a178e7b9`. The sole
+conflict was the handoff; the optimization source files had no overlapping
+changes. Independent review verified the shared local/executor path. The
+integrated full `LOOM_TEST_PARALLEL=8 make check` passed with exit 0, including
+271 storage, 3,835 client, 1,331 TUI and 98 conformance tests, the other
+packages, Go sandbox tests, house lint and configuration self-tests.
+
+Three additional shipped history runs passed after the full gate finished:
+
+| Integrated observation | Local p50 / p95 | Loopback TLS p50 / p95 |
+| --- | --- | --- |
+| Candidate, initial | 56 / 79 ms | 55 / 83 ms |
+| Read optimizations removed, completion witness retained | 57 / 61 ms | 59 / 67 ms |
+| Candidate, restored byte-for-byte | 65 / 74 ms | 74 / 82 ms |
+
+The baseline replaced only `client/wiring.gleam` and `storage/sqlite.gleam`
+with main's versions, then restored the exact candidate bytes. Every run has
+twenty warm observations and separate first calls in the raw artifact.
+A host snapshot immediately after the repeat showed load averages of
+19.04 / 15.61 / 18.02 and multiple unrelated compilers and BEAM VMs consuming
+CPU. It reported no thermal warning. This is evidence of a substantial
+confound, not proof of the workload during each earlier sample. These runs
+do not establish a repeatable integrated end-to-end improvement. The earlier
+full-path reductions remain observations rather than a performance guarantee;
+a quiet or isolated host is needed to quantify that claim. The regression
+proves the removed admission reads, and the standalone scan measures the
+decoding work avoided independently of whole-round scheduling.
+
+An older Linux signoff also exposed two parallel TUI tests sharing and
+deleting one credential path. Each of their three calls now owns a distinct
+path, with assertions and parallel eligibility preserved. The entire 14-test
+module passed 100 parallel runs. The exact failing Linux interleaving remains
+inferred: twenty local baseline pair runs passed. Exact-head hosted CI and
+Linux signoff remain separate from the successful local integration gate.

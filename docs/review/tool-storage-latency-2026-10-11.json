@@ -285,5 +285,205 @@
         "SEARCH e USING PRIMARY KEY (id=?)"
       ]
     }
+  },
+  "integration": {
+    "source_head": "0a178e7b9270bbc6fb90c021d3b9aadbbf3c6514",
+    "main": "2ff7512ac",
+    "candidate_initial": [
+      {
+        "placement": "local",
+        "command": "printf 'ready\\n'",
+        "prompt_bytes": 65550,
+        "cold_ms": 76,
+        "p50_ms": 56,
+        "p95_ms": 79,
+        "warm_samples_ms": [
+          74,
+          52,
+          48,
+          61,
+          50,
+          62,
+          49,
+          56,
+          50,
+          103,
+          51,
+          54,
+          66,
+          79,
+          54,
+          56,
+          64,
+          57,
+          57,
+          54
+        ]
+      },
+      {
+        "placement": "distributed",
+        "command": "printf 'ready\\n'",
+        "prompt_bytes": 65550,
+        "cold_ms": 90,
+        "p50_ms": 55,
+        "p95_ms": 83,
+        "warm_samples_ms": [
+          130,
+          76,
+          66,
+          58,
+          52,
+          49,
+          59,
+          52,
+          50,
+          49,
+          49,
+          54,
+          53,
+          83,
+          55,
+          60,
+          57,
+          57,
+          54,
+          56
+        ]
+      }
+    ],
+    "baseline_without_read_optimizations": [
+      {
+        "placement": "local",
+        "command": "printf 'ready\\n'",
+        "prompt_bytes": 65550,
+        "cold_ms": 70,
+        "p50_ms": 57,
+        "p95_ms": 61,
+        "warm_samples_ms": [
+          52,
+          53,
+          54,
+          54,
+          55,
+          54,
+          57,
+          64,
+          53,
+          53,
+          57,
+          57,
+          57,
+          61,
+          58,
+          60,
+          58,
+          59,
+          57,
+          59
+        ]
+      },
+      {
+        "placement": "distributed",
+        "command": "printf 'ready\\n'",
+        "prompt_bytes": 65550,
+        "cold_ms": 83,
+        "p50_ms": 59,
+        "p95_ms": 67,
+        "warm_samples_ms": [
+          58,
+          57,
+          57,
+          58,
+          59,
+          59,
+          57,
+          59,
+          59,
+          60,
+          66,
+          66,
+          62,
+          62,
+          59,
+          62,
+          67,
+          64,
+          73,
+          67
+        ]
+      }
+    ],
+    "candidate_repeat": [
+      {
+        "placement": "local",
+        "command": "printf 'ready\\n'",
+        "prompt_bytes": 65550,
+        "cold_ms": 79,
+        "p50_ms": 65,
+        "p95_ms": 74,
+        "warm_samples_ms": [
+          64,
+          65,
+          66,
+          63,
+          66,
+          74,
+          79,
+          66,
+          64,
+          64,
+          67,
+          60,
+          62,
+          61,
+          65,
+          64,
+          67,
+          68,
+          73,
+          70
+        ]
+      },
+      {
+        "placement": "distributed",
+        "command": "printf 'ready\\n'",
+        "prompt_bytes": 65550,
+        "cold_ms": 112,
+        "p50_ms": 74,
+        "p95_ms": 82,
+        "warm_samples_ms": [
+          85,
+          71,
+          74,
+          72,
+          72,
+          73,
+          70,
+          80,
+          74,
+          78,
+          76,
+          75,
+          82,
+          79,
+          77,
+          72,
+          77,
+          76,
+          70,
+          67
+        ]
+      }
+    ],
+    "baseline_definition": "integration head with only client/wiring.gleam and storage/sqlite.gleam taken from main 2ff7512ac; completion witness retained; candidate files restored byte-for-byte afterward",
+    "host_snapshot_after_repeat": {
+      "load_averages": [
+        19.04,
+        15.61,
+        18.02
+      ],
+      "observation": "multiple unrelated compiler and BEAM processes consuming CPU; no thermal warning recorded"
+    },
+    "interpretation": "uncontrolled host load confounds full-round comparisons; these observations do not establish a repeatable integrated end-to-end speedup"
   }
 }
