@@ -1390,7 +1390,18 @@ pub fn launch_deployment(
   case parse_launch(["deployment", ..arguments]) {
     Deployment(command:, ..) -> Ok(command)
     Invalid(reason) -> Error(reason)
-    _other -> Error("not a deployment launch")
+    Version
+    | Demo
+    | Local(..)
+    | View(..)
+    | Remote(..)
+    | Forward(..)
+    | Update(..)
+    | Replay(..)
+    | ClaimAccess(..)
+    | Enroll(..)
+    | Access(..)
+    | Sessions(..) -> Error("not a deployment launch")
   }
 }
 

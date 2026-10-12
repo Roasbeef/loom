@@ -972,11 +972,18 @@ fn node_field(
   case list.key_find(fields, "node") {
     Error(Nil) -> Ok(None)
     Ok(json.String(name)) ->
-      case catalogue.is_executor_name(name) || catalogue.is_profile_name(name) {
+      case
+        catalogue.is_executor_name(name) || catalogue.is_orchestrator_name(name)
+      {
         True -> Ok(Some(name))
         False -> Error(node_words)
       }
-    Ok(_other) -> Error(node_words)
+    Ok(json.Object(_))
+    | Ok(json.Array(_))
+    | Ok(json.Int(_))
+    | Ok(json.Float(_))
+    | Ok(json.Bool(_))
+    | Ok(json.Null) -> Error(node_words)
   }
 }
 

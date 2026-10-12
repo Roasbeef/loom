@@ -288,7 +288,12 @@ fn field(value: JsonValue, key: String) -> Result(JsonValue, String) {
   case value {
     json.Object(members) ->
       list.key_find(members, key) |> result.replace_error("missing " <> key)
-    _ -> Error("expected an object")
+    json.Array(_)
+    | json.String(_)
+    | json.Int(_)
+    | json.Float(_)
+    | json.Bool(_)
+    | json.Null -> Error("expected an object")
   }
 }
 
@@ -299,7 +304,12 @@ fn text(value: JsonValue) -> Result(String, String) {
         True -> Ok(word)
         False -> Error("expected nonempty bounded text")
       }
-    _ -> Error("expected text")
+    json.Object(_)
+    | json.Array(_)
+    | json.Int(_)
+    | json.Float(_)
+    | json.Bool(_)
+    | json.Null -> Error("expected text")
   }
 }
 
