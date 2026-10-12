@@ -18,7 +18,8 @@
 ////    publishes this node's pins, so the table holds its row before the first
 ////    handshake can need it.
 //// 2. `Extended` follows a durable append. The new table is published first
-////    (one insert), then the allow list grows, then `stale` names the
+////    (one insert, with the row that names the directory members this node
+////    connects to visibly), then the allow list grows, then `stale` names the
 ////    connections the new table no longer permits and they are disconnected.
 //// 3. `Connected` is a node-up. The node is judged against the ledger as it
 ////    stands now, and disconnected unless it is a linked active member. A
@@ -51,6 +52,7 @@ import client/distribution_plan.{Executor, Orchestrator}
 import client/internal/ffi_distribution
 import client/internal/ffi_nodes
 import client/ledger_service.{type Dialing, type Observation, type Observer}
+import client/membership_entry
 import client/membership_ledger.{type Ledger}
 import gleam/erlang/node.{type Node}
 import gleam/erlang/process
@@ -134,8 +136,9 @@ pub fn pairs(ledger: Ledger, local: String) -> List(#(BitArray, String)) {
   |> list.take(max_peers())
 }
 
-/// Publishes this node's table, so the next handshake reads it. A node that is
-/// not an active member publishes the empty table.
+/// Publishes this node's table, so the next handshake reads it, and with it the
+/// nodes it holds a directory link to. A node that is not an active member
+/// publishes the empty table.
 ///
 /// ## Examples
 ///
@@ -144,6 +147,32 @@ pub fn pairs(ledger: Ledger, local: String) -> List(#(BitArray, String)) {
 /// ```
 pub fn publish(ledger: Ledger, local: String) -> Nil {
   ffi_distribution.publish_pins(pairs(ledger, local))
+  ffi_distribution.publish_directory(directory_nodes(ledger, local))
+}
+
+/// The other members of the session directory this node connects to visibly:
+/// the linked members whose standing is `voter` or `learner`, when this node's
+/// own standing is one of them. A node outside the directory starts hidden and
+/// connects hidden to everyone, so it lists none. Ra reads `nodes()` to decide
+/// where to send its traffic, and a connection's visibility is fixed when it is
+/// made, so `distribution.connect` consults this list on every connect.
+///
+/// ## Examples
+///
+/// ```gleam
+/// ledger_trust.directory_nodes(ledger, "loom@hub.example")
+/// // -> ["loom@box.example"]
+/// ```
+pub fn directory_nodes(ledger: Ledger, local: String) -> List(String) {
+  case membership_ledger.member_at(ledger, local) {
+    Ok(own) if own.directory != membership_entry.NotInDirectory ->
+      membership_ledger.peers(table_of(ledger, local))
+      |> list.filter(fn(peer) {
+        peer.directory != membership_entry.NotInDirectory
+      })
+      |> list.map(fn(peer) { peer.node })
+    _ -> []
+  }
 }
 
 /// Adds the members this node is linked to to the allow list, once

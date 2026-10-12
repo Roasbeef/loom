@@ -17,6 +17,8 @@ import client/executors
 import client/ledger_reference.{Row}
 import client/membership_entry.{Upsert}
 import client/orchestrators
+import client/pools
+import client/spawners
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{Some}
@@ -333,4 +335,220 @@ pub fn a_node_the_ledger_names_only_in_a_replaced_entry_is_inert_not_unknown_tes
       Row("executors.hub.node", "loom@hub.example.net"),
     ])
   assert string.contains(found.reason, "no longer an active member")
+}
+
+// --- executor names ----------------------------------------------------------
+
+// The laptop is an orchestrator linked to the box. The desk is an executor it is
+// not linked to, `peer` is another orchestrator, and `gone` was an executor
+// that was revoked.
+fn named_ledger() {
+  let history =
+    membership.genesis()
+    |> membership.enroll("box", [])
+    |> membership.enroll("desk", [])
+    |> membership.enroll("gone", [])
+    |> membership.must_push(Upsert(
+      membership_entry.Member(
+        ..fixture.member("laptop", ["box"]),
+        role: distribution_plan.Orchestrator,
+      ),
+    ))
+    |> membership.must_push(Upsert(
+      membership_entry.Member(
+        ..fixture.member("peer", ["laptop"]),
+        role: distribution_plan.Orchestrator,
+      ),
+    ))
+    |> membership.revoke("gone")
+  history.ledger
+}
+
+fn names(keys: List(#(String, String))) -> List(ledger_reference.NameRow) {
+  list.map(keys, fn(pair) { ledger_reference.NameRow(pair.0, pair.1) })
+}
+
+pub fn audit_names_sorts_references_into_fine_inert_and_refused_test() {
+  let ledger = named_ledger()
+
+  // The box is a linked executor and `mine` is a written row: both are fine.
+  // The desk is an executor the laptop is not linked to and `gone` was revoked,
+  // so both are inert.
+  let assert Ok(inert) =
+    ledger_reference.audit_names(
+      ledger,
+      laptop,
+      "ledger.log",
+      ["mine"],
+      names([
+        #("pools.builders.executors", "box"),
+        #("pools.builders.executors", "mine"),
+        #("pools.builders.executors", "desk"),
+        #("spawners.guest.executor", "gone"),
+      ]),
+    )
+  assert list.map(inert, fn(found) { found.row.name }) == ["desk", "gone"]
+  let assert [unlinked, departed] = inert
+  assert string.contains(unlinked.reason, "not linked")
+  assert string.contains(departed.reason, "revoked")
+}
+
+pub fn audit_names_refuses_a_name_nobody_gave_test() {
+  let assert Error(reason) =
+    ledger_reference.audit_names(
+      named_ledger(),
+      laptop,
+      "/etc/loom/ledger.log",
+      [],
+      names([#("pools.builders.executors", "ghost")]),
+    )
+  assert string.contains(reason, "pools.builders.executors names ghost")
+  assert string.contains(reason, "/etc/loom/ledger.log")
+  assert string.contains(reason, "loom distribution enroll")
+}
+
+pub fn audit_names_refuses_an_orchestrator_named_as_an_executor_test() {
+  let assert Error(reason) =
+    ledger_reference.audit_names(
+      named_ledger(),
+      laptop,
+      "ledger.log",
+      [],
+      names([#("spawners.guest.executor", "peer")]),
+    )
+  assert string.contains(reason, "enrolled as an orchestrator")
+}
+
+pub fn a_written_row_is_not_judged_by_the_ledger_by_name_test() {
+  // The written row is audited by its node. The name itself may be anything the
+  // grammar allows, because the operator chose it.
+  let assert Ok([]) =
+    ledger_reference.audit_names(
+      named_ledger(),
+      laptop,
+      "ledger.log",
+      ["whatever"],
+      names([#("pools.builders.executors", "whatever")]),
+    )
+}
+
+// --- pools and spawners in ledger mode -----------------------------------------
+
+const ledgered =
+  "[distribution]
+node = \"loom@laptop.example\"
+ca = \"/nowhere/ca.pem\"
+certificate = \"/nowhere/cert.pem\"
+key = \"/nowhere/key.pem\"
+cookie = \"/nowhere/cookie\"
+ledger = \"/nowhere/ledger.log\"
+"
+
+const statically =
+  "[distribution]
+node = \"loom@laptop.example\"
+ca = \"/nowhere/ca.pem\"
+certificate = \"/nowhere/cert.pem\"
+key = \"/nowhere/key.pem\"
+cookie = \"/nowhere/cookie\"
+
+[[distribution.peers]]
+node = \"loom@box.example\"
+sha256 = \"0000000000000000000000000000000000000000000000000000000000000001\"
+"
+
+const a_pool =
+  "
+[pools.builders]
+executors = [\"box\"]
+"
+
+const a_spawner =
+  "
+[spawners.guest]
+node = \"loom@box.example\"
+executor = \"box\"
+workspace = \"loom\"
+profile = \"cheap\"
+
+[profiles.cheap.roles]
+main = [\"fast\"]
+"
+
+pub fn a_pool_may_list_an_executor_only_the_ledger_knows_test() {
+  let assert Ok([pool]) = pools.parse(ledgered <> a_pool)
+  assert pool.executors == ["box"]
+
+  // Static mode is as strict as it was: the member has to be a written row.
+  let assert Error(reason) = pools.parse(statically <> a_pool)
+  assert string.contains(reason, "which is not an [executors.<name>]")
+}
+
+pub fn a_pool_member_still_needs_the_grammar_in_ledger_mode_test() {
+  let assert Error(reason) =
+    pools.parse(
+      ledgered <> "\n[pools.builders]\nexecutors = [\"Not A Name\"]\n",
+    )
+  assert string.contains(reason, "not an executor name")
+}
+
+pub fn a_spawner_may_place_on_an_executor_only_the_ledger_knows_test() {
+  let assert Ok([spawner]) = spawners.parse(ledgered <> a_spawner)
+  assert spawner.placement
+    == spawners.OnExecutor(executor: "box", workspace: "loom")
+  let assert Error(reason) = spawners.parse(statically <> a_spawner)
+  assert string.contains(reason, "not a configured [executors.<name>]")
+}
+
+pub fn the_references_of_a_configuration_are_named_with_their_keys_test() {
+  let assert Ok(configured_pools) = pools.parse(ledgered <> a_pool)
+  let assert Ok(configured_spawners) = spawners.parse(ledgered <> a_spawner)
+  assert main.reference_names(configured_pools, configured_spawners)
+    == [
+      ledger_reference.NameRow("pools.builders.executors", "box"),
+      ledger_reference.NameRow("spawners.guest.executor", "box"),
+    ]
+}
+
+pub fn a_start_with_a_pool_naming_a_revoked_executor_warns_and_goes_on_test() {
+  let started =
+    rig.start(
+      "reference-names",
+      membership.lines(
+        membership.genesis()
+        |> membership.enroll("hub", [])
+        |> membership.enroll("devbox", ["hub"])
+        |> membership.revoke("devbox"),
+      ),
+      rig.patient,
+      [],
+    )
+  let #(logger, records) = capture()
+  let assert Ok(Nil) =
+    main.audit_executor_names(
+      started.service,
+      "loom@hub.example.net",
+      "ledger.log",
+      [],
+      names([#("pools.builders.executors", "devbox")]),
+      logger,
+    )
+  let assert Ok(warning) = process.receive(records, 1000)
+  assert warning.event == "daemon.ledger_name_inert"
+  assert string.contains(
+    string.inspect(warning.fields),
+    "pools.builders.executors",
+  )
+
+  // A name nobody gave refuses the start, and logs nothing.
+  let assert Error(_) =
+    main.audit_executor_names(
+      started.service,
+      "loom@hub.example.net",
+      "ledger.log",
+      [],
+      names([#("pools.builders.executors", "ghost")]),
+      logger,
+    )
+  assert process.receive(records, 50) == Error(Nil)
 }

@@ -97,7 +97,7 @@ pub fn the_migration_marker_is_absent_until_written_test() {
 
 pub fn the_one_member_is_a_voter_and_the_leader_test() {
   use _directory <- with_store
-  let assert Ok(store.Membership(members:, leader:)) = store.membership()
+  let assert Ok(store.Membership(members:, leader:, ..)) = store.membership()
     as "membership answers"
   assert list.length(members) == 1
   assert list.all(members, fn(member) { member.1 == ffi_khepri.Voter })

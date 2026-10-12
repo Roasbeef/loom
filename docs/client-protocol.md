@@ -165,7 +165,7 @@ specifies them and [the web view](architecture/web-view.md) describes them.
 Without `--ui`, every `/ui/` path returns HTTP 404.
 
 Any other path returns HTTP 404.
-Source: `handle` (`client/daemon/server.gleam:397-187`).
+Source: `handle` (`client/daemon/server.gleam:405-187`).
 
 `<session-id>` MUST be the canonical session identifier the control
 endpoint reported. A path segment that is not a canonical session id is
@@ -401,7 +401,7 @@ carries the daemon epoch that most control commands must echo.
 | `ui.path` | string | optional | Present only when the daemon was started with `--ui`: the web view's route prefix, `"/ui"`. A client that does not know the field ignores it. |
 
 Source: (`client/daemon/server.gleam:577-617`); the `ui` field is
-`hello_view` (`client/daemon/server.gleam:1909`).
+`hello_view` (`client/daemon/server.gleam:1919`).
 
 The epoch changes when the daemon restarts. A client MUST discard
 ephemeral state and re-select a session on reconnecting to a different
@@ -546,7 +546,7 @@ Source: (`client/daemon/server.gleam:839-860`).
 A page stops on an authorized record boundary once its encoded size
 would exceed 60000 bytes. The next request resumes after the last
 emitted id. A single record too large for that budget is refused with
-`metadata_too_large`. Source: (`client/daemon/server.gleam:3211`).
+`metadata_too_large`. Source: (`client/daemon/server.gleam:3248`).
 
 Errors: `revision_changed` when `revision` was supplied and differs from
 the catalogue's current one; `metadata_too_large`; `unavailable`.
@@ -1058,7 +1058,7 @@ While the daemon is draining, an existing control socket may still issue
 the read commands `status`, `sessions.list`, `sessions.get`,
 `sessions.default`, `operations.get`, `peers.inspect`, `sessions.activity`,
 `principals.list`, `principals.memberships`, and `ui.link`. Every mutating control command is refused. Source:
-`control_use` (`client/daemon/server.gleam:2228-1130`).
+`control_use` (`client/daemon/server.gleam:2238-1130`).
 
 That includes `sessions.delete`, which is a mutation like any other.
 
@@ -1228,7 +1228,7 @@ the `hello` states with its `ui` field. The request carries the canonical
 
 `page` is the page's ceiling: `"observer"`, which is also the value when
 the field is absent, or `"operator"`. Any other value is refused with
-`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:1132`). The
+`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:1138`). The
 ceiling caps the page's role and never grants one: the page acts with the
 smallest of the principal's membership role, the ceiling, and Operator.
 
@@ -1541,6 +1541,10 @@ Khepri cluster (protocol-change/083). A daemon that is not a member refuses it
 | `leader` | string | when known | The cluster's leader. |
 | `unavailable` | string | when the store cannot be asked | The store's reason. |
 
+A member the leader removed (a revoked name enrolled again on the same disk) finds
+out by itself, resets its store and joins again; until it has, `joined` is `false`
+and `unavailable` says that it was removed and is joining again.
+
 When `members` and `ra_members` disagree, `ra_members` is the membership in
 force: membership lives in the cluster's log, and `members` only tells a daemon
 whom to join and whom to keep connected.
@@ -1571,6 +1575,12 @@ no epoch.
 | `edges` | array | without `node` | Relations, each touching the answering daemon: `kind` is `peer` (an orchestrator) or `serves` (an executor), and `link` is `connected` or `none`, the daemon's own connection. |
 | `placements` | object | without `node` | `executors`, each with `name`, `node`, a `state` of `ready` or `down` (`degraded` and `full` are reserved), and `declared` (the operator's `platform` and `enforcement` when stated, and `toolchains`); and `pools`, each with `name`, `executors` (those the pool admits, in its trial order) and `eligible` (those reachable, in the same order). |
 | `orchestrators` | array | without `node` | The configured orchestrators, each with `name`, `node` and `state`. |
+| `ledger` | object | without `node`, on a daemon that runs from a membership ledger | The body of `ledger.status` (§3.30): the daemon's head, its standing, each active member with the head it last reported to this daemon and how long ago, and the last line it refused. At most 64 members. Absent when the ledger does not answer, and then a client treats it as unknown. |
+
+On a daemon that runs from a membership ledger, the configured orchestrators and
+executors include the ones the ledger derives (protocol-change/086, phase 2), so
+a member enrolled while the daemon runs appears in `nodes` and `placements` on the
+next read.
 
 A node carries `node`, `name` (the daemon's key for it, or the node name when it
 has none, as for itself), `roles` and `state`, and `reason` when it is `down`.
@@ -1591,7 +1601,7 @@ the nodes the key names, and `edges`, `placements` and `orchestrators` are
 absent. A daemon built before this command refuses it `bad_request` with the
 message `unsupported control command`.
 
-### 3.30 `ledger.append`, `ledger.entries` and `ledger.status`
+### 3.30 `ledger.append`, `ledger.entries`, `ledger.status` and `ledger.holdings`
 
 Owner-only (a member is refused `forbidden`), and none needs an epoch. They read
 and extend the membership ledger of a daemon that runs from one
@@ -1629,6 +1639,27 @@ elapsed time. The daemon reports itself at its own head. `last_refusal` is `null
 or `{"seq": 7, "step": "fork", "ours": "<hex>", "theirs": "<hex>"}`, where `seq`
 is `null` when the line had none and `ours` and `theirs` appear only for a fork.
 `loom distribution enroll`, `revoke`, `renew`, `log` and `import` are the clients.
+
+`ledger.holdings` takes `{}`. The daemon asks each orchestrator its pin table lists,
+and itself if it is an orchestrator, what its catalogue holds, all at once and within
+four seconds, and replies with one entry for each:
+
+```json
+{"v":2,"reply_to":4,"event":"ledger.holdings","body":{"orchestrators":[{"name":"hub","node":"hub@10.0.0.1","sessions":3,"placed":[{"node":"box@10.0.0.2","sessions":2}]},{"name":"laptop2","node":"loom@laptop2.example.net"}]}}
+```
+
+`sessions` is the number of sessions the orchestrator owns: its active registrations
+whose custody is not `moved`, so a session handed to another orchestrator and an
+archived session are not counted. `placed` says how many of them are placed on each
+executor the orchestrator lists, by the executor's node, at most 64 entries. An entry
+with no `sessions` is an orchestrator that did not answer: it was unreachable, ran no
+port, answered late or could not read its catalogue. A client must read that as
+unknown and never as none. A catalogue longer than 20,000 sessions, and one with sessions
+placed on more than 64 executors, answer as an orchestrator that did not answer, because
+a count cut short would read as the whole. An orchestrator answers any pinned peer, and the
+answer reveals two counts and executor nodes, no session identity. `loom distribution
+revoke` is the client: it refuses while the member owns sessions or has sessions
+placed on it, or cannot be told, unless `--force`.
 
 ---
 

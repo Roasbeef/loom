@@ -12,6 +12,7 @@ import client/internal/ffi_os
 import client/orchestrators
 import client/remote/protocol
 import client/remote/scope
+import client/roster
 import client/session_importer
 import client/session_move
 import core/clock
@@ -90,8 +91,8 @@ fn rig(label: String, listed: List(executors.Executor)) -> Rig {
       sessions_directory: directory <> "/sessions",
       domain_configuration: "",
       clock: clock.fixed(at: 5000),
-      orchestrators: [orchestrators.plain("alpha", alpha_node)],
-      executors: listed,
+      orchestrators: roster.fixed([orchestrators.plain("alpha", alpha_node)]),
+      executors: roster.fixed(listed),
       logger: log.discard(),
     ),
   )
@@ -512,14 +513,16 @@ pub fn a_repeat_of_a_committed_move_is_accepted_whatever_the_sender_is_called_no
   // the first activation and the retry. The row recorded `alpha`, and the
   // answer to the retry is the row, not a comparison with today's name.
   let renamed =
-    session_importer.Context(..rig.context, orchestrators: [
-      orchestrators.plain("charlie", alpha_node),
-    ])
+    session_importer.Context(
+      ..rig.context,
+      orchestrators: roster.fixed([orchestrators.plain("charlie", alpha_node)]),
+    )
   assert session_importer.activate(renamed, request) == session_move.Accepted
 
   // The sender's row is gone altogether, which is the same promise: the commit
   // exists, so the answer is yes.
-  let unlisted = session_importer.Context(..rig.context, orchestrators: [])
+  let unlisted =
+    session_importer.Context(..rig.context, orchestrators: roster.fixed([]))
   assert session_importer.activate(unlisted, request) == session_move.Accepted
   assert manager.custody(rig.registry, copy.session)
     == Ok(catalogue.Imported(op:, from: "alpha"))
@@ -876,8 +879,8 @@ pub fn a_member_that_owns_the_record_never_refuses_the_import_test() {
   let changed =
     session_importer.Context(
       ..recorded(rig, book),
-      executors: [],
-      orchestrators: [],
+      executors: roster.fixed([]),
+      orchestrators: roster.fixed([]),
     )
 
   // The session is its own by the record, so the import that cannot finish is

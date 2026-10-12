@@ -34,6 +34,7 @@ import core/json.{type JsonValue}
 import gleam/dynamic.{type Dynamic}
 import gleam/int
 import gleam/list
+import gleam/option.{Some}
 import gleam/result
 import gleam/string
 import simplifile
@@ -126,6 +127,10 @@ fn relay(node: Dynamic) -> fn(a) -> Daemon {
           json.Object([#("lines", json.Array(list.map(lines, json.String)))]),
         )
         |> result.try(ledger_control.decode_applied)
+      },
+      holdings: fn() {
+        ask(node, "ledger.holdings", json.Object([]))
+        |> result.try(ledger_control.decode_holdings)
       },
     )
   }
@@ -293,6 +298,282 @@ pub fn the_operator_workflow_changes_membership_of_running_nodes_test_() -> Euni
     let assert Ok(json.Object(fields)) = json.parse(as_json)
     let assert Ok(json.Array(entries)) = list.key_find(fields, "entries")
     assert list.length(entries) == 5
+
+    ok(stop(laptop), "the laptop stops")
+    ok(stop(box), "the box stops")
+    ok(stop(hub), "the hub stops")
+    let _ = simplifile.delete(deployed.base)
+    Nil
+  })
+}
+
+// The names of the executors and the orchestrators a node derives from its
+// ledger at this moment (`client/ledger_rows`), read through the same rosters
+// the daemon builds.
+fn derived(node: Dynamic) -> #(List(String), List(String)) {
+  let body = ok(ask(node, "test.rows", json.Object([])), "the node lists rows")
+  let names = fn(key) {
+    let assert json.Object(fields) = body
+    let assert Ok(json.Array(items)) = list.key_find(fields, key)
+    list.filter_map(items, fn(item) {
+      case item {
+        json.String(name) -> Ok(name)
+        _ -> Error(Nil)
+      }
+    })
+  }
+  #(names("executors"), names("orchestrators"))
+}
+
+/// A member enrolled while the nodes run is a row the next session can use, and
+/// a revoked one stops being offered, with no restart anywhere.
+pub fn the_rows_a_node_derives_follow_enrollment_and_revocation_test_() -> EunitTest {
+  Timeout(seconds / scale, fn() {
+    let id = int.absolute_value(unique_integer([]))
+    let deployed = deployment.provision("live-rows", plan(id))
+    let hub =
+      start(installed(deployed, "hub", deployed.out <> "/hub.loombundle"))
+    let box =
+      start(installed(deployed, "box", deployed.out <> "/box.loombundle"))
+    ok(
+      step(hub, "await_connected " <> member_names(id, ["box"]), "NODES_ARE"),
+      "the hub reaches the box",
+    )
+
+    // The provisioned executor is a row from the start, and the hub has no
+    // orchestrator to list. An executor lists neither.
+    assert derived(hub) == #(["box"], [])
+    assert derived(box) == #([], [])
+
+    // An executor is enrolled. The hub's rows have it the moment the entry is
+    // applied, before the new machine exists.
+    let assert Ok(_) =
+      ledger_cli.run_with(
+        "enroll",
+        list.flatten([
+          [
+            "desk",
+            "--node",
+            node_name("desk", id),
+            "--role",
+            "executor",
+            "--links",
+            "hub",
+            "--workspace",
+            "repo=/srv/repo",
+            "--out",
+            deployed.base <> "/bundles",
+            "--wait",
+            "30",
+          ],
+          deployment.signing(deployed),
+        ]),
+        relay(hub),
+      )
+      as "the executor is enrolled"
+    assert derived(hub) == #(["box", "desk"], [])
+
+    // And it is usable: once the machine starts from its bundle, the hub dials
+    // it by itself, from the ledger alone.
+    let desk =
+      start(installed(
+        deployed,
+        "desk",
+        deployed.base <> "/bundles/desk.loombundle",
+      ))
+    ok(
+      step(
+        hub,
+        "await_connected " <> member_names(id, ["box", "desk"]),
+        "NODES_ARE",
+      ),
+      "the hub reaches the new executor",
+    )
+
+    // An orchestrator is enrolled the same way, and appears among the
+    // orchestrators and not among the executors.
+    let assert Ok(_) =
+      ledger_cli.run_with(
+        "enroll",
+        list.flatten([
+          [
+            "laptop",
+            "--node",
+            node_name("laptop", id),
+            "--role",
+            "orchestrator",
+            "--links",
+            "hub",
+            "--out",
+            deployed.base <> "/bundles",
+            "--wait",
+            "30",
+          ],
+          deployment.signing(deployed),
+        ]),
+        relay(hub),
+      )
+      as "the orchestrator is enrolled"
+    assert derived(hub) == #(["box", "desk"], ["laptop"])
+
+    // The executor is revoked. Nothing was placed on it, so no flag is needed,
+    // and the row goes with the entry while its connection is dropped.
+    let assert Ok(revoked) =
+      ledger_cli.run_with(
+        "revoke",
+        list.flatten([
+          ["desk", "--reason", "retired", "--wait", "0"],
+          deployment.signing(deployed),
+        ]),
+        relay(hub),
+      )
+      as "the executor is revoked"
+    assert string.contains(
+      revoked,
+      "Checked first: no orchestrator linked to desk has a session placed on it.",
+    )
+    assert derived(hub) == #(["box"], ["laptop"])
+    ok(
+      step(hub, "await_connected " <> member_names(id, ["box"]), "NODES_ARE"),
+      "the hub dropped the revoked executor",
+    )
+
+    // The orchestrator goes the same way.
+    let assert Ok(_) =
+      ledger_cli.run_with(
+        "revoke",
+        list.flatten([
+          ["laptop", "--wait", "0"],
+          deployment.signing(deployed),
+        ]),
+        relay(hub),
+      )
+      as "the orchestrator is revoked"
+    assert derived(hub) == #(["box"], [])
+
+    ok(stop(desk), "the desk stops")
+    ok(stop(box), "the box stops")
+    ok(stop(hub), "the hub stops")
+    let _ = simplifile.delete(deployed.base)
+    Nil
+  })
+}
+
+/// The operator's question reaches the orchestrators the way the daemon asks
+/// it: `ledger.holdings` connects to the pinned peer
+/// (`session_directory.reached`), addresses the orchestrator port registered
+/// under its default name, and the port answers from a real catalogue
+/// (`ledger_holdings.from_catalogue`). Nothing on that path is a stub, so a
+/// revoke is refused on the count a catalogue holds.
+pub fn the_holdings_a_revoke_reads_cross_real_distribution_test_() -> EunitTest {
+  Timeout(seconds / scale, fn() {
+    let id = int.absolute_value(unique_integer([]))
+    let deployed = deployment.provision("live-holdings", plan(id))
+    let hub_home = installed(deployed, "hub", deployed.out <> "/hub.loombundle")
+    let box_home = installed(deployed, "box", deployed.out <> "/box.loombundle")
+    let hub = start(hub_home)
+    let box = start(box_home)
+    ok(
+      step(hub, "await_connected " <> member_names(id, ["box"]), "NODES_ARE"),
+      "the hub reaches the box",
+    )
+
+    // A second orchestrator that uses the same executor.
+    let assert Ok(_) =
+      ledger_cli.run_with(
+        "enroll",
+        list.flatten([
+          [
+            "laptop",
+            "--node",
+            node_name("laptop", id),
+            "--role",
+            "orchestrator",
+            "--links",
+            "hub,box",
+            "--out",
+            deployed.base <> "/bundles",
+            "--wait",
+            "30",
+          ],
+          deployment.signing(deployed),
+        ]),
+        relay(hub),
+      )
+      as "the laptop is enrolled"
+    let laptop_home =
+      installed(
+        deployed,
+        "laptop",
+        deployed.base <> "/bundles/laptop.loombundle",
+      )
+    let laptop = start(laptop_home)
+
+    // The laptop dials out, as a laptop does; the hub does not dial it.
+    ok(
+      step(laptop, "connect " <> node_name("hub", id), "CONNECT connected"),
+      "the laptop reaches the hub",
+    )
+    ok(
+      step(
+        hub,
+        "await_connected " <> member_names(id, ["box", "laptop"]),
+        "NODES_ARE",
+      ),
+      "the hub sees the laptop",
+    )
+
+    // Each orchestrator runs a port over a catalogue of its own: the hub holds
+    // nothing and the laptop holds three sessions placed on the box.
+    let box_node = node_name("box", id)
+    ok(
+      step(hub, "serve_holdings 0 " <> box_node, "HOLDINGS_SERVED"),
+      "the hub serves its catalogue",
+    )
+    ok(
+      step(laptop, "serve_holdings 3 " <> box_node, "HOLDINGS_SERVED"),
+      "the laptop serves its catalogue",
+    )
+
+    // The hub asks both over distribution. It answers for itself through its
+    // own port and reaches the laptop through the pinned connection.
+    let body = ok(ask(hub, "ledger.holdings", json.Object([])), "the hub asks")
+    let assert Ok(answers) = ledger_control.decode_holdings(body)
+    assert answers
+      == [
+        ledger_control.AnswerView(
+          name: "hub",
+          node: node_name("hub", id),
+          held: Some(ledger_control.HeldView(sessions: 0, placed: [])),
+        ),
+        ledger_control.AnswerView(
+          name: "laptop",
+          node: node_name("laptop", id),
+          held: Some(
+            ledger_control.HeldView(sessions: 3, placed: [
+              ledger_control.PlacedView(node: box_node, sessions: 3),
+            ]),
+          ),
+        ),
+      ]
+
+    // The count is what the operator's refusals are made of.
+    let assert Error(owned) =
+      ledger_cli.run_with(
+        "revoke",
+        list.flatten([["laptop", "--wait", "0"], deployment.signing(deployed)]),
+        relay(hub),
+      )
+      as "the laptop owns sessions"
+    assert string.contains(owned, "laptop owns 3 sessions")
+    let assert Error(placed) =
+      ledger_cli.run_with(
+        "revoke",
+        list.flatten([["box", "--wait", "0"], deployment.signing(deployed)]),
+        relay(hub),
+      )
+      as "sessions are placed on the box"
+    assert string.contains(placed, "3 sessions placed on box by laptop")
 
     ok(stop(laptop), "the laptop stops")
     ok(stop(box), "the box stops")

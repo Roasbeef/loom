@@ -515,7 +515,7 @@ the host in the node name. The certificate of this daemon must carry its own
 | `key` | string | required | absolute path, mode 0600 | PEM file of this node's private key. |
 | `cookie` | string | required | absolute path, mode 0600 | The daemon's `$HOME/.erlang.cookie`: at least 16 characters of `A-Z`, `a-z`, `0-9`, `_` and `-`, no trailing newline. The emulator reads its cookie from that file, so the daemon refuses any other path. |
 | `listen_port` | integer | any free port | 1 to 65535 | Fixes the port of the distribution listener, for a firewall. Peers still find it through `epmd`. |
-| `ledger` | string | none, and then `peers` is required | absolute path, exclusive with `peers` | The membership ledger file (protocol-change 086). When set, the ledger decides who may connect: the daemon opens the file, checks that its genesis names the certificate in `ca`, publishes the pin table of the members this node is linked to, and only then starts distribution, so the table exists before the listener does. It also runs the `loom_ledger` process, which keeps the file current by exchanging heads with the peers it is connected to, and disconnects a member as soon as an entry revokes it or replaces its certificate. The file must exist and hold a valid ledger, and the daemon refuses to start otherwise, and also when its own `node` is not an active member of the ledger. The daemon is the file's only writer: the operator's tool appends to the operator's own copy and hands entries to a daemon, and nothing else should edit the file while the daemon runs. A document with both `ledger` and `[[distribution.peers]]` is refused at load. A ledger has at most 64 active members, so a node trusts at most 63 peers in ledger mode, not the 32 that `peers` allows. `[executors.<name>]`, `[orchestrators.<name>]` and `[spawners.<name>]` are checked for shape when the file is parsed, which does not open the ledger. At start the daemon compares their `node` with the ledger: a node that no ledger entry has ever named is refused, and a node that was a member and has been revoked (or is not linked to this node) is kept as an inert row and logged as a warning, so a `revoke` never stops the daemon from starting or from opening a session. A call through an inert row fails. A `[directory]` table cannot be combined with a ledger yet. `loom distribution install` of a ledger bundle writes this key. |
+| `ledger` | string | none, and then `peers` is required | absolute path, exclusive with `peers` | The membership ledger file (protocol-change 086). When set, the ledger decides who may connect: the daemon opens the file, checks that its genesis names the certificate in `ca`, publishes the pin table of the members this node is linked to, and only then starts distribution, so the table exists before the listener does. It also runs the `loom_ledger` process, which keeps the file current by exchanging heads with the peers it is connected to, and disconnects a member as soon as an entry revokes it or replaces its certificate. The file must exist and hold a valid ledger, and the daemon refuses to start otherwise, and also when its own `node` is not an active member of the ledger. The daemon is the file's only writer: the operator's tool appends to the operator's own copy and hands entries to a daemon, and nothing else should edit the file while the daemon runs. A document with both `ledger` and `[[distribution.peers]]` is refused at load. A ledger has at most 64 active members, so a node trusts at most 63 peers in ledger mode, not the 32 that `peers` allows. `[executors.<name>]`, `[orchestrators.<name>]` and `[spawners.<name>]` are checked for shape when the file is parsed, which does not open the ledger. At start the daemon compares their `node` with the ledger: a node that no ledger entry has ever named is refused, and a node that was a member and has been revoked (or is not linked to this node) is kept as an inert row and logged as a warning, so a `revoke` never stops the daemon from starting or from opening a session. A call through an inert row fails. In ledger mode an orchestrator also gets a row for each linked executor and each linked orchestrator without any table naming them (see [`[executors.<name>]`](#executorsname) and [`[orchestrators.<name>]`](#orchestratorsname)), and the executor names that `[pools.<name>]` and `[spawners.<name>]` list are compared with the ledger at start the same way. A `[directory]` table cannot be combined with a ledger: the session directory's members are then the ledger's active members whose `directory` standing is `voter` or `learner` (see [`[directory]`](#directory)). `loom distribution install` of a ledger bundle writes this key. |
 | `peers` | array of tables | required unless `ledger` is set | one to 32 `[[distribution.peers]]` rows | The nodes allowed to connect, and the nodes this daemon may connect to. Fixed for the life of the VM; a ledger replaces them. |
 
 ## `[[distribution.peers]]`
@@ -593,6 +593,30 @@ than it declared is not contradicted.
 | `enforcement` | string | none declared | `enforced` or `degraded` | Whether the machine's sandbox helper confines what it runs. |
 | `toolchains` | array of strings | none declared | distinct lowercase names | What the machine provides: `codemode` for the code-mode toolchain, or the key of an `[lsp.<name>]` server it serves. |
 
+### Executors that come from the ledger
+
+(From protocol-change 086, phase 2.) A daemon that runs from a membership ledger
+(`[distribution] ledger`) and is an orchestrator needs no table for an executor it
+is linked to. It lists every executor member it is linked to as if it had written
+`[executors.<name>]` for it, using the ledger's name for the member and its Erlang
+node, with no declaration. So `loom --executor <name>` and `sessions.create` accept
+an executor the moment it is enrolled, and stop accepting it when it is revoked,
+with no restart. The daemon reads the ledger each time it decides, and a session
+that is already open keeps the executor it was placed on: a revoked one fails as an
+executor that is down does.
+
+The ledger carries what every node must agree on: the name, the node, the role and
+the links. It does not carry what is one orchestrator's own claim. A derived row
+therefore has no `platform`, `enforcement` or `toolchains`, a pool that requires one
+skips it, and a workspace is still named by the session. To give a ledger executor
+declarations, write its `[executors.<name>]` table with the same name. A row you
+write replaces the derived row of the same name, and it also replaces a derived row
+for the same `node` under any other name, so one machine is never listed twice. A
+node that is not an orchestrator derives nothing.
+
+A table that you write and the ledger later revokes stays in the file as an inert
+row (see `ledger` above); `loom deployment status` shows it as down.
+
 ## `[pools.<name>]`
 
 (From protocol-change 078.) Optional, read once when the daemon starts, like
@@ -601,7 +625,13 @@ be created on "any of these" instead of on one machine: `sessions.create` accept
 a `pool` in place of an `executor`, never both, and its `workspace` is the name of
 a workspace that every executor of the pool is expected to register. `<name>` has
 the same grammar as an executor name. The pool's executors must each be a
-configured `[executors.<name>]`.
+configured `[executors.<name>]`. In ledger mode a member may instead be the name
+the ledger gave an executor ([above](#executors-that-come-from-the-ledger)): the
+file is checked for the name's shape, and the daemon compares it with the ledger at
+start. A name that no table and no ledger entry ever gave refuses the start. A name
+whose member was revoked, or that this node is not linked to, is logged and skipped,
+as an executor that is down is. A ledger executor declares nothing, so a pool that
+sets a requirement skips it until you write its `[executors.<name>]` table.
 
 The daemon picks the executor when the session first opens. It tries the pool's
 executors in the order listed, after dropping the ones that do not satisfy the
@@ -683,6 +713,22 @@ table for this machine refuses the spawn and says so.
 | `node` | string | required | one of the `node` values in `[[distribution.peers]]` | The peer node that answers for this orchestrator. |
 | `address` | string | none | `wss://<host>[:<port>]/v2/control`, or `ws://` for a loopback host, with no credentials, query or fragment | The control address a client passes to `loom --addr` to reach this orchestrator. A daemon binds loopback only, so this is whatever the operator exposes (a tunnel, a proxy). When absent, `not_owner` names the orchestrator and no address. |
 
+### Orchestrators that come from the ledger
+
+(From protocol-change 086, phase 2.) A daemon that runs from a membership ledger and
+is an orchestrator lists every orchestrator member it is linked to as if it had
+written `[orchestrators.<name>]` for it, using the ledger's name and node and no
+`address`. It asks them which holds a session it does not know, accepts a session
+moved from them, and offers them to `sessions.move` and `agent_spawn`, and it does
+so for a member enrolled after it started and stops for one that is revoked, with no
+restart. A row you write replaces a derived row of the same name or the same
+`node`; write one to give a ledger orchestrator an `address`.
+
+A node whose ledger entry gives it a directory standing derives only the
+orchestrators that have one too, because a directory member refuses an orchestrator
+row for a node that is not a member. `[spawners.<name>]` is never derived: letting a
+machine start subagents here is a decision the ledger does not make.
+
 ## `[directory]`
 
 (From protocol-change 083.) Optional, read once when the daemon starts. It makes
@@ -701,6 +747,21 @@ booted without it is refused. Every member must pin every other member in
 `[orchestrators.<name>]` node must also be a member. The store keeps its data under
 `<state root>/directory`. A new cluster is created once with
 `loomd directory bootstrap` on one member; every other member joins on its own.
+
+**With a membership ledger (`[distribution] ledger`) there is no `[directory]` table,
+and a document that has both is refused.** The members are the ledger's active
+members whose `directory` standing is `voter` or `learner`, and a daemon is a member
+when its own entry says so. `loom distribution provision` gives the plan's
+`directory` nodes the standing `voter`, and `enroll --directory voter|learner|none`
+sets it for a later member (`none`, the default, suits a laptop; a `learner` reads
+the directory locally and never counts toward the majority). The daemon reads the
+seats when it starts to decide whether it is a member and whether each
+`[orchestrators.<name>]` node is one, and again every two seconds while it runs: it
+connects to the nodes the ledger seats, joins the cluster in its own seat, and, on
+the Ra leader, removes the members the ledger unseats. `loomd directory bootstrap`
+works from the ledger and requires it to seat this node as a voter. A count of voters
+outside three to seven, or an even one, is logged as `daemon.directory_voters` and
+not refused; `enroll` and `revoke` keep the count between three and seven.
 
 | Key | Type | Required, default | Allowed values | Meaning |
 | --- | --- | --- | --- | --- |
@@ -736,7 +797,7 @@ still be running.
 | Key | Type | Required, default | Allowed values | Meaning |
 | --- | --- | --- | --- | --- |
 | `node` | string | required | one of the `node` values in `[[distribution.peers]]`, used by no other spawner | The spawning orchestrator's node. A message is judged by the table whose node it came from. |
-| `executor` | string | one placement is required | the name of an `[executors.<name>]` table | Place every delegate session on this executor. Needs `workspace`. |
+| `executor` | string | one placement is required | the name of an `[executors.<name>]` table, or in ledger mode the name the ledger gave an executor | Place every delegate session on this executor. Needs `workspace`. |
 | `pool` | string | one placement is required | the name of a `[pools.<name>]` table | Place every delegate session on a member of this pool. Needs `workspace`. |
 | `directory` | string | one placement is required | an absolute path with no `..` segment | Place every delegate session in this directory on this machine. Does not take `workspace`. |
 | `workspace` | string | required with `executor` or `pool` | 1 to 128 bytes with no `/` and no NUL | The workspace name registered on the executor or the pool's executors. |
@@ -783,9 +844,27 @@ the ledger can never change) or `--static`. With the key kept, `loom distributio
 enroll`, `renew` and `revoke` add, replace and remove nodes without provisioning
 again, and `log` and `import` read the ledger and carry it to a node. `provision
 --static` writes bundles that list their peers and discards the key, so every change
-means provisioning again and reinstalling every bundle with `--force`; a plan with
-a session directory needs it for now. Certificates are valid for five years and the
+means provisioning again and reinstalling every bundle with `--force`. A plan
+with a session directory is provisioned either way; with a ledger its directory
+members are voters in it, and `enroll --directory voter|learner|none` seats a later
+member. Certificates are valid for five years and the
 authority for ten.
+
+`revoke NAME [--reason TEXT] [--force] [--wait SECONDS]` checks three things before it
+signs. It checks the link graph: it refuses a revoke that would leave an executor
+with no orchestrator linked to it, or cut members off from the rest. It also asks the
+deployment what the revoke would strand. The daemon the command talks to asks each
+orchestrator it is linked to, and itself, how many sessions its catalogue owns and
+how many are placed on each executor. Revoking an orchestrator is refused while it
+owns sessions, and revoking an executor while an orchestrator linked to it has
+sessions placed on it. An orchestrator that does not answer is unknown, not empty,
+so a laptop that is off cannot be revoked without `--force`, and neither can any
+member when no daemon is reachable. It also refuses a revoke of a session directory
+voter that would leave fewer than three. `--force` skips all three checks. The refusal
+lists whichever of the link-graph concerns, the sessions and the voter count apply, and
+signs nothing. Revoking
+deletes no session, and enrolling the same name again restores access. Archived
+sessions are not counted.
 
 `install BUNDLE [--home DIR] [--config PATH] [--force]` runs on the node's machine
 and does everything the daemon needs before it starts:
@@ -856,9 +935,12 @@ peer, are errors. Unknown keys are refused.
 A plan may also name, in a top-level `directory` list of node `name`s, the members
 of a session directory (`[directory]` above): three to seven distinct nodes,
 including every orchestrator, because a member refuses an
-`[orchestrators.<name>]` peer that is not a member. Provisioning then peers every
-member with every other member, executors included, and writes the `[directory]`
-table into each member's bundle. `directory` comes before the first `[[node]]`:
+`[orchestrators.<name>]` peer that is not a member. Provisioning with `--static`
+then peers every member with every other member, executors included, and writes
+the `[directory]` table into each member's bundle. Provisioning with a ledger (the
+default) makes the listed nodes voters in the ledger, links them to one another
+through it, and writes no `[directory]` table. `directory` comes before the first
+`[[node]]`:
 
 ```toml
 directory = ["laptop", "desk", "devbox"]

@@ -36,7 +36,9 @@
 //// 2. With a ledger, `open_service` reads and verifies the file, requires this
 ////    node to be an active member, and starts the process with the observer of
 ////    `client/ledger_trust`, which publishes the table before it returns.
-//// 3. `distribution.start` begins TLS distribution in live mode.
+//// 3. `own_cluster` reads this node's directory standing from the ledger.
+////    `distribution.start` begins TLS distribution in live mode, visible for a
+////    node the ledger seats in the session directory and hidden otherwise.
 //// 4. `begin_trust` adds the members this node is linked to to the allow list,
 ////    and tells the process to dial.
 
@@ -44,6 +46,8 @@ import client/distribution
 import client/ledger_reference
 import client/ledger_service.{type Observer, type Service}
 import client/ledger_trust
+import client/membership_entry
+import client/membership_ledger
 import client/membership_store
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -66,8 +70,11 @@ pub type Booted {
 /// as long as it does. On an `Error` the daemon does not start, and the
 /// process it may have started goes with it.
 ///
-/// A directory member (`Member`) cannot use a ledger yet: the ledger would have
-/// to derive the directory's members, which is a later phase of 086.
+/// With a ledger, whether this node is a directory member is the ledger's
+/// answer and not the caller's: the node starts visible, as a member must, when
+/// its entry gives it a `voter` or `learner` standing, and hidden otherwise. A
+/// `Member` cluster passed with a ledger is refused, because it would be a
+/// second source for the members (protocol-change/086, phase 3).
 ///
 /// ## Examples
 ///
@@ -110,10 +117,9 @@ pub fn start_with(
         distribution.NotMember -> Ok(Nil)
         distribution.Member(..) ->
           Error(
-            "[directory] cannot be combined with [distribution] ledger yet: "
-            <> "the directory's members come from [directory] members, and "
-            <> "deriving them from the ledger is a later phase of "
-            <> "protocol-change/086",
+            "[directory] cannot be combined with [distribution] ledger: the "
+            <> "directory's members are the ledger's members whose standing is "
+            <> "voter or learner, so remove the [directory] table",
           )
       })
       let local = distribution.local_node(config)
@@ -124,13 +130,33 @@ pub fn start_with(
         observers,
         logger,
       ))
+      use own <- result.try(own_cluster(service, local))
       use membership <- result.try(
-        distribution.start(config, cluster)
+        distribution.start(config, own)
         |> result.map_error(distribution.describe),
       )
       use Nil <- result.try(begin_trust(service, membership, local))
       Ok(Booted(membership:, ledger: Some(service)))
     }
+  }
+}
+
+// Whether this node starts as a member of the session directory, from the
+// ledger the process holds. The list of members is empty because a ledger node
+// learns them from the table it publishes, and `distribution` reads the table
+// for the link of every connection it makes.
+fn own_cluster(
+  service: Service,
+  local: String,
+) -> Result(distribution.Cluster, String) {
+  use status <- result.map(
+    ledger_service.status(service, 5000)
+    |> result.replace_error("the ledger process did not answer"),
+  )
+  case membership_ledger.member_at(status.ledger, local) {
+    Ok(own) if own.directory != membership_entry.NotInDirectory ->
+      distribution.Member(members: [])
+    _ -> distribution.NotMember
   }
 }
 

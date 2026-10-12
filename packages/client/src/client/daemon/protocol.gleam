@@ -292,6 +292,11 @@ pub type Command {
   /// Reports the ledger's head, this node's standing, its members' reported
   /// heads and the last refusal. Owner-only.
   LedgerStatus
+
+  /// Asks each orchestrator the daemon is linked to, and the daemon itself,
+  /// what its catalogue holds, for the operator's check before a `revoke`
+  /// (protocol-change/086, phase 2). Owner-only.
+  LedgerHoldings
 }
 
 /// What an invitation or rotation gives the member, as the request chose it.
@@ -666,6 +671,7 @@ fn decode_fields(
     "ledger.append" -> result.map(ledger_lines(fields), LedgerAppend)
     "ledger.entries" -> ledger_entries(fields)
     "ledger.status" -> Ok(LedgerStatus)
+    "ledger.holdings" -> Ok(LedgerHoldings)
     _unknown -> Error("unsupported control command")
   }
 }

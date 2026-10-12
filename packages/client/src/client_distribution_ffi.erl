@@ -26,9 +26,16 @@
 %% connection made with hidden_connect_node/1 stays hidden even between two
 %% visible nodes. Every other connection, and every connection of a node that
 %% is not a member, stays hidden exactly as before.
+%%
+%% In ledger mode the members change while the VM runs, so no atom list made at
+%% start can say which peers are members. The ledger process publishes a second
+%% row of the same table, `directory`, with the node names of the other members
+%% this node is linked to, and `link/2` reads it on every connect. A node whose
+%% own entry does not seat it in the directory publishes an empty list, and
+%% connects hidden to everyone.
 -module(client_distribution_ffi).
 -export([options/2, start/5, peer/2, link/2, connect/2, verify/4,
-         ensure_epmd/0, publish_pins/1]).
+         ensure_epmd/0, publish_pins/1, publish_directory/1]).
 -include_lib("kernel/include/file.hrl").
 -include_lib("public_key/include/public_key.hrl").
 
@@ -36,6 +43,12 @@
 %% from a 32-byte leaf pin to the node name that pin must present.
 -define(PIN_TABLE, loom_dist_pins).
 -define(PIN_ROW, pins).
+
+%% The row of the same table that holds the node names, as binaries, of the other
+%% members of the session directory this node is linked to. A member daemon in
+%% ledger mode reads it to decide whether a connection is visible, because the
+%% set of members changes while the VM runs.
+-define(DIRECTORY_ROW, directory).
 
 %% The ssl_dist_optfile text for a configuration. The same term is rebuilt in
 %% start/5 and compared with what the emulator actually loaded, so the file
@@ -110,6 +123,14 @@ publish_pins(Pairs) ->
         _ -> ok
     end,
     true = ets:insert(?PIN_TABLE, {?PIN_ROW, maps:from_list(Pairs)}),
+    nil.
+
+%% Replaces the row that says which nodes are directory members, with one
+%% insert, on the table `publish_pins/1` owns. It is empty on a node that is not
+%% a member itself, so such a node connects hidden to everyone. FFI for the same
+%% reason as `publish_pins/1`: `link/2` reads it, and it lives in that table.
+publish_directory(Names) ->
+    true = ets:insert(?PIN_TABLE, {?DIRECTORY_ROW, Names}),
     nil.
 
 %% Exactly one DNS name in the certificate contains an at sign, and it is the
@@ -404,10 +425,29 @@ live_peer(Name) ->
 
 %% How this node connects to a peer: visibly when both are directory members,
 %% hidden otherwise. The list of members is empty on a node that is not one.
+link({membership, _Local, live, _Members}, Node) ->
+    case directory_names() of
+        {ok, Names} ->
+            case lists:member(atom_to_binary(Node, utf8), Names) of
+                true -> visible;
+                false -> hidden
+            end;
+        unavailable -> hidden
+    end;
 link({membership, _Local, _Nodes, Members}, Node) ->
     case lists:member(Node, Members) of
         true -> visible;
         false -> hidden
+    end.
+
+%% In ledger mode the members are whatever the published row names now: the
+%% atoms of a static boot do not exist, and a ledger entry can seat a node while
+%% the VM runs. A missing table or row is hidden, which is the safe link.
+directory_names() ->
+    try ets:lookup(?PIN_TABLE, ?DIRECTORY_ROW) of
+        [{?DIRECTORY_ROW, Names}] when is_list(Names) -> {ok, Names};
+        _ -> unavailable
+    catch error:badarg -> unavailable
     end.
 
 connect(Node, visible) -> connected(net_kernel:connect_node(Node));

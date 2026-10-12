@@ -22,9 +22,12 @@
 //// alone.
 ////
 //// Like `[distribution]` and `[executors]`, the daemon reads the table once,
-//// when it starts, and never rereads it. The catalogue parser validates the
-//// same table (`client/catalog`), so a typo is refused wherever the file is
-//// read. Absence is the safe answer: with no `[orchestrators]` table the
+//// when it starts, and never rereads it. In ledger mode an orchestrator also
+//// gets a row for each orchestrator the ledger links it to
+//// (`client/ledger_rows`), read through a `client/roster` when a decision needs
+//// it, and a row written here replaces the derived one of the same name or
+//// node. The catalogue parser validates the same table (`client/catalog`), so a
+//// typo is refused wherever the file is read. Absence is the safe answer: with no `[orchestrators]` table the
 //// daemon asks nobody, and every session it does not know is `not_found`,
 //// exactly as before this table existed.
 ////

@@ -25,23 +25,46 @@
 //// refusal is turned into a sentence for the operator naming the member or
 //// link at fault (`describe`).
 ////
-//// ## What `revoke` checks, and what it cannot
+//// ## The directory's voters
 ////
-//// A revoke is safe to sign but not always wise to send. `concerns` lists what
+//// A member's `directory` standing seats it in the session directory's Khepri
+//// cluster as a voter or a learner. `check_voters` is the operator's guard on
+//// the voters: an `enroll` may not take the directory past seven voters, and a
+//// `revoke` may not leave it with fewer than three, the bounds of
+//// protocol-change/083, unless the operator says `--force`. The ledger itself
+//// accepts any count, because it records what the operator signed and the
+//// guard is the operator's. The reasoning is in the design note, section 11.3:
+//// until Ra commits the removal, a revoked voter still counts toward the
+//// majority, so shrinking below three leaves a cluster that cannot lose a
+//// machine.
+////
+//// ## What `revoke` checks
+////
+//// A revoke is safe to sign but not always wise to send, and the ledger cannot
+//// tell, so the operator's tool checks three things first. `concerns` lists what
 //// the revoke would newly break in the link graph: an executor left with no
-//// orchestrator to use it, and members cut off from the rest. 086 also asks the
-//// tool to check that the revoked member owns no sessions or scopes. A session
-//// is owned by a daemon, and no daemon can ask another what it owns until the
-//// admin surface of protocol-change/085 carries it (phase 2), so this build does
-//// not check it and says so in its output.
+//// orchestrator to use it, and members cut off from the rest. `strandings` says
+//// what it would leave unreachable: sessions an orchestrator owns, or sessions
+//// placed on an executor. A daemon answers that by asking the orchestrators it
+//// is linked to what they hold (`client/ledger_holdings`), and this module reads
+//// the answers. An orchestrator that does not answer is unknown and not empty,
+//// so a revoke of a machine that is off is refused until the operator says
+//// `--force`. `check_voters`, described above, is the third check. The revoke
+//// is reversible and deletes no session, which is why a check that cannot be
+//// completed asks for a decision and does not decide.
 
+import client/directory/seats
+import client/directory/settings
+import client/directory/store
 import client/distribution
 import client/distribution_plan.{
   type Role, type Workspace, Executor, Orchestrator,
 }
-import client/ledger_control.{type StatusView}
+import client/ledger_control.{
+  type AnswerView, type HeldView, type StatusView, AnswerView,
+}
 import client/membership_entry.{
-  type Entry, type Member, Entry, Member, NotInDirectory, Revoke, Upsert,
+  type DirectoryStanding, type Entry, type Member, Entry, Member, Revoke, Upsert,
 }
 import client/membership_ledger.{type Ledger}
 import gleam/int
@@ -70,6 +93,10 @@ pub type Enrollment {
     /// The names of the members it may connect to. Explicit, because deriving
     /// them from roles would let any laptop attach to every executor.
     links: List(String),
+    /// Whether it is a voter or a learner in the session directory, or not a
+    /// member of it. A laptop that sleeps should not be a voter: it would
+    /// count toward the majority while it is away.
+    directory: DirectoryStanding,
     /// The workspaces an executor registers.
     workspaces: List(Workspace),
     /// Where the node's credentials go on its machine, if not the default.
@@ -186,11 +213,19 @@ pub fn enroll(
       host: host(request),
       listen_port: request.listen_port,
       role: request.role,
-      directory: NotInDirectory,
+      directory: request.directory,
       links: list.unique(request.links),
       pin:,
     )
-  preflight(ledger, entry_after(ledger, time, Upsert(member)))
+  use entry <- result.try(preflight(
+    ledger,
+    entry_after(ledger, time, Upsert(member)),
+  ))
+  use after <- result.try(
+    membership_ledger.check(ledger, entry) |> result.map_error(describe),
+  )
+  use Nil <- result.map(check_voters(ledger, after))
+  entry
 }
 
 /// The entry that replaces a member's certificate, and the member as it will
@@ -319,6 +354,58 @@ pub fn describe(refusal: membership_ledger.Refusal) -> String {
       }
     other -> "the entry is refused at step " <> membership_ledger.step(other)
   }
+}
+
+// --- the directory's voters --------------------------------------------------
+
+/// Checks that the entry that turns `before` into `after` keeps the directory's
+/// voters within the bounds of protocol-change/083, three to seven. A change
+/// that does not touch the number of voters passes. An entry that adds a voter
+/// may not take the count past seven. An entry that removes one may not leave
+/// fewer than three.
+///
+/// ## Examples
+///
+/// ```gleam
+/// ledger_operator.check_voters(before, after) // -> Ok(Nil)
+/// ```
+pub fn check_voters(before: Ledger, after: Ledger) -> Result(Nil, String) {
+  let held = voters(before)
+  let left = voters(after)
+  case int.compare(left, held) {
+    order.Eq -> Ok(Nil)
+    order.Gt ->
+      case left > settings.maximum_members {
+        True ->
+          Error(
+            "the session directory takes at most "
+            <> int.to_string(settings.maximum_members)
+            <> " voters, and this would make "
+            <> int.to_string(left)
+            <> "; enroll the member as a learner with --directory learner",
+          )
+        False -> Ok(Nil)
+      }
+    order.Lt ->
+      case left < settings.minimum_members {
+        True ->
+          Error(
+            "the session directory would be left with "
+            <> int.to_string(left)
+            <> " voters, and it needs at least "
+            <> int.to_string(settings.minimum_members)
+            <> " to keep working when one fails. Until Ra commits the "
+            <> "removal the revoked voter still counts toward the majority, "
+            <> "so the voters that remain would both have to be up to "
+            <> "commit it",
+          )
+        False -> Ok(Nil)
+      }
+  }
+}
+
+fn voters(ledger: Ledger) -> Int {
+  list.count(seats.places(ledger), fn(place) { place.seat == store.Voter })
 }
 
 // --- what a revoke would break -----------------------------------------------
@@ -452,6 +539,178 @@ pub fn describe_concern(concern: Concern) -> String {
       "the members "
       <> string.join(names, ", ")
       <> " would no longer be linked to the rest"
+  }
+}
+
+// --- what a revoke would strand ----------------------------------------------
+
+/// Sessions a revoke would leave unreachable, or the reason that could not be
+/// told.
+pub type Stranding {
+  /// The orchestrator being revoked owns sessions. They stay in its catalogue
+  /// and cannot be opened by anyone until it is enrolled again.
+  Owns(sessions: Int)
+
+  /// The executor being revoked has sessions placed on it, by these
+  /// orchestrators. Each fails as it does when the executor is down.
+  Placed(sessions: Int, by: List(String))
+
+  /// Whether the member holds sessions could not be told, because these
+  /// orchestrators did not answer. An orchestrator that is asleep or lost is
+  /// silent, and silence is not "none".
+  Silent(names: List(String))
+
+  /// No daemon could be asked at all, for this reason.
+  Unasked(reason: String)
+}
+
+/// What revoking `name` would strand, from what the orchestrators said.
+///
+/// For an orchestrator, the question is whether its own answer reports any
+/// session. For an executor, it is whether any orchestrator that is linked to it
+/// placed a session on its node, and every such orchestrator has to answer for
+/// the result to count as none. An orchestrator the answering daemon could not
+/// ask is not listed, which reads as silent. A member the ledger does not list
+/// strands nothing. The list is empty only when the revoke strands nothing and
+/// nothing is unknown.
+///
+/// ## Examples
+///
+/// ```gleam
+/// ledger_operator.strandings(ledger, "laptop", answers) // -> [Owns(3)]
+/// ```
+pub fn strandings(
+  ledger: Ledger,
+  name: String,
+  answers: List(AnswerView),
+) -> List(Stranding) {
+  case membership_ledger.member(ledger, name) {
+    Error(Nil) -> []
+    Ok(member) ->
+      case member.role {
+        Orchestrator -> owned(member, answers)
+        Executor -> placed(ledger, member, answers)
+      }
+  }
+}
+
+fn owned(member: Member, answers: List(AnswerView)) -> List(Stranding) {
+  case list.find(answers, fn(answer) { answer.name == member.name }) {
+    Ok(AnswerView(held: Some(held), ..)) ->
+      case held.sessions {
+        0 -> []
+        sessions -> [Owns(sessions)]
+      }
+    Ok(AnswerView(held: option.None, ..)) | Error(Nil) -> [
+      Silent([member.name]),
+    ]
+  }
+}
+
+// The orchestrators linked to the executor are the ones that could have placed
+// a session on it, so they are the ones whose silence matters.
+fn placed(
+  ledger: Ledger,
+  member: Member,
+  answers: List(AnswerView),
+) -> List(Stranding) {
+  let users =
+    membership_ledger.pin_table(ledger, member.name)
+    |> membership_ledger.peers
+    |> list.filter(fn(peer) { peer.role == Orchestrator })
+    |> list.map(fn(peer) { peer.name })
+  let #(by, silent, total) =
+    list.fold(users, #([], [], 0), fn(seen, user) {
+      let #(by, silent, total) = seen
+      case list.find(answers, fn(answer) { answer.name == user }) {
+        Ok(AnswerView(held: Some(held), ..)) ->
+          case on_node(held, member.node) {
+            0 -> seen
+            sessions -> #([user, ..by], silent, total + sessions)
+          }
+        Ok(AnswerView(held: option.None, ..)) | Error(Nil) -> #(
+          by,
+          [user, ..silent],
+          total,
+        )
+      }
+    })
+  list.flatten([
+    case total {
+      0 -> []
+      sessions -> [Placed(sessions, list.reverse(by))]
+    },
+    case silent {
+      [] -> []
+      names -> [Silent(list.reverse(names))]
+    },
+  ])
+}
+
+fn on_node(held: HeldView, node: String) -> Int {
+  list.fold(held.placed, 0, fn(sum, placed) {
+    case placed.node == node {
+      True -> sum + placed.sessions
+      False -> sum
+    }
+  })
+}
+
+/// A stranding in the words the operator reads.
+///
+/// ## Examples
+///
+/// ```gleam
+/// ledger_operator.describe_stranding("laptop", Owns(1))
+/// // -> "laptop owns 1 session, which nobody can open until it is enrolled again"
+/// ```
+pub fn describe_stranding(name: String, stranding: Stranding) -> String {
+  case stranding {
+    Owns(sessions:) ->
+      name
+      <> " owns "
+      <> sessions_text(sessions)
+      <> ", which nobody can open until it is enrolled again"
+    Placed(sessions:, by:) ->
+      sessions_text(sessions)
+      <> " placed on "
+      <> name
+      <> " by "
+      <> string.join(by, ", ")
+      <> " would fail as they do when an executor is down"
+    Silent(names:) ->
+      "whether "
+      <> name
+      <> " holds sessions could not be told: "
+      <> string.join(names, ", ")
+      <> " did not answer"
+    Unasked(reason:) ->
+      "whether " <> name <> " holds sessions could not be asked: " <> reason
+  }
+}
+
+fn sessions_text(sessions: Int) -> String {
+  case sessions {
+    1 -> "1 session"
+    _ -> int.to_string(sessions) <> " sessions"
+  }
+}
+
+/// The sentence for a revoke that was checked and found to strand nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// ledger_operator.describe_clear(member)
+/// // -> "laptop owns no sessions."
+/// ```
+pub fn describe_clear(member: Member) -> String {
+  case member.role {
+    Orchestrator -> member.name <> " owns no sessions."
+    Executor ->
+      "no orchestrator linked to "
+      <> member.name
+      <> " has a session placed on it."
   }
 }
 

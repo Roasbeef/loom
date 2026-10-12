@@ -65,6 +65,7 @@ import client/peer_mail
 import client/peers
 import client/pools
 import client/remote/orchestrator_port
+import client/roster.{type Roster}
 import client/session_directory
 import client/session_movers
 import core/ids
@@ -106,10 +107,12 @@ pub type Config(instance) {
     peer_endpoint: fn(instance) -> Option(peer_mail.Endpoint),
     /// Captured owner domain config reference; empty explicitly selects no file.
     domain_configuration: String,
-    /// The `[executors.<name>]` the owner configured, read once at startup. A
-    /// creation that names an executor outside this list is refused before
-    /// anything is reserved (protocol-change/078).
-    executors: List(executors.Executor),
+    /// The `[executors.<name>]` the owner configured, read once at startup,
+    /// and in ledger mode the executors the ledger links this node to, read
+    /// whenever the list is needed (`client/ledger_rows`). A creation that names
+    /// an executor outside this list is refused before anything is reserved
+    /// (protocol-change/078).
+    executors: Roster(executors.Executor),
     /// The `[pools.<name>]` the owner configured, read once at startup. A
     /// creation that names a pool outside this list is refused before anything
     /// is reserved (protocol-change/078).
@@ -628,12 +631,14 @@ fn home_upgrade(
               profiles.model_keys(config.domain_configuration)
               |> result.unwrap([])
             },
-            executors: list.map(config.executors, fn(executor) { executor.name }),
+            executors: list.map(roster.rows(config.executors), fn(executor) {
+              executor.name
+            }),
             pools: list.map(config.pools, fn(pool) { pool.name }),
             placements: fn() {
               deployment.placed(
                 config.deployment,
-                config.executors,
+                roster.rows(config.executors),
                 config.pools,
               )
               |> deployment.for_page
@@ -2253,7 +2258,8 @@ fn control(
             protocol.DeploymentStatus(_) -> KeepServing
             protocol.LedgerAppend(..)
             | protocol.LedgerEntries(..)
-            | protocol.LedgerStatus -> KeepServing
+            | protocol.LedgerStatus
+            | protocol.LedgerHoldings -> KeepServing
             protocol.InspectPeers(..)
             | protocol.LinkPeers(..)
             | protocol.UnlinkPeers(..)
@@ -2320,6 +2326,7 @@ fn control_use(command: protocol.Command) {
     | protocol.DeploymentStatus(_)
     | protocol.LedgerEntries(..)
     | protocol.LedgerStatus
+    | protocol.LedgerHoldings
     | protocol.GetOperation(..) -> root.ControlRead
     protocol.LinkPeers(..)
     | protocol.UnlinkPeers(..)
@@ -2465,7 +2472,8 @@ fn dispatch(
     // codes of `dispatch_class` cannot carry, so they are served here.
     protocol.LedgerAppend(..)
     | protocol.LedgerEntries(..)
-    | protocol.LedgerStatus -> ledger_command(config, principal, command)
+    | protocol.LedgerStatus
+    | protocol.LedgerHoldings -> ledger_command(config, principal, command)
     _ ->
       dispatch_class(config, state, digest, principal, reply_to, command)
       |> result.map_error(control_refusal)
@@ -2494,6 +2502,10 @@ fn ledger_command(
     protocol.LedgerEntries(after, limit) ->
       ledger_control.entries(handle, after, limit)
       |> result.map(fn(body) { #("ledger.entries", body) })
+      |> result.map_error(ledger_refusal)
+    protocol.LedgerHoldings ->
+      ledger_control.holdings(handle)
+      |> result.map(fn(body) { #("ledger.holdings", body) })
       |> result.map_error(ledger_refusal)
     _ ->
       ledger_control.status(handle)
@@ -2626,7 +2638,7 @@ pub const no_quorum_code = "no_quorum"
 
 fn directory_status_json(status: member.Status) -> JsonValue {
   let #(ra_members, leader, ra_error) = case status.ra {
-    Ok(store.Membership(members:, leader:)) -> #(members, leader, None)
+    Ok(store.Membership(members:, leader:, ..)) -> #(members, leader, None)
     Error(store.Unavailable(reason:)) -> #([], None, Some(reason))
   }
   json.Object(
@@ -2637,7 +2649,7 @@ fn directory_status_json(status: member.Status) -> JsonValue {
           "joined",
           json.Bool(case status.joining {
             member.Joined -> True
-            member.NotJoined -> False
+            member.NotJoined | member.Rejoining -> False
           }),
         ),
         #(
@@ -2650,7 +2662,7 @@ fn directory_status_json(status: member.Status) -> JsonValue {
                   "voter",
                   json.Bool(case entry.1 {
                     ffi_khepri.Voter -> True
-                    ffi_khepri.NonVoter -> False
+                    ffi_khepri.Promoting | ffi_khepri.NonVoter -> False
                   }),
                 ),
               ])
@@ -2690,8 +2702,8 @@ fn deployment_status(
   deployment.status(
     config.deployment,
     roles,
-    config.movers.orchestrators,
-    config.executors,
+    roster.rows(config.movers.orchestrators),
+    roster.rows(config.executors),
     config.pools,
     node,
   )
@@ -2699,9 +2711,34 @@ fn deployment_status(
   |> result.map(fn(snapshot) {
     #(
       "deployment.status",
-      deployment.to_json(snapshot, bootstrap.system_time_ms()),
+      with_ledger(
+        deployment.to_json(snapshot, bootstrap.system_time_ms()),
+        node,
+        config.ledger,
+      ),
     )
   })
+}
+
+// A daemon that runs from a membership ledger adds the ledger's own status to
+// the whole-deployment read, so that one command shows whether a change has
+// reached the members (protocol-change/086, phase 2). It is the body of
+// `ledger.status`, which is bounded by the ledger's member limit. A read that
+// names one node, and a ledger that does not answer, add nothing: the member is
+// optional, and an absent one reads as unknown.
+fn with_ledger(
+  body: JsonValue,
+  node: Option(String),
+  handle: Option(ledger_control.Handle),
+) -> JsonValue {
+  case body, node, handle {
+    json.Object(fields), None, Some(handle) ->
+      case ledger_control.status(handle) {
+        Ok(status) -> json.Object(list.append(fields, [#("ledger", status)]))
+        Error(_) -> body
+      }
+    _, _, _ -> body
+  }
 }
 
 fn no_quorum(reason: String) -> Refused {
@@ -3312,7 +3349,7 @@ fn dispatch_class(
       use Nil <- result.try(owner(principal))
       use Nil <- result.try(epoch(state, supplied))
       use _destination <- result.try(
-        orchestrators.find(config.movers.orchestrators, to)
+        orchestrators.find(roster.rows(config.movers.orchestrators), to)
         |> result.replace_error(orchestrator_unknown_code),
       )
 
@@ -3432,7 +3469,8 @@ fn dispatch_class(
     // a step and this function's refusals are bare codes. They never reach here.
     protocol.LedgerAppend(..)
     | protocol.LedgerEntries(..)
-    | protocol.LedgerStatus -> Error("unavailable")
+    | protocol.LedgerStatus
+    | protocol.LedgerHoldings -> Error("unavailable")
     protocol.Shutdown(supplied) -> {
       use Nil <- result.try(owner(principal))
       use Nil <- result.try(epoch(state, supplied))
@@ -3482,7 +3520,7 @@ fn inbound_settled_by_rows(
 ) -> Result(Nil, Unsettled) {
   case manager.custody(registry, id) {
     Ok(catalogue.Imported(from:, ..)) ->
-      case orchestrators.find(movers.orchestrators, from) {
+      case orchestrators.find(roster.rows(movers.orchestrators), from) {
         Ok(origin) ->
           case movers.holds(origin, id) {
             Ok(orchestrator_port.Moved(..)) -> Ok(Nil)
@@ -3592,7 +3630,7 @@ pub fn create_session(
       bootstrap.canonical_directory(request.workspace)
       |> result.replace_error("invalid_workspace")
     executor, "" ->
-      case executors.find(config.executors, executor) {
+      case executors.find(roster.rows(config.executors), executor) {
         Ok(_) -> Ok(request.workspace)
         Error(Nil) -> Error(executor_unknown_code)
       }

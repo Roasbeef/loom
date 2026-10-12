@@ -70,6 +70,7 @@ import client/orchestrators.{type Orchestrator}
 import client/remote/orchestrator_port
 import client/remote/protocol
 import client/remote/scope
+import client/roster.{type Roster}
 import client/session_move.{
   type Activation, type Chunk, type Stage, type Verdict, Accepted, Failed,
   Refused,
@@ -106,9 +107,11 @@ pub type Context(instance) {
     /// The clock the short reads of a copy's cell use.
     clock: Clock,
     /// The orchestrators this daemon lists, by which a sender is recognised.
-    orchestrators: List(Orchestrator),
+    /// Read when an activation arrives, so one enrolled since the daemon
+    /// started is recognised (protocol-change/086).
+    orchestrators: Roster(Orchestrator),
     /// The executors this daemon lists, one of which must hold the session.
-    executors: List(Executor),
+    executors: Roster(Executor),
     /// Where the receiver writes down what it did.
     logger: Logger,
   )
@@ -356,7 +359,10 @@ fn listed(
   context: Context(instance),
   activation: Activation,
 ) -> Result(Orchestrator, Verdict) {
-  orchestrators.by_node(context.orchestrators, activation.from_node)
+  orchestrators.by_node(
+    roster.rows(context.orchestrators),
+    activation.from_node,
+  )
   |> result.replace_error(
     Refused(session_move.UnknownSource(node: activation.from_node)),
   )
@@ -404,7 +410,7 @@ fn verified(
   use Nil <- result.try(
     case
       named == activation.manifest.executor,
-      executors.find(context.executors, named)
+      executors.find(roster.rows(context.executors), named)
     {
       False, _ ->
         Error(

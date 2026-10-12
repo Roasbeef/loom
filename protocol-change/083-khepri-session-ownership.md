@@ -317,6 +317,15 @@ seven of them; an even count is accepted with a warning. On a member daemon,
 every `[orchestrators.<name>]` node must be a member. The store lives at
 `<state root>/directory`. `docs/configuration.md` documents the key.
 
+With a membership ledger (`[distribution] ledger`, protocol-change/086) there is
+no `[directory]` table, and a document with both is refused. The members are the
+ledger's active members whose `directory` standing is `voter` or `learner`, a node
+is a member when its own entry seats it, and the count bounds above are kept by
+`enroll` and `revoke` and logged by the daemon. A learner joins as a Ra
+`non_voter`, which never counts toward a majority, and the Ra leader removes the
+members the ledger unseats. `directory.status` then reports the nodes the ledger seats at the time it
+is asked.
+
 ### Distribution
 
 A member daemon starts distribution with `hidden => false` and requires
@@ -381,5 +390,6 @@ pass runs the seeding, so a store without a quorum delays it and nothing else.
   are gated by `make model-check`.
 
 Not built: automatic failover, a check of the record at open, ownership leases,
-moving a session between executors, membership removal commands, and a merged
-session list.
+moving a session between executors, membership removal commands (with a ledger
+the Ra leader removes the members the ledger unseats, protocol-change/086), and a
+merged session list.

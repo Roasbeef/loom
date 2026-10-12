@@ -45,17 +45,22 @@ import client/directory/deletion
 import client/directory/member
 import client/directory/migrate
 import client/directory/ownership
+import client/directory/seats
 import client/directory/settings as directory_settings
 import client/directory/store
 import client/distribution
+import client/distribution_plan
 import client/executor_plane
 import client/executors
 import client/host
 import client/internal/ffi_os
 import client/ledger_boot
 import client/ledger_control
+import client/ledger_holdings
 import client/ledger_reference
+import client/ledger_rows
 import client/ledger_service.{type Service}
+import client/membership_ledger
 import client/orchestrators
 import client/peer_defaults
 import client/peer_mail
@@ -70,6 +75,7 @@ import client/remote/remote_spawner
 import client/remote/workspace
 import client/remote_reach
 import client/remote_spawn
+import client/roster.{type Roster}
 import client/serve
 import client/session_directory
 import client/session_importer
@@ -127,7 +133,10 @@ pub type Config {
     /// `[peers]` at startup and never reread (protocol-change/077).
     peer_policy: peer_mail.Policy,
     /// The executors sessions may be placed on, read from `[executors.<name>]`
-    /// at startup and never reread (protocol-change/078).
+    /// at startup and never reread (protocol-change/078). These are the rows the
+    /// operator wrote. A daemon that runs from a ledger also uses the executors
+    /// the ledger links it to (protocol-change/086, phase 2), which
+    /// `executor_roster` adds when the list is read.
     executors: List(executors.Executor),
     /// The groups of those executors a session may be created in, read from
     /// `[pools.<name>]` at startup and never reread (protocol-change/078).
@@ -138,7 +147,8 @@ pub type Config {
     workspaces: List(workspaces.Workspace),
     /// The other orchestrators this daemon asks which of them owns a session
     /// its own catalogue lacks, read from `[orchestrators.<name>]` at startup
-    /// and never reread (protocol-change/078, phase 3).
+    /// and never reread (protocol-change/078, phase 3). These are the rows the
+    /// operator wrote, and `orchestrator_roster` adds the ledger's.
     orchestrators: List(orchestrators.Orchestrator),
     /// The `[directory]` table, read at startup and never reread: whether this
     /// daemon is a member of the session directory's Khepri cluster and who the
@@ -488,17 +498,80 @@ fn start_distribution(
   }
 }
 
+/// The directory settings of a daemon, given the table it read: the table
+/// itself when the trust is a static peer list, and the ledger's seats when the
+/// trust is a ledger, where a node is a member exactly when its own entry gives
+/// it a `voter` or `learner` standing. Every `[orchestrators.<name>]` node of a
+/// member must be a member, the rule of protocol-change/083 that a parse
+/// cannot check against a ledger, so it is checked here with the ledger the
+/// process holds. A count of voters outside three to seven, or an even count,
+/// is logged and not refused: the ledger records a fact the operator's command
+/// already vetted.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // main.ledger_directory(None, None, "loom@a.example", [], logger) == Ok(None)
+/// ```
+@internal
+pub fn ledger_directory(
+  configured: Option(directory_settings.Settings),
+  ledger: Option(Service),
+  local: String,
+  listed: List(orchestrators.Orchestrator),
+  logger: Logger,
+) -> Result(Option(directory_settings.Settings), String) {
+  case ledger {
+    None -> Ok(configured)
+    Some(service) -> {
+      use status <- result.try(
+        ledger_service.status(service, 5000)
+        |> result.replace_error("the ledger process did not answer"),
+      )
+      case directory_settings.from_ledger(status.ledger, local) {
+        None -> Ok(None)
+        Some(found) -> {
+          use Nil <- result.map(directory_settings.require_orchestrators(
+            listed,
+            found.members,
+          ))
+          let voters =
+            list.count(seats.places(status.ledger), fn(place) {
+              place.seat == store.Voter
+            })
+          case
+            voters < directory_settings.minimum_members
+            || voters > directory_settings.maximum_members
+            || int.is_even(voters)
+          {
+            True ->
+              log.warn(logger, "daemon.directory_voters", [
+                field.count("voters", voters),
+              ])
+            False -> Nil
+          }
+          Some(found)
+        }
+      }
+    }
+  }
+}
+
 // The tables that name a peer are checked against the ledger once, here, after
 // the ledger process holds the file and before the daemon listens. Parsing them
 // never reads the ledger (`client/ledger_reference`), because a session parses
 // them on every create and open and a ledger changes while a daemon runs. A
 // node no entry ever named refuses the start. A node that was a member and no
 // longer is a row the daemon logs and keeps, so that a `revoke` never turns the
-// next restart into an outage of the sessions that do not use that node.
+// next restart into an outage of the sessions that do not use that node. The
+// executor names that pools and spawners list are judged the same way, because
+// the ledger can give an executor a row that no table defines.
 fn audit_started(
   booted: Option(ledger_boot.Booted),
   document: dict.Dict(String, tom.Toml),
   rows: List(ledger_reference.Row),
+  written: List(String),
+  names: List(ledger_reference.NameRow),
   logger: Logger,
 ) -> Result(Nil, String) {
   use found <- result.try(distribution.from_document(document))
@@ -506,16 +579,87 @@ fn audit_started(
     option.then(booted, fn(started) { started.ledger }),
     option.then(found, distribution.ledger_path)
   {
-    Some(service), Some(path) ->
-      audit_references(
-        service,
-        atom.to_string(node.name(node.self())),
-        path,
-        rows,
-        logger,
-      )
+    Some(service), Some(path) -> {
+      let local = atom.to_string(node.name(node.self()))
+      use Nil <- result.try(audit_references(service, local, path, rows, logger))
+      audit_executor_names(service, local, path, written, names, logger)
+    }
     _, _ -> Ok(Nil)
   }
+}
+
+/// Compares the executor names that pools and spawners list with the ledger a
+/// running ledger process holds, as `audit_references` compares nodes. A name
+/// that is neither a written `[executors.<name>]` row nor a name the ledger ever
+/// gave is an `Error` with a sentence for the operator. A name whose member was
+/// revoked, or is an executor this node is not linked to, is logged as a warning
+/// and the start goes on: the pool skips such an executor as it skips one that
+/// is down.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let assert Ok(Nil) = main.audit_executor_names(service, local, path, ["box"], names, logger)
+/// ```
+@internal
+pub fn audit_executor_names(
+  service: Service,
+  local: String,
+  path: String,
+  written: List(String),
+  names: List(ledger_reference.NameRow),
+  logger: Logger,
+) -> Result(Nil, String) {
+  use status <- result.try(
+    ledger_service.status(service, 5000)
+    |> result.replace_error("the ledger process did not answer"),
+  )
+  use inert <- result.map(ledger_reference.audit_names(
+    status.ledger,
+    local,
+    path,
+    written,
+    names,
+  ))
+  list.each(inert, fn(found) {
+    log.warn(logger, "daemon.ledger_name_inert", [
+      field.text("row", found.row.key),
+      field.text("name", found.row.name),
+      field.text("reason", found.reason),
+    ])
+  })
+}
+
+/// The executor names the pools and spawners of a configuration list, with
+/// the key each was written under, in the order a refusal should report them.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // main.reference_names([], []) == []
+/// ```
+@internal
+pub fn reference_names(
+  configured_pools: List(pools.Pool),
+  configured_spawners: List(spawners.Spawner),
+) -> List(ledger_reference.NameRow) {
+  list.flatten([
+    list.flat_map(configured_pools, fn(pool) {
+      list.map(pool.executors, fn(name) {
+        ledger_reference.NameRow("pools." <> pool.name <> ".executors", name)
+      })
+    }),
+    list.filter_map(configured_spawners, fn(spawner) {
+      case spawner.placement {
+        spawners.OnExecutor(executor:, ..) ->
+          Ok(ledger_reference.NameRow(
+            "spawners." <> spawner.name <> ".executor",
+            executor,
+          ))
+        spawners.InPool(..) | spawners.InDirectory(..) -> Error(Nil)
+      }
+    }),
+  ])
 }
 
 /// Compares the rows of the tables that name a peer with the ledger a running
@@ -559,9 +703,9 @@ pub fn audit_references(
 }
 
 /// The node every row of the tables that name a peer names, in the order a
-/// refusal should report them. `[directory]` is not among them: a directory
-/// member cannot use a ledger yet (`client/ledger_boot`), so a configuration
-/// with both never reaches this check.
+/// refusal should report them. `[directory]` is not among them: with a ledger
+/// the directory's members are the ledger's, and `ledger_directory` checks the
+/// `[orchestrators]` rows against them.
 ///
 /// ## Examples
 ///
@@ -587,25 +731,34 @@ pub fn reference_rows(
   ])
 }
 
-// Each served checkout has to be a directory now, so an operator who mistyped
-// a root learns it at startup and not from the first session that attaches.
-// The plane factory checks again at every attach, because a directory can go
-// away in between.
 // The handle the `ledger.*` commands use: the process and this node's names. The
 // node is distributed by now, so its own name is the VM's.
 fn ledger_handle(
   booted: Option(ledger_boot.Booted),
   configuration: String,
 ) -> Result(Option(ledger_control.Handle), String) {
-  case option.then(booted, fn(started) { started.ledger }) {
-    None -> Ok(None)
-    Some(service) ->
-      ledger_control.handle(service, atom.to_string(node.name(node.self())))
-      |> result.map(Some)
+  case booted {
+    Some(ledger_boot.Booted(ledger: Some(service), membership:)) -> {
+      // The node is distributed by now. `ledger.holdings` asks the orchestrators
+      // the ledger links it to over that distribution.
+      let local = atom.to_string(node.name(node.self()))
+      ledger_control.handle(service, local)
+      |> result.map(fn(handle) {
+        Some(ledger_control.asking(
+          handle,
+          ledger_holdings.over_distribution(membership, local),
+        ))
+      })
       |> result.map_error(fn(reason) { configuration <> ": " <> reason })
+    }
+    Some(ledger_boot.Booted(ledger: None, ..)) | None -> Ok(None)
   }
 }
 
+// Each served checkout has to be a directory now, so an operator who mistyped
+// a root learns it at startup and not from the first session that attaches.
+// The plane factory checks again at every attach, because a directory can go
+// away in between.
 fn existing_roots(served: List(workspaces.Workspace)) -> Result(Nil, String) {
   list.try_each(served, fn(workspace) {
     bootstrap.canonical_directory(workspace.root)
@@ -699,13 +852,32 @@ pub fn start_directory(
     Some(settings), Some(membership) ->
       member.start(member.Config(
         directory: directory_path(config.state_root),
-        members: settings.members,
+        members: members_of(config, settings),
         local: atom.to_string(node.name(node.self())),
         membership:,
         logger:,
       ))
       |> result.map(Some)
     _, _ -> Ok(None)
+  }
+}
+
+// Who the member actor takes its members from: the configured list, or the
+// ledger the daemon runs, read afresh on every tick because the seats change
+// while the daemon runs. The read is a local call to the ledger process, which
+// answers it between two messages.
+fn members_of(
+  config: Config,
+  settings: directory_settings.Settings,
+) -> member.Members {
+  case config.ledger {
+    None -> member.Listed(settings.members)
+    Some(handle) ->
+      member.Followed(read: fn() {
+        ledger_service.status(handle.service, 1000)
+        |> result.map(fn(status) { seats.read(status.ledger) })
+        |> result.replace_error(Nil)
+      })
   }
 }
 
@@ -763,8 +935,8 @@ pub fn start_orchestrator_port(
           sessions_directory: ready.sessions_directory,
           domain_configuration:,
           clock: clock.from_function(ffi_os.system_time_ms),
-          orchestrators: config.orchestrators,
-          executors: config.executors,
+          orchestrators: orchestrator_roster(config),
+          executors: executor_roster(config),
           logger:,
         ))
       use _started <- result.try(
@@ -790,13 +962,20 @@ pub fn start_orchestrator_port(
               endpoint: delegate_endpoint,
             )),
           ),
+          ledger_holdings.from_catalogue(
+            ready.registry,
+            executor_roster(config),
+          ),
         )
         |> result.map_error(fn(error) {
           "the orchestrator port did not start: " <> string.inspect(error)
         }),
       )
       log.info(logger, "daemon.orchestrator_port", [
-        field.count("orchestrators", list.length(config.orchestrators)),
+        field.count(
+          "orchestrators",
+          list.length(roster.rows(orchestrator_roster(config))),
+        ),
         field.count("spawners", list.length(config.spawners)),
       ])
       Ok(Nil)
@@ -952,7 +1131,7 @@ fn reach_of(
       Some(
         remote_spawner.over_distribution(
           membership,
-          config.orchestrators,
+          orchestrator_roster(config),
           session,
           fn() { list.contains(manager.unshared_sessions(registry), session) },
         ),
@@ -978,14 +1157,14 @@ fn session_directory_of(
       let base = case config.directory {
         Some(_) ->
           session_directory.khepri(
-            config.orchestrators,
+            orchestrator_roster(config),
             local,
             catalogue_holds(registry),
             store.read,
           )
         None ->
           session_directory.peers(
-            config.orchestrators,
+            orchestrator_roster(config),
             catalogue_holds(registry),
             session_directory.over_distribution(membership),
           )
@@ -1003,7 +1182,7 @@ fn session_directory_of(
         ))
         |> session_directory.settling(session_directory.settle_over(
           membership,
-          config.orchestrators,
+          orchestrator_roster(config),
         ))
       case config.directory, config.member {
         Some(_), Some(handle) ->
@@ -1029,14 +1208,90 @@ fn deployment_reach(config: Config) -> deployment.Reach {
   }
 }
 
-// The record writes, for a member that is an orchestrator: one that places
-// sessions on executors or lists another orchestrator. An executor member
-// lists neither, and so has no writes.
-fn ownership_of(config: Config, local: String) -> Option(ownership.Ownership) {
-  case config.executors, config.pools, config.orchestrators {
-    [], [], [] -> None
-    _, _, _ -> Some(ownership.over_store(local))
+// The executors this daemon uses: the `[executors.<name>]` rows of its file
+// and, when it runs from a ledger, a row for each executor the ledger links it
+// to (protocol-change/086, phase 2). A part of the daemon that outlives a
+// request holds the roster and reads it at the moment it decides, so an
+// executor enrolled or revoked while the daemon runs is seen by the next
+// decision. A daemon without a ledger has the rows of its file, as before.
+fn executor_roster(config: Config) -> Roster(executors.Executor) {
+  case config.ledger {
+    Some(handle) ->
+      ledger_rows.executor_roster(
+        handle.service,
+        handle.local,
+        config.executors,
+      )
+    None -> roster.fixed(config.executors)
   }
+}
+
+// The orchestrators this daemon asks and moves sessions to, combined the same
+// way as the executors.
+fn orchestrator_roster(config: Config) -> Roster(orchestrators.Orchestrator) {
+  case config.ledger {
+    Some(handle) ->
+      ledger_rows.orchestrator_roster(
+        handle.service,
+        handle.local,
+        config.orchestrators,
+      )
+    None -> roster.fixed(config.orchestrators)
+  }
+}
+
+/// The record writes, for a member that is an orchestrator. An executor member
+/// has none, which is how it is held to never writing.
+///
+/// A daemon with a ledger is an orchestrator when the ledger says its node is
+/// one, and not when it has rows. This value is built once, when the services
+/// start, and a ledger daemon's rows change while it runs: an orchestrator
+/// enrolled before its first executor, or before the orchestrator beside it, has
+/// no rows at boot and would hold no writes for as long as the daemon lived. Its
+/// role is the one fact that does not move, because a name is enrolled once with
+/// the role it keeps. A daemon with no ledger decides from the rows of its file,
+/// which are fixed for its life: an executor, a pool or an orchestrator listed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // main.ownership_of(config, "loom@hub.example") // -> Some(ownership)
+/// ```
+@internal
+pub fn ownership_of(
+  config: Config,
+  local: String,
+) -> Option(ownership.Ownership) {
+  case config.ledger {
+    Some(handle) ->
+      case ledger_role(handle.service, local) {
+        Ok(distribution_plan.Orchestrator) -> Some(ownership.over_store(local))
+        Ok(distribution_plan.Executor) | Error(Nil) -> None
+      }
+    None ->
+      case
+        roster.rows(executor_roster(config)),
+        config.pools,
+        roster.rows(orchestrator_roster(config))
+      {
+        [], [], [] -> None
+        _, _, _ -> Some(ownership.over_store(local))
+      }
+  }
+}
+
+// The role the ledger gives the node, or `Error` when the process does not
+// answer or does not list the node. A daemon that cannot confirm its role holds
+// no writes, as one that is not an orchestrator holds none.
+fn ledger_role(
+  service: Service,
+  local: String,
+) -> Result(distribution_plan.Role, Nil) {
+  use status <- result.try(
+    ledger_service.status(service, 5000) |> result.replace_error(Nil),
+  )
+  membership_ledger.member_at(status.ledger, local)
+  |> result.map(fn(member) { member.role })
 }
 
 /// Starts the movers that hand sessions to other orchestrators, resumes every
@@ -1092,7 +1347,7 @@ pub fn start_movers(
                 migrate.seed(
                   ready.registry,
                   ownership,
-                  config.orchestrators,
+                  roster.rows(orchestrator_roster(config)),
                   logger,
                 )
               deletion.finish_pending(
@@ -1117,7 +1372,7 @@ pub fn start_movers(
         session_mover.Environment(
           authority:,
           registry: ready.registry,
-          orchestrators: config.orchestrators,
+          orchestrators: orchestrator_roster(config),
           directory:,
           courier: session_directory.courier_over(membership),
           close: closer_of(config, membership),
@@ -1137,7 +1392,10 @@ pub fn start_movers(
       use resumed <- result.try(session_movers.resume(control, ready.registry))
       log.info(logger, "daemon.movers", [
         field.count("resumed", resumed),
-        field.count("orchestrators", list.length(config.orchestrators)),
+        field.count(
+          "orchestrators",
+          list.length(roster.rows(orchestrator_roster(config))),
+        ),
       ])
       Ok(control)
     }
@@ -1151,9 +1409,9 @@ fn closer_of(
   config: Config,
   membership: distribution.Membership,
 ) -> session_mover.Closer {
-  let configured = config.executors
+  let configured = executor_roster(config)
   fn(executor, session, workspace_name, incarnation) {
-    case workspace.reach(Some(membership), configured, executor) {
+    case workspace.reach(Some(membership), roster.rows(configured), executor) {
       Ok(reach) ->
         workspace.close_stopped(reach, session, workspace_name, incarnation)
       Error(_unreachable) -> Error(workspace.CloseUnanswered)
@@ -1302,11 +1560,23 @@ pub fn prepare_startup(
     logger,
   ))
   use ledger <- result.try(ledger_handle(booted, configuration))
+  use directory <- result.try(
+    ledger_directory(
+      directory,
+      option.then(booted, fn(started) { started.ledger }),
+      atom.to_string(node.name(node.self())),
+      orchestrators,
+      logger,
+    )
+    |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
+  )
   use Nil <- result.try(
     audit_started(
       booted,
       document,
       reference_rows(executors, orchestrators, spawners),
+      list.map(executors, fn(row) { row.name }),
+      reference_names(pools, spawners),
       logger,
     )
     |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
@@ -1409,7 +1679,12 @@ pub fn prepare_startup(
               logger,
               owner,
               Some(services),
-              workspace.fixed(config.membership, config.executors, name, chosen),
+              workspace.fixed(
+                config.membership,
+                roster.rows(executor_roster(config)),
+                name,
+                chosen,
+              ),
             )
           _, pool ->
             serve.assemble_registered(
@@ -1420,7 +1695,7 @@ pub fn prepare_startup(
               Some(services),
               workspace.pooled(
                 config.membership,
-                config.executors,
+                roster.rows(executor_roster(config)),
                 config.pools,
                 pool,
                 chosen,
@@ -1729,7 +2004,7 @@ pub fn listen_moving(
       daemon:,
       peer_endpoint:,
       domain_configuration:,
-      executors: config.executors,
+      executors: executor_roster(config),
       pools: config.pools,
       directory: session_directory_of(config, ready.registry),
       movers:,

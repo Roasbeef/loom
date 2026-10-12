@@ -8,18 +8,21 @@
 %% input: the Ra system, the store and the path roots are literals, and node
 %% atoms come from the distribution membership made at boot.
 %%
-%% The non-voter join is written against Ra's public API because Khepri's own
-%% join adds a voter. It builds the Ra server configuration Khepri builds for
-%% itself (khepri_cluster:complete_ra_server_config/1 in khepri 0.19.3) and then
-%% restarts the server through khepri:start/2 so Khepri records the store. A
-%% Khepri upgrade must re-check server_config/2 against that function.
+%% The join is written against Ra's public API because Khepri's own join adds a
+%% voter. It builds the Ra server configuration Khepri builds for itself
+%% (khepri_cluster:complete_ra_server_config/1 in khepri 0.19.3) and then
+%% restarts the server through khepri:start/2 so Khepri records the store. It
+%% joins either as a voter, which Ra adds as `promotable` and promotes once the
+%% server has caught up, or as a learner, which Ra adds as `non_voter` and never
+%% promotes (protocol-change/086, phase 3). A Khepri upgrade must re-check
+%% server_config/3 against that function.
 -module(client_khepri_ffi).
 -export([start_system/1, stop_system/0, boot/1, restart/1, sync_server_record/0,
          forget_local/0,
-         join_start/0, join_remove/2, join_add/3, join_promoted/2,
-         join_finish/1,
+         join_start/1, join_remove/2, join_add/4, join_promoted/2,
+         join_caught_up/2, join_finish/1, remove_member/2,
          read/2, consistent/3, create/3, swap/4, delete_if/3, put/3,
-         membership/1, applied_index/0, snapshot_index/0,
+         membership/1, membership_through/2, applied_index/0, snapshot_index/0,
          store_running_on/2]).
 -include_lib("khepri/include/khepri.hrl").
 
@@ -106,13 +109,14 @@ sync_server_record() ->
 %% here makes its request once and says whether it was taken, should be asked
 %% again (`again`), or was refused for good (`{failed, Reason}`).
 
-%% Starts a fresh local server as a promotable non-voter, after deleting any
-%% server left from an earlier attempt, and returns its new UId.
-join_start() ->
+%% Starts a fresh local server with the membership the join asks for, after
+%% deleting any server left from an earlier attempt, and returns its new UId.
+join_start(Joining) ->
     _ = forget_local(),
     try
         UId = ra:new_uid(ra_lib:to_binary(?STORE)),
-        ok = ra:start_server(?SYSTEM, server_config({?STORE, node()}, UId)),
+        ok = ra:start_server(?SYSTEM, server_config({?STORE, node()}, UId,
+                                                    membership_of(Joining))),
         {ok, UId}
     catch Class:Why -> _ = forget_local(), {error, describe({Class, Why})}
     end.
@@ -127,9 +131,12 @@ join_remove(Remote, TimeoutMs) ->
         Other -> {failed, describe({remove_member, Other})}
     end.
 
-%% Asks the cluster to add this member, under UId, as a promotable non-voter.
-join_add(Remote, UId, TimeoutMs) ->
-    New = #{id => {?STORE, node()}, uid => UId, membership => promotable},
+%% Asks the cluster to add this member, under UId, with the membership the join
+%% asks for. The server was started with the same membership: a member whose
+%% configuration disagrees with the cluster's record of it takes the cluster's
+%% word only when the UIds match, so the UId is what ties the two together.
+join_add(Remote, UId, Joining, TimeoutMs) ->
+    New = #{id => {?STORE, node()}, uid => UId, membership => membership_of(Joining)},
     case safe(fun() -> ra:add_member({?STORE, Remote}, New, TimeoutMs) end) of
         {ok, _, _} -> done;
         {error, already_member} -> done;
@@ -153,7 +160,52 @@ join_promoted(Remote, TimeoutMs) ->
         _ -> again
     end.
 
-%% Restarts the promoted server through Khepri, so Khepri records the store.
+%% Whether this member has joined and caught up. A learner is never promoted, so
+%% this stands in for the promotion a voter waits for: the join must not report
+%% a member joined, and so not serve reads, before it holds the directory. Three
+%% things must hold at once. The server has heard from the leader, since until
+%% then it knows no cluster. Its own configuration lists itself, which is the
+%% membership change that added it reaching its log. And it has applied what the
+%% cluster had committed when asked. The commit index is the member's on Remote
+%% at the time of the call, and not a number fixed when the join began, which
+%% keeps the step free of state. A directory written to without pause would keep
+%% the learner behind for ever; the directory takes a handful of writes per
+%% session.
+join_caught_up(Remote, TimeoutMs) ->
+    Id = {?STORE, node()},
+    Own = safe(fun() -> ra:member_overview(Id) end),
+    There = safe(fun() -> ra:member_overview({?STORE, Remote}, TimeoutMs) end),
+    case {Own, There} of
+        {{ok, #{leader_id := Leader, cluster := Cluster, last_applied := Applied}, _},
+         {ok, #{last_applied := Theirs}, _}}
+          when Leader =/= undefined, Applied >= Theirs ->
+            case maps:is_key(Id, Cluster) of
+                true -> done;
+                false -> again
+            end;
+        _ -> again
+    end.
+
+%% Removes the member on Node from the cluster, through this member's own
+%% server, which is the leader when the reconciler calls it. Ra returns once the
+%% change is appended, not committed, and refuses another change until it is, so
+%% a second call before then answers `again`. Not being a member is the same as
+%% having been removed. The name is looked up as an existing atom and never
+%% made into one, so ledger text cannot grow the atom table.
+remove_member(Name, TimeoutMs) ->
+    try binary_to_existing_atom(Name, utf8) of
+        Node ->
+            case safe(fun() -> ra:remove_member({?STORE, node()}, {?STORE, Node}, TimeoutMs) end) of
+                {ok, _, _} -> done;
+                {error, not_member} -> done;
+                {error, cluster_change_not_permitted} -> again;
+                {timeout, _} -> again;
+                Other -> {failed, describe({remove_member, Other})}
+            end
+    catch error:badarg -> done
+    end.
+
+%% Restarts the joined server through Khepri, so Khepri records the store.
 join_finish(TimeoutMs) ->
     try
         ok = ra:stop_server(?SYSTEM, {?STORE, node()}),
@@ -174,12 +226,18 @@ forget_local() ->
 store_config() ->
     #{cluster_name => ?STORE, friendly_name => "loom directory"}.
 
-server_config(Id, UId) ->
+%% The Ra membership a join asks for: a voter is added as promotable, which Ra
+%% promotes once it has caught up, and a learner as non_voter, which it never
+%% promotes and never counts toward a majority.
+membership_of(as_voter) -> promotable;
+membership_of(as_learner) -> non_voter.
+
+server_config(Id, UId, Membership) ->
     #{cluster_name => ?STORE, id => Id, uid => UId,
       friendly_name => "loom directory",
       log_init_args => #{uid => UId, min_snapshot_interval => 0},
       machine => {module, khepri_machine, #{store_id => ?STORE, member => Id}},
-      membership => promotable}.
+      membership => Membership}.
 
 %% ---------------------------------------------------------------- reads
 
@@ -249,24 +307,42 @@ written(Other) -> {error, {unexpected, describe(Other)}}.
 
 %% ---------------------------------------------------------------- membership
 
-%% Ra's members, each with whether it votes, and the leader, as seen through
-%% this member's server.
+%% Ra's members, each with whether it votes, the leader, and the members the
+%% leader reports as reachable, as seen through this member's server.
 membership(TimeoutMs) ->
-    case safe(fun() -> ra:members_info({?STORE, node()}, TimeoutMs) end) of
+    membership_through(node(), TimeoutMs).
+
+%% The same question asked of the server on Node. `ra:members_info/2` is a
+%% leader call: a server that is not the leader forwards it to the leader it
+%% knows, and the answer is the leader's own list of the cluster, so a member
+%% asks it of a peer to learn what the cluster holds when its own server cannot
+%% say, as after the leader removed it. The leader reports each member's
+%% `status`, and `normal` is the only status that means its log is being
+%% replicated now; a follower's answer to a question it was not forwarded
+%% carries no status, so the third element is empty there. The members list
+%% every server in the leader's configuration, committed or not.
+membership_through(Node, TimeoutMs) ->
+    case safe(fun() -> ra:members_info({?STORE, Node}, TimeoutMs) end) of
         {ok, Info, {_, LeaderNode}} ->
-            Members = [{atom_to_binary(N, utf8), voter_of(V)}
-                       || {{_, N}, V} <- maps:to_list(Info)],
-            {ok, {lists:sort(Members), {some, atom_to_binary(LeaderNode, utf8)}}};
+            {ok, {members_of(Info), {some, atom_to_binary(LeaderNode, utf8)},
+                  up_of(Info)}};
         {ok, Info, _} ->
-            Members = [{atom_to_binary(N, utf8), voter_of(V)}
-                       || {{_, N}, V} <- maps:to_list(Info)],
-            {ok, {lists:sort(Members), none}};
+            {ok, {members_of(Info), none, up_of(Info)}};
         {timeout, _} -> {error, no_quorum};
         {error, timeout} -> {error, no_quorum};
         _ -> {error, not_running}
     end.
 
+members_of(Info) ->
+    lists:sort([{atom_to_binary(N, utf8), voter_of(V)}
+                || {{_, N}, V} <- maps:to_list(Info)]).
+
+up_of(Info) ->
+    lists:sort([atom_to_binary(N, utf8)
+                || {{_, N}, #{status := normal}} <- maps:to_list(Info)]).
+
 voter_of(#{voter_status := #{membership := voter}}) -> voter;
+voter_of(#{voter_status := #{membership := promotable}}) -> promoting;
 voter_of(#{voter_status := _}) -> non_voter;
 voter_of(_) -> voter.
 

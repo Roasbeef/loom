@@ -50,6 +50,7 @@
 import client/daemon/manager
 import client/orchestrators.{type Orchestrator}
 import client/remote/orchestrator_port.{type Ownership}
+import client/roster.{type Roster}
 import client/session_mover.{
   type Environment, Aborted, Deferred, Finished, Stalled,
 }
@@ -77,7 +78,7 @@ pub type Control {
   Control(
     /// The orchestrators this daemon lists. A move to any other name is refused
     /// before the registry is asked.
-    orchestrators: List(Orchestrator),
+    orchestrators: Roster(Orchestrator),
     /// Tells the movers that a move began, and returns at once. The move is
     /// already `moving` in the catalogue when this is called.
     begin: fn(catalogue.Pending) -> Nil,
@@ -182,11 +183,11 @@ pub fn no_upkeep() -> Upkeep {
 /// ## Examples
 ///
 /// ```gleam
-/// assert session_movers.idle().orchestrators == []
+/// assert roster.rows(session_movers.idle().orchestrators) == []
 /// ```
 pub fn idle() -> Control {
   Control(
-    orchestrators: [],
+    orchestrators: roster.fixed([]),
     begin: fn(_move) { Nil },
     holds: fn(_orchestrator, _session) { Error(Nil) },
     abandon: fn(_session) { Nil },
@@ -400,7 +401,10 @@ fn overdue(state: State(instance), entry: Entry, now: Int) -> Bool {
       now - since >= state.give_up_after_ms
       && {
         case
-          orchestrators.find(state.environment.orchestrators, entry.move.to)
+          orchestrators.find(
+            roster.rows(state.environment.orchestrators),
+            entry.move.to,
+          )
         {
           Ok(receiver) -> ownership.migrated(receiver.node) == Ok(True)
           Error(Nil) -> False

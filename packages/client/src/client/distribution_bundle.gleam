@@ -651,10 +651,19 @@ fn node_of(bundle: Bundle) -> distribution_plan.Node {
 // A bundle's directory is the `[directory] members` it will write, so it must
 // pass the daemon's own rules: this node among them, every other one a peer,
 // three to seven names, each once.
+//
+// A ledger bundle lists none. Its ledger gives each member a directory standing,
+// and the daemon derives the members from it, so a list beside the ledger would
+// be a second source that could disagree.
 fn valid_directory(bundle: Bundle, peers: List(String)) -> Result(Nil, String) {
-  case bundle.directory {
-    [] -> Ok(Nil)
-    members -> {
+  case bundle.trust, bundle.directory {
+    _, [] -> Ok(Nil)
+    SignedLedger(_), [_, ..] ->
+      Error(
+        "a ledger bundle cannot list the directory's members: its ledger "
+        <> "gives each member a directory standing",
+      )
+    StaticPeers(_), members -> {
       let count = list.length(members)
       use Nil <- result.try(case count >= 3 && count <= 7 {
         True -> Ok(Nil)

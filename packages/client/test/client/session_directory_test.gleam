@@ -7,6 +7,7 @@ import client/directory/record
 import client/directory/store
 import client/orchestrators.{type Orchestrator}
 import client/remote/orchestrator_port.{Moved, NotOwned, Owned}
+import client/roster
 import client/session_directory.{Elsewhere, Here, Unknown, Unreachable}
 import client/session_move
 import core/json
@@ -102,7 +103,7 @@ pub fn a_daemon_that_lists_no_orchestrator_asks_nobody_test() {
   let sent = process.new_subject()
   let directory =
     session_directory.peers(
-      [],
+      roster.fixed([]),
       fn(_id) { Ok(NotOwned) },
       recording(sent, fn(_) { Ok(Owned) }),
     )
@@ -115,7 +116,7 @@ pub fn a_session_the_local_catalogue_holds_is_here_and_asks_nobody_test() {
   let sent = process.new_subject()
   let directory =
     session_directory.peers(
-      [beta(), gamma()],
+      roster.fixed([beta(), gamma()]),
       fn(_id) { Ok(Owned) },
       recording(sent, fn(_) { Ok(Owned) }),
     )
@@ -127,7 +128,7 @@ pub fn a_local_miss_asks_every_orchestrator_and_names_the_holder_test() {
   let sent = process.new_subject()
   let directory =
     session_directory.peers(
-      [beta(), gamma()],
+      roster.fixed([beta(), gamma()]),
       fn(_id) { Ok(NotOwned) },
       recording(sent, fn(orchestrator) {
         case orchestrator.name {
@@ -144,7 +145,7 @@ pub fn a_local_catalogue_that_cannot_answer_still_asks_the_peers_test() {
   let sent = process.new_subject()
   let directory =
     session_directory.peers(
-      [beta()],
+      roster.fixed([beta()]),
       fn(_id) { Error(Nil) },
       recording(sent, fn(_) { Ok(Owned) }),
     )
@@ -156,7 +157,7 @@ pub fn every_peer_saying_not_held_is_unknown_and_a_silent_one_is_unreachable_tes
     answer: fn(Orchestrator) -> Result(orchestrator_port.Ownership, Nil),
   ) {
     session_directory.peers(
-      [beta(), gamma()],
+      roster.fixed([beta(), gamma()]),
       fn(_id) { Ok(NotOwned) },
       fn(orchestrator, _session) { answer(orchestrator) },
     )
@@ -176,7 +177,7 @@ pub fn the_peers_are_asked_at_once_test() {
   // two: the lookup waits for the slowest peer and not for the sum.
   let directory =
     session_directory.peers(
-      [beta(), gamma()],
+      roster.fixed([beta(), gamma()]),
       fn(_id) { Ok(NotOwned) },
       fn(_orchestrator, _session) {
         process.sleep(500)
@@ -191,7 +192,7 @@ pub fn the_peers_are_asked_at_once_test() {
 pub fn a_peer_that_outlasts_the_deadline_is_silent_and_does_not_hold_the_lookup_test() {
   let directory =
     session_directory.peers(
-      [beta(), gamma()],
+      roster.fixed([beta(), gamma()]),
       fn(_id) { Ok(NotOwned) },
       fn(orchestrator, _session) {
         case orchestrator.name {
@@ -213,7 +214,7 @@ pub fn a_peer_that_outlasts_the_deadline_is_silent_and_does_not_hold_the_lookup_
 pub fn a_question_that_crashes_is_silence_not_a_negative_test() {
   let directory =
     session_directory.peers(
-      [beta()],
+      roster.fixed([beta()]),
       fn(_id) { Ok(NotOwned) },
       fn(_orchestrator, _session) { panic as "the question crashed" },
     )
@@ -226,7 +227,7 @@ pub fn a_tombstone_in_the_local_catalogue_names_the_new_owner_and_asks_nobody_te
   let sent = process.new_subject()
   let directory =
     session_directory.peers(
-      [beta(), gamma()],
+      roster.fixed([beta(), gamma()]),
       fn(_id) { Ok(orchestrator_port.Moved(to: "gamma")) },
       recording(sent, fn(_) { Ok(Owned) }),
     )
@@ -240,7 +241,7 @@ pub fn a_tombstone_in_the_local_catalogue_names_the_new_owner_and_asks_nobody_te
 pub fn a_tombstone_naming_an_orchestrator_no_longer_listed_still_redirects_test() {
   let directory =
     session_directory.peers(
-      [beta()],
+      roster.fixed([beta()]),
       fn(_id) { Ok(orchestrator_port.Moved(to: "retired")) },
       fn(_, _) { Ok(Owned) },
     )
@@ -277,9 +278,11 @@ pub fn a_holder_outweighs_a_tombstone_that_points_elsewhere_test() {
 pub fn a_directory_describes_nothing_until_it_is_given_the_question_test() {
   let unreachable = Error("owner unreachable")
   let plain =
-    session_directory.peers([beta()], fn(_) { Ok(NotOwned) }, fn(_, _) {
-      Ok(NotOwned)
-    })
+    session_directory.peers(
+      roster.fixed([beta()]),
+      fn(_) { Ok(NotOwned) },
+      fn(_, _) { Ok(NotOwned) },
+    )
   assert plain.describe(beta(), id) == unreachable
   assert session_directory.none().describe(beta(), id) == unreachable
   let asking =
@@ -312,9 +315,11 @@ pub fn a_directory_activates_nothing_until_it_is_given_the_question_test() {
       ),
     )
   let plain =
-    session_directory.peers([beta()], fn(_) { Ok(NotOwned) }, fn(_, _) {
-      Ok(NotOwned)
-    })
+    session_directory.peers(
+      roster.fixed([beta()]),
+      fn(_) { Ok(NotOwned) },
+      fn(_, _) { Ok(NotOwned) },
+    )
   assert plain.activate(beta(), activation) == Error(Nil)
   assert session_directory.none().activate(beta(), activation) == Error(Nil)
   let asking =
@@ -344,7 +349,7 @@ fn holding(
   answer: Result(option.Option(record.Record), store.Unavailable),
 ) -> session_directory.Directory {
   session_directory.khepri(
-    [beta()],
+    roster.fixed([beta()]),
     "alpha@10.0.0.1",
     fn(_session) { held },
     fn(_session) { answer },

@@ -1,7 +1,7 @@
 # protocol-change/086: a signed membership ledger for distribution
 
-**Status**: PROPOSED 2026-10-11. Nothing here is built, and every spelling is
-provisional until phase 1 lands.
+**Status**: PROPOSED 2026-10-11. Phases 0, 1, 2 and 3 are built (2026-10-12) and
+their spellings are those of the code.
 **Affects**: the `[distribution]` table of `loom.toml` (one new key, `ledger`,
 exclusive with `[[distribution.peers]]`), the text of the TLS options file and
 the semantics of the `OptionsMismatch` boot check in ledger mode, the TLS
@@ -11,14 +11,17 @@ vocabulary for distribution (three new faults), the bundle format (a new
 marker, `loom-distribution-bundle/2`; `/1` is unchanged), a new durable file
 format (`loom-membership-ledger/1`), a new registered process and closed
 message type on every node with a ledger (`loom_ledger`), the client control
-protocol (Part 1.6: three new owner-only commands, `ledger.append`,
-`ledger.entries` and `ledger.status`), the operator command `loom distribution` (five commands
-added; `provision` writes a ledger), the node-name atom rule, and, in later
-phases, the reference checks of `[executors.<name>]`,
-`[orchestrators.<name>]` and `[directory] members`. `protocol.version`, the
-executor host's `HostMessage`, `OwnerMessage`, the orchestrator port's
-`Message`, the catalogue schema, the execution ledger, the helper wire and
-`system.json` (`loom-distribution-system/1`) do not change.
+protocol (Part 1.6: owner-only commands `ledger.append`, `ledger.entries` and
+`ledger.status`, and from phase 2 `ledger.holdings`; `deployment.status` gains an
+optional `ledger` member), the operator command `loom distribution` (five commands
+added; `provision` writes a ledger), the node-name atom rule, from phase 2 the
+`[executors.<name>]` and `[orchestrators.<name>]` rows of an orchestrator (derived
+from the ledger) and the executor names of pools and spawners, from phase 2 the
+orchestrator port (one new constructor, `Holds`), and, in phase 3, `[directory]
+members` and the `directory` row of `loom_dist_pins`. `protocol.version`, the executor host's `HostMessage`, `OwnerMessage`,
+the rest of the orchestrator port's `Message`, the catalogue schema, the execution
+ledger, the helper wire and `system.json` (`loom-distribution-system/1`) do not
+change.
 **Raised by**: the owner's request of 2026-10-11 to add and remove nodes of a
 distributed deployment without reprovisioning every node, driven by laptops
 that come and go as spawners for remote subagents
@@ -343,7 +346,8 @@ constructor sent to an older node halts it; both ends are upgraded together, and
 
 ### Control commands
 
-All three are owner-only commands of the client control protocol, Part 1.6.
+These are owner-only commands of the client control protocol, Part 1.6. The first
+three are phase 1 and the fourth is phase 2.
 
 **`ledger.append`** takes `{"lines": ["<line>", ...]}`, at most 64 lines of at most
 8 KiB each and at most 48,000 bytes in all (a frame is 64 KiB), and passes them
@@ -386,9 +390,28 @@ uses it to fetch entries its own copy lacks before it signs.
 that has not reported. `ms_since_report` is the answering node's own elapsed time
 and no clock value is exchanged. `last_refusal` is `null` or
 `{"seq": 7, "step": "fork", "ours": "<hex>", "theirs": "<hex>"}`, where `ours` and
-`theirs` appear only for a fork. If protocol-change/085 lands, its `NodeReport`
-gains an optional `ledger` member holding `head` and `state`, and `ledger.status`
-remains the detailed read.
+`theirs` appear only for a fork. The whole-deployment `deployment.status` of
+protocol-change/085 carries this same body as its optional `ledger` member (phase 2).
+
+**`ledger.holdings`** (phase 2) takes no arguments and replies with one entry for
+each orchestrator the daemon asked, which are the orchestrators in its pin table and
+the daemon itself if it is one:
+
+```json
+{"orchestrators": [
+   {"name": "hub", "node": "hub@10.0.0.1", "sessions": 3,
+    "placed": [{"node": "box@10.0.0.2", "sessions": 2}]},
+   {"name": "laptop2", "node": "loom@laptop2.example.net"}]}
+```
+
+An entry without `sessions` is an orchestrator that did not answer, and a client
+reads it as unknown. `placed` is bounded to 64 entries, and an orchestrator with
+sessions on more executors than that is unknown, not truncated: a list missing an
+executor would read as none placed there. The same holds for a catalogue longer than
+20,000 sessions. The daemon asks all of them at once and replies within four seconds,
+inside the five seconds the control client waits for any reply, so that an
+orchestrator that does not answer reads as silent and not as a daemon that could not
+be asked. The operator's `revoke` is the client.
 
 ### Configuration
 
@@ -410,7 +433,7 @@ ledger process, which creates the table, and only then calls `distribution.start
 ledger). It returns a `Membership` that resolves a peer name against the published
 table, which lists the active members this node is linked to. A node whose
 `distribution.node` is not an active member of the ledger is refused at start with
-a sentence, and `[directory]` is refused beside a ledger until phase 3. The authority certificate named in the genesis
+a sentence, and `[directory]` is refused beside a ledger (phase 3: the directory's members are the ledger's, see below). The authority certificate named in the genesis
 `authority` key MUST be the certificate in `ca`; a mismatch is `InvalidLedger`.
 `docs/configuration.md` gains a row for the key, as `make doc-check` requires.
 
@@ -452,8 +475,9 @@ until it syncs. A `/1` bundle installs as before, and a `/2` bundle's tables are
 merged by the same rules. The ledger file is compared as a chain, not as a file:
 a file the bundle's ledger extends is replaced, a file that extends the bundle's
 ledger is kept, and two that diverge are refused unless `--force`. A `/2` bundle
-that puts its node in the session directory is refused before anything is written,
-until phase 3.
+lists no directory members: its ledger gives each member a `directory` standing, a
+bundle that names a `directory` beside its ledger is refused by `decode`, and the
+configuration `install` writes has no `[directory]` table (phase 3).
 
 ### Operator commands
 
@@ -466,15 +490,16 @@ passphrase, the operator's copy of the ledger and the deployment's cookie, to
 `--drop-authority` is given, in which case the ledger can never be extended. The
 cookie is kept so that the bundle of a node enrolled later carries the same one;
 it is no more exposed than in the bundles `provision` wrote on the same machine. A
-plan with a session directory is refused without `--static` until phase 3. It reads the passphrase from a
+plan with a session directory is provisioned like any other: its directory members
+become voters in the ledger (phase 3). It reads the passphrase from a
 terminal prompt or `--passphrase-file`, and prints neither. The encryption is
 PBKDF2-HMAC-SHA256 with at least 600,000 iterations and a random salt, and
 AES-256-GCM, both from OTP `crypto`.
 
 | Command | Effect |
 |---|---|
-| `enroll NAME --node N --role R [--directory D] [--host H] [--port P] [--links A,B] [--workspace NAME=ROOT]... [--bundle-dir DIR] [--out DIR] [--force] [--wait S]` | Validates the fold, mints a certificate for `N`, signs and appends a `member` entry, hands it to the daemon, writes `NAME.loombundle` (`/2`), and prints confirmations after at most `S` seconds (default 10). Until phase 3 it refuses a `--directory` other than `none`. It refuses an executor with no `--links`, which could not be reached and cannot be linked later without a revoke. An existing bundle file is not replaced without `--force`. If the bundle cannot be written, the entry is already in the operator's copy, and the error says to run `renew NAME`. |
-| `revoke NAME [--reason TEXT] [--force] [--wait S]` | Checks that the link graph stays connected and that no executor loses its last orchestrator; signs and appends a `revoke`; prints confirmations. The check that the member owns no sessions or scopes is phase 2, because no daemon can ask another what it owns; the output says it was not made. From phase 3 it also checks that the voter count stays within protocol-change/083's bounds. `--force` skips the checks. |
+| `enroll NAME --node N --role R [--directory D] [--host H] [--port P] [--links A,B] [--workspace NAME=ROOT]... [--bundle-dir DIR] [--out DIR] [--force] [--wait S]` | Validates the fold, mints a certificate for `N`, signs and appends a `member` entry, hands it to the daemon, writes `NAME.loombundle` (`/2`), and prints confirmations after at most `S` seconds (default 10). `--directory` is `voter`, `learner` or `none` (the default). A `voter` that would make the eighth is refused, because 083 bounds the directory at seven voters (phase 3). It refuses an executor with no `--links`, which could not be reached and cannot be linked later without a revoke. An existing bundle file is not replaced without `--force`. If the bundle cannot be written, the entry is already in the operator's copy, and the error says to run `renew NAME`. |
+| `revoke NAME [--reason TEXT] [--force] [--wait S]` | Checks that the link graph stays connected and that no executor loses its last orchestrator, that the revoke strands no sessions (phase 2, below), and that it leaves the directory at least three voters, the lower bound of protocol-change/083 (a learner is not counted; phase 3). The three checks are reported together when more than one fails. Signs and appends a `revoke`; prints confirmations. `--force` skips all three checks, and the output says so. |
 | `renew NAME [--bundle-dir DIR] [--out DIR] [--force] [--wait S]` | Mints a new certificate for an existing member, signs a `member` entry with the new pin, and writes a new bundle. The ledger does not record where a node was installed, so `--bundle-dir` names the directory the node was enrolled with, and the bundle then installs over its credentials in place. The node installs the bundle and restarts. Connections that exist to the renewed member are dropped when the entry is applied, since the old certificate may be the reason for the renewal; until the restart, the node's new handshakes are refused. |
 | `log [--json]` | Prints the entries with their identities, the last refusal if there is one, and the members' reported heads when a daemon answers. |
 | `import FILE` | Client-side. Reads a ledger file and feeds its lines to the local daemon's `ledger.append` in pages of 64. It adds no second way for a node to adopt entries. |
@@ -501,6 +526,71 @@ member's ledger file over `~/.loom/authority/<deployment id>/ledger.log`. The
 signing commands refuse to run against a copy that disagrees with the daemon, and
 the member's file is a ledger that every other member also holds.
 
+### Phase 2: derived rows, the revoke check and the head in `deployment.status`
+
+**Derived rows.** An orchestrator that runs from a ledger derives `[executors.<name>]`
+and `[orchestrators.<name>]` rows from it, as section 12 of the design note
+recommends, so that enrolling an executor makes it nameable in `sessions.create`
+with no edit to the orchestrator's file. The rows are the members of the node's pin
+table, one for each executor member and one for each orchestrator member, named as
+the ledger names them, with the member's node. A derived row carries only what the
+ledger carries: it declares no `platform`, `enforcement` or `toolchains` and has no
+`address`, and pool membership is not in the ledger. A node that is not an active
+orchestrator derives nothing. A node whose entry gives it a directory standing
+derives only the orchestrators that have one too (protocol-change/083's rule for
+member daemons). `[spawners.<name>]` is never derived, because letting a machine
+start subagents is a policy the ledger does not carry.
+
+A row the operator wrote claims its name and its node. A derived row is dropped when
+a written row has the same name, so a written row overrides it and adds the address
+and the declarations, or the same node under another name, so one machine is not
+listed twice and the orchestrators' unique-node rule holds. The combined list is
+sorted by name. The rows are read when they are needed and not once at start, so a
+member enrolled or revoked while the daemon runs is seen by its next decision, with
+no restart; a session that is already open keeps the rows it was assembled with. A
+ledger process that does not answer leaves only the written rows.
+
+In ledger mode a pool's `executors` and a spawner's `executor` may name an executor
+that no table defines. Parsing checks the name's grammar, and the daemon compares
+the name with the ledger once, at start, as it does a node: a name no row and no
+entry ever gave, or one the ledger enrolled as an orchestrator, refuses the start,
+and a name whose member was revoked, or that this node is not linked to, is logged as
+`daemon.ledger_name_inert` and skipped. Static mode is as strict as before.
+
+**The revoke check.** `revoke` asks what the revoke would strand before it signs. The
+ledger never vetoes, since nothing in a log fold can see a session and a veto at
+apply time would give two nodes different tables from one log. The tool asks the
+daemon it talks to for a new owner-only control command, `ledger.holdings`, which
+asks each orchestrator in the daemon's pin table, and the daemon itself if it is
+one, one question over the orchestrator port. `orchestrator_port.Message` gains
+`Holds(reply)`, answered with `Held(sessions, placed)`: the active registrations of
+the answering catalogue whose custody is not `moved`, and how many of them are
+placed on each executor listed by the answerer, by the executor's node (at most 64).
+It is the subset of protocol-change/085's `Report` that the check needs, and runs
+apart from the port because it walks the catalogue. A catalogue that cannot be read
+sends no answer. The question reveals two counts and executor nodes to a pinned peer,
+and no session identity.
+
+The tool reads the answers with a total decoder. Revoking an orchestrator is refused
+when its own answer reports sessions. Revoking an executor is refused when the
+orchestrators linked to it report sessions placed on its node, which is the
+executor's scopes as its users know them, and which still works when the executor is
+the machine that is gone. An orchestrator that was asked and did not answer, one the
+daemon could not ask, and a daemon that could not be asked at all are unknown and
+refuse the revoke like a positive count, so the revoke of a laptop that is off needs
+`--force`. The refusal lists the link-graph concerns, the sessions and, from phase 3, a
+voter count below three together, and signs nothing. The output of a revoke that passes says what was checked, and one
+forced past the checks says that nothing was. The answers are a moment in time: a
+session created between the holdings reply and the revoke reaching the daemons is not
+caught. That is accepted, since the revoke is reversible and deletes no session.
+
+**The head in `deployment.status`.** A whole-deployment `deployment.status` of a
+daemon that runs from a ledger gains an optional `ledger` member holding the body of
+`ledger.status`: the head, the daemon's standing, each active member with the head it
+last reported to this daemon and its age, and the last refused line. It is absent
+when the request names a node, when the daemon has no ledger, and when the ledger does
+not answer. `loom deployment status` draws it.
+
 ### Phase 3: the directory
 
 A deployment has two member lists. The ledger's lists every trusted node with its
@@ -509,20 +599,66 @@ replicate the session directory. The ledger owns the first, Ra follows it, and a
 trust change never waits for a quorum. Storing the ledger in Khepri would make it
 wait, because a majority loss would stop the entries that restore trust.
 
-When a member daemon has a `ledger`, `[directory] members` is derived from the
-members whose `directory` is not `none`, and a document with both is refused.
-Before phase 3 there is one voter list, the configured `members`, and `enroll`
-refuses a `directory` other than `none`, so the ledger is never a second source.
+When a daemon has a `ledger`, the directory's members are derived from it: the
+active members whose `directory` is `voter` or `learner`. A node is a member when
+its own entry says so. There is no `[directory]` table beside a ledger: a document
+with both is refused, so the ledger is never a second source. The counts are not a
+rule of the ledger, which records what the operator signed. `enroll` refuses a
+voter that would make the eighth, `revoke` refuses to leave fewer than three
+voters unless `--force`, and the daemon logs a count outside three to seven or an
+even one.
 
-A reconciler runs on the Ra leader only; `ra:members` names the leader, and a node
-that is not the leader does nothing. It compares the derived voters and learners
-with Ra's membership and issues one change at a time: a missing `voter` is added with
-membership `promotable` (as in 083), a missing `learner` is added with membership
-`non_voter`, and a Ra member that the ledger does not name is removed with
-`ra:remove_member`. It recomputes the difference after each change and after each
-leader change. The learner form relies on Ra 3.2.0's `non_voter` membership, which
-is excluded from the quorum count and never promoted; it is verified through
-Khepri's read paths in phase 0.
+A node starts visible, as a directory member must, when its entry seats it. The
+ledger process publishes, beside the pin table, the nodes this node is linked to
+whose own standing is not `none`, and the connection helper reads that row on
+every connect to choose a visible or a hidden connection. A node outside the
+directory publishes an empty row.
+
+**Who adds, who removes.** A member adds itself. Ra needs the new server running,
+with the UId it will be recorded under, before the cluster can reach it, and only
+the new node can start that server. So a seated node joins on its own, through the
+first member whose store answers: a `voter` as `promotable`, as in 083, waiting for
+Ra to promote it, and a `learner` as `non_voter`, waiting until its server has
+heard from the leader, lists itself in its own configuration and has applied what
+the cluster had committed. The first draft of this section had the leader add
+members; it cannot.
+
+A reconciler runs on the Ra leader only, from the member actor's two-second tick.
+The member that `ra:members_info` names as leader does the work, and a node that
+is not the leader does nothing, so a leader change needs no event: the new leader makes the
+same comparison at its next tick. It compares the ledger's seats with Ra's
+membership and issues at most one removal at a time with `ra:remove_member`:
+
+- A Ra member the ledger names but seats nowhere (revoked, or standing `none`) is
+  removed, and so is one seated in the other seat. Ra never stops a server it
+  removes, so the removed node finds out by asking: a node the ledger seats whose
+  own server cannot say what the cluster holds, or does not list the node, asks a
+  seated peer, whose server forwards `ra:members_info` to the leader. When a leader
+  answers and its membership does not list the node, the node logs
+  `daemon.directory_not_a_member`, deletes its `joined` marker and then its local
+  server, and joins again in the seat its entry gives it, which is also what a
+  revoked node enrolled again on the same disk does. A timeout, a missing leader
+  and a node the ledger does not seat reset nothing, and the reset never creates a
+  store. `directory.status` reports `joined: false` until the join ends. A member
+  Ra is promoting counts as a voter.
+- A Ra member the ledger has never named is left alone and reported. On a leader
+  whose ledger is behind it may be a member enrolled a moment ago, and removing it
+  could take a member out of a cluster it belongs in.
+- A voter is removed only while a majority of the voters that remain is replicating
+  the leader's log (Ra's own status for each member in `members_info`, not whether
+  the node is connected), because Ra applies the new configuration at once and the
+  change commits only with that majority. Otherwise the leader holds, logs it once, and
+  asks again at the next tick. The floor of three voters is the operator's command,
+  not the reconciler's.
+- A leader the ledger does not seat does nothing, and no leader removes itself.
+
+The learner form relies on Ra 3.2.0's `non_voter` membership, which is excluded
+from the quorum count and never promoted; phase 0 verified it through Khepri's read
+paths. One property of it is recorded here: a learner never campaigns, so a learner
+whose server has restarted learns who the leader is from the leader's next append.
+A join ends with such a restart, and a directory with no writes leaves the
+learner's own view of the cluster unanswered until one arrives. Its local reads are
+not affected.
 
 The order between the lists is fixed. An enroll puts the pin in the tables first,
 and the Ra add follows. A revoke cuts the pin and disconnects at once, and the Ra
@@ -548,9 +684,14 @@ member daemon is a member continues to hold.
 | Node-name atoms | Created once at start from the configured list | Also created when a verified `member` entry is applied, at most one per entry (10,000) |
 | `net_kernel:allow/1` | Called once | Called per enrolled name; never reduced |
 | Node vocabulary | `HostMessage`, `OwnerMessage`, orchestrator `Message` | Adds `loom_ledger` `Message` (`Head`, `Pull`); the others and `protocol.version` unchanged |
-| Control protocol, Part 1.6 | | Adds owner-only `ledger.append`, `ledger.entries` and `ledger.status`, and the refusal `ledger_invalid` |
+| Control protocol, Part 1.6 | | Adds owner-only `ledger.append`, `ledger.entries`, `ledger.status` and (phase 2) `ledger.holdings`, and the refusal `ledger_invalid`; `deployment.status` gains an optional `ledger` member |
+| Orchestrator port `Message` | `Owns`, `PeerCommand`, `Describe`, `Import`, `ImportStatus`, `Activate`, `Spawn`, `Join`, `RunEnded` | Adds (phase 2) `Holds`, answered with `Held`; peers upgrade together, as for every constructor of the port |
 | Operator commands | `init`, `provision`, `show`, `install`, `options` | Adds `enroll`, `revoke`, `renew`, `log`, `import`; `provision` writes a ledger |
-| Reference checks (phase 2, 3) | Against `[[distribution.peers]]` | Against ledger members; `[directory] members` derived in phase 3 |
+| `[executors.<name>]`, `[orchestrators.<name>]` | Written by the operator | Also derived from the ledger for an orchestrator (phase 2); a written row of the same name or node replaces the derived one |
+| Pool and spawner executor names | Must be written `[executors.<name>]` rows | In ledger mode may be ledger names, compared with the ledger at start (phase 2) |
+| Reference checks (phase 2, 3) | Against `[[distribution.peers]]` | Against ledger members; `[directory]` is absent beside a ledger and its members are the ledger's seated members (phase 3) |
+| Directory join | A promotable non-voter, promoted by Ra | The seat the ledger gives: promotable for a voter, `non_voter` for a learner (phase 3) |
+| `loom_dist_pins` | One row, `pins` | A second row, `directory`: the linked members the node connects to visibly (phase 3) |
 
 No existing wire message, durable table or helper frame changes.
 
@@ -603,11 +744,13 @@ No existing wire message, durable table or helper frame changes.
    through Khepri.
 1. The ledger, live pins, `provision`, `enroll`, `revoke`, `renew`, `log`, `import`,
    bundle `/2`, anti-entropy and the three control commands.
-2. Derived `[executors]` and `[orchestrators]` rows, the revoke checks, and the
-   head in `deployment.status`.
+2. Derived `[executors]` and `[orchestrators]` rows, the revoke checks (the link
+   graph, and the sessions the orchestrator port reports), and the head in
+   `deployment.status`. Built; the design note's "Phase 2" section records how
+   it differs from the sketch.
 3. The directory alone: the Ra leader's reconciler, the `directory` standing,
    `[directory] members` derived from the ledger, and `enroll` accepting a
-   `--directory` other than `none`.
+   `--directory` other than `none`. Built.
 
 Not built by this proposal: pin-rooted TLS and a `rekey` entry (a later note),
 retiring static mode, cookie rotation, a signed checkpoint that compacts the log, a

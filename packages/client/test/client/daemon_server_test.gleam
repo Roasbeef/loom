@@ -16,6 +16,7 @@ import client/ledger_control
 import client/peer_mail
 import client/peers
 import client/pools
+import client/roster
 import client/session_directory
 import client/session_movers
 import core/clock
@@ -230,7 +231,9 @@ pub fn fixture_with_ledger(
       peer_endpoint:,
       daemon:,
       domain_configuration: "",
-      executors: [executors.plain("build-box", "executor@10.0.0.2")],
+      executors: roster.fixed([
+        executors.plain("build-box", "executor@10.0.0.2"),
+      ]),
       pools: [
         pools.Pool(
           name: "builders",
@@ -2040,7 +2043,7 @@ pub fn a_homes_activity_read_is_a_state_word_for_each_held_answer_test() {
           peer_endpoint: endpoint,
           daemon:,
           domain_configuration: "",
-          executors: [],
+          executors: roster.fixed([]),
           pools: [],
           directory: session_directory.none(),
           movers: session_movers.idle(),

@@ -16,6 +16,13 @@
 //// 4. Hand the daemon every line it lacks, then poll its status for a bounded
 ////    time and print which members hold the new head.
 ////
+//// `revoke` adds checks to step 3. Before it signs, it checks the link graph,
+//// asks the daemon what the orchestrators hold (`ledger.holdings`), and counts
+//// the session directory's voters. It refuses when the revoke would break the
+//// link graph, while the member owns sessions or has sessions placed on it (or
+//// when that cannot be told), or when it would leave fewer than three directory
+//// voters, unless `--force` (`checked_revoke`).
+////
 //// Membership changes are eventual. A member that is off learns an entry when it
 //// next connects to one that has it, so the command does not wait for it: it
 //// prints who confirmed and who is still pending and returns. A command with no
@@ -472,7 +479,7 @@ fn sign(
   connect: Connect,
   decide: fn(Ledger) -> Result(Decision(a), String),
   before_send: fn(Signed, a) -> Result(Nil, String),
-) -> Result(Signed, String) {
+) -> Result(#(Signed, a), String) {
   let lock_path = authority.directory <> "/ledger.lock"
   use lock <- result.try(
     bootstrap.try_launch_lock(lock_path)
@@ -491,7 +498,7 @@ fn signed_under_lock(
   connect: Connect,
   decide: fn(Ledger) -> Result(Decision(a), String),
   before_send: fn(Signed, a) -> Result(Nil, String),
-) -> Result(Signed, String) {
+) -> Result(#(Signed, a), String) {
   let path = authority.directory <> "/" <> authority_key.ledger_file
   use opened <- result.try(
     membership_store.open(path, authority.verifier)
@@ -548,7 +555,7 @@ fn signed_under_lock(
   )
   let result = Signed(entry: signed, ledger: next, store:, delivery:)
   use Nil <- result.try(before_send(result, extra))
-  hand_over(result)
+  hand_over(result) |> result.map(fn(handed) { #(handed, extra) })
 }
 
 // Gives the daemon every line it lacks. A daemon that refuses leaves the entry
@@ -656,7 +663,7 @@ fn enroll(parsed: Parsed, connect: Connect) -> Result(String, String) {
   use Nil <- result.try(refuse_existing(bundle_path, overwrite_of(parsed)))
   use authority <- result.try(unlock(parsed))
   let time = now()
-  use signed <- result.try(
+  use #(signed, _) <- result.try(
     sign(
       authority,
       where_,
@@ -717,13 +724,11 @@ fn enrollment_of(parsed: Parsed, name: String) -> Result(Enrollment, String) {
     required(parsed, "--role")
     |> result.try(distribution_plan.role_from_word),
   )
-  use Nil <- result.try(case value(parsed, "--directory") {
-    None | Some("none") -> Ok(Nil)
-    Some(_) ->
-      Error(
-        "--directory must be none: the session directory cannot follow a "
-        <> "membership ledger yet",
-      )
+  use directory <- result.try(case value(parsed, "--directory") {
+    None | Some("none") -> Ok(membership_entry.NotInDirectory)
+    Some("voter") -> Ok(membership_entry.Voter)
+    Some("learner") -> Ok(membership_entry.Learner)
+    Some(_) -> Error("--directory takes voter, learner or none")
   })
   use listen_port <- result.try(case value(parsed, "--port") {
     None -> Ok(None)
@@ -749,6 +754,7 @@ fn enrollment_of(parsed: Parsed, name: String) -> Result(Enrollment, String) {
         |> list.map(string.trim)
         |> list.filter(fn(link) { link != "" })
     },
+    directory:,
     workspaces:,
     bundle_dir: value(parsed, "--bundle-dir"),
   ))
@@ -915,7 +921,7 @@ fn renew(parsed: Parsed, connect: Connect) -> Result(String, String) {
   use Nil <- result.try(refuse_existing(bundle_path, overwrite_of(parsed)))
   use authority <- result.try(unlock(parsed))
   let time = now()
-  use signed <- result.try(
+  use #(signed, _) <- result.try(
     sign(
       authority,
       where_,
@@ -995,7 +1001,8 @@ fn revoke(parsed: Parsed, connect: Connect) -> Result(String, String) {
   use authority <- result.try(unlock(parsed))
   let reason = option.unwrap(value(parsed, "--reason"), "")
   let time = now()
-  use signed <- result.try(
+  let daemon = connect(where_)
+  use #(signed, checked) <- result.try(
     sign(
       authority,
       where_,
@@ -1011,25 +1018,11 @@ fn revoke(parsed: Parsed, connect: Connect) -> Result(String, String) {
           membership_ledger.check(ledger, entry)
           |> result.map_error(ledger_operator.describe),
         )
-        use Nil <- result.map(
-          case ledger_operator.concerns(ledger, after), has(parsed, "--force") {
-            [], _ | _, True -> Ok(Nil)
-            concerns, False ->
-              Error(
-                "revoking "
-                <> name
-                <> " would break the link graph:\n"
-                <> string.join(
-                  list.map(concerns, fn(concern) {
-                    "  " <> ledger_operator.describe_concern(concern)
-                  }),
-                  "\n",
-                )
-                <> "\nNothing was signed. Pass --force to revoke anyway.",
-              )
-          },
-        )
-        Decision(entry:, extra: Nil)
+        use checked <- result.map(case has(parsed, "--force") {
+          True -> Ok(unchecked_text(name))
+          False -> checked_revoke(ledger, after, name, daemon)
+        })
+        Decision(entry:, extra: checked)
       },
       fn(_, _) { Ok(Nil) },
     ),
@@ -1041,15 +1034,98 @@ fn revoke(parsed: Parsed, connect: Connect) -> Result(String, String) {
         <> name
         <> " as entry "
         <> int.to_string(signed.entry.entry.seq)
-        <> ". Not checked: whether "
-        <> name
-        <> " owns sessions or scopes; a daemon cannot ask another. Enrolling the "
-        <> "same name again restores access, and destroys nothing.",
+        <> ". "
+        <> checked
+        <> " Enrolling the same name again restores access, and destroys "
+        <> "nothing.",
       ],
       confirmations_text(signed, wait, []),
     ]),
     "\n",
   ))
+}
+
+// What a `revoke` that was not forced checks before it signs, and the sentence
+// that says it passed. Three things are checked, and all are reported together
+// when more than one fails, so one refusal tells the operator everything to
+// decide on: the link graph after the revoke, the sessions the revoke would
+// leave unreachable, which the daemon learns by asking the orchestrators it is
+// linked to, and the session directory's voters, which must not fall below
+// three. A daemon that cannot be asked, or an orchestrator that does not answer,
+// is unknown and not empty, so it refuses too.
+fn checked_revoke(
+  ledger: Ledger,
+  after: Ledger,
+  name: String,
+  daemon: Daemon,
+) -> Result(String, String) {
+  let links =
+    list.map(ledger_operator.concerns(ledger, after), fn(concern) {
+      ledger_operator.describe_concern(concern)
+    })
+  let strandings = case daemon.holdings() {
+    Ok(answers) -> ledger_operator.strandings(ledger, name, answers)
+    Error(reason) -> [ledger_operator.Unasked(reason)]
+  }
+  let stranded =
+    list.map(strandings, fn(stranding) {
+      ledger_operator.describe_stranding(name, stranding)
+    })
+  let voters = case ledger_operator.check_voters(ledger, after) {
+    Ok(Nil) -> []
+    Error(why) -> [why]
+  }
+  case links, stranded, voters {
+    [], [], [] ->
+      case membership_ledger.member(ledger, name) {
+        Ok(member) ->
+          Ok("Checked first: " <> ledger_operator.describe_clear(member))
+        Error(Nil) -> Ok("Checked first.")
+      }
+    _, _, _ ->
+      Error(string.join(
+        list.flatten([
+          refusal_section(name, "would break the link graph", links),
+          refusal_section(name, "may strand sessions", stranded),
+          refusal_section(name, "would leave too few directory voters", voters),
+          case voters {
+            [] -> []
+            _ -> [wedge_warning]
+          },
+          ["Nothing was signed. Pass --force to revoke anyway."],
+        ]),
+        "
+",
+      ))
+  }
+}
+
+fn refusal_section(
+  name: String,
+  heading: String,
+  lines: List(String),
+) -> List(String) {
+  case lines {
+    [] -> []
+    _ -> [
+      "revoking " <> name <> " " <> heading <> ":",
+      ..list.map(lines, fn(line) { "  " <> line })
+    ]
+  }
+}
+
+// What an operator forcing a revoke below three voters needs to know before
+// choosing which voter: with two voters, revoking the leader leaves a directory
+// that cannot elect, and revoking the follower does not. Giving the leader the
+// standing `none` by hand does the same, since the leader is then removed.
+const wedge_warning =
+  "With --force and two voters, revoke the follower and not the leader: revoking the leader (or giving it the standing `none` by hand) leaves a directory that cannot elect."
+
+// The sentence of a forced revoke: nothing was looked at.
+fn unchecked_text(name: String) -> String {
+  "Not checked (--force): the link graph, whether "
+  <> name
+  <> " owns sessions or has sessions placed on it, and the directory's voters."
 }
 
 // --- log ---------------------------------------------------------------------
@@ -1297,7 +1373,7 @@ fn import_file(parsed: Parsed, connect: Connect) -> Result(String, String) {
 
 // --- the socket --------------------------------------------------------------
 
-// The three ledger commands of the daemon at `where_`, each decoded.
+// The four ledger commands of the daemon at `where_`, each decoded.
 fn socket_daemon(where_: admin.Where) -> Daemon {
   Daemon(
     status: fn() {
@@ -1316,6 +1392,10 @@ fn socket_daemon(where_: admin.Where) -> Daemon {
         #("lines", json.Array(list.map(lines, json.String))),
       ])
       |> result.try(ledger_control.decode_applied)
+    },
+    holdings: fn() {
+      call(where_, "ledger.holdings", [])
+      |> result.try(ledger_control.decode_holdings)
     },
   )
 }

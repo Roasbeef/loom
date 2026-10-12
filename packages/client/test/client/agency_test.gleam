@@ -5455,6 +5455,7 @@ fn serving(harness: Harness) -> address.Address(orchestrator_port.Message) {
       daemon_main.spawn_host(configured, fn(_spawner, _parent) {
         Ok(agency.delegate_endpoint(harness.config))
       }),
+      orchestrator_port.unheld,
     )
     as "the port must start"
   address.Address(node: node.self(), name:)

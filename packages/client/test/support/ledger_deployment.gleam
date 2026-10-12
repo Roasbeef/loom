@@ -8,6 +8,7 @@
 
 import client/daemon/distribution_cli
 import client/ledger_control.{type Handle, Handle}
+import client/ledger_holdings
 import client/ledger_reference
 import client/ledger_service
 import client/ledger_sync.{type Daemon, Daemon}
@@ -178,7 +179,7 @@ pub fn serve(
       tick_ms: 3_600_000,
     )
   let assert Ok(service) = ledger_service.start(config)
-  Handle(service:, local: node, name:)
+  Handle(service:, local: node, name:, asker: ledger_holdings.silent)
 }
 
 /// The `Daemon` a command sees when it is pointed at `handle`: the three
@@ -200,6 +201,11 @@ pub fn daemon_over(handle: Handle) -> Daemon {
       |> result.map_error(describe)
       |> result.try(ledger_control.decode_applied)
     },
+    holdings: fn() {
+      ledger_control.holdings(handle)
+      |> result.map_error(describe)
+      |> result.try(ledger_control.decode_holdings)
+    },
   )
 }
 
@@ -217,6 +223,7 @@ pub fn nobody() -> Daemon {
     status: fn() { Error(refuse) },
     entries: fn(_, _) { Error(refuse) },
     append: fn(_) { Error(refuse) },
+    holdings: fn() { Error(refuse) },
   )
 }
 

@@ -195,8 +195,8 @@ deployment's membership cannot change.
 This prints each bundle's path, role and node name, and writes
 `out/system.json`, a description of the deployment with no secrets,
 `out/ledger.log`, the signed ledger, and one file per node,
-`out/<name>.loombundle`. A plan with a session directory (section 7) cannot use a
-ledger yet; `provision` says so and `--static` provisions it. `loom distribution show out` prints
+`out/<name>.loombundle`. A plan with a session directory (section 7) is provisioned
+the same way: its directory members become voters in the ledger. `loom distribution show out` prints
 `system.json` as a table of nodes, pins and peer edges. **A bundle contains that node's
 private key and the shared cookie.** Copy each bundle to its machine over a
 channel you trust and delete the copies you do not need. Do not commit bundles.
@@ -338,6 +338,22 @@ member while they ran; none restarts. A member that is off during an enrollment 
 a revoke learns the entry when it next connects to a node that has it, so the
 report is a status and not a wait.
 
+An orchestrator that is linked to the new member can use it at once, with no edit to
+its `loom.toml`. It lists every executor member it is linked to as an
+`[executors.<name>]` (using the name you gave to `enroll`) and every orchestrator
+member as an `[orchestrators.<name>]`, so `loom --executor box2 --workspace repo`
+works as soon as the entry has reached it, and stops working when the member is
+revoked. A table you write for the same name replaces the derived one, which is how
+you give an executor a `platform` or an orchestrator an `address`, and a pool still
+needs a line in the file because a pool is your policy; the
+[configuration reference](configuration.md#executors-that-come-from-the-ledger)
+has the rules (**Pending**: `ledger_operator_live_test` enrolls and revokes
+members on running emulators and reads the derived rows, and no run on two
+machines has repeated it). Read the same state from the orchestrator with
+`loom deployment status`: it prints the executors and orchestrators the daemon
+holds, and for a ledger deployment a `LEDGER` section with the head, which members
+have reported it and when, and the last line the daemon refused.
+
 Replace a certificate (`renew`), remove a node (`revoke`), read the ledger
 (`log`) and carry a ledger to a node nothing else reaches (`import`):
 
@@ -351,13 +367,24 @@ loom distribution import ledger.log          # on a member's machine, against it
 
 `revoke` refuses when it would leave an executor with no orchestrator linked to
 it (that executor would never hear of a later entry) or cut members off from the
-rest, and says which; `--force` overrides. It does **not** check whether the node
-owns sessions, because one daemon cannot ask another what it owns: end or move the
-sessions first. A revoked node's connections are dropped at once, and a revoked
-name can be enrolled again. If the daemon cannot be reached, the command still
-signs and keeps the entry in your copy of the ledger
-(`~/.loom/authority/<deployment id>/ledger.log`) and tells you to run `import`
-with that file on any member's machine. If a signing command says your copy
+rest, and says which; `--force` overrides. It also asks the deployment what it
+would strand. The daemon it talks to asks each orchestrator it is linked to, and
+itself, how many sessions each owns and how many it placed on each executor. It
+refuses while the orchestrator you are revoking owns sessions, or while an
+orchestrator linked to the executor you are revoking has sessions placed on it,
+and says how many; end or move the sessions first, or pass `--force`. An
+orchestrator that does not answer is unknown, not empty, so a laptop that is off
+cannot be revoked without `--force`, which is also what a lost laptop needs
+(**Pending**: the question and the counts are tested across two emulator nodes on
+one host, and no run on two machines has repeated them). The check is a moment in
+time: a session created after the daemon answered and before the revoke reaches
+the daemons is not caught. Archived sessions are not counted. It also refuses to take a session directory voter away when fewer than
+three would remain (see "The session directory" in section 7), and when more than one check fails it reports all
+of them together. A revoked node's connections are dropped at once, and a revoked
+name can be enrolled again. If no daemon can be reached, `revoke` cannot ask, and
+refuses without `--force`. With `--force` it signs and keeps the entry in your copy of the
+ledger (`~/.loom/authority/<deployment id>/ledger.log`) and tells you to run
+`import` with that file on any member's machine. If a signing command says your copy
 disagrees with the daemon (two machines holding the key signed different entries
 at the same position), copy a member's ledger file over
 `~/.loom/authority/<deployment id>/ledger.log` and run the command again.
@@ -1377,10 +1404,12 @@ be down. Every orchestrator listed under `[orchestrators.<name>]` must be a
 member, and every member must pin every other member, executors included,
 because any member can become the cluster's leader.
 
-With `loom distribution provision --static` (a plan with a directory cannot use
-a ledger yet), list the members at the top of the plan by
-their plan names. Provisioning then peers every member with every other and
-writes the `[directory]` table into each member's bundle:
+With `loom distribution provision --static`, list the members at the top of the
+plan by their plan names. Provisioning then peers every member with every other and
+writes the `[directory]` table into each member's bundle. Without `--static` the
+same `directory = [...]` line seats those members as voters in the ledger and the
+bundles carry no `[directory]` table; "With a membership ledger" below has the
+rest:
 
 ```toml
 directory = ["alpha", "bravo", "box"]
@@ -1442,6 +1471,41 @@ it yet.
 - Deleting a remote session needs a majority, and is refused `no_quorum`
   without one; the session stays closed and the delete is finished once the
   majority returns.
+
+**With a membership ledger.** **Verified** (the emulator test
+`ledger_directory_test`: three voters, a learner, a refused revoke and a leader
+change over real TLS distribution; the shipped `loomd` processes are **Pending**).
+With a ledger (section 3a) the directory has no `[directory]` table. Each member's
+ledger entry says whether the node is a `voter`, a `learner` or outside the
+directory, and the members are the nodes the ledger seats.
+
+1. Put the directory's voters in the plan, as above, and run `provision` without
+   `--static`. Three to seven voters, and every orchestrator among them.
+2. Create the cluster on one voter with `loomd directory bootstrap` as in step 1
+   above. The configuration needs no `[directory]` table; the command reads the
+   ledger and refuses a node that is not a voter in it.
+3. Start the daemons. Each joins by itself in the seat its entry gives it.
+4. Add members while the deployment runs: `loom distribution enroll NAME ...
+   --directory voter` for an always-on machine (the directory takes at most seven
+   voters), `--directory learner` for a machine that should read the directory
+   locally without ever counting toward the majority, and the default `none` for a
+   laptop. The new machine installs its bundle and starts; it joins the cluster
+   when it connects. A learner's own `directory.status` may answer that there is no
+   quorum until the next write reaches it, but its local reads are served at once.
+5. `loom distribution revoke NAME` takes a member out. The pin is cut and the node
+   disconnected at once, and the Ra leader removes it from the cluster within a few
+   seconds. `revoke` refuses to leave the directory with fewer than three voters
+   unless you pass `--force`: until Ra commits the removal the revoked voter still
+   counts toward the majority, so with three voters the two that remain must both
+   be up. If you do force a revoke that leaves two voters, revoke the follower and
+   not the leader: revoking the leader, or giving it the standing `none` by hand,
+   leaves a directory that cannot elect.
+
+If you enroll a name again after revoking a directory member, on the same disk,
+install the new bundle and start the daemon. The member notices that the cluster
+no longer lists it, logs `daemon.directory_not_a_member`, and joins again in the
+seat its entry gives it; `directory.status` shows it as not joined until then.
+Nothing needs to be removed by hand.
 
 **A member that loses its disk.** Stop it, give it a fresh state directory (or
 keep the catalogue and delete only `<state-dir>/directory`), and start it. It
@@ -1660,11 +1724,11 @@ not yet do the following.
   running deployment without reprovisioning (section 3a). A member that is off
   learns an entry when it next connects to a node that has it; a node isolated
   from every peer that has the latest entries trusts an older membership until it
-  syncs, and `import` carries a ledger to it. `revoke` does not check that the
-  node owns no sessions. A plan with a session directory, or a deployment that
-  must change its authority or its cookie, is provisioned again, and
-  `provision --static` is the older mode in which every change is a new
-  provisioning.
+  syncs, and `import` carries a ledger to it. `revoke` asks the orchestrators what
+  they hold, and refuses while the node owns sessions or has sessions placed on
+  it. A deployment that must change its authority or its
+  cookie is provisioned again, and `provision --static` is the older mode in which
+  every change is a new provisioning.
 
 The orchestrator and executor trust each other completely. Do not put an executor
 on a machine you would not trust with the orchestrator's provider keys.

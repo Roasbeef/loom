@@ -37,6 +37,17 @@
 //// start and is revoked later is inert from the moment the entry is applied,
 //// for the same reason, and the next start logs the warning.
 ////
+//// ## Executor names
+////
+//// An orchestrator in ledger mode gets an `[executors.<name>]` row for each
+//// executor it is linked to without the operator writing one
+//// (`client/ledger_rows`), so a pool or a spawner may list an executor by a
+//// name that no table of the file defines. The name is a reference like a node
+//// is, and `audit_names` judges it the same way: a name nobody ever gave is
+//// refused, a name that was a member and is no longer an active linked executor
+//// is inert, and the rest are fine. In static mode a pool and a spawner still
+//// need a written row, which their parsers check.
+////
 //// ## Why `load` reads the file
 ////
 //// Opening the ledger also cuts a final line with no newline from the file
@@ -45,6 +56,7 @@
 //// never races a second reader.
 
 import client/distribution.{type Config}
+import client/distribution_plan
 import client/membership_entry.{type Verifier}
 import client/membership_ledger.{type Ledger}
 import client/membership_signing
@@ -282,6 +294,124 @@ pub fn audit(
     }),
   )
   list.reverse(inert)
+}
+
+/// One reference to an executor by name, in a table that is not an executor row:
+/// a pool lists executors by name, and a spawner's placement names one. The key
+/// is where the operator wrote it, such as `pools.builders.executors`.
+pub type NameRow {
+  NameRow(
+    /// The key as the operator wrote it.
+    key: String,
+    /// The executor name the key lists.
+    name: String,
+  )
+}
+
+/// A name reference the ledger does not currently support, which the daemon
+/// starts with.
+pub type InertName {
+  InertName(
+    /// The reference.
+    row: NameRow,
+    /// Why no creation through it can succeed, in a sentence.
+    reason: String,
+  )
+}
+
+/// Checks the executor names that pools and spawners list against the ledger,
+/// for the node named `local`, and returns the references that are inert.
+/// `written` is the names of the executor rows the operator wrote, which a
+/// reference may name without the ledger knowing them.
+///
+/// An executor row can be derived from the ledger (`client/ledger_rows`), so a
+/// pool may name an executor that no `[executors.<name>]` table defines. The
+/// rule is the one `audit` applies to a node. A name that no row and no entry
+/// ever gave is an `Error`, because it is a typo or a file written for another
+/// deployment. A name that was a member and is not an active linked executor
+/// now is inert, and the daemon starts: the pool skips it, as it skips an
+/// executor that is down. A name that the ledger enrolled as an orchestrator is
+/// an `Error`, since it can never be a row of the executors table.
+///
+/// ## Examples
+///
+/// ```gleam
+/// ledger_reference.audit_names(ledger, "loom@hub.example", "ledger.log", [], [
+///   NameRow("pools.builders.executors", "box"),
+/// ])
+/// // -> Ok([])
+/// ```
+pub fn audit_names(
+  ledger: Ledger,
+  local: String,
+  path: String,
+  written: List(String),
+  rows: List(NameRow),
+) -> Result(List(InertName), String) {
+  let table = membership_ledger.node_table(ledger, local)
+  use inert <- result.map(
+    list.try_fold(rows, [], fn(inert, row) {
+      case list.contains(written, row.name) {
+        True -> Ok(inert)
+        False ->
+          case membership_ledger.enrollment(ledger, row.name) {
+            membership_ledger.Enrolled(member:) ->
+              named_member(inert, row, member, table)
+            membership_ledger.Revoked ->
+              Ok([
+                InertName(
+                  row:,
+                  reason: "the ledger enrolled it and then revoked it, so it "
+                    <> "is skipped",
+                ),
+                ..inert
+              ])
+            membership_ledger.NotEnrolled ->
+              Error(
+                row.key
+                <> " names "
+                <> row.name
+                <> ", which is neither an [executors.<name>] row nor a member "
+                <> "of the ledger "
+                <> path
+                <> ": correct the name, or enroll that executor with `loom "
+                <> "distribution enroll`",
+              )
+          }
+      }
+    }),
+  )
+  list.reverse(inert)
+}
+
+// A reference to a name that is an active member: an executor this node is
+// linked to is fine, an executor it is not linked to is inert, and anything
+// else cannot be an executor row.
+fn named_member(
+  inert: List(InertName),
+  row: NameRow,
+  member: membership_entry.Member,
+  table: membership_ledger.PinTable,
+) -> Result(List(InertName), String) {
+  case member.role, membership_ledger.lookup_node(table, member.node) {
+    distribution_plan.Executor, Ok(_) -> Ok(inert)
+    distribution_plan.Executor, Error(Nil) ->
+      Ok([
+        InertName(
+          row:,
+          reason: "it is an executor that this node is not linked to, so it "
+            <> "has no row",
+        ),
+        ..inert
+      ])
+    distribution_plan.Orchestrator, _ ->
+      Error(
+        row.key
+        <> " names "
+        <> row.name
+        <> ", which the ledger enrolled as an orchestrator and not an executor",
+      )
+  }
 }
 
 fn standing(

@@ -9,17 +9,31 @@
 //// starts the ledger process, publishes the pin table and starts distribution
 //// in that order, and then a few commands the parent sends over stdin.
 ////
+//// A node can also be a member of the session directory (protocol-change/086,
+//// phase 3). `directory_seed` creates the cluster the way `loomd directory
+//// bootstrap` does and `directory_member` joins it, and both then run the real
+//// member actor over the node's own ledger, so the Ra leader's reconciler is
+//// the production one. `await_ra` is the parent's way to wait for Ra to hold a
+//// stated set of members.
+////
 //// One node can be started with a hook in front of the production observer.
 //// The hook holds the ledger process in the middle of applying an entry, and
 //// the node publishes the table itself and leaves the disconnect to the
 //// node-up check, so that a scenario can order a real handshake against the
 //// publish and prove that the node-up check alone ends the connection.
 
+import client/directory/member
+import client/directory/seats
+import client/directory/store
 import client/distribution
 import client/distribution_plan.{type Role}
+import client/executors
+import client/internal/ffi_khepri
 import client/internal/ffi_nodes
 import client/ledger_boot
 import client/ledger_control
+import client/ledger_holdings
+import client/ledger_rows
 import client/ledger_service.{type Observer}
 import client/ledger_trust
 import client/membership_entry.{
@@ -27,6 +41,8 @@ import client/membership_entry.{
 }
 import client/membership_ledger
 import client/membership_signing
+import client/remote/orchestrator_port
+import client/roster
 import core/json
 import gleam/erlang/process.{type Subject}
 import gleam/int
@@ -34,6 +50,7 @@ import gleam/list
 import gleam/option.{None}
 import gleam/result
 import gleam/string
+import support/held_catalogue
 import support/membership_fixture as fixture
 import telemetry/log
 import weft/poll
@@ -333,18 +350,75 @@ pub fn name(node: Node) -> String {
   node.local
 }
 
+/// Where a node's `ledger.holdings` gets its answers.
+pub type Holdings {
+  /// Every orchestrator answers that it holds nothing: the node runs no
+  /// catalogue and asks nobody over the network.
+  Stubbed
+
+  /// The node asks as the daemon does, over its distribution
+  /// (`ledger_holdings.over_distribution`), and the orchestrators answer from
+  /// the ports `serve_holdings` started.
+  Distributed
+}
+
+/// Starts this node's orchestrator port over a real catalogue that holds
+/// `sessions` sessions placed on an executor it lists, named `box`, whose node
+/// is `executor_node`. The port is registered under its default name, which is
+/// where `ask_holds` addresses it, and answers `Holds` with
+/// `ledger_holdings.from_catalogue`, so what another node is told is what the
+/// catalogue has.
+pub fn serve_holdings(
+  sessions: Int,
+  executor_node: String,
+) -> Result(Nil, String) {
+  let #(registry, store, directory) = held_catalogue.start()
+  let _registered =
+    held_catalogue.registered_n(store, directory, "box", sessions)
+  let listed = roster.fixed([executors.plain("box", executor_node)])
+  orchestrator_port.start_with(
+    orchestrator_port.default(),
+    fn(_session) { Ok(orchestrator_port.NotOwned) },
+    fn(_session, _command) { Error(orchestrator_port.peer_unserved) },
+    fn(_session) { Error(orchestrator_port.peer_unserved) },
+    orchestrator_port.declining(),
+    orchestrator_port.refusing_spawns(),
+    ledger_holdings.from_catalogue(registry, listed),
+  )
+  |> result.replace(Nil)
+  |> result.map_error(string.inspect)
+}
+
 /// Runs one `ledger.*` control command against this node's ledger process, as
 /// the daemon's control socket does, and answers one line of JSON: the reply
 /// body under `ok`, or the refusal under `error`. A scenario's operator reaches
 /// the node through it, so the operator commands run against a node that is
 /// really in the middle of a TLS deployment. `body` is the request body.
-pub fn control(node: Node, command: String, body: String) -> String {
+pub fn control(
+  node: Node,
+  command: String,
+  body: String,
+  holdings: Holdings,
+) -> String {
   let answer = {
     use service <- result.try(option.to_result(
       node.booted.ledger,
       "the node runs no ledger",
     ))
     use handle <- result.try(ledger_control.handle(service, node.local))
+
+    // A node that has not been given a port runs no catalogue, so it asks
+    // nobody over the network. Every orchestrator answers that it holds
+    // nothing, which is what these nodes do hold, so the operator's check
+    // before a `revoke` has an answer to read.
+    let handle =
+      ledger_control.asking(handle, case holdings {
+        Stubbed -> fn(_node) {
+          Ok(orchestrator_port.Held(sessions: 0, placed: []))
+        }
+        Distributed ->
+          ledger_holdings.over_distribution(node.booted.membership, node.local)
+      })
     use fields <- result.try(case json.parse(body) {
       Ok(json.Object(fields)) -> Ok(fields)
       _ -> Error("the request body is not an object")
@@ -374,6 +448,13 @@ pub fn control(node: Node, command: String, body: String) -> String {
           }
           _ -> Error("lines are required")
         }
+      "ledger.holdings" ->
+        ledger_control.holdings(handle) |> result.map_error(failure_text)
+
+      // Not a daemon command: the rows this node derives from its ledger right
+      // now, which is what its sessions and its directory would see. A scenario
+      // reads it to show that an entry changed them with no restart.
+      "test.rows" -> Ok(rows(service, node.local))
       _ -> Error("unsupported control command")
     }
   }
@@ -384,9 +465,111 @@ pub fn control(node: Node, command: String, body: String) -> String {
   }
 }
 
+// The names of the executors and orchestrators a node derives from its ledger,
+// read through the same rosters the daemon builds, with no written rows.
+fn rows(service: ledger_service.Service, local: String) -> json.JsonValue {
+  let executors =
+    roster.rows(ledger_rows.executor_roster(service, local, []))
+    |> list.map(fn(row) { json.String(row.name) })
+  let orchestrators =
+    roster.rows(ledger_rows.orchestrator_roster(service, local, []))
+    |> list.map(fn(row) { json.String(row.name) })
+  json.Object([
+    #("executors", json.Array(executors)),
+    #("orchestrators", json.Array(orchestrators)),
+  ])
+}
+
 fn failure_text(failure: ledger_control.Failure) -> String {
   case failure {
     ledger_control.Invalid(step:) -> "ledger_invalid: " <> step
     ledger_control.Unavailable(reason:) -> reason
   }
+}
+
+// --- the session directory ----------------------------------------------------
+
+/// Creates the directory's cluster on this node, as `loomd directory bootstrap`
+/// does, and starts the member actor over the node's ledger. The node's ledger
+/// entry must seat it as a voter.
+pub fn directory_seed(
+  node: Node,
+  directory: String,
+) -> Result(member.Member, String) {
+  use Nil <- result.try(store.start_system(directory))
+  use Nil <- result.try(store.boot(30_000))
+  use Nil <- result.try(store.mark_joined(directory))
+  directory_member(node, directory)
+}
+
+/// Starts the member actor over the node's ledger. It links to the nodes the
+/// ledger seats and joins the cluster in the seat the ledger gives this node.
+pub fn directory_member(
+  node: Node,
+  directory: String,
+) -> Result(member.Member, String) {
+  use service <- result.try(option.to_result(
+    node.booted.ledger,
+    "the node runs no ledger",
+  ))
+  member.start(member.Config(
+    directory:,
+    members: member.Followed(read: fn() {
+      ledger_service.status(service, 1000)
+      |> result.map(fn(status) { seats.read(status.ledger) })
+      |> result.replace_error(Nil)
+    }),
+    local: node.local,
+    membership: node.booted.membership,
+    logger: log.discard(),
+  ))
+}
+
+/// Waits, within a bound, until Ra, as this member sees it, holds exactly the
+/// members in `expected`: node names with `:voter`, `:promoting` or `:learner`,
+/// comma separated.
+pub fn await_ra(
+  handle: member.Member,
+  expected: String,
+  within_ms: Int,
+) -> Result(Nil, String) {
+  let wanted = expected |> string.split(",") |> list.sort(string.compare)
+  poll.until(within: within_ms, every: 100, attempt: fn() {
+    case ra_words(handle) {
+      Ok(held) if held == wanted -> poll.Done(Nil)
+      Ok(_) | Error(Nil) -> poll.Retry
+    }
+  })
+  |> outcome("Ra did not hold " <> expected <> ", it held: " <> ra_text(handle))
+}
+
+/// The members and the leader as this member sees them, in one line.
+pub fn ra_text(handle: member.Member) -> String {
+  case member.status(handle).ra {
+    Ok(store.Membership(members:, leader:, ..)) ->
+      "leader="
+      <> option.unwrap(leader, "-")
+      <> " "
+      <> string.join(words(members), ",")
+    Error(store.Unavailable(reason:)) -> "unavailable: " <> reason
+  }
+}
+
+fn ra_words(handle: member.Member) -> Result(List(String), Nil) {
+  case member.status(handle).ra {
+    Ok(store.Membership(members:, ..)) -> Ok(words(members))
+    Error(_) -> Error(Nil)
+  }
+}
+
+fn words(members: List(#(String, ffi_khepri.Voting))) -> List(String) {
+  list.map(members, fn(held) {
+    held.0
+    <> case held.1 {
+      ffi_khepri.Voter -> ":voter"
+      ffi_khepri.Promoting -> ":promoting"
+      ffi_khepri.NonVoter -> ":learner"
+    }
+  })
+  |> list.sort(string.compare)
 }

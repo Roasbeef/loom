@@ -48,6 +48,12 @@ pub const activation_ms = 5000
 /// How long a read may take, including the fence of a consistent read.
 pub const read_ms = 3000
 
+/// What `remove_member` reports when Ra refuses a membership change because an
+/// earlier one has not committed. It is not a failure: the change goes through
+/// when the earlier one settles, and a caller that asks again at its next tick
+/// has done everything there is to do.
+pub const settling = "another membership change is settling"
+
 /// Why a read gave no answer.
 pub type Unavailable {
   Unavailable(
@@ -74,6 +80,19 @@ pub type WriteRefusal {
   )
 }
 
+/// The place a member holds in the cluster (protocol-change/086, phase 3): what
+/// the ledger asks of a node and what a join makes of it.
+pub type Seat {
+  /// A voter. Ra adds it as promotable and promotes it once it has caught up,
+  /// and the join returns when it has.
+  Voter
+
+  /// A learner. Ra adds it as a non-voter, which it never promotes and never
+  /// counts toward the majority, and the join returns once the member has
+  /// applied what the cluster had applied.
+  Learner
+}
+
 /// Ra's view of the cluster from this member.
 pub type Membership {
   Membership(
@@ -81,6 +100,11 @@ pub type Membership {
     members: List(#(String, ffi_khepri.Voting)),
     /// The leader's node name, when there is one.
     leader: Option(String),
+    /// The members the leader reports as replicating its log now (Ra status
+    /// `normal`). Empty when the answer did not come from the leader. A member
+    /// Ra has not marked down may still be unreachable, but one in this list is
+    /// one the leader is sending to, which a connected node is not necessarily.
+    up: List(String),
   )
 }
 
@@ -170,13 +194,15 @@ pub fn restart(within_ms: Int) -> Result(Nil, RestartRefusal) {
   )
 }
 
-/// Joins the cluster through the member on `remote` as a non-voter and returns
-/// once Ra has promoted this member.
+/// Joins the cluster through the member on `remote` and returns once the member
+/// is in: promoted by Ra for a voter, caught up for a learner.
 ///
 /// The join is four requests to the cluster in order: start a fresh local
 /// server, have the cluster forget this member's old identity (a member that
 /// lost its disk is still listed under it), add the server as a promotable
-/// non-voter, and wait for Ra to promote it once it has caught up. Ra refuses a
+/// non-voter (a voter) or as a non-voter (a learner), and wait. A voter waits
+/// for Ra to promote it once it has caught up. A learner is never promoted, so
+/// it waits until it has applied what the cluster had applied. Ra refuses a
 /// membership change while an earlier one settles, so each step is repeated
 /// under one deadline for the whole join. Any failure deletes the local server
 /// again, so the next attempt starts clean.
@@ -184,23 +210,32 @@ pub fn restart(within_ms: Int) -> Result(Nil, RestartRefusal) {
 /// ## Examples
 ///
 /// ```gleam
-/// // store.join(peer_node, 60_000)
+/// // store.join(peer_node, 60_000, store.Voter)
 /// ```
-pub fn join(remote: Node, within_ms: Int) -> Result(Nil, String) {
+pub fn join(remote: Node, within_ms: Int, seat: Seat) -> Result(Nil, String) {
   bounded(within_ms + 2000, Error("the join did not finish in time"), fn() {
     let clock = poll.monotonic()
     let deadline = clock.now() + within_ms
     let left = fn() { int.max(1, deadline - clock.now()) }
-    use uid <- result.try(ffi_khepri.join_start())
+    let asked = case seat {
+      Voter -> ffi_khepri.AsVoter
+      Learner -> ffi_khepri.AsLearner
+    }
+    use uid <- result.try(ffi_khepri.join_start(asked))
     let joined = {
       use Nil <- result.try(
         joining(left, fn(ms) { ffi_khepri.join_remove(remote, ms) }),
       )
       use Nil <- result.try(
-        joining(left, fn(ms) { ffi_khepri.join_add(remote, uid, ms) }),
+        joining(left, fn(ms) { ffi_khepri.join_add(remote, uid, asked, ms) }),
       )
       use Nil <- result.try(
-        joining(left, fn(ms) { ffi_khepri.join_promoted(remote, ms) }),
+        joining(left, fn(ms) {
+          case seat {
+            Voter -> ffi_khepri.join_promoted(remote, ms)
+            Learner -> ffi_khepri.join_caught_up(remote, ms)
+          }
+        }),
       )
       ffi_khepri.join_finish(left())
     }
@@ -232,6 +267,27 @@ fn joining(
   }
 }
 
+/// Asks the cluster to remove the member on the node named `member`, from this
+/// member, which the reconciler calls only on the Ra leader. The command is
+/// appended when this returns and Ra commits it after a majority of the
+/// configuration it creates has it; another change is refused until then, which
+/// this reports as `Error` and the caller asks again.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // store.remove_member("loom@laptop.example")
+/// ```
+pub fn remove_member(member: String) -> Result(Nil, String) {
+  bounded(write_ms + 1000, Error("the removal did not finish in time"), fn() {
+    case ffi_khepri.remove_member(member, write_ms) {
+      ffi_khepri.Done -> Ok(Nil)
+      ffi_khepri.Again -> Error(settling)
+      ffi_khepri.Failed(reason:) -> Error(reason)
+    }
+  })
+}
+
 /// Stops the store and the Ra system.
 ///
 /// ## Examples
@@ -253,6 +309,33 @@ pub fn stop() -> Nil {
 /// ```
 pub fn forget_local() -> Nil {
   ffi_khepri.forget_local()
+}
+
+/// Takes this member out of the cluster it believes it is in, so that it joins
+/// again: the joined marker is removed first and the local server is deleted
+/// second.
+///
+/// The order is what keeps a stop in between from doing harm. A member killed
+/// after the marker is gone starts as one that has not joined, and joins through
+/// the cluster, which `restart` and the next `join` handle. The other order would
+/// leave a marker over a deleted server, which `restart` refuses to start
+/// because starting would create a second cluster. This never creates a store,
+/// and a member that has been reset is not a member until `join` ends.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // store.reset(state_root <> "/directory")
+/// ```
+pub fn reset(directory: String) -> Result(Nil, String) {
+  use Nil <- result.try(
+    simplifile.delete_all([joined_marker(directory)])
+    |> result.map_error(fn(error) {
+      "the joined marker could not be removed: "
+      <> simplifile.describe_error(error)
+    }),
+  )
+  Ok(ffi_khepri.forget_local())
 }
 
 /// The file whose presence says this member's store is joined.
@@ -329,12 +412,33 @@ pub fn holds_data(directory: String) -> Bool {
 /// ## Examples
 ///
 /// ```gleam
-/// // store.membership() // -> Ok(Membership([#("a@h.x", Voter)], Some("a@h.x")))
+/// // store.membership()
+/// // -> Ok(Membership([#("a@h.x", Voter)], Some("a@h.x"), ["a@h.x"]))
 /// ```
 pub fn membership() -> Result(Membership, Unavailable) {
   bounded(read_ms + 1000, Error(Unavailable("no answer in time")), fn() {
     case ffi_khepri.membership(read_ms) {
-      Ok(#(members, leader)) -> Ok(Membership(members:, leader:))
+      Ok(#(members, leader, up)) -> Ok(Membership(members:, leader:, up:))
+      Error(failure) -> Error(Unavailable(describe(failure)))
+    }
+  })
+}
+
+/// Ra's view of the cluster as the leader gives it, asked through the member on
+/// `remote`. A member whose own server cannot say what the cluster holds, for
+/// want of a leader it knows, asks a peer, and the peer's server forwards the
+/// question to the leader. A peer that is down, has no store or cannot reach a
+/// leader gives `Unavailable`, which is not an answer about this member.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // store.membership_through(peer_node)
+/// ```
+pub fn membership_through(remote: Node) -> Result(Membership, Unavailable) {
+  bounded(read_ms + 1000, Error(Unavailable("no answer in time")), fn() {
+    case ffi_khepri.membership_through(remote, read_ms) {
+      Ok(#(members, leader, up)) -> Ok(Membership(members:, leader:, up:))
       Error(failure) -> Error(Unavailable(describe(failure)))
     }
   })

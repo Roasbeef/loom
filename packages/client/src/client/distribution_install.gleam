@@ -153,7 +153,6 @@ pub fn default_config(home: String) -> String {
 /// ```
 pub fn install(text: String, options: Options) -> Result(Installed, String) {
   use bundle <- result.try(distribution_bundle.decode(text))
-  use Nil <- result.try(runnable(bundle))
   let directory =
     option.lazy_unwrap(bundle.bundle_dir, fn() {
       default_directory(options.home)
@@ -223,24 +222,6 @@ pub fn install(text: String, options: Options) -> Result(Installed, String) {
     start: start_command(options, optfile),
     snapshot: snapshot_of(bundle),
   ))
-}
-
-// A `/2` bundle installs a node that runs from its ledger. The one thing the
-// daemon cannot yet do with such a node is the session directory: a member of
-// the Khepri cluster takes its members from `[directory] members`, and deriving
-// them from the ledger is phase 3 of protocol-change/086. A bundle whose plan
-// has a directory would install a configuration that the daemon refuses at
-// start, so the refusal comes here, before anything is written.
-fn runnable(bundle: Bundle) -> Result(Nil, String) {
-  case bundle.trust, bundle.directory {
-    distribution_bundle.SignedLedger(_), [_, ..] ->
-      Error(
-        "this bundle puts its node in the session directory, which cannot "
-        <> "follow a membership ledger yet; provision the plan without a "
-        <> "directory, or with --static. Nothing was installed",
-      )
-    _, _ -> Ok(Nil)
-  }
 }
 
 // --- what is already on the machine -----------------------------------------

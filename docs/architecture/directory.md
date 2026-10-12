@@ -38,6 +38,9 @@ on its daemons.
   Khepri cluster, and Khepri holds the single authoritative record of which
   orchestrator owns each session on an executor.
 
+With a membership ledger there is no `[directory]` table: the members are the
+ledger's, see "Following the membership ledger" below.
+
 A daemon with `[directory]` requires every orchestrator in its
 `[orchestrators.<name>]` table to be a member too, so the two kinds never mix
 within one move.
@@ -272,6 +275,94 @@ members and which of them are voters, the leader, this member's applied index,
 and whether its store is joined (protocol-change/083 has the reply). When the configured list and Ra's list differ,
 Ra's is the one in force: membership lives in Raft's log, and `members` only
 tells a daemon whom to join and whom to keep connected.
+
+## Following the membership ledger
+
+A deployment whose trust is a membership ledger (protocol-change/086) has two
+member lists. The ledger lists every trusted node, laptops included, each with a
+pin and a `directory` standing: `voter`, `learner` or `none`. Ra lists the servers
+that replicate this store. The ledger owns the first list and Ra follows it, never
+the reverse, so a trust change never waits for a quorum.
+
+There is no `[directory]` table beside a ledger, and a document with both is
+refused. The members are the active members whose standing is `voter` or `learner`,
+and a node is a member when its own entry says so. The daemon derives them from the
+ledger process at start (`daemon/main.ledger_directory`) and checks that every
+`[orchestrators.<name>]` node is one. The orchestrator rows the daemon derives from
+the ledger need no such check: a member lists only the orchestrators that are
+members too (`client/ledger_rows`), so the rule of protocol-change/083 holds for
+them by construction. The member actor takes the members from the ledger again on
+every tick, because nodes are enrolled while the daemon runs.
+
+```mermaid
+flowchart LR
+    ledger["ledger<br/>voter / learner / none"] -->|"seats"| member["member actor<br/>every 2 s"]
+    member -->|"links, join"| ra["Ra membership"]
+    member -->|"on the leader: remove"| ra
+```
+
+**A seated node joins itself.** Ra needs the new server running, with the UId it
+will be recorded under, before the cluster can reach it, and only the new node can
+start that server. So the join above is started by the node, in the seat its entry
+gives it. A `voter` is added as `promotable` and the join waits for Ra to promote
+it. A `learner` is added as `non_voter`, which Ra never promotes and never counts
+toward a majority, so the join waits until the server has heard from the leader,
+lists itself in its own configuration and has applied what the cluster had
+committed. A learner reads the directory locally and writes through the leader,
+and a learner that is down costs the voters nothing. A learner never campaigns, so
+after the restart that ends the join it learns who the leader is from the leader's
+next append, and until then its own view of the cluster (`directory.status`'s
+`ra_members`) answers that there is no quorum. Its local reads do not.
+
+**The leader removes.** On each tick the member that Ra names leader compares the
+ledger's seats with Ra's membership (`directory/seats.plan`) and issues at most
+one `ra:remove_member`:
+
+| Ra holds | The ledger says | The leader |
+|---|---|---|
+| a member | the node was named and is seated nowhere (revoked, or `none`) | removes it |
+| a member | the other seat | removes it; the node finds out by asking and joins again in its seat |
+| a member | the node was never named | leaves it and logs it |
+| nothing | a seat | nothing: the node joins by itself |
+
+A voter is removed only while a majority of the voters that remain is replicating
+the leader's log, which is Ra's own status for each member and not whether the node
+is connected. Ra applies the new configuration when the change is appended, and the
+change commits only with that majority, so a removal that could not commit would
+sit in the log and Ra would refuse every other change until it did. When no safe
+removal exists the leader logs the first one held, once, and asks again at the next
+tick. A leader that the ledger does not seat does nothing, and no leader removes
+itself. A leader change needs no event: the new leader makes the same comparison at
+its next tick, and a removal already issued is `not_member`.
+
+The order between the two lists is fixed. An enrollment reaches the pin tables
+first, because both ends of the joining node's first connection check the pin. A
+revoke cuts the pin and disconnects at once, and the Ra removal follows. Until it
+commits, a revoked voter still counts toward the majority, which is why `revoke`
+refuses to leave fewer than three voters unless `--force`, and why `enroll`
+refuses an eighth. After a majority loss, enrolling a replacement restores trust
+without a quorum, and Ra cannot add the replacement without a majority of the old
+configuration: recovering the directory then needs a Ra forced reconfiguration,
+which Loom does not perform.
+
+A directory member must connect visibly to the other members. In ledger mode there
+is no list of member atoms at start, so the ledger process publishes the linked
+members whose standing is not `none` in a row of the table the TLS callback reads,
+and `distribution.connect` reads it on every connect. A node outside the directory
+starts hidden and connects hidden to everyone.
+
+**A removed member rejoins by itself.** Ra never stops a server it removes, so a
+node that is revoked and enrolled again on the same disk, or removed to repair its
+seat, keeps its `joined` marker and a server that is in no cluster. On each tick a
+node the ledger seats whose own server cannot say what the cluster holds, or does
+not list the node, asks a seated peer's server, which forwards `ra:members_info` to
+the leader. When a leader answers and its membership does not list the node, the
+node logs `daemon.directory_not_a_member`, removes the marker, then deletes its
+local server (`store.reset`), and the join above takes it in again in the seat the
+ledger gives it; `directory.status` reports it as not joined, rejoining, until then.
+`seats.rejoin` decides, and it acts only on that explicit answer: a timeout, a
+missing leader and a node the ledger does not seat reset nothing. The reset never
+creates a store, since the marker goes first and a join is the only way back.
 
 ## Reading an owner
 

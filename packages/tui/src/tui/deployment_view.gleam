@@ -20,9 +20,10 @@
 //// `decode` → `status_text` or `executors_text`
 ////
 //// 1. `decode` reads the document into a `Status`.
-//// 2. `status_text` draws the verdict, the nodes and the links, and
-////    `executors_text` draws the executors a session may be placed on and the
-////    pools of them.
+//// 2. `status_text` draws the verdict, the nodes and the links, and for a
+////    daemon that runs from a membership ledger the ledger's head and the head
+////    each member has reported (`ledger_text`). `executors_text` draws the
+////    executors a session may be placed on and the pools of them.
 //// 3. Both end in `table`, which pads each column to its widest cell, so two
 ////    runs against one deployment print identical rows.
 
@@ -153,6 +154,47 @@ pub type Pool {
   )
 }
 
+/// One member of the membership ledger, with the newest entry it reported to the
+/// asking daemon (protocol-change/086).
+pub type LedgerMember {
+  LedgerMember(
+    /// The member's name in the ledger.
+    name: String,
+    /// The sequence number of the newest entry it reported, or `None` when it
+    /// has not reported to the asking daemon.
+    reported: Option(Int),
+    /// Milliseconds on the asking daemon's own clock since that report.
+    age_ms: Option(Int),
+  )
+}
+
+/// The last entry the asking daemon refused.
+pub type LedgerRefusal {
+  LedgerRefusal(
+    /// The sequence number the line claimed, when it had one.
+    seq: Option(Int),
+    /// The step that failed, as the daemon worded it.
+    step: String,
+  )
+}
+
+/// What the asking daemon says of its membership ledger, so that an operator can
+/// see whether a change has reached the members.
+pub type Ledger {
+  Ledger(
+    /// The asking daemon's standing: `ok`, `revoked` or `not_enrolled`.
+    standing: String,
+    /// The sequence number of the newest entry the daemon holds.
+    head_seq: Int,
+    /// The first eight characters of that entry's identity.
+    head_id: String,
+    /// The active members, as the daemon lists them.
+    members: List(LedgerMember),
+    /// The last refusal, when the daemon has refused a line.
+    last_refusal: Option(LedgerRefusal),
+  )
+}
+
 /// The decoded reply.
 pub type Status {
   Status(
@@ -173,6 +215,9 @@ pub type Status {
     /// The pools a session may be created in. Empty when the request named one
     /// node.
     pools: List(Pool),
+    /// The asking daemon's membership ledger, when it runs from one and the
+    /// request named no node.
+    ledger: Option(Ledger),
   )
 }
 
@@ -197,15 +242,68 @@ pub fn decode(document: JsonValue) -> Result(Status, String) {
   let reasons = optional_list(document, "reasons", reason)
   let placements =
     field(document, "placements") |> result.unwrap(json.Object([]))
-  Ok(Status(
-    self:,
-    state:,
-    reasons:,
-    nodes:,
-    edges: optional_list(document, "edges", edge),
-    executors: optional_list(placements, "executors", executor),
-    pools: optional_list(placements, "pools", pool),
-  ))
+  Ok(
+    Status(
+      self:,
+      state:,
+      reasons:,
+      nodes:,
+      edges: optional_list(document, "edges", edge),
+      executors: optional_list(placements, "executors", executor),
+      pools: optional_list(placements, "pools", pool),
+      ledger: case field(document, "ledger") |> result.try(ledger) {
+        Ok(found) -> Some(found)
+        Error(_) -> None
+      },
+    ),
+  )
+}
+
+// The ledger member is optional like the rest of what a later daemon adds, so a
+// ledger that does not decode is left out and the rest of the reply is drawn.
+// Its own required parts are the head and the standing; a member entry that is
+// malformed is skipped, as an optional list's entries are.
+fn ledger(value: JsonValue) -> Result(Ledger, String) {
+  use standing <- result.try(text_at(value, "state"))
+  use head <- result.try(field(value, "head"))
+  use head_seq <- result.try(count_at(head, "seq"))
+  use head_id <- result.map(text_at(head, "id"))
+  Ledger(
+    standing:,
+    head_seq:,
+    head_id: string.slice(head_id, at_index: 0, length: 8),
+    members: optional_list(value, "members", ledger_member),
+    last_refusal: case field(value, "last_refusal") {
+      Ok(refusal) -> ledger_refusal(refusal) |> option.from_result
+      Error(_) -> None
+    },
+  )
+}
+
+fn ledger_member(value: JsonValue) -> Result(LedgerMember, String) {
+  use name <- result.map(text_at(value, "name"))
+  LedgerMember(
+    name:,
+    reported: optional_count(value, "reported_seq"),
+    age_ms: optional_count(value, "ms_since_report"),
+  )
+}
+
+fn ledger_refusal(value: JsonValue) -> Result(LedgerRefusal, String) {
+  use step <- result.map(text_at(value, "step"))
+  LedgerRefusal(seq: optional_count(value, "seq"), step:)
+}
+
+fn count_at(value: JsonValue, key: String) -> Result(Int, String) {
+  use found <- result.try(field(value, key))
+  case found {
+    json.Int(count) if count >= 0 -> Ok(count)
+    _ -> Error(key <> " is not a count")
+  }
+}
+
+fn optional_count(value: JsonValue, key: String) -> Option(Int) {
+  count_at(value, key) |> option.from_result
 }
 
 fn node(value: JsonValue) -> Result(Node, String) {
@@ -386,9 +484,93 @@ pub fn status_text(status: Status) -> String {
         ]
       }),
     )
-  case status.edges {
+  let drawn = case status.edges {
     [] -> head <> "\n\n" <> nodes
     edges -> head <> "\n\n" <> nodes <> "\n\n" <> links(status, edges)
+  }
+  case status.ledger {
+    Some(found) -> drawn <> "\n\n" <> ledger_text(found)
+    None -> drawn
+  }
+}
+
+// The membership ledger as the asking daemon sees it: its head, how many members
+// have reported that entry, and for each member the newest entry it reported and
+// how long ago. A member that has not reported to this daemon is drawn as such
+// and not as behind, because the daemon only knows what it was told. The age is
+// the daemon's own clock, so two readings of one deployment never compare ages
+// from different machines.
+fn ledger_text(found: Ledger) -> String {
+  let holding =
+    list.count(found.members, fn(member) {
+      case member.reported {
+        Some(seq) -> seq >= found.head_seq
+        None -> False
+      }
+    })
+  let head =
+    "LEDGER entry "
+    <> int.to_string(found.head_seq)
+    <> " ("
+    <> clean(found.head_id)
+    <> "), "
+    <> int.to_string(holding)
+    <> " of "
+    <> int.to_string(list.length(found.members))
+    <> " members hold it"
+  let standing = case found.standing {
+    "ok" -> []
+    other -> ["this daemon is " <> clean(other) <> " in the ledger"]
+  }
+  let rows = case found.members {
+    [] -> []
+    members -> [
+      table(
+        ["MEMBER", "HOLDS", "REPORTED"],
+        list.map(members, fn(member) { member_row(found, member) }),
+      ),
+    ]
+  }
+  let refusal = case found.last_refusal {
+    None -> []
+    Some(refused) -> [
+      "last refusal: "
+      <> case refused.seq {
+        Some(seq) -> "entry " <> int.to_string(seq) <> ", "
+        None -> ""
+      }
+      <> "step "
+      <> clean(refused.step),
+    ]
+  }
+  string.join(list.flatten([[head], standing, rows, refusal]), "\n")
+}
+
+fn member_row(found: Ledger, member: LedgerMember) -> List(String) {
+  let #(holds, behind) = case member.reported {
+    None -> #("-", "not reported")
+    Some(seq) if seq >= found.head_seq -> #(
+      "entry " <> int.to_string(seq),
+      "current",
+    )
+    Some(seq) -> #(
+      "entry " <> int.to_string(seq),
+      "behind by " <> int.to_string(found.head_seq - seq),
+    )
+  }
+  let age = case member.age_ms {
+    Some(ms) -> ", " <> age_text(ms) <> " ago"
+    None -> ""
+  }
+  [short(member.name), holds, behind <> age]
+}
+
+// An age in the unit a reader reads at a glance.
+fn age_text(ms: Int) -> String {
+  case ms {
+    ms if ms < 60_000 -> int.to_string(ms / 1000) <> "s"
+    ms if ms < 3_600_000 -> int.to_string(ms / 60_000) <> "m"
+    ms -> int.to_string(ms / 3_600_000) <> "h"
   }
 }
 

@@ -99,6 +99,7 @@ import client/orchestrators.{type Orchestrator}
 import client/remote/protocol
 import client/remote/scope
 import client/remote/workspace
+import client/roster.{type Roster}
 import client/session_directory.{type Courier, type Directory}
 import client/session_move.{type Step}
 import core/clock.{type Clock}
@@ -196,7 +197,7 @@ pub type Environment(instance) {
     /// The registry, which owns the slot and the catalogue.
     registry: manager.Manager(instance),
     /// The orchestrators this daemon lists, in which the destination is found.
-    orchestrators: List(Orchestrator),
+    orchestrators: Roster(Orchestrator),
     /// The directory, whose `activate` makes the receiver take the session.
     directory: Directory,
     /// The pieces and the status.
@@ -552,7 +553,7 @@ fn destination(
   environment: Environment(instance),
   move: catalogue.Pending,
 ) -> Result(Orchestrator, Halt) {
-  orchestrators.find(environment.orchestrators, move.to)
+  orchestrators.find(roster.rows(environment.orchestrators), move.to)
   |> result.map_error(fn(_unlisted) {
     Stall("this daemon does not list an orchestrator named " <> move.to)
   })
@@ -563,7 +564,7 @@ fn receiver_stage(
   move: catalogue.Pending,
 ) -> Result(session_move.Stage, Nil) {
   use receiver <- result.try(orchestrators.find(
-    environment.orchestrators,
+    roster.rows(environment.orchestrators),
     move.to,
   ))
   environment.courier.stage(receiver, move.session, move.op)

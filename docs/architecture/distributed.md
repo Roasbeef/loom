@@ -294,20 +294,59 @@ with the ledger once, at start (`client/ledger_reference.audit`, called from
 entry ever named is refused. A row naming a node that was a member and is no longer
 an active member this node is linked to is accepted as inert and logged as
 `daemon.ledger_row_inert`; a call through it fails because `distribution.peer`
-resolves only names in the current pin table. A daemon with a `[directory]` table
-still cannot use a ledger, because the directory's members come from
-`[directory] members` until phase 3 of 086.
+resolves only names in the current pin table. A daemon with a ledger has no
+`[directory]` table: the session directory's members are the ledger's members whose
+`directory` standing is `voter` or `learner`, derived at start by
+`daemon/main.ledger_directory` and read again by the member actor on every tick, and
+the Ra leader removes the members the ledger unseats
+([the directory page](directory.md), "Following the membership ledger").
 
-**Control commands.** `ledger.append`, `ledger.entries` and `ledger.status` are
-owner-only commands of the control socket (`client/ledger_control` holds both
-halves). `ledger.append` offers lines to the process in order through the
+The executor names that a pool lists and a spawner places on get the same
+treatment (`ledger_reference.audit_names`, logged as `daemon.ledger_name_inert`),
+because the ledger can give an executor a row that no table defines.
+
+**Derived rows.** An orchestrator does not need a table for a machine the ledger
+says it is linked to. `client/ledger_rows` turns the members of its pin table into
+`[executors.<name>]` rows (the executor members) and `[orchestrators.<name>]` rows
+(the orchestrator members), named as the ledger names them, with no declaration and
+no address. A row the operator wrote wins: a derived row is dropped when a written
+row has its name (the written row overrides it, as design note section 12 says) or
+its node (so one machine is never listed twice, and an orchestrator's node stays
+unique). A node that is not an active orchestrator derives nothing, and an
+orchestrator in the session directory derives only the orchestrators that are in it
+too. Spawners are never derived.
+
+A part of the daemon that outlives a request holds a `client/roster.Roster`, a
+function that returns the rows. The session importer, the movers, the session
+directory, the remote spawner and the server read it when they decide, and a
+ledger-backed roster asks the ledger process, so an executor enrolled after the
+daemon started is the next `sessions.create`'s and a revoked one stops being
+offered. A session already open keeps the rows it was assembled with, and the
+connection to a revoked member fails as one to a machine that is down. A ledger
+process that does not answer leaves only the written rows, so a member that cannot
+be confirmed is not offered. A static daemon wraps its parsed lists in a fixed
+roster, and nothing else about it changes.
+
+**Control commands.** `ledger.append`, `ledger.entries`, `ledger.status` and
+`ledger.holdings` are owner-only commands of the control socket
+(`client/ledger_control` holds both halves). `ledger.append` offers lines to the process in order through the
 acceptance procedure, so the socket adds no trust beyond the owner check, and a
 refused line is `ledger_invalid` with the step as its message. `ledger.entries`
 is the local twin of a `Pull`. `ledger.status` reports the head, this node's
 standing (`ok`, `revoked`, `not_enrolled`), each active member with the head it
 last reported, and the last refusal. A frame is 64 KiB in both directions, so a
 page of entries and an append are cut to 48,000 bytes of lines as well as 64
-lines. A daemon with no ledger answers `not_found`.
+lines. A daemon with no ledger answers `not_found`. `ledger.holdings` asks the
+orchestrators the daemon is linked to, and the daemon itself, what their catalogues
+hold (`client/ledger_holdings`), and the daemon's own `deployment.status` carries the
+body of `ledger.status` under `ledger`, so one read shows the head, which members
+reported it, how long ago, and the last refusal.
+
+**Holds.** The orchestrator port answers one more question,
+`orchestrator_port.Holds`: how many sessions the catalogue owns, and how many are
+placed on each executor, by node. It is the subset of protocol-change/085's `Report`
+that the operator's check needs, and it runs apart from the port because it walks
+the catalogue. A catalogue that cannot be read produces no answer, never a zero.
 
 **A node tells the peer it pulled from.** After a pull that moved the head, the
 node sends its head to the peer it pulled from as well as to the others. The
@@ -339,9 +378,15 @@ deployment's, kept in `<authority dir>/cookie`. A renewal's bundle carries no
 `[executors]` rows or workspaces, so installing it over the node's old install
 does not conflict with edits the operator made to them. `revoke` refuses when it
 would leave an executor with no orchestrator linked to it or cut members off from
-the rest, unless `--force`. It does not check that the member owns no sessions: a
-session is owned by a daemon and no daemon can ask another until the admin
-surface carries it (phase 2).
+the rest, and when it would strand sessions, unless `--force`. The second check asks
+the daemon the command talks to for `ledger.holdings` before anything is signed.
+For an orchestrator it reads that orchestrator's own count of sessions. For an
+executor it adds up what the orchestrators linked to it placed on its node, which
+still works when the executor is the machine that is gone. An orchestrator that does
+not answer, and a daemon that cannot be asked, are unknown and refuse the revoke as
+a count above zero does, so the revoke of a laptop that is off needs `--force`. The
+ledger itself never vetoes: a log fold cannot see sessions, and a veto at apply time
+would give two nodes different tables from one log.
 
 ### Booting a distributed VM
 
@@ -431,8 +476,10 @@ the same file. `install` writes the ledger beside the credentials, writes a
 `[distribution]` table with a `ledger` key and no peer rows, and renders the live
 options file. The ledger file is compared as a chain: a file the bundle extends is
 replaced, a file that extends the bundle is kept, and two files that diverge are
-refused unless `--force`. A plan with a session directory cannot use a ledger yet,
-so `provision` refuses it and says to pass `--static`.
+refused unless `--force`. A plan with a session directory is provisioned like any
+other: its directory members become voters in the ledger, the bundles list no
+directory members, and the configuration `install` writes has no `[directory]`
+table.
 
 The authority key is kept: `client/authority_key` seals it with
 PBKDF2-HMAC-SHA256 (600,000 iterations) and AES-256-GCM under a passphrase, in
@@ -1441,9 +1488,9 @@ The directory holds no state of its own, so it has no model.
 - **Membership changes are eventual, and some are not checked.** `enroll`,
   `revoke` and `renew` change a running deployment without reprovisioning, and
   a member that is off learns an entry when it next connects to one that has it.
-  A revoke does not check that the member owns no sessions, a plan with a
-  session directory cannot use a ledger, and rotating the authority or the
-  cookie means provisioning again. A node that was down across its own revoke
+  A revoke does not check that the member owns no sessions, a revoked
+  directory voter still counts toward Ra's majority until the leader's removal
+  commits, and rotating the authority or the cookie means provisioning again. A node that was down across its own revoke
   and re-enrolment, and receives the revoke at the end of one pull batch and the
   re-enrolment in the next, self-revokes until `import` or a new bundle. The
   design is in [the membership ledger note](../design-notes/membership-ledger.md)

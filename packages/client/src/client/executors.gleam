@@ -14,8 +14,12 @@
 //// the slices that attach a workspace use the node this table names.
 ////
 //// Like `[distribution]` and `[peers]`, the daemon reads the table once, when
-//// it starts, and never rereads it: a running daemon's executors are the ones
-//// its owner configured before it listened. The catalogue parser validates the
+//// it starts, and never rereads it: the rows its owner wrote are the ones it
+//// has before it listened. In ledger mode the list the daemon uses is not only
+//// this table. An orchestrator also gets a row for each executor the ledger
+//// links it to (`client/ledger_rows`), read through a `client/roster` when a
+//// decision needs it, so an executor enrolled later is usable with no restart.
+//// This module parses the written rows and stays ignorant of the ledger. The catalogue parser validates the
 //// same table (`client/catalog`), so a typo is refused wherever the file is
 //// read rather than only at startup.
 ////

@@ -85,6 +85,7 @@ fn describing() -> Address(Message) {
       },
       orchestrator_port.declining(),
       orchestrator_port.refusing_spawns(),
+      orchestrator_port.unheld,
     )
     as "the port starts under its name"
   address.Address(node: node.self(), name:)
@@ -100,6 +101,62 @@ pub fn a_description_is_the_describers_answer_or_its_reason_test() {
       answers_within_ms,
     )
     == Ok(Error("not_found"))
+}
+
+// A port whose catalogue holds what `holder` says.
+fn holding(holder: orchestrator_port.Holder) -> Address(Message) {
+  let name = process.new_name("orchestrator_port")
+  let assert Ok(_) =
+    orchestrator_port.start_with(
+      name,
+      held,
+      fn(_session, _command) { Error(orchestrator_port.peer_unserved) },
+      fn(_session) { Error("not_found") },
+      orchestrator_port.declining(),
+      orchestrator_port.refusing_spawns(),
+      holder,
+    )
+    as "the port starts under its name"
+  address.Address(node: node.self(), name:)
+}
+
+pub fn what_the_catalogue_holds_is_the_holders_answer_test() {
+  let busy =
+    orchestrator_port.Held(sessions: 4, placed: [
+      orchestrator_port.Placed(executor_node: "box@10.0.0.2", sessions: 3),
+    ])
+  let port = holding(fn() { Ok(busy) })
+  assert orchestrator_port.ask_holds(port, answers_within_ms) == Ok(busy)
+}
+
+pub fn a_catalogue_that_cannot_be_read_is_silence_and_never_none_test() {
+  // The holder says it could not read. The asker must not be able to take that
+  // for a daemon that owns nothing, so the answer is the same as no answer.
+  let port = holding(fn() { Error(Nil) })
+  assert orchestrator_port.ask_holds(port, answers_within_ms) == Error(Nil)
+
+  // A port started without a holder is in the same position, and serves on.
+  let unheld = started()
+  assert orchestrator_port.ask_holds(unheld, answers_within_ms) == Error(Nil)
+  assert orchestrator_port.ask(unheld, "owned-1", answers_within_ms)
+    == Ok(Owned)
+}
+
+pub fn a_slow_holder_does_not_keep_a_lookup_waiting_test() {
+  let port =
+    holding(fn() {
+      process.sleep(400)
+      Ok(orchestrator_port.Held(sessions: 0, placed: []))
+    })
+  let reply = process.new_subject()
+  process.spawn(fn() {
+    process.send(reply, orchestrator_port.ask_holds(port, 3000))
+  })
+
+  // The ownership question is answered while the walk is still running.
+  assert orchestrator_port.ask(port, "owned-1", answers_within_ms) == Ok(Owned)
+  assert process.receive(reply, 3000)
+    == Ok(Ok(orchestrator_port.Held(sessions: 0, placed: [])))
 }
 
 pub fn a_port_with_no_describer_refuses_every_description_test() {
@@ -417,6 +474,7 @@ fn spawning(host: orchestrator_port.SpawnHost) -> Address(Message) {
       fn(_session) { Error("not_found") },
       orchestrator_port.declining(),
       host,
+      orchestrator_port.unheld,
     )
     as "the port starts under its name"
   address.Address(node: node.self(), name:)

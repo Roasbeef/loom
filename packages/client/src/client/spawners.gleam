@@ -428,16 +428,33 @@ fn placement_of(
   use workspace <- result.try(optional_string(fields, place, "workspace"))
   case executor, pool, directory {
     Some(executor), None, None -> {
-      use Nil <- result.try(case executors.find(known.executors, executor) {
-        Ok(_) -> Ok(Nil)
-        Error(Nil) ->
-          Error(
-            place
-            <> ".executor "
-            <> executor
-            <> " is not a configured [executors.<name>]",
-          )
-      })
+      use Nil <- result.try(
+        case executors.find(known.executors, executor), known.peers {
+          Ok(_), _ -> Ok(Nil)
+
+          // In ledger mode the ledger may give this executor a row. Parsing
+          // checks the name's shape, and the daemon compares it with the ledger
+          // when it starts (`ledger_reference.audit_names`).
+          Error(Nil), ledger_reference.Ledgered ->
+            case catalogue.is_executor_name(executor) {
+              True -> Ok(Nil)
+              False ->
+                Error(
+                  place
+                  <> ".executor "
+                  <> executor
+                  <> " is not an executor name",
+                )
+            }
+          Error(Nil), ledger_reference.Pinned(_) ->
+            Error(
+              place
+              <> ".executor "
+              <> executor
+              <> " is not a configured [executors.<name>]",
+            )
+        },
+      )
       use workspace <- result.map(workspace_of(workspace, place, "executor"))
       OnExecutor(executor:, workspace:)
     }

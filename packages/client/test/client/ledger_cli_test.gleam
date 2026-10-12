@@ -10,11 +10,14 @@
 //// is `ledger_operator_live_test`.
 
 import client/daemon/ledger_cli
+import client/directory/seats
+import client/directory/store
 import client/distribution_bundle
 import client/distribution_install.{Options}
 import client/distribution_provision.{ReplaceExisting}
 import client/ledger_control.{type Handle}
 import client/ledger_service
+import client/remote/orchestrator_port.{type Held, Held, Placed}
 import core/json
 import gleam/list
 import gleam/option.{None, Some}
@@ -48,6 +51,16 @@ fn copy_of(deployed: deployment.Deployed) -> List(String) {
 
 fn hub(deployed) {
   deployment.serve(deployed, "hub", "hub", "loom@hub.example")
+}
+
+// The daemon's way to ask the orchestrators what they hold, scripted: each
+// orchestrator answers with what `held` says for its node, or is silent.
+fn asking(handle: Handle, held: fn(String) -> Result(Held, Nil)) -> Handle {
+  ledger_control.asking(handle, held)
+}
+
+fn holding_nothing(handle: Handle) -> Handle {
+  asking(handle, fn(_node) { Ok(Held(sessions: 0, placed: [])) })
 }
 
 fn head_of(handle: Handle) -> Int {
@@ -126,7 +139,7 @@ pub fn a_refused_enrollment_signs_nothing_test() {
   )
 
   // A node another member holds, a link to nobody, and a directory standing
-  // the ledger cannot carry yet.
+  // that is not one.
   refused(
     enroll_laptop(deployed, ["--node", "loom@hub.example"])
       |> drop_flag("--node", "loom@laptop2.example.net"),
@@ -137,7 +150,10 @@ pub fn a_refused_enrollment_signs_nothing_test() {
       |> drop_flag("--links", "hub,devbox"),
     "ghost cannot be linked",
   )
-  refused(enroll_laptop(deployed, ["--directory", "voter"]), "must be none")
+  refused(
+    enroll_laptop(deployed, ["--directory", "maybe"]),
+    "--directory takes voter, learner or none",
+  )
   refused(
     enroll_laptop(deployed, ["--role", "wizard"])
       |> drop_flag("--role", "orchestrator"),
@@ -219,14 +235,14 @@ pub fn a_revoke_that_orphans_an_executor_needs_force_test() {
       fn(_) { deployment.daemon_over(handle) },
     )
   assert string.contains(report, "Revoked hub as entry 3")
-  assert string.contains(report, "owns sessions")
+  assert string.contains(report, "Not checked (--force)")
   assert head_of(handle) == 3
   assert list.length(copy_of(deployed)) == 4
 }
 
-pub fn a_revoke_of_a_leaf_member_needs_no_force_test() {
+pub fn a_revoke_of_a_leaf_member_needs_no_force_once_the_orchestrators_answer_test() {
   let deployed = deployment.provision("cli-leaf", deployment.plan_text)
-  let handle = hub(deployed)
+  let handle = hub(deployed) |> holding_nothing
   let assert Ok(_) =
     ledger_cli.run_with("enroll", enroll_laptop(deployed, []), fn(_) {
       deployment.daemon_over(handle)
@@ -238,6 +254,7 @@ pub fn a_revoke_of_a_leaf_member_needs_no_force_test() {
       fn(_) { deployment.daemon_over(handle) },
     )
   assert string.contains(report, "Revoked laptop2 as entry 4")
+  assert string.contains(report, "Checked first: laptop2 owns no sessions.")
 
   // The name can be enrolled again, which is an ordinary entry.
   let assert Ok(report) =
@@ -254,6 +271,154 @@ pub fn a_revoke_of_a_leaf_member_needs_no_force_test() {
       fn(_) { deployment.daemon_over(handle) },
     )
   assert string.contains(reason, "ghost is not a member")
+}
+
+// The laptop2 of `enroll_laptop` is an orchestrator linked to the hub and the
+// devbox, enrolled through the hub's daemon.
+fn with_laptop(label: String) -> #(deployment.Deployed, Handle) {
+  let deployed = deployment.provision(label, deployment.plan_text)
+  let handle = hub(deployed)
+  let assert Ok(_) =
+    ledger_cli.run_with("enroll", enroll_laptop(deployed, []), fn(_) {
+      deployment.daemon_over(handle)
+    })
+  #(deployed, handle)
+}
+
+fn revoke_laptop(
+  deployed: deployment.Deployed,
+  handle: Handle,
+  extra: List(String),
+) -> Result(String, String) {
+  ledger_cli.run_with(
+    "revoke",
+    list.flatten([
+      ["laptop2", "--wait", "0"],
+      deployment.signing(deployed),
+      extra,
+    ]),
+    fn(_) { deployment.daemon_over(handle) },
+  )
+}
+
+pub fn a_revoke_of_an_orchestrator_that_owns_sessions_needs_force_test() {
+  let #(deployed, handle) = with_laptop("cli-owns")
+
+  // The laptop reports three sessions. The hub reports none.
+  let asked =
+    asking(handle, fn(node) {
+      case node {
+        "loom@laptop2.example.net" -> Ok(Held(sessions: 3, placed: []))
+        _ -> Ok(Held(sessions: 0, placed: []))
+      }
+    })
+  let assert Error(reason) = revoke_laptop(deployed, asked, [])
+  assert string.contains(reason, "may strand sessions")
+  assert string.contains(reason, "laptop2 owns 3 sessions")
+  assert string.contains(reason, "Nothing was signed")
+  assert list.length(copy_of(deployed)) == 4
+  assert head_of(handle) == 3
+
+  // `--force` revokes it, and the report says nothing was looked at.
+  let assert Ok(report) = revoke_laptop(deployed, asked, ["--force"])
+  assert string.contains(report, "Revoked laptop2 as entry 4")
+  assert string.contains(report, "Not checked (--force)")
+}
+
+pub fn a_revoke_of_an_orchestrator_that_does_not_answer_needs_force_test() {
+  let #(deployed, handle) = with_laptop("cli-silent")
+
+  // A laptop that is asleep, or lost, says nothing. That is not "none".
+  let asked =
+    asking(handle, fn(node) {
+      case node {
+        "loom@laptop2.example.net" -> Error(Nil)
+        _ -> Ok(Held(sessions: 0, placed: []))
+      }
+    })
+  let assert Error(reason) = revoke_laptop(deployed, asked, [])
+  assert string.contains(
+    reason,
+    "whether laptop2 holds sessions could not be told",
+  )
+  assert string.contains(reason, "laptop2 did not answer")
+  assert list.length(copy_of(deployed)) == 4
+
+  let assert Ok(_) = revoke_laptop(deployed, asked, ["--force"])
+  assert list.length(copy_of(deployed)) == 5
+}
+
+pub fn a_revoke_of_an_executor_counts_the_sessions_placed_on_it_test() {
+  let deployed = deployment.provision("cli-placed", deployment.plan_text)
+  let handle = hub(deployed)
+  let arguments = ["devbox", "--wait", "0", ..deployment.signing(deployed)]
+
+  // The hub placed two sessions on the devbox's node and one elsewhere.
+  let busy =
+    asking(handle, fn(_node) {
+      Ok(
+        Held(sessions: 3, placed: [
+          Placed(executor_node: "loom@devbox.example", sessions: 2),
+          Placed(executor_node: "loom@other.example", sessions: 1),
+        ]),
+      )
+    })
+  let assert Error(reason) =
+    ledger_cli.run_with("revoke", arguments, fn(_) {
+      deployment.daemon_over(busy)
+    })
+  assert string.contains(reason, "2 sessions placed on devbox by hub")
+  assert list.length(copy_of(deployed)) == 3
+
+  // Sessions placed on another node do not stop it.
+  let elsewhere =
+    asking(handle, fn(_node) {
+      Ok(
+        Held(sessions: 1, placed: [
+          Placed(executor_node: "loom@other.example", sessions: 1),
+        ]),
+      )
+    })
+  let assert Ok(report) =
+    ledger_cli.run_with("revoke", arguments, fn(_) {
+      deployment.daemon_over(elsewhere)
+    })
+  assert string.contains(
+    report,
+    "Checked first: no orchestrator linked to devbox has a session placed on it.",
+  )
+}
+
+pub fn a_revoke_with_no_daemon_to_ask_needs_force_test() {
+  let deployed = deployment.provision("cli-nobody", deployment.plan_text)
+  let arguments = ["devbox", "--wait", "0", ..deployment.signing(deployed)]
+  let assert Error(reason) =
+    ledger_cli.run_with("revoke", arguments, fn(_) { deployment.nobody() })
+  assert string.contains(reason, "could not be asked")
+  assert list.length(copy_of(deployed)) == 3
+
+  let assert Ok(report) =
+    ledger_cli.run_with("revoke", list.append(arguments, ["--force"]), fn(_) {
+      deployment.nobody()
+    })
+  assert string.contains(report, "Revoked devbox as entry 3")
+}
+
+pub fn a_refusal_reports_the_link_graph_and_the_sessions_together_test() {
+  let deployed = deployment.provision("cli-both", deployment.plan_text)
+  let handle = hub(deployed)
+
+  // The hub is the only orchestrator the devbox uses and it owns sessions.
+  let busy = asking(handle, fn(_node) { Ok(Held(sessions: 4, placed: [])) })
+  let assert Error(reason) =
+    ledger_cli.run_with(
+      "revoke",
+      ["hub", "--wait", "0", ..deployment.signing(deployed)],
+      fn(_) { deployment.daemon_over(busy) },
+    )
+  assert string.contains(reason, "would break the link graph")
+  assert string.contains(reason, "hub owns 4 sessions")
+  assert list.length(copy_of(deployed)) == 3
 }
 
 pub fn a_renewal_replaces_the_pin_and_writes_a_bundle_that_installs_test() {
@@ -558,4 +723,129 @@ pub fn the_decoded_status_the_commands_use_is_the_daemons_test() {
   assert status.self_name == "hub"
   assert status.standing == ledger_control.Enrolled
   assert status.last_refusal == None
+}
+
+// --- the session directory ----------------------------------------------------
+
+const directory_plan =
+  "directory = [\"hub\", \"hub2\", \"devbox\"]
+
+[[node]]
+name = \"hub\"
+role = \"orchestrator\"
+erlang_node = \"loom@hub.example\"
+executors = [\"devbox\"]
+
+[[node]]
+name = \"hub2\"
+role = \"orchestrator\"
+erlang_node = \"loom@hub2.example\"
+executors = [\"devbox\"]
+
+[[node]]
+name = \"devbox\"
+role = \"executor\"
+erlang_node = \"loom@devbox.example\"
+[node.workspaces]
+repo = \"/home/me/src/loom\"
+"
+
+fn directory_seats(handle: Handle) -> List(seats.Place) {
+  let assert Ok(status) = ledger_service.status(handle.service, 5000)
+  seats.places(status.ledger)
+}
+
+pub fn an_enrollment_seats_a_learner_and_a_revoke_keeps_three_voters_test() {
+  let deployed = deployment.provision("cli-directory", directory_plan)
+  let handle = holding_nothing(hub(deployed))
+  let assert Ok(report) =
+    ledger_cli.run_with(
+      "enroll",
+      enroll_laptop(deployed, ["--directory", "learner"]),
+      fn(_) { deployment.daemon_over(handle) },
+    )
+  assert string.contains(report, "Enrolled laptop2")
+  assert directory_seats(handle)
+    == [
+      seats.Place("loom@devbox.example", store.Voter),
+      seats.Place("loom@hub.example", store.Voter),
+      seats.Place("loom@hub2.example", store.Voter),
+      seats.Place("loom@laptop2.example.net", store.Learner),
+    ]
+
+  // The directory has three voters, so none of them can be revoked without
+  // --force, and a refusal signs nothing.
+  let head = head_of(handle)
+  let arguments = ["hub2", "--wait", "0", ..deployment.signing(deployed)]
+  let assert Error(reason) =
+    ledger_cli.run_with("revoke", arguments, fn(_) {
+      deployment.daemon_over(handle)
+    })
+  assert string.contains(reason, "would leave too few directory voters")
+  assert string.contains(reason, "left with 2 voters")
+  assert string.contains(reason, "revoke the follower and not the leader")
+  assert string.contains(reason, "Nothing was signed")
+  assert head_of(handle) == head
+  assert list.length(copy_of(deployed)) == head + 1
+
+  // The learner holds no vote and goes without it.
+  let assert Ok(report) =
+    ledger_cli.run_with(
+      "revoke",
+      ["laptop2", "--wait", "0", ..deployment.signing(deployed)],
+      fn(_) { deployment.daemon_over(handle) },
+    )
+  assert string.contains(report, "Revoked laptop2")
+
+  // With --force the operator shrinks the directory on purpose.
+  let assert Ok(report) =
+    ledger_cli.run_with("revoke", list.append(arguments, ["--force"]), fn(_) {
+      deployment.daemon_over(handle)
+    })
+  assert string.contains(report, "Revoked hub2")
+}
+
+// The three checks of a revoke are independent, so a revoke that fails more
+// than one reports each in the same refusal, and `--force` skips and names all
+// three.
+pub fn a_revoke_reports_the_voters_beside_the_sessions_and_force_skips_all_three_test() {
+  let deployed = deployment.provision("cli-all-checks", directory_plan)
+  let asked =
+    asking(hub(deployed), fn(node) {
+      case node {
+        "loom@hub2.example" -> Ok(Held(sessions: 2, placed: []))
+        _ -> Ok(Held(sessions: 0, placed: []))
+      }
+    })
+  let arguments = ["hub2", "--wait", "0", ..deployment.signing(deployed)]
+  let head = head_of(asked)
+  let assert Error(reason) =
+    ledger_cli.run_with("revoke", arguments, fn(_) {
+      deployment.daemon_over(asked)
+    })
+  assert string.contains(reason, "may strand sessions")
+  assert string.contains(reason, "hub2 owns 2 sessions")
+  assert string.contains(reason, "would leave too few directory voters")
+  assert string.contains(reason, "left with 2 voters")
+  assert string.contains(reason, "Nothing was signed")
+  assert head_of(asked) == head
+
+  let assert Ok(report) =
+    ledger_cli.run_with("revoke", list.append(arguments, ["--force"]), fn(_) {
+      deployment.daemon_over(asked)
+    })
+  assert string.contains(report, "Revoked hub2")
+  assert string.contains(report, "Not checked (--force)")
+  assert string.contains(report, "the directory's voters")
+}
+
+pub fn an_enrollment_with_no_standing_stays_outside_the_directory_test() {
+  let deployed = deployment.provision("cli-voters", directory_plan)
+  let handle = hub(deployed)
+  assert list.length(directory_seats(handle)) == 3
+  let assert Ok(_) =
+    ledger_cli.run_with("enroll", enroll_laptop(deployed, []), fn(_) {
+      deployment.daemon_over(handle)
+    })
+  assert list.length(directory_seats(handle)) == 3
 }

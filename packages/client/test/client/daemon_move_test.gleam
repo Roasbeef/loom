@@ -13,6 +13,7 @@ import client/daemon/ui_socket
 import client/daemon_server_test as wire
 import client/orchestrators
 import client/remote/orchestrator_port
+import client/roster
 import client/session_directory.{type Directory, Directory, Elsewhere}
 import client/session_movers
 import core/clock
@@ -135,7 +136,10 @@ fn moving_from(
     )
   let movers =
     session_movers.Control(
-      orchestrators: [laptop(), orchestrators.plain("desk", "desk@10.0.0.8")],
+      orchestrators: roster.fixed([
+        laptop(),
+        orchestrators.plain("desk", "desk@10.0.0.8"),
+      ]),
       begin: fn(move) { process.send(told, Began(move)) },
       holds: fn(_, _) { process.call(desk_says, 1000, Ask) },
       abandon: fn(_) { Nil },

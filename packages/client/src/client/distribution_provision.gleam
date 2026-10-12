@@ -477,12 +477,24 @@ fn bundle(plan: Plan, entry: Issued, minted: Minted, trust: Trust) -> Bundle {
       executors.plain(row.name, row.erlang_node)
     }),
     workspaces: node.workspaces,
-    directory: distribution_plan.directory_members(plan, node),
+    directory: listed_directory(plan, node, trust),
     ca: minted.authority,
     certificate: entry.certificate,
     key: entry.key,
     cookie: minted.cookie,
   )
+}
+
+// The members a bundle lists for the session directory. A static bundle lists
+// them, since it has no other way to say. A ledger carries each member's
+// standing in its own entry, and a bundle that also listed the members would be
+// a second source that could disagree.
+fn listed_directory(plan: Plan, node: Node, trust: Trust) -> List(String) {
+  case trust {
+    distribution_bundle.StaticPeers(..) ->
+      distribution_plan.directory_members(plan, node)
+    distribution_bundle.SignedLedger(..) -> []
+  }
 }
 
 // A pin is looked up by node name, which is unique in a validated plan. The

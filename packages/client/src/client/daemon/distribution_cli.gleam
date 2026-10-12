@@ -105,7 +105,8 @@ commands:
                                   credential file or table is refused unless
                                   --force.
   enroll NAME --node N --role orchestrator|executor [--host H] [--port P]
-         [--links A,B] [--workspace NAME=ROOT]... [--bundle-dir DIR]
+         [--links A,B] [--directory voter|learner|none]
+         [--workspace NAME=ROOT]... [--bundle-dir DIR]
          [--out DIR] [--force] [--wait SECONDS] [COMMON]
                                   Run on the operator's machine. Mints a
                                   certificate for N under the kept authority,
@@ -117,15 +118,23 @@ commands:
                                   SECONDS (default 10). --links names the
                                   members NAME may connect to; an executor
                                   needs at least one orchestrator there, and
-                                  --workspace to serve anything.
+                                  --workspace to serve anything. --directory
+                                  seats the node in the session directory:
+                                  voter for a machine that is always on (the
+                                  directory takes three to seven voters),
+                                  learner for one that only reads it, none
+                                  (the default) for a laptop.
   revoke NAME [--reason TEXT] [--force] [--wait SECONDS] [COMMON]
                                   Signs a `revoke`, hands it to a daemon and
                                   prints confirmations. Refuses when the revoke
                                   would leave an executor with no orchestrator
-                                  linked to it, or cut members off from the
-                                  rest, unless --force. It does not check
-                                  whether NAME owns sessions: a daemon cannot
-                                  ask another.
+                                  linked to it, cut members off from the rest,
+                                  strand sessions (NAME owns some, or for an
+                                  executor, some are placed on it), or leave the
+                                  session directory with fewer than three
+                                  voters, unless --force. An orchestrator that
+                                  does not answer is unknown and also needs
+                                  --force.
   renew NAME [--bundle-dir DIR] [--out DIR] [--force] [--wait SECONDS]
          [COMMON]
                                   Mints a new certificate for a member, signs a
@@ -335,16 +344,6 @@ fn provision_ledger(
   output: String,
   parsed: Parsed,
 ) -> Result(String, String) {
-  use Nil <- result.try(case plan.directory {
-    [] -> Ok(Nil)
-    _ ->
-      Error(
-        "this plan has a session directory, which cannot follow a membership "
-        <> "ledger yet (its members come from [directory] members until phase "
-        <> "3 of protocol-change/086); pass --static to provision it with a "
-        <> "peer list",
-      )
-  })
   use Nil <- result.try(distribution_provision.check_output(
     output,
     parsed.overwrite,

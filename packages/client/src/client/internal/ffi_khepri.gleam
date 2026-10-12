@@ -40,9 +40,25 @@ pub type Voting {
   /// A voting member, counted toward the majority.
   Voter
 
-  /// A member that receives the log but does not vote, such as one that
-  /// joined and has not caught up yet.
+  /// A member Ra added as `promotable`: it receives the log, does not count
+  /// toward the majority yet, and becomes a `Voter` by itself once it has caught
+  /// up. A voter's join passes through this state, so a plan to reconcile the
+  /// cluster must not read it as a learner.
+  Promoting
+
+  /// A member that receives the log, never votes and is never promoted: a
+  /// learner.
   NonVoter
+}
+
+/// The kind of member a join makes.
+pub type Joining {
+  /// A voter: added as promotable, then promoted by Ra once it has caught up.
+  AsVoter
+
+  /// A learner: added as a non-voter, which Ra never promotes and never counts
+  /// toward the majority.
+  AsLearner
 }
 
 /// Starts the Khepri and Ra applications and the Ra system rooted at a data
@@ -122,8 +138,9 @@ pub fn restart(timeout_ms: Int) -> Result(Nil, Restart)
 @external(erlang, "client_khepri_ffi", "sync_server_record")
 pub fn sync_server_record() -> Result(Nil, String)
 
-/// What one step of the non-voter join reports. `client/directory/store`
-/// repeats a step that says `Again` under its own deadline.
+/// What one step of a join, or of a removal, reports.
+/// `client/directory/store` repeats a step that says `Again` under its own
+/// deadline.
 pub type JoinStep {
   /// The cluster took the request, or already held its outcome.
   Done
@@ -136,19 +153,19 @@ pub type JoinStep {
   Failed(reason: String)
 }
 
-/// Starts a fresh local Ra server as a promotable non-voter, after deleting any
-/// server left from an earlier attempt, and returns its new UId. The first
-/// step of the non-voter join; Khepri's own join adds a voter at once.
+/// Starts a fresh local Ra server with the membership the join asks for, after
+/// deleting any server left from an earlier attempt, and returns its new UId.
+/// The first step of a join; Khepri's own join adds a voter at once.
 ///
 /// Ra `ra:force_delete_server/2`, `ra:new_uid/1` and `ra:start_server/2`.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// ffi_khepri.join_start() // -> Ok(uid)
+/// ffi_khepri.join_start(AsLearner) // -> Ok(uid)
 /// ```
 @external(erlang, "client_khepri_ffi", "join_start")
-pub fn join_start() -> Result(Dynamic, String)
+pub fn join_start(joining: Joining) -> Result(Dynamic, String)
 
 /// Asks the cluster, through the member on `remote`, to forget this member's
 /// old identity, as a member that lost its disk must before it rejoins.
@@ -164,17 +181,23 @@ pub fn join_start() -> Result(Dynamic, String)
 pub fn join_remove(remote: Node, timeout_ms: Int) -> JoinStep
 
 /// Asks the cluster to add this member, under the UId `join_start` returned,
-/// as a promotable non-voter.
+/// with the membership `join_start` was given: `promotable` for a voter and
+/// `non_voter` for a learner.
 ///
-/// Ra `ra:add_member/3` with `membership => promotable`.
+/// Ra `ra:add_member/3`.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// ffi_khepri.join_add(remote, uid, 5000) // -> Done
+/// ffi_khepri.join_add(remote, uid, AsVoter, 5000) // -> Done
 /// ```
 @external(erlang, "client_khepri_ffi", "join_add")
-pub fn join_add(remote: Node, uid: Dynamic, timeout_ms: Int) -> JoinStep
+pub fn join_add(
+  remote: Node,
+  uid: Dynamic,
+  joining: Joining,
+  timeout_ms: Int,
+) -> JoinStep
 
 /// Whether Ra has promoted this member to a voter, read from the cluster.
 ///
@@ -188,7 +211,37 @@ pub fn join_add(remote: Node, uid: Dynamic, timeout_ms: Int) -> JoinStep
 @external(erlang, "client_khepri_ffi", "join_promoted")
 pub fn join_promoted(remote: Node, timeout_ms: Int) -> JoinStep
 
-/// Restarts the promoted server through Khepri, so Khepri records the store.
+/// Whether this member has applied what the member on `remote` had applied
+/// when asked. A learner is never promoted, so this is what a learner's join
+/// waits for in place of `join_promoted`.
+///
+/// Ra `ra:member_overview/2`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// ffi_khepri.join_caught_up(remote, 5000) // -> Again
+/// ```
+@external(erlang, "client_khepri_ffi", "join_caught_up")
+pub fn join_caught_up(remote: Node, timeout_ms: Int) -> JoinStep
+
+/// Removes the member on the node named `member` from the cluster, through this
+/// node's own server. The command is appended and not yet committed when it
+/// returns `Done`, and Ra answers `Again` to another change until it commits.
+/// The name is a string because it comes from the ledger, and the shim looks up
+/// an atom that exists and makes none: a name Ra never held is not a member.
+///
+/// Ra `ra:remove_member/3`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// ffi_khepri.remove_member("loom@laptop.example", 5000) // -> Done
+/// ```
+@external(erlang, "client_khepri_ffi", "remove_member")
+pub fn remove_member(member: String, timeout_ms: Int) -> JoinStep
+
+/// Restarts the joined server through Khepri, so Khepri records the store.
 ///
 /// Ra `ra:stop_server/2`, then Khepri `khepri:start/3`.
 ///
@@ -310,20 +363,40 @@ pub fn put(
   timeout_ms: Int,
 ) -> Result(Nil, Failure)
 
-/// Ra's members by node name with whether each votes, and the leader's node
-/// name when there is one.
+/// Ra's members by node name with whether each votes, the leader's node name
+/// when there is one, and the members that leader reports as replicating
+/// (status `normal`), which is empty unless the answer came from the leader.
 ///
 /// Ra `ra:members_info/2`.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// ffi_khepri.membership(2000) // -> Ok(#([#("a@h", Voter)], Some("a@h")))
+/// ffi_khepri.membership(2000)
+/// // -> Ok(#([#("a@h", Voter)], Some("a@h"), ["a@h"]))
 /// ```
 @external(erlang, "client_khepri_ffi", "membership")
 pub fn membership(
   timeout_ms: Int,
-) -> Result(#(List(#(String, Voting)), Option(String)), Failure)
+) -> Result(#(List(#(String, Voting)), Option(String), List(String)), Failure)
+
+/// The same question asked of the server on `remote`, which forwards it to the
+/// leader it knows. A member whose own server cannot say what the cluster holds
+/// asks a peer, and the answer is the leader's.
+///
+/// Ra `ra:members_info/2` addressed to that node's server.
+///
+/// ## Examples
+///
+/// ```gleam
+/// ffi_khepri.membership_through(remote, 2000)
+/// // -> Ok(#([#("a@h", Voter)], Some("a@h"), ["a@h"]))
+/// ```
+@external(erlang, "client_khepri_ffi", "membership_through")
+pub fn membership_through(
+  remote: Node,
+  timeout_ms: Int,
+) -> Result(#(List(#(String, Voting)), Option(String), List(String)), Failure)
 
 /// The last log index this member has applied, or 0 when the store is not
 /// running.

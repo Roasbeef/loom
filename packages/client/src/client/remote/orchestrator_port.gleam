@@ -66,10 +66,16 @@
 //// parent release its children reuses them. `ask_run_ended` is the call that
 //// phase will make.
 ////
-//// The port reveals only whether an identity is in this daemon's catalogue, to a
-//// peer the operator pinned as a trusted Erlang node. It carries no credential,
-//// and a client is never redirected by it: the asking daemon decides what its
-//// own client is told.
+//// Phase 2 of protocol-change/086 adds `Holds`, a read of how many sessions the
+//// catalogue owns and how many sit on each executor. An operator's `revoke`
+//// asks it before it signs, so that removing a member does not strand sessions
+//// unannounced. It runs apart from the port, as a spawn does, because it walks
+//// the catalogue.
+////
+//// The port reveals whether an identity is in this daemon's catalogue, and for
+//// `Holds` two counts of sessions, to a peer the operator pinned as a trusted
+//// Erlang node. It carries no credential, and a client is never redirected by
+//// it: the asking daemon decides what its own client is told.
 ////
 //// A `PeerCommand` is served on the same trust. A peer orchestrator is pinned
 //// by the operator and can already do anything the distribution connection
@@ -224,6 +230,66 @@ pub type Message {
     /// Where the count goes.
     reply: Subject(Result(Int, SpawnRefusal)),
   )
+
+  /// What this daemon holds that a revoke of it, or of an executor it places
+  /// sessions on, would strand (protocol-change/086, phase 2): how many
+  /// sessions its catalogue owns, and how many of them are placed on each
+  /// executor. The operator's tool asks it before it signs a `revoke`. The
+  /// answer is `Error(Nil)` when the catalogue could not be read, which the
+  /// asker must not mistake for "none".
+  ///
+  /// This is the subset of protocol-change/085's `Report` that the check
+  /// needs (`OrchestratorFacts.occupied` and `placements`), built before the
+  /// rest of the report so that the check does not wait for it. A port built
+  /// before this constructor existed has no clause for it and stops, as for
+  /// `Describe`, so this port assumes peers of the same build.
+  Holds(
+    /// Where the answer goes.
+    reply: Subject(Result(Held, Nil)),
+  )
+}
+
+/// What a daemon's catalogue holds, as `Holds` answers it.
+pub type Held {
+  Held(
+    /// The sessions this daemon owns: every active registration whose custody
+    /// is not `Moved`. A session handed to another orchestrator is that
+    /// orchestrator's now, and archived sessions are not counted.
+    sessions: Int,
+    /// How many of them are placed on each executor, by the executor's node,
+    /// for the executors this daemon lists. At most `max_placed` entries,
+    /// ordered by node.
+    placed: List(Placed),
+  )
+}
+
+/// The sessions placed on one executor.
+pub type Placed {
+  Placed(
+    /// The executor's full node name.
+    executor_node: String,
+    /// The sessions placed on it.
+    sessions: Int,
+  )
+}
+
+/// The most executors a `Held` lists.
+pub const max_placed = 64
+
+/// Reads what the daemon's catalogue holds. The daemon supplies it, so the port
+/// does not know the catalogue.
+pub type Holder =
+  fn() -> Result(Held, Nil)
+
+/// The holder of a port started without a catalogue: it cannot tell.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert orchestrator_port.unheld() == Error(Nil)
+/// ```
+pub fn unheld() -> Result(Held, Nil) {
+  Error(Nil)
 }
 
 /// What the port answers.
@@ -381,6 +447,7 @@ pub fn start(
     unserved_description,
     declining(),
     refusing_spawns(),
+    unheld,
   )
 }
 
@@ -410,6 +477,7 @@ pub fn start_serving(
     unserved_description,
     declining(),
     refusing_spawns(),
+    unheld,
   )
 }
 
@@ -434,6 +502,7 @@ pub fn start_importing(
     unserved_description,
     importer,
     refusing_spawns(),
+    unheld,
   )
 }
 
@@ -445,7 +514,7 @@ pub fn start_importing(
 /// ## Examples
 ///
 /// ```gleam
-/// // let assert Ok(_) = orchestrator_port.start_with(orchestrator_port.default(), held, forward, describe, importer, spawns)
+/// // let assert Ok(_) = orchestrator_port.start_with(orchestrator_port.default(), held, forward, describe, importer, spawns, holds)
 /// ```
 pub fn start_with(
   name: Name(Message),
@@ -454,10 +523,11 @@ pub fn start_with(
   describe: Describer,
   importer: Importer,
   spawns: SpawnHost,
+  holds: Holder,
 ) -> actor.StartResult(Subject(Message)) {
   actor.new(Nil)
   |> actor.on_message(fn(state, message) {
-    answer(held, peer, describe, importer, spawns, state, message)
+    answer(held, peer, describe, importer, spawns, holds, state, message)
   })
   |> actor.named(name)
   |> actor.hibernate_after(residency.hibernate_after_ms)
@@ -483,6 +553,7 @@ fn answer(
   describe: Describer,
   importer: Importer,
   spawns: SpawnHost,
+  holds: Holder,
   state: Nil,
   message: Message,
 ) -> actor.Next(Nil, Message) {
@@ -501,6 +572,11 @@ fn answer(
 
     // A description is one catalogue read, answered in this turn like `Owns`.
     Describe(session:, reply:) -> process.send(reply, describe(session))
+
+    // The holdings walk the catalogue a page at a time, which takes as long as
+    // the catalogue is large. It runs apart from the port, as an activation
+    // does, so a question about ownership is not kept waiting behind it.
+    Holds(reply:) -> detached(reply, fn(_node) { holds() })
 
     // A piece is written in this turn, so the pieces of one copy land in the
     // order they were sent.
@@ -639,6 +715,23 @@ pub fn ask_description(
   within_ms: Int,
 ) -> Result(Result(JsonValue, String), Nil) {
   exchange(at, fn(reply) { Describe(session:, reply:) }, within_ms)
+}
+
+/// Asks the port at `at` what its catalogue holds, and waits at most
+/// `within_ms`. `Error(Nil)` means the daemon did not say: the node is
+/// unreachable, no port is registered there, the answer was late, or the
+/// catalogue could not be read. It is never "nothing held".
+///
+/// ## Examples
+///
+/// ```gleam
+/// // orchestrator_port.ask_holds(Address(node: peer, name: orchestrator_port.default()), 5000)
+/// ```
+pub fn ask_holds(at: Address(Message), within_ms: Int) -> Result(Held, Nil) {
+  case exchange(at, fn(reply) { Holds(reply:) }, within_ms) {
+    Ok(Ok(held)) -> Ok(held)
+    Ok(Error(Nil)) | Error(Nil) -> Error(Nil)
+  }
 }
 
 /// Sends one piece of a copy to the port at `at` and waits at most `within_ms`
