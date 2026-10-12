@@ -27,12 +27,36 @@
 //// the sender reads it as an ordinary in-band refusal. Silence is the other
 //// failure, which the port's asker reports as unreachable and which this module
 //// has no value for, because it is the absence of an answer.
+////
+//// ## The spawner's terms
+////
+//// The receiver judges a message against the `[spawners.<name>]` table of its
+//// sender (`client/spawners`). The Agency (`client/agency`) has no use for that
+//// table's placements and profiles, so the figures it needs travel as `Terms`,
+//// plain data. The functions below are the pure half of taking a message to the
+//// Agency: `agent_request` turns a `Request` into the Agency's own
+//// `SpawnRequest` under the terms, `clamp_tools` narrows the parent's tools to
+//// the ceiling, and `refusal_of` turns the Agency's refusals back into this
+//// module's.
+////
+//// ## Flow
+////
+//// `agent_request` → `clamp_tools` → `refusal_of`
+////
+//// 1. `agent_request` judges the deadline and the tools a request names against
+////    the terms, and builds the Agency's request.
+//// 2. `clamp_tools` leaves the parent's tools that the ceiling also holds, which
+////    is the set the child's tools may narrow.
+//// 3. `refusal_of` renders an Agency refusal as the refusal the sender reads.
 
 import core/ids.{type OpId}
 import core/json.{type JsonValue}
-import gleam/option.{type Option}
+import gleam/list
+import gleam/option.{type Option, None, Some}
+import gleam/result
 import tools/agent.{
-  type Handle, type Minter, type Outcome, type ResultSchema, type TerminalResult,
+  type Handle, type Minter, type Outcome, type Refusal, type ResultSchema,
+  type TerminalResult,
 }
 
 /// A session and a strand on the spawning orchestrator. The strand is the
@@ -243,4 +267,153 @@ pub type SpawnRefusal {
   /// serve spawns yet. Slice S2 gives the receiver its delegate session and
   /// removes this variant.
   Unimplemented
+}
+
+/// The longest one join waits on the receiver, in milliseconds. A sender may ask
+/// for more and is answered as if it had asked for this, which keeps one join
+/// under the 30 second ceiling of `agent_wait` and the connection's reply
+/// deadline.
+pub const join_cap_ms = 25_000
+
+/// What the spawner's table says that the Agency needs, as plain data. All
+/// durations are milliseconds, converted from the table's seconds by the host.
+pub type Terms {
+  Terms(
+    /// The tool ceiling: no child holds a tool outside it.
+    ceiling: List(String),
+    /// The deepest child allowed. A child of a parent at depth `d` is at depth
+    /// `d + 1`, which may not exceed this.
+    max_depth: Int,
+    /// The longest deadline a spawn may ask for.
+    max_within_ms: Int,
+    /// The deadline a spawn gets when it asks for none. At most `max_within_ms`.
+    default_within_ms: Int,
+  )
+}
+
+/// A parent on another orchestrator, as the delegate session's Agency sees it:
+/// who it is, how deep it stands and what it may call, under which terms. The
+/// Agency has no strand of its own to read these from, since the parent is not
+/// a strand of the delegate session.
+pub type Delegation {
+  Delegation(
+    /// The parent session and strand on the spawning orchestrator.
+    parent: Parent,
+    /// The parent's depth there: zero for the strand a human talks to.
+    depth: Int,
+    /// The tools the parent holds, already clamped to the terms' ceiling.
+    parent_tools: List(String),
+    /// What the spawner's table allows.
+    terms: Terms,
+  )
+}
+
+/// Turns a request into the Agency's own, under the terms.
+///
+/// The deadline is always finite on the receiver's clock: absent means the
+/// terms' default, and a value that is not positive or is above the cap is
+/// refused and not clamped, so a sender never believes a child may run longer
+/// than it can. A tool the request names outside the ceiling is
+/// `ToolOutsideCeiling`; whether the parent holds it is the Agency's question.
+/// The context is always fresh, since copying the parent's conversation would
+/// ship a transcript to another machine.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_spawn.agent_request(request, terms)
+/// // -> Ok(SpawnRequest(within_ms: Some(1_800_000), ..)) for a request with no deadline
+/// ```
+pub fn agent_request(
+  request: Request,
+  terms: Terms,
+) -> Result(agent.SpawnRequest, SpawnRefusal) {
+  use within_ms <- result.try(case request.within_ms {
+    None -> Ok(terms.default_within_ms)
+    Some(asked) if asked <= 0 ->
+      Error(InvalidArgument(reason: "within_ms must be positive"))
+    Some(asked) if asked > terms.max_within_ms ->
+      Error(InvalidArgument(
+        reason: "within_ms is above this spawner's max_within_s",
+      ))
+    Some(asked) -> Ok(asked)
+  })
+  use Nil <- result.try(case request.tools {
+    None -> Ok(Nil)
+    Some(names) ->
+      case list.find(names, fn(name) { !list.contains(terms.ceiling, name) }) {
+        Ok(outside) -> Error(ToolOutsideCeiling(tool: outside))
+        Error(Nil) -> Ok(Nil)
+      }
+  })
+  Ok(
+    agent.SpawnRequest(
+      purpose: request.purpose,
+      brief: request.brief,
+      model: request.model,
+      tools: request.tools,
+      within_ms: Some(within_ms),
+      result_schema: request.result_schema,
+      context: agent.Fresh,
+      detach: case request.detach {
+        Attached -> False
+        Detached -> True
+      },
+    ),
+  )
+}
+
+/// The parent's tools that the ceiling also holds. A child's tools are narrowed
+/// from this set and so can never include a tool the ceiling excludes, whatever
+/// the parent holds.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert remote_spawn.clamp_tools(["bash", "peer_send"], terms) == ["bash"]
+/// ```
+pub fn clamp_tools(parent_tools: List(String), terms: Terms) -> List(String) {
+  list.filter(parent_tools, list.contains(terms.ceiling, _))
+}
+
+/// Renders a refusal of the Agency as the refusal the sender reads.
+///
+/// `fan_out` and `session_strands` are the two limits behind the Agency's one
+/// cap refusal, which carries only the number it hit. When the two are equal the
+/// answer is `FanOut`: that check runs first, and the number is right either
+/// way.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert remote_spawn.refusal_of(agent.ParentRunEnded("^main"), 8, 16)
+///   == remote_spawn.ParentRunEnded
+/// ```
+pub fn refusal_of(
+  refusal: Refusal,
+  fan_out fan_out: Int,
+  session_strands session_strands: Int,
+) -> SpawnRefusal {
+  case refusal {
+    agent.DepthCapReached(depth:) -> CapReached(cap: MaxDepth, limit: depth)
+    agent.FanOutCapReached(cap:, ..) if cap == fan_out ->
+      CapReached(cap: FanOut, limit: cap)
+    agent.FanOutCapReached(cap:, ..) if cap == session_strands ->
+      CapReached(cap: SessionStrands, limit: cap)
+    agent.FanOutCapReached(cap:, ..) -> CapReached(cap: FanOut, limit: cap)
+    agent.ParentRunEnded(..) -> ParentRunEnded
+    agent.NameAlreadyMinted(..) -> NameAlreadyMinted
+    agent.InvalidArgument(reason:) -> InvalidArgument(reason:)
+    agent.UnknownTool(name:) ->
+      InvalidArgument(reason: "the parent does not hold the tool " <> name)
+    agent.NotADescendant(strand:) ->
+      InvalidArgument(reason: strand <> " is not a child of this parent")
+    agent.PlaneFailed(reason:) -> StoreFailure(reason:)
+    agent.AgencyUnavailable ->
+      StoreFailure(reason: "the delegate session's Agency is not running")
+    agent.MalformedHandle(..)
+    | agent.NotAddressable(..)
+    | agent.ResultSchemaUnmet(..)
+    | agent.ToolNotHeld(..) -> StoreFailure(reason: agent.describe(refusal))
+  }
 }
