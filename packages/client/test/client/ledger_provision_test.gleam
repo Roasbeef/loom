@@ -705,12 +705,15 @@ pub fn the_static_command_is_unchanged_test() {
   discard(base)
 }
 
-pub fn a_plan_with_a_directory_is_provisioned_static_only_for_now_test() {
+// A plan with a session directory is provisioned in ledger mode like any other
+// (protocol-change/086, phase 3). The directory members become voters in the
+// ledger, and their bundles list no directory: the ledger is the only source.
+pub fn a_plan_with_a_directory_is_provisioned_with_a_ledger_test() {
   let base = scratch("directory")
   let plan_path = base <> "/plan.toml"
   let assert Ok(Nil) = simplifile.write(plan_path, directory_text <> plan_text)
   let passphrase = write_passphrase(base, "correct horse battery\n")
-  let assert Error(reason) =
+  let assert Ok(_) =
     distribution_cli.run([
       "provision",
       plan_path,
@@ -720,13 +723,49 @@ pub fn a_plan_with_a_directory_is_provisioned_static_only_for_now_test() {
       "--home",
       base <> "/home",
     ])
-  assert string.contains(reason, "session directory")
-  assert string.contains(reason, "--static")
-  assert simplifile.is_directory(base <> "/out") == Ok(False)
-  assert simplifile.is_directory(base <> "/home") == Ok(False)
+  let assert Ok(text) = simplifile.read(base <> "/out/laptop.loombundle")
+  let assert Ok(bundle) = distribution_bundle.decode(text)
+  let assert distribution_bundle.SignedLedger(_) = bundle.trust
+  assert bundle.directory == []
+
+  // The bundle installs, and the configuration it writes has no [directory]
+  // table: the daemon derives the members from the ledger.
+  let assert Ok(_) =
+    distribution_install.install(
+      text,
+      Options(
+        home: base <> "/home",
+        config: base <> "/home/.loom/loom.toml",
+        overwrite: ReplaceExisting,
+      ),
+    )
+  let assert Ok(config) = simplifile.read(base <> "/home/.loom/loom.toml")
+  assert !string.contains(config, "[directory]")
+  assert string.contains(config, "ledger =")
 
   // Static provisioning of the same plan is what it always was.
   let assert Ok(_) =
-    distribution_cli.run(["provision", plan_path, base <> "/out", "--static"])
+    distribution_cli.run([
+      "provision",
+      plan_path,
+      base <> "/static",
+      "--static",
+    ])
+  let assert Ok(static_text) =
+    simplifile.read(base <> "/static/laptop.loombundle")
+  let assert Ok(static_bundle) = distribution_bundle.decode(static_text)
+  assert static_bundle.directory != []
   discard(base)
+}
+
+// A hand-written ledger bundle that also lists the members is refused, so the
+// two lists can never disagree.
+pub fn a_ledger_bundle_cannot_list_the_directory_beside_its_ledger_test() {
+  let made = provisioned(plan_of(directory_text <> plan_text))
+  refused_bundle(
+    distribution_bundle.Bundle(..bundle_named(made, "laptop"), directory: [
+      "loom@laptop.example",
+    ]),
+    "ledger bundle cannot list the directory",
+  )
 }

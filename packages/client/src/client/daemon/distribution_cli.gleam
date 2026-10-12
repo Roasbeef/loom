@@ -344,16 +344,6 @@ fn provision_ledger(
   output: String,
   parsed: Parsed,
 ) -> Result(String, String) {
-  use Nil <- result.try(case plan.directory {
-    [] -> Ok(Nil)
-    _ ->
-      Error(
-        "this plan has a session directory, which cannot follow a membership "
-        <> "ledger yet (its members come from [directory] members until phase "
-        <> "3 of protocol-change/086); pass --static to provision it with a "
-        <> "peer list",
-      )
-  })
   use Nil <- result.try(distribution_provision.check_output(
     output,
     parsed.overwrite,
