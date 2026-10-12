@@ -559,20 +559,48 @@ fn parse_string_body(
   cursor: Cursor,
   chunks: List(String),
 ) -> Result(#(String, Cursor), CorruptionReport) {
-  let run = clean_run(cursor.rest, 0)
-  use #(chunk, after) <- result.try(cut(cursor, run))
-  let chunks = case chunk {
-    "" -> chunks
-    _ -> [chunk, ..chunks]
-  }
-  let cursor = advance(cursor, after, by: run)
-  case after {
+  let length = clean_run(cursor.rest, 0)
+
+  // Delimiters and adjacent escapes have no ordinary run to cut or validate.
+  case cursor.rest {
     <<0x22, rest:bits>> ->
       Ok(#(string.concat(list.reverse(chunks)), advance(cursor, rest, by: 1)))
     <<0x5C, rest:bits>> -> parse_escape(advance(cursor, rest, by: 1), chunks)
-    <<_, _:bits>> ->
+    <<byte, _:bits>> if byte < 0x20 ->
       Error(fail(cursor, "control characters to be escaped in a string"))
-    _ -> Error(fail(cursor, "a closing \" before end of input"))
+    <<>> -> Error(fail(cursor, "a closing \" before end of input"))
+    <<run:bytes-size(length), after:bits>> -> {
+      // A nonempty run is validated before joining. Matching it here avoids
+      // the cut helper's intermediate Result pair and continuation.
+      use chunk <- result.try(
+        bit_array.to_string(run)
+        |> result.map_error(fn(_) { fail(cursor, "a valid utf-8 string") }),
+      )
+      let chunks = [chunk, ..chunks]
+
+      // Success consumes the run and delimiter in one update. Refusals stop
+      // before the offending byte, preserving the original codepoint offset.
+      case after {
+        <<0x22, rest:bits>> ->
+          Ok(#(
+            string.concat(list.reverse(chunks)),
+            advance(cursor, rest, by: length + 1),
+          ))
+        <<0x5C, rest:bits>> ->
+          parse_escape(advance(cursor, rest, by: length + 1), chunks)
+        <<_, _:bits>> ->
+          Error(fail(
+            advance(cursor, after, by: length),
+            "control characters to be escaped in a string",
+          ))
+        _ ->
+          Error(fail(
+            advance(cursor, after, by: length),
+            "a closing \" before end of input",
+          ))
+      }
+    }
+    _shorter -> Error(fail(cursor, "a valid utf-8 string"))
   }
 }
 
@@ -611,8 +639,8 @@ fn clean_run(rest: BitArray, count: Int) -> Int {
 //
 // Both pieces come out of one binary match rather than two
 // `bit_array.slice` calls: a slice is a function call wrapped in an
-// exception handler and answers a fresh tuple, and this runs for every run
-// of every string in every entry a session reads.
+// exception handler and answers a fresh tuple. Numeric digit runs use this
+// helper; string runs validate their matched slices without the extra pair.
 fn cut(
   cursor: Cursor,
   length: Int,

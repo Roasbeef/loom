@@ -107,6 +107,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import host/bootstrap as native
 import machine/strand as machine_strand
 import provider/stream
 import runtime/api.{type Runtime}
@@ -118,6 +119,7 @@ import tools/blob
 import tools/directory_access
 import tools/job
 import tools/tool
+import weft
 import weft/actor
 import weft/poll
 import weft/registry as address
@@ -2826,4 +2828,205 @@ pub fn each_claim_fault_keeps_its_wording_test() {
     == "the session runtime is not available"
   assert claim_refusal(owner_services.Failed(detail: "disk full"))
     == "disk full"
+}
+
+// --- completion-driven production waits ------------------------------------
+
+pub fn completion_wait_returns_pending_and_preserves_cursors_test() {
+  let harness = start_harness()
+  let started = start_job(harness, "main", "echo ready")
+  emit(harness, started, "ready")
+  let live = completion(harness, started, jobs.Cursors(0, 0), 20)
+  assert live.state == jobstate.Running
+  assert live.stdout.bytes == bit_array.from_string("ready")
+  assert live.stdout.cursor == 5
+
+  // A call that begins after terminal processing needs no witness and
+  // returns the remaining tail directly from the authoritative record.
+  emit(harness, started, " done")
+  settle_with(harness, started, ExecResult(..exited(0), stdout_bytes: 10))
+  let assert jobstate.Exited(..) = settled_state(harness, "main", started)
+    as "completion is already committed"
+  let done = completion(harness, started, jobs.Cursors(5, 0), 5000)
+  assert jobstate.is_terminal(done.state)
+  assert done.stdout.bytes == bit_array.from_string(" done")
+  assert done.stdout.cursor == 10
+}
+
+pub fn completion_wait_does_not_expose_another_strands_job_test() {
+  let harness = start_harness()
+  let started = start_job(harness, "main", "sleep 999")
+  let assert Error(jobs.NotFound(..)) =
+    jobs.await_completion(
+      harness.name,
+      strand: "sibling",
+      id: started.id,
+      cursors: jobs.Cursors(0, 0),
+      within_ms: 5000,
+      waiting: 1000,
+    )
+    as "completion subscription enforces the same ownership as polling"
+  settle_with(harness, started, exited(0))
+}
+
+pub fn completion_wakes_only_after_the_terminal_fact_write_test() {
+  let clock = counting_clock(1_756_000_000_000, 1)
+  let runtime = open_runtime(clock)
+  let fake = start_fake_broker()
+  let spill = start_fake_spill()
+  let name = addresses.new()
+  let blocked = process.new_subject()
+  let base = fake_wiring(runtime, fake, spill, clock)
+  let put = base.owner.facts.put_blind
+  let facts =
+    owner_services.FactAccess(..base.owner.facts, put_blind: fn(key, value) {
+      let assert Ok(record) = jobstate.decode(value)
+        as "the actor writes total job records"
+      case jobstate.is_terminal(record.state) {
+        False -> put(key, value)
+        True -> {
+          let release = process.new_subject()
+          process.send(blocked, release)
+          let assert Ok(Nil) = process.receive(release, 5000)
+            as "the test releases the terminal write"
+          put(key, value)
+        }
+      }
+    })
+  let assert Ok(owner) =
+    jobs.start(
+      name,
+      jobs.Wiring(..base, owner: owner_services.JobsOwner(..base.owner, facts:)),
+    )
+    as "the gated jobs actor starts"
+  let harness =
+    Harness(name:, fake:, spill:, runtime:, operation: an_op(), pid: owner.pid)
+  let started = start_job(harness, "main", "echo ready")
+
+  // A timed-out wait leaves the job's single witness available to later
+  // callers. No waiter subject or timeout entry is stored by the jobs actor.
+  let before = relations(harness.pid, "links")
+  let pending = completion(harness, started, jobs.Cursors(0, 0), 0)
+  assert pending.state == jobstate.Running
+  let assert [witness] =
+    list.filter(relations(harness.pid, "links"), fn(pid) {
+      !list.contains(before, pid)
+    })
+    as "the live job owns one completion witness"
+  let monitor = process.monitor(witness)
+  let stopped =
+    process.new_selector()
+    |> process.select_specific_monitor(monitor, fn(_down) { Nil })
+
+  // Observe the witness itself: an early stop could otherwise hide behind
+  // the authoritative reread, which is queued behind the blocked write.
+  let results = process.new_subject()
+  let waiter =
+    weft.new([
+      fn() {
+        process.send(
+          results,
+          completion(harness, started, jobs.Cursors(0, 0), 4000),
+        )
+        Ok(Nil)
+      },
+    ])
+    |> weft.deadline(5000)
+    |> weft.start_detached
+  settle_with(harness, started, exited(0))
+  let assert Ok(release) = process.receive(blocked, 1000)
+    as "terminal persistence is blocked"
+  assert process.selector_receive(stopped, 40) == Error(Nil)
+  assert process.receive(results, 0) == Error(Nil)
+  let released = native.monotonic_time_ms()
+  process.send(release, Nil)
+  let assert Ok(Nil) = process.selector_receive(stopped, 500)
+    as "terminal persistence releases the completion witness"
+  process.demonitor_process(monitor)
+  let assert Ok(done) = process.receive(results, 500)
+    as "commit wakes the production waiter"
+  assert native.monotonic_time_ms() - released < 500
+  assert jobstate.is_terminal(done.state)
+  assert record_in_store(harness, started.id).state == done.state
+  let assert weft.PulledOutcome(weft.Completed(0, Nil)) =
+    weft.pull(waiter, within: 1000)
+    as "the waiting caller finishes cleanly"
+}
+
+pub fn jobs_owner_exit_releases_completion_waiters_test() {
+  let harness = start_harness()
+  let started = start_job(harness, "main", "sleep 999")
+  let before = relations(harness.pid, "links")
+  let pending = completion(harness, started, jobs.Cursors(0, 0), 0)
+  assert pending.state == jobstate.Running
+  let assert [witness] =
+    list.filter(relations(harness.pid, "links"), fn(pid) {
+      !list.contains(before, pid)
+    })
+    as "the first wait creates exactly one linked completion witness"
+  let entered = process.new_subject()
+  let waiter =
+    weft.new([
+      fn() {
+        process.send(entered, process.self())
+        Ok(jobs.await_completion(
+          harness.name,
+          strand: "main",
+          id: started.id,
+          cursors: jobs.Cursors(0, 0),
+          within_ms: 30_000,
+          waiting: 1000,
+        ))
+      },
+    ])
+    |> weft.deadline(2000)
+    |> weft.start_detached
+  let assert Ok(caller) = process.receive(entered, 1000) as "the waiter starts"
+  let assert poll.Answered(Nil) =
+    poll.until(within: 1000, every: 1, attempt: fn() {
+      case list.contains(relations(witness, "monitored_by"), caller) {
+        True -> poll.Done(Nil)
+        False -> poll.Retry
+      }
+    })
+    as "the caller has installed its completion monitor before owner death"
+
+  // A brutal owner death bypasses shutdown callbacks. This caller is
+  // already monitoring the witness, so refusal alone cannot satisfy the test.
+  process.trap_exits(True)
+  process.kill(harness.pid)
+  let assert weft.PulledOutcome(weft.Completed(0, Error(jobs.Unavailable(..)))) =
+    weft.pull(waiter, within: 1500)
+    as "the owner cannot leave a caller waiting on its witness"
+}
+
+// The two process-info keys used here both return a tagged list of pids.
+// Reading actual kernel monitor state supplies the subscription barrier.
+fn relations(pid: process.Pid, key: String) -> List(process.Pid) {
+  process_relations(pid, atom.create(key)).1
+}
+
+@external(erlang, "erlang", "process_info")
+fn process_relations(
+  pid: process.Pid,
+  key: atom.Atom,
+) -> #(atom.Atom, List(process.Pid))
+
+fn completion(
+  harness: Harness,
+  started: jobs.Started,
+  cursors: jobs.Cursors,
+  within: Int,
+) -> jobs.Polled {
+  let assert Ok(answer) =
+    jobs.await_completion(
+      harness.name,
+      strand: "main",
+      id: started.id,
+      cursors:,
+      within_ms: within,
+      waiting: 1000,
+    )
+    as "the owning strand can wait for its job"
+  answer
 }

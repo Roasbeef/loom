@@ -1,0 +1,50 @@
+sampling 16 of 174 listed processes of the node, the busiest by reductions/s, leaving out 2 of pickglass's own agent processes (tool:pickglass): 16 processes pinned, 62 Hz each, 5 s
+profile of 16 of 174 listed processes of the node, the busiest by reductions/s, leaving out 2 of pickglass's own agent processes (tool:pickglass)
+probe 1: 4948 samples counted over 5 s, complete
+samples: 4,948 samples: 62 running/runnable, 4,886 waiting; counting all samples, waiting ones included
+coverage: Sampled 4,948 times at 62 Hz achieved of 62 requested.
+caveats: sampled at reduction safe points; long BIFs and NIFs are under-counted, and widths are shares of samples, not of time.
+  Width is a share of samples, not of time.
+  A process that is inside a long BIF or NIF is under-sampled.
+  Stack depth is limited to 8; deeper stacks are cut at the outer end.
+  1 targets exited while the probe ran.
+
+top 15 functions by samples of their own (4948 samples in all)
+   flat              cum           function
+  80.0%     3963   80.0%     3963  gleam_erlang_ffi:select/2
+   6.3%      313    6.3%      313  erts_dirty_process_signal_handler:msg_loop/0
+   6.3%      312    6.3%      312  code_server:loop/1
+   6.2%      309    6.2%      309  gen_server:loop/5
+   0.4%       23    0.4%       23  esqlite3:fetchall1/2
+   0.1%        5    0.5%       29  esqlite3:q/3
+   0.0%        4    0.0%        4  core@json:-parse_string_body/2-anonymous-0-/4
+   0.0%        3    0.0%        3  prim_file:read_info_1/3
+   0.0%        3    0.0%        3  sqlight_ffi:exec/2
+   0.0%        3    0.0%        3  weft_registry_ffi:lookup/2
+   0.0%        2    0.0%        2  esqlite3:open/1
+   0.0%        2    0.0%        2  gen:do_call/4
+   0.0%        1    0.0%        1  code_server:call/1
+   0.0%        1    0.0%        1  core@codec:get/2
+   0.0%        1    0.0%        1  esqlite3:fetchall/1
+
+call tree (share of 4948 samples)
+  79.1%  proc_lib:init_p/3
+  36.1%    weft@actor:await_message/1
+  30.1%      gleam_erlang_ffi:select/2
+   5.9%      gleam_erlang_ffi:select/1
+   5.9%        gleam_erlang_ffi:select/2
+  25.1%    weft@state_machine:run/1
+  25.1%      gleam_erlang_ffi:select/1
+  25.1%        gleam_erlang_ffi:select/2
+  17.0%    gleam@otp@actor:loop/1
+  17.0%      gleam_erlang_ffi:select/1
+  17.0%        gleam_erlang_ffi:select/2
+   0.7%    weft@actor:handle/2
+   6.3%  erts_dirty_process_signal_handler:msg_loop/0
+   6.3%  proc_lib:init_p_do_apply/3
+   6.2%    gen_server:loop/5
+   6.3%  code_server:loop/1
+
+
+some pins were still held when the wait ended; detaching releases them
+detached; the agent's modules are unloaded from the target

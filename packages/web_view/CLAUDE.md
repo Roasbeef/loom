@@ -1095,7 +1095,12 @@ page keys and nonces, and the relay into the session's gateway.
   The model holds no trees. `lane.view` draws every transcript line and
   card body inside its own `element.memo` keyed on that line or body, with
   no memo around them (`lane.rows`), so a line is parsed and drawn when it
-  first appears and Lustre reuses its element after that. Lustre forgets
+  first appears and Lustre reuses its element after that. A failed step
+  instead keeps its refusal and remaining rows in one leaf keyed on its
+  words and rows (`fold_row.step_body`). It draws those rows directly, so
+  unchanged failures repeat neither joins nor Unicode trims, and it nests
+  no line memos. `render_work_test` checks repeated hits, invalidation and
+  escaped output. Lustre forgets
   memos nested inside a memo that hit and redraws a keyed subtree whose
   key changed, which is why the memos are leaves and why `turns` keys a
   turn's work by its input (`docs/lustre.md`, "A memo inside a memo that

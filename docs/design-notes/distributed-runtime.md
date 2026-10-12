@@ -118,7 +118,7 @@ never one per file access.
 Tools that act on the conversation rather than the checkout (`agent_*`,
 `history_search`, `remember`, `schedule_*`, `context`, `advise`, skills,
 peers) keep running on the orchestrator. Clearance stays on the orchestrator
-too. `wiring.clear` is pure over `tool.Declarations` (`wiring.gleam:1709`,
+too. `wiring.clear` is pure over `tool.Declarations` (`wiring.gleam:1717`,
 `tools/tool.gleam:573-589`), so the orchestrator builds declarations for the
 workspace tools with the same registration code, fed by census facts instead
 of local probes, and clears every call before it is sent.
@@ -138,7 +138,7 @@ orchestrator:
    shape: get, compare-and-set, and a prefix listing the jobs actor uses at
    boot (`client/jobs.gleam:2772`). Only those reserved prefixes are served.
 3. **Notices.** A finished background job tells its strand through the
-   owner's `notify` function (`client/jobs.gleam:2971`), which locally is
+   owner's `notify` function (`client/jobs.gleam:3103`), which locally is
    `notice.deliver` (`client/notice.gleam:162-174`) and writes to the
    conversation; the executor sends the notice text and the orchestrator
    delivers it.

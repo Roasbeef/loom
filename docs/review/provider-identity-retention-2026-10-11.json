@@ -1,0 +1,3112 @@
+{
+  "date": "2026-10-11",
+  "baseline_commit": "4c2c0a9821ff341c66f45585b03300f83967811b",
+  "candidate": "provider-only identity copy; generic JSON unchanged",
+  "candidate_provider_source_sha256": "74e3dccf889f669815cc5ba2fc5a61c33eaacc85d2284f799d6736f998e66e79",
+  "unchanged_core_source_sha256": "649a5927113f5fb276a7dddfc333edbed9caf3fb8dd1d2d8368bb4354f902462",
+  "toolchain": {
+    "gleam": "1.19.0",
+    "otp": "29",
+    "schedulers": 1,
+    "word_bytes": 8
+  },
+  "method": {
+    "runs_per_side": 3,
+    "order": "baseline/candidate repeated three times sequentially in fresh VMs; no owned gates or negative controls during final comparisons",
+    "retention": "Separate disposable worker per fixture; construct checked values, tail-call into hold, full worker GC, inspect unique off-heap binary allocations, release all values, full worker GC again. No installed daemon touched.",
+    "timing": "Untraced, five warmups then fifty calls; input construction and retention GC probes excluded. Primitive comparison uses 1000 warmups and 100000 calls.",
+    "ownership_scope": "One process per fixture; binary IDs deduplicated within that process. Never sum shared allocations across processes.",
+    "limits": "Synthetic fixtures on a shared Mac; other host activity uncontrolled. Process allocated bytes include spare heap capacity and are not exact reachable size. Binary bytes exclude process heaps and are not RSS. No live resource reduction, whole-tool speedup or workload prevalence claim."
+  },
+  "samples": [
+    {
+      "side": "baseline",
+      "run": 1,
+      "observations": [
+        {
+          "stage": "retention",
+          "case": "selected_64",
+          "count": 32,
+          "padding": 1048576,
+          "field": 64,
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 8744,
+            "selected_backing_bytes": 2048,
+            "selected_bytes": 2048
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_64",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "selected_65",
+          "count": 32,
+          "padding": 1048576,
+          "field": 65,
+          "metrics": {
+            "binary_bytes": 33556823,
+            "binary_count": 32,
+            "process_bytes": 8744,
+            "selected_backing_bytes": 33556823,
+            "selected_bytes": 2080
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_65",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "selected_96",
+          "count": 32,
+          "padding": 1048576,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 33557815,
+            "binary_count": 32,
+            "process_bytes": 8744,
+            "selected_backing_bytes": 33557815,
+            "selected_bytes": 3072
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_96",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "selected_256",
+          "count": 32,
+          "padding": 1048576,
+          "field": 256,
+          "metrics": {
+            "binary_bytes": 33562935,
+            "binary_count": 32,
+            "process_bytes": 8744,
+            "selected_backing_bytes": 33562935,
+            "selected_bytes": 8192
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_256",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "selected_257",
+          "count": 32,
+          "padding": 1048576,
+          "field": 257,
+          "metrics": {
+            "binary_bytes": 33562967,
+            "binary_count": 32,
+            "process_bytes": 8744,
+            "selected_backing_bytes": 33562967,
+            "selected_bytes": 8224
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_257",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "selected_ratio_exact_below",
+          "count": 1,
+          "padding": 662,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 767,
+            "binary_count": 1,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 767,
+            "selected_bytes": 96
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_ratio_exact_below",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "selected_ratio_exact",
+          "count": 1,
+          "padding": 663,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 768,
+            "binary_count": 1,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 768,
+            "selected_bytes": 96
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_ratio_exact",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "selected_ratio_below",
+          "count": 32,
+          "padding": 600,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 22583,
+            "binary_count": 32,
+            "process_bytes": 13632,
+            "selected_backing_bytes": 22583,
+            "selected_bytes": 3072
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_ratio_below",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "selected_ratio_above",
+          "count": 32,
+          "padding": 1000,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 35383,
+            "binary_count": 32,
+            "process_bytes": 13632,
+            "selected_backing_bytes": 35383,
+            "selected_bytes": 3072
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_ratio_above",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "provider_small_event",
+          "count": 16,
+          "padding": 0,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 4279,
+            "binary_count": 16,
+            "process_bytes": 13632,
+            "selected_backing_bytes": 4279,
+            "selected_bytes": 1536
+          }
+        },
+        {
+          "stage": "released",
+          "case": "provider_small_event",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "provider_64",
+          "count": 16,
+          "padding": 1048576,
+          "field": 64,
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 21536,
+            "selected_backing_bytes": 1024,
+            "selected_bytes": 1024
+          }
+        },
+        {
+          "stage": "released",
+          "case": "provider_64",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "provider_65",
+          "count": 16,
+          "padding": 1048576,
+          "field": 65,
+          "metrics": {
+            "binary_bytes": 16780503,
+            "binary_count": 16,
+            "process_bytes": 13632,
+            "selected_backing_bytes": 16780503,
+            "selected_bytes": 1040
+          }
+        },
+        {
+          "stage": "released",
+          "case": "provider_65",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "provider_accumulator",
+          "count": 16,
+          "padding": 1048576,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 16781495,
+            "binary_count": 16,
+            "process_bytes": 21536,
+            "selected_backing_bytes": 16781495,
+            "selected_bytes": 1536
+          }
+        },
+        {
+          "stage": "released",
+          "case": "provider_accumulator",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "provider_256",
+          "count": 16,
+          "padding": 1048576,
+          "field": 256,
+          "metrics": {
+            "binary_bytes": 16786615,
+            "binary_count": 16,
+            "process_bytes": 21536,
+            "selected_backing_bytes": 16786615,
+            "selected_bytes": 4096
+          }
+        },
+        {
+          "stage": "released",
+          "case": "provider_256",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "provider_257",
+          "count": 16,
+          "padding": 1048576,
+          "field": 257,
+          "metrics": {
+            "binary_bytes": 16786647,
+            "binary_count": 16,
+            "process_bytes": 21536,
+            "selected_backing_bytes": 16786647,
+            "selected_bytes": 4112
+          }
+        },
+        {
+          "stage": "released",
+          "case": "provider_257",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "whole_document",
+          "count": 32,
+          "padding": 1048576,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 33557815,
+            "binary_count": 32,
+            "process_bytes": 34328,
+            "selected_backing_bytes": 33557815,
+            "selected_bytes": 3072
+          }
+        },
+        {
+          "stage": "released",
+          "case": "whole_document",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "source_still_owned",
+          "count": 32,
+          "padding": 1048576,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 33557815,
+            "binary_count": 32,
+            "process_bytes": 13632,
+            "selected_backing_bytes": 33557815,
+            "selected_bytes": 3072
+          }
+        },
+        {
+          "stage": "released",
+          "case": "source_still_owned",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "provider_cost",
+          "padding": 0,
+          "input_bytes": 238,
+          "repetitions": 50,
+          "us": 736,
+          "reductions": 97171
+        },
+        {
+          "stage": "provider_cost",
+          "padding": 1048576,
+          "input_bytes": 1048814,
+          "repetitions": 50,
+          "us": 3019590,
+          "reductions": 343773979
+        },
+        {
+          "stage": "primitive_cost",
+          "method": "singleton",
+          "field": 96,
+          "repetitions": 100000,
+          "us": 1417
+        },
+        {
+          "stage": "primitive_cost",
+          "method": "materialized",
+          "field": 96,
+          "repetitions": 100000,
+          "us": 12602
+        },
+        {
+          "stage": "copy_cost",
+          "field": 64,
+          "count": 2048,
+          "input_bytes": 137217,
+          "repetitions": 50,
+          "us": 74933,
+          "reductions": 11237623
+        },
+        {
+          "stage": "copy_cost",
+          "field": 65,
+          "count": 2048,
+          "input_bytes": 139265,
+          "repetitions": 50,
+          "us": 64318,
+          "reductions": 11322780
+        },
+        {
+          "stage": "copy_cost",
+          "field": 96,
+          "count": 2048,
+          "input_bytes": 202753,
+          "repetitions": 50,
+          "us": 75425,
+          "reductions": 15188407
+        },
+        {
+          "stage": "copy_cost",
+          "field": 256,
+          "count": 2048,
+          "input_bytes": 530433,
+          "repetitions": 50,
+          "us": 204134,
+          "reductions": 37651885
+        },
+        {
+          "stage": "copy_cost",
+          "field": 257,
+          "count": 2048,
+          "input_bytes": 532481,
+          "repetitions": 50,
+          "us": 208665,
+          "reductions": 37831138
+        }
+      ]
+    },
+    {
+      "side": "baseline",
+      "run": 2,
+      "observations": [
+        {
+          "stage": "retention",
+          "case": "selected_64",
+          "count": 32,
+          "padding": 1048576,
+          "field": 64,
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 8744,
+            "selected_backing_bytes": 2048,
+            "selected_bytes": 2048
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_64",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "selected_65",
+          "count": 32,
+          "padding": 1048576,
+          "field": 65,
+          "metrics": {
+            "binary_bytes": 33556823,
+            "binary_count": 32,
+            "process_bytes": 8744,
+            "selected_backing_bytes": 33556823,
+            "selected_bytes": 2080
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_65",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "selected_96",
+          "count": 32,
+          "padding": 1048576,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 33557815,
+            "binary_count": 32,
+            "process_bytes": 8744,
+            "selected_backing_bytes": 33557815,
+            "selected_bytes": 3072
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_96",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "selected_256",
+          "count": 32,
+          "padding": 1048576,
+          "field": 256,
+          "metrics": {
+            "binary_bytes": 33562935,
+            "binary_count": 32,
+            "process_bytes": 8744,
+            "selected_backing_bytes": 33562935,
+            "selected_bytes": 8192
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_256",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "selected_257",
+          "count": 32,
+          "padding": 1048576,
+          "field": 257,
+          "metrics": {
+            "binary_bytes": 33562967,
+            "binary_count": 32,
+            "process_bytes": 8744,
+            "selected_backing_bytes": 33562967,
+            "selected_bytes": 8224
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_257",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "selected_ratio_exact_below",
+          "count": 1,
+          "padding": 662,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 767,
+            "binary_count": 1,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 767,
+            "selected_bytes": 96
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_ratio_exact_below",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "selected_ratio_exact",
+          "count": 1,
+          "padding": 663,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 768,
+            "binary_count": 1,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 768,
+            "selected_bytes": 96
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_ratio_exact",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "selected_ratio_below",
+          "count": 32,
+          "padding": 600,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 22583,
+            "binary_count": 32,
+            "process_bytes": 13632,
+            "selected_backing_bytes": 22583,
+            "selected_bytes": 3072
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_ratio_below",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "selected_ratio_above",
+          "count": 32,
+          "padding": 1000,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 35383,
+            "binary_count": 32,
+            "process_bytes": 13632,
+            "selected_backing_bytes": 35383,
+            "selected_bytes": 3072
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_ratio_above",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "provider_small_event",
+          "count": 16,
+          "padding": 0,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 4279,
+            "binary_count": 16,
+            "process_bytes": 13632,
+            "selected_backing_bytes": 4279,
+            "selected_bytes": 1536
+          }
+        },
+        {
+          "stage": "released",
+          "case": "provider_small_event",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "provider_64",
+          "count": 16,
+          "padding": 1048576,
+          "field": 64,
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 21536,
+            "selected_backing_bytes": 1024,
+            "selected_bytes": 1024
+          }
+        },
+        {
+          "stage": "released",
+          "case": "provider_64",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "provider_65",
+          "count": 16,
+          "padding": 1048576,
+          "field": 65,
+          "metrics": {
+            "binary_bytes": 16780503,
+            "binary_count": 16,
+            "process_bytes": 13632,
+            "selected_backing_bytes": 16780503,
+            "selected_bytes": 1040
+          }
+        },
+        {
+          "stage": "released",
+          "case": "provider_65",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "provider_accumulator",
+          "count": 16,
+          "padding": 1048576,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 16781495,
+            "binary_count": 16,
+            "process_bytes": 21536,
+            "selected_backing_bytes": 16781495,
+            "selected_bytes": 1536
+          }
+        },
+        {
+          "stage": "released",
+          "case": "provider_accumulator",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "provider_256",
+          "count": 16,
+          "padding": 1048576,
+          "field": 256,
+          "metrics": {
+            "binary_bytes": 16786615,
+            "binary_count": 16,
+            "process_bytes": 21536,
+            "selected_backing_bytes": 16786615,
+            "selected_bytes": 4096
+          }
+        },
+        {
+          "stage": "released",
+          "case": "provider_256",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "provider_257",
+          "count": 16,
+          "padding": 1048576,
+          "field": 257,
+          "metrics": {
+            "binary_bytes": 16786647,
+            "binary_count": 16,
+            "process_bytes": 21536,
+            "selected_backing_bytes": 16786647,
+            "selected_bytes": 4112
+          }
+        },
+        {
+          "stage": "released",
+          "case": "provider_257",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "whole_document",
+          "count": 32,
+          "padding": 1048576,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 33557815,
+            "binary_count": 32,
+            "process_bytes": 34328,
+            "selected_backing_bytes": 33557815,
+            "selected_bytes": 3072
+          }
+        },
+        {
+          "stage": "released",
+          "case": "whole_document",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "source_still_owned",
+          "count": 32,
+          "padding": 1048576,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 33557815,
+            "binary_count": 32,
+            "process_bytes": 13632,
+            "selected_backing_bytes": 33557815,
+            "selected_bytes": 3072
+          }
+        },
+        {
+          "stage": "released",
+          "case": "source_still_owned",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "provider_cost",
+          "padding": 0,
+          "input_bytes": 238,
+          "repetitions": 50,
+          "us": 605,
+          "reductions": 97171
+        },
+        {
+          "stage": "provider_cost",
+          "padding": 1048576,
+          "input_bytes": 1048814,
+          "repetitions": 50,
+          "us": 1882435,
+          "reductions": 343773979
+        },
+        {
+          "stage": "primitive_cost",
+          "method": "singleton",
+          "field": 96,
+          "repetitions": 100000,
+          "us": 1135
+        },
+        {
+          "stage": "primitive_cost",
+          "method": "materialized",
+          "field": 96,
+          "repetitions": 100000,
+          "us": 8521
+        },
+        {
+          "stage": "copy_cost",
+          "field": 64,
+          "count": 2048,
+          "input_bytes": 137217,
+          "repetitions": 50,
+          "us": 44251,
+          "reductions": 11237515
+        },
+        {
+          "stage": "copy_cost",
+          "field": 65,
+          "count": 2048,
+          "input_bytes": 139265,
+          "repetitions": 50,
+          "us": 45996,
+          "reductions": 11322780
+        },
+        {
+          "stage": "copy_cost",
+          "field": 96,
+          "count": 2048,
+          "input_bytes": 202753,
+          "repetitions": 50,
+          "us": 59523,
+          "reductions": 15188351
+        },
+        {
+          "stage": "copy_cost",
+          "field": 256,
+          "count": 2048,
+          "input_bytes": 530433,
+          "repetitions": 50,
+          "us": 169417,
+          "reductions": 37651885
+        },
+        {
+          "stage": "copy_cost",
+          "field": 257,
+          "count": 2048,
+          "input_bytes": 532481,
+          "repetitions": 50,
+          "us": 171051,
+          "reductions": 37831138
+        }
+      ]
+    },
+    {
+      "side": "baseline",
+      "run": 3,
+      "observations": [
+        {
+          "stage": "retention",
+          "case": "selected_64",
+          "count": 32,
+          "padding": 1048576,
+          "field": 64,
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 8744,
+            "selected_backing_bytes": 2048,
+            "selected_bytes": 2048
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_64",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "selected_65",
+          "count": 32,
+          "padding": 1048576,
+          "field": 65,
+          "metrics": {
+            "binary_bytes": 33556823,
+            "binary_count": 32,
+            "process_bytes": 8744,
+            "selected_backing_bytes": 33556823,
+            "selected_bytes": 2080
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_65",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "selected_96",
+          "count": 32,
+          "padding": 1048576,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 33557815,
+            "binary_count": 32,
+            "process_bytes": 8744,
+            "selected_backing_bytes": 33557815,
+            "selected_bytes": 3072
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_96",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "selected_256",
+          "count": 32,
+          "padding": 1048576,
+          "field": 256,
+          "metrics": {
+            "binary_bytes": 33562935,
+            "binary_count": 32,
+            "process_bytes": 8744,
+            "selected_backing_bytes": 33562935,
+            "selected_bytes": 8192
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_256",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "selected_257",
+          "count": 32,
+          "padding": 1048576,
+          "field": 257,
+          "metrics": {
+            "binary_bytes": 33562967,
+            "binary_count": 32,
+            "process_bytes": 8744,
+            "selected_backing_bytes": 33562967,
+            "selected_bytes": 8224
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_257",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "selected_ratio_exact_below",
+          "count": 1,
+          "padding": 662,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 767,
+            "binary_count": 1,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 767,
+            "selected_bytes": 96
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_ratio_exact_below",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "selected_ratio_exact",
+          "count": 1,
+          "padding": 663,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 768,
+            "binary_count": 1,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 768,
+            "selected_bytes": 96
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_ratio_exact",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "selected_ratio_below",
+          "count": 32,
+          "padding": 600,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 22583,
+            "binary_count": 32,
+            "process_bytes": 13632,
+            "selected_backing_bytes": 22583,
+            "selected_bytes": 3072
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_ratio_below",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "selected_ratio_above",
+          "count": 32,
+          "padding": 1000,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 35383,
+            "binary_count": 32,
+            "process_bytes": 13632,
+            "selected_backing_bytes": 35383,
+            "selected_bytes": 3072
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_ratio_above",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "provider_small_event",
+          "count": 16,
+          "padding": 0,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 4279,
+            "binary_count": 16,
+            "process_bytes": 13632,
+            "selected_backing_bytes": 4279,
+            "selected_bytes": 1536
+          }
+        },
+        {
+          "stage": "released",
+          "case": "provider_small_event",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "provider_64",
+          "count": 16,
+          "padding": 1048576,
+          "field": 64,
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 21536,
+            "selected_backing_bytes": 1024,
+            "selected_bytes": 1024
+          }
+        },
+        {
+          "stage": "released",
+          "case": "provider_64",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "provider_65",
+          "count": 16,
+          "padding": 1048576,
+          "field": 65,
+          "metrics": {
+            "binary_bytes": 16780503,
+            "binary_count": 16,
+            "process_bytes": 13632,
+            "selected_backing_bytes": 16780503,
+            "selected_bytes": 1040
+          }
+        },
+        {
+          "stage": "released",
+          "case": "provider_65",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "provider_accumulator",
+          "count": 16,
+          "padding": 1048576,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 16781495,
+            "binary_count": 16,
+            "process_bytes": 21536,
+            "selected_backing_bytes": 16781495,
+            "selected_bytes": 1536
+          }
+        },
+        {
+          "stage": "released",
+          "case": "provider_accumulator",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "provider_256",
+          "count": 16,
+          "padding": 1048576,
+          "field": 256,
+          "metrics": {
+            "binary_bytes": 16786615,
+            "binary_count": 16,
+            "process_bytes": 21536,
+            "selected_backing_bytes": 16786615,
+            "selected_bytes": 4096
+          }
+        },
+        {
+          "stage": "released",
+          "case": "provider_256",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "provider_257",
+          "count": 16,
+          "padding": 1048576,
+          "field": 257,
+          "metrics": {
+            "binary_bytes": 16786647,
+            "binary_count": 16,
+            "process_bytes": 21536,
+            "selected_backing_bytes": 16786647,
+            "selected_bytes": 4112
+          }
+        },
+        {
+          "stage": "released",
+          "case": "provider_257",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "whole_document",
+          "count": 32,
+          "padding": 1048576,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 33557815,
+            "binary_count": 32,
+            "process_bytes": 34328,
+            "selected_backing_bytes": 33557815,
+            "selected_bytes": 3072
+          }
+        },
+        {
+          "stage": "released",
+          "case": "whole_document",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "source_still_owned",
+          "count": 32,
+          "padding": 1048576,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 33557815,
+            "binary_count": 32,
+            "process_bytes": 13632,
+            "selected_backing_bytes": 33557815,
+            "selected_bytes": 3072
+          }
+        },
+        {
+          "stage": "released",
+          "case": "source_still_owned",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "provider_cost",
+          "padding": 0,
+          "input_bytes": 238,
+          "repetitions": 50,
+          "us": 512,
+          "reductions": 97171
+        },
+        {
+          "stage": "provider_cost",
+          "padding": 1048576,
+          "input_bytes": 1048814,
+          "repetitions": 50,
+          "us": 1937362,
+          "reductions": 343773979
+        },
+        {
+          "stage": "primitive_cost",
+          "method": "singleton",
+          "field": 96,
+          "repetitions": 100000,
+          "us": 1238
+        },
+        {
+          "stage": "primitive_cost",
+          "method": "materialized",
+          "field": 96,
+          "repetitions": 100000,
+          "us": 8912
+        },
+        {
+          "stage": "copy_cost",
+          "field": 64,
+          "count": 2048,
+          "input_bytes": 137217,
+          "repetitions": 50,
+          "us": 43830,
+          "reductions": 11237543
+        },
+        {
+          "stage": "copy_cost",
+          "field": 65,
+          "count": 2048,
+          "input_bytes": 139265,
+          "repetitions": 50,
+          "us": 46285,
+          "reductions": 11322780
+        },
+        {
+          "stage": "copy_cost",
+          "field": 96,
+          "count": 2048,
+          "input_bytes": 202753,
+          "repetitions": 50,
+          "us": 58556,
+          "reductions": 15188359
+        },
+        {
+          "stage": "copy_cost",
+          "field": 256,
+          "count": 2048,
+          "input_bytes": 530433,
+          "repetitions": 50,
+          "us": 161526,
+          "reductions": 37651885
+        },
+        {
+          "stage": "copy_cost",
+          "field": 257,
+          "count": 2048,
+          "input_bytes": 532481,
+          "repetitions": 50,
+          "us": 298102,
+          "reductions": 37831138
+        }
+      ]
+    },
+    {
+      "side": "candidate",
+      "run": 1,
+      "observations": [
+        {
+          "stage": "retention",
+          "case": "selected_64",
+          "count": 32,
+          "padding": 1048576,
+          "field": 64,
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 8744,
+            "selected_backing_bytes": 2048,
+            "selected_bytes": 2048
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_64",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "selected_65",
+          "count": 32,
+          "padding": 1048576,
+          "field": 65,
+          "metrics": {
+            "binary_bytes": 33556823,
+            "binary_count": 32,
+            "process_bytes": 8744,
+            "selected_backing_bytes": 33556823,
+            "selected_bytes": 2080
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_65",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "selected_96",
+          "count": 32,
+          "padding": 1048576,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 33557815,
+            "binary_count": 32,
+            "process_bytes": 8744,
+            "selected_backing_bytes": 33557815,
+            "selected_bytes": 3072
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_96",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "selected_256",
+          "count": 32,
+          "padding": 1048576,
+          "field": 256,
+          "metrics": {
+            "binary_bytes": 33562935,
+            "binary_count": 32,
+            "process_bytes": 8744,
+            "selected_backing_bytes": 33562935,
+            "selected_bytes": 8192
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_256",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "selected_257",
+          "count": 32,
+          "padding": 1048576,
+          "field": 257,
+          "metrics": {
+            "binary_bytes": 33562967,
+            "binary_count": 32,
+            "process_bytes": 8744,
+            "selected_backing_bytes": 33562967,
+            "selected_bytes": 8224
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_257",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "selected_ratio_exact_below",
+          "count": 1,
+          "padding": 662,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 767,
+            "binary_count": 1,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 767,
+            "selected_bytes": 96
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_ratio_exact_below",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "selected_ratio_exact",
+          "count": 1,
+          "padding": 663,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 768,
+            "binary_count": 1,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 768,
+            "selected_bytes": 96
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_ratio_exact",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "selected_ratio_below",
+          "count": 32,
+          "padding": 600,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 22583,
+            "binary_count": 32,
+            "process_bytes": 8744,
+            "selected_backing_bytes": 22583,
+            "selected_bytes": 3072
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_ratio_below",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "selected_ratio_above",
+          "count": 32,
+          "padding": 1000,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 35383,
+            "binary_count": 32,
+            "process_bytes": 8744,
+            "selected_backing_bytes": 35383,
+            "selected_bytes": 3072
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_ratio_above",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "provider_small_event",
+          "count": 16,
+          "padding": 0,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 4279,
+            "binary_count": 16,
+            "process_bytes": 21536,
+            "selected_backing_bytes": 4279,
+            "selected_bytes": 1536
+          }
+        },
+        {
+          "stage": "released",
+          "case": "provider_small_event",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "provider_64",
+          "count": 16,
+          "padding": 1048576,
+          "field": 64,
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 21536,
+            "selected_backing_bytes": 1024,
+            "selected_bytes": 1024
+          }
+        },
+        {
+          "stage": "released",
+          "case": "provider_64",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "provider_65",
+          "count": 16,
+          "padding": 1048576,
+          "field": 65,
+          "metrics": {
+            "binary_bytes": 2080,
+            "binary_count": 32,
+            "process_bytes": 21536,
+            "selected_backing_bytes": 1040,
+            "selected_bytes": 1040
+          }
+        },
+        {
+          "stage": "released",
+          "case": "provider_65",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "provider_accumulator",
+          "count": 16,
+          "padding": 1048576,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 3072,
+            "binary_count": 32,
+            "process_bytes": 13632,
+            "selected_backing_bytes": 1536,
+            "selected_bytes": 1536
+          }
+        },
+        {
+          "stage": "released",
+          "case": "provider_accumulator",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "provider_256",
+          "count": 16,
+          "padding": 1048576,
+          "field": 256,
+          "metrics": {
+            "binary_bytes": 8192,
+            "binary_count": 32,
+            "process_bytes": 21536,
+            "selected_backing_bytes": 4096,
+            "selected_bytes": 4096
+          }
+        },
+        {
+          "stage": "released",
+          "case": "provider_256",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "provider_257",
+          "count": 16,
+          "padding": 1048576,
+          "field": 257,
+          "metrics": {
+            "binary_bytes": 16786647,
+            "binary_count": 16,
+            "process_bytes": 21536,
+            "selected_backing_bytes": 16786647,
+            "selected_bytes": 4112
+          }
+        },
+        {
+          "stage": "released",
+          "case": "provider_257",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "whole_document",
+          "count": 32,
+          "padding": 1048576,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 33557815,
+            "binary_count": 32,
+            "process_bytes": 34328,
+            "selected_backing_bytes": 33557815,
+            "selected_bytes": 3072
+          }
+        },
+        {
+          "stage": "released",
+          "case": "whole_document",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "source_still_owned",
+          "count": 32,
+          "padding": 1048576,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 33557815,
+            "binary_count": 32,
+            "process_bytes": 13632,
+            "selected_backing_bytes": 33557815,
+            "selected_bytes": 3072
+          }
+        },
+        {
+          "stage": "released",
+          "case": "source_still_owned",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "provider_cost",
+          "padding": 0,
+          "input_bytes": 238,
+          "repetitions": 50,
+          "us": 2052,
+          "reductions": 97574
+        },
+        {
+          "stage": "provider_cost",
+          "padding": 1048576,
+          "input_bytes": 1048814,
+          "repetitions": 50,
+          "us": 3292209,
+          "reductions": 343773836
+        },
+        {
+          "stage": "primitive_cost",
+          "method": "singleton",
+          "field": 96,
+          "repetitions": 100000,
+          "us": 1248
+        },
+        {
+          "stage": "primitive_cost",
+          "method": "materialized",
+          "field": 96,
+          "repetitions": 100000,
+          "us": 11289
+        },
+        {
+          "stage": "copy_cost",
+          "field": 64,
+          "count": 2048,
+          "input_bytes": 137217,
+          "repetitions": 50,
+          "us": 54743,
+          "reductions": 11237551
+        },
+        {
+          "stage": "copy_cost",
+          "field": 65,
+          "count": 2048,
+          "input_bytes": 139265,
+          "repetitions": 50,
+          "us": 50596,
+          "reductions": 11322495
+        },
+        {
+          "stage": "copy_cost",
+          "field": 96,
+          "count": 2048,
+          "input_bytes": 202753,
+          "repetitions": 50,
+          "us": 70250,
+          "reductions": 15188363
+        },
+        {
+          "stage": "copy_cost",
+          "field": 256,
+          "count": 2048,
+          "input_bytes": 530433,
+          "repetitions": 50,
+          "us": 193952,
+          "reductions": 37660785
+        },
+        {
+          "stage": "copy_cost",
+          "field": 257,
+          "count": 2048,
+          "input_bytes": 532481,
+          "repetitions": 50,
+          "us": 187489,
+          "reductions": 37834242
+        }
+      ]
+    },
+    {
+      "side": "candidate",
+      "run": 2,
+      "observations": [
+        {
+          "stage": "retention",
+          "case": "selected_64",
+          "count": 32,
+          "padding": 1048576,
+          "field": 64,
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 8744,
+            "selected_backing_bytes": 2048,
+            "selected_bytes": 2048
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_64",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "selected_65",
+          "count": 32,
+          "padding": 1048576,
+          "field": 65,
+          "metrics": {
+            "binary_bytes": 33556823,
+            "binary_count": 32,
+            "process_bytes": 8744,
+            "selected_backing_bytes": 33556823,
+            "selected_bytes": 2080
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_65",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "selected_96",
+          "count": 32,
+          "padding": 1048576,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 33557815,
+            "binary_count": 32,
+            "process_bytes": 8744,
+            "selected_backing_bytes": 33557815,
+            "selected_bytes": 3072
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_96",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "selected_256",
+          "count": 32,
+          "padding": 1048576,
+          "field": 256,
+          "metrics": {
+            "binary_bytes": 33562935,
+            "binary_count": 32,
+            "process_bytes": 8744,
+            "selected_backing_bytes": 33562935,
+            "selected_bytes": 8192
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_256",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "selected_257",
+          "count": 32,
+          "padding": 1048576,
+          "field": 257,
+          "metrics": {
+            "binary_bytes": 33562967,
+            "binary_count": 32,
+            "process_bytes": 8744,
+            "selected_backing_bytes": 33562967,
+            "selected_bytes": 8224
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_257",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "selected_ratio_exact_below",
+          "count": 1,
+          "padding": 662,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 767,
+            "binary_count": 1,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 767,
+            "selected_bytes": 96
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_ratio_exact_below",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "selected_ratio_exact",
+          "count": 1,
+          "padding": 663,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 768,
+            "binary_count": 1,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 768,
+            "selected_bytes": 96
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_ratio_exact",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "selected_ratio_below",
+          "count": 32,
+          "padding": 600,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 22583,
+            "binary_count": 32,
+            "process_bytes": 8744,
+            "selected_backing_bytes": 22583,
+            "selected_bytes": 3072
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_ratio_below",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "selected_ratio_above",
+          "count": 32,
+          "padding": 1000,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 35383,
+            "binary_count": 32,
+            "process_bytes": 8744,
+            "selected_backing_bytes": 35383,
+            "selected_bytes": 3072
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_ratio_above",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "provider_small_event",
+          "count": 16,
+          "padding": 0,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 4279,
+            "binary_count": 16,
+            "process_bytes": 21536,
+            "selected_backing_bytes": 4279,
+            "selected_bytes": 1536
+          }
+        },
+        {
+          "stage": "released",
+          "case": "provider_small_event",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "provider_64",
+          "count": 16,
+          "padding": 1048576,
+          "field": 64,
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 21536,
+            "selected_backing_bytes": 1024,
+            "selected_bytes": 1024
+          }
+        },
+        {
+          "stage": "released",
+          "case": "provider_64",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "provider_65",
+          "count": 16,
+          "padding": 1048576,
+          "field": 65,
+          "metrics": {
+            "binary_bytes": 2080,
+            "binary_count": 32,
+            "process_bytes": 21536,
+            "selected_backing_bytes": 1040,
+            "selected_bytes": 1040
+          }
+        },
+        {
+          "stage": "released",
+          "case": "provider_65",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "provider_accumulator",
+          "count": 16,
+          "padding": 1048576,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 3072,
+            "binary_count": 32,
+            "process_bytes": 13632,
+            "selected_backing_bytes": 1536,
+            "selected_bytes": 1536
+          }
+        },
+        {
+          "stage": "released",
+          "case": "provider_accumulator",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "provider_256",
+          "count": 16,
+          "padding": 1048576,
+          "field": 256,
+          "metrics": {
+            "binary_bytes": 8192,
+            "binary_count": 32,
+            "process_bytes": 21536,
+            "selected_backing_bytes": 4096,
+            "selected_bytes": 4096
+          }
+        },
+        {
+          "stage": "released",
+          "case": "provider_256",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "provider_257",
+          "count": 16,
+          "padding": 1048576,
+          "field": 257,
+          "metrics": {
+            "binary_bytes": 16786647,
+            "binary_count": 16,
+            "process_bytes": 21536,
+            "selected_backing_bytes": 16786647,
+            "selected_bytes": 4112
+          }
+        },
+        {
+          "stage": "released",
+          "case": "provider_257",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "whole_document",
+          "count": 32,
+          "padding": 1048576,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 33557815,
+            "binary_count": 32,
+            "process_bytes": 34328,
+            "selected_backing_bytes": 33557815,
+            "selected_bytes": 3072
+          }
+        },
+        {
+          "stage": "released",
+          "case": "whole_document",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "source_still_owned",
+          "count": 32,
+          "padding": 1048576,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 33557815,
+            "binary_count": 32,
+            "process_bytes": 13632,
+            "selected_backing_bytes": 33557815,
+            "selected_bytes": 3072
+          }
+        },
+        {
+          "stage": "released",
+          "case": "source_still_owned",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "provider_cost",
+          "padding": 0,
+          "input_bytes": 238,
+          "repetitions": 50,
+          "us": 623,
+          "reductions": 97574
+        },
+        {
+          "stage": "provider_cost",
+          "padding": 1048576,
+          "input_bytes": 1048814,
+          "repetitions": 50,
+          "us": 1877918,
+          "reductions": 343773836
+        },
+        {
+          "stage": "primitive_cost",
+          "method": "singleton",
+          "field": 96,
+          "repetitions": 100000,
+          "us": 1106
+        },
+        {
+          "stage": "primitive_cost",
+          "method": "materialized",
+          "field": 96,
+          "repetitions": 100000,
+          "us": 9241
+        },
+        {
+          "stage": "copy_cost",
+          "field": 64,
+          "count": 2048,
+          "input_bytes": 137217,
+          "repetitions": 50,
+          "us": 43645,
+          "reductions": 11237515
+        },
+        {
+          "stage": "copy_cost",
+          "field": 65,
+          "count": 2048,
+          "input_bytes": 139265,
+          "repetitions": 50,
+          "us": 47229,
+          "reductions": 11322495
+        },
+        {
+          "stage": "copy_cost",
+          "field": 96,
+          "count": 2048,
+          "input_bytes": 202753,
+          "repetitions": 50,
+          "us": 63977,
+          "reductions": 15188355
+        },
+        {
+          "stage": "copy_cost",
+          "field": 256,
+          "count": 2048,
+          "input_bytes": 530433,
+          "repetitions": 50,
+          "us": 176030,
+          "reductions": 37660785
+        },
+        {
+          "stage": "copy_cost",
+          "field": 257,
+          "count": 2048,
+          "input_bytes": 532481,
+          "repetitions": 50,
+          "us": 173949,
+          "reductions": 37834242
+        }
+      ]
+    },
+    {
+      "side": "candidate",
+      "run": 3,
+      "observations": [
+        {
+          "stage": "retention",
+          "case": "selected_64",
+          "count": 32,
+          "padding": 1048576,
+          "field": 64,
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 8744,
+            "selected_backing_bytes": 2048,
+            "selected_bytes": 2048
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_64",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "selected_65",
+          "count": 32,
+          "padding": 1048576,
+          "field": 65,
+          "metrics": {
+            "binary_bytes": 33556823,
+            "binary_count": 32,
+            "process_bytes": 8744,
+            "selected_backing_bytes": 33556823,
+            "selected_bytes": 2080
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_65",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "selected_96",
+          "count": 32,
+          "padding": 1048576,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 33557815,
+            "binary_count": 32,
+            "process_bytes": 8744,
+            "selected_backing_bytes": 33557815,
+            "selected_bytes": 3072
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_96",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "selected_256",
+          "count": 32,
+          "padding": 1048576,
+          "field": 256,
+          "metrics": {
+            "binary_bytes": 33562935,
+            "binary_count": 32,
+            "process_bytes": 8744,
+            "selected_backing_bytes": 33562935,
+            "selected_bytes": 8192
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_256",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "selected_257",
+          "count": 32,
+          "padding": 1048576,
+          "field": 257,
+          "metrics": {
+            "binary_bytes": 33562967,
+            "binary_count": 32,
+            "process_bytes": 8744,
+            "selected_backing_bytes": 33562967,
+            "selected_bytes": 8224
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_257",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "selected_ratio_exact_below",
+          "count": 1,
+          "padding": 662,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 767,
+            "binary_count": 1,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 767,
+            "selected_bytes": 96
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_ratio_exact_below",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "selected_ratio_exact",
+          "count": 1,
+          "padding": 663,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 768,
+            "binary_count": 1,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 768,
+            "selected_bytes": 96
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_ratio_exact",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "selected_ratio_below",
+          "count": 32,
+          "padding": 600,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 22583,
+            "binary_count": 32,
+            "process_bytes": 8744,
+            "selected_backing_bytes": 22583,
+            "selected_bytes": 3072
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_ratio_below",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "selected_ratio_above",
+          "count": 32,
+          "padding": 1000,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 35383,
+            "binary_count": 32,
+            "process_bytes": 8744,
+            "selected_backing_bytes": 35383,
+            "selected_bytes": 3072
+          }
+        },
+        {
+          "stage": "released",
+          "case": "selected_ratio_above",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "provider_small_event",
+          "count": 16,
+          "padding": 0,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 4279,
+            "binary_count": 16,
+            "process_bytes": 21536,
+            "selected_backing_bytes": 4279,
+            "selected_bytes": 1536
+          }
+        },
+        {
+          "stage": "released",
+          "case": "provider_small_event",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "provider_64",
+          "count": 16,
+          "padding": 1048576,
+          "field": 64,
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 21536,
+            "selected_backing_bytes": 1024,
+            "selected_bytes": 1024
+          }
+        },
+        {
+          "stage": "released",
+          "case": "provider_64",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "provider_65",
+          "count": 16,
+          "padding": 1048576,
+          "field": 65,
+          "metrics": {
+            "binary_bytes": 2080,
+            "binary_count": 32,
+            "process_bytes": 21536,
+            "selected_backing_bytes": 1040,
+            "selected_bytes": 1040
+          }
+        },
+        {
+          "stage": "released",
+          "case": "provider_65",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "provider_accumulator",
+          "count": 16,
+          "padding": 1048576,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 3072,
+            "binary_count": 32,
+            "process_bytes": 13632,
+            "selected_backing_bytes": 1536,
+            "selected_bytes": 1536
+          }
+        },
+        {
+          "stage": "released",
+          "case": "provider_accumulator",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "provider_256",
+          "count": 16,
+          "padding": 1048576,
+          "field": 256,
+          "metrics": {
+            "binary_bytes": 8192,
+            "binary_count": 32,
+            "process_bytes": 21536,
+            "selected_backing_bytes": 4096,
+            "selected_bytes": 4096
+          }
+        },
+        {
+          "stage": "released",
+          "case": "provider_256",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "provider_257",
+          "count": 16,
+          "padding": 1048576,
+          "field": 257,
+          "metrics": {
+            "binary_bytes": 16786647,
+            "binary_count": 16,
+            "process_bytes": 21536,
+            "selected_backing_bytes": 16786647,
+            "selected_bytes": 4112
+          }
+        },
+        {
+          "stage": "released",
+          "case": "provider_257",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "whole_document",
+          "count": 32,
+          "padding": 1048576,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 33557815,
+            "binary_count": 32,
+            "process_bytes": 34328,
+            "selected_backing_bytes": 33557815,
+            "selected_bytes": 3072
+          }
+        },
+        {
+          "stage": "released",
+          "case": "whole_document",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "retention",
+          "case": "source_still_owned",
+          "count": 32,
+          "padding": 1048576,
+          "field": 96,
+          "metrics": {
+            "binary_bytes": 33557815,
+            "binary_count": 32,
+            "process_bytes": 13632,
+            "selected_backing_bytes": 33557815,
+            "selected_bytes": 3072
+          }
+        },
+        {
+          "stage": "released",
+          "case": "source_still_owned",
+          "metrics": {
+            "binary_bytes": 0,
+            "binary_count": 0,
+            "process_bytes": 2712,
+            "selected_backing_bytes": 0,
+            "selected_bytes": 0
+          }
+        },
+        {
+          "stage": "provider_cost",
+          "padding": 0,
+          "input_bytes": 238,
+          "repetitions": 50,
+          "us": 538,
+          "reductions": 97574
+        },
+        {
+          "stage": "provider_cost",
+          "padding": 1048576,
+          "input_bytes": 1048814,
+          "repetitions": 50,
+          "us": 1780009,
+          "reductions": 343773836
+        },
+        {
+          "stage": "primitive_cost",
+          "method": "singleton",
+          "field": 96,
+          "repetitions": 100000,
+          "us": 1200
+        },
+        {
+          "stage": "primitive_cost",
+          "method": "materialized",
+          "field": 96,
+          "repetitions": 100000,
+          "us": 9098
+        },
+        {
+          "stage": "copy_cost",
+          "field": 64,
+          "count": 2048,
+          "input_bytes": 137217,
+          "repetitions": 50,
+          "us": 47549,
+          "reductions": 11237523
+        },
+        {
+          "stage": "copy_cost",
+          "field": 65,
+          "count": 2048,
+          "input_bytes": 139265,
+          "repetitions": 50,
+          "us": 46418,
+          "reductions": 11322495
+        },
+        {
+          "stage": "copy_cost",
+          "field": 96,
+          "count": 2048,
+          "input_bytes": 202753,
+          "repetitions": 50,
+          "us": 62413,
+          "reductions": 15188335
+        },
+        {
+          "stage": "copy_cost",
+          "field": 256,
+          "count": 2048,
+          "input_bytes": 530433,
+          "repetitions": 50,
+          "us": 166276,
+          "reductions": 37660785
+        },
+        {
+          "stage": "copy_cost",
+          "field": 257,
+          "count": 2048,
+          "input_bytes": 532481,
+          "repetitions": 50,
+          "us": 166332,
+          "reductions": 37834242
+        }
+      ]
+    }
+  ],
+  "discarded_global_copy_experiment": {
+    "source_sha256": "4af112310bd9aa087c6c307ae0a6c49993ea461d3a3443ef428fbd5a334986a3",
+    "scope": "Synthetic core JSON singleton-field copying; NOT part of final production change. Separate three alternating comparisons.",
+    "samples": [
+      {
+        "side": "baseline",
+        "run": 1,
+        "raw_fixture_output": "VM label=baseline otp=29 word_bytes=8 schedulers=1\nRETENTION baseline selected_64 count=32 padding=1048576 field=64 metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 8744,selected_backing_bytes => 2048,selected_bytes => 2048}\nRELEASED baseline selected_64 metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION baseline selected_65 count=32 padding=1048576 field=65 metrics=#{binary_bytes => 33556823,binary_count => 32,process_bytes => 8744,selected_backing_bytes => 33556823,selected_bytes => 2080}\nRELEASED baseline selected_65 metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION baseline selected_96 count=32 padding=1048576 field=96 metrics=#{binary_bytes => 33557815,binary_count => 32,process_bytes => 8744,selected_backing_bytes => 33557815,selected_bytes => 3072}\nRELEASED baseline selected_96 metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION baseline selected_256 count=32 padding=1048576 field=256 metrics=#{binary_bytes => 33562935,binary_count => 32,process_bytes => 8744,selected_backing_bytes => 33562935,selected_bytes => 8192}\nRELEASED baseline selected_256 metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION baseline selected_257 count=32 padding=1048576 field=257 metrics=#{binary_bytes => 33562967,binary_count => 32,process_bytes => 8744,selected_backing_bytes => 33562967,selected_bytes => 8224}\nRELEASED baseline selected_257 metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION baseline selected_ratio_exact_below count=1 padding=662 field=96 metrics=#{binary_bytes => 767,binary_count => 1,process_bytes => 2712,selected_backing_bytes => 767,selected_bytes => 96}\nRELEASED baseline selected_ratio_exact_below metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION baseline selected_ratio_exact count=1 padding=663 field=96 metrics=#{binary_bytes => 768,binary_count => 1,process_bytes => 2712,selected_backing_bytes => 768,selected_bytes => 96}\nRELEASED baseline selected_ratio_exact metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION baseline selected_ratio_below count=32 padding=600 field=96 metrics=#{binary_bytes => 22583,binary_count => 32,process_bytes => 13632,selected_backing_bytes => 22583,selected_bytes => 3072}\nRELEASED baseline selected_ratio_below metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION baseline selected_ratio_above count=32 padding=1000 field=96 metrics=#{binary_bytes => 35383,binary_count => 32,process_bytes => 13632,selected_backing_bytes => 35383,selected_bytes => 3072}\nRELEASED baseline selected_ratio_above metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION baseline provider_accumulator count=16 padding=1048576 field=96 metrics=#{binary_bytes => 16780167,binary_count => 16,process_bytes => 21536,selected_backing_bytes => 16780167,selected_bytes => 1536}\nRELEASED baseline provider_accumulator metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION baseline whole_document count=32 padding=1048576 field=96 metrics=#{binary_bytes => 33557815,binary_count => 32,process_bytes => 34328,selected_backing_bytes => 33557815,selected_bytes => 3072}\nRELEASED baseline whole_document metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION baseline source_still_owned count=32 padding=1048576 field=96 metrics=#{binary_bytes => 33557815,binary_count => 32,process_bytes => 13632,selected_backing_bytes => 33557815,selected_bytes => 3072}\nRELEASED baseline source_still_owned metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nCOPY_COST baseline field=64 count=2048 input_bytes=137217 repetitions=50 us=45621 reductions=11247227\nCOPY_COST baseline field=65 count=2048 input_bytes=139265 repetitions=50 us=47554 reductions=11329245\nCOPY_COST baseline field=96 count=2048 input_bytes=202753 repetitions=50 us=61552 reductions=15218569\nCOPY_COST baseline field=256 count=2048 input_bytes=530433 repetitions=50 us=166784 reductions=37651885\nCOPY_COST baseline field=257 count=2048 input_bytes=532481 repetitions=50 us=168483 reductions=37831138\n"
+      },
+      {
+        "side": "baseline",
+        "run": 2,
+        "raw_fixture_output": "VM label=baseline otp=29 word_bytes=8 schedulers=1\nRETENTION baseline selected_64 count=32 padding=1048576 field=64 metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 8744,selected_backing_bytes => 2048,selected_bytes => 2048}\nRELEASED baseline selected_64 metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION baseline selected_65 count=32 padding=1048576 field=65 metrics=#{binary_bytes => 33556823,binary_count => 32,process_bytes => 8744,selected_backing_bytes => 33556823,selected_bytes => 2080}\nRELEASED baseline selected_65 metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION baseline selected_96 count=32 padding=1048576 field=96 metrics=#{binary_bytes => 33557815,binary_count => 32,process_bytes => 8744,selected_backing_bytes => 33557815,selected_bytes => 3072}\nRELEASED baseline selected_96 metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION baseline selected_256 count=32 padding=1048576 field=256 metrics=#{binary_bytes => 33562935,binary_count => 32,process_bytes => 8744,selected_backing_bytes => 33562935,selected_bytes => 8192}\nRELEASED baseline selected_256 metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION baseline selected_257 count=32 padding=1048576 field=257 metrics=#{binary_bytes => 33562967,binary_count => 32,process_bytes => 8744,selected_backing_bytes => 33562967,selected_bytes => 8224}\nRELEASED baseline selected_257 metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION baseline selected_ratio_exact_below count=1 padding=662 field=96 metrics=#{binary_bytes => 767,binary_count => 1,process_bytes => 2712,selected_backing_bytes => 767,selected_bytes => 96}\nRELEASED baseline selected_ratio_exact_below metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION baseline selected_ratio_exact count=1 padding=663 field=96 metrics=#{binary_bytes => 768,binary_count => 1,process_bytes => 2712,selected_backing_bytes => 768,selected_bytes => 96}\nRELEASED baseline selected_ratio_exact metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION baseline selected_ratio_below count=32 padding=600 field=96 metrics=#{binary_bytes => 22583,binary_count => 32,process_bytes => 13632,selected_backing_bytes => 22583,selected_bytes => 3072}\nRELEASED baseline selected_ratio_below metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION baseline selected_ratio_above count=32 padding=1000 field=96 metrics=#{binary_bytes => 35383,binary_count => 32,process_bytes => 13632,selected_backing_bytes => 35383,selected_bytes => 3072}\nRELEASED baseline selected_ratio_above metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION baseline provider_accumulator count=16 padding=1048576 field=96 metrics=#{binary_bytes => 16780167,binary_count => 16,process_bytes => 21536,selected_backing_bytes => 16780167,selected_bytes => 1536}\nRELEASED baseline provider_accumulator metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION baseline whole_document count=32 padding=1048576 field=96 metrics=#{binary_bytes => 33557815,binary_count => 32,process_bytes => 34328,selected_backing_bytes => 33557815,selected_bytes => 3072}\nRELEASED baseline whole_document metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION baseline source_still_owned count=32 padding=1048576 field=96 metrics=#{binary_bytes => 33557815,binary_count => 32,process_bytes => 13632,selected_backing_bytes => 33557815,selected_bytes => 3072}\nRELEASED baseline source_still_owned metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nCOPY_COST baseline field=64 count=2048 input_bytes=137217 repetitions=50 us=49490 reductions=11247227\nCOPY_COST baseline field=65 count=2048 input_bytes=139265 repetitions=50 us=50446 reductions=11329245\nCOPY_COST baseline field=96 count=2048 input_bytes=202753 repetitions=50 us=65167 reductions=15218569\nCOPY_COST baseline field=256 count=2048 input_bytes=530433 repetitions=50 us=175266 reductions=37651885\nCOPY_COST baseline field=257 count=2048 input_bytes=532481 repetitions=50 us=180035 reductions=37831138\n"
+      },
+      {
+        "side": "baseline",
+        "run": 3,
+        "raw_fixture_output": "VM label=baseline otp=29 word_bytes=8 schedulers=1\nRETENTION baseline selected_64 count=32 padding=1048576 field=64 metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 8744,selected_backing_bytes => 2048,selected_bytes => 2048}\nRELEASED baseline selected_64 metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION baseline selected_65 count=32 padding=1048576 field=65 metrics=#{binary_bytes => 33556823,binary_count => 32,process_bytes => 8744,selected_backing_bytes => 33556823,selected_bytes => 2080}\nRELEASED baseline selected_65 metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION baseline selected_96 count=32 padding=1048576 field=96 metrics=#{binary_bytes => 33557815,binary_count => 32,process_bytes => 8744,selected_backing_bytes => 33557815,selected_bytes => 3072}\nRELEASED baseline selected_96 metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION baseline selected_256 count=32 padding=1048576 field=256 metrics=#{binary_bytes => 33562935,binary_count => 32,process_bytes => 8744,selected_backing_bytes => 33562935,selected_bytes => 8192}\nRELEASED baseline selected_256 metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION baseline selected_257 count=32 padding=1048576 field=257 metrics=#{binary_bytes => 33562967,binary_count => 32,process_bytes => 8744,selected_backing_bytes => 33562967,selected_bytes => 8224}\nRELEASED baseline selected_257 metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION baseline selected_ratio_exact_below count=1 padding=662 field=96 metrics=#{binary_bytes => 767,binary_count => 1,process_bytes => 2712,selected_backing_bytes => 767,selected_bytes => 96}\nRELEASED baseline selected_ratio_exact_below metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION baseline selected_ratio_exact count=1 padding=663 field=96 metrics=#{binary_bytes => 768,binary_count => 1,process_bytes => 2712,selected_backing_bytes => 768,selected_bytes => 96}\nRELEASED baseline selected_ratio_exact metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION baseline selected_ratio_below count=32 padding=600 field=96 metrics=#{binary_bytes => 22583,binary_count => 32,process_bytes => 13632,selected_backing_bytes => 22583,selected_bytes => 3072}\nRELEASED baseline selected_ratio_below metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION baseline selected_ratio_above count=32 padding=1000 field=96 metrics=#{binary_bytes => 35383,binary_count => 32,process_bytes => 13632,selected_backing_bytes => 35383,selected_bytes => 3072}\nRELEASED baseline selected_ratio_above metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION baseline provider_accumulator count=16 padding=1048576 field=96 metrics=#{binary_bytes => 16780167,binary_count => 16,process_bytes => 21536,selected_backing_bytes => 16780167,selected_bytes => 1536}\nRELEASED baseline provider_accumulator metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION baseline whole_document count=32 padding=1048576 field=96 metrics=#{binary_bytes => 33557815,binary_count => 32,process_bytes => 34328,selected_backing_bytes => 33557815,selected_bytes => 3072}\nRELEASED baseline whole_document metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION baseline source_still_owned count=32 padding=1048576 field=96 metrics=#{binary_bytes => 33557815,binary_count => 32,process_bytes => 13632,selected_backing_bytes => 33557815,selected_bytes => 3072}\nRELEASED baseline source_still_owned metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nCOPY_COST baseline field=64 count=2048 input_bytes=137217 repetitions=50 us=46210 reductions=11247227\nCOPY_COST baseline field=65 count=2048 input_bytes=139265 repetitions=50 us=49128 reductions=11329245\nCOPY_COST baseline field=96 count=2048 input_bytes=202753 repetitions=50 us=63659 reductions=15218569\nCOPY_COST baseline field=256 count=2048 input_bytes=530433 repetitions=50 us=171700 reductions=37651885\nCOPY_COST baseline field=257 count=2048 input_bytes=532481 repetitions=50 us=172081 reductions=37831138\n"
+      },
+      {
+        "side": "candidate",
+        "run": 1,
+        "raw_fixture_output": "VM label=candidate otp=29 word_bytes=8 schedulers=1\nRETENTION candidate selected_64 count=32 padding=1048576 field=64 metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 8744,selected_backing_bytes => 2048,selected_bytes => 2048}\nRELEASED candidate selected_64 metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION candidate selected_65 count=32 padding=1048576 field=65 metrics=#{binary_bytes => 2080,binary_count => 32,process_bytes => 8744,selected_backing_bytes => 2080,selected_bytes => 2080}\nRELEASED candidate selected_65 metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION candidate selected_96 count=32 padding=1048576 field=96 metrics=#{binary_bytes => 3072,binary_count => 32,process_bytes => 8744,selected_backing_bytes => 3072,selected_bytes => 3072}\nRELEASED candidate selected_96 metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION candidate selected_256 count=32 padding=1048576 field=256 metrics=#{binary_bytes => 8192,binary_count => 32,process_bytes => 8744,selected_backing_bytes => 8192,selected_bytes => 8192}\nRELEASED candidate selected_256 metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION candidate selected_257 count=32 padding=1048576 field=257 metrics=#{binary_bytes => 33562967,binary_count => 32,process_bytes => 8744,selected_backing_bytes => 33562967,selected_bytes => 8224}\nRELEASED candidate selected_257 metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION candidate selected_ratio_exact_below count=1 padding=662 field=96 metrics=#{binary_bytes => 767,binary_count => 1,process_bytes => 2712,selected_backing_bytes => 767,selected_bytes => 96}\nRELEASED candidate selected_ratio_exact_below metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION candidate selected_ratio_exact count=1 padding=663 field=96 metrics=#{binary_bytes => 96,binary_count => 1,process_bytes => 2712,selected_backing_bytes => 96,selected_bytes => 96}\nRELEASED candidate selected_ratio_exact metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION candidate selected_ratio_below count=32 padding=600 field=96 metrics=#{binary_bytes => 22583,binary_count => 32,process_bytes => 13632,selected_backing_bytes => 22583,selected_bytes => 3072}\nRELEASED candidate selected_ratio_below metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION candidate selected_ratio_above count=32 padding=1000 field=96 metrics=#{binary_bytes => 3072,binary_count => 32,process_bytes => 8744,selected_backing_bytes => 3072,selected_bytes => 3072}\nRELEASED candidate selected_ratio_above metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION candidate provider_accumulator count=16 padding=1048576 field=96 metrics=#{binary_bytes => 1536,binary_count => 16,process_bytes => 21536,selected_backing_bytes => 1536,selected_bytes => 1536}\nRELEASED candidate provider_accumulator metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION candidate whole_document count=32 padding=1048576 field=96 metrics=#{binary_bytes => 33560887,binary_count => 64,process_bytes => 21536,selected_backing_bytes => 3072,selected_bytes => 3072}\nRELEASED candidate whole_document metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION candidate source_still_owned count=32 padding=1048576 field=96 metrics=#{binary_bytes => 33560887,binary_count => 64,process_bytes => 21536,selected_backing_bytes => 3072,selected_bytes => 3072}\nRELEASED candidate source_still_owned metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nCOPY_COST candidate field=64 count=2048 input_bytes=137217 repetitions=50 us=48487 reductions=11131407\nCOPY_COST candidate field=65 count=2048 input_bytes=139265 repetitions=50 us=58755 reductions=11538666\nCOPY_COST candidate field=96 count=2048 input_bytes=202753 repetitions=50 us=76806 reductions=15702188\nCOPY_COST candidate field=256 count=2048 input_bytes=530433 repetitions=50 us=193356 reductions=38113967\nCOPY_COST candidate field=257 count=2048 input_bytes=532481 repetitions=50 us=166050 reductions=37797185\n"
+      },
+      {
+        "side": "candidate",
+        "run": 2,
+        "raw_fixture_output": "VM label=candidate otp=29 word_bytes=8 schedulers=1\nRETENTION candidate selected_64 count=32 padding=1048576 field=64 metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 8744,selected_backing_bytes => 2048,selected_bytes => 2048}\nRELEASED candidate selected_64 metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION candidate selected_65 count=32 padding=1048576 field=65 metrics=#{binary_bytes => 2080,binary_count => 32,process_bytes => 8744,selected_backing_bytes => 2080,selected_bytes => 2080}\nRELEASED candidate selected_65 metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION candidate selected_96 count=32 padding=1048576 field=96 metrics=#{binary_bytes => 3072,binary_count => 32,process_bytes => 8744,selected_backing_bytes => 3072,selected_bytes => 3072}\nRELEASED candidate selected_96 metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION candidate selected_256 count=32 padding=1048576 field=256 metrics=#{binary_bytes => 8192,binary_count => 32,process_bytes => 8744,selected_backing_bytes => 8192,selected_bytes => 8192}\nRELEASED candidate selected_256 metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION candidate selected_257 count=32 padding=1048576 field=257 metrics=#{binary_bytes => 33562967,binary_count => 32,process_bytes => 8744,selected_backing_bytes => 33562967,selected_bytes => 8224}\nRELEASED candidate selected_257 metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION candidate selected_ratio_exact_below count=1 padding=662 field=96 metrics=#{binary_bytes => 767,binary_count => 1,process_bytes => 2712,selected_backing_bytes => 767,selected_bytes => 96}\nRELEASED candidate selected_ratio_exact_below metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION candidate selected_ratio_exact count=1 padding=663 field=96 metrics=#{binary_bytes => 96,binary_count => 1,process_bytes => 2712,selected_backing_bytes => 96,selected_bytes => 96}\nRELEASED candidate selected_ratio_exact metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION candidate selected_ratio_below count=32 padding=600 field=96 metrics=#{binary_bytes => 22583,binary_count => 32,process_bytes => 13632,selected_backing_bytes => 22583,selected_bytes => 3072}\nRELEASED candidate selected_ratio_below metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION candidate selected_ratio_above count=32 padding=1000 field=96 metrics=#{binary_bytes => 3072,binary_count => 32,process_bytes => 8744,selected_backing_bytes => 3072,selected_bytes => 3072}\nRELEASED candidate selected_ratio_above metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION candidate provider_accumulator count=16 padding=1048576 field=96 metrics=#{binary_bytes => 1536,binary_count => 16,process_bytes => 21536,selected_backing_bytes => 1536,selected_bytes => 1536}\nRELEASED candidate provider_accumulator metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION candidate whole_document count=32 padding=1048576 field=96 metrics=#{binary_bytes => 33560887,binary_count => 64,process_bytes => 21536,selected_backing_bytes => 3072,selected_bytes => 3072}\nRELEASED candidate whole_document metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION candidate source_still_owned count=32 padding=1048576 field=96 metrics=#{binary_bytes => 33560887,binary_count => 64,process_bytes => 21536,selected_backing_bytes => 3072,selected_bytes => 3072}\nRELEASED candidate source_still_owned metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nCOPY_COST candidate field=64 count=2048 input_bytes=137217 repetitions=50 us=46012 reductions=11131407\nCOPY_COST candidate field=65 count=2048 input_bytes=139265 repetitions=50 us=57574 reductions=11538666\nCOPY_COST candidate field=96 count=2048 input_bytes=202753 repetitions=50 us=77037 reductions=15702188\nCOPY_COST candidate field=256 count=2048 input_bytes=530433 repetitions=50 us=188243 reductions=38113967\nCOPY_COST candidate field=257 count=2048 input_bytes=532481 repetitions=50 us=185462 reductions=37797185\n"
+      },
+      {
+        "side": "candidate",
+        "run": 3,
+        "raw_fixture_output": "VM label=candidate otp=29 word_bytes=8 schedulers=1\nRETENTION candidate selected_64 count=32 padding=1048576 field=64 metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 8744,selected_backing_bytes => 2048,selected_bytes => 2048}\nRELEASED candidate selected_64 metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION candidate selected_65 count=32 padding=1048576 field=65 metrics=#{binary_bytes => 2080,binary_count => 32,process_bytes => 8744,selected_backing_bytes => 2080,selected_bytes => 2080}\nRELEASED candidate selected_65 metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION candidate selected_96 count=32 padding=1048576 field=96 metrics=#{binary_bytes => 3072,binary_count => 32,process_bytes => 8744,selected_backing_bytes => 3072,selected_bytes => 3072}\nRELEASED candidate selected_96 metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION candidate selected_256 count=32 padding=1048576 field=256 metrics=#{binary_bytes => 8192,binary_count => 32,process_bytes => 8744,selected_backing_bytes => 8192,selected_bytes => 8192}\nRELEASED candidate selected_256 metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION candidate selected_257 count=32 padding=1048576 field=257 metrics=#{binary_bytes => 33562967,binary_count => 32,process_bytes => 8744,selected_backing_bytes => 33562967,selected_bytes => 8224}\nRELEASED candidate selected_257 metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION candidate selected_ratio_exact_below count=1 padding=662 field=96 metrics=#{binary_bytes => 767,binary_count => 1,process_bytes => 2712,selected_backing_bytes => 767,selected_bytes => 96}\nRELEASED candidate selected_ratio_exact_below metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION candidate selected_ratio_exact count=1 padding=663 field=96 metrics=#{binary_bytes => 96,binary_count => 1,process_bytes => 2712,selected_backing_bytes => 96,selected_bytes => 96}\nRELEASED candidate selected_ratio_exact metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION candidate selected_ratio_below count=32 padding=600 field=96 metrics=#{binary_bytes => 22583,binary_count => 32,process_bytes => 13632,selected_backing_bytes => 22583,selected_bytes => 3072}\nRELEASED candidate selected_ratio_below metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION candidate selected_ratio_above count=32 padding=1000 field=96 metrics=#{binary_bytes => 3072,binary_count => 32,process_bytes => 8744,selected_backing_bytes => 3072,selected_bytes => 3072}\nRELEASED candidate selected_ratio_above metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION candidate provider_accumulator count=16 padding=1048576 field=96 metrics=#{binary_bytes => 1536,binary_count => 16,process_bytes => 21536,selected_backing_bytes => 1536,selected_bytes => 1536}\nRELEASED candidate provider_accumulator metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION candidate whole_document count=32 padding=1048576 field=96 metrics=#{binary_bytes => 33560887,binary_count => 64,process_bytes => 21536,selected_backing_bytes => 3072,selected_bytes => 3072}\nRELEASED candidate whole_document metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nRETENTION candidate source_still_owned count=32 padding=1048576 field=96 metrics=#{binary_bytes => 33560887,binary_count => 64,process_bytes => 21536,selected_backing_bytes => 3072,selected_bytes => 3072}\nRELEASED candidate source_still_owned metrics=#{binary_bytes => 0,binary_count => 0,process_bytes => 2712,selected_backing_bytes => 0,selected_bytes => 0}\nCOPY_COST candidate field=64 count=2048 input_bytes=137217 repetitions=50 us=45519 reductions=11131407\nCOPY_COST candidate field=65 count=2048 input_bytes=139265 repetitions=50 us=57938 reductions=11538666\nCOPY_COST candidate field=96 count=2048 input_bytes=202753 repetitions=50 us=79417 reductions=15702188\nCOPY_COST candidate field=256 count=2048 input_bytes=530433 repetitions=50 us=188283 reductions=38113967\nCOPY_COST candidate field=257 count=2048 input_bytes=532481 repetitions=50 us=168197 reductions=37797185\n"
+      }
+    ]
+  },
+  "validation": {
+    "focused_identity_test_exit": 0,
+    "negative_control_exit": 1,
+    "negative_control": "Old provider fails bounded ownership assertion at provider_65; final candidate passes all provider boundary cases.",
+    "review": "Independent Astra production review and Sol 6.1 evidence review found no actionable issues.",
+    "doc_check_exit": 0,
+    "doc_check_warnings": 198,
+    "full_local_make_check_exit": 0,
+    "core_tests": 163,
+    "provider_tests": 301,
+    "client_tests": 3835,
+    "tui_tests": 1331,
+    "conformance_tests": 98,
+    "house_lint_errors": 0,
+    "hosted_linux": "Previous4c2c0a982 head green on both; consult PR949 for new-head status."
+  },
+  "candidate_source_commit": "11b411dba7c7b2ee0895fc13d783ba7b27ce539d"
+}

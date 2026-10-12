@@ -640,6 +640,12 @@ with these forks: they define the same modules.
   `EXPLAIN QUERY PLAN` so the conformance suite fails on any
   `TEMP B-TREE FOR ORDER BY` or entries-scan regression — the query plan is
   an enforced contract, not a performance note.
+  Kind-filtered pages use the covering `ix_be_type` index to exclude unrelated
+  payloads before fetching or decoding them. Stops are still resolved on the
+  unfiltered path before window clipping, then kind filtering, cursor and limit
+  retain their existing semantics. Custom-type filtering remains in the pure
+  pipeline. Matching payloads still undergo total decoding; excluded payloads
+  are not validated, just as rows beyond a stop, cursor or limit are not.
 - **Writing an entry or usage row under an existing id is corruption**, not
   an update. Entry and usage ids share one namespace.
 - **Register semantics**: set replaces, delete removes, delete-absent is a

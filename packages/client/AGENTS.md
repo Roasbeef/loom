@@ -125,6 +125,12 @@ they can still receive a late reply there; they take the same refusal.
 
 ## Provider observation capture
 
+Admission checks the selected model's image-reading capability before asking
+for image classification. Image-capable identities, including the existing
+unknown-model fallback, need no operation or transcript reads for this routing
+decision. Text-only identities retain the durable projection and admitted-batch
+checks which keep image-bearing continuations on the vision route.
+
 `wiring.request_image_classifier` projects the session before constructing
 the callback used by `serve.summary_tap`. The dispatcher and the block summary
 observer still classify the current context and immutable admitted prompt
@@ -2740,7 +2746,7 @@ catalogue without opening runtimes. Explicit admission invokes
   stop_grace_ms, runner_ask_ms, default_policy, parse_policy, blob_spill,
   staging_path, start, supervised, start_job, release_job,
   sample_heartbeat, poll_job, list_jobs, kill_job, write_stdin,
-  await_job}` — the session's background
+  await_job, await_completion}` — the session's background
   jobs: one `weft/actor` in the **restartable** services tier beside
   `client/extension/hosts`, and one weft runner per job. The actor owns
   the durable `job/<id>` record, the per-strand ceiling of four, and the
@@ -2772,6 +2778,17 @@ catalogue without opening runtimes. Explicit admission invokes
   restart cases, because telling this session's first start from a
   supervisor restart needs state that outlives the actor and dies with
   the VM, which is machinery bought for a word nobody branches on.
+  Production waits use `WatchOne` to obtain an ownership-checked completion
+  witness alongside the current `Polled`. The first waiter starts one linked
+  weft actor; later waiters share it without registering their subjects.
+  `commit` stops it after applying the terminal event and attempting the fact
+  write. Each caller monitors it and rereads `poll_job` on DOWN or timeout;
+  DOWN itself never means success. A monitor installed after completion also
+  wakes, and the witness follows its jobs-owner parent on restart or kill.
+  Refused clearance stops it before deleting the held record. Terminal jobs
+  and swept records retain no witness. Persistence errors retain the existing
+  in-memory commit behavior; a wake proves write-attempt ordering, not successful
+  storage under an owner failure.
   **Each job's `Audience` decides who hears about its end.** `NotifyOwner`
   (a background `bash`) sends the owner a completion notice after the
   terminal commit; `CallerWaiting` (an auto `bash`) is silent until
@@ -2788,7 +2805,7 @@ catalogue without opening runtimes. Explicit admission invokes
   owner. The choice is held on the actor's in-memory `Held` rather than
   the durable record, since no job is live across a restart.
 - `client/jobseam.{Wiring, Door, max_wait_ms, ask_timeout_ms,
-  start_margin_ms, first_slice_ms, max_slice_ms, door, none, real_rest}`
+  start_margin_ms, first_slice_ms, max_slice_ms, door, production, none, real_rest}`
   — the host side of the model-facing jobs door, mirroring
   `client/scheduleseam`: six closures keyed on the caller's strand,
   which `client/jobtools` turns into `tools/job` and `cap/job` surfaces.
@@ -2796,10 +2813,11 @@ catalogue without opening runtimes. Explicit admission invokes
   and typed behind it, and this is the one place a string becomes a
   `jobstate.JobId` — with `Invalid` rather than `NotFound` for a
   malformed one, because "that is not a name a job could have" is a typo
-  to fix and not a job to stop looking for. A poll with a wait runs its
-  `weft/poll` loop in the **caller's** process, the reason
-  `client/agency`'s join does: a model blocking thirty seconds on one job
-  must not stop the actor answering about any other.
+  to fix and not a job to stop looking for. `workspace_plane` selects
+  `production`, whose positive waits call `jobs.await_completion` on the real
+  monotonic time base. `door` retains the injected clock and rest over
+  `weft/poll` for simulations. Both wait in the caller's process, so a model
+  blocking thirty seconds on one job cannot stop other actor requests.
 - `client/jobtools.{seam, capability_door, refusal, started, polled,
   listed}` — the translation between `client/jobseam.Door`'s vocabulary
   and the model's. `tools` may reach only `core` and `broker`, so neither

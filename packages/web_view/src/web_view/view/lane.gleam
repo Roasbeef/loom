@@ -38,7 +38,8 @@
 //// its `[image <type>]` text row.
 ////
 //// Every transcript line and card body is drawn inside its own memo whose
-//// one dependency is that line or body, with no memo around them. `view`
+//// one dependency is that line or body, with no memo around them. A failed
+//// step keeps its refusal and remaining rows together in one leaf instead. `view`
 //// says why the memos have to be the leaves; `lane_memo_test` counts the
 //// lines a render draws, and a change here must leave its counts as they
 //// are.
@@ -100,6 +101,10 @@ import web_view/view/strip
 /// turns' folds and the blocks around the lines are rebuilt on each render,
 /// which costs little. A window that drops its oldest rows removes them
 /// rather than rewriting the rows after them.
+///
+/// A failed step instead keeps its refusal and remaining rows in one leaf
+/// over its words and rows (`fold_row.step_body`), so unchanged failures do
+/// not repeat joins and Unicode trims. That leaf draws its rows directly.
 ///
 /// The memos are the leaves, with no memo around them, and that is what
 /// makes them hold. Lustre 5.7.1 keeps a render's memo elements in a table

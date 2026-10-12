@@ -268,6 +268,37 @@ pub fn door(wiring: Wiring) -> Door {
   )
 }
 
+/// The production door, with completion-driven waits on the real time base.
+///
+/// The injected door remains available to simulations. This constructor
+/// changes only the internal wait, preserving tool and capability contracts.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // jobseam.production(wiring)
+/// ```
+@internal
+pub fn production(wiring: Wiring) -> Door {
+  let name = wiring.name
+  Door(..door(wiring), poll: fn(strand, id, wait_ms, cursors) {
+    use id <- result.try(parse(id))
+    case wait_ms <= 0 {
+      True ->
+        jobs.poll_job(name, strand:, id:, cursors:, waiting: ask_timeout_ms)
+      False ->
+        jobs.await_completion(
+          name,
+          strand:,
+          id:,
+          cursors:,
+          within_ms: int.clamp(wait_ms, min: 0, max: max_wait_ms),
+          waiting: ask_timeout_ms,
+        )
+    }
+  })
+}
+
 /// The seam a session with no jobs actor hands out: every operation
 /// refuses in band, naming the reason.
 ///

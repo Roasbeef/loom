@@ -132,3 +132,86 @@ pub fn blank_reasoning_preview_refreshes_to_text_and_back_test() {
   assert !string.contains(changed, "Ready")
   assert !string.contains(element.to_string(blank), "subject preview")
 }
+
+fn failed(words: step_words.Words, rows: List(Line)) -> Element(Nil) {
+  fold_row.step_body(turns.Failed, words, rows, fn(line) {
+    element.text(line.text)
+  })
+  |> element.fragment
+}
+
+pub fn unchanged_failed_step_body_does_no_refusal_work_test() {
+  let words = step_words.Words("Read", step_words.Unnamed, None)
+  let rows = [
+    Line(
+      transcript_line.ToolFailure,
+      "fs_read\ninvalid arguments: `path` is required",
+    ),
+    Line(transcript_line.ToolPatch, "patch <b>λ</b>"),
+  ]
+  let #(#(view, cache), trims, _) =
+    counted(fn() {
+      let view = failed(words, rows)
+      #(view, first(view))
+    })
+  assert trims > 0
+
+  // A memo hit must preserve its leaf for the next patch as well as this one.
+  let #(#(_, cache), trims, _) =
+    counted(fn() { patch(cache, view, failed(words, rows)) })
+  assert trims == 0
+  let #(#(_, cache), trims, _) =
+    counted(fn() { patch(cache, view, failed(words, rows)) })
+  assert trims == 0
+
+  // Both the sentence and engine text remain dependencies of the leaf.
+  let edited = step_words.Words("Edit", step_words.Unnamed, None)
+  let next = failed(edited, rows)
+  let #(#(changed, cache), trims, _) =
+    counted(fn() { patch(cache, view, next) })
+  assert trims > 0
+  assert string.contains(changed, "The edit was rejected")
+  let changed_rows = [Line(transcript_line.ToolResult, "new reason <b>λ</b>")]
+  let #(#(changed, _), trims, _) =
+    counted(fn() { patch(cache, next, failed(edited, changed_rows)) })
+  assert trims > 0
+  assert string.contains(changed, "new reason <b>λ</b>")
+  let html = element.to_string(failed(edited, changed_rows))
+  assert string.contains(html, "new reason &lt;b&gt;λ&lt;/b&gt;")
+  assert !string.contains(html, "new reason <b>")
+}
+
+pub fn blank_failed_refusal_preserves_original_row_order_test() {
+  let words = step_words.Words("Read", step_words.Unnamed, None)
+  let rows = [
+    Line(transcript_line.ToolFailure, "fs_read\n \t"),
+    Line(transcript_line.ToolPatch, "patch <b>λ</b>"),
+    Line(transcript_line.ToolResult, " \t"),
+  ]
+  let expected =
+    rows
+    |> list.map(fn(row) { element.text(row.text) })
+    |> element.fragment
+    |> element.to_string
+  let actual = element.to_string(failed(words, rows))
+  assert without_markers(actual) == without_markers(expected)
+}
+
+// Fragment and memo markers describe the virtual tree, not the row content.
+fn without_markers(html: String) -> String {
+  html
+  |> string.replace("<!-- lustre:memo -->", "")
+  |> string.replace("<!-- lustre:fragment -->", "")
+  |> string.replace("<!-- /lustre:fragment -->", "")
+}
+
+pub fn empty_failed_step_has_no_expandable_body_test() {
+  let words = step_words.Words("Read", step_words.Unnamed, None)
+  let body =
+    fold_row.step_body(turns.Failed, words, [], fn(row) {
+      element.text(row.text)
+    })
+  assert list.is_empty(body)
+  let html = fold_row.step(turns.Failed, words, None, body) |> element.to_string
+  assert !string.contains(html, "loom-expand")
+}

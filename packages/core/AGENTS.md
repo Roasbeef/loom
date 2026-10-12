@@ -143,7 +143,14 @@ wire boundary. WP-A, and the root of the dependency DAG — `core` depends on
   for quote, backslash and C0 controls. An exceptional chunk resumes the
   single-byte step, and slices are still UTF-8 validated. Independent
   codepoint-oracle and raw-input refusal tests cover every escape/control
-  byte at varied ASCII and multibyte offsets.
+  byte at varied ASCII and multibyte offsets. String delimiters, adjacent
+  escapes, raw controls and end of input dispatch before ordinary-run slicing.
+  Nonempty runs validate their matched slice directly and consume a successful
+  delimiter in the same cursor update; errors retain their original offsets
+  and contexts. Reversed chunks and final concatenation retain the previous
+  output ownership. `scripts/json_decode_perf.sh` measures root-only parse
+  allocation and untraced timing, and its `equivalence` mode compares complete
+  results and corruption reports against a built baseline.
 - **msgpack encoding is canonical** — smallest encoding that fits — so
   equal values always produce identical bytes. The Go helper's strict
   decoder and the golden fixtures both depend on this.

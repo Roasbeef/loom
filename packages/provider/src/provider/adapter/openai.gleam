@@ -44,7 +44,7 @@
 ////
 //// ## Flow
 ////
-//// `build_request` → `encode_messages` → `response_machine` → `on_chunk` → `handle_sse` → `handle_chunk_document` → `handle_delta` → `settle`
+//// `build_request` → `encode_messages` → `response_machine` → `on_chunk` → `handle_sse` → `handle_chunk_document` → `retained_identity` → `handle_delta` → `settle`
 ////
 //// 1. `build_request` writes the streaming request body and hands the system
 ////    prompt and transcript to `encode_messages`.
@@ -630,7 +630,7 @@ fn handle_sse_data(
   data: String,
 ) -> #(Accumulator, List(StreamEvent)) {
   use document <- or_fail(json.parse(data), acc, MalformedStream)
-  handle_document(acc, document)
+  handle_document(acc, document, string.byte_size(data))
 }
 
 // A chunk document carrying its own `error` field is how some
@@ -639,6 +639,7 @@ fn handle_sse_data(
 fn handle_document(
   acc: Accumulator,
   document: JsonValue,
+  document_bytes: Int,
 ) -> #(Accumulator, List(StreamEvent)) {
   case wire.field(document, "error") {
     Ok(error) ->
@@ -649,7 +650,7 @@ fn handle_document(
           message: wire.string_field_or(error, "message", or: ""),
         ),
       )
-    Error(Nil) -> handle_chunk_document(acc, document)
+    Error(Nil) -> handle_chunk_document(acc, document, document_bytes)
   }
 }
 
@@ -665,16 +666,17 @@ fn corruption_report(expected: String, context: String) -> CorruptionReport {
 fn handle_chunk_document(
   acc: Accumulator,
   document: JsonValue,
+  document_bytes: Int,
 ) -> #(Accumulator, List(StreamEvent)) {
   let acc =
     Accumulator(
       ..acc,
       response_id: option.or(
-        option.from_result(wire.string_field(document, "id")),
+        retained_identity(document, "id", document_bytes),
         acc.response_id,
       ),
       response_model: option.or(
-        option.from_result(wire.string_field(document, "model")),
+        retained_identity(document, "model", document_bytes),
         acc.response_model,
       ),
     )
@@ -691,6 +693,27 @@ fn handle_chunk_document(
   // final count. EOF with an earlier snapshot retains partial evidence.
   let evidence = final_usage_evidence(acc, document)
   #(Accumulator(..acc, evidence:), events)
+}
+
+// Response identity survives the event document in the accumulator and settled
+// message. Copy only a bounded field from a much larger event; copying every
+// JSON string penalizes callers that continue to own the entire document.
+fn retained_identity(
+  document: JsonValue,
+  key: String,
+  document_bytes: Int,
+) -> Option(String) {
+  wire.string_field(document, key)
+  |> result.map(fn(text) {
+    let size = string.byte_size(text)
+    case size > 64 && size <= 256 && document_bytes >= size * 8 {
+      // OTP 29 already materializes slices up to 64 bytes. A second, empty
+      // chunk makes concatenation materialize larger selected fields too.
+      True -> string.concat([text, ""])
+      False -> text
+    }
+  })
+  |> option.from_result
 }
 
 // Required input/cache witnesses may come from earlier snapshots, but the

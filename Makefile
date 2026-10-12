@@ -401,6 +401,13 @@ bench-exec: sandbox ## Benchmark the exec helper pool against the real helper (L
 	@LOOM_BENCH_EXEC=1 LOOM_TEST_TIMEOUT_SECONDS="$${LOOM_TEST_TIMEOUT_SECONDS:-600}" \
 		bash scripts/test.sh broker --match broker@bench_exec_test:
 
+# Response latency without the Linux-only census and fault-injection probes.
+# PlatformEnforcement is the same demand the ordinary server uses.
+.PHONY: bench-tool-latency
+bench-tool-latency: sandbox ## Measure cold/warm jailed commands and response sizes (LOOM_BENCH_OUT=path)
+	@LOOM_BENCH_EXEC=latency LOOM_TEST_TIMEOUT_SECONDS="$${LOOM_TEST_TIMEOUT_SECONDS:-600}" \
+		bash scripts/test.sh broker --match broker@bench_exec_test:
+
 .PHONY: dev
 dev: ## Build a scratch daemon and open its session picker (interactive)
 	@scripts/dev.sh
@@ -420,6 +427,16 @@ sandbox-test: ## Vet, build, and test the Go sandbox package
 .PHONY: selftest
 selftest: sandbox ## Probe this kernel's enforcement layers (ENFORCED/SKIPPED per probe)
 	@./$(HELPER) --self-test
+
+# The provider fixture brackets real bash calls through a shipped daemon and
+# a TLS orchestrator/executor pair. Build the shipment first; short and delayed
+# workloads are selected with LOOM_BENCH_TOOLS_WORKLOAD=delayed.
+.PHONY: bench-tool-roundtrip
+bench-tool-roundtrip: sandbox server-shipment ## Measure complete local and distributed tool responses
+	@install -m 0755 $(HELPER) bin/loom-exec
+	@LOOM_BENCH_TOOLS=1 LOOM_BOOTSTRAP_E2E_SERVER="$(CURDIR)/bin/loomd" \
+		LOOM_TEST_PROVIDER_KEY=loom-provider-fixture-key \
+		bash scripts/test.sh client --match client@bench_tool_roundtrip_test:
 
 # ---------------------------------------------------------------- end to end
 

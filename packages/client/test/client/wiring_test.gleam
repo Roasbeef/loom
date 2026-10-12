@@ -510,6 +510,57 @@ pub fn admission_reports_the_resolved_window_test() {
   assert api == "acme-api"
 }
 
+// An image-capable identity keeps its own route regardless of transcript
+// images. Admission must answer from its facts without rereading the branch.
+pub fn image_capable_admission_does_not_read_storage_test() {
+  let base = config()
+  let reads = process.new_subject()
+  let store = base.session.store
+  let observed =
+    storage.Storage(
+      ..store,
+      get_register: fn(handle, namespace, key) {
+        process.send(reads, Nil)
+        store.get_register(handle, namespace, key)
+      },
+      scan_branch: fn(handle, query) {
+        process.send(reads, Nil)
+        store.scan_branch(handle, query)
+      },
+    )
+  let opened = session.Session(..base.session, store: observed)
+  let #(operation_id, _generator) =
+    ids.mint_op(ids.generator(clock.fixed(at: 0), seed: 1))
+
+  // Unknown model facts retain the existing image-capable fallback. Neither
+  // that fallback nor an explicit declaration needs the operation's history.
+  list.each(
+    [
+      #(wiring.Config(..base, session: opened), routed_context_window),
+      #(
+        wiring.Config(..base, session: opened, facts: fn(_identity) {
+          Error(Nil)
+        }),
+        base.fallback_context_window,
+      ),
+    ],
+    fn(pair) {
+      let #(configuration, expected_window) = pair
+      let hooks_record = wiring.compaction_hooks(configuration)
+      let assert planner.Admitted(context_window:, ..) =
+        hooks_record.admission(effects.AdmissionQuery(
+          operation: operation_id,
+          step_id: "turn-1",
+          attempt: 1,
+          configuration: configuration_with([]),
+          stream_options: json.Object([]),
+        ))
+      assert context_window == expected_window
+      assert process.receive(reads, 0) == Error(Nil)
+    },
+  )
+}
+
 // Every structural decision goes to a provider. A harness that supplied
 // its own summary here would be answering its own compaction.
 

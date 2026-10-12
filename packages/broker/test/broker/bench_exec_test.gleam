@@ -48,6 +48,12 @@
 //// No other program on a developer's machine does, so a process whose command
 //// line carries it is one this benchmark started, and the leak census can
 //// count it, and later kill it, without touching anyone else's `sleep`.
+////
+//// `LOOM_BENCH_EXEC=latency` runs only startup and response probes, without
+//// the Linux-only process census. It uses production platform enforcement.
+//// Each response probe records raw microsecond samples as well as percentiles;
+//// first output and tail settlement are observed at the broker caller, not
+//// inside the payload. It excludes job polling, storage and provider encoding.
 
 import broker/broker
 import broker/budget
@@ -103,6 +109,7 @@ pub type EunitTest {
 pub fn bench_exec_test_() -> EunitTest {
   case host.getenv("LOOM_BENCH_EXEC") {
     Ok("1") -> Timeout(240, run_all)
+    Ok("latency") -> Timeout(240, run_latency)
     Ok(_) | Error(Nil) -> Timeout(5, not_requested)
   }
 }
@@ -144,6 +151,9 @@ type Settled {
     bytes: Int,
     elapsed_us: Int,
     settled_at_us: Int,
+    first_output_us: Option(Int),
+    last_output_us: Option(Int),
+    clearance_us: Int,
   )
 }
 
@@ -189,7 +199,10 @@ fn open_bench() -> Bench {
       cancel_grace_ms: 3000,
       heartbeat_interval_ms: 0,
     ),
-    demand: exec.BestEffort,
+    demand: case host.getenv("LOOM_BENCH_EXEC") {
+      Ok("latency") -> exec.PlatformEnforcement
+      Ok(_) | Error(Nil) -> exec.BestEffort
+    },
   )
 }
 
@@ -349,7 +362,8 @@ fn run_to_settle(
     broker.clear_call(plane.owner, spec, events:, waiting: 20_000)
     |> result.map_error(refusal_text),
   )
-  await_settled(events, started, 0)
+  let clearance_us = host.now_us() - started
+  await_response(events, started, 0, None, None, clearance_us)
 }
 
 fn await_settled(
@@ -357,9 +371,37 @@ fn await_settled(
   started_us: Int,
   bytes: Int,
 ) -> Result(Settled, String) {
+  await_response(events, started_us, bytes, None, None, 0)
+}
+
+// Keep the output observations on the same monotonic clock as settlement.
+// Empty cap notifications do not count as first payload output.
+fn await_response(
+  events: Subject(broker.CallEvent),
+  started_us: Int,
+  bytes: Int,
+  first_output_us: Option(Int),
+  last_output_us: Option(Int),
+  clearance_us: Int,
+) -> Result(Settled, String) {
   case process.receive(events, 60_000) {
-    Ok(broker.CallOutput(data:, ..)) ->
-      await_settled(events, started_us, bytes + bit_array.byte_size(data))
+    Ok(broker.CallOutput(data:, ..)) -> {
+      let size = bit_array.byte_size(data)
+      let at = host.now_us() - started_us
+      let #(first, last) = case size, first_output_us {
+        0, _ -> #(first_output_us, last_output_us)
+        _, None -> #(Some(at), Some(at))
+        _, Some(_) -> #(first_output_us, Some(at))
+      }
+      await_response(
+        events,
+        started_us,
+        bytes + size,
+        first,
+        last,
+        clearance_us,
+      )
+    }
 
     Ok(broker.CallSettled(outcome:)) -> {
       let now = host.now_us()
@@ -368,6 +410,9 @@ fn await_settled(
         bytes:,
         elapsed_us: now - started_us,
         settled_at_us: now,
+        first_output_us:,
+        last_output_us:,
+        clearance_us:,
       ))
     }
 
@@ -599,6 +644,129 @@ fn run_all() -> Nil {
   // its own running.
   let _ = reap_leftovers(bench)
   Nil
+}
+
+// Short, portable measurements of sequential tool-shaped commands. Fresh
+// pools isolate cold admission; warmed pools exclude the helper handshake,
+// but still build a fresh jail for every command, just as production does.
+fn run_latency() -> Nil {
+  let bench = open_bench()
+  meta(bench)
+  spawn_to_ready(bench)
+  let cold =
+    repeat(10, fn() {
+      let plane = start_plane(bench, 1)
+      let settled = run_to_settle(plane, true_spec(plane)) |> must("cold_noop")
+      validate_response(settled, 0)
+      let assert Ok(Nil) = stop_plane(plane) as "cold pool retires"
+      settled
+    })
+  emit_responses(bench, "cold_noop", cold, 0)
+
+  let plane = start_plane(bench, 1)
+  warm(plane, 1)
+  response_probe(plane, "warm_noop", ["/usr/bin/true"], 0)
+  response_probe(plane, "warm_shell", ["/bin/sh", "-c", "printf ready"], 5)
+  response_probe(
+    plane,
+    "warm_4k",
+    ["/bin/sh", "-c", "dd if=/dev/zero bs=4096 count=1 2>/dev/null"],
+    4096,
+  )
+  response_probe(
+    plane,
+    "warm_1m",
+    ["/bin/sh", "-c", "dd if=/dev/zero bs=65536 count=16 2>/dev/null"],
+    1_048_576,
+  )
+  let assert Ok(Nil) = stop_plane(plane) as "warm pool retires"
+  Nil
+}
+
+fn response_probe(
+  plane: Plane,
+  name: String,
+  argv: List(String),
+  expected_bytes: Int,
+) -> Nil {
+  let command = spec(plane, argv, default_output_bytes)
+
+  // Discard one complete command, not merely a helper handshake, before
+  // measuring. Every measured iteration must return the complete payload.
+  let warmup = run_to_settle(plane, command) |> must(name)
+  validate_response(warmup, expected_bytes)
+  let settled =
+    repeat(30, fn() {
+      let one =
+        run_to_settle(plane, spec(plane, argv, default_output_bytes))
+        |> must(name)
+      validate_response(one, expected_bytes)
+      one
+    })
+  emit_responses(plane.bench, name, settled, expected_bytes)
+}
+
+fn validate_response(settled: Settled, expected_bytes: Int) -> Nil {
+  let result = expect_exit(settled)
+  assert result.code == 0 as "the benchmark command succeeds"
+  assert !result.cancelled && !result.timed_out
+    as "the command finishes normally"
+  assert !result.stdout_truncated && !result.stderr_truncated
+    as "the response is complete, including at the output ceiling"
+  assert settled.bytes == expected_bytes
+    as "every response byte reaches the caller"
+  assert result.stdout_bytes == expected_bytes && result.stderr_bytes == 0
+    as "the helper reports the expected streams"
+  assert { expected_bytes == 0 } == { settled.first_output_us == None }
+    as "first output is absent exactly when the response is empty"
+  Nil
+}
+
+fn emit_responses(
+  bench: Bench,
+  name: String,
+  settled: List(Settled),
+  expected_bytes: Int,
+) -> Nil {
+  let first =
+    list.filter_map(settled, fn(one) { option_to_result(one.first_output_us) })
+  let tail =
+    list.filter_map(settled, fn(one) {
+      one.last_output_us
+      |> option_to_result
+      |> result.map(fn(last) { one.elapsed_us - last })
+    })
+  let reports =
+    list.map(settled, fn(one) { string.inspect(expect_exit(one).enforcement) })
+
+  emit(bench, name, list.length(settled), elapsed(settled), [
+    #("expected_bytes", JInt(expected_bytes)),
+    #("samples_us", JList(list.map(elapsed(settled), JInt))),
+    #(
+      "clearance_samples_us",
+      JList(list.map(settled, fn(one) { JInt(one.clearance_us) })),
+    ),
+    #(
+      "clearance",
+      JObject(latency_fields(list.map(settled, fn(one) { one.clearance_us }))),
+    ),
+    #("first_output", JObject(latency_fields(first))),
+    #("first_output_samples_us", JList(list.map(first, JInt))),
+    #("tail_settlement", JObject(latency_fields(tail))),
+    #("tail_settlement_samples_us", JList(list.map(tail, JInt))),
+    #(
+      "helper_wall_ms",
+      JList(list.map(settled, fn(one) { JInt(expect_exit(one).wall_ms) })),
+    ),
+    #("enforcement", counts(reports)),
+  ])
+}
+
+fn option_to_result(value: Option(a)) -> Result(a, Nil) {
+  case value {
+    Some(inner) -> Ok(inner)
+    None -> Error(Nil)
+  }
 }
 
 // What the numbers below were taken on: the host, the helper, and what the

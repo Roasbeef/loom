@@ -837,6 +837,18 @@ fn branch_scan_checks(backend: Backend(handle)) -> Nil {
     )
     == [m1.id, m2.id, c3.id, x4.id, m5.id, m6.id]
 
+  // Sparse matches still advance by the last fetched matching sequence.
+  assert page_through(store, newest |> storage.branch_kind(storage.Message), 2)
+    == [m6.id, m5.id, m2.id, m1.id]
+  assert page_through(
+      store,
+      newest
+        |> storage.branch_kind(storage.Message)
+        |> storage.branch_order(storage.OldestFirst),
+      2,
+    )
+    == [m1.id, m2.id, m5.id, m6.id]
+
   // A stop kind with no match on the path scans through to the root.
   assert scan_ids(
       store,
@@ -857,6 +869,45 @@ fn branch_scan_checks(backend: Backend(handle)) -> Nil {
   let assert Ok(found) = storage.get_entries(store, [m5.id, c3.id])
   let assert Ok(stored_m5) = dict.get(found, m5.id)
   let assert Ok(stored_c3) = dict.get(found, c3.id)
+
+  // Stop resolution precedes kind filtering, even when the stop itself is
+  // excluded. The exclusive cursor and limit then apply to surviving rows.
+  assert scan_ids(
+      store,
+      newest
+        |> storage.branch_stop_at_kind(storage.Compaction)
+        |> storage.branch_kind(storage.Message)
+        |> storage.branch_limit(3),
+    )
+    == [m6.id, m5.id]
+  assert scan_ids(
+      store,
+      newest
+        |> storage.branch_order(storage.OldestFirst)
+        |> storage.branch_stop_at_kind(storage.Compaction)
+        |> storage.branch_kind(storage.Message)
+        |> storage.branch_limit(3),
+    )
+    == [m1.id, m2.id]
+  assert scan_ids(
+      store,
+      newest
+        |> storage.branch_stop_at_kind(storage.Compaction)
+        |> storage.branch_kind(storage.Message)
+        |> storage.branch_cursor(stored_c3.seq)
+        |> storage.branch_limit(1),
+    )
+    == []
+  assert scan_ids(
+      store,
+      newest
+        |> storage.branch_order(storage.OldestFirst)
+        |> storage.branch_stop_at_kind(storage.Compaction)
+        |> storage.branch_kind(storage.Message)
+        |> storage.branch_cursor(stored_c3.seq)
+        |> storage.branch_limit(1),
+    )
+    == []
   assert scan_ids(
       store,
       newest

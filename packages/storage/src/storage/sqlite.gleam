@@ -3679,36 +3679,59 @@ FROM branch_entries b CROSS JOIN entries e ON e.id = b.entry_id
 WHERE b.branch_id = ?1 AND b.entry_seq > ?2 AND b.entry_seq <= ?3
 ORDER BY b.entry_seq ASC LIMIT ?4"
 
+// Kinds are indexed from the immutable entry at insertion. Resolve stops on
+// the unfiltered path first, then avoid fetching payloads the kind excludes.
+const segment_kind_sql_desc =
+  "SELECT e.payload
+FROM branch_entries b CROSS JOIN entries e ON e.id = b.entry_id
+WHERE b.branch_id = ?1 AND b.entry_seq > ?2 AND b.entry_seq <= ?3
+  AND b.entry_type = ?5
+ORDER BY b.entry_seq DESC LIMIT ?4"
+
+const segment_kind_sql_asc =
+  "SELECT e.payload
+FROM branch_entries b CROSS JOIN entries e ON e.id = b.entry_id
+WHERE b.branch_id = ?1 AND b.entry_seq > ?2 AND b.entry_seq <= ?3
+  AND b.entry_type = ?5
+ORDER BY b.entry_seq ASC LIMIT ?4"
+
 fn scan_window_pages(
   conn: Connection,
   window: Window,
   q: BranchScan,
   refined: branch.Refine,
 ) -> Result(branch.Refine, Fail) {
-  // Without kind filters, the clipped windows contain only emittable
-  // rows, so the page fetch never needs more than the remaining limit —
-  // this is what keeps a recent-window scan from decoding whole pages.
-  let fetch_cap = case q.kind, q.custom_type, q.limit {
-    None, None, Some(limit) ->
-      int.min(page_size, int.max(limit - refined.count, 0))
-    _, _, _ -> page_size
+  // SQL applies kind filtering after stop/cursor clipping. Only a custom
+  // type can still reject fetched rows, so other scans fetch at most their
+  // remaining result limit rather than decoding an entire segment page.
+  let fetch_cap = case q.custom_type, q.limit {
+    None, Some(limit) -> int.min(page_size, int.max(limit - refined.count, 0))
+    _, _ -> page_size
   }
   case refined.done || window.lo >= window.hi || fetch_cap <= 0 {
     True -> Ok(refined)
     False -> {
-      let sql = case q.order {
-        NewestFirst -> segment_sql_desc
-        OldestFirst -> segment_sql_asc
+      let sql = case q.kind, q.order {
+        None, NewestFirst -> segment_sql_desc
+        None, OldestFirst -> segment_sql_asc
+        Some(_), NewestFirst -> segment_kind_sql_desc
+        Some(_), OldestFirst -> segment_kind_sql_asc
+      }
+      let parameters = [
+        sqlight.text(window.branch_id),
+        sqlight.int(window.lo),
+        sqlight.int(window.hi),
+        sqlight.int(fetch_cap),
+      ]
+      let parameters = case q.kind {
+        None -> parameters
+        Some(kind) ->
+          list.append(parameters, [sqlight.text(storage.kind_to_string(kind))])
       }
       use blobs <- result.try(run(
         conn,
         sql,
-        [
-          sqlight.text(window.branch_id),
-          sqlight.int(window.lo),
-          sqlight.int(window.hi),
-          sqlight.int(fetch_cap),
-        ],
+        parameters,
         decode.at([0], decode.bit_array),
       ))
       use entries <- result.try(

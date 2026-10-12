@@ -1,0 +1,731 @@
+{
+  "date": "2026-10-11",
+  "timezone": "America/Los_Angeles",
+  "baseline_commit": "13c3f96a49d195fbf11ab8973fd5e298baafe261",
+  "candidate_base": "13c3f96a49d195fbf11ab8973fd5e298baafe261",
+  "candidate_json_source_sha256": "649a5927113f5fb276a7dddfc333edbed9caf3fb8dd1d2d8368bb4354f902462",
+  "toolchain": {
+    "gleam": "1.19.0",
+    "otp": "29",
+    "word_bytes": 8,
+    "schedulers": 1
+  },
+  "method": {
+    "runs_per_side": 3,
+    "order": "baseline/candidate repeated three times, fresh VMs, sequential",
+    "warmup_calls": 5,
+    "measured_calls_per_pass": 50,
+    "allocation_scope": "tprof call_memory on core@json:parse/1, current process only, child tracing disabled",
+    "timing_scope": "untraced timer:tc and process reductions, separate pass",
+    "limits": "Synthetic decoder fixtures; heap words exclude native/binary payload allocation, retention and RSS. Timings are from one shared Mac, not live-daemon or whole-tool savings."
+  },
+  "samples": [
+    {
+      "side": "baseline",
+      "run": 1,
+      "case": "plain",
+      "input_bytes": 114002,
+      "repetitions": 50,
+      "reductions": 7127946,
+      "allocated_words": 6000,
+      "untraced_us": 23753
+    },
+    {
+      "side": "baseline",
+      "run": 1,
+      "case": "escaped",
+      "input_bytes": 102002,
+      "repetitions": 50,
+      "reductions": 12344224,
+      "allocated_words": 27882821,
+      "untraced_us": 60933
+    },
+    {
+      "side": "baseline",
+      "run": 1,
+      "case": "dense",
+      "input_bytes": 96002,
+      "repetitions": 50,
+      "reductions": 47708116,
+      "allocated_words": 200486989,
+      "untraced_us": 234959
+    },
+    {
+      "side": "baseline",
+      "run": 1,
+      "case": "dense_double",
+      "input_bytes": 192002,
+      "repetitions": 50,
+      "reductions": 93829038,
+      "allocated_words": 398551354,
+      "untraced_us": 459194
+    },
+    {
+      "side": "baseline",
+      "run": 1,
+      "case": "short",
+      "input_bytes": 10753,
+      "repetitions": 50,
+      "reductions": 4340741,
+      "allocated_words": 17314300,
+      "untraced_us": 22225
+    },
+    {
+      "side": "baseline",
+      "run": 1,
+      "case": "transcript",
+      "input_bytes": 360462,
+      "repetitions": 50,
+      "reductions": 61957962,
+      "allocated_words": 121755000,
+      "untraced_us": 535353
+    },
+    {
+      "side": "baseline",
+      "run": 2,
+      "case": "plain",
+      "input_bytes": 114002,
+      "repetitions": 50,
+      "reductions": 7127946,
+      "allocated_words": 6000,
+      "untraced_us": 23366
+    },
+    {
+      "side": "baseline",
+      "run": 2,
+      "case": "escaped",
+      "input_bytes": 102002,
+      "repetitions": 50,
+      "reductions": 12344232,
+      "allocated_words": 27882821,
+      "untraced_us": 59620
+    },
+    {
+      "side": "baseline",
+      "run": 2,
+      "case": "dense",
+      "input_bytes": 96002,
+      "repetitions": 50,
+      "reductions": 47710696,
+      "allocated_words": 200486989,
+      "untraced_us": 265507
+    },
+    {
+      "side": "baseline",
+      "run": 2,
+      "case": "dense_double",
+      "input_bytes": 192002,
+      "repetitions": 50,
+      "reductions": 93846062,
+      "allocated_words": 398551354,
+      "untraced_us": 708301
+    },
+    {
+      "side": "baseline",
+      "run": 2,
+      "case": "short",
+      "input_bytes": 10753,
+      "repetitions": 50,
+      "reductions": 4340741,
+      "allocated_words": 17314300,
+      "untraced_us": 22596
+    },
+    {
+      "side": "baseline",
+      "run": 2,
+      "case": "transcript",
+      "input_bytes": 360462,
+      "repetitions": 50,
+      "reductions": 61957962,
+      "allocated_words": 121755000,
+      "untraced_us": 536508
+    },
+    {
+      "side": "baseline",
+      "run": 3,
+      "case": "plain",
+      "input_bytes": 114002,
+      "repetitions": 50,
+      "reductions": 7127946,
+      "allocated_words": 6000,
+      "untraced_us": 23022
+    },
+    {
+      "side": "baseline",
+      "run": 3,
+      "case": "escaped",
+      "input_bytes": 102002,
+      "repetitions": 50,
+      "reductions": 12344636,
+      "allocated_words": 27882821,
+      "untraced_us": 59408
+    },
+    {
+      "side": "baseline",
+      "run": 3,
+      "case": "dense",
+      "input_bytes": 96002,
+      "repetitions": 50,
+      "reductions": 47709108,
+      "allocated_words": 200486989,
+      "untraced_us": 241519
+    },
+    {
+      "side": "baseline",
+      "run": 3,
+      "case": "dense_double",
+      "input_bytes": 192002,
+      "repetitions": 50,
+      "reductions": 93831702,
+      "allocated_words": 398551354,
+      "untraced_us": 482110
+    },
+    {
+      "side": "baseline",
+      "run": 3,
+      "case": "short",
+      "input_bytes": 10753,
+      "repetitions": 50,
+      "reductions": 4340741,
+      "allocated_words": 17314300,
+      "untraced_us": 25707
+    },
+    {
+      "side": "baseline",
+      "run": 3,
+      "case": "transcript",
+      "input_bytes": 360462,
+      "repetitions": 50,
+      "reductions": 61957962,
+      "allocated_words": 121755000,
+      "untraced_us": 783319
+    },
+    {
+      "side": "candidate",
+      "run": 1,
+      "case": "plain",
+      "input_bytes": 114002,
+      "repetitions": 50,
+      "reductions": 7127597,
+      "allocated_words": 5350,
+      "untraced_us": 23505
+    },
+    {
+      "side": "candidate",
+      "run": 1,
+      "case": "escaped",
+      "input_bytes": 102002,
+      "repetitions": 50,
+      "reductions": 10381329,
+      "allocated_words": 23604650,
+      "untraced_us": 61504
+    },
+    {
+      "side": "candidate",
+      "run": 1,
+      "case": "dense",
+      "input_bytes": 96002,
+      "repetitions": 50,
+      "reductions": 11441639,
+      "allocated_words": 94245748,
+      "untraced_us": 124512
+    },
+    {
+      "side": "candidate",
+      "run": 1,
+      "case": "dense_double",
+      "input_bytes": 192002,
+      "repetitions": 50,
+      "reductions": 22622630,
+      "allocated_words": 188046900,
+      "untraced_us": 253634
+    },
+    {
+      "side": "candidate",
+      "run": 1,
+      "case": "short",
+      "input_bytes": 10753,
+      "repetitions": 50,
+      "reductions": 3221562,
+      "allocated_words": 14906548,
+      "untraced_us": 18885
+    },
+    {
+      "side": "candidate",
+      "run": 1,
+      "case": "transcript",
+      "input_bytes": 360462,
+      "repetitions": 50,
+      "reductions": 50535490,
+      "allocated_words": 104717500,
+      "untraced_us": 460831
+    },
+    {
+      "side": "candidate",
+      "run": 2,
+      "case": "plain",
+      "input_bytes": 114002,
+      "repetitions": 50,
+      "reductions": 7127597,
+      "allocated_words": 5350,
+      "untraced_us": 23902
+    },
+    {
+      "side": "candidate",
+      "run": 2,
+      "case": "escaped",
+      "input_bytes": 102002,
+      "repetitions": 50,
+      "reductions": 10381401,
+      "allocated_words": 23604650,
+      "untraced_us": 62949
+    },
+    {
+      "side": "candidate",
+      "run": 2,
+      "case": "dense",
+      "input_bytes": 96002,
+      "repetitions": 50,
+      "reductions": 11439299,
+      "allocated_words": 94245748,
+      "untraced_us": 114436
+    },
+    {
+      "side": "candidate",
+      "run": 2,
+      "case": "dense_double",
+      "input_bytes": 192002,
+      "repetitions": 50,
+      "reductions": 22620894,
+      "allocated_words": 188046900,
+      "untraced_us": 249931
+    },
+    {
+      "side": "candidate",
+      "run": 2,
+      "case": "short",
+      "input_bytes": 10753,
+      "repetitions": 50,
+      "reductions": 3221574,
+      "allocated_words": 14906548,
+      "untraced_us": 18753
+    },
+    {
+      "side": "candidate",
+      "run": 2,
+      "case": "transcript",
+      "input_bytes": 360462,
+      "repetitions": 50,
+      "reductions": 50535490,
+      "allocated_words": 104717500,
+      "untraced_us": 463709
+    },
+    {
+      "side": "candidate",
+      "run": 3,
+      "case": "plain",
+      "input_bytes": 114002,
+      "repetitions": 50,
+      "reductions": 7127597,
+      "allocated_words": 5350,
+      "untraced_us": 27454
+    },
+    {
+      "side": "candidate",
+      "run": 3,
+      "case": "escaped",
+      "input_bytes": 102002,
+      "repetitions": 50,
+      "reductions": 10381365,
+      "allocated_words": 23604650,
+      "untraced_us": 60757
+    },
+    {
+      "side": "candidate",
+      "run": 3,
+      "case": "dense",
+      "input_bytes": 96002,
+      "repetitions": 50,
+      "reductions": 11438911,
+      "allocated_words": 94245748,
+      "untraced_us": 114597
+    },
+    {
+      "side": "candidate",
+      "run": 3,
+      "case": "dense_double",
+      "input_bytes": 192002,
+      "repetitions": 50,
+      "reductions": 22618202,
+      "allocated_words": 188046900,
+      "untraced_us": 249308
+    },
+    {
+      "side": "candidate",
+      "run": 3,
+      "case": "short",
+      "input_bytes": 10753,
+      "repetitions": 50,
+      "reductions": 3221594,
+      "allocated_words": 14906548,
+      "untraced_us": 18858
+    },
+    {
+      "side": "candidate",
+      "run": 3,
+      "case": "transcript",
+      "input_bytes": 360462,
+      "repetitions": 50,
+      "reductions": 50535490,
+      "allocated_words": 104717500,
+      "untraced_us": 451636
+    }
+  ],
+  "summary": [
+    {
+      "case": "plain",
+      "baseline": {
+        "input_bytes": 114002,
+        "repetitions": 50,
+        "reductions": 7127946,
+        "allocated_words": 6000,
+        "untraced_us": 23366,
+        "heap_bytes_per_decode": 960.0,
+        "untraced_us_per_decode": 467.32,
+        "untraced_us_range": [
+          23022,
+          23753
+        ]
+      },
+      "candidate": {
+        "input_bytes": 114002,
+        "repetitions": 50,
+        "reductions": 7127597,
+        "allocated_words": 5350,
+        "untraced_us": 23902,
+        "heap_bytes_per_decode": 856.0,
+        "untraced_us_per_decode": 478.04,
+        "untraced_us_range": [
+          23505,
+          27454
+        ]
+      },
+      "heap_allocation_reduction_percent": 10.833333333333329,
+      "reductions_reduction_percent": 0.004896221155437086,
+      "time_reduction_percent": -2.293931353248313
+    },
+    {
+      "case": "escaped",
+      "baseline": {
+        "input_bytes": 102002,
+        "repetitions": 50,
+        "reductions": 12344232,
+        "allocated_words": 27882821,
+        "untraced_us": 59620,
+        "heap_bytes_per_decode": 4461251.36,
+        "untraced_us_per_decode": 1192.4,
+        "untraced_us_range": [
+          59408,
+          60933
+        ]
+      },
+      "candidate": {
+        "input_bytes": 102002,
+        "repetitions": 50,
+        "reductions": 10381365,
+        "allocated_words": 23604650,
+        "untraced_us": 61504,
+        "heap_bytes_per_decode": 3776744.0,
+        "untraced_us_per_decode": 1230.08,
+        "untraced_us_range": [
+          60757,
+          62949
+        ]
+      },
+      "heap_allocation_reduction_percent": 15.343393697502849,
+      "reductions_reduction_percent": 15.901086434538826,
+      "time_reduction_percent": -3.160013418315999
+    },
+    {
+      "case": "dense",
+      "baseline": {
+        "input_bytes": 96002,
+        "repetitions": 50,
+        "reductions": 47709108,
+        "allocated_words": 200486989,
+        "untraced_us": 241519,
+        "heap_bytes_per_decode": 32077918.24,
+        "untraced_us_per_decode": 4830.38,
+        "untraced_us_range": [
+          234959,
+          265507
+        ]
+      },
+      "candidate": {
+        "input_bytes": 96002,
+        "repetitions": 50,
+        "reductions": 11439299,
+        "allocated_words": 94245748,
+        "untraced_us": 114597,
+        "heap_bytes_per_decode": 15079319.68,
+        "untraced_us_per_decode": 2291.94,
+        "untraced_us_range": [
+          114436,
+          124512
+        ]
+      },
+      "heap_allocation_reduction_percent": 52.991588895576655,
+      "reductions_reduction_percent": 76.02281937444732,
+      "time_reduction_percent": 52.55155909058915
+    },
+    {
+      "case": "dense_double",
+      "baseline": {
+        "input_bytes": 192002,
+        "repetitions": 50,
+        "reductions": 93831702,
+        "allocated_words": 398551354,
+        "untraced_us": 482110,
+        "heap_bytes_per_decode": 63768216.64,
+        "untraced_us_per_decode": 9642.2,
+        "untraced_us_range": [
+          459194,
+          708301
+        ]
+      },
+      "candidate": {
+        "input_bytes": 192002,
+        "repetitions": 50,
+        "reductions": 22620894,
+        "allocated_words": 188046900,
+        "untraced_us": 249931,
+        "heap_bytes_per_decode": 30087504.0,
+        "untraced_us_per_decode": 4998.62,
+        "untraced_us_range": [
+          249308,
+          253634
+        ]
+      },
+      "heap_allocation_reduction_percent": 52.817397780061235,
+      "reductions_reduction_percent": 75.89205618374054,
+      "time_reduction_percent": 48.15892638609446
+    },
+    {
+      "case": "short",
+      "baseline": {
+        "input_bytes": 10753,
+        "repetitions": 50,
+        "reductions": 4340741,
+        "allocated_words": 17314300,
+        "untraced_us": 22596,
+        "heap_bytes_per_decode": 2770288.0,
+        "untraced_us_per_decode": 451.92,
+        "untraced_us_range": [
+          22225,
+          25707
+        ]
+      },
+      "candidate": {
+        "input_bytes": 10753,
+        "repetitions": 50,
+        "reductions": 3221574,
+        "allocated_words": 14906548,
+        "untraced_us": 18858,
+        "heap_bytes_per_decode": 2385047.68,
+        "untraced_us_per_decode": 377.16,
+        "untraced_us_range": [
+          18753,
+          18885
+        ]
+      },
+      "heap_allocation_reduction_percent": 13.906146942122987,
+      "reductions_reduction_percent": 25.78285596860075,
+      "time_reduction_percent": 16.542750929368033
+    },
+    {
+      "case": "transcript",
+      "baseline": {
+        "input_bytes": 360462,
+        "repetitions": 50,
+        "reductions": 61957962,
+        "allocated_words": 121755000,
+        "untraced_us": 536508,
+        "heap_bytes_per_decode": 19480800.0,
+        "untraced_us_per_decode": 10730.16,
+        "untraced_us_range": [
+          535353,
+          783319
+        ]
+      },
+      "candidate": {
+        "input_bytes": 360462,
+        "repetitions": 50,
+        "reductions": 50535490,
+        "allocated_words": 104717500,
+        "untraced_us": 460831,
+        "heap_bytes_per_decode": 16754800.0,
+        "untraced_us_per_decode": 9216.62,
+        "untraced_us_range": [
+          451636,
+          463709
+        ]
+      },
+      "heap_allocation_reduction_percent": 13.993265163648305,
+      "reductions_reduction_percent": 18.435842031085524,
+      "time_reduction_percent": 14.105474662074002
+    }
+  ],
+  "ownership": [
+    {
+      "side": "baseline",
+      "run": 1,
+      "input_bytes": 1048679,
+      "kept_bytes": 96,
+      "backing_bytes": 1048679
+    },
+    {
+      "side": "baseline",
+      "run": 2,
+      "input_bytes": 1048679,
+      "kept_bytes": 96,
+      "backing_bytes": 1048679
+    },
+    {
+      "side": "baseline",
+      "run": 3,
+      "input_bytes": 1048679,
+      "kept_bytes": 96,
+      "backing_bytes": 1048679
+    },
+    {
+      "side": "candidate",
+      "run": 1,
+      "input_bytes": 1048679,
+      "kept_bytes": 96,
+      "backing_bytes": 1048679
+    },
+    {
+      "side": "candidate",
+      "run": 2,
+      "input_bytes": 1048679,
+      "kept_bytes": 96,
+      "backing_bytes": 1048679
+    },
+    {
+      "side": "candidate",
+      "run": 3,
+      "input_bytes": 1048679,
+      "kept_bytes": 96,
+      "backing_bytes": 1048679
+    }
+  ],
+  "equivalence": {
+    "inputs": 882,
+    "exceptions_baseline": 0,
+    "exceptions_candidate": 0,
+    "sha256_baseline": "27b8e2a1f3e4c1f1fcd85885f0695a3cb70ca0375dfb53766f711de3a4b1995d",
+    "sha256_candidate": "27b8e2a1f3e4c1f1fcd85885f0695a3cb70ca0375dfb53766f711de3a4b1995d"
+  },
+  "javascript_json_tests": {
+    "baseline": {
+      "passed": 30,
+      "failures": [
+        {
+          "name": "adversarial_corpus_test",
+          "message": "Pattern match failed, no pattern matched the value."
+        }
+      ],
+      "newTests": [
+        "adjacent_string_escapes_and_empty_fields_test",
+        "string_delimiter_reports_preserve_codepoint_positions_test"
+      ]
+    },
+    "candidate": {
+      "passed": 30,
+      "failures": [
+        {
+          "name": "adversarial_corpus_test",
+          "message": "Pattern match failed, no pattern matched the value."
+        }
+      ],
+      "newTests": [
+        "adjacent_string_escapes_and_empty_fields_test",
+        "string_delimiter_reports_preserve_codepoint_positions_test"
+      ]
+    },
+    "existing_build_warnings_each": 25,
+    "known_failure": "adversarial_corpus_test includes 1e999; JavaScript accepts a Float(Infinity), unlike Erlang."
+  },
+  "exploratory_logs": {
+    "loom-json-before.log": [
+      "VM otp=29 word_bytes=8 schedulers=1",
+      "baseline-13c3 plain encode bytes=114000 repetitions=50 reductions=1996348 words=2497 us=10984",
+      "baseline-13c3 plain decode bytes=114000 repetitions=50 reductions=7126819 words=6019 us=31686",
+      "baseline-13c3 escaped encode bytes=96000 repetitions=50 reductions=13870732 words=17697972 us=80453",
+      "baseline-13c3 escaped decode bytes=96000 repetitions=50 reductions=12640943 words=27866542 us=69772"
+    ],
+    "loom-json-after.log": [
+      "VM otp=29 word_bytes=8 schedulers=1",
+      "candidate plain encode bytes=114000 repetitions=50 reductions=1996347 words=2497 us=10990",
+      "candidate plain decode bytes=114000 repetitions=50 reductions=7126799 words=12752 us=25277",
+      "candidate escaped encode bytes=96000 repetitions=50 reductions=13905793 words=17674853 us=91369",
+      "candidate escaped decode bytes=96000 repetitions=50 reductions=12214516 words=27870314 us=115484"
+    ],
+    "loom-json-tree.log": [
+      "VM otp=29 word_bytes=8 schedulers=1",
+      "tree plain encode bytes=114000 repetitions=50 reductions=1996346 words=2497 us=14395",
+      "tree plain decode bytes=114000 repetitions=50 reductions=7127047 words=6019 us=96537",
+      "tree escaped encode bytes=96000 repetitions=50 reductions=13873391 words=17700209 us=79481",
+      "tree escaped decode bytes=96000 repetitions=50 reductions=12999878 words=27507313 us=85833"
+    ],
+    "loom-json-tree-root.log": [
+      "VM otp=29 word_bytes=8 schedulers=1 scope=parse/1",
+      "tree plain bytes=114002 repetitions=50 reductions=7128011 words=6000 us=39074",
+      "tree escaped bytes=102002 repetitions=50 reductions=12742843 words=27507588 us=101329",
+      "tree dense bytes=96002 repetitions=50 reductions=46996624 words=199213428 us=389384",
+      "tree dense_double bytes=192002 repetitions=50 reductions=93857483 words=402074500 us=684655",
+      "tree short bytes=10753 repetitions=50 reductions=4704553 words=17365500 us=28040",
+      "tree transcript bytes=360462 repetitions=50 reductions=63005859 words=121756407 us=616066"
+    ],
+    "loom-json-baseline-root.log": [
+      "VM otp=29 word_bytes=8 schedulers=1 scope=parse/1",
+      "baseline plain bytes=114002 repetitions=50 reductions=7127864 words=6000 us=38480",
+      "baseline escaped bytes=102002 repetitions=50 reductions=12347704 words=27882821 us=153558",
+      "baseline dense bytes=96002 repetitions=50 reductions=47692654 words=200486989 us=346121",
+      "baseline dense_double bytes=192002 repetitions=50 reductions=94958102 words=399275100 us=815342",
+      "baseline short bytes=10753 repetitions=50 reductions=4349291 words=17314300 us=37453",
+      "baseline transcript bytes=360462 repetitions=50 reductions=61745442 words=121755000 us=868087"
+    ],
+    "loom-json-accumulator-root.log": [
+      "VM otp=29 word_bytes=8 schedulers=1 scope=parse/1",
+      "accumulator plain bytes=114002 repetitions=50 reductions=7133267 words=6300 us=43032",
+      "accumulator escaped bytes=102002 repetitions=50 reductions=11762566 words=28106500 us=96608",
+      "accumulator dense bytes=96002 repetitions=50 reductions=45698468 words=201613050 us=397709",
+      "accumulator dense_double bytes=192002 repetitions=50 reductions=91409369 words=403213050 us=793780",
+      "accumulator short bytes=10753 repetitions=50 reductions=4112406 words=17647100 us=75649",
+      "accumulator transcript bytes=360462 repetitions=50 reductions=63789938 words=124398500 us=1042854"
+    ],
+    "loom-json-direct-root.log": [
+      "VM otp=29 word_bytes=8 schedulers=1 scope=parse/1",
+      "direct plain bytes=114002 repetitions=50 reductions=7127679 words=5600 us=24035",
+      "direct escaped bytes=102002 repetitions=50 reductions=11061293 words=25454291 us=64991",
+      "direct dense bytes=96002 repetitions=50 reductions=6478277 words=82245521 us=97793",
+      "direct dense_double bytes=192002 repetitions=50 reductions=13001458 words=164039850 us=203078",
+      "direct short bytes=10753 repetitions=50 reductions=3378209 words=15290589 us=21188",
+      "direct transcript bytes=360462 repetitions=50 reductions=53558870 words=110989750 us=507955"
+    ]
+  },
+  "candidate_source_commit": "9b1654af5",
+  "validation": {
+    "local_make_check_exit": 0,
+    "core_tests": 163,
+    "client_tests": 3835,
+    "tui_tests": 1331,
+    "conformance_tests": 98,
+    "house_lint_errors": 0,
+    "doc_check_exit": 0,
+    "doc_check_warnings": 198,
+    "independent_reviews": "Astra reviewed production correctness and simplification; Sol 6.1 reviewed benchmark calculations, evidence and test claims. No remaining actionable findings.",
+    "hosted_and_linux": "New-head gates are separate; consult PR #949 for current status."
+  }
+}

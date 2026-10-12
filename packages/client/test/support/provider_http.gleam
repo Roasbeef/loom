@@ -321,7 +321,7 @@ pub fn with_watched_server(
   within_ms: Int,
   run: fn(String, Watch) -> a,
 ) -> #(a, Result(List(ObservedRequest), String)) {
-  assert list.length(script) <= 8 as "the provider script is finite and small"
+  assert list.length(script) <= 64 as "the provider script is finite and small"
   assert within_ms > 0 as "the callback budget is a positive duration"
   assert list.all(script, fn(step) {
     case step {
