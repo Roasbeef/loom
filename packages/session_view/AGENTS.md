@@ -179,6 +179,27 @@ for a host with no surfaces.
   with a readable record shows the summary and rows under the failure text.
   The golden JSON in `call_tree_test` is the same literal `tools` asserts
   its encoder writes.
+- `program_card.{read, ProgramCard, State, Source, Chip, CallTable, CallRow,
+  Bar, Failure, Diagnostic, Value, Opening, opening, bar, axis, chip_words,
+  budget_words}`: a foreground `code_mode` call and the result joined to it as
+  typed fields, for a host that draws more than text. The terminal does not
+  use it and its rows are unchanged. `read` answers `None` for a launch, a
+  call with no program and a result with no readable details, and otherwise a
+  card in one of six states (`Running`, `Completed`, `CompileFailed`,
+  `Rejected`, `RunFailed`, `ProgramFailed`). The outcome sentence and chips
+  come from a closed capability-to-family table (`fs.read` is a file read,
+  `fs.write` a write, `proc.run` and `job.start` commands, `net.*` requests,
+  `git.add` and `git.commit` repository changes, `lsp.*` code lookups, anything
+  else an other call, never a guess), and nothing in the card names a path or
+  host the call record does not hold. Each call row carries a `Bar`, whole
+  percentages of the program's own span with `offset` in 0 to 99 and `width`
+  in 1 to `100 - offset` for any input; an unsettled call's bar runs to the
+  end. A compiler's diagnostic is read into its place, quoted source rows and
+  caret row, and any text that is not one stays as it came. `Source` says how
+  much text the host keeps (`OpeningOnly`, or `Whole(cut)`, which `turns` builds
+  from its `Expansion`), and `opening` says which sections a view draws open
+  (a failed card opens on its calls or its error, a clean settled one is a
+  line). `turns.Step.program` carries the card.
 - `ImageRow` is an image's placeholder row under the call or turn that
   carries it, worded by `image_header.describe` (`image 1 · image/png ·
   1200×700 · 84 KB`); `image_header.dimensions` reads the pixel size from a

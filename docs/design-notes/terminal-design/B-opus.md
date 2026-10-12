@@ -293,7 +293,7 @@ and the roster returns under the input.
 The transcript has a three-cell gutter: a space, a mark, a space. The mark is
 `●` in the hue of the strand the row belongs to, `∴` for reasoning, `┆` for a
 peer, `◇` for a harness notice, `×` for an error, and `→` or `←` for a strand
-message. The hue comes from `hue` at `session_view/turns.gleam:300`. Under the
+message. The hue comes from `hue` at `session_view/turns.gleam:308`. Under the
 plain palette the marks still differ by glyph, and a crossing row names its
 strand in words, so nothing depends on colour.
 
@@ -396,8 +396,8 @@ record would need a new control command.
 
 | Region | Data | Source today |
 |---|---|---|
-| Gutter hues | strand hue | `hue` at `session_view/turns.gleam:300` |
-| Worked divider with failure count | the turn's steps | `divider` at `session_view/turns.gleam:1424`, plus a failure count from the steps' results |
+| Gutter hues | strand hue | `hue` at `session_view/turns.gleam:308` |
+| Worked divider with failure count | the turn's steps | `divider` at `session_view/turns.gleam:1432`, plus a failure count from the steps' results |
 | Collapsed repeats (`agent_wait ×15`) | consecutive identical calls | a new rule in `project` at `session_view/tool_activity.gleam:55`; no wire change |
 | Collapsed repeated errors (`429 ×20`) | consecutive identical local lines | a fold in `session_view` over `Shared.transcript`; no wire change |
 | Harness notices as system lines | the `[loom] ` prefix | recognised today only to bound the turn, `harness_injection_summary` at `session_view/composer.gleam:444`; the line builder still draws a User turn |
@@ -409,8 +409,8 @@ record would need a new control command.
 | Strands tab: cache | outlook per strand | `outlook` at `session_view/cache_watch.gleam:120` |
 | Changes tab | session edits | `fold` at `session_view/changes_view.gleam:210` |
 | Session tab: jobs, viewers | jobs board, presence | `jobs` at `session_view/session_summary.gleam:99`, `viewers` at `session_view/session_summary.gleam:122` |
-| Code mode block, Trace tab | program, status, result | `code_mode_program` at `session_view/transcript_lines.gleam:3574`, `code_mode_result_lines` at `session_view/transcript_lines.gleam:3817`; the call list has no data and needs a new wire record |
-| Peer messages | authenticated origin | `PeerOrigin` at `core/message.gleam:43`, `peer_message_lines` at `session_view/transcript_lines.gleam:2633` |
+| Code mode block, Trace tab | program, status, result | `code_mode_program` at `session_view/transcript_lines.gleam:3590`, `code_mode_result_lines` at `session_view/transcript_lines.gleam:3833`; the call list has no data and needs a new wire record |
+| Peer messages | authenticated origin | `PeerOrigin` at `core/message.gleam:43`, `peer_message_lines` at `session_view/transcript_lines.gleam:2649` |
 | Strand messages | harness text frame | `frame_message` at `client/agency.gleam:1877`; not recognised by `session_view` today |
 | Images | mime type and bytes | `Image` at `session_view/transcript_image.gleam:29` |
 
@@ -451,10 +451,10 @@ receives.
   "needs protocol-change: call record".
 
 What the client receives: the program, from the call's `program` argument
-only (`code_mode_program` at `session_view/transcript_lines.gleam:3574`),
+only (`code_mode_program` at `session_view/transcript_lines.gleam:3590`),
 and the result's details, which carry the value or the error message and
 details, `status`, `manifest_hash` and `sandbox`
-(`code_mode_result_lines` at `session_view/transcript_lines.gleam:3817`
+(`code_mode_result_lines` at `session_view/transcript_lines.gleam:3833`
 draws them). There is no call data at all: no call list, no capability
 names, no per-call status. Capability calls are serviced inside the
 satellite and the broker, and no transcript entry is written per call. A
