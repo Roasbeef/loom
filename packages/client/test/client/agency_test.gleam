@@ -28,6 +28,7 @@ import client/owner_services
 import client/peer_mail
 import client/peer_outbox
 import client/peers
+import client/remote_spawn
 import client/serve
 import client/workflow_ledger
 import codemode/satellite
@@ -99,6 +100,10 @@ type Provider {
 
   /// Captures the configuration that actually reaches provider dispatch.
   WatchesConfiguration(into: Subject(machine_strand.StrandConfiguration))
+
+  /// Settles each request with a reported, priced usage, so the usage ledger
+  /// has something to sum, and hangs for a request whose context holds `hold`.
+  Meters(text: String, hold: Option(String))
 }
 
 fn counting_clock(from: Int, by: Int) -> Clock {
@@ -252,6 +257,19 @@ fn scripted_stream(
       settle_into(events, text)
     }
     Settles(text:) -> settle_into(events, text)
+    Meters(text:, hold:) ->
+      case spec {
+        effects.GenerationRequest(context:, ..) ->
+          case hold {
+            Some(marker) ->
+              case string.contains(context_text(context), marker) {
+                True -> Nil
+                False -> settle_with(events, text, metered())
+              }
+            None -> settle_with(events, text, metered())
+          }
+        effects.PollRequest(..) | effects.SummaryRequest(..) -> Nil
+      }
     WatchesConfiguration(into:) -> {
       case spec {
         effects.GenerationRequest(configuration:, ..) ->
@@ -275,6 +293,36 @@ fn report_context(
 }
 
 fn settle_into(events: Subject(stream.StreamEvent), text: String) -> Nil {
+  settle_with(events, text, accounting.unknown_usage(usage_evidence.Other))
+}
+
+// One request's worth of reported, priced usage: the figures a join must add up
+// and report, distinct enough that a mix-up between buckets shows.
+fn metered() -> message.Usage {
+  message.Usage(
+    input: 100,
+    output: 20,
+    cache_read: 5,
+    cache_write: 7,
+    cache_write_1h: None,
+    reasoning: None,
+    total_tokens: 132,
+    cost: message.UsageCost(
+      input: 0.125,
+      output: 0.25,
+      cache_read: 0.0625,
+      cache_write: 0.0625,
+      total: 0.5,
+    ),
+    evidence: usage_evidence.priced_api(),
+  )
+}
+
+fn settle_with(
+  events: Subject(stream.StreamEvent),
+  text: String,
+  usage: message.Usage,
+) -> Nil {
   {
     let response =
       message.AssistantMessage(
@@ -285,7 +333,7 @@ fn settle_into(events: Subject(stream.StreamEvent), text: String) -> Nil {
         response_model: None,
         response_id: None,
         diagnostics: None,
-        usage: accounting.unknown_usage(usage_evidence.Other),
+        usage:,
         stop_reason: message.Stop,
         deferred: None,
         error_message: None,
@@ -297,12 +345,7 @@ fn settle_into(events: Subject(stream.StreamEvent), text: String) -> Nil {
       as "the scripted response must settle"
     process.send(
       events,
-      stream.Settled(
-        message: settled,
-        accounting: accounting.from_usage(accounting.unknown_usage(
-          usage_evidence.Other,
-        )),
-      ),
+      stream.Settled(message: settled, accounting: accounting.from_usage(usage)),
     )
   }
 }
@@ -4717,4 +4760,622 @@ pub fn a_remote_call_for_an_unknown_or_foreign_execution_is_refused_test() {
     as "another strand's execution is refused"
   assert foreign.code == owner_codemode.execution_unknown_code
   close(harness)
+}
+
+// --- a parent on another orchestrator (protocol-change/084) -----------------
+//
+// These drive the holder with the questions the orchestrator port relays:
+// `delegate_spawn`, `delegate_join` and `delegate_run_ended`. The session is an
+// ordinary harness session whose `main` strand stands for the strand the
+// spawner's profile seeded, and the parent is a strand of some other
+// orchestrator, which this session has never seen.
+
+fn remote_parent() -> remote_spawn.Parent {
+  remote_spawn.Parent(
+    session: "0198c0de-0000-7000-8000-000000000001",
+    strand: "main",
+  )
+}
+
+// A ceiling that holds the communication floor and two working tools, and
+// excludes `agent_spawn`, `agent_wait` and the peer tools.
+fn remote_terms() -> remote_spawn.Terms {
+  remote_spawn.Terms(
+    ceiling: ["agent_note", "agent_send", "bash", "fs_read"],
+    max_depth: 1,
+    max_within_ms: 3_600_000,
+    default_within_ms: 600_000,
+  )
+}
+
+// The parent reports what it holds, which is more than the ceiling allows.
+fn remote_delegation() -> remote_spawn.Delegation {
+  remote_spawn.Delegation(
+    parent: remote_parent(),
+    depth: 0,
+    parent_tools: [
+      "agent_note", "agent_send", "agent_spawn", "agent_wait", "bash", "fs_read",
+      "peer_send",
+    ],
+    terms: remote_terms(),
+  )
+}
+
+// The call site a remote parent mints under, in the coordinates `caller_on`
+// derives for a local one, so that two sites differ exactly when two labels do.
+fn site_of(label: String, index: Int) -> remote_spawn.CallSite {
+  let caller = caller_on("main", label, index)
+  remote_spawn.CallSite(
+    operation: caller.operation,
+    step_id: caller.step_id,
+    source_index: caller.source_index,
+    minter: caller.minter,
+  )
+}
+
+fn remote_request(purpose: String) -> remote_spawn.Request {
+  remote_spawn.Request(
+    purpose:,
+    brief: "read the file and report",
+    model: None,
+    tools: None,
+    within_ms: None,
+    result_schema: None,
+    detach: remote_spawn.Attached,
+  )
+}
+
+fn remote_spawned(
+  harness: Harness,
+  label: String,
+  purpose: String,
+) -> remote_spawn.Spawned {
+  let assert Ok(spawned) =
+    agency.delegate_spawn(
+      harness.config,
+      remote_delegation(),
+      site_of(label, 0),
+      remote_request(purpose),
+    )
+    as "the remote spawn must be accepted"
+  spawned
+}
+
+fn fake_user(text: String) -> message.AgentMessage {
+  message.UserMessage(
+    content: [message.UserText(text:, text_signature: None)],
+    timestamp: 0,
+    origin: None,
+  )
+}
+
+fn sub_strands(harness: Harness) -> List(String) {
+  let assert Ok(strands) = api.strands(harness.runtime)
+  list.filter(strands, agency.is_subagent)
+}
+
+pub fn a_remote_spawn_makes_a_child_under_the_parent_reference_test() {
+  let harness = start_harness(Settles("done"))
+  let site = site_of("turn-1:tools", 0)
+  let spawned = remote_spawned(harness, "turn-1:tools", "review auth")
+
+  // The name is derived as a local spawn derives it, with the reference where
+  // the parent strand would be, and the lineage cell records that reference as
+  // the parent. The reference has no cell of its own and is no strand here.
+  assert string.starts_with(spawned.handle.strand, "sub:^main/review-auth-")
+  let assert Ok(strands) = api.strands(harness.runtime)
+  assert !list.contains(strands, "^main")
+  assert list.contains(strands, spawned.handle.strand)
+  let assert Some(cell) = cell_for(harness, spawned.handle.strand)
+  assert cell.parent == "^main"
+  assert cell.depth == 1
+  assert cell.minted_by.operation == site.operation
+  assert cell.minted_by.step_id == site.step_id
+  assert cell.minted_by.source_index == site.source_index
+  assert cell.brief == spawned.handle.operation
+
+  // The deadline is on this session's clock, so the sender is told the time
+  // left and not an instant: the terms' default, less what has passed.
+  assert spawned.remaining_ms > 0
+  assert spawned.remaining_ms <= 600_000
+  let run = run_for(harness, spawned.handle)
+  assert run.owner == Some(child_run.ParentRun(site.operation))
+  close(harness)
+}
+
+pub fn a_remote_childs_brief_is_attributed_to_the_remote_parent_test() {
+  let seen = process.new_subject()
+  let harness = start_harness(Watches("done", seen))
+  let _spawned = remote_spawned(harness, "turn-1:tools", "review auth")
+  let assert Ok(context) = process.receive(seen, 5000)
+    as "the child's first request must reach the provider"
+  let origins =
+    list.filter_map(context, fn(entry) {
+      case entry {
+        message.UserMessage(origin: Some(origin), ..) -> Ok(origin)
+        message.UserMessage(..)
+        | message.AssistantMessage(..)
+        | message.ToolResultMessage(..)
+        | message.CustomMessage(..) -> Error(Nil)
+      }
+    })
+
+  // A peer whose session and strand the host bound, and not a strand of this
+  // session, which `^main` is not.
+  assert origins
+    == [message.PeerOrigin(session: remote_parent().session, strand: "main")]
+  close(harness)
+}
+
+pub fn a_remote_childs_tools_are_the_parents_set_under_the_ceiling_test() {
+  let harness = start_harness(Settles("done"))
+
+  // With no request, the child holds what the parent holds and the ceiling also
+  // holds, less the spawn tool: not `agent_wait`, which the ceiling leaves out,
+  // and not `peer_send`, which a local child would have kept.
+  let spawned = remote_spawned(harness, "turn-1:tools", "review")
+  assert spawned.tools == ["agent_note", "agent_send", "bash", "fs_read"]
+  let assert Ok(Some(session.Cell(value: configured, ..))) =
+    session.strand_configuration(harness.runtime.session, spawned.handle.strand)
+  assert configured.active_tool_names == spawned.tools
+
+  // A narrowing request is honoured, with the communication floor added back.
+  let assert Ok(narrowed) =
+    agency.delegate_spawn(
+      harness.config,
+      remote_delegation(),
+      site_of("turn-2:tools", 0),
+      remote_spawn.Request(..remote_request("narrow"), tools: Some(["bash"])),
+    )
+  assert narrowed.tools == ["agent_note", "agent_send", "bash"]
+  close(harness)
+}
+
+pub fn a_tool_outside_the_ceiling_is_refused_not_dropped_test() {
+  let harness = start_harness(Settles("done"))
+
+  // The parent holds `peer_send`, but the ceiling excludes it, so asking for it
+  // is an answer the model reads and not a child that silently lacks it.
+  assert agency.delegate_spawn(
+      harness.config,
+      remote_delegation(),
+      site_of("turn-1:tools", 0),
+      remote_spawn.Request(
+        ..remote_request("peer"),
+        tools: Some(["bash", "peer_send"]),
+      ),
+    )
+    == Error(remote_spawn.ToolOutsideCeiling(tool: "peer_send"))
+
+  // The ceiling is applied to whatever the parent reports. A tool the ceiling
+  // holds and the parent does not is the Agency's ordinary refusal.
+  let delegation =
+    remote_spawn.Delegation(..remote_delegation(), parent_tools: ["bash"])
+  let assert Error(remote_spawn.InvalidArgument(reason:)) =
+    agency.delegate_spawn(
+      harness.config,
+      delegation,
+      site_of("turn-2:tools", 0),
+      remote_spawn.Request(..remote_request("read"), tools: Some(["fs_read"])),
+    )
+  assert string.contains(reason, "fs_read")
+  assert sub_strands(harness) == []
+  close(harness)
+}
+
+pub fn a_remote_spawn_is_judged_by_the_spawners_deadlines_test() {
+  let harness = start_harness(Settles("done"))
+  let terms = remote_terms()
+  let delegation = remote_delegation()
+
+  // Absent means the default, always finite; above the cap is refused and not
+  // clamped, so a sender never believes a child may run longer than it can.
+  let default = remote_spawned(harness, "turn-1:tools", "default")
+  assert run_for(harness, default.handle).deadline != None
+  assert agency.delegate_spawn(
+      harness.config,
+      delegation,
+      site_of("turn-2:tools", 0),
+      remote_spawn.Request(
+        ..remote_request("long"),
+        within_ms: Some(terms.max_within_ms + 1),
+      ),
+    )
+    == Error(remote_spawn.InvalidArgument(
+      reason: "within_ms is above this spawner's max_within_s",
+    ))
+  assert agency.delegate_spawn(
+      harness.config,
+      delegation,
+      site_of("turn-3:tools", 0),
+      remote_spawn.Request(..remote_request("none"), within_ms: Some(0)),
+    )
+    == Error(remote_spawn.InvalidArgument(reason: "within_ms must be positive"))
+  let assert Ok(exact) =
+    agency.delegate_spawn(
+      harness.config,
+      delegation,
+      site_of("turn-4:tools", 0),
+      remote_spawn.Request(
+        ..remote_request("exact"),
+        within_ms: Some(terms.max_within_ms),
+      ),
+    )
+  assert exact.remaining_ms <= terms.max_within_ms
+  assert exact.remaining_ms > terms.default_within_ms
+  close(harness)
+}
+
+pub fn a_resent_remote_spawn_adopts_the_child_it_made_test() {
+  let harness = start_harness(Hangs)
+  let first = remote_spawned(harness, "turn-1:tools", "review auth")
+
+  // The same call site again, as the sender's drainer resends it after a lost
+  // reply: the same handle, no second child, and the first child's deadline.
+  let again = remote_spawned(harness, "turn-1:tools", "review auth")
+  assert again.handle == first.handle
+  assert again.tools == first.tools
+  assert sub_strands(harness) == [first.handle.strand]
+
+  // Another call site is another child, and a name match alone is no proof of
+  // ownership: the same purpose from the same site with another brief still
+  // finds the first child, because the site is what the name is derived from.
+  let other = remote_spawned(harness, "turn-2:tools", "review auth")
+  assert other.handle != first.handle
+  assert list.length(sub_strands(harness)) == 2
+  close(harness)
+}
+
+pub fn a_resent_spawn_adopts_even_after_its_run_has_ended_test() {
+  let harness = start_harness(Hangs)
+  let site = site_of("turn-1:tools", 0)
+  let request =
+    remote_spawn.Request(
+      ..remote_request("outlive"),
+      detach: remote_spawn.Detached,
+    )
+  let assert Ok(first) =
+    agency.delegate_spawn(harness.config, remote_delegation(), site, request)
+
+  // The run ends and the fence is written. A resend of a spawn that already
+  // landed creates nothing for the run end to have missed, so it is answered
+  // with the child it made, and a detached child is not stopped.
+  assert agency.delegate_run_ended(harness.config, site.operation) == Ok(0)
+  let assert Ok(again) =
+    agency.delegate_spawn(harness.config, remote_delegation(), site, request)
+  assert again.handle == first.handle
+  assert run_for(harness, first.handle).stop == child_run.Unstopped
+  close(harness)
+}
+
+pub fn a_spawn_under_an_ended_run_is_refused_and_creates_nothing_test() {
+  let harness = start_harness(Settles("done"))
+  let site = site_of("turn-1:tools", 0)
+
+  // The run end overtakes the spawn: nothing is running, so nothing is
+  // stopped, and the fence is the only trace.
+  assert agency.delegate_run_ended(harness.config, site.operation) == Ok(0)
+  let assert Ok(Some(_fence)) =
+    api.fact(
+      harness.runtime,
+      api.delegate_fact_prefix
+        <> "ended/"
+        <> ids.op_id_to_string(site.operation),
+    )
+    as "the run end leaves a fence"
+  assert agency.delegate_spawn(
+      harness.config,
+      remote_delegation(),
+      site,
+      remote_request("late"),
+    )
+    == Error(remote_spawn.ParentRunEnded)
+  assert sub_strands(harness) == []
+
+  // The fence is for that run alone. A later run of the same parent spawns.
+  let _later = remote_spawned(harness, "turn-2:tools", "next")
+  assert list.length(sub_strands(harness)) == 1
+  close(harness)
+}
+
+pub fn a_run_end_stops_what_that_run_owns_and_nothing_else_test() {
+  let harness = start_harness(Hangs)
+  let ended = site_of("turn-1:tools", 0)
+  let first = remote_spawned(harness, "turn-1:tools", "first")
+  let second =
+    agency.delegate_spawn(
+      harness.config,
+      remote_delegation(),
+      remote_spawn.CallSite(..ended, source_index: 1),
+      remote_request("second"),
+    )
+  let assert Ok(second) = second
+  let assert Ok(detached) =
+    agency.delegate_spawn(
+      harness.config,
+      remote_delegation(),
+      remote_spawn.CallSite(..ended, source_index: 2),
+      remote_spawn.Request(
+        ..remote_request("detached"),
+        detach: remote_spawn.Detached,
+      ),
+    )
+  let other = remote_spawned(harness, "turn-2:tools", "other run")
+
+  // The run that spawned the first two ends: those two are stopped, and the
+  // answer counts them. Another run's child and a detached child are not.
+  assert agency.delegate_run_ended(harness.config, ended.operation) == Ok(2)
+  assert until(
+    fn() {
+      run_for(harness, first.handle).stop == child_run.ParentFinished
+      && run_for(harness, second.handle).stop == child_run.ParentFinished
+    },
+    200,
+  )
+  assert run_for(harness, detached.handle).stop == child_run.Unstopped
+  assert run_for(harness, other.handle).stop == child_run.Unstopped
+
+  // Telling it again changes nothing and counts nothing.
+  assert agency.delegate_run_ended(harness.config, ended.operation) == Ok(0)
+  assert run_for(harness, other.handle).stop == child_run.Unstopped
+  close(harness)
+}
+
+pub fn a_join_reports_a_settled_child_with_its_result_and_its_cost_test() {
+  let harness = start_harness(Meters("the report", Some("hold this one")))
+  let settled_child = remote_spawned(harness, "turn-1:tools", "finishes")
+  let assert Ok(held) =
+    agency.delegate_spawn(
+      harness.config,
+      remote_delegation(),
+      site_of("turn-2:tools", 0),
+      remote_spawn.Request(..remote_request("holds"), brief: "hold this one"),
+    )
+  assert settled(harness, settled_child.handle)
+
+  // A model turn of the session's own strand is in the same ledger. It is not
+  // the child's and must not be counted as its cost.
+  let assert Ok(own) = api.prompt(harness.runtime, [fake_user("hello")])
+  let assert Ok(_) = api.await_result(harness.runtime, own, within_ms: 5000)
+  let assert Ok([ready, pending]) =
+    agency.delegate_join(
+      harness.config,
+      remote_parent(),
+      [settled_child.handle, held.handle],
+      200,
+    )
+    as "the join must answer for both handles, in order"
+  let assert remote_spawn.Ready(
+    handle:,
+    outcome: agent.Completed,
+    report: "the report",
+    result: agent.NoResultAsked,
+    usage:,
+    ..,
+  ) = ready
+  assert handle == settled_child.handle
+  assert usage
+    == remote_spawn.ChildUsage(
+      input: 100,
+      output: 20,
+      cache_read: 5,
+      cache_write: 7,
+      cost: 0.5,
+    )
+
+  // The child that has not finished is `Pending` and carries no usage, and
+  // asking again about the settled one answers the same thing.
+  let assert remote_spawn.Pending(handle: waiting, waited_ms:) = pending
+  assert waiting == held.handle
+  assert waited_ms >= 200
+  let assert Ok([again, _]) =
+    agency.delegate_join(
+      harness.config,
+      remote_parent(),
+      [settled_child.handle, held.handle],
+      0,
+    )
+  assert again == ready
+  close(harness)
+}
+
+pub fn a_join_carries_the_structured_result_the_spawn_asked_for_test() {
+  let harness = start_harness(Meters("done", None))
+  let assert Ok(spawned) =
+    agency.delegate_spawn(
+      harness.config,
+      remote_delegation(),
+      site_of("turn-1:tools", 0),
+      remote_spawn.Request(
+        ..remote_request("structured"),
+        result_schema: Some(a_schema()),
+      ),
+    )
+  assert settled(harness, spawned.handle)
+
+  // The child never wrote the result its schema demands, so the verdict names
+  // the schema, as a local join's does; the cost is the child's all the same.
+  let assert Ok([remote_spawn.Ready(result: agent.ResultAbsent(_), usage:, ..)]) =
+    agency.delegate_join(harness.config, remote_parent(), [spawned.handle], 200)
+  assert usage.input == 100
+  close(harness)
+}
+
+pub fn a_join_waits_no_longer_than_its_cap_whatever_the_sender_asks_test() {
+  // A clock that moves fifty units a reading keeps a 25 second logical wait to
+  // a few hundred readings.
+  let harness =
+    start_harness_on(
+      Hangs,
+      fn(config) { config },
+      counting_clock(1_756_000_000_000, 3),
+      counting_clock(1_756_000_000_000, 50),
+      fn(sess) { sess },
+    )
+  let spawned = remote_spawned(harness, "turn-1:tools", "hangs")
+  let assert Ok([remote_spawn.Pending(waited_ms:, ..)]) =
+    agency.delegate_join(
+      harness.config,
+      remote_parent(),
+      [spawned.handle],
+      10_000_000,
+    )
+  assert waited_ms >= remote_spawn.join_cap_ms
+  assert waited_ms < remote_spawn.join_cap_ms + 1000
+
+  // A negative window is a read: it answers at once with what is settled.
+  let assert Ok([remote_spawn.Pending(waited_ms: quick, ..)]) =
+    agency.delegate_join(harness.config, remote_parent(), [spawned.handle], -5)
+  assert quick < 1000
+  close(harness)
+}
+
+pub fn a_join_refuses_a_handle_that_is_not_the_parents_child_test() {
+  let harness = start_harness(Settles("done"))
+
+  // A child of this session's own `main` strand is a child of a strand here,
+  // not of the remote parent's reference.
+  let local =
+    harness.seam.spawn(caller_on("main", "turn-1:tools", 0), a_spawn("local"))
+  let assert Ok(local) = local
+  let assert Error(remote_spawn.InvalidArgument(reason:)) =
+    agency.delegate_join(harness.config, remote_parent(), [local.handle], 0)
+  assert string.contains(reason, local.handle.strand)
+
+  // Nor is another remote parent's child this parent's to join.
+  let mine = remote_spawned(harness, "turn-2:tools", "mine")
+  let stranger = remote_spawn.Parent(..remote_parent(), strand: "side")
+  assert result.is_error(agency.delegate_join(
+    harness.config,
+    stranger,
+    [mine.handle],
+    0,
+  ))
+  close(harness)
+}
+
+pub fn the_delegate_caps_are_the_agencys_own_and_the_spawners_depth_test() {
+  let harness =
+    start_harness_with(Hangs, fn(config) {
+      agency.Config(..config, fan_out: 2, session_strands: 3)
+    })
+  let _a = remote_spawned(harness, "turn-1:tools", "a")
+  let _b = remote_spawned(harness, "turn-2:tools", "b")
+
+  // The third live child of one parent passes the session cap and meets the
+  // parent's own, and the refusal names the key that stopped it.
+  assert agency.delegate_spawn(
+      harness.config,
+      remote_delegation(),
+      site_of("turn-3:tools", 0),
+      remote_request("c"),
+    )
+    == Error(remote_spawn.CapReached(cap: remote_spawn.FanOut, limit: 2))
+
+  // Another parent has room under its own fan-out, and the session's third
+  // slot, then the session's cap.
+  let side =
+    remote_spawn.Delegation(
+      ..remote_delegation(),
+      parent: remote_spawn.Parent(..remote_parent(), strand: "side"),
+    )
+  let assert Ok(_c) =
+    agency.delegate_spawn(
+      harness.config,
+      side,
+      site_of("turn-4:tools", 0),
+      remote_request("c"),
+    )
+  assert agency.delegate_spawn(
+      harness.config,
+      side,
+      site_of("turn-5:tools", 0),
+      remote_request("d"),
+    )
+    == Error(remote_spawn.CapReached(cap: remote_spawn.SessionStrands, limit: 3))
+
+  // A child may not be deeper than the spawner allows, whatever the Agency's
+  // own cap is.
+  let deep = remote_spawn.Delegation(..remote_delegation(), depth: 1)
+  assert agency.delegate_spawn(
+      harness.config,
+      deep,
+      site_of("turn-6:tools", 0),
+      remote_request("deep"),
+    )
+    == Error(remote_spawn.CapReached(cap: remote_spawn.MaxDepth, limit: 1))
+  close(harness)
+}
+
+pub fn a_deeper_spawner_lets_a_child_hold_the_spawn_tool_only_below_its_limit_test() {
+  let harness = start_harness(Settles("done"))
+  let deeper =
+    remote_spawn.Terms(
+      ..remote_terms(),
+      ceiling: ["agent_note", "agent_send", "agent_spawn", "bash"],
+      max_depth: 2,
+    )
+
+  // A child of a root parent is at depth one, below the limit, so it may keep
+  // the spawn tool the ceiling holds; a child of a depth-one parent is at the
+  // limit and loses it.
+  let root = remote_spawn.Delegation(..remote_delegation(), terms: deeper)
+  let assert Ok(shallow) =
+    agency.delegate_spawn(
+      harness.config,
+      root,
+      site_of("turn-1:tools", 0),
+      remote_spawn.Request(
+        ..remote_request("shallow"),
+        tools: Some(["agent_spawn", "bash"]),
+      ),
+    )
+  assert list.contains(shallow.tools, "agent_spawn")
+  let leaf = remote_spawn.Delegation(..root, depth: 1)
+  let assert Ok(deep) =
+    agency.delegate_spawn(
+      harness.config,
+      leaf,
+      site_of("turn-2:tools", 0),
+      remote_spawn.Request(
+        ..remote_request("deep"),
+        tools: Some(["agent_spawn", "bash"]),
+      ),
+    )
+  assert !list.contains(deep.tools, "agent_spawn")
+  let assert Some(cell) = cell_for(harness, deep.handle.strand)
+  assert cell.depth == 2
+  close(harness)
+}
+
+pub fn the_delegate_endpoint_answers_for_the_same_holder_test() {
+  let harness = start_harness(Settles("done"))
+  let endpoint = agency.delegate_endpoint(harness.config)
+  let site = site_of("turn-1:tools", 0)
+  let assert Ok(spawned) =
+    endpoint.spawn(remote_delegation(), site, remote_request("through"))
+  assert settled(harness, spawned.handle)
+  let assert Ok([remote_spawn.Ready(handle:, ..)]) =
+    endpoint.join(remote_parent(), [spawned.handle], 200)
+  assert handle == spawned.handle
+  assert endpoint.run_ended(site.operation) == Ok(0)
+  close(harness)
+}
+
+pub fn an_agency_that_is_not_running_refuses_in_band_test() {
+  let config = agency.default_config(addresses.new(), clock.fixed(at: 0))
+  let site = site_of("turn-1:tools", 0)
+  let unavailable =
+    remote_spawn.StoreFailure(
+      reason: "the delegate session's Agency is not running",
+    )
+  assert agency.delegate_spawn(
+      config,
+      remote_delegation(),
+      site,
+      remote_request("nobody"),
+    )
+    == Error(unavailable)
+  assert agency.delegate_run_ended(config, site.operation) == Error(unavailable)
+  assert result.is_error(agency.delegate_join(config, remote_parent(), [], 0))
 }
