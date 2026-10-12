@@ -55,6 +55,7 @@ import client/internal/ffi_os
 import client/ledger_boot
 import client/ledger_control
 import client/ledger_reference
+import client/ledger_rows
 import client/ledger_service.{type Service}
 import client/orchestrators
 import client/peer_defaults
@@ -70,6 +71,7 @@ import client/remote/remote_spawner
 import client/remote/workspace
 import client/remote_reach
 import client/remote_spawn
+import client/roster.{type Roster}
 import client/serve
 import client/session_directory
 import client/session_importer
@@ -763,8 +765,8 @@ pub fn start_orchestrator_port(
           sessions_directory: ready.sessions_directory,
           domain_configuration:,
           clock: clock.from_function(ffi_os.system_time_ms),
-          orchestrators: config.orchestrators,
-          executors: config.executors,
+          orchestrators: orchestrator_roster(config),
+          executors: executor_roster(config),
           logger:,
         ))
       use _started <- result.try(
@@ -796,7 +798,10 @@ pub fn start_orchestrator_port(
         }),
       )
       log.info(logger, "daemon.orchestrator_port", [
-        field.count("orchestrators", list.length(config.orchestrators)),
+        field.count(
+          "orchestrators",
+          list.length(roster.rows(orchestrator_roster(config))),
+        ),
         field.count("spawners", list.length(config.spawners)),
       ])
       Ok(Nil)
@@ -952,7 +957,7 @@ fn reach_of(
       Some(
         remote_spawner.over_distribution(
           membership,
-          config.orchestrators,
+          orchestrator_roster(config),
           session,
           fn() { list.contains(manager.unshared_sessions(registry), session) },
         ),
@@ -978,14 +983,14 @@ fn session_directory_of(
       let base = case config.directory {
         Some(_) ->
           session_directory.khepri(
-            config.orchestrators,
+            orchestrator_roster(config),
             local,
             catalogue_holds(registry),
             store.read,
           )
         None ->
           session_directory.peers(
-            config.orchestrators,
+            orchestrator_roster(config),
             catalogue_holds(registry),
             session_directory.over_distribution(membership),
           )
@@ -1003,7 +1008,7 @@ fn session_directory_of(
         ))
         |> session_directory.settling(session_directory.settle_over(
           membership,
-          config.orchestrators,
+          orchestrator_roster(config),
         ))
       case config.directory, config.member {
         Some(_), Some(handle) ->
@@ -1029,11 +1034,47 @@ fn deployment_reach(config: Config) -> deployment.Reach {
   }
 }
 
+// The executors this daemon uses: the `[executors.<name>]` rows of its file
+// and, when it runs from a ledger, a row for each executor the ledger links it
+// to (protocol-change/086, phase 2). A part of the daemon that outlives a
+// request holds the roster and reads it at the moment it decides, so an
+// executor enrolled or revoked while the daemon runs is seen by the next
+// decision. A daemon without a ledger has the rows of its file, as before.
+fn executor_roster(config: Config) -> Roster(executors.Executor) {
+  case config.ledger {
+    Some(handle) ->
+      ledger_rows.executor_roster(
+        handle.service,
+        handle.local,
+        config.executors,
+      )
+    None -> roster.fixed(config.executors)
+  }
+}
+
+// The orchestrators this daemon asks and moves sessions to, combined the same
+// way as the executors.
+fn orchestrator_roster(config: Config) -> Roster(orchestrators.Orchestrator) {
+  case config.ledger {
+    Some(handle) ->
+      ledger_rows.orchestrator_roster(
+        handle.service,
+        handle.local,
+        config.orchestrators,
+      )
+    None -> roster.fixed(config.orchestrators)
+  }
+}
+
 // The record writes, for a member that is an orchestrator: one that places
 // sessions on executors or lists another orchestrator. An executor member
 // lists neither, and so has no writes.
 fn ownership_of(config: Config, local: String) -> Option(ownership.Ownership) {
-  case config.executors, config.pools, config.orchestrators {
+  case
+    roster.rows(executor_roster(config)),
+    config.pools,
+    roster.rows(orchestrator_roster(config))
+  {
     [], [], [] -> None
     _, _, _ -> Some(ownership.over_store(local))
   }
@@ -1092,7 +1133,7 @@ pub fn start_movers(
                 migrate.seed(
                   ready.registry,
                   ownership,
-                  config.orchestrators,
+                  roster.rows(orchestrator_roster(config)),
                   logger,
                 )
               deletion.finish_pending(
@@ -1117,7 +1158,7 @@ pub fn start_movers(
         session_mover.Environment(
           authority:,
           registry: ready.registry,
-          orchestrators: config.orchestrators,
+          orchestrators: orchestrator_roster(config),
           directory:,
           courier: session_directory.courier_over(membership),
           close: closer_of(config, membership),
@@ -1137,7 +1178,10 @@ pub fn start_movers(
       use resumed <- result.try(session_movers.resume(control, ready.registry))
       log.info(logger, "daemon.movers", [
         field.count("resumed", resumed),
-        field.count("orchestrators", list.length(config.orchestrators)),
+        field.count(
+          "orchestrators",
+          list.length(roster.rows(orchestrator_roster(config))),
+        ),
       ])
       Ok(control)
     }
@@ -1151,9 +1195,9 @@ fn closer_of(
   config: Config,
   membership: distribution.Membership,
 ) -> session_mover.Closer {
-  let configured = config.executors
+  let configured = executor_roster(config)
   fn(executor, session, workspace_name, incarnation) {
-    case workspace.reach(Some(membership), configured, executor) {
+    case workspace.reach(Some(membership), roster.rows(configured), executor) {
       Ok(reach) ->
         workspace.close_stopped(reach, session, workspace_name, incarnation)
       Error(_unreachable) -> Error(workspace.CloseUnanswered)
@@ -1409,7 +1453,12 @@ pub fn prepare_startup(
               logger,
               owner,
               Some(services),
-              workspace.fixed(config.membership, config.executors, name, chosen),
+              workspace.fixed(
+                config.membership,
+                roster.rows(executor_roster(config)),
+                name,
+                chosen,
+              ),
             )
           _, pool ->
             serve.assemble_registered(
@@ -1420,7 +1469,7 @@ pub fn prepare_startup(
               Some(services),
               workspace.pooled(
                 config.membership,
-                config.executors,
+                roster.rows(executor_roster(config)),
                 config.pools,
                 pool,
                 chosen,
@@ -1729,7 +1778,7 @@ pub fn listen_moving(
       daemon:,
       peer_endpoint:,
       domain_configuration:,
-      executors: config.executors,
+      executors: executor_roster(config),
       pools: config.pools,
       directory: session_directory_of(config, ready.registry),
       movers:,

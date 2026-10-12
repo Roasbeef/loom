@@ -36,6 +36,7 @@ import client/remote/owner_port
 import client/remote/protocol
 import client/remote/scope
 import client/remote/workspace
+import client/roster
 import client/session_directory
 import client/session_importer
 import client/session_move
@@ -188,8 +189,8 @@ fn owned_daemon(
       sessions_directory: own <> "/sessions",
       domain_configuration: "",
       clock: clock.fixed(at: 5000),
-      orchestrators: [orchestrators.plain(peer, node_name())],
-      executors: listed,
+      orchestrators: roster.fixed([orchestrators.plain(peer, node_name())]),
+      executors: roster.fixed(listed),
       logger: log.discard(),
     )
   let port_name = process.new_name("move_test_port_" <> name)
@@ -431,7 +432,7 @@ fn environment(
   session_mover.Environment(
     authority: session_mover.Rows,
     registry: rig.source.registry,
-    orchestrators: [orchestrators.plain("bravo", node_name())],
+    orchestrators: roster.fixed([orchestrators.plain("bravo", node_name())]),
     directory: session_directory.none()
       |> session_directory.activating(fn(_receiver, activation) {
         wire.activate(activation)
@@ -1008,8 +1009,8 @@ fn importer_context(rig: Rig) -> session_importer.Context(String) {
     sessions_directory: rig.target.directory <> "/sessions",
     domain_configuration: "",
     clock: clock.fixed(at: 5000),
-    orchestrators: [orchestrators.plain("alpha", node_name())],
-    executors: receiver_knows_box(),
+    orchestrators: roster.fixed([orchestrators.plain("alpha", node_name())]),
+    executors: roster.fixed(receiver_knows_box()),
     logger: log.discard(),
   )
 }
@@ -1342,7 +1343,7 @@ pub fn a_session_moves_there_and_back_test() {
   let returning =
     session_mover.Environment(
       ..environment(there, over_ports(rig.source), fn(_) { Nil }),
-      orchestrators: [orchestrators.plain("alpha", node_name())],
+      orchestrators: roster.fixed([orchestrators.plain("alpha", node_name())]),
     )
   assert session_mover.drive(
       returning,
@@ -1454,7 +1455,7 @@ pub fn a_restart_resumes_every_move_that_was_in_flight_test() {
 }
 
 pub fn a_daemon_with_no_movers_lists_no_destination_test() {
-  assert session_movers.idle().orchestrators == []
+  assert roster.rows(session_movers.idle().orchestrators) == []
   session_movers.idle().begin(catalogue.Pending(session: "s", op: "op", to: "x"))
 }
 
@@ -1593,8 +1594,8 @@ fn receiver_listing(
       sessions_directory: rig.target.directory <> "/sessions",
       domain_configuration: "",
       clock: clock.fixed(at: 5000),
-      orchestrators: [orchestrators.plain("alpha", node_name())],
-      executors: listed,
+      orchestrators: roster.fixed([orchestrators.plain("alpha", node_name())]),
+      executors: roster.fixed(listed),
       logger: log.discard(),
     )
   Wire(..rig.wire, activate: fn(activation) {

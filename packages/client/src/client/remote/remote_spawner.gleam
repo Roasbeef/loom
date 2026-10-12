@@ -35,6 +35,7 @@ import client/remote/address
 import client/remote/orchestrator_port
 import client/remote_reach.{type Reach}
 import client/remote_spawn.{type SpawnRefusal}
+import client/roster.{type Roster}
 import gleam/list
 import gleam/result
 
@@ -56,6 +57,12 @@ const connect_ms = 1500
 /// `offered` is asked at each spawn. The daemon passes the test that the session
 /// is one its owner holds alone (`manager.unshared_sessions`).
 ///
+/// The names the session's model is told are the orchestrators the roster holds
+/// when the session opens. A spawn reads the roster again to resolve the name it
+/// is given, so an orchestrator revoked since then is refused as not
+/// configured, and one enrolled since then is told to the sessions that open
+/// after it.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -63,13 +70,15 @@ const connect_ms = 1500
 /// ```
 pub fn over_distribution(
   membership: Membership,
-  configured: List(Orchestrator),
+  configured: Roster(Orchestrator),
   session: String,
   offered: fn() -> Bool,
 ) -> Reach {
   remote_reach.Reach(
     session:,
-    orchestrators: list.map(configured, fn(orchestrator) { orchestrator.name }),
+    orchestrators: list.map(roster.rows(configured), fn(orchestrator) {
+      orchestrator.name
+    }),
     offered:,
     spawn: fn(name, parent, site, depth, tools, request, within_ms) {
       use at <- result.try(reached(membership, configured, name))
@@ -103,11 +112,11 @@ pub fn over_distribution(
 // silence, and a name that is not configured is the one definitive refusal.
 fn reached(
   membership: Membership,
-  configured: List(Orchestrator),
+  configured: Roster(Orchestrator),
   name: String,
 ) -> Result(address.Address(orchestrator_port.Message), Failure) {
   use orchestrator <- result.try(
-    orchestrators.find(configured, name)
+    orchestrators.find(roster.rows(configured), name)
     |> result.map_error(fn(_) { remote_reach.not_configured(name) }),
   )
   use peer <- result.try(

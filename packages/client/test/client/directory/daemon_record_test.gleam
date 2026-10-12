@@ -17,6 +17,7 @@ import client/directory/member
 import client/directory/ownership.{type Ownership, Ownership}
 import client/directory/record.{Moving, Record, Serving}
 import client/directory/store
+import client/roster
 import client/session_directory
 import core/json
 import gleam/list
@@ -56,7 +57,12 @@ fn member_daemon(
   run: fn(root.Ready(String), Int, String) -> Nil,
 ) {
   let directory =
-    session_directory.khepri([], alpha, fn(_) { Error(Nil) }, store.read)
+    session_directory.khepri(
+      roster.fixed([]),
+      alpha,
+      fn(_) { Error(Nil) },
+      store.read,
+    )
     |> session_directory.as_member(Some(writes), fn() { status() })
   wire.fixture_directing(
     limits.defaults,

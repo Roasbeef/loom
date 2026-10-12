@@ -11,6 +11,7 @@ import client/daemon/root
 import client/daemon_server_test as wire
 import client/deployment
 import client/orchestrators
+import client/roster
 import client/session_directory
 import client/session_movers
 import core/json
@@ -100,10 +101,10 @@ fn deploying(
       }
     })
   let movers =
-    session_movers.Control(..session_movers.idle(), orchestrators: [
-      desk(),
-      laptop(),
-    ])
+    session_movers.Control(
+      ..session_movers.idle(),
+      orchestrators: roster.fixed([desk(), laptop()]),
+    )
   wire.fixture_reaching(
     limits.defaults,
     fn(_) { None },

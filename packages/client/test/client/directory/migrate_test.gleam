@@ -12,6 +12,7 @@ import client/directory/ownership
 import client/directory/record.{Moving, Record, Serving}
 import client/directory/store
 import client/orchestrators
+import client/roster
 import client/session_directory
 import client/session_mover
 import client/session_movers
@@ -212,7 +213,7 @@ fn environment_for(
   session_mover.Environment(
     authority: session_mover.Rows,
     registry:,
-    orchestrators: [],
+    orchestrators: roster.fixed([]),
     directory: session_directory.none(),
     courier: session_directory.Courier(
       send: fn(_, _) { Error(Nil) },

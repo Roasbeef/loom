@@ -15,6 +15,7 @@ import client/deployment
 import client/gateway
 import client/gateway_test
 import client/internal/ffi_os
+import client/roster
 import client/session_directory
 import client/session_movers
 import core/clock
@@ -135,7 +136,7 @@ fn fixture_with(
       daemon,
       fn(_) { None },
       "",
-      [],
+      roster.fixed([]),
       [],
       session_directory.none(),
       session_movers.idle(),

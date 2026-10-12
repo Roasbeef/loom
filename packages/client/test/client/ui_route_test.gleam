@@ -30,6 +30,7 @@ import client/deployment
 import client/gateway
 import client/peer_mail
 import client/peers
+import client/roster
 import client/session_directory
 import client/session_movers
 import client/ui_result_test
@@ -209,7 +210,7 @@ fn fixture_lasting(
       peer_endpoint: fn(_) { None },
       daemon:,
       domain_configuration: "",
-      executors: [],
+      executors: roster.fixed([]),
       pools: [],
       directory: session_directory.none(),
       movers: session_movers.idle(),

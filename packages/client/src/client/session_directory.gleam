@@ -77,6 +77,7 @@ import client/orchestrators.{type Orchestrator}
 import client/peer_mail
 import client/remote/address
 import client/remote/orchestrator_port.{type Ownership, Moved, NotOwned, Owned}
+import client/roster.{type Roster}
 import client/session_move.{
   type Activation, type Chunk, type Stage, type Verdict,
 }
@@ -313,15 +314,15 @@ pub fn settling(directory: Directory, settle: fn() -> Nil) -> Directory {
 /// ## Examples
 ///
 /// ```gleam
-/// // let settle = session_directory.settle_over(membership, config.orchestrators)
+/// // let settle = session_directory.settle_over(membership, orchestrators)
 /// ```
 pub fn settle_over(
   membership: Membership,
-  listed: List(Orchestrator),
+  listed: Roster(Orchestrator),
 ) -> fn() -> Nil {
   fn() {
     let _outcomes =
-      listed
+      roster.rows(listed)
       |> list.map(fn(orchestrator: Orchestrator) {
         fn() {
           use peer <- result.try(
@@ -342,8 +343,10 @@ pub fn settle_over(
 ///
 /// `held` reads this daemon's own catalogue; an error is treated as not held,
 /// since the caller only asks after its own read missed. `ask` puts one
-/// question to one orchestrator (`over_distribution` is the production one). A
-/// daemon that lists no orchestrator is `none()`.
+/// question to one orchestrator (`over_distribution` is the production one).
+/// The orchestrators are read from `asked` for each lookup, so in ledger mode
+/// one that was enrolled after the daemon started is asked. A
+/// daemon that lists no orchestrator answers `Unknown` as `none()` does.
 ///
 /// ## Examples
 ///
@@ -351,32 +354,35 @@ pub fn settle_over(
 /// // session_directory.peers(configured, held, session_directory.over_distribution(membership))
 /// ```
 pub fn peers(
-  asked: List(Orchestrator),
+  asked: Roster(Orchestrator),
   held: fn(String) -> Result(Ownership, Nil),
   ask: fn(Orchestrator, String) -> Result(Ownership, Nil),
 ) -> Directory {
-  case asked {
-    [] -> none()
-    _ ->
-      Directory(
-        lookup: fn(session) {
+  Directory(
+    lookup: fn(session) {
+      // The orchestrators are read for this lookup, so one enrolled since the
+      // daemon started is asked. A daemon that lists none asks nobody and
+      // answers `Unknown`, as `none` does.
+      case roster.rows(asked) {
+        [] -> Error(Unknown)
+        listed ->
           case held(session) {
             Ok(Owned) -> Ok(Here)
 
             // This catalogue gave the session away and says to whom. It is the
             // daemon's own record, so no peer is asked.
-            Ok(Moved(to:)) -> Ok(Elsewhere(configured_or_named(asked, to)))
-            Ok(NotOwned) | Error(Nil) -> fan_out(asked, session, ask) |> decide
+            Ok(Moved(to:)) -> Ok(Elsewhere(configured_or_named(listed, to)))
+            Ok(NotOwned) | Error(Nil) -> fan_out(listed, session, ask) |> decide
           }
-        },
-        reach: cannot_reach,
-        describe: cannot_describe,
-        activate: fn(_orchestrator, _activation) { Error(Nil) },
-        settle: fn() { Nil },
-        ownership: None,
-        standing: NotMember,
-      )
-  }
+      }
+    },
+    reach: cannot_reach,
+    describe: cannot_describe,
+    activate: fn(_orchestrator, _activation) { Error(Nil) },
+    settle: fn() { Nil },
+    ownership: None,
+    standing: NotMember,
+  )
 }
 
 /// The directory of a member daemon (protocol-change/083): lookups read this
@@ -400,7 +406,7 @@ pub fn peers(
 /// // session_directory.khepri(config.orchestrators, local, catalogue_holds(registry), store.read)
 /// ```
 pub fn khepri(
-  listed: List(Orchestrator),
+  listed: Roster(Orchestrator),
   local: String,
   held: fn(String) -> Result(Ownership, Nil),
   read: fn(String) -> Result(Option(Record), store.Unavailable),
@@ -408,13 +414,14 @@ pub fn khepri(
   Directory(
     lookup: fn(session) {
       case held(session) {
-        Ok(Moved(to:)) -> Ok(Elsewhere(configured_or_named(listed, to)))
+        Ok(Moved(to:)) ->
+          Ok(Elsewhere(configured_or_named(roster.rows(listed), to)))
         Ok(Owned) | Ok(NotOwned) | Error(Nil) ->
           case read(session) {
             Ok(None) -> Error(Unknown)
             Ok(Some(found)) if found.owner == local -> Ok(Here)
             Ok(Some(found)) ->
-              Ok(Elsewhere(by_node_or_named(listed, found.owner)))
+              Ok(Elsewhere(by_node_or_named(roster.rows(listed), found.owner)))
             Error(store.Unavailable(reason:)) -> Error(Unavailable(reason))
           }
       }

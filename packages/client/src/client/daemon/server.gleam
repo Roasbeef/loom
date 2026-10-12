@@ -65,6 +65,7 @@ import client/peer_mail
 import client/peers
 import client/pools
 import client/remote/orchestrator_port
+import client/roster.{type Roster}
 import client/session_directory
 import client/session_movers
 import core/ids
@@ -106,10 +107,12 @@ pub type Config(instance) {
     peer_endpoint: fn(instance) -> Option(peer_mail.Endpoint),
     /// Captured owner domain config reference; empty explicitly selects no file.
     domain_configuration: String,
-    /// The `[executors.<name>]` the owner configured, read once at startup. A
-    /// creation that names an executor outside this list is refused before
-    /// anything is reserved (protocol-change/078).
-    executors: List(executors.Executor),
+    /// The `[executors.<name>]` the owner configured, read once at startup,
+    /// and in ledger mode the executors the ledger links this node to, read
+    /// whenever the list is needed (`client/ledger_rows`). A creation that names
+    /// an executor outside this list is refused before anything is reserved
+    /// (protocol-change/078).
+    executors: Roster(executors.Executor),
     /// The `[pools.<name>]` the owner configured, read once at startup. A
     /// creation that names a pool outside this list is refused before anything
     /// is reserved (protocol-change/078).
@@ -628,12 +631,14 @@ fn home_upgrade(
               profiles.model_keys(config.domain_configuration)
               |> result.unwrap([])
             },
-            executors: list.map(config.executors, fn(executor) { executor.name }),
+            executors: list.map(roster.rows(config.executors), fn(executor) {
+              executor.name
+            }),
             pools: list.map(config.pools, fn(pool) { pool.name }),
             placements: fn() {
               deployment.placed(
                 config.deployment,
-                config.executors,
+                roster.rows(config.executors),
                 config.pools,
               )
               |> deployment.for_page
@@ -2690,8 +2695,8 @@ fn deployment_status(
   deployment.status(
     config.deployment,
     roles,
-    config.movers.orchestrators,
-    config.executors,
+    roster.rows(config.movers.orchestrators),
+    roster.rows(config.executors),
     config.pools,
     node,
   )
@@ -3312,7 +3317,7 @@ fn dispatch_class(
       use Nil <- result.try(owner(principal))
       use Nil <- result.try(epoch(state, supplied))
       use _destination <- result.try(
-        orchestrators.find(config.movers.orchestrators, to)
+        orchestrators.find(roster.rows(config.movers.orchestrators), to)
         |> result.replace_error(orchestrator_unknown_code),
       )
 
@@ -3482,7 +3487,7 @@ fn inbound_settled_by_rows(
 ) -> Result(Nil, Unsettled) {
   case manager.custody(registry, id) {
     Ok(catalogue.Imported(from:, ..)) ->
-      case orchestrators.find(movers.orchestrators, from) {
+      case orchestrators.find(roster.rows(movers.orchestrators), from) {
         Ok(origin) ->
           case movers.holds(origin, id) {
             Ok(orchestrator_port.Moved(..)) -> Ok(Nil)
@@ -3592,7 +3597,7 @@ pub fn create_session(
       bootstrap.canonical_directory(request.workspace)
       |> result.replace_error("invalid_workspace")
     executor, "" ->
-      case executors.find(config.executors, executor) {
+      case executors.find(roster.rows(config.executors), executor) {
         Ok(_) -> Ok(request.workspace)
         Error(Nil) -> Error(executor_unknown_code)
       }
