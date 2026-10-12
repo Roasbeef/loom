@@ -1,4 +1,4 @@
-//// FFI confinement (spec §0.2): the three operations remote tool calls need
+//// FFI confinement (spec §0.2): the four operations remote calls need
 //// that `gleam_erlang` cannot express, each bound straight to a stock OTP
 //// or `gleam_stdlib` function so that no Erlang source is added.
 ////
@@ -13,7 +13,7 @@
 
 import gleam/erlang/atom
 import gleam/erlang/node.{type Node}
-import gleam/erlang/process.{type Monitor, type Name}
+import gleam/erlang/process.{type Monitor, type Name, type Pid}
 
 type DoNotLeak
 
@@ -43,6 +43,15 @@ fn raw_send(
 // read it.
 @external(erlang, "erlang", "monitor")
 fn raw_monitor(kind: MonitorKind, target: #(Name(message), Node)) -> Monitor
+
+// OTP `erlang:node/1`, the node a pid lives on. `gleam_erlang` binds only
+// `node/0`, the local node, and offers no way to ask where a pid is. The
+// orchestrator port needs it to learn which node a spawn message came from,
+// since the message carries the reply subject and nothing else about the
+// sender. No pure alternative exists: a pid's node is not recoverable from its
+// printed form. The function is total on any pid.
+@external(erlang, "erlang", "node")
+fn raw_node_of(pid: Pid) -> Node
 
 // `gleam_stdlib:identity/1`, which returns its argument. A `Name` is an atom
 // at runtime and `gleam_erlang` mints names only with a unique suffix, so a
@@ -84,6 +93,21 @@ pub fn send(
 ) -> Nil {
   let _sent = raw_send(#(name, node), #(name, message))
   Nil
+}
+
+/// The full name of the node a process runs on, such as `laptop@100.64.0.5`.
+///
+/// The name is read from a pid that distribution has already authenticated, and
+/// becomes a `String` and not an atom the caller could misuse, so nothing here
+/// creates an atom from network input.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ffi_remote.node_of(process.self()) == atom.to_string(node.name(node.self()))
+/// ```
+pub fn node_of(pid: Pid) -> String {
+  atom.to_string(node.name(raw_node_of(pid)))
 }
 
 /// Monitors the process registered as `name` on `node`. The `DOWN` arrives at

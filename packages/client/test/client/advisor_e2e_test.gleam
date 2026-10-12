@@ -750,6 +750,7 @@ fn settings(root: String, script: Subject(ScriptMessage)) -> serve.Settings {
   serve.Settings(
     peer_directory: None,
     peer_defaults: None,
+    remote_reach: None,
     first_prompt: None,
     profile_desk: None,
     codemode_sockets: None,

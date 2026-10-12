@@ -271,6 +271,14 @@ pub type Command {
   /// Reports this daemon's view of the session directory's Khepri cluster
   /// (protocol-change/083). Owner-only.
   DirectoryStatus
+
+  /// Reports which of the nodes this daemon is configured with answer its own
+  /// connection attempts, and the executors and pools a session may be placed
+  /// on (protocol-change/085). Owner-only. The optional `node` is a key of the
+  /// daemon's `[executors]` or `[orchestrators]` tables, which narrows the
+  /// reply to the nodes it names; it is looked up in the configuration and is
+  /// never itself connected to.
+  DeploymentStatus(node: Option(String))
 }
 
 /// What an invitation or rotation gives the member, as the request chose it.
@@ -641,6 +649,7 @@ fn decode_fields(
     }
     "daemon.shutdown" -> result.map(text_field(fields, "epoch", 256), Shutdown)
     "directory.status" -> Ok(DirectoryStatus)
+    "deployment.status" -> result.map(node_field(fields), DeploymentStatus)
     _unknown -> Error("unsupported control command")
   }
 }
@@ -946,6 +955,35 @@ fn created_workspace(
         _other -> Error("expected nonempty text field")
       }
     }
+  }
+}
+
+const node_words =
+  "node must be an executor or orchestrator name of lowercase letters, numbers, _ and -, starting with a letter"
+
+// The optional node of a deployment read. An absent field is every configured
+// node; a field that is present must have the shape of a configuration key, so
+// a malformed one is refused as a bad request and never read as "every node".
+// Whether a well-formed key names anything is the daemon's configuration to
+// say, and an unknown one is answered `not_found` without a connection.
+fn node_field(
+  fields: List(#(String, JsonValue)),
+) -> Result(Option(String), String) {
+  case list.key_find(fields, "node") {
+    Error(Nil) -> Ok(None)
+    Ok(json.String(name)) ->
+      case
+        catalogue.is_executor_name(name) || catalogue.is_orchestrator_name(name)
+      {
+        True -> Ok(Some(name))
+        False -> Error(node_words)
+      }
+    Ok(json.Object(_))
+    | Ok(json.Array(_))
+    | Ok(json.Int(_))
+    | Ok(json.Float(_))
+    | Ok(json.Bool(_))
+    | Ok(json.Null) -> Error(node_words)
   }
 }
 

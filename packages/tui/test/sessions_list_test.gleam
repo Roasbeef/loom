@@ -134,3 +134,20 @@ pub fn help_mentions_all_and_lifecycles_test() {
   assert string.contains(reason, "saved")
   assert string.contains(reason, "reserved")
 }
+
+// A session in the middle of a move is still stopped, but it is not idle
+// history: it is leaving this daemon, so the default view keeps it, with its
+// destination, and the hidden-count note does not count it.
+pub fn a_moving_session_stays_in_the_default_view_test() {
+  let rows = [
+    session("s-moving", control_protocol.Moving("laptop")),
+    session("s-saved", control_protocol.Saved),
+  ]
+  let printed = tui.format_listing(rows, tui.ResidentOnly, Ok(Nil))
+  assert string.contains(printed, "s-moving")
+  assert string.contains(printed, "moving to laptop")
+  assert !string.contains(printed, "s-saved")
+  assert string.ends_with(printed, "1 saved not shown (use --all)")
+  assert tui.format_listing(rows, tui.ResidentOnly, Error("not a tty"))
+    == "s-moving  moving:laptop  /w  n"
+}

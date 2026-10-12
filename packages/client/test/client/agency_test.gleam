@@ -22,13 +22,22 @@ import client/agency
 import client/async_codemode
 import client/async_runs
 import client/codemode
+import client/daemon/main as daemon_main
 import client/internal/ffi_os
 import client/owner_codemode
 import client/owner_services
 import client/peer_mail
 import client/peer_outbox
+import client/peer_outbox_drain
 import client/peers
+import client/remote/address
+import client/remote/orchestrator_port
+import client/remote_child
+import client/remote_drain
+import client/remote_reach
+import client/remote_spawn
 import client/serve
+import client/spawners
 import client/workflow_ledger
 import codemode/satellite
 import codemode/vet/policy as vet_policy
@@ -45,6 +54,8 @@ import core/todo_list
 import core/tx
 import core/usage_evidence
 import gleam/bit_array
+import gleam/erlang/atom
+import gleam/erlang/node
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/io
@@ -66,7 +77,9 @@ import session_view/strand_framing
 import simplifile
 import storage/storage
 import support/addresses
+import support/fake_orchestrators
 import support/tool_registry
+import telemetry/log
 import tools/agent.{type Caller, type Handle, Caller}
 import tools/codemode as codemode_tool
 import tools/directory_access
@@ -99,6 +112,10 @@ type Provider {
 
   /// Captures the configuration that actually reaches provider dispatch.
   WatchesConfiguration(into: Subject(machine_strand.StrandConfiguration))
+
+  /// Settles each request with a reported, priced usage, so the usage ledger
+  /// has something to sum, and hangs for a request whose context holds `hold`.
+  Meters(text: String, hold: Option(String))
 }
 
 fn counting_clock(from: Int, by: Int) -> Clock {
@@ -252,6 +269,19 @@ fn scripted_stream(
       settle_into(events, text)
     }
     Settles(text:) -> settle_into(events, text)
+    Meters(text:, hold:) ->
+      case spec {
+        effects.GenerationRequest(context:, ..) ->
+          case hold {
+            Some(marker) ->
+              case string.contains(context_text(context), marker) {
+                True -> Nil
+                False -> settle_with(events, text, metered())
+              }
+            None -> settle_with(events, text, metered())
+          }
+        effects.PollRequest(..) | effects.SummaryRequest(..) -> Nil
+      }
     WatchesConfiguration(into:) -> {
       case spec {
         effects.GenerationRequest(configuration:, ..) ->
@@ -275,6 +305,36 @@ fn report_context(
 }
 
 fn settle_into(events: Subject(stream.StreamEvent), text: String) -> Nil {
+  settle_with(events, text, accounting.unknown_usage(usage_evidence.Other))
+}
+
+// One request's worth of reported, priced usage: the figures a join must add up
+// and report, distinct enough that a mix-up between buckets shows.
+fn metered() -> message.Usage {
+  message.Usage(
+    input: 100,
+    output: 20,
+    cache_read: 5,
+    cache_write: 7,
+    cache_write_1h: None,
+    reasoning: None,
+    total_tokens: 132,
+    cost: message.UsageCost(
+      input: 0.125,
+      output: 0.25,
+      cache_read: 0.0625,
+      cache_write: 0.0625,
+      total: 0.5,
+    ),
+    evidence: usage_evidence.priced_api(),
+  )
+}
+
+fn settle_with(
+  events: Subject(stream.StreamEvent),
+  text: String,
+  usage: message.Usage,
+) -> Nil {
   {
     let response =
       message.AssistantMessage(
@@ -285,7 +345,7 @@ fn settle_into(events: Subject(stream.StreamEvent), text: String) -> Nil {
         response_model: None,
         response_id: None,
         diagnostics: None,
-        usage: accounting.unknown_usage(usage_evidence.Other),
+        usage:,
         stop_reason: message.Stop,
         deferred: None,
         error_message: None,
@@ -297,12 +357,7 @@ fn settle_into(events: Subject(stream.StreamEvent), text: String) -> Nil {
       as "the scripted response must settle"
     process.send(
       events,
-      stream.Settled(
-        message: settled,
-        accounting: accounting.from_usage(accounting.unknown_usage(
-          usage_evidence.Other,
-        )),
-      ),
+      stream.Settled(message: settled, accounting: accounting.from_usage(usage)),
     )
   }
 }
@@ -373,6 +428,7 @@ fn a_spawn(purpose: String) -> agent.SpawnRequest {
     result_schema: None,
     context: agent.Fresh,
     detach: False,
+    on: None,
   )
 }
 
@@ -1763,6 +1819,7 @@ pub fn a_name_minted_by_another_call_site_is_refused_not_adopted_test() {
       deadline: None,
       detached: False,
       reaped: False,
+      orchestrator: None,
     )
   let assert Ok(Nil) =
     api.put_reserved_fact(
@@ -4716,5 +4773,1821 @@ pub fn a_remote_call_for_an_unknown_or_foreign_execution_is_refused_test() {
     )
     as "another strand's execution is refused"
   assert foreign.code == owner_codemode.execution_unknown_code
+  close(harness)
+}
+
+// --- a parent on another orchestrator (protocol-change/084) -----------------
+//
+// These drive the holder with the questions the orchestrator port relays:
+// `delegate_spawn`, `delegate_join` and `delegate_run_ended`. The session is an
+// ordinary harness session whose `main` strand stands for the strand the
+// spawner's profile seeded, and the parent is a strand of some other
+// orchestrator, which this session has never seen.
+
+fn remote_parent() -> remote_spawn.Parent {
+  remote_spawn.Parent(
+    session: "0198c0de-0000-7000-8000-000000000001",
+    strand: "main",
+  )
+}
+
+// A ceiling that holds the communication floor and two working tools, and
+// excludes `agent_spawn`, `agent_wait` and the peer tools.
+fn remote_terms() -> remote_spawn.Terms {
+  remote_spawn.Terms(
+    ceiling: ["agent_note", "agent_send", "bash", "fs_read"],
+    max_depth: 1,
+    max_within_ms: 3_600_000,
+    default_within_ms: 600_000,
+  )
+}
+
+// The parent reports what it holds, which is more than the ceiling allows.
+fn remote_delegation() -> remote_spawn.Delegation {
+  remote_spawn.Delegation(
+    parent: remote_parent(),
+    depth: 0,
+    parent_tools: [
+      "agent_note", "agent_send", "agent_spawn", "agent_wait", "bash", "fs_read",
+      "peer_send",
+    ],
+    terms: remote_terms(),
+  )
+}
+
+// The call site a remote parent mints under, in the coordinates `caller_on`
+// derives for a local one, so that two sites differ exactly when two labels do.
+fn site_of(label: String, index: Int) -> remote_spawn.CallSite {
+  let caller = caller_on("main", label, index)
+  remote_spawn.CallSite(
+    operation: caller.operation,
+    step_id: caller.step_id,
+    source_index: caller.source_index,
+    minter: caller.minter,
+  )
+}
+
+fn remote_request(purpose: String) -> remote_spawn.Request {
+  remote_spawn.Request(
+    purpose:,
+    brief: "read the file and report",
+    model: None,
+    tools: None,
+    within_ms: None,
+    result_schema: None,
+    detach: remote_spawn.Attached,
+  )
+}
+
+fn remote_spawned(
+  harness: Harness,
+  label: String,
+  purpose: String,
+) -> remote_spawn.Spawned {
+  let assert Ok(spawned) =
+    agency.delegate_spawn(
+      harness.config,
+      remote_delegation(),
+      site_of(label, 0),
+      remote_request(purpose),
+    )
+    as "the remote spawn must be accepted"
+  spawned
+}
+
+fn fake_user(text: String) -> message.AgentMessage {
+  message.UserMessage(
+    content: [message.UserText(text:, text_signature: None)],
+    timestamp: 0,
+    origin: None,
+  )
+}
+
+fn sub_strands(harness: Harness) -> List(String) {
+  let assert Ok(strands) = api.strands(harness.runtime)
+  list.filter(strands, agency.is_subagent)
+}
+
+pub fn a_remote_spawn_makes_a_child_under_the_parent_reference_test() {
+  let harness = start_harness(Settles("done"))
+  let site = site_of("turn-1:tools", 0)
+  let spawned = remote_spawned(harness, "turn-1:tools", "review auth")
+
+  // The name is derived as a local spawn derives it, with the reference where
+  // the parent strand would be, and the lineage cell records that reference as
+  // the parent. The reference has no cell of its own and is no strand here.
+  assert string.starts_with(spawned.handle.strand, "sub:^main/review-auth-")
+  let assert Ok(strands) = api.strands(harness.runtime)
+  assert !list.contains(strands, "^main")
+  assert list.contains(strands, spawned.handle.strand)
+  let assert Some(cell) = cell_for(harness, spawned.handle.strand)
+  assert cell.parent == "^main"
+  assert cell.depth == 1
+  assert cell.minted_by.operation == site.operation
+  assert cell.minted_by.step_id == site.step_id
+  assert cell.minted_by.source_index == site.source_index
+  assert cell.brief == spawned.handle.operation
+
+  // The deadline is on this session's clock, so the sender is told the time
+  // left and not an instant: the terms' default, less what has passed.
+  assert spawned.remaining_ms > 0
+  assert spawned.remaining_ms <= 600_000
+  let run = run_for(harness, spawned.handle)
+  assert run.owner == Some(child_run.ParentRun(site.operation))
+  close(harness)
+}
+
+pub fn a_remote_childs_brief_is_attributed_to_the_remote_parent_test() {
+  let seen = process.new_subject()
+  let harness = start_harness(Watches("done", seen))
+  let _spawned = remote_spawned(harness, "turn-1:tools", "review auth")
+  let assert Ok(context) = process.receive(seen, 5000)
+    as "the child's first request must reach the provider"
+  let origins =
+    list.filter_map(context, fn(entry) {
+      case entry {
+        message.UserMessage(origin: Some(origin), ..) -> Ok(origin)
+        message.UserMessage(..)
+        | message.AssistantMessage(..)
+        | message.ToolResultMessage(..)
+        | message.CustomMessage(..) -> Error(Nil)
+      }
+    })
+
+  // A peer whose session and strand the host bound, and not a strand of this
+  // session, which `^main` is not.
+  assert origins
+    == [message.PeerOrigin(session: remote_parent().session, strand: "main")]
+  close(harness)
+}
+
+pub fn a_remote_childs_tools_are_the_parents_set_under_the_ceiling_test() {
+  let harness = start_harness(Settles("done"))
+
+  // With no request, the child holds what the parent holds and the ceiling also
+  // holds, less the spawn tool: not `agent_wait`, which the ceiling leaves out,
+  // and not `peer_send`, which a local child would have kept.
+  let spawned = remote_spawned(harness, "turn-1:tools", "review")
+  assert spawned.tools == ["agent_note", "agent_send", "bash", "fs_read"]
+  let assert Ok(Some(session.Cell(value: configured, ..))) =
+    session.strand_configuration(harness.runtime.session, spawned.handle.strand)
+  assert configured.active_tool_names == spawned.tools
+
+  // A narrowing request is honoured, with the communication floor added back.
+  let assert Ok(narrowed) =
+    agency.delegate_spawn(
+      harness.config,
+      remote_delegation(),
+      site_of("turn-2:tools", 0),
+      remote_spawn.Request(..remote_request("narrow"), tools: Some(["bash"])),
+    )
+  assert narrowed.tools == ["agent_note", "agent_send", "bash"]
+  close(harness)
+}
+
+pub fn a_tool_outside_the_ceiling_is_refused_not_dropped_test() {
+  let harness = start_harness(Settles("done"))
+
+  // The parent holds `peer_send`, but the ceiling excludes it, so asking for it
+  // is an answer the model reads and not a child that silently lacks it.
+  assert agency.delegate_spawn(
+      harness.config,
+      remote_delegation(),
+      site_of("turn-1:tools", 0),
+      remote_spawn.Request(
+        ..remote_request("peer"),
+        tools: Some(["bash", "peer_send"]),
+      ),
+    )
+    == Error(remote_spawn.ToolOutsideCeiling(tool: "peer_send"))
+
+  // The ceiling is applied to whatever the parent reports. A tool the ceiling
+  // holds and the parent does not is the Agency's ordinary refusal.
+  let delegation =
+    remote_spawn.Delegation(..remote_delegation(), parent_tools: ["bash"])
+  let assert Error(remote_spawn.InvalidArgument(reason:)) =
+    agency.delegate_spawn(
+      harness.config,
+      delegation,
+      site_of("turn-2:tools", 0),
+      remote_spawn.Request(..remote_request("read"), tools: Some(["fs_read"])),
+    )
+  assert string.contains(reason, "fs_read")
+  assert sub_strands(harness) == []
+  close(harness)
+}
+
+pub fn a_remote_spawn_is_judged_by_the_spawners_deadlines_test() {
+  let harness = start_harness(Settles("done"))
+  let terms = remote_terms()
+  let delegation = remote_delegation()
+
+  // Absent means the default, always finite; above the cap is refused and not
+  // clamped, so a sender never believes a child may run longer than it can.
+  let default = remote_spawned(harness, "turn-1:tools", "default")
+  assert run_for(harness, default.handle).deadline != None
+  assert agency.delegate_spawn(
+      harness.config,
+      delegation,
+      site_of("turn-2:tools", 0),
+      remote_spawn.Request(
+        ..remote_request("long"),
+        within_ms: Some(terms.max_within_ms + 1),
+      ),
+    )
+    == Error(remote_spawn.InvalidArgument(
+      reason: "within_ms is above this spawner's max_within_s",
+    ))
+  assert agency.delegate_spawn(
+      harness.config,
+      delegation,
+      site_of("turn-3:tools", 0),
+      remote_spawn.Request(..remote_request("none"), within_ms: Some(0)),
+    )
+    == Error(remote_spawn.InvalidArgument(reason: "within_ms must be positive"))
+  let assert Ok(exact) =
+    agency.delegate_spawn(
+      harness.config,
+      delegation,
+      site_of("turn-4:tools", 0),
+      remote_spawn.Request(
+        ..remote_request("exact"),
+        within_ms: Some(terms.max_within_ms),
+      ),
+    )
+  assert exact.remaining_ms <= terms.max_within_ms
+  assert exact.remaining_ms > terms.default_within_ms
+  close(harness)
+}
+
+pub fn a_resent_remote_spawn_adopts_the_child_it_made_test() {
+  let harness = start_harness(Hangs)
+  let first = remote_spawned(harness, "turn-1:tools", "review auth")
+
+  // The same call site again, as the sender's drainer resends it after a lost
+  // reply: the same handle, no second child, and the first child's deadline.
+  let again = remote_spawned(harness, "turn-1:tools", "review auth")
+  assert again.handle == first.handle
+  assert again.tools == first.tools
+  assert sub_strands(harness) == [first.handle.strand]
+
+  // Another call site is another child, and a name match alone is no proof of
+  // ownership: the same purpose from the same site with another brief still
+  // finds the first child, because the site is what the name is derived from.
+  let other = remote_spawned(harness, "turn-2:tools", "review auth")
+  assert other.handle != first.handle
+  assert list.length(sub_strands(harness)) == 2
+  close(harness)
+}
+
+pub fn a_resent_spawn_adopts_even_after_its_run_has_ended_test() {
+  let harness = start_harness(Hangs)
+  let site = site_of("turn-1:tools", 0)
+  let request =
+    remote_spawn.Request(
+      ..remote_request("outlive"),
+      detach: remote_spawn.Detached,
+    )
+  let assert Ok(first) =
+    agency.delegate_spawn(harness.config, remote_delegation(), site, request)
+
+  // The run ends and the fence is written. A resend of a spawn that already
+  // landed creates nothing for the run end to have missed, so it is answered
+  // with the child it made, and a detached child is not stopped.
+  assert agency.delegate_run_ended(harness.config, site.operation) == Ok(0)
+  let assert Ok(again) =
+    agency.delegate_spawn(harness.config, remote_delegation(), site, request)
+  assert again.handle == first.handle
+  assert run_for(harness, first.handle).stop == child_run.Unstopped
+  close(harness)
+}
+
+pub fn a_spawn_under_an_ended_run_is_refused_and_creates_nothing_test() {
+  let harness = start_harness(Settles("done"))
+  let site = site_of("turn-1:tools", 0)
+
+  // The run end overtakes the spawn: nothing is running, so nothing is
+  // stopped, and the fence is the only trace.
+  assert agency.delegate_run_ended(harness.config, site.operation) == Ok(0)
+  let assert Ok(Some(_fence)) =
+    api.fact(
+      harness.runtime,
+      api.delegate_fact_prefix
+        <> "ended/"
+        <> ids.op_id_to_string(site.operation),
+    )
+    as "the run end leaves a fence"
+  assert agency.delegate_spawn(
+      harness.config,
+      remote_delegation(),
+      site,
+      remote_request("late"),
+    )
+    == Error(remote_spawn.ParentRunEnded)
+  assert sub_strands(harness) == []
+
+  // The fence is for that run alone. A later run of the same parent spawns.
+  let _later = remote_spawned(harness, "turn-2:tools", "next")
+  assert list.length(sub_strands(harness)) == 1
+  close(harness)
+}
+
+pub fn a_run_end_stops_what_that_run_owns_and_nothing_else_test() {
+  let harness = start_harness(Hangs)
+  let ended = site_of("turn-1:tools", 0)
+  let first = remote_spawned(harness, "turn-1:tools", "first")
+  let second =
+    agency.delegate_spawn(
+      harness.config,
+      remote_delegation(),
+      remote_spawn.CallSite(..ended, source_index: 1),
+      remote_request("second"),
+    )
+  let assert Ok(second) = second
+  let assert Ok(detached) =
+    agency.delegate_spawn(
+      harness.config,
+      remote_delegation(),
+      remote_spawn.CallSite(..ended, source_index: 2),
+      remote_spawn.Request(
+        ..remote_request("detached"),
+        detach: remote_spawn.Detached,
+      ),
+    )
+  let other = remote_spawned(harness, "turn-2:tools", "other run")
+
+  // The run that spawned the first two ends: those two are stopped, and the
+  // answer counts them. Another run's child and a detached child are not.
+  assert agency.delegate_run_ended(harness.config, ended.operation) == Ok(2)
+  assert until(
+    fn() {
+      run_for(harness, first.handle).stop == child_run.ParentFinished
+      && run_for(harness, second.handle).stop == child_run.ParentFinished
+    },
+    200,
+  )
+  assert run_for(harness, detached.handle).stop == child_run.Unstopped
+  assert run_for(harness, other.handle).stop == child_run.Unstopped
+
+  // Telling it again changes nothing and counts nothing.
+  assert agency.delegate_run_ended(harness.config, ended.operation) == Ok(0)
+  assert run_for(harness, other.handle).stop == child_run.Unstopped
+  close(harness)
+}
+
+pub fn a_join_reports_a_settled_child_with_its_result_and_its_cost_test() {
+  let harness = start_harness(Meters("the report", Some("hold this one")))
+  let settled_child = remote_spawned(harness, "turn-1:tools", "finishes")
+  let assert Ok(held) =
+    agency.delegate_spawn(
+      harness.config,
+      remote_delegation(),
+      site_of("turn-2:tools", 0),
+      remote_spawn.Request(..remote_request("holds"), brief: "hold this one"),
+    )
+  assert settled(harness, settled_child.handle)
+
+  // A model turn of the session's own strand is in the same ledger. It is not
+  // the child's and must not be counted as its cost.
+  let assert Ok(own) = api.prompt(harness.runtime, [fake_user("hello")])
+  let assert Ok(_) = api.await_result(harness.runtime, own, within_ms: 5000)
+  let assert Ok([ready, pending]) =
+    agency.delegate_join(
+      harness.config,
+      remote_parent(),
+      [settled_child.handle, held.handle],
+      200,
+    )
+    as "the join must answer for both handles, in order"
+  let assert remote_spawn.Ready(
+    handle:,
+    outcome: agent.Completed,
+    report: "the report",
+    result: agent.NoResultAsked,
+    usage:,
+    ..,
+  ) = ready
+  assert handle == settled_child.handle
+  assert usage
+    == remote_spawn.ChildUsage(
+      input: 100,
+      output: 20,
+      cache_read: 5,
+      cache_write: 7,
+      cost: 0.5,
+    )
+
+  // The child that has not finished is `Pending` and carries no usage, and
+  // asking again about the settled one answers the same thing.
+  let assert remote_spawn.Pending(handle: waiting, waited_ms:) = pending
+  assert waiting == held.handle
+  assert waited_ms >= 200
+  let assert Ok([again, _]) =
+    agency.delegate_join(
+      harness.config,
+      remote_parent(),
+      [settled_child.handle, held.handle],
+      0,
+    )
+  assert again == ready
+  close(harness)
+}
+
+pub fn a_join_carries_the_structured_result_the_spawn_asked_for_test() {
+  let harness = start_harness(Meters("done", None))
+  let assert Ok(spawned) =
+    agency.delegate_spawn(
+      harness.config,
+      remote_delegation(),
+      site_of("turn-1:tools", 0),
+      remote_spawn.Request(
+        ..remote_request("structured"),
+        result_schema: Some(a_schema()),
+      ),
+    )
+  assert settled(harness, spawned.handle)
+
+  // The child never wrote the result its schema demands, so the verdict names
+  // the schema, as a local join's does; the cost is the child's all the same.
+  let assert Ok([remote_spawn.Ready(result: agent.ResultAbsent(_), usage:, ..)]) =
+    agency.delegate_join(harness.config, remote_parent(), [spawned.handle], 200)
+  assert usage.input == 100
+  close(harness)
+}
+
+pub fn a_join_waits_no_longer_than_its_cap_whatever_the_sender_asks_test() {
+  // A clock that moves fifty units a reading keeps a 25 second logical wait to
+  // a few hundred readings.
+  let harness =
+    start_harness_on(
+      Hangs,
+      fn(config) { config },
+      counting_clock(1_756_000_000_000, 3),
+      counting_clock(1_756_000_000_000, 50),
+      fn(sess) { sess },
+    )
+  let spawned = remote_spawned(harness, "turn-1:tools", "hangs")
+  let assert Ok([remote_spawn.Pending(waited_ms:, ..)]) =
+    agency.delegate_join(
+      harness.config,
+      remote_parent(),
+      [spawned.handle],
+      10_000_000,
+    )
+  assert waited_ms >= remote_spawn.join_cap_ms
+  assert waited_ms < remote_spawn.join_cap_ms + 1000
+
+  // A negative window is a read: it answers at once with what is settled.
+  let assert Ok([remote_spawn.Pending(waited_ms: quick, ..)]) =
+    agency.delegate_join(harness.config, remote_parent(), [spawned.handle], -5)
+  assert quick < 1000
+  close(harness)
+}
+
+pub fn a_join_refuses_a_handle_that_is_not_the_parents_child_test() {
+  let harness = start_harness(Settles("done"))
+
+  // A child of this session's own `main` strand is a child of a strand here,
+  // not of the remote parent's reference.
+  let local =
+    harness.seam.spawn(caller_on("main", "turn-1:tools", 0), a_spawn("local"))
+  let assert Ok(local) = local
+  let assert Error(remote_spawn.InvalidArgument(reason:)) =
+    agency.delegate_join(harness.config, remote_parent(), [local.handle], 0)
+  assert string.contains(reason, local.handle.strand)
+
+  // Nor is another remote parent's child this parent's to join.
+  let mine = remote_spawned(harness, "turn-2:tools", "mine")
+  let stranger = remote_spawn.Parent(..remote_parent(), strand: "side")
+  assert result.is_error(agency.delegate_join(
+    harness.config,
+    stranger,
+    [mine.handle],
+    0,
+  ))
+  close(harness)
+}
+
+pub fn the_delegate_caps_are_the_agencys_own_and_the_spawners_depth_test() {
+  let harness =
+    start_harness_with(Hangs, fn(config) {
+      agency.Config(..config, fan_out: 2, session_strands: 3)
+    })
+  let _a = remote_spawned(harness, "turn-1:tools", "a")
+  let _b = remote_spawned(harness, "turn-2:tools", "b")
+
+  // The third live child of one parent passes the session cap and meets the
+  // parent's own, and the refusal names the key that stopped it.
+  assert agency.delegate_spawn(
+      harness.config,
+      remote_delegation(),
+      site_of("turn-3:tools", 0),
+      remote_request("c"),
+    )
+    == Error(remote_spawn.CapReached(cap: remote_spawn.FanOut, limit: 2))
+
+  // Another parent has room under its own fan-out, and the session's third
+  // slot, then the session's cap.
+  let side =
+    remote_spawn.Delegation(
+      ..remote_delegation(),
+      parent: remote_spawn.Parent(..remote_parent(), strand: "side"),
+    )
+  let assert Ok(_c) =
+    agency.delegate_spawn(
+      harness.config,
+      side,
+      site_of("turn-4:tools", 0),
+      remote_request("c"),
+    )
+  assert agency.delegate_spawn(
+      harness.config,
+      side,
+      site_of("turn-5:tools", 0),
+      remote_request("d"),
+    )
+    == Error(remote_spawn.CapReached(cap: remote_spawn.SessionStrands, limit: 3))
+
+  // A child may not be deeper than the spawner allows, whatever the Agency's
+  // own cap is.
+  let deep = remote_spawn.Delegation(..remote_delegation(), depth: 1)
+  assert agency.delegate_spawn(
+      harness.config,
+      deep,
+      site_of("turn-6:tools", 0),
+      remote_request("deep"),
+    )
+    == Error(remote_spawn.CapReached(cap: remote_spawn.MaxDepth, limit: 1))
+  close(harness)
+}
+
+pub fn a_deeper_spawner_lets_a_child_hold_the_spawn_tool_only_below_its_limit_test() {
+  // The Agency's own cap is raised to match the spawner's, so the state is
+  // consistent: a child that holds the spawn tool can use it.
+  let harness =
+    start_harness_with(Settles("done"), fn(config) {
+      agency.Config(..config, depth_cap: 2)
+    })
+  let deeper =
+    remote_spawn.Terms(
+      ..remote_terms(),
+      ceiling: ["agent_note", "agent_send", "agent_spawn", "bash"],
+      max_depth: 2,
+    )
+
+  // A child of a root parent is at depth one, below the limit, so it may keep
+  // the spawn tool the ceiling holds; a child of a depth-one parent is at the
+  // limit and loses it.
+  let root = remote_spawn.Delegation(..remote_delegation(), terms: deeper)
+  let assert Ok(shallow) =
+    agency.delegate_spawn(
+      harness.config,
+      root,
+      site_of("turn-1:tools", 0),
+      remote_spawn.Request(
+        ..remote_request("shallow"),
+        tools: Some(["agent_spawn", "bash"]),
+      ),
+    )
+  assert list.contains(shallow.tools, "agent_spawn")
+  let leaf = remote_spawn.Delegation(..root, depth: 1)
+  let assert Ok(deep) =
+    agency.delegate_spawn(
+      harness.config,
+      leaf,
+      site_of("turn-2:tools", 0),
+      remote_spawn.Request(
+        ..remote_request("deep"),
+        tools: Some(["agent_spawn", "bash"]),
+      ),
+    )
+  assert !list.contains(deep.tools, "agent_spawn")
+  let assert Some(cell) = cell_for(harness, deep.handle.strand)
+  assert cell.depth == 2
+  close(harness)
+}
+
+pub fn the_delegate_endpoint_answers_for_the_same_holder_test() {
+  let harness = start_harness(Settles("done"))
+  let endpoint = agency.delegate_endpoint(harness.config)
+  let site = site_of("turn-1:tools", 0)
+  let assert Ok(spawned) =
+    endpoint.spawn(remote_delegation(), site, remote_request("through"))
+  assert settled(harness, spawned.handle)
+  let assert Ok([remote_spawn.Ready(handle:, ..)]) =
+    endpoint.join(remote_parent(), [spawned.handle], 200)
+  assert handle == spawned.handle
+  assert endpoint.run_ended(site.operation) == Ok(0)
+  close(harness)
+}
+
+pub fn an_agency_that_is_not_running_refuses_in_band_test() {
+  let config = agency.default_config(addresses.new(), clock.fixed(at: 0))
+  let site = site_of("turn-1:tools", 0)
+  let unavailable =
+    remote_spawn.StoreFailure(
+      reason: "the delegate session's Agency is not running",
+    )
+  assert agency.delegate_spawn(
+      config,
+      remote_delegation(),
+      site,
+      remote_request("nobody"),
+    )
+    == Error(unavailable)
+  assert agency.delegate_run_ended(config, site.operation) == Error(unavailable)
+  assert result.is_error(agency.delegate_join(config, remote_parent(), [], 0))
+}
+
+// --- through the orchestrator port ------------------------------------------
+//
+// The spawn host and the port in front of it, over a real Agency. The sender
+// is this test's own process, so the node the port sees is the node of this
+// VM, and the spawner's table names that node. Distribution itself carries the
+// same messages between two VMs; nothing about them changes on the way.
+
+fn own_node() -> String {
+  atom.to_string(node.name(node.self()))
+}
+
+fn spawner_table() -> String {
+  "[distribution]
+node = \"box@100.64.0.9\"
+ca = \"/etc/loom/ca.pem\"
+certificate = \"/etc/loom/cert.pem\"
+key = \"/etc/loom/key.pem\"
+cookie = \"/home/loom/.erlang.cookie\"
+
+[[distribution.peers]]
+node = \"laptop@100.64.0.5\"
+sha256 = \"0000000000000000000000000000000000000000000000000000000000000001\"
+
+[profiles.cheap-review.roles]
+main = [\"fast\"]
+
+[spawners.laptop]
+node = \"laptop@100.64.0.5\"
+directory = \"/srv/loom/scratch\"
+profile = \"cheap-review\"
+tools = [\"agent_note\", \"agent_send\", \"bash\", \"fs_read\"]
+"
+}
+
+fn serving(harness: Harness) -> address.Address(orchestrator_port.Message) {
+  let assert Ok(configured) = spawners.parse(spawner_table())
+    as "the spawner's table must parse"
+
+  // The table names a node a distribution peer can have. A test VM that is not
+  // distributed is `nonode@nohost`, which no table can name, so the spawner is
+  // moved to the node this process runs on after the table is read.
+  let configured =
+    list.map(configured, fn(spawner) {
+      spawners.Spawner(..spawner, node: own_node())
+    })
+  let name = process.new_name("orchestrator_port")
+  let assert Ok(_) =
+    orchestrator_port.start_with(
+      name,
+      fn(_session) { Error(Nil) },
+      fn(_session, _command) { Error(orchestrator_port.peer_unserved) },
+      fn(_session) { Error("not_found") },
+      orchestrator_port.declining(),
+      daemon_main.spawn_host(configured, fn(_spawner, _parent) {
+        Ok(agency.delegate_endpoint(harness.config))
+      }),
+    )
+    as "the port must start"
+  address.Address(node: node.self(), name:)
+}
+
+pub fn a_spawner_drives_the_delegate_agency_through_the_port_test() {
+  let harness = start_harness(Meters("the report", None))
+  let port = serving(harness)
+  let parent = remote_parent()
+  let site = site_of("turn-1:tools", 0)
+  let tools = remote_delegation().parent_tools
+
+  // The spawn is answered with the child and what it holds: the parent's tools
+  // under the table's ceiling.
+  let assert Ok(Ok(spawned)) =
+    orchestrator_port.ask_spawn(
+      port,
+      parent,
+      site,
+      0,
+      tools,
+      remote_request("review auth"),
+      5000,
+    )
+    as "the spawn must be answered"
+  assert spawned.tools == ["agent_note", "agent_send", "bash", "fs_read"]
+  assert string.starts_with(spawned.handle.strand, "sub:^main/review-auth-")
+
+  // Asking again, as a drainer does after a lost reply, is the same child.
+  let assert Ok(Ok(again)) =
+    orchestrator_port.ask_spawn(
+      port,
+      parent,
+      site,
+      0,
+      tools,
+      remote_request("review auth"),
+      5000,
+    )
+  assert again.handle == spawned.handle
+  assert list.length(sub_strands(harness)) == 1
+
+  // The join reports the settled child and what it cost.
+  assert settled(harness, spawned.handle)
+  let assert Ok(Ok([remote_spawn.Ready(report:, usage:, ..)])) =
+    orchestrator_port.ask_join(port, parent, [spawned.handle], 200, 5000)
+    as "the join must be answered"
+  assert report == "the report"
+  assert usage.input == 100
+  assert usage.cost == 0.5
+
+  // The run ends: nothing was left running, and from then on a spawn for that
+  // run is refused with the reason, over the same port.
+  assert orchestrator_port.ask_run_ended(port, parent, site.operation, 5000)
+    == Ok(Ok(0))
+  assert orchestrator_port.ask_spawn(
+      port,
+      parent,
+      remote_spawn.CallSite(..site, source_index: 1),
+      0,
+      tools,
+      remote_request("late"),
+      5000,
+    )
+    == Ok(Error(remote_spawn.ParentRunEnded))
+  close(harness)
+}
+
+pub fn the_port_refuses_a_spawn_the_spawners_table_forbids_test() {
+  let harness = start_harness(Settles("done"))
+  let port = serving(harness)
+  let ask = fn(request) {
+    orchestrator_port.ask_spawn(
+      port,
+      remote_parent(),
+      site_of("turn-1:tools", 0),
+      0,
+      remote_delegation().parent_tools,
+      request,
+      5000,
+    )
+  }
+
+  // A tool outside the table's ceiling, a deadline beyond its cap and a child
+  // below its depth are each a refusal that names the rule, and none made a
+  // child.
+  assert ask(
+      remote_spawn.Request(..remote_request("peer"), tools: Some(["peer_send"])),
+    )
+    == Ok(Error(remote_spawn.ToolOutsideCeiling(tool: "peer_send")))
+  assert ask(
+      remote_spawn.Request(
+        ..remote_request("long"),
+        within_ms: Some(1_000_000_000),
+      ),
+    )
+    == Ok(
+      Error(remote_spawn.InvalidArgument(
+        reason: "within_ms is above this spawner's max_within_s",
+      )),
+    )
+  assert orchestrator_port.ask_spawn(
+      port,
+      remote_parent(),
+      site_of("turn-2:tools", 0),
+      1,
+      remote_delegation().parent_tools,
+      remote_request("deep"),
+      5000,
+    )
+    == Ok(Error(remote_spawn.CapReached(cap: remote_spawn.MaxDepth, limit: 1)))
+  assert sub_strands(harness) == []
+  close(harness)
+}
+
+pub fn a_spawner_depth_above_the_agencys_cap_gives_no_spawn_tool_test() {
+  // The default cap is one, and a remote child's own spawn is judged against
+  // it, so `max_depth = 2` must not hand the child a tool it could never use.
+  let harness = start_harness(Settles("done"))
+  let deeper =
+    remote_spawn.Terms(
+      ..remote_terms(),
+      ceiling: ["agent_note", "agent_send", "agent_spawn", "bash"],
+      max_depth: 2,
+    )
+  let root = remote_spawn.Delegation(..remote_delegation(), terms: deeper)
+  let assert Ok(child) =
+    agency.delegate_spawn(
+      harness.config,
+      root,
+      site_of("turn-1:tools", 0),
+      remote_spawn.Request(
+        ..remote_request("capped"),
+        tools: Some(["agent_spawn", "bash"]),
+      ),
+    )
+  assert !list.contains(child.tools, "agent_spawn")
+
+  // Nor may a parent already at that cap have a child at all.
+  let leaf = remote_spawn.Delegation(..root, depth: 1)
+  assert agency.delegate_spawn(
+      harness.config,
+      leaf,
+      site_of("turn-2:tools", 0),
+      remote_request("deeper"),
+    )
+    == Error(remote_spawn.CapReached(cap: remote_spawn.MaxDepth, limit: 1))
+  close(harness)
+}
+
+// --- a child on another orchestrator (protocol-change/084) -------------------
+//
+// The parent's side of a remote spawn, against orchestrators that play the other
+// end (`support/fake_orchestrators`): the stub written before anything is sent,
+// the resends, the drainer, the run end, the caps, and the waits that cross. The
+// fake keeps the one promise the design rests on, that a `Spawn` from a call site
+// that already made a child answers that child, so what these tests establish is
+// that the parent's side leaves no second child, no lost child and no stub that
+// disagrees with the other orchestrator.
+
+const parent_session = "0198c0de-0000-7000-8000-000000000001"
+
+fn on_box(purpose: String) -> agent.SpawnRequest {
+  agent.SpawnRequest(..a_spawn(purpose), on: Some("box"))
+}
+
+// A harness whose Agency reaches `boxes`, and the subject that hears the doorbell
+// the Agency rings when a record is left pending for the drainer.
+fn start_remote(
+  provider: Provider,
+  boxes: List(fake_orchestrators.Box),
+  shape: fn(agency.Config) -> agency.Config,
+) -> #(Harness, Subject(Nil)) {
+  let queued = process.new_subject()
+  let harness =
+    start_harness_with(provider, fn(config) {
+      shape(
+        agency.Config(
+          ..config,
+          remote: fake_orchestrators.reach(parent_session, boxes, fn() { True }),
+          remote_queued: fn() { process.send(queued, Nil) },
+        ),
+      )
+    })
+  #(harness, queued)
+}
+
+fn stubs_of(harness: Harness) -> List(remote_child.Stub) {
+  let assert Ok(kept) = remote_child.all(harness.runtime)
+    as "the stubs must be readable"
+  list.map(kept, fn(entry) { entry.stub })
+}
+
+// The second drainer instance's pass, run once by hand over the harness.
+fn drain(harness: Harness) -> peer_outbox_drain.Backlog {
+  remote_drain.pass(
+    fn() { Ok(harness.runtime) },
+    harness.config.remote,
+    harness.config.clock,
+    log.discard(),
+  )()
+}
+
+fn lineage_of(harness: Harness, strand: String) -> Option(lineage.Lineage) {
+  let assert Ok(cells) =
+    api.reserved_facts(harness.runtime, prefix: lineage.key_prefix)
+    as "the ledger must be readable"
+  case list.key_find(cells, lineage.register_key(strand)) {
+    Ok(payload) -> option.from_result(lineage.decode(payload))
+    Error(Nil) -> None
+  }
+}
+
+// The same operation, a different planned call in it.
+fn second_call(caller: Caller, index: Int) -> Caller {
+  Caller(..caller, source_index: index)
+}
+
+pub fn a_remote_spawn_is_written_ahead_and_the_child_is_a_descendant_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Up)
+  let #(harness, queued) = start_remote(Hangs, [box], fn(config) { config })
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(spawned) = harness.seam.spawn(caller, on_box("run suite"))
+    as "the orchestrator answers the spawn"
+
+  // A running child is owed a look by the drainer, so it is rung for the stub
+  // that now records one.
+  let assert Ok(Nil) = process.receive(queued, 100)
+    as "the drainer is rung for the running child"
+
+  // The orchestrator made one child, and the handle the model holds is its.
+  let seen = fake_orchestrators.report(box)
+  assert list.length(seen.spawns) == 1
+  assert seen.children
+    == [
+      remote_spawn.Spawned(
+        handle: spawned.handle,
+        tools: ["agent_note", "agent_send"],
+        model: "box-model",
+        model_id: "box-model-id",
+        remaining_ms: 1_800_000,
+      ),
+    ]
+  assert string.starts_with(spawned.strand, "sub:^main/run-suite-")
+  assert spawned.model == "box-model"
+  assert option.is_some(spawned.deadline_ms)
+
+  // The stub holds the whole request and now the handle.
+  let assert [stub] = stubs_of(harness)
+  assert stub.orchestrator == "box"
+  assert stub.strand == "main"
+  assert stub.name == spawned.strand
+  assert stub.request.purpose == "run suite"
+  assert stub.request.brief == "read the file and report"
+
+  // The model did not ask to detach, and the child is detached all the same:
+  // the parent's run end is not sent across, so nothing would stop it.
+  assert stub.request.detach == remote_spawn.Detached
+  let assert remote_child.Spawned(placed) = stub.state
+  assert placed.handle == spawned.handle
+
+  // The lineage cell records the edge, names the orchestrator, and makes the
+  // child the parent's descendant, which is what a wait is judged by.
+  let assert Some(cell) = lineage_of(harness, spawned.strand)
+  assert cell.parent == "main"
+  assert cell.orchestrator == Some("box")
+  assert cell.brief == spawned.handle.operation
+  assert cell.depth == 1
+  assert cell.detached
+  assert agency.owns(harness.runtime, ancestor: "main", strand: spawned.strand)
+  close(harness)
+}
+
+pub fn an_unreachable_orchestrator_is_asked_again_and_the_child_exists_once_test() {
+  // Three attempts reach the orchestrator, which acts and loses its answer each
+  // time; the fourth is answered. The call site is the same on every attempt, so
+  // the orchestrator adopts and the model is handed the one child's handle.
+  let box = fake_orchestrators.start("box", fake_orchestrators.LosesFirst(3))
+  let #(harness, _queued) = start_remote(Hangs, [box], fn(config) { config })
+  let assert Ok(spawned) =
+    harness.seam.spawn(caller_on("main", "turn-1:tools", 0), on_box("flaky"))
+    as "the spawn must be answered within the window"
+  let seen = fake_orchestrators.report(box)
+  assert list.length(seen.spawns) == 4
+  let assert [child] = seen.children
+  assert child.handle == spawned.handle
+  let assert [stub] = stubs_of(harness)
+  let assert remote_child.Spawned(placed) = stub.state
+  assert placed.handle == spawned.handle
+  close(harness)
+}
+
+pub fn a_replayed_spawn_returns_the_recorded_child_without_asking_again_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Up)
+  let #(harness, _queued) = start_remote(Hangs, [box], fn(config) { config })
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(first) = harness.seam.spawn(caller, on_box("replay"))
+  let assert Ok(again) = harness.seam.spawn(caller, on_box("replay"))
+  assert again == first
+  assert list.length(fake_orchestrators.report(box).spawns) == 1
+  assert list.length(stubs_of(harness)) == 1
+  close(harness)
+}
+
+pub fn a_replay_naming_another_orchestrator_is_not_the_same_call_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Up)
+  let gpu = fake_orchestrators.start("gpu", fake_orchestrators.Up)
+  let #(harness, _queued) =
+    start_remote(Hangs, [box, gpu], fn(config) { config })
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(_first) = harness.seam.spawn(caller, on_box("route"))
+  let assert Error(agent.NameAlreadyMinted(..)) =
+    harness.seam.spawn(
+      caller,
+      agent.SpawnRequest(..a_spawn("route"), on: Some("gpu")),
+    )
+  assert fake_orchestrators.report(gpu).spawns == []
+  close(harness)
+}
+
+pub fn a_silent_orchestrator_leaves_the_stub_requested_and_rings_the_drainer_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Down)
+  let #(harness, queued) =
+    start_remote(Hangs, [box], fn(config) {
+      agency.Config(..config, fan_out: 1)
+    })
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Error(agent.RemoteSilent(orchestrator: "box")) =
+    harness.seam.spawn(caller, on_box("silent"))
+    as "the window runs out without an answer"
+  let assert Ok(Nil) = process.receive(queued, 100)
+    as "the drainer is rung for the stub that is left"
+
+  // The model is told the child may exist, and the stub is the record of that.
+  let assert [stub] = stubs_of(harness)
+  assert stub.state == remote_child.Requested
+  assert fake_orchestrators.report(box).children == []
+
+  // A stub whose orchestrator has not answered keeps counting, so the cap errs
+  // toward refusing: a second remote spawn and a local one are both refused.
+  let assert Error(agent.FanOutCapReached(live: 1, cap: 1)) =
+    harness.seam.spawn(second_call(caller, 1), on_box("second"))
+  let assert Error(agent.FanOutCapReached(live: 1, cap: 1)) =
+    harness.seam.spawn(second_call(caller, 2), a_spawn("local"))
+  close(harness)
+}
+
+// Each attempt has a wait of its own, and the window is a bound on the whole
+// spawn. An attempt begun late in the window is told to wait only what is left,
+// so the model is not kept for nearly two windows.
+pub fn an_attempt_waits_no_longer_than_the_window_has_left_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Down)
+  let #(harness, _queued) = start_remote(Hangs, [box], fn(config) { config })
+  let assert Error(agent.RemoteSilent(..)) =
+    harness.seam.spawn(caller_on("main", "turn-1:tools", 0), on_box("clipped"))
+
+  let windows = fake_orchestrators.report(box).windows
+  let assert [first, ..rest] = windows
+  let assert Ok(last) = list.last(rest)
+  assert first <= remote_reach.spawn_ms
+  assert last < first
+  assert list.all(windows, fn(within) { within >= 1 })
+  assert windows == list.sort(windows, fn(a, b) { int.compare(b, a) })
+  close(harness)
+}
+
+pub fn a_replayed_spawn_resumes_a_stub_that_was_never_answered_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Down)
+  let #(harness, _queued) = start_remote(Hangs, [box], fn(config) { config })
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Error(agent.RemoteSilent(..)) =
+    harness.seam.spawn(caller, on_box("resume"))
+
+  // The planner replays the same call after the orchestrator is back. The stub
+  // is found, so nothing is written twice, and the spawn goes out again.
+  fake_orchestrators.set_mode(box, fake_orchestrators.Up)
+  let assert Ok(spawned) = harness.seam.spawn(caller, on_box("resume"))
+  assert list.length(stubs_of(harness)) == 1
+  let assert [child] = fake_orchestrators.report(box).children
+  assert child.handle == spawned.handle
+  close(harness)
+}
+
+pub fn a_refused_spawn_keeps_its_stub_refused_and_frees_its_slot_test() {
+  let reason = "the cap `max_sessions` is 4 and was reached"
+  let box = fake_orchestrators.start("box", fake_orchestrators.Refuses(reason))
+  let #(harness, _queued) =
+    start_remote(Hangs, [box], fn(config) {
+      agency.Config(..config, fan_out: 1)
+    })
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Error(agent.RemoteRefused(orchestrator: "box", reason: told)) =
+    harness.seam.spawn(caller, on_box("refused"))
+  assert told == reason
+
+  // A definitive answer is not retried and nothing was created, and the stub is
+  // kept, saying why: the effect process records a refusal exactly as the
+  // drainer does.
+  assert list.length(fake_orchestrators.report(box).spawns) == 1
+  assert fake_orchestrators.report(box).children == []
+  let assert [stub] = stubs_of(harness)
+  assert stub.state == remote_child.Refused(reason)
+
+  // A refused stub does not count, so the slot is free, and the roster shows it
+  // as refused.
+  fake_orchestrators.set_mode(box, fake_orchestrators.Up)
+  let assert Ok(_spawned) =
+    harness.seam.spawn(second_call(caller, 1), on_box("accepted"))
+  let assert Ok(peers) = harness.seam.roster(caller)
+  assert list.any(peers, fn(peer) {
+    peer.placement
+    == agent.Elsewhere(orchestrator: "box", standing: agent.Declined(reason:))
+  })
+  close(harness)
+}
+
+// The refusal the model heard was transient, and the same call site is answered
+// with a child afterwards by the other asker (the drainer, after a restart). The
+// stub is still there to take the child, so it is counted, listed and waited on.
+pub fn a_refusal_heard_by_the_model_does_not_orphan_a_later_child_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Refuses("busy"))
+  let #(harness, _queued) =
+    start_remote(Hangs, [box], fn(config) {
+      agency.Config(..config, fan_out: 1)
+    })
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Error(agent.RemoteRefused(..)) =
+    harness.seam.spawn(caller, on_box("transient"))
+  let assert [refused] = stubs_of(harness)
+  assert refused.state == remote_child.Refused("busy")
+
+  // The cap clears, and the drainer's ask of this call site is answered.
+  fake_orchestrators.set_mode(box, fake_orchestrators.Up)
+  let reach = harness.config.remote
+  let assert Ok(answer) =
+    reach.spawn(
+      "box",
+      remote_reach.parent(reach, "main"),
+      refused.site,
+      refused.depth,
+      refused.parent_tools,
+      refused.request,
+      remote_reach.spawn_ms,
+    )
+  let key = remote_child.stub_key(agent.call_site_digest(caller))
+  let #(now, _clock) = clock.read(harness.config.clock)
+  let assert Ok(moved) =
+    remote_child.spawned(harness.runtime, key, refused, answer, now)
+
+  // The stub took the child, and the lineage cell written with it agrees.
+  let assert remote_child.Spawned(placed) = moved.state
+  assert placed.handle == answer.handle
+  let assert Some(cell) = lineage_of(harness, placed.handle.strand)
+  assert cell.parent == "main"
+  assert cell.orchestrator == Some("box")
+  assert cell.brief == placed.handle.operation
+  assert agency.owns(
+    harness.runtime,
+    ancestor: "main",
+    strand: placed.handle.strand,
+  )
+
+  // So the child is counted, and the roster lists it with its handle.
+  let assert Error(agent.FanOutCapReached(live: 1, cap: 1)) =
+    harness.seam.spawn(second_call(caller, 1), a_spawn("local"))
+  let assert Ok(peers) = harness.seam.roster(caller)
+  assert list.any(peers, fn(peer) { peer.handle == Some(placed.handle) })
+  close(harness)
+}
+
+// The other ordering: the drainer is answered with a child while the model's own
+// ask is still in flight, and the model's ask is then refused. The stub already
+// says `Spawned`, the child exists, and so the model is given it as it would be
+// had its own ask been answered, and not told the spawn was refused.
+pub fn a_refusal_that_loses_to_the_drainers_child_answers_with_the_child_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Up)
+  let #(harness, queued) =
+    start_remote(Hangs, [box], fn(config) {
+      let real = config.remote
+      let runtime = agency.runtime_supplier(config)
+      let racing = fn(name, parent, site, depth, tools, request, within_ms) {
+        // The drainer's ask of this call site is answered and recorded first.
+        let assert Ok(answer) =
+          real.spawn(name, parent, site, depth, tools, request, within_ms)
+          as "the orchestrator must answer the drainer's ask"
+        let assert Ok(open) = runtime() as "the runtime must be borrowable"
+        let assert Ok([entry]) = remote_child.all(open)
+          as "the one stub must be readable"
+        let #(now, _clock) = clock.read(config.clock)
+        let assert Ok(_) =
+          remote_child.spawned(open, entry.key, entry.stub, answer, now)
+          as "the drainer's write must be taken"
+        Error(peer_mail.Refused("busy"))
+      }
+      agency.Config(..config, remote: remote_reach.Reach(..real, spawn: racing))
+    })
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(spawned) = harness.seam.spawn(caller, on_box("raced"))
+    as "a refusal that lost to a child must answer with the child"
+  let assert [child] = fake_orchestrators.report(box).children
+  assert spawned.handle == child.handle
+
+  // The stub stayed `Spawned` and the drainer was rung to look after the child.
+  let assert [stub] = stubs_of(harness)
+  let assert remote_child.Spawned(placed) = stub.state
+  assert placed.handle == child.handle
+  let assert Ok(Nil) = process.receive(queued, 100)
+    as "the drainer is rung for the running child"
+  close(harness)
+}
+
+pub fn the_drainer_adopts_a_spawn_the_orchestrator_already_made_test() {
+  // The orchestrator made the child and every answer was lost, so the parent's
+  // window ran out. That is the laptop-restart shape: a stub on disk, a child on
+  // the other side, and a drainer that starts with only the stub to go on.
+  let box = fake_orchestrators.start("box", fake_orchestrators.LosesReplies)
+  let #(harness, _queued) = start_remote(Hangs, [box], fn(config) { config })
+  let assert Error(agent.RemoteSilent(..)) =
+    harness.seam.spawn(caller_on("main", "turn-1:tools", 0), on_box("adopt"))
+  let assert [child] = fake_orchestrators.report(box).children
+  let assert [remote_child.Requested] =
+    list.map(stubs_of(harness), fn(stub) { stub.state })
+
+  fake_orchestrators.set_mode(box, fake_orchestrators.Up)
+  assert drain(harness) == peer_outbox_drain.Owed(peer_outbox_drain.Quick)
+    as "the adopted child is running, so the drainer keeps asking after it"
+
+  // The resend was answered with the child that exists: one child, now known.
+  assert list.length(fake_orchestrators.report(box).children) == 1
+  let assert [stub] = stubs_of(harness)
+  let assert remote_child.Spawned(placed) = stub.state
+  assert placed.handle == child.handle
+  assert agency.owns(
+    harness.runtime,
+    ancestor: "main",
+    strand: child.handle.strand,
+  )
+  close(harness)
+}
+
+pub fn the_drainer_keeps_a_refusal_it_learns_after_the_model_moved_on_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Down)
+  let #(harness, _queued) =
+    start_remote(Hangs, [box], fn(config) {
+      agency.Config(..config, fan_out: 1)
+    })
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Error(agent.RemoteSilent(..)) =
+    harness.seam.spawn(caller, on_box("late no"))
+
+  fake_orchestrators.set_mode(box, fake_orchestrators.Refuses("no room"))
+  assert drain(harness) == peer_outbox_drain.Clear
+
+  // Nobody is waiting for this answer, so the stub stays to say it. It no longer
+  // counts, and the roster shows the reason.
+  let assert [stub] = stubs_of(harness)
+  assert stub.state == remote_child.Refused("no room")
+  let assert Ok(_spawned) =
+    harness.seam.spawn(second_call(caller, 1), a_spawn("local"))
+    as "a refused stub frees its slot"
+  let assert Ok(peers) = harness.seam.roster(caller)
+  assert list.any(peers, fn(peer) {
+    peer.placement
+    == agent.Elsewhere(
+      orchestrator: "box",
+      standing: agent.Declined(reason: "no room"),
+    )
+  })
+  close(harness)
+}
+
+pub fn a_pass_asks_a_silent_orchestrator_once_however_many_stubs_it_owes_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Down)
+  let #(harness, _queued) = start_remote(Hangs, [box], fn(config) { config })
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Error(agent.RemoteSilent(..)) =
+    harness.seam.spawn(caller, on_box("one"))
+  let assert Error(agent.RemoteSilent(..)) =
+    harness.seam.spawn(second_call(caller, 1), on_box("two"))
+  assert list.length(stubs_of(harness)) == 2
+
+  let before = list.length(fake_orchestrators.report(box).spawns)
+  assert drain(harness) == peer_outbox_drain.Owed(peer_outbox_drain.Quick)
+  assert list.length(fake_orchestrators.report(box).spawns) == before + 1
+  close(harness)
+}
+
+pub fn a_child_that_finishes_unwaited_is_settled_by_a_pass_and_frees_its_slot_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Up)
+  let #(harness, _queued) =
+    start_remote(Hangs, [box], fn(config) {
+      agency.Config(..config, fan_out: 2)
+    })
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(first) = harness.seam.spawn(caller, on_box("first"))
+  let assert Ok(second) =
+    harness.seam.spawn(second_call(caller, 1), on_box("second"))
+
+  // Both children are running and hold the parent's two slots.
+  let assert Error(agent.FanOutCapReached(live: 2, cap: 2)) =
+    harness.seam.spawn(second_call(caller, 2), a_spawn("local"))
+
+  // A pass with nothing finished sends one zero-window join for the two
+  // children, because they share an orchestrator and a parent, and stays owed
+  // so the drainer keeps ticking while they run.
+  assert drain(harness) == peer_outbox_drain.Owed(peer_outbox_drain.Quick)
+  assert fake_orchestrators.report(box).joins == 1
+  assert fake_orchestrators.report(box).join_windows == [0]
+
+  // One finishes with nobody waiting on it. The next pass records it, and the
+  // other keeps the drainer owed.
+  fake_orchestrators.settle(box, first.handle)
+  assert drain(harness) == peer_outbox_drain.Owed(peer_outbox_drain.Quick)
+  let assert Ok(settled) =
+    remote_child.find(
+      harness.runtime,
+      remote_child.stub_key(agent.call_site_digest(caller)),
+    )
+  let assert Some(remote_child.Stub(
+    state: remote_child.Settled(usage:, outcome: agent.Completed, ..),
+    ..,
+  )) = settled
+  assert usage.input == 100
+
+  // The slot is free again without any wait.
+  let assert Ok(_) =
+    harness.seam.spawn(second_call(caller, 2), a_spawn("local"))
+
+  // When the last one finishes the pass owes nothing, and the next sends no join
+  // at all: the drainer is idle until a new child is started.
+  fake_orchestrators.settle(box, second.handle)
+  assert drain(harness) == peer_outbox_drain.Clear
+  let joins = fake_orchestrators.report(box).joins
+  assert drain(harness) == peer_outbox_drain.Clear
+  assert fake_orchestrators.report(box).joins == joins
+
+  // The stub does not keep the report; a wait reads it from the orchestrator.
+  let assert Ok([agent.Ready(report:, ..)]) =
+    harness.seam.wait(caller, [first.handle], 100)
+  assert report == "done on " <> first.strand
+  close(harness)
+}
+
+pub fn a_stub_past_its_deadline_frees_its_slot_while_the_orchestrator_is_down_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Up)
+  let #(harness, _queued) =
+    start_remote(Hangs, [box], fn(config) {
+      agency.Config(..config, fan_out: 1)
+    })
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(spawned) = harness.seam.spawn(caller, on_box("overdue"))
+  let assert Error(agent.FanOutCapReached(live: 1, cap: 1)) =
+    harness.seam.spawn(second_call(caller, 1), a_spawn("local"))
+
+  // The child's deadline falls in the past, as it does when a child runs to its
+  // budget with nobody waiting, and the machine it runs on is unreachable.
+  let key = remote_child.stub_key(agent.call_site_digest(caller))
+  let assert Ok(Some(stub)) = remote_child.find(harness.runtime, key)
+  let assert remote_child.Spawned(placed) = stub.state
+  let overdue =
+    remote_child.Stub(
+      ..stub,
+      state: remote_child.Spawned(
+        remote_child.Placed(..placed, deadline_ms: 1000),
+      ),
+    )
+  let assert Ok(Nil) =
+    api.put_reserved_fact(harness.runtime, key, remote_child.encode(overdue))
+  fake_orchestrators.set_mode(box, fake_orchestrators.Down)
+
+  // The slot is free by the clock alone, and the roster says why the child is
+  // not shown as running.
+  let assert Ok(_) =
+    harness.seam.spawn(second_call(caller, 1), a_spawn("local"))
+  let assert Ok(peers) = harness.seam.roster(caller)
+  assert list.any(peers, fn(peer) {
+    peer.handle == Some(spawned.handle)
+    && peer.placement
+    == agent.Elsewhere(orchestrator: "box", standing: agent.PastDeadline)
+  })
+
+  // Nothing is running, so the drainer owes nothing and does not ask the
+  // unreachable orchestrator.
+  assert drain(harness) == peer_outbox_drain.Clear
+  assert fake_orchestrators.report(box).joins == 0
+  close(harness)
+}
+
+pub fn a_pass_leaves_the_children_of_a_silent_orchestrator_owed_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Up)
+  let #(harness, _queued) = start_remote(Hangs, [box], fn(config) { config })
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(spawned) = harness.seam.spawn(caller, on_box("unreachable"))
+  fake_orchestrators.settle(box, spawned.handle)
+  fake_orchestrators.set_mode(box, fake_orchestrators.Down)
+
+  // The child may have finished, but nobody can say so, so it stays running in
+  // the record and the drainer keeps ticking.
+  assert drain(harness) == peer_outbox_drain.Owed(peer_outbox_drain.Quick)
+  let assert [stub] = stubs_of(harness)
+  let assert remote_child.Spawned(_) = stub.state
+
+  fake_orchestrators.set_mode(box, fake_orchestrators.Up)
+  assert drain(harness) == peer_outbox_drain.Clear
+  let assert [stub] = stubs_of(harness)
+  let assert remote_child.Settled(..) = stub.state
+  close(harness)
+}
+
+pub fn an_empty_pass_owes_nothing_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Up)
+  let #(harness, _queued) = start_remote(Hangs, [box], fn(config) { config })
+  assert drain(harness) == peer_outbox_drain.Clear
+  assert fake_orchestrators.report(box).spawns == []
+  close(harness)
+}
+
+pub fn a_run_end_sends_nothing_to_the_orchestrator_and_the_child_stays_test() {
+  // A remote child is detached, so the run that asked for it ending is not news
+  // to the orchestrator. Nothing is sent, the stub still stands for a running
+  // child, and the child keeps its slot until it settles or its deadline passes.
+  let box = fake_orchestrators.start("box", fake_orchestrators.Up)
+  let #(harness, _queued) =
+    start_remote(Hangs, [box], fn(config) {
+      agency.Config(..config, fan_out: 1)
+    })
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(spawned) =
+    harness.seam.spawn(caller, on_box("outlives its run"))
+  let before = fake_orchestrators.report(box)
+
+  let hooks = agency.reaping_hooks(effects.default_hooks(), harness.config)
+  assert hooks.run_end(caller.operation) == None
+  assert !until(fn() { fake_orchestrators.report(box) != before }, 50)
+
+  let assert [stub] = stubs_of(harness)
+  let assert remote_child.Spawned(placed) = stub.state
+  assert placed.handle == spawned.handle
+  assert remote_child.is_live(stub, placed.deadline_ms - 1)
+  let assert Error(agent.FanOutCapReached(live: 1, cap: 1)) =
+    harness.seam.spawn(second_call(caller, 1), a_spawn("local"))
+  close(harness)
+}
+
+pub fn remote_stubs_count_against_the_caps_until_the_child_settles_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Up)
+  let #(harness, _queued) =
+    start_remote(Hangs, [box], fn(config) {
+      agency.Config(..config, fan_out: 1)
+    })
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(spawned) = harness.seam.spawn(caller, on_box("holds a slot"))
+
+  // The remote child has no strand here, so `is_live` cannot see it; the stub
+  // is what takes the slot, from the parent's `fan_out` and the session's.
+  let assert Error(agent.FanOutCapReached(live: 1, cap: 1)) =
+    harness.seam.spawn(second_call(caller, 1), a_spawn("local"))
+  let assert Error(agent.FanOutCapReached(live: 1, cap: 1)) =
+    harness.seam.spawn(second_call(caller, 2), on_box("remote"))
+
+  // Once a join reports it settled, the slot is free.
+  fake_orchestrators.settle(box, spawned.handle)
+  let assert Ok([agent.Ready(outcome: agent.Completed, ..)]) =
+    harness.seam.wait(caller, [spawned.handle], 100)
+  let assert [stub] = stubs_of(harness)
+  let assert remote_child.Settled(usage:, ..) = stub.state
+  assert usage.input == 100
+  let assert Ok(_) =
+    harness.seam.spawn(second_call(caller, 3), a_spawn("local"))
+  close(harness)
+}
+
+pub fn a_wait_over_local_and_remote_handles_answers_each_in_order_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Up)
+  let #(harness, _queued) =
+    start_remote(Settles("local done"), [box], fn(config) { config })
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(local) = harness.seam.spawn(caller, a_spawn("local"))
+  assert settled(harness, local.handle)
+  let assert Ok(remote) =
+    harness.seam.spawn(second_call(caller, 1), on_box("remote"))
+
+  // The child on the box has not finished: the local one is ready and the remote
+  // one is pending, and the order is the order asked.
+  let assert Ok([first, second]) =
+    harness.seam.wait(caller, [remote.handle, local.handle], 100)
+  let assert agent.Pending(handle: waiting, unanswered: None, ..) = first
+  assert waiting == remote.handle
+  let assert agent.Ready(handle: ready, report: "local done", ..) = second
+  assert ready == local.handle
+  assert fake_orchestrators.report(box).joins == 1
+
+  // Once it has, both are ready, and the remote report is the box's own.
+  fake_orchestrators.settle(box, remote.handle)
+  let assert Ok([agent.Ready(report:, ..), agent.Ready(..)]) =
+    harness.seam.wait(caller, [remote.handle, local.handle], 100)
+  assert report == "done on " <> remote.strand
+  close(harness)
+}
+
+pub fn a_wait_names_the_orchestrator_that_did_not_answer_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Up)
+  let #(harness, _queued) =
+    start_remote(Settles("done"), [box], fn(config) { config })
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(remote) = harness.seam.spawn(caller, on_box("remote"))
+
+  fake_orchestrators.set_mode(box, fake_orchestrators.Down)
+  let assert Ok([agent.Pending(handle:, unanswered: Some("box"), ..)]) =
+    harness.seam.wait(caller, [remote.handle], 100)
+  assert handle == remote.handle
+
+  // A refusal to a join is definitive and refuses the wait.
+  fake_orchestrators.set_mode(
+    box,
+    fake_orchestrators.Refuses("no longer yours"),
+  )
+  let assert Error(agent.RemoteRefused(orchestrator: "box", reason:)) =
+    harness.seam.wait(caller, [remote.handle], 100)
+  assert reason == "no longer yours"
+  close(harness)
+}
+
+pub fn a_wait_on_a_handle_that_is_not_the_callers_is_refused_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Up)
+  let #(harness, _queued) = start_remote(Hangs, [box], fn(config) { config })
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(remote) = harness.seam.spawn(caller, on_box("remote"))
+
+  // Another strand did not spawn it, so it cannot wait on it either.
+  let assert Error(agent.NotADescendant(strand:)) =
+    harness.seam.wait(
+      caller_on("sub:main/other", "turn-9:tools", 0),
+      [remote.handle],
+      100,
+    )
+  assert strand == remote.strand
+  assert fake_orchestrators.report(box).joins == 0
+  close(harness)
+}
+
+pub fn the_roster_lists_remote_children_with_how_each_record_stands_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Up)
+  let #(harness, _queued) = start_remote(Hangs, [box], fn(config) { config })
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(alpha) = harness.seam.spawn(caller, on_box("alpha"))
+  let assert Ok(bravo) =
+    harness.seam.spawn(second_call(caller, 1), on_box("bravo"))
+  fake_orchestrators.settle(box, alpha.handle)
+  let assert Ok(_) = harness.seam.wait(caller, [alpha.handle], 100)
+
+  fake_orchestrators.set_mode(box, fake_orchestrators.Down)
+  let assert Error(agent.RemoteSilent(..)) =
+    harness.seam.spawn(second_call(caller, 2), on_box("charlie"))
+  fake_orchestrators.set_mode(box, fake_orchestrators.Refuses("no room"))
+  assert drain(harness) == peer_outbox_drain.Clear
+  fake_orchestrators.set_mode(box, fake_orchestrators.Down)
+  let assert Error(agent.RemoteSilent(..)) =
+    harness.seam.spawn(second_call(caller, 3), on_box("delta"))
+
+  let assert Ok(peers) = harness.seam.roster(caller)
+  let standing =
+    list.map(peers, fn(peer) {
+      #(peer.relation, peer.handle, peer.outcome, peer.placement)
+    })
+  let on_box = fn(standing) { agent.Elsewhere(orchestrator: "box", standing:) }
+  assert standing
+    == [
+      #(
+        agent.ChildOf,
+        Some(alpha.handle),
+        Some(agent.Completed),
+        on_box(agent.Finished),
+      ),
+      #(agent.ChildOf, Some(bravo.handle), None, on_box(agent.Running)),
+      #(agent.ChildOf, None, None, on_box(agent.Declined(reason: "no room"))),
+      #(agent.ChildOf, None, None, on_box(agent.AwaitingAnswer)),
+    ]
+  let assert [alpha_peer, bravo_peer, charlie_peer, delta_peer] = peers
+  assert alpha_peer.strand == alpha.strand
+  assert bravo_peer.strand == bravo.strand
+  assert string.starts_with(charlie_peer.strand, "sub:^main/charlie-")
+  assert string.starts_with(delta_peer.strand, "sub:^main/delta-")
+  assert alpha_peer.deadline_ms == alpha.deadline_ms
+  close(harness)
+}
+
+pub fn a_remote_spawn_is_refused_where_it_cannot_be_asked_for_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Up)
+  let #(harness, _queued) = start_remote(Hangs, [box], fn(config) { config })
+  let caller = caller_on("main", "turn-1:tools", 0)
+  assert harness.seam.orchestrator_names == ["box"]
+
+  // A conversation is not copied to another machine.
+  let assert Error(agent.InvalidArgument(reason: forking)) =
+    harness.seam.spawn(
+      caller,
+      agent.SpawnRequest(..on_box("fork"), context: agent.MyConversation),
+    )
+  assert string.contains(forking, "my_conversation")
+  assert string.contains(forking, "another machine")
+
+  // A name that is not configured is refused, naming the ones that are.
+  let assert Error(agent.InvalidArgument(reason: unknown)) =
+    harness.seam.spawn(
+      second_call(caller, 1),
+      agent.SpawnRequest(..a_spawn("far"), on: Some("moon")),
+    )
+  assert string.contains(unknown, "`moon` is not a configured orchestrator")
+  assert string.contains(unknown, "box")
+
+  // Nothing was written or sent for either.
+  assert stubs_of(harness) == []
+  assert fake_orchestrators.report(box).spawns == []
+  close(harness)
+}
+
+pub fn a_session_that_is_not_held_alone_may_not_spawn_elsewhere_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Up)
+  let harness =
+    start_harness_with(Hangs, fn(config) {
+      agency.Config(
+        ..config,
+        remote: fake_orchestrators.reach(parent_session, [box], fn() { False }),
+      )
+    })
+  let assert Error(agent.InvalidArgument(reason:)) =
+    harness.seam.spawn(caller_on("main", "turn-1:tools", 0), on_box("shared"))
+  assert string.contains(reason, "hold alone")
+  assert fake_orchestrators.report(box).spawns == []
+  assert stubs_of(harness) == []
+  close(harness)
+}
+
+pub fn a_host_with_no_orchestrators_offers_no_placement_test() {
+  let harness = start_harness(Hangs)
+  assert harness.seam.orchestrator_names == []
+  let assert Error(agent.InvalidArgument(reason:)) =
+    harness.seam.spawn(caller_on("main", "turn-1:tools", 0), on_box("nowhere"))
+  assert string.contains(reason, "none is configured")
+  close(harness)
+}
+
+// The names the tool offers are the ones the session's reach holds, in the
+// order they are configured, and a session that reaches none offers no `on`.
+pub fn the_spawn_tool_offers_the_orchestrators_the_session_reaches_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Up)
+  let gpu = fake_orchestrators.start("gpu", fake_orchestrators.Up)
+  let #(reaching, _queued) =
+    start_remote(Hangs, [box, gpu], fn(config) { config })
+  let alone = start_harness(Hangs)
+  let properties = fn(harness: Harness) {
+    let registry = tool.registry(agent.tools(harness.seam))
+    let assert Ok(spawn) = tool.lookup(registry, "agent_spawn")
+    let assert json.Object(schema) = spawn.schema
+    let assert Ok(json.Object(properties)) = list.key_find(schema, "properties")
+    properties
+  }
+  let assert Ok(json.Object(on)) = list.key_find(properties(reaching), "on")
+  assert list.key_find(on, "enum")
+    == Ok(json.Array([json.String("box"), json.String("gpu")]))
+  assert list.key_find(properties(alone), "on") == Error(Nil)
+  close(reaching)
+  close(alone)
+}
+
+pub fn a_message_to_a_remote_child_is_refused_with_how_it_reports_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Up)
+  let #(harness, _queued) = start_remote(Hangs, [box], fn(config) { config })
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(remote) = harness.seam.spawn(caller, on_box("remote"))
+  let assert Error(agent.InvalidArgument(reason:)) =
+    harness.seam.send(caller, remote.strand, "hello", None)
+  assert string.contains(reason, "runs on the orchestrator `box`")
+  assert string.contains(reason, "final answer")
+  assert string.contains(reason, "agent_wait")
+  close(harness)
+}
+
+pub fn a_remote_childs_message_to_its_parent_reads_as_a_parent_elsewhere_test() {
+  // The delegate side: the child's parent is the reference `^main`, which is no
+  // strand of the session, so the Agency finds no state for it and answers the
+  // finished-run refusal. Only the wording is remote-aware.
+  let harness = start_harness(Hangs)
+  let spawned = remote_spawned(harness, "turn-1:tools", "report up")
+  let child = caller_on(spawned.handle.strand, "child-turn", 0)
+  let assert Error(agent.ParentRunEnded(strand: "^main") as refusal) =
+    harness.seam.send(child, "^main", "done early", None)
+  let sentence = agent.describe(refusal)
+  assert string.contains(sentence, "your parent `main` runs on another")
+  assert string.contains(sentence, "final answer")
+  close(harness)
+}
+
+// --- the records the parent keeps, against a live session store --------------
+
+fn a_stub_of(
+  orchestrator: String,
+  caller: Caller,
+  state: remote_child.State,
+  detach: remote_spawn.Detach,
+) -> #(String, remote_child.Stub) {
+  #(
+    remote_child.stub_key(agent.call_site_digest(caller)),
+    remote_child.Stub(
+      orchestrator:,
+      strand: caller.strand,
+      site: remote_spawn.CallSite(
+        operation: caller.operation,
+        step_id: caller.step_id,
+        source_index: caller.source_index,
+        minter: caller.minter,
+      ),
+      depth: 0,
+      parent_tools: ["agent_note", "agent_send"],
+      request: remote_spawn.Request(..remote_request("record"), detach:),
+      name: "sub:^main/record-0123456789abcdef",
+      state:,
+    ),
+  )
+}
+
+fn an_answer(label: String) -> remote_spawn.Spawned {
+  remote_spawn.Spawned(
+    handle: agent.Handle(
+      strand: "sub:^main/" <> label,
+      operation: caller_on("box", label, 0).operation,
+    ),
+    tools: ["agent_note"],
+    model: "box-model",
+    model_id: "box-model-id",
+    remaining_ms: 1000,
+  )
+}
+
+pub fn admitting_a_call_site_twice_keeps_the_first_stub_test() {
+  let harness = start_harness(Hangs)
+  let #(key, first) =
+    a_stub_of(
+      "box",
+      caller_on("main", "turn-1:tools", 0),
+      remote_child.Requested,
+      remote_spawn.Attached,
+    )
+  let second = remote_child.Stub(..first, orchestrator: "gpu")
+  assert remote_child.admit(harness.runtime, key, first)
+    == Ok(remote_child.Fresh)
+  assert remote_child.admit(harness.runtime, key, second)
+    == Ok(remote_child.Existing(first))
+  assert remote_child.find(harness.runtime, key) == Ok(Some(first))
+  close(harness)
+}
+
+// Two writers hear the same answer: the effect process that asked and the
+// drainer that resends. Whichever is late must not undo the other, or a child
+// that has finished would be shown as running again.
+pub fn a_stub_only_moves_forward_test() {
+  let harness = start_harness(Hangs)
+  let #(key, stub) =
+    a_stub_of(
+      "box",
+      caller_on("main", "turn-1:tools", 0),
+      remote_child.Requested,
+      remote_spawn.Attached,
+    )
+  let assert Ok(remote_child.Fresh) =
+    remote_child.admit(harness.runtime, key, stub)
+  let usage =
+    remote_spawn.ChildUsage(
+      input: 1,
+      output: 2,
+      cache_read: 3,
+      cache_write: 4,
+      cost: 0.25,
+    )
+
+  // A report of a finish cannot apply to a child nobody has said exists.
+  let assert Ok(unmoved) =
+    remote_child.settled(harness.runtime, key, agent.Completed, usage)
+  assert unmoved.state == remote_child.Requested
+
+  let assert Ok(spawned) =
+    remote_child.spawned(harness.runtime, key, stub, an_answer("first"), 1000)
+  let assert remote_child.Spawned(placed) = spawned.state
+  assert placed.handle == an_answer("first").handle
+  assert placed.deadline_ms == 2000
+
+  // A second answer to the same spawn finds the first recorded and returns it.
+  let assert Ok(again) =
+    remote_child.spawned(harness.runtime, key, stub, an_answer("other"), 5000)
+  assert again.state == spawned.state
+
+  let assert Ok(finished) =
+    remote_child.settled(harness.runtime, key, agent.Completed, usage)
+  assert finished.state == remote_child.Settled(placed, agent.Completed, usage)
+
+  // Nothing late moves a finished child, whether an answer or a refusal.
+  let assert Ok(late) =
+    remote_child.spawned(harness.runtime, key, stub, an_answer("late"), 9000)
+  assert late.state == finished.state
+  let assert Ok(refused) =
+    remote_child.refused(harness.runtime, key, "too late to refuse")
+  assert refused.state == finished.state
+  assert remote_child.find(harness.runtime, key) == Ok(Some(finished))
+
+  // The answer also wrote the lineage cell the addressing rule reads.
+  let assert Some(cell) = lineage_of(harness, placed.handle.strand)
+  assert cell.orchestrator == Some("box")
+  assert cell.deadline == Some(2000)
+  close(harness)
+}
+
+pub fn a_refusal_ends_a_stub_that_was_never_answered_until_a_child_outranks_it_test() {
+  let harness = start_harness(Hangs)
+  let #(key, stub) =
+    a_stub_of(
+      "box",
+      caller_on("main", "turn-1:tools", 0),
+      remote_child.Requested,
+      remote_spawn.Attached,
+    )
+  let assert Ok(remote_child.Fresh) =
+    remote_child.admit(harness.runtime, key, stub)
+  let assert Ok(refused) = remote_child.refused(harness.runtime, key, "no room")
+  assert refused.state == remote_child.Refused("no room")
+
+  // The refused stub is not final against a child that exists: an answer that
+  // names one, from a second asker of the same call site, outranks the refusal,
+  // so the stub is never left saying no to a running child.
+  let assert Ok(moved) =
+    remote_child.spawned(harness.runtime, key, stub, an_answer("late"), 0)
+  let assert remote_child.Spawned(placed) = moved.state
+  assert placed.handle == an_answer("late").handle
+  assert remote_child.find(harness.runtime, key) == Ok(Some(moved))
   close(harness)
 }

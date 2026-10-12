@@ -236,6 +236,7 @@ fn settings(
   serve.Settings(
     peer_directory: None,
     peer_defaults: None,
+    remote_reach: None,
     first_prompt: None,
     profile_desk: None,
     codemode_sockets: None,

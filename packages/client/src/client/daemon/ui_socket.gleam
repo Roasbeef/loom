@@ -220,6 +220,7 @@ import web_view/names
 import web_view/operator_page
 import web_view/page
 import web_view/peer_links
+import web_view/placements
 import web_view/remembered
 import web_view/renames
 import web_view/sessions
@@ -828,6 +829,25 @@ pub fn upgrade_home(
     None -> []
   }
 
+  // The pools are told the same way and checked again the same way
+  // (`UnknownPool`). The state of each executor and pool, which the creation
+  // panel draws on its cards (protocol-change/085), is the one thing here that
+  // costs a read: the daemon connects to its executors, so the read runs in a
+  // task of its own, started when the owner opens the panel, and the page's
+  // runtime never waits for it. A page without the creation capability is given
+  // no pools and a read that asks nobody.
+  let pools = case creating {
+    Some(_) -> attachment.pools
+    None -> []
+  }
+  let read_placements = attachment.placements
+  let placing = fn(deliver) {
+    case creating {
+      Some(_) -> read_task(deliver, read_placements)
+      None -> Nil
+    }
+  }
+
   // The owner's recent folders (protocol-change/074) go with the creation, since
   // they exist to start one from. A read or a forget runs in a task of its own
   // and the daemon's home directory is read there too, so the runtime never
@@ -935,6 +955,8 @@ pub fn upgrade_home(
       profiles,
       models,
       executors,
+      pools,
+      placing,
       folders,
       signing,
       administering,
@@ -1240,6 +1262,8 @@ fn admit_home(
   profiles: List(String),
   models: List(String),
   executors: List(String),
+  pools: List(String),
+  placing: fn(fn(placements.Read) -> Nil) -> Nil,
   folders: Option(home.Folders),
   signing: Signing,
   administering: Option(fn(fn(sessions.Answer) -> Nil) -> Nil),
@@ -1283,6 +1307,8 @@ fn admit_home(
       profiles:,
       models:,
       executors:,
+      pools:,
+      placements: placing,
       folders:,
       signins: fn(deliver) { read_task(deliver, signing.read) },
       login: signing.login,
@@ -1379,7 +1405,7 @@ fn home_read(
     manager.authorized_page(attachment.registry, attachment.digest, after: "")
     |> result.map_error(authentication_failure),
   )
-  let entries = list.map(views, listed_entry)
+  let entries = held_entries(attachment.registry, views)
 
   // A failed read of the roles leaves the rows without one, which is the owner's
   // case too: a row that says less than it could is the safe way to be wrong.
@@ -1744,7 +1770,7 @@ fn listed(attachment: server.Attachment(instance)) -> List(sessions.Entry) {
   case
     manager.authorized_page(attachment.registry, attachment.digest, after: "")
   {
-    Ok(#(_, views)) -> list.map(views, listed_entry) |> with_projects
+    Ok(#(_, views)) -> held_entries(attachment.registry, views) |> with_projects
     Error(_) -> []
   }
 }
@@ -2633,7 +2659,7 @@ pub fn create_for(
       roles.profile,
       roles.model,
       executor_of(place),
-      "",
+      pool_of(place),
     )
     |> create(principal, _, scope_of(place, sharing))
     |> result.map(fn(view) { #(principal, view) })
@@ -2773,7 +2799,7 @@ fn placed(
     // canonicalized here: only its shape is judged, so a name that could be
     // taken for a path is refused. The executor is judged by the creation, which
     // knows the daemon's configuration.
-    creations.Registered(workspace:, ..) ->
+    creations.Registered(workspace:, ..) | creations.Pooled(workspace:, ..) ->
       creations.registered_name(workspace)
       |> result.replace_error(creations.InvalidWorkspaceName)
     creations.Drawn(workspace:) ->
@@ -2842,18 +2868,32 @@ fn scope_of(
   sharing: creations.Sharing,
 ) -> domain.Scope {
   case place, sharing {
-    creations.Registered(..), _ | _, creations.Shareable -> domain.SessionOnly
+    creations.Registered(..), _
+    | creations.Pooled(..), _
+    | _, creations.Shareable
+    -> domain.SessionOnly
     creations.Drawn(_), creations.Private
     | creations.Typed(_), creations.Private
     -> domain.WorkspacePrivate
   }
 }
 
-// The executor a creation names, or the empty string for a place on this host.
+// The executor a creation names, or the empty string for a place on this host or
+// in a pool.
 fn executor_of(place: creations.Place) -> String {
   case place {
     creations.Registered(executor:, ..) -> executor
-    creations.Drawn(_) | creations.Typed(_) -> ""
+    creations.Pooled(..) | creations.Drawn(_) | creations.Typed(_) -> ""
+  }
+}
+
+// The pool a creation names, or the empty string for any other place. A creation
+// names an executor or a pool, never both: the daemon picks a pool's executor
+// when the session first opens.
+fn pool_of(place: creations.Place) -> String {
+  case place {
+    creations.Pooled(pool:, ..) -> pool
+    creations.Registered(..) | creations.Drawn(_) | creations.Typed(_) -> ""
   }
 }
 
@@ -2869,6 +2909,7 @@ fn creation_refusal(code: String) -> creations.Reason {
     "unknown_profile" -> creations.UnknownProfile
     "unknown_model" -> creations.UnknownModel
     "executor_unknown" -> creations.UnknownExecutor
+    "pool_unknown" -> creations.UnknownPool
     _ -> creations.Unavailable
   }
 }
@@ -4724,11 +4765,12 @@ fn admin_snapshot(
   use selection <- result.try(chosen_members(attachment, chosen))
   use logins <- result.try(admin_logins(attachment, people.entries))
   let listed = list.take(views, sessions.listed_limit)
-  use summaries <- result.map(admin_summaries(attachment, listed))
+  let #(entries, shown) = admin_rows(attachment.registry, listed)
+  use summaries <- result.map(admin_summaries(attachment, shown))
   grants.Snapshot(
     principals: owner_first(list.map(people.entries, listed_principal)),
     more_principals: more_of(people.remainder),
-    sessions: list.map(listed, listed_entry),
+    sessions: entries,
     selection:,
     logins:,
     summaries:,
@@ -5538,6 +5580,80 @@ pub fn listed_entry(view: manager.View) -> sessions.Entry {
       executor -> Some(executor)
     },
   )
+}
+
+/// The entries of a page of the catalogue that this daemon still serves, with
+/// the move each is in: the page's custody is read once
+/// (`manager.custodies`) and applied by `with_moves`. A failed read leaves the
+/// rows as the catalogue says them, which is the safe way to be wrong, since the
+/// registry refuses an open, archive or delete of a session in a move on its own.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.held_entries(registry, views)
+/// ```
+@internal
+pub fn held_entries(
+  registry: manager.Manager(instance),
+  views: List(manager.View),
+) -> List(sessions.Entry) {
+  let entries = list.map(views, listed_entry)
+  case manager.custodies(registry, list.map(entries, fn(entry) { entry.id })) {
+    Ok(custodies) -> with_moves(entries, custodies)
+    Error(_) -> entries
+  }
+}
+
+/// The entries with their moves applied. A session this catalogue is handing to
+/// another orchestrator becomes a `Moving` row naming the destination, and a
+/// session it has handed over is dropped: the conversation lives on the other
+/// orchestrator, which lists it, and the tombstone here is not something a page
+/// can open (protocol-change/085). A session with no custody pair, a resident
+/// one and an imported one keep their rows.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.with_moves(entries, [#(id, catalogue.Moving(op: "a", to: "bravo"))])
+/// ```
+@internal
+pub fn with_moves(
+  entries: List(sessions.Entry),
+  custodies: List(#(String, catalogue.Custody)),
+) -> List(sessions.Entry) {
+  list.filter_map(entries, fn(entry) {
+    case list.key_find(custodies, entry.id) {
+      Ok(catalogue.Moving(to:, ..)) ->
+        Ok(sessions.Entry(..entry, residency: sessions.Moving(to:)))
+      Ok(catalogue.Moved(..)) -> Error(Nil)
+      Ok(catalogue.Resident) | Ok(catalogue.Imported(..)) | Error(Nil) ->
+        Ok(entry)
+    }
+  })
+}
+
+/// The rows the admin drawer lists for a page of the catalogue: the entries, as
+/// the home lists them (`held_entries`), and the views of the sessions that are
+/// drawn, so the drawer reads a summary for no row it leaves out. A session in a
+/// move reads as moving, and a session that has moved is not drawn.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let #(entries, shown) = ui_socket.admin_rows(registry, views)
+/// ```
+@internal
+pub fn admin_rows(
+  registry: manager.Manager(instance),
+  views: List(manager.View),
+) -> #(List(sessions.Entry), List(manager.View)) {
+  let entries = held_entries(registry, views)
+  let shown =
+    list.filter(views, fn(view) {
+      list.any(entries, fn(entry) { entry.id == view.registration.id })
+    })
+  #(entries, shown)
 }
 
 /// The entries with the project of each one's workspace, read from the host's

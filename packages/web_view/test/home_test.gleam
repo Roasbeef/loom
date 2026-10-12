@@ -90,6 +90,8 @@ fn start_with(ceiling: home.Ceiling, read: fn() -> home.Listing) -> home.Start {
     who: fn(deliver) { deliver(None) },
     rename_self: None,
     executors: [],
+    pools: [],
+    placements: fn(_) { Nil },
   )
 }
 
@@ -2762,4 +2764,53 @@ pub fn a_model_the_daemon_did_not_list_asks_nothing_test() {
 pub fn an_unknown_model_refusal_has_fixed_words_test() {
   assert creations.reason_words(creations.UnknownModel)
     == "That model is not in the configuration now. Reload the page."
+}
+
+// A session the daemon is handing to another orchestrator says where it goes,
+// as text: not "saved", with no press (the registry would refuse an open), and
+// with neither Archive nor Delete, which the registry refuses until the move
+// ends. The destination is a text node, so a name with markup draws as text.
+pub fn a_moving_row_names_its_destination_and_offers_nothing_test() {
+  let ask = fn(_action, _session, _deliver) { Nil }
+  let listed = fn(deliver) {
+    deliver(
+      home.Listed([
+        entry("X", "leaving", "/src/weft", 1, sessions.Moving("bravo")),
+        entry("Y", "<b>odd</b>", "/src/weft", 2, sessions.Moving("<i>c</i>")),
+      ]),
+    )
+  }
+  let #(owner, _) =
+    opened(home.Start(..start(), manage: Some(ask), sessions: listed))
+  let html = drawn(owner)
+  assert string.contains(html, "leaving")
+  assert string.contains(html, "moving to bravo")
+  assert string.contains(html, "moving to &lt;i&gt;c&lt;/i&gt;")
+  assert !string.contains(html, "<i>c</i>")
+  assert !string.contains(html, "needs attention")
+  assert !string.contains(html, ">Archive<")
+  assert !string.contains(html, ">Delete<")
+  assert !string.contains(html, ">Stop<")
+  assert !string.contains(html, "Resume this session")
+  assert !string.contains(html, "Open this session")
+}
+
+// The registry refuses to rename a session in a move, so an owner's page that
+// may rename draws no Rename on that row, while a row beside it that is not
+// moving keeps its button.
+pub fn a_moving_row_offers_no_rename_test() {
+  let ask = fn(_session, _name, _deliver) { Nil }
+  let listed = fn(deliver) {
+    deliver(
+      home.Listed([
+        entry("X", "leaving", "/src/weft", 1, sessions.Moving("bravo")),
+        entry("Y", "staying", "/src/weft", 2, sessions.Saved),
+      ]),
+    )
+  }
+  let #(owner, _) =
+    opened(home.Start(..start(), rename: Some(ask), sessions: listed))
+  let html = drawn(owner)
+  assert string.contains(html, "moving to bravo")
+  assert list.length(string.split(html, "class=\"home-rename\"")) == 2
 }

@@ -55,6 +55,7 @@ fn padded_agency(padding_words: Int) -> agent.Agency {
     },
     max_wait_ms: 30_000,
     model_names: ["reviewer", "worker"],
+    orchestrator_names: [],
     holds: fn(_caller, _tool) { Ok(Nil) },
   )
 }
@@ -75,8 +76,10 @@ pub fn spawn_tool_does_not_capture_whole_agency_test() {
   assert ffi_memory.flat_words(heavy.roster)
     > ffi_memory.flat_words(light.roster) + 4096
 
-  let spawn_light = agent.spawn_tool(light.spawn, light.model_names)
-  let spawn_heavy = agent.spawn_tool(heavy.spawn, heavy.model_names)
+  let spawn_light =
+    agent.spawn_tool(light.spawn, light.model_names, light.orchestrator_names)
+  let spawn_heavy =
+    agent.spawn_tool(heavy.spawn, heavy.model_names, heavy.orchestrator_names)
   assert ffi_memory.flat_words(spawn_heavy.run)
     == ffi_memory.flat_words(spawn_light.run)
 

@@ -1496,7 +1496,20 @@ pub type CreateStrandError {
   /// The strand exists and its driver runs, but the task brief was not
   /// accepted.
   BriefRejected(error: ApiError)
+
+  /// The name begins with `^`, which `parent_reference_prefix` reserves. The
+  /// Agency writes a spawn from another orchestrator as a child of the
+  /// reference `^{strand}`, and the reference names no strand of this session,
+  /// so no strand may be created under a name that could be one.
+  InvalidStrandName(name: String)
 }
+
+/// The prefix that marks a name as a reference to a parent strand on another
+/// orchestrator (protocol-change/084). A child spawned from a remote parent has
+/// the reference `^main` as its lineage parent, and the reference is never a
+/// strand of the session. Reserving the prefix here makes that a property of
+/// strand creation and not of whoever happens to name the next strand.
+pub const parent_reference_prefix = "^"
 
 /// Creates a named subagent strand: seeds its three registers durably —
 /// its own model identity in `strand.config`, its own leaf register
@@ -1646,6 +1659,10 @@ fn seed_strand(
   configuration: StrandConfiguration,
   fork_point: Option(EntryId),
 ) -> Result(Nil, CreateStrandError) {
+  use <- bool.guard(
+    when: string.starts_with(name, parent_reference_prefix),
+    return: Error(InvalidStrandName(name:)),
+  )
   let seed =
     tx.Tx(
       writes: [
@@ -2539,12 +2556,33 @@ pub const goal_fact_prefix = "goal/"
 /// session's own captures. A terminal reads these by exact key instead.
 pub const summary_fact_prefix = "summary/"
 
+/// The reserved prefix of a delegate session's own records
+/// (protocol-change/084). The Agency writes `delegate/ended/{operation}` here
+/// when the orchestrator whose child this session serves reports that a run
+/// of its parent has ended, and a spawn for that run is refused from then on.
+///
+/// Reserved because a model that could write one would end a run it does not
+/// own, which refuses every later spawn for it, or could remove one, which
+/// would let a spawn create a child nobody will reap.
+pub const delegate_fact_prefix = "delegate/"
+
+/// The reserved prefix of the stubs a parent session keeps for subagents that run
+/// on another orchestrator (protocol-change/084). The Agency writes
+/// `remote-child/{call site digest}` before it asks the other orchestrator for a
+/// child, and the stub is the pending row that a drainer resends from.
+///
+/// Reserved because a model that could write one would choose which
+/// orchestrator a later retry of its own spawn goes to, or settle a spawn the
+/// other orchestrator never answered, and one that could remove a stub would
+/// make a live remote child vanish from the fan-out count and the roster.
+pub const remote_child_fact_prefix = "remote-child/"
+
 /// Whether a `fact.custom` key falls in a reserved, runtime-owned corner
 /// of the namespace. Reserved keys are refused to `put_fact` and hidden
 /// from `facts`; harness code reaches them through `put_reserved_fact`
 /// and `reserved_facts`.
 ///
-/// The fourteen corners, and what each would let a forged write do:
+/// The sixteen corners, and what each would let a forged write do:
 /// `escalation/` — manufacture an approval and widen a denied call;
 /// `operation-result/` — shadow an operation's terminal result and lie to
 /// every waiter; `lineage/` — rewrite a parent edge, which is the single
@@ -2570,7 +2608,11 @@ pub const summary_fact_prefix = "summary/"
 /// operator retired or spending past the budget the loop is bounded by;
 /// `summary/` — write the label a terminal shows in place of a reasoning
 /// block, so the operator reads the model's own account of its reasoning
-/// as though the harness's summarizer had written it.
+/// as though the harness's summarizer had written it; `delegate/` — mark a
+/// run of a remote parent as ended, so every later spawn for it is refused, or
+/// remove that mark, so a spawn after the run ended creates a child nobody
+/// will reap; and `remote-child/` — choose which orchestrator a retried spawn goes
+/// to, or remove the stub of a live remote child from the fan-out count.
 ///
 /// ## Examples
 ///
@@ -2597,6 +2639,8 @@ pub fn reserved_fact_key(key: String) -> Bool {
   || string.starts_with(key, advisor_fact_prefix)
   || string.starts_with(key, goal_fact_prefix)
   || string.starts_with(key, summary_fact_prefix)
+  || string.starts_with(key, delegate_fact_prefix)
+  || string.starts_with(key, remote_child_fact_prefix)
 }
 
 /// Writes one cell under a reserved prefix — the harness-only companion

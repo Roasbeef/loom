@@ -11,6 +11,7 @@ import client/daemon/root
 import client/daemon/server
 import client/daemon/session_socket
 import client/daemon_server_test as wire
+import client/deployment
 import client/gateway
 import client/gateway_test
 import client/internal/ffi_os
@@ -138,6 +139,7 @@ fn fixture_with(
       [],
       session_directory.none(),
       session_movers.idle(),
+      deployment.alone("nonode@nohost"),
       fn() {
         ids.generator(
           clock.from_function(ffi_os.system_time_ms),

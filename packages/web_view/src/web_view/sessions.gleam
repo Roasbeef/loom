@@ -69,6 +69,20 @@ pub type Residency {
   /// so the registry takes both; a recovery that stopped does hold one, and the
   /// registry refuses it as busy.
   Blocked
+
+  /// The session is stopped, as a saved one is, and the daemon is handing it to
+  /// the orchestrator `to` (protocol-change/078, phase 5). It is the one
+  /// owner's until the move ends, but this daemon will not open, archive or
+  /// delete it meanwhile, so a row for it is text that says where it is going.
+  /// The daemon reads it as a saved session with a move in flight, and
+  /// `client/daemon/ui_socket.with_moves` reads the two together, so no row can
+  /// offer a resume the daemon would refuse. A session that has moved is not an
+  /// entry at all: its new owner lists it (protocol-change/085).
+  Moving(
+    /// The destination's name in the daemon's `[orchestrators.<name>]` table.
+    /// It is the operator's own configuration, drawn as a text node.
+    to: String,
+  )
 }
 
 /// One session in the sidebar.

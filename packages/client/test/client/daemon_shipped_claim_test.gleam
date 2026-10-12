@@ -299,6 +299,7 @@ fn await_resident(control, session: String, paths: endpoint.Paths) -> Nil {
           protocol.Resident(..) -> poll.Done(Nil)
           protocol.Reserved
           | protocol.Saved
+          | protocol.Moving(_)
           | protocol.Opening(_)
           | protocol.Stopping(_)
           | protocol.RecoveryBlocked ->

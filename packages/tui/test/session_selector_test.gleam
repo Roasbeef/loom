@@ -257,3 +257,25 @@ pub fn session_picker_prefers_workspace_and_preserves_group_order_test() {
   assert state.current == "other"
   assert state.page.revision == 7
 }
+
+// A session being handed to another orchestrator reads as moving to it, at
+// every width, and says it cannot be opened from here. It never offers the
+// Enter the other inactive rows do, since the daemon would refuse the open.
+pub fn a_moving_session_names_its_destination_and_offers_no_open_test() {
+  let rows =
+    list.map(sessions(), fn(row) {
+      protocol.Session(..row, status: protocol.Moving("laptop"))
+    })
+  let moving =
+    session_selector.State(..selector(0), page: protocol.Page(1, rows, None))
+  list.each([80, 292], fn(width) {
+    let screen = geometry.rect_new(0, 0, width, 24)
+    let painted =
+      session_selector.render(buffer.buffer_new(screen), screen, moving, 0)
+    let selected = row_with(painted, "▸")
+    let drawn = string.join(frame.buffer_to_lines(painted), "\n")
+    assert string.contains(line_at(painted, selected), "moving to laptop")
+    assert string.contains(drawn, "cannot be opened")
+    assert !string.contains(drawn, "Enter opens")
+  })
+}

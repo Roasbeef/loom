@@ -25,6 +25,7 @@
 ////    loss of either of the last two ends the daemon.
 
 import argv
+import client/agency
 import client/catalog
 import client/daemon/limits
 import client/daemon/listener
@@ -38,6 +39,8 @@ import client/daemon/ui_assets
 import client/daemon/ui_login
 import client/daemon/ui_sessions
 import client/daemon/ui_socket
+import client/delegate_host
+import client/deployment
 import client/directory/deletion
 import client/directory/member
 import client/directory/migrate
@@ -59,13 +62,17 @@ import client/remote/address
 import client/remote/host as executor_host
 import client/remote/orchestrator_port
 import client/remote/remote_peer
+import client/remote/remote_spawner
 import client/remote/workspace
+import client/remote_reach
+import client/remote_spawn
 import client/serve
 import client/session_directory
 import client/session_importer
 import client/session_move
 import client/session_mover
 import client/session_movers
+import client/spawners
 import client/workspaces
 import core/clock
 import core/glance
@@ -137,6 +144,10 @@ pub type Config {
     /// The running member actor, set by `run` once `start_directory` has
     /// started it; `None` on a daemon that is not a member, and before then.
     member: Option(member.Member),
+    /// The orchestrators that may start subagents on this daemon, and on what
+    /// terms, read from `[spawners.<name>]` at startup and never reread
+    /// (protocol-change/084). A daemon with none accepts no spawns.
+    spawners: List(spawners.Spawner),
     /// The distribution membership `prepare_startup` started, or `None` when
     /// the configuration has no `[distribution]` table. It is how the daemon
     /// reaches the peers it asks, and a daemon without it asks nobody and
@@ -319,6 +330,7 @@ pub fn parse(arguments: List(String)) -> Result(Config, String) {
       [],
       None,
       None,
+      [],
       None,
     )
   use config <- result.try(parse_loop(arguments, initial))
@@ -580,7 +592,10 @@ pub fn directory_path(state_root: String) -> String {
 /// The port answers a peer orchestrator's question about whether this daemon's
 /// catalogue holds a session. It runs whether or not this daemon lists any
 /// `[orchestrators.<name>]` of its own, since an orchestrator can be asked by a
-/// peer that lists it without listing that peer back. It is linked to the
+/// peer that lists it without listing that peer back. It also relays the three
+/// subagent messages to `spawn_host`, which refuses all of them for a daemon with
+/// no `[spawners.<name>]` and otherwise serves them from the sender's delegate
+/// session. It is linked to the
 /// process that starts the daemon's services, so an abnormal exit of the port
 /// ends the daemon the way the executor host's does: a daemon that silently
 /// stopped answering would make every peer report it unreachable.
@@ -588,7 +603,7 @@ pub fn directory_path(state_root: String) -> String {
 /// ## Examples
 ///
 /// ```gleam
-/// // assert main.start_orchestrator_port(Config(..config, membership: None), daemon, logger, peer) == Ok(Nil)
+/// // assert main.start_orchestrator_port(Config(..config, membership: None), daemon, logger, peer, delegate) == Ok(Nil)
 /// ```
 @internal
 pub fn start_orchestrator_port(
@@ -596,6 +611,7 @@ pub fn start_orchestrator_port(
   daemon: root.Root(instance),
   logger: Logger,
   peer_endpoint: fn(instance) -> Option(peer_mail.Endpoint),
+  delegate_endpoint: fn(instance) -> agency.DelegateEndpoint,
 ) -> Result(Nil, String) {
   case config.membership {
     None -> Ok(Nil)
@@ -624,6 +640,22 @@ pub fn start_orchestrator_port(
           peer_command(ready.registry, peer_endpoint),
           server.local_description(ready.registry),
           importer,
+          spawn_host(
+            config.spawners,
+            delegate_host.resolver(delegate_host.Context(
+              registry: ready.registry,
+              sessions_directory: ready.sessions_directory,
+              domain_configuration:,
+              generator: fn() {
+                ids.generator(
+                  clock.from_function(ffi_os.system_time_ms),
+                  ffi_os.unique_positive_integer(),
+                )
+              },
+              now_ms: ffi_os.system_time_ms,
+              endpoint: delegate_endpoint,
+            )),
+          ),
         )
         |> result.map_error(fn(error) {
           "the orchestrator port did not start: " <> string.inspect(error)
@@ -631,6 +663,7 @@ pub fn start_orchestrator_port(
       )
       log.info(logger, "daemon.orchestrator_port", [
         field.count("orchestrators", list.length(config.orchestrators)),
+        field.count("spawners", list.length(config.spawners)),
       ])
       Ok(Nil)
     }
@@ -672,6 +705,65 @@ pub fn peer_command(
   }
 }
 
+/// The functions the orchestrator port calls for the three subagent messages
+/// (protocol-change/084). Each one judges the sender first: the node the message
+/// came from must be the node of a configured `[spawners.<name>]`, or the
+/// answer is `UnknownSpawner`, which is also what a daemon with no spawners
+/// says to every node.
+///
+/// A message from a configured spawner is served by the Agency of that spawner's
+/// delegate session for the parent the message names. `delegates` finds that
+/// Agency, creating or opening the session as needed (`delegate_host.resolver`),
+/// and a refusal it returns is the answer. The spawner's table supplies the
+/// terms the Agency judges the spawn by: the tool ceiling, the depth and the
+/// deadlines. A join and a run end need no terms, because they concern children
+/// the Agency already holds.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // main.spawn_host([], delegates).run_ended(origin, operation)
+/// // -> Error(remote_spawn.UnknownSpawner(origin.node))
+/// ```
+@internal
+pub fn spawn_host(
+  configured: List(spawners.Spawner),
+  delegates: fn(spawners.Spawner, remote_spawn.Parent) ->
+    Result(agency.DelegateEndpoint, remote_spawn.SpawnRefusal),
+) -> orchestrator_port.SpawnHost {
+  let serving = fn(origin: remote_spawn.Origin) {
+    use spawner <- result.try(
+      spawners.by_node(configured, origin.node)
+      |> result.replace_error(remote_spawn.UnknownSpawner(node: origin.node)),
+    )
+    use endpoint <- result.map(delegates(spawner, origin.parent))
+    #(spawner, endpoint)
+  }
+  orchestrator_port.SpawnHost(
+    spawn: fn(origin, call_site, depth, parent_tools, request) {
+      use #(spawner, endpoint) <- result.try(serving(origin))
+      endpoint.spawn(
+        remote_spawn.Delegation(
+          parent: origin.parent,
+          depth:,
+          parent_tools:,
+          terms: delegate_host.terms_of(spawner),
+        ),
+        call_site,
+        request,
+      )
+    },
+    join: fn(origin, handles, within_ms) {
+      use #(_spawner, endpoint) <- result.try(serving(origin))
+      endpoint.join(origin.parent, handles, within_ms)
+    },
+    run_ended: fn(origin, operation) {
+      use #(_spawner, endpoint) <- result.try(serving(origin))
+      endpoint.run_ended(operation)
+    },
+  )
+}
+
 /// Whether this daemon's catalogue holds a session, in any state and any
 /// visibility: `Owned` for a `reserved` or `saved` registration, archived or
 /// not, `NotOwned` when the catalogue has no such identity, and `Error(Nil)`
@@ -707,6 +799,30 @@ pub fn catalogue_holds(
         Ok(orchestrator_port.NotOwned)
       Error(_) -> Error(Nil)
     }
+  }
+}
+
+// How one session reaches the other orchestrators it may start children on
+// (protocol-change/084). A daemon with no distribution reaches none. A session
+// may start a child elsewhere only while its owner holds it alone, which is the
+// test default peer links already use, asked at each spawn because inviting a
+// member changes the answer.
+fn reach_of(
+  config: Config,
+  registry: manager.Manager(instance),
+  session: String,
+) -> Option(remote_reach.Reach) {
+  case config.membership {
+    None -> None
+    Some(membership) ->
+      Some(
+        remote_spawner.over_distribution(
+          membership,
+          config.orchestrators,
+          session,
+          fn() { list.contains(manager.unshared_sessions(registry), session) },
+        ),
+      )
   }
 }
 
@@ -765,6 +881,17 @@ fn session_directory_of(
         _, _ -> connected
       }
     }
+  }
+}
+
+// How `deployment.status` connects to the nodes of this daemon's own
+// configuration: over the distribution it started, under its own node name. A
+// daemon with no `[distribution]` table has no peers to connect to.
+fn deployment_reach(config: Config) -> deployment.Reach {
+  let self = atom.to_string(node.name(node.self()))
+  case config.membership {
+    Some(membership) -> deployment.over(membership, self)
+    None -> deployment.alone(self)
   }
 }
 
@@ -1030,6 +1157,10 @@ pub fn prepare_startup(
       }
     None -> Nil
   }
+  use spawners <- result.try(
+    spawners.from_document(document)
+    |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
+  )
   use membership <- result.try(start_distribution(
     document,
     configuration,
@@ -1045,6 +1176,7 @@ pub fn prepare_startup(
       workspaces:,
       orchestrators:,
       directory:,
+      spawners:,
       membership:,
     )
   root.start(
@@ -1090,6 +1222,7 @@ pub fn prepare_startup(
                 manager.unshared_sessions(directory)
               }),
             ),
+            remote_reach: reach_of(config, directory, registration.id),
           )
         let settings =
           serve.Settings(
@@ -1454,6 +1587,7 @@ pub fn listen_moving(
       pools: config.pools,
       directory: session_directory_of(config, ready.registry),
       movers:,
+      deployment: deployment_reach(config),
       generator: fn() {
         ids.generator(
           clock.from_function(ffi_os.system_time_ms),
@@ -1517,6 +1651,7 @@ fn run(
           daemon,
           logger,
           fn(resident: serve.Resident) { Some(resident.peer) },
+          fn(resident: serve.Resident) { resident.spawns },
         ),
       )
       use movers <- result.try(start_movers(config, daemon, logger))

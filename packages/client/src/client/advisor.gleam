@@ -3629,6 +3629,9 @@ fn describe_create(error: api.CreateStrandError) -> String {
 
     api.BriefRejected(error:) ->
       "the strand brief was rejected: " <> string.inspect(error)
+
+    api.InvalidStrandName(name:) ->
+      "the strand name " <> name <> " is reserved for a parent reference"
   }
 }
 

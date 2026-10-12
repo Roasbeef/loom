@@ -513,6 +513,12 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   is `deliver(answer)`, which the component dispatches as `Linked`. `resumed_for`
   is the socket's gate: an observer role is refused `NotHeld` before any task.
   `listed_entry` maps `Reserved` and `RecoveryBlocked` to `sessions.Blocked`.
+  The home and the sidebar list through `held_entries`, which reads the page's
+  custody once (`manager.custodies`) and applies `with_moves`: a session in a
+  move becomes `sessions.Moving(to)` and a tombstone is left out
+  (protocol-change/085); a failed custody read leaves the rows as the catalogue
+  says them. The admin drawer lists through `admin_rows`, the same `held_entries`
+  plus the views it draws, so it reads no summary for a tombstone.
   The owner's home creates a session (protocol-change/065, the fourth addendum).
   `home_create_capability(principal, ceiling, ask)` is `Some` for the owner at
   Operator ceiling only, `upgrade_home` passes it as `Start.create` beside
@@ -1221,9 +1227,14 @@ catalogue without opening runtimes. Explicit admission invokes
   test and runnable as `gleam run -m client/demo`.
 - `test/client/tui_e2e_test` + `test/support/terminal` — the real
   `loom` binary against a real `serve.boot`, in a real terminal
-  (`tmux` on a private socket, declared geometry, every wait a predicate
-  over pane content with a deadline). Neither side of the protocol is
-  fake; only the model is scripted.
+  (`tmux` on a socket minted per run from the VM's OS pid, declared
+  geometry, every wait a predicate over pane content with a deadline). Neither
+  side of the protocol is fake; only the model is scripted. The socket name
+  must stay unique per run: `tmux -L` sockets live in one per-user directory
+  shared by every checkout, and a fixed name once let a concurrent run's
+  `kill-server` end this one's pane (a `/dev/ttysNNN: No such file` line in
+  the TUI's stderr) or leave its keys and captures following the other run's
+  session.
   Skips — loudly — when `tmux` or `go` is absent.
 - `test/support/tui_driver` is the in-process real-client companion.
   Each actor owns a socket ingress and a separate model inbox, and uses
@@ -7160,9 +7171,11 @@ the session first opens and then never again.
   `chosen` is `manager.seed_executor`, a cast that runs `catalogue.seed_executor`
   in the registry's turn, which writes the `executor` column once, only for a
   registration with a pool and no executor.
-- The catalogue is at version 13 (v13 adds `catalogue_session_moves`, the
+- The catalogue is at version 15 (v13 adds `catalogue_session_moves`, the
   custody of a session moving between orchestrators, read with
-  `catalogue.custody`; nothing in the client reads it yet). `Registration.pool` is part of the creation
+  `catalogue.custody`; v14 adds the deletion mark; v15 adds `catalogue_delegate_sessions`, read by the
+  registry's `movable` check and written by `manager.delegate_session`).
+  `Registration.pool` is part of the creation
   request and `reserve_creation` compares it, and for a pooled request it does not
   compare the executor, which is the first open's choice (`named_same_executor`).
   `view_json` adds `executor` and `pool` members only when non-empty. The control
@@ -7432,7 +7445,9 @@ the protocol-change/078 addendum on moving a session have the protocol.
   `Config.movers.orchestrators`, then `inbound_settled` for an imported session,
   then `manager.begin_move`, then
   `Config.movers.begin`), the `moving` and `moved` members of `sessions.get`
-  (`with_custody`), `moving` on `open` (`in_flight`), and `not_owner` from the
+  (`with_custody`) and of every `sessions.list` record (`listed_json`, which reads
+  one `manager.custodies` for the page and encodes with the same
+  `custody_members`), `moving` on `open` (`in_flight`), and `not_owner` from the
   tombstone for open, archive, restore and delete (`tombstoned`). `daemon/main`
   builds the movers in `start_movers`, gives the port its importer, and reads
   `LOOM_MOVE_CRASH_AFTER`.
@@ -7491,6 +7506,202 @@ trip there and back, the movers' retry and resume), `daemon_move_test` (the comm
 views and refusals across the real control socket), and
 `daemon_shipped_remote_move_test` (three shipped daemons, a clean move and the
 source lost after each step). The terminal's side is `tui`'s `sessions_move_test`.
+
+## Subagents on another orchestrator (protocol 084, slices S1 to S3)
+
+Slice S1 of phase 1 is the policy and the messages. Slice S2 is the box's side:
+the delegate session and the Agency that serves a remote parent. Slice S3 is the
+laptop's side: the stub, the sending end, the second drainer, and the Agency's
+spawn, wait and roster. A remote child is always detached, so the laptop has no
+run-end path. The deadline tick and the retention sweep are
+S4, and the shipped two-orchestrator test is S5.
+
+- `spawners` is the `[spawners.<name>]` table, read by `daemon/main.prepare_startup`
+  into `Config.spawners` and validated by `catalog.parse` too. A `Spawner` has its
+  `node` (a pinned `[[distribution.peers]]` node no other spawner uses), one
+  `Placement` (`OnExecutor`, `InPool` or `InDirectory`, resolved against the
+  executors and pools), a `profile` that must be a `[profiles.<name>]`, a `tools`
+  ceiling (`default_tools` is every built-in tool except `agent_spawn`,
+  `remember`, `peer_*` and `schedule_*`), and `max_depth`, `max_sessions` (at most
+  16), `max_within_s`, `default_within_s` and `retain_s`. The decoder refuses a
+  `default_within_s` above `max_within_s` and a `retain_s` below it, naming both
+  values, because either may be a default the file never wrote. `find` and
+  `by_node` resolve a spawner; the port uses `by_node` on the node a message came
+  from. A new key means `spawners.row`, `scripts/config_keys.sh` and
+  `docs/configuration.md`.
+- The orchestrator name grammar is the profile grammar, which excludes `@` and `#`.
+  A remote handle's parse (`{strand}#{operation}@{orchestrator}`) depends on that,
+  and `orchestrators_test` pins it.
+- `remote_spawn` is the plain-data vocabulary: `Parent`, `Origin` (the sender's
+  node beside the parent), `CallSite`, `Request` with `Detach`, `Spawned`, `Joined`
+  (`Ready | Pending`), `ChildUsage`, and `SpawnRefusal` with `Cap`. It reuses
+  `tools/agent`'s `Handle`, `Minter`, `Outcome`, `TerminalResult` and
+  `ResultSchema`. S1's temporary `Unimplemented` refusal is gone. The module also
+  holds the pure half of taking a message to the Agency: `Terms` (the spawner's
+  figures in milliseconds), `Delegation` (the parent, its depth and tools, the
+  terms), `agent_request` (judges the deadline and the tool names against the
+  terms and builds `tools/agent.SpawnRequest`: a deadline is always finite, above
+  the cap is refused and not clamped, a name outside the ceiling is
+  `ToolOutsideCeiling`, context is always fresh), `clamp_tools` and `refusal_of`
+  (the Agency's refusals as the sender reads them; the one cap refusal is named
+  by the number it hit, and a tie is `FanOut`). `join_cap_ms` (25 000) is the
+  longest one join waits.
+- `orchestrator_port.Message` gains `Spawn`, `Join` and `RunEnded`. `answer` runs
+  each through `detached`, as it does `Activate`, so none of them delays an
+  `Owns`. `detached` now hands its computation the requester's node
+  (`ffi_remote.node_of`, a stock `erlang:node/1` binding: there is no pure way to
+  ask where a pid lives). The functions behind the messages are a `SpawnHost`
+  that `start_with` takes as a fifth argument. `refusing_spawns()` is the host of
+  `start`, `start_serving` and `start_importing`, and answers `UnknownSpawner`.
+  `daemon/main.spawn_host(config.spawners, delegates)` is the production host: a
+  node no spawner names gets `UnknownSpawner(node)`, and a configured one is
+  served by the `agency.DelegateEndpoint` that `delegates(spawner, parent)`
+  returns (`delegate_host.resolver` in the daemon). The spawn carries the
+  spawner's `delegate_host.terms_of`. A host that crashes sends nothing, so the
+  asker's deadline reads silence. `ask_spawn`, `ask_join` and `ask_run_ended` are
+  the thin sending ends the tests use; slice S3 builds the real one on
+  `remote_peer` and uses the first two. Nothing sends `RunEnded` in phase 1.
+- The delegate session (slice S2). `delegate_host.resolver(Context)` is the step
+  between the port and an Agency: `manager.delegate_session` finds or creates the
+  session of a (spawner, parent session) pair in one registry turn, under
+  `max_sessions`, through `create_scoped` with `SessionOnly`, with a request key
+  derived from the pair, and records it in the catalogue
+  (`catalogue.claim_delegate`). The resolver then waits (`open_budget_ms`, 20 s,
+  `weft/poll`) for the session to become resident and returns its
+  `DelegateEndpoint`. The endpoint is a field of `serve.Instance` and
+  `serve.Resident` (`spawns`), three closures over the Agency holder's name and a
+  trimmed `Config`; keep them small, because `manager.resolve` copies the
+  projection to the caller. A placement is `creation`: an executor or pool
+  workspace is kept as written, a directory is canonicalized.
+  `movable` in the manager answers `AdminNotMovable` for a session with a
+  catalogue delegate row. Not built in S2: refusing members on a delegate session.
+- `agency` serves a remote parent through `delegate_spawn`, `delegate_join` and
+  `delegate_run_ended`, each a call into the holder or a wait outside it, and
+  `delegate_endpoint` projects the three. `spawn_on` takes a private `Source`
+  (`Local | Delegated(Delegation)`). A delegated caller is the reference `^main`
+  with the call site's coordinates, so `child_name` and `adopt` run unchanged. For
+  a delegated source: the depth is the message's plus one against the spawner's
+  `max_depth`; the parent's tools are the message's, clamped to the ceiling before
+  the holder sees them; the base configuration is the session's own `main`
+  strand; the brief's origin is `PeerOrigin(parent session, parent strand)`. The
+  ended fence `delegate/ended/{operation}` is read by `admit_run` only on the path
+  that creates or finishes a child, not on adoption, and written by `run_ended_in`
+  inside the holder before `reap_run_in`. `run_ended_in` counts the runs the
+  operation owns that were `Unstopped`, so a repeat counts nothing. `delegate_join`
+  cuts its window to `join_cap_ms`, waits as `^{strand}` (`wait_for`, which `wait`
+  also uses) and adds each settled child's usage from `child_usage.of_strands`
+  (one ledger scan, rows summed by branch entry). Grandchildren inside a delegate
+  session are still bounded by the Agency's own `depth_cap`, not `max_depth`.
+- `runtime/api` refuses a strand name starting with `^`
+  (`InvalidStrandName`), in `seed_strand`, and reserves the `delegate/` fact
+  prefix.
+
+The laptop's side (slice S3):
+
+- `remote_child` is the parent's durable record. `Stub` is `remote-child/{call
+  site digest}` (`agent.call_site_digest` of the caller), written by `admit` before
+  anything is sent and holding the orchestrator, the parent strand, the call site,
+  the parent's depth and tools, the whole `remote_spawn.Request` and the child's
+  derived name. Its `State` is `Requested` (the spawn is owed), `Spawned(Placed)`,
+  `Settled(Placed, Outcome, ChildUsage)` or `Refused(reason)`. `admit` expects the
+  cell absent and returns `Existing` for the stub already there. `spawned`,
+  `refused` and `settled` are compare-and-set steps that leave a stub alone once it
+  has left the state the step starts from: a late `Spawned` never undoes a
+  `Settled`, but it does move a `Refused`, because an answer that names a child
+  means the child exists. `spawned` writes the lineage cell
+  (`orchestrator: Some(..)`, `detached: True`) before the stub moves. A refusal
+  never removes a stub: the effect process that hears one and the drainer both
+  record `Refused`, so a later answer from the other asker of the same call site
+  still has a stub to move, and the child is never left with a lineage cell and no
+  stub. `is_live(stub, now)` is true for `Requested`, and for `Spawned` until
+  `placed.deadline_ms`, so a stub frees its slot by the clock with no network.
+  The decoders are total. The only reserved prefix is `remote-child/`.
+- A remote child is always detached. `agency.remote_request` sends `Detached`
+  whatever `detach` the model gave, and the child outlives the run that asked for
+  it, bounded by its deadline and the box's retention sweep. Nothing on the
+  laptop sends `RunEnded` in phase 1: `reap_run` aborts the local children and
+  stops there. The port's `RunEnded` message and the box-side fence are S2's and
+  stay, for the phase that releases children.
+- `remote_reach.Reach` is what the Agency asks through: `session`, the
+  `orchestrators` it may name, `offered` (asked at each spawn: the owner holds the
+  session alone) and the two functions `spawn` (which also takes the most the call
+  may wait, in milliseconds) and `join`, each answering `Ok`,
+  `Error(Refused(reason))` or `Error(Unreachable)` as peer mail's endpoints do. It
+  is its own module because `orchestrator_port` sits above the Agency in the
+  module graph (`notice -> owner_services -> remote/protocol -> remote/address ->
+  orchestrator_port`); the Agency cannot import the port. `spawn_ms` (30 s) is the
+  longest one spawn call waits. `remote/remote_spawner.over_distribution` is the
+  production reach: it resolves the name through the configured `[orchestrators]`,
+  connects to the pinned peer and calls `orchestrator_port.ask_spawn` and
+  `ask_join` (the spawn's window as given, a join's window plus 2 s). A name that
+  is not configured is a definitive refusal. `daemon/main.reach_of` builds one per
+  session, with `offered` reading `manager.unshared_sessions`;
+  `serve.Settings.remote_reach` carries it to `agency.Config.remote`.
+- `agency` admits `agent_spawn` with `on` through the holder (`AdmitRemote` ->
+  `admit_remote`: the depth cap, `check_capacity` counting live stubs beside live
+  cells, then `write_stub`), and runs the network on the caller's process
+  (`ask_until_answered`: `poll.until_on` on the Agency's clock, doubling 50 ms to
+  2 s, for `remote_window_ms` = 30 s; each attempt is told to wait only what is
+  left of that window). A refusal is recorded as `Refused` (`record_refusal`) and
+  answers `RemoteRefused`, unless the drainer was answered with a child first, and
+  then the stub says `Spawned` and the model gets the child; the window running out
+  answers `RemoteSilent` and leaves the stub `Requested`. Every exit that leaves the stub for the drainer, and every
+  `Spawned` write, calls `config.remote_queued`. `is_live` is false for a cell with
+  an `orchestrator`, and the stub carries the count. `context: my_conversation`, an
+  unknown `on`, an unshared session and a background program are refused before
+  anything is written. `wait` reads the stubs: a handle is remote when a stub holds
+  it (the `@orchestrator` suffix is parsed and dropped), and a wait with any
+  remote handle is `wait_across`, which runs the local wait and one `Join` per
+  orchestrator as `weft` tasks. An unreachable join gives `Pending(unanswered:
+  Some(orchestrator))`, a refused one `RemoteRefused`, and a `Ready` entry moves the
+  stub to `Settled`. `roster` lists local cells and then `remote_peers` from the
+  stubs, with a `Spawned` stub whose deadline has passed shown as `PastDeadline`.
+  `send` to a remote child is refused by `refuse_remote_child`.
+- `remote_drain.pass` is the second `peer_outbox_drain` instance's pass, in two
+  steps over one read of the stubs, and the orchestrators the spawn step found
+  silent are skipped by the join step. `spawn_pass` resends each `Requested` stub,
+  skips an orchestrator that did not answer earlier in the same step, keeps a
+  refusal it learns as `Refused`, reports `Owed` after it records a child as
+  `Spawned` (the join step does not see that child until the next pass), and has
+  no time to live. `join_pass` settles children nobody waits on: it groups the
+  `Spawned` stubs whose deadline has not passed by (orchestrator, parent strand),
+  sends one `Join` with a window of 0 for each group, and records every `Ready`
+  with `remote_child.settled`. It stores no report, since a later `agent_wait`
+  reads it again from the box. A pass is `Owed` while any child is running, so the
+  drainer ticks every 5 s, and `Clear` when none is, so it goes idle; a stub past
+  its deadline is not asked about. A refused join is logged and not retried within
+  the pass; its slots are released by the deadline. `peer_outbox_drain.Options` is
+  `{pass, after}`; `options` builds the peer-mail instance and `over` any other;
+  `Backlog` is public. `serve` supervises both beside each other in the
+  restartable service tier, rung by name (`outbox_queued`, `remote_queued`).
+
+Not in S3: the box's deadline tick and retention sweep (S4), the shipped test and
+the P model (S5), remote token metering (a child nobody waits on runs to its
+`within_ms`, bounded by `max_within_s`), the stub's usage counting against a
+goal's token budget or appearing in a status bar, releasing a child early (phase
+2), and refusing `sessions.move` for a parent that holds a live stub.
+
+Tests: `spawners_test` (a valid table, defaults, every refusal, the catalogue
+parser), `orchestrators_test` (the `@` and `#` refusal),
+`remote/orchestrator_port_test` (each message reaches the host with its origin,
+refusals, a slow answer not delaying `Owns`, a crashing host),
+`remote_spawn_test` (the pure half), `daemon_spawn_host_test` (the production
+host's answers and what the Agency is told), `delegate_host_test` (the creation
+for each placement, the cap, an invalid parent, a session that cannot open),
+`daemon_manager_test` (the registry's half and `not_movable`) and `agency_test`
+(a remote parent against a live Agency: adoption, the fence, run end, join with
+usage, the cap on a join's window, the ceiling, the caps, and the whole path
+through a real port). For the laptop's side, `agency_test` runs the parent against
+`support/fake_orchestrators` (a table from call site to child, with `Up`, `Down`,
+`LosesReplies`, `Refuses` and counted modes, and a record of the spawn and join
+windows it was given): the stub written ahead, resends that leave one child, the
+window clip, a refusal that keeps the stub `Refused` and a later answer that moves
+it, the drainer adopting after a restart, a pass asking a silent orchestrator
+once, a run end that sends nothing, an un-waited child settled by a pass, a stub
+past its deadline freeing its slot while the box is down, the caps, mixed waits,
+the roster and the refusals. `remote_child_test` is the codec and `is_live`,
+`remote_reach_test` the empty reach, and `peer_outbox_drain_test` has an instance
+over another pass.
 
 ## Explicit browser result reads
 
@@ -7720,3 +7931,74 @@ VM-wide singleton); the `Recorded` cases of `session_mover_test`,
 `distribution_provision_test`; and the shipped member variants of
 `daemon_shipped_remote_move_test`, `daemon_shipped_directory_test` and
 `daemon_shipped_peer_mail_test`, with `daemon_shipped_directory_quorum_test`.
+
+## Reading the deployment (protocol-change/085)
+
+`deployment.status` is an owner-only control command that says which of the
+nodes the daemon is configured with answer its own connection attempts, before
+any session is placed on one. `docs/architecture/distributed.md` ("Reading the
+deployment") is the account and `docs/client-protocol.md` §3.29 the wire.
+
+- `client/deployment` is the whole read. `targets` lists the daemon's
+  `[orchestrators]` rows and then its `[executors]` rows (a `Target` with its
+  `Kind`), `only` narrows them to a configuration key, and `probe` connects to
+  every target at once in one weft run (`connect_ms` 1000 each, `deadline_ms`
+  3000 in all). `Reach(self, dial)` is how it connects: `over(membership, self)`
+  is `distribution.peer` then `distribution.connect`, and `alone(self)`, for a
+  daemon with no `[distribution]`, connects to nobody. A task that returns
+  `Error(why)` is a `Failed` outcome carrying `why`, a task the deadline cut off
+  is `Down(TimedOut)`, and a crash is `Down(Unavailable)`: a node nothing was
+  heard from is never assumed up.
+- The only names ever dialled are `Target.node` values from the daemon's own
+  tables. The request's `node` is a key: `status` resolves it with `only` before
+  `probe` runs, so a key the configuration lacks returns `Error(Nil)` and nothing
+  was dialled. `protocol.node_field` holds it to the shape of a key first
+  (`bad_request` otherwise). `daemon_deployment_test` and `deployment_test` assert
+  the dial record is empty in both cases.
+- `Health` is `Reachable | Down(Why)` with `Why` = `TimedOut | Unreachable |
+  Unavailable` (wire words `timeout`, `unreachable`, `unavailable`). A node is
+  `ok` or `down`; `degraded` is reserved on the wire and arrives with the node
+  reports, which need a `Report` constructor on the orchestrator port and are not
+  built. Every node member beyond `node`, `name`, `roles`, `state` and `reason`
+  (when `down`) is optional so that report adds members and replaces none. The
+  whole deployment's `state` is `deployment.verdict` (`Whole`, `Degraded`,
+  `Lost`) over the configured nodes, not counting the asking daemon, which is
+  always reachable: `ok` when all answered, `down` only when none did, `degraded`
+  between. One dead executor among several is a degraded deployment.
+- `Snapshot` is `Overview` (the asking daemon as a `Node`, `others`, `edges`,
+  `placements`) or `Selected` (only the named nodes), so a reply with a `node`
+  filter cannot carry edges or placements. Edges are `Serves` (executors) and
+  `Peers` (orchestrators), each with the asking daemon's own `Link`. Placements
+  are `ready | down` for an executor in this slice, and a pool lists
+  `pools.candidates` in its trial order with `eligible` the reachable ones; the
+  pool is never reordered by health.
+- `server.Config.deployment` is the `Reach`; `main.deployment_reach` builds it
+  from `Config.membership` and the node's own name. `server.deployment_status`
+  adds `MemberRole` to the asking daemon when `directory.standing` is `Member`,
+  and the owner check comes before any connection, so a member cannot make the
+  daemon dial. The orchestrators come from `Control.orchestrators` (the movers'
+  list, which is the `[orchestrators]` table on a daemon with distribution).
+
+- The home page's creation panel reads the same placements without the rest of
+  the deployment (protocol-change/085, `docs/architecture/web-view.md`,
+  "Executors and pools"). `deployment.placed` connects to the executors alone,
+  and `deployment.for_page` reduces the result to `web_view/placements` (a state,
+  the operator's declaration, a pool's trial order and its reachable members; no
+  node name or address). `server.HomeAttachment` gains `pools` (the startup
+  capture of the `[pools]` names, like `executors`) and `placements`, the blocking
+  read, which `ui_socket.upgrade_home` hands the page as
+  `read_task(deliver, attachment.placements)` only where the page holds the
+  creation capability. `ui_socket.create_for` accepts `creations.Pooled`: the pool
+  and no executor reach `manager.Creation` (`pool_of`), the scope is session-only,
+  and the daemon's `pool_unknown` is `creations.UnknownPool`.
+
+Tests: `deployment_test` (the pure read and the weft fan-out with a scripted
+`dial`, including a stuck connection cut by the deadline and a crash, and
+`placed` and `for_page`),
+`daemon_deployment_test` (the control socket: the owner's reply, a member's
+`forbidden`, a key narrowing the read, an unconfigured key and a malformed one
+dialling nobody), the `deployment.status` cases of `daemon_protocol_test`, and
+`daemon_shipped_deployment_test` (two real daemons; the executor's process ends
+and the next read says `down`). For the creation panel: `ui_route_test` (a pooled
+creation and `pool_unknown`) and `ui_socket_test` (a card needs no new event
+class).

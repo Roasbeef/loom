@@ -56,6 +56,7 @@
 
 import argv
 import core/accounting
+import core/json
 import etui/app
 import etui/backend
 import etui/backend/default
@@ -115,6 +116,7 @@ import tui/daemon
 import tui/daemon/protocol as control_protocol
 import tui/daemon/selection as daemon_selection
 import tui/demo_image
+import tui/deployment_view
 import tui/effect
 import tui/frame
 import tui/image_plan
@@ -217,6 +219,12 @@ type Launch {
   // status. Listing and deleting are the two things the picker could do that
   // a person with no terminal open still needs.
   Sessions(options: bootstrap.Options, command: SessionsCommand)
+
+  // `loom deployment …` reads the machines the daemon is configured with
+  // (protocol-change/085). It is the same kind of command as `sessions`: no
+  // terminal state, one control connection as the owner, and one printed
+  // answer or one failure with an exit status.
+  Deployment(options: bootstrap.Options, command: DeploymentCommand)
 }
 
 // The two catalogue verbs the launcher owns. `rm` carries its consent so the
@@ -232,6 +240,26 @@ pub type SessionsCommand {
   // Hands a session to the orchestrator the daemon's `[orchestrators.<name>]`
   // table calls `to` (protocol-change/078, phase 5).
   MoveRegistration(session_id: String, to: String)
+}
+
+/// The two views of `deployment.status` the launcher prints.
+@internal
+pub type DeploymentCommand {
+  /// The verdict, the nodes and the links among them.
+  ShowDeployment(output: Output)
+
+  /// The executors and pools a session may be created on, with their states.
+  ShowExecutors(output: Output)
+}
+
+/// How a deployment view is printed.
+@internal
+pub type Output {
+  /// The table, drawn by `tui/deployment_view`.
+  AsText
+
+  /// The daemon's reply body as it sent it, for a script.
+  AsJson
 }
 
 // Whether the person has already agreed to lose a conversation. `--yes` is
@@ -317,6 +345,7 @@ pub fn main() {
         | ["executor", ..]
         | ["replay", ..]
         | ["sessions", ..]
+        | ["deployment", ..]
         | ["claim", ..]
         | ["enroll", ..]
         | ["access", ..]
@@ -337,6 +366,7 @@ pub fn main() {
         Replay(path:, frames:, size:, colour:) ->
           replay(path, frames, size, colour)
         Sessions(options:, command:) -> run_sessions(options, command)
+        Deployment(options:, command:) -> run_deployment(options, command)
         ClaimAccess(arguments:) -> claim.claim_main(arguments)
         Enroll(arguments:) -> claim.enroll_main(arguments)
         Access(arguments:) -> access_command.main(arguments)
@@ -435,6 +465,7 @@ fn help_topic(arguments: List(String)) -> Option(String) {
   case list.find(arguments, is_topic) {
     Ok("replay") -> Some(replay_usage())
     Ok("sessions") -> Some(sessions_usage())
+    Ok("deployment") -> Some(deployment_usage())
     Ok("claim") | Ok("enroll") -> Some(claim.usage)
     Ok("ext") -> Some(extension_usage())
     Ok("distribution") | Ok("dist") -> Some(distribution_usage())
@@ -450,6 +481,7 @@ fn is_topic(word: String) -> Bool {
   case word {
     "replay"
     | "sessions"
+    | "deployment"
     | "ext"
     | "distribution"
     | "dist"
@@ -794,6 +826,7 @@ fn interactive(launch: Launch, record: String) -> Nil {
     | Update(..)
     | Replay(..)
     | Sessions(..)
+    | Deployment(..)
     | ClaimAccess(..)
     | Enroll(..)
     | Access(..)
@@ -883,6 +916,7 @@ fn interactive(launch: Launch, record: String) -> Nil {
     | Update(..)
     | Replay(..)
     | Sessions(..)
+    | Deployment(..)
     | ClaimAccess(..)
     | Enroll(..)
     | Access(..)
@@ -1031,6 +1065,7 @@ fn parse_launch(arguments: List(String)) -> Launch {
     ["replay", ..rest] -> parse_replay(rest)
     ["ui", ..rest] -> view_launch(rest)
     ["sessions", ..rest] -> parse_sessions(rest)
+    ["deployment", ..rest] -> parse_deployment(rest)
     ["claim", ..rest] -> ClaimAccess(arguments: rest)
     ["enroll", ..rest] -> Enroll(arguments: rest)
     ["access", ..rest] -> Access(arguments: rest)
@@ -1293,6 +1328,134 @@ fn sessions_usage() -> String {
   <> "  daemon has accepted the move, which it then carries out; the session\n"
   <> "  cannot be opened here until the move ends, and afterward it is opened on\n"
   <> "  the other orchestrator"
+}
+
+// `loom deployment status|executors [--json]` and the shared local options.
+// `--json` is a switch and may stand anywhere after the verb, like `--yes`
+// for `sessions`, so it is taken before the shared options are parsed.
+fn parse_deployment(arguments: List(String)) -> Launch {
+  let #(as_json, rest) = take_switch(arguments, "--json")
+  let output = case as_json {
+    True -> AsJson
+    False -> AsText
+  }
+  case rest {
+    ["status", ..flags] -> deployment_launch(flags, ShowDeployment(output))
+    ["executors", ..flags] -> deployment_launch(flags, ShowExecutors(output))
+    _unknown -> Invalid(deployment_usage())
+  }
+}
+
+fn deployment_launch(
+  flags: List(String),
+  command: DeploymentCommand,
+) -> Launch {
+  case parse_local_options(flags, default_bootstrap_options()) {
+    Ok(options) -> Deployment(options:, command:)
+    Error(reason) -> Invalid(reason <> "\n" <> deployment_usage())
+  }
+}
+
+fn deployment_usage() -> String {
+  "usage: loom deployment status [--json] [--state-dir <path>] [--server <path>]\n"
+  <> "       loom deployment executors [--json] [--state-dir <path>] [--server <path>]\n"
+  <> "  status shows which of the machines in the daemon's [executors.<name>]\n"
+  <> "  and [orchestrators.<name>] tables it can reach, and the links between\n"
+  <> "  it and each. Every statement is from the daemon you are connected to:\n"
+  <> "  a node is ok when that daemon connected to it just now and down when\n"
+  <> "  it did not, with a one-word reason\n"
+  <> "  executors shows the executors and pools a session may be created on,\n"
+  <> "  with the state of each, so a choice can be made before the session is\n"
+  <> "  created; it does not stop you from choosing one that is down\n"
+  <> "  --json prints the daemon's reply as it was sent"
+}
+
+/// Classifies the words after `loom deployment` the way the launcher does,
+/// answering the parsed command when they name one and the refusal otherwise.
+/// It is the test seam for the verbs and `--json`, which the runner does not
+/// re-parse once this has settled them onto the command.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(tui.ShowDeployment(tui.AsJson)) =
+///   tui.launch_deployment(["status", "--json"])
+/// let assert Ok(tui.ShowExecutors(tui.AsText)) =
+///   tui.launch_deployment(["executors"])
+/// ```
+@internal
+pub fn launch_deployment(
+  arguments: List(String),
+) -> Result(DeploymentCommand, String) {
+  case parse_launch(["deployment", ..arguments]) {
+    Deployment(command:, ..) -> Ok(command)
+    Invalid(reason) -> Error(reason)
+    Version
+    | Demo
+    | Local(..)
+    | View(..)
+    | Remote(..)
+    | Forward(..)
+    | Update(..)
+    | Replay(..)
+    | ClaimAccess(..)
+    | Enroll(..)
+    | Access(..)
+    | Sessions(..) -> Error("not a deployment launch")
+  }
+}
+
+// One deployment read over a control connection this process owns for the
+// length of the command, printed the way a sessions command prints.
+fn run_deployment(
+  options: bootstrap.Options,
+  command: DeploymentCommand,
+) -> Nil {
+  case sessions_host(options) {
+    Error(reason) -> command_failed("deployment", reason)
+    Ok(#(control, host)) -> {
+      let outcome =
+        daemon_selection.deployment(host)
+        |> result.try(format_deployment(_, command))
+      daemon.close(control)
+      print_outcome("deployment", outcome)
+    }
+  }
+}
+
+/// Renders a `deployment.status` reply body for one command: the daemon's own
+/// document for `--json`, and for text the table `tui/deployment_view` draws.
+/// A body that is not shaped as the protocol says is an `Error` naming what was
+/// wrong, and is never drawn partly.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Error(_) =
+///   tui.format_deployment(json.Object([]), tui.ShowDeployment(tui.AsText))
+/// ```
+@internal
+pub fn format_deployment(
+  document: json.JsonValue,
+  command: DeploymentCommand,
+) -> Result(String, String) {
+  case command {
+    ShowDeployment(output: AsJson) | ShowExecutors(output: AsJson) ->
+      Ok(json.to_string(document))
+    ShowDeployment(output: AsText) ->
+      deployment_view.decode(document)
+      |> result.map(deployment_view.status_text)
+      |> result.map_error(unreadable_deployment)
+    ShowExecutors(output: AsText) ->
+      deployment_view.decode(document)
+      |> result.map(deployment_view.executors_text)
+      |> result.map_error(unreadable_deployment)
+  }
+}
+
+fn unreadable_deployment(reason: String) -> String {
+  "the daemon's deployment reply was not understood: "
+  <> text_hygiene.single_line(reason)
 }
 
 /// What `loom ui` was asked for: the daemon options, the session to link
@@ -1558,16 +1721,28 @@ fn run_sessions(options: bootstrap.Options, command: SessionsCommand) -> Nil {
           move_registration(host, session_id, to)
       }
       daemon.close(control)
-      case outcome {
-        Ok(report) -> io.println(report)
-        Error(reason) -> sessions_failed(reason)
-      }
+      print_outcome("sessions", outcome)
     }
   }
 }
 
 fn sessions_failed(reason: String) -> Nil {
-  io.println_error("loom sessions: " <> reason)
+  command_failed("sessions", reason)
+}
+
+// The one place a launcher subcommand's answer leaves the process: a report is
+// one printed answer, and a failure is one line on standard error naming the
+// subcommand and a nonzero exit status. `sessions` and `deployment` share it so
+// that a script sees the same contract from both.
+fn print_outcome(verb: String, outcome: Result(String, String)) -> Nil {
+  case outcome {
+    Ok(report) -> io.println(report)
+    Error(reason) -> command_failed(verb, reason)
+  }
+}
+
+fn command_failed(verb: String, reason: String) -> Nil {
+  io.println_error("loom " <> verb <> ": " <> reason)
   ffi_terminal.halt(1)
   Nil
 }
@@ -1744,7 +1919,7 @@ fn registration_rows(
 fn registration_line(row: control_protocol.Session) -> String {
   row.session_id
   <> "  "
-  <> session_table.state(row.status).0
+  <> session_table.state_token(row.status)
   <> "  "
   <> placement.label(row.executor, row.workspace)
   <> "  "
@@ -1904,6 +2079,8 @@ fn launch_usage() -> String {
   <> "  update [TAG|COMMIT]  Install a release and restart the daemon.\n"
   <> "  replay <path>       Render a recorded terminal session.\n"
   <> "  sessions list|rm    List or remove saved sessions.\n"
+  <> "  deployment status|executors\n"
+  <> "                      Show which configured machines the daemon reaches.\n"
   <> "  ui [--session <id>] [--operate | --observe] [--open]\n"
   <> "                      Print a link to your home page (sessions by\n"
   <> "                      workspace), or with --session to one session,\n"

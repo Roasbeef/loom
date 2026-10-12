@@ -206,6 +206,12 @@ fn distinct_nodes(configured: List(Orchestrator)) -> Result(Nil, String) {
   }
 }
 
+// The name grammar is the profile grammar, which has no `@` and no `#`. That is
+// load-bearing: a remote subagent's handle is `{strand}#{operation}@{name}` and
+// is parsed by splitting on the last `#` and then the last `@`
+// (protocol-change/084), so a name containing either would make a handle
+// ambiguous. `orchestrators_test` pins the refusal, so loosening the grammar
+// fails there before it can reach a handle.
 fn row(name: String, value: tom.Toml) -> Result(Orchestrator, String) {
   use Nil <- result.try(case catalogue.is_profile_name(name) {
     True -> Ok(Nil)

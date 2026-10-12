@@ -98,7 +98,7 @@ two-line preview of the highlighted row sits above the help line. An empty
 filter says what to press next and keeps the counts.
 
 **Data.** Everything drawn exists today except one figure. Rows come from
-`Session` (`tui/daemon/protocol.gleam:452`) and the page from `Page`
+`Session` (`tui/daemon/protocol.gleam:473`) and the page from `Page`
 (`tui/daemon/protocol.gleam:412`). The state phrase, counts, last message,
 model and the strand rows come from `Activity`
 (`tui/daemon/protocol.gleam:300`) with its `ActivityState`
@@ -545,8 +545,8 @@ arrow first so a reader scanning the gutter sees traffic, and the detail's
 carries the source, target, body and `State`
 (`session_view/agent_messages.gleam:29`: pending, failed, accepted, started),
 projected from the sender's `agent_send` invocation and its result
-(`agent_send`, `tools/agent.gleam:1904`; the steered delivery at
-`steered_outcome`, `tools/agent.gleam:1977`). That state is receipt on the
+(`agent_send`, `tools/agent.gleam:1841`; the steered delivery at
+`steered_outcome`, `tools/agent.gleam:2184`). That state is receipt on the
 sender's side and never proof that the recipient read the message, and the
 row says `accepted`, not `read`.
 

@@ -665,9 +665,21 @@ fn drive(ready: Ready) -> Nil {
 
 // --- the terminal ----------------------------------------------------------
 
-const socket = "loom-e2e"
-
 const tmux_session = "loom"
+
+// A tmux socket name no other run on this host can hold. `tmux -L` puts the
+// socket in one per-user directory, shared by every checkout and every
+// concurrent `make` on the machine, so a fixed name makes unrelated runs one
+// server: a run's `kill-server` ends its neighbour's pane and the neighbour's
+// next `send-keys -t loom` types into whichever session answers to `loom`
+// afterwards. The VM's operating-system pid is unique among live processes,
+// and the serial separates two launches inside one VM.
+fn private_socket() -> String {
+  "loom-e2e-"
+  <> int.to_string(bootstrap.current_process_id())
+  <> "-"
+  <> int.to_string(ffi_os.unique_positive_integer())
+}
 
 // The pane runs a generated launcher rather than the binary directly, so
 // the TUI's stderr lands in a file worth reading and its exit status
@@ -711,15 +723,13 @@ fn launch(
   let assert Ok(Nil) = simplifile.set_permissions_octal(script, 0o700)
     as "the launcher script must be executable"
 
-  // A server left over from an interrupted run would refuse the session
-  // name; killing first makes a re-run deterministic.
-  let stale =
-    terminal.Terminal(tmux: ready.tmux, socket:, session: tmux_session)
-  terminal.stop(stale)
+  // The socket is minted here, so no server can exist on it yet and there is
+  // no stale session to kill. Killing a shared name first, as this once did,
+  // is what let one run end another's terminal.
   let assert Ok(term) =
     terminal.start(
       tmux: ready.tmux,
-      socket:,
+      socket: private_socket(),
       session: tmux_session,
       command: script,
       cols:,
@@ -1048,6 +1058,7 @@ fn settings_at(test_root: String) -> serve.Settings {
   serve.Settings(
     peer_directory: None,
     peer_defaults: None,
+    remote_reach: None,
     first_prompt: None,
     profile_desk: None,
     codemode_sockets: None,

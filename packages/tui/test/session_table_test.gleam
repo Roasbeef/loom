@@ -69,5 +69,34 @@ pub fn resident_track_hides_only_saved_and_reserved_test() {
   assert session_table.resident_track(control_protocol.Resident("i"))
   assert session_table.resident_track(control_protocol.Opening("op"))
   assert session_table.resident_track(control_protocol.Stopping("op"))
+  assert session_table.resident_track(control_protocol.Moving("laptop"))
   assert session_table.resident_track(control_protocol.RecoveryBlocked)
+}
+
+// The plain listing splits on whitespace, so every state is one token. A session
+// being moved carries its destination in that token, as a remote workspace
+// carries its executor.
+pub fn the_state_token_has_no_whitespace_test() {
+  assert session_table.state_token(control_protocol.Moving("laptop"))
+    == "moving:laptop"
+  assert session_table.state_token(control_protocol.Saved) == "saved"
+  assert session_table.state_token(control_protocol.RecoveryBlocked)
+    == "blocked"
+}
+
+// A session being moved names where it is going in the state column, in the
+// amber of a transition, so the operator sees it without asking.
+pub fn a_moving_session_names_its_destination_test() {
+  let drawn =
+    session_table.render([
+      session("s-1", control_protocol.Moving("laptop"), "n"),
+    ])
+
+  assert frame.buffer_to_lines(drawn)
+    == [
+      "SESSION  STATE             WORKSPACE  NAME",
+      "s-1      moving to laptop  /w         n",
+    ]
+  let cell = buffer.get_cell(drawn, Position(x: 9, y: 1))
+  assert buffer.cell_fg(cell) == theme.signal
 }

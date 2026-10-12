@@ -152,6 +152,7 @@ fn reconnect_probe(paths, record, owner, deadline) {
         | Ok(protocol.AccessListingReply(_))
         | Ok(protocol.AccessChangeReply(_))
         | Ok(protocol.ActivityReply(_))
+        | Ok(protocol.DeploymentReply(_))
         | Ok(protocol.UiLinkReply(..))
         | Error(_) -> {
           daemon.close(connected.control)

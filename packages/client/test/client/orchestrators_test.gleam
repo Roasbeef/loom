@@ -167,6 +167,24 @@ pub fn an_address_a_bearer_could_leak_through_is_refused_test() {
   refused(row("\"wss://beta.example.com/other\""), words)
 }
 
+pub fn a_name_a_remote_handle_could_not_carry_is_refused_test() {
+  // A handle is `{strand}#{operation}@{name}`, parsed from the right by
+  // splitting on the last `#` and then the last `@`, so a name containing
+  // either character is refused (protocol-change/084).
+  refused(
+    with("[orchestrators.\"box@lab\"]\nnode = \"beta@10.0.0.2\"\n"),
+    "orchestrators.box@lab is not an orchestrator name",
+  )
+  refused(
+    with("[orchestrators.\"box#1\"]\nnode = \"beta@10.0.0.2\"\n"),
+    "orchestrators.box#1 is not an orchestrator name",
+  )
+  refused(
+    with("[orchestrators.\"#\"]\nnode = \"beta@10.0.0.2\"\n"),
+    "orchestrators.# is not an orchestrator name",
+  )
+}
+
 pub fn the_catalogue_parser_refuses_what_the_orchestrator_parser_refuses_test() {
   // The catalogue validates the table before it looks for any model, so a typo
   // is refused by every reader of the file and not only at startup.

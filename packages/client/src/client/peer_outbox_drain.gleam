@@ -1,5 +1,5 @@
 //// The outbox drainer: one machine per resident session that keeps
-//// attempting the peer messages the session owes (`client/peer_outbox`).
+//// attempting what the session owes another party.
 ////
 //// `peers.send` writes an outbox row before it asks the recipient. When the
 //// recipient's owner is unreachable, or answers that the recipient is saved
@@ -9,24 +9,36 @@
 //// and nothing else: every pass recomputes what is owed from the session's
 //// own store, and a session that is opened again starts with a pass.
 ////
+//// ## What a machine drains
+////
+//// The machine owns the timing and nothing else. What is owed, and how to
+//// attempt it, is one function, the `pass` in its `Options`, which answers
+//// whether anything is still owed. `options` makes the instance that drains peer
+//// mail (`client/peer_outbox`), and `over` makes one over any other pass. The
+//// session runs a second instance over the records of its subagents on other
+//// orchestrators (`client/remote_drain`), which are not peer-mail rows and so
+//// cannot go through `peers.resend` or be refused after an hour, but which owe
+//// the same thing: a durable record written before the first attempt, retried
+//// at a fixed interval until the other side answers.
+////
 //// ## Flow
 ////
-//// `start` → `builder` → `entered` → `handle` → `pass` → `drain_rows` → `after_pass`
+//// `start` → `builder` → `entered` → `handle` → `after_pass` → `peer_pass` → `drain_rows`
 ////
 //// 1. `start` (or `supervised`) builds the machine with `builder`, wired to
 ////    the session's own timer source, and `entered` arms the pass that runs
 ////    at session open.
-//// 2. `handle` runs a pass on each `Tick`, and wakes an idle machine on
-////    `Queued`, which `poke` sends after `peers.send` leaves a row pending.
-//// 3. `pass` asks the sender's Agency for the rows that are due, which also
-////    refuses the rows that have waited an hour, and hands each to
-////    `drain_rows`.
-//// 4. `drain_rows` attempts each row through `peers.resend`, which resolves
+//// 2. `handle` runs the instance's pass on each `Tick`, and wakes an idle
+////    machine on `Queued`, which `poke` sends after a row is left pending.
+//// 3. `after_pass` leaves the machine armed for another pass while anything is
+////    still owed, and idle with no timer when nothing is.
+//// 4. `peer_pass` is the peer-mail instance's pass. It asks the sender's Agency
+////    for the rows that are due, which also refuses the rows that have waited
+////    an hour, and hands each to `drain_rows`.
+//// 5. `drain_rows` attempts each row through `peers.resend`, which resolves
 ////    the recipient through the same `Directory.resolve` seam `peers.send`
 ////    uses and records the outcome. A session that did not answer is not asked
 ////    again in the same pass.
-//// 5. `after_pass` leaves the machine armed for another pass while any row is
-////    still owed, and idle with no timer when none is.
 ////
 //// ## One named timeout, and no timer when there is nothing owed
 ////
@@ -111,14 +123,14 @@ const first_pass_delay_ms = 0
 /// What the drainer works with.
 pub type Options {
   Options(
-    /// The sender's endpoint and peer directory. The drainer reads the due
-    /// rows through `own` and resolves each recipient through `directory`,
-    /// exactly as `peers.send` does.
-    wiring: peers.Wiring,
+    /// Finds what is owed and attempts it, once, and says whether anything is
+    /// still owed afterwards. It runs in the machine's own process on each
+    /// tick, so it may block for as long as its attempts take, and it must not
+    /// crash on a store that cannot be read: such a pass answers `Owed(Quick)`.
+    pass: fn() -> Backlog,
     /// The session's timer source (`runtime/effects.Timers.after`), or a
     /// test's fake wheel.
     after: fn(Int, fn() -> Nil) -> Nil,
-    logger: Logger,
   )
 }
 
@@ -141,7 +153,7 @@ type Phase {
   Waiting
 }
 
-// What the machine carries between events. The wiring is fixed for the life of
+// What the machine carries between events. The pass is fixed for the life of
 // the process; what is owed is read from the store at each pass. The interval
 // is the delay of the arming in force, which the next arming doubles while the
 // owed rows wait for an open.
@@ -149,26 +161,27 @@ type State {
   State(options: Options, interval_ms: Int)
 }
 
-// What a pass found.
-type Backlog {
-  // At least one row is still pending, or the rows could not be read.
+/// What a pass found.
+pub type Backlog {
+  /// At least one record is still pending, or the records could not be read.
   Owed(Pace)
 
-  // Nothing is pending.
+  /// Nothing is pending.
   Clear
 }
 
-// How soon the next pass should be.
-type Pace {
-  // An owner did not answer, or the rows could not be read, and either may be
-  // over by the next pass.
+/// How soon the next pass should be.
+pub type Pace {
+  /// An owner did not answer, or the records could not be read, and either may
+  /// be over by the next pass.
   Quick
 
-  // Every owed row waits for its recipient to be opened.
+  /// Every owed record waits for its recipient to be opened.
   Slow
 }
 
-/// Options over a sender's wiring and a timer source, with a silent logger.
+/// Options for the instance that drains peer mail, over a sender's wiring and a
+/// timer source, with a silent logger.
 ///
 /// ## Examples
 ///
@@ -179,18 +192,34 @@ pub fn options(
   wiring: peers.Wiring,
   after: fn(Int, fn() -> Nil) -> Nil,
 ) -> Options {
-  Options(wiring:, after:, logger: log.discard())
+  Options(pass: peer_pass(wiring, log.discard()), after:)
 }
 
-/// Sets the logger the drainer reports deliveries and failed reads on.
+/// Options for an instance that drains something other than peer mail, over the
+/// pass that finds and attempts it.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // peer_outbox_drain.options(wiring, after) |> peer_outbox_drain.with_logger(logger)
+/// // peer_outbox_drain.over(remote_drain.pass(runtime_supplier, reach, clock, logger), after)
 /// ```
-pub fn with_logger(options: Options, logger: Logger) -> Options {
-  Options(..options, logger:)
+pub fn over(
+  pass: fn() -> Backlog,
+  after: fn(Int, fn() -> Nil) -> Nil,
+) -> Options {
+  Options(pass:, after:)
+}
+
+/// The peer-mail pass: attempts each row that is due and reports deliveries and
+/// failed reads on `logger`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // peer_outbox_drain.Options(pass: peer_outbox_drain.peer_pass(wiring, logger), after:)
+/// ```
+pub fn peer_pass(wiring: peers.Wiring, logger: Logger) -> fn() -> Backlog {
+  fn() { due_pass(wiring, logger) }
 }
 
 /// Starts the drainer under `name`. Its first pass is armed at once.
@@ -300,7 +329,7 @@ fn handle(
   case phase, message {
     Idle, Queued -> sm.transition(to: Waiting, data:)
     Waiting, Queued -> sm.keep(data)
-    Idle, Tick | Waiting, Tick -> after_pass(phase, data, pass(data))
+    Idle, Tick | Waiting, Tick -> after_pass(phase, data, data.options.pass())
   }
 }
 
@@ -344,20 +373,25 @@ fn rearmed(data: State) -> sm.Next(Phase, State, Message) {
 // refuses any that have waited past the hour before it does, so expiry needs
 // no timer of its own. A read that fails is `Owed(Quick)`: the rows may exist,
 // and the next pass reads again.
-fn pass(data: State) -> Backlog {
-  let options = data.options
-  case options.wiring.own.call(peer_mail.OutboxDue) {
+fn due_pass(wiring: peers.Wiring, logger: Logger) -> Backlog {
+  case wiring.own.call(peer_mail.OutboxDue) {
     Ok(json.Array(items)) ->
-      drain_rows(options, list.filter_map(items, peer_outbox.decode), [], [])
+      drain_rows(
+        wiring,
+        logger,
+        list.filter_map(items, peer_outbox.decode),
+        [],
+        [],
+      )
       |> backlog_of
     Ok(_) -> {
-      log.warn(options.logger, "peer_outbox.unreadable", [
+      log.warn(logger, "peer_outbox.unreadable", [
         field.text("reason", "the due rows were not a list"),
       ])
       Owed(Quick)
     }
     Error(failure) -> {
-      log.warn(options.logger, "peer_outbox.unreadable", [
+      log.warn(logger, "peer_outbox.unreadable", [
         field.text("reason", peer_mail.reason(failure)),
       ])
       Owed(Quick)
@@ -377,7 +411,8 @@ fn pass(data: State) -> Backlog {
 // wait for the next pass. The row that was asked has said what the pass found,
 // so a skipped row adds nothing to it.
 fn drain_rows(
-  options: Options,
+  wiring: peers.Wiring,
+  logger: Logger,
   rows: List(peer_outbox.Row),
   waiting: List(String),
   found: List(peer_outbox.Outcome),
@@ -387,10 +422,10 @@ fn drain_rows(
 
     [row, ..rest] ->
       case list.contains(waiting, row.session) {
-        True -> drain_rows(options, rest, waiting, found)
+        True -> drain_rows(wiring, logger, rest, waiting, found)
         False -> {
-          let outcome = peers.resend(options.wiring, row)
-          report(options, row, outcome)
+          let outcome = peers.resend(wiring, row)
+          report(logger, row, outcome)
           let waiting = case outcome {
             peer_outbox.Unanswered | peer_outbox.NotOpen -> [
               row.session,
@@ -398,7 +433,7 @@ fn drain_rows(
             ]
             peer_outbox.Receipt(..) | peer_outbox.Rejected(..) -> waiting
           }
-          drain_rows(options, rest, waiting, [outcome, ..found])
+          drain_rows(wiring, logger, rest, waiting, [outcome, ..found])
         }
       }
   }
@@ -423,15 +458,15 @@ fn backlog_of(found: List(peer_outbox.Outcome)) -> Backlog {
 // The log line for an attempt that ended a row. A row that stays pending says
 // nothing: it is attempted again.
 fn report(
-  options: Options,
+  logger: Logger,
   row: peer_outbox.Row,
   outcome: peer_outbox.Outcome,
 ) -> Nil {
   case outcome {
     peer_outbox.Receipt(..) ->
-      log.info(options.logger, "peer_outbox.admitted", where(row))
+      log.info(logger, "peer_outbox.admitted", where(row))
     peer_outbox.Rejected(reason:) ->
-      log.info(options.logger, "peer_outbox.refused", [
+      log.info(logger, "peer_outbox.refused", [
         field.text("reason", reason),
         ..where(row)
       ])

@@ -9,6 +9,7 @@
 import client/daemon/limits
 import client/daemon/manager
 import client/daemon/root
+import client/daemon/ui_socket
 import client/daemon_server_test as wire
 import client/orchestrators
 import client/remote/orchestrator_port
@@ -23,11 +24,13 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import host/bootstrap
+import host/claim
 import simplifile
 import storage/access
 import storage/catalogue
 import storage/domain
 import support/internal/ffi_ws
+import web_view/sessions
 import weft/actor
 
 fn field(value, key) {
@@ -247,6 +250,27 @@ fn get(socket, id, session) {
   )
 }
 
+// The record `sessions.list` gives for one session, which is in the first page.
+fn listed(socket, id, session) {
+  let reply =
+    wire.send(
+      socket,
+      id,
+      "sessions.list",
+      json.Object([#("after", json.String(""))]),
+      within_ms: 1000,
+    )
+  assert field(reply, "event") == json.String("sessions.list")
+  let assert json.Array(records) = field(field(reply, "body"), "sessions")
+    as "the page lists its sessions"
+  let assert [record] =
+    list.filter(records, fn(record) {
+      field(record, "session_id") == json.String(session)
+    })
+    as "the session is listed once"
+  record
+}
+
 fn command(socket, id, name, session, epoch) {
   wire.send(
     socket,
@@ -389,6 +413,107 @@ pub fn the_session_get_shows_a_move_in_flight_and_one_that_finished_test() {
     assert field(moved, "moved")
       == json.Object([#("to", json.String("laptop"))])
     assert !has(moved, "moving")
+    let _ = ffi_ws.tcp_close(socket)
+    Nil
+  })
+}
+
+pub fn the_session_list_marks_a_move_in_flight_and_one_that_finished_test() {
+  moving(fn(ready, port, credential, _recorder) {
+    let going = remote(ready, "going")
+    let #(socket, _) = wire.connect(port, credential, "/v2/control")
+    let _hello = wire.frame(socket, within_ms: 1000)
+
+    // Before any move, no record carries either member, so a listing is what it
+    // was before moves existed.
+    let plain = listed(socket, 1, going)
+    assert !has(plain, "moving")
+    assert !has(plain, "moved")
+
+    // The daemon holds two sessions open at most, so each move is made before
+    // the next session is created: it stops the session it hands away.
+    let started = move(socket, 2, going, "laptop", ready.epoch)
+    let assert json.String(going_op) = field(field(started, "body"), "op")
+    let gone = remote(ready, "gone-away-list")
+    let finishing = move(socket, 3, gone, "laptop", ready.epoch)
+    let assert json.String(gone_op) = field(field(finishing, "body"), "op")
+    let assert Ok(_) = manager.finish_move(ready.registry, gone, op: gone_op)
+    let resident = local(ready, "stays-put")
+
+    // The move in flight names the operation and the destination, and the one
+    // that finished names only where the session went. The session is still
+    // `saved` underneath, as it is for `sessions.get`.
+    let moving = listed(socket, 4, going)
+    assert field(moving, "moving")
+      == json.Object([
+        #("op", json.String(going_op)),
+        #("to", json.String("laptop")),
+      ])
+    assert !has(moving, "moved")
+    assert field(field(moving, "status"), "state") == json.String("saved")
+    let moved = listed(socket, 5, gone)
+    assert field(moved, "moved")
+      == json.Object([#("to", json.String("laptop"))])
+    assert !has(moved, "moving")
+
+    // A session that has not moved is untouched by the rows beside it.
+    let stays = listed(socket, 6, resident)
+    assert !has(stays, "moving")
+    assert !has(stays, "moved")
+
+    // Each record is the one `sessions.get` gives, so the two cannot word a
+    // move differently.
+    assert has(field(get(socket, 7, going), "body"), "moving")
+    assert has(field(get(socket, 8, gone), "body"), "moved")
+
+    // A move abandoned before it finished drops the member from the listing.
+    let assert Ok(_) = manager.abort_move(ready.registry, going, op: going_op)
+    let again = listed(socket, 9, going)
+    assert !has(again, "moving")
+    let _ = ffi_ws.tcp_close(socket)
+    Nil
+  })
+}
+
+pub fn the_web_listing_and_the_admin_drawer_mark_a_move_and_leave_out_a_tombstone_test() {
+  moving(fn(ready, port, credential, _recorder) {
+    let going = remote(ready, "going")
+    let #(socket, _) = wire.connect(port, credential, "/v2/control")
+    let _hello = wire.frame(socket, within_ms: 1000)
+    let _ = move(socket, 1, going, "laptop", ready.epoch)
+    let gone = remote(ready, "gone-away-list")
+    let finishing = move(socket, 2, gone, "laptop", ready.epoch)
+    let assert json.String(op) = field(field(finishing, "body"), "op")
+    let assert Ok(_) = manager.finish_move(ready.registry, gone, op:)
+    let stays = local(ready, "stays-put")
+
+    // The home and the sidebar read the same page the terminal does and apply
+    // the page's custody to it: the session on its way is a moving row, the
+    // tombstone is not listed, and the session that never moved is untouched.
+    let assert Ok(digest) = access.credential_digest(claim.digest(credential))
+      as "the owner's digest is valid"
+    let assert Ok(#(_, views)) =
+      manager.authorized_page(ready.registry, digest, after: "")
+    let rows =
+      list.map(ui_socket.held_entries(ready.registry, views), fn(entry) {
+        #(entry.id, entry.residency)
+      })
+    assert list.sort(rows, fn(left, right) { string.compare(left.0, right.0) })
+      == list.sort(
+        [#(going, sessions.Moving("laptop")), #(stays, sessions.Live)],
+        fn(left, right) { string.compare(left.0, right.0) },
+      )
+
+    // The admin drawer lists the same rows, and reads a summary for no session
+    // it leaves out.
+    let #(drawn, shown) = ui_socket.admin_rows(ready.registry, views)
+    assert list.map(drawn, fn(entry) { #(entry.id, entry.residency) })
+      == list.map(ui_socket.held_entries(ready.registry, views), fn(entry) {
+        #(entry.id, entry.residency)
+      })
+    assert list.map(shown, fn(view) { view.registration.id })
+      == list.map(drawn, fn(entry) { entry.id })
+    assert !list.any(drawn, fn(entry) { entry.id == gone })
     let _ = ffi_ws.tcp_close(socket)
     Nil
   })

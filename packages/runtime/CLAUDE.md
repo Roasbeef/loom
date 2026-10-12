@@ -113,6 +113,14 @@ extended by the M3 runtime wave.
   `validate` + `seed_strand` + `adopt_strand`; `adopt_strand` is exposed
   on its own because a crash between the seed commit and the brief commit
   leaves a strand nothing else can finish.
+  `seed_strand` refuses a name that begins with `parent_reference_prefix` (`^`)
+  as `InvalidStrandName`, because a delegate session's children name a parent on
+  another orchestrator as `^main` in their lineage and the reference must never
+  be a strand (protocol-change/084). The `delegate/` fact prefix is the fifteenth
+  reserved corner: the Agency keeps `delegate/ended/{operation}` there. The
+  sixteenth is `remote-child/`, the stub a parent session writes before it asks
+  another orchestrator for a child, and `runtime/lineage.Lineage` gains an
+  optional `orchestrator`, absent for a local cell and not written for one.
 - `runtime/api.ApiError` — why an operation failed. `RuntimeUnavailable`
   means the writer address had no live binding before a request was sent;
   a caller can retry later. This differs from `CommitFailed(error:)` and

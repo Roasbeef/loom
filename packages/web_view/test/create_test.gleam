@@ -6,6 +6,7 @@ import gleam/option.{None, Some}
 import gleam/string
 import lustre/element
 import web_view/creations
+import web_view/placements
 import web_view/view/create
 
 fn drawn() -> String {
@@ -23,8 +24,9 @@ fn drawn_with(profiles: List(String), models: List(String)) -> String {
     profiles:,
     models:,
     remote: Nil,
-    submit_remote: fn(_, _, _) { Nil },
-    executors: [],
+    choose_place: fn(_) { Nil },
+    submit_remote: fn(_, _) { Nil },
+    cards: placements.listed([], []),
   )
   |> create.form("/src/loom")
   |> element.to_string
@@ -41,8 +43,9 @@ fn drawn_elsewhere(profiles: List(String), models: List(String)) -> String {
     profiles:,
     models:,
     remote: Nil,
-    submit_remote: fn(_, _, _) { Nil },
-    executors: [],
+    choose_place: fn(_) { Nil },
+    submit_remote: fn(_, _) { Nil },
+    cards: placements.listed([], []),
   )
   |> create.elsewhere_form
   |> element.to_string

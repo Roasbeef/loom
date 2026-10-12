@@ -63,18 +63,22 @@ pub fn render(sessions: List(control_protocol.Session)) -> Buffer {
 /// The word and colour that name a lifecycle state.
 ///
 /// Resident is the only state with a live runtime, so it alone is green; a
-/// transition is amber because it will resolve on its own; a blocked
-/// recovery is red because it will not.
+/// transition, a move included, is amber because it will resolve on its own; a
+/// blocked recovery is red because it will not. A session being moved names its
+/// destination, since that is what the operator would ask next.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// let #(word, _style) = session_table.state(control_protocol.Saved)
 /// assert word == "saved"
+/// let #(word, _style) = session_table.state(control_protocol.Moving("laptop"))
+/// assert word == "moving to laptop"
 /// ```
 pub fn state(status: control_protocol.Lifecycle) -> #(String, style.Style) {
   case status {
     control_protocol.Saved -> #("saved", theme.quiet_text())
+    control_protocol.Moving(to) -> #("moving to " <> to, signal())
     control_protocol.Reserved -> #("reserved", theme.quiet_text())
     control_protocol.Opening(_) -> #("opening", signal())
     control_protocol.Resident(_) -> #("resident", theme.success_text())
@@ -83,13 +87,42 @@ pub fn state(status: control_protocol.Lifecycle) -> #(String, style.Style) {
   }
 }
 
+/// The state as one token with no whitespace, for the plain listing that scripts
+/// split on whitespace.
+///
+/// Every lifecycle is its table word except a session being moved, whose
+/// destination rides in the same token as `moving:<orchestrator>`. That is the
+/// shape `placement.label` gives a remote workspace, `executor:name`: a key, a
+/// colon and a value in one token, so a parser that splits on whitespace still
+/// gets the state and its value together. An orchestrator name has no whitespace
+/// or colon.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert session_table.state_token(control_protocol.Saved) == "saved"
+/// assert session_table.state_token(control_protocol.Moving("laptop"))
+///   == "moving:laptop"
+/// ```
+pub fn state_token(status: control_protocol.Lifecycle) -> String {
+  case status {
+    control_protocol.Moving(to) -> "moving:" <> to
+    control_protocol.Saved
+    | control_protocol.Reserved
+    | control_protocol.Opening(_)
+    | control_protocol.Resident(_)
+    | control_protocol.Stopping(_)
+    | control_protocol.RecoveryBlocked -> state(status).0
+  }
+}
+
 /// Whether a lifecycle belongs to the resident track `loom sessions list`
 /// shows by default.
 ///
 /// A saved registration and a bare reservation are the idle remainder —
 /// neither holds a runtime or a cleanup in progress — so both answer
-/// `False` here; every other lifecycle, including a transition or a
-/// blocked recovery, still occupies the daemon and answers `True`.
+/// `False` here; every other lifecycle, including a transition, a move in
+/// flight or a blocked recovery, still occupies the daemon and answers `True`.
 ///
 /// ## Examples
 ///
@@ -101,6 +134,7 @@ pub fn resident_track(status: control_protocol.Lifecycle) -> Bool {
   case status {
     control_protocol.Saved -> False
     control_protocol.Reserved -> False
+    control_protocol.Moving(_) -> True
     control_protocol.Opening(_) -> True
     control_protocol.Resident(_) -> True
     control_protocol.Stopping(_) -> True

@@ -187,14 +187,21 @@
 //// | `Elsewhere` | `Composing` that workspace | stays `Elsewhere` | asks the daemon for the typed path, then `Sending` | nothing to answer | `Idle` |
 //// | `Sending` | asks nothing | asks nothing | asks nothing | departs and `Idle`, or says why and `Elsewhere`, or `Idle` for a session made and not opened | stays `Sending` |
 ////
-//// The form for a workspace registered on an executor (protocol-change/078) is
-//// a fourth pair of states, `Remote` and `Dispatching`, drawn only when
-//// `Start.executors` is not empty. `Remote` behaves as `Elsewhere` does:
-//// another form's button moves to that form, "New session on an executor" is
-//// the only way in, a submit asks the daemon and moves to `Dispatching`, and
-//// Cancel returns to `Idle`. `Dispatching` behaves as `Sending` does: it asks
-//// nothing, and the answer departs and returns to `Idle`, says why and returns
-//// to `Remote`, or returns to `Idle` for a session made and not opened.
+//// The panel for a workspace registered on an executor or in a pool
+//// (protocol-change/078, 085) is a fourth set of states, `Remote`, `Chosen` and
+//// `Dispatching`, drawn only when `Start.executors` or `Start.pools` is not
+//// empty. "New session on an executor" is the only way in: it opens `Remote`,
+//// which draws a card for each executor and pool with the state the daemon found
+//// a moment before (the read starts when the panel opens, and the cards carry
+//// names alone until it answers), and another form's button moves to that form.
+//// A card's button moves to `Chosen` with the placement it was drawn for, which
+//// adds the form for the workspace registered there. A card the page did not
+//// draw, and a state the daemon gave it, never refuse a choice: the state is
+//// advice, and the daemon decides again when the session opens. A submit asks
+//// the daemon for the chosen placement and moves to `Dispatching`, which behaves
+//// as `Sending` does: it asks nothing, and the answer departs and returns to
+//// `Idle`, says why and returns to `Chosen`, or returns to `Idle` for a session
+//// made and not opened. Cancel returns to `Idle` from `Remote` and `Chosen`.
 
 import gleam/bool
 import gleam/dict.{type Dict}
@@ -213,6 +220,7 @@ import web_view/actions
 import web_view/creations.{type Sharing}
 import web_view/ending.{type Ending}
 import web_view/names
+import web_view/placements
 import web_view/renames
 import web_view/sessions.{
   type Activity, type Entry, type Group, Live, NeedsYou, Working,
@@ -381,12 +389,26 @@ pub type Start {
     models: List(String),
     /// The executor names the daemon's configuration defines, as the daemon
     /// knew them when the page opened (protocol-change/078). The section for
-    /// folders offers a form for a workspace registered on one of them, and a
-    /// creation carries an executor only if it is in this list. It is `[]`
-    /// unless `create` is `Some`, and then the page draws no such form. The
-    /// daemon checks the executor against its configuration again when the
-    /// creation runs, whatever this page said.
+    /// folders offers a panel for a workspace registered on one of them or in
+    /// one of `pools`, and a creation carries an executor only if it is in this
+    /// list. It is `[]` unless `create` is `Some`. The daemon checks the
+    /// executor against its configuration again when the creation runs,
+    /// whatever this page said.
     executors: List(String),
+    /// The pool names the daemon's configuration defines, as it knew them when
+    /// the page opened (protocol-change/085), told and checked as `executors`
+    /// are. It is `[]` unless `create` is `Some`. With `executors` it decides
+    /// whether the panel is offered at all.
+    pools: List(String),
+    /// Starts the read of the placements: the daemon connects to its executors,
+    /// which takes up to a few seconds, and hands the function it is given what
+    /// it found, once. It must return at once, as `resume` must, and run the
+    /// read in the daemon's own task, never in this component's runtime; the
+    /// answer is dispatched as `PlacementsRead`. The page asks when the panel
+    /// opens and draws the cards from names alone until the answer arrives, so a
+    /// slow or failed read costs the person nothing but the states. A page with
+    /// no `create` is never asked.
+    placements: fn(fn(placements.Read) -> Nil) -> Nil,
     /// Reads and edits the owner's recent folders (protocol-change/074). It is
     /// `Some` exactly where `create` is, and a page with `None` lists no folder
     /// and ignores the messages. The daemon checks the page, its ceiling and the
@@ -569,6 +591,13 @@ pub opaque type Model {
     /// workspace, or that workspace's creation out. Only a page with
     /// `Start.create` leaves `Idle`.
     creating: create.State,
+    /// The cards the panel for a registered workspace draws: the names the page
+    /// was given, and what the daemon reported about each once a read answered.
+    cards: placements.Cards,
+    /// How many placement reads have been started, which numbers the next, as
+    /// `reads` does for the list: an answer that a newer read overtook is
+    /// dropped, so a slow read cannot put an older state on a card.
+    place_reads: Int,
     /// The owner's remembered folders as the last read gave them, newest first.
     /// The view draws those that no group already shows.
     recent: List(creations.Recent),
@@ -675,17 +704,30 @@ pub type Msg {
     roles: creations.Roles,
   )
 
-  /// The "New session on an executor" button was pressed: open its form. A page
-  /// with no `Start.create`, or no `Start.executors`, ignores it.
+  /// The "New session on an executor" button was pressed: open its panel and
+  /// start the read of the placements. A page with no `Start.create`, or with
+  /// neither `Start.executors` nor `Start.pools`, ignores it.
   OpeningRemote
 
+  /// A card's Choose button was pressed. The placement is the one the card was
+  /// drawn for, built by the server from the names it was given, so the browser
+  /// names no text. The page honours it only for a card it drew and while a
+  /// panel is open and no creation is out.
+  ChoosingPlace(choice: placements.Choice)
+
+  /// The daemon's answer to the read of the placements, numbered by the read it
+  /// answers. An answer a newer read overtook is dropped. It is the effect's own
+  /// message, dispatched from the daemon's task, and no handler carries it, so
+  /// a browser cannot put a state on a card.
+  PlacementsRead(serial: Int, read: placements.Read)
+
   /// The form for a registered workspace was submitted: ask the daemon to create
-  /// the session on the executor. The executor is one of `Start.executors` (the
-  /// form's decoder, `view/create.remote_fields`, turns the browser's position
-  /// back into the name from that list), and the workspace and the session name
-  /// are the browser's text and nothing else is: the daemon judges both again.
-  /// The page asks only for the form that is open, and only once.
-  CreatingRemote(executor: String, workspace: String, name: String)
+  /// the session at the chosen placement. The placement is the one a card chose
+  /// (`ChoosingPlace`), held by the page and never a field of the form, and the
+  /// workspace and the session name are the browser's text and nothing else is:
+  /// the daemon judges both, and the placement, again. The page asks only for
+  /// the form that is open, and only once.
+  CreatingRemote(workspace: String, name: String)
 
   /// A remembered folder's "Forget this folder" was pressed. The identity is the
   /// daemon's, fixed when the tree was drawn, so a press names an entry that was
@@ -855,6 +897,8 @@ pub fn new(start: Start) -> Model {
     opening: None,
     resuming: None,
     creating: create.Idle,
+    cards: placements.listed(start.executors, start.pools),
+    place_reads: 0,
     recent: [],
     edit: NotEditing,
     acting: actions.Calm,
@@ -989,13 +1033,14 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         | Some(_), Connected, create.Composing(_)
         | Some(_), Connected, create.Elsewhere
         | Some(_), Connected, create.Remote
+        | Some(_), Connected, create.Chosen(_)
         -> #(
           Model(..model, creating: create.Composing(workspace), note: None),
           effect.none(),
         )
         Some(_), Connected, create.Waiting(_)
         | Some(_), Connected, create.Sending
-        | Some(_), Connected, create.Dispatching
+        | Some(_), Connected, create.Dispatching(_)
         | Some(_), Connecting, _
         | Some(_), Ended(_), _
         | None, _, _
@@ -1025,14 +1070,17 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
 
     Cancelled ->
       case model.creating {
-        create.Composing(_) | create.Elsewhere | create.Remote -> #(
+        create.Composing(_)
+        | create.Elsewhere
+        | create.Remote
+        | create.Chosen(_) -> #(
           Model(..model, creating: create.Idle),
           effect.none(),
         )
-        create.Idle | create.Waiting(_) | create.Sending | create.Dispatching -> #(
-          model,
-          effect.none(),
-        )
+        create.Idle
+        | create.Waiting(_)
+        | create.Sending
+        | create.Dispatching(_) -> #(model, effect.none())
       }
 
     // The button opens the form for a typed folder, if the page may create and
@@ -1044,60 +1092,98 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         | Some(_), Connected, create.Composing(_)
         | Some(_), Connected, create.Elsewhere
         | Some(_), Connected, create.Remote
+        | Some(_), Connected, create.Chosen(_)
         -> #(
           Model(..model, creating: create.Elsewhere, note: None),
           effect.none(),
         )
         Some(_), Connected, create.Waiting(_)
         | Some(_), Connected, create.Sending
-        | Some(_), Connected, create.Dispatching
+        | Some(_), Connected, create.Dispatching(_)
         | Some(_), Connecting, _
         | Some(_), Ended(_), _
         | None, _, _
         -> #(model, effect.none())
       }
 
-    // The button opens the form for a registered workspace, if the page may
-    // create, the daemon gave it executors and no creation is out. It closes
-    // another form, as the other buttons do.
+    // The button opens the panel for a registered workspace, if the page may
+    // create, the daemon gave it an executor or a pool and no creation is out.
+    // It closes another form, as the other buttons do, and it starts the read of
+    // the placements: the cards are drawn at once from the names, and the read's
+    // answer adds the states. A panel that is already open is not read again, so
+    // pressing the button twice asks the daemon once; closing the panel and
+    // opening it again reads afresh, which is how a person refreshes the states.
     OpeningRemote ->
-      case
-        model.start.create,
-        model.start.executors,
-        model.status,
-        model.creating
-      {
-        Some(_), [_, ..], Connected, create.Idle
-        | Some(_), [_, ..], Connected, create.Composing(_)
-        | Some(_), [_, ..], Connected, create.Elsewhere
-        | Some(_), [_, ..], Connected, create.Remote
-        -> #(Model(..model, creating: create.Remote, note: None), effect.none())
-        Some(_), _, _, _ | None, _, _, _ -> #(model, effect.none())
+      case model.start.create, model.status, model.creating {
+        Some(_), Connected, create.Idle
+        | Some(_), Connected, create.Composing(_)
+        | Some(_), Connected, create.Elsewhere
+        ->
+          case placements.any(model.cards) {
+            True -> reading_places(model)
+            False -> #(model, effect.none())
+          }
+        Some(_), Connected, create.Remote
+        | Some(_), Connected, create.Chosen(_)
+        | Some(_), Connected, create.Waiting(_)
+        | Some(_), Connected, create.Sending
+        | Some(_), Connected, create.Dispatching(_)
+        | Some(_), Connecting, _
+        | Some(_), Ended(_), _
+        | None, _, _
+        -> #(model, effect.none())
       }
 
-    // The registered form's submit is honoured only for its form while it is
-    // open, as the others are, and only for an executor the page offered. The
-    // decoder resolved the executor from a position in the same list, so a
-    // submit that fails the list check did not come from a form the page drew.
-    // The session is always shareable: the daemon makes a session on an
-    // executor session-only, because its workspace aggregate is keyed by a path
-    // on the daemon's host.
-    CreatingRemote(executor:, workspace:, name:) ->
+    // A card's button chooses its placement, if the panel is open and no
+    // creation is out, and only for a card the page drew: the choice is built by
+    // the server from the names it holds, so a choice outside the cards did not
+    // come from a button the page drew. Choosing another card moves the choice.
+    // The state on the card is not consulted, because it is advice.
+    ChoosingPlace(choice:) ->
       case model.start.create, model.status, model.creating {
-        Some(ask), Connected, create.Remote ->
-          case list.contains(model.start.executors, executor) {
+        Some(_), Connected, create.Remote
+        | Some(_), Connected, create.Chosen(_)
+        ->
+          case placements.offers(model.cards, choice) {
             True -> #(
-              Model(..model, creating: create.Dispatching, note: None),
-              creation(
-                ask,
-                creations.Registered(executor, workspace),
-                name,
-                creations.Shareable,
-                creations.default_roles,
-              ),
+              Model(..model, creating: create.Chosen(choice), note: None),
+              effect.none(),
             )
             False -> #(model, effect.none())
           }
+        Some(_), _, _ | None, _, _ -> #(model, effect.none())
+      }
+
+    // The read of the placements answers: the cards take the daemon's report, or
+    // keep their names and say the read gave nothing. An answer a newer read
+    // overtook is dropped, and so is one for a page with no creation to offer.
+    PlacementsRead(serial:, read:) ->
+      case serial == model.place_reads, model.start.create {
+        True, Some(_) -> #(
+          Model(..model, cards: placements.after(read)),
+          effect.none(),
+        )
+        True, None | False, _ -> #(model, effect.none())
+      }
+
+    // The registered form's submit is honoured only for its form while it is
+    // open, as the others are, and only at the placement a card chose. The
+    // placement is the page's own state, set by a button the server drew, so a
+    // submit carries only what a person typed. The session is always shareable:
+    // the daemon makes a session on an executor or in a pool session-only,
+    // because its workspace aggregate is keyed by a path on the daemon's host.
+    CreatingRemote(workspace:, name:) ->
+      case model.start.create, model.status, model.creating {
+        Some(ask), Connected, create.Chosen(choice) -> #(
+          Model(..model, creating: create.Dispatching(choice), note: None),
+          creation(
+            ask,
+            registered_place(choice, workspace),
+            name,
+            creations.Shareable,
+            creations.default_roles,
+          ),
+        )
         Some(_), _, _ | None, _, _ -> #(model, effect.none())
       }
 
@@ -1767,6 +1853,46 @@ fn resuming(
   resume(session, fn(answer) { dispatch(Linked(answer)) })
 }
 
+// Opens the panel for a registered workspace and starts the read of the
+// placements, numbered so that only the newest answer is kept. The cards stay as
+// they were but are marked as being checked, so a state from an earlier read is
+// never drawn as though it were current.
+fn reading_places(model: Model) -> #(Model, Effect(Msg)) {
+  let serial = model.place_reads + 1
+  #(
+    Model(
+      ..model,
+      creating: create.Remote,
+      note: None,
+      cards: placements.Cards(..model.cards, readiness: placements.Checking),
+      place_reads: serial,
+    ),
+    placing(model.start.placements, serial),
+  )
+}
+
+// Starts the daemon's read of the placements and returns at once; the answer
+// arrives later as `PlacementsRead`, dispatched from the daemon's own task.
+fn placing(
+  read: fn(fn(placements.Read) -> Nil) -> Nil,
+  serial: Int,
+) -> Effect(Msg) {
+  use dispatch <- effect.from
+  read(fn(answer) { dispatch(PlacementsRead(serial, answer)) })
+}
+
+// Where a registered creation asks for its session: an executor's workspace, or
+// the same name registered on the executors of a pool.
+fn registered_place(
+  choice: placements.Choice,
+  workspace: String,
+) -> creations.Place {
+  case choice {
+    placements.OnExecutor(name:) -> creations.Registered(name, workspace)
+    placements.InPool(name:) -> creations.Pooled(name, workspace)
+  }
+}
+
 // Starts the daemon's creation task and returns at once; the answer arrives
 // later as `Created`, dispatched from the task's own process.
 fn creation(
@@ -1826,7 +1952,8 @@ fn refused_at(model: Model) -> home_table.Place {
     None, create.Sending
     | None, create.Elsewhere
     | None, create.Remote
-    | None, create.Dispatching
+    | None, create.Chosen(_)
+    | None, create.Dispatching(_)
     -> home_table.Elsewhere
     None, create.Idle | None, create.Composing(_) | None, create.Waiting(_) ->
       home_table.Page
@@ -1847,15 +1974,18 @@ type Outcome {
 // which leaves nothing to correct.
 fn reopened(state: create.State, outcome: Outcome) -> create.State {
   case state, outcome {
-    create.Waiting(_), Kept | create.Sending, Kept | create.Dispatching, Kept ->
-      create.Idle
+    create.Waiting(_), Kept
+    | create.Sending, Kept
+    | create.Dispatching(_), Kept
+    -> create.Idle
     create.Waiting(workspace), Correctable -> create.Composing(workspace)
     create.Sending, Correctable -> create.Elsewhere
-    create.Dispatching, Correctable -> create.Remote
+    create.Dispatching(choice), Correctable -> create.Chosen(choice)
     create.Idle, _
     | create.Composing(_), _
     | create.Elsewhere, _
     | create.Remote, _
+    | create.Chosen(_), _
     -> state
   }
 }
@@ -2240,8 +2370,9 @@ fn create_offer(model: Model) -> Create(Msg) {
         model.start.profiles,
         model.start.models,
         OpeningRemote,
+        ChoosingPlace,
         CreatingRemote,
-        model.start.executors,
+        model.cards,
       )
     None -> create.Never
   }

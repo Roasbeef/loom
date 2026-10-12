@@ -273,7 +273,29 @@ was asked.
   harness cannot enforce rather than accepting it and ignoring it.
 - `tools/agent.{slug, handle_to_string, parse_handle}` — the name and
   handle grammar: `[a-z0-9-]`, capped, `/` and `#` rejected, and a total
-  parse back from `{strand}#{operation}`.
+  parse back from `{strand}#{operation}`. A child on another orchestrator
+  (protocol-change/084) has a handle with `@{orchestrator}` after the
+  operation (`remote_handle_to_string`); `parse_handle` reads and drops the
+  suffix, and an empty or doubled one is `MalformedHandle`. The suffix is for the
+  model: the Agency decides whether a handle is remote from the parent's own
+  stubs, and nothing is routed by a suffix a model typed.
+- `tools/agent.SpawnRequest.on` and `Agency.orchestrator_names` — `agent_spawn`
+  takes `on`, an enum of the names, and the schema omits the argument when the
+  list is empty. A remote spawn's success text and details carry the suffixed
+  handle and the orchestrator; a local spawn's are byte for byte what they were.
+  `Refusal` gains `RemoteRefused(orchestrator, reason)` (the orchestrator said
+  no) and `RemoteSilent(orchestrator)` (no answer in time, the child may exist).
+  `Waited.Pending` carries `unanswered: Option(String)`, the orchestrator that did
+  not answer a join, and the wait text says the state is unknown. `Peer` carries a
+  `Placement` (`Here` or `Elsewhere(orchestrator, Standing)`, with `Standing` =
+  `AwaitingAnswer | Running | PastDeadline | Finished | Declined(reason)`;
+  `PastDeadline` is a running child whose deadline has passed and whose outcome
+  nothing has read yet). The `on` property says that ending the run does not stop
+  the child and that `detach` has no effect with `on`: a remote child is always
+  detached, bounded by its deadline. `describe` words
+  `ParentRunEnded` for a strand that begins with `^` (the parent reference a
+  remote child holds) as a parent on another orchestrator, naming the final
+  answer, `agent_note` and the result as the way to report.
 - `tools/agent.{Minter, minting_step, call_site_digest}` — who, inside
   one planned tool call, minted a child. `ToolCall` is a model's own
   `agent_spawn`; `Program(ordinal:)` is a code-mode program on its

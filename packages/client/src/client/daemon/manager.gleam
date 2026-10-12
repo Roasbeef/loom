@@ -66,7 +66,7 @@ import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Monitor, type Pid, type Subject}
 import gleam/int
 import gleam/list
-import gleam/option.{type Option}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/set
 import gleam/string
@@ -185,6 +185,58 @@ pub type Creation {
     /// empty string. A creation names an executor or a pool and never both:
     /// the pool picks the executor when the session first opens.
     pool: String,
+  )
+}
+
+/// The registry's part of serving a subagent for a parent on another
+/// orchestrator (protocol-change/084): find or create the delegate session of
+/// one (spawner, parent session) pair, and admit it.
+pub type DelegateRequest {
+  DelegateRequest(
+    /// The `[spawners.<name>]` key of the spawning orchestrator.
+    spawner: String,
+    /// The spawning orchestrator's identity for the parent session.
+    parent_session: String,
+    /// The creation a first spawn makes. Its `request_key` is derived from the
+    /// pair by the caller, so a creation retried after a crash finds the
+    /// registration it reserved and does not make a second one.
+    creation: Creation,
+    /// The directory new conversation files are placed in.
+    directory: String,
+    /// The generator that mints the session's identity.
+    generator: ids.Generator,
+    /// The daemon-wide domain configuration a new session's mapping carries.
+    configuration: String,
+    /// The most delegate sessions the spawner may hold.
+    limit: Int,
+    /// The current time, which becomes the pair's last contact.
+    now_ms: Int,
+  )
+}
+
+/// The delegate session of a pair, admitted or being admitted.
+pub type Delegated {
+  Delegated(
+    /// This daemon's identity for the session.
+    session_id: String,
+    /// Where admission stands: `Resident` when the session is serving, and
+    /// `Opening` when its builder is still running.
+    status: Status,
+  )
+}
+
+/// Why a delegate session could not be found or made.
+pub type DelegateError {
+  /// The pair has no session and the spawner already holds as many as it may.
+  DelegateAtLimit(
+    /// How many the spawner holds.
+    held: Int,
+  )
+
+  /// The registry refused or failed.
+  DelegateFailed(
+    /// The registry's error.
+    error: Error,
   )
 }
 
@@ -586,6 +638,7 @@ type Message(instance) {
     String,
     Subject(Result(View, Error)),
   )
+  DelegateSession(DelegateRequest, Subject(Result(Delegated, DelegateError)))
   DomainForSession(String, Subject(Result(domain.Domain, Error)))
   Isolate(
     access.Digest,
@@ -638,6 +691,13 @@ type Message(instance) {
   /// Whether the owner archived a session, read without waking it. A session
   /// this catalogue does not hold is `Catalogue(Missing)`.
   Visibility(String, Subject(Result(catalogue.Visibility, Error)))
+
+  /// Who serves each of a page of sessions, read in one registry turn, for a
+  /// listing that marks the sessions that are moving or have moved.
+  Custodies(
+    List(String),
+    Subject(Result(List(#(String, catalogue.Custody)), Error)),
+  )
 
   /// The owner's request to hand a session to the orchestrator named, under the
   /// operation identity the caller minted: the caller, the epoch, the session,
@@ -1201,7 +1261,10 @@ pub fn rename_principal(
 /// Renames metadata after reauthenticating owner and epoch in one dispatch.
 ///
 /// This does not acquire a conversation or alter a resident runtime. The
-/// catalogue retains the original creation name for request-key equality.
+/// catalogue retains the original creation name for request-key equality. A
+/// session that is moving or has moved is refused as `AdminMoving` or
+/// `AdminMoved`, as archiving and deleting it are, because the move row is the
+/// only record of who owns it.
 ///
 /// ## Examples
 ///
@@ -1726,6 +1789,35 @@ pub fn create_scoped(
   |> result.unwrap(Error(Unavailable))
 }
 
+/// Finds the delegate session of a (spawner, parent session) pair and admits it,
+/// or creates it on the pair's first message.
+///
+/// A pair with a session answers it, moves its last contact to `now_ms` and
+/// opens it if it is not resident, which is how a restart or a close of the
+/// session needs no step of its own. A pair with none is created through the
+/// same path as any session, with the `SessionOnly` memory domain, unless the
+/// spawner already holds `limit` sessions, which answers `DelegateAtLimit`. The
+/// lookup, the count, the creation and the record run in one turn of the
+/// registry, so two first spawns cannot both pass the cap.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.delegate_session(registry, request) == Ok(manager.Delegated(session_id:, status:))
+/// ```
+@internal
+pub fn delegate_session(
+  manager: Manager(instance),
+  request: DelegateRequest,
+) -> Result(Delegated, DelegateError) {
+  call.try_call(manager.commands, waiting: 5000, sending: DelegateSession(
+    request,
+    _,
+  ))
+  |> result.replace_error(DelegateFailed(Unavailable))
+  |> result.flatten
+}
+
 /// Reads domain metadata without admitting a runtime or opening derived stores.
 ///
 /// ## Examples
@@ -1980,6 +2072,34 @@ pub fn visibility(
   id: String,
 ) -> Result(catalogue.Visibility, Error) {
   call.try_call(manager.commands, waiting: 5000, sending: Visibility(id, _))
+  |> result.unwrap(Error(Unavailable))
+}
+
+/// Reads who serves each of the sessions named, in one registry turn, so a
+/// listing of a page marks the moving and moved sessions with one call and not
+/// one for each row.
+///
+/// The answer pairs each identity with its custody, in the order asked, from one
+/// read of the move table (`catalogue.custodies`). An identity with no move row
+/// is `Resident`, which includes one the catalogue does not hold: the identities
+/// of a listing come from the catalogue's own page, so none is checked again. A
+/// stored move row that does not decode also reads as `Resident` here. A listing
+/// is a display, and a row that shows less than it could is the safe way to be
+/// wrong, since `open`, `restore` and `delete` read the row again and refuse on
+/// their own.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.custodies(registry, [session_id])
+/// //   == Ok([#(session_id, catalogue.Resident)])
+/// ```
+@internal
+pub fn custodies(
+  manager: Manager(instance),
+  ids: List(String),
+) -> Result(List(#(String, catalogue.Custody)), Error) {
+  call.try_call(manager.commands, waiting: 5000, sending: Custodies(ids, _))
   |> result.unwrap(Error(Unavailable))
 }
 
@@ -2550,6 +2670,7 @@ fn handle(
     Rename(caller, epoch, id, name, reply) -> {
       let outcome = {
         use Nil <- result.try(authorize_admin(phase, book, caller, epoch))
+        use Nil <- result.try(refuse_moved(book, id))
         use record <- result.map(
           catalogue.rename(book.catalogue, id, name)
           |> result.map_error(AdminMetadata),
@@ -2670,6 +2791,21 @@ fn handle(
         reply,
         catalogue.visibility(book.catalogue, id) |> result.map_error(Catalogue),
       )
+      sm.keep(book)
+    }
+    Custodies(ids, reply) -> {
+      // One statement reads every move row, and each asked identity is paired
+      // with its row or with `Resident`, in the order asked.
+      let read =
+        catalogue.custodies(book.catalogue)
+        |> result.map(fn(rows) {
+          let moves = dict.from_list(rows)
+          list.map(ids, fn(id) {
+            #(id, result.unwrap(dict.get(moves, id), catalogue.Resident))
+          })
+        })
+        |> result.map_error(Catalogue)
+      process.send(reply, read)
       sm.keep(book)
     }
     BeginMove(caller, epoch, id, to, op, reply) -> {
@@ -2988,6 +3124,11 @@ fn handle(
           scope,
           configuration,
         )
+      process.send(reply, outcome)
+      step(phase, book)
+    }
+    DelegateSession(request, reply) -> {
+      let #(book, outcome) = delegate_now(phase, book, request)
       process.send(reply, outcome)
       step(phase, book)
     }
@@ -3371,6 +3512,21 @@ fn movable(
     catalogue.visibility(book.catalogue, record.id)
     |> result.map_error(AdminMetadata),
   )
+
+  // A delegate session serves the orchestrator whose subagents it holds and
+  // answers to it by name, so handing it to a third orchestrator would strand
+  // them (protocol-change/084). The marker is the catalogue's own row.
+  use marker <- result.try(
+    catalogue.delegate_of(book.catalogue, record.id)
+    |> result.map_error(AdminMetadata),
+  )
+  use Nil <- result.try(case marker {
+    Some(_) ->
+      Error(AdminNotMovable(
+        "a delegate session serves its spawner's subagents and does not move",
+      ))
+    None -> Ok(Nil)
+  })
   case record.state, visibility, record.executor {
     catalogue.Reserved, _, _ ->
       Error(AdminNotMovable("the session has not finished being created"))
@@ -3788,6 +3944,136 @@ fn create_session(
         }
       }
     }
+  }
+}
+
+// The pair's session, admitted. An existing record is answered whatever the
+// count is, since the cap bounds how many sessions a spawner opens and not how
+// often it returns to one. A pair with none is created and recorded in this
+// turn. A creation that crashes between the registration and the record is
+// retried under the same request key, which finds the registration again, so
+// the record is the only thing the retry has left to write.
+fn delegate_now(
+  phase: Phase,
+  book: Book(instance),
+  request: DelegateRequest,
+) -> #(Book(instance), Result(Delegated, DelegateError)) {
+  case phase {
+    ShuttingDown -> #(book, Error(DelegateFailed(Unavailable)))
+    Ready ->
+      case
+        catalogue.delegate_for(
+          book.catalogue,
+          request.spawner,
+          request.parent_session,
+        )
+      {
+        Error(error) -> #(book, Error(DelegateFailed(Catalogue(error))))
+        Ok(Some(found)) ->
+          returning_delegate(phase, book, request, found.session_id)
+        Ok(None) -> first_delegate(phase, book, request)
+      }
+  }
+}
+
+// A pair that has a session: the contact time moves, and the session is
+// admitted if it is not resident.
+fn returning_delegate(
+  phase: Phase,
+  book: Book(instance),
+  request: DelegateRequest,
+  session_id: String,
+) -> #(Book(instance), Result(Delegated, DelegateError)) {
+  case claim_delegate(book, request, session_id) {
+    Error(error) -> #(book, Error(error))
+    Ok(Nil) -> {
+      let #(book, admitted) = admit(phase, book, session_id)
+      #(book, delegated(session_id, admitted))
+    }
+  }
+}
+
+// A pair that has none. The room is checked before anything is created, so a
+// spawner past its cap leaves no registration behind, and the record is written
+// after, once the registration exists for its foreign key.
+fn first_delegate(
+  phase: Phase,
+  book: Book(instance),
+  request: DelegateRequest,
+) -> #(Book(instance), Result(Delegated, DelegateError)) {
+  case delegate_room(book, request) {
+    Error(error) -> #(book, Error(error))
+    Ok(Nil) -> {
+      let #(book, created) =
+        create_session(
+          phase,
+          book,
+          request.creation,
+          request.directory,
+          request.generator,
+          domain.SessionOnly,
+          request.configuration,
+        )
+      case created {
+        Error(error) -> #(book, Error(DelegateFailed(error)))
+        Ok(View(registration:, status:)) ->
+          case claim_delegate(book, request, registration.id) {
+            Error(error) -> #(book, Error(error))
+            Ok(Nil) -> #(
+              book,
+              Ok(Delegated(session_id: registration.id, status:)),
+            )
+          }
+      }
+    }
+  }
+}
+
+fn delegate_room(
+  book: Book(instance),
+  request: DelegateRequest,
+) -> Result(Nil, DelegateError) {
+  use held <- result.try(
+    catalogue.delegates_held(book.catalogue, request.spawner)
+    |> result.map_error(fn(error) { DelegateFailed(Catalogue(error)) }),
+  )
+  case held >= request.limit {
+    True -> Error(DelegateAtLimit(held:))
+    False -> Ok(Nil)
+  }
+}
+
+// The catalogue's record of the pair, written or touched. Its own count check
+// is the second line behind `delegate_room`, in one transaction with the insert.
+fn claim_delegate(
+  book: Book(instance),
+  request: DelegateRequest,
+  session_id: String,
+) -> Result(Nil, DelegateError) {
+  use claim <- result.try(
+    catalogue.claim_delegate(
+      book.catalogue,
+      request.spawner,
+      request.parent_session,
+      session_id,
+      limit: request.limit,
+      now_ms: request.now_ms,
+    )
+    |> result.map_error(fn(error) { DelegateFailed(Catalogue(error)) }),
+  )
+  case claim {
+    catalogue.Claimed(_) -> Ok(Nil)
+    catalogue.AtLimit(held:) -> Error(DelegateAtLimit(held:))
+  }
+}
+
+fn delegated(
+  session_id: String,
+  admitted: Result(Status, Error),
+) -> Result(Delegated, DelegateError) {
+  case admitted {
+    Ok(status) -> Ok(Delegated(session_id:, status:))
+    Error(error) -> Error(DelegateFailed(error))
   }
 }
 

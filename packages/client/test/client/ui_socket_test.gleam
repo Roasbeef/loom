@@ -1087,6 +1087,30 @@ pub fn the_home_socket_admits_a_rename_submit_only_for_an_owner_test() {
   )
 }
 
+// The creation panel's cards (protocol-change/085) add buttons and no event
+// class. A click on a card's Choose button is a click beneath the sessions
+// list's section, where the home already admits a click, and the owner's home
+// admits it as the member's does, since the page draws the panel only for an
+// owner and the component refuses the message from any other page. What the
+// panel could not use stays dropped: the page names its placement itself, so no
+// change or input event from a field is admitted for it, and a click outside
+// the section is no more welcome than it was.
+pub fn a_card_needs_no_new_event_class_test() {
+  let card_button = home.table_path <> "\t2\t1\t2\t0\t1"
+  assert ui_socket.home_owner_accepts(click_on(card_button))
+  assert ui_socket.home_accepts(click_on(card_button))
+  list.each(["change", "input", "keydown", "focus"], fn(name) {
+    assert !ui_socket.home_owner_accepts(
+      "{\"kind\":1,\"path\":\""
+      <> card_button
+      <> "\",\"name\":\""
+      <> name
+      <> "\"}",
+    )
+  })
+  assert !ui_socket.home_owner_accepts(click_on("0\t0\t0"))
+}
+
 // The home's capability to create a session is the owner's on a page minted to
 // operate, as the rename capability is, and the two are separate: each is given
 // by its own function and neither implies the other.
@@ -1423,6 +1447,32 @@ pub fn a_row_says_the_role_the_membership_holds_test() {
   assert ui_socket.with_roles([sessions.Entry(..entry, id: "x")], roles)
     == [sessions.Entry(..entry, id: "x")]
   assert ui_socket.with_roles([entry], []) == [entry]
+}
+
+// A move applies to the rows by session identity. A session this catalogue is
+// handing away becomes a `Moving` row naming the destination, one it has handed
+// over is left out because its new owner lists it, and a resident session, an
+// imported one and one with no custody pair keep their rows.
+pub fn a_move_marks_a_row_and_a_tombstone_is_left_out_test() {
+  let entry = ui_socket.listed_entry(view(manager.Saved))
+  let row = fn(id) { sessions.Entry(..entry, id:) }
+  let custodies = [
+    #("going", catalogue.Moving(op: "a", to: "bravo")),
+    #("gone", catalogue.Moved(op: "b", to: "bravo")),
+    #("here", catalogue.Resident),
+    #("arrived", catalogue.Imported(op: "c", from: "bravo")),
+  ]
+  assert ui_socket.with_moves(
+      [row("going"), row("gone"), row("here"), row("arrived"), row("unread")],
+      custodies,
+    )
+    == [
+      sessions.Entry(..row("going"), residency: sessions.Moving("bravo")),
+      row("here"),
+      row("arrived"),
+      row("unread"),
+    ]
+  assert ui_socket.with_moves([entry], []) == [entry]
 }
 
 // Protocol-change/065, the tenth pull request: the home's "Your name" form is

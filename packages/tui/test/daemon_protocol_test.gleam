@@ -527,3 +527,103 @@ pub fn a_malformed_subtitle_reads_as_absent_and_never_fails_the_page_test() {
     },
   )
 }
+
+fn statuses_of(frame: String) {
+  let assert Ok(protocol.Answer(_, _, protocol.SessionsReply(page))) =
+    protocol.decode(frame)
+    as "the frame decodes whatever its custody members hold"
+  list.map(page.sessions, fn(session) { session.status })
+}
+
+// Protocol-change/078, phase 5. The daemon reports a session being handed to
+// another orchestrator as `saved` beside a `moving` member, and the client reads
+// the two together as one lifecycle that names the destination. A frame from a
+// daemon with no moves has no member, and reads as it always has.
+pub fn a_session_row_reads_the_move_it_is_in_test() {
+  assert statuses_of(session_frame("")) == [protocol.Saved]
+  assert statuses_of(session_frame(
+      ",\"moving\":{\"op\":\"0192f3c1-7b0e\",\"to\":\"laptop\"}",
+    ))
+    == [protocol.Moving("laptop")]
+}
+
+// A destination is drawn in a table cell and in one whitespace-free token of the
+// plain listing, so a name outside the orchestrator grammar (whitespace, a
+// control character, uppercase, a colon) reads as absent.
+pub fn a_destination_outside_the_name_grammar_reads_as_absent_test() {
+  list.each(
+    [
+      "lap top",
+      "lap\\u001b[2Jtop",
+      "Laptop",
+      "lap:top",
+      "lap\\ttop",
+    ],
+    fn(to) {
+      assert statuses_of(session_frame(
+          ",\"moving\":{\"op\":\"a\",\"to\":\"" <> to <> "\"}",
+        ))
+        == [protocol.Saved]
+    },
+  )
+}
+
+// The member is a display aid, so one that does not name a destination reads as
+// absent and never fails the page. The row keeps the `saved` it came with, and
+// the daemon refuses an open of it either way.
+pub fn a_malformed_moving_member_reads_as_absent_and_never_fails_the_page_test() {
+  list.each(
+    [
+      ",\"moving\":null",
+      ",\"moving\":7",
+      ",\"moving\":{}",
+      ",\"moving\":{\"to\":\"\"}",
+      ",\"moving\":{\"to\":7}",
+      ",\"moving\":{\"to\":\"" <> string.repeat("x", 65) <> "\"}",
+    ],
+    fn(extra) {
+      assert statuses_of(session_frame(extra)) == [protocol.Saved]
+    },
+  )
+}
+
+// A tombstone is a session another orchestrator owns now. The page leaves it
+// out, whatever its `moved` member holds, so no consumer of a page can offer to
+// open it. The rows beside it are kept, in order.
+pub fn a_moved_session_is_left_out_of_a_page_test() {
+  let frame = fn(moved: String) {
+    "{\"v\":2,\"reply_to\":7,\"event\":\"sessions.list\",\"body\":{\"revision\":9,\"sessions\":["
+    <> row("00000000-0000-7000-8000-000000000001", "")
+    <> ","
+    <> row("00000000-0000-7000-8000-000000000002", moved)
+    <> ","
+    <> row("00000000-0000-7000-8000-000000000003", "")
+    <> "],\"after\":null}}"
+  }
+  list.each(
+    [
+      ",\"moved\":{\"to\":\"laptop\"}",
+      ",\"moved\":{}",
+      ",\"moved\":null",
+      ",\"moved\":{\"to\":7}",
+    ],
+    fn(moved) {
+      let assert Ok(protocol.Answer(_, _, protocol.SessionsReply(page))) =
+        protocol.decode(frame(moved))
+        as "a page with a tombstone decodes"
+      assert list.map(page.sessions, fn(session) { session.session_id })
+        == [
+          "00000000-0000-7000-8000-000000000001",
+          "00000000-0000-7000-8000-000000000003",
+        ]
+    },
+  )
+}
+
+fn row(id: String, extra: String) -> String {
+  "{\"session_id\":\""
+  <> id
+  <> "\",\"workspace\":\"/work\",\"name\":\"n\",\"created_at\":5,\"status\":{\"state\":\"saved\"}"
+  <> extra
+  <> "}"
+}
