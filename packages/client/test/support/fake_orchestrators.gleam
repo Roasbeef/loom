@@ -27,7 +27,7 @@ import client/remote_spawn.{
   type CallSite, type Joined, type Request, type Spawned,
 }
 import core/clock
-import core/ids.{type OpId}
+import core/ids
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
 import gleam/list
@@ -63,9 +63,6 @@ pub type Report {
     spawns: List(CallSite),
     /// The children it holds, one per call site.
     children: List(Spawned),
-    /// The operations it was told ended, in order, including repeats and the
-    /// ones the network lost.
-    ended: List(OpId),
     /// The number of `Join` calls sent to it.
     joins: Int,
   )
@@ -91,19 +88,13 @@ type Ask {
     window_ms: Int,
     reply: Subject(Result(List(Joined), peer_mail.Failure)),
   )
-  AskEnded(operation: OpId, reply: Subject(Result(Int, peer_mail.Failure)))
-}
-
-type Child {
-  Child(spawned: Spawned, operation: OpId, detached: Bool, stopped: Bool)
 }
 
 type State {
   State(
     mode: Mode,
     spawns: List(CallSite),
-    children: Dict(String, Child),
-    ended: List(OpId),
+    children: Dict(String, Spawned),
     joins: Int,
     settled: List(Handle),
   )
@@ -119,14 +110,7 @@ type State {
 pub fn start(name: String, mode: Mode) -> Box {
   let assert Ok(started) =
     actor.new(
-      State(
-        mode:,
-        spawns: [],
-        children: dict.new(),
-        ended: [],
-        joins: 0,
-        settled: [],
-      ),
+      State(mode:, spawns: [], children: dict.new(), joins: 0, settled: []),
     )
     |> actor.on_message(handle)
     |> actor.start
@@ -173,9 +157,6 @@ pub fn reach(
     join: fn(name, _parent, handles, window_ms) {
       ask(boxes, name, fn(reply) { AskJoin(handles:, window_ms:, reply:) })
     },
-    run_ended: fn(name, _parent, operation) {
-      ask(boxes, name, fn(reply) { AskEnded(operation:, reply:) })
-    },
   )
 }
 
@@ -202,10 +183,7 @@ fn handle(state: State, call: Call) -> actor.Next(State, Call) {
         reply,
         Report(
           spawns: list.reverse(state.spawns),
-          children: list.map(dict.values(state.children), fn(child) {
-            child.spawned
-          }),
-          ended: list.reverse(state.ended),
+          children: dict.values(state.children),
           joins: state.joins,
         ),
       )
@@ -215,7 +193,6 @@ fn handle(state: State, call: Call) -> actor.Next(State, Call) {
       spawn(state, parent, site, request, reply)
     Asked(AskJoin(handles:, window_ms:, reply:)) ->
       join(state, handles, window_ms, reply)
-    Asked(AskEnded(operation:, reply:)) -> end(state, operation, reply)
   }
 }
 
@@ -244,7 +221,7 @@ fn spawn(
       let #(child, state) = adopt(state, parent, site, request)
       process.send(reply, case mode {
         LosesReplies | LosesFirst(..) -> Error(peer_mail.Unreachable)
-        Up | Down | Refuses(..) | DownFirst(..) -> Ok(child.spawned)
+        Up | Down | Refuses(..) | DownFirst(..) -> Ok(child)
       })
       actor.continue(state)
     }
@@ -276,7 +253,7 @@ fn adopt(
   parent: remote_spawn.Parent,
   site: CallSite,
   request: Request,
-) -> #(Child, State) {
+) -> #(Spawned, State) {
   let key = site_key(site)
   case dict.get(state.children, key) {
     Ok(existing) -> #(existing, state)
@@ -296,7 +273,7 @@ fn make_child(
   parent: remote_spawn.Parent,
   site: CallSite,
   request: Request,
-) -> Child {
+) -> Spawned {
   let assert Ok(name) =
     agency.child_name(
       agent.Caller(
@@ -311,17 +288,12 @@ fn make_child(
     as "the purpose in a test is a usable one"
   let #(operation, _generator) =
     ids.mint_op(ids.generator(clock.fixed(at: 1000), seed: seed_of(name)))
-  Child(
-    spawned: remote_spawn.Spawned(
-      handle: agent.Handle(strand: name, operation:),
-      tools: ["agent_note", "agent_send"],
-      model: "box-model",
-      model_id: "box-model-id",
-      remaining_ms: 1_800_000,
-    ),
-    operation: site.operation,
-    detached: request.detach == remote_spawn.Detached,
-    stopped: False,
+  remote_spawn.Spawned(
+    handle: agent.Handle(strand: name, operation:),
+    tools: ["agent_note", "agent_send"],
+    model: "box-model",
+    model_id: "box-model-id",
+    remaining_ms: 1_800_000,
   )
 }
 
@@ -368,44 +340,6 @@ fn join(
     }
   }
   actor.continue(state)
-}
-
-// A run end stops the attached children of that run that were still running and
-// answers how many. A repeat stops none, as the receiver's does.
-fn end(
-  state: State,
-  operation: OpId,
-  reply: Subject(Result(Int, peer_mail.Failure)),
-) -> actor.Next(State, Call) {
-  let state = State(..state, ended: [operation, ..state.ended])
-  case state.mode {
-    Down | DownFirst(..) -> {
-      process.send(reply, Error(peer_mail.Unreachable))
-      actor.continue(state)
-    }
-    Refuses(reason:) -> {
-      process.send(reply, Error(peer_mail.Refused(reason)))
-      actor.continue(state)
-    }
-    Up | LosesReplies | LosesFirst(..) -> {
-      let stopping =
-        dict.filter(state.children, fn(_key, child) {
-          child.operation == operation && !child.detached && !child.stopped
-        })
-      let children =
-        dict.map_values(state.children, fn(key, child) {
-          case dict.has_key(stopping, key) {
-            True -> Child(..child, stopped: True)
-            False -> child
-          }
-        })
-      process.send(reply, case state.mode {
-        LosesReplies | LosesFirst(..) -> Error(peer_mail.Unreachable)
-        Up | Down | Refuses(..) | DownFirst(..) -> Ok(dict.size(stopping))
-      })
-      actor.continue(State(..state, children:))
-    }
-  }
 }
 
 fn site_key(site: CallSite) -> String {

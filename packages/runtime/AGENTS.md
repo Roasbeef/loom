@@ -118,10 +118,9 @@ extended by the M3 runtime wave.
   another orchestrator as `^main` in their lineage and the reference must never
   be a strand (protocol-change/084). The `delegate/` fact prefix is the fifteenth
   reserved corner: the Agency keeps `delegate/ended/{operation}` there. The
-  sixteenth and seventeenth are `remote-child/` (the stub a parent session
-  writes before it asks another orchestrator for a child) and `remote-ended/`
-  (the run-end rows it owes), and `runtime/lineage.Lineage` gains an optional
-  `orchestrator`, absent for a local cell and not written for one.
+  sixteenth is `remote-child/`, the stub a parent session writes before it asks
+  another orchestrator for a child, and `runtime/lineage.Lineage` gains an
+  optional `orchestrator`, absent for a local cell and not written for one.
 - `runtime/api.ApiError` — why an operation failed. `RuntimeUnavailable`
   means the writer address had no live binding before a request was sent;
   a caller can retry later. This differs from `CommitFailed(error:)` and

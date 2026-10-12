@@ -38,8 +38,7 @@
 ////     `ask_until_answered` sends the `Spawn` and `record_answer` writes down
 ////     the reply. `wait_across` joins local and remote handles in one call,
 ////     `remote_peers` lists remote children from their stubs, and
-////     `stop_remote_children` owes the run end to each orchestrator that holds
-////     one.
+////     `live_stubs` counts the stubs whose child may still be running.
 ////
 //// ## The bootstrap knot, and the name that unties it
 ////
@@ -102,15 +101,20 @@
 //// - **Capacity.** `is_live` reads a strand's own state, which a remote child does
 ////   not have, so `check_capacity` counts the live stubs beside the cells. A stub
 ////   whose orchestrator has not answered still counts, which errs toward refusing.
+////   A stub whose child is running counts until the child's deadline passes or a
+////   join reports it finished, and the second drainer instance asks for that join
+////   when nobody waits, so a child that nobody waits on does not hold its slot
+////   for good.
 //// - **Waiting.** A handle is remote when a stub of this session holds it, and
 ////   never because of the text of the handle. A wait over remote handles sends
 ////   one `Join` per orchestrator, in tasks beside the local wait, so the whole is
 ////   as long as the longest and not the sum.
 //// - **Listing.** The roster takes remote children from the stubs, and says how
 ////   far each record has got.
-//// - **The end of a run.** `reap_run` aborts the local children as ever and then
-////   owes the run end to each orchestrator that holds an attached child of it.
-////   A child spawned with `detach` is not stopped, here or there.
+//// - **The end of a run.** A remote child is always detached. `reap_run` aborts
+////   the local children as ever and sends nothing across, so a child on another
+////   orchestrator outlives the run that started it and is bounded by its own
+////   deadline and by that orchestrator's retention sweep.
 ////
 //// The network never runs in the holder. The holder only admits the spawn and
 //// writes the stub, so a slow or silent orchestrator cannot stop the session's
@@ -323,9 +327,10 @@ pub type Config {
     /// ask them (protocol-change/084). `remote_reach.none` is every host that
     /// reaches none, and `agent_spawn` then offers no `on`.
     remote: remote_reach.Reach,
-    /// Called once after a record of a remote child is left pending (a spawn
-    /// that was not answered, a run end that was not delivered), so the second
-    /// drainer instance arms its retry timer. The Agency does not own that
+    /// Called once after a record of a remote child is left for the second
+    /// drainer instance to act on (a spawn that was not answered, or a child
+    /// that is running and may finish unwaited), so that instance arms its retry
+    /// timer. The Agency does not own that
     /// drainer, as it does not own the peer-mail one, so the host supplies a
     /// closure over the drainer's name.
     remote_queued: fn() -> Nil,
@@ -622,7 +627,8 @@ fn holds(config: Config, strand: String, tool: String) -> Result(Nil, Refusal) {
 }
 
 /// Wraps a hook record so a run's end reaps the undetached children that
-/// run spawned. The only work done on the driver process is one
+/// run spawned in this session. A child on another orchestrator is always
+/// detached and is not reaped. The only work done on the driver process is one
 /// `process.spawn_unlinked`; see the module doc for why that constraint
 /// is not negotiable.
 ///
@@ -2497,32 +2503,7 @@ fn reap_overdue(
 fn reap_run(config: Config, operation: OpId) -> Nil {
   case borrow(config) {
     Error(_refusal) -> Nil
-    Ok(runtime) -> {
-      reap_run_in(runtime, operation)
-      stop_remote_children(config, runtime, operation)
-    }
-  }
-}
-
-// The run's children on other orchestrators. Their strands are not here to
-// abort, so the end is recorded in a row per orchestrator that holds one, and
-// told: right away, since this process is already off the driver and may wait,
-// and by the drainer for any orchestrator that did not answer. A child spawned
-// with `detach` writes no row and outlives the run.
-fn stop_remote_children(
-  config: Config,
-  runtime: api.Runtime,
-  operation: OpId,
-) -> Nil {
-  case remote_child.owe_run_end(runtime, operation) {
-    Error(_reason) -> Nil
-    Ok(rows) -> {
-      let replies = list.map(rows, remote_child.tell(runtime, config.remote, _))
-      case list.contains(replies, remote_child.Silent) {
-        True -> config.remote_queued()
-        False -> Nil
-      }
-    }
+    Ok(runtime) -> reap_run_in(runtime, operation)
   }
 }
 
@@ -3214,6 +3195,13 @@ fn is_same_call(
 // The request as the other orchestrator is sent it. The context is dropped,
 // because a remote child's is always fresh, and the placement is the stub's own
 // orchestrator.
+//
+// A remote child is always detached, whatever `detach` the model gave. The
+// parent's run end is not sent across, so nothing could stop an attached child
+// when the run that asked for it ends, and a child that the other orchestrator
+// holds as attached would be reaped by a message that never comes. Sending it
+// detached says what will happen: it runs until it finishes or its deadline
+// passes, and the other orchestrator's retention sweep removes it after that.
 fn remote_request(request: agent.SpawnRequest) -> remote_spawn.Request {
   remote_spawn.Request(
     purpose: request.purpose,
@@ -3222,10 +3210,7 @@ fn remote_request(request: agent.SpawnRequest) -> remote_spawn.Request {
     tools: request.tools,
     within_ms: request.within_ms,
     result_schema: request.result_schema,
-    detach: case request.detach {
-      True -> remote_spawn.Detached
-      False -> remote_spawn.Attached
-    },
+    detach: remote_spawn.Detached,
   )
 }
 

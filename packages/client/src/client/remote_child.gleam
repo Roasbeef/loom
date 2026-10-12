@@ -3,10 +3,9 @@
 ////
 //// A local child is a strand of the parent's own session, so the Agency learns
 //// what it needs from that strand's registers. A remote child has no strand
-//// here. What the parent holds instead is two kinds of record, both in its own
-//// session store under reserved prefixes (`runtime/api.remote_child_fact_prefix`
-//// and `remote_ended_fact_prefix`), and this module is their vocabulary and the
-//// rules for moving them.
+//// here. What the parent holds instead is a stub per child, in its own session
+//// store under the reserved prefix `runtime/api.remote_child_fact_prefix`, and
+//// this module is the stub's vocabulary and the rules for moving it.
 ////
 //// ## The stub
 ////
@@ -33,17 +32,9 @@
 //// before the stub, so that by the time anything shows the model a handle the
 //// addressing rule already holds the child as a descendant.
 ////
-//// ## The run-end row
-////
-//// `remote-ended/{operation}/{orchestrator}` is the pending row for a run end.
-//// It is written once per orchestrator that holds a live, attached child or
-//// stub of the ended operation, `Pending` until the orchestrator answers
-//// `RunEnded` and `Told` after. A detached child is not reaped by a run end and
-//// so writes no row.
-////
 //// ## Flow
 ////
-//// `admit` → `spawned` | `refused` | `discard` → `settled` → `owe_run_end` → `tell`
+//// `admit` → `spawned` | `refused` | `discard` → `settled`
 ////
 //// 1. `admit` writes the stub for a call site, or hands back the one a replay
 ////    or an earlier attempt already wrote.
@@ -51,11 +42,7 @@
 ////    stub; `discard` removes a stub whose spawn was refused where the model
 ////    heard it.
 //// 3. `settled` records a join's report on a `Spawned` stub.
-//// 4. `owe_run_end` writes the rows a finished run owes, and `tell` sends one to
-////    its orchestrator and marks it delivered (`told`) on any answer.
 
-import client/peer_mail
-import client/remote_reach.{type Reach}
 import client/remote_spawn.{type ChildUsage, type Parent}
 import core/corruption
 import core/ids.{type OpId}
@@ -64,7 +51,6 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
-import gleam/string
 import runtime/api
 import runtime/lineage
 import tools/agent.{type Handle, type Outcome}
@@ -151,29 +137,6 @@ pub type Admission {
   Existing(stub: Stub)
 }
 
-/// Where a run-end row stands.
-pub type Telling {
-  /// The orchestrator has not yet answered `RunEnded`.
-  Pending
-
-  /// It answered, with a count or a refusal; either way it needs no more.
-  Told
-}
-
-/// A run end owed to one orchestrator.
-pub type Ended {
-  Ended(
-    /// The parent's operation that ended.
-    operation: OpId,
-    /// The orchestrator that holds children of that operation.
-    orchestrator: String,
-    /// The parent strand that ran the operation.
-    strand: String,
-    /// Whether the orchestrator has been told.
-    telling: Telling,
-  )
-}
-
 /// The key of the stub for one call site, from `agent.call_site_digest`.
 ///
 /// ## Examples
@@ -183,20 +146,6 @@ pub type Ended {
 /// ```
 pub fn stub_key(digest: String) -> String {
   api.remote_child_fact_prefix <> digest
-}
-
-/// The key of the run-end row for one operation and orchestrator.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // remote_child.ended_key(operation, "box") == "remote-ended/{operation}/box"
-/// ```
-pub fn ended_key(operation: OpId, orchestrator: String) -> String {
-  api.remote_ended_fact_prefix
-  <> ids.op_id_to_string(operation)
-  <> "/"
-  <> orchestrator
 }
 
 /// Whether a stub still counts against the fan-out caps: its child is, or may
@@ -509,152 +458,6 @@ fn minting_step(stub: Stub) -> String {
   ))
 }
 
-// --- the run-end rows -------------------------------------------------------
-
-/// Writes the rows that the end of a parent's run owes, and returns the ones that
-/// are pending afterwards.
-///
-/// One row is owed to each orchestrator that holds a child of the operation the
-/// run owns and that may still be live: a `Requested` or `Spawned` stub that is
-/// not detached. A detached child outlives the run and is bounded by its
-/// deadline, so it owes nothing. A row that already exists is not rewritten, so a
-/// run that is reported twice owes once, and a row already `Told` is not
-/// returned. The rows come back in the order of the orchestrators' names, which
-/// is the order they are told in.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // remote_child.owe_run_end(runtime, operation) == Ok([Ended(operation, "box", "main", Pending)])
-/// ```
-pub fn owe_run_end(
-  runtime: api.Runtime,
-  operation: OpId,
-) -> Result(List(Ended), String) {
-  use kept <- result.try(all(runtime))
-  kept
-  |> list.filter(fn(entry) { owes(entry.stub, operation) })
-  |> list.map(fn(entry) { #(entry.stub.orchestrator, entry.stub.strand) })
-  |> list.unique
-  |> list.sort(fn(a, b) { string.compare(a.0 <> "/" <> a.1, b.0 <> "/" <> b.1) })
-  |> list.try_map(fn(owed) {
-    write_ended(
-      runtime,
-      Ended(operation:, orchestrator: owed.0, strand: owed.1, telling: Pending),
-    )
-  })
-  |> result.map(list.filter(_, fn(row) { row.telling == Pending }))
-}
-
-// Whether a run end must reach the stub's orchestrator for this operation.
-fn owes(stub: Stub, operation: OpId) -> Bool {
-  stub.site.operation == operation
-  && stub.request.detach == remote_spawn.Attached
-  && is_live(stub)
-}
-
-// Writes a row unless one is there, and answers the row that stands. The write
-// expects the cell to be absent, so a second report of the same run end finds
-// the first row and does not reset a row that was already told.
-fn write_ended(runtime: api.Runtime, row: Ended) -> Result(Ended, String) {
-  let key = ended_key(row.operation, row.orchestrator)
-  case
-    api.put_reserved_fact_expecting(
-      runtime,
-      key,
-      encode_ended(row),
-      expected: None,
-    )
-  {
-    Ok(_) -> Ok(row)
-    Error(api.FactConflict(..)) -> {
-      use cell <- result.try(
-        api.fact_cell(runtime, key) |> result.map_error(describe),
-      )
-      case cell {
-        Some(api.FactCell(value:, ..)) -> decode_ended(value)
-        None -> Error("the run-end row moved under the write")
-      }
-    }
-    Error(error) -> Error(describe(error))
-  }
-}
-
-/// The run-end rows that have not been told, in key order.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // remote_child.owed_run_ends(runtime) == Ok([remote_child.Ended(operation, "box", "main", remote_child.Pending)])
-/// ```
-pub fn owed_run_ends(runtime: api.Runtime) -> Result(List(Ended), String) {
-  use cells <- result.map(
-    api.reserved_facts(runtime, prefix: api.remote_ended_fact_prefix)
-    |> result.map_error(describe),
-  )
-  list.filter_map(cells, fn(pair) {
-    case decode_ended(pair.1) {
-      Ok(Ended(telling: Pending, ..) as row) -> Ok(row)
-      Ok(Ended(telling: Told, ..)) | Error(_) -> Error(Nil)
-    }
-  })
-}
-
-/// Marks a run-end row delivered. The orchestrator's answer, a count of children
-/// stopped or a refusal, both end the row: a count of zero means the children had
-/// already settled, and a refusal means the orchestrator will never act on it.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // remote_child.told(runtime, ended) == Ok(Nil)
-/// ```
-pub fn told(runtime: api.Runtime, row: Ended) -> Result(Nil, String) {
-  api.put_reserved_fact(
-    runtime,
-    ended_key(row.operation, row.orchestrator),
-    encode_ended(Ended(..row, telling: Told)),
-  )
-  |> result.map_error(describe)
-}
-
-/// What came of telling an orchestrator that a run ended.
-pub type Reply {
-  /// The orchestrator answered, with a count or a refusal, and the row is told.
-  Answered
-
-  /// Nobody answered, or the row could not be recorded as told. It stays
-  /// pending.
-  Silent
-}
-
-/// Tells an orchestrator that a run ended, once, and marks the row told on any
-/// answer.
-///
-/// The parent's reaper calls this the moment it writes the row, so the children
-/// stop without waiting for the drainer's next tick, and the drainer
-/// (`client/remote_drain`) calls it for every row that call left pending. A
-/// refusal ends the row as an answer does: the orchestrator looked and will never
-/// act on it, such as one that no longer lists this machine as a spawner. A
-/// repeat is harmless, since the orchestrator stops nothing more the second time.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // remote_child.tell(runtime, reach, ended) == remote_child.Answered
-/// ```
-pub fn tell(runtime: api.Runtime, reach: Reach, row: Ended) -> Reply {
-  let parent = remote_reach.parent(reach, row.strand)
-  case reach.run_ended(row.orchestrator, parent, row.operation) {
-    Ok(_) | Error(peer_mail.Refused(..)) ->
-      case told(runtime, row) {
-        Ok(Nil) -> Answered
-        Error(_) -> Silent
-      }
-    Error(peer_mail.Unreachable) -> Silent
-  }
-}
-
 // --- the codec --------------------------------------------------------------
 
 fn describe(error: api.ApiError) -> String {
@@ -779,18 +582,6 @@ fn encode_usage(usage: ChildUsage) -> JsonValue {
     #("cacheRead", json.Int(usage.cache_read)),
     #("cacheWrite", json.Int(usage.cache_write)),
     #("cost", json.Float(usage.cost)),
-  ])
-}
-
-fn encode_ended(row: Ended) -> JsonValue {
-  json.Object([
-    #("operation", json.String(ids.op_id_to_string(row.operation))),
-    #("orchestrator", json.String(row.orchestrator)),
-    #("strand", json.String(row.strand)),
-    #("state", case row.telling {
-      Pending -> json.String("pending")
-      Told -> json.String("told")
-    }),
   ])
 }
 
@@ -959,20 +750,6 @@ fn decode_usage(value: JsonValue) -> Result(ChildUsage, String) {
     Ok(_) | Error(Nil) -> Error("expected `cost` to be a number")
   })
   Ok(remote_spawn.ChildUsage(input:, output:, cache_read:, cache_write:, cost:))
-}
-
-fn decode_ended(value: JsonValue) -> Result(Ended, String) {
-  use fields <- result.try(object(value, "a run-end row"))
-  use operation <- result.try(operation_id(fields, "operation"))
-  use orchestrator <- result.try(text(fields, "orchestrator"))
-  use strand <- result.try(text(fields, "strand"))
-  use word <- result.try(text(fields, "state"))
-  use telling <- result.try(case word {
-    "pending" -> Ok(Pending)
-    "told" -> Ok(Told)
-    other -> Error("unknown run-end state `" <> other <> "`")
-  })
-  Ok(Ended(operation:, orchestrator:, strand:, telling:))
 }
 
 fn object(

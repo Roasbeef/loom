@@ -56,9 +56,15 @@
 //// silence, which for a spawn means "the child may exist" and is resolved by
 //// resending, since the receiver adopts the child its call site already made.
 //// The sending end is `client/remote/remote_spawner`, which connects to the
-//// pinned peer and asks through `ask_spawn`, `ask_join` and `ask_run_ended`
-//// below, and fills the record the parent's Agency asks through
-//// (`client/remote_reach`).
+//// pinned peer and asks through `ask_spawn` and `ask_join` below, and fills the
+//// record the parent's Agency asks through (`client/remote_reach`).
+////
+//// In phase 1 nothing on the parent's side sends `RunEnded`, because a child
+//// started from another orchestrator is always detached and outlives the run
+//// that asked for it. The message, its handler and the fence that makes a late
+//// `Spawn` for an ended run refuse stay as built, because the phase that lets a
+//// parent release its children reuses them. `ask_run_ended` is the call that
+//// phase will make.
 ////
 //// The port reveals only whether an identity is in this daemon's catalogue, to a
 //// peer the operator pinned as a trusted Erlang node. It carries no credential,

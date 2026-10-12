@@ -1,13 +1,19 @@
 //// The other orchestrators a session may start children on, as a record of
 //// functions (protocol-change/084, slice S3).
 ////
-//// The Agency asks three questions of another orchestrator: start a child, report
-//// on children, and stop the children of a run that ended. It must not know how
-//// they are sent. The orchestrator port and its addresses sit above the Agency in
-//// the module graph (the owner port reaches the Agency through the notice
-//// module), so the Agency depends on this record and the daemon fills it from the
-//// sending end (`client/remote/remote_spawner`). A test fills it with three
-//// closures that play the other orchestrator.
+//// The Agency asks two questions of another orchestrator: start a child, and
+//// report on children. It must not know how they are sent. The orchestrator port
+//// and its addresses sit above the Agency in the module graph (the owner port
+//// reaches the Agency through the notice module), so the Agency depends on this
+//// record and the daemon fills it from the sending end
+//// (`client/remote/remote_spawner`). A test fills it with two closures that play
+//// the other orchestrator.
+////
+//// The port also takes a `RunEnded` message, which stops the children a finished
+//// run owns, and the sending end does not use it: a remote child is always
+//// detached in phase 1, so nothing on this side tells an orchestrator that a run
+//// ended. The record has no function for it until the phase that releases
+//// children needs one.
 ////
 //// The functions answer as a call to another orchestrator can end, and the same
 //// two ways peer mail's endpoints do (`client/peer_mail.Failure`).
@@ -28,7 +34,6 @@ import client/peer_mail.{type Failure}
 import client/remote_spawn.{
   type CallSite, type Joined, type Parent, type Request, type Spawned,
 }
-import core/ids.{type OpId}
 import tools/agent.{type Handle}
 
 /// Everything a session may ask of the other orchestrators.
@@ -56,9 +61,6 @@ pub type Reach {
     /// orchestrator, the parent, the handles and the window the orchestrator
     /// waits, in milliseconds.
     join: fn(String, Parent, List(Handle), Int) -> Result(List(Joined), Failure),
-    /// Tells the orchestrator that a run ended, and answers how many children it
-    /// stopped. The arguments are the orchestrator, the parent and the operation.
-    run_ended: fn(String, Parent, OpId) -> Result(Int, Failure),
   )
 }
 
@@ -82,7 +84,6 @@ pub fn none(session: String) -> Reach {
     join: fn(name, _parent, _handles, _window_ms) {
       Error(not_configured(name))
     },
-    run_ended: fn(name, _parent, _operation) { Error(not_configured(name)) },
   )
 }
 

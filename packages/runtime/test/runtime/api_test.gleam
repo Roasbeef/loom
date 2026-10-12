@@ -449,20 +449,15 @@ pub fn put_fact_refuses_the_delegate_prefix_test() {
 
 // A parent session's records of its remote children are closed to the model's
 // own door. The stub decides which orchestrator a retried spawn goes to and is
-// counted against the fan-out caps, and a run-end row is how the children of an
-// ended run get stopped (protocol-change/084).
-pub fn put_fact_refuses_the_remote_child_prefixes_test() {
+// counted against the fan-out caps (protocol-change/084).
+pub fn put_fact_refuses_the_remote_child_prefix_test() {
   let rt = fact_runtime()
   assert api.reserved_fact_key("remote-child/0123456789abcdef")
-  assert api.reserved_fact_key("remote-ended/op_1/box")
   assert !api.reserved_fact_key("agent/main/remote-child")
 
   let assert Error(api.ReservedFactKey(key: "remote-child/0123456789abcdef")) =
     api.put_fact(rt, "remote-child/0123456789abcdef", json.Null)
     as "a stub is not the model's to write"
-  let assert Error(api.ReservedFactKey(key: "remote-ended/op_1/box")) =
-    api.put_fact(rt, "remote-ended/op_1/box", json.Null)
-    as "a run-end row is not the model's to write"
   let assert Ok(Nil) =
     api.put_reserved_fact(rt, "remote-child/0123456789abcdef", json.Null)
     as "the harness door writes the stub"

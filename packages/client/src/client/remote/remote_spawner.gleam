@@ -3,7 +3,8 @@
 ////
 //// The receiving end is the orchestrator port's `Spawn`, `Join` and `RunEnded`
 //// (`client/remote/orchestrator_port`); this module is how a parent's Agency
-//// sends them. It is modelled on `client/remote/remote_peer`, which does the same
+//// sends the first two. It does not send `RunEnded`, because a remote child is
+//// always detached in phase 1. It is modelled on `client/remote/remote_peer`, which does the same
 //// for peer mail, and it fills the record the Agency asks through
 //// (`client/remote_reach`), which also says how a call ends: answered, refused
 //// or unreachable.
@@ -41,10 +42,6 @@ import gleam/result
 /// the other orchestrator's delegate session, which on an executor placement
 /// includes an attach.
 pub const spawn_ms = 30_000
-
-/// How long a `RunEnded` waits for its answer, as long as a peer-mail call. The
-/// other orchestrator's Agency holder bounds its own work at five seconds.
-pub const run_ended_ms = 7000
 
 // How much longer than the window it asks the receiver to wait a join's own
 // deadline is, so the receiver's answer for a window that ran out is not itself
@@ -101,11 +98,6 @@ pub fn over_distribution(
         window_ms,
         window_ms + join_slack_ms,
       )
-      |> answer
-    },
-    run_ended: fn(name, parent, operation) {
-      use at <- result.try(reached(membership, configured, name))
-      orchestrator_port.ask_run_ended(at, parent, operation, run_ended_ms)
       |> answer
     },
   )

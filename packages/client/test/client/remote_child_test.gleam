@@ -137,12 +137,9 @@ pub fn a_programs_ordinal_survives_test() {
   round_trips(Stub(..a_stub(remote_child.Requested), site:))
 }
 
-pub fn keys_are_the_reserved_prefixes_and_what_names_the_record_test() {
+pub fn a_stub_is_kept_under_the_reserved_prefix_and_its_call_site_digest_test() {
   assert remote_child.stub_key("7b1c0a4e2d95f318")
     == "remote-child/7b1c0a4e2d95f318"
-  let operation = an_op(5)
-  assert remote_child.ended_key(operation, "box")
-    == "remote-ended/" <> ids.op_id_to_string(operation) <> "/box"
 }
 
 pub fn only_a_stub_whose_child_may_be_running_is_live_test() {

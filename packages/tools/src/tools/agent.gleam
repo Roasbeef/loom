@@ -1683,7 +1683,9 @@ fn on_property(names: List(String)) -> List(#(String, JsonValue)) {
             <> "sets, which can refuse the spawn. `context: my_conversation` "
             <> "is not available with it. The handle it returns ends in "
             <> "`@` and the orchestrator's name; give it to agent_wait as it "
-            <> "is. Ending your run stops the child unless you set detach",
+            <> "is. Ending your run does not stop the child: it runs until it "
+            <> "finishes or its deadline passes, and `detach` has no effect "
+            <> "with `on`",
         ),
       ),
     ]

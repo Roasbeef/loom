@@ -50,7 +50,6 @@ pub fn every_question_of_such_a_reach_is_a_definitive_refusal_test() {
     )
   assert reach.spawn("box", parent, site, 0, [], request) == Error(refused)
   assert reach.join("box", parent, [], 25_000) == Error(refused)
-  assert reach.run_ended("box", parent, an_op()) == Error(refused)
   assert remote_reach.not_configured("box") == refused
 }
 

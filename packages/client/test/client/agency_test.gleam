@@ -5703,6 +5703,10 @@ pub fn a_remote_spawn_is_written_ahead_and_the_child_is_a_descendant_test() {
   assert stub.name == spawned.strand
   assert stub.request.purpose == "run suite"
   assert stub.request.brief == "read the file and report"
+
+  // The model did not ask to detach, and the child is detached all the same:
+  // the parent's run end is not sent across, so nothing would stop it.
+  assert stub.request.detach == remote_spawn.Detached
   let assert remote_child.Spawned(placed) = stub.state
   assert placed.handle == spawned.handle
 
@@ -5713,7 +5717,7 @@ pub fn a_remote_spawn_is_written_ahead_and_the_child_is_a_descendant_test() {
   assert cell.orchestrator == Some("box")
   assert cell.brief == spawned.handle.operation
   assert cell.depth == 1
-  assert !cell.detached
+  assert cell.detached
   assert agency.owns(harness.runtime, ancestor: "main", strand: spawned.strand)
   close(harness)
 }
@@ -5917,108 +5921,30 @@ pub fn an_empty_pass_owes_nothing_test() {
   close(harness)
 }
 
-pub fn a_run_end_tells_exactly_the_orchestrators_that_hold_its_children_test() {
+pub fn a_run_end_sends_nothing_to_the_orchestrator_and_the_child_stays_test() {
+  // A remote child is detached, so the run that asked for it ending is not news
+  // to the orchestrator. Nothing is sent, the stub still stands for a running
+  // child, and the child keeps its slot until it settles or its deadline passes.
   let box = fake_orchestrators.start("box", fake_orchestrators.Up)
-  let gpu = fake_orchestrators.start("gpu", fake_orchestrators.Up)
   let #(harness, _queued) =
-    start_remote(Hangs, [box, gpu], fn(config) { config })
-
-  // Run A has a child on each orchestrator, run B one on `box` only.
-  let run_a = caller_on("main", "turn-a:tools", 0)
-  let run_b = caller_on("main", "turn-b:tools", 0)
-  let assert Ok(_) = harness.seam.spawn(run_a, on_box("a on box"))
-  let assert Ok(_) =
-    harness.seam.spawn(
-      second_call(run_a, 1),
-      agent.SpawnRequest(..a_spawn("a on gpu"), on: Some("gpu")),
-    )
-  let assert Ok(_) = harness.seam.spawn(run_b, on_box("b on box"))
-
-  let hooks = agency.reaping_hooks(effects.default_hooks(), harness.config)
-  assert hooks.run_end(run_a.operation) == None
-  assert until(
-    fn() {
-      fake_orchestrators.report(box).ended == [run_a.operation]
-      && fake_orchestrators.report(gpu).ended == [run_a.operation]
-    },
-    200,
-  )
-
-  // Each was told once, run B's orchestrator-mate was not told of B, and the
-  // rows are finished so nothing is owed.
-  assert remote_child.owed_run_ends(harness.runtime) == Ok([])
-  assert drain(harness) == peer_outbox_drain.Clear
-  assert fake_orchestrators.report(box).ended == [run_a.operation]
-
-  // The run ending again owes nothing more: the rows exist and are told.
-  assert hooks.run_end(run_a.operation) == None
-  assert !until(
-    fn() { list.length(fake_orchestrators.report(box).ended) > 1 },
-    20,
-  )
-  close(harness)
-}
-
-pub fn a_detached_remote_child_is_not_reaped_by_its_runs_end_test() {
-  let box = fake_orchestrators.start("box", fake_orchestrators.Up)
-  let #(harness, _queued) = start_remote(Hangs, [box], fn(config) { config })
+    start_remote(Hangs, [box], fn(config) {
+      agency.Config(..config, fan_out: 1)
+    })
   let caller = caller_on("main", "turn-1:tools", 0)
-  let assert Ok(_) =
-    harness.seam.spawn(
-      caller,
-      agent.SpawnRequest(..on_box("keeps going"), detach: True),
-    )
+  let assert Ok(spawned) =
+    harness.seam.spawn(caller, on_box("outlives its run"))
+  let before = fake_orchestrators.report(box)
+
   let hooks = agency.reaping_hooks(effects.default_hooks(), harness.config)
   assert hooks.run_end(caller.operation) == None
-  assert !until(fn() { fake_orchestrators.report(box).ended != [] }, 20)
-  assert remote_child.owed_run_ends(harness.runtime) == Ok([])
-  close(harness)
-}
+  assert !until(fn() { fake_orchestrators.report(box) != before }, 50)
 
-pub fn a_run_end_the_orchestrator_did_not_hear_is_delivered_by_the_drainer_test() {
-  let box = fake_orchestrators.start("box", fake_orchestrators.Up)
-  let #(harness, queued) = start_remote(Hangs, [box], fn(config) { config })
-  let caller = caller_on("main", "turn-1:tools", 0)
-  let assert Ok(_) = harness.seam.spawn(caller, on_box("stranded"))
-
-  // The link is down when the run ends: the row is written, the attempt gets
-  // no answer, and the drainer is rung.
-  fake_orchestrators.set_mode(box, fake_orchestrators.Down)
-  let hooks = agency.reaping_hooks(effects.default_hooks(), harness.config)
-  assert hooks.run_end(caller.operation) == None
-  let assert Ok(Nil) = process.receive(queued, 2000)
-    as "the drainer is rung for the row that is left"
-  let assert Ok([pending]) = remote_child.owed_run_ends(harness.runtime)
-  assert pending.operation == caller.operation
-  assert pending.orchestrator == "box"
-  assert pending.telling == remote_child.Pending
-
-  // With the link back, the pass tells it, and only once.
-  fake_orchestrators.set_mode(box, fake_orchestrators.Up)
-  assert drain(harness) == peer_outbox_drain.Clear
-  assert fake_orchestrators.report(box).ended
-    == [caller.operation, caller.operation]
-  assert remote_child.owed_run_ends(harness.runtime) == Ok([])
-  assert drain(harness) == peer_outbox_drain.Clear
-  assert list.length(fake_orchestrators.report(box).ended) == 2
-  close(harness)
-}
-
-pub fn a_refused_run_end_finishes_its_row_test() {
-  // An orchestrator that no longer lists this machine as a spawner will never act
-  // on a run end, and asking it again every five seconds cannot change that.
-  let box = fake_orchestrators.start("box", fake_orchestrators.Up)
-  let #(harness, _queued) = start_remote(Hangs, [box], fn(config) { config })
-  let caller = caller_on("main", "turn-1:tools", 0)
-  let assert Ok(_) = harness.seam.spawn(caller, on_box("orphaned"))
-  fake_orchestrators.set_mode(box, fake_orchestrators.Refuses("not a spawner"))
-  let hooks = agency.reaping_hooks(effects.default_hooks(), harness.config)
-  assert hooks.run_end(caller.operation) == None
-  assert until(fn() { fake_orchestrators.report(box).ended != [] }, 200)
-  assert until(
-    fn() { remote_child.owed_run_ends(harness.runtime) == Ok([]) },
-    200,
-  )
+  let assert [stub] = stubs_of(harness)
+  let assert remote_child.Spawned(placed) = stub.state
+  assert placed.handle == spawned.handle
+  assert remote_child.is_live(stub)
+  let assert Error(agent.FanOutCapReached(live: 1, cap: 1)) =
+    harness.seam.spawn(second_call(caller, 1), a_spawn("local"))
   close(harness)
 }
 
@@ -6431,68 +6357,5 @@ pub fn a_stub_that_is_still_requested_can_be_discarded_test() {
   assert remote_child.discard(harness.runtime, key) == Ok(Nil)
   assert remote_child.find(harness.runtime, key) == Ok(None)
   assert remote_child.discard(harness.runtime, key) == Ok(Nil)
-  close(harness)
-}
-
-pub fn a_run_end_is_owed_only_for_live_attached_children_test() {
-  let harness = start_harness(Hangs)
-  let run = caller_on("main", "turn-1:tools", 0)
-  let elsewhere = caller_on("main", "turn-2:tools", 0)
-  let where =
-    remote_child.Placed(
-      handle: an_answer("placed").handle,
-      tools: [],
-      model: "m",
-      model_id: "m",
-      deadline_ms: 1,
-    )
-  let placed = remote_child.Spawned(where)
-  let usage =
-    remote_spawn.ChildUsage(
-      input: 0,
-      output: 0,
-      cache_read: 0,
-      cache_write: 0,
-      cost: 0.0,
-    )
-  let settled_state = remote_child.Settled(where, agent.Completed, usage)
-  let stubs = [
-    a_stub_of("box", run, placed, remote_spawn.Attached),
-    a_stub_of(
-      "gpu",
-      second_call(run, 1),
-      remote_child.Requested,
-      remote_spawn.Attached,
-    ),
-    a_stub_of("box", second_call(run, 2), settled_state, remote_spawn.Attached),
-    a_stub_of("box", second_call(run, 3), placed, remote_spawn.Detached),
-    a_stub_of(
-      "box",
-      second_call(run, 4),
-      remote_child.Refused("no"),
-      remote_spawn.Attached,
-    ),
-    a_stub_of("box", elsewhere, placed, remote_spawn.Attached),
-  ]
-  list.each(stubs, fn(entry) {
-    let assert Ok(remote_child.Fresh) =
-      remote_child.admit(harness.runtime, entry.0, entry.1)
-  })
-
-  // One row per orchestrator that holds a child this run may still be running:
-  // not for the settled, the refused, the detached or another run's.
-  let assert Ok(rows) = remote_child.owe_run_end(harness.runtime, run.operation)
-  assert list.map(rows, fn(row) { #(row.orchestrator, row.strand, row.telling) })
-    == [
-      #("box", "main", remote_child.Pending),
-      #("gpu", "main", remote_child.Pending),
-    ]
-
-  // Telling one finishes it, and a repeat of the run end does not owe it again.
-  let assert [box_row, gpu_row] = rows
-  assert remote_child.told(harness.runtime, box_row) == Ok(Nil)
-  let assert Ok(left) = remote_child.owe_run_end(harness.runtime, run.operation)
-  assert left == [gpu_row]
-  assert remote_child.owed_run_ends(harness.runtime) == Ok([gpu_row])
   close(harness)
 }

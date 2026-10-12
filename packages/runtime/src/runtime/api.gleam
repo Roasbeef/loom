@@ -2577,23 +2577,12 @@ pub const delegate_fact_prefix = "delegate/"
 /// make a live remote child vanish from the fan-out count and the roster.
 pub const remote_child_fact_prefix = "remote-child/"
 
-/// The reserved prefix of the run-end rows a parent session owes other
-/// orchestrators (protocol-change/084). The Agency writes
-/// `remote-ended/{operation}/{orchestrator}` when a run ends while a remote child
-/// of that run may still be live, and the drainer sends it until the
-/// orchestrator answers.
-///
-/// Reserved because a model that could remove a row would keep the remote
-/// children of an ended run alive until their deadlines, and one that could
-/// write a row would stop the children of a run that has not ended.
-pub const remote_ended_fact_prefix = "remote-ended/"
-
 /// Whether a `fact.custom` key falls in a reserved, runtime-owned corner
 /// of the namespace. Reserved keys are refused to `put_fact` and hidden
 /// from `facts`; harness code reaches them through `put_reserved_fact`
 /// and `reserved_facts`.
 ///
-/// The seventeen corners, and what each would let a forged write do:
+/// The sixteen corners, and what each would let a forged write do:
 /// `escalation/` — manufacture an approval and widen a denied call;
 /// `operation-result/` — shadow an operation's terminal result and lie to
 /// every waiter; `lineage/` — rewrite a parent edge, which is the single
@@ -2622,10 +2611,8 @@ pub const remote_ended_fact_prefix = "remote-ended/"
 /// as though the harness's summarizer had written it; `delegate/` — mark a
 /// run of a remote parent as ended, so every later spawn for it is refused, or
 /// remove that mark, so a spawn after the run ended creates a child nobody
-/// will reap; `remote-child/` — choose which orchestrator a retried spawn goes
-/// to, or remove the stub of a live remote child from the fan-out count; and
-/// `remote-ended/` — stop the remote children of a run that has not ended, or
-/// keep those of one that has.
+/// will reap; and `remote-child/` — choose which orchestrator a retried spawn goes
+/// to, or remove the stub of a live remote child from the fan-out count.
 ///
 /// ## Examples
 ///
@@ -2654,7 +2641,6 @@ pub fn reserved_fact_key(key: String) -> Bool {
   || string.starts_with(key, summary_fact_prefix)
   || string.starts_with(key, delegate_fact_prefix)
   || string.starts_with(key, remote_child_fact_prefix)
-  || string.starts_with(key, remote_ended_fact_prefix)
 }
 
 /// Writes one cell under a reserved prefix — the harness-only companion
