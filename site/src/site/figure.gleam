@@ -14,13 +14,15 @@
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/string
 import lustre/attribute.{type Attribute, attribute}
 import lustre/element.{type Element}
 import lustre/element/html
-import lustre/element/svg
 import lustre/event
+import site/code
 import site/diagram.{type Diagram}
 import site/diagram_view
+import site/icons
 import site/inline
 import site/msg.{type FigureId, type Msg}
 
@@ -76,7 +78,12 @@ fn step_at(spec: Spec, index: Int) -> Step {
 }
 
 /// The landing-page layout: text blocks beside a sticky panel.
-pub fn scrolly(spec: Spec, active: Int, playing: Bool) -> Element(Msg) {
+pub fn scrolly(
+  spec: Spec,
+  active: Int,
+  playing: Bool,
+  copied: Option(String),
+) -> Element(Msg) {
   html.div(
     [
       attribute.class("scrolly"),
@@ -86,7 +93,7 @@ pub fn scrolly(spec: Spec, active: Int, playing: Bool) -> Element(Msg) {
       html.div(
         [attribute.class("scrolly-text")],
         list.index_map(spec.steps, fn(step, index) {
-          block(spec.id, step, index, count(spec), index == active)
+          block(spec.id, step, index, count(spec), index == active, copied)
         }),
       ),
       panel(spec, active, playing),
@@ -95,10 +102,15 @@ pub fn scrolly(spec: Spec, active: Int, playing: Bool) -> Element(Msg) {
 }
 
 /// The documentation layout: the panel, then the current step's block.
-pub fn embedded(spec: Spec, active: Int, playing: Bool) -> Element(Msg) {
+pub fn embedded(
+  spec: Spec,
+  active: Int,
+  playing: Bool,
+  copied: Option(String),
+) -> Element(Msg) {
   html.div([attribute.class("embedded")], [
     panel(spec, active, playing),
-    block(spec.id, step_at(spec, active), active, count(spec), True),
+    block(spec.id, step_at(spec, active), active, count(spec), True, copied),
   ])
 }
 
@@ -169,11 +181,10 @@ fn controls(spec: Spec, active: Int, playing: Bool) -> Element(Msg) {
       [
         attribute.class("btn"),
         attribute.type_("button"),
-        attribute("aria-label", "Previous step"),
         attribute.disabled(active == 0),
         event.on_click(msg.FigureGo(spec.id, active - 1)),
       ],
-      [chevron(Left), element.text("Back")],
+      [icons.back(), element.text("Back")],
     ),
     html.button(
       [
@@ -189,9 +200,9 @@ fn controls(spec: Spec, active: Int, playing: Bool) -> Element(Msg) {
         }),
       ],
       case playing {
-        True -> [pause_icon(), element.text("Pause")]
+        True -> [icons.pause(), element.text("Pause")]
         False -> [
-          play_icon(),
+          icons.play(),
           element.text(case active == last {
             True -> "Replay"
             False -> "Play"
@@ -203,11 +214,10 @@ fn controls(spec: Spec, active: Int, playing: Bool) -> Element(Msg) {
       [
         attribute.class("btn"),
         attribute.type_("button"),
-        attribute("aria-label", "Next step"),
         attribute.disabled(active == last),
         event.on_click(msg.FigureGo(spec.id, active + 1)),
       ],
-      [element.text("Next"), chevron(Right)],
+      [element.text("Next"), icons.forward()],
     ),
     html.ol(
       [attribute.class("dots"), attribute("aria-label", "Steps")],
@@ -250,6 +260,7 @@ fn block(
   index: Int,
   total: Int,
   is_active: Bool,
+  copied: Option(String),
 ) -> Element(Msg) {
   html.article(
     [
@@ -276,7 +287,7 @@ fn block(
       html.h3([], [element.text(step.heading)]),
       ..list.flatten([
         list.map(step.body, inline.paragraph),
-        sample(step.sample),
+        sample(id, index, step.sample, copied),
         state(step.state),
         failure(step.failure),
         [jump(id, index, is_active)],
@@ -300,15 +311,39 @@ fn jump(id: FigureId, index: Int, is_active: Bool) -> Element(Msg) {
   }
 }
 
-fn sample(sample: Option(Sample)) -> List(Element(Msg)) {
+fn sample(
+  id: FigureId,
+  index: Int,
+  sample: Option(Sample),
+  copied: Option(String),
+) -> List(Element(Msg)) {
   case sample {
     None -> []
     Some(Sample(title, text)) -> [
-      html.figure([attribute.class("sample")], [
-        html.figcaption([], [element.text(title)]),
-        html.pre([], [html.code([], [element.text(text)])]),
+      html.div([attribute.class("sample")], [
+        html.p([attribute.class("sample-title")], [element.text(title)]),
+        code.view(
+          msg.figure_key(id) <> "-sample-" <> int.to_string(index),
+          sample_language(text),
+          text,
+          copied,
+        ),
       ]),
     ]
+  }
+}
+
+/// The language a sample is coloured as: Gleam when it starts with an
+/// import, a shell command when it starts with a known command, and plain
+/// text otherwise.
+fn sample_language(text: String) -> String {
+  case string.starts_with(text, "import ") {
+    True -> "gleam"
+    False ->
+      case string.starts_with(text, "loom ") {
+        True -> "sh"
+        False -> ""
+      }
   }
 }
 
@@ -339,81 +374,4 @@ fn failure(text: Option(String)) -> List(Element(Msg)) {
       ]),
     ]
   }
-}
-
-type Direction {
-  Left
-  Right
-}
-
-fn chevron(direction: Direction) -> Element(Msg) {
-  let d = case direction {
-    Left -> "M 9 2 L 4 7 L 9 12"
-    Right -> "M 5 2 L 10 7 L 5 12"
-  }
-  svg.svg(
-    [
-      attribute("viewBox", "0 0 14 14"),
-      attribute("width", "14"),
-      attribute("height", "14"),
-      attribute("aria-hidden", "true"),
-      attribute.class("icon"),
-    ],
-    [
-      svg.path([
-        attribute("d", d),
-        attribute("fill", "none"),
-        attribute("stroke", "currentColor"),
-        attribute("stroke-width", "1.8"),
-        attribute("stroke-linecap", "round"),
-        attribute("stroke-linejoin", "round"),
-      ]),
-    ],
-  )
-}
-
-fn play_icon() -> Element(Msg) {
-  svg.svg(
-    [
-      attribute("viewBox", "0 0 14 14"),
-      attribute("width", "14"),
-      attribute("height", "14"),
-      attribute("aria-hidden", "true"),
-      attribute.class("icon"),
-    ],
-    [
-      svg.path([
-        attribute("d", "M 3 2 L 12 7 L 3 12 z"),
-        attribute("fill", "currentColor"),
-      ]),
-    ],
-  )
-}
-
-fn pause_icon() -> Element(Msg) {
-  svg.svg(
-    [
-      attribute("viewBox", "0 0 14 14"),
-      attribute("width", "14"),
-      attribute("height", "14"),
-      attribute("aria-hidden", "true"),
-      attribute.class("icon"),
-    ],
-    [
-      svg.rect([
-        attribute("x", "3"),
-        attribute("y", "2"),
-        attribute("width", "3"),
-        attribute("height", "10"),
-        attribute("fill", "currentColor"),
-      ]),
-      svg.rect([
-        attribute("x", "8"),
-        attribute("y", "2"),
-        attribute("width", "3"),
-        attribute("height", "10"),
-        attribute("fill", "currentColor"),
-      ]),
-    ],
-  )
 }

@@ -7,12 +7,17 @@
 //// `::figure name` line that embeds one of the explainer figures. Prose goes
 //// through `site/inline` for code, bold and links.
 
+import gleam/int
 import gleam/list
+import gleam/option.{type Option}
 import gleam/string
-import lustre/attribute
+import lustre/attribute.{attribute}
 import lustre/element.{type Element}
 import lustre/element/html
+import site/code
 import site/inline
+import site/msg.{type Msg}
+import site/route
 
 /// One block of a page.
 pub type Block {
@@ -220,25 +225,38 @@ pub fn slug(text: String) -> String {
   |> string.join("-")
 }
 
-/// Renders blocks. `figure` builds the element for a `::figure` line.
-pub fn render(
-  blocks: List(Block),
-  figure: fn(String) -> Element(msg),
-) -> List(Element(msg)) {
-  list.map(blocks, fn(block) {
+/// Where a rendered page sits, and what it needs from the page that hosts it.
+pub type Host {
+  Host(
+    /// The documentation page's slug, which heading anchors link under.
+    slug: String,
+    /// The code sample that shows "Copied", if any.
+    copied: Option(String),
+    /// Builds the element for a `::figure` line.
+    figure: fn(String) -> Element(Msg),
+  )
+}
+
+/// Renders blocks. Every fenced sample gets a copy button, named by its
+/// position on the page, and every heading a link to itself.
+pub fn render(blocks: List(Block), host: Host) -> List(Element(Msg)) {
+  list.index_map(blocks, fn(block, index) {
     case block {
       Title(text) -> html.h1([], [element.text(text)])
-      Heading(level, id, text) -> heading(level, id, text)
+      Heading(level, id, text) -> heading(host.slug, level, id, text)
       Para(text) -> inline.paragraph(text)
       Code(lang, text) ->
-        html.pre([attribute.attribute("data-lang", lang)], [
-          html.code([], [element.text(text)]),
-        ])
+        code.view(
+          host.slug <> "-code-" <> int.to_string(index),
+          lang,
+          text,
+          host.copied,
+        )
       Table(head, rows) -> render_table(head, rows)
       Bullets(items) -> html.ul([], list.map(items, item))
       Numbered(items) -> html.ol([], list.map(items, item))
       Note(text) -> html.aside([attribute.class("note")], inline.render(text))
-      Figure(name) -> figure(name)
+      Figure(name) -> host.figure(name)
     }
   })
 }
@@ -247,13 +265,23 @@ fn item(text: String) -> Element(msg) {
   html.li([], inline.render(text))
 }
 
-fn heading(level: Int, id: String, text: String) -> Element(msg) {
-  // Headings carry an id for the page outline and for `#/docs/page/section`
-  // links. They are not rendered as `#id` links, because a bare fragment
-  // would replace the route.
+/// A heading with its id and a link to it. The link's target is the page's
+/// own route plus the id, because a bare `#id` fragment would replace the
+/// route that says which page this is.
+fn heading(slug: String, level: Int, id: String, text: String) -> Element(Msg) {
+  let link =
+    html.a(
+      [
+        attribute.class("anchor"),
+        attribute.href(route.to_hash(route.Doc(slug, id))),
+        attribute("aria-label", "Link to the section " <> text),
+      ],
+      [element.text("#")],
+    )
+  let children = list.append(inline.render(text), [link])
   case level {
-    2 -> html.h2([attribute.id(id)], inline.render(text))
-    _ -> html.h3([attribute.id(id)], inline.render(text))
+    2 -> html.h2([attribute.id(id)], children)
+    _ -> html.h3([attribute.id(id)], children)
   }
 }
 

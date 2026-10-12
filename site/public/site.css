@@ -356,8 +356,7 @@ pre code {
 
 /* At a glance and contents ------------------------------------------------ */
 
-.facts,
-.contents {
+.facts {
   max-width: var(--wide);
   margin: 0 auto;
   padding: 0 var(--gutter);
@@ -385,31 +384,6 @@ pre code {
   margin: 0.3rem 0 0;
   font-size: 0.98rem;
   line-height: 1.5;
-}
-
-.contents {
-  margin-top: 2.5rem;
-}
-
-.contents ol {
-  list-style: none;
-  padding: 0;
-  margin-top: 0.5rem;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.4rem 2rem;
-  counter-reset: part;
-}
-
-.contents li {
-  counter-increment: part;
-}
-
-.contents li::before {
-  content: counter(part) ".";
-  font-family: var(--sans);
-  color: var(--ink-3);
-  margin-right: 0.5rem;
 }
 
 /* Stories ----------------------------------------------------------------- */
@@ -827,5 +801,454 @@ th {
   .neighbour:last-child {
     text-align: left;
     margin-left: 0;
+  }
+}
+
+/* Buttons, continued -------------------------------------------------------- */
+
+.button-primary .button-label {
+  margin-left: 0.55rem;
+  font-weight: 500;
+  opacity: 0.8;
+}
+
+.button-quiet {
+  border-color: transparent;
+  text-decoration: underline;
+  text-decoration-color: var(--amber);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 0.2em;
+}
+
+.nav-download {
+  font-family: var(--sans);
+  font-weight: 600;
+  color: var(--paper);
+  background: var(--ink);
+  border: 1px solid var(--ink);
+  border-radius: 4px;
+  padding: 0.28rem 0.75rem;
+  text-decoration: none;
+}
+
+.nav-download:hover {
+  background: var(--ink-2);
+  color: var(--paper);
+}
+
+/* The landing grid and its sidebar --------------------------------------------- */
+
+.landing {
+  max-width: var(--wide);
+  margin: 0 auto;
+  padding: 0 var(--gutter);
+  display: grid;
+  grid-template-columns: 11.5rem minmax(0, 1fr);
+  gap: clamp(1.5rem, 3.4vw, 3.5rem);
+  align-items: start;
+}
+
+.landing-body {
+  min-width: 0;
+}
+
+.landing-body .story {
+  max-width: none;
+  padding: 0;
+  margin: clamp(3.5rem, 7vw, 6rem) 0 0;
+  scroll-margin-top: calc(var(--stick) + 8px);
+}
+
+.landing-body .story:first-child {
+  margin-top: 2.5rem;
+}
+
+.toc {
+  position: sticky;
+  top: calc(var(--bar) + 24px);
+  margin-top: 2.5rem;
+  font-family: var(--sans);
+  font-size: 0.88rem;
+}
+
+.toc-toggle {
+  display: none;
+}
+
+.toc-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  border-top: 1px solid var(--rule-strong);
+}
+
+.toc-list li {
+  border-bottom: 1px solid var(--rule);
+}
+
+.toc-item {
+  all: unset;
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  padding: 0.5rem 0.55rem;
+  cursor: pointer;
+  color: var(--ink-2);
+  line-height: 1.35;
+}
+
+.toc-item:hover {
+  color: var(--ink);
+}
+
+.toc-item.is-current {
+  color: var(--ink);
+  font-weight: 600;
+  background: var(--surface);
+}
+
+.toc-item:focus-visible {
+  outline: 2px solid var(--hot);
+  outline-offset: -2px;
+}
+
+/* A section's own heading size inside the narrower column */
+
+.landing-body .story-head h2 {
+  font-size: clamp(1.6rem, 1.1rem + 1.6vw, 2.35rem);
+}
+
+.landing-body .story-head h3 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin-top: 2.2rem;
+}
+
+/* Hero --------------------------------------------------------------------------- */
+
+.hero h1 {
+  max-width: 19em;
+}
+
+/* Platforms and status ----------------------------------------------------------- */
+
+.status-table {
+  margin-top: 1.6rem;
+}
+
+.status-table table {
+  min-width: 0;
+}
+
+.status-table th[scope="row"] {
+  border-bottom-color: var(--rule);
+  font-family: var(--serif);
+  font-size: 0.95rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+.status-notes {
+  margin-top: 2rem;
+}
+
+.install-source {
+  margin-top: 2.5rem;
+}
+
+.install-code {
+  margin-top: 1rem;
+  max-width: 44rem;
+}
+
+/* Code samples --------------------------------------------------------------------- */
+
+.code {
+  margin-top: 1rem;
+  background: var(--code-bg);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.code figcaption {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.3rem 0.4rem 0.3rem 0.8rem;
+  border-bottom: 1px solid var(--rule);
+  font-family: var(--sans);
+  font-size: 0.78rem;
+  color: var(--ink-3);
+}
+
+.code-lang {
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.copy {
+  font-family: var(--sans);
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--ink-2);
+  background: var(--paper);
+  border: 1px solid var(--rule-strong);
+  border-radius: 3px;
+  padding: 0.22rem 0.65rem;
+  cursor: pointer;
+}
+
+.copy:hover {
+  border-color: var(--ink);
+  color: var(--ink);
+}
+
+.copy.is-done {
+  color: var(--trust);
+  border-color: var(--trust);
+}
+
+.code pre {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  font-size: 0.8rem;
+}
+
+.code-line {
+  display: block;
+}
+
+.t-comment {
+  color: var(--ink-3);
+  font-style: italic;
+}
+
+.t-str {
+  color: var(--trust);
+}
+
+.t-kw {
+  color: var(--jail);
+}
+
+.t-prompt {
+  color: var(--ink-3);
+  user-select: none;
+}
+
+.t-key {
+  color: var(--link);
+}
+
+.t-header {
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.sample .sample-title {
+  font-family: var(--sans);
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--ink-3);
+  margin: 0;
+}
+
+.sample .code {
+  margin-top: 0.35rem;
+}
+
+/* Heading links in the documentation ---------------------------------------------- */
+
+.anchor {
+  margin-left: 0.45em;
+  font-family: var(--sans);
+  font-size: 0.8em;
+  font-weight: 400;
+  color: var(--ink-3);
+  text-decoration: none;
+  opacity: 0;
+}
+
+h2:hover .anchor,
+h3:hover .anchor,
+.anchor:focus-visible {
+  opacity: 1;
+}
+
+.anchor:hover {
+  color: var(--link);
+}
+
+@media (hover: none) {
+  .anchor {
+    opacity: 0.55;
+  }
+}
+
+/* The footer -------------------------------------------------------------------------- */
+
+.foot-licence {
+  margin-top: 0.5rem;
+}
+
+/* Narrow screens: the sidebar becomes a bar ------------------------------------------- */
+
+@media (max-width: 899px) {
+  :root {
+    --stick: calc(var(--bar) + var(--toc-bar));
+  }
+
+  .landing {
+    display: block;
+    padding: 0;
+  }
+
+  .landing-body {
+    padding: 0 var(--gutter);
+  }
+
+  .toc {
+    position: sticky;
+    top: var(--bar);
+    z-index: 25;
+    height: var(--toc-bar);
+    margin: 1.5rem 0 0;
+    background: var(--paper);
+    border-top: 1px solid var(--rule);
+    border-bottom: 1px solid var(--rule);
+  }
+
+  .toc-toggle {
+    display: flex;
+    align-items: baseline;
+    justify-content: flex-start;
+    gap: 0.6rem;
+    width: 100%;
+    height: 100%;
+    padding: 0 var(--gutter);
+    font-family: var(--sans);
+    font-size: 0.9rem;
+    color: var(--ink);
+    background: none;
+    border: 0;
+    text-align: left;
+    cursor: pointer;
+    align-items: center;
+  }
+
+  .toc-toggle::after {
+    content: "";
+    margin-left: auto;
+    width: 0.5rem;
+    height: 0.5rem;
+    border-right: 2px solid var(--ink-2);
+    border-bottom: 2px solid var(--ink-2);
+    transform: rotate(45deg) translate(-2px, -2px);
+  }
+
+  .toc-toggle[aria-expanded="true"]::after {
+    transform: rotate(225deg);
+  }
+
+  .toc-toggle:focus-visible {
+    outline: 2px solid var(--hot);
+    outline-offset: -4px;
+  }
+
+  .toc-toggle-label {
+    font-weight: 600;
+  }
+
+  .toc-current {
+    color: var(--ink-2);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .toc-list {
+    display: none;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    max-height: calc(100vh - var(--bar) - var(--toc-bar) - 12px);
+    overflow-y: auto;
+    background: var(--paper);
+    border-top: 0;
+    border-bottom: 1px solid var(--rule-strong);
+  }
+
+  .toc-list.is-open {
+    display: block;
+  }
+
+  .toc-item {
+    padding: 0.7rem var(--gutter);
+    font-size: 0.95rem;
+  }
+
+  .landing-body .story:first-child {
+    margin-top: 2rem;
+  }
+}
+
+@media (max-width: 760px) {
+  /* The status table becomes a list of labelled rows. */
+  .status-table table,
+  .status-table tbody,
+  .status-table tr,
+  .status-table th,
+  .status-table td {
+    display: block;
+  }
+
+  .status-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+  }
+
+  .status-table tr {
+    padding: 0.7rem 0;
+    border-bottom: 1px solid var(--rule-strong);
+  }
+
+  .status-table th,
+  .status-table td {
+    border: 0;
+    padding: 0.15rem 0;
+  }
+
+  .status-table td::before {
+    content: attr(data-label);
+    display: block;
+    font-family: var(--sans);
+    font-size: 0.74rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    margin-top: 0.35rem;
+  }
+}
+
+@media (max-width: 560px) {
+  .bar nav .nav-link:nth-of-type(3) {
+    display: none;
+  }
+
+  .bar nav {
+    gap: 0.8rem;
   }
 }

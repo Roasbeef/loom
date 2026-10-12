@@ -24,6 +24,7 @@
 }
 
 .panel {
+  scroll-margin-top: calc(var(--stick) + 8px);
   position: sticky;
   top: calc(var(--stick) + 14px);
   max-height: calc(100vh - var(--stick) - 28px);

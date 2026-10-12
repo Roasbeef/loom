@@ -13,7 +13,7 @@ here=$(cd "$(dirname "$0")/.." && pwd)
 
 # Files that carry copy: the Gleam sources (whose strings are the page text),
 # the Markdown documentation pages, and the HTML shell.
-files=$(find "$here/src" "$here/public/content" "$here/index.html" "$here/test" \
+files=$(find "$here/src" "$here/public/content" "$here/index.html" \
   -type f \( -name '*.gleam' -o -name '*.md' -o -name '*.html' \) | sort)
 
 status=0

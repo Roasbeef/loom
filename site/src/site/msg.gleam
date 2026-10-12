@@ -11,6 +11,13 @@ pub type FigureId {
   Migration
 }
 
+/// What the visitor can answer at the replay's approval dialog.
+pub type Decision {
+  AllowOnce
+  AllowSession
+  Deny
+}
+
 /// Everything that can change the page.
 pub type Msg {
   /// The URL fragment changed.
@@ -31,7 +38,33 @@ pub type Msg {
   ToggleMenu
   /// Scroll to a section of the landing page.
   JumpTo(String)
-  /// A key press the figure does not use.
+  /// The section spy found a different section under the reading line.
+  SectionScrolled(String)
+  /// Open or close the "On this page" list on a narrow screen.
+  ToggleContents
+  /// The reader chose a replay step with a button, a chip or an arrow key.
+  ReplayGo(Int)
+  /// Start the replay stepping by itself. At the end, this starts it over.
+  ReplayPlay
+  /// Stop the replay stepping by itself.
+  ReplayPause
+  /// The replay's timer fired for the given generation.
+  ReplayTick(Int)
+  /// Start the replay again from its first step, with no answer recorded.
+  ReplayRestart
+  /// The reader answered the approval dialog.
+  ReplayDecide(Decision)
+  /// The replay scrolled into view for the first time.
+  ReplayVisible
+  /// Show a step of a figure: set it, then scroll the figure into view.
+  ShowFigure(FigureId, Int)
+  /// Copy a code sample to the clipboard.
+  CopyText(id: String, text: String)
+  /// A copy finished. The id names the sample that gets its "Copied" label.
+  CopyDone(String)
+  /// The "Copied" label of a sample has been up long enough.
+  CopyReset(String)
+  /// A key press that nothing uses.
   Ignore
 }
 

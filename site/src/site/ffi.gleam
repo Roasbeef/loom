@@ -42,10 +42,24 @@ pub fn scroll_to_id(id: String) -> Nil
 @external(javascript, "../loom_site_ffi.mjs", "scroll_to_top")
 pub fn scroll_to_top() -> Nil
 
-/// Starts the scroll spy that reports which step of which figure is under
-/// the reading line.
+/// Copies text to the clipboard and calls back only if the copy worked.
+@external(javascript, "../loom_site_ffi.mjs", "copy_text")
+pub fn copy_text(text: String, on_done: fn() -> Nil) -> Nil
+
+/// Scrolls to an element of the page the reader is already on, smoothly
+/// unless the system asks for less motion.
+@external(javascript, "../loom_site_ffi.mjs", "jump_to_id")
+pub fn jump_to_id(id: String) -> Nil
+
+/// Starts the scroll spies. `on_step` hears which step of which figure is
+/// under the reading line, and `on_section` which of the section ids, in
+/// page order, the reader has scrolled to.
 @external(javascript, "../loom_site_ffi.mjs", "start_scroll_spy")
-pub fn start_scroll_spy(callback: fn(String, Int) -> Nil) -> Nil
+pub fn start_scroll_spy(
+  sections: List(String),
+  on_step: fn(String, Int) -> Nil,
+  on_section: fn(String) -> Nil,
+) -> Nil
 
 /// Records the step Gleam holds for a figure, so the spy reports only changes.
 @external(javascript, "../loom_site_ffi.mjs", "note_step")
@@ -54,3 +68,12 @@ pub fn note_step(figure: String, step: Int) -> Nil
 /// Scrolls the text block of a step under the reading line.
 @external(javascript, "../loom_site_ffi.mjs", "reveal_step")
 pub fn reveal_step(figure: String, step: Int) -> Nil
+
+/// Scrolls a figure into view at a step, from a link elsewhere on the page.
+@external(javascript, "../loom_site_ffi.mjs", "show_step")
+pub fn show_step(figure: String, step: Int) -> Nil
+
+/// Calls back once, the first time at least this fraction of the element is
+/// on screen.
+@external(javascript, "../loom_site_ffi.mjs", "observe_once")
+pub fn observe_once(id: String, fraction: Float, callback: fn() -> Nil) -> Nil

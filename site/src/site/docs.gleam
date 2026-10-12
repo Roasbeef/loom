@@ -29,8 +29,8 @@ pub fn pages() -> List(Page) {
   [
     Page(
       "getting-started",
-      "Getting started",
-      "Build Loom from source, start a session and try the demo.",
+      "Install",
+      "Download a release, verify it, install it and update it. Build from source instead if you prefer.",
     ),
     Page(
       "configuration",
@@ -55,7 +55,7 @@ pub fn pages() -> List(Page) {
     Page(
       "distributed-runtime",
       "Distributed runtime",
-      "Orchestrators, executors, and moving a session. In development.",
+      "Orchestrators, executors, pools and moving a session, and what a remote session cannot do yet.",
     ),
     Page(
       "terminal-and-web",
@@ -130,9 +130,13 @@ fn article(
 ) -> Element(Msg) {
   let outline = markdown.outline(blocks)
   let body =
-    list.append(markdown.render(blocks, fn(name) { embed(model, name) }), [
-      neighbours(slug),
-    ])
+    list.append(
+      markdown.render(
+        blocks,
+        markdown.Host(slug, model.copied, fn(name) { embed(model, name) }),
+      ),
+      [neighbours(slug)],
+    )
     |> insert_outline(slug, outline)
   html.article([attribute.class("prose")], body)
 }
@@ -184,6 +188,7 @@ fn embed(model: Model, name: String) -> Element(Msg) {
         figures.spec(id),
         m.step(model, id),
         m.is_playing(model, id),
+        model.copied,
       )
     Error(Nil) -> element.none()
   }
