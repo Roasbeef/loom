@@ -254,8 +254,17 @@ the life of a ledger, so at most 256 atoms. The rule in protocol-change/078 that
 peer names become atoms "once, from the finite configuration" becomes "from the
 finite, signed ledger". `net_kernel:allow/1` is called with each enrolled name when
 its entry is applied and is never reduced; OTP does not support reducing it. A
-revoked name stays allowed. The pin table is the check on the certificate, and the
-allow list is only a check on the claimed name.
+revoked name stays allowed. The allow list checks the name of an outbound
+connection and the host of an inbound one, and neither is a revocation mechanism.
+An outbound connection to an unlisted name is refused before TLS starts. An
+inbound connection under `inet_tls_dist` is not checked by name: the list becomes
+the hosts of the listed names that the peer's certificate covers, or the address
+the peer connected from when the certificate carries that address, and the
+claimed name must be on one of those hosts. The pin table is therefore the only
+gate on the identity of an inbound peer. Once the list is non-empty, an inbound
+peer needs a certificate that covers a listed host; `provision` issues
+certificates for the node name and the host, so applying the entry for a node on
+a new host adds that host.
 
 ### The `loom_ledger` process and its vocabulary
 

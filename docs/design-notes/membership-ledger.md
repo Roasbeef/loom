@@ -374,9 +374,17 @@ rule, "peer names become atoms once, from the finite configuration", relaxes
 to "from the finite, signed ledger", with the bound as the finite part.
 
 `net_kernel:allow/1` is called with each enrolled name and never shrinks. A
-revoked name stays allowed. That is harmless: the allow list is a check on the
-claimed node name, the pin is the check on the certificate, and a revoked
-certificate has no pin. Removal is enforced by the table and by disconnecting.
+revoked name stays allowed. That is harmless, because the allow list is not a
+revocation mechanism. It checks the name of an outbound connection, which is
+refused by exact name before TLS starts, and the host of an inbound one: under
+`inet_tls_dist` the list becomes the hosts of the listed names that the peer's
+certificate covers, or the address the peer connected from when the certificate
+carries that address, and the claimed name must be on one of those hosts. An
+inbound peer is not checked against the listed names themselves, so the pin is
+the only gate on the identity of an inbound peer. A revoked certificate has no
+pin. Removal is enforced by the table and by disconnecting. Once the list is
+non-empty, an inbound peer needs a certificate that covers a listed host, so
+applying the entry for a node on a new host adds that host to the list.
 
 ### 6.5 Disconnecting on revoke
 
