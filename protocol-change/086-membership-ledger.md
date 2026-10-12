@@ -292,7 +292,9 @@ bytes and subjects only.
 ```gleam
 pub type Message {
   /// What the sender holds. Sent by both ends when a connection comes up, after
-  /// the sender applies entries (to every connected peer but the source), and
+  /// the sender applies entries (to every connected peer but the source, and,
+  /// when the entries came from a pull that moved the head, to the source as
+  /// well, since a peer learns another's head only from this message), and
   /// every 60 seconds to each connected peer. `from` is the sender's inbox: a
   /// message to a registered name does not say who sent it, and the receiver
   /// that is behind must know where to send its `Pull`.
@@ -341,21 +343,26 @@ constructor sent to an older node halts it; both ends are upgraded together, and
 
 All three are owner-only commands of the client control protocol, Part 1.6.
 
-**`ledger.append`** takes `{"lines": ["<line>", ...]}`, at most 64 lines, and
-passes them through the acceptance steps. It replies
+**`ledger.append`** takes `{"lines": ["<line>", ...]}`, at most 64 lines of at most
+8 KiB each and at most 48,000 bytes in all (a frame is 64 KiB), and passes them
+through the acceptance steps. A caller sends larger files in pages. It replies
 
 ```json
 {"applied": 2, "head": {"seq": 9, "id": "4c1e..."}}
 ```
 
 A step failure is refused with `ledger_invalid`, whose message names the step:
-`malformed`, `bad_signature`, `fork`, `chain`, `invalid` or `unsupported_format`.
+`malformed`, `bad_signature`, `fork`, `chain`, `invalid` or `unsupported_format`,
+and `gap` for a line more than one past the head (step 5 ignores such a line, but a
+control command that is silent about a line it did not apply is worse than one that
+says so).
 Lines that were already applied before the failure stay applied. A daemon with no
 `ledger` refuses with `not_found`.
 
 **`ledger.entries`** takes `{"after": 7, "limit": 64}`, with `limit` clamped to 1
 through 64, and replies `{"lines": ["<line>", ...], "head_seq": 9}` with at most
-256 KiB of lines. It is the control-protocol twin of `Pull`. The operator's tool
+48,000 bytes of lines, because the reply is one 64 KiB frame; a page may be shorter
+than `limit`, and the caller continues from the last line it received. It is the control-protocol twin of `Pull`. The operator's tool
 uses it to fetch entries its own copy lacks before it signs.
 
 **`ledger.status`** takes no arguments and replies
@@ -409,10 +416,15 @@ a sentence, and `[directory]` is refused beside a ledger until phase 3. The auth
 belong to this `ca`), `NotEnrolled` and `Revoked`. Each has an operator sentence
 in `describe`. None carries a pin, key or cookie.
 
-Until phase 2, `[executors.<name>]`, `[orchestrators.<name>]` and
-`[directory] members` check their node against the ledger's member names
-instead of `[[distribution.peers]]`. A node that was never in `ever` is refused as
-today. A node in `ever` that is not active produces a warning and an inert row.
+`[executors.<name>]`, `[orchestrators.<name>]`, `[spawners.<name>]` and
+`[directory] members` check their node against the nodes in the reading node's pin
+table instead of `[[distribution.peers]]`, read from the ledger when the table is
+read (`client/ledger_reference`). The text proposed a warning and an inert row for a
+member that is in `ever` and no longer active; the build refuses the row instead,
+with the same sentence as a node that was never enrolled, because an operator finds
+a refusal at start sooner than a row that does nothing. The check is in phase 1
+because a bundle `provision` writes for an orchestrator carries an
+`[executors.<name>]` row for each executor it uses.
 
 ### The bundle
 
@@ -424,34 +436,48 @@ role or node name differs from that entry. `install` writes the ledger file besi
 the credentials and writes `ledger = ...` in place of the pin rows. `install`
 prints the time of the last entry and states that the node trusts the snapshot
 until it syncs. A `/1` bundle installs as before, and a `/2` bundle's tables are
-merged by the same rules.
+merged by the same rules. The ledger file is compared as a chain, not as a file:
+a file the bundle's ledger extends is replaced, a file that extends the bundle's
+ledger is kept, and two that diverge are refused unless `--force`. A `/2` bundle
+that puts its node in the session directory is refused before anything is written,
+until phase 3.
 
 ### Operator commands
 
-`provision PLAN OUT` writes `ledger.log`, `/2` bundles and `system.json`. It writes
-the authority certificate and the authority key, encrypted under a passphrase, to
-`~/.loom/authority/<deployment id>` (mode 0700) unless `--drop-authority` is given,
-in which case the ledger can never be extended. It reads the passphrase from a
+`provision PLAN OUT` writes `ledger.log`, `/2` bundles and `system.json`. This is
+its default; `--static` writes the `/1` bundles of protocol-change/078 instead and
+discards the key, and refuses `--drop-authority`, `--passphrase-file` and `--home`.
+It writes the authority certificate, the authority key encrypted under a
+passphrase, the operator's copy of the ledger and the deployment's cookie, to
+`~/.loom/authority/<deployment id>` (mode 0700, files 0600) unless
+`--drop-authority` is given, in which case the ledger can never be extended. The
+cookie is kept so that the bundle of a node enrolled later carries the same one;
+it is no more exposed than in the bundles `provision` wrote on the same machine. A
+plan with a session directory is refused without `--static` until phase 3. It reads the passphrase from a
 terminal prompt or `--passphrase-file`, and prints neither. The encryption is
 PBKDF2-HMAC-SHA256 with at least 600,000 iterations and a random salt, and
 AES-256-GCM, both from OTP `crypto`.
 
 | Command | Effect |
 |---|---|
-| `enroll NAME --node N --role R [--directory D] [--host H] [--port P] [--links A,B] [--out DIR] [--wait S]` | Validates the fold, mints a certificate for `N`, signs and appends a `member` entry, hands it to the daemon, writes `NAME.loombundle` (`/2`), and prints confirmations after at most `S` seconds (default 10). Until phase 3 it refuses a `--directory` other than `none`. |
-| `revoke NAME [--force] [--wait S]` | Checks that the member owns no sessions or scopes, and that the link graph stays connected; signs and appends a `revoke`; prints confirmations. From phase 3 it also checks that the voter count stays within protocol-change/083's bounds. `--force` skips the checks. |
+| `enroll NAME --node N --role R [--directory D] [--host H] [--port P] [--links A,B] [--workspace NAME=ROOT]... [--bundle-dir DIR] [--out DIR] [--force] [--wait S]` | Validates the fold, mints a certificate for `N`, signs and appends a `member` entry, hands it to the daemon, writes `NAME.loombundle` (`/2`), and prints confirmations after at most `S` seconds (default 10). Until phase 3 it refuses a `--directory` other than `none`. An existing bundle file is not replaced without `--force`. |
+| `revoke NAME [--reason TEXT] [--force] [--wait S]` | Checks that the link graph stays connected and that no executor loses its last orchestrator; signs and appends a `revoke`; prints confirmations. The check that the member owns no sessions or scopes is phase 2, because no daemon can ask another what it owns; the output says it was not made. From phase 3 it also checks that the voter count stays within protocol-change/083's bounds. `--force` skips the checks. |
 | `renew NAME` | Mints a new certificate for an existing member, signs a `member` entry with the new pin, and writes a new bundle. The node installs the bundle and restarts. Connections that exist to the renewed member are dropped when the entry is applied, since the old certificate may be the reason for the renewal; until the restart, the node's new handshakes are refused. |
 | `log [--json]` | Prints the entries with their identities, the last refusal if there is one, and the members' reported heads when a daemon answers. |
 | `import FILE` | Client-side. Reads a ledger file and feeds its lines to the local daemon's `ledger.append` in pages of 64. It adds no second way for a node to adopt entries. |
 
-`enroll` and `revoke` take a lock on the operator's ledger copy and ask the daemon
+`enroll`, `revoke` and `renew` take a lock on the operator's ledger copy and ask the daemon
 for its head before they sign. If the daemon is ahead, they pull the missing
 entries with `ledger.entries` and verify them first. They refuse if the daemon holds
 an entry at a sequence number the operator's copy has, with a different identity.
 They hand the entry to a daemon with `ledger.append` on the control socket they are
-given (`--addr`, as other `loom` commands), and when no daemon is reachable they
-write the entry to the operator's copy and tell the operator to run `import` on a
-member's machine.
+given (`--state-dir DIR` for a daemon on this host, or `--addr URL --token-file
+PATH` as `loom access` takes them), and when no daemon is reachable they write the
+entry to the operator's copy and tell the operator to run `import` on a member's
+machine. A command does not wait for the member it just enrolled or renewed, which
+cannot confirm until its bundle is installed. `loom distribution enroll`, `revoke`
+and `renew` need `--passphrase-file`, because the launcher cannot pass a terminal
+to `loomd`.
 
 There is no command that resets a node after a fork. The design note documents the
 procedure: stop the daemon, truncate the ledger file to the lines before the fork

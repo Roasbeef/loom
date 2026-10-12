@@ -6591,8 +6591,9 @@ each own one step:
   `System` (`system.json`), and writes `<node>.loombundle` (mode 0600) and
   `system.json` into a 0700 directory it refuses to reuse without `--force`. The
   CA key is dropped when `provision` returns. `render` is `show`.
-  `provision_ledger` is the ledger mode (below): it keeps the key, returns it as
-  an `Authority` for the caller to seal or drop, and `write` adds `ledger.log`.
+  `provision_ledger` is the ledger mode (below), which the command uses unless
+  `--static`: it keeps the key and the cookie, returns them as an `Authority` for
+  the caller to seal or drop, and `write` adds `ledger.log`.
 - `client/distribution_bundle` is the single-file bundle: JSON, marker
   `loom-distribution-bundle/1` (or `/2`, below), the node's role, `Trust` (peers
   with pins, or a ledger), role tables and the CA, certificate, key and cookie
@@ -6612,11 +6613,12 @@ each own one step:
   existing cookie at `$HOME/.erlang.cookie` is refused unless `--force`, since
   Erlang reads one cookie for every node the user starts. Rerunning with the
   same bundle changes nothing.
-- `daemon/distribution_cli` dispatches `init`, `provision`, `show`, `install`
-  and `options`. `run` returns the text to print; `main` prints and halts. No
-  command prints a key, cookie, passphrase or certificate. `provision` takes
-  `--ledger`, `--drop-authority`, `--passphrase-file` and `--home` (below); the
-  tui carries a byte-identical copy of the usage text, which
+- `daemon/distribution_cli` dispatches `init`, `provision`, `show`, `install`,
+  `options` and the five ledger commands (`daemon/ledger_cli`, below). `run`
+  returns the text to print; `main` prints and halts. No command prints a key,
+  cookie, passphrase or certificate. `provision` writes a ledger unless given
+  `--static`, and takes `--drop-authority`, `--passphrase-file` and `--home`
+  (below); the tui carries a byte-identical copy of the usage text, which
   `scripts/cli_help_test.sh` compares.
 - `daemon/executor_cli` is `loomd executor release SESSION [--state-dir PATH]`
   (`loom executor release` forwards to it from the launcher, with the help text
@@ -8147,8 +8149,8 @@ through an observer.
 
 ## The membership ledger, provisioning (protocol-change/086, slice 1d-i)
 
-`provision --ledger` signs a ledger for the plan and keeps the authority key.
-Static mode, `[[distribution.peers]]` and `/1` bundles are unchanged.
+`provision` signs a ledger for the plan and keeps the authority key, unless
+`--static`. Static mode, `[[distribution.peers]]` and `/1` bundles are unchanged.
 
 - `client/authority_key` is custody of the key. `keep` writes
   `<home>/.loom/authority/<deployment id>` (directory 0700) holding `key.enc`,
@@ -8188,23 +8190,25 @@ Static mode, `[[distribution.peers]]` and `/1` bundles are unchanged.
   that `executors` rows and `directory` are checked against are the node's pin
   table. `config_tables` writes `ledger = "<dir of ca>/ledger.log"` and no peer
   row (`ledger_path`, `ledger_file`).
-- `install` decodes a `/2` bundle and then refuses it, writing nothing. Running
-  one needs `distribution.from_document` to accept a ledger with no peers,
-  `tls_options` to render the live verify state, and the `[executors]` and
-  `[orchestrators]` reference checks to read the ledger's members. Those belong
-  to the change that makes the ledger the trust list.
-- `--ledger` is opt-in for now, for the same reason. `provision` checks the
-  output directory and reads the passphrase before it mints, seals the key before
-  it writes the bundles, and writes `OUT/ledger.log` beside them. `Provisioned`
-  carries the ledger text as a `String` for `keep_authority`; `Deployment.ledger`
-  stays an `Option` because `write` is shared with static mode.
-- The terminal prompt works only under `loomd distribution provision`. `loom
+- `install` takes a `/2` bundle (slice 1d-ii, below).
+- `provision` writes a ledger by default and `--static` is the opt-in for the
+  `/1` bundles. It checks the output directory and reads the passphrase before it
+  mints, seals the key before it writes the bundles, and writes `OUT/ledger.log`
+  beside them. `Provisioned` carries the ledger text as a `String` for
+  `keep_authority`; `Deployment.ledger` stays an `Option` because `write` is
+  shared with static mode. A plan with a session directory is refused without
+  `--static`. `--static` is refused beside `--drop-authority`,
+  `--passphrase-file` and `--home`, which only a ledger reads.
+- The terminal prompt works only under `loomd distribution`. `loom
   distribution …` runs `loomd` through a port whose stdin is a pipe, so the
   prompt would answer `NoTerminal`; the launcher (`tui.forward_distribution`)
-  refuses `provision --ledger` with neither `--passphrase-file` nor
-  `--drop-authority` before it spawns, and the usage text says so. `--home` is
-  refused by static `provision` (`check_provision_home`), since only the ledger
-  path reads it; `install` keeps it.
+  refuses `provision` with none of `--passphrase-file`, `--drop-authority` and
+  `--static`, and `enroll`, `revoke` and `renew` without `--passphrase-file`,
+  before it spawns, and the usage text says so.
+
+- The kept directory has a fourth file, `cookie` (`Kept.cookie`,
+  `authority_key.cookie`, 0600, unsealed): `enroll` and `renew` write bundles and
+  a bundle carries the cookie. `provision_ledger`'s `Authority` carries it.
 
 Tests: `authority_key_test` (round trip, wrong passphrase, each changed field,
 the deployment binding, the shape and weak-parameter refusals, permissions,
@@ -8224,8 +8228,9 @@ replaces `[[distribution.peers]]`, and a document with both is refused by
   the pin-less file (`ffi_distribution.live_options`) and `start` calls
   `ffi_distribution.start_live` (the same Erlang functions as the static ones,
   which accept the atom `live` in place of a peer list). `peer_nodes` is empty in
-  ledger mode, so `[executors]`, `[orchestrators]` and `[directory]` are refused
-  beside a ledger until their reference checks read the ledger. `distribution`
+  ledger mode, which only `client/ledger_reference.nodes` reads: it answers the
+  tables that name a peer with the ledger's pin table (slice 1d-ii); `[directory]`
+  is still refused beside a ledger. `distribution`
   and `distribution_plan` must never import a `membership_*` or `ledger_*`
   module (`membership_entry` imports both), which is why the mode is a type in
   `distribution` and the ledger side starts it.
@@ -8265,3 +8270,70 @@ replaces `[[distribution.peers]]`, and a document with both is refused by
   dialing, enrollment without a restart, revoke dropping connections, and the
   node-up check alone ending a handshake that read the old row (a hook holds the
   ledger process before the publish; removing the check times the test out).
+
+## The membership ledger, install and the operator commands (protocol-change/086, slice 1d-ii)
+
+`install` takes a `/2` bundle, `provision` writes one by default, and
+`enroll`, `revoke`, `renew`, `log` and `import` extend and read the ledger.
+
+- `distribution_install` writes the ledger beside the credentials
+  (`distribution_bundle.ledger_path`), merges a `[distribution]` table with a
+  `ledger` key and no peer rows, and renders the live options file. The ledger
+  file is planned as a chain (`plan_ledger`): a file the bundle extends is
+  replaced, a file that extends the bundle is kept, two that diverge are refused
+  unless `--force`. A `/2` bundle with a directory is refused before anything is
+  written. The bundle's executor rows are not read against the ledger at install
+  (it is not on disk yet); `decode` already required each to name a peer in the
+  node's pin table. `Installed.snapshot` is the entry the bundle ends at.
+- `client/ledger_reference` opens a node's ledger from its `[distribution]` table
+  (`load`, with the checks `ledger_boot.open_service` used to make) and answers
+  `nodes(config)`: the `[[distribution.peers]]` nodes in static mode and the nodes
+  in the node's pin table in ledger mode. `executors`, `orchestrators`,
+  `spawners` and `directory/settings` check their `node` through it, so those
+  tables read the ledger when they are parsed. A revoked member's row is refused
+  at start. It reads the file, so a table parsed in ledger mode needs the file.
+- `client/ledger_control` is both halves of `ledger.append`, `ledger.entries` and
+  `ledger.status`. The daemon half takes a `Handle` (the `loom_ledger` process,
+  the node's name and its plan name from the ledger it started with, since a
+  revoked node cannot find itself by node name) and answers JSON; a refused
+  line is `Invalid(step)`, which `daemon/server` serves as `ledger_invalid`
+  with the step as the message (`gap` for a line past the head). The operator half
+  is total decoders (`decode_status`, `decode_entries`, `decode_applied`) and
+  `pages`/`fit_page`, which bound a frame to 48,000 bytes of lines. `daemon/main`
+  builds the handle after `start_distribution` and `server.Config.ledger` carries
+  it; a daemon without one answers `not_found`. `host/access` carries the
+  `ledger_invalid` message to the caller (`refusal_code`) and has
+  `raw_remote_request`; `daemon/admin.ledger_request` takes a `Where`
+  (`ThisHost` or `OverNetwork`) and validates with the daemon's decoder.
+- `client/ledger_operator` is the pure part of the commands: `enroll`, `renew`
+  and `revoke` build the entry from the fold (a renewal copies the member's
+  current fields from the fold, not its last entry) and run
+  `membership_ledger.check`, `describe` turns a refusal into a sentence,
+  `concerns(before, after)` lists what a revoke newly breaks (`Orphaned` executor,
+  `Cut` members), and `confirmations(status, seq)` says who holds an entry.
+  `client/ledger_sync` keeps the operator's copy and a daemon in step: `catch_up`
+  pulls what the daemon has that the copy lacks, verified through the fold, and
+  refuses a fork, `hand_over` sends the daemon every line after its head, and
+  `await` polls `ledger.status` (weft poll) for at most `--wait`, not waiting for
+  the member just enrolled or renewed.
+- `daemon/ledger_cli` runs the commands. A signing command unlocks the kept key,
+  locks `<authority dir>/ledger.lock` (`bootstrap.try_launch_lock`), asks the
+  daemon for its status (an unreachable daemon is a reason and the entry stays in
+  the copy), catches up, decides, seals, applies, appends to the copy, writes the
+  bundle (`enroll`, `renew`) after checking it decodes, hands over, and prints the
+  confirmations. `run_with` takes the way to reach a daemon (`Connect`) so a test
+  uses a ledger process in its VM; `run` uses the socket. `revoke` does not check
+  that the member owns sessions (no daemon can ask another; phase 2) and says so.
+  `enroll` refuses a `--directory` other than `none`.
+- `ledger_service` sends the puller's head to the peer it pulled from, so the
+  source's `status` reports it within seconds (without it, at the next tick).
+- Tests: `ledger_install_test` (install, idempotence, fork refusal, boot from
+  the install, the remedy for a node that applied its own revoke),
+  `ledger_reference_test`, `ledger_control_test`, `daemon_ledger_test` (the
+  socket, bounds, `not_found`), `ledger_operator_test` (pure),
+  `ledger_cli_test` (each command with a ledger process as the daemon: offline,
+  online, refusals, catch-up, fork, import, log), `ledger_operator_live_test`
+  (provision, install, three emulators over TLS, enroll while they run, revoke,
+  log; the operator's requests are relayed to the node's `ledger_control`), over
+  `support/ledger_deployment`, `client_ledger_operator_fixture_ffi.erl` and the
+  `control` command of `client_ledger_live_fixture_ffi.erl`.

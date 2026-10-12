@@ -284,10 +284,60 @@ a slow handshake never holds up heads or offers. Its outcome is not reported: a
 connection that comes up is a node-up and the head the executor then reports
 ends the dialing. Executors do not dial.
 
-**Limits of this slice.** `[executors]`, `[orchestrators]` and `[directory]`
-still check their references against `[[distribution.peers]]`, so they are
-refused beside a ledger, and a daemon with a `[directory]` table cannot use a
-ledger. Both wait for the ledger to name the members those tables refer to.
+**Peer tables.** `[executors.<name>]`, `[orchestrators.<name>]`, `[spawners.<name>]`
+and `[directory] members` name a peer by node. In static mode the node must be
+a `[[distribution.peers]]` row. In ledger mode `client/ledger_reference` opens
+the ledger when the table is read and requires the node to be in this node's pin
+table, which is the members it is linked to. The same module owns the checks the
+daemon's start makes of the file, so the two readers use one set of sentences. A
+row that names a member since revoked is refused at start, and the operator edits
+the row. A daemon with a `[directory]` table still cannot use a ledger, because
+the directory's members come from `[directory] members` until phase 3 of 086.
+
+**Control commands.** `ledger.append`, `ledger.entries` and `ledger.status` are
+owner-only commands of the control socket (`client/ledger_control` holds both
+halves). `ledger.append` offers lines to the process in order through the
+acceptance procedure, so the socket adds no trust beyond the owner check, and a
+refused line is `ledger_invalid` with the step as its message. `ledger.entries`
+is the local twin of a `Pull`. `ledger.status` reports the head, this node's
+standing (`ok`, `revoked`, `not_enrolled`), each active member with the head it
+last reported, and the last refusal. A frame is 64 KiB in both directions, so a
+page of entries and an append are cut to 48,000 bytes of lines as well as 64
+lines. A daemon with no ledger answers `not_found`.
+
+**A node tells the peer it pulled from.** After a pull that moved the head, the
+node sends its head to the peer it pulled from as well as to the others. The
+source already holds the entries but cannot know they were applied, and it learns
+a peer's head only from a `Head` message, so without this the origin of an entry
+would see no peer confirm it until the next 60 second tick.
+
+### The operator's commands
+
+`client/daemon/ledger_cli` holds `enroll`, `revoke`, `renew`, `log` and `import`,
+which run on the operator's machine and need no daemon of their own. A signing
+command unlocks the kept authority key, takes a lock on the operator's copy of
+the ledger (`<authority dir>/ledger.log`), and asks a daemon for its head. A
+daemon that is ahead has its lines pulled and verified into the copy first
+(`client/ledger_sync`), and a daemon that holds a different entry at a sequence
+number the copy has stops the command, so two machines holding the key cannot
+fork the ledger by accident. The entry is built from the fold state by
+`client/ledger_operator`, run through `membership_ledger.check`, signed and
+appended to the copy. The daemon then gets every line it lacks, and the command
+polls `ledger.status` for at most `--wait` seconds (10 by default) and prints
+which members hold the new head. The member just enrolled or renewed is listed
+and not waited for, since it cannot confirm before its bundle is installed. With
+no reachable daemon the entry stays in the copy and the output says to run
+`import` on a member's machine.
+
+`enroll` and `renew` mint a certificate under the kept authority and write a
+`/2` bundle with the whole ledger as of the new entry. The cookie in it is the
+deployment's, kept in `<authority dir>/cookie`. A renewal's bundle carries no
+`[executors]` rows or workspaces, so installing it over the node's old install
+does not conflict with edits the operator made to them. `revoke` refuses when it
+would leave an executor with no orchestrator linked to it or cut members off from
+the rest, unless `--force`. It does not check that the member owns no sessions: a
+session is owned by a daemon and no daemon can ask another until the admin
+surface carries it (phase 2).
 
 ### Booting a distributed VM
 
@@ -355,34 +405,41 @@ options file is mounted into a jail.
 `loom distribution` (`dist` for short, and `loomd distribution` on the daemon)
 takes an operator from nothing to a trusted deployment without `openssl`. `init`
 writes an example plan; `provision` reads the plan, mints one authority, one
-ECDSA P-256 certificate per node and one cookie, and writes one
-`<node>.loombundle` per node plus a secret-free `system.json`; `show` prints the
-deployment; `install` puts one bundle's files in place and merges its role
-tables into `loom.toml`; `options` renders the TLS options file. A bundle holds
-the node's private key and the cookie, and no command prints either. The
-authority's key is dropped when `provision` returns, so adding a node or
-renewing a certificate means provisioning again and reinstalling every bundle.
-The plan and bundle rules call the daemon's own validators, so a bundle that
-installs is one the daemon accepts. The setup guide, section 3, has the
-commands and the files they produce.
+ECDSA P-256 certificate per node and one cookie, signs a membership ledger and
+writes one `<node>.loombundle` per node plus a secret-free `system.json` and
+`ledger.log`; `show` prints the deployment; `install` puts one bundle's files in
+place and merges its role tables into `loom.toml`; `options` renders the TLS
+options file; `enroll`, `renew`, `revoke`, `log` and `import` change and read the
+ledger afterwards (see The operator's commands, above). A bundle holds the node's
+private key and the cookie, and no command prints either. The plan and bundle
+rules call the daemon's own validators, so a bundle that installs is one the
+daemon accepts. The setup guide, section 3, has the commands and the files they
+produce.
 
-`provision --ledger` is the ledger mode of
-[protocol-change/086](../../protocol-change/086-membership-ledger.md). It mints
-the same certificates and then signs a membership ledger with the authority key:
-a genesis entry and one `member` entry per plan node, whose `links` and
-directory standing reproduce the peer lists static mode would have written. Each
-node's pin table, derived from the ledger, equals that list, and a test holds the
-two equal. Each bundle (`loom-distribution-bundle/2`) carries the ledger in place
-of the peer list, `decode` replays it against the bundle's own CA, and
-`OUT/ledger.log` holds the same file. Unlike static mode, the authority key is
-kept: `client/authority_key` seals it with PBKDF2-HMAC-SHA256 (600,000
-iterations) and AES-256-GCM under a passphrase, in
-`~/.loom/authority/<deployment id>` (directory mode 0700, files 0600), beside
-the authority certificate and the operator's copy of the ledger. The passphrase
-comes from a terminal prompt that does not echo, or from `--passphrase-file`,
-never from an argument. `--drop-authority` keeps no key, and the ledger can then
-never be extended. In this build `install` refuses a `/2` bundle, because the
-daemon does not yet run a node from a ledger.
+The ledger is what `provision` writes by default
+([protocol-change/086](../../protocol-change/086-membership-ledger.md)): a genesis
+entry and one `member` entry per plan node, whose `links` and directory standing
+reproduce the peer lists static mode would have written. Each node's pin table,
+derived from the ledger, equals that list, and a test holds the two equal. Each
+bundle (`loom-distribution-bundle/2`) carries the ledger in place of the peer
+list, `decode` replays it against the bundle's own CA, and `OUT/ledger.log` holds
+the same file. `install` writes the ledger beside the credentials, writes a
+`[distribution]` table with a `ledger` key and no peer rows, and renders the live
+options file. The ledger file is compared as a chain: a file the bundle extends is
+replaced, a file that extends the bundle is kept, and two files that diverge are
+refused unless `--force`. A plan with a session directory cannot use a ledger yet,
+so `provision` refuses it and says to pass `--static`.
+
+The authority key is kept: `client/authority_key` seals it with
+PBKDF2-HMAC-SHA256 (600,000 iterations) and AES-256-GCM under a passphrase, in
+`~/.loom/authority/<deployment id>` (directory mode 0700, files 0600), beside the
+authority certificate, the operator's copy of the ledger and the cookie. The
+passphrase comes from a terminal prompt that does not echo, or from
+`--passphrase-file`, never from an argument. `--drop-authority` keeps no key, and
+the ledger can then never be extended. `provision --static` is the older mode:
+each bundle (`loom-distribution-bundle/1`) lists its peers' pins, the key is
+dropped when `provision` returns, and adding a node or renewing a certificate
+means provisioning again and reinstalling every bundle.
 
 ## One tool call, end to end
 
@@ -1377,14 +1434,16 @@ The directory holds no state of its own, so it has no model.
   `moved` members; the terminal, the web home and the Admin drawer draw a moving session with its
   destination and leave a moved one out, and the receiver's row is listed only
   on the receiver until the elsewhere group lands.
-- **Provisioning is one-shot until the operator commands land.** Certificate
-  rotation and adding a node without reissuing the others are later work. A
-  node can already run from a signed membership ledger (see Ledger mode above),
-  but nothing yet writes one: `provision` does not, and `enroll`, `revoke`,
-  `renew`, `log` and `import` are not built. The design that makes both a single
-  operator action is in
-  [the membership ledger note](../design-notes/membership-ledger.md) and
-  [protocol-change/086](../../protocol-change/086-membership-ledger.md).
+- **Membership changes are eventual, and some are not checked.** `enroll`,
+  `revoke` and `renew` change a running deployment without reprovisioning, and
+  a member that is off learns an entry when it next connects to one that has it.
+  A revoke does not check that the member owns no sessions, a plan with a
+  session directory cannot use a ledger, and rotating the authority or the
+  cookie means provisioning again. A node that was down across its own revoke
+  and re-enrolment, and receives the revoke at the end of one pull batch and the
+  re-enrolment in the next, self-revokes until `import` or a new bundle. The
+  design is in [the membership ledger note](../design-notes/membership-ledger.md)
+  and [protocol-change/086](../../protocol-change/086-membership-ledger.md).
 - **The ledger is one SQLite file per executor.** Corruption affects every
   scope's history on that machine; full sync and a digest over each outcome are
   the mitigation. Writes serialize through one actor, two short transactions per
@@ -1397,7 +1456,9 @@ The directory holds no state of its own, so it has no model.
 | `client/distribution`, `client/internal/ffi_distribution`, `client_distribution_ffi.erl` | Membership: boot checks, TLS verify, `epmd`, hidden connect |
 | `client/ledger_boot`, `client/ledger_trust`, `client/ledger_service` | Ledger mode: the order at boot, the pin table, the allow list, disconnects, dialing |
 | `client/distribution_plan`, `_provision`, `_bundle`, `_install`; `daemon/distribution_cli` | `loom distribution` |
-| `client/authority_key`, `client/membership_provision` | The kept authority key, and the first ledger of a `provision --ledger` run |
+| `client/authority_key`, `client/membership_provision` | The kept authority key and cookie, and the first ledger of a `provision` run |
+| `daemon/ledger_cli`, `client/ledger_operator`, `client/ledger_sync` | `enroll`, `revoke`, `renew`, `log`, `import`: the entry from the fold, the copy kept in step with a daemon, the confirmations |
+| `client/ledger_control`, `client/ledger_reference` | The `ledger.*` control commands, both halves; the ledger read for the start and for the tables that name a peer |
 | `client/executors`, `client/workspaces`, `client/pools`, `client/orchestrators` | The `[executors]`, `[workspaces]`, `[pools]` and `[orchestrators]` tables |
 | `client/tool_placement` | Which side runs each tool |
 | `client/remote/protocol`, `client/remote/address`, `client/remote/codec` | The closed node vocabulary and its transport |

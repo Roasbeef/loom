@@ -1030,6 +1030,46 @@ connect on the old row, then lets the process go with its sweep left out. Only
 the node-up check can end the connection, and removing the check makes the test
 time out.
 
+### Phase 1 slice 1d-ii: what was decided in the build (2026-10-12)
+
+The operator commands, `install` of a `/2` bundle and the default of `provision`
+landed. Points the proposal left open, or that the build changed:
+
+1. **`provision` writes a ledger by default.** The opt-in is `--static`, which
+   writes the `/1` bundles and discards the key. `--ledger` no longer exists. A
+   plan with a session directory is refused without `--static`, and so is the
+   install of a `/2` bundle with a directory, because the directory takes its
+   members from `[directory] members` until phase 3.
+2. **The peer tables read the ledger in phase 1.** A bundle `provision` writes for
+   an orchestrator carries `[executors.<name>]` rows, so they cannot be refused
+   beside a ledger. A row must name a node in the reader's pin table. A row that
+   names a revoked member is refused at start instead of becoming a warning and an
+   inert row.
+3. **The cookie is kept beside the sealed key.** `enroll` and `renew` write a
+   bundle, and a bundle carries the cookie. The directory of the kept authority has
+   a fourth file, `cookie` (0600), unsealed: the bundles `provision` wrote on the
+   same machine hold it in the clear already.
+4. **A node tells the peer it pulled from.** The proposal sent the head after a
+   pull to every peer but the source. The source then learned the puller's head
+   only at the next 60 second tick, so `enroll` could not report a confirmation
+   within its wait. A pull that moved the head now also sends the head to the
+   source.
+5. **Frames bound the pages.** The control protocol's 64 KiB frame bounds
+   `ledger.append` and `ledger.entries` to 48,000 bytes of lines as well as 64
+   lines. `import` and the catch-up before a signature page accordingly.
+6. **`revoke` cannot check sessions yet.** Phase 2 owns "the member owns no
+   sessions", which needs a daemon to ask another what it owns. Phase 1 checks the
+   link graph (an executor with no orchestrator left, and members cut off from the
+   rest) and says in its output that sessions were not checked. The open question
+   5 recommendation stands for the day the surface exists.
+7. **No confirmation from a member that has not started.** `enroll` and `renew`
+   list the node they just changed and do not wait for it.
+8. **A not-enrolled start names a remedy that works.** A node that applied its own
+   revoke cannot start. The sentence says to run `enroll` for it again and to
+   install the new bundle with `--force` (a re-enrolled name gets a new
+   certificate). `import` needs a running daemon, so it is not that remedy.
+   `ledger_install_test` runs it.
+
 ## 17. Open questions
 
 Each has a recommendation.

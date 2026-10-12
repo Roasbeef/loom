@@ -118,10 +118,19 @@ this for tunnels.
 ## 3. Create the credentials
 
 Every node gets a certificate signed by one private authority that `provision`
-creates, and every node learns the SHA-256 fingerprint ("pin") of each peer's
-certificate. A node accepts a peer only if the certificate chains to that
-authority, hashes to the pin, and names exactly that peer's node name. All nodes
-share one cookie.
+creates, and every node learns whom it may trust. A node accepts a peer only if
+the certificate chains to that authority, hashes to the peer's pin (the SHA-256
+fingerprint of its certificate), and names exactly that peer's node name. All
+nodes share one cookie.
+
+By default the list of whom a node may trust is a signed membership ledger
+([protocol-change/086](../protocol-change/086-membership-ledger.md)), and
+`provision` keeps the authority's key, sealed under a passphrase, so that you can
+add, replace and remove nodes later without provisioning again (section 3a).
+`provision --static` is the older mode: each bundle lists its peers' pins, the
+key is discarded, and any change means provisioning again and installing every
+bundle with `--force`. The quick starts in sections 4 to 6 use `--static`, which
+is what the runs behind their **Verified** marks used.
 
 You do not make these by hand. `loom distribution` does it, in three steps: write
 a plan, provision it once, and install one bundle per machine. (`loom dist` is a
@@ -170,12 +179,24 @@ lists every plan key.
 Then mint everything:
 
 ```sh
-loom distribution provision plan.toml out
+loom distribution provision plan.toml out --passphrase-file ~/.loom/authority-passphrase
 ```
 
+The passphrase protects the authority's key, which signs every change to the
+deployment's membership. Without `--passphrase-file`, `loomd distribution
+provision` asks for it twice on the terminal. `loom distribution provision` cannot
+ask, because the launcher runs `loomd` with a pipe for input, so it needs
+`--passphrase-file PATH` (a file only you can read, 12 to 1024 bytes), or
+`--drop-authority` to keep no key (the ledger can then never change), or
+`--static`. The key is sealed in `~/.loom/authority/<deployment id>` (`--home DIR`
+changes the `~`). Keep the passphrase: without the key and the passphrase the
+deployment's membership cannot change.
+
 This prints each bundle's path, role and node name, and writes
-`out/system.json`, a description of the deployment with no secrets, and one file
-per node, `out/<name>.loombundle`. `loom distribution show out` prints
+`out/system.json`, a description of the deployment with no secrets,
+`out/ledger.log`, the signed ledger, and one file per node,
+`out/<name>.loombundle`. A plan with a session directory (section 7) cannot use a
+ledger yet; `provision` says so and `--static` provisions it. `loom distribution show out` prints
 `system.json` as a table of nodes, pins and peer edges. **A bundle contains that node's
 private key and the shared cookie.** Copy each bundle to its machine over a
 channel you trust and delete the copies you do not need. Do not commit bundles.
@@ -209,9 +230,22 @@ hand when a pool needs them (section 7).
 
 You can write these files by hand, and the troubleshooting section refers to
 them. This is a complete pair for one orchestrator and one executor. Each file
-goes on its own machine.
+goes on its own machine. These are the files of a `--static` deployment, which
+lists its peers. A ledger deployment has the same files with one difference in
+`[distribution]`: a `ledger` key, the path of the ledger file `install` wrote
+beside the certificates, in place of the `[[distribution.peers]]` rows.
 
-The orchestrator's `loom.toml`:
+```toml
+[distribution]
+node = "orch@10.0.0.1"
+ca = "/home/me/.loom/distribution/ca.pem"
+certificate = "/home/me/.loom/distribution/cert.pem"
+key = "/home/me/.loom/distribution/key.pem"
+cookie = "/home/me/.erlang.cookie"
+ledger = "/home/me/.loom/distribution/ledger.log"
+```
+
+The orchestrator's `loom.toml` in static mode:
 
 ```toml
 [distribution]
@@ -256,6 +290,75 @@ trip people up:
 - `key` and `cookie` must be mode 0600.
 - The certificate must carry the node name as a DNS name in its subject
   alternative names, and only one name containing an `@`.
+
+### 3a. Adding, replacing and removing nodes
+
+**Pending** (written from the code and its tests; `ledger_operator_live_test`
+runs these commands against emulators connected over real TLS distribution, and
+no run on two machines has repeated them).
+
+These commands run on the machine that provisioned the deployment, or any machine
+that holds the kept key and a copy of the ledger. They need the passphrase, which
+`loomd distribution` asks for and `loom distribution` takes from
+`--passphrase-file PATH`. Each one hands its entry to a running daemon, by
+default the one on this host (`--state-dir DIR` selects another state directory,
+and `--addr URL --token-file PATH` a daemon on another host), which spreads it to
+the other nodes over the connections they already have.
+
+Add a laptop that uses the executor `box`:
+
+```sh
+loom distribution enroll laptop2 --node orch2@10.0.0.3 --role orchestrator \
+    --links laptop,box --out . --passphrase-file ~/.loom/authority-passphrase
+```
+
+`--links` names the members the new node may connect to; an orchestrator needs
+the executors it will use, and any other orchestrator it should reach. An
+executor also needs `--workspace NAME=ROOT` for each checkout it serves.
+`enroll` mints a certificate, signs a `member` entry, hands it to the daemon,
+writes `./laptop2.loombundle` and prints which members hold the new entry, after
+at most `--wait` seconds (10 by default):
+
+```text
+Enrolled laptop2 (orchestrator, orch2@10.0.0.3) as entry 3.
+Bundle: ./laptop2.loombundle (it holds the node's private key and the deployment's cookie; …)
+Handed to the daemon on this host. Members that hold entry 3:
+  box             confirmed
+  laptop          confirmed
+  laptop2         pending (has not reported)
+2 of 3 members hold it. A member that is off, or not started yet, learns it when it next connects to one that does.
+```
+
+Copy the bundle to the new machine and `loom distribution install laptop2.loombundle`
+there, then start the daemon as `install` prints. The other nodes learned the new
+member while they ran; none restarts. A member that is off during an enrollment or
+a revoke learns the entry when it next connects to a node that has it, so the
+report is a status and not a wait.
+
+Replace a certificate (`renew`), remove a node (`revoke`), read the ledger
+(`log`) and carry a ledger to a node nothing else reaches (`import`):
+
+```sh
+loom distribution renew laptop2 --out . --passphrase-file …   # install the new bundle with --force, restart the node
+loom distribution revoke laptop2 --reason "lost" --passphrase-file …
+loom distribution log
+loom distribution import ledger.log          # on a member's machine, against its daemon
+```
+
+`revoke` refuses when it would leave an executor with no orchestrator linked to
+it (that executor would never hear of a later entry) or cut members off from the
+rest, and says which; `--force` overrides. It does **not** check whether the node
+owns sessions, because one daemon cannot ask another what it owns: end or move the
+sessions first. A revoked node's connections are dropped at once, and a revoked
+name can be enrolled again. If the daemon cannot be reached, the command still
+signs and keeps the entry in your copy of the ledger
+(`~/.loom/authority/<deployment id>/ledger.log`) and tells you to run `import`
+with that file on any member's machine.
+
+A node that applied its own revoke cannot start: the daemon refuses with a
+sentence that says so. Run `enroll` for it again on the operator's machine and
+`loom distribution install --force` the new bundle on the node (the name gets a
+new certificate).
 
 ### The test fixture
 
@@ -309,8 +412,12 @@ proj = "/Users/me/src/myproj"
 ```
 
 ```sh
-loom distribution provision plan.toml out
+loom distribution provision plan.toml out --static
 ```
+
+`--static` writes the bundles this quick start was verified with. Without it
+`provision` writes a signed ledger and asks for a passphrase (section 3), which
+works the same way from here.
 
 The workspace path is a directory on the executor's machine. It does not need to
 exist when you provision. Install each bundle under its own home. `install`
@@ -684,7 +791,7 @@ Save it as `plan.toml`, then run `provision` from the image, as your own user so
 that the bundles are yours (**Verified**, Compose run `caf8bfcac`):
 
 ```sh
-docker run --rm --user $(id -u):$(id -g) -e HOME=/plan/home -v $PWD:/plan -w /plan --entrypoint loom loom-runtime:dev distribution provision plan.toml out
+docker run --rm --user $(id -u):$(id -g) -e HOME=/plan/home -v $PWD:/plan -w /plan --entrypoint loom loom-runtime:dev distribution provision plan.toml out --static
 ```
 
 ```sh
@@ -1263,7 +1370,8 @@ be down. Every orchestrator listed under `[orchestrators.<name>]` must be a
 member, and every member must pin every other member, executors included,
 because any member can become the cluster's leader.
 
-With `loom distribution provision`, list the members at the top of the plan by
+With `loom distribution provision --static` (a plan with a directory cannot use
+a ledger yet), list the members at the top of the plan by
 their plan names. Provisioning then peers every member with every other and
 writes the `[directory]` table into each member's bundle:
 
@@ -1540,16 +1648,16 @@ not yet do the following.
 - **No automatic connection.** Nodes connect only to the peers you list, only when
   asked. Members of a session directory are the exception: each keeps a
   connection to every other member, and those connections are visible.
-- **Provisioning is one-shot.** `provision` discards the authority's key, so adding
-  a node or renewing a certificate means provisioning again and installing every
-  bundle with `--force`. `provision --ledger` keeps the key, sealed under a
-  passphrase, and signs a membership ledger so that a later release can add and
-  remove nodes without reprovisioning (protocol-change/086). It asks for the
-  passphrase twice on the terminal only when run as `loomd distribution
-  provision`; `loom distribution provision --ledger` needs `--passphrase-file
-  PATH` (or `--drop-authority`). It is a preview:
-  `install` does not accept the bundles it writes yet, so use it only to look at
-  the ledger.
+- **Membership changes are eventual.** By default `provision` signs a membership
+  ledger and keeps the authority's key, so `enroll`, `renew` and `revoke` change a
+  running deployment without reprovisioning (section 3a). A member that is off
+  learns an entry when it next connects to a node that has it; a node isolated
+  from every peer that has the latest entries trusts an older membership until it
+  syncs, and `import` carries a ledger to it. `revoke` does not check that the
+  node owns no sessions. A plan with a session directory, or a deployment that
+  must change its authority or its cookie, is provisioned again, and
+  `provision --static` is the older mode in which every change is a new
+  provisioning.
 
 The orchestrator and executor trust each other completely. Do not put an executor
 on a machine you would not trust with the orchestrator's provider keys.
