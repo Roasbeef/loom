@@ -8330,7 +8330,12 @@ replaces `[[distribution.peers]]`, and a document with both is refused by
   confirmations. `run_with` takes the way to reach a daemon (`Connect`) so a test
   uses a ledger process in its VM; `run` uses the socket. `revoke` does not check
   that the member owns sessions (no daemon can ask another; phase 2) and says so.
-  `enroll` refuses a `--directory` other than `none`.
+  `enroll` refuses a `--directory` other than `none`, and an executor with no
+  `--links` (`ledger_operator.check_enrollment`: it would be linked to no
+  orchestrator, and links cannot be added to a member without a revoke). `renew`
+  takes `--bundle-dir` like `enroll`, since the ledger does not record where a
+  node was installed. A bundle that cannot be written leaves the entry in the
+  copy, and the error says to run `renew NAME` (`or_bundle_not_written`).
 - `ledger_service` sends the puller's head to the peer it pulled from, so the
   source's `status` reports it within seconds (without it, at the next tick).
 - Tests: `ledger_install_test` (install, idempotence, fork refusal, boot from
