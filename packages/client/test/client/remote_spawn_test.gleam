@@ -143,3 +143,27 @@ pub fn the_one_cap_refusal_is_named_by_the_limit_it_hit_test() {
 pub fn a_join_is_capped_below_the_agent_wait_ceiling_test() {
   assert remote_spawn.join_cap_ms == 25_000
 }
+
+// The sentence names the rule that stopped the spawn, and for a cap the key that
+// sets it, so the parent's model can change the request or do the work itself.
+pub fn every_refusal_reads_as_a_sentence_naming_its_rule_test() {
+  let sentence = remote_spawn.describe_refusal
+  assert sentence(CapReached(cap: remote_spawn.MaxSessions, limit: 4))
+    == "the cap `max_sessions` is 4 and was reached"
+  assert sentence(CapReached(cap: remote_spawn.MaxDepth, limit: 1))
+    == "the cap `max_depth` is 1 and was reached"
+  assert sentence(CapReached(cap: remote_spawn.SessionStrands, limit: 16))
+    == "the cap `session_strands` is 16 and was reached"
+  assert sentence(remote_spawn.UnknownSpawner(node: "laptop@100.64.0.5"))
+    == "it has no spawner configured for this machine (`laptop@100.64.0.5`)"
+  assert sentence(remote_spawn.ParentRunEnded)
+    == "the run that asked for this child has already ended"
+  assert sentence(remote_spawn.ToolOutsideCeiling(tool: "peer_send"))
+    == "the tool `peer_send` is outside what it lets a child hold"
+  assert sentence(InvalidArgument(reason: "within_ms must be positive"))
+    == "within_ms must be positive"
+  assert sentence(remote_spawn.NameAlreadyMinted)
+    == "a different call already started a child under that name"
+  assert sentence(remote_spawn.StoreFailure(reason: "disk full"))
+    == "its store failed: disk full"
+}

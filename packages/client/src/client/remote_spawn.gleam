@@ -51,6 +51,7 @@
 
 import core/ids.{type OpId}
 import core/json.{type JsonValue}
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -411,5 +412,45 @@ pub fn refusal_of(
     | agent.ToolNotHeld(..)
     | agent.RemoteRefused(..)
     | agent.RemoteSilent(..) -> StoreFailure(reason: agent.describe(refusal))
+  }
+}
+
+/// A refusal as the sentence the parent's model reads after the name of the
+/// orchestrator that gave it. Each names the rule that stopped the spawn, so the
+/// model can change the request or do the work itself.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert remote_spawn.describe_refusal(CapReached(cap: FanOut, limit: 8))
+///   == "the cap `fan_out` is 8 and was reached"
+/// ```
+pub fn describe_refusal(refusal: SpawnRefusal) -> String {
+  case refusal {
+    UnknownSpawner(node:) ->
+      "it has no spawner configured for this machine (`" <> node <> "`)"
+    ParentRunEnded -> "the run that asked for this child has already ended"
+    CapReached(cap:, limit:) ->
+      "the cap `"
+      <> cap_name(cap)
+      <> "` is "
+      <> int.to_string(limit)
+      <> " and was reached"
+    ToolOutsideCeiling(tool:) ->
+      "the tool `" <> tool <> "` is outside what it lets a child hold"
+    InvalidArgument(reason:) -> reason
+    NameAlreadyMinted ->
+      "a different call already started a child under that name"
+    StoreFailure(reason:) -> "its store failed: " <> reason
+  }
+}
+
+// The configuration key a cap is, which is how the refusal names it.
+fn cap_name(cap: Cap) -> String {
+  case cap {
+    MaxDepth -> "max_depth"
+    FanOut -> "fan_out"
+    SessionStrands -> "session_strands"
+    MaxSessions -> "max_sessions"
   }
 }
