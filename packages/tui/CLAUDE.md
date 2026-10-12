@@ -2536,6 +2536,12 @@ untouched.
   birth identity: nothing about a passthrough wants any of that.
   `stderr_to_stdout` because a passthrough that reordered the two streams
   would be worse than one that interleaves them as the child did.
+- **The proposals review keeps only the reader's place.** `proposal_panel`
+  holds the list, one open proposal and the approval question. The board lives
+  in `Shared.proposals`, so a decision's reply redraws the open row. `Alt+p`
+  opens it, and the footer badge is `input_frame.Status.proposals`. A
+  collapsed `history_search` result keeps 3 hits (`recall_view.excerpt_hits`)
+  and `Ctrl+g` shows all.
 
 ## V2 integration evidence
 
@@ -3404,3 +3410,9 @@ gutters, and the long-answer tail with the rail shown or hidden. Side paging
 wraps at `layout.transcript_width`, the width both reading rectangles share.
 `image_draw_test` pins the shared image window against the painted
 main rectangle while the side panel is visible.
+
+## Memory overview (protocol 087)
+
+`tui/memory_panel` is the read-only Alt+m overlay. `tick.watch_memory` derives
+`memory_watch` from the open overlay, so any way of leaving the overlay stops
+the reads.

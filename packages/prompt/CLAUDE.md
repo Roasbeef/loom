@@ -269,6 +269,9 @@ written by whoever calls `render`, not here.
   sentence is checked against `tools/agent` and `client/agency` by a
   test in `default_test`; if one of those changes, the sentence is
   wrong, not merely stale.
+- **The repository guidance fragment names three origins.** They are
+  `workspace`, `user-default` and `approved-proposal`, and the
+  `approved-proposal` block is always the last one.
 
 ## Deep Docs
 

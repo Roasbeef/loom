@@ -1482,6 +1482,12 @@ the refreshed goal through the shared step. `component_test` proves the
 observer stays Connected after that read, so adding a terminal
 surface does not leave the second host with an incompatible reducer path.
 
+The proposals review is the Session pane's eighth child
+(`component.proposals_path`). It is drawn and read only where
+`may_review_proposals` holds, Approve asks first, and `confirm_approval`
+re-checks the held board before it sends. A `history_search` step needs no
+component of its own: it is the generic step row plus `recall_view` rows.
+
 ## Deep Docs
 
 - `docs/architecture/web-view.md`: the architecture map: the request path
@@ -1709,3 +1715,9 @@ composer. Observer pages expose no side-query controls.
 leave a side answer unobserved. Closing the panel does not cancel inference, and
 a late board preserves its hidden visibility. The operator-page fixture verifies
 that an ask during a running turn sends `btw`, never a main prompt or steer.
+
+## Memory overview (protocol 087)
+
+`view/memory` is the Session pane's ninth child, drawn on the owner's page only.
+It has no handler, so no path is admitted beneath it. `component.want_memory`
+owes the first read.

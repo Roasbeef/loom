@@ -835,6 +835,22 @@ refusal settle that report only on its own correlated command reply.
 excluding a prompt already submitting or a running strand. The terminal
 wrapper calls this shared decision.
 
+`recall_view` is the single reader of a `history_search` result's `details`.
+The decoder is total, a malformed hit voids the record, and the hit text is
+drawn with the result speaker, never the Markdown detail speaker. `step_words`
+and `transcript_lines` both consume it.
+
+`composer.memory_context_lines` recognises two injectors, the notes index
+(`notes_attribution_lead` with `notes_fence`) and the digest a past release
+attached (`memory_attribution_lead` with `memory_fence`), which nothing writes
+now but sessions saved by that release still hold. A lead and a fence must be
+from the same injector.
+
+`proposals` decodes the `proposals_get` and `proposal_decide` board totally.
+The push `proposals_changed` only sets `Shared.proposals_refresh`, and
+`surfaces.service_proposals_read` sends the read on the next tick. A refusal is
+`proposals_notice`, never a transcript row.
+
 ## Goal and held-input source navigation
 
 The scoped modules' `## Flow` comments name the local entrypoints and helper
@@ -949,3 +965,11 @@ polls a running request at most once per second through the ready lane, and
 `btw_due` supplies the web host's timer deadline. Connection changes clear the
 old board. Refusals retire its pending correlation without closing the lane.
 Both hosts draw `btw.lines`, which sanitizes terminal control characters.
+
+## Memory overview (protocol 087)
+
+`session_view/memory_overview` is the total board decoder and the words both
+hosts share. `Shared` carries `memory`, `memory_refresh`, `memory_notice`,
+`memory_read_ms` and `memory_watch`. `surfaces.service_memory_read` is the 11th
+read in `service_reads` and re-reads a watched board once it is `backstop_ms`
+old.

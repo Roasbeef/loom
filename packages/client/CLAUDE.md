@@ -719,10 +719,8 @@ adapter (`client/wiring`, promoted from conformance), the system
 prompt's assembly and its durable pin (`client/system_prompt`), the four
 seams that give a model other agents, code mode, recall over the
 repository's own history and a memory that outlives a session
-(`client/agency`, `client/codemode`, `client/history`, `client/memory`),
-the distillation pipeline that fills that memory
-(`client/distill`, a second entry point), plus the
-`loomd` entry point (`client/daemon/main`). Startup restores the private
+(`client/agency`, `client/codemode`, `client/history`, `client/memory`), plus
+the `loomd` entry point (`client/daemon/main`). Startup restores the private
 catalogue without opening runtimes. Explicit admission invokes
 `serve.resolve_managed` and `serve.assemble_in_domain` for one saved registration.
 
@@ -843,7 +841,7 @@ catalogue without opening runtimes. Explicit admission invokes
   one catalogue transaction, and only then unlinks the database and its
   `-wal`, `-shm`, `-journal` and `.tmp` siblings. The durable rows go first
   on purpose: an interrupted delete must leave files nothing refers to, never
-  a registration whose database is gone. The domain and everything distilled
+  a registration whose database is gone. The domain and everything remembered
   into it survive, because a workspace's memory outlives any one
   conversation. `protocol-change/019` and `docs/client-protocol.md` §3.16
   carry the ruling.
@@ -894,15 +892,15 @@ catalogue without opening runtimes. Explicit admission invokes
   the immutable `Domain` before `instance_host.prepare`, then passes it through
   `Assembly.build` without exposing the catalogue connection. Managed resolution
   uses the session registration's runtime configuration independently of the
-  domain's maintenance configuration. `None` preserves embedded fixtures' beside-session
-  layout. `serve.build_domain` resolves maintenance configuration independently;
+  domain's configuration. `None` preserves embedded fixtures' beside-session
+  layout. `serve.build_domain` loads the domain's stored configuration only to
+  refuse a file no session could open under;
   `serve.assemble_in_domain` receives the original shared services capability.
-- `client/daemon/domain.Services` retains one original `history.Shared` and an
-  optional parked `distillpass.DomainMessage` owner. `build` publishes Services
-  cleanup before starting history and Runtime cleanup before starting cadence.
+- `client/daemon/domain.Services` retains one original `history.Shared`.
+  `build` publishes Services cleanup before starting history.
   The registry's capacity-bounded domain book includes closing and blocked slots;
   waiting sessions consume session slots. `DomainOpened`, `DomainFailed`,
-  `DomainRetired`, and `DomainSettled` carry exact domain incarnation identities.
+  and `DomainRetired` carry exact domain incarnation identities.
   A normal `DomainRetired` remains authoritative even if a late builder result
   or fault arrives. During ordinary closing it preserves parked waiters for
   replacement; in other phases it stops remaining dependents.
@@ -931,19 +929,10 @@ catalogue without opening runtimes. Explicit admission invokes
   Only the original witness's normal exit permits a replacement domain to
   start. The session operation selects replacement services after publication;
   cancelled waiters never start, and cleanup failure cancels all waiters while
-  retaining the domain reservation. After the last clean session retirement, `notify_closed`
-  precedes `quiesce` from the same sender; the registry cancels the domain host
-  only after current and coalesced maintenance settles. A domain fenced while
-  admission is open is revived by the next open in the same domain, taking
-  back the same services with the cadence un-fenced along with them
-  (`domain.resume`), so a reopened workspace goes on distilling. Resume
-  withdraws the fence: the worker drops its parked replies, and the registry
-  replaces the settle subject. A reply already decided before resume can
-  still arrive, but the replacement selector cannot accept it as the account
-  of a later fence. A domain fenced during shutdown is never revived, and
-  neither is one whose maintenance
-  worker refuses the resume — that refusal fails the domain, exactly as a
-  refused quiesce does. An assembly fault reports `Stopping`
+  retaining the domain reservation. A domain with no dependent session is
+  cancelled at once, so its services are never handed to a later session; an
+  open that arrives while it is closing parks and is admitted against the
+  replacement. An assembly fault reports `Stopping`
   because Weft's ordered cleanup has already begun; only a cleanup failure
   reports `RecoveryBlocked`, so `Summary.blocked` counts custody that will
   never release. Failed cleanup retains admission capacity and prevents
@@ -990,9 +979,8 @@ catalogue without opening runtimes. Explicit admission invokes
   `Runtime`, `ToolConfig`, `Services`, `Broker`, `Helpers`, `Mcp`, `Storage`,
   `Namespace`. The publication
   handoff in `instance_owner.start` and the registry handoff in
-  `lifetime.start` are both bounded at five seconds, and `distill_owner`'s
-  cleanup run carries a wall deadline, so a wedged start or close settles
-  with a verdict instead of holding the registry forever.
+  `lifetime.start` are both bounded at five seconds, so a wedged start or
+  close settles with a verdict instead of holding the registry forever.
 - `client/internal/instance_host.Host` separates parked preparation from
   assembly. The long-lived registry must call `prepare`, retain the witness
   and monitor it before `begin`; Weft scope lifetime includes its creator.
@@ -1728,7 +1716,6 @@ catalogue without opening runtimes. Explicit admission invokes
   rather than an empty board, because an unreadable cell is not evidence
   for that claim. Backs the `advisor_pending` command; see the wire
   section below.
-- `client/memory.{max_sidecar_bytes, digest_reader}` — the two halves of
 - `client/goalcommand.{Seam, seam}` — the gateway's six goal commands
   over the advisor actor's registered address: one record of monitored
   bounded calls (`set`, `set_check`, `clear`, `pause`, `resume`) built from the
@@ -1881,136 +1868,72 @@ catalogue without opening runtimes. Explicit admission invokes
   primary's wrap-up, the operator's panel and the reviewer's refusals
   cannot word one status three ways.
 
-  bounding the sidecar read, which the lifecycle producer moved onto the
-  strand driver's hot path: `max_sidecar_bytes` (four times the render
-  cap) is asked of the *file* by one `stat` before a byte is read, so a
-  file that could not have come from `render_digest` costs nothing and is
-  refused whole rather than clipped to a plausible prefix, while a file
-  merely over the render cap is still read and clipped as before.
-  `digest_reader` is the reader a server installs — the one that carries
-  a logger, so a refusal says `memory.digest_oversize` instead of looking
-  exactly like a repository that has never distilled. `read_digest` stays
-  the silent door.
-- `client/memory.{memory_file, digest_file, store_beside, digest_beside,
-  directory_of, fact_type, lesson_type, preference_type, pipeline_types,
-  type_named, short_name, max_digest_bytes, max_distillates,
-  max_row_chars, lease_ttl_ms, run_lease_ttl_ms, head_key, cursor_key,
-  notes_cursor_key,
-  note_count_key, Cursor, cursor_from, cursor_value, MemoryFault, Opened,
-  open, close, probe, SourceRef, Provenance, no_provenance, Distillate,
-  distillate_of, provenance_of, provenance_by_id, names_source,
-  append_distillates, head, head_rows, advance_head, replace_head,
-  advance_cursors, NotesRewind, Rewind, no_rewind, cursor_rewind,
-  cell, notes_after, safe_text, remember_seam, fence, render_digest,
-  read_digest, write_digest, reconcile_digest, digest_hooks, wrapped}` —
-  the memory plane: the
+- `client/memory.{memory_file, notes_file, store_beside, notes_beside,
+  directory_of, lease_ttl_ms, note_count_key, MemoryFault, Opened, open,
+  close, probe, cell, StoredNote, note_of, note_data, read_note_entries,
+  remember_seam, write_notes_index, rebuild_notes_index, render_notes_index,
+  max_index_bytes, max_notes_sidecar_bytes, read_notes_index, notes_reader,
+  notes_hooks, notes_wrapped, notes_fence}` — the memory plane: the
   `loom-memory.db` session beside the session files (the fold
   `client/history` established, deliberately *not* the workspace), the
-  `loom-memory.digest` sidecar the server injects from, and the host side
-  of the `remember` door. Opened with the ordinary writer lease and
+  `loom-memory.notes` index the server injects from, and the host side of
+  the `remember` door. Opened with the ordinary writer lease and
   `session.ensure_id` called by hand, because nothing here goes through
-  `runtime/api` — which is also why its bookkeeping cells need no
-  reserved prefix. **The TTL is the caller's**, and the two callers are
-  nothing alike: a `remember` write covers one commit, while a run's
-  commits are separated by whole provider turns and it takes
-  `run_lease_ttl_ms` so no opener can steal the file out from under a
-  model turn (the `rewrite_lease_ttl_ms` precedent, and a constant rather
-  than a renewal timer because a command has no supervision tree to hang
-  one on). **`append_distillates` and `advance_head` are separate
-  on purpose**: rows commit first, the head-and-cursors CAS commits last,
-  and a run killed between them leaves the previous head, cursors and
-  sidecar standing over inert orphan rows. `render_digest` writes the
-  body only — scrubbed, byte-capped, truncation marked — and `wrapped`
-  builds the fence and the attribution at injection time, so the file
-  cannot forge its own provenance.
-  The **erasure cascade's** reading surface is here too (#115).
-  `provenance_of` is the total decoder of the `{text, sources, derived_from}`
-  payload — anything it cannot read is `no_provenance`, which names
-  nothing and is therefore *kept*, so one malformed row can never empty
-  memory. `provenance_by_id` pairs each head id with what its row
-  records, **one pair per id including ids the store cannot resolve**, so
-  an unresolvable head id survives the rewrite rather than vanishing from
-  it. `names_source` is the match, at session grain because provenance is
-  batch-level. `replace_head` is the write: the head cell and the cursor
-  rewind in one CAS, no rows, sharing `advance_head`'s expectation so the
-  head only ever moves under a CAS. `cursor_rewind` computes that rewind
-  (#124) — every `distill/cursor/*` cell wound back to seq zero under the
-  generation it recorded, plus the notes cursor when a consolidation has
-  consumed anything. Those cells *are* the pipeline's record of what it
-  has read, so the prefix scan sees sources a directory walk at cascade
-  time could not: a file a live server holds the lease on, a file since
-  moved away. `no_rewind` is the empty one, which is what an ordinary
-  head replacement passes.
-- `client/distill.{Answer, Distiller, Candidate, Extract, Harvest, Report,
-  Cascade, CascadeMode, Config, default_scan_limit, max_extract_chars,
-  max_notes_per_run,
-  default_timeout_ms, distill_owner, extractable, extraction_input,
-  extraction_prompt, consolidation_prompt, parse_candidates, config_for,
-  with_logger, run, cascade, no_distiller, source_files, target,
-  gateway_distiller, capped_gateway_distiller, main}` — the
-  distillation pipeline, runnable as `gleam run -m client/distill --
-  --config loom.toml [--session-dir <dir> | --session <path.db>]`. It
-  walks the session directory's `*.db` files, skips every one whose
-  writer lease is held (**that is the live-session rule, entire**), reads
-  each above a `{seq, rewrite generation}` cursor, extracts, consolidates
-  against the current head and the `remember` notes, and re-renders the
-  sidecar. `extractable` is the anti-feedback exclusion and is a rule
-  about types: settled assistant text (`client/rules.scannable_text`,
-  shared with the rule scanner) plus compaction and branch summaries, and
-  nothing from a user turn or a `CustomEntry`. `Distiller` is the whole
-  provider surface, so a test scripts both model turns; `target` picks the
-  `Summarize` route when the catalogue has one and the resolved main
-  identity when it does not, the summary path's own arrangement.
-  Two properties of the pass shape are load-bearing rather than
-  incidental. **Only the sources extraction got an answer for** drive the
-  cursors and the provenance: advancing a failed source's cursor would
-  lose its entries permanently and silently, and naming it in provenance
-  would over-claim a contribution #115's cascade would act on. And the
-  consolidation turn is dispatched on what extraction **produced**, not
-  on what it was offered — a repository whose sources all honestly answer
-  `nothing` commits a cursors-only transaction, leaves the head alone,
-  and does not re-pay the same extraction turns on every run forever.
-  Every run, that one included, ends by reconciling the sidecar against
-  the head.
-  **`--cascade <source-session-id>` is the second command behind the same
-  entry point** (`cascade`, issue #115): the first-order erasure cascade,
-  run by the operator *after* `session/repo` has rewritten that source.
-  It drops from the head every distillate whose provenance names the
-  session and re-renders the sidecar without them. Five things about it
-  are load-bearing. It **needs no `--config`** and runs under
-  `no_distiller`, because it dispatches no model turn. It **writes no
-  rows** — every survivor is already durable — so the pipeline's write
-  order holds trivially, and it takes the *short* lease rather than
-  `run_lease_ttl_ms`, since nothing slow sits between its commits. A
-  cascade that drops rows **rewinds the cursors in the same CAS**
-  (#124): a head is uniform in provenance, so an effective cascade
-  empties it, and re-reading the surviving sources is the only rebuild
-  there is, so `memory.cursor_rewind`'s cells ride inside
-  `memory.replace_head`'s transaction. One transaction is the point — a
-  crash between an emptied head and a separate cursor write would leave
-  the head empty above high-water cursors, which is the unrecoverable
-  state the issue described. The next ordinary pass re-extracts every
-  readable source and folds the notes in again, which costs one
-  extraction request per source plus one consolidation and is the only
-  rebuild on offer; `distill_test`'s
-  `an_emptying_cascade_rewinds_so_the_next_pass_rebuilds` drives the
-  whole loop. **`CascadeMode` is the fifth**: `Preview` (`--dry-run`)
-  computes the same answer — dropped, kept, rewound, notes — reports it
-  and writes nothing at all, no CAS and no sidecar, so an operator sees
-  the wipe and its price before paying either. And a cascade that
-  drops nothing **does not CAS at all**, because writing the identical id
-  list back would still bump the cell's seq and lose a concurrent run's
-  expectation — so it rewinds nothing either. First-order: a row whose `derived_from` names a dropped
-  row is not chased, and within one head that is vacuous rather than
-  deferred. The induction is written out at `memory.replace_head` and
-  needs **both** head writers: `advance_head` mints a fresh batch whose
-  ids are disjoint from what its `derived_from` names, and `replace_head`
-  writes a *subset* of an existing head, which preserves that
-  disjointness. A third head writer introducing new ids would void it
-  silently. The `Cascade` report carries an `unreadable` count — rows
-  kept because their provenance would not decode, which is the one place
-  the command under-deletes. `docs/spec-gaps.md`'s M2
-  item 9 carries the boundary and the over-deletion it implies.
+  `runtime/api` — which is also why its one bookkeeping cell
+  (`remember/count`, the lifetime note ceiling) needs no reserved prefix.
+  The lease is the short `lease_ttl_ms`: a `remember` write covers one commit.
+  `render_notes_index` writes the body only — scrubbed, byte-capped, with
+  dropped notes counted — and `notes_wrapped` builds the fence and the
+  attribution at injection time, so the file cannot forge its own
+  provenance. The sidecar read is bounded on the hot path of every accepted
+  run: `max_notes_sidecar_bytes` (four times the render cap) is asked of the
+  *file* by one `stat` before a byte is read, so a file that could not have
+  come from `render_notes_index` costs nothing and is refused whole rather
+  than clipped to a plausible prefix. `notes_reader` is the reader a server
+  installs, the one that carries a logger, so a refusal says
+  `memory.notes_oversize` instead of looking like a repository with no
+  notes; `read_notes_index` stays the silent door. **`read_note_entries`
+  reads the notes without the lease**, through `sqlite.scan_entries_at`, and
+  is shared by the memory overview and `rebuild_notes_index`, which makes the
+  sidecar match the store and rewrites it only when its text differs, so a
+  session open can call it on every open and write nothing in the steady
+  state. A store written while a distillation pipeline existed can hold
+  distillate rows and `distill/*` cells; nothing reads them and nothing
+  deletes them.
+- `client/proposals.{rules_file, key_prefix, lease_owner, max_rules_bytes,
+  max_listed, Kind, State, Decision, Source, Proposal, Listing, Wiring, Admin,
+  seam, admin, channel, submit, listing, decide, rules, read_rules,
+  write_rules, edited, guidance, encode, decode, board}` — the queue of
+  standing rules a model proposes and the owner decides
+  (protocol-change/086). `seam` is the `propose` tool's door and `admin` is
+  the gateway's, over one `Wiring`. The queue is the domain's: its cells are
+  `fact.custom` `proposal/<id>` in `loom-memory.db` (`Wiring.store_path`), so
+  every session of the domain lists and decides the same rows, and
+  `Proposal.source` names the session that made one. `submit` and `decide`
+  hold the memory store's writer lease (`memory.open`, owner `lease_owner`)
+  across their whole read-check-write, and an approval holds it from reading
+  the rules file to marking the proposal; a held lease is `propose.Busy` /
+  `DecideRefusal.Busy`, answered in band and not retried. `listing` takes no
+  lease (`sqlite.list_registers_at`). `submit` refuses a full queue (64
+  pending) and an edit that could not apply; `decide` rechecks the file's
+  digest and `old`'s unique match at decision time and marks the proposal
+  `Stale` instead of writing when either fails; the settling commit also
+  deletes decided rows past `max_listed`. `channel` is the bus key
+  `ProposalsChanged` is published under, derived from the store path;
+  `Admin.channel` carries it and the gateway subscribes every hub to it, so
+  open pages in every session of the domain re-read. `guidance` is the
+  prompt's bounded, total reader of `loom-rules.md`.
+- `client/auxiliary.{Answer, Failure, Summarizer, default_timeout_ms,
+  record_request, target, gateway_summarizer, capped_gateway_summarizer}` —
+  the harness's own single-prompt model requests, which the block summaries
+  and the glance loop make. `Summarizer` is the whole provider surface (one
+  prompt in, a typed `Answer` or `Failure` out), so a test scripts every
+  answer. `target` picks the `Summarize` route when the catalogue has one and
+  the resolved main identity when it does not. Both outcomes carry the full
+  request accounting, so `record_request` commits one aggregate row with a
+  phase detail even for a failed request, and writes none when no remote
+  attempt happened. It holds the code that was `client/distill`'s provider
+  half; the pipeline around it is gone.
 - `client/glance.{Wiring, Report, Message, request_timeout_ms,
   max_answer_tokens, request_deadline_ms, branch_window, target,
   summarizer, hooks, context_of, is_watched, start, supervised}` — the
@@ -2037,7 +1960,7 @@ catalogue without opening runtimes. Explicit admission invokes
   the summarizer, and writes with `api.put_reserved_fact` through the
   borrowed runtime. `target` is `summarize`, then `subagent`, then `main`,
   as `ForRole(role, Some(ThinkingOff))`; `summarizer` caps the answer at
-  `max_answer_tokens` through `distill.capped_gateway_distiller`.
+  `max_answer_tokens` through `auxiliary.capped_gateway_summarizer`.
   `context_of` is `input + cache_read + cache_write + output` and `None`
   for an adjustment row. The glance's `tokens` is that figure from the
   newest row, never a sum. A failure is logged as `glance.unusable`, at
@@ -2079,33 +2002,15 @@ catalogue without opening runtimes. Explicit admission invokes
   in "ing", since models asked for one line often drop the label. A
   missing or empty line is `Error(Nil)`, and values are clipped to
   `glance.max_title_bytes` and `max_summary_bytes`.
-- `client/distillpass.{Cadence, Options, Pass, Config, Message,
-  default_wall_ms, default_options, no_pass, parse, start, supervised,
-  settled,
-  started_event, completed_event, failed_event, expired_event,
-  off_event}` — the distillation pass in the *session lifecycle* (#149):
-  the supervised worker that makes `client/distill` run without a source
-  checkout, a cron job or an operator. A `weft/state_machine` with two
-  states — `Running` while the pass is in flight, `Idle(pass)` for the
-  rest of the boot — started under the service tier by
-  `serve.with_distill_pass`, which is *after* the session's own writer
-  lease is held, so the live session is skipped by the pipeline's
-  existing lease rule rather than by a new one. The pass itself runs on
-  a `weft` scope bounded by `Options.wall_ms` and relayed back onto the
-  machine's own subject, so the machine stays able to answer while it
-  runs; `settled` is that answer, and a question asked mid-pass is
-  `postpone`d and replayed on the transition rather than polled for. It
-  **never re-arms**: one pass per boot is the whole cadence, and the whole
-  retry policy is "the next boot reads the same material again", which is
-  safe because the pipeline moves no cursor until it succeeds. `parse` is
-  the total decoder for the `[memory]` table (`distill = "on-boot" |
-  "off"`, `distill_wall_ms`), whose key must also be in `client/catalog`'s
-  allowed top-level list — the obligation `[[rule]]` and `[schedules]`
-  carry. `default_wall_ms` **is** `memory.run_lease_ttl_ms` and is also
-  the ceiling: nothing renews the memory lease but a commit, so a pass
-  cannot usefully outlive it, and a larger configured value is refused
-  rather than clamped. `Cadence` is a two-variant type rather than a flag because the
-  opt-out is a posture an operator takes deliberately.
+- `client/memory_config.{Injection, Options, default_options, parse}` — the
+  total decoder for the `[memory]` table, whose key must also be in
+  `client/catalog`'s allowed top-level list (the obligation `[[rule]]` and
+  `[schedules]` carry). The one live key is `inject` (`off | notes`).
+  `distill` and `distill_wall_ms` (any value) are still read and do
+  nothing, and `inject = "digest"` reads as `notes`, because refusing a key
+  of a removed optional job only breaks an upgrade; each is listed in
+  `Options.retired` and `boot` logs `memory.config_retired_key` for it. An
+  unknown key is still a parse error.
 - `client/scratch.{Bounds, Message, Scratch, start, supervised, stop, seam,
   none, stat, default_bounds}` — the ephemeral scratch store `cap/kv`
   reads and writes: a session-scoped actor, addressed by process name the
@@ -3101,17 +3006,20 @@ catalogue without opening runtimes. Explicit admission invokes
   writes; since ADR-019 it bars native reads as well, matching the jail's mask.
   `assemble` composes it before `base_policy_fault` validates, so the
   addition is checked by the same gate every other path is.
-- `client/workspace_policy.protecting_memory(SandboxPolicy, String, String)` — the
-  same bargain one step along, over `loom-memory.db` (with its WAL
-  family) and `loom-memory.digest`. More direct than the index's: a
-  search snippet reaches a later session only if a model searches for it,
-  while the digest is injected into **every** run of every session on the
-  repository, unasked. Both paths are conditional — masked once they
-  exist, or before that where a writable root reaches them — because the
-  jail refuses to mask a *missing* protected path under a read-only
-  parent and neither file exists until a distillation run has happened.
-  The two functions share one `protecting(always:, where_maskable:)`
-  mechanism rather than each carrying a copy.
+- `client/workspace_policy.protecting_memory(SandboxPolicy, String, String,
+  String)` — the same bargain one step along, over `loom-memory.db` (with its
+  WAL family) and `loom-memory.notes`. More direct than
+  the index's: a search snippet reaches a later session only if a model
+  searches for it, while the notes index is injected into **every** run of
+  every session on the repository, unasked.
+  The paths are conditional — masked once they exist, or before that where a
+  writable root reaches them — because the jail refuses to mask a *missing*
+  protected path under a read-only parent and none of these files exists
+  until a note is written.
+  `protecting_rules` is the same argument for `loom-rules.md`, which the
+  prompt carries whole at the start of every new session. The functions share
+  one `protecting(always:, where_maskable:)` mechanism rather than each
+  carrying a copy.
 - `client/workspace_policy.state_root_mask_candidates(String)` and
   `client/workspace_policy.protecting_state_root(SandboxPolicy, String)` — what the
   daemon masks under its state root, and the composition `resolve_managed`
@@ -3232,8 +3140,8 @@ catalogue without opening runtimes. Explicit admission invokes
   Its `namespace` owns the 11 reclaimable service addresses and is retired
   after the services stop. `prompt` retains the exact assembled prompt;
   `helper_path` identifies the executable used by this session. Optional
-  `rulescan`, `schedulescan` and `memory_pass` addresses exist only when
-  their services are configured. `stops` belongs to the caller that opened
+  `rulescan` and `schedulescan` addresses exist only when their services
+  are configured. `stops` belongs to the caller that opened
   the instance. `open_instance` and `close_instance` expose this assembly
   without a listener, token file, token directory or signal handler.
   Each open generates a fresh random SQLite writer-owner identity. This
@@ -4143,23 +4051,20 @@ these forks because they define the same modules.
 - **Memory**: the boot's own probe still opens nothing — it reads the
   store's header lease-free (`storage/sqlite.generation`), and an absent
   store is the ordinary state of a repository that has never remembered
-  anything — but the *server* now writes the store, through the
-  supervised `client/distillpass` worker every ordinary boot starts
-  (#149). It reads `loom-memory.digest` at **every run start** through
-  `memory.digest_hooks`, which takes a thunk rather than bytes for
-  exactly that reason: this host runs the producer as well, and a digest
-  captured at boot would hold every session one pass behind its own
-  pipeline. Memory therefore lands on *run* boundaries rather than
-  session boundaries, which costs the same rolling tail write it always
-  did — the digest rides messages, never the pinned head — and nothing
-  can touch a run already open. The writers are `client/distill` (the
-  pipeline, holding the memory session's writer lease for its whole run
-  under `run_lease_ttl_ms` — or under the short one for a `--cascade`
-  pass, which has no model turn between its commits), reached either from
-  the lifecycle worker or from the command line, and the `remember` seam
-  (one open per call under the short `lease_ttl_ms`, refused in band
-  while a run holds the lease). Usage rows for both model turns land in
-  the memory session's own ledger.
+  anything. The *server* writes the store only through the `remember` seam
+  (one open per call under the short `lease_ttl_ms`, refused in band while
+  another call holds the lease). Each run reads `loom-memory.notes` at **run
+  start** through `memory.notes_hooks`, which takes a thunk rather than
+  bytes: a `remember` call in any session rewrites the file, and a copy
+  captured at boot would hold every session one note behind. Memory
+  therefore lands on *run* boundaries rather than session boundaries, which
+  costs the same rolling tail write it always did — the injection rides
+  messages, never the pinned head — and nothing can touch a run already
+  open. A session open also rebuilds the sidecar from the store without a
+  lease (`serve.refresh_notes_index`, `memory.rebuild_notes_index`), so notes
+  written before the index existed reach the first run; a failure logs
+  `memory.notes_index_unrefreshed` and never fails the open, and
+  `inject = "off"` skips it.
 - **Wire**: JSON text frames over websocket. The envelope `seq` **is the
   storage seq** of the write that produced the event, so the durable
   stream needs no side index and `catch_up` rebuilds it with
@@ -5395,19 +5300,6 @@ these forks because they define the same modules.
   cursor where it was, so the next commit's poke retries it. Nothing
   about a session's correctness depends on the index being right, which
   is what lets every one of those failures be quiet.
-- **The distillation pass runs once per boot, skips the live session by
-  its lease, and retries by being run again next boot.** Each clause is
-  load-bearing. *Once*, because the material it may read does not change
-  while this server runs — a live session's own lease is what puts it out
-  of reach — so a timer or a per-turn hook would buy re-reads and model
-  turns for nothing. *By the lease*, because the worker starts in the
-  service tier, after `assemble` has taken the session's writer lease, so
-  the skip is a property of the ordering rather than of a check. *Next
-  boot*, because the pipeline's write order (rows, head-and-cursors CAS,
-  sidecar) means a pass killed anywhere moved no cursor. The one residue
-  is the memory lease a killed pass cannot release: the store is
-  consistent, and a boot inside the ten-minute run TTL logs
-  `memory.distill.failed` naming the holder rather than distilling.
 - **A fatal death is an orderly shutdown, not a side effect.** The host
   traps exits, so a child's death is a message: it runs the whole
   teardown — listener, services, runtime (which releases the writer
@@ -5423,13 +5315,6 @@ these forks because they define the same modules.
   old incarnation's lease. `open_instance` still leaves the close to its
   caller, which is safe only because nothing that close stops before the
   runtime is a fatal child.
-- **A session open outwaits a distillation harvest.** A harvest opens a
-  source session under the ordinary writer lease as
-  `distill.distill_owner`, and the daemon runs one beside admission by
-  design. `serve.open_session_file` retries a `LeaseHeld` naming that
-  owner until the harvest closes or its lease (at most
-  `memory.lease_ttl_ms`) expires, and logs `session.harvest_wait` once.
-  Any other holder is refused at once, as before.
 - **The entry point has two output channels, and the split is
   deliberate** (§3.4). **stdout** carries the startup banner and nothing
   else — the ephemeral port, the token path, the prompt digest — because
@@ -5451,6 +5336,35 @@ these forks because they define the same modules.
   `SIGTERM` is an immediate `init:stop()`, so `boot` never touches it —
   `main` does, through `host.relay_sigterm`, and a test that boots a
   server leaves the node's signal handling alone.
+- **`remember` writes typed notes and the notes index is derivable.** A note
+  has a title, a description, a kind and text, and the seam rebuilds the
+  `loom-memory.notes` index beside the store after each commit. `[memory]
+  inject` defaults to `notes`, which injects that index (1 KiB cap, its own
+  fence `loom-notes`, wrapped at injection time) and nothing when the index is
+  absent. `serve.with_memory_source` joins the memory store to the history
+  owner's sources, which is what makes `history_search kind=note` find it.
+- **The proposal queue is written only by a person's decision.** `proposals`
+  owns the queue under `proposal/<id>` in the domain's memory store and the
+  host-owned `loom-rules.md`. The file is written only by an approved decision, and only
+  after the digest recheck and, for a replacement, the unique-match recheck.
+  The workspace's `AGENTS.md` and `CLAUDE.md` are never targets. The prompt
+  carries the file last, in an `origin=approved-proposal` fence bounded at 16
+  KiB, and it reaches new sessions only. Reading and deciding proposals are
+  owner-only commands, and a `propose` call never raises an approval,
+  escalation or file write.
+- **A read with neighbours goes through the same checks as a single entry.**
+  `client/internal/shared_history` answers `read` with `around` 1..5 by
+  walking a window of descriptors (before via `history_source.before`, after
+  via `page`) through the same fragment, validation and membership path as a
+  single entry, one entry per mailbox turn; its reply is a list. Both recall
+  seams are wrapped in `history_bridge.counted`, which logs
+  `memory.search_called` (`scope`, `hits`, `note_hits`, never the query).
+  `history.seam_with_logger` and `history.seam_for_with_logger` inject the
+  logger; `seam` and `seam_for` log through the Erlang logger.
+- **One module maps the tool's recall vocabulary to the index's.**
+  `client/internal/history_bridge` maps `tools/history` queries and hits to and
+  from `events/search`; both `client/history` (the per-session holder) and
+  `internal/shared_history` (the domain owner) use it.
 
 ## Shipped fixtures run the daemon with an isolated home
 
@@ -5546,8 +5460,7 @@ belongs to the step. The **commit forwarders**
 (`gateway.commit_forwarder`, `history.commit_pull`,
 `history.supervised_shared_commit_pull`) and `serve`'s owned publication child
 are stateless `Nil` processes: nothing to reclaim, and a wake sweep would land
-on the hot path of every commit. `distillpass`'s domain stop token is
-request-scoped and dies with its pass.
+on the hot path of every commit.
 
 Hibernation returns garbage only. The live set it leaves behind is dominated by
 this assembly's per-process copies of `Effects`, so this is a complement to
@@ -6334,7 +6247,7 @@ daemon-wide. Every open resolves it again: a profile the file no longer defines
 fails the open with the file's message, which the registration's startup reason
 (055) carries, and never opens on the default roles. A profile with no config
 file fails the same way. `serve.build_domain` passes no profile, so the shared
-workspace domain's maintenance uses the default roles.
+workspace domain loads the file under the default roles.
 
 `server.create_session` checks the profile before reserving an identity
 (`daemon/profiles.check` against the request's configuration, or the daemon's
@@ -6359,9 +6272,8 @@ pushes carry aggregate consumption and optional `last_usage` separately.
 Context readers suppress only unknown all-zero final observations, retaining
 historical nonzero readings and reported zero measurements.
 
-`distill.Answer` keeps the final attempt's usage apart from request accounting;
-`distill.Failure` retains the same report without an answer. Extraction and
-consolidation persist failed request consumption in the memory ledger.
+`auxiliary.Answer` keeps the final attempt's usage apart from request accounting;
+`auxiliary.Failure` retains the same report without an answer.
 Glance and block summary requests commit one aggregate row with phase details
 before parsing or publishing the text. A ledger commit failure prevents that
 publication; an empty report writes no row. These auxiliary rows do not
@@ -8897,3 +8809,13 @@ above).
   `session_mover_test` (a stalled reason kept and listed, a finished move gone),
   `ledger_holdings_test` (`placements`), `directory/store_test` (`confirm_current`),
   `daemon_executor_test` (the host's facts from a started daemon).
+
+## Memory overview (protocol 087)
+
+`client/memory_overview` reads the inject mode, the two file sizes, the
+newest notes and rules and the pending count into one bounded board for
+`memory_get`. It is owner-only and wired through `gateway.with_memory_overview`
+in `serve`. The notes come from `memory.read_note_entries`, which takes no
+lease, so the read never waits on `remember`. A section that
+fails is `unavailable`, never an empty list, and every cut is counted in
+`omitted`. Lint R13 reads backticked names in a Flow section as function names.

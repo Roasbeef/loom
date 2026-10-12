@@ -216,8 +216,11 @@ or close; there is no transaction, lease or authorization cache.
   Existing domain references and repeated isolation retain their original paths.
   The catalogue also reserves `digest_beside(memory_path)` and checks memory,
   index, and digest paths against every destination column in one transaction.
-  A client-side parity test pins the derived sidecar to the memory module's
-  convention, so imported destinations cannot silently overlap its digest.
+  No file is written at the digest path any more (the distillation pass was
+  removed), but it is a function of the memory file's directory, so the check
+  is the directory guard: two domains cannot register memory files in one
+  directory, which would make them share `loom-memory.notes` and
+  `loom-rules.md`. It stays until a migration replaces it.
 
 - `storage/sqlite_policy.{Options, ForeignKeys, Journal}` centralizes connection
   and journal tuning for sessions, the catalogue and search. Record updates
