@@ -4,7 +4,7 @@ This directory is a separate Gleam project. It compiles to JavaScript and runs i
 
 The landing page opens with what Loom is, then a recorded session in a terminal panel, then four stories. Each story has a few paragraphs and a step-through figure that advances with the scroll position. A sticky sidebar lists the sections and marks the one in view. The documentation pages are Markdown files that the app fetches and renders.
 
-License: TBD. The project has not chosen a license yet, and the site's footer says so.
+Loom is released under the MIT License, and the site's footer says so.
 
 ## Build, test and preview
 
@@ -31,7 +31,7 @@ There is no bundler. `index.html` loads `js/loom_site/loom_site.mjs` as an ES mo
 
 ## Releasing
 
-Everything the site says about a release comes from `src/site/release.gleam`. To point the site at a new release, change `tag` there and rebuild. The Download button, its version label, the archive names on the install page and the `{{tag}}` and `{{version}}` placeholders in the Markdown pages all follow it. The site assumes that the tagged release exists when it is published. The existing `v0.2.0` tag predates the release workflow, `loom update` and the distributed runtime, so the first release that the install page describes is the next one. The Download button links to GitHub's `releases/latest` redirect, so it keeps working if a newer release appears before the site is rebuilt.
+Everything the site says about a release comes from `src/site/release.gleam`. To point the site at a new release, change `tag` there and rebuild. The Download button, its version label, the archive names on the install page and the `{{tag}}` and `{{version}}` placeholders in the Markdown pages all follow it. The site assumes that the tagged release exists when it is published. The Download button links to GitHub's `releases/latest` redirect, so it keeps working if a newer release appears before the site is rebuilt.
 
 ## Routes
 

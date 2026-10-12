@@ -110,8 +110,8 @@ fn current_page(current: Bool) -> List(Attribute(Msg)) {
   }
 }
 
-/// The page footer. The licence is not chosen yet, and the footer says so
-/// plainly instead of implying one.
+/// The page footer: where Loom is developed, its licence, and what the site
+/// is built with.
 pub fn footer() -> Element(Msg) {
   html.footer([attribute.class("foot")], [
     html.div([attribute.class("foot-inner")], [
@@ -128,8 +128,16 @@ pub fn footer() -> Element(Msg) {
         element.text(". It is under active development."),
       ]),
       html.p([attribute.class("foot-licence")], [
-        html.strong([], [element.text("License: TBD.")]),
-        element.text(" The project has not chosen a licence yet."),
+        element.text("Loom is released under the "),
+        html.a(
+          [
+            attribute.href(release.repo <> "/blob/main/LICENSE"),
+            attribute.target("_blank"),
+            attribute.rel("noopener"),
+          ],
+          [element.text("MIT License")],
+        ),
+        element.text("."),
       ]),
       html.p([attribute.class("foot-small")], [
         element.text(

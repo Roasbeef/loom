@@ -21,7 +21,7 @@ pub const branch = "main"
 
 /// The tag of the release the site describes. Change this line, and only
 /// this line, when a new release is published.
-pub const tag = "v0.2.1"
+pub const tag = "v0.3.0"
 
 /// The page that lists every release.
 pub const releases_url = repo <> "/releases"
@@ -41,7 +41,7 @@ pub const platforms = ["linux-x86_64", "macos-arm64"]
 /// ## Examples
 ///
 /// ```gleam
-/// assert version_of("v0.2.1") == "0.2.1"
+/// assert version_of("v0.3.0") == "0.3.0"
 /// ```
 pub fn version_of(tag: String) -> String {
   case tag {
@@ -65,7 +65,7 @@ pub fn label() -> String {
 /// ## Examples
 ///
 /// ```gleam
-/// assert server_archive("linux-x86_64") == "loomd-0.2.1-linux-x86_64.tar.gz"
+/// assert server_archive("linux-x86_64") == "loomd-0.3.0-linux-x86_64.tar.gz"
 /// ```
 pub fn server_archive(platform: String) -> String {
   "loomd-" <> version() <> "-" <> platform <> ".tar.gz"
@@ -116,7 +116,7 @@ pub fn pull(number: Int) -> String {
 /// ## Examples
 ///
 /// ```gleam
-/// assert fill("loom-{{version}}.tar.gz") == "loom-0.2.1.tar.gz"
+/// assert fill("loom-{{version}}.tar.gz") == "loom-0.3.0.tar.gz"
 /// ```
 pub fn fill(text: String) -> String {
   text
