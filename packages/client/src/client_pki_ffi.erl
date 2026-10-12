@@ -7,15 +7,16 @@
 %% node certificate under it, take the SHA-256 of a certificate's DER (the pin
 %% a peer row carries), inspect a node's credentials before they are installed,
 %% draw random bytes for the cookie, and sign and verify membership ledger
-%% entries with the authority key. Plan logic, validation and file layout stay
-%% in Gleam.
+%% entries with the authority key, and seal the authority key at rest under a
+%% passphrase (PBKDF2-HMAC-SHA256 and AES-256-GCM) with a prompt that does not
+%% echo. Plan logic, validation and file layout stay in Gleam.
 %%
 %% Every key is an ECDSA P-256 key and every signature is ecdsa-with-SHA256.
 %% The authority and node validity periods are fixed below; renewing them is
 %% certificate rotation, which is later work.
 -module(client_pki_ffi).
 -export([authority/1, issue/4, pin/1, inspect/3, random_bytes/1, sign/2,
-         verify/3]).
+         verify/3, derive_key/3, encrypt/4, decrypt/5, read_secret/1]).
 -include_lib("public_key/include/public_key.hrl").
 
 -define(CURVE, secp256r1).
@@ -132,6 +133,67 @@ verify(CertPem, Message, Signature) ->
             false -> {error, nil}
         end
     catch _:_ -> {error, nil}
+    end.
+
+%% The 32-byte key a passphrase derives under a salt: PBKDF2 with HMAC-SHA256
+%% and the given iteration count. `gleam_crypto` has no key derivation, and
+%% running 600,000 HMAC rounds in Gleam would take seconds where OpenSSL takes
+%% tens of milliseconds, so the work stays in OTP `crypto`.
+derive_key(Passphrase, Salt, Iterations) ->
+    crypto:pbkdf2_hmac(sha256, Passphrase, Salt, Iterations, 32).
+
+%% AES-256-GCM with a 16-byte tag. `gleam_crypto` has no AEAD cipher. The
+%% caller draws a fresh salt, hence a fresh key, for every file it seals, so
+%% the one message under a key can use a random nonce without any chance of a
+%% repeat under that key.
+encrypt(Key, Nonce, Aad, Plaintext) ->
+    {Ciphertext, Tag} =
+        crypto:crypto_one_time_aead(aes_256_gcm, Key, Nonce, Plaintext, Aad, 16, true),
+    {Ciphertext, Tag}.
+
+%% The inverse of `encrypt`. A wrong key, a changed nonce, ciphertext, tag or
+%% associated data and a truncated tag are all the same answer, because GCM
+%% cannot say which of them it was and the caller must not either.
+decrypt(Key, Nonce, Aad, Ciphertext, Tag) ->
+    try
+        case crypto:crypto_one_time_aead(aes_256_gcm, Key, Nonce, Ciphertext, Aad, Tag, false) of
+            error -> {error, nil};
+            Plaintext when is_binary(Plaintext) -> {ok, Plaintext}
+        end
+    catch _:_ -> {error, nil}
+    end.
+
+%% One line from the terminal with echo off. `io:get_password/0` answers
+%% `enotsup` when the VM runs with `-noshell`, which is how `loomd` runs, and
+%% the line discipline of a noshell VM echoes what is typed. The VM's own raw
+%% mode (OTP 26 and later) reads characters one at a time and echoes none, so
+%% the line is assembled here, with backspace and with ^C and ^D as a refusal.
+%% With no terminal (a pipe, or a TERM the VM cannot drive) the raw mode is
+%% not available, the answer is `no_terminal`, and the caller asks for a
+%% passphrase file. The cooked mode is restored on every exit.
+read_secret(Prompt) ->
+    case shell:start_interactive({noshell, raw}) of
+        ok ->
+            try
+                io:put_chars(standard_error, Prompt),
+                Line = read_secret_line([]),
+                io:put_chars(standard_error, "\n"),
+                Line
+            after
+                _ = shell:start_interactive({noshell, cooked})
+            end;
+        {error, _} -> {error, no_terminal}
+    end.
+
+read_secret_line(Acc) ->
+    case io:get_chars("", 1) of
+        [C] when C =:= $\n; C =:= $\r ->
+            {ok, unicode:characters_to_binary(lists:reverse(Acc))};
+        [C] when C =:= 3; C =:= 4 -> {error, cancelled};
+        [C] when C =:= 8; C =:= 127 ->
+            read_secret_line(case Acc of [] -> []; [_ | Rest] -> Rest end);
+        [C] -> read_secret_line([C | Acc]);
+        _ -> {error, cancelled}
     end.
 
 %% ------------------------------------------------------------------ internal
