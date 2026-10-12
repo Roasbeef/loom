@@ -74,6 +74,19 @@ pub type WriteRefusal {
   )
 }
 
+/// The place a member holds in the cluster (protocol-change/086, phase 3): what
+/// the ledger asks of a node and what a join makes of it.
+pub type Seat {
+  /// A voter. Ra adds it as promotable and promotes it once it has caught up,
+  /// and the join returns when it has.
+  Voter
+
+  /// A learner. Ra adds it as a non-voter, which it never promotes and never
+  /// counts toward the majority, and the join returns once the member has
+  /// applied what the cluster had applied.
+  Learner
+}
+
 /// Ra's view of the cluster from this member.
 pub type Membership {
   Membership(
@@ -170,13 +183,15 @@ pub fn restart(within_ms: Int) -> Result(Nil, RestartRefusal) {
   )
 }
 
-/// Joins the cluster through the member on `remote` as a non-voter and returns
-/// once Ra has promoted this member.
+/// Joins the cluster through the member on `remote` and returns once the member
+/// is in: promoted by Ra for a voter, caught up for a learner.
 ///
 /// The join is four requests to the cluster in order: start a fresh local
 /// server, have the cluster forget this member's old identity (a member that
 /// lost its disk is still listed under it), add the server as a promotable
-/// non-voter, and wait for Ra to promote it once it has caught up. Ra refuses a
+/// non-voter (a voter) or as a non-voter (a learner), and wait. A voter waits
+/// for Ra to promote it once it has caught up. A learner is never promoted, so
+/// it waits until it has applied what the cluster had applied. Ra refuses a
 /// membership change while an earlier one settles, so each step is repeated
 /// under one deadline for the whole join. Any failure deletes the local server
 /// again, so the next attempt starts clean.
@@ -184,23 +199,32 @@ pub fn restart(within_ms: Int) -> Result(Nil, RestartRefusal) {
 /// ## Examples
 ///
 /// ```gleam
-/// // store.join(peer_node, 60_000)
+/// // store.join(peer_node, 60_000, store.Voter)
 /// ```
-pub fn join(remote: Node, within_ms: Int) -> Result(Nil, String) {
+pub fn join(remote: Node, within_ms: Int, seat: Seat) -> Result(Nil, String) {
   bounded(within_ms + 2000, Error("the join did not finish in time"), fn() {
     let clock = poll.monotonic()
     let deadline = clock.now() + within_ms
     let left = fn() { int.max(1, deadline - clock.now()) }
-    use uid <- result.try(ffi_khepri.join_start())
+    let asked = case seat {
+      Voter -> ffi_khepri.AsVoter
+      Learner -> ffi_khepri.AsLearner
+    }
+    use uid <- result.try(ffi_khepri.join_start(asked))
     let joined = {
       use Nil <- result.try(
         joining(left, fn(ms) { ffi_khepri.join_remove(remote, ms) }),
       )
       use Nil <- result.try(
-        joining(left, fn(ms) { ffi_khepri.join_add(remote, uid, ms) }),
+        joining(left, fn(ms) { ffi_khepri.join_add(remote, uid, asked, ms) }),
       )
       use Nil <- result.try(
-        joining(left, fn(ms) { ffi_khepri.join_promoted(remote, ms) }),
+        joining(left, fn(ms) {
+          case seat {
+            Voter -> ffi_khepri.join_promoted(remote, ms)
+            Learner -> ffi_khepri.join_caught_up(remote, ms)
+          }
+        }),
       )
       ffi_khepri.join_finish(left())
     }
@@ -230,6 +254,27 @@ fn joining(
     poll.Failed(reason) -> Error(reason)
     poll.Expired -> Error("the join did not finish in time")
   }
+}
+
+/// Asks the cluster to remove the member on the node named `member`, from this
+/// member, which the reconciler calls only on the Ra leader. The command is
+/// appended when this returns and Ra commits it after a majority of the
+/// configuration it creates has it; another change is refused until then, which
+/// this reports as `Error` and the caller asks again.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // store.remove_member("loom@laptop.example")
+/// ```
+pub fn remove_member(member: String) -> Result(Nil, String) {
+  bounded(write_ms + 1000, Error("the removal did not finish in time"), fn() {
+    case ffi_khepri.remove_member(member, write_ms) {
+      ffi_khepri.Done -> Ok(Nil)
+      ffi_khepri.Again -> Error("another membership change is settling")
+      ffi_khepri.Failed(reason:) -> Error(reason)
+    }
+  })
 }
 
 /// Stops the store and the Ra system.

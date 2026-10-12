@@ -44,7 +44,7 @@ pub fn member(
 ) -> Result(member.Member, String) {
   member.start(member.Config(
     directory:,
-    members:,
+    members: member.Listed(members),
     local:,
     membership:,
     logger: log.discard(),
@@ -63,7 +63,8 @@ pub fn await_voter(
         member.Joined, Ok(store.Membership(members:, ..)) ->
           case list.key_find(members, local) {
             Ok(ffi_khepri.Voter) -> poll.Done(Nil)
-            Ok(ffi_khepri.NonVoter) | Error(Nil) -> poll.Retry
+            Ok(ffi_khepri.Promoting) | Ok(ffi_khepri.NonVoter) | Error(Nil) ->
+              poll.Retry
           }
         _, _ -> poll.Retry
       }

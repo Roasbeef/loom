@@ -2662,7 +2662,7 @@ fn directory_status_json(status: member.Status) -> JsonValue {
                   "voter",
                   json.Bool(case entry.1 {
                     ffi_khepri.Voter -> True
-                    ffi_khepri.NonVoter -> False
+                    ffi_khepri.Promoting | ffi_khepri.NonVoter -> False
                   }),
                 ),
               ])

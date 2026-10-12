@@ -29,14 +29,44 @@
 //// The actor creates no cluster. `loomd directory bootstrap` does that once, by
 //// hand, because a rule that let a member create one would let a member that
 //// lost its disk create a second cluster beside the first.
+////
+//// ## Who the members are
+////
+//// Without a ledger the members are the configured list (`Listed`), all of them
+//// voters, and nothing changes after start. With a ledger (`Followed`) the
+//// actor reads the seats from the ledger on every tick, because they change
+//// while the daemon runs: it links to every node the ledger seats, it joins in
+//// the seat the ledger gives this node, and it does nothing when the ledger
+//// gives this node none (protocol-change/086, phase 3).
+////
+//// **It reconciles, on the leader.** The ledger owns the list of members and
+//// Ra follows it. A member adds itself, as above, because only it can start
+//// its server. Removal is the leader's: on each tick the member that Ra names
+//// leader asks `roster.plan` for the next change and applies it through
+//// `store.remove_member`, one at a time and only while the removal can commit.
+//// A member that is not the leader does nothing. A leader change needs no
+//// event: the next tick on the new leader compares the same ledger with the
+//// same Ra membership and gets the same answer, so the work is repeatable and
+//// a removal is never issued twice (Ra refuses a second change until the first
+//// commits, and a member already gone is `not_member`).
+////
+//// **A learner learns the leader late.** A learner never stands for election,
+//// so a learner whose server has restarted learns who the leader is from the
+//// leader's next append and not before. A join ends with such a restart
+//// (`store.join` records the store through Khepri), and a directory with no
+//// writes leaves the learner's own view of the cluster unanswered until one
+//// arrives. Its local reads are not affected.
 
+import client/directory/roster.{type Place, type Roster, type Verdict}
 import client/directory/store
 import client/distribution.{type Membership, type Peer}
 import gleam/dict.{type Dict}
+import gleam/erlang/atom
 import gleam/erlang/node
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import host/bootstrap
@@ -57,13 +87,25 @@ pub const join_ms = 60_000
 /// How long one connection attempt may take.
 pub const connect_ms = 1500
 
+/// Where a member learns who the members are.
+pub type Members {
+  /// The configured list of `[directory] members`, this node's name included.
+  /// Every member is a voter, and the list never changes while the daemon runs.
+  Listed(nodes: List(String))
+
+  /// The membership ledger, read again on every tick. `read` answers the roster
+  /// of the ledger as it stands now, or `Error` when the ledger process does
+  /// not answer, in which case the tick acts on nothing.
+  Followed(read: fn() -> Result(Roster, Nil))
+}
+
 /// What a member needs to start.
 pub type Config {
   Config(
     /// The store's data directory, `<state root>/directory`.
     directory: String,
-    /// Every member's node name, this node's included.
-    members: List(String),
+    /// Who the members are, this node's name included.
+    members: Members,
     /// This node's own name.
     local: String,
     /// The distribution membership the daemon started, through which the
@@ -86,7 +128,8 @@ pub type Joining {
 /// What `directory.status` reports.
 pub type Status {
   Status(
-    /// The configured members.
+    /// The members as of now: the configured list, or the nodes the ledger
+    /// seats.
     members: List(String),
     /// Whether this node's store has joined.
     joining: Joining,
@@ -99,7 +142,7 @@ pub type Status {
 
 /// A running member actor.
 pub opaque type Member {
-  Member(inbox: Subject(Message), members: List(String))
+  Member(inbox: Subject(Message), members: Members)
 }
 
 // What the actor is told.
@@ -107,6 +150,7 @@ type Message {
   Tick
   Reached(name: String, outcome: Result(Nil, distribution.Fault))
   JoinEnded(outcome: Result(Nil, String))
+  Reconciled(verdict: Verdict, outcome: Result(Nil, String))
   Asked(reply: Subject(Joining))
 }
 
@@ -127,11 +171,14 @@ type State {
   State(
     config: Config,
     inbox: Subject(Message),
-    peers: List(Peer),
     joining: Joining,
     attempt: Attempt,
     backoff: Dict(String, Backoff),
     connecting: List(String),
+    // Whether a reconciliation is running, and what the last one decided, so a
+    // log line is written when the decision changes and not at every tick.
+    reconciling: Attempt,
+    decided: Option(Verdict),
   )
 }
 
@@ -159,26 +206,18 @@ pub fn start(config: Config) -> Result(Member, String) {
       |> result.map_error(fn(refusal) { restart_refusal(config, refusal) })
     NotJoined -> Ok(Nil)
   })
-  let peers =
-    list.filter_map(config.members, fn(name) {
-      case name == config.local {
-        True -> Error(Nil)
-        False ->
-          distribution.peer(config.membership, name)
-          |> result.replace_error(Nil)
-      }
-    })
   let started =
     actor.new_with_initialiser(1000, fn(inbox) {
       let state =
         State(
           config:,
           inbox:,
-          peers:,
           joining:,
           attempt: Idle,
           backoff: dict.new(),
           connecting: [],
+          reconciling: Idle,
+          decided: None,
         )
       Ok(actor.initialised(state) |> actor.returning(inbox))
     })
@@ -188,7 +227,7 @@ pub fn start(config: Config) -> Result(Member, String) {
   case started {
     Ok(started) -> {
       log.info(config.logger, "daemon.directory_member", [
-        field.count("members", list.length(config.members)),
+        field.count("members", list.length(nodes_of(config.members))),
         field.text("joined", case joining {
           Joined -> "yes"
           NotJoined -> "no"
@@ -200,6 +239,25 @@ pub fn start(config: Config) -> Result(Member, String) {
     Error(error) ->
       Error("the directory member did not start: " <> string.inspect(error))
   }
+}
+
+// The roster as of now. A configured list seats every node as a voter and has
+// no ledger to ask whether a node was ever named, so it names every node. A
+// ledger that does not answer seats no one.
+fn roster_of(members: Members) -> Roster {
+  case members {
+    Listed(nodes:) ->
+      roster.Roster(
+        places: list.map(nodes, fn(node) { roster.Place(node, store.Voter) }),
+        named: fn(_) { True },
+      )
+    Followed(read:) ->
+      result.unwrap(read(), roster.Roster(places: [], named: fn(_) { False }))
+  }
+}
+
+fn nodes_of(members: Members) -> List(String) {
+  list.map(roster_of(members).places, fn(place) { place.node })
 }
 
 // The message for a joined store that did not start. A store Ra has no record
@@ -214,7 +272,9 @@ fn restart_refusal(config: Config, refusal: store.RestartRefusal) -> String {
       marked
       <> "Ra has no record of its server, and starting it would create a"
       <> " second cluster. "
-      <> case list.any(config.members, fn(name) { name != config.local }) {
+      <> case
+        list.any(nodes_of(config.members), fn(name) { name != config.local })
+      {
         True ->
           "Remove "
           <> store.joined_marker(config.directory)
@@ -243,7 +303,7 @@ pub fn status(member: Member) -> Status {
     NotJoined -> Error(store.Unavailable("this member has not joined"))
   }
   Status(
-    members: member.members,
+    members: nodes_of(member.members),
     joining:,
     ra:,
     applied_index: store.applied_index(),
@@ -252,7 +312,14 @@ pub fn status(member: Member) -> Status {
 
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   case message {
-    Tick -> state |> keep_links |> try_join |> actor.continue
+    Tick -> {
+      let seats = roster_of(state.config.members)
+      state
+      |> keep_links(seats.places)
+      |> try_join(seats.places)
+      |> reconcile(seats)
+      |> actor.continue
+    }
 
     // A connection attempt ended. A success forgets the member's backoff; a
     // failure doubles the wait before the next attempt.
@@ -293,6 +360,20 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         }
       }
 
+    // A reconciliation ended. The decision is written down when it differs
+    // from the last one, so a leader holding a removal it cannot commit says
+    // so once and not every two seconds.
+    Reconciled(verdict:, outcome:) -> {
+      let decided = case state.decided == Some(verdict), outcome {
+        True, Ok(Nil) -> state.decided
+        _, _ -> {
+          report(state.config.logger, verdict, outcome)
+          Some(verdict)
+        }
+      }
+      actor.continue(State(..state, reconciling: Idle, decided:))
+    }
+
     Asked(reply:) -> {
       process.send(reply, state.joining)
       actor.continue(state)
@@ -300,12 +381,26 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   }
 }
 
-// Starts a connection attempt for every other member that is not connected,
-// is not being connected, and is not waiting out a backoff.
-fn keep_links(state: State) -> State {
+// The peers a roster seats other than this node, for the nodes the pin table
+// lists. A node it does not list yet is skipped: the ledger entry that seats it
+// has not reached this node, and the next tick asks again.
+fn peers_of(state: State, places: List(Place)) -> List(Peer) {
+  list.filter_map(places, fn(place) {
+    case place.node == state.config.local {
+      True -> Error(Nil)
+      False ->
+        distribution.peer(state.config.membership, place.node)
+        |> result.replace_error(Nil)
+    }
+  })
+}
+
+// Starts a connection attempt for every other seated node that is not
+// connected, is not being connected, and is not waiting out a backoff.
+fn keep_links(state: State, places: List(Place)) -> State {
   let visible = node.visible()
   let now = bootstrap.monotonic_time_ms()
-  list.fold(state.peers, state, fn(state, peer) {
+  list.fold(peers_of(state, places), state, fn(state, peer) {
     let name = distribution.name(peer)
     let due = case dict.get(state.backoff, name) {
       Ok(Backoff(next_ms:, ..)) -> now >= next_ms
@@ -336,18 +431,26 @@ fn keep_links(state: State) -> State {
   })
 }
 
-// Starts a join attempt when the store has not joined and none is running.
-fn try_join(state: State) -> State {
-  case state.joining, state.attempt {
-    Joined, _ | NotJoined, Running -> state
-    NotJoined, Idle -> {
+// Starts a join attempt when the store has not joined, none is running and the
+// roster gives this node a seat. The seat decides what the join makes of it.
+fn try_join(state: State, places: List(Place)) -> State {
+  case
+    state.joining,
+    state.attempt,
+    roster.seat_of(places, state.config.local)
+  {
+    Joined, _, _ | NotJoined, Running, _ | NotJoined, Idle, Error(Nil) -> state
+    NotJoined, Idle, Ok(seat) -> {
       let inbox = state.inbox
-      let peers = state.peers
+      let peers = peers_of(state, places)
       let directory = state.config.directory
       let _witness =
         weft.new([
           fn() {
-            process.send(inbox, JoinEnded(outcome: join_any(peers, directory)))
+            process.send(
+              inbox,
+              JoinEnded(outcome: join_any(peers, directory, seat)),
+            )
             Ok(Nil)
           },
         ])
@@ -357,20 +460,24 @@ fn try_join(state: State) -> State {
   }
 }
 
-// Joins through the first member, in configuration order, whose store answers.
-// A member that cannot be reached, or whose store is not running, is skipped;
+// Joins through the first member, in roster order, whose store answers. A
+// member that cannot be reached, or whose store is not running, is skipped;
 // a join that starts and fails is reported, because the next tick tries again
 // from the start of the list.
-fn join_any(peers: List(Peer), directory: String) -> Result(Nil, String) {
+fn join_any(
+  peers: List(Peer),
+  directory: String,
+  seat: store.Seat,
+) -> Result(Nil, String) {
   case peers {
     [] -> Error("no member's store answered")
     [peer, ..rest] -> {
       let _connected = distribution.connect(peer, connect_ms)
       case store.running_on(distribution.node(peer)) {
-        False -> join_any(rest, directory)
+        False -> join_any(rest, directory, seat)
         True -> {
           use Nil <- result.try(
-            store.join(distribution.node(peer), join_ms)
+            store.join(distribution.node(peer), join_ms, seat)
             |> result.map_error(fn(reason) {
               "joining through " <> distribution.name(peer) <> ": " <> reason
             }),
@@ -379,5 +486,104 @@ fn join_any(peers: List(Peer), directory: String) -> Result(Nil, String) {
         }
       }
     }
+  }
+}
+
+// Starts a reconciliation when the roster comes from a ledger, the store has
+// joined and none is running. It runs in a task of its own because it asks Ra
+// and may issue a removal, and either can wait on a quorum.
+fn reconcile(state: State, seats: Roster) -> State {
+  case state.config.members, state.joining, state.reconciling {
+    Followed(..), Joined, Idle -> {
+      let inbox = state.inbox
+      let local = state.config.local
+      let _witness =
+        weft.new([
+          fn() {
+            let #(verdict, outcome) = reconcile_once(seats, local)
+            process.send(inbox, Reconciled(verdict:, outcome:))
+            Ok(Nil)
+          },
+        ])
+        |> weft.start_witnessed
+      State(..state, reconciling: Running)
+    }
+    _, _, _ -> state
+  }
+}
+
+// One pass: Ra's membership as this member sees it, the plan against the
+// roster, and the removal the plan names. A member that cannot read Ra's
+// membership has no verdict to give and reports it as not the leader, which
+// does nothing and says nothing.
+fn reconcile_once(
+  seats: Roster,
+  local: String,
+) -> #(Verdict, Result(Nil, String)) {
+  case store.membership() {
+    Error(_) -> #(roster.NotLeader, Ok(Nil))
+    Ok(ra) -> {
+      let up =
+        list.map(node.visible(), fn(connected) {
+          atom.to_string(node.name(connected))
+        })
+      let verdict = roster.plan(seats, ra, local, up)
+      case verdict {
+        roster.Remove(node: gone, ..) -> #(verdict, store.remove_member(gone))
+        roster.NotLeader
+        | roster.NotSeated
+        | roster.Settled(..)
+        | roster.Held(..) -> #(verdict, Ok(Nil))
+      }
+    }
+  }
+}
+
+// Writes down what a reconciliation decided or did. `NotLeader` is the state of
+// every member but one and is not worth a line, and a leader the ledger no longer
+// seats has been cut off by the revoke that unseated it.
+fn report(
+  logger: Logger,
+  verdict: Verdict,
+  outcome: Result(Nil, String),
+) -> Nil {
+  case verdict, outcome {
+    roster.NotLeader, _ | roster.NotSeated, _ -> Nil
+    roster.Settled(missing:, foreign:), _ ->
+      case missing, foreign {
+        [], [] -> Nil
+        _, _ ->
+          log.info(logger, "daemon.directory_reconciled", [
+            field.text("missing", string.join(missing, ",")),
+            field.text("foreign", string.join(foreign, ",")),
+          ])
+      }
+    roster.Remove(node: gone, why:), Ok(Nil) ->
+      log.info(logger, "daemon.directory_member_removed", [
+        field.text("node", gone),
+        field.text("why", why_word(why)),
+      ])
+    roster.Remove(node: gone, why:), Error(reason) ->
+      log.warn(logger, "daemon.directory_remove_failed", [
+        field.text("node", gone),
+        field.text("why", why_word(why)),
+        field.text("reason", reason),
+      ])
+    roster.Held(node: gone, why:), _ ->
+      log.warn(logger, "daemon.directory_remove_held", [
+        field.text("node", gone),
+        field.text("why", why_word(why)),
+        field.text(
+          "reason",
+          "a majority of the voters that would remain is not connected",
+        ),
+      ])
+  }
+}
+
+fn why_word(why: roster.Why) -> String {
+  case why {
+    roster.Unseated -> "unseated"
+    roster.OtherSeat -> "other_seat"
   }
 }

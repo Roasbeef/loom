@@ -8,10 +8,10 @@
 %% proved by client_ledger_spike_fixture_ffi; Ra needs only visible nodes that
 %% can reach each other, which this gives. The directory calls are the
 %% production ones in client_khepri_ffi, so the reads and the membership view
-%% are the ones the daemon would use. The one thing production cannot do yet is
-%% join a non-voter, so that join is written here against Ra's public API, as
-%% client_khepri_ffi writes the promotable join, and it is the part phase 3 of
-%% the ledger would add there.
+%% are the ones the daemon would use. Phase 0 wrote the learner's join here,
+%% against Ra's public API, because production could only join a voter. Phase 3
+%% added the membership argument to client_khepri_ffi, and this file now joins
+%% both kinds through the production calls and so proves them.
 -module(client_ledger_spike_ra_fixture_ffi).
 -export([scenario/1, child/2]).
 
@@ -81,6 +81,49 @@ run(<<"non_voter">>, Root) ->
             end)
         end)
     end),
+    ok;
+
+%% Two voters and a learner, then the leader removes each in turn. The learner's
+%% removal takes no vote away. The voter's removal changes the configuration at
+%% once and commits with the one voter left, since a lone voter is a majority of
+%% one. A name Ra never held is not a member, so removing it succeeds without
+%% making an atom.
+run(<<"remove_member">>, Root) ->
+    Cookie = binary_to_list(?FIX:cookie("ra")),
+    A = member(Root, "seed", Cookie),
+    B = member(Root, "second", Cookie),
+    L = member(Root, "learner", Cookie),
+    NameA = name_of(A),
+    NameB = name_of(B),
+    NameL = name_of(L),
+    with_member(A, fun(PortA) ->
+        {ok, nil} = ?SPIKE:call(PortA, start_system),
+        {ok, nil} = ?SPIKE:call(PortA, boot, 60000),
+        with_member(B, fun(PortB) ->
+            {ok, nil} = ?SPIKE:call(PortB, start_system),
+            ok = ?SPIKE:call(PortB, {join_voter, NameA}, 120000),
+            with_member(L, fun(PortL) ->
+                {ok, nil} = ?SPIKE:call(PortL, start_system),
+                ok = ?SPIKE:call(PortL, {join_learner, NameA}, 120000),
+                #{NameA := voter, NameB := voter, NameL := non_voter} = voters(PortA),
+
+                %% The learner goes first, and the voters commit as before.
+                done = ?SPIKE:call(PortA, {remove, NameL}, 30000),
+                ok = await_members(PortA, [NameA, NameB]),
+                {ok, nil} = ?SPIKE:call(PortA, {put, [spike, after_learner], 1, 5000}),
+
+                %% Then a voter, which leaves one.
+                done = ?SPIKE:call(PortA, {remove, NameB}, 30000),
+                ok = await_members(PortA, [NameA]),
+                {ok, nil} = ?SPIKE:call(PortA, {put, [spike, after_voter], 2, 5000}),
+
+                %% A member that is gone, and a name that was never one.
+                done = ?SPIKE:call(PortA, {remove, NameB}, 30000),
+                done = ?SPIKE:call(PortA, {remove, <<"nobody@127.0.0.1">>}, 30000),
+                ok
+            end)
+        end)
+    end),
     ok.
 
 %% ----------------------------------------------------------------- phases
@@ -92,6 +135,14 @@ learner_serves_the_store(PortA, PortL, NameA, NameB, NameL) ->
     {ok, nil} = ?SPIKE:call(PortL, start_system),
     ok = ?SPIKE:call(PortL, {join_learner, NameA}, 120000),
     #{NameA := voter, NameB := voter, NameL := non_voter} = voters(PortA),
+
+    %% A learner never campaigns, so a server that has just restarted learns who
+    %% the leader is from the leader's next append and not before. The join ends
+    %% with such a restart (Khepri records the store), and a quiet directory
+    %% would leave the learner's own view of the cluster unanswered until the
+    %% next write. The write below is that append.
+    {ok, nil} = ?SPIKE:call(PortA, {put, [spike, after_join], 0, 5000}),
+    ok = ?SPIKE:call(PortL, {await_value, [spike, after_join], 0, 30000}, 40000),
     #{NameA := voter, NameB := voter, NameL := non_voter} = voters(PortL),
 
     {ok, {some, 1}} = ?SPIKE:call(PortL, {read, [spike, one]}),
@@ -181,6 +232,20 @@ voters(Port) ->
     {ok, {Members, {some, _Leader}}} = ?SPIKE:call(Port, membership),
     maps:from_list(Members).
 
+%% Waits until the leader's membership lists exactly these members.
+await_members(Port, Names) ->
+    await_members(Port, lists:sort(Names), erlang:monotonic_time(millisecond) + 30000).
+
+await_members(Port, Names, Deadline) ->
+    case lists:sort(maps:keys(voters(Port))) of
+        Names -> ok;
+        Other ->
+            case erlang:monotonic_time(millisecond) >= Deadline of
+                true -> error({members, Other, Names});
+                false -> timer:sleep(100), await_members(Port, Names, Deadline)
+            end
+    end.
+
 %% ---------------------------------------------------------------- children
 
 child(Encoded, Role) ->
@@ -223,7 +288,9 @@ handle({transfer, NameBin}, _Directory, State) ->
 handle({join_voter, RemoteBin}, _Directory, State) ->
     {join_voter(binary_to_atom(RemoteBin, utf8)), State};
 handle({join_learner, RemoteBin}, _Directory, State) ->
-    {join_learner(binary_to_atom(RemoteBin, utf8)), State}.
+    {join_learner(binary_to_atom(RemoteBin, utf8)), State};
+handle({remove, NameBin}, _Directory, State) ->
+    {until_done(fun() -> ?KHEPRI:remove_member(NameBin, 5000) end), State}.
 
 %% Reads this member's own copy until it holds Value.
 await_value(Path, Value, Deadline) ->
@@ -240,51 +307,24 @@ await_value(Path, Value, Deadline) ->
 %% a member that is already in, promoted by Ra once caught up, then recorded by
 %% Khepri.
 join_voter(Remote) ->
-    {ok, UId} = ?KHEPRI:join_start(),
+    {ok, UId} = ?KHEPRI:join_start(as_voter),
     done = until_done(fun() -> ?KHEPRI:join_remove(Remote, 5000) end),
-    done = until_done(fun() -> ?KHEPRI:join_add(Remote, UId, 5000) end),
+    done = until_done(fun() -> ?KHEPRI:join_add(Remote, UId, as_voter, 5000) end),
     done = until_done(fun() -> ?KHEPRI:join_promoted(Remote, 5000) end),
     {ok, nil} = ?KHEPRI:join_finish(30000),
     ok.
 
-%% The same join for a learner. The server is configured and announced as a
+%% The production learner join. The server is configured and announced as a
 %% `non_voter`, so Ra never promotes it, and there is no promotion to wait for:
 %% the step before Khepri records the store is that the server has applied what
-%% the leader had applied when the join began.
+%% the leader has applied.
 join_learner(Remote) ->
-    _ = ?KHEPRI:forget_local(),
-    UId = ra:new_uid(ra_lib:to_binary(?STORE)),
-    Id = {?STORE, node()},
-    ok = ra:start_server(?SYSTEM, server_config(Id, UId)),
-    New = #{id => Id, uid => UId, membership => non_voter},
-    done = until_done(fun() -> add_member(Remote, New) end),
-    {ok, #{last_applied := Leader}, _} = ra:member_overview({?STORE, Remote}),
-    done = until_done(fun() -> caught_up(Id, Leader) end),
+    {ok, UId} = ?KHEPRI:join_start(as_learner),
+    done = until_done(fun() -> ?KHEPRI:join_remove(Remote, 5000) end),
+    done = until_done(fun() -> ?KHEPRI:join_add(Remote, UId, as_learner, 5000) end),
+    done = until_done(fun() -> ?KHEPRI:join_caught_up(Remote, 5000) end),
     {ok, nil} = ?KHEPRI:join_finish(30000),
     ok.
-
-add_member(Remote, New) ->
-    case ra:add_member({?STORE, Remote}, New, 5000) of
-        {ok, _, _} -> done;
-        {error, already_member} -> done;
-        {error, cluster_change_not_permitted} -> again;
-        Other -> {failed, Other}
-    end.
-
-caught_up(Id, Index) ->
-    case ra:member_overview(Id) of
-        {ok, #{last_applied := Applied}, _} when Applied >= Index -> done;
-        _ -> again
-    end.
-
-%% What client_khepri_ffi:server_config/2 builds for a promotable server, with
-%% the membership this join announces. A Khepri upgrade must re-check both.
-server_config(Id, UId) ->
-    #{cluster_name => ?STORE, id => Id, uid => UId,
-      friendly_name => "loom directory",
-      log_init_args => #{uid => UId, min_snapshot_interval => 0},
-      machine => {module, khepri_machine, #{store_id => ?STORE, member => Id}},
-      membership => non_voter}.
 
 until_done(Step) -> until_done(Step, erlang:monotonic_time(millisecond) + 90000).
 

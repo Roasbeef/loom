@@ -45,6 +45,7 @@ import client/directory/deletion
 import client/directory/member
 import client/directory/migrate
 import client/directory/ownership
+import client/directory/roster
 import client/directory/settings as directory_settings
 import client/directory/store
 import client/distribution
@@ -790,13 +791,32 @@ pub fn start_directory(
     Some(settings), Some(membership) ->
       member.start(member.Config(
         directory: directory_path(config.state_root),
-        members: settings.members,
+        members: members_of(config, settings),
         local: atom.to_string(node.name(node.self())),
         membership:,
         logger:,
       ))
       |> result.map(Some)
     _, _ -> Ok(None)
+  }
+}
+
+// Who the member actor takes its members from: the configured list, or the
+// ledger the daemon runs, read afresh on every tick because the seats change
+// while the daemon runs. The read is a local call to the ledger process, which
+// answers it between two messages.
+fn members_of(
+  config: Config,
+  settings: directory_settings.Settings,
+) -> member.Members {
+  case config.ledger {
+    None -> member.Listed(settings.members)
+    Some(handle) ->
+      member.Followed(read: fn() {
+        ledger_service.status(handle.service, 1000)
+        |> result.map(fn(status) { roster.roster(status.ledger) })
+        |> result.replace_error(Nil)
+      })
   }
 }
 
