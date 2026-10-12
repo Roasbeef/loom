@@ -560,7 +560,7 @@ concurrent, fault-tolerant systems.
 
 ## License
 
-License: TBD. The project has not chosen a license yet.
+Loom is released under the [MIT License](LICENSE).
 
 ## The website
 
