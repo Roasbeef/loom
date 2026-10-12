@@ -23,11 +23,15 @@ code-mode pipeline. It used `cap/task.parallel_map` and `cap/fs.read` to read
 three sample Markdown files. The recorded tool result returned four lines for
 each file. The macOS enforcement report remains visible in the capture.
 
-The image renders an actual 116-column terminal frame, expanded with `Ctrl+G`
-so the whole program is visible, from `tmux capture-pane -e -p` with its ANSI
-colors and Menlo typeface. Transcript text, results, and UI elements were not
-composited or rewritten for the image. `scripts/codemode_capture/capture.sh`
-reproduces it, and `site/public/img/code-mode.png` is a copy of the same file.
+Two images come from the same run. `code-mode.png` is expanded with `Ctrl+G`,
+so the whole program is visible (116 by 70 cells). `code-mode-compact.png` is
+the default collapsed card (116 by 48 cells). Each is an actual frame from
+`tmux capture-pane -e -p`, rendered at 2x (2624 pixels wide, Menlo typeface) by
+`render_capture.py --scale 2` and meant to be shown at half that width.
+Transcript text, results, and UI elements were not composited or rewritten.
+`scripts/codemode_capture/capture.sh` reproduces both. The README uses the
+expanded image; the website shows the compact one with a toggle for the
+expanded one, and both live in `site/public/img/`.
 
 ## Peer-link captures
 
