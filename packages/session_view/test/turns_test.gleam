@@ -687,6 +687,65 @@ pub fn a_host_that_skips_gets_no_expansion_test() {
   assert full == []
 }
 
+pub fn a_code_mode_step_carries_its_program_card_test() {
+  let pieces =
+    expanding(
+      [
+        call("c", "code_mode", json.Object([#("program", json.String("a\nb"))])),
+      ],
+      Some(text_result("out")),
+      whole(),
+    )
+  let assert [turns.Step(program: Some(card), ..)] = work_items(pieces)
+  assert card.program.lines == 2
+  assert card.program.whole == Some("a\nb")
+}
+
+pub fn a_host_that_skips_keeps_no_whole_program_in_the_card_test() {
+  let pieces =
+    expanding(
+      [
+        call("c", "code_mode", json.Object([#("program", json.String("a\nb"))])),
+      ],
+      Some(text_result("out")),
+      turns.Skip,
+    )
+  let assert [turns.Step(program: Some(card), ..)] = work_items(pieces)
+  assert card.program.whole == None
+  assert list.length(card.program.opening) == 2
+}
+
+pub fn the_hosts_cap_cuts_the_cards_program_too_test() {
+  let pieces =
+    expanding(
+      [
+        call(
+          "c",
+          "code_mode",
+          json.Object([#("program", json.String("a\nb\nc"))]),
+        ),
+      ],
+      Some(text_result("out")),
+      turns.Expand(fn(lines) {
+        list.map(lines, fn(line) {
+          transcript_line.Line(..line, text: "cut: " <> line.text)
+        })
+      }),
+    )
+  let assert [turns.Step(program: Some(card), ..)] = work_items(pieces)
+  assert card.program.whole == Some("cut: a\nb\nc")
+}
+
+pub fn a_call_that_is_not_a_program_has_no_card_test() {
+  let pieces =
+    expanding(
+      [call("c", "bash", json.Object([#("command", json.String("ls"))]))],
+      None,
+      whole(),
+    )
+  let assert [turns.Step(program: None, ..)] = work_items(pieces)
+}
+
 pub fn a_long_bash_command_is_shown_whole_when_expanded_test() {
   let command = string.repeat("echo hello; ", 20) <> "echo the-end"
   let pieces =

@@ -77,6 +77,7 @@ import gleam/string
 import session_view/agent_view
 import session_view/composer
 import session_view/decisions
+import session_view/program_card.{type ProgramCard}
 import session_view/protocol
 import session_view/snapshot
 import session_view/snapshot_view
@@ -246,6 +247,13 @@ pub type Item {
     /// The immutable result entry, for an explicit host read. The identity
     /// adds no second copy of the complete result to the projection.
     result_source: Option(ids.EntryId),
+    /// The call as a program card, for a foreground `code_mode` call: the
+    /// typed facts the call and its result hold, which `detail` has already
+    /// laid out as text. `None` for every other call. A host that draws a
+    /// card draws it in place of the rows; one that does not ignores it. The
+    /// whole program and value are in it only when the host's `Expansion`
+    /// asked for them, cut by its `cap`.
+    program: Option(ProgramCard),
   )
 }
 
@@ -1538,7 +1546,29 @@ fn step(
       Pending -> call.asked
       Done | Failed -> None
     },
+    program: program_card.read(
+      call.invocation,
+      call.outcome,
+      program_source(expansion),
+    ),
   )
+}
+
+// How much of a program and its value a card keeps: what the host's
+// expansion keeps of a row, so a settled turn sealed without its full text
+// keeps no whole program in its cards either, and a host that caps an
+// expanded row caps the card's text the same way.
+fn program_source(expansion: Expansion) -> program_card.Source {
+  case expansion {
+    Skip -> program_card.OpeningOnly
+    Expand(cap:) ->
+      program_card.Whole(cut: fn(text) {
+        [transcript_line.Line(transcript_line.ToolDetail, text)]
+        |> cap
+        |> list.map(fn(line) { line.text })
+        |> string.join("\n")
+      })
+  }
 }
 
 // Whether a call's result says its command was stopped on request: the broker

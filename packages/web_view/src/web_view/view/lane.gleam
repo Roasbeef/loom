@@ -1008,6 +1008,7 @@ fn item_element(
       images:,
       since:,
       result_source:,
+      program: _,
     ) -> {
       let rows = case full {
         [] -> detail
