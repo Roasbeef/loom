@@ -43,12 +43,20 @@ pub type Script {
     resident: Residency,
     deliveries: Int,
     lookups: Int,
+    others: Int,
   )
 }
 
+/// Where the directory finds the recipient.
 pub type Residency {
+  /// Resident: the directory resolves it to its endpoint.
   Resident
+
+  /// Held by its owner and not resident: the directory says `NotOpen`.
   Saved
+
+  /// Held by no catalogue: the directory refuses it.
+  Gone
 }
 
 pub type Step {
@@ -57,6 +65,8 @@ pub type Step {
   SetResident(Residency)
   SetThen(Mode)
   Count(reply: Subject(#(Int, Int)))
+  OtherCount(reply: Subject(Int))
+  Other
 }
 
 pub type Rig {
@@ -86,6 +96,7 @@ pub fn start_script(modes: List(Mode), then: Mode) -> Subject(Step) {
       resident: Resident,
       deliveries: 0,
       lookups: 0,
+      others: 0,
     ))
     |> actor.on_message(handle_step)
     |> actor.start
@@ -115,6 +126,11 @@ pub fn handle_step(script: Script, step: Step) -> actor.Next(Script, Step) {
       process.send(reply, #(script.deliveries, script.lookups))
       actor.continue(script)
     }
+    OtherCount(reply:) -> {
+      process.send(reply, script.others)
+      actor.continue(script)
+    }
+    Other -> actor.continue(Script(..script, others: script.others + 1))
   }
 }
 
@@ -261,13 +277,21 @@ pub fn resolve(
   target: peer_mail.Endpoint,
   id: String,
 ) -> Result(peer_mail.Endpoint, peer_mail.Failure) {
-  case id == source.session {
-    True -> Ok(source)
-    False ->
+  case id == source.session, id == target.session {
+    True, _ -> Ok(source)
+    False, True ->
       case process.call(script, 1000, Lookup) {
         Resident -> Ok(target)
-        Saved -> Error(peer_mail.Refused("session is saved, not open"))
+        Saved -> Error(peer_mail.NotOpen)
+        Gone -> Error(peer_mail.Refused("session does not exist"))
       }
+
+    // Any other session is one the owner holds saved, so that a test can owe a
+    // message to a second recipient whose answer differs from the first's.
+    False, False -> {
+      process.send(script, Other)
+      Error(peer_mail.NotOpen)
+    }
   }
 }
 
@@ -303,6 +327,12 @@ pub fn send(rig: Rig, id: String) -> Result(JsonValue, String) {
 /// was asked for the recipient.
 pub fn counts(rig: Rig) -> #(Int, Int) {
   process.call(rig.script, 1000, Count)
+}
+
+/// How many times the directory was asked for a session other than the
+/// recipient.
+pub fn other_lookups(rig: Rig) -> Int {
+  process.call(rig.script, 1000, OtherCount)
 }
 
 pub fn receipts(runtime: api.Runtime) -> Int {

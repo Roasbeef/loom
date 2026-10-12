@@ -246,9 +246,9 @@ pub type Config {
     /// implicitly, which is every embedded host.
     peer_defaults: peer_mail.Defaults,
     /// Called once after a peer message is recorded as still undelivered
-    /// (`peer_outbox.Unanswered`), so the outbox drainer arms its retry
-    /// timer. The Agency does not own the drainer and cannot start it; the
-    /// host supplies a closure over the drainer's name. An embedded host with
+    /// (`peer_outbox.Unanswered` or `peer_outbox.NotOpen`), so the outbox
+    /// drainer arms its retry timer. The Agency does not own the drainer and
+    /// cannot start it; the host supplies a closure over the drainer's name. An embedded host with
     /// no drainer leaves the no-op, and a message that could not be delivered
     /// then waits for the next session open.
     outbox_queued: fn() -> Nil,
@@ -391,8 +391,9 @@ pub fn start(
         // The doorbell rings after the row is durable, so a drainer that
         // wakes at once finds the message it was told about.
         case command, answer {
-          peer_mail.OutboxSettle(outcome: peer_outbox.Unanswered, ..), Ok(_) ->
-            config.outbox_queued()
+          peer_mail.OutboxSettle(outcome: peer_outbox.Unanswered, ..), Ok(_)
+          | peer_mail.OutboxSettle(outcome: peer_outbox.NotOpen, ..), Ok(_)
+          -> config.outbox_queued()
           _, _ -> Nil
         }
         process.send(reply, answer)

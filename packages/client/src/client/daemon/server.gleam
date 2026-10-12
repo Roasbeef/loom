@@ -3971,22 +3971,123 @@ fn unknown_row(id: String) -> JsonValue {
 // The daemon's peer lookups, which the control commands and an owner's web
 // page share so that both resolve a session the same way. A session resident
 // here resolves to its Agency, and one a configured orchestrator owns resolves
-// to that orchestrator's port (`peers.routed`); discovery is the catalogue's.
+// to that orchestrator's port (`peers.routed`); discovery is the catalogue's,
+// here or on the owner (`peers.described`).
 fn peer_directory(
   config: Config(instance),
   registry: manager.Manager(instance),
 ) -> peers.Directory {
   peers.Directory(
     resolve: peers.routed(
-      fn(id) { peer_endpoint(config, registry, id) |> peer_mail.refused },
+      local_peer(registry, fn(resident) {
+        config.peer_endpoint(resident)
+        |> option.to_result(peer_mail.Refused("peer_service_unavailable"))
+      }),
       config.directory,
     ),
-    describe: fn(id) {
-      manager.get(registry, id)
-      |> result.map(view_json)
-      |> result.map_error(error_code)
-    },
+    describe: peers.described(local_description(registry), config.directory),
   )
+}
+
+/// How a session that is not resident here stands for peer mail, read from
+/// the catalogue without opening it.
+@internal
+pub type Standing {
+  /// The catalogue holds it and its owner can open it: a message waits.
+  Unopened
+
+  /// The catalogue handed it to another orchestrator and holds only the record
+  /// of whom. The sender's lookup was stale. A message waits, because the next
+  /// attempt looks again and follows the move, where a refusal would end it.
+  Handed
+
+  /// The owner archived it. Opening it needs a restore first, which nothing a
+  /// message does can ask for, so a message is refused as for a session that
+  /// is gone.
+  Archived
+
+  /// The catalogue does not hold it, or could not say.
+  Unheld
+}
+
+/// Reads a non-resident session's standing in one visibility read and, for a
+/// session that is not archived, one custody read.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // server.standing(registry, "0198...") == server.Unopened
+/// ```
+@internal
+pub fn standing(registry: manager.Manager(instance), id: String) -> Standing {
+  case manager.visibility(registry, id) {
+    Error(_) -> Unheld
+    Ok(catalogue.Archived) -> Archived
+    Ok(catalogue.Active) ->
+      case manager.custody(registry, id) {
+        Ok(catalogue.Moved(..)) -> Handed
+        Ok(_) | Error(_) -> Unopened
+      }
+  }
+}
+
+/// Resolves a recipient on this daemon to the endpoint of its resident
+/// session, and says why it cannot. A session that is not resident but that
+/// this catalogue holds and can open is `NotOpen`: its message can be admitted
+/// once the owner opens it, and nothing here opens it. A session this
+/// catalogue does not hold, an archived one, and a resident whose endpoint is
+/// not available, are `Refused`.
+///
+/// `project` turns a resident into its endpoint, or into the failure that says
+/// it has none.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // server.local_peer(registry, fn(resident) { Ok(resident.peer) })("0198...")
+/// ```
+@internal
+pub fn local_peer(
+  registry: manager.Manager(instance),
+  project: fn(instance) -> Result(peer_mail.Endpoint, peer_mail.Failure),
+) -> fn(String) -> Result(peer_mail.Endpoint, peer_mail.Failure) {
+  fn(id) {
+    case manager.resolve(registry, id) {
+      Ok(resident) -> project(resident)
+      Error(error) ->
+        case standing(registry, id) {
+          Unopened | Handed -> Error(peer_mail.NotOpen)
+          Archived -> Error(peer_mail.Refused("session_archived"))
+          Unheld -> Error(peer_mail.Refused(error_code(error)))
+        }
+    }
+  }
+}
+
+/// What this daemon's catalogue says about a session, without opening it, as
+/// the metadata a peer listing shows. A session this catalogue handed to
+/// another orchestrator is not described here: its row is only the record of
+/// who owns it now, so the answer is `moved` and `peers.described` asks the
+/// owner.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // server.local_description(registry)("0198...")
+/// ```
+@internal
+pub fn local_description(
+  registry: manager.Manager(instance),
+) -> fn(String) -> Result(JsonValue, String) {
+  fn(id) {
+    use view <- result.try(
+      manager.get(registry, id) |> result.map_error(error_code),
+    )
+    case manager.custody(registry, id) {
+      Ok(catalogue.Moved(..)) -> Error("moved")
+      Ok(_) | Error(_) -> Ok(view_json(view))
+    }
+  }
 }
 
 // The recipient of a link. A lookup bounds one connection at a second and a

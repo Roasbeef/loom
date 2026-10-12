@@ -202,6 +202,27 @@ pub fn a_saved_session_is_refused_and_never_opened_test() {
     == peer_links.Declined(peer_links.NotRunning)
 }
 
+pub fn a_session_its_owner_holds_saved_is_refused_in_the_same_words_test() {
+  let pair = resident_pair(peer_mail.no_defaults, only_first)
+
+  // The session lives on another orchestrator, whose answer to the grant is
+  // that it holds the session and has not opened it.
+  let saved_elsewhere =
+    peers.Directory(..pair.directory, resolve: fn(id) {
+      case id == pair.first {
+        True -> pair.directory.resolve(id)
+        False ->
+          Ok(peer_mail.Endpoint(id, fn(_command) { Error(peer_mail.NotOpen) }))
+      }
+    })
+  assert ui_peers.run(
+      saved_elsewhere,
+      pair.first,
+      peer_links.Link("main", pair.second, "main", BusyOnly, OneWay),
+    )
+    == peer_links.Declined(peer_links.NotRunning)
+}
+
 pub fn a_strand_the_other_session_lacks_is_refused_in_fixed_words_test() {
   let pair = resident_pair(peer_mail.no_defaults, both)
   assert ui_peers.run(

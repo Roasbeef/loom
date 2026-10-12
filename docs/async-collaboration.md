@@ -245,8 +245,9 @@ plus `message_id`, `text`, and the current `epoch`:
 
 The owner selects the strand on whose behalf the script sends. The command
 still requires that strand's outgoing link and the recipient's grant. It uses
-the same durable receipt and wake policy as the model tool. Both sessions must
-be resident; sending never opens a saved session. The harness binds identity to the resolved resident endpoint and the selected
+the same durable receipt and wake policy as the model tool. The source session
+must be resident. A recipient that is saved is queued, as above, and sending
+never opens it. The harness binds identity to the resolved resident endpoint and the selected
 source strand. The request cannot supply provenance metadata; daemon-control
 sends currently store `null` for that auxiliary metadata. A member credential
 cannot use this command.
@@ -267,9 +268,12 @@ refuse a retry, even when the original message was admitted. A receipt proves
 that the message was stored; it does not prove that the model read it or finished
 the requested task.
 
-If the recipient's owner is on another orchestrator and cannot be reached,
-`peer_send` returns `{"state": "queued", ...}` instead of a receipt. The message
-is recorded in the sender's session and delivered when the owner answers.
+If the recipient's owner is on another orchestrator and cannot be reached, or
+the recipient is saved and not running, `peer_send` returns
+`{"state": "queued", ...}` instead of a receipt. The message is recorded in the
+sender's session and delivered once, when the owner answers or when the owner
+opens the saved session. Sending never opens a session. A message that waits an
+hour is refused, with `owner unreachable` or `recipient not opened in time`.
 Keep the same message ID and do not send the text again under a new one:
 sending with the same ID returns the receipt once the message is admitted, and
 `cap/peer.sent_receipt` reads it from the sender's own record. A program calling
@@ -297,7 +301,9 @@ loomd peer unlink SOURCE main TARGET reviewer
 `peer` when the daemon uses a nondefault state directory. `inspect` reports the
 source strand's outgoing links and incoming grants. Each outgoing row shows
 the target's catalogue state, current wake permission when the target is
-resident, and `wake: null` when it is unavailable. Incoming rows show their
+resident, and `wake: null` when it is unavailable. A target on another
+orchestrator is read from its owner, so its catalogue state is the owner's and
+its wake permission is the owner's grant. Incoming rows show their
 source metadata and wake permission. Large inspections use bounded control
 pages; the CLI follows them and returns one aggregate JSON result. Each page
 is a fresh observation, so concurrent link changes may appear or disappear
