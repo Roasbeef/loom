@@ -1,97 +1,94 @@
 # Current handoff
 
 Baselined October 11, 2026 against main
-`4417fdb6a073865660bf029495a9ecf08bc9e315` and the tool-latency source candidate
-`a6a1f6598`. Work is on `perf/tool-latency` in the isolated `5086/loom`
-worktree. The installed daemon has not been changed.
+`4417fdb6a073865660bf029495a9ecf08bc9e315` and the tool-latency branch through
+`4839fd7d8`, including the transcript-read changes recorded below. Work is on
+`perf/tool-latency` in the isolated `5086/loom` worktree and draft PR #949.
+The installed daemon has not been changed.
 
 ## What moved
 
-The previous edition described distributed runtime PR #923 as awaiting merge.
-It merged as the main baseline above on October 11. Its production boundary is
+Distributed runtime PR #923 merged at the main baseline above. Its boundary is
 `runtime/effects.ToolSurface.run`: the orchestrator owns sessions, SQLite,
-providers and approvals; the executor owns the whole workspace plane, including
-its broker, jailed commands, jobs, LSP and code mode. The optimization below
-uses that shared plane rather than a per-command remote broker interface.
+providers and approvals; the executor owns the workspace plane, including its
+broker, jailed commands, jobs, LSP and code mode. The optimizations use those
+shared boundaries rather than a per-command remote broker interface.
 
-The previous latency section was benchmark-only and left full `bash` Auto
-completion unmeasured. We now have both benchmark layers:
+Three benchmark layers now separate the costs:
 
-- `make bench-tool-latency` measures real broker/helper/jail execution with
-  platform enforcement, cold/warm commands, response sizes and phase samples.
-  The [October 9 report](review/tool-latency-2026-10-09.md) records its two
-  macOS runs, with warm medians of 18 to 23 ms.
-- `make bench-tool-roundtrip` brackets real shell calls at the scripted
-  provider through shipped local and TLS distributed daemons. The
-  [October 11 report](review/tool-completion-latency-2026-10-11.md) and its raw
-  samples record tiny-call medians of 95 to 51 ms locally and 99 to 52 ms
-  distributed; a 200 ms command falls from about 403 to 406 ms to 261 ms.
+- `make bench-tool-latency` measures real broker/helper/jail execution.
+  The [October 9 report](review/tool-latency-2026-10-09.md) records warm
+  medians of 18 to 23 ms on macOS.
+- `make bench-tool-roundtrip` measures the scripted-provider-to-provider
+  interval through shipped local and TLS distributed daemons. The
+  [completion report](review/tool-completion-latency-2026-10-11.md) records
+  tiny-call medians of 95 to 51 ms locally and 99 to 52 ms distributed after
+  replacing positive polling waits with a completion witness.
+- `LOOM_BENCH_TOOLS_WORKLOAD=history make bench-tool-roundtrip` fixes a
+  65,550-byte prompt. The [storage report](review/tool-storage-latency-2026-10-11.md)
+  records additional median reductions from 62 to 47–51 ms locally and 70 to
+  50–51 ms distributed. Its standalone SQLite scan falls from 8.166 to
+  0.100 ms over exactly 128 messages containing 1 MiB of text.
 
-Production positive waits now use `jobseam.production` and
-`jobs.await_completion`. Each watched live job lazily owns one linked weft
-actor. Terminal processing attempts the fact write before stopping that
-witness. The caller monitors it and rereads the authoritative state on DOWN
-or timeout. There are no retained waiter subjects. The shared workspace plane
-selects the same constructor on the local daemon and distributed executor.
-The injected-clock `door` and `await_job` remain available to simulations.
+The previous edition left repeated reads and transcript scans as an open lead
+from the [bounded call trace](review/tool-completion-calls-2026-10-11.txt).
+That lead now has two measured changes. Image-capable model admission checks
+model capability before reading operation or transcript state. SQLite pushes
+kind filtering into the existing covering index and caps fetches at the
+remaining limit when custom-type filtering cannot reject rows. It still
+resolves stops and cursor windows on the unfiltered branch first.
 
-## Verified scope
+## Rulings
 
-The final focused job run passed all 57 tests. It checks ownership, pending
-output and cursors, blocked terminal persistence and owner death with a
-confirmed subscriber. Both real shipped benchmark workloads passed on local
-and TLS placements. A five-second Pickglass capture completed against a
-disposable candidate node; sampled processes were predominantly waiting.
-Independent review found no reachable correctness defect, and two test-claim
-observations were corrected before the focused rerun. Package lint passed;
-the documentation citation moved with the source.
+Production positive waits use `jobseam.production` and `jobs.await_completion`.
+Each watched live job lazily owns one linked weft actor. Terminal processing
+attempts the fact write before stopping that witness. Callers monitor it and
+reread authoritative state on DOWN or timeout. There are no retained waiter
+subjects. Local and distributed executors select the same constructor.
+Injected-clock polling remains available to simulations.
 
-Full repository and exact-head hosted/Linux gates are distinct from those
-results. Their latest status is on the feature branch/PR and under
-`build/signoff/`; do not infer green from an earlier source candidate or this
-handoff. Run `make check` and, after pushing, the prescribed
+A dead witness is never a successful result. The existing commit path updates
+memory after a failed persistence attempt; the wake preserves write-attempt
+ordering, not successful durability during owner failure. No tool schema,
+frozen interface, distributed protocol, durable job format or jail enforcement
+was changed.
+
+Kind metadata is derived from the immutable entry at insertion. Matching
+malformed payloads still fail total decoding; payloads excluded by kind are no
+longer fetched or validated. Custom-type filtering stays in pure refinement.
+The existing `ix_be_type` supplies both traversal orders without a new index,
+migration or temporary sort.
+
+## Verification and remaining work
+
+The completion change passed 57 focused job tests, including a direct witness
+monitor held across blocked terminal persistence. The test fails when witness
+shutdown is moved before the write. Both real shipped placements passed.
+
+The transcript changes passed focused storage, wiring and vision runs. Tests
+check zero reads for image-capable admission, failure on selected malformed
+payloads, stop-before-filter semantics, sparse pagination and exact traversal
+around the 256-row boundary. Independent review found no remaining actionable
+defect. A benchmark count observation was corrected, and both scan timings
+were rerun on the exact 128-message fixture.
+
+Full repository and exact-head hosted/Linux gates are separate. Current status
+is on PR #949 and under `build/signoff/`; do not infer green from an earlier
+candidate or this handoff. The full `make check` runs outside the nested macOS
+sandbox so jailed conformance cases can create their capability sockets.
+After pushing, use the prescribed
 `LOOM_SIGNOFF_HOST=gilgamesh-signoff make signoff-remote` for the current SHA.
 
-## Rulings and limits
-
-No tool schema, frozen interface, distributed protocol, durable job format or
-jail enforcement was changed. Completion means the existing runner's weft
-outcome was processed. A dead witness is never a successful result. The
-existing commit path still updates memory after a failed persistence attempt;
-the wake preserves write-attempt ordering, not successful durability during an
-owner failure.
-
-The latency table is one Mac with loopback TLS and twenty warm observations
-per row. The delayed candidate overlapped the full gate and has a distributed
-tail outlier; it is not a production SLO. Linux latency, cross-host RTT,
-contention, large transcripts, code-mode compilation and provider inference
-remain separate measurement work.
+All latency results are from one Mac with loopback TLS, with first calls
+separate from warm samples. They are not production SLOs. Repeat on Linux and
+across physical hosts, then measure contention, growing transcripts, code-mode
+compilation and provider inference separately. Attribute further costs on one
+clock before adding storage or transport machinery. Keep profiling separate
+from timing comparisons and capability sockets outside `/tmp`.
 
 Read [distributed architecture](architecture/distributed.md),
 [the setup guide](distributed-setup.md) and
 [protocol-change/078](../protocol-change/078-distributed-runtime.md) for the
-shipped system. Its earlier handoff recorded limitations around reattachment,
-imported-session movement and extension/MCP support. This performance task did
-not re-audit or close those limits; consult the current code before treating
-those historical notes as an up-to-date issue list.
-
-## Next measurements
-
-The follow-up independent PR reviews found no actionable defect. Their shared
-coverage observation is now closed: the blocked-write test monitors the
-completion witness directly, and fails when shutdown is moved before the
-write. Production source is unchanged by that test strengthening.
-
-The [bounded call trace](review/tool-completion-calls-2026-10-11.txt) captured
-17,699 calls in four pinned processes over eight seconds. Reads, JSON decoding
-and transcript scans exceeded the commit subtree within that selection. Next,
-attribute repeated reads and transcript projection per tool call on one clock;
-the trace is not total CPU or a per-response breakdown. A Darwin process-table
-scan measured only 161 microseconds at the median, so the duplicate startup
-scan is not a substantial remaining cost on this host.
-
-Repeat both benchmark layers on Linux and across physical hosts, preserving
-all samples and enforcement reports. Attribute any remaining response time on
-one clock before changing storage, transport or code-mode startup. Keep
-profiling runs separate from timing comparisons, and keep every checkout and
-capability socket outside `/tmp`.
+shipped system. This task did not re-audit its reattachment, session movement
+or extension/MCP limitations; consult current code before treating historical
+notes as a current issue list.
