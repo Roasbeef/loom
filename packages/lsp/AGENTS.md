@@ -267,7 +267,9 @@ the shared decoding helpers close the file.
 The actor retains at most 2048 UTF-8 bytes from an error-level window message.
 A server can report a failed project load that way and then answer a semantic
 request with null or an empty array; those answers become `Unavailable` with
-the retained reason. Diagnostics reads and settlement cannot call that state
+the retained reason. A JSON-RPC refusal keeps its code and own message, with
+the retained load failure included so a secondary error such as `no views`
+does not hide the toolchain or workspace failure. Diagnostics reads and settlement cannot call that state
 clean, including when settlement reaches its deadline. Recovery requires a
 nonempty result from the feature's existing typed decoder; empty hover content,
 empty rename edits and malformed replies cannot clear the failure. Nonempty

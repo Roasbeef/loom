@@ -73,6 +73,65 @@ fn silent(state: Nil, _inbound: Inbound) -> #(Nil, List(Action)) {
   #(state, [])
 }
 
+pub fn refused_request_retains_project_failure_until_recovery_test() {
+  let #(started, _fake) =
+    started(gleam_like_capabilities(), 0, fn(state, inbound) {
+      case inbound {
+        jsonrpc.ServerRequest(id:, method: "textDocument/hover", ..) -> {
+          let replies = case state {
+            0 -> [
+              Reply(jsonrpc.notification(
+                "window/logMessage",
+                Some(
+                  json.Object([
+                    #("type", json.Int(1)),
+                    #(
+                      "message",
+                      json.String("toolchain lock: operation not permitted"),
+                    ),
+                  ]),
+                ),
+              )),
+              Reply(fake_server.error_response(id, -32_603, "no views")),
+            ]
+            1 -> [Reply(fake_server.error_response(id, -32_603, "no views"))]
+            2 -> [
+              Reply(fake_server.response(
+                id,
+                json.Object([#("contents", json.String("recovered"))]),
+              )),
+            ]
+            _later -> [
+              Reply(fake_server.error_response(id, -32_603, "ordinary refusal")),
+            ]
+          }
+          #(state + 1, replies)
+        }
+        jsonrpc.ServerRequest(id:, ..) -> #(state, [
+          Reply(fake_server.response(id, json.Null)),
+        ])
+        jsonrpc.Notification(..) | jsonrpc.Response(..) -> #(state, [])
+      }
+    })
+  let at = range.Position(0, 7)
+  let assert Error(client.ServerError(code, message)) =
+    client.hover(started, a, at, 1000)
+    as "a refusal after a failed load must retain the cause"
+  assert code == -32_603
+  assert string.contains(message, "toolchain lock: operation not permitted")
+  assert string.contains(message, "Request refused: no views")
+  assert client.hover(started, a, at, 1000)
+    == Error(client.ServerError(code, message))
+
+  // Refusals leave the failure active until a typed semantic result recovers.
+  let assert Ok(Some(hover)) = client.hover(started, a, at, 1000)
+    as "a substantive answer should establish recovery"
+  assert hover.contents == "recovered"
+  assert client.hover(started, a, at, 1000)
+    == Error(client.ServerError(-32_603, "ordinary refusal"))
+  client.stop(started, 1000)
+}
+
 pub fn project_failure_is_not_an_empty_hover_or_clean_diagnostics_test() {
   let #(started, _fake) =
     started(gleam_like_capabilities(), 0, fn(state, inbound) {
