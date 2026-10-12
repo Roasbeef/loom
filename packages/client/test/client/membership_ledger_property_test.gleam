@@ -13,6 +13,14 @@
 //// two nodes that apply the same log hold the same pin table, a fork is
 //// refused and leaves the state unchanged, an entry survives encoding, and the
 //// decoder is total over arbitrary bytes.
+////
+//// Three more concern the pin table. It equals the one a model derives from
+//// the entries alone (`membership_log.model_peers`, which states the rule on
+//// revoked links in a different shape from the ledger), links are symmetric
+//// between active members, and no table holds the pin of a name that is
+//// revoked or was never enrolled. Each asserts a minimum count of the cases it
+//// exercises, so a generator that stopped producing revokes or links would
+//// fail the test and not pass it vacuously.
 
 import client/distribution_plan.{Executor, Orchestrator}
 import client/membership_entry.{
@@ -340,23 +348,148 @@ pub fn two_nodes_that_apply_the_same_log_hold_the_same_table_test() {
   list.each(logs(), fn(drawn) {
     let #(_, log, states) = drawn
     let lines = history.lines(log)
-    let assert Ok(first) = replay(lines)
 
-    // The second node hears the log in a worse order: each line is preceded
-    // by the one after it, which is a gap, and followed by itself again,
-    // which is a duplicate. Neither changes what it holds.
-    let second = hear_untidily(lines)
-    assert first == second
-    assert first == last(states)
+    // Three nodes reach the head by different routes: one replays the file,
+    // one is the builder that appended the entries as it signed them, and one
+    // hears the log in a worse order, each line preceded by the one after it
+    // (a gap) and followed by itself again (a duplicate). Neither changes what
+    // it holds.
+    let assert Ok(replayed) = replay(lines)
+    let built = last(states)
+    let untidy = hear_untidily(lines)
 
-    let probes = ["stranger", ..history.pool()]
-    list.each(probes, fn(name) {
-      assert membership_ledger.pin_table(first, name)
-        == membership_ledger.pin_table(second, name)
-      assert membership_ledger.enrollment(first, name)
-        == membership_ledger.enrollment(second, name)
+    // What a node acts on is its own table and its own standing, so those are
+    // compared first, name by name, and a divergence is reported there. The
+    // whole-ledger equality after them is stronger and implies them; it also
+    // covers state that no table shows, such as the identity applied at each
+    // sequence number.
+    list.each(probes(), fn(name) {
+      let expected = membership_ledger.pin_table(replayed, name)
+      assert membership_ledger.pin_table(built, name) == expected
+      assert membership_ledger.pin_table(untidy, name) == expected
+      let standing = membership_ledger.enrollment(replayed, name)
+      assert membership_ledger.enrollment(built, name) == standing
+      assert membership_ledger.enrollment(untidy, name) == standing
     })
+    assert replayed == built
+    assert replayed == untidy
   })
+}
+
+// The names a test asks a ledger about: every name the generator draws from,
+// and one it never enrolls.
+fn probes() -> List(String) {
+  ["stranger", ..history.pool()]
+}
+
+// The ledger after each prefix of a log, with the entries that produced it.
+fn prefixes(
+  drawn: #(Int, history.Log, List(Ledger)),
+) -> List(#(Ledger, List(membership_entry.SignedEntry))) {
+  let #(_, log, states) = drawn
+  let entries = chronological(log)
+  list.index_map(states, fn(ledger, index) {
+    #(ledger, list.take(entries, index + 1))
+  })
+}
+
+pub fn the_pin_table_matches_a_model_of_the_links_test() {
+  // The table of every probed name, after every prefix of every log, names the
+  // peers the model derives from the entries alone.
+  let nonempty =
+    list.flat_map(logs(), prefixes)
+    |> list.flat_map(fn(state) {
+      let #(ledger, entries) = state
+      list.map(probes(), fn(name) {
+        let expected = history.model_peers(entries, name)
+        let table = membership_ledger.pin_table(ledger, name)
+        assert list.map(membership_ledger.peers(table), fn(peer) { peer.name })
+          == expected
+        expected
+      })
+    })
+    |> list.count(fn(expected) { expected != [] })
+  assert nonempty > runs * length
+}
+
+pub fn the_logs_reach_edges_that_a_revoke_must_prune_test() {
+  // A log shows the pruning rule only if some member lists a name that is
+  // revoked and then enrolled again. Counted over every prefix, the model
+  // finds such stale edges in many of them, so the model test above cannot
+  // pass for want of a case.
+  let stale =
+    list.flat_map(logs(), prefixes)
+    |> list.count(fn(state) { history.stale_edges(state.1) > 0 })
+  assert stale > runs
+}
+
+fn is_peer(table: membership_ledger.PinTable, pin: BitArray) -> Bool {
+  case membership_ledger.lookup_pin(table, pin) {
+    Ok(_) -> True
+    Error(Nil) -> False
+  }
+}
+
+pub fn links_between_active_members_are_symmetric_test() {
+  // For two active members, a accepts the pin of b exactly when b accepts the
+  // pin of a, because TLS needs both ends to agree.
+  let accepted =
+    list.flat_map(logs(), prefixes)
+    |> list.flat_map(fn(state) {
+      let #(ledger, _) = state
+      list.combination_pairs(membership_ledger.members(ledger))
+      |> list.map(fn(pair) {
+        let #(a, b) = pair
+        let forward =
+          is_peer(membership_ledger.pin_table(ledger, a.name), b.pin)
+        let backward =
+          is_peer(membership_ledger.pin_table(ledger, b.name), a.pin)
+        assert forward == backward
+        forward
+      })
+    })
+
+  // Both answers occur often, so neither side of the equivalence is vacuous.
+  assert list.count(accepted, fn(connected) { connected }) > runs * length
+  assert list.count(accepted, fn(connected) { !connected }) > runs * length
+}
+
+// Every pin a name has been given in a prefix of a log, by an enrollment or
+// by the revoke that removed it.
+fn pins_given_to(
+  entries: List(membership_entry.SignedEntry),
+  name: String,
+) -> List(BitArray) {
+  list.filter_map(entries, fn(signed) {
+    case signed.entry.kind {
+      Upsert(member) if member.name == name -> Ok(member.pin)
+      Revoke(name: revoked, pin:, ..) if revoked == name -> Ok(pin)
+      Genesis(..) | Upsert(_) | Revoke(..) -> Error(Nil)
+    }
+  })
+}
+
+pub fn no_table_holds_a_pin_of_a_name_that_is_not_enrolled_test() {
+  let checked =
+    list.flat_map(logs(), prefixes)
+    |> list.flat_map(fn(state) {
+      let #(ledger, entries) = state
+      list.filter(probes(), fn(name) {
+        membership_ledger.enrollment(ledger, name) == membership_ledger.Revoked
+        || membership_ledger.enrollment(ledger, name)
+        == membership_ledger.NotEnrolled
+      })
+      |> list.flat_map(fn(name) {
+        list.map(pins_given_to(entries, name), fn(pin) {
+          list.each(probes(), fn(node) {
+            assert !is_peer(membership_ledger.pin_table(ledger, node), pin)
+          })
+        })
+      })
+    })
+
+  // Revoked names with pins are common in the logs, so the loop above ran.
+  assert list.length(checked) > runs * length
 }
 
 fn hear_untidily(lines: List(BitArray)) -> Ledger {
