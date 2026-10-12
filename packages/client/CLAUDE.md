@@ -8011,3 +8011,62 @@ dialling nobody), the `deployment.status` cases of `daemon_protocol_test`, and
 and the next read says `down`). For the creation panel: `ui_route_test` (a pooled
 creation and `pool_unknown`) and `ui_socket_test` (a card needs no new event
 class).
+
+## The membership ledger, pure part (protocol-change/086, slice 1a)
+
+`client/membership_entry`, `client/membership_ledger` and
+`client/membership_signing` are the format and the fold of the signed membership
+ledger that will replace the fixed `[[distribution.peers]]` list.
+`docs/design-notes/membership-ledger.md` is the argument and
+`protocol-change/086-membership-ledger.md` the normative format. This slice has
+no file, no process, no `loom.toml` key and no wire message: nothing reads these
+modules yet except their tests, and static pins are unchanged.
+
+- `membership_entry` is the bytes. An `Entry` is `seq`, `prev` (an `EntryId`),
+  `time` and a `Kind`: `Genesis(deployment, authority)`, `Upsert(Member)` (wire
+  word `member`) or `Revoke(name, pin, reason)`. `encode_body` writes the JSON with
+  the keys of the format in order; `read` is steps 1 through 3 of the acceptance
+  procedure (`parse_line`, then the injected verifier over `signing_input`, then
+  `decode_body`) and never parses a body whose signature failed. A reader does not
+  re-serialize: a `SignedEntry` keeps the exact `body` bytes, and its `id` is the
+  SHA-256 of them. `parse_line` also refuses a base64 half that is not the
+  canonical encoding of its bytes, which 086 does not say in words: without it a
+  flipped last character would still decode to the same bytes. `seal` is the
+  signer's side and does not validate the fields; `membership_ledger.check` does.
+- `Signer` and `Verifier` are function values, so the module has no `@external`
+  and a test needs no key. `Verdict` is `Authentic | Forged`. `membership_signing`
+  builds the real pair from the authority PEMs through two functions added to
+  `client/internal/ffi_pki` (`sign`, `verify`), and `authority_pin` is the value a
+  genesis names.
+- `membership_ledger` is the fold. A `Ledger` is opaque and immutable: the active
+  members by name, `ever` (every name enrolled), the head, and the identity applied
+  at each sequence number. `begin` and `start` take the genesis, `accept` runs the
+  whole procedure for one line, `apply` runs steps 4 through 7 for an entry already
+  read, and `replay` is `begin` followed by `accept` over a file. A refusal returns
+  `Error(Refusal)` and the caller keeps the ledger it had, which is how a fork
+  leaves a node unchanged. A duplicate and a gap are `Outcome`s and not refusals.
+  `Refusal` is `Unreadable(ReadError)`, `Fork(seq, ours, theirs)`, `Chain` or
+  `Invalid(Rule)`, and `step` gives the control protocol's word for each.
+- The fold's rules are `Rule`: no node or pin shared with another active member,
+  links only to other active members, at most 64 active and 256 names ever, at
+  most 10,000 entries (`max_entries`), a revoke only of an active member, and a
+  genesis only first. A revoke also removes the revoked name from every remaining
+  member's `links`, which 086 states for edges but not for the stored list: a name
+  enrolled again later must not get its old edges back.
+- `pin_table(ledger, name)` is the table for one node: each active member other
+  than `name` that is linked to it (either lists the other, or both have a
+  directory standing other than `none`). `lookup_pin` is what the verify callback
+  will read and `lookup_node` its inverse. A name that is not active has an empty
+  table and `enrollment` says whether it is `Revoked` or `NotEnrolled`. The caller
+  does the effects of steps 8 through 10 (append, publish, disconnect), in that
+  order.
+- `check(ledger, entry)` is the signer's pre-flight: the entry must decode to
+  itself, follow the head and satisfy the fold.
+- Tests: `membership_entry_test` (golden body strings, every malformed shape),
+  `membership_ledger_test` (each refusal, the bounds, the pin table),
+  `membership_ledger_property_test` (replay equals stepwise apply, prefixes,
+  flipped bits, swapped and removed entries, forks, equal tables, totality over
+  arbitrary bytes) over `support/membership_fixture` (an HMAC stand-in for the
+  signature, so the laws need no key) and `support/membership_log` (a log builder
+  and a seeded generator that keeps the random operations the real fold accepts),
+  and `membership_signing_test` (the real ECDSA pair).
