@@ -2711,9 +2711,34 @@ fn deployment_status(
   |> result.map(fn(snapshot) {
     #(
       "deployment.status",
-      deployment.to_json(snapshot, bootstrap.system_time_ms()),
+      with_ledger(
+        deployment.to_json(snapshot, bootstrap.system_time_ms()),
+        node,
+        config.ledger,
+      ),
     )
   })
+}
+
+// A daemon that runs from a membership ledger adds the ledger's own status to
+// the whole-deployment read, so that one command shows whether a change has
+// reached the members (protocol-change/086, phase 2). It is the body of
+// `ledger.status`, which is bounded by the ledger's member limit. A read that
+// names one node, and a ledger that does not answer, add nothing: the member is
+// optional, and an absent one reads as unknown.
+fn with_ledger(
+  body: JsonValue,
+  node: Option(String),
+  handle: Option(ledger_control.Handle),
+) -> JsonValue {
+  case body, node, handle {
+    json.Object(fields), None, Some(handle) ->
+      case ledger_control.status(handle) {
+        Ok(status) -> json.Object(list.append(fields, [#("ledger", status)]))
+        Error(_) -> body
+      }
+    _, _, _ -> body
+  }
 }
 
 fn no_quorum(reason: String) -> Refused {

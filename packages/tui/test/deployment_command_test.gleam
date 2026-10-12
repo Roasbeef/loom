@@ -246,6 +246,143 @@ pub fn a_reply_is_read_into_nodes_edges_executors_and_pools_test() {
   assert list.map(status.pools, fn(each) { each.eligible }) == [["box"]]
 }
 
+// --- the ledger of a daemon that runs from one --------------------------------
+
+fn ledger_member(name, reported, age) {
+  json.Object(
+    list.flatten([
+      [member("name", json.String(name))],
+      case reported {
+        Some(seq) -> [member("reported_seq", json.Int(seq))]
+        None -> []
+      },
+      case age {
+        Some(ms) -> [member("ms_since_report", json.Int(ms))]
+        None -> []
+      },
+    ]),
+  )
+}
+
+// The body of `ledger.status`, which `deployment.status` carries under `ledger`.
+fn ledger(refusal) -> json.JsonValue {
+  json.Object([
+    member("deployment", json.String(string.repeat("a", 32))),
+    member("state", json.String("ok")),
+    member(
+      "head",
+      json.Object([
+        member("seq", json.Int(9)),
+        member("id", json.String("4c1e9a0b" <> string.repeat("0", 56))),
+      ]),
+    ),
+    member(
+      "members",
+      json.Array([
+        ledger_member("alpha", Some(9), Some(0)),
+        ledger_member("box", Some(7), Some(125_000)),
+        ledger_member("laptop", None, None),
+        ledger_member("desk", Some(9), Some(4000)),
+      ]),
+    ),
+    member("last_refusal", refusal),
+  ])
+}
+
+fn with_ledger(value: json.JsonValue) -> json.JsonValue {
+  let assert json.Object(members) = reply()
+  json.Object(list.append(members, [member("ledger", value)]))
+}
+
+pub fn the_ledger_head_and_each_members_report_are_read_and_drawn_test() {
+  let assert Ok(status) = deployment_view.decode(with_ledger(ledger(json.Null)))
+  let assert Some(found) = status.ledger
+  assert found.head_seq == 9
+  assert found.head_id == "4c1e9a0b"
+  assert list.map(found.members, fn(each) { each.reported })
+    == [Some(9), Some(7), None, Some(9)]
+  assert found.last_refusal == None
+
+  let drawn = deployment_view.status_text(status)
+  assert string.contains(
+    drawn,
+    "LEDGER entry 9 (4c1e9a0b), 2 of 4 members hold it",
+  )
+  assert string.contains(drawn, "alpha   entry 9  current, 0s ago")
+  assert string.contains(drawn, "box     entry 7  behind by 2, 2m ago")
+  assert string.contains(drawn, "laptop  -        not reported")
+  assert !string.contains(drawn, "last refusal")
+}
+
+pub fn the_last_refusal_is_drawn_with_its_step_test() {
+  let refusal =
+    json.Object([
+      member("seq", json.Int(7)),
+      member("step", json.String("fork")),
+    ])
+  let assert Ok(status) = deployment_view.decode(with_ledger(ledger(refusal)))
+  let assert Some(found) = status.ledger
+  assert found.last_refusal
+    == Some(deployment_view.LedgerRefusal(seq: Some(7), step: "fork"))
+  assert string.contains(
+    deployment_view.status_text(status),
+    "last refusal: entry 7, step fork",
+  )
+}
+
+pub fn a_daemon_without_a_ledger_draws_no_ledger_section_test() {
+  let assert Ok(status) = deployment_view.decode(reply())
+  assert status.ledger == None
+  assert !string.contains(deployment_view.status_text(status), "LEDGER")
+}
+
+pub fn a_ledger_that_does_not_decode_is_left_out_and_the_rest_is_drawn_test() {
+  let broken = json.Object([member("state", json.String("ok"))])
+  let assert Ok(status) = deployment_view.decode(with_ledger(broken))
+  assert status.ledger == None
+  assert list.length(status.nodes) == 4
+
+  // A member entry that is malformed is skipped like any optional entry.
+  let assert json.Object(fields) = ledger(json.Null)
+  let skipped =
+    json.Object(
+      list.map(fields, fn(each) {
+        case each.0 {
+          "members" ->
+            member(
+              "members",
+              json.Array([
+                json.String("nonsense"),
+                ledger_member("alpha", Some(9), Some(0)),
+              ]),
+            )
+          _ -> each
+        }
+      }),
+    )
+  let assert Ok(status) = deployment_view.decode(with_ledger(skipped))
+  let assert Some(found) = status.ledger
+  assert list.map(found.members, fn(each) { each.name }) == ["alpha"]
+}
+
+pub fn a_standing_other_than_ok_is_stated_test() {
+  let assert json.Object(fields) = ledger(json.Null)
+  let revoked =
+    json.Object(
+      list.map(fields, fn(each) {
+        case each.0 {
+          "state" -> member("state", json.String("revoked"))
+          _ -> each
+        }
+      }),
+    )
+  let assert Ok(status) = deployment_view.decode(with_ledger(revoked))
+  assert string.contains(
+    deployment_view.status_text(status),
+    "this daemon is revoked in the ledger",
+  )
+}
+
 pub fn members_the_reader_does_not_know_and_optional_ones_that_are_absent_are_fine_test() {
   let assert json.Object(members) = reply()
 

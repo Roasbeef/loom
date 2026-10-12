@@ -165,6 +165,69 @@ pub fn the_owner_asks_what_the_orchestrators_hold_test() {
   )
 }
 
+pub fn the_deployment_status_of_a_ledger_daemon_carries_the_ledger_head_test() {
+  ledgered(fn(port, credential, _lines) {
+    let #(socket, _) = wire.connect(port, credential, "/v2/control")
+    let _hello = wire.frame(socket, within_ms: 1000)
+
+    // The whole read names the ledger as `ledger.status` would: the head, the
+    // standing, each member with the head it reported, and the last refusal.
+    let reply = ask(socket, 1, "deployment.status", json.Object([]))
+    assert field(reply, "event") == json.String("deployment.status")
+    let body = field(reply, "body")
+    let status = field(body, "ledger")
+    let assert Ok(decoded) = ledger_control.decode_status(status)
+    assert decoded.head.seq == 1
+    assert decoded.self_name == "hub"
+    assert list.map(decoded.members, fn(member) { member.name }) == ["hub"]
+    assert decoded.last_refusal == None
+
+    // A line the daemon refuses is its last refusal, and the next read shows
+    // it. The head is where the daemon stands, which has not moved.
+    let _ =
+      ask(
+        socket,
+        2,
+        "ledger.append",
+        json.Object([#("lines", json.Array([json.String("not a line")]))]),
+      )
+    let reply = ask(socket, 3, "deployment.status", json.Object([]))
+    let assert Ok(after) =
+      ledger_control.decode_status(field(field(reply, "body"), "ledger"))
+    assert after.head.seq == 1
+    let assert Some(refused) = after.last_refusal
+    assert refused.step == "malformed"
+
+    // A read that names one node is about that node and nothing else.
+    let reply =
+      ask(
+        socket,
+        4,
+        "deployment.status",
+        json.Object([#("node", json.String("nobody"))]),
+      )
+    assert field(field(reply, "body"), "code") == json.String("not_found")
+  })
+}
+
+pub fn a_deployment_status_without_a_ledger_has_no_ledger_member_test() {
+  wire.fixture_moving(
+    limits.defaults,
+    fn(_) { None },
+    fn(record, _domain, _services, _owner, _directory) { Ok(record.id) },
+    session_directory.none(),
+    session_movers.idle(),
+    fn(_, _ready, port, credential) {
+      let #(socket, _) = wire.connect(port, credential, "/v2/control")
+      let _hello = wire.frame(socket, within_ms: 1000)
+      let reply = ask(socket, 1, "deployment.status", json.Object([]))
+      assert field(reply, "event") == json.String("deployment.status")
+      let assert json.Object(members) = field(reply, "body")
+      assert list.key_find(members, "ledger") == Error(Nil)
+    },
+  )
+}
+
 pub fn a_member_token_is_forbidden_every_ledger_command_test() {
   ledgered_ready(fn(ready, port, credential, lines) {
     let assert [laptop, _] = lines
