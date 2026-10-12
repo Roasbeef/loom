@@ -202,6 +202,38 @@ a peer can send, which is scope hygiene and not a security boundary.
   `options_mismatch` at executor boot once, and the macOS gate's skip census flags two
   undeclared broker `/proc` skips. Both are filed as tasks.
 
+## Web code mode card and tool-schema fixes (web/code-mode-ui)
+
+The web view draws a `code_mode` step as a typed card instead of the terminal's
+text rows: `session_view/program_card` is the projection, `turns.Step.program`
+carries it, `web_view/view/program_card` draws it. Deferred, deliberately:
+
+- Copy buttons for the program and result text. `<loom-copy>` takes only
+  shape-checked subjects, so copying arbitrary text needs a new client element
+  and a ruling under protocol-change/051 on clipboard writes of server-chosen
+  text.
+- Rolling consecutive `code_mode` calls of a turn into one summary row.
+- Live per-call rows while a program runs. The call record is written at
+  settlement, so a running card shows an elapsed clock and no rows.
+- `program_card.value_of` still reads the result's kind from the terminal's
+  rendered preview text; `transcript_lines` should expose the pair it renders
+  from.
+
+The same branch fixes a placeholder-filling failure seen in GPT sessions: tool
+fields the model should omit (`todo` `task:""`, `job_poll` `since:""`, bash
+`permissions` with `wall_s:0`, `agent_send` `within_ms`) arrived as values, which
+raised an approval prompt for every bash call. The cause was inferred, not
+confirmed: Responses function tools carried no `strict` field and the model
+reported every field as required. The branch sends `strict: false` and pins the
+optional fields out of `required` in tests. **Not checked against the live
+Responses API.** If placeholders still appear, `agent_wait` `within_ms:0`
+(a poll, not a refusal) and bash `permissions` are the first places to look.
+
+A release's bundled `erl` could not boot bare, because the release had no
+`bin/start.boot`; any model shell typing `erl` died. `release.sh` and
+`release-client.sh` now install it and `--smoke` checks it. Releases installed
+before this stay broken until rebuilt.
+
 ## Background code mode and MCP on a remote session
 
 The branch `distributed/remote-codemode`, stacked on PR #923, implements the
