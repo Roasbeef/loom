@@ -814,6 +814,12 @@ or close; there is no transaction, lease or authorization cache.
   the ledger's `Ledger*` queries are in the generated `sql.gleam`;
   `exec_ledger_test` checks each embedded schema against its file. An older
   build refuses a version 3 file as `Unsupported`.
+- **A read with neighbours is lease-free and identity-checked.**
+  `sqlite.read_entries_around` reads an entry and up to 5 `seq` neighbours
+  each side through the same read-only connection that `read_entry` uses.
+  `storage/internal/history_source.before` and `snapshot_sqlite.before` return
+  the descriptors committed just below a sequence, oldest first, clamped to
+  the cut.
 
 ## Deep Docs
 
@@ -841,3 +847,9 @@ No SQL column changes: usage evidence stays in its encoded payload and the
 request's bounded final-attempt metadata stays in `UsageRow.details`.
 Signed historical reconciliation deltas remain readable. A fork copies
 conversation entries but begins with an empty usage ledger.
+
+## Lease-free entry scan (protocol 087)
+
+`sqlite.scan_entries_at` is the lease-free, identity-checked entry scan; the
+caller's query carries the limit. `sqlite.list_registers_at` is the same read
+for one register namespace and key prefix (the proposal queue's listing).

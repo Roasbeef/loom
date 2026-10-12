@@ -5,6 +5,7 @@
 import core/clock
 import core/entry.{type Entry}
 import core/ids
+import core/json
 import core/register
 import core/tx.{InsertEntry, InsertUsage, SetRegister, Tx}
 import gleam/bit_array
@@ -581,6 +582,188 @@ pub fn a_removed_registered_source_is_refused_before_the_open_test() {
   assert string.contains(reason, registered)
   assert string.contains(reason, "read-only")
   assert simplifile.is_file(registered) == Ok(False)
+}
+
+/// A read with neighbours returns the entry and up to `around` entries each
+/// side in log order, oldest first, never more than `max_around`, and nothing
+/// from a source that is not the named session.
+pub fn read_entries_around_returns_neighbours_in_log_order_test() {
+  let path = fresh_path("around")
+  let assert Ok(store) =
+    sqlite.open(
+      sqlite.config(path:, owner: "around-writer"),
+      clock.fixed(at: 10_000),
+    )
+  let #(session, generator) =
+    ids.mint_session(ids.generator(clock.fixed(at: 1), seed: 31))
+  let #(foreign, _) = ids.mint_session(generator)
+  let assert Ok(Nil) =
+    sqlite.record_identity(
+      store.handle,
+      session_id: ids.session_id_to_string(session),
+      parent_session_id: None,
+    )
+  let #(entries, _ctx) =
+    list.fold(
+      list.repeat(Nil, 9),
+      #([], fixtures.new_ctx()),
+      fn(acc: #(List(Entry), fixtures.Ctx), _) {
+        let #(made, ctx) = acc
+        let parent = case made {
+          [latest, ..] -> Some(latest.id)
+          [] -> None
+        }
+        let #(entry, ctx) =
+          fixtures.message_entry(
+            ctx,
+            parent,
+            "entry " <> int.to_string(list.length(made)),
+          )
+        let assert Ok(_) =
+          storage.commit(store, Tx(writes: [InsertEntry(entry)], expected: []))
+        #([entry, ..made], ctx)
+      },
+    )
+  let ordered = list.reverse(entries)
+  let assert [_, _, _, _, centre, ..] = ordered
+  let assert Ok(Nil) = storage.close(store)
+
+  let ids_of = fn(found: List(Entry)) {
+    list.map(found, fn(entry) { entry.id })
+  }
+  let assert Ok(none) =
+    sqlite.read_entries_around(path:, session:, entry: centre.id, around: 0)
+  assert ids_of(none) == [centre.id]
+
+  let assert Ok(two) =
+    sqlite.read_entries_around(path:, session:, entry: centre.id, around: 2)
+  assert ids_of(two) == ids_of(list.take(list.drop(ordered, 2), 5))
+
+  // The window clamps at both ends of the log and at the cap.
+  let assert Ok(wide) =
+    sqlite.read_entries_around(path:, session:, entry: centre.id, around: 99)
+  assert ids_of(wide) == ids_of(ordered)
+  let assert Ok(negative) =
+    sqlite.read_entries_around(path:, session:, entry: centre.id, around: -3)
+  assert ids_of(negative) == [centre.id]
+
+  let assert Error(storage.BackendFault(_)) =
+    sqlite.read_entries_around(
+      path:,
+      session: foreign,
+      entry: centre.id,
+      around: 1,
+    )
+}
+
+/// A bounded scan reads a session file while a writer still holds its lease,
+/// newest first and no further than the query's limit, and refuses a source
+/// that is not the named session. This is the read the memory overview takes,
+/// which must never wait on a `remember` call.
+pub fn scan_entries_at_reads_under_a_held_lease_and_checks_identity_test() {
+  let path = fresh_path("scan-at")
+  let assert Ok(store) =
+    sqlite.open(
+      sqlite.config(path:, owner: "scan-writer"),
+      clock.fixed(at: 10_000),
+    )
+  let #(session, generator) =
+    ids.mint_session(ids.generator(clock.fixed(at: 1), seed: 41))
+  let #(foreign, _) = ids.mint_session(generator)
+  let assert Ok(Nil) =
+    sqlite.record_identity(
+      store.handle,
+      session_id: ids.session_id_to_string(session),
+      parent_session_id: None,
+    )
+  let #(_made, _ctx) =
+    list.fold(
+      list.repeat(Nil, 4),
+      #([], fixtures.new_ctx()),
+      fn(acc: #(List(Entry), fixtures.Ctx), _) {
+        let #(made, ctx) = acc
+        let parent = case made {
+          [latest, ..] -> Some(latest.id)
+          [] -> None
+        }
+        let #(entry, ctx) =
+          fixtures.message_entry(
+            ctx,
+            parent,
+            "entry " <> int.to_string(list.length(made)),
+          )
+        let assert Ok(_) =
+          storage.commit(store, Tx(writes: [InsertEntry(entry)], expected: []))
+        #([entry, ..made], ctx)
+      },
+    )
+
+  // The writer is still open, so the lease is held while the scan runs.
+  let query =
+    storage.entry_scan()
+    |> storage.entry_order(storage.NewestFirst)
+    |> storage.entry_limit(2)
+  let assert Ok(found) = sqlite.scan_entries_at(path:, session:, query:)
+  assert list.map(found, fn(entry) { entry.seq }) == [4, 3]
+
+  let assert Error(storage.BackendFault(_)) =
+    sqlite.scan_entries_at(path:, session: foreign, query:)
+  let assert Ok(Nil) = storage.close(store)
+}
+
+/// A register listing reads a session file while a writer still holds its
+/// lease, returns only the prefix asked for, and refuses a source that is not
+/// the named session.
+pub fn list_registers_at_reads_under_a_held_lease_and_checks_identity_test() {
+  let path = fresh_path("registers-at")
+  let assert Ok(store) =
+    sqlite.open(
+      sqlite.config(path:, owner: "registers-writer"),
+      clock.fixed(at: 10_000),
+    )
+  let #(session, generator) =
+    ids.mint_session(ids.generator(clock.fixed(at: 1), seed: 43))
+  let #(foreign, _) = ids.mint_session(generator)
+  let assert Ok(Nil) =
+    sqlite.record_identity(
+      store.handle,
+      session_id: ids.session_id_to_string(session),
+      parent_session_id: None,
+    )
+  let cell = fn(key) {
+    SetRegister(
+      ns: register.FactCustom,
+      key:,
+      value: register.value(json.String(key)),
+    )
+  }
+  let assert Ok(_) =
+    storage.commit(
+      store,
+      Tx(
+        writes: [cell("queue/a"), cell("queue/b"), cell("other/c")],
+        expected: [],
+      ),
+    )
+
+  // The writer is still open, so the lease is held while the listing runs.
+  let assert Ok(found) =
+    sqlite.list_registers_at(
+      path:,
+      session:,
+      ns: register.FactCustom,
+      prefix: Some("queue/"),
+    )
+  assert list.map(found, fn(pair) { pair.0 }) == ["queue/a", "queue/b"]
+
+  let assert Error(storage.BackendFault(_)) =
+    sqlite.list_registers_at(
+      path:,
+      session: foreign,
+      ns: register.FactCustom,
+      prefix: Some("queue/"),
+    )
+  let assert Ok(Nil) = storage.close(store)
 }
 
 // --- export_closed (the cut a session move sends) --------------------------
