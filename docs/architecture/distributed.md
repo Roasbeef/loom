@@ -231,8 +231,9 @@ applied prefix, and that is the whole of what `ledger_trust` publishes: the
 pins of the active members this node is linked to. A node that is not an active
 member publishes the empty table. The table holds at most 63 pins, because the
 fold allows 64 active members (`ledger_trust.max_peers`), and the allow list
-grows by at most 256 names over the life of a ledger. The 32-peer cap of static
-mode does not apply.
+grows by one name for each node an entry names, so by at most the file's 10,000
+entries: the 256 names ever enrolled bound member names, and re-upserting a name
+with a new node is legal. The 32-peer cap of static mode does not apply.
 
 **The order at boot** is fixed by the table. `client/ledger_boot` opens and
 verifies the file, requires this node to be an active member, starts the ledger
@@ -266,8 +267,13 @@ check alone ends the connection. Removing the check makes the test time out.
 
 **A node whose own entry is revoked** is left with the empty table. Every
 handshake is refused in both directions and every connection is dropped. Its
-`net_kernel` keeps running, so an entry that enrolls it again takes effect
-without a restart.
+`net_kernel` keeps running, but no entry can reach it over the network
+afterwards: its peers have swept it, it dials nobody and it accepts nobody. The
+entry that enrolls it again arrives through `import` on its own machine, or
+through a new bundle and a restart. A node that was down across its own revoke and
+re-enrolment, and receives the revoke at the end of one 64-line pull batch and the
+re-enrolment in the next, self-revokes and drops its connections in between;
+recovery is `import`.
 
 **Dialing.** An orchestrator keeps trying to reach the executors it is linked
 to that are not connected and have not reported the current head. A pass every

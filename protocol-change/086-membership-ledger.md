@@ -186,8 +186,10 @@ and `m` are **linked**. They are linked when `m.name` is in the links of `n`, wh
 node whose `name` is not an active member has an empty table and starts no
 distribution (`NotEnrolled`). Applying a `revoke` that names the node itself
 leaves it with the empty table (`Revoked`): every handshake is refused in both
-directions and every connection is dropped. Its `net_kernel` keeps running, so
-an entry that enrolls the node again takes effect without a restart.
+directions and every connection is dropped. Its `net_kernel` keeps running, but
+no entry can reach it over the network afterwards: its peers have swept it, it
+dials nobody and it accepts nobody. An entry that enrolls it again reaches it
+through `import` on its own machine, or through a new bundle and a restart.
 
 ### Accepting an entry
 
@@ -227,7 +229,13 @@ which it needs in any case to send a `Head` when a connection comes up, and on e
 node-up it disconnects the node if its name is not in the current table. A
 handshake that read the previous table and finishes after the publish is a node-up
 that the process handles after the publish, because both are messages to one
-process handled in order. No timing assumption is involved.
+process handled in order. No timing assumption is involved. The check is by name, so it
+covers a revoke (the name has left the table) and does not cover a renewal: a
+handshake made with the old certificate that read the old row before the publish,
+and completed after the sweep sampled the connected nodes, finds the name still in
+the table and stays. This is a corollary of the limit that a connection is not
+bound to its certificate (section 6.5 of the design note), and no machinery is
+added for it.
 
 ### The verify callback and the options file
 
@@ -252,8 +260,10 @@ every handshake is refused until it restarts.
 ### Atoms and the allow list
 
 A node name becomes an atom when the ledger applies a `member` entry that
-passed steps 1 through 7, and not before. At most 256 names can be enrolled over
-the life of a ledger, so at most 256 atoms. The rule in protocol-change/078 that
+passed steps 1 through 7, and not before. The atom is the member's `node`, and
+re-upserting a name with a new node is legal, so the number of atoms and of
+allow list names is bounded by the 10,000 entries of the file and not by the 256
+names. The rule in protocol-change/078 that
 peer names become atoms "once, from the finite configuration" becomes "from the
 finite, signed ledger". `net_kernel:allow/1` is called with each enrolled name when
 its entry is applied and is never reduced; OTP does not support reducing it. A
@@ -265,8 +275,8 @@ the hosts of the listed names that the peer's certificate covers, or the address
 the peer connected from when the certificate carries that address, and the
 claimed name must be on one of those hosts. The pin table is therefore the only
 gate on the identity of an inbound peer. The table holds at most 63 pins, because
-at most 64 members are active, and the allow list at most 256 names, one for each
-name ever enrolled. Once the list is non-empty, an inbound
+at most 64 members are active, and the allow list at most 10,000 names, one for
+each node an entry has named. Once the list is non-empty, an inbound
 peer needs a certificate that covers a listed host; `provision` issues
 certificates for the node name and the host, so applying the entry for a node on
 a new host adds that host.
@@ -491,7 +501,7 @@ member daemon is a member continues to hold.
 | `distribution.start` and `Membership` | Fixed, finite, immutable | Takes an optional loaded ledger; `Membership` resolves against the live member set |
 | `distribution.Fault` | Seven constructors | Adds `InvalidLedger`, `NotEnrolled`, `Revoked` |
 | Bundle | `loom-distribution-bundle/1` | Adds `/2`; `/1` still installs |
-| Node-name atoms | Created once at start from the configured list | Also created when a verified `member` entry is applied, at most 256 |
+| Node-name atoms | Created once at start from the configured list | Also created when a verified `member` entry is applied, at most one per entry (10,000) |
 | `net_kernel:allow/1` | Called once | Called per enrolled name; never reduced |
 | Node vocabulary | `HostMessage`, `OwnerMessage`, orchestrator `Message` | Adds `loom_ledger` `Message` (`Head`, `Pull`); the others and `protocol.version` unchanged |
 | Control protocol, Part 1.6 | | Adds owner-only `ledger.append`, `ledger.entries` and `ledger.status`, and the refusal `ledger_invalid` |

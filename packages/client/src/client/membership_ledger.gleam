@@ -73,8 +73,9 @@ pub const max_entries = 10_000
 /// The most members that may be active at once.
 pub const max_active = 64
 
-/// The most names a ledger may ever enroll. Each becomes an atom on a node, so
-/// this bounds the atom table.
+/// The most member names a ledger may ever enroll. The atom a node creates is
+/// the member's `node`, not its name, and re-upserting a name with a new node is
+/// legal, so this does not bound the atoms: `max_entries` does.
 pub const max_names = 256
 
 /// The newest applied entry: its sequence number and identity.

@@ -39,8 +39,10 @@
 ////
 //// A node whose own entry is revoked is left with the empty table. It refuses
 //// every handshake in both directions and drops every connection. Its
-//// `net_kernel` keeps running, so that a later entry which enrolls the node
-//// again takes effect without a restart.
+//// `net_kernel` keeps running, but nothing arrives over the network to enroll
+//// it again: peers have swept it, it dials nobody, and it accepts nobody. The
+//// entry that enrolls it again reaches it only through `import` on its own
+//// machine, or through a new bundle and a restart.
 
 import client/distribution
 import client/distribution_plan.{Executor, Orchestrator}

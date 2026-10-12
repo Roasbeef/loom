@@ -161,7 +161,9 @@ fn is_alive() -> Bool
 /// This is the one place a node name from a ledger becomes an atom. The names
 /// reach it only from entries whose signature verified, that passed the
 /// grammar of `distribution.check_node_name`, and that are within the
-/// ledger's bound of 256 names ever enrolled.
+/// ledger's bound of 10,000 entries: the atom is the member's `node`, and
+/// re-upserting a name with a new node is legal, so the number of distinct
+/// node atoms is bounded by the entries and not by the 256 names.
 ///
 /// ## Examples
 ///

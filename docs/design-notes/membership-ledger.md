@@ -369,9 +369,12 @@ acceptance.
 
 Peer names become atoms when the ledger applies a `member` entry, and not from
 the network. Only a name in an entry whose signature verified, that passed the
-grammar, and that is within the 256-name bound is turned into an atom. Today's
-rule, "peer names become atoms once, from the finite configuration", relaxes
-to "from the finite, signed ledger", with the bound as the finite part.
+grammar, and that is within the ledger's bounds is turned into an atom. The atom
+is the member's `node`, and re-upserting a name with a new node is legal, so the
+bound on distinct node atoms (and on the allow list) is the 10,000 entries of the
+file; the 256 names bound member names. Today's rule, "peer names become atoms
+once, from the finite configuration", relaxes to "from the finite, signed
+ledger", with the entry cap as the finite part.
 
 `net_kernel:allow/1` is called with each enrolled name and never shrinks. A
 revoked name stays allowed. That is harmless, because the allow list is not a
@@ -409,6 +412,13 @@ drops. Binding the connection to the certificate would mean changing
 and the verify function runs before the distribution handshake carries any node
 name. This design does not change `inet_tls_dist`. Section 8 says what the limit
 means for a compromised member.
+
+The same limit bounds the renewal sweep. The node-up check is by name, so it ends
+a handshake that read the row of a revoked member, whose name has left the table,
+and does not end a handshake made with the old certificate of a renewed member: if
+it read the old row before the publish and completed after the sweep sampled the
+connected nodes, its name is still in the table and it stays. No machinery is
+added for it.
 
 ## 7. Storing the ledger in Khepri instead
 
@@ -995,10 +1005,17 @@ settled in the code, and one was changed.
 3. **Renewal drops connections.** Section 9.3's disconnect now also covers a
    member whose entry replaced its pin. The proposal's `renew` row said existing
    connections stay up; they are dropped instead, because a certificate that is
-   being replaced may be the one that leaked.
+   being replaced may be the one that leaked. The node-up check is by name, so it
+   does not cover an old-certificate handshake that read the old row before the
+   publish and completed after the sweep sampled the connected nodes: the name is
+   still in the table. A revoke is covered, since its name has left the table.
+   This is a corollary of the recorded limit that a connection is not bound to
+   its certificate, and no machinery is added.
 4. **A revoked node.** "Stops its distribution" is the empty table plus
-   dropping every connection. `net_kernel` stays up, so a later entry that
-   enrolls the node needs no restart.
+   dropping every connection. `net_kernel` stays up, but no entry can reach the
+   node over the network afterwards (its peers swept it, it dials nobody and it
+   accepts nobody), so the entry that enrolls it again arrives through `import`
+   on its own machine or through a new bundle and a restart.
 5. **Not done here.** `[executors]`, `[orchestrators]` and `[directory]` still
    check against `[[distribution.peers]]`, so they are refused beside a ledger.
    A directory member cannot use a ledger. The `NotEnrolled` case is a start

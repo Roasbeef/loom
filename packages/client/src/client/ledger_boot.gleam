@@ -22,10 +22,11 @@
 ////
 //// The process needs no distribution to start. A monitor of node changes is
 //// valid on a VM that is not yet distributed, and it hears every node that
-//// connects after `net_kernel` starts. No peer can reach the process before
-//// distribution is up, and the daemon holds no handle on it until this module
-//// returns, so nothing can extend the ledger between the table it published
-//// and the allow list this module sets afterwards.
+//// connects after `net_kernel` starts. Distribution is up before `begin_trust`
+//// sets the allow list, so a peer can connect, and a pull can apply an entry,
+//// in that interval. That is harmless: the observer of `client/ledger_trust`
+//// also grows the allow list on every `Extended`, so a name the entry added is
+//// allowed whether `begin_trust` or the entry got there first.
 ////
 //// ## Flow
 ////
@@ -214,8 +215,11 @@ pub fn open_service(
         <> local
         <> " is not an active member of the ledger "
         <> path
-        <> ": it was never enrolled or it has been revoked. Install a bundle "
-        <> "that enrolls it, or correct distribution.node",
+        <> ": it was never enrolled or it has been revoked. On the operator's "
+        <> "machine, run `loom distribution enroll` for it and install the "
+        <> "bundle it writes here with `loom distribution install`, or correct "
+        <> "distribution.node. (`import` needs a running daemon, which this "
+        <> "node cannot be until it is enrolled.)",
       )
   })
   case opened.tail {
