@@ -38,7 +38,7 @@
 ////    process is told to dial.
 
 import client/distribution
-import client/ledger_service.{type Service}
+import client/ledger_service.{type Observer, type Service}
 import client/ledger_trust
 import client/membership_ledger
 import client/membership_signing
@@ -80,6 +80,26 @@ pub fn start(
   cluster: distribution.Cluster,
   logger: Logger,
 ) -> Result(Booted, String) {
+  let local = distribution.local_node(config)
+  start_with(config, cluster, [ledger_trust.observer(local, logger)], logger)
+}
+
+/// The same start with the observers of the ledger process given by the
+/// caller, in place of `ledger_trust.observer`. A test uses it to put a hook in
+/// front of the production observer, so that it can hold the process between
+/// two steps and order a handshake against them.
+///
+/// ## Examples
+///
+/// ```gleam
+/// ledger_boot.start_with(config, distribution.NotMember, [hook, trust], logger)
+/// ```
+pub fn start_with(
+  config: distribution.Config,
+  cluster: distribution.Cluster,
+  observers: List(Observer),
+  logger: Logger,
+) -> Result(Booted, String) {
   case distribution.ledger_path(config) {
     None ->
       distribution.start(config, cluster)
@@ -101,6 +121,7 @@ pub fn start(
         path,
         distribution.credential_files(config).ca,
         local,
+        observers,
         logger,
       ))
       use membership <- result.try(
@@ -138,8 +159,9 @@ fn begin_trust(
 }
 
 /// Starts the ledger process for the ledger file at `path`, signed by the
-/// certificate in the PEM file `ca`, for the node named `local`. The observer
-/// of `client/ledger_trust` publishes the pin table before this returns.
+/// certificate in the PEM file `ca`, for the node named `local`. The observers
+/// have seen the loaded ledger before this returns, so with the observer of
+/// `client/ledger_trust` the pin table is published by then.
 ///
 /// A ledger that does not verify, that was signed by another authority than the
 /// `ca` file's, that cannot be read, or in which `local` is not an active
@@ -148,12 +170,13 @@ fn begin_trust(
 /// ## Examples
 ///
 /// ```gleam
-/// ledger_boot.open_service("/home/me/.loom/ledger.log", "/etc/loom/ca.pem", "loom@a.example", logger)
+/// ledger_boot.open_service(path, "/etc/loom/ca.pem", "loom@a.example", [trust], logger)
 /// ```
 pub fn open_service(
   path: String,
   ca: String,
   local: String,
+  observers: List(Observer),
   logger: Logger,
 ) -> Result(Service, String) {
   use pem <- result.try(
@@ -202,7 +225,7 @@ pub fn open_service(
     opened.store,
     opened.ledger,
     verifier,
-    [ledger_trust.observer(local, logger)],
+    observers,
     logger,
   )
   |> ledger_service.start

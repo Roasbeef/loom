@@ -8,6 +8,7 @@ import client/distribution
 import client/internal/ffi_pki
 import client/ledger_boot
 import client/ledger_service
+import client/ledger_trust
 import client/membership_entry.{Genesis, Upsert}
 import client/membership_signing
 import gleam/bit_array
@@ -116,6 +117,7 @@ pub fn a_ledger_signed_by_the_ca_starts_the_process_test() {
       directory <> "/ledger.log",
       directory <> "/ca.pem",
       hub,
+      [ledger_trust.observer(hub, log.discard())],
       log.discard(),
     )
   let assert Ok(head) = ledger_service.head(service, 5000)
@@ -148,6 +150,7 @@ pub fn a_ledger_signed_by_another_authority_is_refused_with_its_line_test() {
       directory <> "/ledger.log",
       directory <> "/ca.pem",
       hub,
+      [ledger_trust.observer(hub, log.discard())],
       log.discard(),
     )
   assert string.contains(reason, "not a valid ledger: line 1")
@@ -166,6 +169,7 @@ pub fn a_ledger_that_names_another_certificate_is_refused_test() {
       directory <> "/ledger.log",
       directory <> "/ca.pem",
       hub,
+      [ledger_trust.observer(hub, log.discard())],
       log.discard(),
     )
   assert string.contains(reason, "other than the certificate")
@@ -180,6 +184,7 @@ pub fn a_missing_file_or_ca_is_an_operator_sentence_test() {
       directory <> "/absent.log",
       directory <> "/ca.pem",
       hub,
+      [ledger_trust.observer(hub, log.discard())],
       log.discard(),
     )
   assert string.contains(reason, "distribution.ledger")
@@ -190,6 +195,7 @@ pub fn a_missing_file_or_ca_is_an_operator_sentence_test() {
       directory <> "/ledger.log",
       directory <> "/absent.pem",
       hub,
+      [ledger_trust.observer(hub, log.discard())],
       log.discard(),
     )
   assert string.contains(reason, "distribution.ca could not be read")
@@ -200,6 +206,7 @@ pub fn a_missing_file_or_ca_is_an_operator_sentence_test() {
       directory <> "/ledger.log",
       directory <> "/ca.pem",
       hub,
+      [ledger_trust.observer(hub, log.discard())],
       log.discard(),
     )
   assert string.contains(reason, "does not hold a certificate")
@@ -214,6 +221,7 @@ pub fn a_node_the_ledger_does_not_enroll_is_refused_before_anything_starts_test(
       directory <> "/ledger.log",
       directory <> "/ca.pem",
       "loom@stranger.example.net",
+      [],
       log.discard(),
     )
   assert string.contains(reason, "is not an active member of the ledger")
