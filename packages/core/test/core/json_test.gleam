@@ -400,3 +400,34 @@ pub fn canonical_sorts_keys_at_every_depth_and_keeps_arrays_test() {
   assert json.to_string(json.canonical(streamed))
     == "{\"action\":{\"a\":1,\"z\":null},\"limit\":15,\"order\":[2,1],\"scope\":\"repository\"}"
 }
+
+// Adjacent escapes have no ordinary run between them. Empty keys and values
+// exercise the same delimiter path without losing duplicate-key detection.
+pub fn adjacent_string_escapes_and_empty_fields_test() {
+  let text = string.repeat("\"\\\n\t\u{0008}é中🎉", 100)
+  assert json.parse(json.to_string(json.String(text))) == Ok(json.String(text))
+  assert json.parse("{\"\":\"\",\"value\":\"\\n\\t\\\"\\\\\"}")
+    == Ok(
+      json.Object([#("", json.String("")), #("value", json.String("\n\t\"\\"))]),
+    )
+  let assert Error(_) = json.parse("{\"\":0,\"\":1}")
+    as "empty keys still participate in duplicate-key rejection"
+}
+
+// The cursor must stop before raw controls and incomplete delimiters even
+// when the preceding text contains multibyte characters and adjacent escapes.
+pub fn string_delimiter_reports_preserve_codepoint_positions_test() {
+  let prefix = "\"é中🎉\\n\\t"
+  let assert Error(control) = json.parse(prefix <> "\u{0001}\"")
+    as "a raw control is refused after adjacent escapes"
+  assert control.subject == "codepoint offset 8"
+  assert control.expected == "control characters to be escaped in a string"
+  let assert Error(escape) = json.parse(prefix <> "\\q\"")
+    as "an unknown escape is refused after adjacent escapes"
+  assert escape.subject == "codepoint offset 9"
+  assert escape.expected == "a valid escape character"
+  let assert Error(unfinished) = json.parse(prefix)
+    as "the missing closing quote is reported at end of input"
+  assert unfinished.subject == "codepoint offset 8"
+  assert unfinished.context == "end of input"
+}
