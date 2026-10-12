@@ -216,6 +216,12 @@ for a host with no surfaces.
   `Stopped`, with its diagnostic beneath it as dim detail unless it says only
   that the provider's request was cancelled, which is what a Stop or a steer
   does and which the records do not tell apart (F153, protocol-change/071).
+- `child_stop` joins captured `child-run/{operation}` facts to exact aborted
+  results and assistant entry IDs. `transcript_lines` and `agent_view` show
+  the recorded parent completion or child budget expiry beside the provider's
+  cancellation diagnostic. Missing, malformed or foreign-strand metadata adds
+  no reason. The gateway captures this metadata for each strand's latest
+  terminal operation; older history without a captured result stays generic.
 - `transcript_lines.collapse_repeats` folds a run of identical consecutive
   items into the newest of them with `×N` on its first row, in compact
   history only. Two predicates say what may fold: `repeated_call` (a call

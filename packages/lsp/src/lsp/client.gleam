@@ -1956,14 +1956,23 @@ fn answered(
 }
 
 // An empty result is ambiguous after a server-reported load failure. A
-// substantive result is evidence that analysis recovered; it retires the
-// retained error so later legitimate misses remain ordinary empty answers.
+// refused request can be another consequence of that failure, so preserve
+// its cause beside the request's own error. A substantive result is evidence
+// that analysis recovered; it retires the retained error so later legitimate
+// misses remain ordinary empty answers.
 fn semantic_answer(
   data: Data,
   feature: Feature,
   outcome: Result(JsonValue, RequestError),
 ) -> #(Data, Result(JsonValue, RequestError)) {
   case outcome, data.server_failure {
+    Error(ServerError(code:, message:)), Some(reason) -> #(
+      data,
+      Error(ServerError(
+        code:,
+        message: reason <> "\nRequest refused: " <> message,
+      )),
+    )
     Error(_), _ | Ok(_), None -> #(data, outcome)
     Ok(json.Array([_, ..])), Some(_)
       if feature == protocol.CallHierarchyFeature

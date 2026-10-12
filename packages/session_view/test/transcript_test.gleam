@@ -8,11 +8,16 @@ import core/entry
 import core/ids
 import core/json
 import core/message
+import core/register
 import core/usage_evidence
 import gleam/dict
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import machine/codec
+import machine/operation
+import session_view/agent_view
+import session_view/child_stop
 import session_view/history_view
 import session_view/protocol
 import session_view/snapshot
@@ -20,6 +25,7 @@ import session_view/snapshot_view
 import session_view/transcript
 import session_view/transcript_line
 import session_view/transcript_lines
+import session_view/turns
 
 fn id(seq: Int) -> ids.EntryId {
   ids.mint_entry(ids.generator(clock.fixed(1000), seq)).0
@@ -394,4 +400,139 @@ pub fn a_stream_naming_no_entry_is_never_owed_test() {
     running,
     streaming("legacy-request"),
   )
+}
+
+// The latest child's result selects its exact aborted entry. A completed
+// successor and a foreign strand must never inherit that cancellation cause.
+pub fn recorded_child_stop_is_shown_beside_the_provider_diagnostic_test() {
+  let assert snapshot.Loaded(
+    entry.MessageEntry(message: message.AssistantMessage(..) as assistant, ..) as source,
+    bytes,
+  ) = advised(2, 1, "")
+    as "the fixture must provide an assistant entry"
+  let stopped =
+    snapshot.Loaded(
+      entry.MessageEntry(
+        ..source,
+        message: message.AssistantMessage(
+          ..assistant,
+          stop_reason: message.Aborted,
+          error_message: Some(
+            "provider cancellation could not be confirmed (runtime: explicit stop)",
+          ),
+        ),
+      ),
+      bytes,
+    )
+  let operation_id = ids.mint_op(ids.generator(clock.fixed(1000), 42)).0
+  let key = ids.op_id_to_string(operation_id)
+  let cells = [
+    snapshot_view.Cell(
+      register.StrandLastResult,
+      "main",
+      4,
+      codec.encode_last_result(operation.RunLastResult(
+        operation_id,
+        Some(id(2)),
+        operation.RunAborted,
+        Some(id(2)),
+      )),
+    ),
+    snapshot_view.Cell(
+      register.FactCustom,
+      "child-run/" <> key,
+      3,
+      json.Object([
+        #("strand", json.String("main")),
+        #("stop", json.String("parent_finished")),
+      ]),
+    ),
+  ]
+  let shown = snapshot_view.View(..view([#("main", 2)]), cells:)
+  let captured = cut([stopped, said(1, None, "audit")])
+  let rows =
+    transcript.project(captured, shown, "main")
+    |> list.map(fn(row) { row.text })
+  assert list.contains(
+    rows,
+    "Stopped because the parent run ended. The provider may not have confirmed the stop.",
+  )
+  let lane =
+    transcript.blocks(captured, shown, "main", [])
+    |> turns.pieces([], turns.Settled, turns.Skip)
+    |> list.flat_map(fn(piece) {
+      case piece {
+        turns.Plain(block:, ..) -> list.map(block.rows, fn(row) { row.1.text })
+        turns.Work(items:, ..) ->
+          list.flat_map(items, fn(item) {
+            case item {
+              turns.Narrated(block:, ..) ->
+                list.map(block.rows, fn(row) { row.1.text })
+              _ -> []
+            }
+          })
+        _ -> []
+      }
+    })
+  assert list.contains(
+    lane,
+    "Stopped because the parent run ended. The provider may not have confirmed the stop.",
+  )
+  let inspector_view =
+    snapshot_view.View(
+      ..shown,
+      strands: [protocol.Strand("main", None, None)],
+      pending_inputs: Some([]),
+    )
+  let assert [row] = agent_view.observe([], captured.window, inspector_view, [])
+    as "the capture must produce the strand's inspector row"
+  assert row.status == agent_view.Halted
+  assert row.activity == "Stopped because the parent run ended."
+  assert child_stop.operation_reason(cells, key, "other") == None
+
+  // A newer result cannot rewrite an older stop, even on the same strand.
+  let successor = ids.mint_op(ids.generator(clock.fixed(1000), 43)).0
+  let newer =
+    snapshot_view.Cell(
+      register.StrandLastResult,
+      "main",
+      5,
+      codec.encode_last_result(operation.RunLastResult(
+        successor,
+        Some(id(2)),
+        operation.RunCompleted(operation.CompletedByAssistant),
+        Some(id(2)),
+      )),
+    )
+  assert child_stop.entry_reasons([newer, ..list.drop(cells, 1)], "main")
+    == dict.new()
+  assert child_stop.operation_reason(
+      [
+        snapshot_view.Cell(
+          register.FactCustom,
+          "child-run/" <> key,
+          3,
+          json.Null,
+        ),
+      ],
+      key,
+      "main",
+    )
+    == None
+}
+
+pub fn recorded_child_budget_expiry_has_its_own_words_test() {
+  let cells = [
+    snapshot_view.Cell(
+      register.FactCustom,
+      "child-run/op",
+      1,
+      json.Object([
+        #("strand", json.String("main")),
+        #("stop", json.String("budget_expired")),
+      ]),
+    ),
+  ]
+  assert child_stop.operation_reason(cells, "op", "main")
+    == Some("Stopped because the child run's wall-clock budget expired.")
 }

@@ -2279,6 +2279,14 @@ fn snapshot_plan(recent: Int) -> snapshot.Plan {
         "currentOperationId",
         register.OpMeta,
       ),
+      // Terminal operation identity selects only its own optional stop fact.
+      // A full child-run scan would grow with every resumed run in the session.
+      snapshot.OptionalPrefixedField(
+        register.StrandLastResult,
+        "operationId",
+        register.FactCustom,
+        "child-run/",
+      ),
     ],
     recent,
   )

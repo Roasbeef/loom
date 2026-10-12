@@ -140,7 +140,7 @@ dialect = "codex-subscription"
 auth = "codex"
 profile = "personal"
 model_id = "gpt-6.1-sol"
-context_window = 272000
+context_window = 500000
 max_output_tokens = 32768
 thinking = "low"
 
@@ -181,6 +181,21 @@ summarize = ["codex-worker"]
 subagent = ["codex-worker"]
 summarize = ["codex-worker"]
 ```
+
+The Sol entry uses a 500,000-token local context budget. Loom already takes
+this limit from `context_window`; extending an existing entry needs only a
+configuration edit. Automatic compaction starts above
+`context_window - reserve_tokens`; `LOOM_COMPACTION_RESERVE` controls the reserve
+and defaults to 16,384 tokens. Stop and reopen an existing session to load the
+new limit.
+
+[GPT-6.1 Sol's API documentation](https://developers.openai.com/api/docs/models/gpt-6.1-sol)
+lists a 1,050,000-token context window. The example leaves room below that
+maximum; it does not establish a subscription account's inference entitlement.
+Model discovery returns IDs only. Platform API-key requests using
+`openai-responses` have separate billing, including higher rates above 272,000
+input tokens. Check the linked model documentation before raising an API-key
+entry's budget.
 
 Merge these role keys into your existing `[roles]` table; do not define that
 table twice. Other routes, such as `advisor` and `vision`, are inherited when a

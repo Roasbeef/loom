@@ -62,6 +62,7 @@ import session_view/advisor_history
 import session_view/agent_roster
 import session_view/block_summary
 import session_view/call_tree.{type CallLog}
+import session_view/child_stop
 import session_view/composer
 import session_view/file_read_view
 import session_view/image_header
@@ -970,7 +971,9 @@ fn record_blocks(
   Dict(tool_activity.Call, List(Line)),
   Dict(#(entry.Entry, Option(message.Origin), List(#(Int, String))), List(Line)),
 ) {
-  let entries = strand_entries(records, presentation.active_strand)
+  let entries =
+    strand_entries(records, presentation.active_strand)
+    |> recorded_stop_entries(presentation)
   let sequences = entry_sequences(entries)
   let owner = solo_owner(presentation.captured)
   case presentation.extent {
@@ -1046,6 +1049,51 @@ fn record_blocks(
       )
     }
   }
+}
+
+// A stop reason belongs to an operation result, never to the latest run on
+// a reusable strand. Enrich only the display copy; durable messages and their
+// provider acknowledgement diagnostics remain unchanged on disk.
+fn recorded_stop_entries(
+  entries: List(entry.Entry),
+  presentation: Presentation,
+) -> List(entry.Entry) {
+  let cells = case presentation.captured {
+    Some(#(_, view)) -> view.cells
+    None -> []
+  }
+  let reasons = child_stop.entry_reasons(cells, presentation.active_strand)
+  list.map(entries, fn(value) {
+    case value {
+      entry.MessageEntry(
+        id:,
+        message: message.AssistantMessage(
+          stop_reason: message.Aborted,
+          error_message:,
+          ..,
+        ) as assistant,
+        ..,
+      ) ->
+        case dict.get(reasons, ids.entry_id_to_string(id)) {
+          Ok(reason) -> {
+            let diagnostic = error_message |> option.then(stop_detail)
+            let text = case diagnostic {
+              None -> reason
+              Some(detail) -> reason <> " " <> detail
+            }
+            entry.MessageEntry(
+              ..value,
+              message: message.AssistantMessage(
+                ..assistant,
+                error_message: Some(text),
+              ),
+            )
+          }
+          Error(Nil) -> value
+        }
+      _ -> value
+    }
+  })
 }
 
 // The advisor's board, tagged as its own source.

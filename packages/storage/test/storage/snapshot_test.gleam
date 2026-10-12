@@ -1345,3 +1345,57 @@ pub fn the_lineage_step_is_a_primary_key_probe_test() {
   assert !list.any(plan, string.contains(_, "SCAN"))
   assert sqlight.close(conn) == Ok(Nil)
 }
+
+// Optional lifecycle references use exact prefixed keys and leave old sessions
+// without that metadata readable. Other operation histories stay out of the cut.
+pub fn optional_prefixed_references_select_only_the_terminal_operation_test() {
+  list.each([Memory, Sqlite], fn(backend) {
+    let fixture = open(backend, "optional-child-stop")
+    let _committed =
+      write(fixture, [
+        tx.SetRegister(
+          register.StrandLastResult,
+          "main",
+          register.value(
+            json.Object([#("operationId", json.String("current"))]),
+          ),
+        ),
+        tx.SetRegister(
+          register.StrandLastResult,
+          "legacy",
+          register.value(
+            json.Object([#("operationId", json.String("missing"))]),
+          ),
+        ),
+        tx.SetRegister(
+          register.FactCustom,
+          "child-run/current",
+          register.value(json.String("the recorded stop")),
+        ),
+        tx.SetRegister(
+          register.FactCustom,
+          "child-run/older",
+          register.value(json.String("unrelated history")),
+        ),
+      ])
+    let plan =
+      snapshot.Plan(
+        [all(register.StrandLastResult)],
+        [
+          snapshot.OptionalPrefixedField(
+            register.StrandLastResult,
+            "operationId",
+            register.FactCustom,
+            "child-run/",
+          ),
+        ],
+        0,
+      )
+    let assert Ok(cut) = fixture.reader.capture(plan, answer_wait_ms)
+      as "missing optional lifecycle facts must not refuse a legacy session"
+    assert list.length(cut.cells) == 3
+    assert list.any(cut.cells, fn(cell) { cell.key == "child-run/current" })
+    assert !list.any(cut.cells, fn(cell) { cell.key == "child-run/older" })
+    assert fixture.close() == Ok(Nil)
+  })
+}

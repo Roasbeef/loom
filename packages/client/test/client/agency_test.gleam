@@ -102,6 +102,9 @@ type Provider {
   Settles(text: String)
   Hangs
 
+  /// Exposes each request so a lifecycle test controls its settlement order.
+  Gated(into: Subject(#(effects.RequestSpec, Subject(stream.StreamEvent))))
+
   /// Leaves the parent prompt open while child reviews complete.
   HoldsParent
 
@@ -255,6 +258,7 @@ fn scripted_stream(
   let events = process.new_subject()
   case provider {
     Hangs -> Nil
+    Gated(into:) -> process.send(into, #(spec, events))
     HoldsParent ->
       case spec {
         effects.GenerationRequest(context:, ..) ->
@@ -291,7 +295,21 @@ fn scripted_stream(
       settle_into(events, "done")
     }
   }
-  stream.immediate(events:, cancel: fn() { Nil })
+  stream.immediate(events:, cancel: fn() {
+    case provider {
+      Gated(..) ->
+        process.send(
+          events,
+          stream.Failed(
+            error: stream.ProviderCancelled,
+            accounting: accounting.from_usage(accounting.unknown_usage(
+              usage_evidence.Other,
+            )),
+          ),
+        )
+      _ -> Nil
+    }
+  })
 }
 
 fn report_context(
@@ -2414,6 +2432,17 @@ pub fn resuming_an_aborted_child_renews_its_budget_and_parent_owner_test() {
     joined(harness, parent, child.handle)
     as "the old handle must retain its original stop reason"
 
+  let assert Some(follow_up) = hooks.run_end(parent.operation)
+    as "an attached continuation must keep its current parent open"
+  assert string.contains(
+    context_text([follow_up]),
+    agent.handle_to_string(renewed),
+  )
+  assert run_for(harness, renewed).stop == child_run.Unstopped
+
+  // Explicit cancellation still ends custody and reaps the current child.
+  api.abort_operation(harness.runtime, parent.operation)
+  assert settled(harness, agent.Handle("main", parent.operation))
   let _ = hooks.run_end(parent.operation)
   assert until(
     fn() { run_for(harness, renewed).stop == child_run.ParentFinished },
@@ -2423,6 +2452,48 @@ pub fn resuming_an_aborted_child_renews_its_budget_and_parent_owner_test() {
   let assert agent.Ready(outcome: agent.ParentFinished, ..) =
     joined(harness, parent, renewed)
     as "parent completion must be distinguishable from budget expiry"
+  close(harness)
+}
+
+// The provider is gated at every boundary, so the attempted final answer is
+// observed before the child is allowed to finish. No sleep decides the race.
+pub fn a_parent_cannot_finish_before_its_resumed_child_test() {
+  let requests = process.new_subject()
+  let harness = start_harness(Gated(requests))
+  let parent = open_parent(harness, "resume the audit")
+  let assert Ok(#(_, parent_events)) = process.receive(requests, 5000)
+    as "the parent's initial request must start"
+  let assert Ok(child) = harness.seam.spawn(parent, a_spawn("audit"))
+    as "the original child must start"
+  let assert Ok(_) = process.receive(requests, 5000)
+    as "the original child provider must start"
+  api.abort_operation(
+    api.on_strand(harness.runtime, child.strand),
+    child.handle.operation,
+  )
+  assert settled(harness, child.handle)
+
+  let assert Ok(agent.Started(operation:, ..)) =
+    harness.seam.send(parent, child.strand, "resume", None)
+    as "the same child strand must accept renewed work"
+  let renewed = agent.Handle(child.strand, operation)
+  let assert Ok(#(_, child_events)) = process.receive(requests, 5000)
+    as "the resumed child provider must start"
+  settle_into(parent_events, "Done, I resumed the audit.")
+  let assert Ok(#(effects.GenerationRequest(context:, ..), final_events)) =
+    process.receive(requests, 5000)
+    as "the completion guard must ask the parent to collect the child result"
+  assert string.contains(context_text(context), agent.handle_to_string(renewed))
+  assert api.await_result(harness.runtime, parent.operation, 0) == Error(Nil)
+  assert run_for(harness, renewed).stop == child_run.Unstopped
+
+  settle_into(child_events, "The complete audit report.")
+  assert settled(harness, renewed)
+  settle_into(final_events, "The audit is complete.")
+  assert settled(harness, agent.Handle("main", parent.operation))
+  let assert agent.Ready(outcome: agent.Completed, ..) =
+    joined(harness, parent, renewed)
+    as "parent cleanup must preserve the child's successful terminal result"
   close(harness)
 }
 
@@ -5379,6 +5450,25 @@ pub fn the_delegate_endpoint_answers_for_the_same_holder_test() {
   assert handle == spawned.handle
   assert endpoint.run_ended(site.operation) == Ok(0)
   close(harness)
+}
+
+// Shutdown can retire the Agency before an already-persisted answer reaches
+// its completion hook. That boundary must not append a new turn for reopening.
+pub fn a_run_end_after_the_holder_retires_delegates_without_a_follow_up_test() {
+  let config = agency.default_config(addresses.new(), clock.fixed(at: 0))
+  let ended = process.new_subject()
+  let original = effects.default_hooks()
+  let hooks =
+    agency.reaping_hooks(
+      effects.Hooks(..original, run_end: fn(operation) {
+        process.send(ended, operation)
+        None
+      }),
+      config,
+    )
+  let operation = site_of("shutdown:tools", 0).operation
+  assert hooks.run_end(operation) == None
+  assert process.receive(ended, within: 1000) == Ok(operation)
 }
 
 pub fn an_agency_that_is_not_running_refuses_in_band_test() {
