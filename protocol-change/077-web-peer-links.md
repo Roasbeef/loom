@@ -179,6 +179,18 @@ runtime, its schedules and its resumed operations, which is a larger grant than
 adding a prompt to a session that is already running. The refusal is for every
 send, explicit links included.
 
+#### Addendum: a send to a closed session waits
+
+The limit that a model never causes a session to open stands. The refusal does
+not: [protocol-change/078, "Addendum: peer mail reach"](078-distributed-runtime.md)
+queues a send to a session that is saved, for a local recipient as for one on
+another orchestrator. The sender's outbox keeps the message and attempts it
+again, at growing intervals, until the owner opens the session or an hour has
+passed. The model is told the message is queued and is delivered once, under the
+recipient's grant at that moment. A recipient that no catalogue holds is still
+refused with the sentence above, `peer_roster` still marks a closed session
+`running: false`, and `link` still needs both ends resident.
+
 ### The roster's bound
 
 A strand holds at most 64 outgoing links (`peer_mail.outgoing_link_limit`). The

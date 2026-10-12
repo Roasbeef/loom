@@ -10,15 +10,16 @@
 //// (`client/remote/orchestrator_port.PeerCommand`) and waits for the answer
 //// the owner's own Agency gave.
 ////
-//// ## Three outcomes
+//// ## Four outcomes
 ////
-//// A call ends in one of three ways, and the sender's outbox depends on telling
+//// A call ends in one of four ways, and the sender's outbox depends on telling
 //// them apart:
 ////
 //// | What happened | The call returns |
 //// | --- | --- |
 //// | The owner's Agency answered | `Ok(value)` |
 //// | The owner answered with a refusal, or its port refused the command | `Error(Refused(reason))` |
+//// | The owner holds the session saved and not resident | `Error(NotOpen)` |
 //// | The node is gone (`noconnection`), no port is registered, or no answer arrived in time | `Error(Unreachable)` |
 ////
 //// The monitor is taken before the request is sent, as `orchestrator_port.ask`
@@ -49,9 +50,49 @@ import gleam/result
 /// room for the round trip beyond it.
 pub const call_ms = 7000
 
+/// How long a read for a listing waits (`Roster`), once connected. A listing
+/// asks once for every link, so a slow owner is shown as unavailable rather
+/// than holding the rest of the listing for the seven seconds a delivery may.
+pub const read_ms = 2000
+
 // The bound on connecting to a peer that is not connected yet. It is shorter
 // than the call so that an unreachable host costs the sender little.
 const connect_ms = 1500
+
+/// How long a call to the owner waits for the answer to `command`: `read_ms`
+/// for the `Roster` read a listing makes, and `call_ms` for every command that
+/// changes or admits something.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert remote_peer.wait_ms(peer_mail.Roster("s", "main")) == remote_peer.read_ms
+/// ```
+pub fn wait_ms(command: peer_mail.Command) -> Int {
+  case command {
+    peer_mail.Roster(..) -> read_ms
+    peer_mail.Allow(..)
+    | peer_mail.Revoke(..)
+    | peer_mail.Link(..)
+    | peer_mail.Unlink(..)
+    | peer_mail.Links(..)
+    | peer_mail.Grants(..)
+    | peer_mail.Deliver(..)
+    | peer_mail.Describe(..)
+    | peer_mail.Activity(..)
+    | peer_mail.Inbox(..)
+    | peer_mail.InboxGet(..)
+    | peer_mail.History(..)
+    | peer_mail.Received(..)
+    | peer_mail.ReceivedGet(..)
+    | peer_mail.SentReceipt(..)
+    | peer_mail.Overview
+    | peer_mail.OutboxClaim(..)
+    | peer_mail.OutboxSettle(..)
+    | peer_mail.OutboxDue
+    | peer_mail.OutboxReceipt(..) -> call_ms
+  }
+}
 
 /// The endpoint for `session` on the orchestrator port at `at`, waiting at most
 /// `within_ms` for each answer.
@@ -74,7 +115,7 @@ pub fn at(
 /// The production endpoints: for a session owned by `orchestrator`, an endpoint
 /// that connects to the pinned peer if it is not connected and then asks its
 /// port. A peer the membership does not know and a refused handshake are
-/// `Unreachable`.
+/// `Unreachable`. A call waits `wait_ms` for its answer.
 ///
 /// ## Examples
 ///
@@ -102,7 +143,7 @@ pub fn over_distribution(
         ),
         session,
         command,
-        call_ms,
+        wait_ms(command),
       )
     })
   }
@@ -129,7 +170,18 @@ fn ask(
     |> process.selector_receive(within_ms)
   process.demonitor_process(watch)
   case heard {
-    Ok(Ok(answer)) -> peer_mail.refused(answer)
+    Ok(Ok(answer)) -> result.map_error(answer, failure_of)
     Ok(Error(Nil)) | Error(Nil) -> Error(peer_mail.Unreachable)
+  }
+}
+
+// The owner's refusal text as a failure. The one text that is not a refusal is
+// the owner's answer that it holds the session and has not opened it
+// (`peer_mail.not_open_reason`); it is a text because the port's reply type
+// carries one, and this is the only place it is turned back into a variant.
+fn failure_of(text: String) -> peer_mail.Failure {
+  case text == peer_mail.not_open_reason {
+    True -> peer_mail.NotOpen
+    False -> peer_mail.Refused(text)
   }
 }

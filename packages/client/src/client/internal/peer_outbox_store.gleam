@@ -104,7 +104,8 @@ fn make_room(
 
 /// Records what one delivery attempt found. A row that is already finished,
 /// or was removed by an unlink while the attempt was in flight, is left as it
-/// is: the first outcome stands.
+/// is: the first receipt or refusal stands. A row that stays pending is
+/// rewritten only when the attempt changed what it waits for.
 ///
 /// ## Examples
 ///
@@ -126,24 +127,31 @@ pub fn settle(
 
 /// The rows that still need an attempt, after refusing any that have waited
 /// longer than `peer_outbox.pending_ttl_ms`. The drainer asks this at each
-/// pass, so expiry needs no timer of its own.
+/// pass, so expiry needs no timer of its own. A row is refused with
+/// `on_owner` if its last attempt found nobody to ask and with `on_open` if it
+/// found the recipient saved.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // peer_outbox_store.due(runtime, now, "owner unreachable")
+/// // peer_outbox_store.due(runtime, now, "owner unreachable", "not opened")
 /// ```
 pub fn due(
   runtime: api.Runtime,
   now: Int,
-  expired_reason: String,
+  on_owner: String,
+  on_open: String,
 ) -> Result(List(Row), String) {
   use stored <- result.try(rows(runtime))
   list.filter(stored, fn(pair) { peer_outbox.is_pending(pair.1) })
   |> list.try_fold([], fn(due, pair) {
     use expired <- result.try(
       settle_key(runtime, pair.0, fn(row) {
-        peer_outbox.expire(row, now, expired_reason)
+        peer_outbox.expire(
+          row,
+          now,
+          peer_outbox.expiry_reason(row, on_owner, on_open),
+        )
       }),
     )
     case expired {

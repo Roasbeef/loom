@@ -2,6 +2,7 @@
 //// outcome is a report, never a different outcome.
 
 import client/remote/codec
+import client/remote/protocol
 import core/json
 import core/message
 import gleam/bit_array
@@ -59,4 +60,28 @@ pub fn bytes_that_are_not_an_outcome_are_reports_test() {
   refused(bit_array.from_string(
     "{\"kind\":\"completed\",\"result\":{\"role\":\"user\",\"content\":[],\"timestamp\":1},\"terminate\":\"yes\"}",
   ))
+}
+
+pub fn an_execution_value_round_trips_as_its_own_kind_test() {
+  let value = json.Object([#("status", json.String("completed"))])
+  let bytes = codec.encode_execution(value)
+  assert codec.decode_stored(bytes) == Ok(codec.StoredExecution(value))
+  assert codec.decode_stored(codec.encode_outcome(ToolFailed(reason: "no")))
+    == Ok(codec.StoredOutcome(ToolFailed(reason: "no")))
+}
+
+pub fn an_execution_value_is_never_read_as_a_tool_outcome_test() {
+  // A tool call answered from an execution's row would hand the model a
+  // program's value as the call's result, so the outcome reader refuses it.
+  let assert Error(report) =
+    codec.decode_outcome(codec.encode_execution(json.Int(1)))
+    as "an execution value is not a tool outcome"
+  assert report.expected == "completed or failed"
+}
+
+pub fn an_execution_key_names_its_execution_and_a_call_key_none_test() {
+  let key = protocol.Key("s", "op", "async/ab12", 0)
+  assert protocol.execution_id(key) == Ok("ab12")
+  assert protocol.execution_id(protocol.Key(..key, step: "turn-1:tools"))
+    == Error(Nil)
 }

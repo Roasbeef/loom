@@ -12,7 +12,7 @@
 // while the defects they name were open (README.md, "Defects found"). They
 // pass now, and a mutant in mutate.py reopens each.
 
-module System = { Wire, Host, Body, Orch, Call, Chaos, Harness };
+module System = { Wire, Host, Body, ExecBody, Orch, Call, Record, Exec, Chaos, Harness };
 
 // Two calls: one the planner may replay, one it may not.
 fun mixed(): seq[tReplay] {
@@ -34,7 +34,7 @@ fun fenced(): seq[tReplay] {
 machine TestQuiet {
   start state Init {
     entry {
-      new Harness((replays = mixed(), acks = ACK_AFTER_QUIET, breaks = 0, crashes = 0, opens = 0, restarts = 0));
+      new Harness((replays = mixed(), acks = ACK_AFTER_QUIET, breaks = 0, crashes = 0, opens = 0, restarts = 0, executions = 0, cancels = 0));
     }
   }
 }
@@ -42,7 +42,7 @@ machine TestQuiet {
 machine TestPartition {
   start state Init {
     entry {
-      new Harness((replays = mixed(), acks = ACK_AFTER_QUIET, breaks = 3, crashes = 0, opens = 0, restarts = 0));
+      new Harness((replays = mixed(), acks = ACK_AFTER_QUIET, breaks = 3, crashes = 0, opens = 0, restarts = 0, executions = 0, cancels = 0));
     }
   }
 }
@@ -50,7 +50,7 @@ machine TestPartition {
 machine TestOpenCrash {
   start state Init {
     entry {
-      new Harness((replays = fenced(), acks = ACK_AFTER_QUIET, breaks = 1, crashes = 0, opens = 2, restarts = 0));
+      new Harness((replays = fenced(), acks = ACK_AFTER_QUIET, breaks = 1, crashes = 0, opens = 2, restarts = 0, executions = 0, cancels = 0));
     }
   }
 }
@@ -58,7 +58,7 @@ machine TestOpenCrash {
 machine TestHostCrash {
   start state Init {
     entry {
-      new Harness((replays = mixed(), acks = ACK_AFTER_QUIET, breaks = 1, crashes = 1, opens = 1, restarts = 0));
+      new Harness((replays = mixed(), acks = ACK_AFTER_QUIET, breaks = 1, crashes = 1, opens = 1, restarts = 0, executions = 0, cancels = 0));
     }
   }
 }
@@ -68,7 +68,7 @@ machine TestHostCrash {
 machine TestAll {
   start state Init {
     entry {
-      new Harness((replays = fenced(), acks = ACK_AFTER_QUIET, breaks = 2, crashes = 1, opens = 1, restarts = 1));
+      new Harness((replays = fenced(), acks = ACK_AFTER_QUIET, breaks = 2, crashes = 1, opens = 1, restarts = 1, executions = 0, cancels = 0));
     }
   }
 }
@@ -77,7 +77,7 @@ machine TestAll {
 machine TestRuntimeRestart {
   start state Init {
     entry {
-      new Harness((replays = fenced(), acks = ACK_AFTER_QUIET, breaks = 0, crashes = 0, opens = 0, restarts = 2));
+      new Harness((replays = fenced(), acks = ACK_AFTER_QUIET, breaks = 0, crashes = 0, opens = 0, restarts = 2, executions = 0, cancels = 0));
     }
   }
 }
@@ -87,7 +87,7 @@ machine TestRuntimeRestart {
 machine TestRuntimeRestartAckAtOnce {
   start state Init {
     entry {
-      new Harness((replays = fenced(), acks = ACK_AT_ONCE, breaks = 0, crashes = 0, opens = 0, restarts = 2));
+      new Harness((replays = fenced(), acks = ACK_AT_ONCE, breaks = 0, crashes = 0, opens = 0, restarts = 2, executions = 0, cancels = 0));
     }
   }
 }
@@ -175,3 +175,101 @@ test tcDefectNoPlane [main = TestHostCrash]:
 test tcDefectLateRun [main = TestRuntimeRestartAckAtOnce]:
   assert AtMostOnceStart, NoStartAfterFence, UnknownIsFinal, OutcomeFaithful, StaleTokenRefused, CancelOnlyOnAbort, EveryKeyDelivered in
   (union System, { TestRuntimeRestartAckAtOnce });
+
+// --- background executions ----------------------------------------------------
+
+// No tool calls: the open attaches only to carry the executions.
+fun noCalls(): seq[tReplay] {
+  var r: seq[tReplay];
+  return r;
+}
+
+machine TestExecQuiet {
+  start state Init {
+    entry {
+      new Harness((replays = noCalls(), acks = ACK_AFTER_QUIET, breaks = 0, crashes = 0, opens = 0, restarts = 0, executions = 2, cancels = 0));
+    }
+  }
+}
+
+// Cancels racing starts and finishes, over dropped connections.
+machine TestExecCancel {
+  start state Init {
+    entry {
+      new Harness((replays = noCalls(), acks = ACK_AFTER_QUIET, breaks = 2, crashes = 0, opens = 0, restarts = 0, executions = 2, cancels = 2));
+    }
+  }
+}
+
+// An orchestrator restart, with the workers' starts still in flight, and a
+// dropped connection.
+machine TestExecOpenCrash {
+  start state Init {
+    entry {
+      new Harness((replays = noCalls(), acks = ACK_AFTER_QUIET, breaks = 1, crashes = 0, opens = 1, restarts = 0, executions = 2, cancels = 1));
+    }
+  }
+}
+
+// An executor restart under running programs.
+machine TestExecHostCrash {
+  start state Init {
+    entry {
+      new Harness((replays = noCalls(), acks = ACK_AFTER_QUIET, breaks = 1, crashes = 1, opens = 0, restarts = 0, executions = 2, cancels = 1));
+    }
+  }
+}
+
+// Executions beside tool calls, under every fault.
+machine TestExecAll {
+  start state Init {
+    entry {
+      new Harness((replays = mixed(), acks = ACK_AFTER_QUIET, breaks = 2, crashes = 1, opens = 1, restarts = 0, executions = 2, cancels = 2));
+    }
+  }
+}
+
+test tcExecQuiet [main = TestExecQuiet]:
+  assert AtMostOnceStart, UnknownIsFinal, StaleTokenRefused, CancelOnlyOnAbort, ExecNoStartAfterStop, ExecFinishedIsStored, ExecStopOnlyOnDecision, ExecNotLostWhenFinished, ExecAckOnlyWhenRecordTerminal, EveryExecutionSettles in
+  (union System, { TestExecQuiet });
+
+test tcExecCancel [main = TestExecCancel]:
+  assert AtMostOnceStart, UnknownIsFinal, StaleTokenRefused, CancelOnlyOnAbort, ExecNoStartAfterStop, ExecFinishedIsStored, ExecStopOnlyOnDecision, ExecNotLostWhenFinished, ExecAckOnlyWhenRecordTerminal, EveryExecutionSettles in
+  (union System, { TestExecCancel });
+
+test tcExecOpenCrash [main = TestExecOpenCrash]:
+  assert AtMostOnceStart, UnknownIsFinal, StaleTokenRefused, CancelOnlyOnAbort, ExecNoStartAfterStop, ExecFinishedIsStored, ExecStopOnlyOnDecision, ExecNotLostWhenFinished, ExecAckOnlyWhenRecordTerminal, EveryExecutionSettles in
+  (union System, { TestExecOpenCrash });
+
+test tcExecHostCrash [main = TestExecHostCrash]:
+  assert AtMostOnceStart, UnknownIsFinal, StaleTokenRefused, CancelOnlyOnAbort, ExecNoStartAfterStop, ExecFinishedIsStored, ExecStopOnlyOnDecision, ExecNotLostWhenFinished, ExecAckOnlyWhenRecordTerminal, EveryExecutionSettles in
+  (union System, { TestExecHostCrash });
+
+test tcExecAll [main = TestExecAll]:
+  assert AtMostOnceStart, NoStartAfterFence, UnknownIsFinal, OutcomeFaithful, StaleTokenRefused, CancelOnlyOnAbort, EveryKeyDelivered, ExecNoStartAfterStop, ExecFinishedIsStored, ExecStopOnlyOnDecision, ExecNotLostWhenFinished, ExecAckOnlyWhenRecordTerminal, EveryExecutionSettles in
+  (union System, { TestExecAll });
+
+// One spec each, for mutate.py.
+test tcOnlyExecNoStartAfterStop [main = TestExecCancel]:
+  assert ExecNoStartAfterStop in (union System, { TestExecCancel });
+
+test tcOnlyExecStopOnlyOnDecision [main = TestExecCancel]:
+  assert ExecStopOnlyOnDecision in (union System, { TestExecCancel });
+
+test tcOnlyExecAckOnlyWhenRecordTerminal [main = TestExecCancel]:
+  assert ExecAckOnlyWhenRecordTerminal in (union System, { TestExecCancel });
+
+test tcOnlyExecNotLostWhenFinished [main = TestExecCancel]:
+  assert ExecNotLostWhenFinished in (union System, { TestExecCancel });
+
+test tcOnlyExecAtMostOnce [main = TestExecHostCrash]:
+  assert AtMostOnceStart in (union System, { TestExecHostCrash });
+
+test tcOnlyEveryExecutionSettles [main = TestExecCancel]:
+  assert EveryExecutionSettles in (union System, { TestExecCancel });
+
+test tcProbeExecStartBarred [main = TestExecCancel]:
+  assert ProbeExecStartBarred in (union System, { TestExecCancel });
+
+test tcProbeExecRecoveredValue [main = TestExecOpenCrash]:
+  assert ProbeExecRecoveredValue in (union System, { TestExecOpenCrash });

@@ -101,7 +101,7 @@ checks its own current SHA.
 | 1. One orchestrator, one executor | `ToolSurface.run` is the cut. The executor runs main's own workspace plane behind `remote/host`, with one SQLite ledger per executor (`storage/exec_ledger`, schema version 3). Scope rows carry an incarnation and an attach token; call rows are keyed by `(session, op, step, source_index)`. A session attaches once per open. A reconnect re-sends the same `Run`. Only a non-`noconnection` DOWN cancels. Recovery fences `ReplayNever` keys. An acknowledgement leaves a tombstone until the incarnation changes, so a key admitted once in an incarnation never starts again in it. Owner-bound code-mode capabilities answer over the owner port. `loom distribution` (`dist`) provisions and installs bundles, and `loomd executor release` is the operator override for a scope whose cleanup was never proven. |
 | 2. Executor pools | `[pools.<name>]` with a trial order and declared requirements. The scope record names the executor before `Attach`. The next candidate is tried only on a failed connection or `CapacityExhausted` at first open. A census that contradicts the declaration closes the scope. |
 | 3. Two orchestrators | Option C: `session_directory` is a Khepri-shaped interface backed by a 2 s parallel lookup over pinned peers, and each catalogue stays the source of truth. `not_owner` and `owner_unreachable` redirect the owner principal only, with no automatic follow. |
-| 4. Peer mail between orchestrators | A sender outbox (`client/peers/outbox/<digest>`: pending, admitted or refused) drained by a weft state machine; `PeerCommand` (Allow, Revoke, Deliver, SentReceipt) on the `loom_orchestrator` port; a typed `peer_mail.Failure`. |
+| 4. Peer mail between orchestrators | A sender outbox (`client/peers/outbox/<digest>`: pending, admitted or refused) drained by a weft state machine; `PeerCommand` (Allow, Revoke, Deliver, SentReceipt, Roster) and `Describe` (the owner's catalogue, never opening the session) on the `loom_orchestrator` port; a typed `peer_mail.Failure` (`Refused`, `Unreachable`, `NotOpen`). A recipient its owner holds saved is queued and delivered once when opened, locally and across; the drainer backs off from 5 s to 5 min while that is all it waits for (the "peer mail reach" addendum in protocol-change/078). |
 | 5. Controlled movement | `sessions.move` and `loom sessions move`. Authority is two catalogue CAS rows (v13 `catalogue_session_moves`), a write-ahead intent and the executor's token fence, over six steps with resume at boot. A committed activation is always answered `Accepted`. An imported session cannot be moved on or deleted until its origin has retired. |
 | 6. Acceptance | Two independent Fable 5.1 reviews of the assembled system (remote core; directory, peer mail and movement), each with re-verification of its fixes; a P model of remote execution and a TLA+ model of a move, both gated; the evidence below. |
 
@@ -180,10 +180,10 @@ a peer can send, which is scope hygiene and not a security boundary.
 - An imported session whose origin is decommissioned, renamed or reinstalled can never
   move on, and has no override yet. The web home's delete button does not apply the
   inbound hold that the control `sessions.delete` applies.
-- Roster and Describe are not served across orchestrators. Remote roster rows show
-  `running: true` and `exported_strands` as unavailable.
-- A message queued to a session that is saved on its owner is refused `not_running`
-  after the owner restarts (077 semantics), not delivered.
+- A queued message to a saved session learns that the session was opened at its
+  next attempt, up to five minutes later once the backoff has grown; nothing tells
+  the sender's drainer that a recipient opened. A message queued while the drainer
+  is backed off for older messages waits for the same tick.
 - The TUI does not render the `moving` and `moved` members of a session view. The
   source keeps a tombstone row, which lists as saved.
 - The receiver identifies the sender by `from_node` through its `[orchestrators]`
@@ -193,13 +193,38 @@ a peer can send, which is scope hygiene and not a security boundary.
   report "still starting" until the next daemon starts.
 - On macOS, an executor started from a checkout looks for its code-mode seed under
   the workspace's `build/` by default, which is wrong there. Pass `--codemode-seed`.
-- Remote sessions refuse extension tools, operator directory additions, background
-  code mode and MCP facades.
+- Remote sessions refuse extension tools and operator directory additions.
+  Background code mode and MCP facades on a remote session are on the stacked
+  branch `distributed/remote-codemode` (see below), not on this one.
 - `remote/protocol` and `storage/exec_ledger` each keep their own `Key` and
   `CloseOutcome` types with mappers between them.
 - Two recorded flakes: `daemon_shipped_remote_test`'s partition drill saw an
   `options_mismatch` at executor boot once, and the macOS gate's skip census flags two
   undeclared broker `/proc` skips. Both are filed as tasks.
+
+## Background code mode and MCP on a remote session
+
+The branch `distributed/remote-codemode`, stacked on PR #923, implements the
+protocol-change/078 addendum "background code mode and MCP façades on a remote
+session" at protocol version 3. The orchestrator keeps each background
+execution's record, input and progress in `async_runs`; the executor runs the
+program under the ledger key `(session, op, "async/<id>", 0)`; a closed record
+sends `StopExecution`, which `exec_ledger.stop_or_fence` turns into an unknown
+row or a barred key; the owner port's reconciler stops orphans and acknowledges
+an execution's row only once its record is closed; recovery after an
+orchestrator restart keeps a result the executor already stored. `[mcp.<name>]`
+gains `runs_on`, and an executor-placed server runs from the executor's own
+table. `packages/client/CLAUDE.md`, "Background code mode and MCP on a
+registered session", is the map; the P model's mutants M8 to M12 and the
+shipped fixtures `daemon_shipped_remote_background_test` and
+`daemon_shipped_remote_mcp_test` are the evidence.
+
+Open on that branch: `check`, `send` and `cancel` wait out a link cut because
+`code_mode` is placed on the executor by name; the execution budget (1 MiB a
+row) is per executor; a rebound attach keeps the old MCP plan without a log
+line saying so; and the launching call that the record now stores is used to
+attribute a background program's workflow steps but does not change the step
+id the workflow ledger records.
 
 ## The Linux box
 

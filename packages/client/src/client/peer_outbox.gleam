@@ -35,10 +35,11 @@
 //// 2. `room` applies the per-strand bound before a new row is written, and
 ////    names the oldest finished row to evict when the strand is at the bound.
 //// 3. `settle` applies one attempt's outcome to a pending row. A finished row
-////    never moves again.
+////    never moves again, and a pending row only changes what it says it is
+////    waiting for.
 //// 4. `expire` turns a pending row that has waited longer than the pending
-////    limit into a refusal, so that an owner that never returns stops being
-////    attempted.
+////    limit into a refusal, so that an owner that never returns, or a
+////    recipient that is never opened, stops being attempted.
 
 import core/json.{type JsonValue}
 import gleam/list
@@ -64,7 +65,13 @@ pub const pending_ttl_ms = 3_600_000
 pub type State {
   /// Not yet admitted or refused. The text is kept because the drainer must
   /// be able to send the message again without the model's help.
-  Pending(text: String)
+  Pending(
+    /// The message body.
+    text: String,
+    /// What the last attempt found the message is waiting for. It chooses the
+    /// words of the refusal if the message waits out the hour.
+    wait: Wait,
+  )
 
   /// The recipient returned a receipt. The receipt is kept so that
   /// `peer_sent_receipt` can answer without asking the recipient's owner.
@@ -73,6 +80,19 @@ pub type State {
   /// The recipient refused definitively, or the message expired. The reason is
   /// the recipient's, worded for the model.
   Refused(reason: String)
+}
+
+/// What a pending message is waiting for.
+pub type Wait {
+  /// The recipient's owner. Nobody has answered for the recipient: the owner
+  /// is unreachable, or no attempt has been made yet.
+  OnOwner
+
+  /// The recipient. Its owner answered that the session is saved, and the
+  /// message goes in once the owner opens it. Nothing the sender does hurries
+  /// that, so the drainer slows its attempts while this is all it is waiting
+  /// for.
+  OnOpen
 }
 
 /// One outgoing message and its state. The key is derived from `strand`,
@@ -107,6 +127,11 @@ pub type Outcome {
   /// Nobody answered: the recipient's owner is unreachable. The row stays
   /// pending and the drainer attempts it again.
   Unanswered
+
+  /// The owner answered that it holds the recipient saved, not resident. The
+  /// row stays pending, as for `Unanswered`, and the message is admitted when
+  /// the owner next opens the session.
+  NotOpen
 }
 
 /// What a claim of a message id means, given the row already stored for it.
@@ -184,7 +209,7 @@ pub fn pending(
     target_strand:,
     message_id:,
     queued_at: now,
-    state: Pending(text),
+    state: Pending(text:, wait: OnOwner),
   )
 }
 
@@ -213,7 +238,7 @@ pub fn is_pending(row: Row) -> Bool {
 /// ```
 pub fn request(source_session: String, row: Row) -> Option(JsonValue) {
   case row.state {
-    Pending(text:) ->
+    Pending(text:, ..) ->
       Some(
         json.Object([
           #("source_session", json.String(source_session)),
@@ -316,9 +341,11 @@ fn oldest_first(a: #(String, Row), b: #(String, Row)) -> order.Order {
 }
 
 /// Applies one attempt's outcome to a row. Only a pending row moves, so the
-/// first outcome recorded is the final one, and an attempt that raced another
-/// (the inline send and the drainer can both be in flight) cannot overwrite it.
-/// `None` means there is nothing to write.
+/// first receipt or refusal recorded is the final one, and an attempt that
+/// raced another (the inline send and the drainer can both be in flight) cannot
+/// overwrite it. A pending row that stays pending is rewritten only when the
+/// attempt found a different thing to wait for. `None` means there is nothing
+/// to write.
 ///
 /// ## Examples
 ///
@@ -326,18 +353,48 @@ fn oldest_first(a: #(String, Row), b: #(String, Row)) -> order.Order {
 /// let row = peer_outbox.pending("main", "s2", "main", "m1", "hello", 0)
 /// assert peer_outbox.settle(row, peer_outbox.Unanswered) == None
 /// ```
+///
+/// ```gleam
+/// let row = peer_outbox.pending("main", "s2", "main", "m1", "hello", 0)
+/// let assert Some(waiting) = peer_outbox.settle(row, peer_outbox.NotOpen)
+/// assert peer_outbox.waiting_for(waiting) == Some(peer_outbox.OnOpen)
+/// ```
 pub fn settle(row: Row, outcome: Outcome) -> Option(Row) {
   case row.state, outcome {
     Pending(..), Receipt(receipt:) -> Some(Row(..row, state: Admitted(receipt)))
     Pending(..), Rejected(reason:) -> Some(Row(..row, state: Refused(reason)))
-    Pending(..), Unanswered -> None
+    Pending(text:, wait:), Unanswered -> waiting(row, text, wait, OnOwner)
+    Pending(text:, wait:), NotOpen -> waiting(row, text, wait, OnOpen)
     Admitted(..), _ | Refused(..), _ -> None
+  }
+}
+
+// A pending row that is still pending changes only when what it waits for does.
+fn waiting(row: Row, text: String, was: Wait, now: Wait) -> Option(Row) {
+  case was == now {
+    True -> None
+    False -> Some(Row(..row, state: Pending(text:, wait: now)))
+  }
+}
+
+/// What a pending row is waiting for, or `None` for a finished row.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let row = peer_outbox.pending("main", "s2", "main", "m1", "hello", 0)
+/// assert peer_outbox.waiting_for(row) == Some(peer_outbox.OnOwner)
+/// ```
+pub fn waiting_for(row: Row) -> Option(Wait) {
+  case row.state {
+    Pending(wait:, ..) -> Some(wait)
+    Admitted(..) | Refused(..) -> None
   }
 }
 
 /// Turns a pending row that has waited longer than `pending_ttl_ms` into a
 /// refusal worded with `reason`. A row that is not yet old, or is finished,
-/// is left alone.
+/// is left alone. `expiry_reason` chooses the words.
 ///
 /// ## Examples
 ///
@@ -352,6 +409,23 @@ pub fn expire(row: Row, now: Int, reason: String) -> Option(Row) {
   }
 }
 
+/// The words a row is refused with if it waits out the hour: `on_owner` when
+/// the last attempt found nobody to ask, `on_open` when it found the recipient
+/// saved.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let row = peer_outbox.pending("main", "s2", "main", "m1", "hello", 0)
+/// assert peer_outbox.expiry_reason(row, "silent", "closed") == "silent"
+/// ```
+pub fn expiry_reason(row: Row, on_owner: String, on_open: String) -> String {
+  case waiting_for(row) {
+    Some(OnOpen) -> on_open
+    Some(OnOwner) | None -> on_owner
+  }
+}
+
 /// Encodes a row as the value stored in the session.
 ///
 /// ## Examples
@@ -361,9 +435,10 @@ pub fn expire(row: Row, now: Int, reason: String) -> Option(Row) {
 /// ```
 pub fn encode(row: Row) -> JsonValue {
   let state = case row.state {
-    Pending(text:) -> [
+    Pending(text:, wait:) -> [
       #("state", json.String("pending")),
       #("text", json.String(text)),
+      #("wait", json.String(wait_word(wait))),
     ]
     Admitted(receipt:) -> [
       #("state", json.String("admitted")),
@@ -406,12 +481,35 @@ pub fn decode(value: JsonValue) -> Result(Row, String) {
   })
   use word <- result.try(text(value, "state"))
   use state <- result.try(case word {
-    "pending" -> text(value, "text") |> result.map(Pending)
+    "pending" -> {
+      use body <- result.try(text(value, "text"))
+      use wait <- result.try(decode_wait(value))
+      Ok(Pending(text: body, wait:))
+    }
     "admitted" -> field(value, "receipt") |> result.map(Admitted)
     "refused" -> text(value, "reason") |> result.map(Refused)
     _ -> Error("unknown outbox state")
   })
   Ok(Row(strand:, session:, target_strand:, message_id:, queued_at:, state:))
+}
+
+fn wait_word(wait: Wait) -> String {
+  case wait {
+    OnOwner -> "owner"
+    OnOpen -> "open"
+  }
+}
+
+// A row written before a recipient could be waited for has no `wait` field, and
+// it was waiting for its owner, so a missing field reads as that. A field of
+// any other shape is an error, like every other field of a row.
+fn decode_wait(value: JsonValue) -> Result(Wait, String) {
+  case field(value, "wait") {
+    Error(_) -> Ok(OnOwner)
+    Ok(json.String("owner")) -> Ok(OnOwner)
+    Ok(json.String("open")) -> Ok(OnOpen)
+    Ok(_) -> Error("unknown outbox wait")
+  }
 }
 
 fn field(value: JsonValue, name: String) -> Result(JsonValue, String) {

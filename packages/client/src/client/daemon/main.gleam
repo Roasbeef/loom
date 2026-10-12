@@ -498,6 +498,7 @@ pub fn start_executor(
           ledger_path: config.state_root <> "/exec-ledger.db",
           limits: executor_plane.scope_limits(),
           max_result_bytes: executor_host.default_max_result_bytes,
+          execution_result_bytes: executor_host.default_execution_result_bytes,
           clock: clock.from_function(ffi_os.system_time_ms),
           factory: executor_plane.factory(machine, configured),
         ))
@@ -561,6 +562,7 @@ pub fn start_orchestrator_port(
           orchestrator_port.default(),
           catalogue_holds(ready.registry),
           peer_command(ready.registry, peer_endpoint),
+          server.local_description(ready.registry),
           importer,
         )
         |> result.map_error(fn(error) {
@@ -578,9 +580,11 @@ pub fn start_orchestrator_port(
 /// Forwards one peer-mail command from another orchestrator to a session
 /// resident here, the way the control commands reach the same session
 /// (`server.peer_endpoint`): resolve the identity with the manager and call the
-/// session's own endpoint. A session that is not resident answers
-/// `peers.not_running`, the refusal a send within one daemon gets, so the
-/// sender cannot tell where the recipient was supposed to be.
+/// session's own endpoint. A session that is not resident but that this
+/// catalogue holds and can open answers `peer_mail.not_open_reason`, which the
+/// sender turns back into `NotOpen` and waits on. One this catalogue does not
+/// hold, or that its owner archived, answers `peers.not_running`, a refusal,
+/// because a message will never cause it to open.
 ///
 /// ## Examples
 ///
@@ -594,7 +598,11 @@ pub fn peer_command(
 ) -> fn(String, peer_mail.Command) -> Result(JsonValue, String) {
   fn(session, command) {
     case manager.resolve(registry, session) {
-      Error(_) -> Error(peers.not_running)
+      Error(_) ->
+        case server.standing(registry, session) {
+          server.Unopened | server.Handed -> Error(peer_mail.not_open_reason)
+          server.Archived | server.Unheld -> Error(peers.not_running)
+        }
       Ok(resident) ->
         case endpoint(resident) {
           None -> Error("peer_service_unavailable")
@@ -657,6 +665,9 @@ fn session_directory_of(
         session_directory.over_distribution(membership),
       )
       |> session_directory.with_reach(remote_peer.over_distribution(membership))
+      |> session_directory.describing(session_directory.description_over(
+        membership,
+      ))
       |> session_directory.activating(session_directory.activation_over(
         membership,
       ))
@@ -1555,19 +1566,9 @@ pub fn peer_directory_across(
 ) -> peers.Directory {
   peers.Directory(
     resolve: peers.routed(
-      fn(id) {
-        manager.resolve(registry, id)
-        |> result.map(endpoint)
-        |> result.map_error(fn(error) {
-          peer_mail.Refused(string.inspect(error))
-        })
-      },
+      server.local_peer(registry, fn(resident) { Ok(endpoint(resident)) }),
       sessions,
     ),
-    describe: fn(id) {
-      manager.get(registry, id)
-      |> result.map(server.view_json)
-      |> result.map_error(string.inspect)
-    },
+    describe: peers.described(server.local_description(registry), sessions),
   )
 }
