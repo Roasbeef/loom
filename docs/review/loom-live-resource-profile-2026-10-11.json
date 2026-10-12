@@ -1,0 +1,768 @@
+{
+  "date": "2026-10-11",
+  "target": {
+    "commit": "2ff7512acb31f6c52e7a60a4ec5bd2a35535e866",
+    "version": "0.2.0",
+    "deployment_changed": false
+  },
+  "memory_before_bytes": {
+    "total": 285836756,
+    "processes": 209446664,
+    "processes_used": 209301880,
+    "system": 76390092,
+    "atom": 1369151,
+    "atom_used": 1369151,
+    "binary": 27640768,
+    "code": 26789851,
+    "ets": 1865048
+  },
+  "memory_after_bytes": {
+    "total": 266869544,
+    "processes": 189486432,
+    "processes_used": 189409056,
+    "system": 77383112,
+    "atom": 1369878,
+    "atom_used": 1369878,
+    "binary": 28582944,
+    "code": 26821471,
+    "ets": 1869584
+  },
+  "os_rss_before_bytes": 343670784,
+  "cpu": {
+    "observation": {
+      "t": "perturbation",
+      "probe": "1",
+      "enabled": [
+        "current_stacktrace"
+      ],
+      "events": {
+        "v": 10000
+      },
+      "collector_reductions": {
+        "not_applicable": true
+      },
+      "bytes": {
+        "not_applicable": true
+      },
+      "wall_ms": {
+        "v": 10006
+      },
+      "matched": 16,
+      "counters": null,
+      "outcome": "complete"
+    },
+    "status_samples": {
+      "waiting": 9620,
+      "running": 297,
+      "runnable": 83
+    },
+    "top_flat": [
+      {
+        "function": "esqlite3:fetchall1/2",
+        "samples": 69,
+        "inclusive_samples": 69
+      },
+      {
+        "function": "gleam_erlang_ffi:select/2",
+        "samples": 39,
+        "inclusive_samples": 48
+      },
+      {
+        "function": "string:bin_search_loop/5",
+        "samples": 39,
+        "inclusive_samples": 54
+      },
+      {
+        "function": "string:trim_t/3",
+        "samples": 21,
+        "inclusive_samples": 115
+      },
+      {
+        "function": "string:bin_search_inv_n/3",
+        "samples": 19,
+        "inclusive_samples": 21
+      },
+      {
+        "function": "unicode_util:gc/1",
+        "samples": 16,
+        "inclusive_samples": 16
+      },
+      {
+        "function": "esqlite3:q/3",
+        "samples": 16,
+        "inclusive_samples": 85
+      },
+      {
+        "function": "gleam@bit_array:is_utf8_loop/1",
+        "samples": 13,
+        "inclusive_samples": 13
+      },
+      {
+        "function": "string:bin_search/3",
+        "samples": 11,
+        "inclusive_samples": 11
+      },
+      {
+        "function": "string:bin_search_inv/3",
+        "samples": 7,
+        "inclusive_samples": 7
+      },
+      {
+        "function": "core@json:-parse_string_body/2-anonymous-0-/4",
+        "samples": 7,
+        "inclusive_samples": 8
+      },
+      {
+        "function": "lustre@vdom@path:do_to_string/3",
+        "samples": 6,
+        "inclusive_samples": 6
+      },
+      {
+        "function": "lustre@server_component:client_message_to_json/1",
+        "samples": 6,
+        "inclusive_samples": 6
+      },
+      {
+        "function": "core@json:parse_escape/2",
+        "samples": 6,
+        "inclusive_samples": 6
+      },
+      {
+        "function": "gleam@bit_array:to_string/1",
+        "samples": 6,
+        "inclusive_samples": 21
+      }
+    ]
+  },
+  "allocation": {
+    "observation": {
+      "t": "perturbation",
+      "probe": "1",
+      "enabled": [
+        "call_time",
+        "call_memory"
+      ],
+      "events": {
+        "not_applicable": true
+      },
+      "collector_reductions": {
+        "not_applicable": true
+      },
+      "bytes": {
+        "not_applicable": true
+      },
+      "wall_ms": {
+        "v": 5119
+      },
+      "matched": 162,
+      "counters": {
+        "requested_ms": 5000,
+        "processes": 8,
+        "called": 90,
+        "read": 90,
+        "unread": 0,
+        "invalidated": 0,
+        "total_words": 18338749
+      },
+      "outcome": "complete"
+    },
+    "word_size_bytes": 8,
+    "total_allocated_bytes": 146709992,
+    "functions": [
+      {
+        "function": "core@json:cut/2",
+        "calls": 113264,
+        "call_time_ns": 51108000,
+        "allocated_bytes": 33347536
+      },
+      {
+        "function": "core@json:-parse_string_body/2-anonymous-0-/4",
+        "calls": 105204,
+        "call_time_ns": 35640000,
+        "allocated_bytes": 17994456
+      },
+      {
+        "function": "web_view@view@fold_row:-line_row/2-anonymous-0-/2",
+        "calls": 52,
+        "call_time_ns": 13731000,
+        "allocated_bytes": 14444592
+      },
+      {
+        "function": "core@json:skip_whitespace/1",
+        "calls": 131698,
+        "call_time_ns": 19837000,
+        "allocated_bytes": 10843848
+      },
+      {
+        "function": "core@json:parse_escape/2",
+        "calls": 57135,
+        "call_time_ns": 11602000,
+        "allocated_bytes": 7772848
+      },
+      {
+        "function": "core@json:-parse_members/5-anonymous-0-/7",
+        "calls": 28211,
+        "call_time_ns": 12419000,
+        "allocated_bytes": 7364728
+      },
+      {
+        "function": "core@json:clean_run/2",
+        "calls": 856908,
+        "call_time_ns": 114173000,
+        "allocated_bytes": 4686480
+      },
+      {
+        "function": "core@json:advance/3",
+        "calls": 105204,
+        "call_time_ns": 10345000,
+        "allocated_bytes": 4208368
+      },
+      {
+        "function": "core@json:parse_string_body/2",
+        "calls": 105204,
+        "call_time_ns": 41925000,
+        "allocated_bytes": 4208160
+      },
+      {
+        "function": "core@json:parse_member/2",
+        "calls": 28211,
+        "call_time_ns": 9607000,
+        "allocated_bytes": 4097432
+      },
+      {
+        "function": "core@json:-parse_member/2-anonymous-1-/2",
+        "calls": 28211,
+        "call_time_ns": 15585000,
+        "allocated_bytes": 4088680
+      },
+      {
+        "function": "core@json:parse_value/2",
+        "calls": 37286,
+        "call_time_ns": 11002000,
+        "allocated_bytes": 4065624
+      },
+      {
+        "function": "session_view@step_words:command/1",
+        "calls": 91,
+        "call_time_ns": 3795000,
+        "allocated_bytes": 3333928
+      },
+      {
+        "function": "core@json:-cut/2-anonymous-0-/2",
+        "calls": 113264,
+        "call_time_ns": 9590000,
+        "allocated_bytes": 2718336
+      },
+      {
+        "function": "core@json:parse_members/5",
+        "calls": 28271,
+        "call_time_ns": 11502000,
+        "allocated_bytes": 2266960
+      },
+      {
+        "function": "core@json:-parse_member/2-anonymous-0-/2",
+        "calls": 28211,
+        "call_time_ns": 2362000,
+        "allocated_bytes": 2031192
+      },
+      {
+        "function": "core@json:-parse_members/5-anonymous-1-/4",
+        "calls": 28211,
+        "call_time_ns": 7936000,
+        "allocated_bytes": 1805504
+      },
+      {
+        "function": "core@json:build/1",
+        "calls": 10418,
+        "call_time_ns": 4570000,
+        "allocated_bytes": 1604760
+      },
+      {
+        "function": "core@json:-parse_value/2-anonymous-0-/1",
+        "calls": 19858,
+        "call_time_ns": 1788000,
+        "allocated_bytes": 1429776
+      },
+      {
+        "function": "core@json:-parse_items/4-anonymous-0-/3",
+        "calls": 7471,
+        "call_time_ns": 2586000,
+        "allocated_bytes": 1236248
+      },
+      {
+        "function": "web_view@view@fold_row:openable/3",
+        "calls": 374,
+        "call_time_ns": 796000,
+        "allocated_bytes": 1073816
+      },
+      {
+        "function": "core@json:-flush_run/4-anonymous-0-/2",
+        "calls": 1497,
+        "call_time_ns": 784000,
+        "allocated_bytes": 1017808
+      },
+      {
+        "function": "core@json:parse_exponent/1",
+        "calls": 6728,
+        "call_time_ns": 1238000,
+        "allocated_bytes": 883720
+      },
+      {
+        "function": "session_view@step_words:at_word/2",
+        "calls": 77,
+        "call_time_ns": 968000,
+        "allocated_bytes": 827088
+      },
+      {
+        "function": "web_view@view@fold_row:spoken/1",
+        "calls": 374,
+        "call_time_ns": 606000,
+        "allocated_bytes": 776192
+      },
+      {
+        "function": "core@json:build_string/1",
+        "calls": 11958,
+        "call_time_ns": 2778000,
+        "allocated_bytes": 760608
+      },
+      {
+        "function": "core@json:-take_digits/1-anonymous-0-/3",
+        "calls": 8060,
+        "call_time_ns": 625000,
+        "allocated_bytes": 709280
+      },
+      {
+        "function": "core@json:parse_fraction/1",
+        "calls": 6728,
+        "call_time_ns": 1252000,
+        "allocated_bytes": 654224
+      },
+      {
+        "function": "core@json:parse_items/4",
+        "calls": 8115,
+        "call_time_ns": 3545000,
+        "allocated_bytes": 643840
+      },
+      {
+        "function": "core@json:-parse_number/1-anonymous-0-/5",
+        "calls": 6728,
+        "call_time_ns": 1259000,
+        "allocated_bytes": 539328
+      },
+      {
+        "function": "core@json:parse_number/1",
+        "calls": 6728,
+        "call_time_ns": 1984000,
+        "allocated_bytes": 484416
+      },
+      {
+        "function": "core@json:-build/1-anonymous-0-/1",
+        "calls": 6919,
+        "call_time_ns": 2237000,
+        "allocated_bytes": 442816
+      },
+      {
+        "function": "core@json:flush_run/4",
+        "calls": 2789,
+        "call_time_ns": 637000,
+        "allocated_bytes": 358008
+      },
+      {
+        "function": "core@json:escape_runs/5",
+        "calls": 15442,
+        "call_time_ns": 2615000,
+        "allocated_bytes": 345784
+      },
+      {
+        "function": "core@json:-parse_number/1-anonymous-1-/4",
+        "calls": 6728,
+        "call_time_ns": 2142000,
+        "allocated_bytes": 322944
+      },
+      {
+        "function": "core@json:digit_run/2",
+        "calls": 47958,
+        "call_time_ns": 6504000,
+        "allocated_bytes": 322400
+      },
+      {
+        "function": "core@json:finish_float/6",
+        "calls": 1110,
+        "call_time_ns": 744000,
+        "allocated_bytes": 293040
+      },
+      {
+        "function": "core@json:-parse_value/2-anonymous-2-/4",
+        "calls": 6919,
+        "call_time_ns": 1085000,
+        "allocated_bytes": 276760
+      },
+      {
+        "function": "web_view@view@fold_row:step_body/4",
+        "calls": 218,
+        "call_time_ns": 266000,
+        "allocated_bytes": 270936
+      },
+      {
+        "function": "core@json:parse_integer_digits/1",
+        "calls": 6728,
+        "call_time_ns": 1132000,
+        "allocated_bytes": 269120
+      },
+      {
+        "function": "core@json:-parse_number/1-anonymous-2-/3",
+        "calls": 6728,
+        "call_time_ns": 1809000,
+        "allocated_bytes": 269120
+      },
+      {
+        "function": "core@json:take_digits/1",
+        "calls": 8060,
+        "call_time_ns": 3311000,
+        "allocated_bytes": 257920
+      },
+      {
+        "function": "session_view@step_words:failure_sentence/2",
+        "calls": 14,
+        "call_time_ns": 133000,
+        "allocated_bytes": 252944
+      },
+      {
+        "function": "web_view@view@fold_row:step/4",
+        "calls": 218,
+        "call_time_ns": 168000,
+        "allocated_bytes": 218352
+      },
+      {
+        "function": "web_view@view@fold_row:-step_body/4-anonymous-7-/2",
+        "calls": 50,
+        "call_time_ns": 190000,
+        "allocated_bytes": 100400
+      },
+      {
+        "function": "core@json:-escape_runs/5-anonymous-0-/5",
+        "calls": 2642,
+        "call_time_ns": 687000,
+        "allocated_bytes": 84544
+      },
+      {
+        "function": "core@json:-parse_value/2-anonymous-1-/4",
+        "calls": 2062,
+        "call_time_ns": 421000,
+        "allocated_bytes": 82480
+      },
+      {
+        "function": "session_view@step_words:directory_end/1",
+        "calls": 67,
+        "call_time_ns": 931000,
+        "allocated_bytes": 77880
+      },
+      {
+        "function": "core@json:parse/1",
+        "calls": 1604,
+        "call_time_ns": 1128000,
+        "allocated_bytes": 64160
+      },
+      {
+        "function": "session_view@step_words:without_cd/1",
+        "calls": 91,
+        "call_time_ns": 89000,
+        "allocated_bytes": 52872
+      },
+      {
+        "function": "web_view@view@fold_row:reasoning/4",
+        "calls": 156,
+        "call_time_ns": 59000,
+        "allocated_bytes": 39936
+      },
+      {
+        "function": "core@json:-parse/1-anonymous-0-/1",
+        "calls": 1604,
+        "call_time_ns": 477000,
+        "allocated_bytes": 38496
+      },
+      {
+        "function": "web_view@view@fold_row:-step_body/4-anonymous-8-/2",
+        "calls": 388,
+        "call_time_ns": 40000,
+        "allocated_bytes": 37248
+      },
+      {
+        "function": "core@json:to_string/1",
+        "calls": 1756,
+        "call_time_ns": 2148000,
+        "allocated_bytes": 34536
+      },
+      {
+        "function": "core@json:-parse_exponent/1-anonymous-0-/2",
+        "calls": 222,
+        "call_time_ns": 100000,
+        "allocated_bytes": 30192
+      },
+      {
+        "function": "session_view@step_words:reasoning_of/3",
+        "calls": 156,
+        "call_time_ns": 79000,
+        "allocated_bytes": 29728
+      },
+      {
+        "function": "session_view@step_words:counted/3",
+        "calls": 248,
+        "call_time_ns": 83000,
+        "allocated_bytes": 27792
+      },
+      {
+        "function": "web_view@view@fold_row:line_row/2",
+        "calls": 284,
+        "call_time_ns": 31000,
+        "allocated_bytes": 27264
+      },
+      {
+        "function": "core@json:-parse_fraction/1-anonymous-0-/2",
+        "calls": 1110,
+        "call_time_ns": 91000,
+        "allocated_bytes": 26640
+      },
+      {
+        "function": "session_view@step_words:duration/1",
+        "calls": 214,
+        "call_time_ns": 73000,
+        "allocated_bytes": 21952
+      },
+      {
+        "function": "session_view@step_words:worked_with_failures/4",
+        "calls": 60,
+        "call_time_ns": 118000,
+        "allocated_bytes": 19200
+      },
+      {
+        "function": "web_view@view@fold_row:-step_body/4-anonymous-3-/2",
+        "calls": 7,
+        "call_time_ns": 31000,
+        "allocated_bytes": 14056
+      },
+      {
+        "function": "web_view@view@fold_row:running_time/3",
+        "calls": 218,
+        "call_time_ns": 49000,
+        "allocated_bytes": 11712
+      },
+      {
+        "function": "session_view@step_words:of_call/1",
+        "calls": 96,
+        "call_time_ns": 51000,
+        "allocated_bytes": 10392
+      },
+      {
+        "function": "web_view@view@fold_row:preview_span/1",
+        "calls": 18,
+        "call_time_ns": 11000,
+        "allocated_bytes": 10368
+      },
+      {
+        "function": "web_view@view@fold_row:failure/2",
+        "calls": 14,
+        "call_time_ns": 6000,
+        "allocated_bytes": 8960
+      },
+      {
+        "function": "web_view@view@fold_row:refused_text/1",
+        "calls": 14,
+        "call_time_ns": 9000,
+        "allocated_bytes": 7536
+      },
+      {
+        "function": "session_view@step_words:named/4",
+        "calls": 91,
+        "call_time_ns": 31000,
+        "allocated_bytes": 5824
+      },
+      {
+        "function": "web_view@view@fold_row:ticked/1",
+        "calls": 14,
+        "call_time_ns": 18000,
+        "allocated_bytes": 5312
+      },
+      {
+        "function": "session_view@step_words:pending/1",
+        "calls": 50,
+        "call_time_ns": 8000,
+        "allocated_bytes": 4000
+      },
+      {
+        "function": "session_view@step_words:-named/4-anonymous-0-/4",
+        "calls": 91,
+        "call_time_ns": 39000,
+        "allocated_bytes": 3640
+      },
+      {
+        "function": "session_view@step_words:clip_to/2",
+        "calls": 4,
+        "call_time_ns": 3000,
+        "allocated_bytes": 2912
+      },
+      {
+        "function": "session_view@step_words:-of_call/1-anonymous-5-/1",
+        "calls": 91,
+        "call_time_ns": 13000,
+        "allocated_bytes": 2184
+      },
+      {
+        "function": "web_view@view@fold_row:-step_body/4-anonymous-6-/2",
+        "calls": 22,
+        "call_time_ns": 6000,
+        "allocated_bytes": 2112
+      },
+      {
+        "function": "web_view@view@fold_row:-step_body/4-anonymous-5-/2",
+        "calls": 1,
+        "call_time_ns": 3000,
+        "allocated_bytes": 2008
+      },
+      {
+        "function": "web_view@view@fold_row:-step_body/4-anonymous-4-/2",
+        "calls": 14,
+        "call_time_ns": 1000,
+        "allocated_bytes": 1344
+      },
+      {
+        "function": "core@json:canonical/1",
+        "calls": 13,
+        "call_time_ns": 5000,
+        "allocated_bytes": 712
+      },
+      {
+        "function": "web_view@view@fold_row:-ticked/1-anonymous-0-/2",
+        "calls": 14,
+        "call_time_ns": 1000,
+        "allocated_bytes": 560
+      },
+      {
+        "function": "session_view@step_words:step_noun/1",
+        "calls": 14,
+        "call_time_ns": 1000,
+        "allocated_bytes": 560
+      },
+      {
+        "function": "session_view@step_words:waited/1",
+        "calls": 2,
+        "call_time_ns": 1000,
+        "allocated_bytes": 224
+      },
+      {
+        "function": "core@json:-canonical/1-anonymous-0-/1",
+        "calls": 8,
+        "call_time_ns": 1000,
+        "allocated_bytes": 192
+      },
+      {
+        "function": "session_view@step_words:generic/2",
+        "calls": 3,
+        "call_time_ns": 2000,
+        "allocated_bytes": 144
+      },
+      {
+        "function": "core@json:check_depth/2",
+        "calls": 8981,
+        "call_time_ns": 664000,
+        "allocated_bytes": 0
+      },
+      {
+        "function": "core@json:check_unique_key/3",
+        "calls": 28211,
+        "call_time_ns": 3035000,
+        "allocated_bytes": 0
+      },
+      {
+        "function": "core@json:escape_of/1",
+        "calls": 2642,
+        "call_time_ns": 193000,
+        "allocated_bytes": 0
+      },
+      {
+        "function": "core@json:-canonical/1-anonymous-1-/2",
+        "calls": 4,
+        "call_time_ns": 0,
+        "allocated_bytes": 0
+      },
+      {
+        "function": "web_view@view@fold_row:-step_body/4-anonymous-0-/1",
+        "calls": 28,
+        "call_time_ns": 2000,
+        "allocated_bytes": 0
+      },
+      {
+        "function": "web_view@view@fold_row:-refused_text/1-anonymous-0-/1",
+        "calls": 14,
+        "call_time_ns": 5000,
+        "allocated_bytes": 0
+      },
+      {
+        "function": "session_view@step_words:is_present/1",
+        "calls": 24,
+        "call_time_ns": 9000,
+        "allocated_bytes": 0
+      },
+      {
+        "function": "session_view@step_words:-worked_with_failures/4-anonymous-0-/1",
+        "calls": 240,
+        "call_time_ns": 27000,
+        "allocated_bytes": 0
+      }
+    ],
+    "module_patterns": [
+      "core@json",
+      "web_view@view@fold_row",
+      "session_view@step_words"
+    ]
+  },
+  "call_trace_observation": {
+    "t": "perturbation",
+    "probe": "1",
+    "enabled": [
+      "call",
+      "return_to"
+    ],
+    "events": {
+      "v": 100000
+    },
+    "collector_reductions": {
+      "not_applicable": true
+    },
+    "bytes": {
+      "not_applicable": true
+    },
+    "wall_ms": {
+      "v": 188
+    },
+    "matched": 568,
+    "counters": null,
+    "outcome": "partial",
+    "reason": "truncated:budget_reached"
+  },
+  "regression": {
+    "test": "render_work_test:unchanged_failed_step_body_does_no_refusal_work_test",
+    "baseline": "439bb846c701f0f983e89425b113777de5c64b09",
+    "baseline_unchanged_patch_trim_calls": 4,
+    "candidate_unchanged_patch_trim_calls": 0,
+    "candidate_second_unchanged_patch_trim_calls": 0,
+    "limitations": "Counts cover the fixture, not live CPU or retained-memory savings."
+  },
+  "timezone": "America/Los_Angeles",
+  "snapshot_times_utc": {
+    "before": "2026-10-12T01:21:58.183000+00:00",
+    "after": "2026-10-12T01:23:31.519000+00:00"
+  },
+  "candidate_source_commit": "a226609f1",
+  "validation": {
+    "focused_preprocessing_tests": 6,
+    "final_web_view_tests": 956,
+    "full_check_exit": 0,
+    "full_check_client_tests": 3835,
+    "full_check_tui_tests": 1331,
+    "full_check_conformance_tests": 98,
+    "house_lint_errors": 0,
+    "doc_check_errors": 0,
+    "note": "Final web-only check covers empty-body regression added during broader full run."
+  }
+}

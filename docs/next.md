@@ -3,7 +3,7 @@
 Baselined October 11, 2026 against main
 `2ff7512ac` (PR #950), with measurements based on the earlier
 `4417fdb6a073865660bf029495a9ecf08bc9e315` tree and the tool-latency branch through
-`4839fd7d8`, including the transcript-read changes recorded below. Work is on
+`a226609f1`, including the failed-body memo described below. Work is on
 `perf/tool-latency` in the isolated `5086/loom` worktree and draft PR #949.
 The installed daemon has not been changed.
 
@@ -42,6 +42,14 @@ model capability before reading operation or transcript state. SQLite pushes
 kind filtering into the existing covering index and caps fetches at the
 remaining limit when custom-type filtering cannot reject rows. It still
 resolves stops and cursor windows on the unfiltered branch first.
+
+The latest live [Pickglass resource profile](review/loom-live-resource-profile-2026-10-11.md)
+observed the installed main daemon during active sessions. It identified
+repeated failed-tool refusal trimming in web rendering. A failed body now
+uses one memo leaf over its words and rows; its rows are drawn directly.
+The real Lustre cache fixture falls from four trim calls to zero on unchanged
+patches. Empty bodies remain empty; independent words and row changes
+invalidate the memo. The adjacent profile JSON records sanitized counters.
 
 ## Rulings
 
@@ -94,6 +102,15 @@ The earlier 18–29% full-path reductions are observations; an isolated host is
 needed to establish a repeatable integrated speedup. All samples are retained
 in the storage report.
 
+The live-profile follow-up passed all six preprocessing regressions and the
+final `make check-web_view` (956 tests). Astra reviewed the actual drawing
+callback, memo dependencies and empty-body shape. `make doc-check` passed
+with 198 existing warnings and zero errors. The follow-up full
+`LOOM_TEST_PARALLEL=8 make check` also passed with exit 0, including client
+3,835, TUI 1,331, conformance 98, Go tests and zero house-lint errors. The
+final web-only check includes the empty-body regression added during that
+full run.
+
 Exact-head hosted/Linux gates are separate from the local results. Current status
 is on PR #949 and under `build/signoff/`; do not infer green from an earlier
 candidate or this handoff. The full `make check` runs outside the nested macOS
@@ -114,3 +131,15 @@ Read [distributed architecture](architecture/distributed.md),
 shipped system. PR #950 adds remote background code mode and executor-placed MCP servers. This
 task did not re-audit the remaining reattachment and session movement limits;
 consult current code before treating historical notes as a current issue list.
+
+## Next measurements
+
+JSON parsing is the next measured allocation lead: the bounded eight-process
+probe counted 146.7 MB of cumulative heap allocation in 5.119 seconds, with
+`core/json.cut` prominent. This is not retained memory or whole-node allocation.
+Use a controlled parser fixture and preserve total decoding, UTF-8 validation
+and corruption reports before changing it. The live daemon was not deployed
+or hotpatched; no live CPU or memory reduction is claimed for this candidate.
+Repeat the integrated local/TLS latency comparison on an isolated host, and
+only compare live resource profiles after an authorized deployment under a
+matched workload.
