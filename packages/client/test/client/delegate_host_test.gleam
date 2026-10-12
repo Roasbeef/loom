@@ -9,6 +9,7 @@
 
 import client/agency
 import client/daemon/domain as domain_service
+import client/daemon/main as daemon_main
 import client/daemon/manager
 import client/delegate_host
 import client/internal/ffi_os
@@ -81,6 +82,16 @@ fn context(
   registry: manager.Manager(agency.DelegateEndpoint),
   directory: String,
 ) -> delegate_host.Context(agency.DelegateEndpoint) {
+  context_at(registry, directory, 4242)
+}
+
+// The same, with the time a message is recorded as arriving, which becomes the
+// pair's last contact.
+fn context_at(
+  registry: manager.Manager(agency.DelegateEndpoint),
+  directory: String,
+  now_ms: Int,
+) -> delegate_host.Context(agency.DelegateEndpoint) {
   delegate_host.Context(
     registry:,
     sessions_directory: directory,
@@ -91,7 +102,7 @@ fn context(
         ffi_os.unique_positive_integer(),
       )
     },
-    now_ms: fn() { 4242 },
+    now_ms: fn() { now_ms },
     endpoint: fn(instance) { instance },
   )
 }
@@ -298,6 +309,102 @@ pub fn a_session_that_cannot_open_ends_the_wait_with_a_refusal_test() {
   let assert Error(remote_spawn.StoreFailure(reason:)) =
     resolve(laptop, parent(30))
   assert reason != ""
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+// --- the retention sweep ------------------------------------------------------
+
+pub fn the_boot_sweep_deletes_the_sessions_a_spawner_has_left_idle_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let laptop = spawner("executor = \"runner\"\nworkspace = \"loom\"\n")
+  let sessions = "/delegate-host/sessions"
+  let first = started(store, fn(built) { Ok(tagged(built)) })
+
+  // Two parents made contact at different times.
+  let assert Ok(_) =
+    delegate_host.resolver(context_at(first, sessions, 1000))(
+      laptop,
+      parent(40),
+    )
+  let assert Ok(_) =
+    delegate_host.resolver(context_at(first, sessions, 500_000))(
+      laptop,
+      parent(41),
+    )
+  assert catalogue.delegates_held(store, "laptop") == Ok(2)
+  let assert Ok(option.Some(idle)) =
+    catalogue.delegate_for(store, "laptop", parent(40).session)
+  let assert Ok(option.Some(boundary)) =
+    catalogue.delegate_for(store, "laptop", parent(41).session)
+
+  // The daemon restarts: a new registry over the same catalogue has no session
+  // resident, and the sweep judges every delegate by its last contact.
+  stop(first)
+  let second = started(store, fn(built) { Ok(tagged(built)) })
+  let retain = fn(_spawner) { 100_000 }
+
+  // Idle for 599_000 ms passes the 100_000 ms retention. Idle for exactly the
+  // retention does not.
+  assert manager.sweep_delegates(second, retain, 600_000, sessions) == Ok(1)
+  assert catalogue.delegate_of(store, idle.session_id) == Ok(option.None)
+  assert catalogue.get(store, idle.session_id) == Error(catalogue.Missing)
+  assert catalogue.delegate_of(store, boundary.session_id)
+    == Ok(option.Some(boundary))
+  assert catalogue.delegates_held(store, "laptop") == Ok(1)
+
+  // The slot the deleted session held is free again, and a repeat sweep finds
+  // nothing more to delete.
+  assert manager.sweep_delegates(second, retain, 600_000, sessions) == Ok(0)
+  let assert Ok(_) =
+    delegate_host.resolver(context_at(second, sessions, 700_000))(
+      laptop,
+      parent(40),
+    )
+  assert catalogue.delegates_held(store, "laptop") == Ok(2)
+  stop(second)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn a_resident_session_is_kept_by_the_sweep_whatever_its_age_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let laptop = spawner("executor = \"runner\"\nworkspace = \"loom\"\n")
+  let sessions = "/delegate-host/sessions"
+  let registry = started(store, fn(built) { Ok(tagged(built)) })
+  let assert Ok(_) =
+    delegate_host.resolver(context_at(registry, sessions, 1000))(
+      laptop,
+      parent(50),
+    )
+
+  // The session is open and its last contact is old, but something is using it.
+  assert manager.sweep_delegates(registry, fn(_) { 10 }, 9_000_000, sessions)
+    == Ok(0)
+  assert catalogue.delegates_held(store, "laptop") == Ok(1)
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn a_session_is_a_delegate_once_the_registry_has_recorded_its_pair_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let laptop = spawner("executor = \"runner\"\nworkspace = \"loom\"\n")
+  let registry = started(store, fn(built) { Ok(tagged(built)) })
+  let assert Ok(_) =
+    delegate_host.resolver(context(registry, "/delegate-host/sessions"))(
+      laptop,
+      parent(60),
+    )
+  let assert Ok(option.Some(recorded)) =
+    catalogue.delegate_for(store, "laptop", parent(60).session)
+  assert manager.delegate_of(registry, recorded.session_id)
+    == Ok(option.Some(recorded))
+
+  // Only that session gets a deadline tick. Any other session has no pair, so
+  // its Agency reaps on observation alone, as it always did.
+  assert daemon_main.deadline_tick_of(registry, recorded.session_id)
+    == option.Some(agency.delegate_deadline_tick_ms)
+  assert daemon_main.deadline_tick_of(registry, parent(61).session)
+    == option.None
   stop(registry)
   assert catalogue.close(store) == Ok(Nil)
 }
