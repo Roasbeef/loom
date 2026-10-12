@@ -49,6 +49,7 @@ import client/directory/seats
 import client/directory/settings as directory_settings
 import client/directory/store
 import client/distribution
+import client/distribution_plan
 import client/executor_plane
 import client/executors
 import client/host
@@ -59,6 +60,7 @@ import client/ledger_holdings
 import client/ledger_reference
 import client/ledger_rows
 import client/ledger_service.{type Service}
+import client/membership_ledger
 import client/orchestrators
 import client/peer_defaults
 import client/peer_mail
@@ -1238,18 +1240,58 @@ fn orchestrator_roster(config: Config) -> Roster(orchestrators.Orchestrator) {
   }
 }
 
-// The record writes, for a member that is an orchestrator: one that places
-// sessions on executors or lists another orchestrator. An executor member
-// lists neither, and so has no writes.
-fn ownership_of(config: Config, local: String) -> Option(ownership.Ownership) {
-  case
-    roster.rows(executor_roster(config)),
-    config.pools,
-    roster.rows(orchestrator_roster(config))
-  {
-    [], [], [] -> None
-    _, _, _ -> Some(ownership.over_store(local))
+/// The record writes, for a member that is an orchestrator. An executor member
+/// has none, which is how it is held to never writing.
+///
+/// A daemon with a ledger is an orchestrator when the ledger says its node is
+/// one, and not when it has rows. This value is built once, when the services
+/// start, and a ledger daemon's rows change while it runs: an orchestrator
+/// enrolled before its first executor, or before the orchestrator beside it, has
+/// no rows at boot and would hold no writes for as long as the daemon lived. Its
+/// role is the one fact that does not move, because a name is enrolled once with
+/// the role it keeps. A daemon with no ledger decides from the rows of its file,
+/// which are fixed for its life: an executor, a pool or an orchestrator listed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // main.ownership_of(config, "loom@hub.example") // -> Some(ownership)
+/// ```
+@internal
+pub fn ownership_of(
+  config: Config,
+  local: String,
+) -> Option(ownership.Ownership) {
+  case config.ledger {
+    Some(handle) ->
+      case ledger_role(handle.service, local) {
+        Ok(distribution_plan.Orchestrator) -> Some(ownership.over_store(local))
+        Ok(distribution_plan.Executor) | Error(Nil) -> None
+      }
+    None ->
+      case
+        roster.rows(executor_roster(config)),
+        config.pools,
+        roster.rows(orchestrator_roster(config))
+      {
+        [], [], [] -> None
+        _, _, _ -> Some(ownership.over_store(local))
+      }
   }
+}
+
+// The role the ledger gives the node, or `Error` when the process does not
+// answer or does not list the node. A daemon that cannot confirm its role holds
+// no writes, as one that is not an orchestrator holds none.
+fn ledger_role(
+  service: Service,
+  local: String,
+) -> Result(distribution_plan.Role, Nil) {
+  use status <- result.try(
+    ledger_service.status(service, 5000) |> result.replace_error(Nil),
+  )
+  membership_ledger.member_at(status.ledger, local)
+  |> result.map(fn(member) { member.role })
 }
 
 /// Starts the movers that hand sessions to other orchestrators, resumes every
