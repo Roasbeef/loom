@@ -3,7 +3,7 @@
 Baselined October 11, 2026 against main
 `2ff7512ac` (PR #950), with measurements based on the earlier
 `4417fdb6a073865660bf029495a9ecf08bc9e315` tree and the tool-latency branch through
-`9b1654af5`, including the JSON decoding follow-up described below. Work is on
+`11b411dba`, including the JSON allocation and provider retention follow-ups below. Work is on
 `perf/tool-latency` in the isolated `5086/loom` worktree and draft PR #949.
 The installed daemon has not been changed.
 
@@ -58,6 +58,16 @@ alternating fresh-VM comparisons reduce measured heap allocation by 14.0% for
 128 transcript-shaped objects, 15.3% for escaped text and 53.0% for dense
 adjacent escapes. Full values and corruption reports match for 882 differential
 inputs. Final concatenation, output ownership and numeric parsing are unchanged.
+
+The backing-binary follow-up has a [targeted provider comparison](review/provider-identity-retention-2026-10-11.md).
+The OpenAI-compatible accumulator now materializes selected `id` and `model`
+values of 65–256 bytes only when their event document is at least eight times
+larger. Sixteen synthetic accumulators retaining two 96-byte identity fields
+hold 3,072 binary payload bytes instead of 16,781,495. Generic JSON decoding
+keeps its existing ownership: a rejected global copy policy slowed a retained
+2,048-field fixture by 21% at 96 bytes. Full-event timing is noisy; primitive
+materialization costs about 0.09 µs for 96 bytes. These are isolated ownership
+and overhead measurements, with no installed-daemon memory reduction claim.
 
 ## Rulings
 
@@ -128,6 +138,15 @@ and evidence. Both found no remaining actionable issue. The optional JavaScript
 comparison still has the same pre-existing non-finite-number corpus failure
 and 25 build warnings on both sides; both new regressions pass.
 
+The targeted provider retention follow-up passed the full local
+`LOOM_TEST_PARALLEL=8 make check` with exit 0: core 163, provider 301, client
+3,835, TUI 1,331, conformance 98, Go sandbox tests and zero house-lint errors.
+Its ownership assertion fails against the old provider at 65 bytes; the final
+candidate passes boundary and small-event cases. Both independent production
+and evidence reviews found no actionable issue. Documentation checks pass with
+198 existing warnings. The prior `4c2c0a982` head now has green hosted CI and
+Linux signoff; these do not validate the newer provider source.
+
 Exact-head hosted/Linux gates are separate from the local results. Current status
 is on PR #949 and under `build/signoff/`; do not infer green from an earlier
 candidate or this handoff. The full `make check` runs outside the nested macOS
@@ -154,9 +173,11 @@ consult current code before treating historical notes as a current issue list.
 The bounded live allocation probe counted 146.7 MB in 5.119 seconds over its
 selected functions and processes. The decoder follow-up measures only synthetic
 parser inputs; it cannot scale that live total or establish retained-memory
-savings. A 96-byte output in both builds still references the same roughly
-1 MiB input backing binary. Study actual selected-field lifetimes and a matched
-copy-policy fixture before changing string ownership.
+savings. A generic 96-byte selected output still references the same roughly 1 MiB
+input backing binary. The targeted provider identity policy detaches only its
+measured owner boundary; study other selected-field lifetimes before expanding
+that policy. Typical identities of at most 64 bytes already detach on OTP 29,
+so the measured large-event fixture does not establish real workload prevalence.
 
 Repeat the integrated local/TLS latency comparison on an isolated host. Only
 compare live resource profiles after an authorized deployment under a matched
