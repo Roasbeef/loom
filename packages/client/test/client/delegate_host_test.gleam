@@ -166,6 +166,10 @@ fn scratch(label: String) -> String {
     <> label
     <> "-"
     <> int.to_string(ffi_os.unique_positive_integer())
+
+  // The counter restarts with every VM, so a later run lands on the same name
+  // and would open the earlier run's catalogue, damaged rows and all.
+  let _ = simplifile.delete(directory)
   let assert Ok(Nil) = simplifile.create_directory_all(directory)
     as "the scratch directory is made"
   directory
