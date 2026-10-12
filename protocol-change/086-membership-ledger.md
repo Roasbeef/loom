@@ -496,6 +496,11 @@ There is no command that resets a node after a fork. The design note documents t
 procedure: stop the daemon, truncate the ledger file to the lines before the fork
 point, start it, and let it sync.
 
+An operator's copy that has forked from the deployment is repaired by hand: copy a
+member's ledger file over `~/.loom/authority/<deployment id>/ledger.log`. The
+signing commands refuse to run against a copy that disagrees with the daemon, and
+the member's file is a ledger that every other member also holds.
+
 ### Phase 3: the directory
 
 A deployment has two member lists. The ledger's lists every trusted node with its

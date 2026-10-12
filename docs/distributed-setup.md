@@ -357,7 +357,10 @@ sessions first. A revoked node's connections are dropped at once, and a revoked
 name can be enrolled again. If the daemon cannot be reached, the command still
 signs and keeps the entry in your copy of the ledger
 (`~/.loom/authority/<deployment id>/ledger.log`) and tells you to run `import`
-with that file on any member's machine.
+with that file on any member's machine. If a signing command says your copy
+disagrees with the daemon (two machines holding the key signed different entries
+at the same position), copy a member's ledger file over
+`~/.loom/authority/<deployment id>/ledger.log` and run the command again.
 
 A node that applied its own revoke cannot start: the daemon refuses with a
 sentence that says so. Run `enroll` for it again on the operator's machine and
