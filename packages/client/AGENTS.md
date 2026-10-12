@@ -125,6 +125,12 @@ they can still receive a late reply there; they take the same refusal.
 
 ## Provider observation capture
 
+Admission checks the selected model's image-reading capability before asking
+for image classification. Image-capable identities, including the existing
+unknown-model fallback, need no operation or transcript reads for this routing
+decision. Text-only identities retain the durable projection and admitted-batch
+checks which keep image-bearing continuations on the vision route.
+
 `wiring.request_image_classifier` projects the session before constructing
 the callback used by `serve.summary_tap`. The dispatcher and the block summary
 observer still classify the current context and immutable admitted prompt

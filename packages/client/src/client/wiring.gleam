@@ -1119,9 +1119,12 @@ fn admit_projected(
       fallback_max_output_tokens,
       identity,
     )
+
+  // An image-capable model keeps its route for every transcript. Consult
+  // that fact first, so only text-only admission pays for image projection.
   case
-    image_bearing_projected(opened, query.operation)
-    && model.reading == catalog.TextOnly
+    model.reading == catalog.TextOnly
+    && image_bearing_projected(opened, query.operation)
   {
     False ->
       Admitted(
