@@ -1279,7 +1279,7 @@ h3:hover .anchor,
 #clients .shot figcaption { background: none; color: var(--ink-2); padding: 0.7rem 0; }
 #clients .shot img { width: 100%; }
 .differentiators { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1.6rem; padding-top: 2.5rem; }
-.landing-body .benefit { margin: 0; border-top: 2px solid var(--rule-strong); padding-top: 1rem; }
+.landing-body .benefit, .landing-body .benefit:first-child { margin: 0; border-top: 2px solid var(--rule-strong); padding-top: 1rem; }
 .benefit h2 { font-size: 1.45rem; line-height: 1.2; }
 .benefit p { margin: 1rem 0; }
 .benefit a { font-family: var(--sans); font-size: 0.9rem; }
