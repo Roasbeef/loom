@@ -42,6 +42,20 @@
 //// `NotOwned` for a failed read would let a transient fault read as proof that
 //// the session exists nowhere.
 ////
+//// Phase 6 (protocol-change/084) adds the receiving half of a subagent that runs
+//// on this orchestrator for a parent on another: `Spawn` starts a child, `Join`
+//// reports on children, and `RunEnded` stops the children a finished run owns.
+//// The vocabulary is `client/remote_spawn`. A daemon supplies a `SpawnHost`, the
+//// functions that judge and serve those three messages, and a daemon that
+//// accepts no spawns starts the port with `refusing_spawns`, which answers every
+//// one with `UnknownSpawner`, as a daemon that receives no sessions refuses
+//// `Import`. All three run apart from the port, as `Activate` does, because a
+//// spawn may open a session and a join may wait for most of half a minute, and
+//// a question about ownership is never kept waiting behind either. A host that
+//// cannot answer sends nothing, and the asker's deadline turns that into
+//// silence, which for a spawn means "the child may exist" and is resolved by
+//// resending, since the receiver adopts the child its call site already made.
+////
 //// The port reveals only whether an identity is in this daemon's catalogue, to a
 //// peer the operator pinned as a trusted Erlang node. It carries no credential,
 //// and a client is never redirected by it: the asking daemon decides what its
@@ -61,12 +75,18 @@
 import client/internal/ffi_remote
 import client/peer_mail
 import client/remote/address.{type Address}
+import client/remote_spawn.{
+  type CallSite, type Joined, type Origin, type Parent, type Request,
+  type SpawnRefusal, type Spawned,
+}
 import client/session_move.{
   type Activation, type Chunk, type Stage, type Verdict,
 }
+import core/ids.{type OpId}
 import core/json.{type JsonValue}
 import gleam/erlang/process.{type Name, type Subject}
 import runtime/residency
+import tools/agent.{type Handle}
 import weft
 import weft/actor
 
@@ -149,6 +169,51 @@ pub type Message {
     /// Where the verdict goes.
     reply: Subject(Verdict),
   )
+
+  /// Starts a child for a parent on the sending orchestrator
+  /// (protocol-change/084). The answer is the child's handle, or the reason the
+  /// spawn was refused. A repeat from the same call site answers the same
+  /// handle, which is what lets the sender resend until it is answered.
+  Spawn(
+    /// The parent session and strand, on the sending orchestrator.
+    parent: Parent,
+    /// The parent's planned call, from which the child's name is derived.
+    call_site: CallSite,
+    /// The parent's depth, which the spawner's `max_depth` is checked against.
+    depth: Int,
+    /// The tools the parent holds, which the child's tools may not exceed.
+    parent_tools: List(String),
+    /// What the parent asked for.
+    request: Request,
+    /// Where the answer goes.
+    reply: Subject(Result(Spawned, SpawnRefusal)),
+  )
+
+  /// Waits, for at most `within_ms`, until the named children of the parent have
+  /// settled, and answers one entry per handle in the order given. A wait is a
+  /// read: asking twice about a settled child answers the same entry twice.
+  Join(
+    /// The parent session and strand whose children are meant.
+    parent: Parent,
+    /// The children, as `Spawned` returned them.
+    handles: List(Handle),
+    /// The longest the receiver waits, in milliseconds.
+    within_ms: Int,
+    /// Where the entries go.
+    reply: Subject(Result(List(Joined), SpawnRefusal)),
+  )
+
+  /// Tells the receiver that the parent's run `operation` ended, so it stops the
+  /// children that run owns. The answer is how many it stopped, and a repeat
+  /// stops nothing more.
+  RunEnded(
+    /// The parent session and strand.
+    parent: Parent,
+    /// The parent's operation that ended.
+    operation: OpId,
+    /// Where the count goes.
+    reply: Subject(Result(Int, SpawnRefusal)),
+  )
 }
 
 /// What the port answers.
@@ -167,6 +232,53 @@ pub type Ownership {
     /// The name of the `[orchestrators.<name>]` that received the session, as
     /// this daemon calls it.
     to: String,
+  )
+}
+
+/// What a daemon does when another orchestrator asks it to run subagents
+/// (protocol-change/084): judge the sender against its spawn policy, and serve
+/// the three messages. The daemon supplies the functions, so the port neither
+/// reads the policy nor opens a session.
+///
+/// Each function runs in a task of its own, linked to the port and cancelled
+/// with the requester (`detached`), so one may take as long as it needs. Each
+/// answers `Error` with the refusal when it declines, and a function that
+/// crashes sends nothing.
+pub type SpawnHost {
+  SpawnHost(
+    /// Starts a child, or adopts the one the call site already made.
+    spawn: fn(Origin, CallSite, Int, List(String), Request) ->
+      Result(Spawned, SpawnRefusal),
+    /// Reports on children, given the handles and the longest wait in
+    /// milliseconds.
+    join: fn(Origin, List(Handle), Int) -> Result(List(Joined), SpawnRefusal),
+    /// Stops the children a finished run owns, given the run's operation, and
+    /// counts them.
+    run_ended: fn(Origin, OpId) -> Result(Int, SpawnRefusal),
+  )
+}
+
+/// The host of a daemon that accepts no spawns: every message is refused with
+/// `UnknownSpawner`, naming the node it came from, because no spawner names that
+/// node.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // orchestrator_port.refusing_spawns().run_ended(origin, operation)
+/// // -> Error(remote_spawn.UnknownSpawner(origin.node))
+/// ```
+pub fn refusing_spawns() -> SpawnHost {
+  SpawnHost(
+    spawn: fn(origin, _call_site, _depth, _parent_tools, _request) {
+      Error(remote_spawn.UnknownSpawner(node: origin.node))
+    },
+    join: fn(origin, _handles, _within_ms) {
+      Error(remote_spawn.UnknownSpawner(node: origin.node))
+    },
+    run_ended: fn(origin, _operation) {
+      Error(remote_spawn.UnknownSpawner(node: origin.node))
+    },
   )
 }
 
@@ -258,6 +370,7 @@ pub fn start(
     fn(_session, _command) { Error(peer_unserved) },
     unserved_description,
     declining(),
+    refusing_spawns(),
   )
 }
 
@@ -280,7 +393,14 @@ pub fn start_serving(
   held: fn(String) -> Result(Ownership, Nil),
   peer: PeerHandler,
 ) -> actor.StartResult(Subject(Message)) {
-  start_with(name, held, peer, unserved_description, declining())
+  start_with(
+    name,
+    held,
+    peer,
+    unserved_description,
+    declining(),
+    refusing_spawns(),
+  )
 }
 
 /// Starts the port as `start` does, for a daemon that also receives sessions
@@ -303,18 +423,19 @@ pub fn start_importing(
     fn(_session, _command) { Error(peer_unserved) },
     unserved_description,
     importer,
+    refusing_spawns(),
   )
 }
 
 /// Starts the port serving peer commands (phase 4), descriptions of the
-/// sessions it holds, and session moves (phase 5), which is what the production
-/// daemon runs. `start`, `start_serving` and `start_importing` are this with the
-/// other parts refused.
+/// sessions it holds, session moves (phase 5) and subagent spawns (phase 6),
+/// which is what the production daemon runs. `start`, `start_serving` and
+/// `start_importing` are this with the other parts refused.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // let assert Ok(_) = orchestrator_port.start_with(orchestrator_port.default(), held, forward, describe, importer)
+/// // let assert Ok(_) = orchestrator_port.start_with(orchestrator_port.default(), held, forward, describe, importer, spawns)
 /// ```
 pub fn start_with(
   name: Name(Message),
@@ -322,10 +443,11 @@ pub fn start_with(
   peer: PeerHandler,
   describe: Describer,
   importer: Importer,
+  spawns: SpawnHost,
 ) -> actor.StartResult(Subject(Message)) {
   actor.new(Nil)
   |> actor.on_message(fn(state, message) {
-    answer(held, peer, describe, importer, state, message)
+    answer(held, peer, describe, importer, spawns, state, message)
   })
   |> actor.named(name)
   |> actor.hibernate_after(residency.hibernate_after_ms)
@@ -350,6 +472,7 @@ fn answer(
   peer: PeerHandler,
   describe: Describer,
   importer: Importer,
+  spawns: SpawnHost,
   state: Nil,
   message: Message,
 ) -> actor.Next(Nil, Message) {
@@ -381,7 +504,31 @@ fn answer(
     // An activation hashes and opens a whole file. It runs apart from the
     // port, so a lookup is not kept waiting behind it.
     Activate(activation:, reply:) ->
-      detached(reply, fn() { importer.activate(activation) })
+      detached(reply, fn(_node) { importer.activate(activation) })
+
+    // The three subagent messages each run apart from the port. A spawn may
+    // open a session, a join waits for up to 25 s, and a run end reaches into
+    // the session's Agency, which answers when its holder does. The requester's
+    // node is the receiver's account of who is asking (`remote_spawn.Origin`),
+    // and the host judges it against the spawn policy.
+    Spawn(parent:, call_site:, depth:, parent_tools:, request:, reply:) ->
+      detached(reply, fn(node) {
+        spawns.spawn(
+          remote_spawn.Origin(node:, parent:),
+          call_site,
+          depth,
+          parent_tools,
+          request,
+        )
+      })
+    Join(parent:, handles:, within_ms:, reply:) ->
+      detached(reply, fn(node) {
+        spawns.join(remote_spawn.Origin(node:, parent:), handles, within_ms)
+      })
+    RunEnded(parent:, operation:, reply:) ->
+      detached(reply, fn(node) {
+        spawns.run_ended(remote_spawn.Origin(node:, parent:), operation)
+      })
   }
   actor.continue(state)
 }
@@ -424,14 +571,16 @@ fn served(command: peer_mail.Command) -> Bool {
 // The requester is on another node, so its death or disconnection arrives as a
 // monitor `DOWN` and cancels the run, as it does for the executor's owner port.
 // A run that crashes sends nothing, and the asker's deadline turns that into
-// silence.
-fn detached(reply: Subject(reply), compute: fn() -> reply) -> Nil {
+// silence. `compute` is handed the requester's node name, which only the
+// subagent messages read.
+fn detached(reply: Subject(reply), compute: fn(String) -> reply) -> Nil {
   case process.subject_owner(reply) {
     Ok(requester) -> {
+      let from = ffi_remote.node_of(requester)
       let _witness =
         weft.new([
           fn() {
-            process.send(reply, compute())
+            process.send(reply, compute(from))
             Ok(Nil)
           },
         ])
@@ -531,6 +680,75 @@ pub fn ask_activation(
   within_ms: Int,
 ) -> Result(Verdict, Nil) {
   exchange(at, fn(reply) { Activate(activation:, reply:) }, within_ms)
+}
+
+/// Asks the port at `at` to start a child, and waits at most `within_ms`.
+/// `Error(Nil)` is silence, as `ask` defines it: the child may or may not
+/// exist, and the same question can be asked again, because the receiver adopts
+/// the child the call site already made.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // orchestrator_port.ask_spawn(Address(node: peer, name: orchestrator_port.default()), parent, call_site, 0, tools, request, 30_000)
+/// ```
+pub fn ask_spawn(
+  at: Address(Message),
+  parent: Parent,
+  call_site: CallSite,
+  depth: Int,
+  parent_tools: List(String),
+  request: Request,
+  within_ms: Int,
+) -> Result(Result(Spawned, SpawnRefusal), Nil) {
+  exchange(
+    at,
+    fn(reply) {
+      Spawn(parent:, call_site:, depth:, parent_tools:, request:, reply:)
+    },
+    within_ms,
+  )
+}
+
+/// Asks the port at `at` to report on children, and waits at most `within_ms`
+/// for the answer, which the caller sets above the window it asks the receiver
+/// to wait. Silence is `Error(Nil)`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // orchestrator_port.ask_join(Address(node: peer, name: orchestrator_port.default()), parent, handles, 25_000, 27_000)
+/// ```
+pub fn ask_join(
+  at: Address(Message),
+  parent: Parent,
+  handles: List(Handle),
+  window_ms: Int,
+  within_ms: Int,
+) -> Result(Result(List(Joined), SpawnRefusal), Nil) {
+  exchange(
+    at,
+    fn(reply) { Join(parent:, handles:, within_ms: window_ms, reply:) },
+    within_ms,
+  )
+}
+
+/// Tells the port at `at` that a run ended, and waits at most `within_ms` for
+/// the count of children it stopped. Silence is `Error(Nil)`, and the same
+/// message can be sent again.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // orchestrator_port.ask_run_ended(Address(node: peer, name: orchestrator_port.default()), parent, operation, 7000)
+/// ```
+pub fn ask_run_ended(
+  at: Address(Message),
+  parent: Parent,
+  operation: OpId,
+  within_ms: Int,
+) -> Result(Result(Int, SpawnRefusal), Nil) {
+  exchange(at, fn(reply) { RunEnded(parent:, operation:, reply:) }, within_ms)
 }
 
 // One request and its reply. The monitor is taken before the request is sent,
