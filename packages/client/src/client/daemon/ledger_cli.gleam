@@ -62,6 +62,9 @@ import client/daemon/admin
 import client/distribution
 import client/distribution_bundle.{type Bundle, Bundle}
 import client/distribution_plan.{type Workspace, Executor, Workspace}
+import client/distribution_provision.{
+  type Overwrite, RefuseExisting, ReplaceExisting,
+}
 import client/executors
 import client/internal/ffi_pki
 import client/ledger_control
@@ -650,7 +653,7 @@ fn enroll(parsed: Parsed, connect: Connect) -> Result(String, String) {
   use wait <- result.try(wait_ms(parsed))
   use out <- result.try(out_directory(parsed))
   let bundle_path = out <> "/" <> name <> distribution_provision_extension
-  use Nil <- result.try(refuse_existing(bundle_path, has(parsed, "--force")))
+  use Nil <- result.try(refuse_existing(bundle_path, overwrite_of(parsed)))
   use authority <- result.try(unlock(parsed))
   let time = now()
   use signed <- result.try(
@@ -678,6 +681,7 @@ fn enroll(parsed: Parsed, connect: Connect) -> Result(String, String) {
           issued.0,
           issued.1,
         )
+        |> or_bundle_not_written(name, "enrolled", signed)
       },
     ),
   )
@@ -765,14 +769,50 @@ fn out_directory(parsed: Parsed) -> Result(String, String) {
   bootstrap.absolute_path(option.unwrap(value(parsed, "--out"), "."))
 }
 
+// Whether a bundle already at the path may be replaced: only with `--force`.
+fn overwrite_of(parsed: Parsed) -> Overwrite {
+  case has(parsed, "--force") {
+    True -> ReplaceExisting
+    False -> RefuseExisting
+  }
+}
+
 // A bundle holds a private key, so one that is already there is not replaced
 // without `--force`.
-fn refuse_existing(path: String, forced: Bool) -> Result(Nil, String) {
-  case bootstrap.path_exists(path), forced {
-    True, False ->
+fn refuse_existing(path: String, overwrite: Overwrite) -> Result(Nil, String) {
+  case bootstrap.path_exists(path), overwrite {
+    True, RefuseExisting ->
       Error(path <> " already exists; pass --force to replace the bundle")
     _, _ -> Ok(Nil)
   }
+}
+
+// The entry is in the operator's copy by the time a bundle is written, so a
+// bundle that cannot be written leaves the member changed in the ledger with
+// no certificate that anyone holds. The sentence says so, and names the command
+// that mints a new certificate and writes the bundle again. That command also
+// hands the entry to a daemon, which the failed one stopped before doing.
+fn or_bundle_not_written(
+  written: Result(Nil, String),
+  name: String,
+  done: String,
+  signed: Signed,
+) -> Result(Nil, String) {
+  result.map_error(written, fn(reason) {
+    name
+    <> " is "
+    <> done
+    <> " as entry "
+    <> int.to_string(signed.entry.entry.seq)
+    <> " in the operator's copy of the ledger, "
+    <> membership_store.path(signed.store)
+    <> ", but its bundle could not be written: "
+    <> reason
+    <> ". Run `loom distribution renew "
+    <> name
+    <> "` to mint a new certificate and write the bundle; it also hands the "
+    <> "entry to a daemon."
+  })
 }
 
 // A certificate and key for the node, issued by the kept authority for its node
@@ -872,7 +912,7 @@ fn renew(parsed: Parsed, connect: Connect) -> Result(String, String) {
   use wait <- result.try(wait_ms(parsed))
   use out <- result.try(out_directory(parsed))
   let bundle_path = out <> "/" <> name <> distribution_provision_extension
-  use Nil <- result.try(refuse_existing(bundle_path, has(parsed, "--force")))
+  use Nil <- result.try(refuse_existing(bundle_path, overwrite_of(parsed)))
   use authority <- result.try(unlock(parsed))
   let time = now()
   use signed <- result.try(
@@ -924,6 +964,7 @@ fn renew(parsed: Parsed, connect: Connect) -> Result(String, String) {
             cookie: authority.cookie,
           )
         store_bundle(bundle_path, bundle)
+        |> or_bundle_not_written(name, "renewed", signed)
       },
     ),
   )

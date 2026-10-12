@@ -114,6 +114,8 @@ pub fn a_refused_enrollment_signs_nothing_test() {
       "loom@other.example",
       "--role",
       "executor",
+      "--links",
+      "hub",
       "--wait",
       "0",
       "--out",
@@ -299,6 +301,54 @@ pub fn a_renewal_replaces_the_pin_and_writes_a_bundle_that_installs_test() {
     == Some(3)
 }
 
+pub fn a_bundle_that_cannot_be_written_leaves_a_sentence_that_says_what_to_run_test() {
+  let deployed = deployment.provision("cli-unwritable", deployment.plan_text)
+  let handle = hub(deployed)
+
+  // The output directory is a regular file, so the bundle cannot be created
+  // below it. The entry is already in the operator's copy by then.
+  let in_the_way = deployed.base <> "/in-the-way"
+  let assert Ok(Nil) = simplifile.write(in_the_way, "not a directory")
+  let assert Error(reason) =
+    ledger_cli.run_with(
+      "enroll",
+      [
+        "laptop2",
+        "--node",
+        "loom@laptop2.example.net",
+        "--role",
+        "orchestrator",
+        "--out",
+        in_the_way,
+        "--wait",
+        "0",
+        ..deployment.signing(deployed)
+      ],
+      fn(_) { deployment.daemon_over(handle) },
+    )
+  assert string.contains(reason, "laptop2 is enrolled as entry 3")
+  assert string.contains(reason, "but its bundle could not be written")
+  assert string.contains(reason, "loom distribution renew laptop2")
+  assert list.length(copy_of(deployed)) == 4
+
+  // The command that sentence names writes the bundle, and the daemon receives
+  // both entries.
+  let assert Ok(_) =
+    ledger_cli.run_with(
+      "renew",
+      [
+        "laptop2",
+        "--out",
+        deployed.base <> "/renewed",
+        "--wait",
+        "0",
+        ..deployment.signing(deployed)
+      ],
+      fn(_) { deployment.daemon_over(handle) },
+    )
+  assert head_of(handle) == 4
+}
+
 pub fn a_renewal_keeps_the_directory_a_node_was_installed_under_test() {
   let deployed = deployment.provision("cli-renew-dir", deployment.plan_text)
   let handle = hub(deployed)
@@ -341,6 +391,8 @@ pub fn a_copy_behind_the_daemon_catches_up_before_it_signs_test() {
         "loom@first.example",
         "--role",
         "executor",
+        "--links",
+        "hub",
         "--out",
         deployed.base <> "/bundles",
         "--wait",
@@ -381,6 +433,8 @@ pub fn a_copy_that_disagrees_with_the_daemon_refuses_to_sign_test() {
         "loom@other.example",
         "--role",
         "executor",
+        "--links",
+        "hub",
         "--out",
         deployed.base <> "/bundles",
         "--wait",
