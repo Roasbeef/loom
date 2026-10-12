@@ -288,7 +288,11 @@ was asked.
   `Waited.Pending` carries `unanswered: Option(String)`, the orchestrator that did
   not answer a join, and the wait text says the state is unknown. `Peer` carries a
   `Placement` (`Here` or `Elsewhere(orchestrator, Standing)`, with `Standing` =
-  `AwaitingAnswer | Running | Finished | Declined(reason)`). `describe` words
+  `AwaitingAnswer | Running | PastDeadline | Finished | Declined(reason)`;
+  `PastDeadline` is a running child whose deadline has passed and whose outcome
+  nothing has read yet). The `on` property says that ending the run does not stop
+  the child and that `detach` has no effect with `on`: a remote child is always
+  detached, bounded by its deadline. `describe` words
   `ParentRunEnded` for a strand that begins with `^` (the parent reference a
   remote child holds) as a parent on another orchestrator, naming the final
   answer, `agent_note` and the result as the way to report.

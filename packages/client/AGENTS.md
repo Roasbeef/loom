@@ -7499,7 +7499,8 @@ source lost after each step). The terminal's side is `tui`'s `sessions_move_test
 Slice S1 of phase 1 is the policy and the messages. Slice S2 is the box's side:
 the delegate session and the Agency that serves a remote parent. Slice S3 is the
 laptop's side: the stub, the sending end, the second drainer, and the Agency's
-spawn, wait, roster and run end. The deadline tick and the retention sweep are
+spawn, wait and roster. A remote child is always detached, so the laptop has no
+run-end path. The deadline tick and the retention sweep are
 S4, and the shipped two-orchestrator test is S5.
 
 - `spawners` is the `[spawners.<name>]` table, read by `daemon/main.prepare_startup`
@@ -7546,7 +7547,7 @@ S4, and the shipped two-orchestrator test is S5.
   spawner's `delegate_host.terms_of`. A host that crashes sends nothing, so the
   asker's deadline reads silence. `ask_spawn`, `ask_join` and `ask_run_ended` are
   the thin sending ends the tests use; slice S3 builds the real one on
-  `remote_peer`.
+  `remote_peer` and uses the first two. Nothing sends `RunEnded` in phase 1.
 - The delegate session (slice S2). `delegate_host.resolver(Context)` is the step
   between the port and an Agency: `manager.delegate_session` finds or creates the
   session of a (spawner, parent session) pair in one registry turn, under
@@ -7595,34 +7596,43 @@ The laptop's side (slice S3):
   has left the state the step starts from: a late `Spawned` never undoes a
   `Settled`, but it does move a `Refused`, because an answer that names a child
   means the child exists. `spawned` writes the lineage cell
-  (`orchestrator: Some(..)`) before the stub moves. `discard` removes a stub whose
-  refusal the model heard, and only while the stub is still `Requested`. `owe_run_end` writes `remote-ended/{operation}/{orchestrator}`
-  for each orchestrator that holds a `Requested` or `Spawned`, attached stub of the
-  operation (a detached child owes none), in orchestrator-name order and without
-  rewriting a row that exists; `tell` sends a row and marks it `Told` on any answer,
-  `Refused` included. The decoders are total. Both prefixes are reserved in
-  `runtime/api`.
+  (`orchestrator: Some(..)`, `detached: True`) before the stub moves. A refusal
+  never removes a stub: the effect process that hears one and the drainer both
+  record `Refused`, so a later answer from the other asker of the same call site
+  still has a stub to move, and the child is never left with a lineage cell and no
+  stub. `is_live(stub, now)` is true for `Requested`, and for `Spawned` until
+  `placed.deadline_ms`, so a stub frees its slot by the clock with no network.
+  The decoders are total. The only reserved prefix is `remote-child/`.
+- A remote child is always detached. `agency.remote_request` sends `Detached`
+  whatever `detach` the model gave, and the child outlives the run that asked for
+  it, bounded by its deadline and the box's retention sweep. Nothing on the
+  laptop sends `RunEnded` in phase 1: `reap_run` aborts the local children and
+  stops there. The port's `RunEnded` message and the box-side fence are S2's and
+  stay, for the phase that releases children.
 - `remote_reach.Reach` is what the Agency asks through: `session`, the
   `orchestrators` it may name, `offered` (asked at each spawn: the owner holds the
-  session alone) and the three functions `spawn`, `join` and `run_ended`, each
-  answering `Ok`, `Error(Refused(reason))` or `Error(Unreachable)` as peer mail's
-  endpoints do. It is its own module because `orchestrator_port` sits above the
-  Agency in the module graph (`notice -> owner_services -> remote/protocol ->
-  remote/address -> orchestrator_port`); the Agency cannot import the port.
-  `remote/remote_spawner.over_distribution` is the production reach: it resolves
-  the name through the configured `[orchestrators]`, connects to the pinned peer
-  and calls `orchestrator_port.ask_spawn`, `ask_join` and `ask_run_ended` (30 s,
-  window plus 2 s, 7 s). A name that is not configured is a definitive refusal.
-  `daemon/main.reach_of` builds one per session, with `offered` reading
-  `manager.unshared_sessions`; `serve.Settings.remote_reach` carries it to
-  `agency.Config.remote`.
+  session alone) and the two functions `spawn` (which also takes the most the call
+  may wait, in milliseconds) and `join`, each answering `Ok`,
+  `Error(Refused(reason))` or `Error(Unreachable)` as peer mail's endpoints do. It
+  is its own module because `orchestrator_port` sits above the Agency in the
+  module graph (`notice -> owner_services -> remote/protocol -> remote/address ->
+  orchestrator_port`); the Agency cannot import the port. `spawn_ms` (30 s) is the
+  longest one spawn call waits. `remote/remote_spawner.over_distribution` is the
+  production reach: it resolves the name through the configured `[orchestrators]`,
+  connects to the pinned peer and calls `orchestrator_port.ask_spawn` and
+  `ask_join` (the spawn's window as given, a join's window plus 2 s). A name that
+  is not configured is a definitive refusal. `daemon/main.reach_of` builds one per
+  session, with `offered` reading `manager.unshared_sessions`;
+  `serve.Settings.remote_reach` carries it to `agency.Config.remote`.
 - `agency` admits `agent_spawn` with `on` through the holder (`AdmitRemote` ->
   `admit_remote`: the depth cap, `check_capacity` counting live stubs beside live
   cells, then `write_stub`), and runs the network on the caller's process
   (`ask_until_answered`: `poll.until_on` on the Agency's clock, doubling 50 ms to
-  2 s, for `remote_window_ms` = 30 s). A refusal removes the stub and answers
-  `RemoteRefused`; the window running out answers `RemoteSilent`, leaves the stub
-  `Requested` and calls `config.remote_queued`. `is_live` is false for a cell with
+  2 s, for `remote_window_ms` = 30 s; each attempt is told to wait only what is
+  left of that window). A refusal is recorded as `Refused` (`record_refusal`) and
+  answers `RemoteRefused`; the window running out answers `RemoteSilent` and leaves
+  the stub `Requested`. Every exit that leaves the stub for the drainer, and every
+  `Spawned` write, calls `config.remote_queued`. `is_live` is false for a cell with
   an `orchestrator`, and the stub carries the count. `context: my_conversation`, an
   unknown `on`, an unshared session and a background program are refused before
   anything is written. `wait` reads the stubs: a handle is remote when a stub holds
@@ -7631,21 +7641,28 @@ The laptop's side (slice S3):
   orchestrator as `weft` tasks. An unreachable join gives `Pending(unanswered:
   Some(orchestrator))`, a refused one `RemoteRefused`, and a `Ready` entry moves the
   stub to `Settled`. `roster` lists local cells and then `remote_peers` from the
-  stubs. `send` to a remote child is refused by `refuse_remote_child`. `reap_run`
-  ends with `stop_remote_children`: it owes the rows, tells each at once, and calls
-  `remote_queued` if any orchestrator is silent.
-- `remote_drain.pass` is the second `peer_outbox_drain` instance's pass. It resends
-  each `Requested` stub and each `Pending` row, skips an orchestrator that did not
-  answer earlier in the same pass, keeps a refusal it learns as `Refused`, and has
-  no time to live. `peer_outbox_drain.Options` is `{pass, after}`; `options` builds
-  the peer-mail instance and `over` any other; `Backlog` is public. `serve`
-  supervises both beside each other in the restartable service tier, rung by name
-  (`outbox_queued`, `remote_queued`).
+  stubs, with a `Spawned` stub whose deadline has passed shown as `PastDeadline`.
+  `send` to a remote child is refused by `refuse_remote_child`.
+- `remote_drain.pass` is the second `peer_outbox_drain` instance's pass, in two
+  steps. `spawn_pass` resends each `Requested` stub, skips an orchestrator that did
+  not answer earlier in the same step, keeps a refusal it learns as `Refused`, and
+  has no time to live. `join_pass` settles children nobody waits on: it groups the
+  `Spawned` stubs whose deadline has not passed by (orchestrator, parent strand),
+  sends one `Join` with a window of 0 for each group, and records every `Ready` with
+  `remote_child.settled`. It stores no report, since a later `agent_wait` reads it
+  again from the box. A pass is `Owed` while any child is running, so the drainer
+  ticks every 5 s, and `Clear` when none is, so it goes idle; a stub past its
+  deadline is not asked about. A refused join is logged and not retried, because
+  the deadline frees the slot. `peer_outbox_drain.Options` is `{pass, after}`;
+  `options` builds the peer-mail instance and `over` any other; `Backlog` is
+  public. `serve` supervises both beside each other in the restartable service
+  tier, rung by name (`outbox_queued`, `remote_queued`).
 
 Not in S3: the box's deadline tick and retention sweep (S4), the shipped test and
-the P model (S5), the stub's usage counting against a goal's token budget or
-appearing in a status bar, and refusing `sessions.move` for a parent that holds a
-live stub.
+the P model (S5), remote token metering (a child nobody waits on runs to its
+`within_ms`, bounded by `max_within_s`), the stub's usage counting against a
+goal's token budget or appearing in a status bar, releasing a child early (phase
+2), and refusing `sessions.move` for a parent that holds a live stub.
 
 Tests: `spawners_test` (a valid table, defaults, every refusal, the catalogue
 parser), `orchestrators_test` (the `@` and `#` refusal),
@@ -7659,12 +7676,15 @@ for each placement, the cap, an invalid parent, a session that cannot open),
 usage, the cap on a join's window, the ceiling, the caps, and the whole path
 through a real port). For the laptop's side, `agency_test` runs the parent against
 `support/fake_orchestrators` (a table from call site to child, with `Up`, `Down`,
-`LosesReplies`, `Refuses` and counted modes): the stub written ahead, resends that
-leave one child, a refusal that removes the stub, the drainer adopting after a
-restart, a pass asking a silent orchestrator once, the run end told to exactly the
-orchestrators involved, detach, the caps, mixed waits, the roster and the refusals.
-`remote_child_test` is the codec, `remote_reach_test` the empty reach, and
-`peer_outbox_drain_test` has an instance over another pass.
+`LosesReplies`, `Refuses` and counted modes, and a record of the spawn and join
+windows it was given): the stub written ahead, resends that leave one child, the
+window clip, a refusal that keeps the stub `Refused` and a later answer that moves
+it, the drainer adopting after a restart, a pass asking a silent orchestrator
+once, a run end that sends nothing, an un-waited child settled by a pass, a stub
+past its deadline freeing its slot while the box is down, the caps, mixed waits,
+the roster and the refusals. `remote_child_test` is the codec and `is_live`,
+`remote_reach_test` the empty reach, and `peer_outbox_drain_test` has an instance
+over another pass.
 
 ## Explicit browser result reads
 

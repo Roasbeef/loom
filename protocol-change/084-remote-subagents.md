@@ -2,7 +2,8 @@
 
 **Status**: PROPOSED 2026-10-09, direction ruled by the owner the same day
 (transport, child shape, approvals, who spawns, and the defaults). Phase 1 was
-simplified after review on 2026-10-11. Slices S1 (the policy and the port
+simplified after review on 2026-10-11, and the owner ruled the same day that
+remote children are detached by default (see "Turn end" below). Slices S1 (the policy and the port
 messages), S2 (the delegate session and the box's Agency) and S3 (the laptop's
 stubs, drainer and tools) of phase 1 are built; the rest is not, and every
 spelling below that is not built is provisional until phase 1 lands.
@@ -16,7 +17,7 @@ no key, but a name may not contain `@` or `#`), the remote daemon's catalogue
 `on`) and its handle text, `cap/strand` (one assignment field, phase 2), the
 session's remote drainer (one field on `peer_outbox_drain.Options`, and a
 second instance of the machine), and durable cells that are not Part 1
-interfaces: the parent's `remote-child/` stubs and `remote-ended/` rows, an
+interfaces: the parent's `remote-child/` stubs, an
 optional `orchestrator` on the lineage cell, and the delegate session's
 `delegate/ended/` fences. `runtime/child_run.Stop` is unchanged in phase 1 and
 gains three variants in phase 2. The client control protocol (Part 1.6) is
@@ -102,8 +103,8 @@ a recipient session and exported strand, a message id and text). The drainer's
 only action is `peers.resend`, which resolves a recipient and calls `Deliver`.
 And `OutboxDue` settles any row older than an hour as refused. The remote
 rows are therefore their own durable facts: the stub is the pending row for a
-spawn, and a `remote-ended` row is the pending row for a run end. The drainer
-machine is generalised by one field and a second instance runs over them.
+spawn. The drainer machine is generalised by one field and a second instance
+runs over the stubs.
 
 ### A status query and a site fence (rejected)
 
@@ -297,25 +298,27 @@ On the spawning daemon, in the parent session's store:
   spawn. It holds the orchestrator, the derived name and the whole request
   (including the caller's coordinates, the depth and the parent's tool names),
   then the handle, then the settled outcome and usage, or the remote's
-  refusal. Its state is `Requested`, `Spawned`, `Settled` or `Refused`, and it
+  refusal. A refusal is recorded on the stub whoever hears it, and the stub is
+  never removed. Its state is `Requested`, `Spawned`, `Settled` or `Refused`, and it
   is written before the first `Spawn` is sent. `Requested` means pending.
-- `remote-ended/{operation}/{orchestrator}`, reserved, is the pending row for a
-  run end. It is `Pending` until the remote answers `RunEnded` and `Told`
-  after. It is written by the same process that `agency.reaping_hooks` spawns
-  with `spawn_unlinked` to run `reap_run`, once per remote orchestrator holding
-  a child the run owns, so the strand driver never waits.
 - The lineage cell gains an optional `orchestrator`. A cell without it decodes
   as local. It is written when the spawn is answered.
 - `peer_outbox_drain.Options` gains `pass: fn() -> Backlog`, and `Backlog`
   (`Owed` or `Clear`) becomes public. The current body is the peer-mail
   instance's pass. A second instance, under its own name in the same
-  restartable service tier, has a pass over the stubs and run-end rows: it
-  resends each `Requested` stub's `Spawn` and each `Pending` row's `RunEnded`
-  every five seconds, skipping an orchestrator that did not answer earlier in
-  the same pass. `peer_outbox.Row`, `peers.resend` and `OutboxDue` are
-  untouched. Neither kind of row is refused after an hour; each is retried
-  until the remote answers, because every message is idempotent and the child
-  it concerns is bounded by its deadline.
+  restartable service tier, has a pass over the stubs. It resends each
+  `Requested` stub's `Spawn` every five seconds, skipping an orchestrator that
+  did not answer earlier in the same step, and it sends one `Join` with a
+  window of 0 for each (orchestrator, parent strand) group of `Spawned` stubs
+  whose deadline has not passed, recording each `Ready` as `Settled` so that a
+  child nobody waits on does not hold a fan-out slot. A pass is `Owed` while
+  any stub is `Requested` or any child is running, and the instance goes idle
+  when none is. `peer_outbox.Row`, `peers.resend` and `OutboxDue` are
+  untouched. A stub is not refused after an hour; it is retried until the
+  remote answers, because every message is idempotent and the child it
+  concerns is bounded by its deadline. A `Spawned` stub counts against the
+  fan-out caps only until its child's deadline passes, which is read from the
+  stub and the clock with no message.
 
 On the remote:
 
@@ -401,15 +404,16 @@ with `^`.
   names the result and the notes as the way to report, and a remote child's
   `agent_send` to its parent is refused with `ParentRunEnded` worded for a
   parent on another orchestrator.
-- **Turn end.** When the parent's run ends, `reap_run(op)` stops every child
-  that `ParentRun(op)` owns and `RunEnded` carries that to the remote, so a
-  model that ends its turn after spawning reaps its remote children as it
-  reaps local ones. A laptop suspended in the middle of an `agent_wait` has not
-  ended the run: only the in-flight `Join` task is cancelled. A child spawned
-  with `detach` outlives the turn, bounded by its deadline and the retention
-  sweep, and a later `agent_wait` on its handle still reads the result. This
-  is the recommended behavior and awaits the owner's confirmation; remote
-  children detached by default is the alternative (design note, section 17).
+- **Turn end.** Remote children are detached by default (the owner's ruling of
+  2026-10-11, option (b) of the design note's question 3). `agent_spawn` with
+  `on` sends the request detached whatever `detach` the model gave. When the
+  parent's run ends, `reap_run(op)` stops the local children as ever, and
+  nothing is sent to the remote: the laptop sends no `RunEnded` in phase 1. A
+  remote child runs to its deadline, bounded by the retention sweep, and a
+  later `agent_wait` on its handle reads the result. A laptop suspended in the
+  middle of an `agent_wait` has not ended the run: only the in-flight `Join`
+  task is cancelled. The port's `RunEnded` message and the delegate session's
+  ended fence stay as S2 built them, because phase 2's `Release` reuses them.
 - `cap/strand` gains `with_on` on the assignment (phase 2).
 - `child_run.Stop` gains `Released`, `SpawnerRemoved` and `TokenBudgetSpent`,
   and `tools/agent.Outcome` gains the matching variants, in phase 2. A record
@@ -433,18 +437,17 @@ Phase 1 has five slices, each of which lands on `origin/main` alone.
   usage. Tests: in-VM Agency tests.
 - **S3. The laptop side.** The stub written ahead and the lineage cell with
   `orchestrator`; `check_capacity` counting stubs; the parameterised drainer
-  with a second instance, and `reaping_hooks` writing `remote-ended` rows;
-  `agent_spawn` with `on`, `agent_wait` over mixed handles, `agent_roster` from
+  with a second instance; `agent_spawn` with `on`, `agent_wait` over mixed handles, `agent_roster` from
   stubs; `context: "mine"` refused; the upward refusal wording. Tests:
   simulated-session tests with a fake endpoint. As built, the Agency asks through
-  `client/remote_reach.Reach`, a record of the three functions, because the
+  `client/remote_reach.Reach`, a record of two functions, `spawn` and `join`, because the
   orchestrator port sits above the Agency in the module graph;
   `client/remote/remote_spawner` fills it. The handle's `@{orchestrator}` suffix
   is parsed and dropped, and a wait finds a remote handle in the parent's own
-  stubs. A refusal heard where the model waits removes the stub, and one the
-  drainer learns afterwards leaves it `Refused` with the reason. The process that
-  writes a run-end row tells the orchestrator at once and leaves the row `Pending`
-  for the drainer only when nobody answered. Remote usage is recorded on the
+  stubs. Every refusal leaves the stub `Refused` with the
+  reason, wherever it is heard. Remote children are always detached, the laptop
+  sends no run end, and the drainer settles children that finish unwaited by a
+  zero-window `Join`. Remote usage is recorded on the
   settled stub; counting it against a goal and refusing `sessions.move` for a
   parent that holds a live stub are not built. The design note's section 15 lists
   the differences.
@@ -453,9 +456,10 @@ Phase 1 has five slices, each of which lands on `origin/main` alone.
 - **S5. A shipped two-orchestrator test and the P model.** The test is modelled
   on `daemon_shipped_peer_mail_test`: three children spawned, joined, with
   structured results and usage; the laptop killed mid-spawn; the link cut
-  mid-join; the run ended with the link down. The P model holds
-  `AtMostOneChildPerSite`, `NoSpawnUnderEndedRun`, `EndedRunChildrenStop` and
-  `EveryEndedRunIsTold`. This document moves to ACCEPTED when S5 is green.
+  mid-join; the parent's turn ended with a child running and the link down, the
+  child outliving the turn. The P model holds `AtMostOneChildPerSite` and the
+  drainer's settling liveness; the run-end specs wait for a sender in phase 2.
+  This document moves to ACCEPTED when S5 is green.
 
 Phase 2 adds `Release` and its daemon-level drainer, `SpawnerRemoved`, the
 boot-time reopen, the open-time `RunEnded` repair, metering on the remote
@@ -489,13 +493,17 @@ parent serialize there, as local spawns serialize in the parent's holder.
 
 **Phase 1 does not meter tokens on the remote.** Deadlines, `max_sessions` and
 the delegate Agency's caps bound the work in time and width, not in tokens.
-Metering needs a hand-off off the strand driver and is phase 2.
+Metering needs a hand-off off the strand driver and is phase 2. Because remote
+children are detached, a child that nobody waits on or releases runs to its
+deadline, at most `max_within_s` (4 hours by default), and spends what it
+spends until then.
 
 **Without `Release`, a deleted parent session leaves its remote children until
 their deadlines,** at most `max_within_s`, and the delegate session until the
 retention sweep.
 
-**Ending a turn reaps remote children** unless they were spawned detached.
+**A remote child outlives its parent's turn.** Ending a turn does not stop it,
+and a model that forgets to wait leaves it running to its deadline.
 
 **Upward messages (phase 2) are weaker than local ones** when the laptop is
 disconnected. A child that sends while the laptop is unreachable is told the
@@ -521,8 +529,8 @@ orchestrator port with #923's trust model, a strand in one delegate session per
 within the remote owner's ceiling in phase 3, spawning only from sessions the
 owner holds alone, and the defaults above. `[spawners.<name>]` over
 `[orchestrators.<laptop>.spawn]` is settled by the membership rule in
-protocol-change/083. Two points remain for the owner (design note, section 17):
-accepting one-shot provisioning for adding a laptop, and confirming that ending
-a turn reaps remote children (recommended) rather than detaching them by
-default. This document moves to ACCEPTED, with the implemented spellings, when
+protocol-change/083. The owner ruled on 2026-10-11 that ending a turn
+does not stop remote children: they are detached by default and bounded by
+their deadlines. One point remains for the owner (design note, section 17):
+accepting one-shot provisioning for adding a laptop. This document moves to ACCEPTED, with the implemented spellings, when
 S5 of phase 1 lands.
