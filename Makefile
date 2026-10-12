@@ -428,6 +428,16 @@ sandbox-test: ## Vet, build, and test the Go sandbox package
 selftest: sandbox ## Probe this kernel's enforcement layers (ENFORCED/SKIPPED per probe)
 	@./$(HELPER) --self-test
 
+# The provider fixture brackets real bash calls through a shipped daemon and
+# a TLS orchestrator/executor pair. Build the shipment first; short and delayed
+# workloads are selected with LOOM_BENCH_TOOLS_WORKLOAD=delayed.
+.PHONY: bench-tool-roundtrip
+bench-tool-roundtrip: sandbox server-shipment ## Measure complete local and distributed tool responses
+	@install -m 0755 $(HELPER) bin/loom-exec
+	@LOOM_BENCH_TOOLS=1 LOOM_BOOTSTRAP_E2E_SERVER="$(CURDIR)/bin/loomd" \
+		LOOM_TEST_PROVIDER_KEY=loom-provider-fixture-key \
+		bash scripts/test.sh client --match client@bench_tool_roundtrip_test:
+
 # ---------------------------------------------------------------- end to end
 
 # The standalone executor boots with no harness: packages/executor depends on
