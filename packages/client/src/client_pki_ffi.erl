@@ -105,10 +105,12 @@ random_bytes(Count) -> crypto:strong_rand_bytes(Count).
 %% ECDSA over P-256 with SHA-256, DER encoded, which is the signature of a
 %% membership ledger entry (protocol-change/086). The message is the domain
 %% prefix and the body, built in Gleam; this function only signs the bytes it
-%% is given. No Gleam package signs with an EC key.
+%% is given. No Gleam package signs with an EC key. Only an EC private key
+%% signs: `decode_key` also returns an RSA key, which would sign here and be
+%% refused later as too large, so the match fails the call at the first use.
 sign(KeyPem, Message) ->
     try
-        Key = decode_key(KeyPem),
+        #'ECPrivateKey'{} = Key = decode_key(KeyPem),
         {ok, public_key:sign(Message, sha256, Key)}
     catch _:_ -> {error, nil}
     end.

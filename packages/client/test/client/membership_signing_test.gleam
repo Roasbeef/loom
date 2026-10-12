@@ -10,6 +10,7 @@ import client/membership_ledger
 import client/membership_signing
 import gleam/bit_array
 import gleam/list
+import support/internal/ffi_keys
 import support/membership_fixture as fixture
 
 fn authority() -> #(String, String) {
@@ -100,6 +101,14 @@ fn result_is_error(result: Result(a, Nil)) -> Bool {
     Ok(_) -> False
     Error(Nil) -> True
   }
+}
+
+// An RSA key is a private key `pem_entry_decode` accepts and would sign with,
+// but its signatures are far over the wire bound and are not what 086 names.
+// The signer must refuse it when it is built, as its doc promises, and not let
+// the first `seal` fail with `TooLarge`.
+pub fn an_rsa_key_is_not_a_signing_key_test() {
+  assert membership_signing.signer(ffi_keys.rsa_private_key()) == Error(Nil)
 }
 
 pub fn a_certificate_is_not_a_signing_key_test() {
