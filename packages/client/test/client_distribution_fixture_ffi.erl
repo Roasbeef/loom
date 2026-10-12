@@ -7,6 +7,12 @@
 %% directory is deleted afterwards.
 -module(client_distribution_fixture_ffi).
 -export([scenario/1, child/2, installed/4, free_port/0, certificate_facts/1]).
+%% The pieces the membership-ledger spike fixtures reuse, so that there is one
+%% way to mint a node, boot an emulator with the production TLS flags and wait
+%% for what it prints.
+-export([root_cert/1, cookie/1, name/1, provision/6, cert_of/1, name_of/1,
+         bin/1, str/1, open_vm/6, child_for/3, await_ready/2, await_complete/2,
+         await_text/3, await_unregistered/2, close_port/1, command/2, ready/0]).
 -include_lib("public_key/include/public_key.hrl").
 
 -define(DIST, 'client@distribution').
@@ -737,11 +743,16 @@ run_expect(Node, Config, Expected, Extra) ->
     try await_complete(Port, <<>>) after close_port(Port) end,
     ok.
 
-open_vm(#{home := Home, options := Options}, Config, Role, Aux, Extra) ->
+open_vm(Node, Config, Role, Aux, Extra) ->
+    open_vm(?MODULE, Node, Config, Role, Aux, Extra).
+
+%% `Module` is the fixture whose `child/2` the emulator enters, so that another
+%% fixture can define its own roles and still boot through this function.
+open_vm(Module, #{home := Home, options := Options}, Config, Role, Aux, Extra) ->
     Paths = [filename:absname(Path) || Path <- code:get_path()],
     Encoded = binary_to_list(base64:encode(term_to_binary({Config, Aux}))),
     Eval = lists:flatten(io_lib:format(
-        "client_distribution_fixture_ffi:child(~p, ~p).", [Encoded, Role])),
+        "~s:child(~p, ~p).", [Module, Encoded, Role])),
     Args = ["+S", "2", "-pa"] ++ Paths
         ++ ["-proto_dist", "inet_tls", "-ssl_dist_optfile", str(Options)]
         ++ Extra ++ ["-noshell", "-eval", Eval],
@@ -787,13 +798,18 @@ close_port(Port) -> try port_close(Port) catch _:_ -> ok end.
 %% The entry point of each child emulator. It has a finite lifetime and prints
 %% a witness only after every assertion of its role held.
 child(Encoded, Role) ->
+    child_for(fun role/3, Encoded, Role).
+
+%% The same entry point for a fixture with roles of its own: `Handler` runs the
+%% role, and the watchdog, the stdin forwarding and the witness stay shared.
+child_for(Handler, Encoded, Role) ->
     {Config, Aux} = binary_to_term(base64:decode(Encoded)),
     Lifetime = maps:get(lifetime, Aux, 50000),
     _ = spawn(fun() -> timer:sleep(Lifetime), halt(3) end),
     Self = self(),
     _ = spawn(fun() -> stdin_loop(Self) end),
     try
-        role(Role, Config, Aux),
+        Handler(Role, Config, Aux),
         io:format("BOOTSTRAP_COMPLETE~n"),
         halt(0)
     catch Class:Reason:Stack ->
