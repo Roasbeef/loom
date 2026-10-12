@@ -6,6 +6,7 @@
 //// and that a request outside the bounds is refused before the ledger sees it.
 
 import client/daemon/limits
+import client/daemon/root
 import client/daemon_server_test as wire
 import client/deployment
 import client/ledger_control.{Handle}
@@ -15,6 +16,11 @@ import core/json
 import gleam/bit_array
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/string
+import host/bootstrap
+import storage/access
+import storage/catalogue
+import support/internal/ffi_ws
 import support/ledger_rig as rig
 import support/membership_log as log
 
@@ -33,6 +39,16 @@ fn text(line: BitArray) -> String {
 // Runs `run` against a daemon whose ledger holds genesis and `hub`, with the
 // lines of the entries that come next: `laptop` enrolled, then revoked.
 fn ledgered(run: fn(Int, String, List(String)) -> Nil) {
+  ledgered_ready(fn(_ready, port, credential, lines) {
+    run(port, credential, lines)
+  })
+}
+
+// The same, handing the test the daemon's readiness record, which names the
+// state root a member must be created under.
+fn ledgered_ready(
+  run: fn(root.Ready(String), Int, String, List(String)) -> Nil,
+) {
   let history = log.genesis() |> log.enroll("hub", [])
   let started = rig.start("wire", log.lines(history), rig.patient, [])
   let next = history |> log.enroll("laptop", ["hub"]) |> log.revoke("laptop")
@@ -49,8 +65,8 @@ fn ledgered(run: fn(Int, String, List(String)) -> Nil) {
       local: "loom@hub.example.net",
       name: "hub",
     )),
-    fn(_, _ready, port, credential) {
-      run(port, credential, [text(laptop), text(gone)])
+    fn(_, ready, port, credential) {
+      run(ready, port, credential, [text(laptop), text(gone)])
     },
   )
 }
@@ -93,6 +109,52 @@ pub fn the_owner_appends_reads_and_asks_for_the_status_test() {
     let assert Ok(status) = ledger_control.decode_status(field(reply, "body"))
     assert status.self_name == "hub"
     assert status.head.seq == 3
+  })
+}
+
+pub fn a_member_token_is_forbidden_every_ledger_command_test() {
+  ledgered_ready(fn(ready, port, credential, lines) {
+    let assert [laptop, _] = lines
+    let member_token = string.repeat("4", 64)
+    let assert Ok(digest) =
+      member_token
+      |> bit_array.from_string
+      |> bootstrap.sha256
+      |> bit_array.base16_encode
+      |> string.lowercase
+      |> access.credential_digest
+      as "member digest is valid"
+    let assert Ok(store) = catalogue.open(ready.state_root <> "/catalogue.db")
+      as "fixture administration opens the durable catalogue"
+    let assert Ok(_) = access.create_member(store, "reader", "R", digest)
+      as "the member exists"
+    let #(member, _) = wire.connect(port, member_token, "/v2/control")
+    let _hello = wire.frame(member, within_ms: 1000)
+    let forbidden = fn(id, command, body) {
+      let reply = ask(member, id, command, body)
+      assert field(field(reply, "body"), "code") == json.String("forbidden")
+    }
+    forbidden(
+      1,
+      "ledger.append",
+      json.Object([#("lines", json.Array([json.String(laptop)]))]),
+    )
+    forbidden(
+      2,
+      "ledger.entries",
+      json.Object([#("after", json.Int(0)), #("limit", json.Int(64))]),
+    )
+    forbidden(3, "ledger.status", json.Object([]))
+    let _ = ffi_ws.tcp_close(member)
+    assert catalogue.close(store) == Ok(Nil)
+
+    // The refusal came before the ledger saw anything: the owner reads the
+    // head the fixture started with.
+    let #(socket, _) = wire.connect(port, credential, "/v2/control")
+    let _hello = wire.frame(socket, within_ms: 1000)
+    let reply = ask(socket, 1, "ledger.status", json.Object([]))
+    let assert Ok(status) = ledger_control.decode_status(field(reply, "body"))
+    assert status.head.seq == 1
   })
 }
 
