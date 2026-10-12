@@ -1,6 +1,6 @@
 # Membership ledger: adding and removing nodes without reprovisioning
 
-Status: **phases 0, 1 and 2 built, 2026-10-12; phase 3 (the directory) is not.** The
+Status: **phases 0, 1, 2 and 3 built, 2026-10-12.** The
 owner chose the shape to explore (an operator-signed, append-only log of
 membership entries that every node replays into a live pin table); this note
 argues it, compares it with the alternatives, and records where it is weak.
@@ -60,8 +60,9 @@ reinstall of the other nodes and no restart, and what that costs.
    report which nodes have confirmed the new head.
 5. **One mechanism for every deployment.** The ledger is not stored in Khepri.
    When a deployment has a Khepri directory, the Ra voter set follows the
-   ledger: a reconciler adds a voter or a learner when a `member` entry names
-   one and removes it when a `revoke` does.
+   ledger: a member entry that seats a node makes it join as a voter or a
+   learner, and a reconciler on the Ra leader removes it when a `revoke` does
+   (as built; section 11.3 first had the reconciler add as well).
 6. **The operator key is kept.** `provision` stops dropping the authority key
    and keeps it encrypted on the operator's machine. It is one key with two
    uses: it signs node certificates and it signs ledger entries. Its loss or
@@ -625,8 +626,9 @@ servers that replicate the session directory. A node's `directory` standing says
 whether it is on the second list. The ledger owns the first, Ra owns the second,
 and the second follows the first. A trust change never waits for a quorum.
 
-A reconciler runs on the Ra leader only. `ra:members` names the leader, and the
-reconciler on that node compares the ledger's `voter` and `learner` members with
+A reconciler runs on the Ra leader only. (As built it only removes; a node adds
+itself, see "Phase 3: what was decided in the build".) `ra:members` names the
+leader, and the reconciler on that node compares the ledger's `voter` and `learner` members with
 Ra's membership and issues one change at a time: it adds a member the ledger names
 and Ra lacks (a voter as `promotable`, the form #934 already uses, and a learner as
 `non_voter`), and removes a Ra member the ledger does not name. A node that is not
@@ -673,9 +675,9 @@ reads of the directory. The rule in protocol-change/083, that every
 `[orchestrators.<name>]` node on a member daemon is itself a member, is the
 reason a laptop would be a learner and not simply absent: if a member daemon
 names the laptop as an orchestrator, the laptop must be a member of some kind.
-Before phase 3 there is one voter list, `[directory] members`, so `enroll` refuses
-a `--directory` other than `none` and the ledger is never a second source of
-voters.
+Before phase 3 there was one voter list, `[directory] members`, so `enroll` refused
+a `--directory` other than `none` and the ledger was never a second source of
+voters. Phase 3 removed that list for a deployment with a ledger.
 
 ## 12. The `[orchestrators]` and `[executors]` tables
 
@@ -709,7 +711,7 @@ commands keep their meaning in static mode.
 | Command | What it does |
 |---|---|
 | `provision PLAN OUT` | Writes the genesis entry and one `member` entry per plan node, one `/2` bundle each, and `system.json`. Keeps the authority key encrypted in `~/.loom/authority/<deployment id>` with the operator's copy of the ledger. `--drop-authority` restores the one-shot behavior. |
-| `enroll NAME --node N --role R [--directory D] [--links A,B] [--out DIR]` | Mints the node's certificate under the kept authority, signs a `member` entry, appends it locally, hands it to a daemon, writes `NAME.loombundle`, and prints which nodes have confirmed the head. Until phase 3 it refuses a `--directory` other than `none`. |
+| `enroll NAME --node N --role R [--directory D] [--links A,B] [--out DIR]` | Mints the node's certificate under the kept authority, signs a `member` entry, appends it locally, hands it to a daemon, writes `NAME.loombundle`, and prints which nodes have confirmed the head. `--directory` is `voter`, `learner` or `none` (the default). |
 | `revoke NAME [--force] [--wait SECONDS]` | Checks sessions and the link graph (sections 9.2, 11.1), signs a `revoke`, appends it, and prints confirmations. |
 | `renew NAME` | Mints a new certificate for an existing member, signs a `member` entry with the new pin, and writes a new bundle. After the node installs it and restarts, it presents the new certificate. Existing connections stay up; until the restart the node's new handshakes are refused. |
 | `log [--json]` | Prints the entries with their identities, the last refusal if any, and, when a daemon is reachable, each member's last reported head. |
@@ -827,7 +829,8 @@ records how.
 
 **Phase 3, the directory (one to two weeks).** The Ra leader's reconciler, the
 `directory` standing accepted by `enroll`, the voter-count check in `revoke`, and
-`[directory] members` derived from the ledger.
+`[directory] members` derived from the ledger. Built. The section "Phase 3: what
+was decided in the build" below records where the build differs from this note.
 
 **Later, in their own notes.** Pin-rooted TLS and `rekey` (section 14.2), and
 retiring static mode.
@@ -1042,7 +1045,7 @@ landed. Points the proposal left open, or that the build changed:
    writes the `/1` bundles and discards the key. `--ledger` no longer exists. A
    plan with a session directory is refused without `--static`, and so is the
    install of a `/2` bundle with a directory, because the directory takes its
-   members from `[directory] members` until phase 3.
+   members from `[directory] members`. Phase 3 lifted both refusals.
 2. **The peer tables are checked against the ledger once, at start.** A bundle
    `provision` writes for an orchestrator carries `[executors.<name>]` rows, so
    they cannot be refused beside a ledger. The first build parsed them against the
@@ -1095,8 +1098,8 @@ points they left open, and the places the build departs from them.
    and orchestrator members `[orchestrators.<name>]`, under the ledger's name,
    which has the grammar of both tables. A node whose own entry has a directory
    standing derives only the orchestrators that have one too, which is 083's rule
-   for member daemons, and which cannot arise until phase 3 lets a ledger daemon
-   join the directory. `[spawners.<name>]` is never derived: a spawner is a
+   for member daemons. Phase 3 made the rule reachable, because a ledger daemon
+   can now hold a seat in the directory. `[spawners.<name>]` is never derived: a spawner is a
    permission to start work here, and the ledger carries identity.
 
 2. **How a written row and a derived one combine.** Section 12 said an explicit row
@@ -1180,6 +1183,88 @@ Not done, on purpose: the executor's own count of scopes (point 5); a warning wh
 written row shadows a ledger member of the same name at another node; placement
 counts beyond 64 executors; carrying the ledger's name for a row in
 `deployment.status` so that a derived row can be told from a written one.
+
+### Phase 3: what was decided in the build (2026-10-12)
+
+The Khepri directory now follows the ledger. Points the note left open, or that the
+build changed:
+
+1. **A member adds itself; the leader only removes.** Section 11.3 had the
+   reconciler add a missing voter or learner. It cannot. Ra needs the new server
+   running, with the UId it will be recorded under (a `promotable` member is refused
+   without one), before the cluster can reach it, and only the new node can start
+   that server. The first design to avoid this, a UId derived from the node name so
+   that the leader could add a server that does not exist yet, would have changed
+   what Ra's data directory names mean for a node that rejoins. The join that
+   protocol-change/083 already has, started by the joining node, does
+   the add, now in the seat the ledger gives: `promotable` for a `voter`, waiting
+   for Ra to promote it, and `non_voter` for a `learner`, waiting until the server
+   has heard from the leader, lists itself in its own configuration and has applied
+   what the cluster had committed. The leader's reconciler removes. The order of the
+   two lists is unchanged: the pin is in the tables before the node can join, since
+   both ends of its first connection check the pin, and a revoke cuts the pin before
+   the removal commits.
+2. **The reconciler is the member actor's tick.** The note said the observers of the
+   ledger process would drive it. The member actor already ticks every two seconds
+   for the links and the join, and the observers are installed before the actor
+   exists, so a push would need a mutable cell between them. The actor reads the
+   ledger process on each tick and the leader runs `roster.plan`. A leader change
+   needs no event: the new leader makes the same comparison at its next tick. The
+   cost is up to two seconds between an entry and the removal.
+3. **What the leader removes and what it leaves.** A Ra member goes when the ledger
+   has named its node and seats it nowhere, or in the other seat (it then joins
+   again in the seat its entry gives it; a change of standing is not an operator
+   command, since `enroll` of a member that exists is refused, so this is a repair
+   for a ledger signed by hand). A Ra member the ledger has never named stays and
+   is logged. On a leader whose ledger is behind, it may be a member enrolled a
+   moment ago, and removing it would take a member out of a cluster it belongs in.
+   A leader that the ledger does not seat does nothing.
+4. **A voter is removed only if the removal can commit.** Ra applies a new
+   configuration when the change is appended, and the change commits when a majority
+   of the voters left has it. The leader removes a voter only while a majority of
+   the remaining voters is connected, and otherwise holds, logs once, and asks again
+   at the next tick. A removal that cannot commit would otherwise sit in the log,
+   and Ra refuses every other change until it does. The floor of three voters is the
+   operator's: `revoke` refuses to leave fewer than three, and `--force` is how an
+   operator shrinks the directory on purpose. The reconciler follows the ledger
+   whatever the count.
+5. **`enroll` bounds the voters, `revoke` keeps three.** `enroll --directory voter`
+   is refused when it would make the eighth voter, with a sentence that suggests a
+   learner. A learner is not counted anywhere. The ledger's fold accepts any count.
+6. **No `[directory]` table beside a ledger.** A document with both is refused. A
+   node is a member when its own entry seats it, and the members are every seated
+   node. The daemon derives them once, at start, from the ledger process, checks
+   that each `[orchestrators.<name>]` node is a member, and gives the member actor
+   the ledger to read afresh, since seats are enrolled while the daemon runs. Phase
+   2 owns the derived `[orchestrators]` rows; the rule that a member daemon lists
+   only members as orchestrators is checked against the ledger's seats.
+7. **Visible links follow the ledger.** A directory member starts visible and must
+   connect visibly to other members, and a connection's visibility is fixed when it
+   is made. In ledger mode no list of member atoms exists at start, so the ledger
+   process publishes a second row of `loom_dist_pins`, the linked members whose
+   standing is not `none`, and `link/2` reads it on every connect. A node outside the
+   directory publishes none and connects hidden to everyone.
+8. **A learner learns the leader late.** The join ends with a restart of the server
+   (Khepri records the store). A learner never campaigns, so after the restart it
+   learns who the leader is from the leader's next append, and in a directory with
+   no writes its own view of the cluster (`ra:members_info`, a consistent read)
+   answers `no_quorum` until one arrives. Its local reads are not affected. Phase 0
+   asserted the learner's membership straight after the join, which held only
+   because the leader still had entries to send; the fixture now writes first.
+9. **Re-enrolling a removed directory member.** A node that is revoked and enrolled
+   again keeps its `joined` marker and its Ra server, which the leader removed. It
+   is no member of the cluster it believes it is in. The remedy is the one the
+   directory already has for a store that must rejoin: remove
+   `<state root>/directory/joined` and start the daemon, and the member joins again.
+   Nothing detects the state; it needs a revoke of a directory member followed by an
+   enrollment of the same name on the same disk, and the cost of a mechanism for it
+   is more than the cost of the sentence.
+10. **Not done here.** `directory.status` still reports what it reported, with
+    `members` now the ledger's seated nodes; the reconciler's last verdict is not on
+    the wire. A Ra forced reconfiguration after a majority loss stays the operator's
+    (section 11.3). The shipped-daemon test of the ledger directory (real `loomd`
+    processes) is not written; `ledger_directory_test` runs the production member
+    actor and ledger over emulators with the production TLS flags.
 
 ## 17. Open questions
 

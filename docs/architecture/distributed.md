@@ -294,12 +294,16 @@ with the ledger once, at start (`client/ledger_reference.audit`, called from
 entry ever named is refused. A row naming a node that was a member and is no longer
 an active member this node is linked to is accepted as inert and logged as
 `daemon.ledger_row_inert`; a call through it fails because `distribution.peer`
-resolves only names in the current pin table. A daemon with a `[directory]` table
-still cannot use a ledger, because the directory's members come from
-`[directory] members` until phase 3 of 086. The executor names that a pool lists
-and a spawner places on get the same treatment (`ledger_reference.audit_names`,
-logged as `daemon.ledger_name_inert`), because the ledger can give an executor a
-row that no table defines.
+resolves only names in the current pin table. A daemon with a ledger has no
+`[directory]` table: the session directory's members are the ledger's members whose
+`directory` standing is `voter` or `learner`, derived at start by
+`daemon/main.ledger_directory` and read again by the member actor on every tick, and
+the Ra leader removes the members the ledger unseats
+([the directory page](directory.md), "Following the membership ledger").
+
+The executor names that a pool lists and a spawner places on get the same
+treatment (`ledger_reference.audit_names`, logged as `daemon.ledger_name_inert`),
+because the ledger can give an executor a row that no table defines.
 
 **Derived rows.** An orchestrator does not need a table for a machine the ledger
 says it is linked to. `client/ledger_rows` turns the members of its pin table into
@@ -472,8 +476,10 @@ the same file. `install` writes the ledger beside the credentials, writes a
 `[distribution]` table with a `ledger` key and no peer rows, and renders the live
 options file. The ledger file is compared as a chain: a file the bundle extends is
 replaced, a file that extends the bundle is kept, and two files that diverge are
-refused unless `--force`. A plan with a session directory cannot use a ledger yet,
-so `provision` refuses it and says to pass `--static`.
+refused unless `--force`. A plan with a session directory is provisioned like any
+other: its directory members become voters in the ledger, the bundles list no
+directory members, and the configuration `install` writes has no `[directory]`
+table.
 
 The authority key is kept: `client/authority_key` seals it with
 PBKDF2-HMAC-SHA256 (600,000 iterations) and AES-256-GCM under a passphrase, in
@@ -1482,9 +1488,9 @@ The directory holds no state of its own, so it has no model.
 - **Membership changes are eventual, and some are not checked.** `enroll`,
   `revoke` and `renew` change a running deployment without reprovisioning, and
   a member that is off learns an entry when it next connects to one that has it.
-  A revoke does not check that the member owns no sessions, a plan with a
-  session directory cannot use a ledger, and rotating the authority or the
-  cookie means provisioning again. A node that was down across its own revoke
+  A revoke does not check that the member owns no sessions, a revoked
+  directory voter still counts toward Ra's majority until the leader's removal
+  commits, and rotating the authority or the cookie means provisioning again. A node that was down across its own revoke
   and re-enrolment, and receives the revoke at the end of one pull batch and the
   re-enrolment in the next, self-revokes until `import` or a new bundle. The
   design is in [the membership ledger note](../design-notes/membership-ledger.md)

@@ -7806,7 +7806,8 @@ ADR-020 the choice of Khepri and its measurements, and
   the store when Ra knows no server: only bootstrap uses it), `restart` (the
   start of a member that has joined; it refuses when Ra has no record of the
   member's server, because `boot` would create a second one-member cluster),
-  `join(node, within_ms)`, `read` (local, `favor => low_latency`),
+  `join(node, within_ms, seat)` (`Seat` is `Voter | Learner`), `remove_member(name)`,
+  `read` (local, `favor => low_latency`),
   `read_consistent` (`khepri:fence/2`, then a local read), `create`, `swap`,
   `delete_if`, `mark_migrated`, `membership`, `running_on(node)` and the `joined`
   marker file (`mark_joined` writes Ra's `names.dets` to disk first, since Ra
@@ -7815,7 +7816,8 @@ ADR-020 the choice of Khepri and its measurements, and
   deadline (`write_ms` 3000, `activation_ms` 5000, `read_ms` 3000), because the
   consistent path ignores its own timeout without a majority. `WriteRefusal` is
   `NoQuorum(reason) | Mismatch(found)`.
-- `directory/settings` reads `[directory] members`: three to seven distinct
+- `directory/settings` reads `[directory] members` (refused beside a ledger,
+  where `from_ledger` derives the members): three to seven distinct
   nodes, this node among them, every other one a pinned peer, and on a member
   every `[orchestrators.<name>]` node a member. An even count is accepted with a
   warning. `catalog` knows the key and `scripts/config_keys.sh` and
@@ -7830,7 +7832,9 @@ ADR-020 the choice of Khepri and its measurements, and
   link to every configured member missing from `nodes()`, backing off by
   doubling to 30 s, and joins a member with no joined store through the first
   member whose store runs (`store.running_on`, then `store.join` under a 60 s
-  deadline, then the marker). A store with the marker starts at `member.start`
+  deadline, then the marker). With a ledger its members are `Followed`, read
+  from the ledger on every tick, and it also reconciles on the Ra leader (see
+  "The membership ledger, the session directory" below). A store with the marker starts at `member.start`
   through `store.restart` and a refusal is a failed start whose message names
   the remedy (remove the marker and the member rejoins; for a one-member
   cluster, remove the directory and bootstrap again). `member.status`
@@ -8196,8 +8200,8 @@ through an observer.
   mints, seals the key before it writes the bundles, and writes `OUT/ledger.log`
   beside them. `Provisioned` carries the ledger text as a `String` for
   `keep_authority`; `Deployment.ledger` stays an `Option` because `write` is
-  shared with static mode. A plan with a session directory is refused without
-  `--static`. `--static` is refused beside `--drop-authority`,
+  shared with static mode. A plan with a session directory is provisioned in
+  ledger mode too (phase 3: its members are voters). `--static` is refused beside `--drop-authority`,
   `--passphrase-file` and `--home`, which only a ledger reads.
 - The terminal prompt works only under `loomd distribution`. `loom
   distribution …` runs `loomd` through a port whose stdin is a pipe, so the
@@ -8230,8 +8234,8 @@ replaces `[[distribution.peers]]`, and a document with both is refused by
   which accept the atom `live` in place of a peer list). `peer_nodes` is empty in
   ledger mode, which only `client/ledger_reference.peers` reads: it answers
   `Ledgered`, so the tables that name a peer check shape only (slice 1d-ii);
-  `[directory]` is still refused beside a ledger. `distribution`
-  and `distribution_plan` must never import a `membership_*` or `ledger_*`
+  `[directory]` is refused beside a ledger (phase 3 derives the members from
+  it). `distribution` and `distribution_plan` must never import a `membership_*` or `ledger_*`
   module (`membership_entry` imports both), which is why the mode is a type in
   `distribution` and the ledger side starts it.
 - `ledger_trust` is the observer that applies the ledger. It runs inside the
@@ -8281,8 +8285,7 @@ replaces `[[distribution.peers]]`, and a document with both is refused by
   `ledger` key and no peer rows, and renders the live options file. The ledger
   file is planned as a chain (`plan_ledger`): a file the bundle extends is
   replaced, a file that extends the bundle is kept, two that diverge are refused
-  unless `--force`. A `/2` bundle with a directory is refused before anything is
-  written. The bundle's executor rows are not read against the ledger at install
+  unless `--force`. A `/2` bundle lists no directory (`decode` refuses one). The bundle's executor rows are not read against the ledger at install
   (it is not on disk yet); `decode` already required each to name a peer in the
   node's pin table. `Installed.snapshot` is the entry the bundle ends at.
 - `client/ledger_reference` opens a node's ledger from its `[distribution]` table
@@ -8329,8 +8332,9 @@ replaces `[[distribution.peers]]`, and a document with both is refused by
   bundle (`enroll`, `renew`) after checking it decodes, hands over, and prints the
   confirmations. `run_with` takes the way to reach a daemon (`Connect`) so a test
   uses a ledger process in its VM; `run` uses the socket. `revoke` does not check
-  that the member owns sessions on its own: it asks the daemon (phase 2, below).
-  `enroll` refuses a `--directory` other than `none`, and an executor with no
+  that the member owns sessions on its own: it asks the daemon (phase 2, below),
+  and it counts the directory's voters (phase 3). `enroll` takes
+  `--directory voter|learner|none` (phase 3), and refuses an executor with no
   `--links` (`ledger_operator.check_enrollment`: it would be linked to no
   orchestrator, and links cannot be added to a member without a revoke). `renew`
   takes `--bundle-dir` like `enroll`, since the ledger does not record where a
@@ -8413,7 +8417,8 @@ argument.
   sessions on its node, and `Silent` for each of those that did not answer.
   `describe_stranding` and `describe_clear` are the sentences. `ledger_sync.Daemon` gained
   `holdings`. `daemon/ledger_cli.revoke` runs `checked_revoke` before it signs (unless
-  `--force`): the link graph and the strandings together, one refusal listing both. A
+  `--force`): the link graph, the strandings and (phase 3) `ledger_operator.check_voters`
+  together, one refusal listing all that fail. A
   daemon that cannot be asked is `Unasked`, so an offline `revoke` now needs `--force`.
   `sign` returns the decision's extra value beside the `Signed`, which is how the
   sentence about what was checked reaches the output.
@@ -8433,3 +8438,78 @@ argument.
   enroll and revoke while they run, and the rows follow). The live fixture nodes run no
   catalogue, so their `ledger.holdings` answers that every orchestrator holds nothing,
   and `test.rows` is a fixture-only command that lists the derived rows.
+
+## The membership ledger, the session directory (protocol-change/086, phase 3)
+
+With a ledger the session directory's members are the ledger's, and the Khepri
+cluster follows them. `docs/architecture/directory.md` ("Following the membership
+ledger") is the account and the design note's "Phase 3: what was decided in the
+build" the rulings.
+
+- `directory/roster` is the pure part. `places(ledger)` reads the active members
+  whose `directory` standing is `voter` or `learner` as `Place(node, seat)`, ordered
+  by node, and `roster(ledger)` adds `named`, whether any entry has named a node.
+  `plan(roster, ra, local, up)` returns a `Verdict`: `NotLeader` (this member is not
+  the Ra leader), `NotSeated` (it leads and the ledger gives it no seat),
+  `Remove(node, Why)` (`Unseated` or `OtherSeat`), `Held(node, Why)` (a voter whose
+  removal could not commit, because a majority of the voters that remain is not in
+  `up`), or `Settled(missing, foreign)`. Learners are removed before voters. A Ra
+  member the ledger has never named is `foreign` and stays; a seat nobody has taken
+  is `missing` and the node joins by itself. The plan never adds: only the joining
+  node can start the Ra server with the UId it is recorded under.
+- `store.Seat` is `Voter | Learner`. `store.join(node, within_ms, seat)` is the four
+  steps with the seat's membership: `promotable` and a wait for the promotion for a
+  voter, `non_voter` and `join_caught_up` for a learner (the server has heard from
+  the leader, lists itself in its configuration, and has applied what the cluster
+  had applied). `ffi_khepri.Voting` gains `Promoting` so a voter that is catching up
+  is not read as a learner. `store.remove_member(name)` is `ra:remove_member` through
+  this node's own server; `client_khepri_ffi:remove_member/2` looks the name up as an
+  existing atom and makes none.
+- `member.Members` is `Listed(nodes)` (every node a voter, no reconciliation) or
+  `Followed(read)` (the ledger's roster, read each tick; an unreadable ledger seats
+  no one, and a roster that seats no one removes no one because `named` is false).
+  A tick keeps links and tries the join for the roster's places, and with `Followed`
+  and a joined store runs `roster.plan` in a task and applies a `Remove` through
+  `store.remove_member`. The decision is logged when it changes:
+  `daemon.directory_member_removed`, `daemon.directory_remove_held`,
+  `daemon.directory_remove_failed`, `daemon.directory_reconciled`.
+- `directory/settings`: a `[directory]` table beside a ledger is refused;
+  `from_ledger(ledger, local)` is `Some(Settings(members))` when the ledger seats the
+  node; `require_orchestrators` is the `[orchestrators]` rule, called with the
+  ledger's members. `daemon/main.ledger_directory` derives the daemon's settings from
+  the ledger process at start and logs `daemon.directory_voters` for a voter count
+  outside three to seven or an even one. `main.members_of` gives the member actor
+  `Followed` when `Config.ledger` is set.
+- `ledger_boot` reads the node's standing from the ledger and starts distribution as
+  `Member([])` when it is seated (visible, `connect_all` off) and `NotMember`
+  otherwise; it refuses a `Member` cluster passed with a ledger.
+  `ledger_trust.publish` publishes `directory_nodes` (the linked members whose
+  standing is not `none`, empty on a node outside the directory) as the `directory`
+  row of `loom_dist_pins` (`ffi_distribution.publish_directory`), and
+  `client_distribution_ffi:link/2` reads it in live mode on every connect.
+- `daemon/directory_cli`: `bootstrap` takes the members from the ledger when
+  `[distribution]` names one (`start_ledgered`: `ledger_boot.start`, then requires a
+  voter seat) and from `[directory]` otherwise (`listed_members`, read before
+  anything is reserved).
+- Operator: `Enrollment.directory` carries `--directory`; `ledger_operator.check_voters`
+  refuses an `enroll` that makes the eighth voter and a `revoke` that leaves fewer than
+  three (`revoke --force` skips it). Provisioning writes a ledger bundle's `directory`
+  as `[]` and `decode` refuses a ledger bundle that lists one; `install` no longer
+  refuses a directory plan.
+- Invariants: the leader never adds, never removes itself, and removes a voter only
+  while a majority of the remaining voters is connected; a Ra member the ledger has
+  not named is never removed; a learner that has just joined learns the leader from
+  the leader's next append (the fixture writes before it reads the learner's view);
+  a revoked-then-re-enrolled directory member must remove `<state>/directory/joined`.
+- Tests: `directory/roster_test` (the plan as values), `ledger_spike_non_voter_test`
+  (the production learner join and `remove_member` over two scenarios in
+  `client_ledger_spike_ra_fixture_ffi`), `ledger_operator_directory_test` and the
+  directory cases of `ledger_cli_test` (the voter bounds), `settings_test`,
+  `ledger_trust_test` and `bootstrap_cli_test`, `daemon_ledger_directory_test`
+  (`main.ledger_directory`), `ledger_provision_test` (a directory plan with a
+  ledger), and `ledger_directory_test`, which provisions, installs and boots three
+  voters over TLS with the production member actor, enrolls a learner while they run,
+  sees a revoke refused, ends the leader and watches the new leader remove the revoked
+  learner (the store runs in emulators of its own, so the test VM needs no serial
+  entry; it takes about 35 s).
+
