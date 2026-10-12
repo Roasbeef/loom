@@ -1040,11 +1040,19 @@ landed. Points the proposal left open, or that the build changed:
    plan with a session directory is refused without `--static`, and so is the
    install of a `/2` bundle with a directory, because the directory takes its
    members from `[directory] members` until phase 3.
-2. **The peer tables read the ledger in phase 1.** A bundle `provision` writes for
-   an orchestrator carries `[executors.<name>]` rows, so they cannot be refused
-   beside a ledger. A row must name a node in the reader's pin table. A row that
-   names a revoked member is refused at start instead of becoming a warning and an
-   inert row.
+2. **The peer tables are checked against the ledger once, at start.** A bundle
+   `provision` writes for an orchestrator carries `[executors.<name>]` rows, so
+   they cannot be refused beside a ledger. The first build parsed them against the
+   ledger, which made every session create, open and profile switch read and verify
+   the whole file, and made one `revoke` fail every session open on a daemon whose
+   table still named the member. The ruling is that parsing checks shape only, and
+   the daemon audits the rows once, at start, against the ledger it already holds
+   (`ledger_reference.audit`). A node no member entry ever named is refused as a
+   typo or a foreign configuration. A node that was a member and is not an active
+   linked member is accepted as an inert row and logged as a warning, as the
+   proposal said. A call through it fails because peer resolution answers only for
+   the pin table. The fold keeps the set of nodes ever named (`ever_nodes`) to tell
+   the two apart.
 3. **The cookie is kept beside the sealed key.** `enroll` and `renew` write a
    bundle, and a bundle carries the cookie. The directory of the kept authority has
    a fourth file, `cookie` (0600), unsealed: the bundles `provision` wrote on the

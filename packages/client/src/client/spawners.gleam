@@ -120,8 +120,9 @@ pub type Spawner {
     /// `catalogue.is_profile_name`. It names the spawner in a delegate
     /// session's record.
     name: String,
-    /// The spawning orchestrator's full node name, one of the
-    /// `[[distribution.peers]]` nodes.
+    /// The spawning orchestrator's full node name. In static mode it is one of
+    /// the `[[distribution.peers]]` nodes; in ledger mode the daemon compares
+    /// it with the ledger at start.
     node: String,
     /// Where each delegate session of this spawner is put.
     placement: Placement,
@@ -149,7 +150,7 @@ pub type Spawner {
 // does not reread the document.
 type Known {
   Known(
-    peers: List(String),
+    peers: ledger_reference.Peers,
     executors: List(Executor),
     pools: List(Pool),
     profiles: List(String),
@@ -264,15 +265,15 @@ pub fn by_node(
   list.find(configured, fn(spawner) { spawner.node == node })
 }
 
-// The pinned peers a spawner may name. A spawner with no distribution table has
-// no peer to be messaged by, which is a different mistake from a mistyped node,
-// so it is worded as the missing table.
+// The peers a spawner may name. A spawner with no distribution table has no
+// peer to be messaged by, which is a different mistake from a mistyped node, so
+// it is worded as the missing table.
 fn peer_nodes(
   document: Dict(String, tom.Toml),
-) -> Result(List(String), String) {
+) -> Result(ledger_reference.Peers, String) {
   use found <- result.try(distribution.from_document(document))
   case found {
-    Some(settings) -> ledger_reference.nodes(settings)
+    Some(settings) -> Ok(ledger_reference.peers(settings))
     None -> Error("spawners needs a [distribution] table naming its peers")
   }
 }
@@ -392,18 +393,18 @@ fn row(name: String, value: tom.Toml, known: Known) -> Result(Spawner, String) {
 fn node_of(
   fields: Dict(String, tom.Toml),
   place: String,
-  peers: List(String),
+  peers: ledger_reference.Peers,
 ) -> Result(String, String) {
   case dict.get(fields, "node") {
     Ok(tom.String(node)) ->
-      case list.contains(peers, node) {
+      case ledger_reference.accepts(peers, node) {
         True -> Ok(node)
         False ->
           Error(
             place
             <> ".node "
             <> node
-            <> " is not a peer of this node: pin it in [[distribution.peers]], or link it in the ledger",
+            <> " is not a peer of this node: pin it in [[distribution.peers]]",
           )
       }
     Ok(_) -> Error(place <> ".node must be a string")

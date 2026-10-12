@@ -125,6 +125,10 @@ run(<<"revoke_drops_connections">>, Root) ->
                       <<"NODES_ARE">>),
 
             ok = step(Hub, ["offer 4"], <<"OFFER accepted">>),
+
+            %% A table row that still named the revoked member is inert: the
+            %% name no longer resolves, so a call through it fails at call time.
+            ok = step(Hub, ["connect ", name(D, box)], <<"CONNECT not_linked">>),
             ok = step(Hub, ["await_connected ", names(D, [desk])], <<"NODES_ARE">>),
             ok = step(Desk, ["await_head 4"], <<"AT 4">>),
             ok = step(Desk, ["await_connected ", names(D, [hub])], <<"NODES_ARE">>),

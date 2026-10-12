@@ -176,7 +176,7 @@ workspace = \"loom\"
 profile = \"cheap-review\"
 ",
     ),
-    "spawners.laptop.node stranger@10.0.0.9 is not a peer of this node: pin it in [[distribution.peers]], or link it in the ledger",
+    "spawners.laptop.node stranger@10.0.0.9 is not a peer of this node: pin it in [[distribution.peers]]",
   )
 }
 

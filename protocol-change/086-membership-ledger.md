@@ -417,14 +417,25 @@ belong to this `ca`), `NotEnrolled` and `Revoked`. Each has an operator sentence
 in `describe`. None carries a pin, key or cookie.
 
 `[executors.<name>]`, `[orchestrators.<name>]`, `[spawners.<name>]` and
-`[directory] members` check their node against the nodes in the reading node's pin
-table instead of `[[distribution.peers]]`, read from the ledger when the table is
-read (`client/ledger_reference`). The text proposed a warning and an inert row for a
-member that is in `ever` and no longer active; the build refuses the row instead,
-with the same sentence as a node that was never enrolled, because an operator finds
-a refusal at start sooner than a row that does nothing. The check is in phase 1
-because a bundle `provision` writes for an orchestrator carries an
-`[executors.<name>]` row for each executor it uses.
+`[directory] members` name a peer by node. In static mode each node is checked
+against `[[distribution.peers]]` when the table is parsed, as before. In ledger mode
+parsing checks a row's shape and never opens the ledger: a session parses these
+tables on every create, open and profile switch, and a ledger changes while a daemon
+runs, so a parse that read it would verify every signature again for each session
+open, and one `revoke` would fail every session open on a daemon whose table still
+named the revoked member. The daemon compares the rows with the ledger once, at
+start, with the ledger the ledger process already holds
+(`client/ledger_reference.audit`). A row naming a node that no member entry has ever
+named, active or revoked, is refused with a sentence, because it is a typo or a
+configuration written for another deployment. A row naming a node that was a member
+and is not an active member this node is linked to is accepted as inert and logged
+as a warning that names the row and the reason, which is the warning and the inert
+row this proposal asked for. A call through an inert row fails at call time, because
+peer resolution in live mode answers only for names in the current pin table. The
+check is in phase 1 because a bundle `provision` writes for an orchestrator carries
+an `[executors.<name>]` row for each executor it uses. The ledger's fold gains the
+set of every node a member entry has named (`ever_nodes`), beside `ever`, which
+holds names, so that a revoked member's node can be told from a mistyped one.
 
 ### The bundle
 

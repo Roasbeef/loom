@@ -149,16 +149,16 @@ fn table(
     False ->
       Error("directory.members must include this daemon's own node " <> local)
   })
-  use peers <- result.try(ledger_reference.nodes(config))
+  let peers = ledger_reference.peers(config)
   use Nil <- result.try(
     list.try_each(members, fn(member) {
-      case member == local || list.contains(peers, member) {
+      case member == local || ledger_reference.accepts(peers, member) {
         True -> Ok(Nil)
         False ->
           Error(
             "directory.members names "
             <> member
-            <> ", which is not a peer of this node: pin it in [[distribution.peers]], or link it in the ledger",
+            <> ", which is not a peer of this node: pin it in [[distribution.peers]]",
           )
       }
     }),

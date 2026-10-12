@@ -286,13 +286,17 @@ ends the dialing. Executors do not dial.
 
 **Peer tables.** `[executors.<name>]`, `[orchestrators.<name>]`, `[spawners.<name>]`
 and `[directory] members` name a peer by node. In static mode the node must be
-a `[[distribution.peers]]` row. In ledger mode `client/ledger_reference` opens
-the ledger when the table is read and requires the node to be in this node's pin
-table, which is the members it is linked to. The same module owns the checks the
-daemon's start makes of the file, so the two readers use one set of sentences. A
-row that names a member since revoked is refused at start, and the operator edits
-the row. A daemon with a `[directory]` table still cannot use a ledger, because
-the directory's members come from `[directory] members` until phase 3 of 086.
+a `[[distribution.peers]]` row. In ledger mode parsing a table checks its shape and
+never reads the ledger, because a session parses these tables on every create and
+open and the ledger changes while the daemon runs. The daemon compares the rows
+with the ledger once, at start (`client/ledger_reference.audit`, called from
+`daemon/main` after the ledger process holds the file). A row naming a node that no
+entry ever named is refused. A row naming a node that was a member and is no longer
+an active member this node is linked to is accepted as inert and logged as
+`daemon.ledger_row_inert`; a call through it fails because `distribution.peer`
+resolves only names in the current pin table. A daemon with a `[directory]` table
+still cannot use a ledger, because the directory's members come from
+`[directory] members` until phase 3 of 086.
 
 **Control commands.** `ledger.append`, `ledger.entries` and `ledger.status` are
 owner-only commands of the control socket (`client/ledger_control` holds both

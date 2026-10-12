@@ -8228,9 +8228,9 @@ replaces `[[distribution.peers]]`, and a document with both is refused by
   the pin-less file (`ffi_distribution.live_options`) and `start` calls
   `ffi_distribution.start_live` (the same Erlang functions as the static ones,
   which accept the atom `live` in place of a peer list). `peer_nodes` is empty in
-  ledger mode, which only `client/ledger_reference.nodes` reads: it answers the
-  tables that name a peer with the ledger's pin table (slice 1d-ii); `[directory]`
-  is still refused beside a ledger. `distribution`
+  ledger mode, which only `client/ledger_reference.peers` reads: it answers
+  `Ledgered`, so the tables that name a peer check shape only (slice 1d-ii);
+  `[directory]` is still refused beside a ledger. `distribution`
   and `distribution_plan` must never import a `membership_*` or `ledger_*`
   module (`membership_entry` imports both), which is why the mode is a type in
   `distribution` and the ledger side starts it.
@@ -8286,12 +8286,18 @@ replaces `[[distribution.peers]]`, and a document with both is refused by
   (it is not on disk yet); `decode` already required each to name a peer in the
   node's pin table. `Installed.snapshot` is the entry the bundle ends at.
 - `client/ledger_reference` opens a node's ledger from its `[distribution]` table
-  (`load`, with the checks `ledger_boot.open_service` used to make) and answers
-  `nodes(config)`: the `[[distribution.peers]]` nodes in static mode and the nodes
-  in the node's pin table in ledger mode. `executors`, `orchestrators`,
-  `spawners` and `directory/settings` check their `node` through it, so those
-  tables read the ledger when they are parsed. A revoked member's row is refused
-  at start. It reads the file, so a table parsed in ledger mode needs the file.
+  (`load`, with the checks `ledger_boot.open_service` used to make). It answers
+  `peers(config)`: `Pinned(nodes)` in static mode and `Ledgered` in ledger mode,
+  and `executors`, `orchestrators`, `spawners` and `directory/settings` test their
+  `node` with `accepts`. So parsing a table never reads the ledger; a session
+  parses them on every create and open, and a `revoke` cannot fail one. The check
+  against the ledger is `audit(ledger, local, path, rows)`, which `daemon/main`
+  calls once at start (`audit_references`, over the ledger process's own state,
+  rows from `reference_rows`): a node no member entry ever named
+  (`membership_ledger.ever_named`) is an `Error`; a node that was a member and is
+  not an active linked member is an `Inert` row, logged as
+  `daemon.ledger_row_inert`. A call through an inert row fails because
+  `distribution.peer` resolves only names in the pin table.
 - `client/ledger_control` is both halves of `ledger.append`, `ledger.entries` and
   `ledger.status`. The daemon half takes a `Handle` (the `loom_ledger` process,
   the node's name and its plan name from the ledger it started with, since a

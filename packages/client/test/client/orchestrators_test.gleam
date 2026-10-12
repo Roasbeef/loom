@@ -95,7 +95,7 @@ address = \"ws://127.0.0.1:7000/v2/control\"
 pub fn a_node_that_is_not_a_pinned_peer_is_refused_by_name_test() {
   refused(
     with("[orchestrators.beta]\nnode = \"stranger@10.0.0.9\"\n"),
-    "orchestrators.beta.node stranger@10.0.0.9 is not a peer of this node: pin it in [[distribution.peers]], or link it in the ledger",
+    "orchestrators.beta.node stranger@10.0.0.9 is not a peer of this node: pin it in [[distribution.peers]]",
   )
 }
 

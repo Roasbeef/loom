@@ -54,6 +54,8 @@ import client/host
 import client/internal/ffi_os
 import client/ledger_boot
 import client/ledger_control
+import client/ledger_reference
+import client/ledger_service.{type Service}
 import client/orchestrators
 import client/peer_defaults
 import client/peer_mail
@@ -484,6 +486,105 @@ fn start_distribution(
       |> result.map(Some)
       |> result.map_error(fn(reason) { configuration <> ": " <> reason })
   }
+}
+
+// The tables that name a peer are checked against the ledger once, here, after
+// the ledger process holds the file and before the daemon listens. Parsing them
+// never reads the ledger (`client/ledger_reference`), because a session parses
+// them on every create and open and a ledger changes while a daemon runs. A
+// node no entry ever named refuses the start. A node that was a member and no
+// longer is a row the daemon logs and keeps, so that a `revoke` never turns the
+// next restart into an outage of the sessions that do not use that node.
+fn audit_started(
+  booted: Option(ledger_boot.Booted),
+  document: dict.Dict(String, tom.Toml),
+  rows: List(ledger_reference.Row),
+  logger: Logger,
+) -> Result(Nil, String) {
+  use found <- result.try(distribution.from_document(document))
+  case
+    option.then(booted, fn(started) { started.ledger }),
+    option.then(found, distribution.ledger_path)
+  {
+    Some(service), Some(path) ->
+      audit_references(
+        service,
+        atom.to_string(node.name(node.self())),
+        path,
+        rows,
+        logger,
+      )
+    _, _ -> Ok(Nil)
+  }
+}
+
+/// Compares the rows of the tables that name a peer with the ledger a running
+/// ledger process holds, for the node named `local` whose ledger file is
+/// `path`. A row naming a node that no entry has ever named is an `Error` with
+/// a sentence for the operator. A row naming a node that was a member and is
+/// not an active linked member now is logged as a warning and the start goes
+/// on, because the row is inert: peer resolution answers only for names in the
+/// current pin table, so a call to it fails when it is made.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let assert Ok(Nil) = main.audit_references(service, local, path, rows, logger)
+/// ```
+@internal
+pub fn audit_references(
+  service: Service,
+  local: String,
+  path: String,
+  rows: List(ledger_reference.Row),
+  logger: Logger,
+) -> Result(Nil, String) {
+  use status <- result.try(
+    ledger_service.status(service, 5000)
+    |> result.replace_error("the ledger process did not answer"),
+  )
+  use inert <- result.map(ledger_reference.audit(
+    status.ledger,
+    local,
+    path,
+    rows,
+  ))
+  list.each(inert, fn(found) {
+    log.warn(logger, "daemon.ledger_row_inert", [
+      field.text("row", found.row.key),
+      field.text("node", found.row.node),
+      field.text("reason", found.reason),
+    ])
+  })
+}
+
+/// The node every row of the tables that name a peer names, in the order a
+/// refusal should report them. `[directory]` is not among them: a directory
+/// member cannot use a ledger yet (`client/ledger_boot`), so a configuration
+/// with both never reaches this check.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // main.reference_rows([], [], []) == []
+/// ```
+@internal
+pub fn reference_rows(
+  configured_executors: List(executors.Executor),
+  configured_orchestrators: List(orchestrators.Orchestrator),
+  configured_spawners: List(spawners.Spawner),
+) -> List(ledger_reference.Row) {
+  list.flatten([
+    list.map(configured_executors, fn(row) {
+      ledger_reference.Row("executors." <> row.name <> ".node", row.node)
+    }),
+    list.map(configured_orchestrators, fn(row) {
+      ledger_reference.Row("orchestrators." <> row.name <> ".node", row.node)
+    }),
+    list.map(configured_spawners, fn(row) {
+      ledger_reference.Row("spawners." <> row.name <> ".node", row.node)
+    }),
+  ])
 }
 
 // Each served checkout has to be a directory now, so an operator who mistyped
@@ -1201,6 +1302,15 @@ pub fn prepare_startup(
     logger,
   ))
   use ledger <- result.try(ledger_handle(booted, configuration))
+  use Nil <- result.try(
+    audit_started(
+      booted,
+      document,
+      reference_rows(executors, orchestrators, spawners),
+      logger,
+    )
+    |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
+  )
   let config =
     Config(
       ..config,

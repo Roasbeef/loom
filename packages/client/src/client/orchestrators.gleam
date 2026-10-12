@@ -123,7 +123,7 @@ pub fn from_document(
       use peers <- result.try(peer_nodes(document))
       use Nil <- result.try(
         list.try_each(configured, fn(orchestrator) {
-          case list.contains(peers, orchestrator.node) {
+          case ledger_reference.accepts(peers, orchestrator.node) {
             True -> Ok(Nil)
             False ->
               Error(
@@ -131,7 +131,7 @@ pub fn from_document(
                 <> orchestrator.name
                 <> ".node "
                 <> orchestrator.node
-                <> " is not a peer of this node: pin it in [[distribution.peers]], or link it in the ledger",
+                <> " is not a peer of this node: pin it in [[distribution.peers]]",
               )
           }
         }),
@@ -172,15 +172,15 @@ pub fn by_node(
   list.find(configured, fn(orchestrator) { orchestrator.node == node })
 }
 
-// The pinned peers an orchestrator may name. An orchestrator with no
-// distribution table has no peer to be asked, which is a different mistake
-// from a mistyped node, so it is worded as the missing table.
+// The peers an orchestrator may name. An orchestrator with no distribution
+// table has no peer to be asked, which is a different mistake from a mistyped
+// node, so it is worded as the missing table.
 fn peer_nodes(
   document: Dict(String, tom.Toml),
-) -> Result(List(String), String) {
+) -> Result(ledger_reference.Peers, String) {
   use found <- result.try(distribution.from_document(document))
   case found {
-    Some(settings) -> ledger_reference.nodes(settings)
+    Some(settings) -> Ok(ledger_reference.peers(settings))
     None -> Error("orchestrators needs a [distribution] table naming its peers")
   }
 }

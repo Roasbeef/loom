@@ -1,35 +1,48 @@
 //// Reading a node's ledger from its `[distribution]` table, for the daemon's
-//// start and for the tables that name a peer.
+//// start, and checking the tables that name a peer against it.
 ////
 //// A node in ledger mode (protocol-change/086) has no `[[distribution.peers]]`
-//// list. The nodes it trusts are in the ledger file, and two readers need
-//// them. The daemon's start opens the ledger and starts the process that owns
-//// it (`client/ledger_boot`). The `[executors.<name>]`,
-//// `[orchestrators.<name>]`, `[spawners.<name>]` and `[directory]` tables name
-//// a peer by node and used to check the name against the pinned list, so in
-//// ledger mode they check it against the ledger. This module is the one place
-//// that turns the table into an opened, verified ledger, so the two readers
-//// cannot disagree about what the file says or how a failure is worded.
+//// list. The nodes it trusts are in the ledger file. The daemon's start opens
+//// the ledger and starts the process that owns it (`client/ledger_boot`). The
+//// `[executors.<name>]`, `[orchestrators.<name>]`, `[spawners.<name>]` and
+//// `[directory]` tables name a peer by node, and in static mode each node is
+//// checked against the pinned list when the table is parsed.
 ////
-//// ## Which nodes a table may name
+//// ## Parsing never reads the ledger
 ////
-//// The nodes in this node's pin table: the active members it is linked to.
-//// That is the meaning the pinned list had, "a node this one trusts and can
-//// connect to", and it is what `install` already holds a `/2` bundle to
-//// (`distribution_bundle.decode`). A member that is active and not linked to
-//// this node is refused, as a node that was never pinned is refused in static
-//// mode. A member that has been revoked is no longer in the table, so a table
-//// that still names it is refused until the operator edits the file. The
-//// ledger's 086 text asks for a warning and an inert row for that case; this
-//// build refuses instead, because a row that does nothing is a failure the
-//// operator would find later than a refusal at start.
+//// Those tables are parsed on every session create, open and profile switch
+//// (`client/catalog`), and a ledger changes while a daemon runs. If parsing
+//// read the ledger, every session open would verify every signature in the
+//// file again, and one `revoke` would make every session open fail for as long
+//// as a table still named the revoked member. So in ledger mode `peers`
+//// answers `Ledgered`, and a table checks the shape of its rows (names, keys,
+//// types) and nothing about which nodes are members.
 ////
-//// ## Why this reads the file
+//// ## The daemon checks the rows once, at start
 ////
-//// Parsing a table is otherwise pure. Here it opens the ledger, which also
-//// cuts a final line with no newline from the file (`membership_store.open`).
-//// That is the repair the ledger process makes at its own start, and the
-//// tables are parsed before it runs, so the two never race.
+//// `audit` takes the ledger the ledger process holds and the node of every row,
+//// and sorts them into three. A node that is an active member this node is
+//// linked to is fine. A node that some member entry named and that is no longer
+//// an active linked member is accepted as inert: its row stays in the file, the
+//// daemon logs a warning naming the row and the reason, and a call to it fails
+//// at call time, because peer resolution in live mode (`distribution.peer`)
+//// answers only for names in the current pin table. A node that no entry ever
+//// named is refused with a sentence for the operator: it is a typo, or a
+//// configuration written for another deployment. This is the ruling of
+//// protocol-change/086 on a row that names a revoked member, "a warning and an
+//// inert row", and it is what keeps `revoke` from being an event that takes a
+//// daemon's sessions down.
+////
+//// A table is not audited again while the daemon runs. A row that was live at
+//// start and is revoked later is inert from the moment the entry is applied,
+//// for the same reason, and the next start logs the warning.
+////
+//// ## Why `load` reads the file
+////
+//// Opening the ledger also cuts a final line with no newline from the file
+//// (`membership_store.open`). That is the repair the ledger process makes at
+//// its own start, and `load` is called only from that start, so the repair
+//// never races a second reader.
 
 import client/distribution.{type Config}
 import client/membership_entry.{type Verifier}
@@ -120,33 +133,175 @@ pub fn load(path: String, ca: String, local: String) -> Result(Loaded, String) {
   ))
 }
 
-/// The node names another table of the configuration may reference: the
-/// configured peers in static mode, and in ledger mode the nodes of the
-/// members this node is linked to.
+/// What another table of the configuration may name, as far as parsing it can
+/// tell.
+pub type Peers {
+  /// Static mode: exactly these nodes, the `[[distribution.peers]]` rows. A
+  /// table is refused at parse time if it names any other node.
+  Pinned(nodes: List(String))
+
+  /// Ledger mode: the members change while the daemon runs, so a table is
+  /// checked for shape only. The daemon compares its rows with the ledger once,
+  /// at start (`audit`).
+  Ledgered
+}
+
+/// The nodes a table may name, for the document's `[distribution]` table. This
+/// reads no file.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// ledger_reference.nodes(config) // -> Ok(["executor@10.0.0.2"])
+/// ledger_reference.peers(config) // -> Pinned(["executor@10.0.0.2"])
 /// ```
-pub fn nodes(config: Config) -> Result(List(String), String) {
+pub fn peers(config: Config) -> Peers {
   case distribution.ledger_path(config) {
-    None -> Ok(distribution.peer_nodes(config))
-    Some(path) -> {
-      use loaded <- result.try(load(
-        path,
-        distribution.credential_files(config).ca,
-        distribution.local_node(config),
-      ))
-      Ok(
-        membership_ledger.node_table(
-          loaded.ledger,
-          distribution.local_node(config),
-        )
-        |> membership_ledger.peers
-        |> list.map(fn(peer) { peer.node }),
-      )
-    }
+    None -> Pinned(distribution.peer_nodes(config))
+    Some(_) -> Ledgered
+  }
+}
+
+/// Whether a table may name this node. Everything passes in ledger mode, where
+/// `audit` makes the judgement.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ledger_reference.accepts(Pinned(["a@10.0.0.2"]), "a@10.0.0.2")
+/// assert ledger_reference.accepts(Ledgered, "anything@10.0.0.9")
+/// ```
+pub fn accepts(peers: Peers, node: String) -> Bool {
+  case peers {
+    Pinned(nodes:) -> list.contains(nodes, node)
+    Ledgered -> True
+  }
+}
+
+/// One row of a table that names a node: where it is written, for the
+/// operator, and the node it names.
+pub type Row {
+  Row(
+    /// The key as the operator wrote it, such as `executors.devbox.node`.
+    key: String,
+    /// The Erlang node name the row names.
+    node: String,
+  )
+}
+
+/// A row the ledger does not currently support, which the daemon starts with.
+pub type Inert {
+  Inert(
+    /// The row.
+    row: Row,
+    /// Why no call through it can succeed, in a sentence.
+    reason: String,
+  )
+}
+
+// What the ledger says about the node a row names.
+type Standing {
+  // An active member in this node's pin table.
+  Linked
+
+  // An active member this node is not linked to.
+  NotLinked
+
+  // Named by a member entry, and not an active member now.
+  Departed
+
+  // The node this table belongs to.
+  Itself
+
+  // Named by no entry.
+  Unknown
+}
+
+/// Checks the rows of the four tables against the ledger the node runs on, for
+/// the node named `local`, and returns the rows that are inert. `path` is the
+/// ledger file, named in the sentence that refuses a row.
+///
+/// The first row that names a node no entry ever named, or this node itself, is
+/// an `Error`. Rows are taken in the order given, so the caller's order is the
+/// order of the refusal.
+///
+/// ## Examples
+///
+/// ```gleam
+/// ledger_reference.audit(ledger, "loom@a.example", path, [
+///   Row("executors.devbox.node", "loom@devbox.example"),
+/// ])
+/// // -> Ok([])
+/// ```
+pub fn audit(
+  ledger: Ledger,
+  local: String,
+  path: String,
+  rows: List(Row),
+) -> Result(List(Inert), String) {
+  let table = membership_ledger.node_table(ledger, local)
+  use inert <- result.map(
+    list.try_fold(rows, [], fn(inert, row) {
+      case standing(ledger, table, local, row.node) {
+        Linked -> Ok(inert)
+        NotLinked ->
+          Ok([
+            Inert(
+              row:,
+              reason: "it is an active member of the ledger that this node is "
+                <> "not linked to, so no connection to it is accepted",
+            ),
+            ..inert
+          ])
+        Departed ->
+          Ok([
+            Inert(
+              row:,
+              reason: "a member entry named it and it is no longer an active "
+                <> "member, so calls to it fail",
+            ),
+            ..inert
+          ])
+        Itself ->
+          Error(
+            row.key
+            <> " "
+            <> row.node
+            <> " is this node itself, which is not a peer of itself",
+          )
+        Unknown ->
+          Error(
+            row.key
+            <> " "
+            <> row.node
+            <> " names a node that no entry of the ledger "
+            <> path
+            <> " has ever named: correct the node name, or enroll that node "
+            <> "with `loom distribution enroll`",
+          )
+      }
+    }),
+  )
+  list.reverse(inert)
+}
+
+fn standing(
+  ledger: Ledger,
+  table: membership_ledger.PinTable,
+  local: String,
+  node: String,
+) -> Standing {
+  case node == local, membership_ledger.lookup_node(table, node) {
+    True, _ -> Itself
+    False, Ok(_) -> Linked
+    False, Error(Nil) ->
+      case membership_ledger.member_at(ledger, node) {
+        Ok(_) -> NotLinked
+        Error(Nil) ->
+          case membership_ledger.ever_named(ledger, node) {
+            True -> Departed
+            False -> Unknown
+          }
+      }
   }
 }
 
