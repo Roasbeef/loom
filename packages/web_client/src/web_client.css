@@ -1129,7 +1129,7 @@
   .pc-caret .pc-t{color:var(--color-danger-text);}
   .pc-note .pc-t{color:var(--color-fg-quiet);white-space:pre-wrap;}
   .pc-errh{margin:0 0 2px 0;color:var(--color-danger-text);font:13px/1.5 var(--font-mono);overflow-wrap:anywhere;}
-  .pc-loc{margin:0 0 6px 0;color:var(--color-fg-quiet);font:12px/1.5 var(--font-mono);}
+  .pc-loc{margin:0 0 6px 0;color:var(--color-fg-quiet);font:12px/1.5 var(--font-mono);overflow-wrap:anywhere;}
   .pc-all{margin-top:6px;}
   summary.pc-button{display:inline-block;cursor:pointer;list-style:none;border:1px solid var(--color-divider);border-radius:5px;padding:2px 8px;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
   summary.pc-button:hover{color:var(--color-fg);}
