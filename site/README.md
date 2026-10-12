@@ -87,12 +87,7 @@ Every figure names the repository documents it follows in the comment at the top
 
 All asset URLs are relative, so the site works from a project path such as `https://roasbeef.github.io/loom/` as well as from a custom domain. No server rewrite is needed.
 
-This repository does not carry a workflow for it yet. A workflow would do the following on a push to the branch that Pages publishes:
-
-1. Check out the repository.
-2. Install Erlang/OTP 29 and Gleam 1.19.0 (for example with `erlef/setup-beam`).
-3. Run `make -C site check`.
-4. Upload `site/dist` with `actions/upload-pages-artifact` and publish it with `actions/deploy-pages`.
+`.github/workflows/pages.yml` publishes it. On a pull request that touches `site/`, it runs `make -C site check` and stops. On a push to `main`, it runs the same check, uploads `site/dist` with `actions/upload-pages-artifact` and publishes it with `actions/deploy-pages`. It installs stock Gleam 1.19.0 and Erlang/OTP 29 with `erlef/setup-beam`, because the site builds no Loom package and so does not need the patched toolchain the main CI uses.
 
 Set the repository's Pages source to GitHub Actions. To publish by hand instead, copy the contents of `site/dist` to the `gh-pages` branch.
 
