@@ -318,6 +318,14 @@ const opening_lines = 4
 // The most characters of a row's argument summaries.
 const args_limit = 120
 
+// The most characters of a failure's text, and of one opening line of the
+// program. Both are words the program chose, and a sealed turn keeps its
+// card with only the opening, so without a bound one program could put an
+// arbitrarily large message into every viewer's page.
+const failure_limit = 8000
+
+const line_limit = 240
+
 /// The card of a foreground `code_mode` call, with the result joined to it
 /// when there is one.
 ///
@@ -452,7 +460,11 @@ fn failed(
     )
     _ -> #(RunFailed, said)
   }
-  let text = error |> text_hygiene.multiline |> string.trim
+  let text =
+    error
+    |> text_hygiene.multiline
+    |> string.trim
+    |> bounded(failure_limit)
   let diagnostic = case state {
     CompileFailed -> parse_diagnostic(text)
     Running | Completed | Rejected | RunFailed | ProgramFailed -> None
@@ -482,6 +494,19 @@ fn failed(
   )
 }
 
+// Text cut to `limit` characters with a line saying so, or the text itself
+// when it fits.
+fn bounded(text: String, limit: Int) -> String {
+  case string.drop_start(text, limit) {
+    "" -> text
+    _ ->
+      string.slice(text, 0, limit)
+      <> "\n… cut at "
+      <> int.to_string(limit)
+      <> " characters"
+  }
+}
+
 // --- the program --------------------------------------------------------
 
 // The program's line count and opening, and the whole text when the host
@@ -497,7 +522,7 @@ fn program_of(
     lines: list.length(lines),
     opening: lines
       |> list.index_map(fn(line, index) {
-        SourceLine(index + 1, text_hygiene.single_line(line))
+        SourceLine(index + 1, transcript_lines.compact(line, line_limit))
       })
       |> list.filter(fn(line) { string.trim(line.text) != "" })
       |> list.take(opening_lines),
@@ -539,7 +564,7 @@ fn family_of(module: String, function: String) -> Family {
   case module, function {
     "fs", "read" -> FileRead
     "fs", "list" -> Search
-    "fs", "write" | "fs", "edit" -> FileWrite
+    "fs", "write" | "fs", "edit" | "fs", "delete" -> FileWrite
     "search", _ -> Search
     "lsp", "rename" -> FileWrite
     "lsp", _ | "lsp_sql", _ -> CodeLookup

@@ -460,6 +460,30 @@ pub fn a_program_that_failed_a_call_says_how_many_of_how_many_test() {
   assert program_card.opening(card).program == Collapsed
 }
 
+// A program chooses its own failure message, and a sealed turn keeps the card
+// with only the opening, so the text has a bound of its own.
+pub fn a_failure_message_the_program_chose_is_cut_test() {
+  let card =
+    failed_with("program_failed", [
+      #("message", json.String(string.repeat("x", 50_000))),
+    ])
+  let assert Some(failure) = card.failure
+  assert string.length(failure.text) < 8100
+  assert string.ends_with(failure.text, "cut at 8000 characters")
+}
+
+// One long line of a program is cut where the opening keeps it.
+pub fn an_opening_line_of_a_long_program_is_cut_test() {
+  let assert Some(card) =
+    program_card.read(
+      call([#("program", json.String(string.repeat("y", 5000)))]),
+      None,
+      OpeningOnly,
+    )
+  let assert [line] = card.program.opening
+  assert string.length(line.text) <= 240
+}
+
 pub fn a_deadline_stop_draws_the_unsettled_call_to_the_end_test() {
   let items = [
     ok("fs.read", 0, 3),
