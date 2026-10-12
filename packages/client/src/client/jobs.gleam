@@ -201,6 +201,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/otp/supervision
 import gleam/result
 import gleam/string
+import host/bootstrap as native
 import runtime/residency
 import simplifile
 import telemetry/owner
@@ -501,6 +502,14 @@ pub opaque type Message {
     id: JobId,
     cursors: Cursors,
     reply_with: Subject(Result(Polled, Refusal)),
+  )
+
+  // A production waiter observes completion without polling live tails.
+  WatchOne(
+    strand: String,
+    id: JobId,
+    cursors: Cursors,
+    reply_with: Subject(Result(#(Polled, Option(Subject(Nil))), Refusal)),
   )
 
   ListAll(strand: String, reply_with: Subject(Result(List(Listed), Refusal)))
@@ -911,6 +920,7 @@ type Held {
     custody: Custody,
     listener: Listener,
     idle_wake: IdleWake,
+    completion: Option(Subject(Nil)),
   )
 }
 
@@ -1080,6 +1090,60 @@ pub fn poll_job(
   ask(name, waiting, fn(reply) {
     PollOne(strand:, id:, cursors:, reply_with: reply)
   })
+}
+
+/// Waits on a production job's completion witness, then reads its state.
+///
+/// The witness belongs to the jobs actor and stops only after terminal
+/// processing. Monitoring after it stops still wakes immediately, so there
+/// is no subscription race and no retained waiter list. A down signal is
+/// only a reason to read the authoritative record, never a terminal result.
+/// Injected-clock callers continue to use `await_job`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // jobs.await_completion(name, strand: "main", id:, cursors:, within_ms: 500, waiting: 5000)
+/// ```
+@internal
+pub fn await_completion(
+  name: address.Address(Message),
+  strand strand: String,
+  id id: JobId,
+  cursors cursors: Cursors,
+  within_ms within_ms: Int,
+  waiting waiting: Int,
+) -> Result(Polled, Refusal) {
+  let until = native.monotonic_time_ms() + int.max(within_ms, 0)
+  use #(polled, witness) <- result.try(
+    ask(name, waiting, fn(reply) {
+      WatchOne(strand:, id:, cursors:, reply_with: reply)
+    }),
+  )
+  case witness {
+    None -> Ok(polled)
+    Some(witness) -> {
+      // Even if completion overtook installation, monitoring the dead
+      // witness delivers DOWN. Its parent also takes it down on restart.
+      use pid <- result.try(
+        process.subject_owner(witness)
+        |> result.replace_error(Unavailable(
+          reason: "the completion witness has no owner",
+        )),
+      )
+      let monitor = process.monitor(pid)
+      let selector =
+        process.new_selector()
+        |> process.select_specific_monitor(monitor, fn(down) { down })
+      let _wake =
+        process.selector_receive(
+          selector,
+          int.max(until - native.monotonic_time_ms(), 0),
+        )
+      process.demonitor_process(monitor)
+      poll_job(name, strand:, id:, cursors:, waiting:)
+    }
+  }
 }
 
 /// Every job the strand owns, live and finished.
@@ -1259,6 +1323,12 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
 
     PollOne(strand:, id:, cursors:, reply_with:) -> {
       process.send(reply_with, polled(state, strand, id, cursors))
+      actor.continue(state)
+    }
+
+    WatchOne(strand:, id:, cursors:, reply_with:) -> {
+      let #(state, answer) = watch_one(state, strand, id, cursors)
+      process.send(reply_with, answer)
       actor.continue(state)
     }
 
@@ -1447,6 +1517,7 @@ fn admitted(
       custody: Dispatching(reports:, reply_with:),
       listener: listening(request.audience, caller),
       idle_wake: request.idle_wake,
+      completion: None,
     )
   Ok(State(..state, generator:, jobs: dict.insert(state.jobs, id, held)))
 }
@@ -1993,6 +2064,7 @@ fn cleared(
     // exists to prevent.
     Ok(held), Error(refusal) -> {
       let _dropped = discard(state, id)
+      stop_completion(held.completion)
       answer_starter(
         held,
         Error(ClearanceRefused(reason: refusal_text(refusal))),
@@ -2382,9 +2454,20 @@ fn commit(
             Some(spill) -> jobstate.JobRecord(..stepped, spill:)
           }
           let _written = persist(state, record)
+          let completion = case jobstate.is_terminal(record.state) {
+            True -> {
+              stop_completion(held.completion)
+              None
+            }
+            False -> held.completion
+          }
           State(
             ..state,
-            jobs: dict.insert(state.jobs, id, Held(..held, record:)),
+            jobs: dict.insert(
+              state.jobs,
+              id,
+              Held(..held, record:, completion:),
+            ),
           )
         }
       }
@@ -2434,6 +2517,54 @@ fn owned(state: State, strand: String, id: JobId) -> Result(Held, Refusal) {
         False -> Error(NotFound(id: jobstate.job_id_to_string(id)))
       }
   }
+}
+
+// Only an owning strand can create or learn the completion witness. One
+// linked weft actor serves every waiter and retains no caller information.
+fn watch_one(
+  state: State,
+  strand: String,
+  id: JobId,
+  cursors: Cursors,
+) -> #(State, Result(#(Polled, Option(Subject(Nil))), Refusal)) {
+  let answer = {
+    use held <- result.try(owned(state, strand, id))
+    use polled <- result.try(polled(state, strand, id, cursors))
+    use completion <- result.try(
+      case jobstate.is_terminal(held.record.state), held.completion {
+        True, _witness -> Ok(None)
+        False, Some(witness) -> Ok(Some(witness))
+        False, None ->
+          actor.new(Nil)
+          |> actor.on_message(fn(_state, _finished: Nil) { actor.stop() })
+          |> actor.trapping_exits(True)
+          |> actor.start
+          |> result.map(fn(started) { Some(started.data) })
+          |> result.replace_error(Unavailable(
+            reason: "could not watch job completion",
+          ))
+      },
+    )
+    Ok(#(held, polled, completion))
+  }
+  case answer {
+    Error(refusal) -> #(state, Error(refusal))
+    Ok(#(held, polled, completion)) -> {
+      let state =
+        State(
+          ..state,
+          jobs: dict.insert(state.jobs, id, Held(..held, completion:)),
+        )
+      #(state, Ok(#(polled, completion)))
+    }
+  }
+}
+
+// Stop follows the persistence attempt, so a wake cannot overtake terminal
+// processing. Successful durability retains the existing commit contract.
+fn stop_completion(witness: Option(Subject(Nil))) -> Nil {
+  option.map(witness, fn(subject) { process.send(subject, Nil) })
+  Nil
 }
 
 fn polled(
@@ -2807,6 +2938,7 @@ fn remember(jobs: Dict(JobId, Held), record: JobRecord) -> Dict(JobId, Held) {
       custody: Detached(streams: no_streams()),
       listener: Owner,
       idle_wake: job.QuietUntilDone,
+      completion: None,
     ),
   )
 }
@@ -3252,6 +3384,7 @@ fn drain(state: State, until: Int) -> State {
 
     Ok(Reap)
     | Ok(PollOne(..))
+    | Ok(WatchOne(..))
     | Ok(ListAll(..))
     | Ok(LiveJobs(..))
     | Ok(Kill(..))
@@ -3314,6 +3447,7 @@ fn drained_clearance(
         Error(Unavailable(reason: "this session is stopping")),
       )
       let _dropped = discard(state, id)
+      stop_completion(held.completion)
       State(..state, jobs: dict.delete(state.jobs, id))
     }
 

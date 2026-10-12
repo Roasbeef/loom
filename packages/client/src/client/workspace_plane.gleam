@@ -844,7 +844,7 @@ fn doors_over(
 ) -> Doors {
   Doors(
     scratch: scratch.seam(scratch_name, timeout_ms: scratch.default_timeout_ms),
-    jobs: jobseam.door(jobseam.Wiring(
+    jobs: jobseam.production(jobseam.Wiring(
       name: jobs_name,
       clock:,
       rest: jobseam.real_rest(),
