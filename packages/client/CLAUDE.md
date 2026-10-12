@@ -6365,6 +6365,11 @@ callback keeps every PKIX failure, and for the leaf it requires the SHA-256 pin
 and the exact node name (the certificate's only DNS name containing an `@`) of
 one configured peer, in both directions. Network input never makes an atom:
 peer names become atoms once inside `start`, and `peer` looks them up by string.
+The foreign code also has a live mode, not yet reachable from the Gleam side
+(protocol-change/086, spiked by `test/client_ledger_spike_fixture_ffi.erl`): with
+`live` in place of the peer list, `tls_options` renders no pin and the callback
+checks a leaf against the `pins` row of the protected ETS table `loom_dist_pins`,
+refusing every handshake with `ledger_unavailable` when the table is absent.
 
 Invariants that break things when violated:
 
