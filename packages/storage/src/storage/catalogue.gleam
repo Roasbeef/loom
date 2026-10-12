@@ -31,7 +31,8 @@
 //// 8. `remember_folder`, `recent_folders` and `forget_folder` keep the short list
 ////    of folders the owner recently started a session in, which belongs to no
 ////    session and so outlives every one.
-//// 9. `custody` reads who serves a session, and `begin_move`, `finish_move`,
+//// 9. `custody` reads who serves a session, `custodies` reads it for every
+////    session with a move row in one statement, and `begin_move`, `finish_move`,
 ////    `abort_move` and `import_session` are the compare-and-set transitions of
 ////    a session moving between orchestrators.
 
@@ -1121,6 +1122,35 @@ pub fn is_orchestrator_name(text: String) -> Bool {
 pub fn custody(catalogue: Catalogue, id: String) -> Result(Custody, Error) {
   use _record <- result.try(get(catalogue, id))
   stored_custody(catalogue, id)
+}
+
+/// Reads the custody of every session that has a move row, in one statement.
+///
+/// A listing needs the custody of a whole page. Asking `custody` for each
+/// session costs two statements apiece, while the move table holds a row only
+/// for a session that is in a move or after one, so reading it whole is the
+/// smaller query whatever the catalogue's size. A session with no pair here is
+/// `Resident`.
+///
+/// A row that does not decode is left out, so the session reads as `Resident`
+/// here. That is for display only: `custody`, and every transition that
+/// consults it, still fail on the same row with `Invalid`, so `open`, `restore`
+/// and `delete` refuse on their own.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.custodies(store)
+/// //   == Ok([#(session_id, catalogue.Moving(op: "a", to: "bravo"))])
+/// ```
+pub fn custodies(
+  catalogue: Catalogue,
+) -> Result(List(#(String, Custody)), Error) {
+  use rows <- result.map(query(catalogue, sql.all_session_moves()))
+  list.filter_map(rows, fn(row) {
+    decode_custody(row.op, row.peer, row.state)
+    |> result.map(fn(custody) { #(row.session_id, custody) })
+  })
 }
 
 fn stored_custody(catalogue: Catalogue, id: String) -> Result(Custody, Error) {

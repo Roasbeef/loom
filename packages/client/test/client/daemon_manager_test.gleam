@@ -2323,8 +2323,9 @@ pub fn one_custody_read_answers_for_a_whole_page_of_sessions_test() {
   let assert Ok(_) = manager.finish_move(registry, gone.id, op: op_b)
 
   // Each identity is paired with what `custody` says of it, in the order asked.
-  // A session that has not moved is `Resident`, and one the catalogue does not
-  // hold has no pair, so a listing never fails on a row it cannot read.
+  // A session with no move row is `Resident`, and so is an identity the
+  // catalogue does not hold, because the identities of a listing come from the
+  // catalogue's own page and the read does not check them again.
   assert manager.custodies(registry, [
       going.id,
       "not-a-session",
@@ -2333,6 +2334,7 @@ pub fn one_custody_read_answers_for_a_whole_page_of_sessions_test() {
     ])
     == Ok([
       #(going.id, catalogue.Moving(op: op_a, to: "laptop")),
+      #("not-a-session", catalogue.Resident),
       #(staying.id, catalogue.Resident),
       #(gone.id, catalogue.Moved(op: op_b, to: "desk")),
     ])

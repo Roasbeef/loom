@@ -1994,11 +1994,14 @@ pub fn visibility(
 /// listing of a page marks the moving and moved sessions with one call and not
 /// one for each row.
 ///
-/// The answer pairs each identity with what `custody` would say of it, in the
-/// order asked. A session the catalogue does not hold, and one whose stored move
-/// row does not decode, has no pair: a listing is a display, and a row that
-/// shows less than it could is the safe way to be wrong, since `open`, `restore`
-/// and `delete` read the row again and refuse on their own.
+/// The answer pairs each identity with its custody, in the order asked, from one
+/// read of the move table (`catalogue.custodies`). An identity with no move row
+/// is `Resident`, which includes one the catalogue does not hold: the identities
+/// of a listing come from the catalogue's own page, so none is checked again. A
+/// stored move row that does not decode also reads as `Resident` here. A listing
+/// is a display, and a row that shows less than it could is the safe way to be
+/// wrong, since `open`, `restore` and `delete` read the row again and refuse on
+/// their own.
 ///
 /// ## Examples
 ///
@@ -2705,13 +2708,18 @@ fn handle(
       sm.keep(book)
     }
     Custodies(ids, reply) -> {
+      // One statement reads every move row, and each asked identity is paired
+      // with its row or with `Resident`, in the order asked.
       let read =
-        list.filter_map(ids, fn(id) {
-          catalogue.custody(book.catalogue, id)
-          |> result.map(fn(custody) { #(id, custody) })
-          |> result.replace_error(Nil)
+        catalogue.custodies(book.catalogue)
+        |> result.map(fn(rows) {
+          let moves = dict.from_list(rows)
+          list.map(ids, fn(id) {
+            #(id, result.unwrap(dict.get(moves, id), catalogue.Resident))
+          })
         })
-      process.send(reply, Ok(read))
+        |> result.map_error(Catalogue)
+      process.send(reply, read)
       sm.keep(book)
     }
     BeginMove(caller, epoch, id, to, op, reply) -> {
