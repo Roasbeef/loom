@@ -253,15 +253,7 @@ pub fn parse_reads_each_operation_test() {
     == Ok(todos.Block(todos.OneTask("a"), Some("waiting")))
 }
 
-pub fn parse_refuses_ambiguous_and_incomplete_calls_test() {
-  let assert Error(_) =
-    todos.parse(
-      args([
-        #("op", json.String("done")),
-        #("task", json.String("a")),
-        #("phase", json.String("P")),
-      ]),
-    )
+pub fn parse_refuses_incomplete_calls_test() {
   let assert Error(_) = todos.parse(args([#("op", json.String("block"))]))
   let assert Error(_) = todos.parse(args([#("op", json.String("start"))]))
   let assert Error(_) =
@@ -432,6 +424,19 @@ pub fn every_missing_field_refusal_shows_a_call_for_that_op_test() {
     == Error(
       "`init` needs a non-empty `items` list, e.g. {\"op\":\"init\",\"items\":[\"Write the parser\",\"Add tests\"]}",
     )
+}
+
+// A model that names a task with its phase means the task; the pair used
+// to be refused, and the same refusal came back on every retry.
+pub fn a_task_named_with_its_phase_targets_the_task_test() {
+  assert todos.parse(
+      args([
+        #("op", json.String("done")),
+        #("task", json.String("Pilot the questions")),
+        #("phase", json.String("Judge")),
+      ]),
+    )
+    == Ok(todos.Finish(todos.OneTask("Pilot the questions")))
 }
 
 pub fn an_unknown_op_lists_the_known_ops_test() {
