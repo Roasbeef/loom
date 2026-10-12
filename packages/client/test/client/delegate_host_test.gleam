@@ -281,6 +281,10 @@ pub fn a_parent_that_is_not_a_session_identity_is_an_invalid_argument_test() {
       reason: "the parent session is not a session identity",
     ))
   assert catalogue.delegates_held(store, "laptop") == Ok(0)
+
+  // Nothing was created for the malformed pair, under the key it would have had.
+  assert catalogue.by_request_key(store, "delegate:laptop:s1")
+    == Error(catalogue.Missing)
   stop(registry)
   assert catalogue.close(store) == Ok(Nil)
 }

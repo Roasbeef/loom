@@ -766,11 +766,15 @@ type Source {
 }
 
 // The deepest child this source may have: the Agency's own cap for a strand of
-// this session, and the spawner's `max_depth` for a remote parent.
+// this session, and for a remote parent the spawner's `max_depth` but never
+// above that same cap. A remote child's own spawn is judged as a local one
+// against the cap, so a limit above it would hand the child a spawn tool that
+// every call of it would be refused.
 fn depth_limit(config: Config, source: Source) -> Int {
   case source {
     Local -> config.depth_cap
-    Delegated(delegation) -> delegation.terms.max_depth
+    Delegated(delegation) ->
+      int.min(delegation.terms.max_depth, config.depth_cap)
   }
 }
 
@@ -2882,19 +2886,29 @@ fn joined(
           report:,
           result:,
           notes:,
-          usage: result.unwrap(
-            dict.get(usage, handle.strand),
-            remote_spawn.ChildUsage(
-              input: 0,
-              output: 0,
-              cache_read: 0,
-              cache_write: 0,
-              cost: 0.0,
-            ),
-          ),
+          usage: usage_of(usage, handle.strand),
         )
       Pending(handle:, waited_ms:) -> remote_spawn.Pending(handle:, waited_ms:)
     }
+  })
+}
+
+// A settled child's usage. `child_usage.of_strands` keys every strand it is
+// asked about, so the lookup cannot miss. A `let assert` saying so would be the
+// plain form, but lint R4 bars it from `src`, so the miss arm is a zero that is
+// built lazily and never reached.
+fn usage_of(
+  usage: Dict(String, remote_spawn.ChildUsage),
+  strand: String,
+) -> remote_spawn.ChildUsage {
+  result.lazy_unwrap(dict.get(usage, strand), fn() {
+    remote_spawn.ChildUsage(
+      input: 0,
+      output: 0,
+      cache_read: 0,
+      cache_write: 0,
+      cost: 0.0,
+    )
   })
 }
 

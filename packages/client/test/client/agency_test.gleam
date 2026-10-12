@@ -5314,7 +5314,12 @@ pub fn the_delegate_caps_are_the_agencys_own_and_the_spawners_depth_test() {
 }
 
 pub fn a_deeper_spawner_lets_a_child_hold_the_spawn_tool_only_below_its_limit_test() {
-  let harness = start_harness(Settles("done"))
+  // The Agency's own cap is raised to match the spawner's, so the state is
+  // consistent: a child that holds the spawn tool can use it.
+  let harness =
+    start_harness_with(Settles("done"), fn(config) {
+      agency.Config(..config, depth_cap: 2)
+    })
   let deeper =
     remote_spawn.Terms(
       ..remote_terms(),
@@ -5554,5 +5559,40 @@ pub fn the_port_refuses_a_spawn_the_spawners_table_forbids_test() {
     )
     == Ok(Error(remote_spawn.CapReached(cap: remote_spawn.MaxDepth, limit: 1)))
   assert sub_strands(harness) == []
+  close(harness)
+}
+
+pub fn a_spawner_depth_above_the_agencys_cap_gives_no_spawn_tool_test() {
+  // The default cap is one, and a remote child's own spawn is judged against
+  // it, so `max_depth = 2` must not hand the child a tool it could never use.
+  let harness = start_harness(Settles("done"))
+  let deeper =
+    remote_spawn.Terms(
+      ..remote_terms(),
+      ceiling: ["agent_note", "agent_send", "agent_spawn", "bash"],
+      max_depth: 2,
+    )
+  let root = remote_spawn.Delegation(..remote_delegation(), terms: deeper)
+  let assert Ok(child) =
+    agency.delegate_spawn(
+      harness.config,
+      root,
+      site_of("turn-1:tools", 0),
+      remote_spawn.Request(
+        ..remote_request("capped"),
+        tools: Some(["agent_spawn", "bash"]),
+      ),
+    )
+  assert !list.contains(child.tools, "agent_spawn")
+
+  // Nor may a parent already at that cap have a child at all.
+  let leaf = remote_spawn.Delegation(..root, depth: 1)
+  assert agency.delegate_spawn(
+      harness.config,
+      leaf,
+      site_of("turn-2:tools", 0),
+      remote_request("deeper"),
+    )
+    == Error(remote_spawn.CapReached(cap: remote_spawn.MaxDepth, limit: 1))
   close(harness)
 }

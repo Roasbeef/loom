@@ -56,7 +56,7 @@ import weft/poll
 pub const open_budget_ms = 20_000
 
 /// How often the wait looks at the registry, in milliseconds.
-const open_poll_ms = 25
+const open_poll_ms = 200
 
 /// What the registry needs to find or make a delegate session, and how to reach
 /// its Agency once it is resident.
