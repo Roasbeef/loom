@@ -1,6 +1,6 @@
 # Current handoff
 
-Baselined October 12, 2026 against main `3146d3676` (through PR #934),
+Baselined October 12, 2026 against main `b197c9566` (through PR #964),
 with the tool-latency work rebased for PR #949. The original measurements use
 `4417fdb6a073865660bf029495a9ecf08bc9e315` and the candidates named in their
 reports. Work is on `perf/tool-latency` in the isolated `5086/loom` worktree.
@@ -10,9 +10,28 @@ The prior integrated head `f918ae5df` passed full local `make check`, hosted CI
 and Linux signoff. Main then advanced through the program-card web changes and
 Khepri directory work. Rebasing replayed the individual feature commits; the
 conflicts were handoff snapshots and the generated stylesheet's source digest.
-`make gen-client` regenerated the assets. The new head requires fresh local,
-hosted and Linux validation; the prior green gates do not attest to it.
+`make gen-client` regenerated the assets. The prior green gates do not attest to the final rebased head.
 The automatic merge timer has been removed at the owner's request.
+
+## Final merge validation boundary
+
+The first rebase, `7515d0d82`, passed full local `make check` with exit 0,
+including 3,931 client, 1,331 TUI and 98 conformance tests. Its Linux signoff
+failed an unchanged LSP fixture: a late concurrent caller correctly received
+`Warm`, while the test assumed all spawned callers reached the manager during
+startup. Five focused baseline runs passed. The corrected fixture holds
+transport startup until a test-only OTP state snapshot proves all three callers
+are parked, preserving every original assertion. It passed 100 parallel
+repetitions and all 52 manager tests, and independent review found no issue.
+
+Hosted macOS end-to-end CI exhausted its 20-minute job budget during progressing
+code-mode tests, after bootstrap and conformance steps passed. The job budget
+is now 30 minutes; individual test deadlines are unchanged. The final rebase
+also brings in main's distributed membership-ledger and remote-subagent work.
+The owner explicitly authorized force merge without another full hosted/Linux
+cycle. Final build, focused test and documentation results are recorded on
+PR #949; do not treat this authorization as a fresh Linux signoff. The recurring
+automation was deleted, and the installed daemon remains unchanged.
 
 ## What moved
 
@@ -191,12 +210,11 @@ compare live resource profiles after an authorized deployment under a matched
 workload. The installed daemon remains unchanged, and no live CPU or memory
 reduction is claimed for this candidate.
 
-## Earlier distributed and directory handoff
+## Inherited main handoff
 
-The following is the inherited main handoff, retained for its design rulings,
-measurements and open work. Its branch and merge-status statements are
-historical: PR #923 and the Khepri directory PR #934 are merged into the base
-above. Consult current code and exact-head CI for current readiness.
+The following is the main handoff at `b197c9566`, retained for its design
+rulings, evidence and open work. Its earlier branch-status statements are
+historical; the corresponding work is in the base above.
 
 This edition covers the distributed runtime (issue #697) on
 `distributed/simplify`, rebuilt from `main` at `7091d5a42` after PR #819 was
@@ -382,8 +400,9 @@ a peer can send, which is scope hygiene and not a security boundary.
   next attempt, up to five minutes later once the backoff has grown; nothing tells
   the sender's drainer that a recipient opened. A message queued while the drainer
   is backed off for older messages waits for the same tick.
-- The TUI does not render the `moving` and `moved` members of a session view. The
-  source keeps a tombstone row, which lists as saved.
+- A session that moved is not listed on its source: `sessions.list` carries `moved`
+  and both clients leave the tombstone out. It lists only on the receiver, until the
+  elsewhere group (protocol-change/085) shows it from the source's side.
 - The receiver identifies the sender by `from_node` through its `[orchestrators]`
   table, as claimed by the sender. Copies refused or abandoned stay in `incoming/`,
   and a failed rename of the moved-away file is not logged.
