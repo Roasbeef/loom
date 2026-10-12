@@ -112,6 +112,7 @@ import client/peer_mail
 import client/peer_outbox_drain
 import client/peers
 import client/profile_switch
+import client/proposals
 import client/remote/owner_port
 import client/remote/protocol
 import client/remote/remote_census
@@ -3251,6 +3252,12 @@ fn assemble_in(
   use memory_store <- result.try(beside_session(settings, memory.memory_file))
   use memory_notes <- result.try(beside_session(settings, memory.notes_file))
 
+  // The approved-rules file is protected on the same argument, one step
+  // further: the prompt carries it whole at the start of every new session,
+  // so a file a jailed process could write would be a standing instruction
+  // channel. Only `client/proposals` writes it, one approval at a time.
+  use rules_path <- result.try(beside_session(settings, proposals.rules_file))
+
   // The workspace half is prepared here, before anything of the owner's is
   // opened and before any lease is taken: the toolchain is located and
   // judged against the session base (a base built before the toolchain is
@@ -3278,6 +3285,7 @@ fn assemble_in(
             Some(workspace_policy.OwnerFiles(
               index: index_path,
               memory_store:,
+              rules: rules_path,
               memory_notes:,
             )),
             blob_root,
@@ -3531,6 +3539,21 @@ fn assemble_in(
   // published by the observer below and relayed by the hub as pushed
   // `tool_output` frames (`protocol-change/031`).
   let event_bus = bus.start()
+
+  // The proposal queue: the `propose` tool and the operator's two commands
+  // are doors over this one wiring. The queue lives in the domain's memory
+  // store beside the rules file it edits, so it needs no runtime and every
+  // session of the domain reaches the same one.
+  let proposal_wiring =
+    proposals.Wiring(
+      store_path: memory_store,
+      rules_path:,
+      session: settings.session_id,
+      clock:,
+      entropy:,
+      bus: event_bus,
+      logger:,
+    )
 
   // Code mode, and the MCP servers it reaches, are one decision made on
   // the census: the second is unreachable without the first. The owner
@@ -3890,6 +3913,12 @@ fn assemble_in(
         // `advisor.ensure_strand` grants it to the advisor alone. The
         // seam refuses a call from any other strand in any case, by the
         // caller's durable name.
+        // `propose` files a suggestion in the queue above and never blocks,
+        // so it is registered unconditionally, like the skill and peer tools.
+        contributions.Contribution(
+          contributions.BuiltIn,
+          contributions.proposal_tools(proposals.seam(proposal_wiring)),
+        ),
         contributions.Contribution(contributions.BuiltIn, case advisor_wiring {
           None -> []
           Some(wiring) -> [advise.tool(advisor.seam(wiring))]
@@ -3956,6 +3985,7 @@ fn assemble_in(
       render_prompt(
         settings,
         plane,
+        rules_path,
         // The prompt is one string for every strand, so the advisor's
         // own tool is left out of the index the primary reads; the
         // advisor is told about it by its brief instead.
@@ -4503,7 +4533,8 @@ fn assemble_in(
             // a session with a routed advisor telling its operator it
             // has no reviewer.
             |> with_goal_control(advisor_wiring)
-            |> with_schedule_admin(schedule_admin),
+            |> with_schedule_admin(schedule_admin)
+            |> hub.with_proposals(proposals.admin(proposal_wiring)),
           name,
         )
       }),
@@ -5375,16 +5406,26 @@ fn with_history(
 fn render_prompt(
   settings: Settings,
   plane: workspace_plane.WorkspacePlane,
+  rules_path: String,
   tools: List(String),
   available_tools: List(String),
 ) -> Result(system_prompt.Rendered, String) {
   use facts <- result.try(plane.prompt_facts())
   let census = plane.census
   let #(standing, standing_notes) = system_prompt.discover_user(settings.home)
+
+  // The approved-rules file is read here, on the owner, because it is the
+  // owner's file, and it goes last: it follows the operator's and the
+  // project's files so that nothing a person approved can displace them.
+  let #(approved, approved_notes) = proposals.guidance(rules_path)
   let #(guidance, notes) =
     system_prompt.render_guidance(
-      list.append(option.values([standing]), facts.guidance),
-      list.append(standing_notes, facts.guidance_notes),
+      list.flatten([
+        option.values([standing]),
+        facts.guidance,
+        option.values([approved]),
+      ]),
+      list.flatten([standing_notes, facts.guidance_notes, approved_notes]),
     )
   use #(origin, source) <- result.try(
     system_prompt.pack_source(

@@ -53,6 +53,7 @@ fn files(settings: serve.Settings) -> workspace_policy.OwnerFiles {
   workspace_policy.OwnerFiles(
     index: settings.session_path <> ".index",
     memory_store: settings.session_path <> ".memory",
+    rules: settings.session_path <> ".rules",
     memory_notes: settings.session_path <> ".notes",
   )
 }

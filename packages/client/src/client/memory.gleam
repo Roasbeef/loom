@@ -47,19 +47,25 @@
 //// And the reserved-fact-prefix machinery does not apply. `runtime/api`
 //// refuses a model-supplied `put_fact` under a reserved prefix because a
 //// model can reach `put_fact`; nothing model-influenced can reach a
-//// register in *this* file directly. The one door is `remember`, which
-//// appends a note entry. The host chooses the key and the entry type: the
-//// model supplies text and nothing that names a register or a type. So the
-//// bookkeeping cell (`remember/count`) is a plain `fact.custom` cell and
-//// needs no prefix reservation.
+//// register in *this* file directly. There are two doors, `remember`, which
+//// appends a note entry, and `propose` (`client/proposals`), which writes a
+//// `proposal/<id>` cell. In both, the host chooses the key, the state and the
+//// entry type: the model supplies text and nothing that names a register, a
+//// state or a type. So the bookkeeping cells (`remember/count` and the
+//// `proposal/` rows) are plain `fact.custom` cells and need no prefix
+//// reservation.
 ////
 //// # The writer lease serializes every write
 ////
 //// One SQLite writer lease per file, taken at open for `lease_ttl_ms`, which
-//// covers one commit. No heartbeat: a caller that arrives while another holds
-//// the lease is refused in band and told which owner holds it. The boot's own
+//// covers one commit. `remember`, `proposals.submit` and `proposals.decide`
+//// all take it, so there is no second writer between them; an approval
+//// holds it a little longer, across reading the rules file, writing it and
+//// the commit. No heartbeat: a caller that arrives while another holds the
+//// lease is refused in band and told which owner holds it. The boot's own
 //// probe opens nothing; it reads the file's header without taking a lease.
-//// The first `remember` in a repository with no store is what creates one.
+//// Either door may create the store: the first `remember` or the first
+//// `propose` in a repository with no store is what creates one.
 ////
 //// # The notes index crosses to the server as bytes, not as a read
 ////

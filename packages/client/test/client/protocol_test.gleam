@@ -798,3 +798,106 @@ pub fn a_profile_snapshot_round_trips_and_omits_the_default_test() {
     as "the default roles are the absence of the field"
   assert string.contains(encoded, "\"moved\":1")
 }
+
+// --- proposed rules (protocol-change/086) ----------------------------------
+
+pub fn the_proposal_commands_round_trip_test() {
+  list.each(
+    [
+      protocol.ProposalsGet,
+      protocol.ProposalDecide(
+        id: "prop-0123456789",
+        decision: protocol.ProposalApprove,
+      ),
+      protocol.ProposalDecide(
+        id: "prop-0123456789",
+        decision: protocol.ProposalReject,
+      ),
+    ],
+    fn(command) {
+      let encoded =
+        protocol.encode_command(protocol.CommandEnvelope(id: 50, command:))
+      assert protocol.decode_command(encoded)
+        == Ok(protocol.CommandEnvelope(id: 50, command:))
+    },
+  )
+}
+
+pub fn the_proposal_commands_have_their_documented_wire_form_test() {
+  assert protocol.encode_command(protocol.CommandEnvelope(
+      id: 7,
+      command: protocol.ProposalDecide(
+        id: "prop-0123456789",
+        decision: protocol.ProposalApprove,
+      ),
+    ))
+    == "{\"v\":2,\"id\":7,\"cmd\":\"proposal_decide\",\"body\":{\"id\":\"prop-0123456789\",\"decision\":\"approve\"}}"
+  assert protocol.encode_command(protocol.CommandEnvelope(
+      id: 8,
+      command: protocol.ProposalsGet,
+    ))
+    == "{\"v\":2,\"id\":8,\"cmd\":\"proposals_get\",\"body\":{}}"
+}
+
+pub fn a_decision_must_name_an_id_and_a_known_answer_test() {
+  list.each(
+    [
+      "{}",
+      "{\"id\":\"prop-0123456789\"}",
+      "{\"decision\":\"approve\"}",
+      "{\"id\":\"prop-0123456789\",\"decision\":\"maybe\"}",
+      "{\"id\":\"prop-0123456789\",\"decision\":true}",
+      "{\"id\":7,\"decision\":\"approve\"}",
+    ],
+    fn(body) {
+      assert result.is_error(protocol.decode_command(
+        "{\"v\":2,\"id\":51,\"cmd\":\"proposal_decide\",\"body\":"
+        <> body
+        <> "}",
+      ))
+    },
+  )
+}
+
+pub fn a_proposals_snapshot_round_trips_test() {
+  let event =
+    protocol.SnapshotEvent(
+      protocol.ProposalsSnapshot(
+        board: json.Object([
+          #("proposals", json.Array([])),
+          #("pending", json.Int(0)),
+          #("limit", json.Int(64)),
+        ]),
+      ),
+    )
+  let encoded =
+    protocol.encode_event(protocol.EventEnvelope(
+      reply_to: Some(5),
+      seq: None,
+      event:,
+    ))
+  assert protocol.decode_event(encoded)
+    == Ok(protocol.EventEnvelope(reply_to: Some(5), seq: None, event:))
+}
+
+pub fn a_proposals_snapshot_without_a_board_is_refused_test() {
+  assert result.is_error(protocol.decode_event(
+    "{\"v\":2,\"event\":\"snapshot\",\"body\":{\"mode\":\"proposals\"}}",
+  ))
+}
+
+pub fn a_proposals_changed_push_round_trips_with_an_empty_body_test() {
+  let encoded =
+    protocol.encode_event(protocol.EventEnvelope(
+      reply_to: None,
+      seq: None,
+      event: protocol.ProposalsChanged,
+    ))
+  assert encoded == "{\"v\":2,\"event\":\"proposals_changed\",\"body\":{}}"
+  assert protocol.decode_event(encoded)
+    == Ok(protocol.EventEnvelope(
+      reply_to: None,
+      seq: None,
+      event: protocol.ProposalsChanged,
+    ))
+}

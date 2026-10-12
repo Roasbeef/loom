@@ -17,6 +17,7 @@ import client/goalcommand
 import client/grants
 import client/permissions
 import client/profile_switch
+import client/proposals
 import client/protocol
 import client/provider_relay
 import client/schedule
@@ -7397,4 +7398,214 @@ pub fn authenticated_observer_cannot_ask_or_read_private_side_queries_test() {
         as "observers cannot use side inference or read side history"
     },
   )
+}
+// --- proposed rules (protocol-change/086) ----------------------------------
+
+fn a_proposal(id: String, state: proposals.State) -> proposals.Proposal {
+  proposals.Proposal(
+    id:,
+    kind: proposals.Rule,
+    target: proposals.rules_file,
+    base_digest: "cbf29ce484222325-0",
+    old: "",
+    new: "Run make check before pushing.",
+    rationale: "it failed twice",
+    source: proposals.Source(session: "sess-01", entry: None),
+    created_ms: 1_790_000_000_000,
+    state:,
+  )
+}
+
+// A queue scripted by id, so each refusal the gateway maps can be asked for
+// by name. The behaviour of the real queue is `proposals_test`'s.
+fn scripted_proposals() -> proposals.Admin {
+  proposals.Admin(
+    list: fn() {
+      Ok(proposals.Listing(
+        proposals: [a_proposal("prop-0000000001", proposals.Pending)],
+        pending: 1,
+      ))
+    },
+    decide: fn(id, _decision) {
+      case id {
+        "prop-0000000001" -> Ok(a_proposal(id, proposals.Approved))
+        "prop-0000000002" ->
+          Error(proposals.AlreadyDecided(state: proposals.Rejected))
+        "prop-0000000003" -> Error(proposals.Busy(owner: "loom-remember"))
+        "prop-0000000004" -> Error(proposals.CannotApply("the rules are full"))
+        _ -> Error(proposals.NoSuchProposal)
+      }
+    },
+    channel: bus.unidentified_key(name: "proposals:scripted"),
+  )
+}
+
+fn start_harness_with_proposals() -> Harness {
+  start_harness_adjusted(
+    None,
+    None,
+    None,
+    None,
+    SettlingProvider,
+    None,
+    None,
+    gateway.with_proposals(_, scripted_proposals()),
+  )
+}
+
+fn proposals_board(harness: Harness, id: Int) -> json.JsonValue {
+  let envelope = next(harness)
+  assert envelope.reply_to == Some(id)
+  let assert protocol.SnapshotEvent(protocol.ProposalsSnapshot(board:)) =
+    envelope.event
+    as "a proposals snapshot was expected"
+  board
+}
+
+pub fn proposals_get_answers_the_queue_board_test() {
+  let harness = start_harness_with_proposals()
+  subscribe(harness)
+  send(harness, 60, protocol.ProposalsGet)
+  let assert json.Object(fields) = proposals_board(harness, 60)
+  assert list.key_find(fields, "pending") == Ok(json.Int(1))
+  assert list.key_find(fields, "limit") == Ok(json.Int(64))
+  let assert Ok(json.Array([row])) = list.key_find(fields, "proposals")
+  assert proposals.decode(row)
+    == Ok(a_proposal("prop-0000000001", proposals.Pending))
+}
+
+pub fn a_decision_is_answered_with_the_queue_that_remains_test() {
+  let harness = start_harness_with_proposals()
+  subscribe(harness)
+  send(
+    harness,
+    61,
+    protocol.ProposalDecide(
+      id: "prop-0000000001",
+      decision: protocol.ProposalApprove,
+    ),
+  )
+  let assert json.Object(fields) = proposals_board(harness, 61)
+  assert list.key_find(fields, "limit") == Ok(json.Int(64))
+}
+
+pub fn a_decision_the_queue_refuses_maps_to_its_wire_code_test() {
+  let harness = start_harness_with_proposals()
+  subscribe(harness)
+  list.each(
+    [
+      #("prop-0000000002", protocol.code_conflict),
+      #("prop-0000000003", protocol.code_conflict),
+      #("prop-0000000004", protocol.code_internal),
+      #("prop-0000000005", protocol.code_bad_request),
+    ],
+    fn(case_) {
+      send(
+        harness,
+        62,
+        protocol.ProposalDecide(id: case_.0, decision: protocol.ProposalReject),
+      )
+      expect_error(harness, 62, case_.1)
+    },
+  )
+}
+
+pub fn a_host_with_no_queue_answers_unsupported_test() {
+  let harness = start_harness()
+  subscribe(harness)
+  send(harness, 63, protocol.ProposalsGet)
+  expect_error(harness, 63, protocol.code_unsupported)
+  send(
+    harness,
+    64,
+    protocol.ProposalDecide(
+      id: "prop-0000000001",
+      decision: protocol.ProposalApprove,
+    ),
+  )
+  expect_error(harness, 64, protocol.code_unsupported)
+}
+
+// Reading and deciding are the owner's: a member operator may allow once and
+// deny, but the proposals are model text a person is about to turn into a
+// rule for later sessions, and an observer may not touch them at all.
+pub fn only_the_owner_may_read_or_decide_proposals_test() {
+  let harness = start_harness_with_proposals()
+  let #(member, _, _) =
+    authenticated(harness, access.Participant(access.Operator), process.self())
+  let #(observer, _, _) =
+    authenticated(harness, access.Participant(access.Observer), process.self())
+  list.each([member, observer], fn(handle) {
+    list.each(
+      [
+        #(970, protocol.ProposalsGet),
+        #(
+          971,
+          protocol.ProposalDecide(
+            id: "prop-0000000001",
+            decision: protocol.ProposalApprove,
+          ),
+        ),
+      ],
+      fn(sent) {
+        gateway.connection_text(
+          handle,
+          protocol.encode_command(protocol.CommandEnvelope(sent.0, sent.1)),
+        )
+        let assert protocol.ErrorEvent(code: "forbidden", ..) =
+          next_reply(harness, sent.0, 20).event
+          as "only the owner reviews proposals"
+      },
+    )
+  })
+  let #(owner, _, _) = authenticated_owner(harness, process.self())
+  gateway.connection_text(
+    owner,
+    protocol.encode_command(protocol.CommandEnvelope(972, protocol.ProposalsGet)),
+  )
+  let assert protocol.SnapshotEvent(protocol.ProposalsSnapshot(..)) =
+    next_reply(harness, 972, 20).event
+    as "the owner reads the queue"
+}
+
+fn proposals_fixture_id() -> ids.SessionId {
+  let #(id, _) =
+    ids.mint_session(ids.generator(clock.fixed(at: 1_700_000_000_000), 4213))
+  id
+}
+
+/// A change to the queue published on the session's `Outputs` topic reaches a
+/// subscribed network peer as a pushed `proposals_changed` frame with an empty
+/// body, no `reply_to` and no `seq`. Nothing follows it: the push is an
+/// invalidation and the peer reads the queue again.
+pub fn a_network_hub_pushes_proposals_changed_from_the_bus_test() {
+  let events_bus = bus.start()
+  let harness =
+    start_harness_reserved(
+      None,
+      None,
+      None,
+      Some(proposals_fixture_id()),
+      SettlingProvider,
+      Some(events_bus),
+    )
+  let inbox = process.new_subject()
+  let #(_handle, _auth, _closed) =
+    network_socket(
+      harness.hub,
+      harness.runtime,
+      inbox,
+      operator("alice", "Alice"),
+      access.Participant(access.Operator),
+    )
+  bus.publish(
+    events_bus,
+    session: bus.key(of: api.session_id(harness.runtime)),
+    event: bus.ProposalsChanged,
+  )
+  let envelope = next_on(inbox)
+  assert envelope.reply_to == None
+  assert envelope.seq == None
+  assert envelope.event == protocol.ProposalsChanged
+  assert process.receive(inbox, within: 100) == Error(Nil)
 }

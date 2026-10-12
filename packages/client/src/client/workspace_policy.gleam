@@ -74,6 +74,9 @@ pub type OwnerFiles {
     index: String,
     /// The absolute path of the memory store.
     memory_store: String,
+    /// The absolute path of the approved-rules file the system prompt
+    /// carries (`client/proposals`).
+    rules: String,
     /// The absolute path of the notes index sidecar.
     memory_notes: String,
   )
@@ -865,9 +868,10 @@ fn protecting_owner_files(
 ) -> policy.SandboxPolicy {
   case files {
     None -> base
-    Some(OwnerFiles(index:, memory_store:, memory_notes:)) ->
+    Some(OwnerFiles(index:, memory_store:, memory_notes:, rules:)) ->
       protecting_index(base, index)
       |> protecting_memory(memory_store, memory_notes)
+      |> protecting_rules(rules)
   }
 }
 
@@ -1259,6 +1263,29 @@ pub fn protecting_memory(
     notes_path,
     ..sqlite_side_files(store_path)
   ])
+}
+
+/// The base policy with the approved-rules file protected.
+///
+/// The prompt carries this file at the start of every new session, so a file
+/// a jailed process could write would be a standing instruction channel into
+/// every later session. Only the host writes it, one approved proposal at a
+/// time (`client/proposals`). Like the memory files it is conditional: it does
+/// not exist until the first approval, and the jail refuses to mask a missing
+/// protected path under a read-only parent, so the mask arrives with the file.
+/// The prompt's own fence (`origin=approved-proposal`) does not depend on this.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // workspace_policy.protecting_rules(base, "/d/loom-rules.md")
+/// ```
+///
+pub fn protecting_rules(
+  base: policy.SandboxPolicy,
+  rules_path: String,
+) -> policy.SandboxPolicy {
+  protecting(base, always: [], where_maskable: [rules_path])
 }
 
 /// Every path under the daemon's state root that must stay masked from

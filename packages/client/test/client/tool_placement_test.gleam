@@ -29,6 +29,7 @@ import tools/codemode as codemode_tool
 import tools/context as context_tool
 import tools/history as history_tool
 import tools/job
+import tools/propose
 import tools/remember
 import tools/schedule as schedule_tool
 import tools/tool
@@ -115,6 +116,11 @@ fn owner_built() -> List(tool.Tool) {
     built.session,
     skill_tool.tools(a_skill_catalogue()),
     peers.tools(a_peer_wiring()),
+    contributions.proposal_tools(
+      propose.Proposals(submit: fn(_submission) {
+        Error(propose.Unavailable("a fixture"))
+      }),
+    ),
     [
       advise.tool(
         advise.Advice(judge: fn(_strand, _verdict) { Error("a fixture") }),
@@ -207,8 +213,8 @@ pub fn every_registered_name_is_placed_exactly_once_test() {
     ])
     as "the built-in halves never claim one name twice"
   let registered = tool.names(registry)
-  assert list.length(registered) == 28
-    as "ten workspace tools and eighteen owner tools"
+  assert list.length(registered) == 29
+    as "ten workspace tools and nineteen owner tools"
   list.each(registered, fn(name) {
     assert result.is_ok(tool_placement.placement(name))
       as { "`" <> name <> "` is registered and placed on no side" }

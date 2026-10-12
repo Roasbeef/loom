@@ -344,8 +344,29 @@ pub type Command {
   /// in which case nothing was written.
   PermissionForget(target: ForgetTarget, expected_seq: Option(Int))
 
+  /// Reads the standing-rule proposals a model has queued and the decisions
+  /// already made on them. Answered by a `proposals` snapshot.
+  ///
+  /// Owner-only and not an observer's read, for the reason `PermissionsGet`
+  /// is: the proposals are model-authored text a person is about to turn into
+  /// a rule (`protocol-change/086`).
+  ProposalsGet
+
+  /// Approves or rejects one pending proposal. Answered by the fresh
+  /// `proposals` snapshot, and refused (`code_conflict`) when the proposal
+  /// was decided already. An approval that finds the rules file moved is not
+  /// refused: the proposal is marked `stale`, nothing is written, and the
+  /// snapshot shows it.
+  ProposalDecide(id: String, decision: ProposalDecision)
+
   /// A well-formed envelope with an unknown command name, kept as data.
   UnknownCommand(cmd: String, body: JsonValue)
+}
+
+/// A person's answer to a pending proposal.
+pub type ProposalDecision {
+  ProposalApprove
+  ProposalReject
 }
 
 /// What a `permission_forget` names.
@@ -450,6 +471,11 @@ pub type Snapshot {
   /// both `permissions` and a successful `permission_forget`, so one reply
   /// redraws the list after a forget.
   PermissionsSnapshot(board: JsonValue)
+
+  /// The proposal queue (`client/proposals.board`): the reply to both
+  /// `proposals` and `proposal_decide`, so one reply redraws the review
+  /// list after a decision (protocol-change/086).
+  ProposalsSnapshot(board: JsonValue)
 
   /// The session's model role profile and the profiles the configuration
   /// defines: the reply to both `profile_get` and `profile_set`
@@ -737,6 +763,10 @@ pub type Event {
 
   /// The authoritative goal cell changed; subscribed peers re-read it.
   GoalChanged
+
+  /// A proposal was queued or decided; subscribed peers re-read the queue.
+  /// Carries no data, as `GoalChanged` carries none (protocol-change/086).
+  ProposalsChanged
 
   /// One usage-ledger append.
   UsageEvent(
@@ -1105,7 +1135,22 @@ fn command_body(command: Command) -> #(String, JsonValue) {
         #("expected_seq", option.map(expected_seq, json.Int)),
       ]),
     )
+    ProposalsGet -> #("proposals_get", json.Object([]))
+    ProposalDecide(id:, decision:) -> #(
+      "proposal_decide",
+      json.Object([
+        #("id", json.String(id)),
+        #("decision", json.String(proposal_decision_name(decision))),
+      ]),
+    )
     UnknownCommand(cmd:, body:) -> #(cmd, body)
+  }
+}
+
+fn proposal_decision_name(decision: ProposalDecision) -> String {
+  case decision {
+    ProposalApprove -> "approve"
+    ProposalReject -> "reject"
   }
 }
 
@@ -1537,6 +1582,18 @@ fn decode_command_body(
       use expected_seq <- result.try(optional_int(fields, "expected_seq"))
       Ok(PermissionForget(target:, expected_seq:))
     }
+    "proposals_get" -> Ok(ProposalsGet)
+    "proposal_decide" -> {
+      use fields <- result.try(body_fields(body))
+      use id <- result.try(required_string(fields, "id"))
+      use decision <- result.try(case required_string(fields, "decision") {
+        Ok("approve") -> Ok(ProposalApprove)
+        Ok("reject") -> Ok(ProposalReject)
+        Ok(_) -> Error("decision must be approve or reject")
+        Error(reason) -> Error(reason)
+      })
+      Ok(ProposalDecide(id:, decision:))
+    }
     other -> Ok(UnknownCommand(cmd: other, body:))
   }
 }
@@ -1689,6 +1746,7 @@ fn event_body(event: Event) -> #(String, JsonValue) {
       ]),
     )
     GoalChanged -> #("goal_changed", json.Object([]))
+    ProposalsChanged -> #("proposals_changed", json.Object([]))
     BlockSummaryEvent(subject:, text:) -> #(
       "block_summary",
       json.Object(
@@ -1828,6 +1886,8 @@ fn encode_snapshot(snapshot: Snapshot) -> JsonValue {
       ])
     PermissionsSnapshot(board:) ->
       json.Object([#("mode", json.String("permissions")), #("board", board)])
+    ProposalsSnapshot(board:) ->
+      json.Object([#("mode", json.String("proposals")), #("board", board)])
     ProfileSnapshot(current:, available:, switched:) ->
       json.Object(
         list.flatten([
@@ -2172,6 +2232,10 @@ fn decode_event_body(name: String, body: JsonValue) -> Result(Event, String) {
       use _ <- result.try(body_fields(body))
       Ok(GoalChanged)
     }
+    "proposals_changed" -> {
+      use _ <- result.try(body_fields(body))
+      Ok(ProposalsChanged)
+    }
     "usage" -> {
       use #(strand, op, usage, last_usage) <- result.try(decode_usage_body(body))
       Ok(UsageEvent(strand:, op:, usage:, last_usage:))
@@ -2496,6 +2560,13 @@ fn decode_snapshot(body: JsonValue) -> Result(Event, String) {
         |> result.replace_error("missing permissions board"),
       )
       Ok(SnapshotEvent(PermissionsSnapshot(board:)))
+    }
+    "proposals" -> {
+      use board <- result.try(
+        list.key_find(fields, "board")
+        |> result.replace_error("missing proposals board"),
+      )
+      Ok(SnapshotEvent(ProposalsSnapshot(board:)))
     }
     "profile" -> {
       use current <- result.try(optional_string(fields, "profile"))
