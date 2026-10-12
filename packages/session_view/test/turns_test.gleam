@@ -701,6 +701,57 @@ pub fn a_code_mode_step_carries_its_program_card_test() {
   assert card.program.whole == Some("a\nb")
 }
 
+// A program that completed while one of its calls failed is a step that went
+// wrong, and the divider of the turn that folds it says so.
+pub fn the_divider_counts_a_program_whose_call_failed_test() {
+  let failed_call =
+    json.Object([
+      #("cap", json.String("fs.read")),
+      #("status", json.String("failed")),
+      #("error", json.String("not_found")),
+      #("start_ms", json.Int(0)),
+      #("duration_ms", json.Int(4)),
+    ])
+  let details =
+    json.Object([
+      #("status", json.String("completed")),
+      #("value", json.Null),
+      #(
+        "calls",
+        json.Object([
+          #("started_unix_ms", json.Int(1)),
+          #("elapsed_ms", json.Int(10)),
+          #("total", json.Int(1)),
+          #("failed", json.Int(1)),
+          #("cancelled", json.Int(0)),
+          #("unsettled", json.Int(0)),
+          #("items", json.Array([failed_call])),
+        ]),
+      ),
+    ])
+  let result =
+    message.ToolResultMessage(
+      "c",
+      "code_mode",
+      [message.ToolResultText("fine", None)],
+      Some(details),
+      None,
+      None,
+      False,
+      12_000,
+    )
+  let pieces =
+    expanding(
+      [
+        call("c", "code_mode", json.Object([#("program", json.String("a"))])),
+      ],
+      Some(result),
+      whole(),
+    )
+  let assert [_, turns.Work(worked:, ..), ..] = pieces
+  assert worked.failed == 1
+}
+
 pub fn a_host_that_skips_keeps_no_whole_program_in_the_card_test() {
   let pieces =
     expanding(

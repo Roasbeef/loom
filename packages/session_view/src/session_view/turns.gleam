@@ -1847,6 +1847,14 @@ fn worked(turn: Turn) -> Worked {
     list.count(turn.rest, fn(item) {
       case item {
         Doing(item: Step(standing: Failed, ..), ..) -> True
+
+        // A program that finished while one of its calls did not still
+        // went wrong somewhere, and its card says so; the divider that
+        // folds it away says the same.
+        Doing(item: Step(program: Some(card), ..), ..) ->
+          list.any(card.chips, fn(chip) {
+            chip.kind == program_card.FailedCalls && chip.count > 0
+          })
         Doing(..) | Answer(..) | Input(..) | Outside(..) -> False
       }
     })
