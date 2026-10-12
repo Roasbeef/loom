@@ -7581,7 +7581,9 @@ the delegate session and the Agency that serves a remote parent. Slice S3 is the
 laptop's side: the stub, the sending end, the second drainer, and the Agency's
 spawn, wait and roster. A remote child is always detached, so the laptop has no
 run-end path. Slice S4 is the box's deadline tick and retention sweep. The
-shipped two-orchestrator test is S5.
+shipped two-orchestrator test is S5
+(`daemon_shipped_remote_subagents_test`, run when `LOOM_BOOTSTRAP_E2E_SERVER`
+is set), with the P model in `protocol/models/remote-subagents`.
 
 - `spawners` is the `[spawners.<name>]` table, read by `daemon/main.prepare_startup`
   into `Config.spawners` and validated by `catalog.parse` too. A `Spawner` has its

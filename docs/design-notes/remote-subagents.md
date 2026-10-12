@@ -1203,6 +1203,47 @@ Five slices. Each lands on `origin/main` alone, and none needs #934.
     for a sender in phase 2 (section 14).
   - Protocol-change/084 moves to ACCEPTED when S5 is green.
 
+  As built in S5, where the code differs from the text above:
+
+  - **The test is `daemon_shipped_remote_subagents_test`.** It provisions two
+    orchestrators with `loom distribution provision` (a membership ledger),
+    installs each bundle, and adds only a model URL on both daemons and the
+    `[profiles.kid]` and `[spawners.laptop]` tables on the box. The laptop's row
+    for the box comes from the ledger. Both models are scripted HTTP peers.
+    One laptop session starts three children with `agent_spawn` `on` the box and
+    joins the first with `agent_wait`, which returns the report the child wrote.
+    The turn ends with the other two running. The second child's shell goes on
+    writing its heartbeat after the turn has ended, so a remote child outlives the
+    turn. The third child has a three second deadline and nobody waits on it:
+    the box logs `operation.aborted` for it from the tick, before the second turn
+    starts. The second turn joins both children with one `agent_wait`, which
+    reports the second as completed and the third as `wall-clock budget expired`.
+    The test runs only when `LOOM_BOOTSTRAP_E2E_SERVER` is set.
+  - **A run-end stop is not driven.** The laptop sends no `RunEnded` in phase 1,
+    so no daemon can send one to the box, and the shipped test does not exercise
+    it. The P model checks the fence and the reaping against a modelled sender.
+  - **The three failure cases are not driven.** The shipped test does not kill
+    the laptop mid-spawn, cut the link mid-join or end a turn with the link down,
+    and it does not enroll a laptop into a running deployment, so it provisions
+    both nodes at once. It does not assert structured results or usage. The P
+    model covers the first two failure shapes as message loss, an abort of the
+    parent's effect processes and a remote restart.
+  - **The P model is `protocol/models/remote-subagents`.** It has the machines of
+    section 14 except `Child` and the usage, with `Laptop` holding the stubs and
+    the drainer, and `SpawnCall`, `Port`, `Wire` and `Chaos` as described there.
+    It checks `AtMostOneChildPerSite`, `OwnChildOnly`, `AnswerIsStable`,
+    `JoinReportsOwnChild`, `TerminalOnce`, the two liveness specs
+    `EveryStubAnswered` and `EveryChildTerminal`, and, against the sender it
+    models, `NoSpawnUnderEndedRun` and `EndedRunChildrenStop`. Eight mutants are
+    caught. `EveryEndedRunIsTold` and the mutant for a spawn retried against a
+    second orchestrator are not modelled; the first needs a laptop that sends and
+    keeps a `RunEnded` row, and the second needs two ports.
+  - **Observed, not fixed here.** After the tick aborted the third child's run,
+    the `bash` process it had started kept writing its heartbeat for at least
+    45 seconds. The run was aborted and the tool's effect process exited, but the
+    executor never logged the execution as settled. The shipped test therefore
+    reads the abort from the daemon's log and not from the heartbeat stopping.
+
 Phase 1 exit: a laptop daemon starts three children on a Linux box daemon over
 pinned distribution, joins them and reads their structured results and usage,
 and the shipped test's three failure cases each leave every child reported
