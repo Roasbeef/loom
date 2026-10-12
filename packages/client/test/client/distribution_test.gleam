@@ -361,26 +361,52 @@ pub fn the_ledger_path_is_optional_and_absolute_test() {
   assert distribution.ledger_path(without) == None
 
   let assert Ok(Some(with)) =
-    distribution.parse(document("ledger = \"/var/loom/ledger.log\"\n", peers))
+    distribution.parse(document("ledger = \"/var/loom/ledger.log\"\n", ""))
   assert distribution.ledger_path(with) == Some("/var/loom/ledger.log")
   assert distribution.credential_files(with).ca == "/etc/loom/ca.pem"
 
   refused(
-    document("ledger = \"ledger.log\"\n", peers),
+    document("ledger = \"ledger.log\"\n", ""),
     "distribution.ledger must be an absolute path",
   )
   refused(
-    document("ledger = 3\n", peers),
+    document("ledger = 3\n", ""),
     "distribution.ledger must be a string",
   )
 }
 
-pub fn the_ledger_key_does_not_change_the_options_file_test() {
-  // The ledger path is read by the ledger process alone. The options file the
-  // VM boots from is a function of the credentials and the pins.
+pub fn a_ledger_and_peers_together_are_refused_test() {
+  // Two sources of trust would leave the question of which one decides, so
+  // the document is refused whichever order its tables are written in.
   let peers = peer("executor@10.0.0.2", pin)
-  let assert Ok(Some(without)) = distribution.parse(document("", peers))
+  refused(
+    document("ledger = \"/var/loom/ledger.log\"\n", peers),
+    "distribution.ledger and [[distribution.peers]] cannot both be set",
+  )
+}
+
+pub fn ledger_mode_has_no_configured_peers_test() {
   let assert Ok(Some(with)) =
-    distribution.parse(document("ledger = \"/var/loom/ledger.log\"\n", peers))
-  assert distribution.tls_options(with) == distribution.tls_options(without)
+    distribution.parse(document("ledger = \"/var/loom/ledger.log\"\n", ""))
+  assert distribution.peer_nodes(with) == []
+  assert distribution.local_node(with) == "owner@10.0.0.1"
+}
+
+pub fn the_ledger_options_file_names_no_pin_and_ignores_the_path_test() {
+  // In ledger mode the verify state is the atom that selects the published
+  // table, so the file is a function of the credentials alone: another ledger
+  // path, or any enrollment, leaves it as it was, and it holds no binary.
+  let assert Ok(Some(first)) =
+    distribution.parse(document("ledger = \"/var/loom/a.log\"\n", ""))
+  let assert Ok(Some(second)) =
+    distribution.parse(document("ledger = \"/var/loom/b.log\"\n", ""))
+  assert distribution.tls_options(first) == distribution.tls_options(second)
+  assert string.contains(distribution.tls_options(first), "live")
+  assert !string.contains(distribution.tls_options(first), "<<")
+
+  // The static file for the same credentials is a different file, which is
+  // what keeps one mode from starting on the other's options.
+  let assert Ok(Some(static)) =
+    distribution.parse(document("", peer("executor@10.0.0.2", pin)))
+  assert distribution.tls_options(static) != distribution.tls_options(first)
 }
