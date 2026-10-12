@@ -154,6 +154,10 @@ rm -f "$REL/releases/$VERSION/vm.args" \
 [ -f "$REL/bin/no_dot_erlang.boot" ] || {
   echo "release-client.sh: relx left no bin/no_dot_erlang.boot" >&2; exit 1; }
 
+# A bare `erl` needs `bin/start.boot`, which relx does not ship. See the
+# same step in release.sh for the failure it prevents.
+cp "$REL/releases/$VERSION/start_clean.boot" "$REL/bin/start.boot"
+
 if [ "$STRIP_ERTS" = 1 ]; then
   echo "==> stripping the copied ERTS"
   find "$REL/erts-$ERTS_VSN/bin" -type f -exec sh -c '

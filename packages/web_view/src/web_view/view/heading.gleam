@@ -49,6 +49,7 @@
 //// page out, and a module the component imports cannot import the
 //// component back.
 
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
@@ -97,12 +98,14 @@ pub type Tone {
 /// label says so. A figure with no value is not drawn: an empty `context`
 /// draws no `ctx`, and a `cost` that ends in the dash (`est —`, a model with
 /// no price) draws no `est`, since two dashes beside each other read as
-/// missing data rather than as "not known".
+/// missing data rather than as "not known". `rate` is the output speed of the
+/// last timed generation in tokens per second (`Shared.output_rate_tps`), and
+/// is `None` until one long enough to time has settled.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // heading.view("0192ab34cd", element.none(), Some("docs"), Some("/src/loom"), Some("glm-5-3"), "connected", heading.Live, "ctx ~41%", element.none(), "est $0.04", element.none())
+/// // heading.view("0192ab34cd", element.none(), Some("docs"), Some("/src/loom"), Some("glm-5-3"), "connected", heading.Live, "ctx ~41%", element.none(), "est $0.04", Some(87), element.none())
 /// ```
 pub fn view(
   session_id session_id: String,
@@ -115,6 +118,7 @@ pub fn view(
   context context: String,
   breakdown breakdown: Element(message),
   cost cost: String,
+  rate rate: Option(Int),
   notice notice: Element(message),
 ) -> Element(message) {
   html.header(
@@ -185,6 +189,25 @@ pub fn view(
                   ),
                 ],
                 figure_words(cost),
+              ),
+            ]
+          },
+
+          // The last settled generation's output speed, in the terminal's
+          // own words. Empty until a generation long enough to time has
+          // settled, and then nothing is drawn rather than a dash.
+          case rate {
+            None -> []
+            Some(tokens) -> [
+              html.span(
+                [
+                  attribute.class("figure"),
+                  attribute.class("rate"),
+                  attribute.title(
+                    "Output tokens per second of the last timed generation on the strand shown",
+                  ),
+                ],
+                [number_element(int.to_string(tokens)), html.text(" tok/s")],
               ),
             ]
           },

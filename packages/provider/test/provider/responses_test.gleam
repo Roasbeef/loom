@@ -582,7 +582,7 @@ pub fn responses_request_policy_and_secret_boundary_test() {
     )
   let assert Ok([tool]) = wire.array_field(body, "tools") as "one flat tool"
   assert wire.field(tool, "name") == Ok(json.String("read"))
-  assert wire.field(tool, "strict") == Error(Nil)
+  assert wire.field(tool, "strict") == Ok(json.Bool(False))
   assert !string.contains(built.body, "private-fixture-key")
   list.each(
     ["previous_response_id", "conversation", "service_tier", "prompt_cache_key"],

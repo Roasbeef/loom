@@ -331,6 +331,10 @@ fn assert_request(request: http.HttpRequest, dialect: Dialect) -> Nil {
           #("properties", json.Object([])),
         ]),
       ),
+
+      // Optional fields stay optional: the request opts out of strict
+      // function calling so the API does not require every property.
+      #("strict", json.Bool(False)),
     ])
   let tools = case dialect {
     PublicResponses -> [function]

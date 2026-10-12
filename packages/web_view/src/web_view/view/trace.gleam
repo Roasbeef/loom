@@ -4,10 +4,14 @@
 ////
 //// The trace is `session_view/trace_view`, folded from the records the page
 //// already holds, so nothing here reads anything the page does not have and
-//// nothing is sent. It lists programs and not the capability calls inside
-//// them, because no capability call is recorded (`trace_view` says why, and
-//// the pane says so in its last line, so an empty-looking program is not read
-//// as one that did nothing). Timing bars wait on that record too.
+//// nothing is sent. It lists the programs, and under the newest one the
+//// capability calls its result recorded (`trace_view.Program.calls`, from the
+//// call record of protocol change 060) as text rows. A result written before
+//// that record existed, a background result and a program that did not run
+//// carry no record, and the pane says so in its last line, so a program with
+//// no rows is not read as one that made no calls. The calls drawn against the
+//// program's own time axis are the lane's program card
+//// (`view/program_card`); this pane keeps the plain list.
 ////
 //// The pane is the panel's fourth (`view/panel`), placed after Session and
 //// before the advisor's nudges, so the paths the Strands and Session panes

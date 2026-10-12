@@ -246,6 +246,7 @@ fn bar(compact: option.Option(Nil)) -> Element(Nil) {
         context_breakdown.Actions(refresh: Nil, compact:),
       ),
       cost: "est $0.04",
+      rate: None,
       notice: element.none(),
     ),
   ])

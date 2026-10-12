@@ -336,7 +336,7 @@ fn render(
     Error(_error) -> outcome
     Ok(bounded) ->
       tool.ToolOutcome(..outcome, content: [
-        tool.text_block(blob.bounded_text(bounded)),
+        tool.text_block(blob.bounded_text(ctx.blob_root, bounded)),
       ])
       |> blob.with_blob_details(bounded)
   }

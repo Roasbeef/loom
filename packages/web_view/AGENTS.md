@@ -662,7 +662,8 @@ page keys and nonces, and the relay into the session's gateway.
   `<loom-title>` reads, and the wrapper keeps the bar's child positions), the status as a `.pill` whose class follows the `Tone`
   (`online | pending | ended`), the `ctx ~41%` estimate and the cost
   `transcript_lines.cost_words` words as `est $0.04` or `est —` when tokens
-  were spent and none priced, each as a word and a `span.num`; a figure with no
+  were spent and none priced, and the last timed generation's `87 tok/s`
+  (`Shared.output_rate_tps`, `rate`, drawn only once one has settled), each as a word and a `span.num`; a figure with no
   value is not drawn, so no `est` for an unpriced model and no `ctx` on the
   primary strand before its first turn), with the ended
   page's notice as its last child; `component.heading(model, going_home, context_actions)` reads those
@@ -766,6 +767,23 @@ page keys and nonces, and the relay into the session's gateway.
   per row and ends a cut row with one line saying so. The rows are memoized per
   line (`fold_row.line_row`). Session text is drawn as text nodes: a program is
   a Markdown code block, so a `<pre><code>` holding text.
+- **Program cards.** A foreground `code_mode` call is not a row but a card
+  (`view/program_card`, drawn by `lane.item_element` when `turns.Step.program`
+  is set; the projection is `session_view/program_card`). The card is a native
+  `<details>`: closed it is one line (the outcome sentence, chips for writes,
+  commands, requests and failures, the call count, the time), and a program
+  that failed or whose calls did draws open. Its sections are Program (the
+  first four lines, the whole program behind a control when the host kept it),
+  Calls (a timeline row per run of consecutive calls with a bar of two bounded
+  percentages, opening to the redacted summary, error code and timing the
+  record holds) and Result or Error (a compiler's diagnostic laid out with its
+  line marked). A running program shows its opening and a `<loom-elapsed>`
+  counted from `Step.since`; the record is written at settlement, so it has no
+  calls yet. The whole program and value are cut by the same `Expansion` as an
+  expanded row, so a sealed turn draws only the opening. The card has no
+  handler, all session text is a text node, and a class comes from a closed
+  type. There is no copy button: a client element that writes server-chosen
+  text to the clipboard needs its own ruling under protocol-change/051.
 - **Diffs.** Every diff the page draws goes through `view/diff`: the opened
   edit step (a `ToolPatch` line, drawn by `lane.line_element`) and the Changes
   tab. `session_view/diff_view` reads the text into lines of a closed kind and

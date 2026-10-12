@@ -2116,9 +2116,17 @@ fn call_groups_of(calls: List(call_tree.Call)) -> List(CallGroup) {
   |> list.reverse
 }
 
-// A capability's error code as a reader says it: the codes the host
-// writes in words, and any other code as it is.
-fn error_words(code: String) -> String {
+/// A capability's error code as a reader says it: the codes the host
+/// writes in words, and any other code as it is. The web view's program card
+/// words a failed call's code with the same table.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert transcript_lines.error_words("exit_status") == "exit status"
+/// ```
+@internal
+pub fn error_words(code: String) -> String {
   case code {
     "exit_status" -> "exit status"
     "policy" -> "policy refused"
@@ -2132,9 +2140,17 @@ fn error_words(code: String) -> String {
   }
 }
 
-// A call's duration: tenths of a second from one second up, and whole
-// milliseconds below it.
-fn seconds_text(ms: Int) -> String {
+/// A call's duration: tenths of a second from one second up, and whole
+/// milliseconds below it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert transcript_lines.seconds_text(4100) == "4.1s"
+/// assert transcript_lines.seconds_text(31) == "31ms"
+/// ```
+@internal
+pub fn seconds_text(ms: Int) -> String {
   case ms >= 1000 {
     True -> {
       let tenths = { ms + 50 } / 100

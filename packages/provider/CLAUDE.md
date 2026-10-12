@@ -222,8 +222,9 @@ not split the batch. These are transient wire projections.
   - OpenAI Responses SSE — named item/part lifecycle events, indexed text
     and argument deltas, then a terminal response object. Completion
     records must agree with the deltas and final output. Requests post to
-    `/responses` with flat function definitions, `store: false`, and
-    caller-owned input history. API-key authentication uses the existing
+    `/responses` with flat function definitions, each carrying
+    `strict: false` (the server defaults to strict, which would make every
+    property required), `store: false`, and caller-owned input history. API-key authentication uses the existing
     HTTP transport owner. The subscription variant uses the same semantic
     fold and replay projection, but sends a relative, uncredentialed request
     through `CodexTransport`. Its body omits the public output ceiling and

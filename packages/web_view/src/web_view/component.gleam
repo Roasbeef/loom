@@ -6861,6 +6861,7 @@ pub fn heading(
     context: context_figure(model),
     breakdown: context_breakdown.panel(model.shared.context, context_actions),
     cost: transcript_lines.cost_words(model.shared.usage),
+    rate: model.shared.output_rate_tps,
     notice: ended.view(ended_ending(model.view.status), model.shared.session),
   )
 }

@@ -82,7 +82,7 @@ pub fn excerpts_respect_utf8_boundaries_test() {
   assert bit_array.byte_size(<<tail_excerpt:utf8>>) <= blob.excerpt_bytes
 }
 
-pub fn bounded_text_names_the_ref_test() {
+pub fn bounded_text_names_the_path_and_how_to_read_it_test() {
   let bounded =
     blob.Overflowed(
       ref: "sha256-abc",
@@ -90,15 +90,16 @@ pub fn bounded_text_names_the_ref_test() {
       head_excerpt: "HEAD",
       tail_excerpt: "TAIL",
     )
-  let text = blob.bounded_text(bounded)
+  let text = blob.bounded_text("/blobs", bounded)
   assert string.starts_with(text, "HEAD")
   assert string.ends_with(text, "TAIL")
-  assert string.contains(text, "sha256-abc")
+  assert string.contains(text, "/blobs/sha256-abc")
+  assert string.contains(text, "not by re-running")
   assert string.contains(text, "70000 bytes")
 }
 
 pub fn inline_bounded_text_is_identity_test() {
-  assert blob.bounded_text(blob.Inline("as is")) == "as is"
+  assert blob.bounded_text("/blobs", blob.Inline("as is")) == "as is"
 }
 
 pub fn with_blob_details_merges_into_object_test() {

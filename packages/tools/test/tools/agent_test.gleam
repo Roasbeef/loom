@@ -1271,3 +1271,38 @@ pub fn the_spawn_description_says_how_parent_and_child_talk_test() {
   assert string.contains(spawn.description, "agent_note")
   assert !list.contains(agent.child_floor_tools, agent.spawn_tool_name)
 }
+
+// The required list a tool's schema declares, at the top level or inside
+// one named property.
+fn required_of(schema: json.JsonValue, inside: String) -> List(String) {
+  let assert json.Object(fields) = schema as "a schema is an object"
+  let target = case inside {
+    "" -> fields
+    name -> {
+      let assert Ok(json.Object(props)) = list.key_find(fields, "properties")
+        as "the schema has properties"
+      let assert Ok(json.Object(nested)) = list.key_find(props, name)
+        as "the property is an object schema"
+      nested
+    }
+  }
+  let assert Ok(json.Array(names)) = list.key_find(target, "required")
+    as "the schema declares required"
+  list.filter_map(names, fn(name) {
+    case name {
+      json.String(text) -> Ok(text)
+      _ -> Error(Nil)
+    }
+  })
+}
+
+pub fn agent_send_requires_only_to_and_message_test() {
+  // A placeholder `within_ms` is refused (zero) or misapplied (positive
+  // on an active child), so the schema must not make it required.
+  let assert Ok(send) =
+    list.find(agent.tools(echoing_agency()), fn(each) {
+      each.name == "agent_send"
+    })
+    as "agent_send is registered"
+  assert required_of(send.schema, "") == ["to", "message"]
+}

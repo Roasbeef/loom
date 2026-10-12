@@ -999,7 +999,7 @@ fn exited(
       )
     Ok(bounded) ->
       tool.ToolOutcome(
-        content: [tool.text_block(blob.bounded_text(bounded))],
+        content: [tool.text_block(blob.bounded_text(ctx.blob_root, bounded))],
         details: option.Some(details),
         is_error:,
         terminate: tool.ContinueRun,

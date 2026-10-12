@@ -200,7 +200,8 @@ fn schema() -> JsonValue {
         tool.string_property(
           "a task's exact text. REQUIRED for `start`; `block` and `unblock` "
           <> "need it or a `phase`; `done`, `drop` and `remove` act on "
-          <> "everything when neither is given",
+          <> "everything when neither is given; a `phase` sent beside it is "
+          <> "ignored",
         ),
       ),
       #("reason", tool.string_property("for `block`: what the task waits on")),
@@ -817,15 +818,17 @@ fn required_task(args: JsonValue) -> Result(String, String) {
   }
 }
 
-// A call naming both a task and a phase is refused rather than guessed
-// at: whichever one the tool picked, the model meant the other half the
-// time.
+// A call naming both a task and a phase means that task, said with its
+// phase for context: task text is unique across the whole board, so the
+// phase narrows nothing. Refusing the pair used to fail every `done` a
+// model sent as {task, phase}, and it retried the same shape each time. The
+// narrower reading is the safe one, since the task is one item where the
+// phase is a whole group.
 fn target(args: JsonValue, fallback: Target) -> Result(Target, String) {
   use task <- result.try(tool.optional_string(args, "task"))
   use phase <- result.try(tool.optional_string(args, "phase"))
   case task, phase {
-    Some(_), Some(_) -> Error("give either `task` or `phase`, not both")
-    Some(text), None -> Ok(OneTask(text))
+    Some(text), _ -> Ok(OneTask(text))
     None, Some(name) -> Ok(WholePhase(name))
     None, None -> Ok(fallback)
   }
