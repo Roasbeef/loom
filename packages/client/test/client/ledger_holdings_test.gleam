@@ -4,7 +4,6 @@
 //// exercised over a real registry holding real registrations, so the counts the
 //// operator reads are the counts the catalogue has.
 
-import client/daemon/domain as domain_service
 import client/daemon/manager
 import client/distribution_plan.{Executor, Orchestrator}
 import client/executors
@@ -13,16 +12,11 @@ import client/membership_entry.{Upsert}
 import client/membership_ledger
 import client/remote/orchestrator_port.{type Held, Held, Placed}
 import client/roster
-import core/clock
-import core/ids
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
-import gleam/string
-import host/bootstrap
-import storage/access
 import storage/catalogue
-import storage/domain
+import support/held_catalogue
 import support/membership_fixture as fixture
 import support/membership_log as log
 
@@ -104,95 +98,10 @@ pub fn the_silent_asker_leaves_every_orchestrator_unanswered_test() {
 
 // --- the catalogue's side ---------------------------------------------------------
 
-fn start() -> #(manager.Manager(String), catalogue.Catalogue, String) {
-  let assert Ok(directory) =
-    bootstrap.absolute_path("build/ledger-holdings-" <> int.to_string(unique()))
-  let assert Ok(store) = catalogue.open(":memory:") as "the catalogue opens"
-  let assert Ok(owner) = access.credential_digest(string.repeat("a", 64))
-  let assert Ok(_) = access.bootstrap_owner(store, "owner", "Owner", owner)
-  let assert Ok(registry) =
-    manager.start(
-      store,
-      manager.Assembly(
-        domain_build: fn(_, _, _) { Ok(domain_service.inert()) },
-        build: fn(record, _domain, _services, _owner, _directory) {
-          Ok(record.id)
-        },
-        drain: fn(_, _) { Nil },
-        fatal: fn(_) { [] },
-      ),
-      epoch: "holdings-test",
-      limit: 2,
-    )
-    as "the registry starts"
-  #(registry, store, directory)
-}
-
-@external(erlang, "erlang", "unique_integer")
-fn unique_integer(options: List(a)) -> Int
-
-fn unique() -> Int {
-  int.absolute_value(unique_integer([]))
-}
-
-// Registers and confirms one session placed on `executor` (the empty string for
-// a local one) and returns its identity.
-fn register(
-  store: catalogue.Catalogue,
-  directory: String,
-  generator: ids.Generator,
-  executor: String,
-) -> #(String, ids.Generator) {
-  let #(id, next) = ids.mint_session(generator)
-  let session = ids.session_id_to_string(id)
-  let record =
-    catalogue.Registration(
-      id: session,
-      path: directory <> "/sessions/" <> session <> ".db",
-      workspace: case executor {
-        "" -> directory
-        _ -> "repo"
-      },
-      name: "a session",
-      configuration: "",
-      profile: None,
-      model: None,
-      executor:,
-      pool: "",
-      created_at: 1_700_000_000_000,
-      request_key: "key-" <> session,
-      state: catalogue.Reserved,
-      subtitle: None,
-    )
-  let selected = manager.session_only_domain(record, "", directory)
-  let assert Ok(_) = domain.reserve_session(store, record, selected)
-  let assert Ok(_) = catalogue.confirm(store, session)
-  #(session, next)
-}
-
-fn generator() -> ids.Generator {
-  ids.generator(clock.fixed(at: 1_700_000_000_000), seed: unique())
-}
-
-fn registered_n(
-  store: catalogue.Catalogue,
-  directory: String,
-  executor: String,
-  count: Int,
-) -> List(String) {
-  list.repeat(Nil, count)
-  |> list.fold(#([], generator()), fn(state, _) {
-    let #(found, next) = state
-    let #(session, next) = register(store, directory, next, executor)
-    #([session, ..found], next)
-  })
-  |> fn(state) { state.0 }
-}
-
 pub fn the_catalogue_counts_its_sessions_and_where_they_are_placed_test() {
-  let #(registry, store, directory) = start()
-  let _ = registered_n(store, directory, "box", 2)
-  let _ = registered_n(store, directory, "", 1)
+  let #(registry, store, directory) = held_catalogue.start()
+  let _ = held_catalogue.registered_n(store, directory, "box", 2)
+  let _ = held_catalogue.registered_n(store, directory, "", 1)
   let listed =
     roster.fixed([
       executors.plain("box", "loom@box.example.net"),
@@ -207,10 +116,10 @@ pub fn the_catalogue_counts_its_sessions_and_where_they_are_placed_test() {
 }
 
 pub fn two_names_for_one_node_are_added_and_an_unlisted_name_is_not_a_placement_test() {
-  let #(registry, store, directory) = start()
-  let _ = registered_n(store, directory, "box", 1)
-  let _ = registered_n(store, directory, "build", 2)
-  let _ = registered_n(store, directory, "gone", 4)
+  let #(registry, store, directory) = held_catalogue.start()
+  let _ = held_catalogue.registered_n(store, directory, "box", 1)
+  let _ = held_catalogue.registered_n(store, directory, "build", 2)
+  let _ = held_catalogue.registered_n(store, directory, "gone", 4)
   let listed =
     roster.fixed([
       executors.plain("box", "loom@box.example.net"),
@@ -228,8 +137,8 @@ pub fn two_names_for_one_node_are_added_and_an_unlisted_name_is_not_a_placement_
 }
 
 pub fn a_session_handed_to_another_orchestrator_is_not_counted_test() {
-  let #(registry, store, directory) = start()
-  let sessions = registered_n(store, directory, "box", 3)
+  let #(registry, store, directory) = held_catalogue.start()
+  let sessions = held_catalogue.registered_n(store, directory, "box", 3)
   let assert [first, ..] = sessions
   let assert Ok(_) = catalogue.begin_move(store, first, op: "op-1", to: "bravo")
   let assert Ok(_) = catalogue.finish_move(store, first, op: "op-1")
@@ -243,8 +152,8 @@ pub fn a_session_handed_to_another_orchestrator_is_not_counted_test() {
 }
 
 pub fn a_session_still_moving_is_still_owned_test() {
-  let #(registry, store, directory) = start()
-  let sessions = registered_n(store, directory, "", 2)
+  let #(registry, store, directory) = held_catalogue.start()
+  let sessions = held_catalogue.registered_n(store, directory, "", 2)
   let assert [first, ..] = sessions
   let assert Ok(_) = catalogue.begin_move(store, first, op: "op-2", to: "bravo")
   assert ledger_holdings.from_catalogue(registry, roster.fixed([]))()
@@ -252,9 +161,9 @@ pub fn a_session_still_moving_is_still_owned_test() {
 }
 
 pub fn the_walk_crosses_a_page_boundary_test() {
-  let #(registry, store, directory) = start()
+  let #(registry, store, directory) = held_catalogue.start()
   let count = catalogue.page_limit + 5
-  let _ = registered_n(store, directory, "box", count)
+  let _ = held_catalogue.registered_n(store, directory, "box", count)
   let listed = roster.fixed([executors.plain("box", "loom@box.example.net")])
   assert ledger_holdings.from_catalogue(registry, listed)()
     == Ok(
@@ -265,13 +174,13 @@ pub fn the_walk_crosses_a_page_boundary_test() {
 }
 
 pub fn an_empty_catalogue_holds_nothing_test() {
-  let #(registry, _, _) = start()
+  let #(registry, _, _) = held_catalogue.start()
   assert ledger_holdings.from_catalogue(registry, roster.fixed([]))()
     == Ok(Held(sessions: 0, placed: []))
 }
 
 pub fn a_registry_that_cannot_be_read_is_unknown_and_not_empty_test() {
-  let #(registry, _, _) = start()
+  let #(registry, _, _) = held_catalogue.start()
   manager.shutdown(registry)
   assert ledger_holdings.from_catalogue(registry, roster.fixed([]))()
     == Error(Nil)
@@ -280,8 +189,9 @@ pub fn a_registry_that_cannot_be_read_is_unknown_and_not_empty_test() {
 // --- the bounds -------------------------------------------------------------------
 
 pub fn a_catalogue_past_the_page_bound_is_unknown_and_not_partial_test() {
-  let #(registry, store, directory) = start()
-  let _ = registered_n(store, directory, "", catalogue.page_limit + 1)
+  let #(registry, store, directory) = held_catalogue.start()
+  let _ =
+    held_catalogue.registered_n(store, directory, "", catalogue.page_limit + 1)
   let listed = roster.fixed([])
 
   // One page holds a hundred and the catalogue has a hundred and one. A tally
@@ -292,8 +202,9 @@ pub fn a_catalogue_past_the_page_bound_is_unknown_and_not_partial_test() {
 }
 
 pub fn a_catalogue_that_fills_the_bound_exactly_is_known_test() {
-  let #(registry, store, directory) = start()
-  let _ = registered_n(store, directory, "", catalogue.page_limit)
+  let #(registry, store, directory) = held_catalogue.start()
+  let _ =
+    held_catalogue.registered_n(store, directory, "", catalogue.page_limit)
 
   // The bound is reached with the next page empty, so nothing was left out.
   assert ledger_holdings.from_pages(registry, roster.fixed([]), 1)()
@@ -304,12 +215,12 @@ pub fn a_catalogue_that_fills_the_bound_exactly_is_known_test() {
 // on, lists them all on nodes of their own, and answers what the catalogue
 // holds.
 fn spread(count: Int) -> Result(Held, Nil) {
-  let #(registry, store, directory) = start()
+  let #(registry, store, directory) = held_catalogue.start()
   let names =
     list.repeat(Nil, count)
     |> list.index_map(fn(_, number) { "e" <> int.to_string(number) })
   list.each(names, fn(name) {
-    let _ = registered_n(store, directory, name, 1)
+    let _ = held_catalogue.registered_n(store, directory, name, 1)
     Nil
   })
   let listed =

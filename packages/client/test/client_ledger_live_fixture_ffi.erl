@@ -358,8 +358,20 @@ commands(Node, Lines, State) ->
         {line, "control " ++ Rest} ->
             [Command, Body] = string:split(Rest, " "),
             say("CONTROL ~s",
-                [?LIVE:control(Node, list_to_binary(Command), list_to_binary(Body))]),
+                [?LIVE:control(Node, list_to_binary(Command), list_to_binary(Body),
+                               maps:get(holdings, State, stubbed))]),
             commands(Node, Lines, State);
+        %% An orchestrator port over a real catalogue holding N sessions placed
+        %% on the executor at the node named, and from then on this node's
+        %% `ledger.holdings` asks the other orchestrators over distribution.
+        {line, "serve_holdings " ++ Rest} ->
+            [Sessions, Executor] = string:split(Rest, " "),
+            case ?LIVE:serve_holdings(list_to_integer(Sessions),
+                                      list_to_binary(Executor)) of
+                {ok, nil} -> say("HOLDINGS_SERVED", []);
+                {error, Why} -> say("HOLDINGS_FAILED ~s", [Why])
+            end,
+            commands(Node, Lines, State#{holdings => distributed});
         {line, "describe"} ->
             {ok, Text} = ?LIVE:describe(Node),
             say("DESCRIBE ~s", [Text]),

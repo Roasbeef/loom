@@ -27,10 +27,12 @@ import client/directory/seats
 import client/directory/store
 import client/distribution
 import client/distribution_plan.{type Role}
+import client/executors
 import client/internal/ffi_khepri
 import client/internal/ffi_nodes
 import client/ledger_boot
 import client/ledger_control
+import client/ledger_holdings
 import client/ledger_rows
 import client/ledger_service.{type Observer}
 import client/ledger_trust
@@ -48,6 +50,7 @@ import gleam/list
 import gleam/option.{None}
 import gleam/result
 import gleam/string
+import support/held_catalogue
 import support/membership_fixture as fixture
 import telemetry/log
 import weft/poll
@@ -347,12 +350,56 @@ pub fn name(node: Node) -> String {
   node.local
 }
 
+/// Where a node's `ledger.holdings` gets its answers.
+pub type Holdings {
+  /// Every orchestrator answers that it holds nothing: the node runs no
+  /// catalogue and asks nobody over the network.
+  Stubbed
+
+  /// The node asks as the daemon does, over its distribution
+  /// (`ledger_holdings.over_distribution`), and the orchestrators answer from
+  /// the ports `serve_holdings` started.
+  Distributed
+}
+
+/// Starts this node's orchestrator port over a real catalogue that holds
+/// `sessions` sessions placed on an executor it lists, named `box`, whose node
+/// is `executor_node`. The port is registered under its default name, which is
+/// where `ask_holds` addresses it, and answers `Holds` with
+/// `ledger_holdings.from_catalogue`, so what another node is told is what the
+/// catalogue has.
+pub fn serve_holdings(
+  sessions: Int,
+  executor_node: String,
+) -> Result(Nil, String) {
+  let #(registry, store, directory) = held_catalogue.start()
+  let _registered =
+    held_catalogue.registered_n(store, directory, "box", sessions)
+  let listed = roster.fixed([executors.plain("box", executor_node)])
+  orchestrator_port.start_with(
+    orchestrator_port.default(),
+    fn(_session) { Ok(orchestrator_port.NotOwned) },
+    fn(_session, _command) { Error(orchestrator_port.peer_unserved) },
+    fn(_session) { Error(orchestrator_port.peer_unserved) },
+    orchestrator_port.declining(),
+    orchestrator_port.refusing_spawns(),
+    ledger_holdings.from_catalogue(registry, listed),
+  )
+  |> result.replace(Nil)
+  |> result.map_error(string.inspect)
+}
+
 /// Runs one `ledger.*` control command against this node's ledger process, as
 /// the daemon's control socket does, and answers one line of JSON: the reply
 /// body under `ok`, or the refusal under `error`. A scenario's operator reaches
 /// the node through it, so the operator commands run against a node that is
 /// really in the middle of a TLS deployment. `body` is the request body.
-pub fn control(node: Node, command: String, body: String) -> String {
+pub fn control(
+  node: Node,
+  command: String,
+  body: String,
+  holdings: Holdings,
+) -> String {
   let answer = {
     use service <- result.try(option.to_result(
       node.booted.ledger,
@@ -360,13 +407,17 @@ pub fn control(node: Node, command: String, body: String) -> String {
     ))
     use handle <- result.try(ledger_control.handle(service, node.local))
 
-    // A fixture node runs no catalogue and no orchestrator port, so it asks
+    // A node that has not been given a port runs no catalogue, so it asks
     // nobody over the network. Every orchestrator answers that it holds
     // nothing, which is what these nodes do hold, so the operator's check
     // before a `revoke` has an answer to read.
     let handle =
-      ledger_control.asking(handle, fn(_node) {
-        Ok(orchestrator_port.Held(sessions: 0, placed: []))
+      ledger_control.asking(handle, case holdings {
+        Stubbed -> fn(_node) {
+          Ok(orchestrator_port.Held(sessions: 0, placed: []))
+        }
+        Distributed ->
+          ledger_holdings.over_distribution(node.booted.membership, node.local)
       })
     use fields <- result.try(case json.parse(body) {
       Ok(json.Object(fields)) -> Ok(fields)
