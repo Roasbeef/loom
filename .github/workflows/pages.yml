@@ -1,0 +1,95 @@
+# Loom's homepage and documentation site, published to GitHub Pages.
+#
+# The site under site/ is a client-side Lustre application compiled to
+# JavaScript; `make -C site check` formats, tests, checks the copy rules and
+# builds it into site/dist, which is plain static files. A pull request that
+# touches the site runs that check and stops. A push to main runs the same
+# check and then publishes site/dist, so what Pages serves is always a build
+# that passed its own gate on the commit it came from.
+#
+# The repository's Pages source must be set to "GitHub Actions" for the
+# deploy job to succeed; until it is, the build job still gates pull
+# requests and the deploy job fails without publishing anything.
+#
+# The site is independent of the rest of the tree: it never builds a Loom
+# package, so it uses stock Gleam from setup-beam rather than the patched
+# toolchain in .github/actions/setup-toolchain, and it runs on no path but
+# its own.
+name: pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - site/**
+      - .github/workflows/pages.yml
+  pull_request:
+    paths:
+      - site/**
+      - .github/workflows/pages.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One publish at a time, and a publish in flight is allowed to finish rather
+# than being cancelled halfway through a deployment.
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # The same exact versions ci.yml pins; site/README.md names them too.
+  GLEAM_VERSION: "1.19.0"
+  OTP_VERSION: "29.0.5"
+
+jobs:
+  build:
+    name: check and build the site
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
+        with:
+          otp-version: ${{ env.OTP_VERSION }}
+          gleam-version: ${{ env.GLEAM_VERSION }}
+          version-type: strict
+
+      # fmt-check, the gleeunit suite on the JavaScript target (node is on
+      # the runner image), the copy rules, and the build into site/dist.
+      - name: make -C site check
+        run: make -C site check
+
+      # Only a push to main or a manual run publishes, so a pull request
+      # never uploads an artifact the deploy job could pick up.
+      - if: github.event_name != 'pull_request'
+        # actions/upload-pages-artifact v5.0.0
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9
+        with:
+          path: site/dist
+
+  deploy:
+    name: publish to GitHub Pages
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    # The deploy action mints an OIDC token to prove which workflow run the
+    # artifact came from, and writes the Pages deployment; nothing else in
+    # this workflow gets either permission.
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      # actions/deploy-pages v5.0.1
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346

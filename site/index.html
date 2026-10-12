@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Loom: a coding agent harness on the BEAM</title>
+    <meta
+      name="description"
+      content="Loom is a coding agent harness written in Gleam and running on the BEAM. Each session is a supervision tree over a write-once SQLite store, commands run in kernel sandboxes, and a distributed runtime runs a session's tool calls on executors."
+    />
+    <meta name="color-scheme" content="light dark" />
+    <link rel="icon" type="image/svg+xml" href="./img/loom-mark.svg" />
+    <link rel="stylesheet" href="./site.css" />
+    <link rel="stylesheet" href="./figures.css" />
+    <link rel="stylesheet" href="./replay.css" />
+  </head>
+  <body>
+    <a class="skip" href="#main" onclick="document.getElementById('main')?.focus(); return false;">Skip to the content</a>
+    <div id="app"></div>
+    <noscript>
+      <p style="padding: 2rem; font-family: serif">
+        This site is a Lustre application and needs JavaScript. The source and
+        documentation are at
+        <a href="https://github.com/Roasbeef/loom">github.com/Roasbeef/loom</a>.
+      </p>
+    </noscript>
+    <script type="module">
+      import { main } from "./js/loom_site/loom_site.mjs";
+      main();
+    </script>
+  </body>
+</html>

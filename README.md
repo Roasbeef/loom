@@ -557,3 +557,11 @@ describes packaging and release builds.
 
 Inspired by Pi, oh-my-pi, and Codex, and by the Erlang/OTP approach to building
 concurrent, fault-tolerant systems.
+
+## License
+
+License: TBD. The project has not chosen a license yet.
+
+## The website
+
+The source of Loom's homepage and documentation site is in [site/](site/README.md).

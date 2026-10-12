@@ -1,0 +1,426 @@
+/* The recorded session on the landing page.
+ *
+ * The terminal is a tinted surface with a hairline border, in the same
+ * palette as the rest of the page, so it reads in both themes. Colour carries
+ * meaning only where the real terminal's does: a refusal is red, the dialog
+ * is orange, and a finished tool call is green. */
+
+.replay-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+  gap: clamp(1.25rem, 3vw, 3rem);
+  margin-top: 2rem;
+  align-items: start;
+}
+
+.replay-grid > * {
+  min-width: 0;
+}
+
+/* The window ------------------------------------------------------------------ */
+
+.term {
+  background: var(--surface);
+  border: 1px solid var(--rule-strong);
+  border-radius: 6px;
+  overflow: hidden;
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+.term-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.5rem 0.8rem;
+  border-bottom: 1px solid var(--rule);
+  font-family: var(--sans);
+  font-size: 0.82rem;
+  color: var(--ink-2);
+}
+
+.term-tag {
+  flex: none;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--hot);
+  border: 1px solid var(--hot);
+  border-radius: 3px;
+  padding: 0.08rem 0.45rem;
+}
+
+.term-body {
+  display: grid;
+  gap: 0.75rem;
+  padding: 0.9rem 0.7rem 0.7rem;
+}
+
+.box {
+  position: relative;
+  background: var(--paper);
+  border: 1px solid var(--rule-strong);
+  border-radius: 4px;
+  padding: 0.9rem 0.8rem 0.6rem;
+}
+
+.box-title {
+  position: absolute;
+  top: -0.62rem;
+  left: 0.6rem;
+  padding: 0 0.35rem;
+  background: var(--surface);
+  font-family: var(--sans);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--ink-3);
+}
+
+.tx {
+  height: 23rem;
+  padding: 0;
+}
+
+/* A column-reverse scroller starts at its end, so the newest line is in view
+ * without a script. The lines inside keep their own order. */
+.tx-scroll {
+  height: 100%;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column-reverse;
+  padding: 0.9rem 0.8rem 0.6rem;
+}
+
+.tx-lines {
+  display: grid;
+  gap: 0.4rem;
+  margin-bottom: auto;
+}
+
+.ln {
+  overflow-wrap: anywhere;
+}
+
+.ln .who {
+  display: inline-block;
+  min-width: 3.6rem;
+  font-weight: 700;
+  color: var(--ink-2);
+}
+
+.ln-user {
+  display: flex;
+  gap: 0.5rem;
+  color: var(--ink);
+}
+
+.ln-user .who {
+  color: var(--link);
+}
+
+.ln-agent {
+  display: flex;
+  gap: 0.5rem;
+  color: var(--ink);
+}
+
+.ln-tool .tool {
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.ln-tool::before {
+  content: "\25CF  ";
+  color: var(--trust);
+}
+
+.ln-tool .args {
+  margin-left: 0.6rem;
+  color: var(--ink-2);
+}
+
+.ln-out {
+  color: var(--ink-2);
+  padding-left: 1rem;
+}
+
+.ln-out::before {
+  content: "\2514  ";
+  color: var(--ink-3);
+}
+
+.ln-note {
+  color: var(--ink-3);
+  padding-left: 1rem;
+}
+
+.ln-warn {
+  color: var(--warn);
+  background: var(--warn-bg);
+  border-radius: 3px;
+  padding: 0.2rem 0.5rem 0.2rem 1rem;
+}
+
+.ln-code {
+  margin: 0.2rem 0 0.2rem 1rem;
+  font-size: 0.75rem;
+  line-height: 1.45;
+  background: var(--code-bg);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  padding: 0.6rem 0.7rem;
+  overflow-x: auto;
+}
+
+/* Lines that arrive a moment after their step appear one at a time. */
+.late {
+  opacity: 0;
+  animation: replay-appear 0.35s ease-out forwards;
+}
+
+@keyframes replay-appear {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.prompt {
+  min-height: 2.4rem;
+  padding-top: 0.85rem;
+  padding-bottom: 0.5rem;
+}
+
+.cursor {
+  display: inline-block;
+  width: 0.55rem;
+  height: 1rem;
+  background: var(--ink-2);
+  vertical-align: middle;
+  animation: replay-blink 1.1s steps(1) infinite;
+}
+
+@keyframes replay-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+.term-status {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding: 0.4rem 0.8rem;
+  border-top: 1px solid var(--rule);
+  font-family: var(--sans);
+  font-size: 0.78rem;
+  color: var(--ink-3);
+}
+
+/* The approval dialog --------------------------------------------------------- */
+
+.dialog {
+  background: var(--hot-bg);
+  border: 1px solid var(--hot);
+  border-radius: 4px;
+  padding: 0.75rem 0.9rem 0.8rem;
+  font-family: var(--sans);
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+
+.dialog-title {
+  font-weight: 700;
+  margin-bottom: 0.4rem;
+}
+
+.dialog-facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 0.15rem 0.9rem;
+}
+
+.dialog-facts dt {
+  color: var(--ink-3);
+  font-weight: 600;
+}
+
+.dialog-facts dd {
+  margin: 0;
+}
+
+.dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.btn-decision {
+  font-size: 0.85rem;
+}
+
+.dialog-hint {
+  margin-top: 0.55rem;
+  font-size: 0.78rem;
+  color: var(--ink-3);
+}
+
+.shell .tx-lines {
+  gap: 0.2rem;
+}
+
+/* The explanation and controls ------------------------------------------------ */
+
+.replay-side {
+  min-width: 0;
+}
+
+.narration {
+  min-height: 15.5rem;
+}
+
+.narration h3 {
+  font-size: 1.4rem;
+  line-height: 1.25;
+  font-weight: 600;
+  margin: 0.4rem 0 0.9rem;
+}
+
+.narration p + p {
+  margin-top: 0.9rem;
+}
+
+.waiting {
+  font-family: var(--sans);
+  font-size: 0.92rem;
+  font-weight: 600;
+  background: var(--hot-bg);
+  border: 1px solid var(--hot);
+  border-radius: 4px;
+  padding: 0.55rem 0.8rem;
+}
+
+.narration .show-step {
+  margin-top: 1rem;
+}
+
+.replay-controls {
+  margin-top: 1.1rem;
+  display: grid;
+  gap: 0.8rem;
+}
+
+.chips {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-family: var(--sans);
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--ink-2);
+  background: var(--paper);
+  border: 1px solid var(--rule-strong);
+  border-radius: 999px;
+  padding: 0.22rem 0.65rem 0.22rem 0.4rem;
+  cursor: pointer;
+}
+
+.chip:hover:not(:disabled) {
+  border-color: var(--ink);
+  color: var(--ink);
+}
+
+.chip:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.chip-n {
+  display: inline-grid;
+  place-items: center;
+  width: 1.2rem;
+  height: 1.2rem;
+  border-radius: 50%;
+  border: 1px solid var(--rule-strong);
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.chip.is-past .chip-n {
+  border-color: var(--trust);
+  color: var(--trust);
+}
+
+.chip.is-current {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--paper);
+}
+
+.chip.is-current .chip-n {
+  border-color: var(--paper);
+}
+
+/* Reduced motion ------------------------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .late {
+    opacity: 1;
+    animation: none;
+  }
+
+  .cursor {
+    animation: none;
+  }
+}
+
+/* Narrower screens ------------------------------------------------------------ */
+
+@media (max-width: 899px) {
+  .replay-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .narration {
+    min-height: 0;
+  }
+}
+
+@media (max-width: 560px) {
+  .term {
+    font-size: 0.78rem;
+  }
+
+  .tx {
+    height: 21rem;
+  }
+
+  .ln-user,
+  .ln-agent {
+    display: block;
+  }
+
+  .ln .who {
+    display: block;
+    min-width: 0;
+  }
+}

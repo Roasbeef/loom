@@ -1,0 +1,664 @@
+/* The step-through figures.
+ *
+ * A story on the landing page is a column of step texts beside a sticky
+ * panel. The panel holds the drawing, a caption, the controls and a table of
+ * every part's state. Below 761px the panel is an ordinary block above the
+ * one text that matches the current step, because a drawing tall enough to
+ * read does not leave room for text under a sticky header on a phone.
+ *
+ * Surfaces are tinted backgrounds with hairline borders. There are no
+ * shadows, no accent bars and no gradients. */
+
+/* Story layout ------------------------------------------------------------ */
+
+.scrolly {
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+  gap: clamp(1.25rem, 3vw, 3.5rem);
+  margin-top: 2rem;
+  align-items: start;
+}
+
+.scrolly > * {
+  min-width: 0;
+}
+
+.panel {
+  scroll-margin-top: calc(var(--stick) + 8px);
+  position: sticky;
+  top: calc(var(--stick) + 14px);
+  max-height: calc(100vh - var(--stick) - 28px);
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 12px 12px 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.panel-caption {
+  font-family: var(--sans);
+  font-size: 0.92rem;
+  line-height: 1.45;
+  min-height: 2.9em;
+  padding: 0 2px;
+}
+
+.panel-count {
+  display: inline-block;
+  min-width: 3.2em;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.panel-states {
+  border-top: 1px solid var(--rule);
+  padding-top: 8px;
+}
+
+/* Controls ---------------------------------------------------------------- */
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-family: var(--sans);
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--rule-strong);
+  border-radius: 4px;
+  padding: 0.42rem 0.75rem;
+  cursor: pointer;
+}
+
+.btn:hover:not(:disabled) {
+  border-color: var(--ink);
+}
+
+.btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.btn-play[aria-pressed="true"] {
+  background: var(--ink);
+  color: var(--paper);
+  border-color: var(--ink);
+}
+
+.icon {
+  flex: none;
+}
+
+.dots {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 0 auto;
+  display: flex;
+  gap: 0.2rem;
+}
+
+.dot {
+  all: unset;
+  box-sizing: border-box;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+.dot::after {
+  content: "";
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 1.5px solid var(--ink-3);
+  transition: background 0.2s, border-color 0.2s, transform 0.2s;
+}
+
+.dot:hover::after {
+  border-color: var(--ink);
+}
+
+.dot.is-active::after {
+  background: var(--hot);
+  border-color: var(--hot);
+  transform: scale(1.25);
+}
+
+.dot:focus-visible {
+  outline: 2px solid var(--hot);
+  outline-offset: 0;
+}
+
+/* Step texts -------------------------------------------------------------- */
+
+.step {
+  min-height: 60vh;
+  padding: 2.5rem 0;
+  opacity: 0.5;
+  transition: opacity 0.35s;
+}
+
+.step.is-active {
+  opacity: 1;
+}
+
+.step:first-child {
+  padding-top: 0.5rem;
+}
+
+.step h3 {
+  font-size: 1.4rem;
+  line-height: 1.25;
+  font-weight: 600;
+  margin: 0.4rem 0 0.9rem;
+}
+
+.step p + p {
+  margin-top: 0.9rem;
+}
+
+.step .state,
+.step .sample,
+.step .failure,
+.step .show-step {
+  margin-top: 1.1rem;
+}
+
+.state {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 0 1.2rem;
+  font-size: 0.93rem;
+  line-height: 1.45;
+  border-top: 1px solid var(--rule);
+}
+
+.state dt,
+.state dd {
+  margin: 0;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.state dt {
+  font-family: var(--sans);
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--ink-3);
+  padding-top: 0.62rem;
+}
+
+.sample figcaption {
+  font-family: var(--sans);
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--ink-3);
+  margin-bottom: 0.35rem;
+}
+
+.sample pre {
+  font-size: 0.75rem;
+}
+
+.failure {
+  font-size: 0.93rem;
+  line-height: 1.5;
+  color: var(--ink-2);
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 0.6rem 0.8rem;
+}
+
+.failure strong {
+  font-family: var(--sans);
+  font-size: 0.8rem;
+  letter-spacing: 0.02em;
+}
+
+.show-step {
+  all: unset;
+  display: inline-block;
+  cursor: pointer;
+  font-family: var(--sans);
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--link);
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+  margin-top: 1.1rem;
+}
+
+.show-step:focus-visible {
+  outline: 2px solid var(--hot);
+  outline-offset: 2px;
+}
+
+/* A figure inside a documentation page ------------------------------------- */
+
+.prose .dots {
+  margin: 0 0 0 auto;
+  padding: 0;
+}
+
+.prose .dots li {
+  margin: 0;
+}
+
+.prose .step h3 {
+  font-size: 1.4rem;
+  font-weight: 600;
+  margin: 0.4rem 0 0.9rem;
+}
+
+.prose .step p {
+  margin-top: 0;
+}
+
+.prose .step p + p {
+  margin-top: 0.9rem;
+}
+
+.prose .step pre {
+  margin-top: 0;
+}
+
+.embedded {
+  margin: 1.8rem 0;
+  display: grid;
+  gap: 1.2rem;
+}
+
+.embedded .panel {
+  position: static;
+  max-height: none;
+  overflow: visible;
+}
+
+.embedded .step {
+  min-height: 0;
+  opacity: 1;
+  padding: 0;
+}
+
+/* The drawing --------------------------------------------------------------
+ *
+ * Two layouts are in the markup. The container query picks the narrow one
+ * when the panel's drawing is under 400px wide. Text is HTML at a fixed pixel size, so
+ * a label is 12px or 13px at every width; only the boxes scale. */
+
+.dgm {
+  container-type: inline-size;
+  container-name: figure;
+}
+
+.dgm-layout {
+  position: relative;
+  width: 100%;
+  isolation: isolate;
+}
+
+.dgm-wide {
+  max-width: 620px;
+  margin: 0 auto;
+}
+
+.dgm-narrow {
+  display: none;
+  max-width: 420px;
+  margin: 0 auto;
+}
+
+@container figure (max-width: 399px) {
+  .dgm-wide {
+    display: none;
+  }
+
+  .dgm-narrow {
+    display: block;
+  }
+}
+
+.dgm-lines {
+  z-index: 1;
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.dl-base {
+  fill: none;
+  stroke: var(--rule-strong);
+  stroke-width: 1.5;
+}
+
+.dl-live {
+  fill: none;
+  stroke: var(--hot);
+  stroke-width: 2.5;
+  stroke-dasharray: 7 5;
+}
+
+.dl-live-0 {
+  animation: dgm-flow-0 0.8s linear infinite;
+}
+
+.dl-live-1 {
+  animation: dgm-flow-1 0.8s linear infinite;
+}
+
+@keyframes dgm-flow-0 {
+  to {
+    stroke-dashoffset: -12;
+  }
+}
+
+@keyframes dgm-flow-1 {
+  to {
+    stroke-dashoffset: -12;
+  }
+}
+
+.dl-head {
+  fill: var(--hot);
+}
+
+.dnode {
+  position: absolute;
+  box-sizing: border-box;
+}
+
+.dzone {
+  border: 1px dashed var(--rule-strong);
+  border-radius: 8px;
+}
+
+.dz-title {
+  z-index: 3;
+  text-shadow: 0 0 4px var(--paper), 0 0 4px var(--paper), 0 0 4px var(--paper);
+  position: absolute;
+  left: 10px;
+  top: 4px;
+  font-family: var(--sans);
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--ink-3);
+}
+
+.dzone.kind-trusted-zone {
+  background: var(--trust-bg);
+  border-color: var(--trust-line);
+}
+
+.dzone.kind-jail-zone {
+  background: var(--jail-bg);
+  border-color: var(--jail-line);
+}
+
+.dbox {
+  z-index: 2;
+  padding: 8px;
+  border: 1px solid var(--rule-strong);
+  border-radius: 6px;
+  background: var(--paper);
+  overflow: hidden;
+  font-family: var(--sans);
+  transition: background-color 0.35s, border-color 0.35s;
+}
+
+.dn-title {
+  font-size: 13px;
+  line-height: 17px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.dn-detail,
+.dn-state {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+.dbox.kind-store {
+  border-radius: 3px;
+  background: var(--surface-2);
+}
+
+.dbox.kind-outside {
+  border-style: dashed;
+}
+
+.dbox.kind-jailed {
+  background: var(--jail-bg);
+  border-color: var(--jail-line);
+}
+
+.dbox.kind-stage {
+  text-align: center;
+  padding: 8px 4px;
+}
+
+.dbox.tone-live {
+  background: var(--hot-bg);
+  border-color: var(--hot);
+}
+
+.dbox.tone-live .dn-state {
+  color: var(--ink);
+}
+
+.dbox.tone-done {
+  background: var(--trust-bg);
+  border-color: var(--trust);
+}
+
+.dbox.tone-fault {
+  background: var(--warn-bg);
+  border-color: var(--warn);
+  border-style: dashed;
+}
+
+.dbox.tone-fault .dn-state {
+  color: var(--warn);
+}
+
+.dgm-chip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: baseline;
+  font-family: var(--sans);
+  font-size: 13px;
+  margin: 0 0 8px;
+}
+
+.dgm-chip-label {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+/* The table of states ------------------------------------------------------ */
+
+.dgm-states {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--sans);
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
+.dgm-states th,
+.dgm-states td {
+  padding: 0.16rem 0.5rem 0.16rem 0;
+  border-bottom: 1px solid var(--rule);
+  vertical-align: top;
+  text-align: left;
+  font-size: 12.5px;
+  letter-spacing: 0;
+}
+
+.dgm-states th {
+  width: 36%;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
+.dgm-states tr:last-child th,
+.dgm-states tr:last-child td {
+  border-bottom: 0;
+}
+
+.dgm-states .sdot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 0.45rem;
+  background: var(--rule-strong);
+}
+
+.dgm-states .tone-live .sdot {
+  background: var(--hot);
+}
+
+.dgm-states .tone-done .sdot {
+  background: var(--trust);
+}
+
+.dgm-states .tone-fault .sdot {
+  background: var(--warn);
+}
+
+.dgm-states .tone-fault td {
+  color: var(--warn);
+}
+
+.dgm-wire {
+  margin-top: 6px;
+  font-family: var(--sans);
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink-2);
+}
+
+.dgm-wire-label {
+  font-weight: 600;
+  margin-right: 0.5rem;
+}
+
+.dgm-msg {
+  display: inline-block;
+  margin-right: 0.9rem;
+}
+
+.dgm-wire code {
+  font-size: 12px;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Reduced motion ------------------------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .dbox,
+  .step {
+    transition: none;
+  }
+
+  .dl-live-0,
+  .dl-live-1 {
+    animation: none;
+    stroke-dasharray: none;
+  }
+}
+
+/* Narrower screens ----------------------------------------------------------- */
+
+@media (max-width: 1199px) {
+  .scrolly {
+    grid-template-columns: minmax(0, 3fr) minmax(0, 4fr);
+    gap: 1.25rem;
+  }
+
+  .panel {
+    padding: 10px 10px 8px;
+  }
+
+  .step {
+    min-height: 56vh;
+  }
+}
+
+@media (max-width: 760px) {
+  .scrolly {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+  }
+
+  .scrolly .panel {
+    order: -1;
+    position: static;
+    max-height: none;
+    overflow: visible;
+  }
+
+  .scrolly .step {
+    display: none;
+  }
+
+  .scrolly .step.is-active {
+    display: block;
+    min-height: 0;
+    padding: 1.4rem 0 0;
+    opacity: 1;
+  }
+
+  .scrolly .step .show-step {
+    display: none;
+  }
+
+  .panel-caption {
+    font-size: 0.9rem;
+    min-height: 0;
+  }
+
+  .dots {
+    margin-left: 0;
+    flex-wrap: wrap;
+  }
+}
