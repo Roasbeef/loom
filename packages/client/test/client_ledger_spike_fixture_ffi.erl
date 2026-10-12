@@ -141,6 +141,97 @@ run(<<"live_pins">>, Root) ->
         {ok, Written} = file:read_file(Options)
     end);
 
+%% net_kernel:allow/1 on a node that already filters by pin. The target T pins
+%% both X and Y, so a refusal that leaves T's callback accepting the leaf can
+%% only come from the allow list. OTP makes two different checks with the one
+%% list. An outbound connection is checked against the exact node name. An
+%% inbound connection under inet_tls_dist is checked against the certificate:
+%% the peer is let in when its certificate names the host of a listed node or
+%% the IP address the peer connected from (inet_tls_dist:allowed_nodes/3), and
+%% the claimed node name has then to be on one of those hosts. The nodes here
+%% are addressed by IP, so their certificates carry the IP, and the claimed name
+%% is never what refuses them.
+run(<<"allow_list">>, Root) ->
+    Ca = ?FIX:root_cert("ledger spike ca"),
+    Cookie = ?FIX:cookie("shared"),
+    T = live_node(Root, "target", Ca, Cookie),
+    X = live_node(Root, "first", Ca, Cookie),
+    Y = live_node(Root, "second", Ca, Cookie),
+    Specs = [{T, #{ledger => pins([X, Y])}},
+             {X, #{ledger => pins([T])}},
+             {Y, #{ledger => pins([T])}}],
+    with_nodes(Specs, fun([PortT, PortX, PortY]) ->
+        NameT = name_of(T),
+        NameX = name_of(X),
+        NameY = name_of(Y),
+        Ghost = <<"ghost@10.9.9.9">>,
+        Drop = fun() ->
+            true = call(PortT, {disconnect, NameY}),
+            ok = call(PortT, {await_down, NameY}),
+            ok = call(PortY, {await_down, NameT}),
+            _ = verdicts(PortT),
+            _ = verdicts(PortY)
+        end,
+
+        %% Before the first call nobody is listed, and anybody with the cookie
+        %% and a pinned leaf is let in. Y connects.
+        {ok, []} = call(PortT, allowed),
+        true = connect(PortY, T),
+        pong = ping(PortY, T),
+
+        %% The first call turns the list on, here with a name on another host.
+        %% A node that is already connected and is not listed stays connected.
+        ok = call(PortT, {allow, [Ghost]}),
+        {ok, [Ghost]} = call(PortT, allowed),
+        pong = ping(PortY, T),
+        pong = ping(PortT, Y),
+
+        %% Y is neither listed nor on a listed host, and it connects again: the
+        %% inbound check admitted its certificate by the address it came from.
+        %% The allow list is not a gate on the name an inbound peer claims.
+        Drop(),
+        true = connect(PortY, T),
+        pong = ping(PortY, T),
+        [{valid, live}] = verdicts(PortT),
+
+        %% A later call adds, and X connects.
+        ok = call(PortT, {allow, [NameX]}),
+        {ok, [Ghost, NameX]} = call(PortT, allowed),
+        true = connect(PortX, T),
+        pong = ping(PortX, T),
+
+        %% An outbound connection is checked by exact name. T cannot dial Y
+        %% until Y is listed, and the refusal comes before TLS: neither
+        %% callback is asked.
+        Drop(),
+        false = connect(PortT, Y),
+        [] = verdicts(PortT),
+        [] = verdicts(PortY),
+        ok = call(PortT, {allow, [NameY]}),
+        {ok, [Ghost, NameX, NameY]} = call(PortT, allowed),
+        true = connect(PortT, Y),
+        pong = ping(PortT, Y),
+
+        %% A repeat adds nothing, an empty list does nothing, and a list with
+        %% an element that is not an atom is refused whole, including the atom
+        %% before it.
+        ok = call(PortT, {allow, [NameX]}),
+        {ok, [Ghost, NameX, NameY]} = call(PortT, allowed),
+        ok = call(PortT, {allow, []}),
+        {ok, [Ghost, NameX, NameY]} = call(PortT, allowed),
+        error = call(PortT, {allow_raw, [<<"not_an_atom">>]}),
+        error = call(PortT, {allow_raw, [late_name, <<"x">>]}),
+        {ok, [Ghost, NameX, NameY]} = call(PortT, allowed),
+
+        %% A listed name is not a trusted name. Removing Y's pin refuses Y at
+        %% TLS, with Y still listed, and nothing removes Y from the list.
+        ok = call(PortT, {publish, pins([X])}),
+        Drop(),
+        false = connect(PortY, T),
+        [{fail, peer_identity_mismatch}] = verdicts(PortT),
+        {ok, [Ghost, NameX, NameY]} = call(PortT, allowed)
+    end);
+
 %% The pin-less options file and the boot check that compares the loaded file
 %% with the one the configuration generates.
 run(<<"options_boot_check">>, Root) ->
@@ -336,7 +427,14 @@ handle({ping, Name}, State) ->
 handle(take_verdicts, #{collector := Collector} = State) ->
     Collector ! {take, self()},
     {receive {verdicts, Seen} -> Seen after 5000 -> error(collector_timeout) end,
-     State}.
+     State};
+handle({allow, Names}, State) ->
+    {net_kernel:allow([binary_to_atom(N, utf8) || N <- Names]), State};
+handle({allow_raw, Names}, State) ->
+    {net_kernel:allow(Names), State};
+handle(allowed, State) ->
+    {ok, Nodes} = net_kernel:allowed(),
+    {{ok, [atom_to_binary(N, utf8) || N <- Nodes]}, State}.
 
 await_down(Node) ->
     true = erlang:monitor_node(Node, true),
