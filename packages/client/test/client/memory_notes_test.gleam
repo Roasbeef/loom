@@ -7,13 +7,16 @@
 import broker/broker
 import broker/exec
 import broker/policy
+import client/history
 import client/memory
 import client/notes
+import client/serve
 import core/clock
 import core/entry
 import core/ids
 import core/json
 import core/message
+import events/search
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
@@ -26,6 +29,7 @@ import support/tool_registry
 import telemetry/level
 import telemetry/log
 import tools/directory_access
+import tools/history as history_tool
 import tools/remember
 import tools/tool
 
@@ -308,6 +312,61 @@ pub fn the_notes_hook_injects_one_message_or_none_test() {
   assert composer.memory_context_lines(text) == Some(2)
   assert composer.transcript_text(text, False)
     == "memory context (2 lines)  [Ctrl+G to expand]"
+}
+
+// --- search -----------------------------------------------------------------
+
+/// The two spellings of the note type are one string.
+pub fn the_index_and_the_door_agree_on_the_note_type_test() {
+  assert search.note_entry_type == remember.note_type
+}
+
+/// A note written through the door is found by `history_search` under kind
+/// `note`, from the domain's memory store joined to its history sources.
+pub fn a_remembered_note_is_found_by_kind_note_test() {
+  let root = fresh_root("search")
+  let memory_path = root <> "/loom-memory.db"
+  assert !dispatch(
+    root,
+    "Tab policy",
+    "how this repo indents",
+    "feedback",
+    "Use tabs in Makefiles because make requires them.",
+  ).is_error
+
+  let sources = serve.with_memory_source(fn() { Ok([]) }, memory_path)
+  let assert Ok([source]) = sources() as "the memory store must be a source"
+  assert source.path == memory_path
+
+  let assert Ok(prepared) =
+    history.prepare_shared(history.SharedConfig(
+      root <> "/loom-search.db",
+      sources,
+      5000,
+      100,
+    ))
+    as "the shared owner must prepare"
+  let assert Ok(shared) = prepared.begin() as "the shared owner must begin"
+  let seam = history.seam_for(shared, source.session)
+  let found =
+    seam.search(
+      history_tool.Query(
+        ..history_tool.query("tabs", 10, history_tool.Repository),
+        kind: Some("note"),
+      ),
+    )
+  let _retired = prepared.retire()
+  let assert Ok([hit]) = found as "the note must be searchable"
+  assert hit.kind == "note"
+  assert hit.ts >= 1_756_000_000_000
+  assert string.contains(hit.snippet, "tabs")
+    || string.contains(hit.snippet, "Tab")
+  assert string.length(hit.entry) > 0
+
+  // A store with no notes yet contributes no source at all.
+  let none = fresh_root("search-none")
+  assert serve.with_memory_source(fn() { Ok([]) }, none <> "/loom-memory.db")()
+    == Ok([])
 }
 
 // --- helpers ----------------------------------------------------------------

@@ -1152,12 +1152,52 @@ pub fn build_domain(
   domain_service.build(
     domain_service.Config(history: history.SharedConfig(
       index_path: selected.index_path,
-      sources:,
+      sources: with_memory_source(sources, selected.memory_path),
       timeout_ms: history.default_timeout_ms,
       batch_entries: 100,
     )),
     owner,
   )
+}
+
+/// Adds the domain's memory store to the sources its history owner refreshes.
+///
+/// The store is a session file like the conversations beside it, and its
+/// `memory/note` entries are what `history_search kind=note` returns, so the
+/// owner indexes it by the route every other source takes. A store that does
+/// not exist yet, or has no identity yet, contributes nothing and the next
+/// refresh asks again, because the resolver runs afresh for every job.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.with_memory_source(sources, "/d/loom-memory.db")()
+/// ```
+@internal
+pub fn with_memory_source(
+  sources: fn() -> Result(List(shared_history.Source), String),
+  memory_path: String,
+) -> fn() -> Result(List(shared_history.Source), String) {
+  fn() {
+    use found <- result.map(sources())
+    case memory_source(memory_path) {
+      Ok(source) -> list.append(found, [source])
+      Error(Nil) -> found
+    }
+  }
+}
+
+// The memory store's identity is read without its writer lease, so a
+// `remember` call holding it never delays a search.
+fn memory_source(path: String) -> Result(shared_history.Source, Nil) {
+  use #(identity, _parent) <- result.try(
+    sqlite.identity(path:) |> result.replace_error(Nil),
+  )
+  use text <- result.try(option.to_result(identity, Nil))
+  use session <- result.map(
+    ids.parse_session_id(text) |> result.replace_error(Nil),
+  )
+  shared_history.Source(session:, path:)
 }
 
 /// Derives one stable workspace domain, independent of session filename and cwd.
