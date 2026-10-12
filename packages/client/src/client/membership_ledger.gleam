@@ -659,6 +659,22 @@ fn linked(a: Member, b: Member) -> Bool {
   || { a.directory != NotInDirectory && b.directory != NotInDirectory }
 }
 
+/// The table of the node whose Erlang node name is `node`, for a caller that
+/// holds the node and not the plan name. A node that is not an active member
+/// has the empty table, which refuses every peer.
+///
+/// ## Examples
+///
+/// ```gleam
+/// membership_ledger.node_table(ledger, "loom@laptop.example")
+/// ```
+pub fn node_table(ledger: Ledger, node: String) -> PinTable {
+  case member_at(ledger, node) {
+    Ok(own) -> pin_table(ledger, own.name)
+    Error(Nil) -> PinTable(by_pin: dict.new(), pin_of: dict.new())
+  }
+}
+
 /// The peer a leaf certificate's pin names, which the verify callback then
 /// compares with the certificate's node-name subject alternative name.
 ///
