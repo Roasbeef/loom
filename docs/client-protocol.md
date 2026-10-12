@@ -1591,6 +1591,45 @@ the nodes the key names, and `edges`, `placements` and `orchestrators` are
 absent. A daemon built before this command refuses it `bad_request` with the
 message `unsupported control command`.
 
+### 3.30 `ledger.append`, `ledger.entries` and `ledger.status`
+
+Owner-only (a member is refused `forbidden`), and none needs an epoch. They read
+and extend the membership ledger of a daemon that runs from one
+([protocol-change/086](../protocol-change/086-membership-ledger.md)). A daemon
+with no `[distribution] ledger` answers each `not_found`. A frame is 64 KiB in
+both directions, so the bounds below are those of one frame.
+
+`ledger.append` takes `{"lines": ["<line>", ...]}`: one to 64 strings of at most
+8 KiB each. The daemon offers them to its ledger process in order, through the
+acceptance procedure a peer's line goes through, so the command adds no trust
+beyond the owner check. It replies `{"applied": 2, "head": {"seq": 9, "id":
+"<64 hex>"}}`, where `applied` does not count a line the ledger already held. A
+line that fails is refused `ledger_invalid` and the `message` is the step:
+`malformed`, `bad_signature`, `fork`, `chain`, `invalid`, `unsupported_format`, or
+`gap` for a line more than one past the head. Lines before the failing one stay
+applied. A line the file could not take is refused `unavailable`. A request over
+64 lines or 8 KiB a line is `bad_request`.
+
+`ledger.entries` takes `{"after": 7, "limit": 64}`: `after` is the sequence number
+the caller holds (0 or more) and `limit` a positive integer that the ledger
+clamps to 1 through 64. It replies `{"lines": ["<line>", ...], "head_seq": 9}`
+with at most 48,000 bytes of lines, so a page may hold fewer than `limit`; the
+caller continues from the last line it received.
+
+`ledger.status` takes `{}` and replies
+
+```json
+{"v":2,"reply_to":3,"event":"ledger.status","body":{"deployment":"3f9c...","state":"ok","head":{"seq":9,"id":"4c1e..."},"self":{"name":"hub","enrolled":true},"members":[{"name":"hub","node":"hub@10.0.0.1","role":"orchestrator","directory":"none","reported_seq":9,"ms_since_report":0},{"name":"laptop2","node":"loom@laptop2.example.net","role":"orchestrator","directory":"none"}],"last_refusal":null}}
+```
+
+`state` is `ok`, `revoked` or `not_enrolled`. `reported_seq` is the newest
+sequence number the member reported to the answering daemon and is absent for a
+member that has not reported; `ms_since_report` is the answering daemon's own
+elapsed time. The daemon reports itself at its own head. `last_refusal` is `null`
+or `{"seq": 7, "step": "fork", "ours": "<hex>", "theirs": "<hex>"}`, where `seq`
+is `null` when the line had none and `ours` and `theirs` appear only for a fork.
+`loom distribution enroll`, `revoke`, `renew`, `log` and `import` are the clients.
+
 ---
 
 ## 4. The session endpoint
