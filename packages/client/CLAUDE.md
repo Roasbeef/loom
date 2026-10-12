@@ -1142,6 +1142,9 @@ catalogue without opening runtimes. Explicit admission invokes
   wins, and no rung below it is evaluated.
 - `client/grants` — decoding the runtime's opaque escalation JSON back
   into `broker/policy.Grant`, and encoding it again. Pure and total.
+- `client/effect_abort.{Message, supervised, abort}` — the late-bound route from
+  an Agency reap to `broker.abort`; see "A reap also cancels the child's broker
+  executions".
 - `client/escalate.{Config, Message, Refused, Decision, Escalations,
   seam, start, none, record_id, action_digest, action_preview,
   default_config}` — parking: what a production tool call does when the
@@ -4703,6 +4706,16 @@ these forks because they define the same modules.
   mid-restart would otherwise evaporate and the child would run until the
   session closed. The mark is written once and every later observation
   re-issues the abort.
+- **A reap also cancels the child's broker executions.** The runtime's
+  abort kills the strand's live effect processes only. A default-mode
+  `bash` is a job under the jobs actor, whose execution and jailed process
+  survive that, so `reap` calls `Config.abort_effects` (and `drain_execution`
+  its `abort_effects` argument, fed from `async_runs.Wiring.abort_children`)
+  after `api.abort_operation`. `serve` binds both to `client/effect_abort`, a
+  named actor that runs the same closure the operator's abort uses
+  (`hub.with_effect_abort`): the async fence, then `broker.abort`. By name
+  because the broker is built after `agency.Config` and the plane consumes the
+  config. A new reap path must go through `reap`, not `api.abort_operation`.
 - **A spawn adopts an existing child on a name match only when the ledger
   says this caller minted it.** Handing an existing child back is the
   reconciliation path that makes `agent_spawn` `ReplaySafe`, and it is

@@ -57,6 +57,7 @@
 
 import client/tui_e2e_test.{type EunitTest}
 import core/json
+import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -376,6 +377,13 @@ fn session(duo: Duo, work: String, laptop_url: String, box_url: String) -> Nil {
   // started, so no join can have been the one that found it overdue.
   await_log(duo.bravo, ["operation.aborted", "third-child"])
 
+  // The abort must also reach the child's shell. A default-mode `bash` runs as
+  // a job under the jobs actor, which the runtime's own abort does not stop;
+  // before the reap told the broker, this file went on growing until the job's
+  // one hour deadline. The heartbeat is once a second, so a count that holds
+  // for three seconds means the process group is gone.
+  let _quiet = await_quiet(work <> "/beat3")
+
   // The second turn joins the two children it did not wait for.
   remote_daemons.say(terminal, join_prompt)
   remote_daemons.await_answers(
@@ -396,6 +404,22 @@ fn await_lines(path: String, lines: Int) -> Int {
       }
     })
     as { path <> " reached " <> int.to_string(lines) <> " lines" }
+  count
+}
+
+// Waits until the file stops growing: two counts, three seconds apart, agree.
+// A heartbeat ticking once a second cannot hold still for that long.
+fn await_quiet(path: String) -> Int {
+  let assert poll.Answered(count) =
+    poll.until(within: settle_ms, every: 500, attempt: fn() {
+      let before = line_count(path)
+      process.sleep(3000)
+      case line_count(path) == before {
+        True -> poll.Done(before)
+        False -> poll.Retry
+      }
+    })
+    as { path <> " stopped growing after the abort" }
   count
 }
 

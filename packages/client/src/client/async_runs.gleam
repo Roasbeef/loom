@@ -60,6 +60,10 @@ pub type Wiring {
     clock: clock.Clock,
     /// Cancels only this execution's distinct broker step.
     abort: fn(ids.OpId, String) -> Nil,
+    /// Cancels the effect plane's executions under an operation. Used for
+    /// the children a drained execution stops, so a background job a child
+    /// started does not outlive it.
+    abort_children: fn(ids.OpId) -> Nil,
     /// How long an owner may sit idle while executions it launched are
     /// still live before it is woken with a listing of them, in
     /// milliseconds; zero turns it off. The same `[jobs].heartbeat_s` the
@@ -275,6 +279,7 @@ pub fn start(
       weft.cancel(held.cancel)
       let _children =
         agency.drain_execution(
+          state.wiring.abort_children,
           state.wiring.runtime,
           held.record.operation,
           held.record.id,
@@ -1207,7 +1212,12 @@ fn live_by_owner(
 fn sweep(state: State) -> State {
   let recovering =
     list.filter(state.recovering, fn(record) {
-      agency.drain_execution(state.wiring.runtime, record.operation, record.id)
+      agency.drain_execution(
+        state.wiring.abort_children,
+        state.wiring.runtime,
+        record.operation,
+        record.id,
+      )
       != Ok(True)
     })
   let state = State(..state, recovering:)
@@ -1241,6 +1251,7 @@ fn sweep(state: State) -> State {
         weft.cancel(held.cancel)
         let drained =
           agency.drain_execution(
+            state.wiring.abort_children,
             state.wiring.runtime,
             held.record.operation,
             id,

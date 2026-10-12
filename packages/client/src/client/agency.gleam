@@ -346,6 +346,14 @@ pub type Config {
     /// `delegate_deadline_tick_ms`, because the spawner that started its
     /// children may never return to wait on them (protocol-change/084).
     deadline_tick_ms: Option(Int),
+    /// Cancels the effect plane's executions under an operation, called with
+    /// the child's operation after the reap has stopped it. The runtime's own
+    /// abort kills the strand's live effect processes and nothing else, so a
+    /// background job (which runs under the jobs actor, not under the tool
+    /// call that started it) would otherwise run to its wall deadline. The
+    /// host owns the broker, so the host supplies this; the default is a no-op
+    /// for embedded hosts with no effect plane. It must not wait.
+    abort_effects: fn(OpId) -> Nil,
   )
 }
 
@@ -411,6 +419,7 @@ pub fn default_config(name: address.Address(Message), clock: Clock) -> Config {
     remote: remote_reach.none(""),
     remote_queued: fn() { Nil },
     deadline_tick_ms: None,
+    abort_effects: fn(_operation) { Nil },
   )
 }
 
@@ -555,7 +564,7 @@ pub fn start(
         actor.continue(state)
       }
       DelegateEnded(operation:, reply:) -> {
-        process.send(reply, run_ended_in(state, operation))
+        process.send(reply, run_ended_in(config, state, operation))
         actor.continue(state)
       }
       DeadlineTick -> {
@@ -2624,9 +2633,9 @@ fn reap_overdue(
       Ok(Some(run)) ->
         case run.record.stop, run.record.deadline {
           child_run.Unstopped, Some(at) if at <= now ->
-            reap(runtime, run, child_run.BudgetExpired)
+            reap(config.abort_effects, runtime, run, child_run.BudgetExpired)
           child_run.Unstopped, _ -> Nil
-          _, _ -> reap(runtime, run, run.record.stop)
+          _, _ -> reap(config.abort_effects, runtime, run, run.record.stop)
         }
       Ok(None) | Error(_) -> Nil
     }
@@ -2636,14 +2645,15 @@ fn reap_overdue(
 fn reap_run(config: Config, operation: OpId) -> Nil {
   case borrow(config) {
     Error(_refusal) -> Nil
-    Ok(runtime) -> reap_run_in(runtime, operation)
+    Ok(runtime) -> reap_run_in(config, runtime, operation)
   }
 }
 
 // `reap_run` on a runtime already in hand. The holder calls it with its own
 // state, since borrowing from inside the holder would wait on itself.
-fn reap_run_in(runtime: api.Runtime, operation: OpId) -> Nil {
-  let _owned = drain_owned(runtime, child_run.ParentRun(operation))
+fn reap_run_in(config: Config, runtime: api.Runtime, operation: OpId) -> Nil {
+  let _owned =
+    drain_owned(config.abort_effects, runtime, child_run.ParentRun(operation))
   case read_ledger(runtime) {
     Error(_refusal) -> Nil
     Ok(ledger) ->
@@ -2651,7 +2661,7 @@ fn reap_run_in(runtime: api.Runtime, operation: OpId) -> Nil {
         case current_run(runtime, cell) {
           Ok(Some(run))
             if run.record.owner == Some(child_run.ParentRun(operation))
-          -> reap(runtime, run, child_run.ParentFinished)
+          -> reap(config.abort_effects, runtime, run, child_run.ParentFinished)
           Ok(_) | Error(_) -> Nil
         }
       })
@@ -2663,7 +2673,11 @@ fn reap_run_in(runtime: api.Runtime, operation: OpId) -> Nil {
 // and one that reached it before is a child this reap stops. The count is taken
 // before the reap, of the runs this operation owns that nobody had stopped yet,
 // so a repeated message counts nothing.
-fn run_ended_in(runtime: api.Runtime, operation: OpId) -> Result(Int, Refusal) {
+fn run_ended_in(
+  config: Config,
+  runtime: api.Runtime,
+  operation: OpId,
+) -> Result(Int, Refusal) {
   use Nil <- result.try(
     api.put_reserved_fact(runtime, ended_key(operation), json.Null)
     |> result.map_error(plane_failed),
@@ -2678,13 +2692,18 @@ fn run_ended_in(runtime: api.Runtime, operation: OpId) -> Result(Int, Refusal) {
         Ok(None) | Error(_) -> False
       }
     })
-  reap_run_in(runtime, operation)
+  reap_run_in(config, runtime, operation)
   stopping
 }
 
 // A cause is written once for this operation. Losing its CAS leaves the next
 // observation to read the winner; it never sends an unrecorded cancellation.
-fn reap(runtime: api.Runtime, run: ObservedRun, stop: child_run.Stop) -> Nil {
+fn reap(
+  abort_effects: fn(OpId) -> Nil,
+  runtime: api.Runtime,
+  run: ObservedRun,
+  stop: child_run.Stop,
+) -> Nil {
   let recorded = case run.record.stop {
     child_run.Unstopped ->
       api.put_reserved_fact_expecting(
@@ -2710,11 +2729,20 @@ fn reap(runtime: api.Runtime, run: ObservedRun, stop: child_run.Stop) -> Nil {
         )
       {
         Error(_) -> Nil
-        Ok(_) ->
+        Ok(_) -> {
           api.abort_operation(
             api.on_strand(runtime, run.record.strand),
             run.operation,
           )
+
+          // The runtime's abort stopped only the strand's live effect
+          // processes. A default-mode `bash` runs as a job under the jobs
+          // actor, so its broker execution and jailed process survive that
+          // and keep running until the job's wall deadline unless the
+          // broker is told. Sent after the marker is durable and the
+          // effects are interrupted, in the order the operator's abort uses.
+          abort_effects(run.operation)
+        }
       }
     }
   }
@@ -2992,17 +3020,23 @@ fn describe_create(error: api.CreateStrandError) -> String {
 /// ## Examples
 ///
 /// ```gleam
-/// // agency.drain_execution(runtime, operation, execution)
+/// // agency.drain_execution(abort_effects, runtime, operation, execution)
 /// ```
 pub fn drain_execution(
+  abort_effects: fn(OpId) -> Nil,
   runtime: api.Runtime,
   operation: OpId,
   execution: String,
 ) -> Result(Bool, String) {
-  drain_owned(runtime, child_run.AsyncExecution(operation, execution))
+  drain_owned(
+    abort_effects,
+    runtime,
+    child_run.AsyncExecution(operation, execution),
+  )
 }
 
 fn drain_owned(
+  abort_effects: fn(OpId) -> Nil,
   runtime: api.Runtime,
   owner: child_run.Owner,
 ) -> Result(Bool, String) {
@@ -3033,7 +3067,7 @@ fn drain_owned(
           case observed {
             None -> Error("child custody disappeared during drain")
             Some(run) -> {
-              reap(runtime, run, child_run.ParentFinished)
+              reap(abort_effects, runtime, run, child_run.ParentFinished)
               let child_settled =
                 api.await_result(
                   api.on_strand(runtime, record.strand),
