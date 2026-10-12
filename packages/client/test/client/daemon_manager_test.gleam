@@ -2455,3 +2455,154 @@ pub fn a_new_import_replaces_a_stale_file_at_the_sessions_path_test() {
   let _removed = simplifile.delete_all([directory])
   Nil
 }
+
+// --- delegate sessions (protocol-change/084) ---------------------------------
+
+fn delegate_request(
+  spawner: String,
+  parent: Int,
+  limit: Int,
+) -> manager.DelegateRequest {
+  let parent_session = registration(parent).id
+  manager.DelegateRequest(
+    spawner:,
+    parent_session:,
+    creation: manager.Creation(
+      request_key: "delegate:" <> spawner <> ":" <> parent_session,
+      workspace: "repo",
+      name: "delegate " <> spawner <> " " <> parent_session,
+      configuration: "",
+      profile: option.Some("cheap"),
+      model: option.None,
+      executor: "box",
+      pool: "",
+    ),
+    directory: "/delegate-sessions",
+    generator: ids.generator(clock.fixed(at: 1_700_000_000_000), seed: parent),
+    configuration: "",
+    limit:,
+    now_ms: 1000 + parent,
+  )
+}
+
+pub fn a_delegate_session_is_made_once_for_a_pair_and_a_return_finds_it_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let registry = start(store, 4, fn(record, _) { Ok(record.id) })
+
+  // The first message for a pair creates the session, owned by the registry
+  // like any other, and records it under the pair.
+  let request = delegate_request("laptop", 940, 2)
+  let assert Ok(manager.Delegated(session_id:, status: manager.Opening(_))) =
+    manager.delegate_session(registry, request)
+    as "the first message creates the session"
+  let assert Ok(option.Some(recorded)) =
+    catalogue.delegate_for(store, "laptop", request.parent_session)
+    as "the pair is recorded"
+  assert recorded.session_id == session_id
+  assert recorded.last_contact_ms == 1940
+
+  // The session is an ordinary one in every other respect: it has the
+  // session-only memory domain and the spawner's profile.
+  let assert Ok(view) = manager.get(registry, session_id)
+  assert view.registration.profile == option.Some("cheap")
+  assert view.registration.executor == "box"
+  let assert Ok(selected) = manager.session_domain(registry, session_id)
+  assert selected.scope == domain.SessionOnly
+
+  // A return for the same pair finds the same session, and moves the contact
+  // time. A second parent of the same spawner gets a session of its own.
+  let later = manager.DelegateRequest(..request, now_ms: 9000)
+  let assert Ok(manager.Delegated(session_id: again, ..)) =
+    manager.delegate_session(registry, later)
+  assert again == session_id
+  let assert Ok(option.Some(touched)) =
+    catalogue.delegate_for(store, "laptop", request.parent_session)
+  assert touched.last_contact_ms == 9000
+  let assert Ok(manager.Delegated(session_id: other, ..)) =
+    manager.delegate_session(registry, delegate_request("laptop", 941, 2))
+  assert other != session_id
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn a_spawner_holds_no_more_delegate_sessions_than_its_limit_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let registry = start(store, 8, fn(record, _) { Ok(record.id) })
+  let assert Ok(manager.Delegated(..)) =
+    manager.delegate_session(registry, delegate_request("laptop", 942, 2))
+  let assert Ok(manager.Delegated(..)) =
+    manager.delegate_session(registry, delegate_request("laptop", 943, 2))
+
+  // A third pair is refused, naming how many the spawner holds, and creates no
+  // registration. Another spawner has a cap of its own, and a pair that has a
+  // session still finds it at the limit.
+  assert manager.delegate_session(registry, delegate_request("laptop", 944, 2))
+    == Error(manager.DelegateAtLimit(held: 2))
+  assert catalogue.by_request_key(
+      store,
+      "delegate:laptop:" <> registration(944).id,
+    )
+    == Error(catalogue.Missing)
+  let assert Ok(manager.Delegated(..)) =
+    manager.delegate_session(registry, delegate_request("desk", 944, 2))
+  let assert Ok(manager.Delegated(..)) =
+    manager.delegate_session(registry, delegate_request("laptop", 942, 2))
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn a_delegate_session_is_opened_again_after_the_registry_restarts_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let registry = start(store, 2, fn(record, _) { Ok(record.id) })
+  let request = delegate_request("laptop", 945, 2)
+  let assert Ok(manager.Delegated(session_id:, status: manager.Opening(first))) =
+    manager.delegate_session(registry, request)
+  await_status(registry, session_id, manager.Resident(first))
+  stop(registry)
+
+  // A new registry knows the session only from the catalogue. The next message
+  // for the pair finds it there, creates nothing, and admits it.
+  let restarted = start(store, 2, fn(record, _) { Ok(record.id) })
+  let assert Ok(manager.Delegated(session_id: found, status: manager.Opening(_))) =
+    manager.delegate_session(restarted, request)
+  assert found == session_id
+  assert catalogue.delegates_held(store, "laptop") == Ok(1)
+  stop(restarted)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn a_delegate_session_never_moves_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let #(owner, _member) = owner_and_member(store)
+  let registry = start(store, 4, fn(record, _) { Ok(record.id) })
+
+  // A session on an executor can move, as the ordinary one beside it shows.
+  let ordinary = remote_saved(store, 946)
+  let assert Ok(catalogue.Moving(..)) =
+    manager.begin_move(
+      registry,
+      owner,
+      "daemon-test",
+      ordinary.id,
+      to: "laptop",
+      op: op_a,
+    )
+
+  // The delegate session is on an executor too, and the marker alone refuses
+  // it, with a reason that says why.
+  let assert Ok(manager.Delegated(session_id:, ..)) =
+    manager.delegate_session(registry, delegate_request("laptop", 947, 2))
+  let assert Error(manager.AdminNotMovable(reason)) =
+    manager.begin_move(
+      registry,
+      owner,
+      "daemon-test",
+      session_id,
+      to: "laptop",
+      op: op_a,
+    )
+  assert string.contains(reason, "delegate session")
+  assert manager.custody(registry, session_id) == Ok(catalogue.Resident)
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}
