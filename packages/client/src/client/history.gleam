@@ -57,6 +57,7 @@
 //// that are already durable, and the structural anti-feedback exclusion
 //// belongs to memory stage M2 rather than here.
 
+import client/internal/history_bridge
 import client/internal/shared_history
 import core/codec
 import core/ids.{type SessionId}
@@ -73,6 +74,8 @@ import runtime/writer
 import simplifile
 import storage/sqlite
 import storage/storage.{type Storage}
+import telemetry/level
+import telemetry/log.{type Logger}
 import tools/history as history_tool
 import weft/actor
 import weft/registry as address
@@ -121,15 +124,14 @@ pub opaque type Message {
   /// (or an operator's line) needs, since `Pull` is a cast.
   Synchronize(reply_with: Subject(Result(Nil, String)))
   Query(
-    text: String,
-    limit: Int,
-    scope: history_tool.Scope,
+    query: history_tool.Query,
     reply_with: Subject(Result(List(history_tool.Hit), String)),
   )
   ReadEntry(
     session: SessionId,
     entry: ids.EntryId,
-    reply_with: Subject(Result(JsonValue, String)),
+    around: Int,
+    reply_with: Subject(Result(List(JsonValue), String)),
   )
   Recent(
     limit: Int,
@@ -180,7 +182,27 @@ pub fn prepare_shared(config: SharedConfig) -> Result(PreparedShared, String) {
 /// ```
 @internal
 pub fn seam_for(shared: Shared, session: SessionId) -> history_tool.History {
-  shared_history.seam(shared, session)
+  seam_for_with_logger(
+    shared,
+    session,
+    logger: log.erlang(threshold: level.Info),
+  )
+}
+
+/// `seam_for` writing its `memory.search_called` counter line to `logger`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // history.seam_for_with_logger(shared, session_id, logger:)
+/// ```
+@internal
+pub fn seam_for_with_logger(
+  shared: Shared,
+  session: SessionId,
+  logger logger: Logger,
+) -> history_tool.History {
+  history_bridge.counted(shared_history.seam(shared, session), logger)
 }
 
 /// Coalesces a commit hint without waiting in a session writer or manager.
@@ -483,18 +505,42 @@ pub fn seam(
   name: address.Address(Message),
   timeout_ms timeout_ms: Int,
 ) -> history_tool.History {
+  seam_with_logger(name, timeout_ms:, logger: log.erlang(threshold: level.Info))
+}
+
+/// `seam` writing its `memory.search_called` counter line to `logger`
+/// instead of the Erlang logger, which is how a host with a scoped logger,
+/// or a test with a capturing sink, observes recall.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // history.seam_with_logger(name, timeout_ms: 5000, logger:)
+/// ```
+///
+pub fn seam_with_logger(
+  name: address.Address(Message),
+  timeout_ms timeout_ms: Int,
+  logger logger: Logger,
+) -> history_tool.History {
+  history_bridge.counted(holder_seam(name, timeout_ms), logger)
+}
+
+fn holder_seam(
+  name: address.Address(Message),
+  timeout_ms: Int,
+) -> history_tool.History {
   history_tool.History(
-    read: fn(session, entry) {
-      ask(name, timeout_ms, ReadEntry(session:, entry:, reply_with: _))
+    read: fn(session, entry, around) {
+      ask(name, timeout_ms, ReadEntry(session:, entry:, around:, reply_with: _))
       |> result.map_error(fn(reason) { history_tool.IndexUnavailable(reason:) })
       |> result.try(fn(result) {
         result
         |> result.map_error(fn(reason) { history_tool.IndexRefused(reason:) })
       })
     },
-    search: fn(text, limit, scope) {
-      ask(name, timeout_ms, Query(text:, limit:, scope:, reply_with: _))
-      |> hits_answer
+    search: fn(query) {
+      ask(name, timeout_ms, Query(query:, reply_with: _)) |> hits_answer
     },
     recent: fn(limit) {
       ask(name, timeout_ms, Recent(limit:, reply_with: _)) |> hits_answer
@@ -574,16 +620,16 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       process.send(reply_with, Error(unavailable_index))
       actor.continue(state)
     }
-    Query(text:, limit:, scope:, reply_with:), Some(index) -> {
-      process.send(reply_with, query(state, index, text, limit, scope))
+    Query(query: asked, reply_with:), Some(index) -> {
+      process.send(reply_with, query(state, index, asked))
       actor.continue(state)
     }
     Query(reply_with:, ..), None -> {
       process.send(reply_with, Error(unavailable_index))
       actor.continue(state)
     }
-    ReadEntry(session:, entry:, reply_with:), Some(index) -> {
-      process.send(reply_with, read_entry(index, session, entry))
+    ReadEntry(session:, entry:, around:, reply_with:), Some(index) -> {
+      process.send(reply_with, read_entry(index, session, entry, around))
       actor.continue(state)
     }
     ReadEntry(reply_with:, ..), None -> {
@@ -610,7 +656,8 @@ fn read_entry(
   index: Search,
   session: SessionId,
   entry: ids.EntryId,
-) -> Result(JsonValue, String) {
+  around: Int,
+) -> Result(List(JsonValue), String) {
   use source <- result.try(
     search.source(index, session) |> result.map_error(describe_search_error),
   )
@@ -621,8 +668,8 @@ fn read_entry(
         "no registered source for this session; reopen it to enable exact reads",
       )
   })
-  sqlite.read_entry(path:, session:, entry:)
-  |> result.map(codec.encode_entry)
+  sqlite.read_entries_around(path:, session:, entry:, around:)
+  |> result.map(list.map(_, codec.encode_entry))
   |> result.map_error(fn(error) { string.inspect(error) })
 }
 
@@ -635,12 +682,11 @@ const unavailable_index =
 fn query(
   state: State,
   index: Search,
-  text: String,
-  limit: Int,
-  scope: history_tool.Scope,
+  query: history_tool.Query,
 ) -> Result(List(history_tool.Hit), String) {
-  let found = case scope {
-    history_tool.Repository -> search.query(index, search.words(text, limit))
+  let wanted = history_bridge.index_query(query)
+  let found = case query.scope {
+    history_tool.Repository -> search.query(index, wanted)
 
     // Scoping is in the SQL, not over the results: `rank` and `LIMIT`
     // are applied inside the query, so a post-filter would let a
@@ -650,7 +696,7 @@ fn query(
       search.query_in_session(
         index,
         session: state.config.session,
-        query: search.words(text, limit),
+        query: wanted,
       )
   }
   found
@@ -669,7 +715,7 @@ fn recent(
 }
 
 fn tool_hit(hit: search.Hit) -> history_tool.Hit {
-  history_tool.Hit(session: hit.session, entry: hit.entry, snippet: hit.snippet)
+  history_bridge.tool_hit(hit)
 }
 
 // One question to the holder, degrading an absent or wedged holder to an

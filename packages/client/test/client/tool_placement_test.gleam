@@ -91,9 +91,9 @@ fn owner_built() -> List(tool.Tool) {
       Some(an_agency()),
       Some(
         history_tool.History(
-          search: fn(_query, _limit, _scope) { Ok([]) },
+          search: fn(_query) { Ok([]) },
           recent: fn(_limit) { Ok([]) },
-          read: fn(_session, _entry) {
+          read: fn(_session, _entry, _around) {
             Error(history_tool.IndexUnavailable("a fixture"))
           },
         ),

@@ -186,7 +186,7 @@ pub fn a_missing_holder_refuses_in_band_test() {
   let name = addresses.new()
   let seam = history.seam(name, timeout_ms: 200)
   let assert Error(history_tool.IndexUnavailable(reason:)) =
-    seam.search("anything", 10, history_tool.Repository)
+    seam.search(history_tool.query("anything", 10, history_tool.Repository))
     as "a seam over no holder must refuse rather than crash"
   assert string.contains(reason, "no history index")
 }
@@ -201,23 +201,36 @@ pub fn a_synced_session_is_findable_through_the_seam_test() {
     as "the first sync must succeed"
 
   let seam = history.seam(name, timeout_ms: 5000)
-  let assert Ok([hit]) = seam.search("migration", 10, history_tool.Repository)
+  let assert Ok([hit]) =
+    seam.search(history_tool.query("migration", 10, history_tool.Repository))
     as "the indexed entry must be findable"
   assert hit.session == ids.session_id_to_string(id)
   assert string.contains(hit.snippet, "[migration]")
   history.stop(name)
 }
 
-// A query is read as words, so text that is not valid FTS5 syntax is text and
-// not a refusal: no model input can be a syntax error.
-pub fn a_malformed_query_is_words_not_a_refusal_test() {
+// A malformed FTS5 query in raw syntax is the index's own refusal, and it must
+// reach the model as an in-band refusal rather than as a dead tool call. The
+// same text in the default words syntax is just words, and is not refused.
+pub fn a_malformed_raw_query_refuses_in_band_and_words_do_not_test() {
   let path = fresh_index("malformed")
   let #(store, id) = a_store(2, ["something"])
   let name = addresses.new()
   let assert Ok(_started) = history.start(config(name, path, id, store))
   let seam = history.seam(name, timeout_ms: 5000)
+  let raw =
+    history_tool.Query(
+      ..history_tool.query("\"unbalanced", 10, history_tool.Repository),
+      syntax: history_tool.Raw,
+    )
+  let assert Error(history_tool.IndexRefused(..)) = seam.search(raw)
+    as "a malformed raw query is a refusal, not a crash"
   let assert Ok(_) =
-    seam.search("\"unbalanced a:b foo-bar", 10, history_tool.Repository)
+    seam.search(history_tool.query(
+      "\"unbalanced a:b foo-bar",
+      10,
+      history_tool.Repository,
+    ))
     as "the same text as words is never a syntax error"
   history.stop(name)
 }
@@ -244,11 +257,11 @@ pub fn a_session_scope_excludes_the_other_sessions_rows_test() {
   let seam = history.seam(my_name, timeout_ms: 5000)
   // Repository scope sees both sessions' rows.
   let assert Ok(everywhere) =
-    seam.search("decision", 10, history_tool.Repository)
+    seam.search(history_tool.query("decision", 10, history_tool.Repository))
   assert list.length(everywhere) == 2
   // This session's scope sees exactly its own.
   let assert Ok([only_mine]) =
-    seam.search("decision", 10, history_tool.ThisSession)
+    seam.search(history_tool.query("decision", 10, history_tool.ThisSession))
     as "a scoped query must see one session's row and no other"
   assert only_mine.session == ids.session_id_to_string(my_id)
   assert string.contains(only_mine.snippet, "msgpack")
@@ -273,7 +286,8 @@ pub fn a_restarted_holder_reopens_the_index_test() {
   let assert Ok(_second) = history.start(config(name, path, id, store))
     as "the holder must start again under the same name"
   let seam = history.seam(name, timeout_ms: 5000)
-  let assert Ok([hit]) = seam.search("retry", 10, history_tool.Repository)
+  let assert Ok([hit]) =
+    seam.search(history_tool.query("retry", 10, history_tool.Repository))
     as "the reopened index must still hold what was synced before"
   assert string.contains(hit.snippet, "[retry]")
   history.stop(name)
@@ -301,7 +315,7 @@ pub fn an_unopenable_index_starts_and_repairs_in_band_test() {
     as "an unopenable index must not fail the start"
   let seam = history.seam(name, timeout_ms: 5000)
   let assert Error(history_tool.IndexUnavailable(reason:)) =
-    seam.search("decision", 10, history_tool.Repository)
+    seam.search(history_tool.query("decision", 10, history_tool.Repository))
     as "a holder with no index must answer unavailability, not crash"
   assert string.contains(reason, "could not be opened")
   // The repair: remove the obstruction and restart the holder — a fresh
@@ -314,7 +328,8 @@ pub fn an_unopenable_index_starts_and_repairs_in_band_test() {
     as "the restart over the repaired file must start"
   let assert Ok(Nil) = history.synchronize(name, timeout_ms: 5000)
     as "the restarted holder must sync the repaired index"
-  let assert Ok([hit]) = seam.search("decision", 10, history_tool.Repository)
+  let assert Ok([hit]) =
+    seam.search(history_tool.query("decision", 10, history_tool.Repository))
     as "the repaired index must serve what the sync indexed"
   assert string.contains(hit.snippet, "[decision]")
   history.stop(name)
@@ -341,7 +356,8 @@ pub fn an_unreadable_generation_skips_the_sync_test() {
     as "a sync with no generation must report rather than index"
   assert string.contains(reason, "no session file")
   let seam = history.seam(name, timeout_ms: 5000)
-  assert seam.search("indexed", 10, history_tool.Repository) == Ok([])
+  assert seam.search(history_tool.query("indexed", 10, history_tool.Repository))
+    == Ok([])
   history.stop(name)
 }
 
