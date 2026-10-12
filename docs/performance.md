@@ -31,6 +31,23 @@ census workloads. Compare repeated runs on the same host and runtime before
 optimizing; the [October 9 baseline](review/tool-latency-2026-10-09.md) records
 the first measurements and the polling path worth measuring next.
 
+## Complete tool responses
+
+`make bench-tool-roundtrip` measures real `bash` calls at the scripted
+provider, through a shipped local daemon and a pinned-TLS orchestrator/executor
+pair. It reports one first-call observation and twenty warm samples per
+placement, checking every successful result and its exact output. An explicit
+run fails if a fixture skips. `LOOM_BENCH_TOOLS_WORKLOAD=delayed` selects a
+fixed 200 ms command; `LOOM_BENCH_TOOLS_OUT` selects the appended JSONL file
+(default `packages/client/build/bench-tool-roundtrip.jsonl`).
+
+Production waits now wake on a monitored completion witness; simulation waits
+retain their injected clock and rest. The [October 11 report](review/tool-completion-latency-2026-10-11.md)
+records the full-path comparison, raw samples and bounded Pickglass capture.
+These timings include provider-fixture HTTP, persistence and response encoding,
+with both distributed nodes on the same host. Cross-host RTT and production
+provider inference are outside that comparison.
+
 Performance work in Loom starts with a process, a workload, and a measurement.
 An Activity Monitor row named `beam.smp` is not enough: a development machine
 can have a server, a terminal client, a test node, and yesterday's forgotten
