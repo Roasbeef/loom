@@ -6,7 +6,7 @@
 import client/distribution_plan.{Executor, Orchestrator}
 import client/ledger_control.{HeadView, MemberView, StatusView}
 import client/ledger_operator.{Enrollment}
-import client/membership_entry.{Revoke, Upsert}
+import client/membership_entry.{NotInDirectory, Revoke, Upsert}
 import client/membership_ledger
 import gleam/list
 import gleam/option.{None, Some}
@@ -24,6 +24,7 @@ fn request(name: String, links: List(String)) -> ledger_operator.Enrollment {
     host: None,
     listen_port: None,
     links:,
+    directory: NotInDirectory,
     workspaces: [],
     bundle_dir: None,
   )

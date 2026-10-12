@@ -16,10 +16,12 @@
 //// 4. Hand the daemon every line it lacks, then poll its status for a bounded
 ////    time and print which members hold the new head.
 ////
-//// `revoke` adds a check to step 3. Before it signs, it checks the link graph
-//// and asks the daemon what the orchestrators hold (`ledger.holdings`), and it
-//// refuses while the member owns sessions or has sessions placed on it, or when
-//// that cannot be told, unless `--force` (`checked_revoke`).
+//// `revoke` adds checks to step 3. Before it signs, it checks the link graph,
+//// asks the daemon what the orchestrators hold (`ledger.holdings`), and counts
+//// the session directory's voters. It refuses when the revoke would break the
+//// link graph, while the member owns sessions or has sessions placed on it (or
+//// when that cannot be told), or when it would leave fewer than three directory
+//// voters, unless `--force` (`checked_revoke`).
 ////
 //// Membership changes are eventual. A member that is off learns an entry when it
 //// next connects to one that has it, so the command does not wait for it: it
@@ -722,13 +724,11 @@ fn enrollment_of(parsed: Parsed, name: String) -> Result(Enrollment, String) {
     required(parsed, "--role")
     |> result.try(distribution_plan.role_from_word),
   )
-  use Nil <- result.try(case value(parsed, "--directory") {
-    None | Some("none") -> Ok(Nil)
-    Some(_) ->
-      Error(
-        "--directory must be none: the session directory cannot follow a "
-        <> "membership ledger yet",
-      )
+  use directory <- result.try(case value(parsed, "--directory") {
+    None | Some("none") -> Ok(membership_entry.NotInDirectory)
+    Some("voter") -> Ok(membership_entry.Voter)
+    Some("learner") -> Ok(membership_entry.Learner)
+    Some(_) -> Error("--directory takes voter, learner or none")
   })
   use listen_port <- result.try(case value(parsed, "--port") {
     None -> Ok(None)
@@ -754,6 +754,7 @@ fn enrollment_of(parsed: Parsed, name: String) -> Result(Enrollment, String) {
         |> list.map(string.trim)
         |> list.filter(fn(link) { link != "" })
     },
+    directory:,
     workspaces:,
     bundle_dir: value(parsed, "--bundle-dir"),
   ))
@@ -1045,12 +1046,13 @@ fn revoke(parsed: Parsed, connect: Connect) -> Result(String, String) {
 }
 
 // What a `revoke` that was not forced checks before it signs, and the sentence
-// that says it passed. Two things are checked, and both are reported together
-// when both fail, so one refusal tells the operator everything to decide on:
-// the link graph after the revoke, and the sessions the revoke would leave
-// unreachable, which the daemon learns by asking the orchestrators it is linked
-// to. A daemon that cannot be asked, or an orchestrator that does not answer, is
-// unknown and not empty, so it refuses too.
+// that says it passed. Three things are checked, and all are reported together
+// when more than one fails, so one refusal tells the operator everything to
+// decide on: the link graph after the revoke, the sessions the revoke would
+// leave unreachable, which the daemon learns by asking the orchestrators it is
+// linked to, and the session directory's voters, which must not fall below
+// three. A daemon that cannot be asked, or an orchestrator that does not answer,
+// is unknown and not empty, so it refuses too.
 fn checked_revoke(
   ledger: Ledger,
   after: Ledger,
@@ -1069,21 +1071,27 @@ fn checked_revoke(
     list.map(strandings, fn(stranding) {
       ledger_operator.describe_stranding(name, stranding)
     })
-  case links, stranded {
-    [], [] ->
+  let voters = case ledger_operator.check_voters(ledger, after) {
+    Ok(Nil) -> []
+    Error(why) -> [why]
+  }
+  case links, stranded, voters {
+    [], [], [] ->
       case membership_ledger.member(ledger, name) {
         Ok(member) ->
           Ok("Checked first: " <> ledger_operator.describe_clear(member))
         Error(Nil) -> Ok("Checked first.")
       }
-    _, _ ->
+    _, _, _ ->
       Error(string.join(
         list.flatten([
           refusal_section(name, "would break the link graph", links),
           refusal_section(name, "may strand sessions", stranded),
+          refusal_section(name, "would leave too few directory voters", voters),
           ["Nothing was signed. Pass --force to revoke anyway."],
         ]),
-        "\n",
+        "
+",
       ))
   }
 }
@@ -1104,9 +1112,9 @@ fn refusal_section(
 
 // The sentence of a forced revoke: nothing was looked at.
 fn unchecked_text(name: String) -> String {
-  "Not checked (--force): the link graph, and whether "
+  "Not checked (--force): the link graph, whether "
   <> name
-  <> " owns sessions or has sessions placed on it."
+  <> " owns sessions or has sessions placed on it, and the directory's voters."
 }
 
 // --- log ---------------------------------------------------------------------

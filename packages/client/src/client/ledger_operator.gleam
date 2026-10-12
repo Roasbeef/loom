@@ -25,10 +25,23 @@
 //// refusal is turned into a sentence for the operator naming the member or
 //// link at fault (`describe`).
 ////
+//// ## The directory's voters
+////
+//// A member's `directory` standing seats it in the session directory's Khepri
+//// cluster as a voter or a learner. `check_voters` is the operator's guard on
+//// the voters: an `enroll` may not take the directory past seven voters, and a
+//// `revoke` may not leave it with fewer than three, the bounds of
+//// protocol-change/083, unless the operator says `--force`. The ledger itself
+//// accepts any count, because it records what the operator signed and the
+//// guard is the operator's. The reasoning is in the design note, section 11.3:
+//// until Ra commits the removal, a revoked voter still counts toward the
+//// majority, so shrinking below three leaves a cluster that cannot lose a
+//// machine.
+////
 //// ## What `revoke` checks
 ////
 //// A revoke is safe to sign but not always wise to send, and the ledger cannot
-//// tell, so the operator's tool checks two things first. `concerns` lists what
+//// tell, so the operator's tool checks three things first. `concerns` lists what
 //// the revoke would newly break in the link graph: an executor left with no
 //// orchestrator to use it, and members cut off from the rest. `strandings` says
 //// what it would leave unreachable: sessions an orchestrator owns, or sessions
@@ -36,9 +49,13 @@
 //// is linked to what they hold (`client/ledger_holdings`), and this module reads
 //// the answers. An orchestrator that does not answer is unknown and not empty,
 //// so a revoke of a machine that is off is refused until the operator says
-//// `--force`. The revoke is reversible and deletes no session, which is why a
-//// check that cannot be completed asks for a decision and does not decide.
+//// `--force`. `check_voters`, described above, is the third check. The revoke
+//// is reversible and deletes no session, which is why a check that cannot be
+//// completed asks for a decision and does not decide.
 
+import client/directory/roster
+import client/directory/settings
+import client/directory/store
 import client/distribution
 import client/distribution_plan.{
   type Role, type Workspace, Executor, Orchestrator,
@@ -47,7 +64,7 @@ import client/ledger_control.{
   type AnswerView, type HeldView, type StatusView, AnswerView,
 }
 import client/membership_entry.{
-  type Entry, type Member, Entry, Member, NotInDirectory, Revoke, Upsert,
+  type DirectoryStanding, type Entry, type Member, Entry, Member, Revoke, Upsert,
 }
 import client/membership_ledger.{type Ledger}
 import gleam/int
@@ -76,6 +93,10 @@ pub type Enrollment {
     /// The names of the members it may connect to. Explicit, because deriving
     /// them from roles would let any laptop attach to every executor.
     links: List(String),
+    /// Whether it is a voter or a learner in the session directory, or not a
+    /// member of it. A laptop that sleeps should not be a voter: it would
+    /// count toward the majority while it is away.
+    directory: DirectoryStanding,
     /// The workspaces an executor registers.
     workspaces: List(Workspace),
     /// Where the node's credentials go on its machine, if not the default.
@@ -192,11 +213,19 @@ pub fn enroll(
       host: host(request),
       listen_port: request.listen_port,
       role: request.role,
-      directory: NotInDirectory,
+      directory: request.directory,
       links: list.unique(request.links),
       pin:,
     )
-  preflight(ledger, entry_after(ledger, time, Upsert(member)))
+  use entry <- result.try(preflight(
+    ledger,
+    entry_after(ledger, time, Upsert(member)),
+  ))
+  use after <- result.try(
+    membership_ledger.check(ledger, entry) |> result.map_error(describe),
+  )
+  use Nil <- result.map(check_voters(ledger, after))
+  entry
 }
 
 /// The entry that replaces a member's certificate, and the member as it will
@@ -325,6 +354,58 @@ pub fn describe(refusal: membership_ledger.Refusal) -> String {
       }
     other -> "the entry is refused at step " <> membership_ledger.step(other)
   }
+}
+
+// --- the directory's voters --------------------------------------------------
+
+/// Checks that the entry that turns `before` into `after` keeps the directory's
+/// voters within the bounds of protocol-change/083, three to seven. A change
+/// that does not touch the number of voters passes. An entry that adds a voter
+/// may not take the count past seven. An entry that removes one may not leave
+/// fewer than three.
+///
+/// ## Examples
+///
+/// ```gleam
+/// ledger_operator.check_voters(before, after) // -> Ok(Nil)
+/// ```
+pub fn check_voters(before: Ledger, after: Ledger) -> Result(Nil, String) {
+  let held = voters(before)
+  let left = voters(after)
+  case int.compare(left, held) {
+    order.Eq -> Ok(Nil)
+    order.Gt ->
+      case left > settings.maximum_members {
+        True ->
+          Error(
+            "the session directory takes at most "
+            <> int.to_string(settings.maximum_members)
+            <> " voters, and this would make "
+            <> int.to_string(left)
+            <> "; enroll the member as a learner with --directory learner",
+          )
+        False -> Ok(Nil)
+      }
+    order.Lt ->
+      case left < settings.minimum_members {
+        True ->
+          Error(
+            "the session directory would be left with "
+            <> int.to_string(left)
+            <> " voters, and it needs at least "
+            <> int.to_string(settings.minimum_members)
+            <> " to keep working when one fails. Until Ra commits the "
+            <> "removal the revoked voter still counts toward the majority, "
+            <> "so the voters that remain would both have to be up to "
+            <> "commit it",
+          )
+        False -> Ok(Nil)
+      }
+  }
+}
+
+fn voters(ledger: Ledger) -> Int {
+  list.count(roster.places(ledger), fn(place) { place.seat == store.Voter })
 }
 
 // --- what a revoke would break -----------------------------------------------

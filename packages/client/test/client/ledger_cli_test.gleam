@@ -10,6 +10,8 @@
 //// is `ledger_operator_live_test`.
 
 import client/daemon/ledger_cli
+import client/directory/roster
+import client/directory/store
 import client/distribution_bundle
 import client/distribution_install.{Options}
 import client/distribution_provision.{ReplaceExisting}
@@ -137,7 +139,7 @@ pub fn a_refused_enrollment_signs_nothing_test() {
   )
 
   // A node another member holds, a link to nobody, and a directory standing
-  // the ledger cannot carry yet.
+  // that is not one.
   refused(
     enroll_laptop(deployed, ["--node", "loom@hub.example"])
       |> drop_flag("--node", "loom@laptop2.example.net"),
@@ -148,7 +150,10 @@ pub fn a_refused_enrollment_signs_nothing_test() {
       |> drop_flag("--links", "hub,devbox"),
     "ghost cannot be linked",
   )
-  refused(enroll_laptop(deployed, ["--directory", "voter"]), "must be none")
+  refused(
+    enroll_laptop(deployed, ["--directory", "maybe"]),
+    "--directory takes voter, learner or none",
+  )
   refused(
     enroll_laptop(deployed, ["--role", "wizard"])
       |> drop_flag("--role", "orchestrator"),
@@ -718,4 +723,93 @@ pub fn the_decoded_status_the_commands_use_is_the_daemons_test() {
   assert status.self_name == "hub"
   assert status.standing == ledger_control.Enrolled
   assert status.last_refusal == None
+}
+
+// --- the session directory ----------------------------------------------------
+
+const directory_plan =
+  "directory = [\"hub\", \"hub2\", \"devbox\"]
+
+[[node]]
+name = \"hub\"
+role = \"orchestrator\"
+erlang_node = \"loom@hub.example\"
+executors = [\"devbox\"]
+
+[[node]]
+name = \"hub2\"
+role = \"orchestrator\"
+erlang_node = \"loom@hub2.example\"
+executors = [\"devbox\"]
+
+[[node]]
+name = \"devbox\"
+role = \"executor\"
+erlang_node = \"loom@devbox.example\"
+[node.workspaces]
+repo = \"/home/me/src/loom\"
+"
+
+fn seats(handle: Handle) -> List(roster.Place) {
+  let assert Ok(status) = ledger_service.status(handle.service, 5000)
+  roster.places(status.ledger)
+}
+
+pub fn an_enrollment_seats_a_learner_and_a_revoke_keeps_three_voters_test() {
+  let deployed = deployment.provision("cli-directory", directory_plan)
+  let handle = hub(deployed)
+  let assert Ok(report) =
+    ledger_cli.run_with(
+      "enroll",
+      enroll_laptop(deployed, ["--directory", "learner"]),
+      fn(_) { deployment.daemon_over(handle) },
+    )
+  assert string.contains(report, "Enrolled laptop2")
+  assert seats(handle)
+    == [
+      roster.Place("loom@devbox.example", store.Voter),
+      roster.Place("loom@hub.example", store.Voter),
+      roster.Place("loom@hub2.example", store.Voter),
+      roster.Place("loom@laptop2.example.net", store.Learner),
+    ]
+
+  // The directory has three voters, so none of them can be revoked without
+  // --force, and a refusal signs nothing.
+  let head = head_of(handle)
+  let arguments = ["hub2", "--wait", "0", ..deployment.signing(deployed)]
+  let assert Error(reason) =
+    ledger_cli.run_with("revoke", arguments, fn(_) {
+      deployment.daemon_over(handle)
+    })
+  assert string.contains(reason, "left with 2 voters")
+  assert string.contains(reason, "Nothing was signed")
+  assert head_of(handle) == head
+  assert list.length(copy_of(deployed)) == head + 1
+
+  // The learner holds no vote and goes without it.
+  let assert Ok(report) =
+    ledger_cli.run_with(
+      "revoke",
+      ["laptop2", "--wait", "0", ..deployment.signing(deployed)],
+      fn(_) { deployment.daemon_over(handle) },
+    )
+  assert string.contains(report, "Revoked laptop2")
+
+  // With --force the operator shrinks the directory on purpose.
+  let assert Ok(report) =
+    ledger_cli.run_with("revoke", list.append(arguments, ["--force"]), fn(_) {
+      deployment.daemon_over(handle)
+    })
+  assert string.contains(report, "Revoked hub2")
+}
+
+pub fn an_enrollment_with_no_standing_stays_outside_the_directory_test() {
+  let deployed = deployment.provision("cli-voters", directory_plan)
+  let handle = hub(deployed)
+  assert list.length(seats(handle)) == 3
+  let assert Ok(_) =
+    ledger_cli.run_with("enroll", enroll_laptop(deployed, []), fn(_) {
+      deployment.daemon_over(handle)
+    })
+  assert list.length(seats(handle)) == 3
 }
