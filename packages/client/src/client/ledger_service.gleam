@@ -20,6 +20,19 @@
 //// durable append and the next message, which is how a later slice publishes
 //// the pin table and disconnects revoked nodes without a race.
 ////
+//// ## Dialing
+////
+//// Only orchestrators dial (protocol-change/078), and only the executors they
+//// are linked to. A node that is told to dial (`enable_dialing`) keeps a list
+//// of the executors that are not connected and have not reported the current
+//// head, and attempts a connection to each from a periodic pass. The attempt
+//// is a function the caller supplies and it returns at once, because a
+//// handshake to an unreachable machine takes seconds and this process must
+//// keep answering heads. The service never learns whether an attempt worked.
+//// A connection that comes up is a node-up, and the head that executor then
+//// reports ends the dialing. An executor that stays unreachable is attempted
+//// again after 5 seconds, then 10, doubling to 5 minutes.
+////
 //// ## The wire vocabulary
 ////
 //// Peers speak two messages. `Head` says what the sender holds and where to
@@ -51,6 +64,8 @@
 ////    moved and the peer has more, `delivered` requests the next batch.
 ////    Otherwise the machine is `Quiet`, and the new head is announced to
 ////    every peer but the source.
+//// 7. A node that dials also runs `redial` from a periodic timer, which
+////    attempts the connections that are due.
 ////
 //// ## Refusals
 ////
@@ -102,6 +117,13 @@ pub const default_pull_within_ms = 5000
 
 /// How often a node sends its head to every connected peer.
 pub const default_tick_ms = 60_000
+
+/// How long a dialing node waits after its first attempt at an executor, and
+/// the delay doubles with each attempt after that.
+pub const default_dial_first_ms = 5000
+
+/// The longest a dialing node waits between attempts at one executor.
+pub const default_dial_ceiling_ms = 300_000
 
 // --- the vocabulary peers speak ------------------------------------------------
 
@@ -206,11 +228,16 @@ pub type Observation {
   /// so a table can exist before the first handshake.
   Loaded(ledger: Ledger)
 
-  /// An entry was applied and is durable. `ledger` is the state after it.
-  Extended(ledger: Ledger, entry: SignedEntry)
+  /// An entry was applied and is durable. `ledger` is the state after it and
+  /// `previous` the state before, so an observer can tell what the entry took
+  /// away from the table it publishes.
+  Extended(previous: Ledger, ledger: Ledger, entry: SignedEntry)
 
-  /// A peer connected. A later slice judges the peer against the pin table.
-  Connected(node: String)
+  /// A peer connected. `ledger` is the state the node holds now, which is
+  /// what the peer is judged against: a handshake that read an older table
+  /// and finished after a revoke was published arrives here with the newer
+  /// ledger.
+  Connected(node: String, ledger: Ledger)
 }
 
 /// A function the process calls for each observation. It runs in the process,
@@ -239,6 +266,24 @@ pub type Peers {
   /// and `meet` introduces a peer that has just connected. The protocol tests
   /// use it to run two services in one VM.
   Supplied(reach: fn() -> List(Reach))
+}
+
+/// Whom a node dials and how it does so.
+pub type Dialing {
+  Dialing(
+    /// The node names this node keeps trying to reach, given the ledger. An
+    /// orchestrator answers with the executors it is linked to, and any other
+    /// node with none.
+    wanted: fn(Ledger) -> List(String),
+    /// Starts an attempt at a node and returns at once.
+    dial: fn(String) -> Nil,
+    /// Milliseconds between passes that look for attempts that are due.
+    every_ms: Int,
+    /// The wait after a first attempt at a node.
+    first_ms: Int,
+    /// The longest wait between attempts at a node.
+    ceiling_ms: Int,
+  )
 }
 
 /// How a service starts.
@@ -310,6 +355,8 @@ type Event {
   ReadHead(reply: Subject(membership_ledger.Head))
   Read(after: Int, limit: Int, reply: Subject(Entries))
   ReadStatus(reply: Subject(Status))
+  EnableDialing(Dialing)
+  Redial
 }
 
 type Data {
@@ -328,11 +375,19 @@ type Data {
     answers: Subject(Entries),
     last_refusal: Option(Rejected),
     reported: Dict(String, Report),
+    dialing: Option(Dialing),
+    dials: Dict(String, Backoff),
   )
 }
 
 type Report {
   Report(seq: Int, id: BitArray, at: Int)
+}
+
+// Where one node stands in its backoff: when the next attempt is due, and the
+// wait that follows the attempt after that.
+type Backoff {
+  Backoff(due: Int, next_wait: Int)
 }
 
 // What a `Head` asks of this node.
@@ -441,6 +496,8 @@ fn initialise(
       answers:,
       last_refusal: None,
       reported: dict.new(),
+      dialing: None,
+      dials: dict.new(),
     )
   tell(data, Loaded(ledger: config.ledger))
   let selector =
@@ -574,6 +631,32 @@ pub fn announce(service: Service) -> Nil {
   process.send(service.control, Tick)
 }
 
+/// Tells the node to dial the executors `dialing` names, which it does from
+/// then on at each pass of `dialing.every_ms`. It is a separate call from
+/// `start` because the production `dial` needs the distribution that starts
+/// after the ledger process does.
+///
+/// ## Examples
+///
+/// ```gleam
+/// ledger_service.enable_dialing(service, dialing)
+/// ```
+pub fn enable_dialing(service: Service, dialing: Dialing) -> Nil {
+  process.send(service.control, EnableDialing(dialing))
+}
+
+/// Runs one dialing pass now, as the periodic timer does. A test uses it with
+/// its own clock to see the schedule without waiting for a timer.
+///
+/// ## Examples
+///
+/// ```gleam
+/// ledger_service.redial(service)
+/// ```
+pub fn redial(service: Service) -> Nil {
+  process.send(service.control, Redial)
+}
+
 /// Introduces a peer that has just connected, as a node-up does: the process
 /// sends it a `Head`.
 ///
@@ -642,12 +725,24 @@ fn handle(
       process.send(reply, status_of(data))
       sm.keep(data)
     }
+
+    // The pass is the only thing that dials, so the timer is armed with the
+    // dialing it belongs to and replaced if dialing is enabled again.
+    EnableDialing(dialing) ->
+      sm.keep(Data(..data, dialing: Some(dialing)))
+      |> sm.with_periodic_timeout(
+        name: "dial",
+        every: dialing.every_ms,
+        sending: Redial,
+      )
+
+    Redial -> sm.keep(redial_pass(data))
   }
 }
 
 // A peer connected: the observers may judge it, and it is told the head.
 fn met(data: Data, reach: Reach) -> sm.Next(Phase, Data, Event) {
-  tell(data, Connected(node: reach.node))
+  tell(data, Connected(node: reach.node, ledger: data.ledger))
   send_head(data, reach)
   sm.keep(data)
 }
@@ -884,11 +979,12 @@ fn extend(data: Data, ledger: Ledger, entry: SignedEntry) -> #(Data, Offered) {
       #(data, NotDurable(reason:))
     }
     Ok(store) -> {
+      let previous = data.ledger
       let data = Data(..data, store:, ledger:)
       log.info(data.logger, "ledger.applied", [
         field.count("seq", entry.entry.seq),
       ])
-      tell(data, Extended(ledger:, entry:))
+      tell(data, Extended(previous:, ledger:, entry:))
       #(data, Accepted(head: membership_ledger.head(ledger)))
     }
   }
@@ -927,6 +1023,73 @@ fn seq_field(seq: Option(Int)) -> List(Field) {
   case seq {
     Some(seq) -> [field.count("seq", seq)]
     None -> []
+  }
+}
+
+// --- dialing --------------------------------------------------------------------------
+
+// One pass. A node is pending when the ledger says to reach it, no connection
+// to it is up, and it has not reported a head as new as ours. A pending node
+// with no backoff is attempted now; one with a backoff is attempted when its
+// time has come. A node that stopped being pending loses its backoff, so the
+// next time it is pending the schedule starts again at the first wait.
+fn redial_pass(data: Data) -> Data {
+  case data.dialing {
+    None -> data
+    Some(dialing) -> {
+      let now = data.now_ms()
+      let head = membership_ledger.head(data.ledger).seq
+      let connected = list.map(reaches(data), fn(reach) { reach.node })
+      let pending =
+        dialing.wanted(data.ledger)
+        |> list.filter(fn(node) {
+          !list.contains(connected, node) && !has_reported(data, node, head)
+        })
+      let kept =
+        dict.filter(data.dials, fn(node, _) { list.contains(pending, node) })
+      Data(
+        ..data,
+        dials: list.fold(pending, kept, fn(dials, node) {
+          attempt(dialing, dials, node, now)
+        }),
+      )
+    }
+  }
+}
+
+fn has_reported(data: Data, node: String, seq: Int) -> Bool {
+  case dict.get(data.reported, node) {
+    Ok(report) -> report.seq >= seq
+    Error(Nil) -> False
+  }
+}
+
+// Attempts one node if its time has come and records when the next attempt is
+// due. The waits are the first wait, then double up to the ceiling.
+fn attempt(
+  dialing: Dialing,
+  dials: Dict(String, Backoff),
+  node: String,
+  now: Int,
+) -> Dict(String, Backoff) {
+  let wait = case dict.get(dials, node) {
+    Ok(Backoff(due:, ..)) if now < due -> Error(Nil)
+    Ok(Backoff(next_wait:, ..)) -> Ok(next_wait)
+    Error(Nil) -> Ok(dialing.first_ms)
+  }
+  case wait {
+    Error(Nil) -> dials
+    Ok(wait) -> {
+      dialing.dial(node)
+      dict.insert(
+        dials,
+        node,
+        Backoff(
+          due: now + wait,
+          next_wait: int.min(wait * 2, dialing.ceiling_ms),
+        ),
+      )
+    }
   }
 }
 

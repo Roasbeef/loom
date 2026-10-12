@@ -18,11 +18,50 @@ import gleam/int
 import gleam/list
 import gleam/otp/actor
 import gleam/string
+import host/bootstrap
 import simplifile
 import support/membership_fixture as fixture
 import support/remote_fixtures
 import telemetry/log
 import weft/poll
+
+/// A clock a test sets, for the service's schedules.
+pub opaque type Clock {
+  Clock(subject: Subject(ClockMessage))
+}
+
+type ClockMessage {
+  SetTime(Int)
+  ReadTime(Subject(Int))
+}
+
+/// A clock that reads zero until it is set.
+pub fn new_clock() -> Clock {
+  let assert Ok(started) =
+    actor.new(0)
+    |> actor.on_message(fn(now, message) {
+      case message {
+        SetTime(next) -> actor.continue(next)
+        ReadTime(reply) -> {
+          process.send(reply, now)
+          actor.continue(now)
+        }
+      }
+    })
+    |> actor.start
+    as "the clock starts"
+  Clock(subject: started.data)
+}
+
+/// Sets the time the clock reads.
+pub fn set_time(clock: Clock, ms: Int) -> Nil {
+  process.send(clock.subject, SetTime(ms))
+}
+
+/// The clock as the function a service takes.
+pub fn reading(clock: Clock) -> fn() -> Int {
+  fn() { process.call(clock.subject, 1000, ReadTime) }
+}
 
 /// The peers of a rig, changeable while the rig runs.
 pub opaque type Book {
@@ -109,6 +148,23 @@ pub fn start_in(
   timing: Timing,
   observers: List(Observer),
 ) -> Rig {
+  start_clocked(
+    directory,
+    lines,
+    timing,
+    observers,
+    bootstrap.monotonic_time_ms,
+  )
+}
+
+/// The same, with the clock the service ages reports and schedules dials by.
+pub fn start_clocked(
+  directory: String,
+  lines: List(BitArray),
+  timing: Timing,
+  observers: List(Observer),
+  now_ms: fn() -> Int,
+) -> Rig {
   let path = directory <> "/ledger.log"
   let assert Ok(Nil) = simplifile.write(path, text_of(lines))
     as "the ledger file is written"
@@ -130,6 +186,7 @@ pub fn start_in(
       name: process.new_name("ledger"),
       tick_ms: timing.tick_ms,
       pull_within_ms: timing.pull_within_ms,
+      now_ms:,
     )
   let assert Ok(service) = ledger_service.start(config) as "the service starts"
   Rig(service:, book:, path:)

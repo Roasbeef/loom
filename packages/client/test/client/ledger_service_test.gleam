@@ -5,6 +5,7 @@
 //// without a distribution. `ledger_distribution_test` runs it across
 //// emulators.
 
+import client/internal/ffi_nodes
 import client/ledger_service.{
   type Observation, Accepted, AlreadyHeld, Behind, Connected, Entries, Extended,
   Head, Loaded, NotDurable, Pull, Reach, Refused,
@@ -97,7 +98,7 @@ pub fn observers_see_the_loaded_ledger_then_each_entry_once_it_is_on_disk_test()
           string.contains(text, line_text(membership_entry.line(entry)))
         process.send(seen, #("extended", written))
       }
-      Connected(_) -> process.send(seen, #("connected", True))
+      Connected(..) -> process.send(seen, #("connected", True))
     }
   }
   let r = rig.start_in(directory, [genesis], rig.patient, [observer])
@@ -455,8 +456,115 @@ pub fn a_connected_peer_is_announced_to_the_observers_test() {
       process.send(heads, message)
     }),
   )
-  assert process.receive(seen, 1000) == Ok(Connected("peer@10.0.0.9"))
+  let assert Ok(Connected(node:, ledger:)) = process.receive(seen, 1000)
+  assert node == "peer@10.0.0.9"
+  assert membership_ledger.head(ledger).seq == 0
 
   // The peer was told the head.
   let assert Ok(Head(seq: 0, ..)) = process.receive(heads, 1000)
+}
+
+// --- dialing ----------------------------------------------------------------------------
+
+// A service whose clock the test sets, that dials `target` and reports every
+// attempt on the subject. The periodic pass never fires by itself, so each
+// pass is one the test asks for with `redial` and waits out with a call.
+fn dialing_rig(
+  label: String,
+  target: String,
+  lines: List(BitArray),
+) -> #(rig.Rig, rig.Clock, process.Subject(String)) {
+  let clock = rig.new_clock()
+  let attempts = process.new_subject()
+  let directory = remote_fixtures.scratch(label)
+  let r =
+    rig.start_clocked(directory, lines, rig.patient, [], rig.reading(clock))
+  ledger_service.enable_dialing(
+    r.service,
+    ledger_service.Dialing(
+      wanted: fn(_) { [target] },
+      dial: fn(node) { process.send(attempts, node) },
+      every_ms: 3_600_000,
+      first_ms: 5000,
+      ceiling_ms: 20_000,
+    ),
+  )
+  #(r, clock, attempts)
+}
+
+// Runs a pass at a time and waits until the service has finished it, which
+// the answer to a later call proves, since the service handles one message at
+// a time.
+fn pass_at(r: rig.Rig, clock: rig.Clock, ms: Int) -> Nil {
+  rig.set_time(clock, ms)
+  ledger_service.redial(r.service)
+  let _ = rig.head_seq(r)
+  Nil
+}
+
+pub fn an_unreachable_executor_is_dialed_on_a_doubling_backoff_test() {
+  let target = "executor@10.0.0.2"
+  let #(r, clock, attempts) =
+    dialing_rig("service-dial", target, history.lines(log()))
+
+  // The first pass attempts at once. Nothing more happens until the first
+  // wait has passed.
+  pass_at(r, clock, 0)
+  assert process.receive(attempts, 0) == Ok(target)
+  pass_at(r, clock, 4999)
+  assert process.receive(attempts, 0) == Error(Nil)
+
+  // The waits are 5, 10 and then 20 seconds, which is the ceiling here, and
+  // it stays there.
+  pass_at(r, clock, 5000)
+  assert process.receive(attempts, 0) == Ok(target)
+  pass_at(r, clock, 14_999)
+  assert process.receive(attempts, 0) == Error(Nil)
+  pass_at(r, clock, 15_000)
+  assert process.receive(attempts, 0) == Ok(target)
+  pass_at(r, clock, 34_999)
+  assert process.receive(attempts, 0) == Error(Nil)
+  pass_at(r, clock, 35_000)
+  assert process.receive(attempts, 0) == Ok(target)
+  pass_at(r, clock, 54_999)
+  assert process.receive(attempts, 0) == Error(Nil)
+  pass_at(r, clock, 55_000)
+  assert process.receive(attempts, 0) == Ok(target)
+}
+
+pub fn a_connected_executor_is_not_dialed_test() {
+  let target = "executor@10.0.0.2"
+  let #(r, clock, attempts) =
+    dialing_rig("service-dial-connected", target, history.lines(log()))
+  rig.set_peers(r, [Reach(node: target, deliver: fn(_) { Nil })])
+
+  pass_at(r, clock, 0)
+  assert process.receive(attempts, 0) == Error(Nil)
+}
+
+pub fn an_executor_that_reported_the_head_is_not_dialed_and_restarts_afresh_test() {
+  // The executor is this test's own node, so a head sent from an inbox here
+  // is a report from it.
+  let target = ffi_nodes.owner_name(process.self())
+  let lines = history.lines(log())
+  let assert [genesis, hub, ..rest] = lines
+  let #(r, clock, attempts) =
+    dialing_rig("service-dial-reported", target, [genesis, hub])
+
+  pass_at(r, clock, 0)
+  assert process.receive(attempts, 0) == Ok(target)
+
+  // It reports the head this node holds, so it is no longer pending and its
+  // backoff is forgotten.
+  let inbox = process.new_subject()
+  process.send(ledger_service.wire(r.service), head_of(1, inbox))
+  pass_at(r, clock, 5000)
+  assert process.receive(attempts, 0) == Error(Nil)
+
+  // A new entry makes the report stale. The executor is pending again, and
+  // it is attempted at once and not when the old backoff would have allowed.
+  let assert [laptop, ..] = rest
+  let assert Accepted(_) = offer(r, laptop)
+  pass_at(r, clock, 5001)
+  assert process.receive(attempts, 0) == Ok(target)
 }

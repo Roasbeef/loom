@@ -540,6 +540,21 @@ pub fn member(ledger: Ledger, name: String) -> Result(Member, Nil) {
   dict.get(ledger.members, name)
 }
 
+/// The active member that answers to this Erlang node name. Node names are
+/// unique among active members, so there is at most one. A node finds its own
+/// plan name this way, since its configuration holds the node and not the name.
+///
+/// ## Examples
+///
+/// ```gleam
+/// membership_ledger.member_at(ledger, "loom@hub.example")
+/// // -> Ok(Member(name: "hub", ..))
+/// ```
+pub fn member_at(ledger: Ledger, node: String) -> Result(Member, Nil) {
+  dict.values(ledger.members)
+  |> list.find(fn(member) { member.node == node })
+}
+
 /// Whether a node's own name is enrolled, revoked or unknown to the ledger.
 pub type Enrollment {
   /// The name is an active member.
