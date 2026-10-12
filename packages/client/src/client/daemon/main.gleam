@@ -52,6 +52,7 @@ import client/executor_plane
 import client/executors
 import client/host
 import client/internal/ffi_os
+import client/ledger_boot
 import client/orchestrators
 import client/peer_defaults
 import client/peer_mail
@@ -452,6 +453,7 @@ fn start_distribution(
   document: dict.Dict(String, tom.Toml),
   configuration: String,
   cluster: distribution.Cluster,
+  logger: Logger,
 ) -> Result(Option(distribution.Membership), String) {
   use found <- result.try(
     distribution.from_document(document)
@@ -459,12 +461,24 @@ fn start_distribution(
   )
   case found {
     None -> Ok(None)
-    Some(settings) ->
-      distribution.start(settings, cluster)
-      |> result.map(Some)
-      |> result.map_error(fn(fault) {
-        configuration <> ": " <> distribution.describe(fault)
-      })
+    Some(settings) -> {
+      use membership <- result.try(
+        distribution.start(settings, cluster)
+        |> result.map_error(fn(fault) {
+          configuration <> ": " <> distribution.describe(fault)
+        }),
+      )
+
+      // A configured ledger is opened and served once distribution is up, so
+      // that the process can see peers connect. It stays linked to this
+      // process for the life of the daemon, like the other services, and a
+      // daemon without a `ledger` key starts nothing here.
+      use _service <- result.try(
+        ledger_boot.start(settings, logger)
+        |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
+      )
+      Ok(Some(membership))
+    }
   }
 }
 
@@ -1165,6 +1179,7 @@ pub fn prepare_startup(
     document,
     configuration,
     directory_settings.cluster(directory),
+    logger,
   ))
   let config =
     Config(

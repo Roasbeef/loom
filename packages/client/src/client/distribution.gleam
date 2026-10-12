@@ -575,7 +575,9 @@ fn table(fields: Dict(String, tom.Toml)) -> Result(Config, String) {
 
 // The optional ledger path (protocol-change/086), checked like the credential
 // paths: absolute, bounded, and free of a NUL.
-fn ledger_key(fields: Dict(String, tom.Toml)) -> Result(Option(String), String) {
+fn ledger_key(
+  fields: Dict(String, tom.Toml),
+) -> Result(Option(String), String) {
   case dict.get(fields, "ledger") {
     Error(Nil) -> Ok(None)
     Ok(tom.String(path)) ->
