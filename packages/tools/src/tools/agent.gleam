@@ -1504,7 +1504,8 @@ pub fn describe(refusal: Refusal) -> String {
 
 /// What a name that begins with this prefix is: the reference a child on another
 /// orchestrator holds for its parent strand, which is not a strand of the
-/// child's own session (protocol-change/084).
+/// child's own session (protocol-change/084). It is restated from
+/// `runtime/api.parent_reference_prefix`, which this package cannot import.
 pub const parent_reference_prefix = "^"
 
 // The refusal a child reads when it messages its parent and the parent is on

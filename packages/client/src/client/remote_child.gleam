@@ -25,7 +25,9 @@
 //// compare-and-set that refuses to move a stub that has already left the state
 //// the step starts from, because two writers can race here by design: the
 //// effect process that asked and the drainer that resends it both hear the same
-//// answer, and a late `Spawned` must not undo a `Settled`.
+//// answer, and a late `Spawned` must not undo a `Settled`. The one move that goes
+//// back is `Refused` to `Spawned`: an answer that names a child means the child
+//// exists, and a stub must not be left refusing a child that is running.
 ////
 //// The lineage cell of a remote child is written with the `Spawned` step,
 //// before the stub, so that by the time anything shows the model a handle the
@@ -294,8 +296,11 @@ pub fn all(runtime: api.Runtime) -> Result(List(Kept), String) {
 ///
 /// The lineage cell is written first, so that no one is shown the handle before
 /// the addressing rule holds the child as a descendant, and the stub moves to
-/// `Spawned` second. A stub that is no longer `Requested` is returned as it is:
+/// `Spawned` second. A stub that is `Spawned` or `Settled` is returned as it is:
 /// a second writer got the same answer first, or the child has since settled.
+/// A `Refused` stub does move: an answer that names a child means the child
+/// exists, and that outranks a refusal an earlier ask was given, so the stub is
+/// never left saying no to a child that is running.
 ///
 /// ## Examples
 ///
@@ -327,8 +332,8 @@ pub fn spawned(
   )
   advance(runtime, key, fn(state) {
     case state {
-      Requested -> Some(Spawned(placed))
-      Spawned(..) | Settled(..) | Refused(..) -> None
+      Requested | Refused(..) -> Some(Spawned(placed))
+      Spawned(..) | Settled(..) -> None
     }
   })
 }
@@ -358,7 +363,8 @@ pub fn refused(
 
 /// Removes a stub whose spawn was refused where the model heard it. Nothing was
 /// created, nothing is owed, and the refusal is in the model's own result, so the
-/// stub has no reader left.
+/// stub has no reader left. A stub that has since moved, because another asker got
+/// a child from the same call site, is left alone.
 ///
 /// ## Examples
 ///
@@ -366,7 +372,12 @@ pub fn refused(
 /// // remote_child.discard(runtime, key)
 /// ```
 pub fn discard(runtime: api.Runtime, key: String) -> Result(Nil, String) {
-  api.delete_reserved_fact(runtime, key) |> result.map_error(describe)
+  use found <- result.try(read(runtime, key))
+  case found {
+    Some(#(Stub(state: Requested, ..), _seq)) ->
+      api.delete_reserved_fact(runtime, key) |> result.map_error(describe)
+    Some(_) | None -> Ok(Nil)
+  }
 }
 
 /// Records a join's report that a child finished, with what it cost. The cost is

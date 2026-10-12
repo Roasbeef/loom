@@ -6404,12 +6404,33 @@ pub fn a_refusal_ends_a_stub_that_was_never_answered_test() {
   let assert Ok(refused) = remote_child.refused(harness.runtime, key, "no room")
   assert refused.state == remote_child.Refused("no room")
 
-  // An answer after a refusal is not applied: the orchestrator said no.
-  let assert Ok(kept) =
+  // The refused stub is not final against a child that exists: an answer that
+  // names one, from a second asker of the same call site, outranks the refusal,
+  // so the stub is never left saying no to a running child. And once it has moved,
+  // the first asker's removal of it leaves it alone.
+  let assert Ok(moved) =
     remote_child.spawned(harness.runtime, key, stub, an_answer("late"), 0)
-  assert kept.state == remote_child.Refused("no room")
+  let assert remote_child.Spawned(placed) = moved.state
+  assert placed.handle == an_answer("late").handle
+  assert remote_child.discard(harness.runtime, key) == Ok(Nil)
+  assert remote_child.find(harness.runtime, key) == Ok(Some(moved))
+  close(harness)
+}
+
+pub fn a_stub_that_is_still_requested_can_be_discarded_test() {
+  let harness = start_harness(Hangs)
+  let #(key, stub) =
+    a_stub_of(
+      "box",
+      caller_on("main", "turn-1:tools", 0),
+      remote_child.Requested,
+      remote_spawn.Attached,
+    )
+  let assert Ok(remote_child.Fresh) =
+    remote_child.admit(harness.runtime, key, stub)
   assert remote_child.discard(harness.runtime, key) == Ok(Nil)
   assert remote_child.find(harness.runtime, key) == Ok(None)
+  assert remote_child.discard(harness.runtime, key) == Ok(Nil)
   close(harness)
 }
 
