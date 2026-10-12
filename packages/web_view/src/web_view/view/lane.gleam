@@ -89,6 +89,7 @@ import web_view/view/diff
 import web_view/view/expansion
 import web_view/view/fold_row
 import web_view/view/live
+import web_view/view/program_card as program_view
 import web_view/view/strip
 
 /// The lane: the page strand's turns, keyed by the engine's identity for
@@ -984,7 +985,9 @@ fn work_items(
 // One item of the fold, each a line with the rest behind it. A call's body is
 // its whole program and result when the page holds them, and the rows the
 // transcript draws under the call when it does not; the two say the same
-// thing, so only one is drawn.
+// thing, so only one is drawn. A foreground `code_mode` call is the exception:
+// it is a card (`view/program_card`) drawn from the call and its result, whose
+// text rows the terminal alone uses.
 fn item_element(
   item: turns.Item,
   draw: fn(Line) -> Element(message),
@@ -1008,24 +1011,39 @@ fn item_element(
       images:,
       since:,
       result_source:,
-      program: _,
+      program:,
     ) -> {
-      let rows = case full {
-        [] -> detail
-        [_, ..] -> full
+      let links = case result_source {
+        None -> []
+        Some(id) -> [tool_result.links(session, id)]
       }
-      fold_row.step(
-        standing,
-        words,
-        since,
-        list.append(
-          fold_row.step_body(standing, words, rows, draw),
-          list.append(pictures(session, key, images), case result_source {
-            None -> []
-            Some(id) -> [tool_result.links(session, id)]
-          }),
-        ),
-      )
+
+      // A foreground `code_mode` call is a card (`view/program_card`): the
+      // program, the calls it made and its result, drawn from the typed
+      // record and not from the text rows the terminal draws. The link to
+      // the result's whole text stays under it, where every call has it.
+      case program {
+        Some(card) ->
+          html.div([attribute.class("pc-step")], [
+            program_view.view(card, since),
+            ..links
+          ])
+        None -> {
+          let rows = case full {
+            [] -> detail
+            [_, ..] -> full
+          }
+          fold_row.step(
+            standing,
+            words,
+            since,
+            list.append(
+              fold_row.step_body(standing, words, rows, draw),
+              list.append(pictures(session, key, images), links),
+            ),
+          )
+        }
+      }
     }
   }
 }
