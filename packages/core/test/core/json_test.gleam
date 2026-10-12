@@ -151,6 +151,48 @@ pub fn serialize_compact_forms_test() {
     == "{\"a\":1,\"b\":null}"
 }
 
+// Delimiter construction must preserve the ordered field list, including
+// hand-built duplicate keys that the parser itself would refuse.
+pub fn serialize_container_delimiters_and_order_test() {
+  let value =
+    json.Object([
+      #("z", json.Array([])),
+      #("", json.Object([])),
+      #("z", json.Array([json.Object([#("é中🎉\"\n", json.String("\\"))])])),
+    ])
+  assert json.to_string(value)
+    == "{\"z\":[],\"\":{},\"z\":[{\"é中🎉\\\"\\n\":\"\\\\\"}]}"
+}
+
+// Wide containers must not add one recursive build frame per sibling.
+// This also runs on JavaScript, where sibling recursion would exhaust the stack.
+pub fn serialize_wide_containers_test() {
+  let items = list.repeat(json.Int(7), 20_000)
+  let encoded = json.to_string(json.Array(items))
+  assert encoded == "[" <> string.repeat("7,", 19_999) <> "7]"
+
+  let fields = list.repeat(#("key", json.Null), 20_000)
+  assert json.to_string(json.Object(fields))
+    == "{" <> string.repeat("\"key\":null,", 19_999) <> "\"key\":null}"
+}
+
+// The encoder still supports every nesting level the decoder accepts.
+pub fn serialize_containers_at_depth_bound_test() {
+  let arrays =
+    string.repeat("[", json.max_depth) <> string.repeat("]", json.max_depth)
+  let assert Ok(value) = json.parse(arrays)
+    as "the fixture is at the accepted array nesting bound"
+  assert json.to_string(value) == arrays
+
+  let objects =
+    string.repeat("{\"k\":", json.max_depth - 1)
+    <> "{}"
+    <> string.repeat("}", json.max_depth - 1)
+  let assert Ok(value) = json.parse(objects)
+    as "the fixture is at the accepted object nesting bound"
+  assert json.to_string(value) == objects
+}
+
 pub fn serialized_floats_stay_floats_test() {
   let assert Ok(json.Float(1.0)) = json.parse(json.to_string(json.Float(1.0)))
   let assert Ok(json.Float(_)) = json.parse(json.to_string(json.Float(1.0e30)))
