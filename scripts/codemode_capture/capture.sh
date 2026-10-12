@@ -2,10 +2,14 @@
 # capture.sh: regenerate docs/images/code-mode.png from the current terminal UI.
 #
 #   make binaries server-shipment      # bin/loom, bin/loomd, build/codemode-seed
-#   scripts/codemode_capture/capture.sh [OUT.png]
+#   scripts/codemode_capture/capture.sh [OUT_DIR]
 #
-# Rerun it whenever the terminal's code-mode rendering changes, then copy the
-# image to site/public/img/code-mode.png (the two files are identical).
+# It writes two images into OUT_DIR (default docs/images): code-mode.png, the
+# details expanded so the whole program shows, and code-mode-compact.png, the
+# default collapsed card. Rerun it whenever the terminal's code-mode rendering
+# changes, then copy both to site/public/img/. Each is rendered at 2x
+# (CAPTURE_SCALE) so it is sharp on a high-density screen; the site displays
+# it at half its pixel size.
 #
 # Everything lives under a scratch directory (default /var/tmp/loom-codemode-
 # capture; set CAPTURE_DIR to move it, and keep it off /tmp because the jail
@@ -19,14 +23,15 @@
 # `tmux capture-pane -e -p`. Nothing is composited or rewritten.
 #
 # Ctrl+G expands the tool details so the whole program is visible, which needs
-# a taller pane than the old 116x48; CAPTURE_ROWS sets it.
+# a taller pane than the compact 116x48; CAPTURE_ROWS sets the expanded height.
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
-out=${1:-$root/docs/images/code-mode.png}
+outdir=${1:-$root/docs/images}
 dir=${CAPTURE_DIR:-/var/tmp/loom-codemode-capture}
 rows=${CAPTURE_ROWS:-70}
+scale=${CAPTURE_SCALE:-2}
 port=${CAPTURE_PORT:-18761}
 sock=loom-codemode-capture
 prompt="Use code mode to read the three project docs in parallel and report their line counts."
@@ -111,12 +116,21 @@ tmux -L "$sock" send-keys -t 0 -l "$prompt"
 tmux -L "$sock" send-keys -t 0 Enter
 wait_for "stayed out of the conversation"
 
-# Expand the tool details and let the redraw settle before capturing.
+# The collapsed card first, in a 48-row pane, then the expanded details in
+# the taller one. Resizing redraws, so wait for the redraw to settle.
+tmux -L "$sock" resize-window -t 0 -x 116 -y 48
+wait_for "stayed out of the conversation"
+sleep 1
+tmux -L "$sock" capture-pane -e -p -t 0 >"$dir/compact.ansi"
+
+tmux -L "$sock" resize-window -t 0 -x 116 -y "$rows"
 tmux -L "$sock" send-keys -t 0 C-g
 wait_for "details expanded"
 sleep 1
 tmux -L "$sock" capture-pane -e -p -t 0 >"$dir/frame.ansi"
 
-python3 "$root/docs/design-notes/tui-agent-workspace/render_capture.py" \
-	"$dir/frame.ansi" "$out" dark
-echo "wrote $out"
+render="$root/docs/design-notes/tui-agent-workspace/render_capture.py"
+mkdir -p "$outdir"
+python3 "$render" "$dir/compact.ansi" "$outdir/code-mode-compact.png" dark --scale "$scale"
+python3 "$render" "$dir/frame.ansi" "$outdir/code-mode.png" dark --scale "$scale"
+echo "wrote $outdir/code-mode.png and $outdir/code-mode-compact.png"

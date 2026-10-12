@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Rasterize an actual tmux capture; never synthesize terminal UI content.
 
-Usage: python3 render_capture.py input.ansi output.png [dark|light]
+Usage: python3 render_capture.py input.ansi output.png [dark|light] [--scale N]
+--scale multiplies cell size, margin and font size for a sharper image on
+high-density screens; the default of 1 leaves existing captures unchanged.
 Captures use tmux capture-pane -p -e. Default colors are the emulator theme;
 explicit indexed and RGB colors come from the native terminal frame.
 """
@@ -11,7 +13,13 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-source, destination, *mode = sys.argv[1:]
+args = sys.argv[1:]
+scale = 1
+if "--scale" in args:
+    at = args.index("--scale")
+    scale = int(args[at + 1])
+    del args[at:at + 2]
+source, destination, *mode = args
 light = mode == ["light"]
 foreground = (28, 38, 52) if light else (231, 237, 245)
 background = (248, 250, 252) if light else (15, 20, 28)
@@ -37,8 +45,8 @@ def indexed(index):
 ansi = re.compile(r"\x1b\[([0-9;]*)m")
 lines = Path(source).read_text().splitlines()
 width = max(len(ansi.sub("", line)) for line in lines)
-cell_width, cell_height, margin = 11, 23, 18
-font = ImageFont.truetype("/System/Library/Fonts/Menlo.ttc", 17)
+cell_width, cell_height, margin = 11 * scale, 23 * scale, 18 * scale
+font = ImageFont.truetype("/System/Library/Fonts/Menlo.ttc", 17 * scale)
 image = Image.new("RGB", (width * cell_width + margin * 2,
                           len(lines) * cell_height + margin * 2), background)
 draw = ImageDraw.Draw(image)
@@ -99,6 +107,6 @@ for row, line in enumerate(lines):
                 ink = tuple((a + b) // 2 for a, b in zip(ink, paper))
             draw.rectangle((x, y, x + cell_width - 1, y + cell_height - 1), fill=paper)
             draw.text((x, y), char, font=font, fill=ink,
-                      stroke_width=0.2 if bold else 0)
+                      stroke_width=0.2 * scale if bold else 0)
             column += 1
-image.save(destination)
+image.save(destination, optimize=True)
