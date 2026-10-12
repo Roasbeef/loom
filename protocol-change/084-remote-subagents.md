@@ -187,7 +187,7 @@ retain_s = 604800
 | `executor` and `workspace`, `pool` and `workspace`, or `directory` | Exactly one placement for every delegate session of this spawner. |
 | `profile` | The `[profiles.<name>]` that seeds every delegate session. |
 | `tools` | The tool ceiling. The default omits `agent_spawn`, the peer tools, `schedule_*`, `remember` and skill installation. |
-| `max_depth` | The deepest child allowed, default 1, so children cannot spawn. |
+| `max_depth` | The deepest child allowed, default 1, so children cannot spawn. It is never above the remote Agency's own `depth_cap`, 1 in phase 1: a remote child's own spawn is judged against that cap, so a larger value would hand the child a spawn tool it could never use. |
 | `max_sessions` | Delegate sessions this spawner holds, default 4, at most 16, an executor's scope limit. The live children of one delegate session are bounded by the Agency's existing `fan_out` and `session_strands`, so the spawner's total is at most `max_sessions` times `session_strands`. |
 | `max_within_s`, `default_within_s` | The deadline cap (default 4 h) and the deadline a spawn gets when it names none (default 30 min). |
 | `retain_s` | How long a delegate session with no message from its spawner is kept before the boot sweep deletes it (default 7 days). At least `max_within_s`. |
@@ -346,15 +346,20 @@ recovery resumes its children; phase 1 has no boot-time reopen.
 An ordinary session of the remote daemon, owned by its owner, seeded from the
 spawner's profile and placed by the spawner's placement with the
 `session_only` memory domain. The manager's `movable` check answers
-`not_movable` for it by one arm on a marker in the catalogue row, and members
-cannot be invited to it. Its only peer grants are the phase 2 upward grants
-below.
+`not_movable` for it by one arm on a marker in the catalogue row. Refusing
+members of a delegate session is phase 2, alongside the refusal of peer links
+other than the upward grants below; until then the owner can open, read and
+prompt it, so nothing is protected. Its only peer grants are the phase 2 upward
+grants below.
 
-A spawn from the port is a new variant of the Agency's `Caller`. `spawn_on` and
-`reconcile`, which read the parent's configuration, and `child_tools`, which
-takes the parent's tool list, take both from the message for this variant: the
-configuration is the policy profile's and the tool list is `parent_tools`,
-narrowed by the request and the ceiling.
+A spawn from the port is judged by the same `spawn_on`, with a private `Source`
+(`Local | Delegated`) threaded through the Agency. The caller is an ordinary
+`Caller` whose strand is the reference `^main` and whose other fields are the
+parent's call site. For a `Delegated` source, `spawn_on` and `reconcile`, which
+read the parent's configuration, and `child_tools`, which takes the parent's tool
+list, take both from the message: the configuration is the delegate session's
+`main` strand, which the policy profile seeded, and the tool list is
+`parent_tools`, narrowed by the request and the ceiling.
 
 On the spawning daemon, `check_capacity` counts the parent's stubs that are
 `Requested` or `Spawned` as live children of their parent strand, against the
@@ -422,8 +427,8 @@ Phase 1 has five slices, each of which lands on `origin/main` alone.
   with a fake host.
 - **S2. The delegate session and remote Agency.** The `delegate_sessions`
   table and the session created through `manager.create_scoped(SessionOnly)`
-  on the first `Spawn`; the port `Caller` variant through `spawn_on` and
-  `reconcile`; the `^` prefix refusal; the `delegate/ended/{op}` fence, read at
+  on the first `Spawn`; a `Source` through `spawn_on` and
+  `reconcile`, with the caller an ordinary `Caller` for `^main`; the `^` prefix refusal; the `delegate/ended/{op}` fence, read at
   admission and written by `RunEnded` before `reap_run`; `Join` as `wait` plus
   usage. Tests: in-VM Agency tests.
 - **S3. The laptop side.** The stub written ahead and the lineage cell with

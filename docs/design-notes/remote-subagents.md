@@ -421,9 +421,9 @@ remote daemon in every respect not listed here:
   the host binds.
 - **What it refuses.** Moving it (`sessions.move` answers `not_movable`, by
   one arm in the manager's `movable` check that tests a marker in the
-  catalogue row),
-  inviting members to it, and, in phase 2, peer links to or from it other than
-  the ones section 8.6 writes.
+  catalogue row). Refusing members of a delegate session is phase 2, with the
+  refusal of peer links to or from it other than the ones section 8.6 writes;
+  until then the owner can open, read and prompt it, so nothing is protected.
 
 Because the session is created through `manager.create_scoped`, it is created
 the same way whether or not #934 has landed. The two PRs can land in either
@@ -443,13 +443,16 @@ could still be running.
 
 The spawn path is `spawn_on`, and its `reconcile` reads the parent's
 configuration while `child_tools` takes the parent's tool list. Neither can
-read a parent strand that is not in the delegate session. So `Caller` gains a
-variant for a spawn that arrives from the port, which carries what the
-`Spawn` message holds, and three things change for it:
+read a parent strand that is not in the delegate session. So a private
+`Source` (`Local | Delegated`) is threaded through the Agency, and a spawn that
+arrives from the port is `Delegated`, carrying what the `Spawn` message holds.
+The caller stays an ordinary `Caller` whose strand is the reference `^main`.
+Three things change for it:
 
 1. **Depth** is the depth the parent reports, checked against the policy's
    `max_depth`, instead of a parent cell, because the parent has no cell on
-   the remote.
+   the remote. The limit is never above the remote Agency's own `depth_cap`, 1
+   in phase 1, because a remote child's own spawn is judged against that cap.
 2. **The base configuration and the tool list** come from the message and the
    policy. `reconcile` takes the policy profile's configuration instead of the
    parent strand's, and `child_tools` takes the message's `parent_tools`,
@@ -1034,7 +1037,7 @@ Five slices. Each lands on `origin/main` alone, and none needs #934.
 - **S2. The delegate session and the remote Agency.**
   - The `delegate_sessions` catalogue table, with a session created through
     `manager.create_scoped(SessionOnly)` on the first `Spawn`.
-  - A port `Caller` variant through `spawn_on` and `reconcile`, and the `^`
+  - A `Source` through `spawn_on` and `reconcile`, and the `^`
     prefix refusal in `create_strand`.
   - The `delegate/ended/{op}` fence, read at admission and written by
     `RunEnded` before `reap_run`.
