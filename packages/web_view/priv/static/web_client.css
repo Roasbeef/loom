@@ -54,7 +54,7 @@
    input 9e0ca7b3335d39a61f6d1dfa147f42d4db04d5194a8918a0b6d0ef24f9d033bd  packages/web_view/src/web_view/creations.gleam
    input e54b11846a242bbc2aa2e7353845d2b5b1fdafff909ff3e6911bd76cddc503c1  packages/web_view/src/web_view/ending.gleam
    input 293926b61e06c6940f80244ab88b706458a42cd3c95c74faaa42406f7a77fb6b  packages/web_view/src/web_view/grants.gleam
-   input f37efb4d5bd6bbb72c00505dce4f97ea7a0a25078b0bd81468932716f42d4789  packages/web_view/src/web_view/home.gleam
+   input eab4177eb302eb213a2f50ce2c62417d51efa635934d18906bfc19b82199b615  packages/web_view/src/web_view/home.gleam
    input 66f129b5d21f94c1f61d312c78720223300f13e9b3bdbe370b1aa340e12623d2  packages/web_view/src/web_view/image.gleam
    input 20ecaef145694bf83737c3e2e0e3a3588fbda978b26206223b248b2603afaf07  packages/web_view/src/web_view/invites.gleam
    input 2d6532f819991a3d67925dd4d5ec69402c5928210ce0baa89694dcd7a4e23b3a  packages/web_view/src/web_view/markdown_view.gleam
@@ -62,7 +62,7 @@
    input c83f7c4d6dc902a6ec2d2fc30877068859f2f38c400b8002aa42892f949ce27c  packages/web_view/src/web_view/operator_page.gleam
    input aa0a493f61d0638af307e99b79bcc5831e62cc182764f6536cd0f47e906e238b  packages/web_view/src/web_view/page.gleam
    input d1ee8ae66bc605c456fb34fc32a94178102d101b09eaea870d543dd78f274474  packages/web_view/src/web_view/peer_links.gleam
-   input 6c37c1ef6bad81d1171b1572e846d97138245b0ae82c6888edb4cc8b6d190b51  packages/web_view/src/web_view/placements.gleam
+   input e830a6fcc5dd7d31eb10c2472cf2e3b19c671df4663c11d868b3d865591dcd6a  packages/web_view/src/web_view/placements.gleam
    input 1ea3d766230b36781f3b4d2d0efb442e30cf93a2384a6356854a86d9fab8d835  packages/web_view/src/web_view/remembered.gleam
    input efa4a21666ccc4182653dd486ec571be36418e528b9ede0ba8b210ca28d091bb  packages/web_view/src/web_view/renames.gleam
    input 7ff373b6d8a33aa37cb0557d91c4d7abbb3cd9fc3796e09b49be905a0da5d6ae  packages/web_view/src/web_view/sessions.gleam
@@ -79,7 +79,7 @@
    input b39a5b8f7df61ef01db3ee1694c3cc476eeef18ee35a0af07862bf516efc1a76  packages/web_view/src/web_view/view/commentary.gleam
    input ebf2cb3ebd59dca1b206854f1d063f087d9a4b5649b0efdb51456361dcbab7af  packages/web_view/src/web_view/view/context_breakdown.gleam
    input f68c15f081f14d095cdaabbfbfbbf0e5b19968c0135356146b2015ff34924ce1  packages/web_view/src/web_view/view/controls.gleam
-   input 539759e8de080bd715c59fe697d45c4ef6cacdce2c9c67ed423e86e964f1772c  packages/web_view/src/web_view/view/create.gleam
+   input 0decf9089df330ea3f18e1b2ab9bbfba5cd199f2e90c84a9d94fa97c8dc962bb  packages/web_view/src/web_view/view/create.gleam
    input acc1ec316e6219705cb135e1038cf2ea8684229ea9e1a470c555943e1881b77a  packages/web_view/src/web_view/view/crumb.gleam
    input d2b0cb02c09f7ba815383b8442434951f5ced00a866b34428078b885b8cf16d1  packages/web_view/src/web_view/view/diff.gleam
    input ec670b0798d86abebafb0335e522c2c6cc7046e9af77f649a984abc3d1f149c4  packages/web_view/src/web_view/view/ended.gleam
@@ -88,7 +88,7 @@
    input 7ed293c31acc2055c20348deb28e681e65a8db4342b22d704fa2d8fcc5f08469  packages/web_view/src/web_view/view/folders.gleam
    input 5c18338d387ffbe0cd6569f587207e3565e6233bfa602f7449fa1ec5b7c0f82c  packages/web_view/src/web_view/view/heading.gleam
    input 1750c51bfa6e2b4a31f9d92204c425e9199477e16f3d505cd155ccd93ad78ee6  packages/web_view/src/web_view/view/home_bar.gleam
-   input 2b14d9da5889a612073d04f915fea2aac6814d5fd15c8ec516d6ac00a6b8fa2e  packages/web_view/src/web_view/view/home_table.gleam
+   input 9c6c03b5ea1fdbbd211ef2c4892cfe5867f6c73cfb546b3b7b17c58673b82a20  packages/web_view/src/web_view/view/home_table.gleam
    input e6d07cd99664884f0f36c77bd9fe31b269a72a1d35c3486c567ef2b0da30786a  packages/web_view/src/web_view/view/lane.gleam
    input 69884bbfe0c71d7379a9a02ca5617606ded1e28e1f15692f28da4c6d38eb5e7b  packages/web_view/src/web_view/view/live.gleam
    input 8ac4a964a8cc9533bc165f260bedd62aa834cfda13f87959b82160cc91a2f17e  packages/web_view/src/web_view/view/notice.gleam
