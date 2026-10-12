@@ -79,3 +79,30 @@ and explicit budgets, explicit budget expiry, parent ownership and detachment,
 refused late admission, direct operator admission, legacy decoding, reserved
 fact protection, and the new tool metadata. A parked real run-end hook makes
 the parent-finalization race deterministic.
+
+## Addendum: Parent completion and displayed causes (October 12, 2026)
+
+A natural parent completion no longer reaps active attached children. The
+run-end hook checks their current operation records and returns a born-placed
+follow-up with their current handles. The parent operation remains open so it
+can wait for results, including work resumed with `agent_send`. Detached
+children remain independent. Explicit cancellation retains parent cleanup,
+and completion checks observe expired child budgets.
+
+The completion guard uses the existing synchronous run-end hook. Its reads
+reach the separate holder, writer and session store, never the parent driver.
+It does not wait for child results inside the hook; the follow-up directs the
+parent to the existing `agent_wait` tool. Cleanup remains a background action.
+
+The shared terminal and web projection displays `parent_finished` or
+`budget_expired` from the reserved lifecycle fact beside the provider's
+cancellation acknowledgement diagnostic. It joins the exact aborted operation
+and final assistant entry, and verifies the recorded strand. The gateway's
+bounded coherent capture follows each latest terminal result's operation ID
+to its optional lifecycle fact through an exact indexed lookup. Missing legacy
+metadata adds no inferred cause, and capture read failures still refuse.
+Historical operations outside that selected metadata retain generic diagnostics.
+
+Regressions exercise premature parent finalization with a gated resumed child,
+explicit parent cancellation, exact snapshot selection on both backends,
+and stop attribution without leaking an old cause into a successful successor.

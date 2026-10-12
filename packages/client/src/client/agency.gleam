@@ -131,20 +131,14 @@
 //// whether a replayed spawn is looking at a child that already exists;
 //// and which children a run end should reap.
 ////
-//// ## Reaping runs off the driver, or not at all
+//// ## Completion checks and background cleanup
 ////
-//// `Hooks.run_end` fires inside `drive_loop`, **on the driver process**,
-//// before any `actor.continue`. A hook that reads a register there is a
-//// `process.call_forever` from the driver; a hook that waits for anything
-//// stops the driver serving `Nudge`, `RequestAbort` and `PollTick` for
-//// the duration — which is precisely the property that makes a blocking
-//// `agent_wait` safe in the first place. So `reaping_hooks` does exactly
-//// one thing on the driver: `process.spawn_unlinked`. Every read, every
-//// abort and every commit happens on that spawned process, and the hook
-//// returns whatever the wrapped hook returned without rendering anything.
-//// The hook carries no strand, and it does not need one: a lineage cell
-//// records the *operation* that minted it, so "reap what this run
-//// spawned" is a ledger predicate, not a strand lookup.
+//// The completion guard reads only the holder, session store and writer.
+//// None of those reads calls back into the parent driver. It therefore keeps
+//// the existing synchronous hook ordering: while attached children run, a
+//// born-placed follow-up names their current handles and keeps the parent
+//// operation open. Once they settle, cleanup runs on a background process.
+//// Cancelled or already-ended parents retain their existing cleanup behavior.
 ////
 //// ## Two things this does not fix
 ////
@@ -626,11 +620,12 @@ fn holds(config: Config, strand: String, tool: String) -> Result(Nil, Refusal) {
   }
 }
 
-/// Wraps a hook record so a run's end reaps the undetached children that
-/// run spawned in this session. A child on another orchestrator is always
-/// detached and is not reaped. The only work done on the driver process is one
-/// `process.spawn_unlinked`; see the module doc for why that constraint
-/// is not negotiable.
+/// Keeps an uncancelled parent open while its attached children are active.
+///
+/// The guard reads the separate writer and session store. A follow-up carries
+/// the exact current handles, so a resumed child cannot be mistaken for its
+/// original aborted run. Detached children do not hold their parent open.
+/// Cancelled or ended parents retain their existing cleanup behavior.
 ///
 /// ## Examples
 ///
@@ -639,15 +634,85 @@ fn holds(config: Config, strand: String, tool: String) -> Result(Nil, Refusal) {
 /// ```
 ///
 pub fn reaping_hooks(hooks: effects.Hooks, config: Config) -> effects.Hooks {
-  // Capture the slot, not the record: a closure over `hooks` doubles the
-  // record's flat size at every wrapping layer, and flat size is what a copy
-  // into a spawned process costs. See docs/design-notes/daemon-memory.md.
   let inner = hooks.run_end
-
   effects.Hooks(..hooks, run_end: fn(operation) {
-    let _reaper = process.spawn_unlinked(fn() { reap_run(config, operation) })
-    inner(operation)
+    case unfinished_children(config, operation) {
+      Ok([]) -> {
+        let _reaper =
+          process.spawn_unlinked(fn() { reap_run(config, operation) })
+        inner(operation)
+      }
+      Ok(handles) ->
+        Some(completion_follow_up(
+          config,
+          "Your attached child runs are still working. Your run remains open. "
+            <> "Use agent_wait on these current handles and collect their results "
+            <> "before finishing: "
+            <> string.join(handles, ", "),
+        ))
+      Error(refusal) ->
+        Some(completion_follow_up(
+          config,
+          "Child completion could not be checked: "
+            <> string.inspect(refusal)
+            <> ". Check agent_roster and wait for attached children before finishing.",
+        ))
+    }
   })
+}
+
+// The parent operation, rather than the original spawn, owns renewed work.
+// Expiry is observed here too, so repeated attempts to finish cannot leave a
+// child running past the same budget that agent_wait would enforce.
+fn unfinished_children(
+  config: Config,
+  operation: OpId,
+) -> Result(List(String), Refusal) {
+  use runtime <- result.try(borrow(config))
+  use state <- result.try(
+    session.op_state(runtime.session, operation)
+    |> result.replace_error(agent.PlaneFailed("parent operation is unreadable")),
+  )
+  case state {
+    Some(session.Cell(
+      value: operation.RunState(control: operation.Running, ..),
+      ..,
+    )) -> {
+      use ledger <- result.try(read_ledger(runtime))
+      reap_overdue(config, runtime, ledger)
+      use runs <- result.map(
+        list.try_map(dict.values(ledger), current_run(runtime, _)),
+      )
+      runs
+      |> list.filter_map(fn(run) {
+        case run {
+          Some(ObservedRun(
+            operation: child,
+            record: child_run.Run(
+              owner: Some(child_run.ParentRun(parent)),
+              strand:,
+              ..,
+            ),
+            ..,
+          ))
+            if parent == operation
+          -> Ok(agent.handle_to_string(Handle(strand:, operation: child)))
+          _ -> Error(Nil)
+        }
+      })
+      |> list.sort(string.compare)
+    }
+    Some(_) | None -> Ok([])
+  }
+}
+
+fn completion_follow_up(config: Config, text: String) -> message.AgentMessage {
+  let #(now, _) = clock.read(config.clock)
+  message.UserMessage(
+    content: [message.UserText(text:, text_signature: None)],
+    timestamp: now,
+    origin: None,
+  )
 }
 
 // --- borrowing the runtime -------------------------------------------------

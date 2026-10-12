@@ -4660,15 +4660,21 @@ these forks because they define the same modules.
   relation, so each is pinned by one:
   `the_mcp_call_timeout_wins_the_race_test` and
   `the_wait_ceiling_wins_the_race_test`.
-- **A reap does one thing on the driver process: `spawn_unlinked`.**
-  `Hooks.run_end` fires inside `drive_loop`, on the driver, before any
-  `actor.continue` — so a hook that read a register would be a
-  `call_forever` from the driver and a hook that waited would stop it
-  serving `Nudge`, `RequestAbort` and `PollTick`, which is exactly the
-  property that makes a blocking tool safe. Every read, abort and commit
-  a reap performs happens on the spawned process. The hook carries no
-  strand and does not need one: each current child-run record names its
-  owning operation, including custody transferred on continuation.
+- **Natural completion waits for attached children.** `agency.reaping_hooks`
+  reads current child operations through the separate writer and session store,
+  without calling the parent driver.
+  A running parent with active attached children receives a born-placed
+  follow-up naming their current waitable handles, including resumed runs.
+  It retains the same operation until those children settle. Detached children
+  do not delay it. Cancelled parents retain cleanup, and overdue children are
+  observed through the existing deadline enforcement. Ledger read failures
+  return a follow-up instead of permitting completion.
+- **Terminal parent cleanup runs in the background.**
+  The completion guard reads through the separate writer and observes overdue
+  child budgets by recording stop intent and sending cancellation, without
+  waiting on either driver. Final parent cleanup runs on a background process.
+  Each current child-run record names its owning operation, including custody
+  transferred on continuation.
 - **A reap's intent is durable and its abort is re-issued.** `api.abort`
   is a no-op when no driver is registered, so a reap that landed
   mid-restart would otherwise evaporate and the child would run until the
