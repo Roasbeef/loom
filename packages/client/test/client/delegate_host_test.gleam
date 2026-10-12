@@ -22,6 +22,7 @@ import gleam/int
 import gleam/option.{None, Some}
 import host/bootstrap
 import simplifile
+import sqlight
 import storage/catalogue
 import storage/domain
 
@@ -402,9 +403,36 @@ pub fn a_session_is_a_delegate_once_the_registry_has_recorded_its_pair_test() {
   // Only that session gets a deadline tick. Any other session has no pair, so
   // its Agency reaps on observation alone, as it always did.
   assert daemon_main.deadline_tick_of(registry, recorded.session_id)
-    == option.Some(agency.delegate_deadline_tick_ms)
+    == Ok(option.Some(agency.delegate_deadline_tick_ms))
   assert daemon_main.deadline_tick_of(registry, parent(61).session)
-    == option.None
+    == Ok(option.None)
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn a_session_whose_delegate_marker_is_unreadable_has_no_answer_test() {
+  // A row that breaks its grammar makes the marker unreadable. The answer is an
+  // error, which the build refuses, and not "no tick".
+  let path = scratch("damaged") <> "/catalogue.db"
+  let assert Ok(store) = catalogue.open(path) as "catalogue opens"
+  let laptop = spawner("executor = \"runner\"\nworkspace = \"loom\"\n")
+  let registry = started(store, fn(built) { Ok(tagged(built)) })
+  let assert Ok(_) =
+    delegate_host.resolver(context(registry, "/delegate-host/sessions"))(
+      laptop,
+      parent(70),
+    )
+  let assert Ok(option.Some(recorded)) =
+    catalogue.delegate_for(store, "laptop", parent(70).session)
+  let assert Ok(raw) = sqlight.open(path)
+  let assert Ok(_) =
+    sqlight.exec(
+      "UPDATE catalogue_delegate_sessions SET parent_session = 'not-an-id'",
+      on: raw,
+    )
+  let assert Error(_) =
+    daemon_main.deadline_tick_of(registry, recorded.session_id)
+  let assert Ok(Nil) = sqlight.close(raw)
   stop(registry)
   assert catalogue.close(store) == Ok(Nil)
 }

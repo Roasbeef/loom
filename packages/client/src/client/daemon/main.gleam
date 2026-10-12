@@ -1625,6 +1625,10 @@ pub fn prepare_startup(
           )
           |> diagnose_start(logger, identity, SettingsResolution),
         )
+        use tick <- result.try(
+          deadline_tick_of(directory, registration.id)
+          |> diagnose_start(logger, identity, SettingsResolution),
+        )
         let settings =
           serve.Settings(
             ..settings,
@@ -1639,7 +1643,7 @@ pub fn prepare_startup(
               }),
             ),
             remote_reach: reach_of(config, directory, registration.id),
-            deadline_tick_ms: deadline_tick_of(directory, registration.id),
+            deadline_tick_ms: tick,
           )
         let settings =
           serve.Settings(
@@ -1717,23 +1721,25 @@ pub fn prepare_startup(
 ///
 /// Only a delegate session has a tick: its children belong to a spawner that
 /// may never come back to wait on them, so the session enforces the deadline
-/// itself (protocol-change/084). A registry that cannot answer leaves the
-/// session without one until its next open, which the spawner's next message
-/// causes, and a wait or a roster that reads the ledger still reaps.
+/// itself (protocol-change/084). A marker that cannot be read is an error and
+/// not "no tick", as it is for the catalogue and for moves: the session would
+/// otherwise open as an ordinary one and its children would outlive their
+/// deadlines. The caller refuses the open.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // main.deadline_tick_of(registry, delegate_session_id) == Some(15_000)
+/// // main.deadline_tick_of(registry, delegate_session_id) == Ok(Some(15_000))
 /// ```
 @internal
 pub fn deadline_tick_of(
   registry: manager.Manager(instance),
   id: String,
-) -> Option(Int) {
+) -> Result(Option(Int), String) {
   case manager.delegate_of(registry, id) {
-    Ok(Some(_delegate)) -> Some(agency.delegate_deadline_tick_ms)
-    Ok(None) | Error(_) -> None
+    Ok(Some(_delegate)) -> Ok(Some(agency.delegate_deadline_tick_ms))
+    Ok(None) -> Ok(None)
+    Error(_) -> Error("the session's delegate marker could not be read")
   }
 }
 
