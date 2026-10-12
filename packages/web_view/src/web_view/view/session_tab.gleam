@@ -45,9 +45,10 @@
 //// the panel never moves. After the rows it has three more children: the
 //// owner's invitation control (`view/share`), or an empty node on a page that
 //// has none, the operator's session controls (`view/controls`), or an empty
-//// node, the owner's rename control (`view/rename`), or an empty node, and the
+//// node, the owner's rename control (`view/rename`), or an empty node, the
 //// operator's list of remembered permissions (`view/remembered`), or an empty
-//// node.
+//// node, the owner's peer-link section, or an empty node, and the owner's
+//// proposals review (`view/proposals`), or an empty node.
 ////
 //// Job lines, which carry a command excerpt, viewer names and the goal's
 //// objective, are session and principal text: each is drawn as a text node,
@@ -90,13 +91,15 @@ import session_view/session_summary.{
 /// (`view/remembered`), or `element.none()` on an observer's page, and is the
 /// pane's sixth child, beneath `component.remembered_path`. `peers` is the
 /// owner's peer-link section (`view/peer_links`), or `element.none()` on any
-/// other page, and is the pane's seventh and last child, beneath
-/// `component.peers_path`.
+/// other page, and is the pane's seventh child, beneath
+/// `component.peers_path`. `proposals` is the owner's review of proposed
+/// standing rules (`view/proposals`), or `element.none()` on any other page, and
+/// is the pane's eighth and last child, beneath `component.proposals_path`.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // session_tab.view([], "$0.12", component.jobs(model), Some(component.viewers(model)), Some("/src/loom"), element.none(), element.none(), element.none(), element.none(), element.none())
+/// // session_tab.view([], "$0.12", component.jobs(model), Some(component.viewers(model)), Some("/src/loom"), element.none(), element.none(), element.none(), element.none(), element.none(), element.none())
 /// ```
 pub fn view(
   goal: List(String),
@@ -109,6 +112,7 @@ pub fn view(
   rename: Element(message),
   remembered: Element(message),
   peers: Element(message),
+  proposals: Element(message),
 ) -> Element(message) {
   html.section(
     [
@@ -124,6 +128,7 @@ pub fn view(
       rename,
       remembered,
       peers,
+      proposals,
     ],
   )
 }

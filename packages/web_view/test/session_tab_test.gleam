@@ -38,6 +38,7 @@ fn drawn(jobs, viewers) -> String {
     element.none(),
     element.none(),
     element.none(),
+    element.none(),
   ))
 }
 
@@ -68,6 +69,7 @@ pub fn the_groups_read_session_people_goal_jobs_cost_test() {
       Unread,
       Some(Viewers([], 1)),
       Some("/src/loom"),
+      element.none(),
       element.none(),
       element.none(),
       element.none(),
@@ -113,6 +115,7 @@ pub fn a_pinned_goal_is_the_terminals_row_and_no_goal_says_none_test() {
       element.none(),
       element.none(),
       element.none(),
+      element.none(),
     ))
   assert string.contains(with_goal, "Goal")
   assert string.contains(
@@ -134,6 +137,7 @@ pub fn the_goal_is_only_ever_a_text_node_test() {
       Unread,
       None,
       None,
+      element.none(),
       element.none(),
       element.none(),
       element.none(),

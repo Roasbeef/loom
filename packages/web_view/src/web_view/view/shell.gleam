@@ -91,13 +91,16 @@ pub type Sidebar(message) {
 /// `centre` is the children of the centre column, in order: the transcript
 /// first, so its "Load older" button keeps the path `component.older_path`
 /// names. `needing` is how many strands wait on a decision, for the badge.
+/// `proposals` is how many proposed standing rules wait for the owner
+/// (protocol-change/086), the number on the Session tab, which is zero on every
+/// page but the owner's.
 /// `workspace` is the workspace digest, or an empty string for none, in which
 /// case the frame carries no `workspace` attribute.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // shell.view(shell.Observer, heading, shell.Unlisted, [lane], panel, 0, "")
+/// // shell.view(shell.Observer, heading, shell.Unlisted, [lane], panel, 0, 0, "")
 /// ```
 pub fn view(
   audience: Audience,
@@ -106,11 +109,12 @@ pub fn view(
   centre: List(Element(message)),
   panel: Element(message),
   needing: Int,
+  proposals: Int,
   workspace: String,
 ) -> Element(message) {
   element.element(
     "loom-shell",
-    frame_attributes(audience, sidebar, needing, workspace),
+    frame_attributes(audience, sidebar, needing, proposals, workspace),
     [
       bar,
       sidebar_element(sidebar),
@@ -128,6 +132,7 @@ fn frame_attributes(
   audience: Audience,
   sidebar: Sidebar(message),
   needing: Int,
+  proposals: Int,
   workspace: String,
 ) -> List(attribute.Attribute(message)) {
   let word = case sidebar {
@@ -137,7 +142,7 @@ fn frame_attributes(
   let facts = [
     attribute.attribute("sidebar", word),
     attribute.attribute("needing", int.to_string(needing)),
-    ..digest(workspace)
+    ..proposals_fact(proposals, digest(workspace))
   ]
   case audience {
     Operator -> [
@@ -151,6 +156,18 @@ fn frame_attributes(
       attribute.class("loom-home"),
       ..facts
     ]
+  }
+}
+
+// The `proposals` attribute, written only while a proposal waits, so a page
+// that has none, which is every page but the owner's, carries nothing.
+fn proposals_fact(
+  proposals: Int,
+  rest: List(attribute.Attribute(message)),
+) -> List(attribute.Attribute(message)) {
+  case proposals > 0 {
+    True -> [attribute.attribute("proposals", int.to_string(proposals)), ..rest]
+    False -> rest
   }
 }
 
