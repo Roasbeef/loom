@@ -152,6 +152,15 @@ fn bundle_named(
   bundle
 }
 
+// The peers a static bundle lists.
+fn static_peers(
+  bundle: distribution_bundle.Bundle,
+) -> List(distribution.PeerPin) {
+  let assert distribution_bundle.StaticPeers(peers) = bundle.trust
+    as "A static deployment's bundles list their peers."
+  peers
+}
+
 fn options_for(
   base: String,
   name: String,
@@ -430,7 +439,7 @@ pub fn certificates_carry_the_exact_node_name_and_the_pins_match_test() {
   // Every pin in every bundle is the SHA-256 of the DER of that peer's
   // certificate, recomputed here.
   list.each(deployment.bundles, fn(bundle) {
-    list.each(bundle.peers, fn(peer) {
+    list.each(static_peers(bundle), fn(peer) {
       let assert Ok(owner) =
         list.find(deployment.bundles, fn(b) { b.erlang_node == peer.node })
       let #(digest, _) = facts(owner.name)
@@ -467,7 +476,7 @@ pub fn install_writes_a_configuration_the_daemon_accepts_test() {
     // slice's table, so the catalogue parser is given everything before them.
     let assert Ok(Some(settings)) = distribution.parse(config)
     assert list.length(distribution.peer_nodes(settings))
-      == list.length(bundle.peers)
+      == list.length(static_peers(bundle))
     let assert Ok(_) =
       catalog.parse(
         catalogue
@@ -742,9 +751,12 @@ pub fn a_tampered_bundle_is_refused_and_installs_nothing_test() {
     "cookie must be 16 to 128",
   )
   refused_bundle(
-    distribution_bundle.Bundle(..laptop, peers: [
-      distribution.PeerPin("loom@desk.example", <<1, 2>>),
-    ]),
+    distribution_bundle.Bundle(
+      ..laptop,
+      trust: distribution_bundle.StaticPeers([
+        distribution.PeerPin("loom@desk.example", <<1, 2>>),
+      ]),
+    ),
     "64 hexadecimal",
   )
 
@@ -759,9 +771,9 @@ pub fn a_tampered_bundle_is_refused_and_installs_nothing_test() {
     string.replace(
       text,
       "loom-distribution-bundle/1",
-      "loom-distribution-bundle/2",
+      "loom-distribution-bundle/3",
     ),
-    "is not a loom-distribution-bundle/1 bundle",
+    "is not a loom-distribution-bundle/1 or loom-distribution-bundle/2 bundle",
   )
   refused_text("{\"format\": \"loom-distribution-bundle/1\"}", "name")
   refused_text(

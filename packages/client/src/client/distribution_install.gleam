@@ -135,6 +135,7 @@ pub fn default_config(home: String) -> String {
 /// ```
 pub fn install(text: String, options: Options) -> Result(Installed, String) {
   use bundle <- result.try(distribution_bundle.decode(text))
+  use Nil <- result.try(static_only(bundle))
   let directory =
     option.lazy_unwrap(bundle.bundle_dir, fn() {
       default_directory(options.home)
@@ -191,6 +192,26 @@ pub fn install(text: String, options: Options) -> Result(Installed, String) {
     ]),
     start: start_command(options, optfile),
   ))
+}
+
+// A ledger bundle has been decoded and verified, and that is as far as this
+// build takes it. Installing one means writing a configuration with a `ledger`
+// key and no peers, and an options file whose verify state is the live pin
+// table (protocol-change/086). The daemon in this build refuses the first, and
+// `distribution.tls_options` does not render the second, so an install now
+// would leave a node that cannot start. The refusal comes before any
+// destination is read, so nothing is written.
+fn static_only(bundle: Bundle) -> Result(Nil, String) {
+  case bundle.trust {
+    distribution_bundle.StaticPeers(_) -> Ok(Nil)
+    distribution_bundle.SignedLedger(_) ->
+      Error(
+        "this bundle carries a membership ledger ("
+        <> distribution_bundle.ledger_format
+        <> "), and this build's daemon cannot run one yet; nothing was "
+        <> "installed",
+      )
+  }
 }
 
 // --- what is already on the machine -----------------------------------------
