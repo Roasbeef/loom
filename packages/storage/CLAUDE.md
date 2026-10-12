@@ -146,8 +146,9 @@ or close; there is no transaction, lease or authorization cache.
   `limit` rows, which answers `AtLimit(held)` and writes nothing, so two callers
   cannot both pass `max_sessions`. A pair already bound to another session is
   `Conflict`. `delegate_for` reads by pair and refuses a malformed pair as `Invalid` before anything else, so the registry's first step fails before it creates a session, `delegate_of` reads by session and is
-  the marker the manager refuses a move on, and `delegates_held` counts a
-  spawner's rows. A stored row that is duplicated or breaks its grammar fails the
+  the marker the manager refuses a move on, `delegates_held` counts a
+  spawner's rows, and `delegates` lists every row in session identity order for
+  the boot sweep that applies `retain_s`. A stored row that is duplicated or breaks its grammar fails the
   read with `Invalid` and is never read as "not a delegate". `delete` removes the
   row first, which frees the slot. Claims do not move the catalogue revision,
   because no listing shows them.

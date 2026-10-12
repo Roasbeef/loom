@@ -181,6 +181,7 @@ pub fn generated_queries_match_the_sqlc_input_test() {
     sql.deleting_sessions().0,
     sql.delegate_session("", "").0,
     sql.delegate_of_session("").0,
+    sql.all_delegate_sessions().0,
     sql.count_delegate_sessions("").0,
     sql.insert_delegate_session("", "", "", 0).0,
     sql.touch_delegate_session(0, "", "").0,
@@ -2191,6 +2192,48 @@ pub fn a_delegate_claim_records_a_pair_once_and_a_repeat_only_touches_it_test() 
   let assert Ok(reopened) = catalogue.open(path) as "catalogue reopens"
   assert catalogue.delegate_of(reopened, record.id) == Ok(option.Some(later))
   assert catalogue.close(reopened) == Ok(Nil)
+}
+
+pub fn every_delegate_session_is_listed_in_identity_order_test() {
+  let path = fresh_path("delegate-list")
+  let assert Ok(store) = catalogue.open(path) as "catalogue opens"
+  let first = registration(90)
+  let second = registration(91)
+  assert catalogue.reserve(store, first) == Ok(first)
+  assert catalogue.reserve(store, second) == Ok(second)
+  assert catalogue.delegates(store) == Ok([])
+
+  // Two spawners' rows come back together, each with its own contact time, in
+  // the order of the session identities and not of the claims.
+  let assert Ok(_) =
+    catalogue.claim_delegate(
+      store,
+      "desk",
+      parent_of(92),
+      second.id,
+      limit: 4,
+      now_ms: 20,
+    )
+  let assert Ok(_) =
+    catalogue.claim_delegate(
+      store,
+      "laptop",
+      parent_of(93),
+      first.id,
+      limit: 4,
+      now_ms: 10,
+    )
+  let assert Ok(listed) = catalogue.delegates(store)
+  assert list.map(listed, fn(row) { #(row.session_id, row.last_contact_ms) })
+    == list.sort([#(first.id, 10), #(second.id, 20)], fn(a, b) {
+      string.compare(a.0, b.0)
+    })
+
+  // A deleted session leaves the list with its registration.
+  assert catalogue.delete(store, first.id) == Ok(first)
+  let assert Ok([only]) = catalogue.delegates(store)
+  assert only.session_id == second.id
+  assert catalogue.close(store) == Ok(Nil)
 }
 
 pub fn a_spawner_holds_no_more_delegate_sessions_than_its_limit_test() {
