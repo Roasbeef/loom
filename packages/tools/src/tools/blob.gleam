@@ -182,18 +182,30 @@ fn call_tag(ctx: Ctx) -> String {
 }
 
 /// The transcript text for a bounded output: inline text as-is; an
-/// overflowed output as head excerpt, an elision note naming the ref,
-/// and tail excerpt.
-pub fn bounded_text(bounded: Bounded) -> String {
+/// overflowed output as head excerpt, an elision note, and tail excerpt.
+///
+/// The note names the file's full path, not only its ref, because a bare
+/// content address tells the model nothing about where to look, and it
+/// says how to read the file. Re-running the call that overflowed would
+/// produce the same oversized output again.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // blob.bounded_text("/blobs", blob.Inline("small")) == "small"
+/// ```
+///
+pub fn bounded_text(blob_root: String, bounded: Bounded) -> String {
   case bounded {
     Inline(text:) -> text
     Overflowed(ref:, size:, head_excerpt:, tail_excerpt:) ->
       head_excerpt
       <> "\n[... output of "
       <> int.to_string(size)
-      <> " bytes stored as "
-      <> ref
-      <> " ...]\n"
+      <> " bytes saved to "
+      <> ref_path(blob_root, ref)
+      <> "; read it with grep or bash head -c / tail -c, not by re-running "
+      <> "the call ...]\n"
       <> tail_excerpt
   }
 }

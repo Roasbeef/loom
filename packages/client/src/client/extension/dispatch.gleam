@@ -1116,7 +1116,7 @@ fn bounded(
 
     Ok(held) ->
       tool.ToolOutcome(
-        content: [tool.text_block(blob.bounded_text(held))],
+        content: [tool.text_block(blob.bounded_text(ctx.blob_root, held))],
         details: Some(details),
         is_error:,
         terminate:,
