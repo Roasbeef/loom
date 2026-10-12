@@ -92,6 +92,7 @@ pub opaque type Config {
     peers: List(PeerPin),
     files: CredentialFiles,
     listen_port: Option(Int),
+    ledger: Option(String),
   )
 }
 
@@ -196,7 +197,7 @@ pub fn configure(
   use Nil <- result.try(valid_files(files))
   use Nil <- result.try(valid_peers(local, peers))
   use Nil <- result.try(valid_port(listen_port))
-  Ok(Config(local:, peers:, files:, listen_port:))
+  Ok(Config(local:, peers:, files:, listen_port:, ledger: None))
 }
 
 /// Reads the `[distribution]` table of a configuration document, or `None`
@@ -246,6 +247,32 @@ pub fn parse(text: String) -> Result(Option(Config), String) {
 /// ```
 pub fn local_node(config: Config) -> String {
   config.local
+}
+
+/// The path of the membership ledger file, when the configuration names one
+/// (protocol-change/086). It is read by the ledger process and by nothing in
+/// this module, so the trust list a node runs with is still the peers until a
+/// later change makes the ledger the source of it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// distribution.ledger_path(config) // -> Some("/home/me/.loom/ledger.log")
+/// ```
+pub fn ledger_path(config: Config) -> Option(String) {
+  config.ledger
+}
+
+/// The credential files of this node. The ledger's verifier is built from the
+/// `ca` file among them.
+///
+/// ## Examples
+///
+/// ```gleam
+/// distribution.credential_files(config).ca // -> "/etc/loom/ca.pem"
+/// ```
+pub fn credential_files(config: Config) -> CredentialFiles {
+  config.files
 }
 
 /// The node names of the configured peers, in the order the file lists them.
@@ -519,7 +546,10 @@ fn pairs(peers: List(PeerPin)) -> List(#(String, BitArray)) {
 fn table(fields: Dict(String, tom.Toml)) -> Result(Config, String) {
   use Nil <- result.try(known_keys(
     dict.keys(fields),
-    ["node", "ca", "certificate", "key", "cookie", "listen_port", "peers"],
+    [
+      "node", "ca", "certificate", "key", "cookie", "listen_port", "ledger",
+      "peers",
+    ],
     "[distribution]",
   ))
   use local <- result.try(string_key(fields, "node", "distribution"))
@@ -532,13 +562,35 @@ fn table(fields: Dict(String, tom.Toml)) -> Result(Config, String) {
   use key <- result.try(string_key(fields, "key", "distribution"))
   use cookie <- result.try(string_key(fields, "cookie", "distribution"))
   use listen_port <- result.try(port_key(fields))
+  use ledger <- result.try(ledger_key(fields))
   use peers <- result.try(peer_rows(fields))
-  configure(
+  use config <- result.try(configure(
     local,
     peers,
     CredentialFiles(ca:, certificate:, key:, cookie:),
     listen_port,
-  )
+  ))
+  Ok(Config(..config, ledger:))
+}
+
+// The optional ledger path (protocol-change/086), checked like the credential
+// paths: absolute, bounded, and free of a NUL.
+fn ledger_key(fields: Dict(String, tom.Toml)) -> Result(Option(String), String) {
+  case dict.get(fields, "ledger") {
+    Error(Nil) -> Ok(None)
+    Ok(tom.String(path)) ->
+      case absolute_path(path) {
+        True -> Ok(Some(path))
+        False -> Error("distribution.ledger must be an absolute path")
+      }
+    Ok(_) -> Error("distribution.ledger must be a string")
+  }
+}
+
+fn absolute_path(path: String) -> Bool {
+  string.starts_with(path, "/")
+  && string.byte_size(path) <= 4096
+  && !string.contains(path, "\u{0}")
 }
 
 fn peer_rows(fields: Dict(String, tom.Toml)) -> Result(List(PeerPin), String) {
@@ -645,11 +697,7 @@ fn valid_files(files: CredentialFiles) -> Result(Nil, String) {
     ],
     fn(entry) {
       let #(key, path) = entry
-      case
-        string.starts_with(path, "/")
-        && string.byte_size(path) <= 4096
-        && !string.contains(path, "\u{0}")
-      {
+      case absolute_path(path) {
         True -> Ok(Nil)
         False -> Error("distribution." <> key <> " must be an absolute path")
       }

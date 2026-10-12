@@ -354,3 +354,33 @@ pub fn a_member_killed_as_it_joins_never_starts_a_cluster_of_its_own_test() {
       <> "never starts a cluster of its own.",
   )
 }
+
+pub fn the_ledger_path_is_optional_and_absolute_test() {
+  let peers = peer("executor@10.0.0.2", pin)
+  let assert Ok(Some(without)) = distribution.parse(document("", peers))
+  assert distribution.ledger_path(without) == None
+
+  let assert Ok(Some(with)) =
+    distribution.parse(document("ledger = \"/var/loom/ledger.log\"\n", peers))
+  assert distribution.ledger_path(with) == Some("/var/loom/ledger.log")
+  assert distribution.credential_files(with).ca == "/etc/loom/ca.pem"
+
+  refused(
+    document("ledger = \"ledger.log\"\n", peers),
+    "distribution.ledger must be an absolute path",
+  )
+  refused(
+    document("ledger = 3\n", peers),
+    "distribution.ledger must be a string",
+  )
+}
+
+pub fn the_ledger_key_does_not_change_the_options_file_test() {
+  // The ledger path is read by the ledger process alone. The options file the
+  // VM boots from is a function of the credentials and the pins.
+  let peers = peer("executor@10.0.0.2", pin)
+  let assert Ok(Some(without)) = distribution.parse(document("", peers))
+  let assert Ok(Some(with)) =
+    distribution.parse(document("ledger = \"/var/loom/ledger.log\"\n", peers))
+  assert distribution.tls_options(with) == distribution.tls_options(without)
+}
