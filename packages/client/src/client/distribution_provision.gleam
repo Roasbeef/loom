@@ -310,6 +310,7 @@ fn bundle(
       executors.plain(row.name, row.erlang_node)
     }),
     workspaces: node.workspaces,
+    directory: distribution_plan.directory_members(plan, node),
     ca: authority,
     certificate: entry.certificate,
     key: entry.key,

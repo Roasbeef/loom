@@ -58,3 +58,5 @@ document ever cited them under the old ones.
   generated (issue #696).
 - [019](019-native-reads-follow-read-scope.md): native reads follow the
   session's read policy, and protected paths are refused on reads.
+- [020](020-khepri-for-session-ownership.md): Khepri holds session ownership,
+  and its members are the orchestrators and the executors (issue #697).

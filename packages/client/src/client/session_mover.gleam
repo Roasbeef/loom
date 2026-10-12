@@ -52,8 +52,49 @@
 ////
 //// Each step runs under a weft deadline of its own, so one that hangs cannot hold
 //// the whole move, and its expiry is a stall and not a verdict.
+////
+//// ## Flow
+////
+//// `drive` → `run` → `migrated` → `intended` → `carried` → `retire`
+////
+//// 1. `drive` runs the move and turns how it halted into an `Outcome` through
+////    `ended`; `give_up` does the same from an abandon.
+//// 2. `run` reads the registration and the row (`still_moving`), waits on a
+////    member for `migrated`, asks the receiver's `receiver_stage`, and writes
+////    the record's intent with `intended`.
+//// 3. `carried` takes the steps that remain: `stopped`, `closed`, `cut`,
+////    `send` and `activate`.
+//// 4. `retire` finishes the move: by the rows with `retire_by_rows`, or on a
+////    member with `retire_recorded` after a consistent read.
+//// 5. A move given up goes through `abandon`, which on a member is
+////    `abandon_recorded` and otherwise `revert`.
+////
+//// ## On a directory member (protocol-change/083)
+////
+//// With `Recorded` authority the owner record decides and the catalogue row
+//// remembers. The row is still written first, by the registry, in the turn
+//// that stops the slot, because it stops this daemon serving the session. Then
+//// the mover writes the record from `serving` to `moving`, and does nothing
+//// that depends on the store until this daemon's migration marker exists, so a
+//// record that is merely not seeded yet is never taken for a missing one. The
+//// receiver's activation is the compare-and-set that hands the session over.
+////
+//// Three rules change. The move may be abandoned whatever the receiver did,
+//// because the abandon is a compare-and-set that expects this daemon's
+//// `moving` record and so fails once the receiver has activated; a failed
+//// abandon sends the mover to the retirement instead. The retirement happens
+//// only after the receiver answered and a consistent read of the record shows
+//// another owner, so a stale copy never sets aside a file. And a stall that
+//// giving the move up could not cure, because the store has no quorum or this
+//// daemon has not seeded it yet, is reported as `Deferred`, so the movers do not
+//// count it toward the time after which a silent receiver is given up. The
+//// give-up passes the same seed check as a run before it touches the record,
+//// since until the seed is done a missing record means "not copied yet".
 
 import client/daemon/manager
+import client/directory/ownership.{type Ownership}
+import client/directory/record
+import client/directory/store
 import client/orchestrators.{type Orchestrator}
 import client/remote/protocol
 import client/remote/scope
@@ -134,9 +175,24 @@ pub fn unreachable_executors() -> Closer {
   }
 }
 
+/// What decides who owns a session while it moves.
+pub type Authority {
+  /// Phase 5: the source's and the receiver's catalogue rows.
+  Rows
+
+  /// A directory member: the owner record, written through this daemon's
+  /// ownership; the rows only remember.
+  Recorded(
+    /// The record writes and reads, bound to this daemon's node.
+    ownership: Ownership,
+  )
+}
+
 /// What a mover needs from the daemon around it.
 pub type Environment(instance) {
   Environment(
+    /// Whether the rows or the directory record decide.
+    authority: Authority,
     /// The registry, which owns the slot and the catalogue.
     registry: manager.Manager(instance),
     /// The orchestrators this daemon lists, in which the destination is found.
@@ -175,6 +231,12 @@ pub type Outcome {
   /// The move is neither finished nor abandoned. The row stays `moving` and the
   /// run is retried later, with the reason it stopped.
   Stalled(reason: String)
+
+  /// As `Stalled`, for a reason that giving the move up could not cure: the
+  /// directory store could not commit or be read, or this daemon has not
+  /// seeded it yet. The time a receiver has been silent is not counted while
+  /// this lasts.
+  Deferred(reason: String)
 }
 
 // Whether a send has already begun the file again. A receiver that loses its
@@ -201,8 +263,35 @@ type Halt {
   // The move may go on later.
   Stall(reason: String)
 
+  // The move may go on later, once something a give-up could not cure has
+  // passed: the directory store has a quorum again, or this daemon has seeded
+  // it.
+  Defer(reason: String)
+
+  // The session's record is gone after this daemon seeded the store. Every
+  // remote session has a record once the seed ran, so its owner deleted it:
+  // the receiver took the session while this source was away, and then
+  // deleted it. The source's copy is set aside, never served again.
+  Gone
+
+  // The receiver answered and the record decides: retire if it names another
+  // owner.
+  Decide
+
   // The move is over, one way or the other, and there is nothing left to do.
   Over
+}
+
+// Why a move is being abandoned, which decides what an abandon that finds the
+// receiver owning the session means.
+type Cause {
+  // Something answered no: the receiver refused, or the executor or the file
+  // showed the move cannot go on. Every `Abandon` a run produces is this.
+  Answered
+
+  // Nobody answered: the movers gave up on a silent receiver, or the owner
+  // asked (`give_up`).
+  Unanswered
 }
 
 /// Runs the move as far as it can go and says how it ended. Safe to call again
@@ -217,14 +306,107 @@ pub fn drive(
   environment: Environment(instance),
   move: catalogue.Pending,
 ) -> Outcome {
-  let outcome = case run(environment, move) {
-    Ok(Nil) -> Finished
-    Error(Over) -> Finished
-    Error(Abandon(reason:)) -> abandon(environment, move, reason)
-    Error(Stall(reason:)) -> Stalled(reason)
+  let outcome = ended(environment, move, run(environment, move))
+  note(environment, move, outcome)
+  outcome
+}
+
+/// Abandons the move now, at an operator's request or once the movers have
+/// waited out a silent receiver. Only a directory member can: its abandon is a
+/// compare-and-set that fails if the receiver has already activated, in which
+/// case the move is retired instead. Under the rows authority an abandon after
+/// the send could leave two owners, so it stalls with the reason.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // session_mover.give_up(environment, move)
+/// ```
+pub fn give_up(
+  environment: Environment(instance),
+  move: catalogue.Pending,
+) -> Outcome {
+  let outcome = case environment.authority {
+    Rows ->
+      Stalled(
+        "a move can be abandoned on request only by a directory member; "
+        <> "this daemon decides by its catalogue rows",
+      )
+
+    // The give-up reads the record, so it waits for the seed exactly as a run
+    // does: before it, an abandon that finds no record would take the session
+    // for one a later owner deleted and set its file aside.
+    Recorded(..) ->
+      case migrated(environment) {
+        Error(halt) -> ended(environment, move, Error(halt))
+        Ok(Nil) ->
+          abandon(
+            environment,
+            move,
+            "abandoned on request or after the receiver stayed silent",
+            Unanswered,
+          )
+      }
   }
   note(environment, move, outcome)
   outcome
+}
+
+fn ended(
+  environment: Environment(instance),
+  move: catalogue.Pending,
+  halted: Result(Nil, Halt),
+) -> Outcome {
+  case halted {
+    Ok(Nil) -> Finished
+    Error(Over) -> Finished
+    Error(Abandon(reason:)) -> abandon(environment, move, reason, Answered)
+    Error(Stall(reason:)) -> Stalled(reason)
+    Error(Defer(reason:)) -> Deferred(reason)
+    Error(Gone) -> gone(environment, move)
+    Error(Decide) ->
+      case environment.authority {
+        Rows -> Stalled("only a directory member decides by the record")
+        Recorded(ownership:) ->
+          case retire_recorded(environment, ownership, move) {
+            Ok(Nil) | Error(Over) -> Finished
+            Error(Defer(reason:)) -> Deferred(reason)
+            Error(Stall(reason:)) -> Stalled(reason)
+            Error(Abandon(reason:)) -> Aborted(reason)
+            Error(Gone) | Error(Decide) -> Stalled("the record did not decide")
+          }
+      }
+  }
+}
+
+// The session's record is gone after the seed, so it was deleted elsewhere. A
+// missing record never grants serving: the move ends as a retirement does,
+// with the `moved` row and the file set aside under its tombstone name, which
+// an operator can recover and nothing deletes.
+fn gone(
+  environment: Environment(instance),
+  move: catalogue.Pending,
+) -> Outcome {
+  log.warn(environment.logger, "daemon.move_record_gone", [
+    field.ident("session", move.session),
+    field.ident("op", move.op),
+    field.text(
+      "reason",
+      "the session's directory record is gone, so it was deleted elsewhere; "
+        <> "this copy is set aside",
+    ),
+  ])
+  case
+    {
+      use registration <- result.try(registered(environment, move))
+      retire_by_rows(environment, move, registration)
+    }
+  {
+    Ok(Nil) | Error(Over) -> Finished
+    Error(Defer(reason:)) -> Deferred(reason)
+    Error(Stall(reason:)) | Error(Abandon(reason:)) -> Stalled(reason)
+    Error(Gone) | Error(Decide) -> Stalled("the record did not decide")
+  }
 }
 
 fn run(
@@ -233,6 +415,7 @@ fn run(
 ) -> Result(Nil, Halt) {
   use registration <- result.try(registered(environment, move))
   use Nil <- result.try(still_moving(environment, move, registration))
+  use Nil <- result.try(migrated(environment))
   environment.after(session_move.Intent)
 
   // A receiver that already activated the session needs nothing more from the
@@ -241,8 +424,56 @@ fn run(
   // has already arrived.
   case receiver_stage(environment, move) {
     Ok(session_move.Activated) -> retire(environment, move, registration)
-    Ok(session_move.Received) | Ok(session_move.Absent) | Error(Nil) ->
+    Ok(session_move.Received) | Ok(session_move.Absent) | Error(Nil) -> {
+      use Nil <- result.try(intended(environment, move))
       carried(environment, move, registration)
+    }
+  }
+}
+
+// On a member, nothing that reads the store runs before this daemon has seeded
+// it from its catalogue: until then a missing record means "not copied yet",
+// not "never existed".
+fn migrated(environment: Environment(instance)) -> Result(Nil, Halt) {
+  case environment.authority {
+    Rows -> Ok(Nil)
+    Recorded(ownership:) ->
+      case ownership.migrated(ownership.node) {
+        Ok(True) -> Ok(Nil)
+        Ok(False) ->
+          Error(Defer("this daemon has not seeded the directory store yet"))
+        Error(store.Unavailable(reason:)) -> Error(Defer(reason))
+      }
+  }
+}
+
+// The record's half of the intent: `serving -> moving(op, to)`. A record that
+// already names another owner means the receiver's activation committed and its
+// import or its reply did not reach us, and the move carries on so that the
+// receiver is asked again and answers from what it holds. No record at all, now
+// that the seed has run (`run` checks it first), means the session was deleted
+// elsewhere, and the move ends with the copy set aside (`gone`).
+fn intended(
+  environment: Environment(instance),
+  move: catalogue.Pending,
+) -> Result(Nil, Halt) {
+  case environment.authority {
+    Rows -> Ok(Nil)
+    Recorded(ownership:) -> {
+      use receiver <- result.try(destination(environment, move))
+      case ownership.begin_move(move.session, move.op, receiver.node) {
+        Ok(Nil) -> Ok(Nil)
+        Error(store.Mismatch(found: None)) -> Error(Gone)
+        Error(store.Mismatch(found: Some(found)))
+          if found.owner != ownership.node
+        -> Ok(Nil)
+        Error(store.Mismatch(found: Some(_))) ->
+          Error(Stall(
+            "the directory record is in a state this move did not write",
+          ))
+        Error(store.NoQuorum(reason:)) -> Error(Defer(reason))
+      }
+    }
   }
 }
 
@@ -680,6 +911,17 @@ fn asked_to_activate(
       Error(Stall(
         "the orchestrator " <> move.to <> " could not decide: " <> reason,
       ))
+    Ok(session_move.Refused(session_move.MoveEnded)) ->
+      case environment.authority {
+        Recorded(..) -> Error(Decide)
+        Rows ->
+          Error(Abandon(
+            "the orchestrator "
+            <> move.to
+            <> " refused the session: "
+            <> session_move.describe(session_move.MoveEnded),
+          ))
+      }
     Ok(session_move.Refused(refusal:)) ->
       case refusal, asking {
         session_move.DigestMismatch, FirstAsk
@@ -712,6 +954,51 @@ fn asked_to_activate(
 // compare-and-set that cannot be undone. The file work follows it, and a crash
 // between them is finished by the next run, which finds the row `moved`.
 fn retire(
+  environment: Environment(instance),
+  move: catalogue.Pending,
+  registration: catalogue.Registration,
+) -> Result(Nil, Halt) {
+  case environment.authority {
+    Recorded(..) -> Error(Decide)
+    Rows -> retire_by_rows(environment, move, registration)
+  }
+}
+
+// On a member the retirement reads the record after this member has caught up
+// with the leader. Another owner, or no record at all now that this daemon has
+// seeded the store (the later owner deleted it), means the session left: the
+// row becomes `moved` and the file is set aside. This daemon still serving it
+// means its own abandon committed before a crash, and the row is reverted
+// without touching the file.
+fn retire_recorded(
+  environment: Environment(instance),
+  ownership: Ownership,
+  move: catalogue.Pending,
+) -> Result(Nil, Halt) {
+  use registration <- result.try(registered(environment, move))
+  case ownership.read_consistent(move.session) {
+    Error(store.Unavailable(reason:)) -> Error(Defer(reason))
+    Ok(Some(found)) if found.owner == ownership.node ->
+      case found.state {
+        record.Serving -> {
+          let _reverted = revert(environment, move, "the move was abandoned")
+          Error(Over)
+        }
+        record.Moving(..) ->
+          Error(Stall(
+            "the receiver answered but the directory record still says moving",
+          ))
+
+        // A session on an executor never has a local record; one that does is
+        // a fault for an operator, and nothing is changed on its strength.
+        record.Local ->
+          Error(Stall("the directory records this session as a local one"))
+      }
+    Ok(Some(_)) | Ok(None) -> retire_by_rows(environment, move, registration)
+  }
+}
+
+fn retire_by_rows(
   environment: Environment(instance),
   move: catalogue.Pending,
   registration: catalogue.Registration,
@@ -782,6 +1069,89 @@ fn remove_copy(
 // resident. If the receiver may hold a copy it does not matter, since it
 // refused or never saw an activation.
 fn abandon(
+  environment: Environment(instance),
+  move: catalogue.Pending,
+  reason: String,
+  cause: Cause,
+) -> Outcome {
+  case environment.authority {
+    Rows -> revert(environment, move, reason)
+    Recorded(ownership:) ->
+      abandon_recorded(environment, ownership, move, reason, cause)
+  }
+}
+
+// On a member the abandon is the record's compare-and-set first, because
+// reverting the row lets this daemon serve the session again and that must
+// follow a committed write. The receiver's activation expects the same moving
+// record, so exactly one of the two commits; one that finds the receiver
+// already owning the session retires instead, but only on an answer: see
+// `taken_elsewhere`.
+fn abandon_recorded(
+  environment: Environment(instance),
+  ownership: Ownership,
+  move: catalogue.Pending,
+  reason: String,
+  cause: Cause,
+) -> Outcome {
+  case destination(environment, move) {
+    Error(Stall(reason:)) -> Stalled(reason)
+    Error(_) -> Stalled("the destination is not configured")
+    Ok(receiver) ->
+      case ownership.abandon(move.session, move.op, receiver.node) {
+        Ok(Nil) -> revert(environment, move, reason)
+        Error(store.Mismatch(found: Some(found)))
+          if found.owner == ownership.node
+        ->
+          case found.state {
+            record.Serving -> revert(environment, move, reason)
+            record.Moving(..) ->
+              Stalled("the directory record names another move of this session")
+            record.Local ->
+              Stalled("the directory records this session as a local one")
+          }
+        Error(store.Mismatch(found: Some(found))) ->
+          taken_elsewhere(environment, move, cause, found.owner)
+
+        // No record at all, after the seed `run` and `give_up` check, means the
+        // session was deleted elsewhere: the same end, and the same log line,
+        // as `intended` finding it gone.
+        Error(store.Mismatch(found: None)) ->
+          ended(environment, move, Error(Gone))
+        Error(store.NoQuorum(reason:)) -> Deferred(reason)
+      }
+  }
+}
+
+// An abandon that finds the record naming another owner means the receiver's
+// activation committed first. After an answer (a refusal, or a close the
+// executor refused because the receiver holds the scope), the receiver has
+// spoken and the record decides. After silence it has not: its compare-and-set
+// may have committed with its import lost to a crash, and only the source's
+// next activation makes it finish the import, so retiring now would leave the
+// record naming a daemon that never registered the session. The run asks the
+// receiver again instead, and retires on its answer; the wait is not counted
+// toward the give-up, which could not take the session back anyway.
+fn taken_elsewhere(
+  environment: Environment(instance),
+  move: catalogue.Pending,
+  cause: Cause,
+  owner: String,
+) -> Outcome {
+  case cause {
+    Answered -> ended(environment, move, Error(Decide))
+    Unanswered ->
+      Deferred(
+        "the directory record names "
+        <> owner
+        <> ", so its activation committed; the receiver is asked again",
+      )
+  }
+}
+
+// Reverts the row and drops the cut copy: the move is over and the session is
+// this daemon's again.
+fn revert(
   environment: Environment(instance),
   move: catalogue.Pending,
   reason: String,
@@ -867,7 +1237,7 @@ fn note(
         field.text("reason", reason),
         ..fields
       ])
-    Stalled(reason:) ->
+    Stalled(reason:) | Deferred(reason:) ->
       log.warn(environment.logger, "daemon.move_stalled", [
         field.text("reason", reason),
         ..fields

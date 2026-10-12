@@ -7457,7 +7457,10 @@ Invariants that break things when violated:
   earlier loses the record the source's retry needs, and a return move meets the
   source's own `moving` row. A delete removes the row, so the retry imports the
   session afresh. Both daemons would abandon and both would be resident. The
-  web page's delete in `ui_socket` does not make this check yet.
+  web page's delete in `ui_socket` does not make this check yet. A session
+  directory member does not apply this hold (next section): the record decides,
+  and the origin's abandon expects its own `moving` record, so it fails once the
+  receiver activated.
 - The intent is committed in the registry turn that cancels the slot, and admission
   reads the custody row in the turn that reserves a slot. Moving the read out of
   that turn lets a runtime open a file whose copy is being cut.
@@ -7541,3 +7544,179 @@ profile table name at load.
 
 `Settings` gained `profile_desk`, so every `serve.Settings` literal in the tests
 carries `profile_desk: None`.
+
+## The session directory in Khepri (protocol-change/083)
+
+A deployment may add a `[directory]` table, which makes the listed orchestrators
+and executors the members of one Khepri cluster. Khepri then holds the single
+authoritative record of which orchestrator owns each remote session (one created
+with an executor or a pool), and every change of owner is one compare-and-set on
+that record. Local sessions are recorded too, as lookup hints that never decide
+anything. The catalogue rows stay as each daemon's local write-ahead memory.
+A daemon without `[directory]` runs phases 3 and 5 exactly as the two sections
+above describe. `docs/architecture/directory.md` is the design,
+ADR-020 the choice of Khepri and its measurements, and
+`protocol/models/session-move/KhepriMove.tla` the model.
+
+- `internal/ffi_khepri` and `client_khepri_ffi.erl` are the only calls into
+  Khepri 0.19.3 and Ra 3.2.0. The shim starts Loom's own Ra system
+  (`loom_directory_ra`) and store (`loom_directory`) under
+  `<state root>/directory`, normalizes every return to `{ok, _}`,
+  `{error, {mismatch, Found}}`, `{error, no_quorum}`, `{error, not_running}`
+  or `{error, {unexpected, Term}}` (an answer it does not recognise, printed),
+  and catches exceptions at the boundary. The non-voter join is one primitive
+  per Ra call (`join_start`, `join_remove`, `join_add`, `join_promoted`,
+  `join_finish`), each answering `Done`, `Again` or `Failed(reason)`;
+  `store.join` sequences them over `weft/poll` under one deadline.
+- `directory/record` is `Record(owner, state)` with `OwnerState` `Serving |
+  Local | Moving(op, to)`, stored as `{loom_owner, 1, Owner, State}` at
+  `[loom, sessions, Id]`, and the marker `{loom_migrated, 1}` at
+  `[loom, migrated, Node]`. Its decoder is total: node names go through
+  `distribution.check_node_name` and the op through `catalogue.is_move_op`, and a
+  payload that does not decode is an error, never an absent record. The payload
+  types are opaque, so no `@external` leaves `internal/`.
+- `directory/store` wraps the shim: `start_system`, `boot` (one member),
+  `join(node, within_ms)`, `read` (local, `favor => low_latency`),
+  `read_consistent` (`khepri:fence/2`, then a local read), `create`, `swap`,
+  `delete_if`, `mark_migrated`, `membership`, `running_on(node)` and the `joined`
+  marker file. Every call that can wait on a quorum runs in a weft run under a
+  deadline (`write_ms` 3000, `activation_ms` 5000, `read_ms` 3000), because the
+  consistent path ignores its own timeout without a majority. `WriteRefusal` is
+  `NoQuorum(reason) | Mismatch(found)`.
+- `directory/settings` reads `[directory] members`: three to seven distinct
+  nodes, this node among them, every other one a pinned peer, and on a member
+  every `[orchestrators.<name>]` node a member. An even count is accepted with a
+  warning. `catalog` knows the key and `scripts/config_keys.sh` and
+  `docs/configuration.md` document it.
+- `distribution` takes `Cluster` (`NotMember | Member(members)`). A member
+  starts with `hidden => false` and is refused unless the VM booted with
+  `-kernel connect_all false` (`BootRefusal` `ConnectAllEnabled`); the launchers
+  pass it with the TLS flags. `Peer.link` is `visible | hidden`, and
+  `distribution.connect` uses `net_kernel:connect_node/1` only when both ends
+  are members, so a link between members is visible whoever dials first.
+- `directory/member` is the member's actor (`weft/actor`, a 2 s tick). It keeps a
+  link to every configured member missing from `nodes()`, backing off by
+  doubling to 30 s, and joins a member with no joined store through the first
+  member whose store runs (`store.running_on`, then `store.join` under a 60 s
+  deadline, then the marker). `member.status` answers `directory.status`.
+- `directory/ownership` is the record of write functions bound to this node:
+  `create`, `begin_move`, `activate`, `abandon`, `release`, `record_local`,
+  `release_local`, `mark_migrated`, `seed_moving`, the two reads and
+  `migrated`. Only an orchestrator builds one (`main.ownership_of`: a daemon
+  with executors, pools or other orchestrators), so an executor member never
+  writes. `create` and `begin_move` answer a record already holding their
+  value as committed. Tests bind two names over one shared book
+  (`test/support/record_book`), because two registries in one VM share a node.
+- `session_directory.khepri` is the lookup over the local copy, after the daemon's
+  own catalogue: a tombstone there (`Moved(to)`) is `Elsewhere` its receiver
+  without a read, as `peers` answers it, so a restarted member whose copy lags or
+  is not joined still says where a session it handed away went. Otherwise
+  absent is `Unknown`, this node `Here`, another node `Elsewhere` (the configured
+  row, or a row carrying the node name), and an unreadable store `Unavailable(reason)`,
+  which the server refuses `no_quorum` and peer mail treats as `Unreachable`.
+  `as_member` adds the `ownership` and the `standing` (`Member(status)`) the
+  server reads.
+- `daemon/main` builds it all when `Config.directory` is set: `start_directory`
+  starts the Ra system and the member actor (`Config.member`),
+  `session_directory_of` chooses the Khepri lookup, and `start_movers` gives the
+  movers `Recorded(ownership)` authority and a `session_movers.Upkeep`:
+  `directory/migrate.seed` and `directory/deletion.finish_pending` on every
+  tick, `migrate.cover_local` when local records are wanted, and
+  `ownership.release_local` for a deleted local session.
+- `daemon/manager` gains `reserve` (a registration reserved without opening it),
+  `begin_delete`, `unmark_deleting`, `finish_delete`, `deleting_sessions`,
+  `remote_registrations` and `local_sessions`. `prepare_slot` reads the deletion mark in the turn
+  that reserves a slot and refuses `SessionDeleting` (code `busy`).
+- `daemon/server`: a remote `sessions.create` on a member reserves, then
+  `ownership.create`, then creates (`recorded`); `no_quorum` keeps the
+  reservation. A remote `sessions.delete` goes through `directory/deletion.finish`:
+  mark, conditional record delete, then the registration; `not_owner`, `moving`
+  and `no_quorum` are its refusals. `directory.status` and `sessions.move` with
+  `abandon: true` (`protocol.AbandonMove`) are member-only. `inbound_settled` is
+  skipped on members. A local creation asks the movers for the local records
+  (`Control.cover`) and does not wait; a local delete asks them to forget the
+  record (`Control.forget`).
+- `session_mover` takes `Authority` (`Rows | Recorded(ownership)`). Under
+  `Recorded` it waits for this node's migration marker (`migrated`), writes the
+  intent (`intended`: a record naming another owner carries on, an absent one is
+  `Gone`, deleted elsewhere after the seed, and `gone` sets the copy aside as a
+  retirement does, never reverting), retires only after a consistent read names another
+  owner (`retire_recorded`), and abandons by the record first
+  (`abandon_recorded`). An abandon carries its `Cause`: one that followed an
+  answer and finds the record naming another owner retires; one that followed
+  silence (`give_up`) returns `Deferred` and the next run asks the receiver
+  again, because a receiver that crashed between its CAS and its import
+  finishes only when asked (`taken_elsewhere`). `give_up` passes the same
+  `migrated` check as a run. A stall a give-up could not cure (no quorum, not
+  seeded, receiver already owns it) is `Deferred`, not `Stalled`.
+  `session_movers` gives up a move after `give_up_after_ms` (30 min) of
+  `Stalled` runs, and only once the receiver's marker exists;
+  `Control.abandon` is the owner's hand-abandon.
+- `session_importer.recorded` makes the activation compare-and-set before the
+  import. A mismatch naming this node imports (a catalogue `Conflict` there is
+  answered `Accepted`); any other owner or no record is `Refused(MoveEnded)` and
+  drops only the incoming copy; `NoQuorum` is `Failed`.
+- `directory/migrate.cover_local` writes `{self, local}` for every confirmed
+  local session missing from this member's copy. The movers run it at boot and
+  after `Control.cover`, and keep it wanted until a pass succeeds: a request
+  count and the count the last successful pass covered, so a creation during a
+  pass is covered by the next.
+- `directory/migrate.seed` copies a version 13 catalogue's remote registrations
+  into the store once: resident and imported become `serving` (or the activation
+  for an imported session whose sender already wrote `moving`), moving becomes
+  `moving` unless the receiver already owns it, moved writes nothing. A record
+  naming another daemon is logged `directory.migration_conflict` and left. The
+  marker is written last, once per node name, and nothing checks afterwards that
+  every remote session has a record: a seeded member must not drop and re-add
+  `[directory]` or change its node name, since sessions created in between have
+  no record and a move of one would set it aside as deleted. To leave, move or
+  delete its remote sessions first; to rename, decommission it and bootstrap or
+  join it as a new member.
+- `daemon/directory_cli` is `loomd directory bootstrap`: it refuses without
+  `[directory]`, with a store on disk (the `joined` marker or a Ra server
+  directory; the Ra system's own files do not count), while the daemon runs
+  (it takes the endpoint reservation), and when a reachable member already
+  runs a store. Each refusal names its remedy.
+
+Invariants that break things when violated:
+
+- A local transition that stops this daemon serving (`moving`, the deletion
+  mark) is written in the registry turn before the record changes, and one that
+  lets it serve (`imported`, the revert to `resident`) only after the record
+  write that grants it committed. `KhepriMutantIntendBeforeStop` and
+  `KhepriMutantImportBeforeCAS` are the model's checks.
+- The receiver refuses a session its own row holds in any other state, `moving`
+  included, before it writes the record (`activated` asks the catalogue first).
+  Writing first can hand the record to a node that then cannot import, and the
+  copy holding the newest version is dropped (`KhepriMutantImportOverMoving`).
+- Every write expects a literal value; the activation and the abandon expect the
+  same `moving` record, so exactly one commits. A blind write of either gives two
+  owners.
+- The source sets its file aside only on a consistent read naming another owner.
+  A local read can be from before this daemon owned the session.
+- A receiver never removes a session the record says it owns, and refuses only
+  when the record names someone else: once it owns the record, an import that
+  cannot finish is `Failed` and the copy stays (`owned_import`,
+  `kept_if_owned`).
+- No Khepri call runs inside a registry turn, and every one is bounded by a weft
+  deadline. Opening a session makes no Khepri call.
+- A local session's record is `Local`, never `Serving`, so no move or remote
+  delete can use it as a compare-and-set base, and writing it never gates a
+  creation. A stale one (a lost `forget`, or a delete from the web page, which
+  does not ask) names the right owner, which answers `not_found`.
+- A given-up move retires only on the receiver's answer
+  (`KhepriMutantRetireOnSilence`).
+- A missing record after the seed never grants serving: it means the owner
+  deleted the session, and the source sets its copy aside
+  (`KhepriMutantGoneReverts`).
+
+Tests: `directory/record_test`, `directory/store_test`, `directory/ownership_test`,
+`directory/settings_test`, `directory/migrate_test`, `directory/bootstrap_cli_test`
+and `directory/daemon_record_test` (the store tests are serial: the store is a
+VM-wide singleton); the `Recorded` cases of `session_mover_test`,
+`session_importer_test` and `session_directory_test`; the
+`members_visible`, `members_not_transitive`, `member_needs_connect_all_off` and
+`directory_rejoin` scenarios of `distribution_test`; the directory cases of
+`distribution_provision_test`; and the shipped member variants of
+`daemon_shipped_remote_move_test`, `daemon_shipped_directory_test` and
+`daemon_shipped_peer_mail_test`, with `daemon_shipped_directory_quorum_test`.

@@ -540,6 +540,7 @@ Projection per pi §2.5 (stop at compaction inclusive; drop error/aborted/deferr
 1. No model-influenced code executes in the harness VM (extension loads only via WP-M's compile-from-vetted-source path).
 2. Every external effect carries a policy and a token; every effect's policy is durably attached to its intent.
 3. Network-off is default; any widening is a durable, user-visible event.
+   *Note on the daemon's default: the 2026-09-10 addendum to `protocol-change/020-minimal-jail-root.md` (commit `1bb929207`) changed the daemon's developer default for jailed shell tools to full network and host-wide reads. The broker library default (`policy.workspace_default`) and the fixed jails (code mode, extensions, language servers and the hermetic compile jail) remain network-off, as stated above. `[tools] network = "off"` restores this invariant for shell tools.*
 4. Secrets appear only in ProviderGateway request memory; never in envs, transcripts, logs, or satellite-reachable state.
 5. Distribution listeners: none by default; control-plane clustering is opt-in config with mTLS required.
 6. Satellite/executor channels validate every inbound frame; a malformed frame closes the channel and settles the effect as an in-band error.

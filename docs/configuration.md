@@ -106,6 +106,7 @@ is not in this list is refused.
 | `pools` | table of `[pools.<name>]` | Named groups of executors a session may be placed on without naming one (from protocol-change 078). | [`[pools.<name>]`](#poolsname) |
 | `workspaces` | table of `[workspaces.<name>]` | Checkouts this machine serves to orchestrators (from protocol-change 078). | [`[workspaces.<name>]`](#workspacesname) |
 | `orchestrators` | table of `[orchestrators.<name>]` | Other orchestrators this daemon asks who owns a session it does not know (from protocol-change 078). | [`[orchestrators.<name>]`](#orchestratorsname) |
+| `directory` | table | Membership of the session directory's Khepri cluster (from protocol-change 083). | [`[directory]`](#directory) |
 
 ## `[models.<name>]`
 
@@ -672,6 +673,29 @@ without `[orchestrators]` asks nobody.
 | `node` | string | required | one of the `node` values in `[[distribution.peers]]` | The peer node that answers for this orchestrator. |
 | `address` | string | none | `wss://<host>[:<port>]/v2/control`, or `ws://` for a loopback host, with no credentials, query or fragment | The control address a client passes to `loom --addr` to reach this orchestrator. A daemon binds loopback only, so this is whatever the operator exposes (a tunnel, a proxy). When absent, `not_owner` names the orchestrator and no address. |
 
+## `[directory]`
+
+(From protocol-change 083.) Optional, read once when the daemon starts. It makes
+the daemon a member of the session directory's Khepri cluster, which holds the
+single authoritative record of which orchestrator owns each session on an
+executor. Write the same table on every orchestrator and executor that is a member.
+A daemon without the table is not a member and behaves exactly as described under
+`[orchestrators.<name>]`. [docs/architecture/directory.md](architecture/directory.md)
+describes what the cluster does.
+
+The table requires `[distribution]`. A member starts distribution visible instead of
+hidden, so the launcher boots its VM with `-kernel connect_all false`, which
+`bin/loomd` and the release's `loomd` always pass with the TLS flags; a member VM
+booted without it is refused. Every member must pin every other member in
+`[[distribution.peers]]`, executors included. On a member daemon, every
+`[orchestrators.<name>]` node must also be a member. The store keeps its data under
+`<state root>/directory`. A new cluster is created once with
+`loomd directory bootstrap` on one member; every other member joins on its own.
+
+| Key | Type | Required, default | Allowed values | Meaning |
+| --- | --- | --- | --- | --- |
+| `members` | array of strings | required | three to seven distinct node names: this daemon's own `[distribution] node` and `[[distribution.peers]]` nodes | The cluster's voting members, orchestrators and executors. An odd count is recommended: an even count is accepted with a warning, because it adds a member without letting the cluster survive one more failure. |
+
 ## Provisioning a deployment
 
 The tables above are what a node reads. Writing them for every machine by hand,
@@ -769,6 +793,17 @@ Every orchestrator peers with the executors it uses and with every other
 orchestrator, and each executor peers with the orchestrators that use it, always in
 both directions. An executor that no orchestrator uses, and an orchestrator with no
 peer, are errors. Unknown keys are refused.
+
+A plan may also name, in a top-level `directory` list of node `name`s, the members
+of a session directory (`[directory]` above): three to seven distinct nodes,
+including every orchestrator, because a member refuses an
+`[orchestrators.<name>]` peer that is not a member. Provisioning then peers every
+member with every other member, executors included, and writes the `[directory]`
+table into each member's bundle. `directory` comes before the first `[[node]]`:
+
+```toml
+directory = ["laptop", "desk", "devbox"]
+```
 
 ## Releasing an executor's stuck scope
 

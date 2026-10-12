@@ -63,6 +63,17 @@ declared|linux|SKIP shipped remote move: platform enforcement unavailable|The or
 declared|linux|SKIP shipped remote background: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the macOS gate and the local Linux sign-off gate run the background counter, link-cut, executor-restart and orchestrator-restart scenarios for real.
 declared|linux|SKIP shipped remote mcp: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the macOS gate and the local Linux sign-off gate run the orchestrator-placed, executor-placed and mismatched MCP scenarios for real.
 
+# The session directory's quorum fixture (ADR-020, protocol-change/083) boots three
+# directory members around an executor that jails every call, then stops two of
+# them, and in a second scenario wipes one member's disk and lets it rejoin. Each
+# scenario declines on a runner whose helper cannot enforce a policy, like the
+# other remote fixtures; the macOS gate and the local Linux sign-off gate run
+# both for real.
+declared|linux|SKIP shipped directory quorum loss: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the macOS gate and the local Linux sign-off gate run the lost-majority scenario for real.
+declared|linux|SKIP shipped directory rejoin: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the macOS gate and the local Linux sign-off gate run the disk-loss rejoin scenario for real.
+declared|linux|SKIP shipped remote directory with members: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the macOS gate and the local Linux sign-off gate run the directory-member redirect and rejoin scenario for real.
+declared|linux|SKIP shipped remote peer mail between directory members: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the macOS gate and the local Linux sign-off gate run the directory-member peer mail scenario for real.
+
 # The shipped confinement fixture reads the daemon's own credentials from a
 # jailed `bash` call and asserts the secret did not come back. Without a
 # helper that enforces a policy the reads succeed, which measures the absence

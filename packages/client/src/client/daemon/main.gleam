@@ -38,6 +38,12 @@ import client/daemon/ui_assets
 import client/daemon/ui_login
 import client/daemon/ui_sessions
 import client/daemon/ui_socket
+import client/directory/deletion
+import client/directory/member
+import client/directory/migrate
+import client/directory/ownership
+import client/directory/settings as directory_settings
+import client/directory/store
 import client/distribution
 import client/executor_plane
 import client/executors
@@ -123,6 +129,14 @@ pub type Config {
     /// its own catalogue lacks, read from `[orchestrators.<name>]` at startup
     /// and never reread (protocol-change/078, phase 3).
     orchestrators: List(orchestrators.Orchestrator),
+    /// The `[directory]` table, read at startup and never reread: whether this
+    /// daemon is a member of the session directory's Khepri cluster and who the
+    /// members are (protocol-change/083). `None` leaves the daemon exactly as
+    /// it was before the directory existed.
+    directory: Option(directory_settings.Settings),
+    /// The running member actor, set by `run` once `start_directory` has
+    /// started it; `None` on a daemon that is not a member, and before then.
+    member: Option(member.Member),
     /// The distribution membership `prepare_startup` started, or `None` when
     /// the configuration has no `[distribution]` table. It is how the daemon
     /// reaches the peers it asks, and a daemon without it asks nobody and
@@ -304,6 +318,8 @@ pub fn parse(arguments: List(String)) -> Result(Config, String) {
       [],
       [],
       None,
+      None,
+      None,
     )
   use config <- result.try(parse_loop(arguments, initial))
   use state_root <- result.try(case config.state_root {
@@ -423,6 +439,7 @@ fn bind_address(value: String) -> Result(#(String, Int), String) {
 fn start_distribution(
   document: dict.Dict(String, tom.Toml),
   configuration: String,
+  cluster: distribution.Cluster,
 ) -> Result(Option(distribution.Membership), String) {
   use found <- result.try(
     distribution.from_document(document)
@@ -431,7 +448,7 @@ fn start_distribution(
   case found {
     None -> Ok(None)
     Some(settings) ->
-      distribution.start(settings)
+      distribution.start(settings, cluster)
       |> result.map(Some)
       |> result.map_error(fn(fault) {
         configuration <> ": " <> distribution.describe(fault)
@@ -515,6 +532,48 @@ pub fn start_executor(
   }
 }
 
+/// Starts this daemon's membership in the session directory's Khepri cluster
+/// when the configuration has a `[directory]` table (protocol-change/083), and
+/// nothing otherwise. A store marked joined is started before this returns; one
+/// that has not joined is joined in the background, and until then every store
+/// call is refused as no quorum. The actor is linked to the process that starts
+/// the daemon's services, as the orchestrator port is.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // assert main.start_directory(Config(..config, directory: None), logger) == Ok(None)
+/// ```
+@internal
+pub fn start_directory(
+  config: Config,
+  logger: Logger,
+) -> Result(Option(member.Member), String) {
+  case config.directory, config.membership {
+    Some(settings), Some(membership) ->
+      member.start(member.Config(
+        directory: directory_path(config.state_root),
+        members: settings.members,
+        local: atom.to_string(node.name(node.self())),
+        membership:,
+        logger:,
+      ))
+      |> result.map(Some)
+    _, _ -> Ok(None)
+  }
+}
+
+/// Where a member keeps its directory store.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert main.directory_path("/s") == "/s/directory"
+/// ```
+pub fn directory_path(state_root: String) -> String {
+  state_root <> "/directory"
+}
+
 /// Starts the orchestrator port when the configuration has a `[distribution]`
 /// table, and registers nothing otherwise.
 ///
@@ -548,6 +607,7 @@ pub fn start_orchestrator_port(
       ))
       let importer =
         session_importer.new(session_importer.Context(
+          ownership: session_directory_of(config, ready.registry).ownership,
           registry: ready.registry,
           state_root: ready.state_root,
           sessions_directory: ready.sessions_directory,
@@ -652,29 +712,69 @@ pub fn catalogue_holds(
 
 // The directory the control socket asks when its own catalogue misses. With no
 // distribution there is nobody to ask and the directory answers `Unknown`.
+//
+// A directory member reads its copy of the owner record instead of asking its
+// peers, and on an orchestrator (a daemon that places sessions on executors)
+// it also carries the record writes; an executor member builds none, which is
+// how it is held to never writing (protocol-change/083).
 fn session_directory_of(
   config: Config,
   registry: manager.Manager(instance),
 ) -> session_directory.Directory {
   case config.membership {
     None -> session_directory.none()
-    Some(membership) ->
-      session_directory.peers(
-        config.orchestrators,
-        catalogue_holds(registry),
-        session_directory.over_distribution(membership),
-      )
-      |> session_directory.with_reach(remote_peer.over_distribution(membership))
-      |> session_directory.describing(session_directory.description_over(
-        membership,
-      ))
-      |> session_directory.activating(session_directory.activation_over(
-        membership,
-      ))
-      |> session_directory.settling(session_directory.settle_over(
-        membership,
-        config.orchestrators,
-      ))
+    Some(membership) -> {
+      let local = atom.to_string(node.name(node.self()))
+      let base = case config.directory {
+        Some(_) ->
+          session_directory.khepri(
+            config.orchestrators,
+            local,
+            catalogue_holds(registry),
+            store.read,
+          )
+        None ->
+          session_directory.peers(
+            config.orchestrators,
+            catalogue_holds(registry),
+            session_directory.over_distribution(membership),
+          )
+      }
+      let connected =
+        base
+        |> session_directory.with_reach(remote_peer.over_distribution(
+          membership,
+        ))
+        |> session_directory.describing(session_directory.description_over(
+          membership,
+        ))
+        |> session_directory.activating(session_directory.activation_over(
+          membership,
+        ))
+        |> session_directory.settling(session_directory.settle_over(
+          membership,
+          config.orchestrators,
+        ))
+      case config.directory, config.member {
+        Some(_), Some(handle) ->
+          session_directory.as_member(
+            connected,
+            ownership_of(config, local),
+            fn() { member.status(handle) },
+          )
+        _, _ -> connected
+      }
+    }
+  }
+}
+
+// The record writes, for a member that is an orchestrator: one that places
+// sessions on executors or lists another orchestrator. An executor member
+// lists neither, and so has no writes.
+fn ownership_of(config: Config, local: String) -> Option(ownership.Ownership) {
+  case config.executors, config.pools, config.orchestrators {
+    [], [], [] -> None
+    _, _, _ -> Some(ownership.over_store(local))
   }
 }
 
@@ -718,11 +818,46 @@ pub fn start_movers(
     }
     Some(membership) -> {
       use ready <- result.try(root.ready(daemon, within: 20_000))
+      let directory = session_directory_of(config, ready.registry)
+      let #(authority, upkeep) = case directory.ownership {
+        // The movers' periodic pass seeds the store from the catalogue until
+        // it has once, then finishes the deletions left marked; on request it
+        // writes the local sessions' records.
+        Some(ownership) -> #(
+          session_mover.Recorded(ownership:),
+          session_movers.Upkeep(
+            every_tick: fn() {
+              let _seeded =
+                migrate.seed(
+                  ready.registry,
+                  ownership,
+                  config.orchestrators,
+                  logger,
+                )
+              deletion.finish_pending(
+                ready.registry,
+                ready.sessions_directory,
+                ownership,
+              )
+            },
+            cover: fn() {
+              migrate.cover_local(ready.registry, ownership, logger)
+              |> result.replace(Nil)
+            },
+            release: fn(session) {
+              let _released = ownership.release_local(session)
+              Nil
+            },
+          ),
+        )
+        None -> #(session_mover.Rows, session_movers.no_upkeep())
+      }
       let environment =
         session_mover.Environment(
+          authority:,
           registry: ready.registry,
           orchestrators: config.orchestrators,
-          directory: session_directory_of(config, ready.registry),
+          directory:,
           courier: session_directory.courier_over(membership),
           close: closer_of(config, membership),
           clock: clock.from_function(ffi_os.system_time_ms),
@@ -731,10 +866,12 @@ pub fn start_movers(
           after: crash_after_step(),
           logger:,
         )
-      use control <- result.try(session_movers.start(
+      use control <- result.try(session_movers.start_with(
         environment,
         session_movers.retry_ms,
         session_directory.over_distribution(membership),
+        session_movers.give_up_after_ms,
+        upkeep,
       ))
       use resumed <- result.try(session_movers.resume(control, ready.registry))
       log.info(logger, "daemon.movers", [
@@ -878,7 +1015,26 @@ pub fn prepare_startup(
     orchestrators.from_document(document)
     |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
   )
-  use membership <- result.try(start_distribution(document, configuration))
+  use directory <- result.try(
+    directory_settings.from_document(document)
+    |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
+  )
+  case directory {
+    Some(found) ->
+      case directory_settings.even(found) {
+        True ->
+          log.warn(logger, "daemon.directory_even_members", [
+            field.count("members", list.length(found.members)),
+          ])
+        False -> Nil
+      }
+    None -> Nil
+  }
+  use membership <- result.try(start_distribution(
+    document,
+    configuration,
+    directory_settings.cluster(directory),
+  ))
   let config =
     Config(
       ..config,
@@ -888,6 +1044,7 @@ pub fn prepare_startup(
       pools:,
       workspaces:,
       orchestrators:,
+      directory:,
       membership:,
     )
   root.start(
@@ -1351,6 +1508,8 @@ fn run(
   host.relay_sigterm(signals, ffi_os.wait_for_sigterm)
   case
     {
+      use member <- result.try(start_directory(config, logger))
+      let config = Config(..config, member:)
       use executor <- result.try(start_executor(config, logger))
       use Nil <- result.try(
         start_orchestrator_port(

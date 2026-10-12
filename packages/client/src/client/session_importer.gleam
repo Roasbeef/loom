@@ -53,8 +53,18 @@
 //// Every refusal is final for the sender, and it says why. A fault that is not
 //// a finding about the copy, such as a registry that did not answer, is a
 //// failure and the sender asks again.
+////
+//// On a directory member (protocol-change/083) a refusal is final only from a
+//// receiver that does not own the session's record. Once this daemon's
+//// activation write has committed, now or before a crash, the session is its
+//// own, and an import that cannot finish (an executor or a sender no longer
+//// configured, a copy that does not check) answers `Failed`: the source keeps
+//// asking and the incoming copy stays, so a committed activation is never
+//// refused (`owned_import`, `kept_if_owned`).
 
 import client/daemon/manager
+import client/directory/ownership.{type Ownership}
+import client/directory/store
 import client/executors.{type Executor}
 import client/orchestrators.{type Orchestrator}
 import client/remote/orchestrator_port
@@ -69,7 +79,7 @@ import core/ids
 import gleam/bit_array
 import gleam/int
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import host/bootstrap
@@ -81,6 +91,10 @@ import telemetry/log.{type Logger}
 /// What a receiver needs to take in a session.
 pub type Context(instance) {
   Context(
+    /// On a directory member, the owner record writes, through which the
+    /// activation's compare-and-set is made before the session is registered
+    /// (protocol-change/083); `None` where the catalogue rows decide.
+    ownership: Option(Ownership),
     /// The registry, which decides what this daemon serves.
     registry: manager.Manager(instance),
     /// The daemon's private root, below which copies wait in `incoming/`.
@@ -327,11 +341,13 @@ fn activated(
       conflict(context, activation)
 
     // A session that was never here, or that was here and went away under an
-    // earlier move, can be taken in.
-    Some(catalogue.Moved(..)) | None -> {
-      use source <- result.try(listed(context, activation))
-      verified(context, activation, source)
-    }
+    // earlier move, can be taken in. A refusal of it is checked against the
+    // record first: see `kept_if_owned`.
+    Some(catalogue.Moved(..)) | None ->
+      kept_if_owned(context, activation, {
+        use source <- result.try(listed(context, activation))
+        verified(context, activation, source)
+      })
   }
 }
 
@@ -403,7 +419,102 @@ fn verified(
       True, Ok(_) -> Ok(Nil)
     },
   )
-  import_it(context, activation, source.name)
+  recorded(context, activation, source.name)
+}
+
+// On a directory member the activation is the record's compare-and-set, and it
+// is made before the session is registered and its file placed, because those
+// let this daemon serve the session (protocol-change/083). When the write finds
+// this daemon already owning the session, its own earlier write committed and
+// the import or the reply was lost, or the session has moved on since: the
+// import is finished if it can be, and the answer is yes. This daemon never
+// removes a session it owns. Any other owner, or no record, means the move
+// ended without this receiver, and only the incoming copy goes.
+fn recorded(
+  context: Context(instance),
+  activation: Activation,
+  source: String,
+) -> Result(Nil, Verdict) {
+  case context.ownership {
+    None -> import_it(context, activation, source)
+    Some(ownership) ->
+      case
+        ownership.activate(
+          activation.session,
+          activation.op,
+          activation.from_node,
+        )
+      {
+        Ok(Nil) -> owned_import(context, activation, source)
+        Error(store.Mismatch(found: Some(found)))
+          if found.owner == ownership.node
+        ->
+          case owned_import(context, activation, source) {
+            Ok(Nil) | Error(Refused(session_move.Conflict)) -> Ok(Nil)
+            Error(verdict) -> Error(verdict)
+          }
+        Error(store.Mismatch(..)) -> Error(Refused(session_move.MoveEnded))
+        Error(store.NoQuorum(reason:)) ->
+          Error(Failed(
+            "the directory could not record the activation: " <> reason,
+          ))
+      }
+  }
+}
+
+// The import of a session this daemon owns by its record: its own write
+// committed, now or before a crash. The session is this daemon's, so the import
+// must finish, and an import that cannot finish now (an executor or a sender no
+// longer configured, a copy that does not check) is `Failed`, never `Refused`.
+// A refusal would make the source retire and would discard the incoming copy,
+// leaving the record naming a daemon that holds nothing; `Failed` keeps the
+// copy and the source keeps asking until the cause is cured. A `Conflict` is
+// left as it is: the caller reads it as the session having moved on from here.
+fn owned_import(
+  context: Context(instance),
+  activation: Activation,
+  source: String,
+) -> Result(Nil, Verdict) {
+  case import_it(context, activation, source) {
+    Error(Refused(session_move.Conflict)) as conflict -> conflict
+    Error(Refused(refusal:)) -> Error(cannot_finish(refusal))
+    outcome -> outcome
+  }
+}
+
+// A refusal of a session this catalogue does not hold is final only when this
+// daemon does not own the session's record. When it does, its own write
+// committed before a crash lost the import, and the checks before the write
+// (the sender listed, the copy, the executor) can now fail on a configuration
+// changed since: the answer is `Failed`, as for `owned_import`. The record is
+// read after catching up with the leader, and a store that cannot say is
+// `Failed` too, because a refusal it could not rule out would be final.
+fn kept_if_owned(
+  context: Context(instance),
+  activation: Activation,
+  decided: Result(Nil, Verdict),
+) -> Result(Nil, Verdict) {
+  case decided, context.ownership {
+    Error(Refused(refusal:)), Some(ownership) ->
+      case ownership.read_consistent(activation.session) {
+        Ok(Some(found)) if found.owner == ownership.node ->
+          Error(cannot_finish(refusal))
+        Ok(_) -> decided
+        Error(store.Unavailable(reason:)) ->
+          Error(Failed(
+            "the directory could not say who owns the session: " <> reason,
+          ))
+      }
+    _, _ -> decided
+  }
+}
+
+fn cannot_finish(refusal: session_move.Refusal) -> Verdict {
+  Failed(
+    "this orchestrator owns the session by its directory record and cannot "
+    <> "finish the import yet: "
+    <> session_move.describe(refusal),
+  )
 }
 
 // The copy's scope cell, which must read a clean close at the claimed

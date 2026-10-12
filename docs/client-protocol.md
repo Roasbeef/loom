@@ -544,7 +544,7 @@ Source: (`client/daemon/server.gleam:839-860`).
 A page stops on an authorized record boundary once its encoded size
 would exceed 60000 bytes. The next request resumes after the last
 emitted id. A single record too large for that budget is refused with
-`metadata_too_large`. Source: (`client/daemon/server.gleam:3015`).
+`metadata_too_large`. Source: (`client/daemon/server.gleam:3079`).
 
 Errors: `revision_changed` when `revision` was supplied and differs from
 the catalogue's current one; `metadata_too_large`; `unavailable`.
@@ -597,6 +597,20 @@ principal is always answered `not_found` for a session this daemon does not
 hold. A client treats `not_owner` as a statement of where the session is: this
 daemon does not forward the client, and the client needs a credential for the
 owner to use it. `owner_unreachable` can be retried.
+
+On a daemon that is a member of a session directory (a `[directory]` table,
+[protocol-change/083](../protocol-change/083-khepri-session-ownership.md)), the
+answer comes from the daemon's own copy of the owner records and no other
+orchestrator is asked. `not_owner` carries the same members, for a session on
+an executor or a pool and for a local session alike: every session on a member
+has a record. A local session's record is written a few seconds after it is
+created, without waiting for it, so a local session that new, or one created
+while the directory had no majority, is `not_found` elsewhere until the record
+lands. `owner_unreachable` is never sent: a session with no record is
+`not_found`. A deleted local session's record may be left behind, naming its
+former owner, which answers `not_found`. When the daemon's copy cannot be read
+at all, because its store is not running, the answer is `no_quorum`, whose
+`message` carries the store's reason.
 
 ### 3.6 `sessions.default` and `sessions.set_default`
 
@@ -669,6 +683,13 @@ daemon's configuration, and `pool_unknown` when `pool` names no
 the key was reused with different metadata, a different `profile`,
 `model`, `executor` or `pool` included; `unavailable`.
 Source: (`client/daemon/server.gleam:657-664`).
+
+On a session directory member, a session with an `executor` or a `pool` is
+created only once its owner record is written. When the record cannot be
+written for want of a majority of the directory's members, the command is
+refused `no_quorum`; the identity stays reserved under `request_key`, and a
+retry with the same key completes it once the majority returns. A record that
+already names another orchestrator is `conflict`.
 
 `loom --executor <name> --workspace <registered name>` is the terminal's way to
 send `executor`, and the web home's "New session on an executor" form is the
@@ -989,6 +1010,19 @@ source that is down, silent or no longer in this daemon's `[orchestrators.<name>
 tables gives the same `busy`. Ask again once the source's move has finished
 (`sessions.get` there reports `moved`) or the source is reachable.
 
+On a session directory member that hold does not apply. Deleting a session on an
+executor or a pool first marks it as being deleted, in the same step that
+checks no runtime is reserved, then deletes its owner record, then removes the
+registration and the files as below. While the mark exists the session cannot
+be opened, and an open or another lifecycle command answers `busy`. The record
+delete expects the record to name this daemon as serving: a record that names
+another orchestrator is refused `not_owner`, and one that says this daemon is
+moving the session is refused `moving`, and in both cases the mark is removed.
+Without a majority of the directory's members the command is refused
+`no_quorum` and the mark stays, so the session stays closed; the daemon finishes
+the delete by itself once the majority returns, and a repeat of the command
+finishes it at once.
+
 On success the daemon removes, in one catalogue transaction: the
 registration, every membership in it, a workspace default that named it,
 and its domain mapping. The catalogue revision is incremented, so an open
@@ -1190,7 +1224,7 @@ the `hello` states with its `ui` field. The request carries the canonical
 
 `page` is the page's ceiling: `"observer"`, which is also the value when
 the field is absent, or `"operator"`. Any other value is refused with
-`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:1011`). The
+`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:1033`). The
 ceiling caps the page's role and never grants one: the page acts with the
 smallest of the principal's membership role, the ceiling, and Operator.
 
@@ -1419,6 +1453,7 @@ file aside. The command returns as soon as the intent is committed.
 | `session_id` | string | required | Canonical session id. |
 | `to` | string | required | The destination, as the key of an `[orchestrators.<name>]` table of this daemon's configuration: a lowercase letter, then lowercase letters, numbers, `_` or `-`, at most 32 characters. |
 | `epoch` | string | required | The epoch from `hello`. |
+| `abandon` | boolean | optional | On a session directory member only: `true` asks the daemon to abandon the move in flight now instead of starting one. `to` is then not required. |
 
 ```json
 {"v":2,"id":18,"cmd":"sessions.move","body":{"session_id":"0198c0de-0000-7000-8000-000000000001","to":"bravo","epoch":"ep-7f3a"}}
@@ -1458,6 +1493,53 @@ is archived, has not finished being created, or was imported from an orchestrato
 another destination is in flight), and `not_owner` (the session already moved).
 `moving` is not a refusal of this command: asking again is how a client learns
 the stored `op`.
+
+On a session directory member
+([protocol-change/083](../protocol-change/083-khepri-session-ownership.md)) the
+owner record decides the move. Three things differ for a client:
+
+- An imported session can move onward at once; `not_movable` is no longer
+  answered for a session whose origin has not retired the move that brought it.
+- A destination that stays silent for thirty minutes, while the directory has a
+  majority, is given up on: the daemon abandons the move and serves the session
+  again, and `sessions.get` drops the `moving` member.
+- `abandon: true` abandons a move now. The reply is
+  `{"session_id": ..., "op": ..., "state": "abandoning"}`, and the abandon runs
+  in the daemon's mover: when it commits, `sessions.get` drops the `moving`
+  member; when the destination took the session first, the daemon keeps the
+  move, asks the destination again, and finishes the move on its answer, after
+  which `sessions.get` reports `moved`. A session with no move in flight
+  is refused `conflict`, and a daemon that is not a member refuses `not_movable`,
+  because without the record a move cannot be abandoned safely.
+
+```json
+{"v":2,"id":19,"cmd":"sessions.move","body":{"session_id":"0198c0de-0000-7000-8000-000000000001","abandon":true,"epoch":"ep-7f3a"}}
+{"v":2,"reply_to":19,"event":"sessions.move","body":{"session_id":"0198c0de-0000-7000-8000-000000000001","op":"0198c0de-0000-7000-8000-000000000a01","state":"abandoning"}}
+```
+
+### 3.28 `directory.status`
+
+Owner-only, no arguments. Reports this daemon's view of the session directory's
+Khepri cluster (protocol-change/083). A daemon that is not a member refuses it
+`not_found`.
+
+```json
+{"v":2,"id":20,"cmd":"directory.status","body":{}}
+{"v":2,"reply_to":20,"event":"directory.status","body":{"members":["alpha@10.0.0.1","bravo@10.0.0.4","exec@10.0.0.2"],"joined":true,"ra_members":[{"node":"alpha@10.0.0.1","voter":true},{"node":"bravo@10.0.0.4","voter":true},{"node":"exec@10.0.0.2","voter":true}],"applied_index":12,"leader":"bravo@10.0.0.4"}}
+```
+
+| Member | Type | Presence | Meaning |
+|---|---|---|---|
+| `members` | array of strings | always | The configured `[directory] members`, as node names. |
+| `joined` | boolean | always | This member has joined the cluster. |
+| `ra_members` | array of objects | always | The membership in force, each with `node` and `voter`; a member that is catching up is listed with `voter: false`. Empty when the store cannot be asked. |
+| `applied_index` | integer | always | The last log index this member has applied. |
+| `leader` | string | when known | The cluster's leader. |
+| `unavailable` | string | when the store cannot be asked | The store's reason. |
+
+When `members` and `ra_members` disagree, `ra_members` is the membership in
+force: membership lives in the cluster's log, and `members` only tells a daemon
+whom to join and whom to keep connected.
 
 ---
 
@@ -3836,7 +3918,7 @@ below have not been edited.
    `docs/loom-implementation-spec.md` §1.6 names ten control commands.
    The code implements six more: `sessions.isolate`, `sessions.invite`,
    `sessions.set_role`, `sessions.revoke`, `credentials.rotate` and
-   `credentials.revoke` (`client/daemon/protocol.gleam:472`). The
+   `credentials.revoke` (`client/daemon/protocol.gleam:482`). The
    six are specified in `protocol-change/015`'s addenda, so the gap is
    in the spec's summary rather than in the decision record.
    `protocol-change/053` adds a third route, `/v2/claim`, with its one

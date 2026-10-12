@@ -578,7 +578,10 @@ was asked.
   `CallExited`. `grep` additionally parses ripgrep's `--json` event stream
   into `Match` values.
 - **Policy**: each tool declares `requirements(workspace)`. `bash` asks
-  workspace write, system paths readable, network **off**; `grep` asks
+  workspace write, system paths readable, and network **off** in the
+  requirement it states, though it clears under the session base's own
+  network (`tool.asking_base_network`), which the daemon defaults to
+  full; `grep` asks
   workspace readable, nothing writable, network off; `history_search`
   asks for **nothing at all** — no readable root, no writable root, no
   network — because it starts no jailed process and touches no path: the

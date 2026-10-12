@@ -47,6 +47,15 @@
 //// 5. `b`'s transcript holds exactly one peer message for `m1`, and sending `m1`
 ////    again answers the stored receipt and adds nothing.
 ////
+//// `a_message_between_directory_members_is_delivered_once_the_owner_returns_test_`
+////
+//// The same six steps as the first test, with the session directory's Khepri
+//// cluster (protocol-change/083): `alpha`, `bravo` and an executor are its
+//// members, and `a` and `b` are remote sessions on that executor, since a
+//// member records only the sessions it places on executors. `alpha` finds `b`'s
+//// owner in its own copy of the owner records instead of asking `bravo`, which
+//// is what lets it know whom to queue for while `bravo` is down.
+////
 //// `a_first_link_over_a_slow_handshake_still_links_test_`
 ////
 //// The first `peers.link` between the two daemons pays for their first TLS
@@ -89,14 +98,10 @@
 import client/peer_outbox
 import client/peers
 import client/tui_e2e_test.{type EunitTest}
-import core/entry
 import core/json.{type JsonValue}
-import core/message
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
-import gleam/result
-import gleam/string
 import support/remote_daemons
 import support/remote_duo.{type Duo}
 import weft/poll
@@ -113,85 +118,34 @@ const delivered_within_ms = 40_000
 // the attempt at 5 or at 15 seconds delivers it. The fixture itself ends at 60.
 const opened_delivery_ms = 40_000
 
+const member_label = "shipped remote peer mail between directory members"
+
 pub fn a_message_to_an_unreachable_orchestrator_is_delivered_once_it_returns_test_() -> EunitTest {
   remote_duo.shipped(skip_label, fn(duo) {
     let keys = remote_duo.provision(duo)
     remote_duo.configure(duo, keys, None)
     let alpha = remote_daemons.start(duo.alpha)
     let bravo = remote_daemons.start(duo.bravo)
-    let on_alpha = remote_daemons.open_control(alpha)
-    let on_bravo = remote_daemons.open_control(bravo)
-    let #(a, settled) =
-      remote_daemons.create_local_and_settle(
-        on_alpha,
+    delivered_once(duo, alpha, bravo, fn(control, key, layout) {
+      remote_daemons.create_local_and_settle(control, 1, key, layout.workspace)
+    })
+  })
+}
+
+pub fn a_message_between_directory_members_is_delivered_once_the_owner_returns_test_() -> EunitTest {
+  remote_duo.shipped(member_label, fn(duo) {
+    let keys = remote_duo.provision(duo)
+    remote_duo.configure_members(duo, keys, None)
+    let members = remote_duo.start_members(duo)
+    delivered_once(duo, members.alpha, members.bravo, fn(control, key, _layout) {
+      remote_daemons.create_and_settle(
+        control,
         1,
-        "e2e-a",
-        duo.alpha.workspace,
+        key,
+        remote_duo.executor_name,
+        remote_duo.workspace_name,
       )
-    assert remote_daemons.settled_state(settled) == "resident"
-      as { "a opens: " <> json.to_string(settled) }
-    let #(b, settled) =
-      remote_daemons.create_local_and_settle(
-        on_bravo,
-        1,
-        "e2e-b",
-        duo.bravo.workspace,
-      )
-    assert remote_daemons.settled_state(settled) == "resident"
-      as { "b opens: " <> json.to_string(settled) }
-
-    // The owner links the pair from `alpha`, which writes the grant on
-    // `bravo`: the first command that crosses.
-    let linked = link(on_alpha, 10, a, b)
-    assert remote_daemons.field(linked, "event") == json.String("peers.link")
-      as { "the link answers peers.link: " <> json.to_string(linked) }
-
-    // A send to a session on a reachable orchestrator is admitted exactly as a
-    // local one is.
-    let sent = send(on_alpha, 11, a, b, "m1", "first message")
-    assert remote_daemons.field(sent, "event") == json.String("peers.send")
-      as { "the send answers peers.send: " <> json.to_string(sent) }
-    assert remote_daemons.field(body_of(sent), "admitted") == json.Bool(True)
-      as { "the send is admitted: " <> json.to_string(sent) }
-    await_peer_messages(duo, b, "first message", 1)
-    await_row(duo, a, b, "m1", Admitted)
-
-    // `bravo` goes away with `b` resident on it. The send is recorded and
-    // answers `queued`; nothing reached `b`.
-    remote_daemons.retire(duo.bravo.paths)
-    let queued = send(on_alpha, 12, a, b, "m2", "second message")
-    assert remote_daemons.field(queued, "event") == json.String("peers.send")
-      as { "the send answers peers.send: " <> json.to_string(queued) }
-    assert remote_daemons.field(body_of(queued), "state")
-      == json.String("queued")
-      as { "the send is queued: " <> json.to_string(queued) }
-    await_row(duo, a, b, "m2", Pending)
-
-    // `alpha` is frozen while `bravo` starts again and `b` is opened, so that
-    // no retry runs in between. When it runs again its drainer finds `b`
-    // resident.
-    remote_duo.freeze(duo.alpha)
-    let bravo = remote_daemons.start(duo.bravo)
-    let on_bravo = remote_daemons.open_control(bravo)
-    let reopened = remote_daemons.reopen_session(on_bravo, 100, b)
-    assert remote_daemons.settled_state(reopened) == "resident"
-      as { "b opens again: " <> json.to_string(reopened) }
-    remote_duo.thaw(duo.alpha)
-
-    // The drainer delivers it, once.
-    await_row(duo, a, b, "m2", Admitted)
-    await_peer_messages(duo, b, "second message", 1)
-    await_peer_messages(duo, b, "first message", 1)
-
-    // The same id and text again is the stored receipt, and `b` gains nothing.
-    let receipt = row_receipt(duo, a, b, "m2")
-    let again = send(on_alpha, 13, a, b, "m2", "second message")
-    assert remote_daemons.field(again, "event") == json.String("peers.send")
-      as { "the repeat answers peers.send: " <> json.to_string(again) }
-    assert body_of(again) == receipt
-      as { "the repeat answers the stored receipt: " <> json.to_string(again) }
-    assert peer_messages(duo, b, "second message") == Ok(1)
-    Nil
+    })
   })
 }
 
@@ -221,7 +175,7 @@ pub fn a_session_stopped_on_the_other_orchestrator_is_listed_and_messaged_once_o
       )
     assert remote_daemons.settled_state(settled) == "resident"
       as { "b opens: " <> json.to_string(settled) }
-    let linked = link(on_alpha, 10, a, b)
+    let linked = remote_daemons.peers_link(on_alpha, 10, a, b)
     assert remote_daemons.field(linked, "event") == json.String("peers.link")
       as { "the link answers peers.link: " <> json.to_string(linked) }
 
@@ -249,7 +203,8 @@ pub fn a_session_stopped_on_the_other_orchestrator_is_listed_and_messaged_once_o
       as { "the session is described as saved: " <> json.to_string(saved) }
 
     // The send waits. It is not refused, and nothing reaches `b`.
-    let queued = send(on_alpha, 22, a, b, "m1", "waiting message")
+    let queued =
+      remote_daemons.peers_send(on_alpha, 22, a, b, "m1", "waiting message")
     assert remote_daemons.field(queued, "event") == json.String("peers.send")
       as { "the send answers peers.send: " <> json.to_string(queued) }
     assert remote_daemons.field(body_of(queued), "state")
@@ -270,7 +225,8 @@ pub fn a_session_stopped_on_the_other_orchestrator_is_listed_and_messaged_once_o
 
     // The same id and text again is the stored receipt, and `b` gains nothing.
     let receipt = row_receipt(duo, a, b, "m1")
-    let again = send(on_alpha, 23, a, b, "m1", "waiting message")
+    let again =
+      remote_daemons.peers_send(on_alpha, 23, a, b, "m1", "waiting message")
     assert body_of(again) == receipt
       as { "the repeat answers the stored receipt: " <> json.to_string(again) }
     assert peer_messages(duo, b, "waiting message") == Ok(1)
@@ -323,7 +279,7 @@ pub fn a_first_link_over_a_slow_handshake_still_links_test_() -> EunitTest {
         process.sleep(handshake_held_ms)
         remote_duo.thaw(duo.bravo)
       })
-    let linked = link(on_alpha, 10, a, b)
+    let linked = remote_daemons.peers_link(on_alpha, 10, a, b)
     let _ = thaw
     remote_duo.thaw(duo.bravo)
     assert remote_daemons.field(linked, "event") == json.String("peers.link")
@@ -332,31 +288,84 @@ pub fn a_first_link_over_a_slow_handshake_still_links_test_() -> EunitTest {
   })
 }
 
+// The six steps, with `a` created on `alpha` and `b` on `bravo` by `create`,
+// which is given the control socket, the request key and the daemon's layout.
+fn delivered_once(
+  duo: Duo,
+  alpha: remote_daemons.Running,
+  bravo: remote_daemons.Running,
+  create: fn(remote_daemons.Control, String, remote_daemons.Layout) ->
+    #(String, JsonValue),
+) -> Nil {
+  let on_alpha = remote_daemons.open_control(alpha)
+  let on_bravo = remote_daemons.open_control(bravo)
+  let #(a, settled) = create(on_alpha, "e2e-a", duo.alpha)
+  assert remote_daemons.settled_state(settled) == "resident"
+    as { "a opens: " <> json.to_string(settled) }
+  let #(b, settled) = create(on_bravo, "e2e-b", duo.bravo)
+  assert remote_daemons.settled_state(settled) == "resident"
+    as { "b opens: " <> json.to_string(settled) }
+
+  // The owner links the pair from `alpha`, which writes the grant on
+  // `bravo`: the first command that crosses.
+  let linked = remote_daemons.peers_link(on_alpha, 10, a, b)
+  assert remote_daemons.field(linked, "event") == json.String("peers.link")
+    as { "the link answers peers.link: " <> json.to_string(linked) }
+
+  // A send to a session on a reachable orchestrator is admitted exactly as a
+  // local one is.
+  let sent =
+    remote_daemons.peers_send(on_alpha, 11, a, b, "m1", "first message")
+  assert remote_daemons.field(sent, "event") == json.String("peers.send")
+    as { "the send answers peers.send: " <> json.to_string(sent) }
+  assert remote_daemons.field(body_of(sent), "admitted") == json.Bool(True)
+    as { "the send is admitted: " <> json.to_string(sent) }
+  await_peer_messages(duo, b, "first message", 1)
+  await_row(duo, a, b, "m1", Admitted)
+
+  // `bravo` goes away with `b` resident on it. The send is recorded and
+  // answers `queued`; nothing reached `b`.
+  remote_daemons.retire(duo.bravo.paths)
+  let queued =
+    remote_daemons.peers_send(on_alpha, 12, a, b, "m2", "second message")
+  assert remote_daemons.field(queued, "event") == json.String("peers.send")
+    as { "the send answers peers.send: " <> json.to_string(queued) }
+  assert remote_daemons.field(body_of(queued), "state") == json.String("queued")
+    as { "the send is queued: " <> json.to_string(queued) }
+  await_row(duo, a, b, "m2", Pending)
+
+  // `alpha` is frozen while `bravo` starts again and `b` is opened, so that
+  // no retry runs in between. When it runs again its drainer finds `b`
+  // resident.
+  remote_duo.freeze(duo.alpha)
+  let bravo = remote_daemons.start(duo.bravo)
+  let on_bravo = remote_daemons.open_control(bravo)
+  let reopened = remote_daemons.reopen_session(on_bravo, 100, b)
+  assert remote_daemons.settled_state(reopened) == "resident"
+    as { "b opens again: " <> json.to_string(reopened) }
+  remote_duo.thaw(duo.alpha)
+
+  // The drainer delivers it, once.
+  await_row(duo, a, b, "m2", Admitted)
+  await_peer_messages(duo, b, "second message", 1)
+  await_peer_messages(duo, b, "first message", 1)
+
+  // The same id and text again is the stored receipt, and `b` gains nothing.
+  let receipt = row_receipt(duo, a, b, "m2")
+  let again =
+    remote_daemons.peers_send(on_alpha, 13, a, b, "m2", "second message")
+  assert remote_daemons.field(again, "event") == json.String("peers.send")
+    as { "the repeat answers peers.send: " <> json.to_string(again) }
+  assert body_of(again) == receipt
+    as { "the repeat answers the stored receipt: " <> json.to_string(again) }
+  assert peer_messages(duo, b, "second message") == Ok(1)
+  Nil
+}
+
 // --- control commands --------------------------------------------------------
 
 fn body_of(reply: JsonValue) -> JsonValue {
   remote_daemons.field(reply, "body")
-}
-
-fn link(
-  control: remote_daemons.Control,
-  id: Int,
-  source: String,
-  target: String,
-) -> JsonValue {
-  remote_daemons.command(
-    control,
-    id,
-    "peers.link",
-    json.Object([
-      #("source_session", json.String(source)),
-      #("source_strand", json.String("main")),
-      #("target_session", json.String(target)),
-      #("target_strand", json.String("main")),
-      #("wake", json.String("may_wake")),
-      #("epoch", json.String(control.epoch)),
-    ]),
-  )
 }
 
 fn inspect(
@@ -398,30 +407,6 @@ fn catalogue_state(row: JsonValue) -> JsonValue {
   remote_daemons.field(
     remote_daemons.field(remote_daemons.field(row, "metadata"), "status"),
     "state",
-  )
-}
-
-fn send(
-  control: remote_daemons.Control,
-  id: Int,
-  source: String,
-  target: String,
-  message_id: String,
-  text: String,
-) -> JsonValue {
-  remote_daemons.command(
-    control,
-    id,
-    "peers.send",
-    json.Object([
-      #("source_session", json.String(source)),
-      #("source_strand", json.String("main")),
-      #("target_session", json.String(target)),
-      #("target_strand", json.String("main")),
-      #("message_id", json.String(message_id)),
-      #("text", json.String(text)),
-      #("epoch", json.String(control.epoch)),
-    ]),
   )
 }
 
@@ -493,29 +478,13 @@ fn row_receipt(
   receipt
 }
 
-// How many messages in `session`'s transcript on `bravo` come from a peer and
-// carry `text`.
+// Every message in these steps lands on `bravo`, so the counts read its store.
 fn peer_messages(
   duo: Duo,
   session: String,
   text: String,
 ) -> Result(Int, String) {
-  use entries <- result.try(remote_duo.session_messages(duo, duo.bravo, session))
-  Ok(
-    list.count(entries, fn(each) {
-      case each {
-        entry.MessageEntry(
-          message: message.UserMessage(
-            content: [message.UserText(body, _)],
-            origin: Some(message.PeerOrigin(..)),
-            ..,
-          ),
-          ..,
-        ) -> string.contains(body, text)
-        _ -> False
-      }
-    }),
-  )
+  remote_duo.peer_messages(duo, duo.bravo, session, text)
 }
 
 fn await_peer_messages(

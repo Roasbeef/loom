@@ -10,15 +10,24 @@
 //// `shipped` does the gating and the retirement, `provision` mints the
 //// credentials, and `configure` writes both `loom.toml` files.
 ////
+//// A fixture that runs the session directory's Khepri cluster
+//// (protocol-change/083) adds a third daemon, an executor, because a cluster of
+//// two members has no majority once one is gone. `configure_members` writes
+//// the three configurations with the same `[directory]` table, the executor
+//// registering the checkout `repo` that the orchestrators reach as `box`, and
+//// `start_members` bootstraps the cluster on the executor, starts the three and
+//// waits until each has joined with three voters. The executor is laid out and
+//// issued a certificate in every fixture and started only by those.
+////
 //// The credentials, the daemons and the control commands are the vocabulary of
-//// `support/remote_daemons`. This module only arranges two orchestrators with
-//// it.
+//// `support/remote_daemons`. This module only arranges the daemons with it.
 
 import broker/token
 import client/tui_e2e_test.{type EunitTest, Timeout}
 import core/codec
 import core/entry
 import core/json.{type JsonValue}
+import core/message
 import gleam/bit_array
 import gleam/dynamic/decode
 import gleam/int
@@ -35,6 +44,7 @@ import support/enforcement
 import support/internal/ffi_proc
 import support/remote_daemons.{Trust}
 import weft
+import weft/poll
 
 // The longest the body may run, and the EUnit timeout, which the runner scales
 // by ten.
@@ -42,13 +52,24 @@ const body_ms = 420_000
 
 const eunit_seconds = 60
 
-/// The two orchestrators of one fixture: where each lives.
+/// The orchestrators' name for the executor of a member fixture, an
+/// `[executors.<name>]` key.
+pub const executor_name = "box"
+
+/// The executor's name for its checkout, and the name a session uses for it.
+pub const workspace_name = "repo"
+
+/// The daemons of one fixture: where each lives.
 pub type Duo {
   Duo(
     /// The fixture's private directory.
     directory: String,
     alpha: remote_daemons.Layout,
     bravo: remote_daemons.Layout,
+    /// The executor, started only by a fixture that runs the directory.
+    executor: remote_daemons.Layout,
+    /// The executor's checkout, registered as `repo`.
+    checkout: String,
   )
 }
 
@@ -58,6 +79,16 @@ pub type Credentials {
     authority: remote_daemons.Authority,
     alpha: remote_daemons.Identity,
     bravo: remote_daemons.Identity,
+    executor: remote_daemons.Identity,
+  )
+}
+
+/// The three running daemons of a member fixture.
+pub type Members {
+  Members(
+    alpha: remote_daemons.Running,
+    bravo: remote_daemons.Running,
+    executor: remote_daemons.Running,
   )
 }
 
@@ -102,6 +133,8 @@ fn fixture(label: String, body: fn(Duo) -> Nil) -> Nil {
       directory:,
       alpha: remote_daemons.layout(directory, "alpha"),
       bravo: remote_daemons.layout(directory, "bravo"),
+      executor: remote_daemons.layout(directory, "executor"),
+      checkout: directory <> "/executor-checkout",
     )
   io.println_error(label <> " fixture: " <> directory)
   let outcomes =
@@ -119,7 +152,7 @@ fn fixture(label: String, body: fn(Duo) -> Nil) -> Nil {
   // the body already killed has no process to retire, which `retire` accepts.
   // A daemon the body froze is thawed first, because a stopped process would
   // not act on the signal that retires it.
-  list.each([duo.alpha, duo.bravo], fn(layout) {
+  list.each([duo.alpha, duo.bravo, duo.executor], fn(layout) {
     thaw(layout)
     remote_daemons.retire(layout.paths)
   })
@@ -129,7 +162,7 @@ fn fixture(label: String, body: fn(Duo) -> Nil) -> Nil {
   Nil
 }
 
-/// Mints the authority, one leaf per node and the cookie both share.
+/// Mints the authority, one leaf per node and the cookie they share.
 ///
 /// ## Examples
 ///
@@ -160,9 +193,16 @@ pub fn provision(duo: Duo) -> Credentials {
         name("bravo"),
         duo.bravo.home,
       ),
+      executor: remote_daemons.issue(
+        authority,
+        secrets,
+        "executor",
+        name("exec"),
+        duo.executor.home,
+      ),
     )
   let cookie = "loom-e2e-cookie-" <> remote_daemons.random_hex(16)
-  list.each([keys.alpha, keys.bravo], fn(identity) {
+  list.each([keys.alpha, keys.bravo, keys.executor], fn(identity) {
     remote_daemons.write_cookie(identity, cookie)
   })
   keys
@@ -219,6 +259,122 @@ pub fn configure(
       "\n",
     ),
   )
+}
+
+/// Writes the three configuration files of a member fixture. Each daemon
+/// trusts the other two, each orchestrator lists the other as `configure`
+/// writes it and the executor as `box`, the executor registers the checkout as
+/// `repo`, and all three name the same three members under `[directory]`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_duo.configure_members(duo, keys, None)
+/// ```
+pub fn configure_members(
+  duo: Duo,
+  keys: Credentials,
+  alphas_address: Option(String),
+) -> Nil {
+  let assert Ok(Nil) = simplifile.create_directory_all(duo.checkout)
+    as "the executor checkout is created"
+  let members =
+    remote_daemons.directory_table([
+      keys.alpha.node,
+      keys.bravo.node,
+      keys.executor.node,
+    ])
+  let trust = fn(identity: remote_daemons.Identity) {
+    Trust(identity.node, identity.pin)
+  }
+  let write = fn(layout: remote_daemons.Layout, text) {
+    let assert Ok(Nil) = simplifile.write(layout.config, text)
+      as "the daemon configuration is written"
+    remote_daemons.write_options(layout)
+  }
+  write(
+    duo.executor,
+    string.join(
+      [
+        remote_daemons.model_table("http://127.0.0.1:9"),
+        remote_daemons.distribution_table(keys.executor, keys.authority, [
+          trust(keys.alpha),
+          trust(keys.bravo),
+        ]),
+        remote_daemons.workspace_table(workspace_name, duo.checkout),
+        members,
+      ],
+      "\n",
+    ),
+  )
+  write(
+    duo.alpha,
+    string.join(
+      [
+        remote_daemons.model_table("http://127.0.0.1:9"),
+        remote_daemons.distribution_table(keys.alpha, keys.authority, [
+          trust(keys.bravo),
+          trust(keys.executor),
+        ]),
+        remote_daemons.executor_table(executor_name, keys.executor.node),
+        remote_daemons.orchestrator_table("bravo", keys.bravo.node, None),
+        members,
+      ],
+      "\n",
+    ),
+  )
+  write(
+    duo.bravo,
+    string.join(
+      [
+        remote_daemons.model_table("http://127.0.0.1:9"),
+        remote_daemons.distribution_table(keys.bravo, keys.authority, [
+          trust(keys.alpha),
+          trust(keys.executor),
+        ]),
+        remote_daemons.executor_table(executor_name, keys.executor.node),
+        remote_daemons.orchestrator_table(
+          "alpha",
+          keys.alpha.node,
+          alphas_address,
+        ),
+        members,
+      ],
+      "\n",
+    ),
+  )
+}
+
+/// Creates the directory cluster on the executor with `loomd directory
+/// bootstrap`, starts the executor and then both orchestrators, and waits until
+/// each of the three has joined a cluster with three voters. The control ids
+/// the waits use start at 9000, out of a body's way.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let members = remote_duo.start_members(duo)
+/// ```
+pub fn start_members(duo: Duo) -> Members {
+  let #(status, output) = remote_daemons.bootstrap_directory(duo.executor)
+  case status {
+    0 -> Nil
+    _ -> io.println_error("directory bootstrap failed: " <> output)
+  }
+  assert status == 0 as "the directory bootstrap succeeds"
+  let executor = remote_daemons.start(duo.executor)
+  let alpha = remote_daemons.start(duo.alpha)
+  let bravo = remote_daemons.start(duo.bravo)
+  list.each([executor, alpha, bravo], fn(running) {
+    let _status =
+      remote_daemons.await_directory(
+        remote_daemons.open_control(running),
+        9000,
+        3,
+      )
+    Nil
+  })
+  Members(alpha:, bravo:, executor:)
 }
 
 /// A reserved fact of a session, read from a copy of the daemon's store.
@@ -396,4 +552,64 @@ fn signal(layout: remote_daemons.Layout, name: String) -> Nil {
       }
     Ok(None) | Error(_) -> Nil
   }
+}
+
+/// How many messages in `session`'s transcript on `daemon` come from a peer and
+/// carry `text`, read from a copy of the store as `session_messages` reads it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_duo.peer_messages(duo, duo.alpha, session, "first message")
+/// ```
+pub fn peer_messages(
+  duo: Duo,
+  daemon: remote_daemons.Layout,
+  session: String,
+  text: String,
+) -> Result(Int, String) {
+  use entries <- result.try(session_messages(duo, daemon, session))
+  Ok(
+    list.count(entries, fn(each) {
+      case each {
+        entry.MessageEntry(
+          message: message.UserMessage(
+            content: [message.UserText(body, _)],
+            origin: Some(message.PeerOrigin(..)),
+            ..,
+          ),
+          ..,
+        ) -> string.contains(body, text)
+        _ -> False
+      }
+    }),
+  )
+}
+
+/// Waits until `session`'s transcript on `daemon` holds exactly `want` peer
+/// messages carrying `text`, and fails at once if it holds more.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_duo.await_peer_messages(duo, duo.alpha, session, "hello", 1)
+/// ```
+pub fn await_peer_messages(
+  duo: Duo,
+  daemon: remote_daemons.Layout,
+  session: String,
+  text: String,
+  want: Int,
+) -> Nil {
+  let assert poll.Answered(Nil) =
+    poll.until(within: 40_000, every: 500, attempt: fn() {
+      case peer_messages(duo, daemon, session, text) {
+        Ok(found) if found == want -> poll.Done(Nil)
+        Ok(found) if found > want ->
+          poll.Fail("the transcript holds the message more than once")
+        _ -> poll.Retry
+      }
+    })
+    as { "the transcript holds the message " <> text }
+  Nil
 }

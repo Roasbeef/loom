@@ -95,3 +95,7 @@ client|client@assembly_heap_census_test|differences erlang:processes/0 and suspe
 # move. Both read state every module on the emulator shares.
 broker|broker@integration_test|differences the node's helper ports from erlang:ports() and expects exactly one new loom-exec; a sibling spawning a helper adds another
 broker|broker@leak_census_test|differences erlang:system_info(process_count) across a hundred executions; the count is node-wide
+client|client@directory@store_test|the Khepri store and its Ra system are registered once per emulator under fixed names
+client|client@directory@daemon_record_test|the Khepri store and its Ra system are registered once per emulator under fixed names
+client|client@directory@ownership_test|the Khepri store and its Ra system are registered once per emulator under fixed names
+client|client@directory@migrate_test|the Khepri store and its Ra system are registered once per emulator under fixed names

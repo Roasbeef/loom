@@ -475,7 +475,7 @@ call that was `admitted` into `unknown`, as for any executor restart.
 **The 16 MiB per-call reservation inside the 512 MiB budget.** Admission
 reserves `default_max_result_bytes` for every call, 16 MiB, twice the largest
 file `fs_read` returns (`client/remote/host.gleam:229`). The daemon passes it as
-`max_result_bytes` (`client/daemon/main.gleam:495`) and the host hands it to
+`max_result_bytes` (`client/daemon/main.gleam:517`) and the host hands it to
 `exec_ledger.admit` (`client/remote/host.gleam:901`). The ledger's byte budget
 is `default_max_ledger_bytes`, 512 MiB (`storage/exec_ledger.gleam:440`), and
 `require_budget` refuses a call when the bytes held by `admitted` and
@@ -615,6 +615,13 @@ work before the previous one runs.
 6. **Acceptance.** The evidence table, full repository gates, both placements,
    the failure matrix, the formal models, an independent review of the
    assembled system, and hosted CI once publication is authorized.
+
+The next step replaces the catalogue rows of phases 3 and 5 with one record
+per session in a Khepri store whose members are the orchestrators and the
+executors, so that a move is one compare-and-set and failover has a record to
+build on. It is proposed in [ADR-020](../adr/020-khepri-for-session-ownership.md)
+and [protocol-change/083](../../protocol-change/083-khepri-session-ownership.md),
+and [docs/architecture/directory.md](../architecture/directory.md) describes it.
 
 Automatic failover and workspace snapshot migration stay deferred. The
 filesystem and cache policy is inherited from the executor's configuration,

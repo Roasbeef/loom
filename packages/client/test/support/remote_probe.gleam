@@ -64,7 +64,7 @@ pub fn main(config_path: String, steps_path: String) -> Nil {
     as "the probe reads its own configuration"
   let assert Ok(Some(config)) = distribution.parse(text)
     as "the probe configuration has a [distribution] table"
-  let assert Ok(membership) = distribution.start(config)
+  let assert Ok(membership) = distribution.start(config, distribution.NotMember)
     as "the probe emulator was booted for distribution"
   let assert Ok(steps) = simplifile.read(steps_path)
     as "the probe reads its steps"

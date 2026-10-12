@@ -53,7 +53,11 @@ import client/daemon/ui_relay
 import client/daemon/ui_result
 import client/daemon/ui_sessions
 import client/daemon/upgrade_log
+import client/directory/deletion
+import client/directory/member
+import client/directory/store
 import client/executors
+import client/internal/ffi_khepri
 import client/orchestrators
 import client/peer_mail
 import client/peers
@@ -1785,6 +1789,7 @@ fn registry_refusal(error: manager.Error) -> Option(String) {
       Some("session is moving to another orchestrator")
     manager.SessionMoved(..) ->
       Some("session was moved to another orchestrator")
+    manager.SessionDeleting -> Some("session is being deleted")
   }
 }
 
@@ -2211,6 +2216,7 @@ fn control(
           // rather than inheriting "keep serving" from a catch-all.
           let after = case request.command {
             protocol.Shutdown(_) -> DrainDaemon
+            protocol.DirectoryStatus -> KeepServing
             protocol.InspectPeers(..)
             | protocol.LinkPeers(..)
             | protocol.UnlinkPeers(..)
@@ -2243,6 +2249,7 @@ fn control(
             | protocol.OpenSession(..)
             | protocol.StopSession(..)
             | protocol.MoveSession(..)
+            | protocol.AbandonMove(..)
             | protocol.DeleteSession(..) -> KeepServing
           }
           #(protocol.event(Some(request.id), event, body), after)
@@ -2272,6 +2279,7 @@ fn control_use(command: protocol.Command) {
     | protocol.ListArchivedSessions(..)
     | protocol.GetSession(_)
     | protocol.WorkspaceDefault(_)
+    | protocol.DirectoryStatus
     | protocol.GetOperation(..) -> root.ControlRead
     protocol.LinkPeers(..)
     | protocol.UnlinkPeers(..)
@@ -2292,6 +2300,7 @@ fn control_use(command: protocol.Command) {
     | protocol.OpenSession(..)
     | protocol.StopSession(..)
     | protocol.MoveSession(..)
+    | protocol.AbandonMove(..)
     | protocol.DeleteSession(..)
     | protocol.Shutdown(_) -> root.ControlMutation
   }
@@ -2453,6 +2462,7 @@ fn redirected(
       case config.directory.lookup(id) {
         Ok(session_directory.Elsewhere(owner)) -> not_owner(owner)
         Error(session_directory.Unreachable(names)) -> owner_unreachable(names)
+        Error(session_directory.Unavailable(reason:)) -> no_quorum(reason)
         Ok(session_directory.Here) | Error(session_directory.Unknown) -> refused
       }
     code, access.OwnerPrincipal if code == not_owner_code ->
@@ -2520,6 +2530,61 @@ fn not_owner(owner: orchestrators.Orchestrator) -> Refused {
     #("orchestrator", json.String(owner.name)),
     ..address
   ])
+}
+
+/// The code a directory member answers when the session directory could not
+/// be read or could not commit in time (protocol-change/083).
+pub const no_quorum_code = "no_quorum"
+
+fn directory_status_json(status: member.Status) -> JsonValue {
+  let #(ra_members, leader, ra_error) = case status.ra {
+    Ok(store.Membership(members:, leader:)) -> #(members, leader, None)
+    Error(store.Unavailable(reason:)) -> #([], None, Some(reason))
+  }
+  json.Object(
+    list.flatten([
+      [
+        #("members", json.Array(list.map(status.members, json.String))),
+        #(
+          "joined",
+          json.Bool(case status.joining {
+            member.Joined -> True
+            member.NotJoined -> False
+          }),
+        ),
+        #(
+          "ra_members",
+          json.Array(
+            list.map(ra_members, fn(entry) {
+              json.Object([
+                #("node", json.String(entry.0)),
+                #(
+                  "voter",
+                  json.Bool(case entry.1 {
+                    ffi_khepri.Voter -> True
+                    ffi_khepri.NonVoter -> False
+                  }),
+                ),
+              ])
+            }),
+          ),
+        ),
+        #("applied_index", json.Int(status.applied_index)),
+      ],
+      case leader {
+        Some(node) -> [#("leader", json.String(node))]
+        None -> []
+      },
+      case ra_error {
+        Some(reason) -> [#("unavailable", json.String(reason))]
+        None -> []
+      },
+    ]),
+  )
+}
+
+fn no_quorum(reason: String) -> Refused {
+  Refused(no_quorum_code, "the session directory cannot answer: " <> reason, [])
 }
 
 fn owner_unreachable(names: List(String)) -> Refused {
@@ -3083,6 +3148,34 @@ fn dispatch_class(
       |> result.map_error(error_code)
       |> result.map(fn(status) { #("sessions.stop", status_json(status)) })
     }
+    protocol.AbandonMove(id, supplied) -> {
+      use Nil <- result.try(owner(principal))
+      use Nil <- result.try(epoch(state, supplied))
+      use Nil <- result.try(case config.directory.ownership {
+        Some(_) -> Ok(Nil)
+        None ->
+          Error(
+            admin_error_code(manager.AdminNotMovable(
+              "only a directory member can abandon a move",
+            )),
+          )
+      })
+      case manager.custody(state.registry, id) {
+        Ok(catalogue.Moving(op:, ..)) -> {
+          config.movers.abandon(id)
+          Ok(#(
+            "sessions.move",
+            json.Object([
+              #("session_id", json.String(id)),
+              #("op", json.String(op)),
+              #("state", json.String("abandoning")),
+            ]),
+          ))
+        }
+        Ok(_) -> Error("conflict")
+        Error(error) -> Error(error_code(error))
+      }
+    }
     protocol.MoveSession(id, to, supplied) -> {
       use Nil <- result.try(owner(principal))
       use Nil <- result.try(epoch(state, supplied))
@@ -3092,7 +3185,7 @@ fn dispatch_class(
       )
 
       use Nil <- result.try(
-        inbound_settled(config.movers, state.registry, id)
+        inbound_settled(config, state.registry, id)
         |> result.replace_error(
           admin_error_code(manager.AdminNotMovable(
             "the move in from the session's origin has not finished",
@@ -3141,23 +3234,39 @@ fn dispatch_class(
       use Nil <- result.try(owner(principal))
       use Nil <- result.try(epoch(state, supplied))
       use Nil <- result.try(
-        inbound_settled(config.movers, state.registry, id)
+        inbound_settled(config, state.registry, id)
         |> result.replace_error(admin_error_code(manager.AdminBusy)),
       )
+      use through_directory <- result.try(deleted_through_directory(
+        config,
+        state,
+        digest,
+        supplied,
+        id,
+      ))
 
       // Owner, epoch and the busy check are all re-decided inside the
       // registry's own dispatch; the check here would only widen the window
       // between deciding and removing.
-      use registration <- result.try(
-        manager.delete_session(
-          state.registry,
-          digest,
-          supplied,
-          id,
-          state.sessions_directory,
-        )
-        |> result.map_error(admin_error_code),
-      )
+      use registration <- result.try(case through_directory {
+        Some(registration) -> Ok(registration)
+        None ->
+          manager.delete_session(
+            state.registry,
+            digest,
+            supplied,
+            id,
+            state.sessions_directory,
+          )
+          |> result.map_error(admin_error_code)
+      })
+
+      // A deleted local session's record is removed best-effort and not waited
+      // for. One left behind names this daemon, which answers `not_found`.
+      case registration.executor, registration.pool {
+        "", "" -> config.movers.forget(registration.id)
+        _, _ -> Nil
+      }
       Ok(#(
         "sessions.delete",
         json.Object([
@@ -3173,6 +3282,14 @@ fn dispatch_class(
       manager.operation(state.registry, id, operation)
       |> result.map_error(error_code)
       |> result.map(fn(view) { #("operations.get", view_json(view)) })
+    }
+    protocol.DirectoryStatus -> {
+      use Nil <- result.try(owner(principal))
+      case config.directory.standing {
+        session_directory.NotMember -> Error("not_found")
+        session_directory.Member(status:) ->
+          Ok(#("directory.status", directory_status_json(status())))
+      }
     }
     protocol.Shutdown(supplied) -> {
       use Nil <- result.try(owner(principal))
@@ -3201,6 +3318,22 @@ fn dispatch_class(
 // session is not settled yet, and the caller refuses in the words of its own
 // command: the owner asks again later.
 fn inbound_settled(
+  config: Config(instance),
+  registry: manager.Manager(instance),
+  id: String,
+) -> Result(Nil, Unsettled) {
+  let movers = config.movers
+  case config.directory.ownership {
+    // On a directory member the origin's retry cannot undo anything here: it
+    // abandons only by a compare-and-set that expects its own moving record,
+    // which fails once this daemon activated the session, so there is nothing
+    // to wait for (protocol-change/083).
+    Some(_) -> Ok(Nil)
+    None -> inbound_settled_by_rows(movers, registry, id)
+  }
+}
+
+fn inbound_settled_by_rows(
   movers: session_movers.Control,
   registry: manager.Manager(instance),
   id: String,
@@ -3221,6 +3354,49 @@ fn inbound_settled(
     | Ok(catalogue.Moving(..))
     | Ok(catalogue.Moved(..))
     | Error(_) -> Ok(Nil)
+  }
+}
+
+// A delete of a remote session on a directory member (protocol-change/083).
+// The deletion mark is written in the registry turn that finds no slot open,
+// then the record is deleted on the condition that it names this daemon as
+// serving, then the registration, the mark and the file go, and the deleted
+// registration is returned. A local session, or a daemon that is not a member,
+// is `Ok(None)` with nothing done, and the ordinary delete runs.
+fn deleted_through_directory(
+  config: Config(instance),
+  state: root.Ready(instance),
+  digest: access.Digest,
+  supplied: String,
+  id: String,
+) -> Result(Option(catalogue.Registration), String) {
+  case config.directory.ownership, manager.get(state.registry, id) {
+    Some(ownership), Ok(manager.View(registration:, ..))
+      if registration.executor != "" || registration.pool != ""
+    -> {
+      use marked <- result.try(
+        manager.begin_delete(state.registry, digest, supplied, id)
+        |> result.map_error(admin_error_code),
+      )
+      deletion.finish(
+        state.registry,
+        state.sessions_directory,
+        ownership,
+        marked.id,
+      )
+      |> result.map(Some)
+      |> result.map_error(deletion_code)
+    }
+    _, _ -> Ok(None)
+  }
+}
+
+fn deletion_code(refusal: deletion.Refusal) -> String {
+  case refusal {
+    deletion.Moving -> "moving"
+    deletion.NotOwner -> not_owner_code
+    deletion.NoQuorum -> no_quorum_code
+    deletion.Registry(error:) -> admin_error_code(error)
   }
 }
 
@@ -3313,6 +3489,13 @@ pub fn create_session(
       }
     }),
   )
+  use Nil <- result.try(recorded(
+    config,
+    registry,
+    directory,
+    manager.Creation(..request, workspace:, configuration:),
+    scope,
+  ))
   use created <- result.map(
     manager.create_scoped(
       registry,
@@ -3328,12 +3511,54 @@ pub fn create_session(
   // The folder is remembered once the session exists, under the canonical text
   // the catalogue holds, so the home can offer it again after every session in
   // it is gone (protocol-change/074). A creation that failed leaves no trace.
-  // A registered name is no folder on this host, so it is never offered.
+  // A registered name is no folder on this host, so it is never offered. On a
+  // directory member a local session's record is a lookup hint the movers'
+  // next tick writes; the creation does not wait for it, so it succeeds without
+  // a majority (protocol-change/083).
   case request.executor, request.pool {
-    "", "" -> manager.remember_folder(registry, workspace)
+    "", "" -> {
+      manager.remember_folder(registry, workspace)
+      config.movers.cover()
+    }
     _, _ -> Nil
   }
   created
+}
+
+// A remote session created on a directory member is recorded before it can be
+// served (protocol-change/083): the registration is reserved without opening
+// it, the record names this daemon, and only then does `create_scoped` find
+// the reservation by its request key and open it. A creation refused for no
+// quorum keeps its reservation, and a retry under the same key repeats the
+// record write, which accepts a record that already names this daemon.
+fn recorded(
+  config: Config(instance),
+  registry: manager.Manager(instance),
+  directory: String,
+  request: manager.Creation,
+  scope: domain.Scope,
+) -> Result(Nil, String) {
+  case request.executor, request.pool, config.directory.ownership {
+    "", "", _ | _, _, None -> Ok(Nil)
+    _, _, Some(ownership) -> {
+      use reserved <- result.try(
+        manager.reserve(
+          registry,
+          request,
+          directory:,
+          generator: config.generator(),
+          scope:,
+          configuration: config.domain_configuration,
+        )
+        |> result.map_error(error_code),
+      )
+      case ownership.create(reserved.id) {
+        Ok(Nil) -> Ok(Nil)
+        Error(store.NoQuorum(_)) -> Error(no_quorum_code)
+        Error(store.Mismatch(_)) -> Error("conflict")
+      }
+    }
+  }
 }
 
 fn operator(authority) {
@@ -3776,6 +4001,7 @@ fn error_code(error) {
     manager.Unavailable | manager.Preparation(_) -> "unavailable"
     manager.SessionMoving(..) -> "moving"
     manager.SessionMoved(..) -> not_owner_code
+    manager.SessionDeleting -> "busy"
     manager.Catalogue(catalogue.Missing) -> "not_found"
     manager.Catalogue(catalogue.Conflict) -> "conflict"
     manager.Catalogue(catalogue.Invalid(_)) -> "bad_request"

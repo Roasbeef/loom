@@ -83,7 +83,8 @@ pub fn routed(
         case sessions.lookup(session) {
           Ok(session_directory.Elsewhere(orchestrator: owner)) ->
             Ok(sessions.reach(owner, session))
-          Error(session_directory.Unreachable(..)) ->
+          Error(session_directory.Unreachable(..))
+          | Error(session_directory.Unavailable(..)) ->
             Error(peer_mail.Unreachable)
           Ok(session_directory.Here) | Error(session_directory.Unknown) ->
             Error(refusal)
@@ -99,8 +100,9 @@ pub fn routed(
 /// that is another orchestrator describes the session from its own catalogue
 /// (`sessions.describe`), so a saved session on another orchestrator is
 /// described without being opened, exactly as a local one is. An owner that
-/// could not be asked is `owner unreachable`, which the roster shows as the
-/// row's `unavailable` metadata. `Here` and `Unknown` leave `local`'s error
+/// could not be asked, or a member directory that could not read its record,
+/// is `owner unreachable`, which the roster shows as the row's `unavailable`
+/// metadata. `Here` and `Unknown` leave `local`'s error
 /// standing.
 ///
 /// ## Examples
@@ -119,7 +121,8 @@ pub fn described(
         case sessions.lookup(session) {
           Ok(session_directory.Elsewhere(orchestrator: owner)) ->
             sessions.describe(owner, session)
-          Error(session_directory.Unreachable(..)) ->
+          Error(session_directory.Unreachable(..))
+          | Error(session_directory.Unavailable(..)) ->
             Error(peer_mail.unreachable_reason)
           Ok(session_directory.Here) | Error(session_directory.Unknown) ->
             Error(refusal)
