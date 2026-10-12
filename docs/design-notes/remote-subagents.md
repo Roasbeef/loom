@@ -1,8 +1,9 @@
 # Subagents on another orchestrator
 
 Status: **direction ruled by the owner, 2026-10-09; phase 1 simplified after
-review, 2026-10-11. Design only; nothing here is built.** The wire and
-durable formats it would add are drafted in
+review, 2026-10-11. Slices S1 and S2 of phase 1 (the policy and the port
+messages, then the delegate session and the box's Agency) are built; the rest is
+design.** The wire and durable formats it adds are drafted in
 [protocol-change/084](../../protocol-change/084-remote-subagents.md). It
 builds on the distributed runtime of PR #923
 ([the design note](distributed-runtime.md),
@@ -391,7 +392,8 @@ remote side is the local code with a different caller.
 
 The remote creates the delegate session on the first `Spawn` for a parent
 session, through `manager.create_scoped` with the `SessionOnly` memory
-domain, and records it in a new catalogue table, `delegate_sessions`, keyed by
+domain, and records it in a new catalogue table, `delegate_sessions` (built as
+`catalogue_delegate_sessions`, at catalogue version 15), keyed by
 (spawner name, parent session id). Every later message for that parent
 session is answered from the same row. The spawner name is the remote's
 `[spawners.<name>]` key for the sending node. It is an ordinary session of the
@@ -593,7 +595,13 @@ stateDiagram-v2
   finds the fence and is refused with `ParentRunEnded` instead of creating a
   child nobody will reap. The fence is read at admission and written before
   `reap_run`, both inside the holder, so whichever of the two arrives first
-  decides and the other agrees with it.
+  decides and the other agrees with it. As built in S2, admission reads the fence
+  only on the path that would create or finish a child, after the adoption check:
+  a resend that finds the child its call site already made is answered with that
+  child, fenced or not, since adopting creates nothing the run end could have
+  missed, and a detached child whose first reply was lost is not orphaned by a
+  refusal. A `RunEnded` for a parent with no delegate session yet creates the
+  session, so that the fence exists before a late `Spawn` arrives.
 
 The cases phase 2 handles faster are bounded without it. A deleted parent
 session, a spawner removed from the configuration, and a laptop that never

@@ -2,8 +2,10 @@
 
 **Status**: PROPOSED 2026-10-09, direction ruled by the owner the same day
 (transport, child shape, approvals, who spawns, and the defaults). Phase 1 was
-simplified after review on 2026-10-11. Nothing here is built, and every
-spelling below is provisional until phase 1 lands.
+simplified after review on 2026-10-11. Slices S1 (the policy and the port
+messages) and S2 (the delegate session and the box's Agency) of phase 1 are
+built; the rest is not, and every spelling below that is not built is
+provisional until phase 1 lands.
 **Affects**: the orchestrator port's closed message type (three constructors in
 phase 1, `Spawn`, `Join` and `RunEnded`; `Release` and `ChildSend` in phase 2;
 `ChildEscalation` and `Resolve` in phase 3), `loom.toml` (a `[spawners.<name>]`
@@ -252,11 +254,13 @@ invalid argument (including a `within_ms` above `max_within_s` and
 As built in S1 (`client/remote_spawn`), the depth cap is one `Cap` beside the
 other three (`CapReached(cap, limit)`), `UnknownSpawner` carries the sender's
 node, and the sender's node is taken from the process that asked, since the
-messages above carry no origin field. S1 also has an `Unimplemented` refusal,
-which a daemon with a matching spawner returns until S2 gives it a delegate
-session; S2 removes the variant. All three messages run in a task linked to the
-port, including `RunEnded`, because S2 makes it wait on the delegate session's
-Agency holder.
+messages above carry no origin field. S1 had a temporary `Unimplemented`
+refusal for a daemon with a matching spawner and no delegate session yet; S2
+removed it. All three messages run in a task linked to the port, including
+`RunEnded`, because it waits on the delegate session's Agency holder. As built
+in S2, a `RunEnded` for a parent that has no delegate session yet creates the
+session, counted against `max_sessions`, so that the ended fence exists before a
+late `Spawn` for that run arrives.
 
 Phase 2 adds `Release(parent_session, reply)`, which stops every child of the
 delegate session, detached ones included, marks it released and deletes it
@@ -316,7 +320,9 @@ On the spawning daemon, in the parent session's store:
 On the remote:
 
 - `delegate_sessions(spawner, parent_session, session_id, last_contact_ms)` in
-  the catalogue, keyed by `(spawner, parent_session)`. Phase 2 adds a `state`
+  the catalogue, keyed by `(spawner, parent_session)`. As built in S2 the table
+  is `catalogue_delegate_sessions`, like the other catalogue tables, at catalogue
+  version 15, with `session_id` unique and referencing `catalogue_sessions`. Phase 2 adds a `state`
   column of `open`, `releasing` and `released`.
 - In each delegate session's store, under a reserved prefix that
   `api.put_fact` refuses: `delegate/ended/{operation}`, written by `RunEnded`

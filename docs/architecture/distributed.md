@@ -920,8 +920,9 @@ with, so a changed plan takes effect at the next reopen.
 [The design note](../design-notes/remote-subagents.md) and
 [protocol-change/084](../../protocol-change/084-remote-subagents.md) give a model
 on one orchestrator, a laptop, children that run on another, the box. Only the
-box's policy and the orchestrator port's messages exist so far; nothing starts a
-child yet.
+box's side exists so far: its policy, the orchestrator port's messages and the
+delegate sessions that serve them. The laptop's side, which sends the messages,
+is a later slice.
 
 The box lists each orchestrator that may spawn on it in a
 `[spawners.<name>]` table (`client/spawners`, read once at startup like
@@ -944,11 +945,62 @@ is never kept waiting behind one. The sender's node comes from the process that
 asked, and the host judges it against the spawner table.
 
 A daemon supplies the port a `SpawnHost`. One with no `[spawners]` table gives
-every message `UnknownSpawner`. In slice S1 a daemon with a matching spawner
-answers `Unimplemented`, because the delegate session that serves a spawn is
-slice S2. A host that crashes sends nothing, which the asker reports as
-`Unreachable`, and the sender resends a spawn because the receiver adopts the
-child its call site made.
+every message `UnknownSpawner`. One with a matching spawner serves the message
+from that spawner's delegate session, below. A host that crashes sends nothing,
+which the asker reports as `Unreachable`, and the sender resends a spawn because
+the receiver adopts the child its call site made.
+
+### The delegate session
+
+A spawner's children do not run in any session of the box's owner or members.
+The first message for a (spawner, parent session) pair creates a session for the
+pair through the registry (`manager.delegate_session`), with the spawner's
+placement and profile and the `session_only` memory domain, and records it in
+the catalogue table `catalogue_delegate_sessions` (catalogue version 15). The
+row is the pair, the session and the time of the last message. It is also the
+marker that makes the session a delegate session, which the registry's `movable`
+check reads, so `sessions.move` answers `not_movable` for it. The spawner's
+`max_sessions` is the count of its rows. The count, the creation and the record
+are one turn of the registry, which is already the one process that serializes
+session creation, so two first spawns cannot both pass the cap, and the
+creation's request key is derived from the pair, so a crash between the
+registration and the row is retried onto the same registration.
+
+Every later message for the pair finds the row and admits the session if it is
+not resident, so a restart or a close needs no step of its own. The message
+waits in `client/delegate_host` for the session to become resident, up to 20
+seconds. The registry's resident projection (`serve.Resident`) carries a
+`DelegateEndpoint`, three closures over the Agency holder's name that stay small
+because the registry copies the projection to whoever looks it up.
+
+The parent is not a strand of the delegate session. Its children's lineage names
+the reference `^main`, and `runtime/api` refuses any strand name that begins
+with `^`, so the reference cannot name a real strand. The Agency (`client/agency`)
+takes a `Source` that says whether a spawn comes from a strand of its session or
+from such a parent. For a remote parent the depth, the parent's tools and the
+spawner's terms (`remote_spawn.Delegation`) come from the message in place of a
+parent strand's cells, the base configuration is the delegate session's own
+`main`, which the spawner's profile seeded, and the child's brief is attributed
+to a `PeerOrigin` for the parent's session and strand. The child's tools are the
+parent's tools under the spawner's ceiling, narrowed by the request. The
+request's deadline is always finite: absent means `default_within_s`, and a value
+above `max_within_s` is refused and not clamped.
+
+`Join` is the Agency's `wait` for the named children, asked as `^main`, with a
+window cut to 25 seconds inside the receiver whatever the sender asked, and each
+settled child's usage added from the session's usage ledger. A child's entries
+are its whole branch, since a delegate child starts from no fork point, so its
+usage is the sum of the ledger rows priced on that branch. The remote prices
+once, and the sender records the result without repricing it.
+
+A run of the parent can end while a `Spawn` for it is still in flight, because
+the two travel from different processes and distribution orders only per sender.
+`RunEnded` therefore writes the fence `delegate/ended/{operation}` (a reserved
+fact prefix) and then reaps the children whose current run that operation owns,
+both inside the holder. A spawn that would create or finish a child reads the
+fence first and is refused with `ParentRunEnded`. A spawn that finds the child
+its call site already made adopts it whatever the fence says, since adopting
+creates nothing for the run end to have missed.
 
 ## Failures
 
@@ -977,6 +1029,8 @@ the model sees. "Unknown" below always means the model reads
 | No `epmd`, or its port held by something that does not answer | `distribution.start` fails before the catalogue opens. | The daemon exits: `no epmd answers on port N and Loom could not start one`. |
 | VM booted without the TLS flags, or a stale options file | `distribution.start` refuses with a `BootRefusal`. | The daemon exits with a plain line naming the check. |
 | Pin, name or CA mismatch | The TLS handshake is refused in whichever direction fails. | `executor_unavailable:` with a deliberately plain reason. |
+| Spawn for a run that already ended | The delegate session's `delegate/ended/{operation}` fence refuses it with `ParentRunEnded`, and no child is made. | The spawn refusal; a resend of a spawn whose child already exists is still answered with that child. |
+| Spawner past `max_sessions` | The registry refuses to create a session for a new parent. | `CapReached(MaxSessions)`; parents that have a session still reach it. |
 | Mismatched builds | `Attach` has one shape in every version, so a different `protocol.version` is refused at attach by value, in either direction, and the host stays up. Any other message the receiver cannot match crashes the host, which is why sessions are stopped before either machine is upgraded. | At attach: `the executor speaks protocol version N and this orchestrator does not`, and the open fails. Later: `daemon.executor_lost` on the executor. |
 
 **Quorum does not apply.** No state in this design is replicated or decided by a
@@ -1091,6 +1145,7 @@ The directory holds no state of its own, so it has no model.
 | `client/remote/remote_peer`, `client/peers`, `client/peer_outbox`, `client/peer_outbox_drain` | Peer mail across orchestrators |
 | `client/session_move`, `client/session_mover`, `client/session_movers`, `client/session_importer` | Moving a session |
 | `client/spawners`, `client/remote_spawn`; `daemon/main.spawn_host` | The `[spawners]` table, the subagent messages' vocabulary and the daemon's spawn host |
+| `client/delegate_host`, `client/child_usage`; `agency.delegate_spawn`, `delegate_join`, `delegate_run_ended`; `manager.delegate_session`; `storage/catalogue.claim_delegate` | The delegate session of a (spawner, parent session) pair: finding or creating it, the Agency's side of a remote parent, a child's usage, and the catalogue record |
 
 `packages/client/CLAUDE.md` has one section per phase, from "Trusted
 distribution membership" to "Moving a session between orchestrators", with the

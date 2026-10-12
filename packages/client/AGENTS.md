@@ -7160,9 +7160,11 @@ the session first opens and then never again.
   `chosen` is `manager.seed_executor`, a cast that runs `catalogue.seed_executor`
   in the registry's turn, which writes the `executor` column once, only for a
   registration with a pool and no executor.
-- The catalogue is at version 13 (v13 adds `catalogue_session_moves`, the
+- The catalogue is at version 15 (v13 adds `catalogue_session_moves`, the
   custody of a session moving between orchestrators, read with
-  `catalogue.custody`; nothing in the client reads it yet). `Registration.pool` is part of the creation
+  `catalogue.custody`; v14 adds the deletion mark; v15 adds `catalogue_delegate_sessions`, read by the
+  registry's `movable` check and written by `manager.delegate_session`).
+  `Registration.pool` is part of the creation
   request and `reserve_creation` compares it, and for a pooled request it does not
   compare the executor, which is the first open's choice (`named_same_executor`).
   `view_json` adds `executor` and `pool` members only when non-empty. The control
@@ -7492,11 +7494,12 @@ views and refusals across the real control socket), and
 `daemon_shipped_remote_move_test` (three shipped daemons, a clean move and the
 source lost after each step). The terminal's side is `tui`'s `sessions_move_test`.
 
-## Subagents on another orchestrator (protocol 084, slice S1)
+## Subagents on another orchestrator (protocol 084, slices S1 and S2)
 
-Slice S1 of phase 1 is the policy and the messages. Nothing starts a child yet:
-the delegate session is slice S2, the laptop's side is S3, the deadline tick is
-S4 and the shipped two-orchestrator test is S5.
+Slice S1 of phase 1 is the policy and the messages. Slice S2 is the box's side:
+the delegate session and the Agency that serves a remote parent. The laptop's
+side is S3, the deadline tick and the retention sweep are S4, and the shipped
+two-orchestrator test is S5.
 
 - `spawners` is the `[spawners.<name>]` table, read by `daemon/main.prepare_startup`
   into `Config.spawners` and validated by `catalog.parse` too. A `Spawner` has its
@@ -7518,7 +7521,16 @@ S4 and the shipped two-orchestrator test is S5.
   node beside the parent), `CallSite`, `Request` with `Detach`, `Spawned`, `Joined`
   (`Ready | Pending`), `ChildUsage`, and `SpawnRefusal` with `Cap`. It reuses
   `tools/agent`'s `Handle`, `Minter`, `Outcome`, `TerminalResult` and
-  `ResultSchema`. `Unimplemented` is a refusal only slice S1 uses; S2 removes it.
+  `ResultSchema`. S1's temporary `Unimplemented` refusal is gone. The module also
+  holds the pure half of taking a message to the Agency: `Terms` (the spawner's
+  figures in milliseconds), `Delegation` (the parent, its depth and tools, the
+  terms), `agent_request` (judges the deadline and the tool names against the
+  terms and builds `tools/agent.SpawnRequest`: a deadline is always finite, above
+  the cap is refused and not clamped, a name outside the ceiling is
+  `ToolOutsideCeiling`, context is always fresh), `clamp_tools` and `refusal_of`
+  (the Agency's refusals as the sender reads them; the one cap refusal is named
+  by the number it hit, and a tie is `FanOut`). `join_cap_ms` (25 000) is the
+  longest one join waits.
 - `orchestrator_port.Message` gains `Spawn`, `Join` and `RunEnded`. `answer` runs
   each through `detached`, as it does `Activate`, so none of them delays an
   `Owns`. `detached` now hands its computation the requester's node
@@ -7526,17 +7538,60 @@ S4 and the shipped two-orchestrator test is S5.
   ask where a pid lives). The functions behind the messages are a `SpawnHost`
   that `start_with` takes as a fifth argument. `refusing_spawns()` is the host of
   `start`, `start_serving` and `start_importing`, and answers `UnknownSpawner`.
-  `daemon/main.spawn_host(config.spawners)` is the production host: a node no
-  spawner names gets `UnknownSpawner(node)`, and a configured one gets
-  `Unimplemented`. A host that crashes sends nothing, so the asker's deadline
-  reads silence. `ask_spawn`, `ask_join` and `ask_run_ended` are the thin sending
-  ends the tests use; slice S3 builds the real one on `remote_peer`.
+  `daemon/main.spawn_host(config.spawners, delegates)` is the production host: a
+  node no spawner names gets `UnknownSpawner(node)`, and a configured one is
+  served by the `agency.DelegateEndpoint` that `delegates(spawner, parent)`
+  returns (`delegate_host.resolver` in the daemon). The spawn carries the
+  spawner's `delegate_host.terms_of`. A host that crashes sends nothing, so the
+  asker's deadline reads silence. `ask_spawn`, `ask_join` and `ask_run_ended` are
+  the thin sending ends the tests use; slice S3 builds the real one on
+  `remote_peer`.
+- The delegate session (slice S2). `delegate_host.resolver(Context)` is the step
+  between the port and an Agency: `manager.delegate_session` finds or creates the
+  session of a (spawner, parent session) pair in one registry turn, under
+  `max_sessions`, through `create_scoped` with `SessionOnly`, with a request key
+  derived from the pair, and records it in the catalogue
+  (`catalogue.claim_delegate`). The resolver then waits (`open_budget_ms`, 20 s,
+  `weft/poll`) for the session to become resident and returns its
+  `DelegateEndpoint`. The endpoint is a field of `serve.Instance` and
+  `serve.Resident` (`spawns`), three closures over the Agency holder's name and a
+  trimmed `Config`; keep them small, because `manager.resolve` copies the
+  projection to the caller. A placement is `creation`: an executor or pool
+  workspace is kept as written, a directory is canonicalized.
+  `movable` in the manager answers `AdminNotMovable` for a session with a
+  catalogue delegate row. Not built in S2: refusing members on a delegate session.
+- `agency` serves a remote parent through `delegate_spawn`, `delegate_join` and
+  `delegate_run_ended`, each a call into the holder or a wait outside it, and
+  `delegate_endpoint` projects the three. `spawn_on` takes a private `Source`
+  (`Local | Delegated(Delegation)`). A delegated caller is the reference `^main`
+  with the call site's coordinates, so `child_name` and `adopt` run unchanged. For
+  a delegated source: the depth is the message's plus one against the spawner's
+  `max_depth`; the parent's tools are the message's, clamped to the ceiling before
+  the holder sees them; the base configuration is the session's own `main`
+  strand; the brief's origin is `PeerOrigin(parent session, parent strand)`. The
+  ended fence `delegate/ended/{operation}` is read by `admit_run` only on the path
+  that creates or finishes a child, not on adoption, and written by `run_ended_in`
+  inside the holder before `reap_run_in`. `run_ended_in` counts the runs the
+  operation owns that were `Unstopped`, so a repeat counts nothing. `delegate_join`
+  cuts its window to `join_cap_ms`, waits as `^{strand}` (`wait_for`, which `wait`
+  also uses) and adds each settled child's usage from `child_usage.of_strands`
+  (one ledger scan, rows summed by branch entry). Grandchildren inside a delegate
+  session are still bounded by the Agency's own `depth_cap`, not `max_depth`.
+- `runtime/api` refuses a strand name starting with `^`
+  (`InvalidStrandName`), in `seed_strand`, and reserves the `delegate/` fact
+  prefix.
 
 Tests: `spawners_test` (a valid table, defaults, every refusal, the catalogue
 parser), `orchestrators_test` (the `@` and `#` refusal),
 `remote/orchestrator_port_test` (each message reaches the host with its origin,
-refusals, a slow answer not delaying `Owns`, a crashing host) and
-`daemon_spawn_host_test` (the production host's three answers).
+refusals, a slow answer not delaying `Owns`, a crashing host),
+`remote_spawn_test` (the pure half), `daemon_spawn_host_test` (the production
+host's answers and what the Agency is told), `delegate_host_test` (the creation
+for each placement, the cap, an invalid parent, a session that cannot open),
+`daemon_manager_test` (the registry's half and `not_movable`) and `agency_test`
+(a remote parent against a live Agency: adoption, the fence, run end, join with
+usage, the cap on a join's window, the ceiling, the caps, and the whole path
+through a real port).
 
 ## Explicit browser result reads
 
