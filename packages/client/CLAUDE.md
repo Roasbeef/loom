@@ -7758,7 +7758,10 @@ deployment") is the account and `docs/client-protocol.md` §3.29 the wire.
   reports, which need a `Report` constructor on the orchestrator port and are not
   built. Every node member beyond `node`, `name`, `roles`, `state` and `reason`
   (when `down`) is optional so that report adds members and replaces none. The
-  whole deployment's `state` is that of its worst node.
+  whole deployment's `state` is `deployment.verdict` (`Whole`, `Degraded`,
+  `Lost`) over the configured nodes, not counting the asking daemon, which is
+  always reachable: `ok` when all answered, `down` only when none did, `degraded`
+  between. One dead executor among several is a degraded deployment.
 - `Snapshot` is `Overview` (the asking daemon as a `Node`, `others`, `edges`,
   `placements`) or `Selected` (only the named nodes), so a reply with a `node`
   filter cannot carry edges or placements. Edges are `Serves` (executors) and

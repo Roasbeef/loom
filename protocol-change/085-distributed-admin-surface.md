@@ -263,7 +263,7 @@ function is added.
 |---|---|
 | `ok` | Reachable, and no reason applies. |
 | `degraded` | Reachable, with the reasons below. |
-| `down` | No connection within the deadline; the reason is the word `distribution.describe` gives. |
+| `down` | No connection within the deadline. The reason is one of `timeout` (the connection did not settle in time), `unreachable` (refused, or the host could not be reached; a wrong pin or certificate reads this way) and `unavailable` (the daemon has no distribution, or the node is not one it pinned). `distribution.describe` returns an operator's sentence with a remedy, so the word is chosen from the fault instead (`client/deployment.why_of`). |
 
 The degraded reasons are the fixed words `unclean_scope`, `full` (the scopes that
 are not cleanly closed are at the limit), `declaration_contradicted`,
@@ -333,7 +333,7 @@ treats an absent one as unknown, so a later slice adds members and replaces none
 |---|---|---|---|
 | `as_of_ms` | integer | always | The asking daemon's wall clock when the reply was built. |
 | `self` | string | always | The asking daemon's node. Every statement is from its point of view. |
-| `state` | string | always | The worst node state, in the order `down`, `degraded`, `ok`. |
+| `state` | string | always | The whole deployment, from the nodes the asking daemon is configured with, not counting itself: `ok` when every node is `ok`, `down` only when no node is reachable, and `degraded` otherwise. One dead executor among several is a degraded deployment, not a dead one. A reachable node that is itself `degraded` counts as reachable and not `ok`. |
 | `reasons` | array | always | One entry per node that is not `ok`: `node` and a fixed `reason` word. |
 | `nodes` | array | always | At most 33 entries; the asking daemon first, then orchestrators, then executors, each by name. |
 | `edges` | array | without `node` | `serves`, `peer` and `member` relations. `link` (`connected` or `none`) is present only on an edge that touches the asking daemon, which is the only link it observes. `sessions` on a `serves` edge; `voter` and `leader` on a `member` edge. |
@@ -395,7 +395,22 @@ The owner's operating home gains capabilities, given on the owner condition the
 creation form has: the placements for the creation cards, the elsewhere group, the
 move chooser (fresh homes only, through `manage_for`'s existing re-check) and the
 strip. No new event class is admitted: the cards and buttons are clicks, and the
-form is the submit already admitted beneath the home's table. Every name, path,
+form is the submit already admitted beneath the home's table.
+
+The creation cards work as follows. The page is given the executor and pool names
+when it opens (`Start.executors` and `Start.pools`) and starts a read of their
+states each time the panel opens (`Start.placements`). The read connects to the
+executors alone and runs in a weft task. The panel is drawn at once from the
+names, each card marked "not checked", and the numbered answer replaces them; a
+read that gives nothing leaves the names and says so. A state is advice and never
+blocks a choice, so a `down` executor can be chosen. The chosen card is the page's
+own state and not a field of the form, so the submit carries only the workspace
+and session names and a forged executor or pool field refuses the event. A pool
+creation is a `creations.Pooled` place beside `creations.Registered`; the daemon
+makes either session-only and re-checks the name against its configuration. A
+card says what the executor's operator declared as a claim, and "N scopes free"
+and the contradiction text when the executor's report supplies them. The
+workspace is typed until the reports carry the registered names. Every name, path,
 reason and workspace name drawn on any page is a text node, and no class, attribute,
 key or URL is built from them. Colours come from existing tokens; there are no
 left-edge accent bars and no shadows.
@@ -432,95 +447,37 @@ Not changed: `sessions.create`, the wire of `sessions.move`, `directory.status`,
 the executor host's messages, `protocol.version`, the catalogue, configuration, the
 Erlang FFI, formal models.
 
-## Implementation notes: `deployment.status` without the port
 
-The command shipped ahead of the orchestrator port constructors, so a reachable
-node is `ok` with no optional members. Where the code differs from the text
-above, or settles something the text left open, it is recorded here.
+## Implementation notes: what slices 2 and 3 leave for slice 4
 
-- **The reason word of a `down` node** is one of `timeout`, `unreachable` and
-  `unavailable`, chosen from the connection layer's fault in
-  `client/deployment.why_of`. The text above says "the word `distribution.describe`
-  gives", but `describe` returns an operator's sentence with a remedy, and the
-  example reply shows `"reason":"timeout"`. The three words follow the example.
-  `TimedOut` is `timeout`, `Unavailable` (a refused handshake, a wrong pin, an
-  unreachable host) is `unreachable`, and every other fault, together with a node
-  the daemon did not pin and a daemon with no distribution, is `unavailable`.
-- **The deployment's `state`** is the worst node state, as the table above says.
-  Both examples in this proposal and in the design note show `degraded` for a
-  deployment in which one node is `down`, which that rule would call `down`; the
-  code follows the rule, and the examples need a ruling. If a deployment with one
-  unreachable optional executor should read `degraded`, the change is one
-  function (`deployment.worst`).
-- **The `node` filter** is implemented in this slice, although the plan lists it
-  with the node reports. It has nothing to select among but `node`, `name`,
-  `roles` and `state` until the reports exist, and the rule that a name from a
-  request is never connected to is worth having tested from the first command.
-  `deployment.status` resolves the key against `[executors]` and
-  `[orchestrators]` before any connection, and a key that matches nothing is
-  `not_found`. A key shaped unlike a configuration key is `bad_request`. A key
-  that matches an executor and an orchestrator selects both.
-- **The asking daemon's node** has `name` equal to its node name, the "bare node
-  when it has none" rule, and `roles` `["orchestrator"]`, with `"member"` added
-  when `directory.standing` is `Member`. It is never connected to and is always
-  `ok`.
-- **What is not in the reply yet:** the `directory` and `moves` members, `member`
-  edges, `sessions` counts on a `serves` edge, and the `imports` and `serves`
-  members of an `orchestrators` entry. All need node reports or a directory read
-  that is part of the next slice. `orchestrators` entries carry `name`, `node` and
-  `state`. An executor placement carries `name`, `node`, `state` (`ready` or `down`)
-  and `declared`; `free_scopes` and `contradiction` are absent. A pool placement
-  lists the executors `pools.candidates` admits, which are fewer than the pool's
-  `executors` key when its requirements reject one.
-- **`server.Config`** gains a `deployment` field, the daemon's node name and the
-  function it connects with, so a test can script the connections. Nothing else of
-  the daemon's configuration changes, and no `loom.toml` key is added.
+`deployment.status` and the creation cards ship without the orchestrator port's
+`Report`, so a reachable node is `ok` with no optional members. Slice 4 adds the
+rest:
 
-## Implementation notes: the cards in the creation form
-
-The owner's home draws a card for each executor and each pool in the panel that
-"New session on an executor" opens. The cards follow the design note's section 5
-and differ from it in these ways.
-
-- **The reads.** The page is given the executor and pool names when it opens
-  (`Start.executors`, and `Start.pools`, which is new) and starts a read of their
-  states when the panel opens, as `Start.placements`. The note called the read
-  `Start.deployment`. It is `client/deployment.placed`: the daemon connects to its
-  executors and to nothing else, since the orchestrators are no part of a
-  creation. The read runs in a weft task (`ui_socket.read_task`) and the answer is
-  numbered, so an older read cannot overwrite a newer one. The panel is drawn at
-  once from the names, with each card marked "not checked", and the answer
-  replaces them. A read that gives nothing leaves the names and says so; the page
-  has a value for that (`placements.Unreported`) that the daemon does not yet send.
-- **A state is advice.** A `down` executor is drawn with that word and its Choose
-  button works, as the note's section 3 decides. The panel says this above the
-  cards.
-- **What a card says.** The name, the kind, a pill in the existing `online`,
-  `pending` or `ended` tint (`ready` is `online`, `degraded` and `full` are
-  `pending`, `down` is `ended`), and what the executor's operator declared. The
-  declaration is worded as the operator's claim ("Declared: ...") because no
-  census has been read. "N scopes free" and the contradiction text are drawn when
-  the daemon supplies them, and this slice's daemon supplies neither. A pool's card
-  says how many of its admitted executors were reached and the order they are
-  tried in, and its pill is `ready` when at least one was reached and `down`
-  otherwise.
-- **The workspace is typed.** The executor's registered workspace names come with
-  the node reports, so the form under the chosen card is today's typed field. The
-  choice of card is the page's own state: a card's button sends the placement it
-  was drawn for, and the form's submit carries the workspace and session names
-  only. That differs from the old form, whose executor was a select field, and a
-  forged `executor` or `pool` field is now an extra field that refuses the event.
-- **Pools create sessions.** `creations.Place` gains `Pooled(pool, workspace)`,
-  next to `Registered`, rather than widening `Registered`. `create_for` passes the
-  pool and no executor to the creation, the scope is session-only, and the daemon's
-  `pool_unknown` is a fixed refusal (`creations.UnknownPool`).
-- **Local stays the default.** The panel is opened by its own button, and the
-  forms under a workspace and for a typed folder create local sessions as before.
-  There is no "this machine" card.
-- **No new event class.** A card's button is a click beneath the sessions list's
-  section, where the owner's socket already admits one.
-- **The stylesheet** is regenerated (`make gen-client`) because the page's
-  stylesheet records the digest of every `web_view` source. A branch that changes
-  any other `web_view` source and regenerates it too will conflict in
-  `packages/web_view/priv/static/web_client.css`'s header, and the conflict is
+- The `directory` and `moves` members, the `member` edges, the `sessions` counts
+  on `serves` edges, and the `imports` and `serves` members of an `orchestrators`
+  entry. Until then an `orchestrators` entry carries `name`, `node` and `state`.
+- An executor placement carries `name`, `node`, `state` (`ready` or `down`) and
+  `declared`. `free_scopes` and `contradiction`, and the states `degraded` and
+  `full`, wait for the executor's own report. The page already draws all four
+  states and both members when they arrive.
+- A node's own `degraded` state and its reasons. The whole-deployment rule counts
+  a reachable node that is not `ok` as degrading the deployment, and
+  `client/deployment.verdict` will be extended to read it; today it sees only
+  reachable and down.
+- The registered workspace names that the `node` filter returns, and the workspace
+  select that replaces the typed field in the cards' form. Today the filter
+  returns the one node with the same four members as any other read.
+- A page-side value for a placement read that gave nothing
+  (`placements.Unreported`) exists and the page handles it, but this slice's
+  daemon always answers with a report.
+- The asking daemon is a node named by its node name (the "bare node when it has
+  none" rule) with the roles `orchestrator`, and `member` when it stands in the
+  directory's cluster. It is never connected to and is always `ok`.
+- `server.Config` gained a `deployment` field, the daemon's node name and the
+  function it connects with, so a test can script the connections. No `loom.toml`
+  key was added.
+- The page's stylesheet records a digest of every `web_view` source, so a branch
+  that changes another `web_view` source and regenerates it conflicts in
+  `packages/web_view/priv/static/web_client.css`'s header. The conflict is
   resolved by running `make gen-client` once after the merge.

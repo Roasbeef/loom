@@ -584,6 +584,9 @@ and then its `[executors]` rows, connects to all of them at once in one weft run
 of three reason words: `timeout`, `unreachable` or `unavailable`. Nothing is
 cached; the next read connects again. A first TLS handshake can outlast its
 second, in which case the node is `down` in that reply and `ok` in the next. The
+deployment as a whole is `ok` when every configured node is, `down` only when none
+is, and `degraded` between: one dead executor among several is a degraded
+deployment, not a dead one. The
 daemon asks about itself too, as the first node, and a daemon with no
 `[distribution]` table answers with itself and its executors `down`.
 

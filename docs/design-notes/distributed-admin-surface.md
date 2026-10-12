@@ -116,7 +116,9 @@ so neither client can draw a `moving` or `moved` session
    bootstrap`, `loom distribution provision` and `install`, and any future
    membership removal or failover (section 9).
 10. **No new configuration key, catalogue table, port or Erlang function.**
-11. **Eight slices.** The first three add no new command or port (section 11).
+11. **Eight slices.** The first adds optional members to a record and the second
+    adds `deployment.status`; neither adds a port, and the first three add no
+    constructor to the orchestrator port (section 11).
 
 ## 4. How the pieces fit
 
@@ -227,7 +229,7 @@ own configuration. It runs on the asking daemon, so both clients show one verdic
 |---|---|
 | `ok` | Reachable, and no reason below applies. |
 | `degraded` | Reachable, with one or more fixed reasons. |
-| `down` | No distribution connection could be made within the deadline. The reason word is the one `distribution.describe` gives. |
+| `down` | No distribution connection could be made within the deadline. The reason is one of the fixed words `timeout` (the connection did not settle in time), `unreachable` (refused, or the host could not be reached; a wrong pin or certificate reads this way) and `unavailable` (the daemon has no distribution, or the node is not one it pinned). `distribution.describe` gives an operator's sentence with a remedy, which is too long for a state, so the words are chosen from the fault (`client/deployment.why_of`). |
 
 The degraded reasons are: `unclean_scope` (a scope that blocks a reopen exists),
 `full` (the scopes that are not cleanly closed are at the limit, so the next attach
@@ -237,8 +239,13 @@ disagrees with its `[executors.<name>]` row, using `contradiction`),
 `directory_no_leader`, `directory_copy_unconfirmed`, and `directory_quorum_lost`
 (fewer reachable voters than a majority, from the asker's connect attempts). There
 are no near-limit thresholds. The scope counts, the ledger bytes and their limits
-are reported as numbers, and a person reads them. The whole deployment is as bad as
-its worst node, in the order `down`, `degraded`, `ok`.
+are reported as numbers, and a person reads them.
+
+The whole deployment reads from the nodes the asking daemon is configured with,
+not counting itself, which is always reachable. It is `ok` when every node is
+`ok`, `down` only when no node is reachable, and `degraded` in between: one dead
+executor among several is a degraded deployment, not a dead one. A reachable node
+that is itself `degraded` counts as reachable and not `ok`.
 
 ### 4.4 Authority and trust
 
@@ -308,11 +315,19 @@ positions, labels are text nodes, as the profile select already works). When the
 executor did not report its workspaces, or for a pool whose members disagree, the
 form falls back to today's typed field and says why in one line. Cards use clicks
 and the form uses the submit that the owner's socket already admits beneath the
-home table, so no new event class is admitted. The page is told the cards once
-when the form opens (a weft task runs the read; the runtime never waits) and the
-creation path (`create_for`) is untouched except that it accepts a pool, which
-`creations.Registered` gains as a variant. It re-checks the name against its
-configuration as it does for executors.
+home table, so no new event class is admitted. The page is given the executor and
+pool names when it opens (`Start.executors` and `Start.pools`) and starts the
+read of their states each time the panel opens (`Start.placements`; a weft task
+runs it and the runtime never waits). The panel is drawn at once from the names,
+with each card marked "not checked", and the answer replaces them; it is numbered,
+so an older read cannot overwrite a newer one. The read connects to the executors
+alone, because the orchestrators are no part of a creation. The chosen card is
+the page's own state and not a field of the form, so the submit carries only the
+workspace and session names and a forged executor or pool field refuses the event.
+The creation path (`create_for`) accepts a pool through a new `creations.Pooled`
+place beside `creations.Registered`, makes either session-only, and re-checks the
+name against its configuration as it does for executors (`executor_unknown`,
+`pool_unknown`).
 
 **Terminal.** `loom deployment executors` prints the same candidates: name, node,
 state, scopes, platform, enforcement, workspaces and the pools each belongs to,
@@ -448,7 +463,7 @@ the directory and the moves (example in section 8). `loom directory status` prin
 `directory.status` as a short table. Both take `--json`.
 
 **Tests.** The classification table as pure tests, one case per reason and one for
-the worst-node rule. A report test against a real ledger with an unclean scope, a
+the whole-deployment rule (all `ok`, some down, none reachable). A report test against a real ledger with an unclean scope, a
 full ledger and an `open` scope. A shipped test with an executor daemon restarted
 under a live session (the case the setup guide's troubleshooting describes) that
 asserts the scope appears as `unclean_scope` with the right session id and that
@@ -653,9 +668,11 @@ is an action.
 
 Each slice ends green on its package gates, `make lint` and `make doc-check`, and
 updates the CLAUDE.md of any package it changes. The dependency named is the PR
-whose code the slice needs. Slices 1 to 3 add no new command or port. From slice 2
-the node members of `deployment.status` other than `node`, `name`, `roles` and
-`state` are optional, so a later slice adds members and replaces none.
+whose code the slice needs. Slice 2 adds the control command `deployment.status`;
+slices 1 to 3 add no port and no constructor to the orchestrator port. From slice
+2 the node members of `deployment.status` other than `node`, `name`, `roles` and
+`state` (and `reason` on a node that is down) are optional, so a later slice adds
+members and replaces none.
 
 1. **`sessions.list` carries custody.** *Scope:* optional `moving` and `moved`
    members on each record; `tui` decodes and renders them; `web_view` hides `moved`
@@ -667,7 +684,8 @@ the node members of `deployment.status` other than `node`, `name`, `roles` and
    source. *Depends on:* #923.
 2. **`deployment.status` without the port.** *Scope:* `client/deployment` (pure
    candidates, edges and classification), reachability from the asker's connect
-   attempts, placements, `loom deployment status` and `loom deployment executors`,
+   attempts, placements, the `node` filter (a configured key, looked up before
+   anything is dialled), `loom deployment status` and `loom deployment executors`,
    both with `--json`. Reachable nodes are `ok` with no optional members. *Files:*
    new `client/deployment.gleam`, `client/daemon/protocol.gleam`,
    `client/daemon/server.gleam`, `tui/src/tui.gleam`, `tui/daemon/protocol.gleam`,
@@ -675,19 +693,22 @@ the node members of `deployment.status` other than `node`, `name`, `roles` and
    pure tests, a two-daemon test that a stopped executor is `down`, terminal
    goldens. *Exit:* `loom deployment executors` names the unreachable executor
    before a session is created. *Depends on:* #923.
-3. **Executor and pool cards in the web form.** *Scope:* `Start.deployment` (the
-   placements, read by a weft task when the form opens), cards, the choice, pool
-   creation through `creations.Registered`. *Files:* `web_view/home.gleam`,
+3. **Executor and pool cards in the web form.** *Scope:* `Start.pools` and
+   `Start.placements` (the states, read by a weft task from the executors alone
+   each time the panel opens), cards, the choice, pool creation through
+   `creations.Pooled`. *Files:* `web_view/home.gleam`, `web_view/placements.gleam`,
    `web_view/view/create.gleam`, `web_view/creations.gleam`,
-   `client/daemon/ui_socket.gleam`, `client/daemon/server.gleam`. *Tests:*
+   `client/deployment.gleam`, `client/daemon/ui_socket.gleam`,
+   `client/daemon/server.gleam`. *Tests:*
    simulation, route and socket admission tests. *Exit:* the form shows state on
    each card and creates a pooled session. *Depends on:* slice 2.
 4. **Reports, the node filter and the directory copy.** *Scope:* the `Report`
    constructor on the orchestrator port, answered through `detached` and wired by a
    closure from `main`; the host's private `Summary` event;
    `exec_ledger.summary`; the movers' stall reason and a `moves` read; `copy`;
-   the full node members of `deployment.status`, the `node` filter with
-   workspace names, the text topology, and the workspace select in the form.
+   the full node members of `deployment.status`, the workspace names and long
+   lists that the `node` filter returns, the text topology, and the workspace
+   select in the form.
    *Files:* `client/remote/orchestrator_port.gleam`, `client/daemon/main.gleam`,
    `client/remote/host.gleam`, `storage/exec_ledger.gleam` with its SQL and
    generated module (own commit), `client/session_movers.gleam`,
