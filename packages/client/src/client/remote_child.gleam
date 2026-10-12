@@ -28,19 +28,27 @@
 //// back is `Refused` to `Spawned`: an answer that names a child means the child
 //// exists, and a stub must not be left refusing a child that is running.
 ////
+//// A refusal never removes a stub. The effect process that hears one and the
+//// drainer that hears one both record `Refused` and leave the stub, because a
+//// refusal can be transient (a cap that clears, a store that recovers) and a
+//// second asker of the same call site can still be answered with a child. If the
+//// stub had been deleted, that child would exist on the other orchestrator with
+//// a lineage cell here and no stub to count it, list it or wait on it. A
+//// `Refused` stub does not count against the caps and shows in the roster as
+//// refused.
+////
 //// The lineage cell of a remote child is written with the `Spawned` step,
 //// before the stub, so that by the time anything shows the model a handle the
 //// addressing rule already holds the child as a descendant.
 ////
 //// ## Flow
 ////
-//// `admit` → `spawned` | `refused` | `discard` → `settled`
+//// `admit` → `spawned` | `refused` → `settled`
 ////
 //// 1. `admit` writes the stub for a call site, or hands back the one a replay
 ////    or an earlier attempt already wrote.
 //// 2. `spawned` and `refused` apply the orchestrator's answer to a `Requested`
-////    stub; `discard` removes a stub whose spawn was refused where the model
-////    heard it.
+////    stub, whoever heard it.
 //// 3. `settled` records a join's report on a `Spawned` stub.
 
 import client/remote_spawn.{type ChildUsage, type Parent}
@@ -287,10 +295,13 @@ pub fn spawned(
   })
 }
 
-/// Records the orchestrator's refusal of a `Spawn`, for a spawn nobody is
-/// waiting on: the drainer learned it after the model had been told the
-/// orchestrator did not answer. The stub stays, in `Refused`, so the roster can
-/// show the reason, and it stops counting against the caps.
+/// Records the orchestrator's refusal of a `Spawn`, whoever heard it: the effect
+/// process the model is waiting on, or the drainer that learned it after the
+/// model had been told the orchestrator did not answer. The stub stays, in
+/// `Refused`, so the roster can show the reason, and it stops counting against
+/// the caps. It is never removed, because the refusal may be transient and a
+/// second asker of the same call site can still be answered with a child, which
+/// `spawned` then records over the refusal.
 ///
 /// ## Examples
 ///
@@ -308,25 +319,6 @@ pub fn refused(
       Spawned(..) | Settled(..) | Refused(..) -> None
     }
   })
-}
-
-/// Removes a stub whose spawn was refused where the model heard it. Nothing was
-/// created, nothing is owed, and the refusal is in the model's own result, so the
-/// stub has no reader left. A stub that has since moved, because another asker got
-/// a child from the same call site, is left alone.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // remote_child.discard(runtime, key)
-/// ```
-pub fn discard(runtime: api.Runtime, key: String) -> Result(Nil, String) {
-  use found <- result.try(read(runtime, key))
-  case found {
-    Some(#(Stub(state: Requested, ..), _seq)) ->
-      api.delete_reserved_fact(runtime, key) |> result.map_error(describe)
-    Some(_) | None -> Ok(Nil)
-  }
 }
 
 /// Records a join's report that a child finished, with what it cost. The cost is

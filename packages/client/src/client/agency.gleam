@@ -3217,8 +3217,10 @@ fn remote_request(request: agent.SpawnRequest) -> remote_spawn.Request {
 // Asks until the orchestrator answers or the window runs out, resending with a
 // doubling pause. A resend is safe because the receiver adopts the child the
 // call site already made, so an answer lost on the way back is returned again.
-// A refusal ends the stub where the model hears it, and the window running out
-// leaves it `Requested` and rings the drainer, which keeps asking after the model
+// A refusal is recorded on the stub as `Refused` and the stub stays, exactly as
+// it does when the drainer hears one. The window running out leaves the stub
+// `Requested`, and so does an answer or a refusal that could not be recorded; in
+// each of those cases the drainer is rung, and it keeps asking after the model
 // has moved on.
 fn ask_until_answered(
   config: Config,
@@ -3254,13 +3256,7 @@ fn ask_until_answered(
     )
   case asked {
     poll.Answered(answer) -> record_answer(config, key, stub, answer)
-    poll.Failed(reason) -> {
-      let _removed = case borrow(config) {
-        Ok(runtime) -> remote_child.discard(runtime, key)
-        Error(_) -> Ok(Nil)
-      }
-      Error(agent.RemoteRefused(orchestrator: stub.orchestrator, reason:))
-    }
+    poll.Failed(reason) -> Error(record_refusal(config, key, stub, reason))
     poll.Expired -> {
       config.remote_queued()
       Error(agent.RemoteSilent(orchestrator: stub.orchestrator))
@@ -3268,23 +3264,50 @@ fn ask_until_answered(
   }
 }
 
+// A refusal heard where the model asked. The stub is kept as `Refused`, never
+// removed: a refusal can be transient (a cap that clears, a store that
+// recovers), and the drainer or a replay of the same call site may still be
+// answered with a child. A stub that was deleted here would leave that child
+// with a lineage cell and no stub to count it, list it or wait on it. If the
+// refusal cannot be recorded the stub stays `Requested` and the drainer is
+// rung, which asks again and hears the same refusal.
+fn record_refusal(
+  config: Config,
+  key: String,
+  stub: remote_child.Stub,
+  reason: String,
+) -> Refusal {
+  let recorded = {
+    use runtime <- result.try(borrow(config) |> result.replace_error(Nil))
+    remote_child.refused(runtime, key, reason) |> result.replace_error(Nil)
+  }
+  case recorded {
+    Ok(_) -> Nil
+    Error(Nil) -> config.remote_queued()
+  }
+  agent.RemoteRefused(orchestrator: stub.orchestrator, reason:)
+}
+
 // The answer to a spawn is written down before the model sees it. If it cannot
 // be written the stub stays `Requested` and the drainer asks again, which
 // returns the same answer, so the model is told the spawn failed and the child
-// is not lost.
+// is not lost. The drainer is rung either way: after a `Spawned` write it has a
+// running child to ask about, and after a failed one it has the spawn to resend.
 fn record_answer(
   config: Config,
   key: String,
   stub: remote_child.Stub,
   answer: remote_spawn.Spawned,
 ) -> Result(Spawned, Refusal) {
-  use runtime <- result.try(borrow(config))
-  let #(now, _clock) = clock.read(config.clock)
-  use recorded <- result.try(
+  let recorded = {
+    use runtime <- result.try(borrow(config))
+    let #(now, _clock) = clock.read(config.clock)
     remote_child.spawned(runtime, key, stub, answer, now)
-    |> result.map_error(agent.PlaneFailed),
-  )
-  case recorded.state {
+    |> result.map_error(agent.PlaneFailed)
+  }
+  config.remote_queued()
+  use stored <- result.try(recorded)
+  case stored.state {
     remote_child.Spawned(placed:) | remote_child.Settled(placed:, ..) ->
       Ok(placed_spawn(placed))
     remote_child.Requested | remote_child.Refused(..) ->

@@ -34,6 +34,7 @@ import client/remote/address
 import client/remote/orchestrator_port
 import client/remote_child
 import client/remote_drain
+import client/remote_reach
 import client/remote_spawn
 import client/serve
 import client/spawners
@@ -5813,7 +5814,7 @@ pub fn a_replayed_spawn_resumes_a_stub_that_was_never_answered_test() {
   close(harness)
 }
 
-pub fn a_refused_spawn_removes_its_stub_and_frees_its_slot_test() {
+pub fn a_refused_spawn_keeps_its_stub_refused_and_frees_its_slot_test() {
   let reason = "the cap `max_sessions` is 4 and was reached"
   let box = fake_orchestrators.start("box", fake_orchestrators.Refuses(reason))
   let #(harness, _queued) =
@@ -5825,16 +5826,76 @@ pub fn a_refused_spawn_removes_its_stub_and_frees_its_slot_test() {
     harness.seam.spawn(caller, on_box("refused"))
   assert told == reason
 
-  // A definitive answer is not retried, nothing was created, and the stub that
-  // was written ahead is gone with the refusal in the model's own result.
+  // A definitive answer is not retried and nothing was created, and the stub is
+  // kept, saying why: the effect process records a refusal exactly as the
+  // drainer does.
   assert list.length(fake_orchestrators.report(box).spawns) == 1
   assert fake_orchestrators.report(box).children == []
-  assert stubs_of(harness) == []
+  let assert [stub] = stubs_of(harness)
+  assert stub.state == remote_child.Refused(reason)
 
-  // So the slot is free again.
+  // A refused stub does not count, so the slot is free, and the roster shows it
+  // as refused.
   fake_orchestrators.set_mode(box, fake_orchestrators.Up)
   let assert Ok(_spawned) =
     harness.seam.spawn(second_call(caller, 1), on_box("accepted"))
+  let assert Ok(peers) = harness.seam.roster(caller)
+  assert list.any(peers, fn(peer) {
+    peer.placement
+    == agent.Elsewhere(orchestrator: "box", standing: agent.Declined(reason:))
+  })
+  close(harness)
+}
+
+// The refusal the model heard was transient, and the same call site is answered
+// with a child afterwards by the other asker (the drainer, after a restart). The
+// stub is still there to take the child, so it is counted, listed and waited on.
+pub fn a_refusal_heard_by_the_model_does_not_orphan_a_later_child_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Refuses("busy"))
+  let #(harness, _queued) =
+    start_remote(Hangs, [box], fn(config) {
+      agency.Config(..config, fan_out: 1)
+    })
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Error(agent.RemoteRefused(..)) =
+    harness.seam.spawn(caller, on_box("transient"))
+  let assert [refused] = stubs_of(harness)
+  assert refused.state == remote_child.Refused("busy")
+
+  // The cap clears, and the drainer's ask of this call site is answered.
+  fake_orchestrators.set_mode(box, fake_orchestrators.Up)
+  let reach = harness.config.remote
+  let assert Ok(answer) =
+    reach.spawn(
+      "box",
+      remote_reach.parent(reach, "main"),
+      refused.site,
+      refused.depth,
+      refused.parent_tools,
+      refused.request,
+    )
+  let key = remote_child.stub_key(agent.call_site_digest(caller))
+  let assert Ok(moved) =
+    remote_child.spawned(harness.runtime, key, refused, answer, 1000)
+
+  // The stub took the child, and the lineage cell written with it agrees.
+  let assert remote_child.Spawned(placed) = moved.state
+  assert placed.handle == answer.handle
+  let assert Some(cell) = lineage_of(harness, placed.handle.strand)
+  assert cell.parent == "main"
+  assert cell.orchestrator == Some("box")
+  assert cell.brief == placed.handle.operation
+  assert agency.owns(
+    harness.runtime,
+    ancestor: "main",
+    strand: placed.handle.strand,
+  )
+
+  // So the child is counted, and the roster lists it with its handle.
+  let assert Error(agent.FanOutCapReached(live: 1, cap: 1)) =
+    harness.seam.spawn(second_call(caller, 1), a_spawn("local"))
+  let assert Ok(peers) = harness.seam.roster(caller)
+  assert list.any(peers, fn(peer) { peer.handle == Some(placed.handle) })
   close(harness)
 }
 
@@ -6316,7 +6377,7 @@ pub fn a_stub_only_moves_forward_test() {
   close(harness)
 }
 
-pub fn a_refusal_ends_a_stub_that_was_never_answered_test() {
+pub fn a_refusal_ends_a_stub_that_was_never_answered_until_a_child_outranks_it_test() {
   let harness = start_harness(Hangs)
   let #(key, stub) =
     a_stub_of(
@@ -6332,30 +6393,11 @@ pub fn a_refusal_ends_a_stub_that_was_never_answered_test() {
 
   // The refused stub is not final against a child that exists: an answer that
   // names one, from a second asker of the same call site, outranks the refusal,
-  // so the stub is never left saying no to a running child. And once it has moved,
-  // the first asker's removal of it leaves it alone.
+  // so the stub is never left saying no to a running child.
   let assert Ok(moved) =
     remote_child.spawned(harness.runtime, key, stub, an_answer("late"), 0)
   let assert remote_child.Spawned(placed) = moved.state
   assert placed.handle == an_answer("late").handle
-  assert remote_child.discard(harness.runtime, key) == Ok(Nil)
   assert remote_child.find(harness.runtime, key) == Ok(Some(moved))
-  close(harness)
-}
-
-pub fn a_stub_that_is_still_requested_can_be_discarded_test() {
-  let harness = start_harness(Hangs)
-  let #(key, stub) =
-    a_stub_of(
-      "box",
-      caller_on("main", "turn-1:tools", 0),
-      remote_child.Requested,
-      remote_spawn.Attached,
-    )
-  let assert Ok(remote_child.Fresh) =
-    remote_child.admit(harness.runtime, key, stub)
-  assert remote_child.discard(harness.runtime, key) == Ok(Nil)
-  assert remote_child.find(harness.runtime, key) == Ok(None)
-  assert remote_child.discard(harness.runtime, key) == Ok(Nil)
   close(harness)
 }
