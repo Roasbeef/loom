@@ -55,6 +55,10 @@
 //// cannot answer sends nothing, and the asker's deadline turns that into
 //// silence, which for a spawn means "the child may exist" and is resolved by
 //// resending, since the receiver adopts the child its call site already made.
+//// The sending end is `client/remote/remote_spawner`, which connects to the
+//// pinned peer and asks through `ask_spawn`, `ask_join` and `ask_run_ended`
+//// below, and fills the record the parent's Agency asks through
+//// (`client/remote_reach`).
 ////
 //// The port reveals only whether an identity is in this daemon's catalogue, to a
 //// peer the operator pinned as a trusted Erlang node. It carries no credential,
