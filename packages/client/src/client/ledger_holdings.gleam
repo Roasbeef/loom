@@ -38,11 +38,11 @@
 ////
 //// ## Flow
 ////
-//// `collect` → `targets` → the `Asker` → `Answer`s
+//// `collect` → `targets` → `over_distribution` → `from_catalogue`
 ////
 //// 1. `targets` lists the orchestrators to ask: this node, if it is an active
 ////    orchestrator, and each orchestrator its pin table lists.
-//// 2. `collect` asks them all at once in one weft run under `deadline_ms`, so
+//// 2. `collect` asks them all at once in one weft run under a deadline, so
 ////    one silent laptop costs the reply at most that long.
 //// 3. `over_distribution` is the production `Asker`: it connects to the pinned
 ////    peer, or addresses its own port, and asks `Holds`.

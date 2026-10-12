@@ -130,7 +130,10 @@ pub type Config {
     /// `[peers]` at startup and never reread (protocol-change/077).
     peer_policy: peer_mail.Policy,
     /// The executors sessions may be placed on, read from `[executors.<name>]`
-    /// at startup and never reread (protocol-change/078).
+    /// at startup and never reread (protocol-change/078). These are the rows the
+    /// operator wrote. A daemon that runs from a ledger also uses the executors
+    /// the ledger links it to (protocol-change/086, phase 2), which
+    /// `executor_roster` adds when the list is read.
     executors: List(executors.Executor),
     /// The groups of those executors a session may be created in, read from
     /// `[pools.<name>]` at startup and never reread (protocol-change/078).
@@ -141,7 +144,8 @@ pub type Config {
     workspaces: List(workspaces.Workspace),
     /// The other orchestrators this daemon asks which of them owns a session
     /// its own catalogue lacks, read from `[orchestrators.<name>]` at startup
-    /// and never reread (protocol-change/078, phase 3).
+    /// and never reread (protocol-change/078, phase 3). These are the rows the
+    /// operator wrote, and `orchestrator_roster` adds the ledger's.
     orchestrators: List(orchestrators.Orchestrator),
     /// The `[directory]` table, read at startup and never reread: whether this
     /// daemon is a member of the session directory's Khepri cluster and who the

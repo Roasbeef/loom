@@ -16,6 +16,11 @@
 //// 4. Hand the daemon every line it lacks, then poll its status for a bounded
 ////    time and print which members hold the new head.
 ////
+//// `revoke` adds a check to step 3. Before it signs, it checks the link graph
+//// and asks the daemon what the orchestrators hold (`ledger.holdings`), and it
+//// refuses while the member owns sessions or has sessions placed on it, or when
+//// that cannot be told, unless `--force` (`checked_revoke`).
+////
 //// Membership changes are eventual. A member that is off learns an entry when it
 //// next connects to one that has it, so the command does not wait for it: it
 //// prints who confirmed and who is still pending and returns. A command with no

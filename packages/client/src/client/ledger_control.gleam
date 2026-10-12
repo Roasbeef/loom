@@ -558,7 +558,7 @@ pub fn decode_holdings(value: JsonValue) -> Result(List(AnswerView), String) {
   use fields <- result.try(object(Ok(value), "holdings"))
   case field(fields, "orchestrators") {
     Ok(json.Array(items)) ->
-      case list.length(items) <= membership_ledger.max_active {
+      case list.drop(items, membership_ledger.max_active) == [] {
         True -> list.try_map(items, answer_view)
         False -> Error("holdings.orchestrators holds too many entries")
       }
@@ -581,7 +581,7 @@ fn held_view(fields: List(#(String, JsonValue))) -> Result(HeldView, String) {
   use sessions <- result.try(count_of(fields, "sessions"))
   use placed <- result.map(case field(fields, "placed") {
     Ok(json.Array(items)) ->
-      case list.length(items) <= orchestrator_port.max_placed {
+      case list.drop(items, orchestrator_port.max_placed) == [] {
         True -> list.try_map(items, placed_view)
         False -> Error("holdings placed holds too many entries")
       }
