@@ -118,7 +118,7 @@ never one per file access.
 Tools that act on the conversation rather than the checkout (`agent_*`,
 `history_search`, `remember`, `schedule_*`, `context`, `advise`, skills,
 peers) keep running on the orchestrator. Clearance stays on the orchestrator
-too. `wiring.clear` is pure over `tool.Declarations` (`wiring.gleam:1709`,
+too. `wiring.clear` is pure over `tool.Declarations` (`wiring.gleam:1717`,
 `tools/tool.gleam:573-589`), so the orchestrator builds declarations for the
 workspace tools with the same registration code, fed by census facts instead
 of local probes, and clears every call before it is sent.
