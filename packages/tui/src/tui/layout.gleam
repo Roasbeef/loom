@@ -72,6 +72,7 @@ import tui/input_frame
 import tui/model.{
   type Model, AccessManager, AgentInspector, ApprovalInspector, DaemonSelector,
   DiffVisible, GoalInspector, ModelSelector, NoOverlay, PeerLinkManager,
+  ProposalReview,
 } as tui_model
 import tui/queue_editor
 import tui/queue_panel
@@ -266,7 +267,8 @@ pub fn rail_area(screen: Rect, model: Model) -> Rect {
     | GoalInspector(_)
     | DaemonSelector(_)
     | PeerLinkManager(_)
-    | AccessManager(_) -> shown_rail_area(screen, model)
+    | AccessManager(_)
+    | ProposalReview(_) -> shown_rail_area(screen, model)
   }
 }
 
@@ -1441,6 +1443,7 @@ pub fn diff_borrow_eligible(model: Model) -> Bool {
     | DaemonSelector(_)
     | PeerLinkManager(_)
     | AccessManager(_)
+    | ProposalReview(_)
     | ApprovalInspector(_) -> False
   }
   && !model.view.notes_open

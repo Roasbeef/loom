@@ -161,12 +161,12 @@ pub fn update_tick(model: Model) -> Model {
 // Preserve the original model for the quiet-time comparison after all
 // reads settle.
 //
-// The first eight reads (`session_step.service_reads`) take the shared
+// The first ten reads (`session_step.service_reads`) take the shared
 // record alone and read nothing of the terminal, so they run as one chain
 // over `Shared` and are held once, before
 // the terminal's activity poll. One hold moves their effects into the outbox
 // in the order the chain decided them and applies their editor notices after
-// the last, and since none of the eight reads what a notice changes, the
+// the last, and since none of the nine reads what a notice changes, the
 // model is the same as if each had been held on its own.
 fn settle_tick(model: Model, drained: Model) -> Model {
   let drained =

@@ -28,7 +28,9 @@ import tui/focused_goal_panel
 import tui/model.{
   type Model, AccessManager, AgentInspector, ApprovalInspector, DaemonSelector,
   GoalInspector, Model, ModelSelector, NoOverlay, PeerLinkManager,
+  ProposalReview,
 } as tui_model
+import tui/proposal_panel
 import tui/queue_editor
 import tui/render
 import tui/summary_panel
@@ -59,6 +61,7 @@ pub fn notes_surface(model: Model) -> Bool {
     | False, DaemonSelector(_)
     | False, PeerLinkManager(_)
     | False, AccessManager(_)
+    | False, ProposalReview(_)
     | False, AgentInspector(_)
     | False, ApprovalInspector(_)
     -> False
@@ -166,6 +169,33 @@ pub fn request_goal_status(model: Model) -> Model {
           |> view_set.toggle_repaint,
       )
   }
+}
+
+/// Opens the proposals review and asks for a fresh board.
+///
+/// The read is the owner's, and a daemon refuses it to anyone else. The
+/// refusal's words are kept in the shared record and the overlay draws them,
+/// so a terminal that is not the owner's opens a review that says so.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // side_surfaces.open_proposals(model)
+/// ```
+@internal
+pub fn open_proposals(model: Model) -> Model {
+  let state = case model.view.overlay {
+    ProposalReview(state) -> state
+    _ -> proposal_panel.new()
+  }
+  Model(
+    shared: model.shared
+      |> shared_set.proposals_refresh(worktree_view.Requested)
+      |> shared_set.proposals_notice(""),
+    view: model.view
+      |> view_set.overlay(ProposalReview(state))
+      |> view_set.toggle_repaint,
+  )
 }
 
 fn goal_observation(model: Model) -> String {

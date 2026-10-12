@@ -103,6 +103,9 @@ pub type Status {
     cost: String,
     /// How many agents need the operator.
     needs: Int,
+    /// The badge for proposed standing rules that wait for the owner
+    /// (`proposal_panel.badge`), or empty while none do.
+    proposals: String,
     /// Whether the input is held for an approval.
     lock: Lock,
   )
@@ -434,9 +437,23 @@ fn bottom_left(status: Status, width: Int) -> List(#(String, style.Style)) {
   ]
 }
 
-// How many agents need the operator, in the danger colour, and nothing at
-// all while none do.
+// The proposals badge, in the signal colour, then how many agents need the
+// operator, in the danger colour. Each is nothing while there is nothing to
+// say, and both outrank the model and cost when the rule is too short.
 fn bottom_right(status: Status) -> List(#(String, style.Style)) {
+  let badge = case status.proposals {
+    "" -> []
+    words -> [
+      #(
+        " " <> words <> " ",
+        style.new(theme.signal, style.Default, style.bold()),
+      ),
+    ]
+  }
+  list.append(badge, needing(status))
+}
+
+fn needing(status: Status) -> List(#(String, style.Style)) {
   case status.needs {
     0 -> []
     1 -> [

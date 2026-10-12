@@ -340,6 +340,8 @@ fn decode_selection(kind, fields) {
     | "profile_set"
     | "permissions"
     | "permission_forget"
+    | "proposals_get"
+    | "proposal_decide"
     | "prompt"
     | "prompt_content"
     | "steer"

@@ -80,6 +80,7 @@ import session_view/model.{
 } as session_model
 import session_view/notice_words
 import session_view/outbound
+import session_view/proposals
 import session_view/protocol
 import session_view/queue_request
 import session_view/reviewer_status
@@ -1480,6 +1481,27 @@ fn apply_request_refused(
   // page says in its own words, and a footer error every half minute would
   // be the only other trace.
   use <- bool.lazy_guard(command == "permissions", fn() { shared })
+
+  // The proposals surface words its own refusals: a refused read says why
+  // beside the list, and a refused decision also asks for the list again,
+  // since a conflict means the board it was made from is old. Neither is a
+  // transcript row, because the operator did not type a command.
+  use <- bool.lazy_guard(
+    command == "proposals_get" || command == "proposal_decide",
+    fn() {
+      let noted =
+        shared_set.proposals_notice(
+          shared,
+          proposals.refusal_words(code, message),
+        )
+      case command {
+        "proposal_decide" ->
+          shared_set.proposals_refresh(noted, worktree_view.Requested)
+        _ -> noted
+      }
+      |> session_model.invalidate_frame
+    },
+  )
 
   // A notes read refused while no notes surface is open was the todo
   // panel's seed. An older daemon refuses it, and an error row would report

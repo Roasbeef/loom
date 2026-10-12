@@ -87,13 +87,14 @@ import tui/model.{
   type Model, type ScrollDirection, AccessManager, AgentInspector,
   ApprovalInspector, Caches, DaemonSelector, DiffHidden, DiffVisible, FrameCache,
   GoalInspector, Model, ModelSelector, Newer, NoClipboard, NoOverlay, Older,
-  PeerLinkManager, ReconnectAttempting, ReconnectIdle, ReconnectSpent,
-  TerminalClipboard, View,
+  PeerLinkManager, ProposalReview, ReconnectAttempting, ReconnectIdle,
+  ReconnectSpent, TerminalClipboard, View,
 } as tui_model
 import tui/model_selector
 import tui/note_panel
 import tui/peer_links
 import tui/projection
+import tui/proposal_panel
 import tui/queue_editor
 import tui/queue_panel
 import tui/rail
@@ -137,6 +138,7 @@ pub fn handle_paste(
     | DaemonSelector(_)
     | ApprovalInspector(_)
     | PeerLinkManager(_)
+    | ProposalReview(_)
     | AccessManager(_) -> model
   }
 }
@@ -468,6 +470,18 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
         |> tui_model.send_frame(protocol.models(1))
         |> inbound.request_visible_worktree
 
+      // The proposals board is the owner's to read. Asking once per adoption
+      // is how a terminal learns whether it may: a refusal leaves no board
+      // and so no badge, and the daemon's push keeps an owner's board fresh.
+      let adopted =
+        Model(
+          ..adopted,
+          shared: shared_set.proposals_refresh(
+            adopted.shared,
+            worktree_view.Requested,
+          ),
+        )
+
       // An adoption proves the daemon answers, so a relaunch still in flight
       // is no longer needed. Cancelling it stops a second daemon start that
       // the cleared slot would otherwise leave running until it gave up.
@@ -558,6 +572,7 @@ fn update_normal_key(key: keys.Key, model: Model) -> Model {
           session_control.update_peer_link_manager(key, model, state)
         AccessManager(state) ->
           session_control.update_access_overlay(key, model, state)
+        ProposalReview(state) -> update_proposal_review(key, model, state)
         ApprovalInspector(panel) ->
           case approval_panel.update(key, panel) {
             approval_panel.Close ->
@@ -572,6 +587,50 @@ fn update_normal_key(key: keys.Key, model: Model) -> Model {
           }
         NoOverlay -> update_main_key(key, model)
       }
+  }
+}
+
+// A key in the proposals review. The board is the shared record's, so a
+// decision sends its command and leaves the reader on the proposal, which the
+// daemon's reply then redraws with its new state.
+fn update_proposal_review(
+  key: keys.Key,
+  model: Model,
+  state: proposal_panel.State,
+) -> Model {
+  case
+    proposal_panel.update(
+      key,
+      state,
+      model.shared.proposals,
+      layout.model_goal_inspector_area(model),
+    )
+  {
+    proposal_panel.Close ->
+      Model(
+        shared: shared_set.notice(model.shared, "proposals review closed"),
+        view: model.view
+          |> view_set.overlay(NoOverlay)
+          |> view_set.toggle_repaint,
+      )
+    proposal_panel.Continue(next) ->
+      Model(
+        ..model,
+        view: model.view
+          |> view_set.overlay(ProposalReview(next))
+          |> view_set.toggle_repaint,
+      )
+    proposal_panel.Refresh -> side_surfaces.open_proposals(model)
+    proposal_panel.Decide(id:, decision:) ->
+      Model(
+        ..model,
+        view: view_set.overlay(
+          model.view,
+          ProposalReview(proposal_panel.after_decision(state, id)),
+        ),
+      )
+      |> tui_model.run_shared(surfaces.decide_proposal(_, id, decision))
+      |> tui_model.invalidate_frame
   }
 }
 
@@ -1380,6 +1439,11 @@ fn close_sheet_after_open(model: Model) -> Model {
 fn update_main_key_composing(key: keys.Key, model: Model) -> Model {
   case layout.diff_shown(model), model.shared.worktree.focus, key {
     _, _, keys.Alt("q") -> submit.open_queue(model)
+
+    // Alt+P opens the review of proposed standing rules, as Alt+Q opens the
+    // queue. It is bound before the generic Alt rule, which would otherwise
+    // interrupt the run and insert the letter.
+    _, _, keys.Alt("p") -> side_surfaces.open_proposals(model)
 
     // Ctrl+O ("open agents") is the chord a hand already on the keyboard
     // reaches; F2 stays for anyone who learned it. Ctrl+A was the other

@@ -88,6 +88,7 @@ import session_view/model.{
   ReportGoal, Shared,
 } as session_model
 import session_view/outbound
+import session_view/proposals
 import session_view/protocol
 import session_view/queue_request
 import session_view/remembered
@@ -402,6 +403,66 @@ pub fn forget_remembered(
       outbound.send_frame(
         shared,
         protocol.permission_forget(shared.next_id, forget),
+      )
+  }
+}
+
+// --- the standing-rule proposals --------------------------------------------
+
+/// Sends a requested read of the proposals once the channel is ready for it.
+///
+/// Over the shared record alone. A host sets `proposals_refresh` when it first
+/// wants the board, when a `proposals_changed` push arrives
+/// (`event_fold`), and after a decision the daemon refused. Only an owner's
+/// host asks: the daemon refuses the read to anyone else
+/// (protocol-change/086). A read that cannot be sent now stays requested for
+/// the next tick.
+///
+/// ## Examples
+///
+/// ```gleam
+/// surfaces.service_proposals_read(model.shared)
+/// ```
+@internal
+pub fn service_proposals_read(
+  shared: Shared(socket, recorder, source, replay_source),
+) -> Shared(socket, recorder, source, replay_source) {
+  case shared.channel, shared.proposals_refresh, shared.peer {
+    Some(channel), worktree_view.Requested, Attached ->
+      case session_channel.ready_for_read(channel) {
+        True ->
+          outbound.send_frame(
+            shared_set.proposals_refresh(shared, worktree_view.Settled),
+            protocol.proposals_get(shared.next_id),
+          )
+        False -> shared
+      }
+    _, worktree_view.Requested, _ | _, worktree_view.Settled, _ -> shared
+  }
+}
+
+/// Decides one pending proposal, as the host listed it.
+///
+/// A decision needs what an approval needs: a live attachment that may
+/// mutate. The reply is the board as it now stands, so nothing else is read.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let shared = surfaces.decide_proposal(shared, "prop-0123456789", proposals.Approve)
+/// ```
+@internal
+pub fn decide_proposal(
+  shared: Shared(socket, recorder, source, replay_source),
+  id: String,
+  decision: proposals.Decision,
+) -> Shared(socket, recorder, source, replay_source) {
+  case outbound.mutation_refusal(shared, command.Approve("")) {
+    Some(reason) -> shared_set.proposals_notice(shared, reason)
+    None ->
+      outbound.send_frame(
+        shared_set.proposals_notice(shared, ""),
+        protocol.proposal_decide(shared.next_id, id, decision),
       )
   }
 }

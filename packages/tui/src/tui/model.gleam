@@ -136,6 +136,7 @@ import tui/msg
 import tui/note_panel
 import tui/pacing
 import tui/peer_links
+import tui/proposal_panel
 import tui/queue_editor
 import tui/recording
 import tui/selection
@@ -193,6 +194,7 @@ pub type Overlay {
   PeerLinkManager(peer_links.State)
   AccessManager(access_overlay.State)
   ApprovalInspector(approval_panel.State)
+  ProposalReview(proposal_panel.State)
 }
 
 /// What Enter does to a draft while an operation is live.

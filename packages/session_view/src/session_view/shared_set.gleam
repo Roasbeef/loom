@@ -575,6 +575,48 @@ pub fn remembered_refresh(
   Shared(..shared, remembered_refresh:)
 }
 
+/// Replaces `Shared.proposals`; the record documents the field.
+///
+/// ## Examples
+///
+/// ```gleam
+/// shared_set.proposals(model.shared, value)
+/// ```
+@internal
+pub fn proposals(shared: Shared(a, b, c, d), proposals) -> Shared(a, b, c, d) {
+  Shared(..shared, proposals:)
+}
+
+/// Replaces `Shared.proposals_refresh`; the record documents the field.
+///
+/// ## Examples
+///
+/// ```gleam
+/// shared_set.proposals_refresh(model.shared, value)
+/// ```
+@internal
+pub fn proposals_refresh(
+  shared: Shared(a, b, c, d),
+  proposals_refresh,
+) -> Shared(a, b, c, d) {
+  Shared(..shared, proposals_refresh:)
+}
+
+/// Replaces `Shared.proposals_notice`; the record documents the field.
+///
+/// ## Examples
+///
+/// ```gleam
+/// shared_set.proposals_notice(model.shared, value)
+/// ```
+@internal
+pub fn proposals_notice(
+  shared: Shared(a, b, c, d),
+  proposals_notice,
+) -> Shared(a, b, c, d) {
+  Shared(..shared, proposals_notice:)
+}
+
 /// Replaces `Shared.agent_messages`; the record documents the field.
 ///
 /// ## Examples

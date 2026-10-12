@@ -208,6 +208,13 @@ pub fn apply_event(
     // for the host to draw and nothing is written to the transcript.
     protocol.PermissionsSnapshot(board:) ->
       shared_set.remembered(shared, Some(board))
+
+    // The proposals board, kept for the host to draw. A board that arrives
+    // clears the last refusal, since it is the daemon's current word.
+    protocol.ProposalsSnapshot(board:) ->
+      shared
+      |> shared_set.proposals(Some(board))
+      |> shared_set.proposals_notice("")
     protocol.ConfigSnapshot(model_name:, directories:) -> {
       let shared = case model_name {
         Some(name) -> {
@@ -484,6 +491,11 @@ pub fn apply_event(
     protocol.Committed(..) | protocol.MetadataChanged | protocol.GoalChanged ->
       shared
 
+    // A proposal was queued or decided elsewhere, so the board this host
+    // holds is old. The shared step reads it again on its next tick.
+    protocol.ProposalsChanged ->
+      shared_set.proposals_refresh(shared, worktree_view.Requested)
+
     // A resumed marker names a stream that continues from a cut this
     // terminal already holds. The lane reports it as its own update, so a
     // frame arriving outside one is nothing to paint.
@@ -502,8 +514,10 @@ pub fn apply_event(
       restore_returned_draft(shared, strand, kind, text, attachment_count)
   }
   case event {
-    protocol.Committed(..) | protocol.MetadataChanged | protocol.GoalChanged ->
-      updated
+    protocol.Committed(..)
+    | protocol.MetadataChanged
+    | protocol.GoalChanged
+    | protocol.ProposalsChanged -> updated
     protocol.Resumed(_) -> updated
     protocol.HeldInputReturned(..) -> updated
     protocol.Ignored(_) -> updated
@@ -523,6 +537,7 @@ pub fn apply_event(
     | protocol.GoalSnapshot(..)
     | protocol.SchedulesSnapshot(..)
     | protocol.PermissionsSnapshot(..)
+    | protocol.ProposalsSnapshot(..)
     | protocol.ProfileSnapshot(..)
     | protocol.ConfigSnapshot(..)
     | protocol.EntryAdded(..)

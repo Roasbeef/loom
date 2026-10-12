@@ -62,7 +62,7 @@ import tui/model.{
   type Model, AccessManager, ActivityAsking, ActivityDue, ActivityResting,
   AgentInspector, ApprovalInspector, ControlRequest, DaemonSelector,
   GoalInspector, Model, ModelSelector, NoOverlay, PeerLinkManager,
-  ReconnectAttempting, ReconnectIdle, ReconnectSpent, View,
+  ProposalReview, ReconnectAttempting, ReconnectIdle, ReconnectSpent, View,
 } as tui_model
 import tui/peer_links
 import tui/placement
@@ -514,6 +514,7 @@ fn finish_control(model: Model, result) {
           | GoalInspector(_)
           | ApprovalInspector(_)
           | PeerLinkManager(_)
+          | ProposalReview(_)
           | AccessManager(_) -> model.view.overlay
         }),
       )
@@ -560,6 +561,7 @@ fn catalogue_removed(model: Model, id: String, description: String) -> Model {
       | GoalInspector(_)
       | ApprovalInspector(_)
       | PeerLinkManager(_)
+      | ProposalReview(_)
       | AccessManager(_) -> model.view.overlay
     }),
   )
@@ -1091,6 +1093,7 @@ fn finish_peer_workspace(
     | GoalInspector(_)
     | DaemonSelector(_)
     | ApprovalInspector(_)
+    | ProposalReview(_)
     | AccessManager(_) -> model
   }
 }
@@ -1162,6 +1165,7 @@ fn finish_peer_inspection(
     | GoalInspector(_)
     | DaemonSelector(_)
     | ApprovalInspector(_)
+    | ProposalReview(_)
     | AccessManager(_) -> model
   }
 }
@@ -1186,6 +1190,7 @@ fn finish_peer_operation(model: Model, document: json.JsonValue) {
     | GoalInspector(_)
     | DaemonSelector(_)
     | ApprovalInspector(_)
+    | ProposalReview(_)
     | AccessManager(_) -> model
   }
 }
@@ -1215,6 +1220,7 @@ fn finish_control_failure(model: Model, reason: String) {
     | AgentInspector(_)
     | GoalInspector(_)
     | DaemonSelector(_)
+    | ProposalReview(_)
     | ApprovalInspector(_) -> tui_model.append_error(model, reason)
   }
 }
@@ -1352,6 +1358,7 @@ fn finish_access_listing(
     | GoalInspector(_)
     | DaemonSelector(_)
     | PeerLinkManager(_)
+    | ProposalReview(_)
     | ApprovalInspector(_) -> model
   }
 }
@@ -1379,6 +1386,7 @@ fn finish_memberships(
     | GoalInspector(_)
     | DaemonSelector(_)
     | PeerLinkManager(_)
+    | ProposalReview(_)
     | ApprovalInspector(_) -> model
   }
 }
@@ -1414,6 +1422,7 @@ fn finish_access_change(model: Model, document: json.JsonValue) -> Model {
     | GoalInspector(_)
     | DaemonSelector(_)
     | PeerLinkManager(_)
+    | ProposalReview(_)
     | ApprovalInspector(_) ->
       tui_model.append_system(model, "access change acknowledged")
   }

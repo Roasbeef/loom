@@ -84,6 +84,7 @@ import session_view/inbox
 import session_view/live_jobs
 import session_view/msg
 import session_view/notes_view
+import session_view/proposals
 import session_view/protocol
 import session_view/queue_request
 import session_view/remembered
@@ -235,6 +236,16 @@ pub type Shared(socket, recorder, source, replay_source) {
     remembered: Option(remembered.Board),
     /// One remembered-permissions read waiting for a free command lane.
     remembered_refresh: worktree_view.Refresh,
+    /// The standing-rule proposals the daemon last listed
+    /// (protocol-change/086). `None` is "not read", never "no proposals";
+    /// only a daemon's board says that.
+    proposals: Option(proposals.Board),
+    /// One proposals read waiting for a free command lane.
+    proposals_refresh: worktree_view.Refresh,
+    /// The words for the last refused proposals command, or empty. A refused
+    /// read or decision is the proposals surface's own news, so it is kept
+    /// here and not written to the transcript.
+    proposals_notice: String,
     /// The advisor's undelivered nudge queue, observed while the primary is
     /// idle. `None` is "nothing observed", never "the queue is empty".
     nudges: Option(advisor_pending.Board),

@@ -48,6 +48,7 @@ import session_view/context_view
 import session_view/goal_view
 import session_view/live_jobs
 import session_view/notes_view
+import session_view/proposals
 import session_view/queued_input
 import session_view/remembered
 import session_view/skills
@@ -196,6 +197,15 @@ pub type Event {
   /// `permissions` read and to a successful `permission_forget` alike
   /// (protocol-change/073).
   PermissionsSnapshot(board: remembered.Board)
+
+  /// The standing rules a model has proposed and a person has yet to decide:
+  /// the reply to a `proposals_get` and to a `proposal_decide` alike
+  /// (protocol-change/086).
+  ProposalsSnapshot(board: proposals.Board)
+
+  /// A proposal was queued, or decided by another peer. The board is read
+  /// again; this push carries nothing to draw.
+  ProposalsChanged
 
   /// An authoritative replacement for the schedule listing — the reply
   /// to `/schedules` and to a successful cancel alike.
@@ -593,6 +603,36 @@ pub fn permission_forget(id: Int, forget: remembered.Forget) -> String {
   })
 }
 
+/// Encodes a read of the standing-rule proposals (protocol-change/086).
+///
+/// ## Examples
+///
+/// ```gleam
+/// protocol.proposals_get(14)
+/// ```
+pub fn proposals_get(id: Int) -> String {
+  command(id, "proposals_get", [])
+}
+
+/// Encodes a person's decision on one pending proposal. The daemon answers
+/// with the board as it now stands.
+///
+/// ## Examples
+///
+/// ```gleam
+/// protocol.proposal_decide(15, "prop-0123456789", proposals.Approve)
+/// ```
+pub fn proposal_decide(
+  id: Int,
+  proposal: String,
+  decision: proposals.Decision,
+) -> String {
+  command(id, "proposal_decide", [
+    #("id", json.String(proposal)),
+    #("decision", json.String(proposals.decision_word(decision))),
+  ])
+}
+
 /// Requests one strand's effective configuration without changing it.
 ///
 /// `set_config` with an empty object is the frozen protocol's readback form:
@@ -749,6 +789,7 @@ pub fn decode_v2_presentation(text: String) -> Result(Event, String) {
     | GoalSnapshot(_)
     | SchedulesSnapshot(_)
     | PermissionsSnapshot(_)
+    | ProposalsSnapshot(_)
     | ProfileSnapshot(..)
     | Resumed(_)
     | ServerError(..) -> Ok(event)
@@ -766,6 +807,7 @@ pub fn decode_v2_presentation(text: String) -> Result(Event, String) {
     | HeldInputReturned(..)
     | BlockSummarized(..)
     | GoalChanged
+    | ProposalsChanged
     | Ignored(_) -> Error("unexpected live presentation response")
   }
 }
@@ -854,6 +896,10 @@ fn decode_body(name: String, body: JsonValue) -> Result(Event, String) {
     "goal_changed" -> {
       use _ <- result.try(object_fields(body, "goal_changed body"))
       Ok(GoalChanged)
+    }
+    "proposals_changed" -> {
+      use _ <- result.try(object_fields(body, "proposals_changed body"))
+      Ok(ProposalsChanged)
     }
     "block_summary" -> decode_block_summary(body)
     other -> Ok(Ignored(other))
@@ -965,6 +1011,10 @@ fn decode_snapshot(body: JsonValue) -> Result(Event, String) {
     "permissions" -> {
       use board <- result.try(required_value(fields, "board"))
       remembered.decode(board) |> result.map(PermissionsSnapshot)
+    }
+    "proposals" -> {
+      use board <- result.try(required_value(fields, "board"))
+      proposals.decode(board) |> result.map(ProposalsSnapshot)
     }
     "profile" -> {
       use current <- result.try(optional_string(fields, "profile"))
