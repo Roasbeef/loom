@@ -215,6 +215,7 @@ fn init(arguments: List(String)) -> Result(String, String) {
 
 fn provision(arguments: List(String)) -> Result(String, String) {
   use parsed <- result.try(parse_flags(arguments))
+  use parsed <- result.try(check_provision_home(parsed))
   use #(plan_path, output) <- result.try(case parsed.positional {
     [plan, output] -> Ok(#(plan, output))
     _ -> Error(usage)
@@ -557,6 +558,17 @@ fn check_ledger_flags(parsed: Parsed) -> Result(Parsed, String) {
         <> "no key is sealed",
       )
     _, _, _ -> Ok(parsed)
+  }
+}
+
+// `--home` is `install`'s flag too, so `parse_flags` cannot refuse it. In
+// `provision` only ledger mode reads it, to place the sealed key. Static mode
+// writes nothing under a home directory, so the flag would be accepted and
+// silently do nothing.
+fn check_provision_home(parsed: Parsed) -> Result(Parsed, String) {
+  case parsed.mode, parsed.home {
+    StaticMode, Some(_) -> Error("--home needs --ledger")
+    _, _ -> Ok(parsed)
   }
 }
 

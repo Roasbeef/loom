@@ -623,6 +623,9 @@ pub fn the_ledger_flags_only_mean_something_together_test() {
   )
   refused(["--ledger", "--passphrase-file"], "needs a value")
 
+  // Static mode keeps no key, so a home directory has nothing to hold.
+  refused(["--home", base <> "/home"], "--home needs --ledger")
+
   // The flags belong to provision and no other command takes them.
   let assert Error(reason) =
     distribution_cli.run(["install", base <> "/node.loombundle", "--ledger"])
