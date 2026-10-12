@@ -495,7 +495,7 @@ pub fn await_ra(
 /// The members and the leader as this member sees them, in one line.
 pub fn ra_text(handle: member.Member) -> String {
   case member.status(handle).ra {
-    Ok(store.Membership(members:, leader:)) ->
+    Ok(store.Membership(members:, leader:, ..)) ->
       "leader="
       <> option.unwrap(leader, "-")
       <> " "

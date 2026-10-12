@@ -1541,6 +1541,10 @@ Khepri cluster (protocol-change/083). A daemon that is not a member refuses it
 | `leader` | string | when known | The cluster's leader. |
 | `unavailable` | string | when the store cannot be asked | The store's reason. |
 
+A member the leader removed (a revoked name enrolled again on the same disk) finds
+out by itself, resets its store and joins again; until it has, `joined` is `false`
+and `unavailable` says that it was removed and is joining again.
+
 When `members` and `ra_members` disagree, `ra_members` is the membership in
 force: membership lives in the cluster's log, and `members` only tells a daemon
 whom to join and whom to keep connected.

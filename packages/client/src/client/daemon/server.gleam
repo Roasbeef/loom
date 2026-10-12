@@ -2638,7 +2638,7 @@ pub const no_quorum_code = "no_quorum"
 
 fn directory_status_json(status: member.Status) -> JsonValue {
   let #(ra_members, leader, ra_error) = case status.ra {
-    Ok(store.Membership(members:, leader:)) -> #(members, leader, None)
+    Ok(store.Membership(members:, leader:, ..)) -> #(members, leader, None)
     Error(store.Unavailable(reason:)) -> #([], None, Some(reason))
   }
   json.Object(
@@ -2649,7 +2649,7 @@ fn directory_status_json(status: member.Status) -> JsonValue {
           "joined",
           json.Bool(case status.joining {
             member.Joined -> True
-            member.NotJoined -> False
+            member.NotJoined | member.Rejoining -> False
           }),
         ),
         #(

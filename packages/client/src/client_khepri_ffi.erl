@@ -22,7 +22,7 @@
          join_start/1, join_remove/2, join_add/4, join_promoted/2,
          join_caught_up/2, join_finish/1, remove_member/2,
          read/2, consistent/3, create/3, swap/4, delete_if/3, put/3,
-         membership/1, applied_index/0, snapshot_index/0,
+         membership/1, membership_through/2, applied_index/0, snapshot_index/0,
          store_running_on/2]).
 -include_lib("khepri/include/khepri.hrl").
 
@@ -307,22 +307,39 @@ written(Other) -> {error, {unexpected, describe(Other)}}.
 
 %% ---------------------------------------------------------------- membership
 
-%% Ra's members, each with whether it votes, and the leader, as seen through
-%% this member's server.
+%% Ra's members, each with whether it votes, the leader, and the members the
+%% leader reports as reachable, as seen through this member's server.
 membership(TimeoutMs) ->
-    case safe(fun() -> ra:members_info({?STORE, node()}, TimeoutMs) end) of
+    membership_through(node(), TimeoutMs).
+
+%% The same question asked of the server on Node. `ra:members_info/2` is a
+%% leader call: a server that is not the leader forwards it to the leader it
+%% knows, and the answer is the leader's own list of the cluster, so a member
+%% asks it of a peer to learn what the cluster holds when its own server cannot
+%% say, as after the leader removed it. The leader reports each member's
+%% `status`, and `normal` is the only status that means its log is being
+%% replicated now; a follower's answer to a question it was not forwarded
+%% carries no status, so the third element is empty there. The members list
+%% every server in the leader's configuration, committed or not.
+membership_through(Node, TimeoutMs) ->
+    case safe(fun() -> ra:members_info({?STORE, Node}, TimeoutMs) end) of
         {ok, Info, {_, LeaderNode}} ->
-            Members = [{atom_to_binary(N, utf8), voter_of(V)}
-                       || {{_, N}, V} <- maps:to_list(Info)],
-            {ok, {lists:sort(Members), {some, atom_to_binary(LeaderNode, utf8)}}};
+            {ok, {members_of(Info), {some, atom_to_binary(LeaderNode, utf8)},
+                  up_of(Info)}};
         {ok, Info, _} ->
-            Members = [{atom_to_binary(N, utf8), voter_of(V)}
-                       || {{_, N}, V} <- maps:to_list(Info)],
-            {ok, {lists:sort(Members), none}};
+            {ok, {members_of(Info), none, up_of(Info)}};
         {timeout, _} -> {error, no_quorum};
         {error, timeout} -> {error, no_quorum};
         _ -> {error, not_running}
     end.
+
+members_of(Info) ->
+    lists:sort([{atom_to_binary(N, utf8), voter_of(V)}
+                || {{_, N}, V} <- maps:to_list(Info)]).
+
+up_of(Info) ->
+    lists:sort([atom_to_binary(N, utf8)
+                || {{_, N}, #{status := normal}} <- maps:to_list(Info)]).
 
 voter_of(#{voter_status := #{membership := voter}}) -> voter;
 voter_of(#{voter_status := #{membership := promotable}}) -> promoting;

@@ -14,8 +14,8 @@
 //// This is what lets a cut network heal without an operator, beside Ra's own
 //// dial when its server starts.
 ////
-//// **It joins, once.** A store whose data directory carries the `joined`
-//// marker is started at boot, before the actor exists, and Ra resumes its
+//// **It joins, and joins again if it was removed.** A store whose data
+//// directory carries the `joined` marker is started at boot, before the actor exists, and Ra resumes its
 //// membership. A store without the marker has never joined, or lost its disk:
 //// on each tick, until one attempt succeeds, the actor asks the first member
 //// whose store answers to take this node in as a non-voter, which Ra promotes
@@ -25,6 +25,23 @@
 //// refuses to create one if it has not). While the store is not joined, every
 //// store call answers that the store is not running, which the callers report
 //// as no quorum, and nothing is served from a store that has not joined.
+////
+//// The marker says the store joined once, and the leader can remove a member
+//// afterwards: a revoke followed by an enrollment of the same name on the same
+//// disk, or a repair of a member in the wrong seat. Ra never stops the server it
+//// removed, so the node would go on believing it was in a cluster that no longer
+//// lists it, and every store call would wait out its deadline and report no
+//// quorum while the cluster was well. So a node the ledger seats whose own
+//// server cannot say what the cluster holds, or does not list the node, asks a
+//// peer's server, which forwards the question to the leader. When a leader
+//// answers and its membership does not list the node, the node logs
+//// `daemon.directory_not_a_member`, deletes the marker and its local server
+//// (`store.reset`), and joins again in the seat the ledger gives it
+//// (`directory.status` reports it as rejoining until then). The decision is
+//// `seats.rejoin`. It never acts on a timeout or on no answer, and never on a
+//// node the ledger does not seat, so a healthy member on a bad network does not
+//// churn. It never creates a store: the reset goes through the join path above,
+//// and a join is the only way back to a store.
 ////
 //// The actor creates no cluster. `loomd directory bootstrap` does that once, by
 //// hand, because a rule that let a member create one would let a member that
@@ -61,8 +78,7 @@ import client/directory/seats.{type Place, type Seats, type Verdict}
 import client/directory/store
 import client/distribution.{type Membership, type Peer}
 import gleam/dict.{type Dict}
-import gleam/erlang/atom
-import gleam/erlang/node
+import gleam/erlang/node.{type Node}
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
@@ -123,6 +139,12 @@ pub type Joining {
 
   /// The store has not joined yet; the actor is trying.
   NotJoined
+
+  /// The store had joined, the leader has removed this node since, and the
+  /// actor reset the store and is joining again in the seat the ledger gives.
+  /// It is `NotJoined` in every other respect, and apart so that
+  /// `directory.status` can say why.
+  Rejoining
 }
 
 /// What `directory.status` reports.
@@ -150,8 +172,16 @@ type Message {
   Tick
   Reached(name: String, outcome: Result(Nil, distribution.Fault))
   JoinEnded(outcome: Result(Nil, String))
-  Reconciled(verdict: Verdict, outcome: Result(Nil, String))
+  Reconciled(pass: Pass)
   Asked(reply: Subject(Joining))
+}
+
+// What one reconciliation pass did. It plans a removal from the leader's side,
+// or it finds that this node is no member of the cluster it believes it is in
+// and resets the store so that the next tick joins again.
+type Pass {
+  Planned(verdict: Verdict, outcome: Result(Nil, String))
+  Reset(outcome: Result(Nil, String))
 }
 
 // When a member that did not answer may be tried again, and how long the next
@@ -175,10 +205,10 @@ type State {
     attempt: Attempt,
     backoff: Dict(String, Backoff),
     connecting: List(String),
-    // Whether a reconciliation is running, and what the last one decided, so a
-    // log line is written when the decision changes and not at every tick.
+    // Whether a reconciliation is running, and what the last one decided and
+    // did, so a log line is written when that changes and not at every tick.
     reconciling: Attempt,
-    decided: Option(Verdict),
+    decided: Option(#(Verdict, Result(Nil, String))),
   )
 }
 
@@ -204,7 +234,7 @@ pub fn start(config: Config) -> Result(Member, String) {
     Joined ->
       store.restart(30_000)
       |> result.map_error(fn(refusal) { restart_refusal(config, refusal) })
-    NotJoined -> Ok(Nil)
+    NotJoined | Rejoining -> Ok(Nil)
   })
   let started =
     actor.new_with_initialiser(1000, fn(inbox) {
@@ -230,7 +260,7 @@ pub fn start(config: Config) -> Result(Member, String) {
         field.count("members", list.length(nodes_of(config.members))),
         field.text("joined", case joining {
           Joined -> "yes"
-          NotJoined -> "no"
+          NotJoined | Rejoining -> "no"
         }),
       ])
       process.send(started.data, Tick)
@@ -301,6 +331,10 @@ pub fn status(member: Member) -> Status {
   let ra = case joining {
     Joined -> store.membership()
     NotJoined -> Error(store.Unavailable("this member has not joined"))
+    Rejoining ->
+      Error(store.Unavailable(
+        "this member was removed from the cluster and is joining it again",
+      ))
   }
   Status(
     members: nodes_of(member.members),
@@ -360,18 +394,33 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         }
       }
 
-    // A reconciliation ended. The decision is written down when it differs
-    // from the last one, so a leader holding a removal it cannot commit says
-    // so once and not every two seconds.
-    Reconciled(verdict:, outcome:) -> {
-      let decided = case state.decided == Some(verdict), outcome {
-        True, Ok(Nil) -> state.decided
-        _, _ -> {
-          report(state.config.logger, verdict, outcome)
-          Some(verdict)
-        }
+    // A reconciliation ended. What it decided and did is written down when it
+    // differs from the last pass, so a leader holding a removal it cannot commit
+    // says so once and not every two seconds. A real failure is written every
+    // time, because it is not going to settle by itself.
+    Reconciled(pass: Planned(verdict:, outcome:)) -> {
+      let now = Some(#(verdict, outcome))
+      let repeated = state.decided == now && quiet(outcome)
+      case repeated {
+        True -> Nil
+        False -> report(state.config.logger, verdict, outcome)
       }
-      actor.continue(State(..state, reconciling: Idle, decided:))
+      actor.continue(State(..state, reconciling: Idle, decided: now))
+    }
+
+    // The pass found this node out of the cluster and reset its store. From the
+    // next tick the join path takes it in again in the seat the ledger gives it;
+    // a reset that failed leaves the store as it was, and the next pass asks
+    // again.
+    Reconciled(pass: Reset(outcome: Ok(Nil))) ->
+      actor.continue(
+        State(..state, joining: Rejoining, reconciling: Idle, decided: None),
+      )
+    Reconciled(pass: Reset(outcome: Error(reason))) -> {
+      log.warn(state.config.logger, "daemon.directory_reset_failed", [
+        field.text("reason", reason),
+      ])
+      actor.continue(State(..state, reconciling: Idle))
     }
 
     Asked(reply:) -> {
@@ -435,8 +484,10 @@ fn keep_links(state: State, places: List(Place)) -> State {
 // ledger gives this node a seat. The seat decides what the join makes of it.
 fn try_join(state: State, places: List(Place)) -> State {
   case state.joining, state.attempt, seats.seat_of(places, state.config.local) {
-    Joined, _, _ | NotJoined, Running, _ | NotJoined, Idle, Error(Nil) -> state
-    NotJoined, Idle, Ok(seat) -> {
+    Joined, _, _ -> state
+    NotJoined, Running, _ | Rejoining, Running, _ -> state
+    NotJoined, Idle, Error(Nil) | Rejoining, Idle, Error(Nil) -> state
+    NotJoined, Idle, Ok(seat) | Rejoining, Idle, Ok(seat) -> {
       let inbox = state.inbox
       let peers = peers_of(state, places)
       let directory = state.config.directory
@@ -492,12 +543,18 @@ fn reconcile(state: State, wanted: Seats) -> State {
   case state.config.members, state.joining, state.reconciling {
     Followed(..), Joined, Idle -> {
       let inbox = state.inbox
-      let local = state.config.local
+      let config = state.config
+      let asked =
+        peers_of(state, wanted.places)
+        |> list.map(distribution.node)
+        |> list.filter(fn(peer) { list.contains(node.visible(), peer) })
       let _witness =
         weft.new([
           fn() {
-            let #(verdict, outcome) = reconcile_once(wanted, local)
-            process.send(inbox, Reconciled(verdict:, outcome:))
+            process.send(
+              inbox,
+              Reconciled(pass: reconcile_once(wanted, config, asked)),
+            )
             Ok(Nil)
           },
         ])
@@ -508,30 +565,82 @@ fn reconcile(state: State, wanted: Seats) -> State {
   }
 }
 
-// One pass: Ra's membership as this member sees it, the plan against the
-// seats, and the removal the plan names. A member that cannot read Ra's
-// membership has no verdict to give and reports it as not the leader, which
-// does nothing and says nothing.
-fn reconcile_once(
+// One pass. A member the ledger seats first makes sure it is a member of the
+// cluster it believes it is in, and otherwise plans from the leader's side.
+//
+// Ra never stops a server it removes, so a node the leader removed (a revoke
+// and an enrollment of the same name, or an other-seat repair) goes on running
+// a store that belongs to no cluster, and its calls queue until their deadline.
+// The cheap sign is that its own server cannot say what the cluster holds, or
+// says and does not list this node. Then, and only then, it asks a peer, whose
+// server forwards the question to the leader (`store.membership_through`), and
+// resets when a leader answers without it (`seats.rejoin`). Most passes find
+// this node listed and ask nothing.
+//
+// Otherwise the pass is the leader's: the plan against the seats and the
+// removal the plan names. A member that cannot read Ra's membership has no
+// verdict to give and reports it as not the leader, which does nothing and says
+// nothing.
+fn reconcile_once(wanted: Seats, config: Config, asked: List(Node)) -> Pass {
+  let local = config.local
+  let own = store.membership()
+  case rejoin_due(wanted, local, own, asked) {
+    seats.Rejoin -> {
+      log.warn(config.logger, "daemon.directory_not_a_member", [
+        field.text("node", local),
+      ])
+      Reset(store.reset(config.directory))
+    }
+    seats.Stay ->
+      case own {
+        Error(_) -> Planned(seats.NotLeader, Ok(Nil))
+        Ok(ra) -> {
+          let verdict = seats.plan(wanted, ra, local)
+          case verdict {
+            seats.Remove(node: gone, ..) ->
+              Planned(verdict, store.remove_member(gone))
+            seats.NotLeader
+            | seats.NotSeated
+            | seats.Settled(..)
+            | seats.Held(..) -> Planned(verdict, Ok(Nil))
+          }
+        }
+      }
+  }
+}
+
+// Whether to reset, asking the peers only when this node's own view does not
+// settle the question. The first peer that gives an answer decides; one that
+// does not is skipped, and no answer at all is `Stay`.
+fn rejoin_due(
   wanted: Seats,
   local: String,
-) -> #(Verdict, Result(Nil, String)) {
-  case store.membership() {
-    Error(_) -> #(seats.NotLeader, Ok(Nil))
-    Ok(ra) -> {
-      let up =
-        list.map(node.visible(), fn(connected) {
-          atom.to_string(node.name(connected))
-        })
-      let verdict = seats.plan(wanted, ra, local, up)
-      case verdict {
-        seats.Remove(node: gone, ..) -> #(verdict, store.remove_member(gone))
-        seats.NotLeader
-        | seats.NotSeated
-        | seats.Settled(..)
-        | seats.Held(..) -> #(verdict, Ok(Nil))
+  own: Result(store.Membership, store.Unavailable),
+  asked: List(Node),
+) -> seats.Rejoin {
+  case seats.seat_of(wanted.places, local), own {
+    Error(Nil), _ -> seats.Stay
+    Ok(_), Ok(ra) ->
+      case list.key_find(ra.members, local) {
+        Ok(_) -> seats.Stay
+        Error(Nil) -> seats.rejoin(wanted, local, first_answer(asked))
       }
-    }
+    Ok(_), Error(_) -> seats.rejoin(wanted, local, first_answer(asked))
+  }
+}
+
+fn first_answer(asked: List(Node)) -> Result(store.Membership, Nil) {
+  list.find_map(asked, fn(peer) {
+    store.membership_through(peer) |> result.replace_error(Nil)
+  })
+}
+
+// Whether a pass that repeats the last one is worth no line: it did what it did
+// before, or it is waiting out a change that will settle by itself.
+fn quiet(outcome: Result(Nil, String)) -> Bool {
+  case outcome {
+    Ok(Nil) -> True
+    Error(reason) -> reason == store.settling
   }
 }
 
@@ -559,6 +668,12 @@ fn report(
         field.text("node", gone),
         field.text("why", why_word(why)),
       ])
+    seats.Remove(node: gone, why:), Error(reason) if reason == store.settling ->
+      log.info(logger, "daemon.directory_remove_held", [
+        field.text("node", gone),
+        field.text("why", why_word(why)),
+        field.text("reason", reason),
+      ])
     seats.Remove(node: gone, why:), Error(reason) ->
       log.warn(logger, "daemon.directory_remove_failed", [
         field.text("node", gone),
@@ -571,7 +686,7 @@ fn report(
         field.text("why", why_word(why)),
         field.text(
           "reason",
-          "a majority of the voters that would remain is not connected",
+          "a majority of the voters that would remain is not replicating",
         ),
       ])
   }

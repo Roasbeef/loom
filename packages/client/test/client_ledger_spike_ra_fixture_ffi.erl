@@ -229,7 +229,7 @@ rpc_line(Request) ->
 
 %% Ra's members as one member sees them, with whether each votes.
 voters(Port) ->
-    {ok, {Members, {some, _Leader}}} = ?SPIKE:call(Port, membership),
+    {ok, {Members, {some, _Leader}, _Up}} = ?SPIKE:call(Port, membership),
     maps:from_list(Members).
 
 %% Waits until the leader's membership lists exactly these members.

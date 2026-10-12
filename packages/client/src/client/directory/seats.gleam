@@ -28,7 +28,13 @@
 ////
 //// A Ra member goes when the ledger names its node and gives it no seat (it was
 //// revoked, or its standing is `none`) or a different one (a voter that is now
-//// a learner, or the reverse; the member then joins again in its new seat). A
+//// a learner, or the reverse). Ra never stops the server it removed, so the
+//// removed node does not learn of it from the cluster. It finds out by asking
+//// (`rejoin`): a node the ledger seats whose store cannot say what the cluster
+//// holds asks the leader through a peer, and when the leader's membership does
+//// not list it, the node resets its store and joins again in the seat the
+//// ledger gives it. A node the ledger does not seat never does, and neither
+//// does one whose question went unanswered. A
 //// Ra member the ledger has never named is left alone and reported. It is
 //// either a node of another deployment or a node whose enrollment this
 //// leader's ledger has not received yet, and removing it on a stale ledger
@@ -38,8 +44,10 @@
 ////
 //// Removing a voter changes the configuration at once, and the change commits
 //// only when a majority of the voters that remain have it. The leader therefore
-//// removes a voter only while a majority of the remaining voters are connected
-//// to it. Otherwise it holds, says so, and asks again at the next tick, so a
+//// removes a voter only while a majority of the remaining voters are replicating
+//// its log, which is what Ra's own status for the member says (`Membership.up`):
+//// a node that is connected may run no Ra server, and one Ra has marked
+//// disconnected or suspended will not acknowledge the change. Otherwise it holds, says so, and asks again at the next tick, so a
 //// removal that cannot commit never sits in the log blocking the changes that
 //// could. The floor of three voters is the operator's command and not this
 //// module's: the ledger is the authority, and `revoke --force` is the way to
@@ -112,6 +120,20 @@ pub type Verdict {
   Held(node: String, why: Why)
 }
 
+/// What a member seated by the ledger does about the store it believes it has
+/// joined, once it knows what the leader's membership holds.
+pub type Rejoin {
+  /// The leader's membership lists this node, or the leader did not say, or the
+  /// ledger does not seat this node. The store is left as it is.
+  Stay
+
+  /// The leader answered, and its membership does not list this node. The leader
+  /// removed it, and Ra never stops the server it removes, so the store queues
+  /// every call until its deadline and reports no quorum while the cluster is
+  /// well. The node resets the store and joins again.
+  Rejoin
+}
+
 /// The seats of a ledger, read from its active members, and a way to tell
 /// whether it has ever named a node.
 ///
@@ -159,11 +181,11 @@ pub fn seat_of(places: List(Place), node: String) -> Result(Seat, Nil) {
 
 /// The next change, or the reason there is none.
 ///
-/// `local` is this member's node name, `up` the nodes connected to it, which
-/// need not list `local`. The reconciliation is the leader's alone, and the
-/// leader never removes itself: a leader the ledger no longer seats stands down
-/// when its own entry reaches it, as the revoke that unseated it disconnects it
-/// from everyone.
+/// `local` is this member's node name, and `ra` the membership as the leader
+/// gives it, whose `up` lists the members it is replicating to. The
+/// reconciliation is the leader's alone, and the leader never removes itself: a
+/// leader the ledger no longer seats stands down when its own entry reaches it,
+/// as the revoke that unseated it disconnects it from everyone.
 ///
 /// A learner is removed before a voter, and members in name order, so the same
 /// state gives the same answer on every call. The first removal that is safe is
@@ -172,23 +194,19 @@ pub fn seat_of(places: List(Place), node: String) -> Result(Seat, Nil) {
 /// ## Examples
 ///
 /// ```gleam
-/// seats.plan(wanted, ra, "loom@a.example", ["loom@b.example"])
+/// seats.plan(wanted, ra, "loom@a.example")
 /// // -> Settled(missing: [], foreign: [])
 /// ```
-pub fn plan(
-  wanted: Seats,
-  ra: Membership,
-  local: String,
-  up: List(String),
-) -> Verdict {
+pub fn plan(wanted: Seats, ra: Membership, local: String) -> Verdict {
   case ra.leader == Some(local), seat_of(wanted.places, local) {
     False, _ -> NotLeader
     True, Error(Nil) -> NotSeated
     True, Ok(_) -> {
       let due = removals(wanted, ra, local)
       let voters = voting(ra)
+      let replicating = ra.up
       let reachable = fn(node: String) {
-        node == local || list.contains(up, node)
+        node == local || list.contains(replicating, node)
       }
       case list.find(due, fn(one) { safe(one, voters, reachable) }) {
         Ok(#(node, why, _)) -> Remove(node, why)
@@ -203,6 +221,37 @@ pub fn plan(
           }
       }
     }
+  }
+}
+
+/// Whether a node resets its store and joins again, given what the leader said.
+///
+/// `answer` is the cluster's membership as a leader gave it to a question this
+/// node asked, or `Error(Nil)` when no leader answered. Only an explicit answer
+/// that leaves this node out is a reason to reset: a timeout, an unreachable
+/// peer and a missing leader say nothing about this node, and a node that did
+/// not ask cannot tell a removed member from a slow cluster. A node the ledger
+/// does not seat never joins, so it never resets either. The decision depends on
+/// no clock and no count, so a healthy member cannot be talked into churning by
+/// a slow network.
+///
+/// ## Examples
+///
+/// ```gleam
+/// seats.rejoin(wanted, "loom@a.example", Error(Nil)) // -> Stay
+/// ```
+pub fn rejoin(
+  wanted: Seats,
+  local: String,
+  answer: Result(Membership, Nil),
+) -> Rejoin {
+  case seat_of(wanted.places, local), answer {
+    Ok(_), Ok(ra) ->
+      case list.key_find(ra.members, local) {
+        Ok(_) -> Stay
+        Error(Nil) -> Rejoin
+      }
+    Error(Nil), _ | Ok(_), Error(Nil) -> Stay
   }
 }
 

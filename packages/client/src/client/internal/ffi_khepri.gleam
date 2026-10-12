@@ -363,20 +363,40 @@ pub fn put(
   timeout_ms: Int,
 ) -> Result(Nil, Failure)
 
-/// Ra's members by node name with whether each votes, and the leader's node
-/// name when there is one.
+/// Ra's members by node name with whether each votes, the leader's node name
+/// when there is one, and the members that leader reports as replicating
+/// (status `normal`), which is empty unless the answer came from the leader.
 ///
 /// Ra `ra:members_info/2`.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// ffi_khepri.membership(2000) // -> Ok(#([#("a@h", Voter)], Some("a@h")))
+/// ffi_khepri.membership(2000)
+/// // -> Ok(#([#("a@h", Voter)], Some("a@h"), ["a@h"]))
 /// ```
 @external(erlang, "client_khepri_ffi", "membership")
 pub fn membership(
   timeout_ms: Int,
-) -> Result(#(List(#(String, Voting)), Option(String)), Failure)
+) -> Result(#(List(#(String, Voting)), Option(String), List(String)), Failure)
+
+/// The same question asked of the server on `remote`, which forwards it to the
+/// leader it knows. A member whose own server cannot say what the cluster holds
+/// asks a peer, and the answer is the leader's.
+///
+/// Ra `ra:members_info/2` addressed to that node's server.
+///
+/// ## Examples
+///
+/// ```gleam
+/// ffi_khepri.membership_through(remote, 2000)
+/// // -> Ok(#([#("a@h", Voter)], Some("a@h"), ["a@h"]))
+/// ```
+@external(erlang, "client_khepri_ffi", "membership_through")
+pub fn membership_through(
+  remote: Node,
+  timeout_ms: Int,
+) -> Result(#(List(#(String, Voting)), Option(String), List(String)), Failure)
 
 /// The last log index this member has applied, or 0 when the store is not
 /// running.

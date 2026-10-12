@@ -48,6 +48,12 @@ pub const activation_ms = 5000
 /// How long a read may take, including the fence of a consistent read.
 pub const read_ms = 3000
 
+/// What `remove_member` reports when Ra refuses a membership change because an
+/// earlier one has not committed. It is not a failure: the change goes through
+/// when the earlier one settles, and a caller that asks again at its next tick
+/// has done everything there is to do.
+pub const settling = "another membership change is settling"
+
 /// Why a read gave no answer.
 pub type Unavailable {
   Unavailable(
@@ -94,6 +100,11 @@ pub type Membership {
     members: List(#(String, ffi_khepri.Voting)),
     /// The leader's node name, when there is one.
     leader: Option(String),
+    /// The members the leader reports as replicating its log now (Ra status
+    /// `normal`). Empty when the answer did not come from the leader. A member
+    /// Ra has not marked down may still be unreachable, but one in this list is
+    /// one the leader is sending to, which a connected node is not necessarily.
+    up: List(String),
   )
 }
 
@@ -271,7 +282,7 @@ pub fn remove_member(member: String) -> Result(Nil, String) {
   bounded(write_ms + 1000, Error("the removal did not finish in time"), fn() {
     case ffi_khepri.remove_member(member, write_ms) {
       ffi_khepri.Done -> Ok(Nil)
-      ffi_khepri.Again -> Error("another membership change is settling")
+      ffi_khepri.Again -> Error(settling)
       ffi_khepri.Failed(reason:) -> Error(reason)
     }
   })
@@ -298,6 +309,33 @@ pub fn stop() -> Nil {
 /// ```
 pub fn forget_local() -> Nil {
   ffi_khepri.forget_local()
+}
+
+/// Takes this member out of the cluster it believes it is in, so that it joins
+/// again: the joined marker is removed first and the local server is deleted
+/// second.
+///
+/// The order is what keeps a stop in between from doing harm. A member killed
+/// after the marker is gone starts as one that has not joined, and joins through
+/// the cluster, which `restart` and the next `join` handle. The other order would
+/// leave a marker over a deleted server, which `restart` refuses to start
+/// because starting would create a second cluster. This never creates a store,
+/// and a member that has been reset is not a member until `join` ends.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // store.reset(state_root <> "/directory")
+/// ```
+pub fn reset(directory: String) -> Result(Nil, String) {
+  use Nil <- result.try(
+    simplifile.delete_all([joined_marker(directory)])
+    |> result.map_error(fn(error) {
+      "the joined marker could not be removed: "
+      <> simplifile.describe_error(error)
+    }),
+  )
+  Ok(ffi_khepri.forget_local())
 }
 
 /// The file whose presence says this member's store is joined.
@@ -374,12 +412,33 @@ pub fn holds_data(directory: String) -> Bool {
 /// ## Examples
 ///
 /// ```gleam
-/// // store.membership() // -> Ok(Membership([#("a@h.x", Voter)], Some("a@h.x")))
+/// // store.membership()
+/// // -> Ok(Membership([#("a@h.x", Voter)], Some("a@h.x"), ["a@h.x"]))
 /// ```
 pub fn membership() -> Result(Membership, Unavailable) {
   bounded(read_ms + 1000, Error(Unavailable("no answer in time")), fn() {
     case ffi_khepri.membership(read_ms) {
-      Ok(#(members, leader)) -> Ok(Membership(members:, leader:))
+      Ok(#(members, leader, up)) -> Ok(Membership(members:, leader:, up:))
+      Error(failure) -> Error(Unavailable(describe(failure)))
+    }
+  })
+}
+
+/// Ra's view of the cluster as the leader gives it, asked through the member on
+/// `remote`. A member whose own server cannot say what the cluster holds, for
+/// want of a leader it knows, asks a peer, and the peer's server forwards the
+/// question to the leader. A peer that is down, has no store or cannot reach a
+/// leader gives `Unavailable`, which is not an answer about this member.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // store.membership_through(peer_node)
+/// ```
+pub fn membership_through(remote: Node) -> Result(Membership, Unavailable) {
+  bounded(read_ms + 1000, Error(Unavailable("no answer in time")), fn() {
+    case ffi_khepri.membership_through(remote, read_ms) {
+      Ok(#(members, leader, up)) -> Ok(Membership(members:, leader:, up:))
       Error(failure) -> Error(Unavailable(describe(failure)))
     }
   })
