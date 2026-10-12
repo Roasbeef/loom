@@ -231,6 +231,7 @@ pub fn a_kept_key_is_private_and_never_replaced_test() {
       key:,
       certificate:,
       ledger: "line one\nline two\n",
+      cookie: "a-cookie-of-sixteen-characters",
     )
 
   let assert Ok(path) = authority_key.keep(directory, kept, passphrase)
@@ -243,6 +244,8 @@ pub fn a_kept_key_is_private_and_never_replaced_test() {
   assert simplifile.read(directory <> "/ca.pem") == Ok(certificate)
   assert simplifile.read(directory <> "/ledger.log")
     == Ok("line one\nline two\n")
+  assert mode_of(directory <> "/cookie") == 0o600
+  assert authority_key.cookie(directory) == Ok("a-cookie-of-sixteen-characters")
 
   // A second keep, even with the same key and passphrase, writes nothing.
   let before = simplifile.read(path)
@@ -261,7 +264,13 @@ pub fn a_key_file_that_others_can_read_is_not_opened_test() {
   let assert Ok(path) =
     authority_key.keep(
       directory,
-      authority_key.Kept(deployment:, key:, certificate:, ledger: ""),
+      authority_key.Kept(
+        deployment:,
+        key:,
+        certificate:,
+        ledger: "",
+        cookie: "c",
+      ),
       passphrase,
     )
   let assert Ok(Nil) = simplifile.set_permissions_octal(path, 0o640)
@@ -281,7 +290,13 @@ pub fn the_signer_signs_for_the_authority_certificate_test() {
   let assert Ok(_) =
     authority_key.keep(
       directory,
-      authority_key.Kept(deployment:, key:, certificate:, ledger: ""),
+      authority_key.Kept(
+        deployment:,
+        key:,
+        certificate:,
+        ledger: "",
+        cookie: "c",
+      ),
       passphrase,
     )
 
@@ -308,6 +323,7 @@ pub fn a_sealed_value_that_is_not_a_key_cannot_sign_test() {
         key: "not a key",
         certificate: "",
         ledger: "",
+        cookie: "",
       ),
       passphrase,
     )

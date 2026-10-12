@@ -517,6 +517,20 @@ pub fn head(ledger: Ledger) -> Head {
   ledger.head
 }
 
+/// The identity of the entry applied at a sequence number, from genesis to
+/// the head. An operator's tool compares it with the identity a daemon holds at
+/// the same number, which is how it notices a copy of the ledger that forked.
+///
+/// ## Examples
+///
+/// ```gleam
+/// membership_ledger.id_at(ledger, 0) // -> Ok(genesis_id)
+/// assert membership_ledger.id_at(ledger, 99) == Error(Nil)
+/// ```
+pub fn id_at(ledger: Ledger, seq: Int) -> Result(EntryId, Nil) {
+  dict.get(ledger.applied, seq)
+}
+
 /// The active members, ordered by name.
 ///
 /// ## Examples

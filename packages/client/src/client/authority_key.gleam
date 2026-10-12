@@ -12,12 +12,16 @@
 //// ## What is stored
 ////
 //// One directory per deployment, `<home>/.loom/authority/<deployment id>` by
-//// default, mode 0700, holding three files mode 0600:
+//// default, mode 0700, holding four files mode 0600:
 ////
 //// - `key.enc`, the authority private key sealed under a passphrase;
 //// - `ca.pem`, the authority certificate, which `enroll` needs to issue a
 ////   node certificate;
-//// - `ledger.log`, the operator's copy of the ledger.
+//// - `ledger.log`, the operator's copy of the ledger;
+//// - `cookie`, the deployment's shared cookie, which every bundle `enroll` and
+////   `renew` write carries. It is not sealed: the bundles `provision` wrote
+////   hold it in the clear on this machine already, and a cookie that needed a
+////   passphrase would put a prompt in front of a command that only copies it.
 ////
 //// No daemon reads this directory and no node holds the key.
 ////
@@ -86,6 +90,9 @@ pub const certificate_file = "ca.pem"
 
 /// The name of the operator's copy of the ledger inside the directory.
 pub const ledger_file = distribution_bundle.ledger_file
+
+/// The name of the deployment's cookie inside the directory.
+pub const cookie_file = "cookie"
 
 /// The PBKDF2 iteration count a new envelope uses.
 pub const iterations = 600_000
@@ -506,6 +513,8 @@ pub type Kept {
     certificate: String,
     /// The text of the ledger file as provisioned.
     ledger: String,
+    /// The deployment's cookie, which the bundles of later nodes carry.
+    cookie: String,
   )
 }
 
@@ -551,6 +560,7 @@ pub fn keep(
     kept.certificate,
   ))
   use _ <- result.try(write(directory <> "/" <> ledger_file, kept.ledger))
+  use _ <- result.try(write(directory <> "/" <> cookie_file, kept.cookie))
   use _ <- result.try(write(
     key_path,
     seal(kept.key, passphrase, kept.deployment),
@@ -605,6 +615,24 @@ pub fn signer(
 ) -> Result(Signer, KeyError) {
   use key <- result.try(load(directory, deployment, passphrase))
   membership_signing.signer(key) |> result.replace_error(NotASigningKey)
+}
+
+/// The deployment's cookie, from a directory `keep` wrote. The file must be
+/// private to its owner.
+///
+/// ## Examples
+///
+/// ```gleam
+/// authority_key.cookie(directory) // -> Ok("Zm9v...")
+/// ```
+pub fn cookie(directory: String) -> Result(String, KeyError) {
+  let path = directory <> "/" <> cookie_file
+  use bytes <- result.try(
+    bootstrap.read_private_bounded(path, 256)
+    |> result.map_error(fn(reason) { Io(path, reason) }),
+  )
+  bit_array.to_string(bytes)
+  |> result.replace_error(Io(path, "the cookie is not text"))
 }
 
 /// Whether a directory already holds a sealed key.

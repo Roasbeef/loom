@@ -32,6 +32,7 @@
 //// first two, and its path is all a command says about it.
 
 import client/authority_key
+import client/daemon/ledger_cli
 import client/distribution
 import client/distribution_bundle
 import client/distribution_install.{Options}
@@ -138,7 +139,12 @@ pub fn run(arguments: List(String)) -> Result(String, String) {
     ["provision", ..rest] -> provision(rest)
     ["show", ..rest] -> show(rest)
     ["install", ..rest] -> install(rest)
-    _ -> Error(usage)
+    [word, ..rest] ->
+      case ledger_cli.is_ledger_command(word) {
+        True -> ledger_cli.run(word, rest)
+        False -> Error(usage)
+      }
+    [] -> Error(usage)
   }
 }
 
@@ -329,6 +335,7 @@ fn keep_authority(
       key: authority.key,
       certificate: authority.certificate,
       ledger: provisioned.ledger,
+      cookie: authority.cookie,
     ),
     passphrase,
   )

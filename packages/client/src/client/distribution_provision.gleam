@@ -90,6 +90,9 @@ pub type Authority {
     certificate: String,
     /// PEM of the authority private key.
     key: String,
+    /// The deployment's cookie, which every bundle carries. The operator keeps
+    /// it beside the key so that a node enrolled later gets the same one.
+    cookie: String,
   )
 }
 
@@ -244,6 +247,7 @@ pub fn provision_ledger(
       deployment: deployment_id,
       certificate: minted.authority,
       key: minted.authority_key,
+      cookie: minted.cookie,
     ),
     ledger:,
   ))

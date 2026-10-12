@@ -7,12 +7,18 @@
 //// authority key is sealed under, so no test touches the real `$HOME`.
 
 import client/daemon/distribution_cli
+import client/ledger_control.{type Handle, Handle}
+import client/ledger_reference
+import client/ledger_service
+import client/ledger_sync.{type Daemon, Daemon}
+import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/result
 import gleam/string
 import host/bootstrap
 import simplifile
+import telemetry/log
 
 /// The passphrase every test deployment is sealed under.
 pub const passphrase = "correct horse battery"
@@ -123,4 +129,100 @@ pub fn lines(path: String) -> List(String) {
 /// Runs a command and returns what it printed or the reason it was refused.
 pub fn run(arguments: List(String)) -> Result(String, String) {
   distribution_cli.run(arguments) |> result.map(string.trim_end)
+}
+
+/// A ledger process for the node `node` of a provisioned deployment, over a
+/// copy of the ledger `provision` wrote, in its own directory. It is the
+/// production process with a name of its own and no peers, so a test can run it
+/// beside others and drive it as a daemon would be driven.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let handle = ledger_deployment.serve(deployed, "hub", "loom@hub.example")
+/// ```
+pub fn serve(
+  deployed: Deployed,
+  label: String,
+  name: String,
+  node: String,
+) -> Handle {
+  let directory = deployed.base <> "/served-" <> label
+  let assert Ok(Nil) = simplifile.create_directory_all(directory)
+  let assert Ok(Nil) =
+    simplifile.write(
+      directory <> "/ledger.log",
+      read(deployed.out <> "/ledger.log"),
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      directory <> "/ca.pem",
+      read(authority_directory(deployed) <> "/ca.pem"),
+    )
+  let assert Ok(loaded) =
+    ledger_reference.load(
+      directory <> "/ledger.log",
+      directory <> "/ca.pem",
+      node,
+    )
+  let config =
+    ledger_service.Config(
+      ..ledger_service.configuration(
+        loaded.store,
+        loaded.ledger,
+        loaded.verifier,
+        [],
+        log.discard(),
+      ),
+      peers: ledger_service.Supplied(reach: fn() { [] }),
+      name: process.new_name("served"),
+      tick_ms: 3_600_000,
+    )
+  let assert Ok(service) = ledger_service.start(config)
+  Handle(service:, local: node, name:)
+}
+
+/// The `Daemon` a command sees when it is pointed at `handle`: the three
+/// commands, with every reply passed through the decoder an operator uses.
+pub fn daemon_over(handle: Handle) -> Daemon {
+  Daemon(
+    status: fn() {
+      ledger_control.status(handle)
+      |> result.map_error(describe)
+      |> result.try(ledger_control.decode_status)
+    },
+    entries: fn(after, limit) {
+      ledger_control.entries(handle, after, limit)
+      |> result.map_error(describe)
+      |> result.try(ledger_control.decode_entries)
+    },
+    append: fn(lines) {
+      ledger_control.append(handle, lines)
+      |> result.map_error(describe)
+      |> result.try(ledger_control.decode_applied)
+    },
+  )
+}
+
+fn describe(failure: ledger_control.Failure) -> String {
+  case failure {
+    ledger_control.Invalid(step:) -> "ledger_invalid: " <> step
+    ledger_control.Unavailable(reason:) -> reason
+  }
+}
+
+/// A daemon nothing answers for, as when no daemon runs on the host.
+pub fn nobody() -> Daemon {
+  let refuse = "request not sent: no ready local daemon"
+  Daemon(
+    status: fn() { Error(refuse) },
+    entries: fn(_, _) { Error(refuse) },
+    append: fn(_) { Error(refuse) },
+  )
+}
+
+/// The flags every signing command of a test takes: the home the key is sealed
+/// under and the passphrase file.
+pub fn signing(deployed: Deployed) -> List(String) {
+  ["--home", deployed.home, "--passphrase-file", deployed.passphrase_file]
 }
