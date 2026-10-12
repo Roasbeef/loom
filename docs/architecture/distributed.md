@@ -1032,7 +1032,10 @@ The directory holds no state of its own, so it has no model.
   domain, memberships or claims, or appear in the web view. The terminal does
   not render the `moving` and `moved` members of a session view.
 - **Provisioning is one-shot.** Certificate rotation and adding a node without
-  reissuing the others are later work.
+  reissuing the others are later work. A signed membership ledger that makes
+  both a single operator action is proposed in
+  [the membership ledger note](../design-notes/membership-ledger.md) and
+  [protocol-change/086](../../protocol-change/086-membership-ledger.md).
 - **The ledger is one SQLite file per executor.** Corruption affects every
   scope's history on that machine; full sync and a digest over each outcome are
   the mitigation. Writes serialize through one actor, two short transactions per
