@@ -31,6 +31,25 @@
 //// the ledger is public, and `import` adds no way to adopt an entry that a
 //// signature and a chain do not already allow.
 ////
+//// ## Flow
+////
+//// `run` → `run_with` → `parse` → `enroll` | `renew` | `revoke` | `log` |
+//// `import_file`
+////
+//// 1. `run` hands the command to `run_with` with the socket as the way to reach
+////    a daemon (`socket_daemon`); a test passes a ledger process of its own.
+//// 2. `parse` reads the words with the flags of the command (`flags_of`) and
+////    refuses an option nobody knows.
+//// 3. A signing command checks its own fields, then `unlock` opens the kept key
+////    with the passphrase.
+//// 4. `sign` locks the operator's copy and `signed_under_lock` does the work:
+////    status from the daemon, `ledger_sync.catch_up`, the command's own decision
+////    from the ledger as it stands, seal, apply, append to the copy, the
+////    command's bundle, `hand_over`.
+//// 5. `confirmations_text` polls the daemon for the new head and prints who has
+////    it. `log` and `import_file` read the ledger or feed it to a daemon and do
+////    not sign.
+////
 //// ## Which daemon
 ////
 //// By default the daemon on this host, found through its state directory
@@ -138,35 +157,39 @@ type Parsed {
   )
 }
 
-// The flags each command accepts, by whether they take a value.
-fn flags_of(command: String) -> #(List(String), List(String), List(String)) {
+// The flags a command accepts: the options that take a value, the switches that
+// do not, and the options that may be given more than once.
+type Flags {
+  Flags(valued: List(String), switches: List(String), repeatable: List(String))
+}
+
+fn flags_of(command: String) -> Flags {
   let common = [
     "--home", "--deployment", "--passphrase-file", "--state-dir", "--addr",
     "--token-file",
   ]
   case command {
-    "enroll" -> #(
-      list.append(common, [
-        "--node", "--role", "--host", "--port", "--links", "--workspace",
-        "--bundle-dir", "--out", "--wait", "--directory",
-      ]),
-      ["--force"],
-      ["--workspace"],
-    )
-    "revoke" -> #(list.append(common, ["--reason", "--wait"]), ["--force"], [])
-    "renew" -> #(list.append(common, ["--out", "--wait"]), ["--force"], [])
-    "log" -> #(list.append(common, ["--config"]), ["--json"], [])
-    _ -> #(["--state-dir", "--addr", "--token-file"], [], [])
+    "enroll" ->
+      Flags(
+        list.append(common, [
+          "--node", "--role", "--host", "--port", "--links", "--workspace",
+          "--bundle-dir", "--out", "--wait", "--directory",
+        ]),
+        ["--force"],
+        ["--workspace"],
+      )
+    "revoke" ->
+      Flags(list.append(common, ["--reason", "--wait"]), ["--force"], [])
+    "renew" -> Flags(list.append(common, ["--out", "--wait"]), ["--force"], [])
+    "log" -> Flags(list.append(common, ["--config"]), ["--json"], [])
+    _ -> Flags(["--state-dir", "--addr", "--token-file"], [], [])
   }
 }
 
 fn parse(command: String, arguments: List(String)) -> Result(Parsed, String) {
-  let #(valued, switches, repeatable) = flags_of(command)
   use parsed <- result.try(parse_loop(
     arguments,
-    valued,
-    switches,
-    repeatable,
+    flags_of(command),
     Parsed([], [], []),
   ))
   Ok(Parsed(
@@ -178,55 +201,59 @@ fn parse(command: String, arguments: List(String)) -> Result(Parsed, String) {
 
 fn parse_loop(
   arguments: List(String),
-  valued: List(String),
-  switches: List(String),
-  repeatable: List(String),
+  flags: Flags,
   parsed: Parsed,
 ) -> Result(Parsed, String) {
   case arguments {
     [] -> Ok(parsed)
-    [word, ..rest] ->
+    [word, ..rest] -> {
+      use #(parsed, rest) <- result.try(take_word(word, rest, flags, parsed))
+      parse_loop(rest, flags, parsed)
+    }
+  }
+}
+
+// One word: an option that takes a value, a switch, an option nobody knows, or
+// a positional word. Returns what it consumed beyond the word.
+fn take_word(
+  word: String,
+  rest: List(String),
+  flags: Flags,
+  parsed: Parsed,
+) -> Result(#(Parsed, List(String)), String) {
+  case
+    list.contains(flags.valued, word),
+    list.contains(flags.switches, word),
+    string.starts_with(word, "--")
+  {
+    True, _, _ -> take_value(word, rest, flags, parsed)
+    _, True, _ ->
+      Ok(#(Parsed(..parsed, switches: [word, ..parsed.switches]), rest))
+    _, _, True -> Error("unknown option " <> word)
+    _, _, False ->
+      Ok(#(Parsed(..parsed, positional: [word, ..parsed.positional]), rest))
+  }
+}
+
+fn take_value(
+  word: String,
+  rest: List(String),
+  flags: Flags,
+  parsed: Parsed,
+) -> Result(#(Parsed, List(String)), String) {
+  case rest {
+    [] -> Error(word <> " needs a value")
+    [value, ..after] ->
       case
-        list.contains(valued, word),
-        list.contains(switches, word),
-        string.starts_with(word, "--")
+        list.key_find(parsed.values, word),
+        list.contains(flags.repeatable, word)
       {
-        True, _, _ ->
-          case rest {
-            [value, ..after] ->
-              case
-                list.key_find(parsed.values, word),
-                list.contains(repeatable, word)
-              {
-                Ok(_), False -> Error(word <> " was given twice")
-                _, _ ->
-                  parse_loop(
-                    after,
-                    valued,
-                    switches,
-                    repeatable,
-                    Parsed(..parsed, values: [#(word, value), ..parsed.values]),
-                  )
-              }
-            [] -> Error(word <> " needs a value")
-          }
-        _, True, _ ->
-          parse_loop(
-            rest,
-            valued,
-            switches,
-            repeatable,
-            Parsed(..parsed, switches: [word, ..parsed.switches]),
-          )
-        _, _, True -> Error("unknown option " <> word)
-        _, _, False ->
-          parse_loop(
-            rest,
-            valued,
-            switches,
-            repeatable,
-            Parsed(..parsed, positional: [word, ..parsed.positional]),
-          )
+        Ok(_), False -> Error(word <> " was given twice")
+        _, _ ->
+          Ok(#(
+            Parsed(..parsed, values: [#(word, value), ..parsed.values]),
+            after,
+          ))
       }
   }
 }
@@ -382,7 +409,7 @@ fn unlock(parsed: Parsed) -> Result(Authority, String) {
   use certificate <- result.try(read_text(directory <> "/ca.pem"))
   use verifier <- result.try(
     membership_signing.verifier(certificate)
-    |> result.replace_error(directory <> "/ca.pem is not a certificate"),
+    |> result.map_error(fn(_) { directory <> "/ca.pem is not a certificate" }),
   )
   use cookie <- result.try(
     authority_key.cookie(directory)
@@ -441,9 +468,9 @@ fn sign(
   let lock_path = authority.directory <> "/ledger.lock"
   use lock <- result.try(
     bootstrap.try_launch_lock(lock_path)
-    |> result.replace_error(
-      "another command holds the lock on this ledger copy: " <> lock_path,
-    ),
+    |> result.map_error(fn(_) {
+      "another command holds the lock on this ledger copy: " <> lock_path
+    }),
   )
   let done = signed_under_lock(authority, where_, connect, decide, before_send)
   bootstrap.release_launch_lock(lock)
@@ -758,7 +785,7 @@ fn issue(
   names: List(String),
 ) -> Result(#(String, String), String) {
   ffi_pki.issue(authority.certificate, authority.key, name, list.unique(names))
-  |> result.replace_error("could not issue a certificate for " <> name)
+  |> result.map_error(fn(_) { "could not issue a certificate for " <> name })
 }
 
 fn pin_of(certificate: String) -> Result(BitArray, String) {
@@ -851,7 +878,7 @@ fn renew(parsed: Parsed, connect: Connect) -> Result(String, String) {
       fn(ledger) {
         use member <- result.try(
           membership_ledger.member(ledger, name)
-          |> result.replace_error(name <> " is not an active member"),
+          |> result.map_error(fn(_) { name <> " is not an active member" }),
         )
         use #(certificate, key) <- result.try(
           issue(authority, name, [member.node, member.host]),
@@ -1013,7 +1040,9 @@ fn log_source(
       use pem <- result.try(read_text(directory <> "/ca.pem"))
       use verifier <- result.map(
         membership_signing.verifier(pem)
-        |> result.replace_error(directory <> "/ca.pem is not a certificate"),
+        |> result.map_error(fn(_) {
+          directory <> "/ca.pem is not a certificate"
+        }),
       )
       #(directory <> "/" <> authority_key.ledger_file, verifier)
     }
@@ -1031,7 +1060,7 @@ fn log(parsed: Parsed, connect: Connect) -> Result(String, String) {
     lines_of(opened.store)
     |> list.try_map(fn(line) {
       membership_entry.read(bit_array.from_string(line), verifier)
-      |> result.replace_error(path <> " holds a line that does not verify")
+      |> result.map_error(fn(_) { path <> " holds a line that does not verify" })
     }),
   )
   let daemon = connect(where_)

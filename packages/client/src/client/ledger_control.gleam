@@ -85,7 +85,9 @@ pub fn handle(service: Service, local: String) -> Result(Handle, String) {
   )
   use member <- result.map(
     membership_ledger.member_at(status.ledger, local)
-    |> result.replace_error(local <> " is not an active member of its ledger"),
+    |> result.map_error(fn(_) {
+      local <> " is not an active member of its ledger"
+    }),
   )
   Handle(service:, local:, name: member.name)
 }
@@ -344,8 +346,10 @@ pub type RefusalView {
 pub type Standing {
   /// An active member.
   Enrolled
+
   /// Enrolled once and revoked since.
   Revoked
+
   /// Never enrolled.
   NotEnrolled
 }
@@ -459,17 +463,16 @@ pub fn decode_applied(value: JsonValue) -> Result(AppliedView, String) {
 /// assert ledger_control.pages(["a", "b"]) == [["a", "b"]]
 /// ```
 pub fn pages(lines: List(String)) -> List(List(String)) {
-  let #(done, current, _) =
-    list.fold(lines, #([], [], 0), fn(state, line) {
-      let #(done, current, bytes) = state
+  let #(done, current, _, _) =
+    list.fold(lines, #([], [], 0, 0), fn(state, line) {
+      let #(done, current, count, bytes) = state
       let size = bit_array.byte_size(bit_array.from_string(line))
       case
-        current,
-        list.length(current) >= max_append_lines
-        || bytes + size > max_page_bytes
+        count > 0
+        && { count >= max_append_lines || bytes + size > max_page_bytes }
       {
-        [_, ..], True -> #([list.reverse(current), ..done], [line], size)
-        _, _ -> #(done, [line, ..current], bytes + size)
+        True -> #([list.reverse(current), ..done], [line], 1, size)
+        False -> #(done, [line, ..current], count + 1, bytes + size)
       }
     })
   case current {
@@ -509,7 +512,8 @@ fn head_view(value: Result(JsonValue, Nil)) -> Result(HeadView, String) {
 }
 
 fn is_hex_id(text: String) -> Bool {
-  string.length(text) == 64
+  string.drop_start(text, 64) == ""
+  && string.drop_start(text, 63) != ""
   && list.all(string.to_graphemes(text), string.contains("0123456789abcdef", _))
 }
 

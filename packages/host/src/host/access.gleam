@@ -1433,6 +1433,7 @@ fn refusal_code(fields) {
     Ok(json.String("not_found")) -> "not_found"
     Ok(json.String("stale_epoch")) -> "stale_epoch"
     Ok(json.String("bad_request")) -> "bad_request"
+
     // The message of a refused ledger line is the step that failed, which is
     // what the operator needs to act on (protocol-change/086).
     Ok(json.String("ledger_invalid")) ->

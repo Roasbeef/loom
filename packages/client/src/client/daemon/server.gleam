@@ -2484,7 +2484,7 @@ fn ledger_command(
   use Nil <- result.try(owner(principal) |> result.map_error(control_refusal))
   use handle <- result.try(
     option.to_result(config.ledger, Nil)
-    |> result.replace_error(control_refusal("not_found")),
+    |> result.map_error(fn(_) { control_refusal("not_found") }),
   )
   case command {
     protocol.LedgerAppend(lines) ->

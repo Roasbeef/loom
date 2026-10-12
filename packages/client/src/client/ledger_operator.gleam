@@ -188,7 +188,7 @@ pub fn renew(
 ) -> Result(#(Entry, Member), String) {
   use current <- result.try(
     membership_ledger.member(ledger, name)
-    |> result.replace_error(not_a_member(ledger, name)),
+    |> result.map_error(fn(_) { not_a_member(ledger, name) }),
   )
   let member = Member(..current, pin:)
   use entry <- result.map(preflight(
@@ -215,7 +215,7 @@ pub fn revoke(
 ) -> Result(Entry, String) {
   use current <- result.try(
     membership_ledger.member(ledger, name)
-    |> result.replace_error(not_a_member(ledger, name)),
+    |> result.map_error(fn(_) { not_a_member(ledger, name) }),
   )
   use Nil <- result.try(
     case string.byte_size(reason) <= 200 && !has_control(reason) {
@@ -440,6 +440,7 @@ pub fn describe_concern(concern: Concern) -> String {
 pub type Confirmation {
   /// The member reported a head at or past the entry.
   Confirmed
+
   /// The member has not reported the entry. `reported` is the newest sequence
   /// number it did report, or `None` if it has not reported at all.
   Pending(reported: Option(Int))
