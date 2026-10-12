@@ -522,6 +522,20 @@ pub fn a_program_vetting_refused_never_ran_test() {
 const diagnostic =
   "error: Unknown variable\n  ┌─ program.gleam:5:12\n  │\n5 │   let x = fs.raed(\"a.md\")\n  │              ^^^^^^^ Did you mean `read`?\n\nThe name `raed` is not defined here."
 
+// The compiler prints a program's warnings before its error. The card names
+// the error's line, never an unused import's.
+pub fn a_warning_before_the_error_does_not_name_the_line_test() {
+  let text =
+    "warning: Unused imported module\n  ┌─ program.gleam:1:1\n  │\n1 │ import gleam/list\n  │ ^^^^^^^^^^^^^^^^^ This imported module is never used\n\n"
+    <> diagnostic
+  let card = failed_with("compile_failed", [#("detail", json.String(text))])
+  assert card.outcome == "Compile error, line 5"
+  let assert Some(failure) = card.failure
+  let assert Some(found) = failure.diagnostic
+  assert found.heading == "error: Unknown variable"
+  assert found.line == 5
+}
+
 pub fn a_compile_error_is_read_into_its_line_and_source_test() {
   let card =
     failed_with("compile_failed", [#("detail", json.String(diagnostic))])

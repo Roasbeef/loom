@@ -946,7 +946,7 @@ fn value_of(
 // place or quotes no source is not a diagnostic the card can lay out, and
 // the card shows it as it came.
 fn parse_diagnostic(text: String) -> Option(Diagnostic) {
-  case string.split(text, "\n") {
+  case first_error(string.split(text, "\n")) {
     [heading, ..rest] ->
       case list.find_map(rest, place_of) {
         Ok(#(path, line, column)) -> {
@@ -959,6 +959,22 @@ fn parse_diagnostic(text: String) -> Option(Diagnostic) {
         Error(Nil) -> None
       }
     [] -> None
+  }
+}
+
+// The compiler lists a program's warnings before its error, and it is the
+// error that stopped the build, so the card is laid out from the first
+// `error` and only the rows up to the next diagnostic. A text with no `error`
+// row is read from its first line as it came.
+fn first_error(lines: List(String)) -> List(String) {
+  case list.drop_while(lines, fn(row) { !string.starts_with(row, "error") }) {
+    [heading, ..rest] -> [
+      heading,
+      ..list.take_while(rest, fn(row) {
+        !string.starts_with(row, "error") && !string.starts_with(row, "warning")
+      })
+    ]
+    [] -> lines
   }
 }
 
