@@ -1,20 +1,24 @@
 # protocol-change/084: subagents on another orchestrator
 
 **Status**: PROPOSED 2026-10-09, direction ruled by the owner the same day
-(transport, child shape, approvals, who spawns, and the defaults). Nothing
-here is built, and every spelling below is provisional until phase 1 lands.
-**Affects**: the orchestrator port's closed message type (five constructors
-in phase 1, `ChildSend` in phase 2, `ChildEscalation` and `Resolve` in phase
-3), `loom.toml` (a `[spawners.<name>]` table on the remote, and one key,
-`subagents`, on an `[orchestrators.<name>]` row of the spawning daemon), the
-remote daemon's catalogue (one table for delegate sessions and one for spend,
-at the next version after 078 and 083), the model-facing `agent_spawn` (one
-argument, `on`) and its handle text, `cap/strand` (one assignment field, phase
-2), two new kinds of row in the session outbox, and durable cells that are not
-Part 1 interfaces: the parent's `remote-child/` stub, an optional
-`orchestrator` on the lineage cell, and the delegate session's fences.
-`runtime/child_run.Stop` gains three variants. The client control protocol
-(Part 1.6) is unchanged.
+(transport, child shape, approvals, who spawns, and the defaults). Phase 1 was
+simplified after review on 2026-10-11. Nothing here is built, and every
+spelling below is provisional until phase 1 lands.
+**Affects**: the orchestrator port's closed message type (three constructors in
+phase 1, `Spawn`, `Join` and `RunEnded`; `Release` and `ChildSend` in phase 2;
+`ChildEscalation` and `Resolve` in phase 3), `loom.toml` (a `[spawners.<name>]`
+table on the remote; the spawning daemon's `[orchestrators.<name>]` rows gain
+no key, but a name may not contain `@` or `#`), the remote daemon's catalogue
+(one table in phase 1, `delegate_sessions`, at the next version after 078 and
+083; a spend table in phase 2), the model-facing `agent_spawn` (one argument,
+`on`) and its handle text, `cap/strand` (one assignment field, phase 2), the
+session's remote drainer (one field on `peer_outbox_drain.Options`, and a
+second instance of the machine), and durable cells that are not Part 1
+interfaces: the parent's `remote-child/` stubs and `remote-ended/` rows, an
+optional `orchestrator` on the lineage cell, and the delegate session's
+`delegate/ended/` fences. `runtime/child_run.Stop` is unchanged in phase 1 and
+gains three variants in phase 2. The client control protocol (Part 1.6) is
+unchanged.
 **Raised by**: the owner's question of 2026-10-09, whether an orchestrator on
 a laptop can start and direct subagents on a remote orchestrator, "basically
 via TLS distribution".
@@ -22,7 +26,8 @@ via TLS distribution".
 **Builds on**: [protocol-change/078](078-distributed-runtime.md) (remote
 workspaces, pools, the orchestrator port, peer mail between orchestrators and
 the sender outbox), [076](076-config-profiles.md) (profiles) and, where
-present, protocol-change/083 on PR #934 (the Khepri directory).
+present, protocol-change/083 on PR #934 (the Khepri directory). Phase 1 does
+not need #934, and either order of landing is safe.
 
 ## Problem
 
@@ -65,25 +70,48 @@ The owner ruled against it on 2026-10-09, in favor of the distribution
 transport below. The reasons on that side are these. The deployment already
 trusts its orchestrators as Erlang peers, and a laptop that is to direct work
 on the remote is being given that standing on purpose. The distribution path
-reuses the orchestrator port, peer mail's outbox, drainer, `Endpoint` and
-failure split, and the remote can deliver to the laptop over the connection
-the laptop made, where the control path would have needed a second, pull-only
-vocabulary for anything the remote has to tell the parent. And a second
-authentication path between daemons, with its own principal kind, claim flow,
-grant storage and total decoders for untrusted input, is a large surface to
-build for one feature. If a deployment later needs spawners it does not trust
-as peers, this option can be built beside the chosen one: the remote's spawn
-handling is written against a spawner identity, so the control path would be a
-second way to establish that identity.
+reuses the orchestrator port, peer mail's `Endpoint` and failure split, and
+the shape of its drainer, and the remote can deliver to the laptop over the
+connection the laptop made, where the control path would have needed a second,
+pull-only vocabulary for anything the remote has to tell the parent. And a
+second authentication path between daemons, with its own principal kind, claim
+flow, grant storage and total decoders for untrusted input, is a large surface
+to build for one feature. If a deployment later needs spawners it does not
+trust as peers, this option can be built beside the chosen one: the remote's
+spawn handling is written against a spawner identity, so the control path
+would be a second way to establish that identity.
 
 ### Transport: the orchestrator port over TLS distribution (chosen)
 
-Spawn, status, join, run end and release become constructors of the
-orchestrator port's `Message`, beside `Owns`, `PeerCommand`, `Import`,
-`ImportStatus` and `Activate`. The laptop is a pinned distribution peer of the
-remote. A pinned peer is fully trusted, as every peer in #923 already is, so
-the remote's spawn policy bounds an honest peer and is not a security boundary
-against a compromised one. The design note's section 5 states this in full.
+Spawn, join and run end become constructors of the orchestrator port's
+`Message`, beside `Owns`, `PeerCommand`, `Import`, `ImportStatus` and
+`Activate`. The laptop is a pinned distribution peer of the remote. A pinned
+peer is fully trusted, as every peer in #923 already is, so the remote's spawn
+policy bounds an honest peer and is not a security boundary against a
+compromised one. Trust is symmetric: a compromised remote can equally call any
+function on the laptop daemon, including its other sessions and keys. The
+design note's section 5 states this in full.
+
+### Delivery that must survive a failure: the peer outbox (rejected)
+
+The first draft put `SpawnStatus` and `RunEnded` rows in the peer outbox. That
+does not fit the code. `peer_outbox.Row` has a fixed shape (a sending strand,
+a recipient session and exported strand, a message id and text). The drainer's
+only action is `peers.resend`, which resolves a recipient and calls `Deliver`.
+And `OutboxDue` settles any row older than an hour as refused. The remote
+rows are therefore their own durable facts: the stub is the pending row for a
+spawn, and a `remote-ended` row is the pending row for a run end. The drainer
+machine is generalised by one field and a second instance runs over them.
+
+### A status query and a site fence (rejected)
+
+The first draft let a spawn whose window ran out be settled by a `SpawnStatus`
+message, with a per-site fence so that the status could not be overtaken by a
+spawn from a killed process. Because the stub stores the request, the drainer
+can resend the `Spawn` itself, and the remote's adoption on `minted_by` makes
+every resend idempotent. Nothing queries, so there is nothing to fence. The
+`delegate/ended/{op}` fence stays: it is what stops an orphan when a run is
+aborted while a `Spawn` is in flight.
 
 ### Where the spawn policy lives
 
@@ -100,8 +128,15 @@ that decides session ownership. `[orchestrators]` also means whom a daemon asks
 about sessions and to whom it may move them, which a spawner needs neither of.
 
 **`[spawners.<name>]`.** A separate table whose node must be a pinned
-distribution peer and nothing more. Chosen, pending the owner's confirmation
-(design note, section 17).
+distribution peer and nothing more. Chosen, and settled by checking the
+membership rule in protocol-change/083 (design note, section 17).
+
+### Where the spawn switch lives
+
+A boolean on the spawning daemon's `[orchestrators.<name>]` row was in the first
+draft. Rejected: it is a naked `Bool` (lint R9) and a second authority that can
+disagree with the remote's policy. Every `[orchestrators.<name>]` row is a
+valid `on`, and the remote's `[spawners]` table refuses with its reason.
 
 ### Shape of the remote child
 
@@ -137,13 +172,9 @@ profile = "cheap-review"          # a [profiles.<name>] key
 tools = ["fs_read", "fs_write", "fs_edit", "grep", "bash", "code_mode",
          "agent_note", "agent_send"]
 max_depth = 1
-max_live = 8
-max_per_day = 200
 max_sessions = 4
 max_within_s = 14400
 default_within_s = 1800
-token_budget_per_day = 5000000
-child_token_budget = 1000000      # optional
 retain_s = 604800
 # approval_ceiling = { ... }      # phase 3
 ```
@@ -155,45 +186,47 @@ retain_s = 604800
 | `profile` | The `[profiles.<name>]` that seeds every delegate session. |
 | `tools` | The tool ceiling. The default omits `agent_spawn`, the peer tools, `schedule_*`, `remember` and skill installation. |
 | `max_depth` | The deepest child allowed, default 1, so children cannot spawn. |
-| `max_live` | Live children across all of this spawner's delegate sessions. |
-| `max_per_day` | Spawn admissions per rolling day. |
-| `max_sessions` | Delegate sessions not yet released; at most an executor placement's scope capacity. |
+| `max_sessions` | Delegate sessions this spawner holds, at most 16, an executor's scope limit. The live children of one delegate session are bounded by the Agency's existing `fan_out` and `session_strands`, so the spawner's total is at most `max_sessions` times `session_strands`. |
 | `max_within_s`, `default_within_s` | The deadline cap (default 4 h) and the deadline a spawn gets when it names none (default 30 min). |
-| `token_budget_per_day`, `child_token_budget` | Tokens per rolling day across the spawner's children, and an optional ceiling per child. |
-| `retain_s` | How long a delegate session with no live child and no message from its spawner is kept (default 7 days). |
+| `retain_s` | How long a delegate session with no message from its spawner is kept before the boot sweep deletes it (default 7 days). At least `max_within_s`. |
 | `approval_ceiling` | Phase 3: the grants the parent's operator may approve. Absent means none. |
 
-The table requires `[distribution]`. The decoder refuses an unknown node, a
-placement that does not resolve, an unknown profile, a `max_sessions` above an
-executor placement's scope capacity, and a `default_within_s` above
-`max_within_s`. A daemon with no `[spawners]` table accepts no spawns.
+Phase 2 adds `max_per_day`, `token_budget_per_day` and `child_token_budget`,
+with their spend table. Phase 1 reports usage and does not meter it: the
+usage hook runs on the strand driver and must never block.
 
-On the spawning daemon, an `[orchestrators.<name>]` row gains `subagents`, a
-boolean that defaults to false. The keys of the rows that set it are the names
-a model may pass as `on`.
+The table requires `[distribution]`. The decoder refuses an unknown node, a
+node shared with another table, a placement that does not resolve or that
+names more than one, an unknown profile, a `max_sessions` above 16, a
+`default_within_s` above `max_within_s`, and a `retain_s` below `max_within_s`.
+A daemon with no `[spawners]` table accepts no spawns.
+
+On the spawning daemon the `[orchestrators.<name>]` rows are unchanged, and
+every one of them is a valid value of `on`. The decoder refuses an
+orchestrator name that contains `@` or `#`, because a handle is parsed by
+splitting on the last `#` and then the last `@`.
 
 ### The orchestrator port (`client/remote/orchestrator_port.Message`)
 
-Phase 1 adds five constructors. `parent` is `{session, strand}` on the
+Phase 1 adds three constructors. `parent` is `{session, strand}` on the
 spawning orchestrator; `caller` is the parent's `{operation, step_id,
 source_index, minter}`, with `minter` either `ToolCall` or `Program(ordinal)`.
 
 - `Spawn(parent, caller, depth, parent_tools, request, reply)`. `request` is
-  `{purpose, brief, model, tools, within_ms, result_schema, detach}`. The port
-  resolves the sender's node to a `[spawners.<name>]` table, resolves or opens
-  the delegate session for (spawner, parent session), and asks its Agency
-  holder to admit the spawn. The holder checks the ended fence for
-  `caller.operation` and the site fence, derives the child's name from the
-  caller with the parent strand rendered as the reference `^{strand}`, adopts
-  an existing child only when its lineage cell's `minted_by` equals the
-  caller's call site, and otherwise checks the policy and caps and creates the
-  child. The answer is `Ok(Spawned(handle, tools, model, model_id,
-  remaining_ms))` or `Error(SpawnRefusal)`. A repeat from the same call site
-  answers the same handle. Runs in a task linked to the port.
-- `SpawnStatus(parent, caller, reply)` answers `Spawned(...)` when the call
-  site's child exists, and otherwise writes the site fence and answers
-  `Fenced`. Decided in the holder that admits spawns, so a spawn and a status
-  for one site are serialized there.
+  `{purpose, brief, model, tools, within_ms, result_schema, detach}`, and
+  `parent_tools` is the parent's active tool names, which the remote has no
+  parent strand to read. The port resolves the sender's node to a
+  `[spawners.<name>]` table, resolves or opens the delegate session for
+  (spawner, parent session), and asks its Agency holder to admit the spawn.
+  The holder checks the ended fence for `caller.operation`, derives the
+  child's name from the caller with the parent strand rendered as the
+  reference `^{strand}`, adopts an existing child only when its lineage cell's
+  `minted_by` equals the caller's call site, and otherwise checks the policy
+  and the Agency's caps and creates the child. The answer is
+  `Ok(Spawned(handle, tools, model, model_id, remaining_ms))` or
+  `Error(SpawnRefusal)`. A repeat from the same call site answers the same
+  handle, which is what lets the sender resend until it is answered. Runs in
+  a task linked to the port.
 - `Join(parent, handles, within_ms, reply)` waits, as the Agency's `wait`
   does, for children of `^{parent.strand}`, for at most 25 000 ms. It answers
   one entry per handle in order: `Ready(handle, outcome, report, result,
@@ -203,31 +236,29 @@ source_index, minter}`, with `minter` either `ToolCall` or `Program(ordinal)`.
 - `RunEnded(parent, operation, reply)` writes the ended fence for
   `operation`, then stops every child whose current run is owned by that
   operation, and answers how many it stopped. A repeat stops nothing more.
-- `Release(parent_session, reply)` stops every child of the delegate session,
-  detached ones included, marks it released and deletes it once its cleanup is
-  proven. It answers `Released` or `Releasing`, and a repeat answers the stored
-  state.
 
 A message from a node no `[spawners]` table names is refused. A daemon with no
-`[spawners]` table starts the port without a spawn host and refuses all five,
-as a daemon that receives no sessions refuses `Import`. Unlike `PeerCommand`,
-these messages may open a delegate session that is not resident: it exists
-only to serve its spawner, and a join on a settled child must be able to read
-its result after the session was closed.
+`[spawners]` table starts the port without a spawn host and refuses all
+three, as a daemon that receives no sessions refuses `Import`. Unlike
+`PeerCommand`, these messages may open a delegate session that is not
+resident: it exists only to serve its spawner, and a join on a settled child
+must be able to read its result after the session was closed.
 
 `SpawnRefusal` covers: unknown spawner, the ended fence (`ParentRunEnded`),
-the site fence (`Fenced`), the depth cap, the remote's live, daily and session
-caps (each naming its key), the token budget, a tool outside the ceiling, an
+the depth cap, the Agency's `fan_out` and `session_strands` caps and the
+spawner's `max_sessions` (each naming its key), a tool outside the ceiling, an
 invalid argument (including a `within_ms` above `max_within_s` and
-`context: "mine"`), `NameAlreadyMinted`, a released delegate session, and a
-failure of the remote's store.
+`context: "mine"`), `NameAlreadyMinted`, and a failure of the remote's store.
 
-Phase 2 adds `ChildSend(parent, child, message_id, text, within_ms, reply)`,
-delivered through the remote Agency's `send` with a receipt stored under the
-message id, so a repeat answers the receipt. Phase 3 adds `Resolve(parent,
-escalation, decision, expected_seq, reply)`, admitted only when every grant in
-the decision is inside `approval_ceiling`, and the laptop's port gains
-`ChildEscalation(parent, child, escalation, reply)`, sent by the remote.
+Phase 2 adds `Release(parent_session, reply)`, which stops every child of the
+delegate session, detached ones included, marks it released and deletes it
+once its cleanup is proven, and `ChildSend(parent, child, message_id, text,
+within_ms, reply)`, delivered through the remote Agency's `send` with a receipt
+stored under the message id, so a repeat answers the receipt. Phase 3 adds
+`Resolve(parent, escalation, decision, expected_seq, reply)`, admitted only
+when every grant in the decision is inside `approval_ceiling`, and the
+laptop's port gains `ChildEscalation(parent, child, escalation, reply)`, sent
+by the remote.
 
 ### The sending end
 
@@ -240,56 +271,84 @@ within the deadline. A spawn that is `Unreachable` is resent with a doubling
 pause from 50 ms to 2 s until its 30-second window runs out, and never sent to
 another orchestrator.
 
-While a parent session holds a live remote child, a link keeper on the
-spawning daemon reconnects to that remote every two seconds when the
-connection is down, so the remote can reach the laptop's port in phase 2.
+Phase 1 has no connection keeper. Every call connects on demand, and the remote
+sends nothing to the laptop on its own. Phase 2, which adds messages the remote
+originates, adds a keeper in the shape of #934's `directory/member`: while a
+parent session holds a live remote child it reconnects to that remote every two
+seconds when the connection is down.
 
 ### Records
 
-On the spawning daemon:
+On the spawning daemon, in the parent session's store:
 
-- `remote-child/{site digest}` in the parent session's store, reserved: the
-  orchestrator and the derived name, then the handle, then the settled outcome
-  and usage, or `Fenced`. Written before the first `Spawn` is sent.
+- `remote-child/{site digest}`, reserved, is the stub and the pending row for a
+  spawn. It holds the orchestrator, the derived name and the whole request
+  (including the caller's coordinates, the depth and the parent's tool names),
+  then the handle, then the settled outcome and usage, or the remote's
+  refusal. Its state is `Requested`, `Spawned`, `Settled` or `Refused`, and it
+  is written before the first `Spawn` is sent. `Requested` means pending.
+- `remote-ended/{operation}/{orchestrator}`, reserved, is the pending row for a
+  run end. It is `Pending` until the remote answers `RunEnded` and `Told`
+  after. It is written by the same process that `agency.reaping_hooks` spawns
+  with `spawn_unlinked` to run `reap_run`, once per remote orchestrator holding
+  a child the run owns, so the strand driver never waits.
 - The lineage cell gains an optional `orchestrator`. A cell without it decodes
   as local. It is written when the spawn is answered.
-- Two new row kinds in the session's peer outbox, drained by the existing
-  `peer_outbox_drain`: `SpawnStatus(site)`, written when a spawn's window runs
-  out unanswered, and `RunEnded(op)`, written at a run end for each remote
-  orchestrator holding a child that run owns. Neither row is refused after an
-  hour; each is retried until the remote answers. When a session opens it
-  writes a `RunEnded` row for each live stub whose owning operation has ended
-  and has none.
-- Release rows in the catalogue, `remote_child_releases(orchestrator,
-  parent_session)`, written in the registry turn that deletes a session with
-  remote children and sent by a daemon-level drainer of the same shape until
-  the remote answers.
+- `peer_outbox_drain.Options` gains `pass: fn() -> Backlog`, and `Backlog`
+  (`Owed` or `Clear`) becomes public. The current body is the peer-mail
+  instance's pass. A second instance, under its own name in the same
+  restartable service tier, has a pass over the stubs and run-end rows: it
+  resends each `Requested` stub's `Spawn` and each `Pending` row's `RunEnded`
+  every five seconds, skipping an orchestrator that did not answer earlier in
+  the same pass. `peer_outbox.Row`, `peers.resend` and `OutboxDue` are
+  untouched. Neither kind of row is refused after an hour; each is retried
+  until the remote answers, because every message is idempotent and the child
+  it concerns is bounded by its deadline.
 
 On the remote:
 
-- `delegate_sessions(spawner, parent_session, session_id, state,
-  last_contact_ms)` in the catalogue, keyed by `(spawner, parent_session)`,
-  with `state` one of `open`, `releasing` and `released`.
-- `spawner_spend(spawner, day, tokens)` in the catalogue, updated by the
-  delegate sessions' usage hook.
+- `delegate_sessions(spawner, parent_session, session_id, last_contact_ms)` in
+  the catalogue, keyed by `(spawner, parent_session)`. Phase 2 adds a `state`
+  column of `open`, `releasing` and `released`.
 - In each delegate session's store, under a reserved prefix that
-  `api.put_fact` refuses: `delegate/ended/{operation}`, read by spawn
-  admission, and `delegate/fence/{site digest}`, written by `SpawnStatus`.
+  `api.put_fact` refuses: `delegate/ended/{operation}`, written by `RunEnded`
+  before it reaps and read by spawn admission.
 
-`create_strand` refuses a name that begins with `^`, so the parent reference
-can never name a strand. At boot the remote releases the delegate sessions of
-any spawner that no longer has a table, and reopens the delegate sessions that
-hold a live child. Each child's deadline is enforced on the remote's clock by
-the Agency's overdue check and by a timer for the session's earliest
-deadline.
+A delegate session is created through `manager.create_scoped` with the
+`SessionOnly` domain, so it is created the same way with or without #934. A
+`CreateStrandError` arm and a check in `create_strand` refuse a name that
+begins with `^`, so the parent reference can never name a strand;
+`CreateStrandError` has no invalid-name arm today, so the arm is new. Each
+child's deadline is enforced on the remote's clock by the Agency's overdue
+check and by a periodic timeout, for each open delegate session, of a
+`weft/state_machine` that calls `reap_overdue`. A boot sweep deletes delegate
+sessions whose last contact is older than the spawner's `retain_s`, or than the
+default when the spawner's table is gone. A delegate session that is not open
+is opened by the next `Join` or `Spawn` for it (`manager.open`), and runtime
+recovery resumes its children; phase 1 has no boot-time reopen.
 
 ### The delegate session
 
 An ordinary session of the remote daemon, owned by its owner, seeded from the
 spawner's profile and placed by the spawner's placement with the
-`session_only` memory domain. `sessions.move` answers `not_movable` for it, and
-members cannot be invited to it. Its only peer grants are the phase 2 upward
-grants below.
+`session_only` memory domain. The manager's `movable` check answers
+`not_movable` for it by one arm on a marker in the catalogue row, and members
+cannot be invited to it. Its only peer grants are the phase 2 upward grants
+below.
+
+A spawn from the port is a new variant of the Agency's `Caller`. `spawn_on` and
+`reconcile`, which read the parent's configuration, and `child_tools`, which
+takes the parent's tool list, take both from the message for this variant: the
+configuration is the policy profile's and the tool list is `parent_tools`,
+narrowed by the request and the ceiling.
+
+On the spawning daemon, `check_capacity` counts the parent's stubs that are
+`Requested` or `Spawned` as live children of their parent strand, against the
+same `fan_out` and `session_strands`. This is an explicit change: `is_live`
+reads the local `strand.state`, which a remote child does not have. A parent
+with a stub that is not `Settled` or `Refused` makes `sessions.move` answer
+`not_movable`, checked in the mover's close step, where the session file is
+already open.
 
 ### Upward messages (phase 2)
 
@@ -301,36 +360,90 @@ peer grant for (delegate session, child strand) to (parent session, parent
 strand) with `may_wake = false`, so the parent admits the message exactly once
 by its id and only as a steer into an open run.
 
+In phase 1 an upward send is refused without new code: its target `^{strand}`
+is a strand with no state in the delegate session, so `send` answers
+`ParentRunEnded`. Only the rendering is remote-aware, for a target that begins
+with `^`.
+
 ### Model-facing changes
 
-- `agent_spawn` gains `on`, an enum of the `[orchestrators]` keys with
-  `subagents = true`, offered only in sessions the owner holds alone
+- `agent_spawn` gains `on`, an enum of every `[orchestrators.<name>]` key,
+  offered only in sessions the owner holds alone
   (`manager.unshared_sessions`). With `on`, `context: "mine"` is refused,
   `within_ms` must be within the spawner's cap, and `model` names the remote's
   catalogue.
 - A remote handle renders as `{strand}#{operation}@{orchestrator}`.
   `agent.parse_handle` reads the orchestrator after the last `@` that follows
   the last `#`.
-- `agent_wait` accepts local and remote handles together under one deadline.
-  `agent_roster` lists remote children from the stubs.
-- In phase 1, `agent_send` to a remote child, and a remote child's
-  `agent_send` to its parent, are refused with a sentence that names the
-  result and the notes as the way to report.
+- `agent_wait` accepts local and remote handles together under one deadline,
+  with one `Join` per orchestrator within 25 s. `agent_roster` lists remote
+  children from the stubs.
+- In phase 1, `agent_send` to a remote child is refused with a sentence that
+  names the result and the notes as the way to report, and a remote child's
+  `agent_send` to its parent is refused with `ParentRunEnded` worded for a
+  parent on another orchestrator.
+- **Turn end.** When the parent's run ends, `reap_run(op)` stops every child
+  that `ParentRun(op)` owns and `RunEnded` carries that to the remote, so a
+  model that ends its turn after spawning reaps its remote children as it
+  reaps local ones. A laptop suspended in the middle of an `agent_wait` has not
+  ended the run: only the in-flight `Join` task is cancelled. A child spawned
+  with `detach` outlives the turn, bounded by its deadline and the retention
+  sweep, and a later `agent_wait` on its handle still reads the result. This
+  is the recommended behavior and awaits the owner's confirmation; remote
+  children detached by default is the alternative (design note, section 17).
 - `cap/strand` gains `with_on` on the assignment (phase 2).
 - `child_run.Stop` gains `Released`, `SpawnerRemoved` and `TokenBudgetSpent`,
-  and `tools/agent.Outcome` gains the matching variants. A record written
-  before this change decodes as before.
+  and `tools/agent.Outcome` gains the matching variants, in phase 2. A record
+  written before this change decodes as before.
 - Remote usage, recorded on the stub, counts against the parent goal's token
   budget.
 
+### Phasing
+
+Phase 1 has five slices, each of which lands on `origin/main` alone.
+
+- **S1. Policy and messages.** The `[spawners.<name>]` decoder with the keys
+  above; the `@` and `#` refusal in orchestrator names; `Spawn`, `Join` and
+  `RunEnded` with `SpawnRefusal`. Tests: decoder fixtures and a port unit test
+  with a fake host.
+- **S2. The delegate session and remote Agency.** The `delegate_sessions`
+  table and the session created through `manager.create_scoped(SessionOnly)`
+  on the first `Spawn`; the port `Caller` variant through `spawn_on` and
+  `reconcile`; the `^` prefix refusal; the `delegate/ended/{op}` fence, read at
+  admission and written by `RunEnded` before `reap_run`; `Join` as `wait` plus
+  usage. Tests: in-VM Agency tests.
+- **S3. The laptop side.** The stub written ahead and the lineage cell with
+  `orchestrator`; `check_capacity` counting stubs; the parameterised drainer
+  with a second instance, and `reaping_hooks` writing `remote-ended` rows;
+  `agent_spawn` with `on`, `agent_wait` over mixed handles, `agent_roster` from
+  stubs; `context: "mine"` refused; the upward refusal wording. Tests:
+  simulated-session tests with a fake endpoint.
+- **S4. Deadline tick and retention.** The per-delegate-session
+  `weft/state_machine` calling `reap_overdue`, and the boot sweep.
+- **S5. A shipped two-orchestrator test and the P model.** The test is modelled
+  on `daemon_shipped_peer_mail_test`: three children spawned, joined, with
+  structured results and usage; the laptop killed mid-spawn; the link cut
+  mid-join; the run ended with the link down. The P model holds
+  `AtMostOneChildPerSite`, `NoSpawnUnderEndedRun`, `EndedRunChildrenStop` and
+  `EveryEndedRunIsTold`. This document moves to ACCEPTED when S5 is green.
+
+Phase 2 adds `Release` and its daemon-level drainer, `SpawnerRemoved`, the
+boot-time reopen, the open-time `RunEnded` repair, metering on the remote
+(`spawner_spend`, `token_budget_per_day`, `child_token_budget`, `max_per_day`,
+`TokenBudgetSpent`, handed off with `spawn_unlinked`), the keeper, `ChildSend`
+with receipts, upward peer mail with the `BusyOnly` grant, `with_on` in code
+mode, and the two upward specs. Phase 3 is `approval_ceiling`,
+`ChildEscalation` and `Resolve`.
+
 ## What it costs
 
-**No boundary against a compromised spawner.** A spawner is a pinned
+**No boundary against a compromised spawner or remote.** A spawner is a pinned
 distribution peer and can call any function on the remote, so the spawn policy
-binds only an honest peer. This is #923's assumption for every orchestrator,
-extended to a laptop. A spawner's bundle must be guarded like an
-orchestrator's, and cutting a compromised one off means removing its pin from
-every node and restarting them.
+binds only an honest peer. Trust is symmetric, so a compromised remote can
+equally call any function on the laptop daemon. This is #923's assumption for
+every orchestrator, extended to a laptop. A spawner's bundle must be guarded
+like an orchestrator's, and cutting a compromised one off means removing its
+pin from every node and restarting them.
 
 **Provisioning.** A laptop needs a provisioned bundle. Provisioning is
 one-shot today, so adding a spawner to an existing deployment reprovisions
@@ -343,6 +456,16 @@ parent serialize there, as local spawns serialize in the parent's holder.
 
 **Each delegate session on an executor holds a scope,** so a spawner's
 `max_sessions` takes capacity from the remote's executors.
+
+**Phase 1 does not meter tokens on the remote.** Deadlines, `max_sessions` and
+the delegate Agency's caps bound the work in time and width, not in tokens.
+Metering needs a hand-off off the strand driver and is phase 2.
+
+**Without `Release`, a deleted parent session leaves its remote children until
+their deadlines,** at most `max_within_s`, and the delegate session until the
+retention sweep.
+
+**Ending a turn reaps remote children** unless they were spawned detached.
 
 **Upward messages (phase 2) are weaker than local ones** when the laptop is
 disconnected. A child that sends while the laptop is unreachable is told the
@@ -366,8 +489,10 @@ Direction accepted by the owner on 2026-10-09: TLS distribution over the
 orchestrator port with #923's trust model, a strand in one delegate session per
 (parent orchestrator, parent session), approvals by the parent's operator
 within the remote owner's ceiling in phase 3, spawning only from sessions the
-owner holds alone, and the defaults above. Two points remain for the owner
-(design note, section 17): confirming `[spawners.<name>]` over
-`[orchestrators.<laptop>.spawn]`, and accepting one-shot provisioning for
-adding a laptop. This document moves to ACCEPTED, with the implemented
-spellings, when phase 1 lands.
+owner holds alone, and the defaults above. `[spawners.<name>]` over
+`[orchestrators.<laptop>.spawn]` is settled by the membership rule in
+protocol-change/083. Two points remain for the owner (design note, section 17):
+accepting one-shot provisioning for adding a laptop, and confirming that ending
+a turn reaps remote children (recommended) rather than detaching them by
+default. This document moves to ACCEPTED, with the implemented spellings, when
+S5 of phase 1 lands.
