@@ -958,7 +958,10 @@ jobs:
     name: e2e (macos)
     needs: deps-macos
     runs-on: macos-15
-    timeout-minutes: 20
+    # Cold directory dependencies and shipped bootstrap drills consume most
+    # of twenty minutes before code-mode tests begin. Keep each test's own
+    # deadline and allow the complete enforcement suite to finish.
+    timeout-minutes: 30
     steps:
       # actions/checkout v7.0.1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
