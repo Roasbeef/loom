@@ -4456,13 +4456,14 @@ fn assemble_in(
       intensity: service_restart_intensity,
       period: service_restart_period,
     )
+    // Before the Agency's holder, so a reap it runs at start finds the name bound.
+    |> sup.add(effect_abort.supervised(effect_abort_name, abort_op_effects))
     |> sup.add(
       supervision.worker(fn() { agency.start(agency_config, runtime) }),
     )
     |> sup.add(
       supervision.worker(fn() { escalate.start(escalate_config, runtime) }),
     )
-    |> sup.add(effect_abort.supervised(effect_abort_name, abort_op_effects))
     |> sup.add(
       supervision.worker(fn() {
         async_runs.start(

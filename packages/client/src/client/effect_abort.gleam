@@ -25,10 +25,11 @@
 ////    the sweep off the caller, which is a reaper that must not wait on the
 ////    async service's fence.
 ////
-//// A send while the actor restarts is lost. That costs a job running to its
-//// wall deadline, which is what happened before this existed, and the reap
-//// is re-issued on every later observation of the ledger, so the next one
-//// repeats the send.
+//// A send to an address nobody is bound to is dropped and is not retried:
+//// a reap re-reaps only while the child's run is still current, and the
+//// runtime's abort ends that within milliseconds. A drop would cost one job
+//// running to its wall deadline. It is not reachable in steady state: the
+//// actor starts before any reaper and its sweep cannot raise.
 
 import core/ids.{type OpId}
 import gleam/erlang/process.{type Subject}
