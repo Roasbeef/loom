@@ -4931,8 +4931,10 @@ fn with_peer_outbox_drain(
   sup.add(
     builder,
     peer_outbox_drain.supervised(
-      peer_outbox_drain.options(wiring, runtime.effects.timers.after)
-        |> peer_outbox_drain.with_logger(logger),
+      peer_outbox_drain.over(
+        peer_outbox_drain.peer_pass(wiring, logger),
+        runtime.effects.timers.after,
+      ),
       name,
     ),
   )
