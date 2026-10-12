@@ -394,6 +394,11 @@ pub type Settings {
     /// daemon with no `[orchestrators]` table, and `agent_spawn` then offers no
     /// `on`.
     remote_reach: Option(remote_reach.Reach),
+    /// How often the Agency reaps children past their deadlines when nobody is
+    /// waiting on them, in milliseconds. `None` reaps only on observation, and
+    /// the daemon sets it for a delegate session alone, whose children belong
+    /// to a spawner that may never return (protocol-change/084).
+    deadline_tick_ms: Option(Int),
     /// Told the first human prompt the session accepts on its main strand,
     /// once, so the daemon can seed the catalogue's subtitle
     /// (`protocol-change/067`). `None` for a host with no catalogue.
@@ -1431,6 +1436,7 @@ fn resolve(flags: Flags, placement: Placement) -> Result(Settings, String) {
       peer_directory: None,
       peer_defaults: None,
       remote_reach: None,
+      deadline_tick_ms: None,
       first_prompt: None,
       profile_desk: None,
       codemode_sockets: None,
@@ -3534,6 +3540,7 @@ fn assemble_in(
         remote_reach.none(settings.session_id)
       }),
       remote_queued: fn() { peer_outbox_drain.poke(remote_drain_name) },
+      deadline_tick_ms: settings.deadline_tick_ms,
       models: list.map(settings.catalog.models, fn(entry) {
         #(
           machine_strand.ModelIdentity(

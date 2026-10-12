@@ -1060,6 +1060,7 @@ fn settings_at(test_root: String) -> serve.Settings {
     peer_directory: None,
     peer_defaults: None,
     remote_reach: None,
+    deadline_tick_ms: None,
     first_prompt: None,
     profile_desk: None,
     codemode_sockets: None,

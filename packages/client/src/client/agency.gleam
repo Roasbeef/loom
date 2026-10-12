@@ -89,6 +89,17 @@
 //// adopted whatever the fence says, since adopting creates nothing that the run
 //// end would have to reap.
 ////
+//// The spawner may also never come back. A child there is bounded by its
+//// deadline on this machine's clock, and ordinarily a deadline is enforced when
+//// a wait or a roster reads the ledger, which a spawner that has gone away will
+//// not do. So a delegate session sets `Config.deadline_tick_ms`, and its holder
+//// then runs a weft periodic timeout whose `DeadlineTick` message calls
+//// `reap_overdue`. The tick stops a child the same way a wait does: the durable
+//// `BudgetExpired` mark is written before the operation is cancelled, so a pass
+//// that repeats, or that runs after a restart has reopened the session, finds the
+//// children already stopped or stops the ones that became overdue while the
+//// daemon was down. Deadlines are absolute, so time spent down counts.
+////
 //// ## A child on another orchestrator
 ////
 //// `agent_spawn` with `on` starts a child on another orchestrator
@@ -328,8 +339,22 @@ pub type Config {
     /// drainer, as it does not own the peer-mail one, so the host supplies a
     /// closure over the drainer's name.
     remote_queued: fn() -> Nil,
+    /// How often the holder reaps children that are past their deadlines, in
+    /// milliseconds, when nobody is waiting on them. `None` reaps only when a
+    /// wait or a roster observes the ledger, which is every session but a
+    /// delegate session. A delegate session sets
+    /// `delegate_deadline_tick_ms`, because the spawner that started its
+    /// children may never return to wait on them (protocol-change/084).
+    deadline_tick_ms: Option(Int),
   )
 }
+
+/// How often a delegate session's holder reaps overdue children, in
+/// milliseconds. The bound a remote child runs under is its deadline, and the
+/// tick is what enforces it when no wait is looking, so this is also how late
+/// a child can be stopped. It is a provisional figure: the cost of a pass is one
+/// read of the lineage ledger.
+pub const delegate_deadline_tick_ms = 15_000
 
 /// Sensible defaults for a production host.
 ///
@@ -385,6 +410,7 @@ pub fn default_config(name: address.Address(Message), clock: Clock) -> Config {
     outbox_queued: fn() { Nil },
     remote: remote_reach.none(""),
     remote_queued: fn() { Nil },
+    deadline_tick_ms: None,
   )
 }
 
@@ -440,6 +466,10 @@ pub type Message {
   /// Records that a run of a parent on another orchestrator ended, then stops
   /// the children it owns. Answers how many were stopped.
   DelegateEnded(operation: OpId, reply: Subject(Result(Int, Refusal)))
+
+  /// The periodic heartbeat of a session with `deadline_tick_ms`: stops every
+  /// child whose deadline has passed, whether or not anything is waiting.
+  DeadlineTick
 }
 
 /// Starts the holder under `config.name`, after `api.open` has returned
@@ -528,15 +558,40 @@ pub fn start(
         process.send(reply, run_ended_in(state, operation))
         actor.continue(state)
       }
+      DeadlineTick -> {
+        // A ledger that cannot be read leaves the pass for the next tick, which
+        // reads it again; the durable mark a reap writes is what makes a
+        // repeated pass harmless.
+        case read_ledger(state) {
+          Ok(ledger) -> reap_overdue(config, state, ledger)
+          Error(_refusal) -> Nil
+        }
+        actor.continue(state)
+      }
       Borrow(reply:) -> {
         process.send(reply, state)
         actor.continue(state)
       }
     }
   })
+  |> with_deadline_tick(config.deadline_tick_ms)
   |> actor.addressed(config.name)
   |> actor.hibernate_after(residency.hibernate_after_ms)
   |> actor.start
+}
+
+// The heartbeat is a weft periodic timeout, whose fixed delay arms the next
+// fire after this one's handler returns, so a slow pass slows the ticks and
+// never queues a backlog of them. Only a delegate session has one: its
+// children belong to a spawner that may never return to wait on them.
+fn with_deadline_tick(
+  builder: actor.Builder(api.Runtime, Message, Subject(Message)),
+  every: Option(Int),
+) -> actor.Builder(api.Runtime, Message, Subject(Message)) {
+  case every {
+    Some(ms) -> actor.periodic(builder, every: ms, sending: DeadlineTick)
+    None -> builder
+  }
 }
 
 /// Whether a strand name was minted by an Agency. The predicate

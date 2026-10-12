@@ -87,6 +87,7 @@ import tools/todos
 import tools/tool
 import weft
 import weft/actor
+import weft/poll
 
 // --- the harness -----------------------------------------------------------
 
@@ -5487,6 +5488,83 @@ pub fn an_agency_that_is_not_running_refuses_in_band_test() {
     == Error(unavailable)
   assert agency.delegate_run_ended(config, site.operation) == Error(unavailable)
   assert result.is_error(agency.delegate_join(config, remote_parent(), [], 0))
+}
+
+// --- the deadline tick -------------------------------------------------------
+//
+// A remote child is bounded by its deadline on this machine's clock, and the
+// spawner that started it may never return to wait on it. The tick is what
+// enforces the deadline when nothing looks at the ledger.
+
+// A child whose deadline passes at once, spawned for a remote parent that then
+// stays away: no wait and no roster observes it.
+fn spawn_unwatched(harness: Harness) -> remote_spawn.Spawned {
+  let assert Ok(spawned) =
+    agency.delegate_spawn(
+      harness.config,
+      remote_delegation(),
+      site_of("turn-1:tools", 0),
+      remote_spawn.Request(..remote_request("late"), within_ms: Some(1)),
+    )
+    as "the child must spawn"
+  assert run_for(harness, spawned.handle).stop == child_run.Unstopped
+  spawned
+}
+
+pub fn the_tick_reaps_an_overdue_child_nobody_waits_on_test() {
+  let harness =
+    start_harness_with(Hangs, fn(config) {
+      agency.Config(..config, deadline_tick_ms: Some(20))
+    })
+  let spawned = spawn_unwatched(harness)
+
+  // The durable mark is the same one a wait writes: the child's own deadline
+  // was the cause.
+  let stopped =
+    poll.until(within: 5000, every: 10, attempt: fn() {
+      case run_for(harness, spawned.handle).stop {
+        child_run.BudgetExpired -> poll.Done(Nil)
+        _ -> poll.Retry
+      }
+    })
+  assert stopped == poll.Answered(Nil)
+  close(harness)
+}
+
+pub fn without_a_tick_an_overdue_child_stays_until_something_looks_test() {
+  // The control for the test above, and the mutation check of the tick: with the
+  // timer removed the child is still running after several tick intervals.
+  let harness = start_harness(Hangs)
+  let spawned = spawn_unwatched(harness)
+  process.sleep(300)
+  assert run_for(harness, spawned.handle).stop == child_run.Unstopped
+
+  // A join is an observation, and reaps it.
+  let assert Ok(_joined) =
+    agency.delegate_join(harness.config, remote_parent(), [spawned.handle], 0)
+  assert run_for(harness, spawned.handle).stop == child_run.BudgetExpired
+  close(harness)
+}
+
+pub fn the_tick_leaves_a_child_inside_its_deadline_running_test() {
+  let harness =
+    start_harness_with(Hangs, fn(config) {
+      agency.Config(..config, deadline_tick_ms: Some(20))
+    })
+  let assert Ok(spawned) =
+    agency.delegate_spawn(
+      harness.config,
+      remote_delegation(),
+      site_of("turn-1:tools", 0),
+      remote_spawn.Request(
+        ..remote_request("patient"),
+        within_ms: Some(3_600_000),
+      ),
+    )
+    as "the child must spawn"
+  process.sleep(300)
+  assert run_for(harness, spawned.handle).stop == child_run.Unstopped
+  close(harness)
 }
 
 // --- through the orchestrator port ------------------------------------------
