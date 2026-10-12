@@ -2,11 +2,12 @@
 //// `install`.
 ////
 //// No Gleam library generates or signs a certificate, and the operator is not
-//// asked to install openssl, so these five operations go through OTP's
+//// asked to install openssl, so these operations go through OTP's
 //// `public_key` and `crypto` applications in `client_pki_ffi.erl`. The
-//// boundary is narrow on purpose: it mints, pins and inspects, and it knows
-//// nothing about plans, bundles or files. Only `client/distribution_bundle`
-//// and `client/distribution_provision` import it.
+//// boundary is narrow on purpose: it mints, pins, inspects, and signs and
+//// verifies raw bytes, and it knows nothing about plans, bundles, ledgers or
+//// files. Only `client/distribution_bundle`, `client/distribution_provision`
+//// and `client/membership_signing` import it.
 
 /// Why a node's credentials were refused. Each names the file that is wrong
 /// and carries no certificate or key contents.
@@ -100,3 +101,36 @@ pub fn inspect(
 /// ```
 @external(erlang, "client_pki_ffi", "random_bytes")
 pub fn random_bytes(count: Int) -> BitArray
+
+/// Signs bytes with an ECDSA P-256 private key (PEM), as ECDSA with SHA-256,
+/// and returns the DER signature. A key that is not one PEM EC private key
+/// fails.
+///
+/// OTP `public_key:sign/3`; no Gleam package signs with an EC key.
+///
+/// ## Examples
+///
+/// ```gleam
+/// ffi_pki.sign(key_pem, <<"message":utf8>>) // -> Ok(<<DER signature>>)
+/// ```
+@external(erlang, "client_pki_ffi", "sign")
+pub fn sign(key: String, message: BitArray) -> Result(BitArray, Nil)
+
+/// Checks a DER ECDSA P-256 SHA-256 signature against the public key of the
+/// first certificate in a PEM. `Ok` means the signature is valid; an
+/// unreadable certificate, a malformed signature and a wrong signature are all
+/// `Error`.
+///
+/// OTP `public_key:verify/4`; no Gleam package verifies with an EC key.
+///
+/// ## Examples
+///
+/// ```gleam
+/// ffi_pki.verify(certificate_pem, message, signature) // -> Ok(Nil)
+/// ```
+@external(erlang, "client_pki_ffi", "verify")
+pub fn verify(
+  certificate: String,
+  message: BitArray,
+  signature: BitArray,
+) -> Result(Nil, Nil)

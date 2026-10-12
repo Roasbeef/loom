@@ -6,14 +6,16 @@
 %% The surface is deliberately small: mint a certificate authority, issue a
 %% node certificate under it, take the SHA-256 of a certificate's DER (the pin
 %% a peer row carries), inspect a node's credentials before they are installed,
-%% and draw random bytes for the cookie. Plan logic, validation and file layout
-%% stay in Gleam.
+%% draw random bytes for the cookie, and sign and verify membership ledger
+%% entries with the authority key. Plan logic, validation and file layout stay
+%% in Gleam.
 %%
 %% Every key is an ECDSA P-256 key and every signature is ecdsa-with-SHA256.
 %% The authority and node validity periods are fixed below; renewing them is
 %% certificate rotation, which is later work.
 -module(client_pki_ffi).
--export([authority/1, issue/4, pin/1, inspect/3, random_bytes/1]).
+-export([authority/1, issue/4, pin/1, inspect/3, random_bytes/1, sign/2,
+         verify/3]).
 -include_lib("public_key/include/public_key.hrl").
 
 -define(CURVE, secp256r1).
@@ -99,6 +101,36 @@ inspect_credentials(CaPem, CertPem, KeyPem) ->
     end.
 
 random_bytes(Count) -> crypto:strong_rand_bytes(Count).
+
+%% ECDSA over P-256 with SHA-256, DER encoded, which is the signature of a
+%% membership ledger entry (protocol-change/086). The message is the domain
+%% prefix and the body, built in Gleam; this function only signs the bytes it
+%% is given. No Gleam package signs with an EC key.
+sign(KeyPem, Message) ->
+    try
+        Key = decode_key(KeyPem),
+        {ok, public_key:sign(Message, sha256, Key)}
+    catch _:_ -> {error, nil}
+    end.
+
+%% Checks a signature against the public key of a certificate. An unreadable
+%% certificate, a malformed signature and a wrong signature are all the same
+%% answer, because the caller treats each as a line it will not apply.
+verify(CertPem, Message, Signature) ->
+    try
+        [{'Certificate', Der, not_encrypted} | _] = public_key:pem_decode(CertPem),
+        #'OTPCertificate'{tbsCertificate = Tbs} =
+            public_key:pkix_decode_cert(Der, otp),
+        Spki = Tbs#'OTPTBSCertificate'.subjectPublicKeyInfo,
+        Algorithm = Spki#'OTPSubjectPublicKeyInfo'.algorithm,
+        Point = Spki#'OTPSubjectPublicKeyInfo'.subjectPublicKey,
+        Parameters = Algorithm#'PublicKeyAlgorithm'.parameters,
+        case public_key:verify(Message, sha256, Signature, {Point, Parameters}) of
+            true -> {ok, nil};
+            false -> {error, nil}
+        end
+    catch _:_ -> {error, nil}
+    end.
 
 %% ------------------------------------------------------------------ internal
 
