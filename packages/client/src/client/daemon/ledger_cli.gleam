@@ -472,7 +472,7 @@ fn sign(
   connect: Connect,
   decide: fn(Ledger) -> Result(Decision(a), String),
   before_send: fn(Signed, a) -> Result(Nil, String),
-) -> Result(Signed, String) {
+) -> Result(#(Signed, a), String) {
   let lock_path = authority.directory <> "/ledger.lock"
   use lock <- result.try(
     bootstrap.try_launch_lock(lock_path)
@@ -491,7 +491,7 @@ fn signed_under_lock(
   connect: Connect,
   decide: fn(Ledger) -> Result(Decision(a), String),
   before_send: fn(Signed, a) -> Result(Nil, String),
-) -> Result(Signed, String) {
+) -> Result(#(Signed, a), String) {
   let path = authority.directory <> "/" <> authority_key.ledger_file
   use opened <- result.try(
     membership_store.open(path, authority.verifier)
@@ -548,7 +548,7 @@ fn signed_under_lock(
   )
   let result = Signed(entry: signed, ledger: next, store:, delivery:)
   use Nil <- result.try(before_send(result, extra))
-  hand_over(result)
+  hand_over(result) |> result.map(fn(handed) { #(handed, extra) })
 }
 
 // Gives the daemon every line it lacks. A daemon that refuses leaves the entry
@@ -656,7 +656,7 @@ fn enroll(parsed: Parsed, connect: Connect) -> Result(String, String) {
   use Nil <- result.try(refuse_existing(bundle_path, overwrite_of(parsed)))
   use authority <- result.try(unlock(parsed))
   let time = now()
-  use signed <- result.try(
+  use #(signed, _) <- result.try(
     sign(
       authority,
       where_,
@@ -915,7 +915,7 @@ fn renew(parsed: Parsed, connect: Connect) -> Result(String, String) {
   use Nil <- result.try(refuse_existing(bundle_path, overwrite_of(parsed)))
   use authority <- result.try(unlock(parsed))
   let time = now()
-  use signed <- result.try(
+  use #(signed, _) <- result.try(
     sign(
       authority,
       where_,
@@ -995,7 +995,8 @@ fn revoke(parsed: Parsed, connect: Connect) -> Result(String, String) {
   use authority <- result.try(unlock(parsed))
   let reason = option.unwrap(value(parsed, "--reason"), "")
   let time = now()
-  use signed <- result.try(
+  let daemon = connect(where_)
+  use #(signed, checked) <- result.try(
     sign(
       authority,
       where_,
@@ -1011,25 +1012,11 @@ fn revoke(parsed: Parsed, connect: Connect) -> Result(String, String) {
           membership_ledger.check(ledger, entry)
           |> result.map_error(ledger_operator.describe),
         )
-        use Nil <- result.map(
-          case ledger_operator.concerns(ledger, after), has(parsed, "--force") {
-            [], _ | _, True -> Ok(Nil)
-            concerns, False ->
-              Error(
-                "revoking "
-                <> name
-                <> " would break the link graph:\n"
-                <> string.join(
-                  list.map(concerns, fn(concern) {
-                    "  " <> ledger_operator.describe_concern(concern)
-                  }),
-                  "\n",
-                )
-                <> "\nNothing was signed. Pass --force to revoke anyway.",
-              )
-          },
-        )
-        Decision(entry:, extra: Nil)
+        use checked <- result.map(case has(parsed, "--force") {
+          True -> Ok(unchecked_text(name))
+          False -> checked_revoke(ledger, after, name, daemon)
+        })
+        Decision(entry:, extra: checked)
       },
       fn(_, _) { Ok(Nil) },
     ),
@@ -1041,15 +1028,80 @@ fn revoke(parsed: Parsed, connect: Connect) -> Result(String, String) {
         <> name
         <> " as entry "
         <> int.to_string(signed.entry.entry.seq)
-        <> ". Not checked: whether "
-        <> name
-        <> " owns sessions or scopes; a daemon cannot ask another. Enrolling the "
-        <> "same name again restores access, and destroys nothing.",
+        <> ". "
+        <> checked
+        <> " Enrolling the same name again restores access, and destroys "
+        <> "nothing.",
       ],
       confirmations_text(signed, wait, []),
     ]),
     "\n",
   ))
+}
+
+// What a `revoke` that was not forced checks before it signs, and the sentence
+// that says it passed. Two things are checked, and both are reported together
+// when both fail, so one refusal tells the operator everything to decide on:
+// the link graph after the revoke, and the sessions the revoke would leave
+// unreachable, which the daemon learns by asking the orchestrators it is linked
+// to. A daemon that cannot be asked, or an orchestrator that does not answer, is
+// unknown and not empty, so it refuses too.
+fn checked_revoke(
+  ledger: Ledger,
+  after: Ledger,
+  name: String,
+  daemon: Daemon,
+) -> Result(String, String) {
+  let links =
+    list.map(ledger_operator.concerns(ledger, after), fn(concern) {
+      ledger_operator.describe_concern(concern)
+    })
+  let strandings = case daemon.holdings() {
+    Ok(answers) -> ledger_operator.strandings(ledger, name, answers)
+    Error(reason) -> [ledger_operator.Unasked(reason)]
+  }
+  let stranded =
+    list.map(strandings, fn(stranding) {
+      ledger_operator.describe_stranding(name, stranding)
+    })
+  case links, stranded {
+    [], [] ->
+      case membership_ledger.member(ledger, name) {
+        Ok(member) ->
+          Ok("Checked first: " <> ledger_operator.describe_clear(member))
+        Error(Nil) -> Ok("Checked first.")
+      }
+    _, _ ->
+      Error(string.join(
+        list.flatten([
+          refusal_section(name, "would break the link graph", links),
+          refusal_section(name, "may strand sessions", stranded),
+          ["Nothing was signed. Pass --force to revoke anyway."],
+        ]),
+        "\n",
+      ))
+  }
+}
+
+fn refusal_section(
+  name: String,
+  heading: String,
+  lines: List(String),
+) -> List(String) {
+  case lines {
+    [] -> []
+    _ -> [
+      "revoking " <> name <> " " <> heading <> ":",
+      ..list.map(lines, fn(line) { "  " <> line })
+    ]
+  }
+}
+
+// The sentence of a forced revoke: nothing was looked at.
+fn unchecked_text(name: String) -> String {
+  "Not checked (--force): the link graph, and whether "
+  <> name
+  <> " owns sessions or has sessions placed on it."
 }
 
 // --- log ---------------------------------------------------------------------
@@ -1297,7 +1349,7 @@ fn import_file(parsed: Parsed, connect: Connect) -> Result(String, String) {
 
 // --- the socket --------------------------------------------------------------
 
-// The three ledger commands of the daemon at `where_`, each decoded.
+// The four ledger commands of the daemon at `where_`, each decoded.
 fn socket_daemon(where_: admin.Where) -> Daemon {
   Daemon(
     status: fn() {
@@ -1316,6 +1368,10 @@ fn socket_daemon(where_: admin.Where) -> Daemon {
         #("lines", json.Array(list.map(lines, json.String))),
       ])
       |> result.try(ledger_control.decode_applied)
+    },
+    holdings: fn() {
+      call(where_, "ledger.holdings", [])
+      |> result.try(ledger_control.decode_holdings)
     },
   )
 }

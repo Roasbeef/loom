@@ -9,7 +9,11 @@ import client/daemon/limits
 import client/daemon/root
 import client/daemon_server_test as wire
 import client/deployment
+import client/distribution_plan
 import client/ledger_control.{Handle}
+import client/ledger_holdings
+import client/membership_entry.{Upsert}
+import client/remote/orchestrator_port
 import client/session_directory
 import client/session_movers
 import core/json
@@ -22,6 +26,7 @@ import storage/access
 import storage/catalogue
 import support/internal/ffi_ws
 import support/ledger_rig as rig
+import support/membership_fixture as fixture
 import support/membership_log as log
 
 fn field(value, key) {
@@ -64,6 +69,7 @@ fn ledgered_ready(
       service: started.service,
       local: "loom@hub.example.net",
       name: "hub",
+      asker: ledger_holdings.silent,
     )),
     fn(_, ready, port, credential) {
       run(ready, port, credential, [text(laptop), text(gone)])
@@ -112,6 +118,53 @@ pub fn the_owner_appends_reads_and_asks_for_the_status_test() {
   })
 }
 
+pub fn the_owner_asks_what_the_orchestrators_hold_test() {
+  // The hub is the only orchestrator of this ledger, so it is the one asked,
+  // and it answers for itself.
+  let history =
+    log.genesis()
+    |> log.must_push(Upsert(
+      membership_entry.Member(
+        ..fixture.member("hub", []),
+        role: distribution_plan.Orchestrator,
+      ),
+    ))
+  let started = rig.start("holdings-wire", log.lines(history), rig.patient, [])
+  let asked =
+    Handle(
+      service: started.service,
+      local: "loom@hub.example.net",
+      name: "hub",
+      asker: fn(_node) { Ok(orchestrator_port.Held(sessions: 0, placed: [])) },
+    )
+  wire.fixture_with_ledger(
+    limits.defaults,
+    fn(_) { None },
+    fn(record, _domain, _services, _owner, _directory) { Ok(record.id) },
+    session_directory.none(),
+    session_movers.idle(),
+    deployment.alone("nonode@nohost"),
+    Some(asked),
+    fn(_, _ready, port, credential) {
+      let #(socket, _) = wire.connect(port, credential, "/v2/control")
+      let _hello = wire.frame(socket, within_ms: 1000)
+
+      let reply = ask(socket, 1, "ledger.holdings", json.Object([]))
+      assert field(reply, "event") == json.String("ledger.holdings")
+      let assert Ok(answers) =
+        ledger_control.decode_holdings(field(reply, "body"))
+      assert answers
+        == [
+          ledger_control.AnswerView(
+            name: "hub",
+            node: "loom@hub.example.net",
+            held: Some(ledger_control.HeldView(sessions: 0, placed: [])),
+          ),
+        ]
+    },
+  )
+}
+
 pub fn a_member_token_is_forbidden_every_ledger_command_test() {
   ledgered_ready(fn(ready, port, credential, lines) {
     let assert [laptop, _] = lines
@@ -145,6 +198,7 @@ pub fn a_member_token_is_forbidden_every_ledger_command_test() {
       json.Object([#("after", json.Int(0)), #("limit", json.Int(64))]),
     )
     forbidden(3, "ledger.status", json.Object([]))
+    forbidden(4, "ledger.holdings", json.Object([]))
     let _ = ffi_ws.tcp_close(member)
     assert catalogue.close(store) == Ok(Nil)
 
@@ -229,6 +283,8 @@ pub fn a_daemon_with_no_ledger_answers_not_found_test() {
       let #(socket, _) = wire.connect(port, credential, "/v2/control")
       let _hello = wire.frame(socket, within_ms: 1000)
       let reply = ask(socket, 1, "ledger.status", json.Object([]))
+      assert field(field(reply, "body"), "code") == json.String("not_found")
+      let reply = ask(socket, 3, "ledger.holdings", json.Object([]))
       assert field(field(reply, "body"), "code") == json.String("not_found")
       let reply =
         ask(

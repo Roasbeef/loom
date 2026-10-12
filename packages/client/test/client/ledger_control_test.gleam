@@ -3,9 +3,13 @@
 //// operator's tool reads them with. The ledger is the fixture scheme's, over a
 //// real file, so every rule of the acceptance procedure is the production one.
 
+import client/distribution_plan
 import client/ledger_control.{type Handle, Handle}
+import client/ledger_holdings
 import client/ledger_service
 import client/membership_entry.{Upsert}
+import client/membership_ledger
+import client/remote/orchestrator_port
 import core/json
 import gleam/bit_array
 import gleam/list
@@ -29,10 +33,19 @@ fn started() -> #(rig.Rig, Handle, List(String)) {
   let started = rig.start("control", log.lines(history), rig.patient, [])
   let next = history |> log.enroll("laptop", ["hub"]) |> log.revoke("laptop")
   let assert [_, _, laptop, gone] = log.lines(next)
-  #(started, Handle(service: started.service, local:, name: "hub"), [
-    text(laptop),
-    text(gone),
-  ])
+  #(
+    started,
+    Handle(
+      service: started.service,
+      local:,
+      name: "hub",
+      asker: ledger_holdings.silent,
+    ),
+    [
+      text(laptop),
+      text(gone),
+    ],
+  )
 }
 
 pub fn an_append_reports_what_it_applied_and_the_new_head_test() {
@@ -176,6 +189,131 @@ pub fn the_decoders_refuse_a_reply_that_is_not_what_was_asked_for_test() {
   assert result_is_error(
     ledger_control.decode_applied(
       json.Object([#("applied", json.Int(1)), #("head", bad_head)]),
+    ),
+  )
+}
+
+// --- holdings --------------------------------------------------------------
+
+fn orchestrating() -> #(rig.Rig, Handle) {
+  let history =
+    log.genesis()
+    |> log.must_push(Upsert(
+      membership_entry.Member(
+        ..fixture.member("hub", []),
+        role: distribution_plan.Orchestrator,
+      ),
+    ))
+    |> log.must_push(Upsert(
+      membership_entry.Member(
+        ..fixture.member("laptop", ["hub"]),
+        role: distribution_plan.Orchestrator,
+      ),
+    ))
+  let started = rig.start("holdings", log.lines(history), rig.patient, [])
+  #(
+    started,
+    Handle(
+      service: started.service,
+      local:,
+      name: "hub",
+      asker: ledger_holdings.silent,
+    ),
+  )
+}
+
+pub fn holdings_report_each_answer_and_leave_silence_without_a_count_test() {
+  let #(_, handle) = orchestrating()
+  let asked =
+    ledger_control.asking(handle, fn(node) {
+      case node {
+        "loom@hub.example.net" ->
+          Ok(
+            orchestrator_port.Held(sessions: 3, placed: [
+              orchestrator_port.Placed(
+                executor_node: "loom@box.example.net",
+                sessions: 2,
+              ),
+            ]),
+          )
+        _ -> Error(Nil)
+      }
+    })
+  let assert Ok(reply) = ledger_control.holdings(asked)
+  let assert Ok(answers) = ledger_control.decode_holdings(reply)
+  assert answers
+    == [
+      ledger_control.AnswerView(
+        name: "hub",
+        node: local,
+        held: Some(
+          ledger_control.HeldView(sessions: 3, placed: [
+            ledger_control.PlacedView(node: "loom@box.example.net", sessions: 2),
+          ]),
+        ),
+      ),
+      ledger_control.AnswerView(
+        name: "laptop",
+        node: "loom@laptop.example.net",
+        held: None,
+      ),
+    ]
+
+  // A handle that was given no way to ask reports every orchestrator silent.
+  let assert Ok(reply) = ledger_control.holdings(handle)
+  let assert Ok(silent) = ledger_control.decode_holdings(reply)
+  assert list.all(silent, fn(answer) { answer.held == None })
+}
+
+pub fn the_holdings_decoder_refuses_what_it_was_not_asked_for_test() {
+  let entry = fn(fields) { json.Object(fields) }
+  let named = [
+    #("name", json.String("hub")),
+    #("node", json.String("loom@hub.example.net")),
+  ]
+  let reply = fn(entries) {
+    json.Object([#("orchestrators", json.Array(entries))])
+  }
+
+  // A count below zero, a placement without a node, a reply that is not a list
+  // and one with more entries than a ledger holds.
+  assert result_is_error(
+    ledger_control.decode_holdings(
+      reply([
+        entry(
+          list.append(named, [
+            #("sessions", json.Int(-1)),
+            #("placed", json.Array([])),
+          ]),
+        ),
+      ]),
+    ),
+  )
+  assert result_is_error(
+    ledger_control.decode_holdings(
+      reply([
+        entry(
+          list.append(named, [
+            #("sessions", json.Int(1)),
+            #("placed", json.Array([json.Object([#("sessions", json.Int(1))])])),
+          ]),
+        ),
+      ]),
+    ),
+  )
+  assert result_is_error(
+    ledger_control.decode_holdings(json.Object([#("orchestrators", json.Null)])),
+  )
+  assert result_is_error(
+    ledger_control.decode_holdings(
+      reply(list.repeat(entry(named), membership_ledger.max_active + 1)),
+    ),
+  )
+
+  // A sessions count with no placements is a reply that lost a field.
+  assert result_is_error(
+    ledger_control.decode_holdings(
+      reply([entry(list.append(named, [#("sessions", json.Int(1))]))]),
     ),
   )
 }

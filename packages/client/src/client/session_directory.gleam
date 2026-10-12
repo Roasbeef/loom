@@ -504,9 +504,18 @@ pub const stage_reply_ms = 5000
 /// the whole copy and opens it, so this is the longest of the three.
 pub const activation_reply_ms = 120_000
 
-// Connects to the pinned peer of an orchestrator, or says nothing: every way
-// of not reaching it is the silence the callers already treat as "try again".
-fn reached(
+/// Connects to the pinned peer of an orchestrator if it is not connected, and
+/// returns the address of its port, or says nothing: every way of not reaching
+/// it is the silence the callers already treat as "try again". The operator's
+/// check before a `revoke` (`client/ledger_holdings`) reaches the orchestrators
+/// it asks the same way.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // session_directory.reached(membership, orchestrators.plain("laptop", node))
+/// ```
+pub fn reached(
   membership: Membership,
   orchestrator: Orchestrator,
 ) -> Result(address.Address(orchestrator_port.Message), Nil) {

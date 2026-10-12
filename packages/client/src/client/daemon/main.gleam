@@ -54,6 +54,7 @@ import client/host
 import client/internal/ffi_os
 import client/ledger_boot
 import client/ledger_control
+import client/ledger_holdings
 import client/ledger_reference
 import client/ledger_rows
 import client/ledger_service.{type Service}
@@ -674,12 +675,21 @@ fn ledger_handle(
   booted: Option(ledger_boot.Booted),
   configuration: String,
 ) -> Result(Option(ledger_control.Handle), String) {
-  case option.then(booted, fn(started) { started.ledger }) {
-    None -> Ok(None)
-    Some(service) ->
-      ledger_control.handle(service, atom.to_string(node.name(node.self())))
-      |> result.map(Some)
+  case booted {
+    Some(ledger_boot.Booted(ledger: Some(service), membership:)) -> {
+      // The node is distributed by now. `ledger.holdings` asks the orchestrators
+      // the ledger links it to over that distribution.
+      let local = atom.to_string(node.name(node.self()))
+      ledger_control.handle(service, local)
+      |> result.map(fn(handle) {
+        Some(ledger_control.asking(
+          handle,
+          ledger_holdings.over_distribution(membership, local),
+        ))
+      })
       |> result.map_error(fn(reason) { configuration <> ": " <> reason })
+    }
+    Some(ledger_boot.Booted(ledger: None, ..)) | None -> Ok(None)
   }
 }
 
@@ -866,6 +876,10 @@ pub fn start_orchestrator_port(
               now_ms: ffi_os.system_time_ms,
               endpoint: delegate_endpoint,
             )),
+          ),
+          ledger_holdings.from_catalogue(
+            ready.registry,
+            executor_roster(config),
           ),
         )
         |> result.map_error(fn(error) {

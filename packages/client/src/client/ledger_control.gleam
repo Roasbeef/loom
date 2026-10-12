@@ -1,5 +1,6 @@
 //// The owner's view of a daemon's membership ledger over the control socket
-//// (protocol-change/086): `ledger.append`, `ledger.entries` and `ledger.status`.
+//// (protocol-change/086): `ledger.append`, `ledger.entries`, `ledger.status` and
+//// `ledger.holdings`.
 ////
 //// Both halves of the exchange live here so they cannot drift. The daemon's
 //// half turns a decoded request into a reply by asking the `loom_ledger`
@@ -20,6 +21,11 @@
 ////   before it signs.
 //// - `status` reports the head, this node's standing, every active member with
 ////   the head it last reported, and the last refusal.
+//// - `holdings` asks each orchestrator the daemon is linked to, and the daemon
+////   itself, what its catalogue holds (`client/ledger_holdings`). The operator's
+////   tool reads it before it signs a `revoke`. It is the one command that
+////   reaches other machines, so it is bounded by its own deadline and reports
+////   an orchestrator that did not answer as silent.
 ////
 //// ## Frames are 64 KiB
 ////
@@ -31,9 +37,11 @@
 //// `max_page_bytes` bytes, whichever is reached first (`pages`).
 
 import client/distribution_plan
+import client/ledger_holdings.{type Asker}
 import client/ledger_service.{type Service}
 import client/membership_entry
 import client/membership_ledger
+import client/remote/orchestrator_port
 import core/json.{type JsonValue}
 import gleam/bit_array
 import gleam/list
@@ -66,6 +74,10 @@ pub type Handle {
     local: String,
     /// This node's plan name.
     name: String,
+    /// How `ledger.holdings` asks an orchestrator what it holds. A handle
+    /// built by `handle` asks nobody, so every orchestrator reads as silent;
+    /// the daemon gives it the production asker with `asking`.
+    asker: Asker,
   )
 }
 
@@ -89,7 +101,18 @@ pub fn handle(service: Service, local: String) -> Result(Handle, String) {
       local <> " is not an active member of its ledger"
     }),
   )
-  Handle(service:, local:, name: member.name)
+  Handle(service:, local:, name: member.name, asker: ledger_holdings.silent)
+}
+
+/// The same handle with the way `ledger.holdings` reaches the orchestrators.
+///
+/// ## Examples
+///
+/// ```gleam
+/// ledger_control.asking(handle, ledger_holdings.over_distribution(membership, local))
+/// ```
+pub fn asking(handle: Handle, asker: Asker) -> Handle {
+  Handle(..handle, asker:)
 }
 
 /// Why a request was not answered with a reply.
@@ -265,6 +288,59 @@ pub fn status(handle: Handle) -> Result(JsonValue, Failure) {
     #("members", json.Array(members)),
     #("last_refusal", refusal_json(status.last_refusal)),
   ])
+}
+
+/// `ledger.holdings`: asks every orchestrator this node is linked to, and this
+/// node itself if it is one, what its catalogue holds, and reports each answer.
+/// An orchestrator that did not answer is listed without `sessions`, so that a
+/// reader can tell silence from none. The operator's tool decides what the
+/// answers mean for a `revoke` (`client/ledger_operator.holdings`).
+///
+/// The request waits for the slowest ask, at most `ledger_holdings.deadline_ms`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// ledger_control.holdings(handle)
+/// // -> Ok(json.Object([#("orchestrators", json.Array([..]))]))
+/// ```
+pub fn holdings(handle: Handle) -> Result(JsonValue, Failure) {
+  use status <- result.map(
+    ledger_service.status(handle.service, within_ms)
+    |> result.replace_error(Unavailable("the ledger process did not answer")),
+  )
+  let answers =
+    ledger_holdings.collect(status.ledger, handle.local, handle.asker)
+  json.Object([
+    #("orchestrators", json.Array(list.map(answers, answer_json))),
+  ])
+}
+
+fn answer_json(answer: ledger_holdings.Answer) -> JsonValue {
+  let who = [
+    #("name", json.String(answer.name)),
+    #("node", json.String(answer.node)),
+  ]
+  case answer.held {
+    None -> json.Object(who)
+    Some(held) ->
+      json.Object(
+        list.append(who, [
+          #("sessions", json.Int(held.sessions)),
+          #(
+            "placed",
+            json.Array(
+              list.map(held.placed, fn(placed) {
+                json.Object([
+                  #("node", json.String(placed.executor_node)),
+                  #("sessions", json.Int(placed.sessions)),
+                ])
+              }),
+            ),
+          ),
+        ]),
+      )
+  }
 }
 
 fn head_of(handle: Handle) -> Result(membership_ledger.Head, Failure) {
@@ -451,6 +527,85 @@ pub fn decode_applied(value: JsonValue) -> Result(AppliedView, String) {
   use applied <- result.try(int_of(fields, "applied"))
   use head <- result.map(head_view(field(fields, "head")))
   AppliedView(applied:, head:)
+}
+
+/// The sessions placed on one executor, as an orchestrator reported them.
+pub type PlacedView {
+  PlacedView(node: String, sessions: Int)
+}
+
+/// What one orchestrator reported holding.
+pub type HeldView {
+  HeldView(sessions: Int, placed: List(PlacedView))
+}
+
+/// One orchestrator in a `ledger.holdings` reply. `held` is `None` when it did
+/// not answer, which is silence and not "nothing".
+pub type AnswerView {
+  AnswerView(name: String, node: String, held: Option(HeldView))
+}
+
+/// Reads a `ledger.holdings` reply. At most `membership_ledger.max_active`
+/// orchestrators are accepted, each with at most `orchestrator_port.max_placed`
+/// placements, and a count below zero is refused.
+///
+/// ## Examples
+///
+/// ```gleam
+/// ledger_control.decode_holdings(json) // -> Ok([AnswerView(..)])
+/// ```
+pub fn decode_holdings(value: JsonValue) -> Result(List(AnswerView), String) {
+  use fields <- result.try(object(Ok(value), "holdings"))
+  case field(fields, "orchestrators") {
+    Ok(json.Array(items)) ->
+      case list.length(items) <= membership_ledger.max_active {
+        True -> list.try_map(items, answer_view)
+        False -> Error("holdings.orchestrators holds too many entries")
+      }
+    _ -> Error("holdings.orchestrators is not an array")
+  }
+}
+
+fn answer_view(value: JsonValue) -> Result(AnswerView, String) {
+  use fields <- result.try(object(Ok(value), "holdings entry"))
+  use name <- result.try(string_of(fields, "name"))
+  use node <- result.try(string_of(fields, "node"))
+  use held <- result.map(case field(fields, "sessions") {
+    Error(Nil) | Ok(json.Null) -> Ok(None)
+    Ok(_) -> held_view(fields) |> result.map(Some)
+  })
+  AnswerView(name:, node:, held:)
+}
+
+fn held_view(fields: List(#(String, JsonValue))) -> Result(HeldView, String) {
+  use sessions <- result.try(count_of(fields, "sessions"))
+  use placed <- result.map(case field(fields, "placed") {
+    Ok(json.Array(items)) ->
+      case list.length(items) <= orchestrator_port.max_placed {
+        True -> list.try_map(items, placed_view)
+        False -> Error("holdings placed holds too many entries")
+      }
+    _ -> Error("holdings placed is not an array")
+  })
+  HeldView(sessions:, placed:)
+}
+
+fn placed_view(value: JsonValue) -> Result(PlacedView, String) {
+  use fields <- result.try(object(Ok(value), "holdings placement"))
+  use node <- result.try(string_of(fields, "node"))
+  use sessions <- result.map(count_of(fields, "sessions"))
+  PlacedView(node:, sessions:)
+}
+
+fn count_of(
+  fields: List(#(String, JsonValue)),
+  key: String,
+) -> Result(Int, String) {
+  use number <- result.try(int_of(fields, key))
+  case number >= 0 {
+    True -> Ok(number)
+    False -> Error(key <> " is a negative count")
+  }
 }
 
 /// Splits lines into the pages an append may carry: at most `max_append_lines`

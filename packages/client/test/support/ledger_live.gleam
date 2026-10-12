@@ -27,6 +27,7 @@ import client/membership_entry.{
 }
 import client/membership_ledger
 import client/membership_signing
+import client/remote/orchestrator_port
 import core/json
 import gleam/erlang/process.{type Subject}
 import gleam/int
@@ -345,6 +346,15 @@ pub fn control(node: Node, command: String, body: String) -> String {
       "the node runs no ledger",
     ))
     use handle <- result.try(ledger_control.handle(service, node.local))
+
+    // A fixture node runs no catalogue and no orchestrator port, so it asks
+    // nobody over the network. Every orchestrator answers that it holds
+    // nothing, which is what these nodes do hold, so the operator's check
+    // before a `revoke` has an answer to read.
+    let handle =
+      ledger_control.asking(handle, fn(_node) {
+        Ok(orchestrator_port.Held(sessions: 0, placed: []))
+      })
     use fields <- result.try(case json.parse(body) {
       Ok(json.Object(fields)) -> Ok(fields)
       _ -> Error("the request body is not an object")
@@ -374,6 +384,8 @@ pub fn control(node: Node, command: String, body: String) -> String {
           }
           _ -> Error("lines are required")
         }
+      "ledger.holdings" ->
+        ledger_control.holdings(handle) |> result.map_error(failure_text)
       _ -> Error("unsupported control command")
     }
   }

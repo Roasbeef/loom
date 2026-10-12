@@ -122,10 +122,11 @@ commands:
                                   Signs a `revoke`, hands it to a daemon and
                                   prints confirmations. Refuses when the revoke
                                   would leave an executor with no orchestrator
-                                  linked to it, or cut members off from the
-                                  rest, unless --force. It does not check
-                                  whether NAME owns sessions: a daemon cannot
-                                  ask another.
+                                  linked to it, cut members off from the rest,
+                                  or strand sessions (NAME owns some, or for
+                                  an executor, some are placed on it), unless
+                                  --force. An orchestrator that does not answer
+                                  is unknown and also needs --force.
   renew NAME [--bundle-dir DIR] [--out DIR] [--force] [--wait SECONDS]
          [COMMON]
                                   Mints a new certificate for a member, signs a

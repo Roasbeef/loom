@@ -1,0 +1,278 @@
+//// What the orchestrators of a deployment hold, as the operator's `revoke`
+//// asks it (protocol-change/086, phase 2). The fan-out is exercised with a
+//// scripted asker over fixture ledgers, and the daemon's side of the question is
+//// exercised over a real registry holding real registrations, so the counts the
+//// operator reads are the counts the catalogue has.
+
+import client/daemon/domain as domain_service
+import client/daemon/manager
+import client/distribution_plan.{Executor, Orchestrator}
+import client/executors
+import client/ledger_holdings.{Answer}
+import client/membership_entry.{Upsert}
+import client/membership_ledger
+import client/remote/orchestrator_port.{Held, Placed}
+import client/roster
+import core/clock
+import core/ids
+import gleam/int
+import gleam/list
+import gleam/option.{None, Some}
+import gleam/string
+import host/bootstrap
+import storage/access
+import storage/catalogue
+import storage/domain
+import support/membership_fixture as fixture
+import support/membership_log as log
+
+// --- who is asked --------------------------------------------------------------
+
+fn orchestrator(name: String, links: List(String)) {
+  membership_entry.Member(..fixture.member(name, links), role: Orchestrator)
+}
+
+// A hub linked to a laptop and a box, a stray orchestrator the hub is not
+// linked to, and a desk that was revoked.
+fn estate() -> membership_ledger.Ledger {
+  let estate =
+    log.genesis()
+    |> log.must_push(Upsert(orchestrator("hub", [])))
+    |> log.must_push(Upsert(orchestrator("laptop", ["hub"])))
+    |> log.must_push(Upsert(orchestrator("stray", [])))
+    |> log.must_push(Upsert(orchestrator("desk", ["hub"])))
+    |> log.must_push(Upsert(
+      membership_entry.Member(..fixture.member("box", ["hub"]), role: Executor),
+    ))
+    |> log.revoke("desk")
+  estate.ledger
+}
+
+const hub = "loom@hub.example.net"
+
+pub fn an_orchestrator_asks_itself_and_the_orchestrators_it_is_linked_to_test() {
+  assert ledger_holdings.targets(estate(), hub)
+    == [
+      #("hub", hub),
+      #("laptop", "loom@laptop.example.net"),
+    ]
+}
+
+pub fn an_executor_asks_the_orchestrators_that_use_it_and_not_itself_test() {
+  assert ledger_holdings.targets(estate(), "loom@box.example.net")
+    == [#("hub", hub)]
+}
+
+pub fn a_node_the_ledger_does_not_list_asks_nobody_test() {
+  assert ledger_holdings.targets(estate(), "loom@ghost.example.net") == []
+  assert ledger_holdings.targets(estate(), "loom@desk.example.net") == []
+}
+
+// --- the fan-out -----------------------------------------------------------------
+
+pub fn each_target_is_asked_once_and_silence_is_not_nothing_test() {
+  let ask = fn(node) {
+    case node {
+      "loom@laptop.example.net" -> Error(Nil)
+      _ -> Ok(Held(sessions: 2, placed: []))
+    }
+  }
+  assert ledger_holdings.collect(estate(), hub, ask)
+    == [
+      Answer("hub", hub, Some(Held(sessions: 2, placed: []))),
+      Answer("laptop", "loom@laptop.example.net", None),
+    ]
+}
+
+pub fn an_ask_that_crashes_reads_as_silence_test() {
+  let ask = fn(node) {
+    case node {
+      "loom@laptop.example.net" -> panic as "the asker failed"
+      _ -> Ok(Held(sessions: 0, placed: []))
+    }
+  }
+  let answers = ledger_holdings.collect(estate(), hub, ask)
+  assert list.map(answers, fn(answer) { answer.held })
+    == [Some(Held(sessions: 0, placed: [])), None]
+}
+
+pub fn the_silent_asker_leaves_every_orchestrator_unanswered_test() {
+  let answers = ledger_holdings.collect(estate(), hub, ledger_holdings.silent)
+  assert list.all(answers, fn(answer) { answer.held == None })
+  assert list.length(answers) == 2
+}
+
+// --- the catalogue's side ---------------------------------------------------------
+
+fn start() -> #(manager.Manager(String), catalogue.Catalogue, String) {
+  let assert Ok(directory) =
+    bootstrap.absolute_path("build/ledger-holdings-" <> int.to_string(unique()))
+  let assert Ok(store) = catalogue.open(":memory:") as "the catalogue opens"
+  let assert Ok(owner) = access.credential_digest(string.repeat("a", 64))
+  let assert Ok(_) = access.bootstrap_owner(store, "owner", "Owner", owner)
+  let assert Ok(registry) =
+    manager.start(
+      store,
+      manager.Assembly(
+        domain_build: fn(_, _, _) { Ok(domain_service.inert()) },
+        build: fn(record, _domain, _services, _owner, _directory) {
+          Ok(record.id)
+        },
+        drain: fn(_, _) { Nil },
+        fatal: fn(_) { [] },
+      ),
+      epoch: "holdings-test",
+      limit: 2,
+    )
+    as "the registry starts"
+  #(registry, store, directory)
+}
+
+@external(erlang, "erlang", "unique_integer")
+fn unique_integer(options: List(a)) -> Int
+
+fn unique() -> Int {
+  int.absolute_value(unique_integer([]))
+}
+
+// Registers and confirms one session placed on `executor` (the empty string for
+// a local one) and returns its identity.
+fn register(
+  store: catalogue.Catalogue,
+  directory: String,
+  generator: ids.Generator,
+  executor: String,
+) -> #(String, ids.Generator) {
+  let #(id, next) = ids.mint_session(generator)
+  let session = ids.session_id_to_string(id)
+  let record =
+    catalogue.Registration(
+      id: session,
+      path: directory <> "/sessions/" <> session <> ".db",
+      workspace: case executor {
+        "" -> directory
+        _ -> "repo"
+      },
+      name: "a session",
+      configuration: "",
+      profile: None,
+      model: None,
+      executor:,
+      pool: "",
+      created_at: 1_700_000_000_000,
+      request_key: "key-" <> session,
+      state: catalogue.Reserved,
+      subtitle: None,
+    )
+  let selected = manager.session_only_domain(record, "", directory)
+  let assert Ok(_) = domain.reserve_session(store, record, selected)
+  let assert Ok(_) = catalogue.confirm(store, session)
+  #(session, next)
+}
+
+fn generator() -> ids.Generator {
+  ids.generator(clock.fixed(at: 1_700_000_000_000), seed: unique())
+}
+
+fn registered_n(
+  store: catalogue.Catalogue,
+  directory: String,
+  executor: String,
+  count: Int,
+) -> List(String) {
+  list.repeat(Nil, count)
+  |> list.fold(#([], generator()), fn(state, _) {
+    let #(found, next) = state
+    let #(session, next) = register(store, directory, next, executor)
+    #([session, ..found], next)
+  })
+  |> fn(state) { state.0 }
+}
+
+pub fn the_catalogue_counts_its_sessions_and_where_they_are_placed_test() {
+  let #(registry, store, directory) = start()
+  let _ = registered_n(store, directory, "box", 2)
+  let _ = registered_n(store, directory, "", 1)
+  let listed =
+    roster.fixed([
+      executors.plain("box", "loom@box.example.net"),
+      executors.plain("desk", "loom@desk.example.net"),
+    ])
+  assert ledger_holdings.from_catalogue(registry, listed)()
+    == Ok(
+      Held(sessions: 3, placed: [
+        Placed(executor_node: "loom@box.example.net", sessions: 2),
+      ]),
+    )
+}
+
+pub fn two_names_for_one_node_are_added_and_an_unlisted_name_is_not_a_placement_test() {
+  let #(registry, store, directory) = start()
+  let _ = registered_n(store, directory, "box", 1)
+  let _ = registered_n(store, directory, "build", 2)
+  let _ = registered_n(store, directory, "gone", 4)
+  let listed =
+    roster.fixed([
+      executors.plain("box", "loom@box.example.net"),
+      executors.plain("build", "loom@box.example.net"),
+    ])
+
+  // Seven sessions, three of them on the box under either name, and four on an
+  // executor no row lists now, which names no node.
+  assert ledger_holdings.from_catalogue(registry, listed)()
+    == Ok(
+      Held(sessions: 7, placed: [
+        Placed(executor_node: "loom@box.example.net", sessions: 3),
+      ]),
+    )
+}
+
+pub fn a_session_handed_to_another_orchestrator_is_not_counted_test() {
+  let #(registry, store, directory) = start()
+  let sessions = registered_n(store, directory, "box", 3)
+  let assert [first, ..] = sessions
+  let assert Ok(_) = catalogue.begin_move(store, first, op: "op-1", to: "bravo")
+  let assert Ok(_) = catalogue.finish_move(store, first, op: "op-1")
+  let listed = roster.fixed([executors.plain("box", "loom@box.example.net")])
+  assert ledger_holdings.from_catalogue(registry, listed)()
+    == Ok(
+      Held(sessions: 2, placed: [
+        Placed(executor_node: "loom@box.example.net", sessions: 2),
+      ]),
+    )
+}
+
+pub fn a_session_still_moving_is_still_owned_test() {
+  let #(registry, store, directory) = start()
+  let sessions = registered_n(store, directory, "", 2)
+  let assert [first, ..] = sessions
+  let assert Ok(_) = catalogue.begin_move(store, first, op: "op-2", to: "bravo")
+  assert ledger_holdings.from_catalogue(registry, roster.fixed([]))()
+    == Ok(Held(sessions: 2, placed: []))
+}
+
+pub fn the_walk_crosses_a_page_boundary_test() {
+  let #(registry, store, directory) = start()
+  let count = catalogue.page_limit + 5
+  let _ = registered_n(store, directory, "box", count)
+  let listed = roster.fixed([executors.plain("box", "loom@box.example.net")])
+  assert ledger_holdings.from_catalogue(registry, listed)()
+    == Ok(
+      Held(sessions: count, placed: [
+        Placed(executor_node: "loom@box.example.net", sessions: count),
+      ]),
+    )
+}
+
+pub fn an_empty_catalogue_holds_nothing_test() {
+  let #(registry, _, _) = start()
+  assert ledger_holdings.from_catalogue(registry, roster.fixed([]))()
+    == Ok(Held(sessions: 0, placed: []))
+}
+
+pub fn a_registry_that_cannot_be_read_is_unknown_and_not_empty_test() {
+  let #(registry, _, _) = start()
+  manager.shutdown(registry)
+  assert ledger_holdings.from_catalogue(registry, roster.fixed([]))()
+    == Error(Nil)
+}

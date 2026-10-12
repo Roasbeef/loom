@@ -25,21 +25,27 @@
 //// refusal is turned into a sentence for the operator naming the member or
 //// link at fault (`describe`).
 ////
-//// ## What `revoke` checks, and what it cannot
+//// ## What `revoke` checks
 ////
-//// A revoke is safe to sign but not always wise to send. `concerns` lists what
+//// A revoke is safe to sign but not always wise to send, and the ledger cannot
+//// tell, so the operator's tool checks two things first. `concerns` lists what
 //// the revoke would newly break in the link graph: an executor left with no
-//// orchestrator to use it, and members cut off from the rest. 086 also asks the
-//// tool to check that the revoked member owns no sessions or scopes. A session
-//// is owned by a daemon, and no daemon can ask another what it owns until the
-//// admin surface of protocol-change/085 carries it (phase 2), so this build does
-//// not check it and says so in its output.
+//// orchestrator to use it, and members cut off from the rest. `strandings` says
+//// what it would leave unreachable: sessions an orchestrator owns, or sessions
+//// placed on an executor. A daemon answers that by asking the orchestrators it
+//// is linked to what they hold (`client/ledger_holdings`), and this module reads
+//// the answers. An orchestrator that does not answer is unknown and not empty,
+//// so a revoke of a machine that is off is refused until the operator says
+//// `--force`. The revoke is reversible and deletes no session, which is why a
+//// check that cannot be completed asks for a decision and does not decide.
 
 import client/distribution
 import client/distribution_plan.{
   type Role, type Workspace, Executor, Orchestrator,
 }
-import client/ledger_control.{type StatusView}
+import client/ledger_control.{
+  type AnswerView, type HeldView, type StatusView, AnswerView,
+}
 import client/membership_entry.{
   type Entry, type Member, Entry, Member, NotInDirectory, Revoke, Upsert,
 }
@@ -452,6 +458,178 @@ pub fn describe_concern(concern: Concern) -> String {
       "the members "
       <> string.join(names, ", ")
       <> " would no longer be linked to the rest"
+  }
+}
+
+// --- what a revoke would strand ----------------------------------------------
+
+/// Sessions a revoke would leave unreachable, or the reason that could not be
+/// told.
+pub type Stranding {
+  /// The orchestrator being revoked owns sessions. They stay in its catalogue
+  /// and cannot be opened by anyone until it is enrolled again.
+  Owns(sessions: Int)
+
+  /// The executor being revoked has sessions placed on it, by these
+  /// orchestrators. Each fails as it does when the executor is down.
+  Placed(sessions: Int, by: List(String))
+
+  /// Whether the member holds sessions could not be told, because these
+  /// orchestrators did not answer. An orchestrator that is asleep or lost is
+  /// silent, and silence is not "none".
+  Silent(names: List(String))
+
+  /// No daemon could be asked at all, for this reason.
+  Unasked(reason: String)
+}
+
+/// What revoking `name` would strand, from what the orchestrators said.
+///
+/// For an orchestrator, the question is whether its own answer reports any
+/// session. For an executor, it is whether any orchestrator that is linked to it
+/// placed a session on its node, and every such orchestrator has to answer for
+/// the result to count as none. An orchestrator the answering daemon could not
+/// ask is not listed, which reads as silent. A member the ledger does not list
+/// strands nothing. The list is empty only when the revoke strands nothing and
+/// nothing is unknown.
+///
+/// ## Examples
+///
+/// ```gleam
+/// ledger_operator.strandings(ledger, "laptop", answers) // -> [Owns(3)]
+/// ```
+pub fn strandings(
+  ledger: Ledger,
+  name: String,
+  answers: List(AnswerView),
+) -> List(Stranding) {
+  case membership_ledger.member(ledger, name) {
+    Error(Nil) -> []
+    Ok(member) ->
+      case member.role {
+        Orchestrator -> owned(member, answers)
+        Executor -> placed(ledger, member, answers)
+      }
+  }
+}
+
+fn owned(member: Member, answers: List(AnswerView)) -> List(Stranding) {
+  case list.find(answers, fn(answer) { answer.name == member.name }) {
+    Ok(AnswerView(held: Some(held), ..)) ->
+      case held.sessions {
+        0 -> []
+        sessions -> [Owns(sessions)]
+      }
+    Ok(AnswerView(held: option.None, ..)) | Error(Nil) -> [
+      Silent([member.name]),
+    ]
+  }
+}
+
+// The orchestrators linked to the executor are the ones that could have placed
+// a session on it, so they are the ones whose silence matters.
+fn placed(
+  ledger: Ledger,
+  member: Member,
+  answers: List(AnswerView),
+) -> List(Stranding) {
+  let users =
+    membership_ledger.pin_table(ledger, member.name)
+    |> membership_ledger.peers
+    |> list.filter(fn(peer) { peer.role == Orchestrator })
+    |> list.map(fn(peer) { peer.name })
+  let #(by, silent, total) =
+    list.fold(users, #([], [], 0), fn(seen, user) {
+      let #(by, silent, total) = seen
+      case list.find(answers, fn(answer) { answer.name == user }) {
+        Ok(AnswerView(held: Some(held), ..)) ->
+          case on_node(held, member.node) {
+            0 -> seen
+            sessions -> #([user, ..by], silent, total + sessions)
+          }
+        Ok(AnswerView(held: option.None, ..)) | Error(Nil) -> #(
+          by,
+          [user, ..silent],
+          total,
+        )
+      }
+    })
+  list.flatten([
+    case total {
+      0 -> []
+      sessions -> [Placed(sessions, list.reverse(by))]
+    },
+    case silent {
+      [] -> []
+      names -> [Silent(list.reverse(names))]
+    },
+  ])
+}
+
+fn on_node(held: HeldView, node: String) -> Int {
+  list.fold(held.placed, 0, fn(sum, placed) {
+    case placed.node == node {
+      True -> sum + placed.sessions
+      False -> sum
+    }
+  })
+}
+
+/// A stranding in the words the operator reads.
+///
+/// ## Examples
+///
+/// ```gleam
+/// ledger_operator.describe_stranding("laptop", Owns(1))
+/// // -> "laptop owns 1 session, which nobody can open until it is enrolled again"
+/// ```
+pub fn describe_stranding(name: String, stranding: Stranding) -> String {
+  case stranding {
+    Owns(sessions:) ->
+      name
+      <> " owns "
+      <> sessions_text(sessions)
+      <> ", which nobody can open until it is enrolled again"
+    Placed(sessions:, by:) ->
+      sessions_text(sessions)
+      <> " placed on "
+      <> name
+      <> " by "
+      <> string.join(by, ", ")
+      <> " would fail as they do when an executor is down"
+    Silent(names:) ->
+      "whether "
+      <> name
+      <> " holds sessions could not be told: "
+      <> string.join(names, ", ")
+      <> " did not answer"
+    Unasked(reason:) ->
+      "whether " <> name <> " holds sessions could not be asked: " <> reason
+  }
+}
+
+fn sessions_text(sessions: Int) -> String {
+  case sessions {
+    1 -> "1 session"
+    _ -> int.to_string(sessions) <> " sessions"
+  }
+}
+
+/// The sentence for a revoke that was checked and found to strand nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// ledger_operator.describe_clear(member)
+/// // -> "laptop owns no sessions."
+/// ```
+pub fn describe_clear(member: Member) -> String {
+  case member.role {
+    Orchestrator -> member.name <> " owns no sessions."
+    Executor ->
+      "no orchestrator linked to "
+      <> member.name
+      <> " has a session placed on it."
   }
 }
 

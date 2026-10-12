@@ -2258,7 +2258,8 @@ fn control(
             protocol.DeploymentStatus(_) -> KeepServing
             protocol.LedgerAppend(..)
             | protocol.LedgerEntries(..)
-            | protocol.LedgerStatus -> KeepServing
+            | protocol.LedgerStatus
+            | protocol.LedgerHoldings -> KeepServing
             protocol.InspectPeers(..)
             | protocol.LinkPeers(..)
             | protocol.UnlinkPeers(..)
@@ -2325,6 +2326,7 @@ fn control_use(command: protocol.Command) {
     | protocol.DeploymentStatus(_)
     | protocol.LedgerEntries(..)
     | protocol.LedgerStatus
+    | protocol.LedgerHoldings
     | protocol.GetOperation(..) -> root.ControlRead
     protocol.LinkPeers(..)
     | protocol.UnlinkPeers(..)
@@ -2470,7 +2472,8 @@ fn dispatch(
     // codes of `dispatch_class` cannot carry, so they are served here.
     protocol.LedgerAppend(..)
     | protocol.LedgerEntries(..)
-    | protocol.LedgerStatus -> ledger_command(config, principal, command)
+    | protocol.LedgerStatus
+    | protocol.LedgerHoldings -> ledger_command(config, principal, command)
     _ ->
       dispatch_class(config, state, digest, principal, reply_to, command)
       |> result.map_error(control_refusal)
@@ -2499,6 +2502,10 @@ fn ledger_command(
     protocol.LedgerEntries(after, limit) ->
       ledger_control.entries(handle, after, limit)
       |> result.map(fn(body) { #("ledger.entries", body) })
+      |> result.map_error(ledger_refusal)
+    protocol.LedgerHoldings ->
+      ledger_control.holdings(handle)
+      |> result.map(fn(body) { #("ledger.holdings", body) })
       |> result.map_error(ledger_refusal)
     _ ->
       ledger_control.status(handle)
@@ -3437,7 +3444,8 @@ fn dispatch_class(
     // a step and this function's refusals are bare codes. They never reach here.
     protocol.LedgerAppend(..)
     | protocol.LedgerEntries(..)
-    | protocol.LedgerStatus -> Error("unavailable")
+    | protocol.LedgerStatus
+    | protocol.LedgerHoldings -> Error("unavailable")
     protocol.Shutdown(supplied) -> {
       use Nil <- result.try(owner(principal))
       use Nil <- result.try(epoch(state, supplied))

@@ -16,7 +16,7 @@
 ////   has, with another identity. That is a fork already, and the command stops
 ////   with the sequence number.
 ////
-//// The daemon is a record of three functions rather than a socket, so the
+//// The daemon is a record of four functions rather than a socket, so the
 //// commands run against a real daemon, and the tests against a ledger process
 //// in the same VM, through the same code. Everything it returns went through
 //// the total decoders of `client/ledger_control`.
@@ -30,7 +30,9 @@
 //// 4. `await` polls the daemon's status until every member holds the head, or
 ////    the wait ends.
 
-import client/ledger_control.{type AppliedView, type PageView, type StatusView}
+import client/ledger_control.{
+  type AnswerView, type AppliedView, type PageView, type StatusView,
+}
 import client/ledger_operator
 import client/membership_entry.{type Verifier}
 import client/membership_ledger.{type Ledger}
@@ -42,7 +44,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import weft/poll
 
-/// A daemon's three ledger commands.
+/// A daemon's ledger commands.
 pub type Daemon {
   Daemon(
     /// `ledger.status`.
@@ -51,6 +53,8 @@ pub type Daemon {
     entries: fn(Int, Int) -> Result(PageView, String),
     /// `ledger.append` of a page of lines.
     append: fn(List(String)) -> Result(AppliedView, String),
+    /// `ledger.holdings`: what each orchestrator the daemon can ask holds.
+    holdings: fn() -> Result(List(AnswerView), String),
   )
 }
 
