@@ -185,7 +185,9 @@ and `m` are **linked**. They are linked when `m.name` is in the links of `n`, wh
 `n` is in the links of `m`, or when both have `directory` other than `none`. A
 node whose `name` is not an active member has an empty table and starts no
 distribution (`NotEnrolled`). Applying a `revoke` that names the node itself
-stops its distribution (`Revoked`).
+leaves it with the empty table (`Revoked`): every handshake is refused in both
+directions and every connection is dropped. Its `net_kernel` keeps running, so
+an entry that enrolls the node again takes effect without a restart.
 
 ### Accepting an entry
 
@@ -204,7 +206,8 @@ in order, and stops at the first failure:
 7. Check validity (the fold). Failure is `invalid`.
 8. Append the line to the file and flush it to disk.
 9. Publish the new pin table.
-10. Disconnect every connected node whose name is not in the new table.
+10. Disconnect every connected node whose name is not in the new table, and
+    every connected node whose pin the entry replaced.
 
 A line that fails at `bad_signature`, `malformed`, `fork`, `chain` or `invalid` is
 refused. The node records the last refusal (the sequence number, the failing step
@@ -261,7 +264,9 @@ inbound connection under `inet_tls_dist` is not checked by name: the list become
 the hosts of the listed names that the peer's certificate covers, or the address
 the peer connected from when the certificate carries that address, and the
 claimed name must be on one of those hosts. The pin table is therefore the only
-gate on the identity of an inbound peer. Once the list is non-empty, an inbound
+gate on the identity of an inbound peer. The table holds at most 63 pins, because
+at most 64 members are active, and the allow list at most 256 names, one for each
+name ever enrolled. Once the list is non-empty, an inbound
 peer needs a certificate that covers a listed host; `provision` issues
 certificates for the node name and the host, so applying the entry for a node on
 a new host adds that host.
@@ -380,9 +385,13 @@ ledger = "/home/me/.loom/distribution/ledger.log"
 
 `ledger` is an absolute path, and the daemon reads the file at start. A document
 with both `ledger` and `[[distribution.peers]]` is refused, and one with neither
-is refused as today. With `ledger` set, `distribution.start` takes the loaded and
-verified ledger, creates the table, and returns a `Membership` that resolves a peer
-name against the live member set. The authority certificate named in the genesis
+is refused as today. With `ledger` set, the daemon loads and verifies the file and starts the
+ledger process, which creates the table, and only then calls `distribution.start`
+(which takes no ledger, so that `client/distribution` imports nothing of the
+ledger). It returns a `Membership` that resolves a peer name against the published
+table, which lists the active members this node is linked to. A node whose
+`distribution.node` is not an active member of the ledger is refused at start with
+a sentence, and `[directory]` is refused beside a ledger until phase 3. The authority certificate named in the genesis
 `authority` key MUST be the certificate in `ca`; a mismatch is `InvalidLedger`.
 `docs/configuration.md` gains a row for the key, as `make doc-check` requires.
 
@@ -421,7 +430,7 @@ AES-256-GCM, both from OTP `crypto`.
 |---|---|
 | `enroll NAME --node N --role R [--directory D] [--host H] [--port P] [--links A,B] [--out DIR] [--wait S]` | Validates the fold, mints a certificate for `N`, signs and appends a `member` entry, hands it to the daemon, writes `NAME.loombundle` (`/2`), and prints confirmations after at most `S` seconds (default 10). Until phase 3 it refuses a `--directory` other than `none`. |
 | `revoke NAME [--force] [--wait S]` | Checks that the member owns no sessions or scopes, and that the link graph stays connected; signs and appends a `revoke`; prints confirmations. From phase 3 it also checks that the voter count stays within protocol-change/083's bounds. `--force` skips the checks. |
-| `renew NAME` | Mints a new certificate for an existing member, signs a `member` entry with the new pin, and writes a new bundle. The node installs the bundle and restarts. Connections that exist stay up, because a pin is checked only at handshake; until the restart, the node's new handshakes are refused. |
+| `renew NAME` | Mints a new certificate for an existing member, signs a `member` entry with the new pin, and writes a new bundle. The node installs the bundle and restarts. Connections that exist to the renewed member are dropped when the entry is applied, since the old certificate may be the reason for the renewal; until the restart, the node's new handshakes are refused. |
 | `log [--json]` | Prints the entries with their identities, the last refusal if there is one, and the members' reported heads when a daemon answers. |
 | `import FILE` | Client-side. Reads a ledger file and feeds its lines to the local daemon's `ledger.append` in pages of 64. It adds no second way for a node to adopt entries. |
 

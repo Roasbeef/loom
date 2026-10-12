@@ -434,7 +434,7 @@ For each item in the owner's list: what exists, where it lives, and the proposal
 
 | Item | State today | Proposal |
 |---|---|---|
-| Orchestrator and executor reachable | Internal: `distribution.connect` results, and a link keeper for directory members only (`connect`, `client/distribution.gleam:428`) | `state` on each node in `deployment.status`, from the asker's own connect attempt |
+| Orchestrator and executor reachable | Internal: `distribution.connect` results, and a link keeper for directory members only (`connect`, `client/distribution.gleam:506`) | `state` on each node in `deployment.status`, from the asker's own connect attempt |
 | Executor census (platform, enforcement, toolchains) | Returned at attach and kept in the live plane | Executor facts, from the last attach; absent before the first |
 | Capacity and live scopes | Ledger rows and the limit (`default_limits`, `storage/exec_ledger.gleam:459`; `LOOM_EXECUTOR_MAX_SCOPES`) | Executor facts: counts by state and the limit, as numbers |
 | Helper pool | `pool_census` per plane, no node total | Deferred (section 10) |

@@ -6365,11 +6365,11 @@ callback keeps every PKIX failure, and for the leaf it requires the SHA-256 pin
 and the exact node name (the certificate's only DNS name containing an `@`) of
 one configured peer, in both directions. Network input never makes an atom:
 peer names become atoms once inside `start`, and `peer` looks them up by string.
-The foreign code also has a live mode, not yet reachable from the Gleam side
-(protocol-change/086, spiked by `test/client_ledger_spike_fixture_ffi.erl`): with
-`live` in place of the peer list, `tls_options` renders no pin and the callback
-checks a leaf against the `pins` row of the protected ETS table `loom_dist_pins`,
-refusing every handshake with `ledger_unavailable` when the table is absent.
+The foreign code also has a live mode (protocol-change/086), which `[distribution]
+ledger` selects: `tls_options` renders no pin and the callback checks a leaf
+against the `pins` row of the protected ETS table `loom_dist_pins`, refusing
+every handshake with `ledger_unavailable` when the table is absent. See
+"The membership ledger, TLS and dialing (slice 1c)" below.
 
 Invariants that break things when violated:
 
@@ -8091,9 +8091,8 @@ are unchanged.
 
 `client/membership_store`, `client/ledger_service` and `client/ledger_boot` run
 the pure ledger above on one node and replicate it between nodes. Nothing here
-changes who may connect: `verify/4`, the options file and the pins are still the
-static ones (slice 1c), so a ledger is replicated beside `[[distribution.peers]]`
-and decides nothing yet.
+changes who may connect by itself: slice 1c below makes the ledger the trust list
+through an observer.
 
 - `membership_store` is the file: one signed line per entry, each followed by
   `\n`. `open(path, verifier)` reads it (at most 64 MiB), drops a final line with
@@ -8120,9 +8119,9 @@ and decides nothing yet.
   `membership_store.append`, and only then the observers and the in-memory
   ledger move. A file that cannot take a valid line leaves the node unchanged
   (`NotDurable`). `Observer`s are called inside the process, synchronously,
-  with `Loaded(ledger)` before `start` returns, `Extended(ledger, entry)` after
-  each durable append and `Connected(node)` on a node-up; slice 1c publishes the
-  pin table and disconnects revoked nodes from them.
+  with `Loaded(ledger)` before `start` returns, `Extended(previous, ledger, entry)`
+  after each durable append and `Connected(node, ledger)` on a node-up; slice 1c
+  publishes the pin table and disconnects from them.
 - Anti-entropy: `Start` sends a head to every connected peer and arms the one
   periodic `Tick` (60 s, `tick_ms`); each tick and each node-up sends a head. A
   head ahead of ours is pulled from in batches of at most 64 under a 5 s state
@@ -8134,16 +8133,9 @@ and decides nothing yet.
   every peer but the source. A refusal is recorded as the last one (replaced by
   the next) and never sticks. Peers are `Distributed` (the VM's connected nodes
   and `net_kernel:monitor_nodes`, through `internal/ffi_nodes`, stock OTP
-  bindings with no Erlang source) or `Supplied(reach)` for tests. Not built: an
-  orchestrator dialing executors that have not reported the current head (it
-  needs the node's own role and links from the live member set).
-- `ledger_boot.start(config, logger)` is the daemon's glue: with no
-  `[distribution] ledger` it returns `None`; otherwise it builds the verifier from
-  the `ca` file, opens the ledger, requires the genesis `authority` to equal the
-  `ca` certificate's pin, and starts the service. `daemon/main.start_distribution`
-  calls it after `distribution.start` and keeps nothing; the control commands
-  (slice 1d) will keep the handle. `distribution` gains only `ledger_path` and
-  `credential_files` and imports nothing from the ledger modules, which import it.
+  bindings with no Erlang source) or `Supplied(reach)` for tests. Dialing is
+  slice 1c.
+- `ledger_boot` is the daemon's glue; slice 1c changed it, see below.
 - Tests: `membership_store_test`; `ledger_service_test` (two to three services in
   one VM over real files with `support/ledger_rig`: outcomes, refusals,
   durability, tick, batches, relay, garbage, deadline, postponed heads, fork,
@@ -8220,3 +8212,56 @@ overwrite refusal, the signer) and `ledger_provision_test` (the equivalence with
 static pins for a plain and a directory plan, standing defaults, the `/2` bundle
 refusals, the config tables, the install refusal, the 65-member plan, and the
 commands).
+
+## The membership ledger, TLS and dialing (protocol-change/086, slice 1c)
+
+Ledger mode makes the ledger the only source of trust: `[distribution] ledger`
+replaces `[[distribution.peers]]`, and a document with both is refused by
+`distribution.from_document`.
+
+- `distribution.Config` holds a private `Trust`, `Pinned(peers)` or
+  `Ledgered(path)`. `configure_ledger` builds the second; `tls_options` renders
+  the pin-less file (`ffi_distribution.live_options`) and `start` calls
+  `ffi_distribution.start_live` (the same Erlang functions as the static ones,
+  which accept the atom `live` in place of a peer list). `peer_nodes` is empty in
+  ledger mode, so `[executors]`, `[orchestrators]` and `[directory]` are refused
+  beside a ledger until their reference checks read the ledger. `distribution`
+  and `distribution_plan` must never import a `membership_*` or `ledger_*`
+  module (`membership_entry` imports both), which is why the mode is a type in
+  `distribution` and the ledger side starts it.
+- `ledger_trust` is the observer that applies the ledger. It runs inside the
+  ledger process, which therefore owns the protected table `loom_dist_pins`:
+  `publish` (FFI `publish_pins`) creates it on the first call and replaces the
+  `pins` row with one insert, after the durable append. Order per `Extended`:
+  publish, `net_kernel:allow/1` (grows, never shrinks, `ffi_nodes.allow` is the
+  one place a ledger name becomes an atom), then disconnect `stale` nodes, which
+  are the connected nodes the new table does not list or whose pin the entry
+  replaced. `Connected(node, ledger)` disconnects a node that is not in the table
+  of the ledger the process holds at that moment. A self-revoke leaves the empty
+  table (every handshake refused, every connection dropped) and keeps
+  `net_kernel` up.
+- Bounds: the table never holds more than `membership_ledger.max_active - 1`
+  pins, and the allow list never grows past `max_names` (256) names, both
+  enforced by the fold. `ledger_trust.max_peers` states the first, and `publish`
+  never publishes more.
+- `ledger_boot.start(config, cluster, logger)` returns `Booted(membership,
+  ledger)`. With a ledger it runs `open_service` (verify the file, require this
+  node to be an active member, start the process with the observers), then
+  `distribution.start`, then `begin_trust` (allow list, `enable_dialing`). The
+  ledger starts first so the table exists before the listener does. `start_with`
+  takes the observers, for the test that holds the process. A `Member` cluster is
+  refused. `daemon/main.Config.ledger` keeps the process handle.
+- Dialing (`ledger_service.enable_dialing`, `redial`): a periodic pass attempts
+  each wanted node that is not connected and has not reported the current head,
+  with waits of 5 s doubling to 5 min kept per node; a node that stops being
+  pending loses its backoff. `wanted` is `ledger_trust.executors_to_dial` (an
+  orchestrator's linked executors) and the attempt is a spawned
+  `distribution.peer` and `distribution.connect`, so the process never waits on
+  a handshake. In live mode `peer` resolves a name only if the table lists it.
+- Tests: `ledger_trust_test` (stale and dial decisions), `ledger_service_test`
+  (fake-clock backoff, observer arguments), `ledger_boot_test`, and
+  `ledger_live_test` over `client_ledger_live_fixture_ffi` and
+  `support/ledger_live` (emulators, production PKI): links-only connections and
+  dialing, enrollment without a restart, revoke dropping connections, and the
+  node-up check alone ending a handshake that read the old row (a hook holds the
+  ledger process before the publish; removing the check times the test out).

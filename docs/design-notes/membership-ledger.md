@@ -977,6 +977,42 @@ boots any member marked joined with `store.boot`, so this is a path to a silent
 second cluster in #934's design. It is rare and applies to voters as much as
 learners. No test was kept for it, and it should be looked at on its own.
 
+### Phase 1 slice 1c: what was decided in the build (2026-10-12)
+
+The ledger now drives TLS distribution. Four points the proposal left open were
+settled in the code, and one was changed.
+
+1. **Boot order.** The ledger process starts, and publishes the table, before
+   `distribution.start`, so the listener never exists without a table. A
+   monitor of node changes is valid on a VM that is not distributed, so the
+   process needs nothing from distribution to start. The allow list can only be
+   set on a distributed node, so it is set right after `distribution.start`.
+2. **One owner.** The ledger process creates `loom_dist_pins` when it loads and
+   is the only writer. The observer of `client/ledger_trust` runs inside it, so
+   publishing, growing the allow list and disconnecting happen in the order the
+   process handles messages, which is what the node-up argument of section 6.5
+   needs.
+3. **Renewal drops connections.** Section 9.3's disconnect now also covers a
+   member whose entry replaced its pin. The proposal's `renew` row said existing
+   connections stay up; they are dropped instead, because a certificate that is
+   being replaced may be the one that leaked.
+4. **A revoked node.** "Stops its distribution" is the empty table plus
+   dropping every connection. `net_kernel` stays up, so a later entry that
+   enrolls the node needs no restart.
+5. **Not done here.** `[executors]`, `[orchestrators]` and `[directory]` still
+   check against `[[distribution.peers]]`, so they are refused beside a ledger.
+   A directory member cannot use a ledger. The `NotEnrolled` case is a start
+   refusal with a sentence, and the three new `Fault`s of 086 are not added,
+   because `client/distribution` cannot import the ledger to know a node's
+   standing.
+
+The node-up race of section 6.5, which phase 0 could not exercise, is covered by
+`ledger_live_test:a_handshake_that_read_the_old_table_ends_at_its_node_up_test`.
+It holds the ledger process in front of its publish with a hook, lets a node
+connect on the old row, then lets the process go with its sweep left out. Only
+the node-up check can end the connection, and removing the check makes the test
+time out.
+
 ## 17. Open questions
 
 Each has a recommendation.

@@ -203,6 +203,86 @@ executor therefore needs two inbound ports (`epmd` and its fixed
 and can run without a reachable listener; in a deployment with two, each is
 dialled by the other.
 
+### Ledger mode
+
+`[distribution] ledger` replaces `[[distribution.peers]]`
+([protocol-change/086](../../protocol-change/086-membership-ledger.md)); a
+document with both is refused when it is read. The two modes differ in where
+the pins come from and nothing else: the PKIX checks, the exact node-name
+check, the cookie, `dist_auto_connect = never` and the hidden node are the
+same.
+
+In ledger mode the options file names no pin. The verify state is the atom
+`live`, so the file is a function of the credential paths and an enrollment
+never changes it, and the boot check that compares the loaded file with what
+the configuration generates is unchanged. For a leaf, `verify/4` reads the row
+`pins` of the protected ETS table `loom_dist_pins`, a map from a 32-byte pin to
+the node name that pin must present. A pin missing from the map is refused with
+`peer_identity_mismatch`, and a missing table or row with `ledger_unavailable`.
+
+**The ledger process owns the table.** `loom_ledger` (`client/ledger_service`)
+creates it and is the only process that writes it, through the observer of
+`client/ledger_trust`. The table is created when the process starts, from the
+ledger the file replayed to, and its `pins` row is replaced with one insert
+after each entry has been appended to the file, so a handshake reads the old map
+or the new one. The table is deleted when the process ends, and every handshake
+is then refused until it restarts. The pin table of a node is a function of the
+applied prefix, and that is the whole of what `ledger_trust` publishes: the
+pins of the active members this node is linked to. A node that is not an active
+member publishes the empty table. The table holds at most 63 pins, because the
+fold allows 64 active members (`ledger_trust.max_peers`), and the allow list
+grows by at most 256 names over the life of a ledger. The 32-peer cap of static
+mode does not apply.
+
+**The order at boot** is fixed by the table. `client/ledger_boot` opens and
+verifies the file, requires this node to be an active member, starts the ledger
+process, which publishes the table, and only then calls `distribution.start`.
+The listener never exists without a table, so there is no window in which the
+first peer is refused with `ledger_unavailable`. The process does not need
+distribution to start: `net_kernel:monitor_nodes` is valid on a VM that is not
+yet distributed. Once distribution is up, the linked members are added to the
+allow list and the process is told to dial. The daemon keeps the process's
+handle in `daemon/main.Config.ledger`.
+
+**What an entry does.** After the append, in this order, the process publishes
+the new table, adds the linked members to `net_kernel:allow/1`, and disconnects
+every connected node that the new table no longer lists or whose pin the entry
+replaced (`ledger_trust.stale`). The allow list only grows and a revoked name
+stays on it. It checks the name of an outbound connection and the host of an
+inbound one, so the pin is what refuses a revoked member. A pin is checked
+only at a handshake, so the disconnect is what ends a connection that is
+already up. A renewed member's connections are dropped as well as its pin
+replaced, since the old certificate may be the reason for the renewal.
+
+**What a node-up does.** The process subscribes to node changes of all types.
+On each node-up it judges the node against the ledger it holds when it handles
+the message, and disconnects it unless it is a linked active member. The
+message is behind any publish in the process's mailbox, so a handshake that
+read the old row and completed after a revoke was published ends here, and no
+timing assumption is involved. `ledger_live_test` orders exactly that: a hook
+holds the process in front of the publish, a node connects on the old row,
+the process is let go, and with the sweep of the entry left out the node-up
+check alone ends the connection. Removing the check makes the test time out.
+
+**A node whose own entry is revoked** is left with the empty table. Every
+handshake is refused in both directions and every connection is dropped. Its
+`net_kernel` keeps running, so an entry that enrolls it again takes effect
+without a restart.
+
+**Dialing.** An orchestrator keeps trying to reach the executors it is linked
+to that are not connected and have not reported the current head. A pass every
+5 seconds attempts each one that is due: the first at once, then 5 seconds
+later, doubling to 5 minutes. An attempt runs in a process of its own through
+`distribution.connect`, which resolves the name against the published table, so
+a slow handshake never holds up heads or offers. Its outcome is not reported: a
+connection that comes up is a node-up and the head the executor then reports
+ends the dialing. Executors do not dial.
+
+**Limits of this slice.** `[executors]`, `[orchestrators]` and `[directory]`
+still check their references against `[[distribution.peers]]`, so they are
+refused beside a ledger, and a daemon with a `[directory]` table cannot use a
+ledger. Both wait for the ledger to name the members those tables refer to.
+
 ### Booting a distributed VM
 
 The daemon boots without a node name and starts distribution itself, from
@@ -1291,9 +1371,12 @@ The directory holds no state of its own, so it has no model.
   `moved` members; the terminal, the web home and the Admin drawer draw a moving session with its
   destination and leave a moved one out, and the receiver's row is listed only
   on the receiver until the elsewhere group lands.
-- **Provisioning is one-shot.** Certificate rotation and adding a node without
-  reissuing the others are later work. A signed membership ledger that makes
-  both a single operator action is proposed in
+- **Provisioning is one-shot until the operator commands land.** Certificate
+  rotation and adding a node without reissuing the others are later work. A
+  node can already run from a signed membership ledger (see Ledger mode above),
+  but nothing yet writes one: `provision` does not, and `enroll`, `revoke`,
+  `renew`, `log` and `import` are not built. The design that makes both a single
+  operator action is in
   [the membership ledger note](../design-notes/membership-ledger.md) and
   [protocol-change/086](../../protocol-change/086-membership-ledger.md).
 - **The ledger is one SQLite file per executor.** Corruption affects every
@@ -1306,6 +1389,7 @@ The directory holds no state of its own, so it has no model.
 | Module | Role |
 |---|---|
 | `client/distribution`, `client/internal/ffi_distribution`, `client_distribution_ffi.erl` | Membership: boot checks, TLS verify, `epmd`, hidden connect |
+| `client/ledger_boot`, `client/ledger_trust`, `client/ledger_service` | Ledger mode: the order at boot, the pin table, the allow list, disconnects, dialing |
 | `client/distribution_plan`, `_provision`, `_bundle`, `_install`; `daemon/distribution_cli` | `loom distribution` |
 | `client/authority_key`, `client/membership_provision` | The kept authority key, and the first ledger of a `provision --ledger` run |
 | `client/executors`, `client/workspaces`, `client/pools`, `client/orchestrators` | The `[executors]`, `[workspaces]`, `[pools]` and `[orchestrators]` tables |
