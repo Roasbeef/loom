@@ -27,6 +27,7 @@ import machine/codec
 import machine/operation
 import session_view/agent_activity
 import session_view/approval
+import session_view/child_stop
 import session_view/protocol
 import session_view/reviewer_status
 import session_view/snapshot
@@ -399,7 +400,17 @@ fn idle_state(
         Error(Nil) -> #(None, Idle, "No current operation", None)
       }
     Ok(operation.RunLastResult(operation: id, outcome:, final_assistant:, ..)) -> {
-      let #(status, reason) = run_outcome(outcome)
+      let #(status, fallback) = run_outcome(outcome)
+      let reason = case outcome {
+        operation.RunAborted ->
+          child_stop.operation_reason(
+            view.cells,
+            ids.op_id_to_string(id),
+            strand,
+          )
+          |> option.unwrap(fallback)
+        operation.RunCompleted(_) | operation.RunFailed(_) -> fallback
+      }
       #(Some(ids.op_id_to_string(id)), status, reason, final_assistant)
     }
     Ok(operation.CompactionLastResult(operation: id, outcome:, ..))

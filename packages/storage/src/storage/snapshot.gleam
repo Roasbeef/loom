@@ -142,6 +142,19 @@ pub type Reference {
     /// The namespace owning the referenced cell.
     target: RegisterNs,
   )
+
+  /// An optional cell whose key is a host-owned prefix plus the field value.
+  /// Missing legacy metadata contributes no cell; other read failures refuse.
+  OptionalPrefixedField(
+    /// The selected namespace whose field carries the operation identity.
+    source: RegisterNs,
+    /// Required nullable string field on each selected source cell.
+    field: String,
+    /// Namespace holding the optional lifecycle metadata.
+    target: RegisterNs,
+    /// Literal host-owned key prefix, never read from model input.
+    prefix: String,
+  )
 }
 
 /// One copied register and its namespace/key address.
@@ -292,7 +305,12 @@ pub fn validate(plan: Plan) -> Result(Nil, Error) {
     }),
   )
   list.try_map(plan.references, fn(reference) {
-    validate_field(reference.field)
+    use Nil <- result.try(validate_field(reference.field))
+    case reference {
+      FromField(..) -> Ok(Nil)
+      OptionalPrefixedField(prefix:, ..) ->
+        check_budget(1, string.byte_size(prefix) + 65)
+    }
   })
   |> result.replace(Nil)
 }
@@ -453,7 +471,16 @@ fn reference_headers(
       keys
       |> list.filter_map(option.to_result(_, Nil))
       |> list.unique
-      |> list.try_map(fn(key) { source.header(reference.target, key) })
+      |> list.try_map(fn(key) {
+        case reference {
+          FromField(..) ->
+            source.header(reference.target, key)
+            |> result.map(fn(header) { [header] })
+          OptionalPrefixedField(prefix:, ..) ->
+            selection_headers(source, ExactKey(reference.target, prefix <> key))
+        }
+      })
+      |> result.map(list.flatten)
     }),
   )
   list.flatten(nested)

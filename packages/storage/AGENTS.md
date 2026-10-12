@@ -283,7 +283,11 @@ with these forks: they define the same modules.
 - `storage/snapshot.{Reader, Plan, Cut, Descriptor}` supplies bounded client
   reads without changing the frozen `Storage` record. A declarative plan
   selects register namespaces/prefixes or `ExactKey(namespace, key)` and follows
-  bounded references. Missing exact keys are omitted; a caller needing absence
+  bounded references. `OptionalPrefixedField` follows a selected source's
+  nullable string field into an exact prefixed key. Missing optional metadata
+  is omitted, while other read failures and capture budgets still apply.
+  The gateway uses this for the latest child operation's lifecycle fact.
+  Missing exact keys are omitted; a caller needing absence
   reports must compare requested keys with returned cells. Exact selection uses
   the existing indexed header lookup, accounts before payload fetch, and never
   scans prefix neighbors. Capture
