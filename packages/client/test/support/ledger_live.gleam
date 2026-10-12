@@ -19,6 +19,7 @@ import client/distribution
 import client/distribution_plan.{type Role}
 import client/internal/ffi_nodes
 import client/ledger_boot
+import client/ledger_control
 import client/ledger_service.{type Observer}
 import client/ledger_trust
 import client/membership_entry.{
@@ -26,6 +27,7 @@ import client/membership_entry.{
 }
 import client/membership_ledger
 import client/membership_signing
+import core/json
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
@@ -329,4 +331,62 @@ pub fn describe(node: Node) -> Result(String, String) {
 /// This node's own name.
 pub fn name(node: Node) -> String {
   node.local
+}
+
+/// Runs one `ledger.*` control command against this node's ledger process, as
+/// the daemon's control socket does, and answers one line of JSON: the reply
+/// body under `ok`, or the refusal under `error`. A scenario's operator reaches
+/// the node through it, so the operator commands run against a node that is
+/// really in the middle of a TLS deployment. `body` is the request body.
+pub fn control(node: Node, command: String, body: String) -> String {
+  let answer = {
+    use service <- result.try(option.to_result(
+      node.booted.ledger,
+      "the node runs no ledger",
+    ))
+    use handle <- result.try(ledger_control.handle(service, node.local))
+    use fields <- result.try(case json.parse(body) {
+      Ok(json.Object(fields)) -> Ok(fields)
+      _ -> Error("the request body is not an object")
+    })
+    case command {
+      "ledger.status" ->
+        ledger_control.status(handle) |> result.map_error(failure_text)
+      "ledger.entries" ->
+        case list.key_find(fields, "after"), list.key_find(fields, "limit") {
+          Ok(json.Int(after)), Ok(json.Int(limit)) ->
+            ledger_control.entries(handle, after, limit)
+            |> result.map_error(failure_text)
+          _, _ -> Error("after and limit are required")
+        }
+      "ledger.append" ->
+        case list.key_find(fields, "lines") {
+          Ok(json.Array(items)) -> {
+            let lines =
+              list.filter_map(items, fn(item) {
+                case item {
+                  json.String(line) -> Ok(line)
+                  _ -> Error(Nil)
+                }
+              })
+            ledger_control.append(handle, lines)
+            |> result.map_error(failure_text)
+          }
+          _ -> Error("lines are required")
+        }
+      _ -> Error("unsupported control command")
+    }
+  }
+  case answer {
+    Ok(reply) -> json.to_string(json.Object([#("ok", reply)]))
+    Error(reason) ->
+      json.to_string(json.Object([#("error", json.String(reason))]))
+  }
+}
+
+fn failure_text(failure: ledger_control.Failure) -> String {
+  case failure {
+    ledger_control.Invalid(step:) -> "ledger_invalid: " <> step
+    ledger_control.Unavailable(reason:) -> reason
+  }
 }

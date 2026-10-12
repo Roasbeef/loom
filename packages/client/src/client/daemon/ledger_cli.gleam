@@ -553,7 +553,11 @@ fn now() -> String {
 // --- the report --------------------------------------------------------------
 
 // Waits for confirmations, bounded, and prints which members hold the entry.
-fn confirmations_text(signed: Signed, wait: Int) -> List(String) {
+fn confirmations_text(
+  signed: Signed,
+  wait: Int,
+  unreachable: List(String),
+) -> List(String) {
   let seq = signed.entry.entry.seq
   case signed.delivery {
     Offline(reason:) -> [
@@ -567,7 +571,8 @@ fn confirmations_text(signed: Signed, wait: Int) -> List(String) {
         <> "with a daemon reachable.",
     ]
     Delivered(daemon:, status:, where_:) -> {
-      let #(latest, _) = ledger_sync.await(daemon, seq, wait, status)
+      let #(latest, _) =
+        ledger_sync.await(daemon, seq, wait, unreachable, status)
       let rows = ledger_operator.confirmations(latest, seq)
       let held =
         list.count(rows, fn(row) { row.1 == ledger_operator.Confirmed })
@@ -662,7 +667,7 @@ fn enroll(parsed: Parsed, connect: Connect) -> Result(String, String) {
           <> "copy it over a channel you trust, then run `loom distribution "
           <> "install` on that machine).",
       ],
-      confirmations_text(signed, wait),
+      confirmations_text(signed, wait, [name]),
     ]),
     "\n",
   ))
@@ -899,7 +904,7 @@ fn renew(parsed: Parsed, connect: Connect) -> Result(String, String) {
           <> bundle_path
           <> ". Install it on that machine with `loom distribution install --force` and restart the daemon; until then the node's new handshakes are refused.",
       ],
-      confirmations_text(signed, wait),
+      confirmations_text(signed, wait, [name]),
     ]),
     "\n",
   ))
@@ -965,7 +970,7 @@ fn revoke(parsed: Parsed, connect: Connect) -> Result(String, String) {
         <> " owns sessions or scopes; a daemon cannot ask another. Enrolling the "
         <> "same name again restores access, and destroys nothing.",
       ],
-      confirmations_text(signed, wait),
+      confirmations_text(signed, wait, []),
     ]),
     "\n",
   ))

@@ -349,6 +349,13 @@ commands(Node, Lines, State) ->
                 {error, Why} -> say("AWAIT_FAILED ~s", [Why])
             end,
             commands(Node, Lines, State);
+        %% A control command, as the daemon's control socket would serve it:
+        %% the command and its JSON body. The whole reply is one line.
+        {line, "control " ++ Rest} ->
+            [Command, Body] = string:split(Rest, " "),
+            say("CONTROL ~s",
+                [?LIVE:control(Node, list_to_binary(Command), list_to_binary(Body))]),
+            commands(Node, Lines, State);
         {line, "describe"} ->
             {ok, Text} = ?LIVE:describe(Node),
             say("DESCRIBE ~s", [Text]),

@@ -106,7 +106,8 @@ pub fn load(path: String, ca: String, local: String) -> Result(Loaded, String) {
         <> path
         <> ": it was never enrolled or it has been revoked. On the operator's "
         <> "machine, run `loom distribution enroll` for it and install the "
-        <> "bundle it writes here with `loom distribution install`, or correct "
+        <> "bundle it writes here with `loom distribution install --force` (a "
+        <> "re-enrolled name gets a new certificate), or correct "
         <> "distribution.node. (`import` needs a running daemon, which this "
         <> "node cannot be until it is enrolled.)",
       )

@@ -7,11 +7,13 @@
 //// wrote: the configuration parses in ledger mode, its rows resolve against
 //// the ledger, and the ledger process starts from the file.
 
+import client/daemon/ledger_cli
 import client/distribution
 import client/distribution_install.{Options}
 import client/distribution_provision.{RefuseExisting, ReplaceExisting}
 import client/executors
 import client/ledger_boot
+import client/ledger_reference
 import client/ledger_service
 import client/ledger_trust
 import gleam/erlang/process
@@ -137,4 +139,83 @@ pub fn a_different_ledger_on_the_machine_is_refused_without_force_test() {
     )
   assert deployment.read(directory <> "/ledger.log")
     == deployment.read(deployed.out <> "/ledger.log")
+}
+
+// A node that applied its own revoke cannot start: it is not an active member.
+// The sentence it refuses with names the remedy, and this runs the remedy as an
+// operator would. The name is enrolled again, which mints a new certificate, and
+// the new bundle is installed over the old install. The node's ledger ends at
+// its revoke, which the bundle's ledger extends, so the file is replaced.
+pub fn the_remedy_the_refusal_names_recovers_a_node_that_was_revoked_test() {
+  let deployed = deployment.provision("install-recover", deployment.plan_text)
+  let text = deployment.read(deployed.out <> "/devbox.loombundle")
+  let assert Ok(_) =
+    distribution_install.install(
+      text,
+      options(deployed.base, "devbox", RefuseExisting),
+    )
+  let config = deployment.read(deployed.base <> "/devbox/.loom/loom.toml")
+  let assert Ok(Some(settings)) = distribution.parse(config)
+  let assert Some(path) = distribution.ledger_path(settings)
+  let local = distribution.local_node(settings)
+  let ca = distribution.credential_files(settings).ca
+
+  // The operator revokes it, and the node applies the entry: its file ends at
+  // the revoke. The operator's copy is the file a node would hold.
+  let flags = deployment.signing(deployed)
+  let no_daemon = fn(_) { deployment.nobody() }
+  let assert Ok(_) =
+    ledger_cli.run_with(
+      "revoke",
+      list.append(["devbox", "--force", "--wait", "0"], flags),
+      no_daemon,
+    )
+  let operator_copy = deployment.authority_directory(deployed) <> "/ledger.log"
+  let assert Ok(Nil) = simplifile.write(path, deployment.read(operator_copy))
+
+  // It cannot start, and the refusal names what to do.
+  let assert Error(reason) = ledger_reference.load(path, ca, local)
+  assert string.contains(reason, "is not an active member")
+  assert string.contains(reason, "loom distribution enroll")
+  assert string.contains(reason, "loom distribution install --force")
+
+  // The operator does exactly that. The bundle's ledger extends the node's.
+  let assert Ok(_) =
+    ledger_cli.run_with(
+      "enroll",
+      list.append(
+        [
+          "devbox",
+          "--node",
+          local,
+          "--role",
+          "executor",
+          "--links",
+          "hub",
+          "--workspace",
+          "repo=/home/me/src/loom",
+          "--out",
+          deployed.base <> "/again",
+          "--wait",
+          "0",
+        ],
+        flags,
+      ),
+      no_daemon,
+    )
+  let again = deployment.read(deployed.base <> "/again/devbox.loombundle")
+  let assert Error(refused) =
+    distribution_install.install(
+      again,
+      options(deployed.base, "devbox", RefuseExisting),
+    )
+  assert string.contains(refused, "pass --force")
+  let assert Ok(installed) =
+    distribution_install.install(
+      again,
+      options(deployed.base, "devbox", ReplaceExisting),
+    )
+  assert installed.snapshot |> option.map(fn(snapshot) { snapshot.seq })
+    == Some(4)
+  let assert Ok(_) = ledger_reference.load(path, ca, local)
 }

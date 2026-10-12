@@ -219,19 +219,24 @@ pub fn hand_over(
 }
 
 /// Polls the daemon's status until every member reports the entry at `seq`, or
-/// `within_ms` passes. Returns the last status it read and whether the wait
-/// found every member confirmed. A status that cannot be read ends the wait
-/// with what the last good read said.
+/// `within_ms` passes. Members named in `unreachable` are not waited for: the
+/// node an `enroll` just added has not started, and the node a `renew` just
+/// replaced is refused until its new bundle is installed, so waiting for either
+/// would always spend the whole bound. They are still listed in the status the
+/// caller prints. Returns the last status it read and whether the wait found
+/// every other member confirmed. A status that cannot be read ends the wait with
+/// what the last good read said.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// ledger_sync.await(daemon, 4, 10_000, first_status)
+/// ledger_sync.await(daemon, 4, 10_000, ["laptop2"], first_status)
 /// ```
 pub fn await(
   daemon: Daemon,
   seq: Int,
   within_ms: Int,
+  unreachable: List(String),
   last: StatusView,
 ) -> #(StatusView, Bool) {
   let verdict =
@@ -243,16 +248,15 @@ pub fn await(
       attempt: fn(previous) {
         case daemon.status() {
           Error(_) -> poll.Pending(previous)
-          Ok(status) ->
-            case
-              ledger_operator.all_confirmed(ledger_operator.confirmations(
-                status,
-                seq,
-              ))
-            {
+          Ok(status) -> {
+            let waited_for =
+              ledger_operator.confirmations(status, seq)
+              |> list.filter(fn(row) { !list.contains(unreachable, row.0) })
+            case ledger_operator.all_confirmed(waited_for) {
               True -> poll.Settled(status)
               False -> poll.Pending(status)
             }
+          }
         }
       },
     )
