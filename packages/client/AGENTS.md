@@ -8071,3 +8071,69 @@ modules yet except their tests, and static pins are unchanged.
   signature, so the laws need no key) and `support/membership_log` (a log builder
   and a seeded generator that keeps the random operations the real fold accepts),
   and `membership_signing_test` (the real ECDSA pair).
+
+## The membership ledger, file and process (protocol-change/086, slice 1b)
+
+`client/membership_store`, `client/ledger_service` and `client/ledger_boot` run
+the pure ledger above on one node and replicate it between nodes. Nothing here
+changes who may connect: `verify/4`, the options file and the pins are still the
+static ones (slice 1c), so a ledger is replicated beside `[[distribution.peers]]`
+and decides nothing yet.
+
+- `membership_store` is the file: one signed line per entry, each followed by
+  `\n`. `open(path, verifier)` reads it (at most 64 MiB), drops a final line with
+  no `\n` (a write that did not finish, valid-looking or not) and cuts it from the
+  file, then replays the rest through `membership_ledger.replay`. A line the fold
+  refuses stops the open with `Corrupt(line, refusal)`, one-based; a missing or
+  non-text file is `Unreadable`, an empty one `NoGenesis`. `append` rewrites the
+  file beside the old one, fsyncs and renames it (`bootstrap.atomic_write_private`,
+  mode 0600), so a crash leaves the old file or the new one. That is O(file) per
+  entry, at most 10,000 entries, and it needs no new Erlang. `lines_after` serves
+  a pull within 64 lines and 256 KiB.
+- `ledger_service` is the `loom_ledger` process, a `weft/state_machine` with the
+  phases `Quiet` and `Pulling(source, via)`. Its fixed registered name is
+  `ledger_service.default_name()`. Wire messages (closed, no catch-all):
+  `Head(seq, id, from: Subject(Message))` and `Pull(after, limit, reply:
+  Subject(Entries))`, answered by `Entries(lines, head_seq)`. `Head` carries the
+  sender's inbox because a message to a registered name does not say who sent
+  it; 086 now says so. Local calls: `offer(service, line, within)` returns
+  `Accepted(head) | AlreadyHeld | Behind(head) | Refused(refusal) |
+  NotDurable(reason)`, `head`, `entries(after, limit)` (the local twin of `Pull`),
+  `status` (ledger, last refusal, reported heads with `ms_since`), `announce`
+  (send heads now) and `meet(reach)` (a peer just connected).
+- Order, per line: `membership_entry.read`, `membership_ledger.apply`, then
+  `membership_store.append`, and only then the observers and the in-memory
+  ledger move. A file that cannot take a valid line leaves the node unchanged
+  (`NotDurable`). `Observer`s are called inside the process, synchronously,
+  with `Loaded(ledger)` before `start` returns, `Extended(ledger, entry)` after
+  each durable append and `Connected(node)` on a node-up; slice 1c publishes the
+  pin table and disconnects revoked nodes from them.
+- Anti-entropy: `Start` sends a head to every connected peer and arms the one
+  periodic `Tick` (60 s, `tick_ms`); each tick and each node-up sends a head. A
+  head ahead of ours is pulled from in batches of at most 64 under a 5 s state
+  timeout; a head at our sequence number with another identity is pulled for that
+  one entry so the fork becomes a recorded refusal; a head that would start a
+  second pull is postponed until `Quiet`. Entries are applied whoever sent them.
+  The next batch is asked for only if the head moved, which ends a peer that
+  answers with old or invalid lines. After applying, a node sends its head to
+  every peer but the source. A refusal is recorded as the last one (replaced by
+  the next) and never sticks. Peers are `Distributed` (the VM's connected nodes
+  and `net_kernel:monitor_nodes`, through `internal/ffi_nodes`, stock OTP
+  bindings with no Erlang source) or `Supplied(reach)` for tests. Not built: an
+  orchestrator dialing executors that have not reported the current head (it
+  needs the node's own role and links from the live member set).
+- `ledger_boot.start(config, logger)` is the daemon's glue: with no
+  `[distribution] ledger` it returns `None`; otherwise it builds the verifier from
+  the `ca` file, opens the ledger, requires the genesis `authority` to equal the
+  `ca` certificate's pin, and starts the service. `daemon/main.start_distribution`
+  calls it after `distribution.start` and keeps nothing; the control commands
+  (slice 1d) will keep the handle. `distribution` gains only `ledger_path` and
+  `credential_files` and imports nothing from the ledger modules, which import it.
+- Tests: `membership_store_test`; `ledger_service_test` (two to three services in
+  one VM over real files with `support/ledger_rig`: outcomes, refusals,
+  durability, tick, batches, relay, garbage, deadline, postponed heads, fork,
+  observers); `ledger_boot_test` (real ECDSA, serial because it registers
+  `loom_ledger`); `ledger_distribution_test`, a three-emulator chain over the
+  production TLS flags (`client_distribution_fixture_ffi` scenario
+  `ledger_relay`, node side in `support/ledger_nodes`) where a revoke reaches a
+  node the origin never connects to.

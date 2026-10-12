@@ -258,16 +258,16 @@ not depend on it.
 
 Every daemon with a ledger runs one process, registered as `loom_ledger`, that
 owns the file and the pin table and speaks a small closed vocabulary to its
-peers on other nodes. The messages hold bytes and integers and no atom or
+peers on other nodes. The messages hold bytes, integers and subjects and no atom or
 function derived from peer input, and the receiver decodes the entry lines with
 total decoders even though the peer is pinned, because entries are durable and
 are relayed.
 
 ```gleam
 pub type Message {
-  /// What the sender holds. Sent by both ends when a connection comes up and
-  /// on a timer.
-  Head(seq: Int, id: BitArray)
+  /// What the sender holds, and its inbox, which the receiver pulls from.
+  /// Sent by both ends when a connection comes up and on a timer.
+  Head(seq: Int, id: BitArray, from: Subject(Message))
   /// Entries after `after`, at most `limit` (clamped to 1 through 64).
   Pull(after: Int, limit: Int, reply: Subject(Entries))
 }

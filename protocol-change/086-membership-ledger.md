@@ -271,15 +271,17 @@ a new host adds that host.
 Each daemon with a `ledger` runs one process registered as `loom_ledger`. It owns
 the file, the table and the disconnects, and it is started by the daemon before the
 catalogue, after the VM is booted for distribution and before `net_kernel` starts
-(the table must exist before the first handshake). Its messages hold integers and
-bytes only.
+(the table must exist before the first handshake). Its messages hold integers,
+bytes and subjects only.
 
 ```gleam
 pub type Message {
   /// What the sender holds. Sent by both ends when a connection comes up, after
   /// the sender applies entries (to every connected peer but the source), and
-  /// every 60 seconds to each connected peer.
-  Head(seq: Int, id: BitArray)
+  /// every 60 seconds to each connected peer. `from` is the sender's inbox: a
+  /// message to a registered name does not say who sent it, and the receiver
+  /// that is behind must know where to send its `Pull`.
+  Head(seq: Int, id: BitArray, from: Subject(Message))
 
   /// The entries after `after`, at most `limit`, which is clamped to 1 through
   /// 64. The reply holds at most 256 KiB of lines.

@@ -53,7 +53,8 @@ type Kinds {
 
 // OTP `net_kernel:monitor_nodes/2`. It answers `ok`, or an error term, which
 // is read below with a decoder because the success is a bare atom and not a
-// Gleam `Result`.
+// Gleam `Result`. Its first argument is the atom `true` or `false`, so the
+// parameter is a `Bool` by the function's own definition.
 @external(erlang, "net_kernel", "monitor_nodes")
 fn monitor_nodes(on: Bool, options: List(MonitorOption)) -> Dynamic
 

@@ -255,12 +255,14 @@ fn take(
   bytes_left: Int,
   taken: List(BitArray),
 ) -> List(BitArray) {
-  use <- bool.guard(when: left <= 0, return: list.reverse(taken))
+  use <- bool.lazy_guard(when: left <= 0, return: fn() { list.reverse(taken) })
   case dict.get(store.lines, seq) {
     Error(Nil) -> list.reverse(taken)
     Ok(line) -> {
       let size = bit_array.byte_size(line)
-      use <- bool.guard(when: size > bytes_left, return: list.reverse(taken))
+      use <- bool.lazy_guard(when: size > bytes_left, return: fn() {
+        list.reverse(taken)
+      })
       take(store, seq + 1, left - 1, bytes_left - size, [line, ..taken])
     }
   }

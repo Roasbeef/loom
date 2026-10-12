@@ -62,7 +62,7 @@ pub fn start_at(
 ) -> Result(Option(Service), String) {
   use pem <- result.try(
     simplifile.read(ca)
-    |> result.replace_error("distribution.ca could not be read: " <> ca),
+    |> result.map_error(fn(_) { "distribution.ca could not be read: " <> ca }),
   )
   use verifier <- result.try(
     membership_signing.verifier(pem)
