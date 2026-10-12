@@ -47,6 +47,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import session_view/recall_view
 import session_view/text_hygiene
 import session_view/todo_board
 import session_view/tool_activity
@@ -145,7 +146,8 @@ pub fn of_call(call: tool_activity.Call) -> Words {
       |> or_name(name, arguments)
     "agent_note" -> Words("Noted", keyed(text_field(arguments, "key")), None)
     "agent_notes" -> Words("Listed notes", Unnamed, None)
-    "remember" -> Words("Remembered", Prose("a durable note"), None)
+    "remember" -> remembered(arguments)
+    "history_search" -> recalled(arguments, call.outcome)
     "context_remaining" -> Words("Checked context", Unnamed, None)
     "todo" -> todo_words(arguments)
     "code_mode" -> program(arguments)
@@ -177,6 +179,9 @@ pub fn pending(words: Words) -> Words {
     "Noted" -> "Noting"
     "Listed notes" -> "Listing notes"
     "Remembered" -> "Remembering"
+    "Searched history for" -> "Searching history for"
+    "Browsed history" -> "Browsing history"
+    "Read history entry" -> "Reading history entry"
     "Checked context" -> "Checking context"
     "Waited for" -> "Waiting for"
     other -> other
@@ -199,7 +204,8 @@ pub fn is_present(verb: String) -> Bool {
     [
       "Running", "Reading", "Editing", "Writing", "Searching", "Spawning",
       "Messaging", "Noting", "Listing notes", "Remembering", "Checking context",
-      "Waiting for",
+      "Waiting for", "Searching history for", "Browsing history",
+      "Reading history entry",
     ],
     verb,
   )
@@ -399,7 +405,8 @@ fn step_noun(verb: String) -> String {
     "Read" -> "The read"
     "Ran" -> "The command"
     "Wrote" -> "The write"
-    "Searched" -> "The search"
+    "Searched" | "Searched history for" | "Browsed history" -> "The search"
+    "Read history entry" -> "The history read"
     "Spawned" -> "The sub-agent spawn"
     "Messaged" -> "The message"
     "Todo" -> "The todo update"
@@ -584,6 +591,109 @@ fn searched(arguments: JsonValue) -> Words {
       Words("Searched", Mono(clip(pattern) <> " in " <> path(where)), None)
     Some(pattern), None -> Words("Searched", Mono(clip(pattern)), None)
     None, _ -> generic("grep", arguments)
+  }
+}
+
+// The `remember` call as a reader says it: `Remembered feedback: Prefer
+// small diffs`, and `Remembering feedback: …` while it runs. A note names a
+// `kind` and a `title`; a call recorded before notes had a title has neither,
+// and keeps the words it always had.
+fn remembered(arguments: JsonValue) -> Words {
+  case text_field(arguments, "title") |> option.map(string.trim) {
+    Some(title) if title != "" -> {
+      let kind = case text_field(arguments, "kind") |> option.map(string.trim) {
+        Some(kind) if kind != "" -> clip_to(kind, remember_kind_limit) <> ": "
+        _ -> ""
+      }
+      Words(
+        "Remembered",
+        Prose(kind <> clip_to(title, remember_title_limit)),
+        None,
+      )
+    }
+    _ -> Words("Remembered", Prose("a durable note"), None)
+  }
+}
+
+// The most characters of a note's kind and of its title a `remember` step
+// keeps.
+const remember_kind_limit = 16
+
+const remember_title_limit = 80
+
+// The `history_search` call as a reader says it: `Searching history for
+// "deploy"` while it runs and `Searched history for "deploy" · 3 hits` once
+// its result is in. The count comes from the hits the result recorded
+// (`recall_view.hits`), so a result that recorded none, a failed call or a
+// call still running names only the query. A search with no query browses this
+// session's recent entries, and a read names the entry it fetched.
+fn recalled(
+  arguments: JsonValue,
+  outcome: Option(message.AgentMessage),
+) -> Words {
+  let found = option.map(found_hits(outcome), list.length)
+  case arguments, text_field(arguments, "action") {
+    json.Object(_), Some("read") ->
+      Words("Read history entry", read_target(arguments), None)
+    json.Object(_), _ ->
+      case text_field(arguments, "query") |> option.map(string.trim) {
+        Some(query) if query != "" ->
+          Words(
+            "Searched history for",
+            Prose(
+              "\""
+              <> clip_to(query, history_query_limit)
+              <> "\""
+              <> counted_hits(found, " · "),
+            ),
+            None,
+          )
+        _ ->
+          Words(
+            "Browsed history",
+            case found {
+              Some(count) -> Figure(recall_view.count_text(count))
+              None -> Unnamed
+            },
+            None,
+          )
+      }
+    _, _ -> generic("history_search", arguments)
+  }
+}
+
+// The most characters of a query a history step keeps.
+const history_query_limit = 60
+
+// The hits a settled search recorded, from a result that did not fail.
+fn found_hits(
+  outcome: Option(message.AgentMessage),
+) -> Option(List(recall_view.Hit)) {
+  case outcome {
+    Some(message.ToolResultMessage(is_error: False, details: Some(details), ..)) ->
+      recall_view.hits(details)
+    _ -> None
+  }
+}
+
+// ` · 3 hits` after its separator, or nothing before the result is in.
+fn counted_hits(found: Option(Int), separator: String) -> String {
+  case found {
+    Some(count) -> separator <> recall_view.count_text(count)
+    None -> ""
+  }
+}
+
+// The entry a read fetched, in the short form its hits were shown in.
+fn read_target(arguments: JsonValue) -> Subject {
+  case text_field(arguments, "session"), text_field(arguments, "entry") {
+    Some(session), Some(entry) ->
+      Mono(
+        recall_view.short_session(session)
+        <> " "
+        <> recall_view.short_entry(entry),
+      )
+    _, _ -> Unnamed
   }
 }
 
