@@ -354,28 +354,34 @@ actors use the same runtime and the same language as the harness, which
 also lets a program's actor later become a supervised process in an
 extension without a rewrite.
 
-## In development: distributed execution
+## Distributed execution
 
-Work on [issue #697](https://github.com/Roasbeef/loom/issues/697) separates
-the session owner from the machine that holds the checkout. It is not on
-`main` yet. The session's conversation, notes and approvals stay with an
-owning orchestrator. Files, builds, language servers and commands run on a
-registered remote executor beside the checkout. Trusted orchestrators and
-executors join one cluster over TLS-protected BEAM distribution.
+The distributed runtime from [issue #697](https://github.com/Roasbeef/loom/issues/697)
+keeps a session's conversation and approvals on an orchestrator while a
+registered executor holds the checkout and runs workspace tools. The daemons
+join over TLS-protected BEAM distribution. See the
+[distributed setup guide](distributed-setup.md) for provisioning and the
+[architecture page](architecture/distributed.md) for ownership and recovery.
 
-For code mode, the owner still vets the program. The executor compiles it
-beside the checkout and runs the satellite there, in the same native jail
-with distribution disabled. The satellite never joins the cluster. Its
-local capability socket reaches an executor-owned forwarder, which sends
-bounded frames back to the owner's broker:
+The orchestrator vets code-mode programs, while the executor compiles them
+beside the checkout and runs the satellite in the native jail with BEAM
+distribution disabled. The satellite never joins the cluster. Its local
+capability socket reaches an executor-owned forwarder, which sends bounded
+frames back to the owner's broker:
 
 - Filesystem and LSP calls run against the executor's workspace.
+- Background code-mode executions and configured MCP façades can run on the
+  executor as well.
 - Notes, strand operations and reports keep the owner's session authority.
 - Provider secrets and cluster credentials never enter the satellite's
-  environment, mounts or handles.
+environment, mounts or handles.
 
-From the program's side nothing changes: the same imports, served from
-wherever the checkout lives.
+From the program's side nothing changes: it uses the same imports, served from
+wherever the checkout lives. This moves workspace execution, not session
+availability; the conversation is not replicated and Loom does not provide
+automatic executor failover. Subagents remain local to their session. Remote
+subagents are still a design proposal in
+[the remote subagents note](design-notes/remote-subagents.md).
 
 ## Where code mode is going
 
