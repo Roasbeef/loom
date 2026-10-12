@@ -151,3 +151,25 @@ DELETE FROM catalogue_session_deletions WHERE session_id = ?;
 
 -- name: DeletingSessions :many
 SELECT session_id FROM catalogue_session_deletions ORDER BY session_id;
+
+-- name: DelegateSession :many
+SELECT session_id, last_contact_ms FROM catalogue_delegate_sessions
+WHERE spawner = ? AND parent_session = ?;
+
+-- name: DelegateOfSession :many
+SELECT spawner, parent_session, last_contact_ms FROM catalogue_delegate_sessions
+WHERE session_id = ?;
+
+-- name: CountDelegateSessions :one
+SELECT COUNT(*) FROM catalogue_delegate_sessions WHERE spawner = ?;
+
+-- name: InsertDelegateSession :exec
+INSERT INTO catalogue_delegate_sessions (spawner, parent_session, session_id, last_contact_ms)
+VALUES (?, ?, ?, ?);
+
+-- name: TouchDelegateSession :exec
+UPDATE catalogue_delegate_sessions SET last_contact_ms = ?
+WHERE spawner = ? AND parent_session = ?;
+
+-- name: DeleteDelegateSession :exec
+DELETE FROM catalogue_delegate_sessions WHERE session_id = ?;
