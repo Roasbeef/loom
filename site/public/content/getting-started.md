@@ -1,10 +1,76 @@
 # Install
 
-This page shows how to install Loom from a release: download it, verify it, install it and update it with `loom update`. The last section builds Loom from source instead. The steps come from the repository's `docs/distribution.md`, `docs/updating.md` and `docs/running.md`. The release is built for one platform at a time, so you pick the archives that match your machine.
+Build from source today. Loom is under active development and has no published release archives yet. After building, explore `loom --demo`, then configure a model and open your first project session. License: TBD; the project has not chosen a licence.
+
+The archive and updater sections below describe the release format for when assets are published. Their versioned filenames are examples, not available downloads. The sources are [`docs/distribution.md`](https://github.com/Roasbeef/loom/blob/main/docs/distribution.md), [`docs/updating.md`](https://github.com/Roasbeef/loom/blob/main/docs/updating.md) and [`docs/running.md`](https://github.com/Roasbeef/loom/blob/main/docs/running.md).
+
+## Build from source
+
+Ordinary builds use stock Gleam; the patched compiler is only needed for reproducible release builds. Dependencies are fetched from Hex and pinned Git remotes, so the first build needs network access. You need these tools:
+
+- Gleam 1.19.0.
+- Erlang/OTP 29 or later. Only the build needs it. The installed client and server bundle their own BEAM runtime.
+- Go 1.26 or later, which builds the sandbox helper `loom-exec`.
+- `rebar3` and Python 3 (available as `python3`), used by shipment and seed preparation.
+- A C compiler, `make` and `strip`.
+
+```sh
+git clone https://github.com/Roasbeef/loom.git
+cd loom
+make install
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+`make install` runs three builds in order: the code-mode seed, the self-contained server release, and the client. It then lays the result out under `~/.local`, or under `PREFIX` if you set one.
+
+| Path under the prefix | What it is |
+|---|---|
+| `bin/loom` | The terminal client. |
+| `bin/loomd` | The daemon. |
+| `lib/loom/server` | A symlink to the installed server tree: the sandbox helper, the Gleam compiler, the code-mode seed and the BEAM runtime. |
+| `lib/loom/client` | A symlink to the installed client tree, which also bundles the BEAM runtime. |
+
+Every install writes fresh directories and switches links afterwards, so a running process keeps the files it started with. To check the sandbox on the machine where agents will run, use the helper's self-test:
+
+```sh
+make selftest
+```
+
+It prints `ENFORCED`, `SKIPPED` or `FAILED` for each probe.
+
+To update a source build, run `make update` from a clean, committed checkout. It builds and smoke-tests its release artifacts, installs them and gracefully restarts the shared daemon. To package the archives that a release carries, run `make dist`. It writes the server tarball, the self-contained client tarball, the slim client tarball, a manifest and `SHA256SUMS`.
+
+## Check the sandbox
+
+On Linux, the sandbox needs bubblewrap, user namespaces and delegated cgroup v2 resources. The repository's `packages/sandbox/README.md` and `docs/docker.md` describe the host setup.
+
+By default the server refuses to start when a layer is missing: Linux must enforce everything, and macOS may lack only the three gaps that ADR-006 reports. `loomd --best-effort` accepts broader gaps for development machines, and `loomd --full-enforcement` demands the full contract on every platform.
+
+## Choose a model
+
+Copy the example catalogue from the repository to `~/.loom/loom.toml` and edit its model entries and role routes:
+
+```sh
+mkdir -p ~/.loom
+curl -fsSL https://raw.githubusercontent.com/Roasbeef/loom/main/docs/examples/loom.toml -o ~/.loom/loom.toml
+```
+
+API keys stay in environment variables that the catalogue names, never in the file. Export them before you start the daemon. The [configuration page](#/docs/configuration) explains the file.
+
+## Start a session
+
+```sh
+cd ~/src/my-project
+loom
+```
+
+`loom` finds the shared local daemon or starts one, then opens the session picker. Choose **New session**, or pick a saved session to resume it. Inside a session, `/sessions` returns to the picker and `/model` switches to another model from your catalogue.
+
+Starting the daemon and listing sessions open no session runtimes. A session opens when you select it. Try a first prompt: "Find the entry point, explain how it works, and suggest one small improvement."
 
 ## Download a release
 
-Open [the latest release](https://github.com/Roasbeef/loom/releases/latest) and download the archives for your platform. The release workflow builds Linux x86_64 (`linux-x86_64`) and macOS arm64 (`macos-arm64`). A release carries these files for each platform, where `{{version}}` is the release number without its `v`. The examples on this page use Linux x86_64, so substitute `macos-arm64` on a Mac:
+When an archive release is published, open [the latest release](https://github.com/Roasbeef/loom/releases/latest) and download the archives for your platform. The release workflow builds Linux x86_64 (`linux-x86_64`) and macOS arm64 (`macos-arm64`). A release carries these files for each platform, where `{{version}}` is the release number without its `v`. The examples on this page use Linux x86_64, so substitute `macos-arm64` on a Mac:
 
 | File | What it is |
 |---|---|
@@ -53,34 +119,6 @@ loom version          # The client's version, commit and platform.
 loom --demo           # The terminal with canned content. No daemon, network or provider.
 ```
 
-## Check the sandbox
-
-On Linux, the sandbox needs bubblewrap, user namespaces and delegated cgroup v2 resources. The repository's `packages/sandbox/README.md` and `docs/docker.md` describe the host setup.
-
-By default the server refuses to start when a layer is missing: Linux must enforce everything, and macOS may lack only the three gaps that ADR-006 reports. `loomd --best-effort` accepts broader gaps for development machines, and `loomd --full-enforcement` demands the full contract on every platform.
-
-## Choose a model
-
-Copy the example catalogue from the repository to `~/.loom/loom.toml` and edit its model entries and role routes:
-
-```sh
-mkdir -p ~/.loom
-curl -fsSL https://raw.githubusercontent.com/Roasbeef/loom/main/docs/examples/loom.toml -o ~/.loom/loom.toml
-```
-
-API keys stay in environment variables that the catalogue names, never in the file. Export them before you start the daemon. The [configuration page](#/docs/configuration) explains the file.
-
-## Start a session
-
-```sh
-cd ~/src/my-project
-loom
-```
-
-`loom` finds the shared local daemon or starts one, then opens the session picker. Choose **New session**, or pick a saved session to resume it. Inside a session, `/sessions` returns to the picker and `/model` switches to another model from your catalogue.
-
-Starting the daemon and listing sessions open no session runtimes. A session opens when you select it.
-
 ## Update with loom update
 
 `loom update` downloads a published release, verifies its manifest and archives, installs fresh immutable trees, and gracefully restarts the shared daemon. Running terminals keep their original client files until you reopen them.
@@ -89,7 +127,7 @@ Starting the daemon and listing sessions open no session runtimes. A session ope
 loom version                      # The installed client's version, commit and platform.
 loom update --check               # Verify the release metadata without installing.
 loom update                       # Install the latest stable release.
-loom update --version {{tag}}     # Install a published tag.
+loom update --version {{tag}}     # Example only; the tag must be published.
 loom update --install-only        # Install, and leave the daemon restart to you.
 ```
 
@@ -98,42 +136,6 @@ Every archive must match its manifest's exact size and SHA-256. With `--keyring 
 A client that you unpacked by hand is unmanaged, so give it a prefix: `loom update --prefix DIR`. That makes `DIR` a managed install with its own `bin`, `lib/loom/server` and `lib/loom/client`, and the update restarts the daemon from `DIR/bin/loomd`. The trees you unpacked by hand are left alone, so put `DIR/bin` first on your `PATH` afterwards.
 
 The updater waits up to 90 seconds for the old daemon to retire, then starts the new one and checks its commit. It never force-kills the old daemon. A daemon serves several workspaces, so coordinate the restart with anyone else who uses it. The repository's `docs/updating.md` covers rollback and cleanup.
-
-## Build from source
-
-Build from source if there is no release for your platform or you want to change Loom. You need these tools:
-
-- Gleam 1.19.0.
-- Erlang/OTP 29 or later. Only the build needs it. The installed client and server bundle their own BEAM runtime.
-- Go 1.26 or later, which builds the sandbox helper `loom-exec`.
-- `rebar3`.
-- A C compiler, `make` and `strip`.
-
-```sh
-git clone https://github.com/Roasbeef/loom.git
-cd loom
-make install
-export PATH="$HOME/.local/bin:$PATH"
-```
-
-`make install` runs three builds in order: the code-mode seed, the self-contained server release, and the client. It then lays the result out under `~/.local`, or under `PREFIX` if you set one.
-
-| Path under the prefix | What it is |
-|---|---|
-| `bin/loom` | The terminal client. |
-| `bin/loomd` | The daemon. |
-| `lib/loom/server` | A symlink to the installed server tree: the sandbox helper, the Gleam compiler, the code-mode seed and the BEAM runtime. |
-| `lib/loom/client` | A symlink to the installed client tree, which also bundles the BEAM runtime. |
-
-Every install writes fresh directories and switches links afterwards, so a running process keeps the files it started with. To check the sandbox on the machine where agents will run, use the helper's self-test:
-
-```sh
-make selftest
-```
-
-It prints `ENFORCED`, `SKIPPED` or `FAILED` for each probe.
-
-To update a source build, run `make update` from a clean, committed checkout. It builds and smoke-tests its release artifacts, installs them and gracefully restarts the shared daemon. To package the archives that a release carries, run `make dist`. It writes the server tarball, the self-contained client tarball, the slim client tarball, a manifest and `SHA256SUMS`.
 
 ## Where to go next
 

@@ -30,7 +30,7 @@ pub fn pages() -> List(Page) {
     Page(
       "getting-started",
       "Install",
-      "Download a release, verify it, install it and update it. Build from source instead if you prefer.",
+      "Build from source, explore the demo and configure your first session. Archive instructions apply when a release is published.",
     ),
     Page(
       "configuration",

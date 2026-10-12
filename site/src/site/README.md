@@ -97,4 +97,4 @@ Every decision stays in Gleam. The JavaScript only calls the browser and dispatc
 
 ## Releases
 
-`release.gleam` is the only place that names the release. Changing `tag` there updates the Download button, the version label, the archive names, and the `{{tag}}` and `{{version}}` placeholders in the docs pages.
+`release.gleam` records publication separately from the existing example tag. With `SourceOnly`, install actions go to the source-build guide and show no version badge. Once assets are published and verified, `Published` enables the download action. The tag still fills conditional archive examples in the docs.

@@ -1,5 +1,24 @@
 # Current handoff
 
+## Homepage feedback follow-up (October 12)
+
+The isolated `site/recovery-first-homepage` branch shortens the homepage to
+recovery benefits, real web/terminal proof, three differentiators, the branching
+recorded task, source-build onboarding and deeper-doc links. The four full
+architecture figures remain in the site docs. GitHub has no published archive
+release, so install actions use source-build and the existing version appears
+only in conditional archive examples. Do not enable downloads until actual
+assets are published and verified; no tag, release or deployment was made.
+
+`make -C site check` passes 65 tests plus format, copy and build gates.
+Matched live-before/local-after desktop and phone screenshots and the browser
+QA inventory are in `site/screenshots/recovery-first/`. Exact-head hosted CI,
+independent review and Linux signoff are recorded on the draft PR; a prior
+main gate is not evidence for this branch. The installed daemon is unchanged.
+
+The prior runtime/performance handoff follows unchanged.
+
+
 Baselined October 12, 2026 against main `b197c9566` (through PR #964),
 with the tool-latency work rebased for PR #949. The original measurements use
 `4417fdb6a073865660bf029495a9ecf08bc9e315` and the candidates named in their
