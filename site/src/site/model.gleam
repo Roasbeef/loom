@@ -3,7 +3,7 @@
 import gleam/dict.{type Dict}
 import gleam/option.{type Option, None, Some}
 import site/markdown.{type Block}
-import site/msg.{type Decision, type FigureId}
+import site/msg.{type Decision, type FigureId, type ShotView}
 import site/route.{type Route}
 
 /// A documentation file's loading state.
@@ -51,6 +51,8 @@ pub type Model {
     replay: Replay,
     /// The code sample that shows "Copied", if any.
     copied: Option(String),
+    /// Which capture of the terminal client the landing page shows.
+    shot_view: ShotView,
   )
 }
 
@@ -67,6 +69,7 @@ pub fn new(current: Route) -> Model {
     contents_open: False,
     replay: new_replay(),
     copied: None,
+    shot_view: msg.Compact,
   )
 }
 

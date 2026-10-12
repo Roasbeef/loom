@@ -303,3 +303,24 @@ pub fn the_embedded_figure_names_exist_test() {
     assert figure.count(figures.spec(id)) >= 4
   })
 }
+
+// TERMINAL SCREENSHOT ---------------------------------------------------------
+
+pub fn terminal_shot_starts_collapsed_test() {
+  let html = landing_html()
+  assert string.contains(html, "img/code-mode-compact.png")
+  assert !string.contains(html, "src=\"./img/code-mode.png\"")
+}
+
+pub fn terminal_shot_toggle_swaps_the_image_test() {
+  let model = m.Model(..m.new(route.Landing), shot_view: msg.Expanded)
+  let html = element.to_string(landing.view(model))
+  assert string.contains(html, "src=\"./img/code-mode.png\"")
+  assert !string.contains(html, "code-mode-compact.png")
+}
+
+pub fn terminal_shot_images_have_alt_text_and_size_test() {
+  let compact = landing_html()
+  assert string.contains(compact, "width=\"1312\"")
+  assert string.contains(compact, "alt=\"The terminal client after")
+}
