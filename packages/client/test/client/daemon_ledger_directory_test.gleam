@@ -10,9 +10,13 @@
 
 import client/daemon/main
 import client/directory/settings.{Settings}
+import client/distribution_plan
+import client/ledger_rows
+import client/ledger_service
 import client/membership_entry.{Learner, Member, Upsert, Voter}
 import client/orchestrators.{Orchestrator}
 import gleam/erlang/process
+import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import support/ledger_rig as rig
@@ -152,4 +156,67 @@ pub fn a_count_of_voters_outside_the_bounds_is_logged_not_refused_test() {
     main.ledger_directory(None, Some(started.service), a, [], logger)
   let assert Ok(warning) = process.receive(records, 1000)
   assert warning.event == "daemon.directory_voters"
+}
+
+// Phase 2 derives `[orchestrators.<name>]` rows from the ledger, and a member
+// daemon must list only members as orchestrators (protocol-change/083). Phase 3
+// is what lets a ledger daemon be a member, so the two meet here: the rows that
+// a seated orchestrator derives are accepted by the check the start makes on
+// them, and the laptop outside the directory, which a node outside it would
+// list, is the row that check would refuse.
+pub fn the_orchestrators_a_member_derives_are_members_test() {
+  let orchestrator = fn(name, standing, links) {
+    Upsert(
+      Member(
+        ..fixture.member(name, links),
+        role: distribution_plan.Orchestrator,
+        directory: standing,
+      ),
+    )
+  }
+  let started =
+    rig.start(
+      "ledger-directory-derived",
+      membership.lines(
+        membership.genesis()
+        |> membership.must_push(orchestrator("a", Voter, []))
+        |> membership.must_push(orchestrator("b", Voter, ["a"]))
+        |> membership.must_push(orchestrator("c", Voter, ["a"]))
+        |> membership.must_push(
+          orchestrator("laptop", membership_entry.NotInDirectory, ["a"]),
+        ),
+      ),
+      rig.patient,
+      [],
+    )
+  let #(logger, _) = capture()
+  let assert Ok(status) = ledger_service.status(started.service, 5000)
+
+  // The member `a` lists the orchestrators that are in the directory, and the
+  // start accepts them.
+  let derived = ledger_rows.orchestrators_of(status.ledger, a, [])
+  assert list.map(derived, fn(row) { row.name }) == ["b", "c"]
+  let assert Ok(Some(_)) =
+    main.ledger_directory(None, Some(started.service), a, derived, logger)
+
+  // A node outside the directory lists all of them, and the laptop is not a
+  // member, so the row it would add is the one the start refuses.
+  let everything =
+    ledger_rows.orchestrators_of(status.ledger, "loom@laptop.example.net", [])
+  assert list.map(everything, fn(row) { row.name }) == ["a"]
+  let assert Error(reason) =
+    main.ledger_directory(
+      None,
+      Some(started.service),
+      a,
+      [
+        Orchestrator(
+          name: "laptop",
+          node: "loom@laptop.example.net",
+          address: None,
+        ),
+      ],
+      logger,
+    )
+  assert string.contains(reason, "orchestrators.laptop.node")
 }
