@@ -73,7 +73,8 @@ pub fn start_system(directory: String) -> Result(Nil, String)
 pub fn stop_system() -> Nil
 
 /// Starts the store: restarts a server Ra knows, or creates and elects a
-/// one-member cluster when Ra knows none.
+/// one-member cluster when Ra knows none. A member that has joined a cluster
+/// starts with `restart` instead.
 ///
 /// Khepri `khepri:start/3`.
 ///
@@ -84,6 +85,42 @@ pub fn stop_system() -> Nil
 /// ```
 @external(erlang, "client_khepri_ffi", "boot")
 pub fn boot(timeout_ms: Int) -> Result(Nil, String)
+
+/// Why `restart` did not start the store.
+pub type Restart {
+  /// Ra has no record of this member's server, so starting would create a
+  /// new store.
+  NoServerRecord
+
+  /// The store did not start for another reason.
+  CouldNotStart(reason: String)
+}
+
+/// Starts a store this member has joined before, and refuses when Ra has no
+/// record of the member's server instead of creating a new store for it.
+///
+/// Ra `ra_directory:uid_of/2`, then Khepri `khepri:start/3`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// ffi_khepri.restart(10_000) // -> Ok(Nil)
+/// ```
+@external(erlang, "client_khepri_ffi", "restart")
+pub fn restart(timeout_ms: Int) -> Result(Nil, Restart)
+
+/// Writes Ra's record of this member's server to disk, so that a process killed
+/// afterwards restarts the server instead of creating a store.
+///
+/// Erlang `dets:sync/1` on Ra's directory table.
+///
+/// ## Examples
+///
+/// ```gleam
+/// ffi_khepri.sync_server_record() // -> Ok(Nil)
+/// ```
+@external(erlang, "client_khepri_ffi", "sync_server_record")
+pub fn sync_server_record() -> Result(Nil, String)
 
 /// What one step of the non-voter join reports. `client/directory/store`
 /// repeats a step that says `Again` under its own deadline.

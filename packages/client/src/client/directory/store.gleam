@@ -107,9 +107,9 @@ pub fn start_system(directory: String) -> Result(Nil, String) {
   ffi_khepri.start_system(directory)
 }
 
-/// Starts the store. A member whose store is joined restarts its server with
-/// its membership; `bootstrap` uses the same call on an empty directory to
-/// create a one-member cluster.
+/// Starts the store, creating a one-member cluster when Ra knows no server.
+/// Only `bootstrap` wants that. A member that has joined a cluster starts with
+/// `restart`, which cannot create one.
 ///
 /// ## Examples
 ///
@@ -120,6 +120,54 @@ pub fn boot(within_ms: Int) -> Result(Nil, String) {
   bounded(within_ms + 1000, Error("the store did not start in time"), fn() {
     ffi_khepri.boot(within_ms)
   })
+}
+
+/// Why `restart` did not start the store.
+pub type RestartRefusal {
+  /// Ra has no record of this member's server and nothing was started. See
+  /// `restart` for how that can come about.
+  NoServerRecord
+
+  /// The store did not start, for the reason given.
+  CouldNotStart(
+    /// What went wrong, for a log line or a refusal's message.
+    reason: String,
+  )
+}
+
+/// Starts the store of a member that has joined a cluster, with the membership
+/// Ra recorded for it. When Ra has no record of the member's server, the answer
+/// is `NoServerRecord` and nothing is started.
+///
+/// `boot` would answer that case by creating a store with this member as its
+/// only member and electing it leader: a second cluster, beside the one this
+/// member is listed in, that reads and writes as if it were the first. The case
+/// is reachable only if the record of the server was lost. `mark_joined` writes
+/// it to disk before the marker, so a kill cannot lose it, and this refusal is
+/// what stands if it was lost another way, such as a restored backup that holds
+/// the marker and an older copy of Ra's files. Ra also drops a server's record
+/// when it starts the server and finds its data directory missing or its
+/// configuration unreadable (`ra_log_pre_init`), and `restart` refuses after
+/// that too.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // store.restart(30_000)
+/// ```
+pub fn restart(within_ms: Int) -> Result(Nil, RestartRefusal) {
+  bounded(
+    within_ms + 1000,
+    Error(CouldNotStart("the store did not start in time")),
+    fn() {
+      case ffi_khepri.restart(within_ms) {
+        Ok(Nil) -> Ok(Nil)
+        Error(ffi_khepri.NoServerRecord) -> Error(NoServerRecord)
+        Error(ffi_khepri.CouldNotStart(reason:)) ->
+          Error(CouldNotStart(reason:))
+      }
+    },
+  )
 }
 
 /// Joins the cluster through the member on `remote` as a non-voter and returns
@@ -231,12 +279,18 @@ pub fn is_joined(directory: String) -> Bool {
 
 /// Records that this member's store is joined.
 ///
+/// The marker is what makes the next start call `restart` and never `boot`, so
+/// it is written only once Ra's record of the server is on disk. Ra writes that
+/// record on a 500 ms timer, and a member killed between its join and the next
+/// tick would otherwise restart with a marker and no server.
+///
 /// ## Examples
 ///
 /// ```gleam
 /// // store.mark_joined(state_root <> "/directory")
 /// ```
 pub fn mark_joined(directory: String) -> Result(Nil, String) {
+  use Nil <- result.try(ffi_khepri.sync_server_record())
   simplifile.write(joined_marker(directory), "joined\n")
   |> result.map_error(fn(error) {
     "the joined marker could not be written: "

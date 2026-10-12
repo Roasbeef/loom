@@ -345,3 +345,12 @@ pub fn a_member_that_lost_its_disk_rejoins_and_catches_up_test() {
       <> "the store running on another.",
   )
 }
+
+pub fn a_member_killed_as_it_joins_never_starts_a_cluster_of_its_own_test() {
+  proves(
+    "directory_join_kill",
+    "A member whose emulator is killed the moment its joined marker exists "
+      <> "comes back into the cluster it joined and lists both members; it "
+      <> "never starts a cluster of its own.",
+  )
+}

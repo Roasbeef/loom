@@ -10,9 +10,26 @@
          origin_start/0, origin_stop/1, origin_seen/1, monitored_by/1,
          owner_label_of/1, reductions_of/1, log_capture_start/0,
          log_capture_stop/0, log/2, utf_codepoint_calls/1,
-         function_values/1, wire_round_trip/1, remote_pid/0]).
+         function_values/1, wire_round_trip/1, remote_pid/0,
+         ra_names_on_disk/1]).
 
 -include_lib("public_key/include/public_key.hrl").
+
+%% The server names Ra's directory table holds on disk for a Ra system rooted
+%% at Directory. The live table is not read: its file is copied as it stands and
+%% the copy is opened, so what comes back is what a process killed at this
+%% instant would leave for the next start.
+ra_names_on_disk(Directory) ->
+    Source = filename:join(unicode:characters_to_list(Directory), "names.dets"),
+    Copy = Source ++ ".copy",
+    {ok, _} = file:copy(Source, Copy),
+    Table = ra_names_copy,
+    try
+        {ok, Table} = dets:open_file(Table, [{file, Copy}]),
+        try [atom_to_binary(Name, utf8)
+             || {Name, _UId} <- dets:select(Table, [{'$1', [], ['$1']}])]
+        after dets:close(Table) end
+    after file:delete(Copy) end.
 
 %% The number of function values reachable in a term. A closure serializes on
 %% one node and fails to decode on another whose code differs, so a term that

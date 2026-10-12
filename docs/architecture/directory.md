@@ -241,7 +241,17 @@ configured member that answers:
    daemon waits for the promotion, then marks its store joined.
 
 A member whose store is already joined starts it, and Ra resumes the membership
-recorded in its log.
+recorded in its log. The daemon writes the `joined` marker last, and only after
+Ra's record of the member's server (`names.dets`) has been written to disk. Ra
+writes that record on a 500 ms timer, so without the wait a member killed in the
+half second after it joined restarted with a marker and no server, and Khepri's
+start answers an unknown server by creating a fresh one-member store: a second
+cluster, beside the real one, that read and wrote as if it were the first. The
+start of a joined member also refuses to create a store. If Ra has no record of
+its server, the daemon does not start. When the cluster has other members the
+error names the marker, and removing it lets the member rejoin as a non-voter,
+as after a disk loss. A one-member cluster has nothing to rejoin, so the error
+tells the operator to remove the directory and run bootstrap again.
 
 The same rule covers a member that lost its disk. Its old identity is removed
 while the remaining members have a majority, and it comes back as a non-voter,

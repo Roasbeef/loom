@@ -19,6 +19,12 @@ const bravo = "bravo@10.0.0.4"
 
 const op = "0192f3c1-0000-7000-8000-000000000001"
 
+// The server names in Ra's directory table as `names.dets` holds them on disk,
+// read from a copy of the file, which is what a process killed at this instant
+// would leave for the next start.
+@external(erlang, "client_test_ffi", "ra_names_on_disk")
+fn ra_names_on_disk(directory: String) -> List(String)
+
 fn with_store(body: fn(String) -> Nil) -> Nil {
   let directory = remote_fixtures.scratch("directory-store") <> "/directory"
   let assert Ok(Nil) = store.start_system(directory) as "the Ra system starts"
@@ -139,4 +145,56 @@ pub fn a_stopped_store_answers_no_quorum_rather_than_absent_test() {
   let assert Ok(False) = simplifile.is_file(store.joined_marker(directory))
     as "nothing marked it joined"
   Nil
+}
+
+pub fn restart_refuses_where_boot_would_create_a_second_cluster_test() {
+  let directory = remote_fixtures.scratch("directory-restart") <> "/directory"
+  let assert Ok(Nil) = store.start_system(directory) as "the Ra system starts"
+
+  // The member's marker says joined and Ra has no record of its server, as
+  // after a kill that lost the record. Booting here would elect a one-member
+  // store beside the real cluster; restarting must not.
+  let assert Ok(Nil) = store.mark_joined(directory) as "marked"
+  assert store.is_joined(directory)
+  assert store.restart(10_000) == Error(store.NoServerRecord)
+  let assert Error(store.Unavailable(_)) = store.membership()
+    as "no store was created"
+  store.stop()
+}
+
+pub fn restart_resumes_the_store_boot_created_test() {
+  let directory = remote_fixtures.scratch("directory-resume") <> "/directory"
+  let assert Ok(Nil) = store.start_system(directory) as "the Ra system starts"
+  let assert Ok(Nil) = store.boot(10_000) as "a one-member store starts"
+  let owned = Record(owner: alpha, state: Serving)
+  let assert Ok(Nil) = store.create(session, owned) as "created"
+  let assert Ok(Nil) = store.mark_joined(directory) as "marked"
+  store.stop()
+
+  // The same directory again, as after a daemon restart.
+  let assert Ok(Nil) = store.start_system(directory)
+    as "the Ra system starts again"
+  let assert Ok(Nil) = store.restart(10_000) as "the joined store restarts"
+  assert store.read_consistent(session) == Ok(Some(owned))
+  store.stop()
+}
+
+pub fn the_joined_marker_follows_the_server_record_on_disk_test() {
+  // Ra writes its record of a server on a 500 ms timer, so a marker written
+  // as soon as the server starts finds the record on disk only if a tick fell
+  // in between. Six members make a miss all but certain without the sync.
+  let missing =
+    list.repeat(Nil, 6)
+    |> list.filter(fn(_) {
+      let directory =
+        remote_fixtures.scratch("directory-record") <> "/directory"
+      let assert Ok(Nil) = store.start_system(directory)
+        as "the Ra system starts"
+      let assert Ok(Nil) = store.boot(10_000) as "a one-member store starts"
+      let assert Ok(Nil) = store.mark_joined(directory) as "marked"
+      let on_disk = ra_names_on_disk(directory)
+      store.stop()
+      !list.contains(on_disk, "loom_directory")
+    })
+  assert missing == []
 }

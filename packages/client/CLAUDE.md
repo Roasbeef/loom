@@ -7786,11 +7786,16 @@ ADR-020 the choice of Khepri and its measurements, and
   `distribution.check_node_name` and the op through `catalogue.is_move_op`, and a
   payload that does not decode is an error, never an absent record. The payload
   types are opaque, so no `@external` leaves `internal/`.
-- `directory/store` wraps the shim: `start_system`, `boot` (one member),
+- `directory/store` wraps the shim: `start_system`, `boot` (one member, creating
+  the store when Ra knows no server: only bootstrap uses it), `restart` (the
+  start of a member that has joined; it refuses when Ra has no record of the
+  member's server, because `boot` would create a second one-member cluster),
   `join(node, within_ms)`, `read` (local, `favor => low_latency`),
   `read_consistent` (`khepri:fence/2`, then a local read), `create`, `swap`,
   `delete_if`, `mark_migrated`, `membership`, `running_on(node)` and the `joined`
-  marker file. Every call that can wait on a quorum runs in a weft run under a
+  marker file (`mark_joined` writes Ra's `names.dets` to disk first, since Ra
+  flushes it on a 500 ms timer and the marker is what selects `restart`). Every
+  call that can wait on a quorum runs in a weft run under a
   deadline (`write_ms` 3000, `activation_ms` 5000, `read_ms` 3000), because the
   consistent path ignores its own timeout without a majority. `WriteRefusal` is
   `NoQuorum(reason) | Mismatch(found)`.
@@ -7809,7 +7814,11 @@ ADR-020 the choice of Khepri and its measurements, and
   link to every configured member missing from `nodes()`, backing off by
   doubling to 30 s, and joins a member with no joined store through the first
   member whose store runs (`store.running_on`, then `store.join` under a 60 s
-  deadline, then the marker). `member.status` answers `directory.status`.
+  deadline, then the marker). A store with the marker starts at `member.start`
+  through `store.restart` and a refusal is a failed start whose message names
+  the remedy (remove the marker and the member rejoins; for a one-member
+  cluster, remove the directory and bootstrap again). `member.status`
+  answers `directory.status`.
 - `directory/ownership` is the record of write functions bound to this node:
   `create`, `begin_move`, `activate`, `abandon`, `release`, `record_local`,
   `release_local`, `mark_migrated`, `seed_moving`, the two reads and
