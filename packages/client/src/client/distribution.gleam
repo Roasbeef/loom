@@ -40,7 +40,7 @@
 //// be the VM's own `$HOME/.erlang.cookie`, because the emulator reads the
 //// cookie from there when it opens its listener.
 
-import client/internal/ffi_distribution
+import client/internal/ffi_distribution.{Live}
 import gleam/bit_array
 import gleam/dict.{type Dict}
 import gleam/erlang/node.{type Node}
@@ -84,12 +84,26 @@ pub type PeerPin {
   )
 }
 
+/// Where a node's list of trusted peers comes from. The two sources exclude
+/// each other (protocol-change/086): a node either carries fixed pins in its
+/// configuration or reads them from a membership ledger, and never both.
+type Trust {
+  /// The pins of `[[distribution.peers]]`, rendered into the options file and
+  /// fixed for the life of the VM.
+  Pinned(peers: List(PeerPin))
+
+  /// The membership ledger file at this absolute path. The options file names
+  /// no pin: the verify callback reads a table that the ledger process
+  /// publishes, so a member can be enrolled or revoked without a restart.
+  Ledgered(path: String)
+}
+
 /// A validated configuration. Building one creates no Erlang atoms and reads
 /// no file; `start` does both.
 pub opaque type Config {
   Config(
     local: String,
-    peers: List(PeerPin),
+    trust: Trust,
     files: CredentialFiles,
     listen_port: Option(Int),
   )
@@ -196,7 +210,35 @@ pub fn configure(
   use Nil <- result.try(valid_files(files))
   use Nil <- result.try(valid_peers(local, peers))
   use Nil <- result.try(valid_port(listen_port))
-  Ok(Config(local:, peers:, files:, listen_port:))
+  Ok(Config(local:, trust: Pinned(peers:), files:, listen_port:))
+}
+
+/// Validates the identity and credentials of a node that takes its peers from
+/// a membership ledger (protocol-change/086), with no pin in its configuration.
+///
+/// `path` is the absolute path of the ledger file. Which members the node
+/// trusts is the ledger's to say, so nothing is checked about peers here; the
+/// ledger process checks the file against the `ca` before distribution starts.
+///
+/// ## Examples
+///
+/// ```gleam
+/// distribution.configure_ledger("a@10.0.0.1", files, None, "/var/loom/ledger.log")
+/// ```
+pub fn configure_ledger(
+  local: String,
+  files: CredentialFiles,
+  listen_port: Option(Int),
+  path: String,
+) -> Result(Config, String) {
+  use Nil <- result.try(valid_name("distribution.node", local))
+  use Nil <- result.try(valid_files(files))
+  use Nil <- result.try(valid_port(listen_port))
+  use Nil <- result.try(case absolute_path(path) {
+    True -> Ok(Nil)
+    False -> Error("distribution.ledger must be an absolute path")
+  })
+  Ok(Config(local:, trust: Ledgered(path:), files:, listen_port:))
 }
 
 /// Reads the `[distribution]` table of a configuration document, or `None`
@@ -248,11 +290,44 @@ pub fn local_node(config: Config) -> String {
   config.local
 }
 
-/// The node names of the configured peers, in the order the file lists them.
+/// The path of the membership ledger file, when the configuration names one
+/// (protocol-change/086). Its presence is what puts the node in ledger mode:
+/// the file is read by the ledger process and by nothing in this module, which
+/// only starts distribution in the mode that reads the table that process
+/// publishes.
 ///
-/// Another table that names a peer, such as `[executors.<name>]`, checks its
-/// reference against this list, so the reference means a node the operator
-/// has pinned and nothing else.
+/// ## Examples
+///
+/// ```gleam
+/// distribution.ledger_path(config) // -> Some("/home/me/.loom/ledger.log")
+/// ```
+pub fn ledger_path(config: Config) -> Option(String) {
+  case config.trust {
+    Pinned(..) -> None
+    Ledgered(path:) -> Some(path)
+  }
+}
+
+/// The credential files of this node. The ledger's verifier is built from the
+/// `ca` file among them.
+///
+/// ## Examples
+///
+/// ```gleam
+/// distribution.credential_files(config).ca // -> "/etc/loom/ca.pem"
+/// ```
+pub fn credential_files(config: Config) -> CredentialFiles {
+  config.files
+}
+
+/// The node names of the configured `[[distribution.peers]]`, in the order the
+/// file lists them, and none in ledger mode.
+///
+/// A table that names a peer, such as `[executors.<name>]`, checks its
+/// reference through `client/ledger_reference.nodes`, which answers with this
+/// list in static mode and with the nodes this node's ledger links it to in
+/// ledger mode. This module cannot read the ledger (it must not import a
+/// `membership_*` module), so it has no peers to give in that mode.
 ///
 /// ## Examples
 ///
@@ -260,7 +335,10 @@ pub fn local_node(config: Config) -> String {
 /// distribution.peer_nodes(config) // -> ["executor@10.0.0.2"]
 /// ```
 pub fn peer_nodes(config: Config) -> List(String) {
-  list.map(config.peers, fn(peer) { peer.node })
+  case config.trust {
+    Pinned(peers:) -> list.map(peers, fn(peer) { peer.node })
+    Ledgered(..) -> []
+  }
 }
 
 /// Checks one Erlang node name against the grammar `configure` applies to
@@ -282,13 +360,19 @@ pub fn check_node_name(place: String, name: String) -> Result(Nil, String) {
 /// credential paths and the public pins only, so it holds no secret, but
 /// `start` still requires the file to be private and to equal this text.
 ///
+/// In ledger mode the text names no pin, so it is a function of the credential
+/// paths alone and enrolling or revoking a member never changes it.
+///
 /// ## Examples
 ///
 /// ```gleam
 /// distribution.tls_options(config) // -> "[{server, [..]}, {client, [..]}].\n"
 /// ```
 pub fn tls_options(config: Config) -> String {
-  ffi_distribution.options(pairs(config.peers), config.files)
+  case config.trust {
+    Pinned(peers:) -> ffi_distribution.options(pairs(peers), config.files)
+    Ledgered(..) -> ffi_distribution.live_options(Live, config.files)
+  }
 }
 
 /// The emulator flags a launcher adds to boot a VM for this module.
@@ -316,6 +400,11 @@ pub fn boot_arguments(options_path: String) -> List(String) {
 /// `NotMember`, visible for a directory `Member`, whose VM must also run with
 /// `connect_all` off.
 ///
+/// In ledger mode it starts with no peer, and every handshake is refused with
+/// `ledger_unavailable` until a process on this node publishes the pin table.
+/// The caller therefore starts that process first (`client/ledger_boot`), so
+/// that the table exists before the listener does.
+///
 /// The preconditions are checked before a credential is read or a listener
 /// opened. A VM that is already distributed, that was booted without the TLS
 /// flags, or whose options file differs from `tls_options` is refused and
@@ -340,19 +429,33 @@ pub fn start(config: Config, cluster: Cluster) -> Result(Membership, Fault) {
     NotMember -> None
     Member(members:) -> Some(members)
   }
-  ffi_distribution.start(
-    config.local,
-    pairs(config.peers),
-    config.files,
-    config.listen_port,
-    members,
-  )
+  case config.trust {
+    Pinned(peers:) ->
+      ffi_distribution.start(
+        config.local,
+        pairs(peers),
+        config.files,
+        config.listen_port,
+        members,
+      )
+    Ledgered(..) ->
+      ffi_distribution.start_live(
+        config.local,
+        Live,
+        config.files,
+        config.listen_port,
+        members,
+      )
+  }
   |> result.map_error(fault)
 }
 
 /// Resolves a configured peer name to the node made for it at boot. A name
 /// that was not configured is refused, so network input never reaches the
 /// atom table. Success is identity only, not connectivity.
+///
+/// In ledger mode a name resolves when the published pin table lists it, which
+/// means it is an active member linked to this node.
 ///
 /// ## Examples
 ///
@@ -519,7 +622,10 @@ fn pairs(peers: List(PeerPin)) -> List(#(String, BitArray)) {
 fn table(fields: Dict(String, tom.Toml)) -> Result(Config, String) {
   use Nil <- result.try(known_keys(
     dict.keys(fields),
-    ["node", "ca", "certificate", "key", "cookie", "listen_port", "peers"],
+    [
+      "node", "ca", "certificate", "key", "cookie", "listen_port", "ledger",
+      "peers",
+    ],
     "[distribution]",
   ))
   use local <- result.try(string_key(fields, "node", "distribution"))
@@ -532,19 +638,51 @@ fn table(fields: Dict(String, tom.Toml)) -> Result(Config, String) {
   use key <- result.try(string_key(fields, "key", "distribution"))
   use cookie <- result.try(string_key(fields, "cookie", "distribution"))
   use listen_port <- result.try(port_key(fields))
-  use peers <- result.try(peer_rows(fields))
-  configure(
-    local,
-    peers,
-    CredentialFiles(ca:, certificate:, key:, cookie:),
-    listen_port,
-  )
+  let files = CredentialFiles(ca:, certificate:, key:, cookie:)
+  use ledger <- result.try(ledger_key(fields))
+  case ledger, dict.has_key(fields, "peers") {
+    Some(path), False -> configure_ledger(local, files, listen_port, path)
+    Some(_), True ->
+      Error(
+        "distribution.ledger and [[distribution.peers]] cannot both be set: "
+        <> "with a ledger the members and their pins come from the ledger, so "
+        <> "remove the [[distribution.peers]] rows or the ledger key",
+      )
+    None, _ -> {
+      use peers <- result.try(peer_rows(fields))
+      configure(local, peers, files, listen_port)
+    }
+  }
+}
+
+// The optional ledger path (protocol-change/086), checked like the credential
+// paths: absolute, bounded, and free of a NUL.
+fn ledger_key(
+  fields: Dict(String, tom.Toml),
+) -> Result(Option(String), String) {
+  case dict.get(fields, "ledger") {
+    Error(Nil) -> Ok(None)
+    Ok(tom.String(path)) ->
+      case absolute_path(path) {
+        True -> Ok(Some(path))
+        False -> Error("distribution.ledger must be an absolute path")
+      }
+    Ok(_) -> Error("distribution.ledger must be a string")
+  }
+}
+
+fn absolute_path(path: String) -> Bool {
+  string.starts_with(path, "/")
+  && string.byte_size(path) <= 4096
+  && !string.contains(path, "\u{0}")
 }
 
 fn peer_rows(fields: Dict(String, tom.Toml)) -> Result(List(PeerPin), String) {
   case dict.get(fields, "peers") {
     Error(Nil) ->
-      Error("distribution needs at least one [[distribution.peers]] row")
+      Error(
+        "distribution needs at least one [[distribution.peers]] row or a ledger",
+      )
     Ok(tom.ArrayOfTables(rows)) -> list.try_map(rows, peer_row)
     Ok(_) -> Error("distribution.peers must be [[distribution.peers]] tables")
   }
@@ -645,11 +783,7 @@ fn valid_files(files: CredentialFiles) -> Result(Nil, String) {
     ],
     fn(entry) {
       let #(key, path) = entry
-      case
-        string.starts_with(path, "/")
-        && string.byte_size(path) <= 4096
-        && !string.contains(path, "\u{0}")
-      {
+      case absolute_path(path) {
         True -> Ok(Nil)
         False -> Error("distribution." <> key <> " must be an absolute path")
       }

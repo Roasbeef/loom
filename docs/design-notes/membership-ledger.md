@@ -258,16 +258,16 @@ not depend on it.
 
 Every daemon with a ledger runs one process, registered as `loom_ledger`, that
 owns the file and the pin table and speaks a small closed vocabulary to its
-peers on other nodes. The messages hold bytes and integers and no atom or
+peers on other nodes. The messages hold bytes, integers and subjects and no atom or
 function derived from peer input, and the receiver decodes the entry lines with
 total decoders even though the peer is pinned, because entries are durable and
 are relayed.
 
 ```gleam
 pub type Message {
-  /// What the sender holds. Sent by both ends when a connection comes up and
-  /// on a timer.
-  Head(seq: Int, id: BitArray)
+  /// What the sender holds, and its inbox, which the receiver pulls from.
+  /// Sent by both ends when a connection comes up and on a timer.
+  Head(seq: Int, id: BitArray, from: Subject(Message))
   /// Entries after `after`, at most `limit` (clamped to 1 through 64).
   Pull(after: Int, limit: Int, reply: Subject(Entries))
 }
@@ -369,14 +369,25 @@ acceptance.
 
 Peer names become atoms when the ledger applies a `member` entry, and not from
 the network. Only a name in an entry whose signature verified, that passed the
-grammar, and that is within the 256-name bound is turned into an atom. Today's
-rule, "peer names become atoms once, from the finite configuration", relaxes
-to "from the finite, signed ledger", with the bound as the finite part.
+grammar, and that is within the ledger's bounds is turned into an atom. The atom
+is the member's `node`, and re-upserting a name with a new node is legal, so the
+bound on distinct node atoms (and on the allow list) is the 10,000 entries of the
+file; the 256 names bound member names. Today's rule, "peer names become atoms
+once, from the finite configuration", relaxes to "from the finite, signed
+ledger", with the entry cap as the finite part.
 
 `net_kernel:allow/1` is called with each enrolled name and never shrinks. A
-revoked name stays allowed. That is harmless: the allow list is a check on the
-claimed node name, the pin is the check on the certificate, and a revoked
-certificate has no pin. Removal is enforced by the table and by disconnecting.
+revoked name stays allowed. That is harmless, because the allow list is not a
+revocation mechanism. It checks the name of an outbound connection, which is
+refused by exact name before TLS starts, and the host of an inbound one: under
+`inet_tls_dist` the list becomes the hosts of the listed names that the peer's
+certificate covers, or the address the peer connected from when the certificate
+carries that address, and the claimed name must be on one of those hosts. An
+inbound peer is not checked against the listed names themselves, so the pin is
+the only gate on the identity of an inbound peer. A revoked certificate has no
+pin. Removal is enforced by the table and by disconnecting. Once the list is
+non-empty, an inbound peer needs a certificate that covers a listed host, so
+applying the entry for a node on a new host adds that host to the list.
 
 ### 6.5 Disconnecting on revoke
 
@@ -401,6 +412,13 @@ drops. Binding the connection to the certificate would mean changing
 and the verify function runs before the distribution handshake carries any node
 name. This design does not change `inet_tls_dist`. Section 8 says what the limit
 means for a compromised member.
+
+The same limit bounds the renewal sweep. The node-up check is by name, so it ends
+a handshake that read the row of a revoked member, whose name has left the table,
+and does not end a handshake made with the old certificate of a renewed member: if
+it read the old row before the publish and completed after the sweep sampled the
+connected nodes, its name is still in the table and it stays. No machinery is
+added for it.
 
 ## 7. Storing the ledger in Khepri instead
 
@@ -822,6 +840,244 @@ model like those under `protocol/models`, checking that no node applies two
 entries at one sequence number, that the pin table is a function of the applied
 prefix, and that a revoke reaches every node in a connected link graph, with a
 mutation for each.
+
+### Phase 0 results (2026-10-12)
+
+The spike ran on OTP 29.0.5 (`kernel` 11.0.3, `ssl` 11.7.4), Ra 3.2.0 and the
+Khepri version pinned in `packages/client/gleam.toml` (0.19.3). Every check
+boots real emulators with the production boot flags. Items 1 to 5 use the
+production `start/5`, an options file that `client_distribution_ffi` generated,
+and real `inet_tls` distribution between emulators. A call trace on `verify/4`
+records the value the callback returned for each leaf certificate, so a test says
+which check refused a connection and not only that it was refused. The tests keep
+the checks as regressions. Each takes under a second except item 6, which takes
+about eleven.
+
+One piece of production code changed, because the spike has to run the real
+callback. `client_distribution_ffi.erl` accepts `live` where it took a peer list.
+`tls_options(live, Files)` renders no pin. `verify/4` checks a leaf against the
+`pins` row of the protected table `loom_dist_pins`, and returns
+`{fail, ledger_unavailable}` when the table or the row is absent. `start/5` makes
+no peer atoms in that mode. Nothing on the Gleam side can reach it yet:
+`distribution.Config` still requires one to 32 peers, so phase 1 needs a ledger
+variant of `Config` and of the typed `ffi_distribution.options` and `start`.
+
+1. **The verify function reads a live table during a real handshake. Holds.**
+   Two emulators, an orchestrator that dials and an executor that listens, each
+   with a stand-in for the ledger process that owns the table. With no table the
+   callback returned `{fail, ledger_unavailable}`. With an empty table it returned
+   `{fail, peer_identity_mismatch}`. With the dialer's table holding the
+   executor's pin and the executor still without a table, the dialer accepted
+   the executor's leaf (`{valid, live}`) and the executor refused the dialer's
+   (`ledger_unavailable`). Once both tables held the other's pin the pair
+   connected, the connection was hidden at the dialer, and a message crossed it.
+   The test is
+   `ledger_spike_pin_table_test:a_pin_changed_at_runtime_takes_effect_on_the_next_handshake_test`
+   (scenario `live_pins` in `client_ledger_spike_fixture_ffi.erl`).
+
+2. **A pin added at runtime is accepted and one removed is refused on the next
+   handshake, with no restart. Holds.** The same scenario publishes new tables
+   with one insert while both emulators run. The operating-system process ids
+   were the same at the start and the end, and the options file on disk was
+   byte-for-byte what it was at boot. Removal was checked at both ends. When the
+   executor's table drops the dialer's pin, the executor's callback refuses the
+   dialer's leaf (`peer_identity_mismatch`). When the dialer's table drops the
+   executor's pin, the dialer's own callback refuses the executor's leaf. Putting
+   the pin back makes the same pair connect again.
+
+3. **Removing a pin leaves the live connection up, `disconnect_node/1` drops it,
+   and the reconnect is refused. Holds.** After the executor's table lost the
+   dialer's pin, messages still crossed in both directions. That confirms a pin
+   is checked only at handshake and that the sweep in section 6.5 is needed.
+   `erlang:disconnect_node/1` then returned `true`, and both emulators saw the
+   node go down (observed with `monitor_node`, not a poll). A reconnect attempted
+   at once was refused by the executor's callback. Because it was refused at
+   once, no resumed TLS session skipped the callback in this configuration.
+   Killing the table's owner deleted the table, left the live connection
+   untouched, and made the next handshake fail with `ledger_unavailable`. A new
+   owner holding the pin reopened the node. Not exercised: the race in section
+   6.5, a handshake that read the old table and finishes after the publish. It
+   needs the real ledger process and its node-up subscription, so it belongs to
+   phase 1.
+
+4. **The pin-less options file passes the daemon's boot check. Holds.**
+   `options(live, Files)` is a function of the credential paths and nothing else,
+   and contains no binary literal (a pin renders as one in static mode). A VM
+   booted from it starts under the production `start/5` with `live`. The check
+   still compares the loaded file with what the configuration generates: a live
+   file refuses a static start, a static file refuses a live start, and a live
+   file that others can write is refused. The test is
+   `a_pin_less_options_file_passes_the_boot_check_test`.
+
+5. **`net_kernel:allow/1` grows as documented, and the design's description of
+   what it checks needs a correction. Holds, with a change to the wording.** The
+   documented behavior was measured. A call adds names in order. A repeat adds
+   nothing and an empty list does nothing. A list holding anything that is not an
+   atom returns `error` and adds none of its elements, including the atoms before
+   the bad one. Nothing removes a name. A node that is connected and not listed
+   stays connected. `net_kernel:allowed/0` (OTP 28 and later) reads the list
+   back, which a status output can use. The test is
+   `ledger_spike_allow_list_test:the_allow_list_only_grows_and_refuses_after_tls_test`.
+
+   What the list checks is not what sections 6.4 and 15 say, which is that it is
+   "a check on the claimed node name". There are two checks. An *outbound*
+   connection is refused by exact name before TLS starts: dialing an unlisted
+   name returned `false` and neither callback was consulted. An *inbound*
+   connection under `inet_tls_dist` is not checked by name. In the source,
+   `inet_tls_dist:allowed_nodes/3` turns the list into the hosts of the listed
+   names that the peer's certificate covers, or the address the peer connected
+   from when the certificate carries that address, and `dist_util` then requires
+   the claimed name to be on one of those hosts. In the test an unlisted name
+   connected inbound while the only listed name was on another host, which fits
+   that reading: its certificate carried the address it dialed from.
+
+   Two consequences, and neither changes the design. First, the pin is the only
+   gate on the identity of an inbound peer, and the table is the right place for
+   it. A revoked name that stays listed is harmless in both directions, as
+   section 6.4 says, and the test shows a listed name refused at TLS once its pin
+   is gone. Second, once the list is non-empty an inbound peer needs a
+   certificate that covers a listed host. `provision` already issues
+   certificates for `[erlang_node, host]` (`distribution_provision.gleam`), so
+   applying the entry for a node on a new host adds that host to the list. The
+   wording to adopt in section 6.4 and in "Atoms and the allow list" of
+   protocol-change/086: the allow list checks the name of an outbound connection
+   and the host of an inbound one, and neither is a revocation mechanism.
+
+6. **A `non_voter` Ra member works through Khepri's own reads and does not count
+   toward the quorum. Holds, with an addition to the join code.** Two voters and
+   a learner, each in its own emulator, using the production `client_khepri_ffi`
+   calls for everything except the learner's join. The join starts a server with
+   `membership => non_voter`, announces it with `ra:add_member` and the same
+   membership, waits until the server has applied what the leader had applied,
+   and records the store with `join_finish`. Measured:
+   - `membership` on the leader and on the learner both report it as `non_voter`,
+     and it is still one after 300 further writes. Ra does not promote it.
+   - The learner's local read and its consistent read (a fence and then the read)
+     return the leader's data. A write issued at the learner commits through the
+     leader and is read back at the leader.
+   - `ra:transfer_leadership/2` to the learner returns `{error, non_voter}`.
+   - With the learner's emulator gone, the voters still commit. The learner
+     restarts from its own disk, is still a `non_voter`, and receives what was
+     written while it was away. A restarted emulator has no connections and Ra
+     does not make them, so the daemon's member actor, which links the members,
+     has to link a learner as it links a voter.
+   - With both voters up and the learner caught up, ending one voter leaves a
+     lone voter, and its write times out (`no_quorum`) although the learner is
+     up. Had the learner counted, two of three would have committed. The
+     learner's local read still serves what it holds, and its consistent read and
+     its write fail as they do on any member without a quorum. A laptop that reads
+     the directory therefore reads possibly stale data when the voters are gone,
+     and does not get an error.
+
+   The test is `ledger_spike_non_voter_test` (scenario `non_voter` in
+   `client_ledger_spike_ra_fixture_ffi.erl`). What phase 3 needs: in
+   `client_khepri_ffi.erl`, `server_config/2` and `join_add/3` fix the membership
+   at `promotable`, so a learner's join takes a membership argument and has no
+   promotion step to wait for. The scenario file writes that sequence out against
+   Ra's public API and says so.
+
+**Found on the way, not about the ledger.** A voter killed within a moment of
+joining the directory came back without Ra's record of its server, and
+`khepri:start` then bootstrapped a new one-member store, because Khepri falls
+back to that when `ra:restart_server` answers `name_not_registered`. It did not
+recur with a three second wait before the kill, or with a `dets:sync` of the Ra
+directory table before it, so the cause looks like the directory's `names.dets`
+not yet being on disk. The spike did not isolate it. `directory/member.start`
+boots any member marked joined with `store.boot`, so this is a path to a silent
+second cluster in #934's design. It is rare and applies to voters as much as
+learners. No test was kept for it, and it should be looked at on its own.
+
+### Phase 1 slice 1c: what was decided in the build (2026-10-12)
+
+The ledger now drives TLS distribution. Four points the proposal left open were
+settled in the code, and one was changed.
+
+1. **Boot order.** The ledger process starts, and publishes the table, before
+   `distribution.start`, so the listener never exists without a table. A
+   monitor of node changes is valid on a VM that is not distributed, so the
+   process needs nothing from distribution to start. The allow list can only be
+   set on a distributed node, so it is set right after `distribution.start`.
+2. **One owner.** The ledger process creates `loom_dist_pins` when it loads and
+   is the only writer. The observer of `client/ledger_trust` runs inside it, so
+   publishing, growing the allow list and disconnecting happen in the order the
+   process handles messages, which is what the node-up argument of section 6.5
+   needs.
+3. **Renewal drops connections.** Section 9.3's disconnect now also covers a
+   member whose entry replaced its pin. The proposal's `renew` row said existing
+   connections stay up; they are dropped instead, because a certificate that is
+   being replaced may be the one that leaked. The node-up check is by name, so it
+   does not cover an old-certificate handshake that read the old row before the
+   publish and completed after the sweep sampled the connected nodes: the name is
+   still in the table. A revoke is covered, since its name has left the table.
+   This is a corollary of the recorded limit that a connection is not bound to
+   its certificate, and no machinery is added.
+4. **A revoked node.** "Stops its distribution" is the empty table plus
+   dropping every connection. `net_kernel` stays up, but no entry can reach the
+   node over the network afterwards (its peers swept it, it dials nobody and it
+   accepts nobody). Enrolling the name again mints a new certificate that the
+   node does not hold, so `import` is no remedy: the operator runs `enroll`
+   again, installs the new bundle with `install --force` and restarts the node.
+5. **Not done here.** `[executors]`, `[orchestrators]` and `[directory]` still
+   check against `[[distribution.peers]]`, so they are refused beside a ledger.
+   A directory member cannot use a ledger. The `NotEnrolled` case is a start
+   refusal with a sentence, and the three new `Fault`s of 086 are not added,
+   because `client/distribution` cannot import the ledger to know a node's
+   standing.
+
+The node-up race of section 6.5, which phase 0 could not exercise, is covered by
+`ledger_live_test:a_handshake_that_read_the_old_table_ends_at_its_node_up_test`.
+It holds the ledger process in front of its publish with a hook, lets a node
+connect on the old row, then lets the process go with its sweep left out. Only
+the node-up check can end the connection, and removing the check makes the test
+time out.
+
+### Phase 1 slice 1d-ii: what was decided in the build (2026-10-12)
+
+The operator commands, `install` of a `/2` bundle and the default of `provision`
+landed. Points the proposal left open, or that the build changed:
+
+1. **`provision` writes a ledger by default.** The opt-in is `--static`, which
+   writes the `/1` bundles and discards the key. `--ledger` no longer exists. A
+   plan with a session directory is refused without `--static`, and so is the
+   install of a `/2` bundle with a directory, because the directory takes its
+   members from `[directory] members` until phase 3.
+2. **The peer tables are checked against the ledger once, at start.** A bundle
+   `provision` writes for an orchestrator carries `[executors.<name>]` rows, so
+   they cannot be refused beside a ledger. The first build parsed them against the
+   ledger, which made every session create, open and profile switch read and verify
+   the whole file, and made one `revoke` fail every session open on a daemon whose
+   table still named the member. The ruling is that parsing checks shape only, and
+   the daemon audits the rows once, at start, against the ledger it already holds
+   (`ledger_reference.audit`). A node no member entry ever named is refused as a
+   typo or a foreign configuration. A node that was a member and is not an active
+   linked member is accepted as an inert row and logged as a warning, as the
+   proposal said. A call through it fails because peer resolution answers only for
+   the pin table. The fold keeps the set of nodes ever named (`ever_nodes`) to tell
+   the two apart.
+3. **The cookie is kept beside the sealed key.** `enroll` and `renew` write a
+   bundle, and a bundle carries the cookie. The directory of the kept authority has
+   a fourth file, `cookie` (0600), unsealed: the bundles `provision` wrote on the
+   same machine hold it in the clear already.
+4. **A node tells the peer it pulled from.** The proposal sent the head after a
+   pull to every peer but the source. The source then learned the puller's head
+   only at the next 60 second tick, so `enroll` could not report a confirmation
+   within its wait. A pull that moved the head now also sends the head to the
+   source.
+5. **Frames bound the pages.** The control protocol's 64 KiB frame bounds
+   `ledger.append` and `ledger.entries` to 48,000 bytes of lines as well as 64
+   lines. `import` and the catch-up before a signature page accordingly.
+6. **`revoke` cannot check sessions yet.** Phase 2 owns "the member owns no
+   sessions", which needs a daemon to ask another what it owns. Phase 1 checks the
+   link graph (an executor with no orchestrator left, and members cut off from the
+   rest) and says in its output that sessions were not checked. The open question
+   5 recommendation stands for the day the surface exists.
+7. **No confirmation from a member that has not started.** `enroll` and `renew`
+   list the node they just changed and do not wait for it.
+8. **A not-enrolled start names a remedy that works.** A node that applied its own
+   revoke cannot start. The sentence says to run `enroll` for it again and to
+   install the new bundle with `--force` (a re-enrolled name gets a new
+   certificate). `import` needs a running daemon, so it is not that remedy.
+   `ledger_install_test` runs it.
 
 ## 17. Open questions
 

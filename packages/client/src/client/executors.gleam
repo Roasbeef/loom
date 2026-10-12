@@ -5,10 +5,13 @@
 //// on another machine, so the orchestrator has to know which executors exist
 //// before it reserves anything. This module is that list and nothing else. An
 //// executor is a name the operator chooses and the peer node that answers to
-//// it, and the node has to be one of the `[[distribution.peers]]` the operator
-//// already pinned, so a reference here can only point at a machine the daemon
-//// trusts as an Erlang peer. It opens no connection and reads no file; the
-//// slices that attach a workspace use the node this table names.
+//// it. In static mode the node has to be one of the `[[distribution.peers]]`
+//// the operator already pinned. In ledger mode parsing checks the row's shape
+//// and nothing about membership, because the ledger changes while a daemon
+//// runs; the daemon compares the node with the ledger once, at start
+//// (`client/ledger_reference`), and a node that was a member and no longer is
+//// stays as an inert row. This module opens no connection and reads no file;
+//// the slices that attach a workspace use the node this table names.
 ////
 //// Like `[distribution]` and `[peers]`, the daemon reads the table once, when
 //// it starts, and never rereads it: a running daemon's executors are the ones
@@ -46,6 +49,7 @@
 ////    an attach census.
 
 import client/distribution
+import client/ledger_reference
 import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -171,7 +175,7 @@ pub fn from_document(
       use peers <- result.try(peer_nodes(document))
       use Nil <- result.try(
         list.try_each(configured, fn(executor) {
-          case list.contains(peers, executor.node) {
+          case ledger_reference.accepts(peers, executor.node) {
             True -> Ok(Nil)
             False ->
               Error(
@@ -179,7 +183,7 @@ pub fn from_document(
                 <> executor.name
                 <> ".node "
                 <> executor.node
-                <> " is not a node in [[distribution.peers]]",
+                <> " is not a peer of this node: pin it in [[distribution.peers]]",
               )
           }
         }),
@@ -201,15 +205,15 @@ pub fn find(configured: List(Executor), name: String) -> Result(Executor, Nil) {
   list.find(configured, fn(executor) { executor.name == name })
 }
 
-// The pinned peers an executor may name. An executor with no distribution
-// table has no peer to be served by, which is a different mistake from a
-// mistyped node, so it is worded as the missing table.
+// The peers an executor may name. An executor with no distribution table has no
+// peer to be served by, which is a different mistake from a mistyped node, so it
+// is worded as the missing table.
 fn peer_nodes(
   document: Dict(String, tom.Toml),
-) -> Result(List(String), String) {
+) -> Result(ledger_reference.Peers, String) {
   use found <- result.try(distribution.from_document(document))
   case found {
-    Some(settings) -> Ok(distribution.peer_nodes(settings))
+    Some(settings) -> Ok(ledger_reference.peers(settings))
     None -> Error("executors needs a [distribution] table naming its peers")
   }
 }

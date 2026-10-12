@@ -89,7 +89,11 @@ A ledger is a file of lines separated by `\n`. A line is
 where `body` is the unpadded URL-safe base64 of the entry body and `signature` is
 the unpadded URL-safe base64 of the DER ECDSA signature. A reader MUST reject a
 line with padding, whitespace inside the line, more than one dot, a body over
-4096 bytes after decoding, or a signature over 80 bytes after decoding. An
+4096 bytes after decoding, a signature over 80 bytes after decoding, or a half
+that is not the canonical encoding of its bytes (its unused trailing bits are not
+zero). Without that last rule a flipped trailing character decodes to the same
+bytes, so the text of a line could change while the entry, its identity and its
+signature did not. An
 unterminated last line (no `\n`) is a write that did not finish; a node discards
 it at boot and never acknowledges it.
 
@@ -150,8 +154,15 @@ Every body has these keys first:
 The state after entries `0..n` is a function of those entries alone:
 
 - `members`: a map from `name` to its latest `member` entry's fields, with
-  revoked names removed.
+  revoked names removed. Applying a `revoke` also removes the revoked name from
+  the `links` of every remaining member, so a name enrolled again later holds no
+  edge it was not given anew.
 - `ever`: the set of every `name` any `member` entry has named.
+
+A tool that writes a `member` entry for `enroll` or `renew` derives the member's
+current fields, `links` included, from this state and not from the member's last
+entry. The last entry still lists a revoked name, and an entry which copied that
+list would name a member that is no longer active and be refused as invalid.
 
 An entry is **valid** at state `S` when its `seq` and `prev` follow the head and:
 
@@ -174,7 +185,13 @@ and `m` are **linked**. They are linked when `m.name` is in the links of `n`, wh
 `n` is in the links of `m`, or when both have `directory` other than `none`. A
 node whose `name` is not an active member has an empty table and starts no
 distribution (`NotEnrolled`). Applying a `revoke` that names the node itself
-stops its distribution (`Revoked`).
+leaves it with the empty table (`Revoked`): every handshake is refused in both
+directions and every connection is dropped. Its `net_kernel` keeps running, but
+no entry can reach it over the network afterwards: its peers have swept it, it
+dials nobody and it accepts nobody. Enrolling the name again mints a new
+certificate that the node does not hold, so `import` of the new entry does not
+help it. The remedy is to run `enroll` for the name again, `install --force` the
+new bundle on the node and restart it.
 
 ### Accepting an entry
 
@@ -193,7 +210,8 @@ in order, and stops at the first failure:
 7. Check validity (the fold). Failure is `invalid`.
 8. Append the line to the file and flush it to disk.
 9. Publish the new pin table.
-10. Disconnect every connected node whose name is not in the new table.
+10. Disconnect every connected node whose name is not in the new table, and
+    every connected node whose pin the entry replaced.
 
 A line that fails at `bad_signature`, `malformed`, `fork`, `chain` or `invalid` is
 refused. The node records the last refusal (the sequence number, the failing step
@@ -213,7 +231,13 @@ which it needs in any case to send a `Head` when a connection comes up, and on e
 node-up it disconnects the node if its name is not in the current table. A
 handshake that read the previous table and finishes after the publish is a node-up
 that the process handles after the publish, because both are messages to one
-process handled in order. No timing assumption is involved.
+process handled in order. No timing assumption is involved. The check is by name, so it
+covers a revoke (the name has left the table) and does not cover a renewal: a
+handshake made with the old certificate that read the old row before the publish,
+and completed after the sweep sampled the connected nodes, finds the name still in
+the table and stays. This is a corollary of the limit that a connection is not
+bound to its certificate (section 6.5 of the design note), and no machinery is
+added for it.
 
 ### The verify callback and the options file
 
@@ -238,28 +262,45 @@ every handshake is refused until it restarts.
 ### Atoms and the allow list
 
 A node name becomes an atom when the ledger applies a `member` entry that
-passed steps 1 through 7, and not before. At most 256 names can be enrolled over
-the life of a ledger, so at most 256 atoms. The rule in protocol-change/078 that
+passed steps 1 through 7, and not before. The atom is the member's `node`, and
+re-upserting a name with a new node is legal, so the number of atoms and of
+allow list names is bounded by the 10,000 entries of the file and not by the 256
+names. The rule in protocol-change/078 that
 peer names become atoms "once, from the finite configuration" becomes "from the
 finite, signed ledger". `net_kernel:allow/1` is called with each enrolled name when
 its entry is applied and is never reduced; OTP does not support reducing it. A
-revoked name stays allowed. The pin table is the check on the certificate, and the
-allow list is only a check on the claimed name.
+revoked name stays allowed. The allow list checks the name of an outbound
+connection and the host of an inbound one, and neither is a revocation mechanism.
+An outbound connection to an unlisted name is refused before TLS starts. An
+inbound connection under `inet_tls_dist` is not checked by name: the list becomes
+the hosts of the listed names that the peer's certificate covers, or the address
+the peer connected from when the certificate carries that address, and the
+claimed name must be on one of those hosts. The pin table is therefore the only
+gate on the identity of an inbound peer. The table holds at most 63 pins, because
+at most 64 members are active, and the allow list at most 10,000 names, one for
+each node an entry has named. Once the list is non-empty, an inbound
+peer needs a certificate that covers a listed host; `provision` issues
+certificates for the node name and the host, so applying the entry for a node on
+a new host adds that host.
 
 ### The `loom_ledger` process and its vocabulary
 
 Each daemon with a `ledger` runs one process registered as `loom_ledger`. It owns
 the file, the table and the disconnects, and it is started by the daemon before the
 catalogue, after the VM is booted for distribution and before `net_kernel` starts
-(the table must exist before the first handshake). Its messages hold integers and
-bytes only.
+(the table must exist before the first handshake). Its messages hold integers,
+bytes and subjects only.
 
 ```gleam
 pub type Message {
   /// What the sender holds. Sent by both ends when a connection comes up, after
-  /// the sender applies entries (to every connected peer but the source), and
-  /// every 60 seconds to each connected peer.
-  Head(seq: Int, id: BitArray)
+  /// the sender applies entries (to every connected peer but the source, and,
+  /// when the entries came from a pull that moved the head, to the source as
+  /// well, since a peer learns another's head only from this message), and
+  /// every 60 seconds to each connected peer. `from` is the sender's inbox: a
+  /// message to a registered name does not say who sent it, and the receiver
+  /// that is behind must know where to send its `Pull`.
+  Head(seq: Int, id: BitArray, from: Subject(Message))
 
   /// The entries after `after`, at most `limit`, which is clamped to 1 through
   /// 64. The reply holds at most 256 KiB of lines.
@@ -270,6 +311,12 @@ pub type Entries {
   Entries(lines: List(BitArray), head_seq: Int)
 }
 ```
+
+`from` is the sender's own inbox, a subject owned by a process on the sender's
+node. The receiver attributes a `Head` to the node that owns `from` and never to
+a name the sender states, and it ignores a `Head` whose `from` is a named subject,
+which would resolve against the receiver's own registry. A peer that never sends
+a `Head`, such as a static-mode node, is listed as never having reported.
 
 There is no push message. A node that receives `Head` with a higher `seq` pulls
 from its current head and applies the lines in order, through the acceptance steps
@@ -298,21 +345,26 @@ constructor sent to an older node halts it; both ends are upgraded together, and
 
 All three are owner-only commands of the client control protocol, Part 1.6.
 
-**`ledger.append`** takes `{"lines": ["<line>", ...]}`, at most 64 lines, and
-passes them through the acceptance steps. It replies
+**`ledger.append`** takes `{"lines": ["<line>", ...]}`, at most 64 lines of at most
+8 KiB each and at most 48,000 bytes in all (a frame is 64 KiB), and passes them
+through the acceptance steps. A caller sends larger files in pages. It replies
 
 ```json
 {"applied": 2, "head": {"seq": 9, "id": "4c1e..."}}
 ```
 
 A step failure is refused with `ledger_invalid`, whose message names the step:
-`malformed`, `bad_signature`, `fork`, `chain`, `invalid` or `unsupported_format`.
+`malformed`, `bad_signature`, `fork`, `chain`, `invalid` or `unsupported_format`,
+and `gap` for a line more than one past the head (step 5 ignores such a line, but a
+control command that is silent about a line it did not apply is worse than one that
+says so).
 Lines that were already applied before the failure stay applied. A daemon with no
 `ledger` refuses with `not_found`.
 
 **`ledger.entries`** takes `{"after": 7, "limit": 64}`, with `limit` clamped to 1
 through 64, and replies `{"lines": ["<line>", ...], "head_seq": 9}` with at most
-256 KiB of lines. It is the control-protocol twin of `Pull`. The operator's tool
+48,000 bytes of lines, because the reply is one 64 KiB frame; a page may be shorter
+than `limit`, and the caller continues from the last line it received. It is the control-protocol twin of `Pull`. The operator's tool
 uses it to fetch entries its own copy lacks before it signs.
 
 **`ledger.status`** takes no arguments and replies
@@ -352,9 +404,13 @@ ledger = "/home/me/.loom/distribution/ledger.log"
 
 `ledger` is an absolute path, and the daemon reads the file at start. A document
 with both `ledger` and `[[distribution.peers]]` is refused, and one with neither
-is refused as today. With `ledger` set, `distribution.start` takes the loaded and
-verified ledger, creates the table, and returns a `Membership` that resolves a peer
-name against the live member set. The authority certificate named in the genesis
+is refused as today. With `ledger` set, the daemon loads and verifies the file and starts the
+ledger process, which creates the table, and only then calls `distribution.start`
+(which takes no ledger, so that `client/distribution` imports nothing of the
+ledger). It returns a `Membership` that resolves a peer name against the published
+table, which lists the active members this node is linked to. A node whose
+`distribution.node` is not an active member of the ledger is refused at start with
+a sentence, and `[directory]` is refused beside a ledger until phase 3. The authority certificate named in the genesis
 `authority` key MUST be the certificate in `ca`; a mismatch is `InvalidLedger`.
 `docs/configuration.md` gains a row for the key, as `make doc-check` requires.
 
@@ -362,10 +418,26 @@ name against the live member set. The authority certificate named in the genesis
 belong to this `ca`), `NotEnrolled` and `Revoked`. Each has an operator sentence
 in `describe`. None carries a pin, key or cookie.
 
-Until phase 2, `[executors.<name>]`, `[orchestrators.<name>]` and
-`[directory] members` check their node against the ledger's member names
-instead of `[[distribution.peers]]`. A node that was never in `ever` is refused as
-today. A node in `ever` that is not active produces a warning and an inert row.
+`[executors.<name>]`, `[orchestrators.<name>]`, `[spawners.<name>]` and
+`[directory] members` name a peer by node. In static mode each node is checked
+against `[[distribution.peers]]` when the table is parsed, as before. In ledger mode
+parsing checks a row's shape and never opens the ledger: a session parses these
+tables on every create, open and profile switch, and a ledger changes while a daemon
+runs, so a parse that read it would verify every signature again for each session
+open, and one `revoke` would fail every session open on a daemon whose table still
+named the revoked member. The daemon compares the rows with the ledger once, at
+start, with the ledger the ledger process already holds
+(`client/ledger_reference.audit`). A row naming a node that no member entry has ever
+named, active or revoked, is refused with a sentence, because it is a typo or a
+configuration written for another deployment. A row naming a node that was a member
+and is not an active member this node is linked to is accepted as inert and logged
+as a warning that names the row and the reason, which is the warning and the inert
+row this proposal asked for. A call through an inert row fails at call time, because
+peer resolution in live mode answers only for names in the current pin table. The
+check is in phase 1 because a bundle `provision` writes for an orchestrator carries
+an `[executors.<name>]` row for each executor it uses. The ledger's fold gains the
+set of every node a member entry has named (`ever_nodes`), beside `ever`, which
+holds names, so that a revoked member's node can be told from a mistyped one.
 
 ### The bundle
 
@@ -377,38 +449,57 @@ role or node name differs from that entry. `install` writes the ledger file besi
 the credentials and writes `ledger = ...` in place of the pin rows. `install`
 prints the time of the last entry and states that the node trusts the snapshot
 until it syncs. A `/1` bundle installs as before, and a `/2` bundle's tables are
-merged by the same rules.
+merged by the same rules. The ledger file is compared as a chain, not as a file:
+a file the bundle's ledger extends is replaced, a file that extends the bundle's
+ledger is kept, and two that diverge are refused unless `--force`. A `/2` bundle
+that puts its node in the session directory is refused before anything is written,
+until phase 3.
 
 ### Operator commands
 
-`provision PLAN OUT` writes `ledger.log`, `/2` bundles and `system.json`. It writes
-the authority certificate and the authority key, encrypted under a passphrase, to
-`~/.loom/authority/<deployment id>` (mode 0700) unless `--drop-authority` is given,
-in which case the ledger can never be extended. It reads the passphrase from a
+`provision PLAN OUT` writes `ledger.log`, `/2` bundles and `system.json`. This is
+its default; `--static` writes the `/1` bundles of protocol-change/078 instead and
+discards the key, and refuses `--drop-authority`, `--passphrase-file` and `--home`.
+It writes the authority certificate, the authority key encrypted under a
+passphrase, the operator's copy of the ledger and the deployment's cookie, to
+`~/.loom/authority/<deployment id>` (mode 0700, files 0600) unless
+`--drop-authority` is given, in which case the ledger can never be extended. The
+cookie is kept so that the bundle of a node enrolled later carries the same one;
+it is no more exposed than in the bundles `provision` wrote on the same machine. A
+plan with a session directory is refused without `--static` until phase 3. It reads the passphrase from a
 terminal prompt or `--passphrase-file`, and prints neither. The encryption is
 PBKDF2-HMAC-SHA256 with at least 600,000 iterations and a random salt, and
 AES-256-GCM, both from OTP `crypto`.
 
 | Command | Effect |
 |---|---|
-| `enroll NAME --node N --role R [--directory D] [--host H] [--port P] [--links A,B] [--out DIR] [--wait S]` | Validates the fold, mints a certificate for `N`, signs and appends a `member` entry, hands it to the daemon, writes `NAME.loombundle` (`/2`), and prints confirmations after at most `S` seconds (default 10). Until phase 3 it refuses a `--directory` other than `none`. |
-| `revoke NAME [--force] [--wait S]` | Checks that the member owns no sessions or scopes, and that the link graph stays connected; signs and appends a `revoke`; prints confirmations. From phase 3 it also checks that the voter count stays within protocol-change/083's bounds. `--force` skips the checks. |
-| `renew NAME` | Mints a new certificate for an existing member, signs a `member` entry with the new pin, and writes a new bundle. The node installs the bundle and restarts. Connections that exist stay up, because a pin is checked only at handshake; until the restart, the node's new handshakes are refused. |
+| `enroll NAME --node N --role R [--directory D] [--host H] [--port P] [--links A,B] [--workspace NAME=ROOT]... [--bundle-dir DIR] [--out DIR] [--force] [--wait S]` | Validates the fold, mints a certificate for `N`, signs and appends a `member` entry, hands it to the daemon, writes `NAME.loombundle` (`/2`), and prints confirmations after at most `S` seconds (default 10). Until phase 3 it refuses a `--directory` other than `none`. It refuses an executor with no `--links`, which could not be reached and cannot be linked later without a revoke. An existing bundle file is not replaced without `--force`. If the bundle cannot be written, the entry is already in the operator's copy, and the error says to run `renew NAME`. |
+| `revoke NAME [--reason TEXT] [--force] [--wait S]` | Checks that the link graph stays connected and that no executor loses its last orchestrator; signs and appends a `revoke`; prints confirmations. The check that the member owns no sessions or scopes is phase 2, because no daemon can ask another what it owns; the output says it was not made. From phase 3 it also checks that the voter count stays within protocol-change/083's bounds. `--force` skips the checks. |
+| `renew NAME [--bundle-dir DIR] [--out DIR] [--force] [--wait S]` | Mints a new certificate for an existing member, signs a `member` entry with the new pin, and writes a new bundle. The ledger does not record where a node was installed, so `--bundle-dir` names the directory the node was enrolled with, and the bundle then installs over its credentials in place. The node installs the bundle and restarts. Connections that exist to the renewed member are dropped when the entry is applied, since the old certificate may be the reason for the renewal; until the restart, the node's new handshakes are refused. |
 | `log [--json]` | Prints the entries with their identities, the last refusal if there is one, and the members' reported heads when a daemon answers. |
 | `import FILE` | Client-side. Reads a ledger file and feeds its lines to the local daemon's `ledger.append` in pages of 64. It adds no second way for a node to adopt entries. |
 
-`enroll` and `revoke` take a lock on the operator's ledger copy and ask the daemon
+`enroll`, `revoke` and `renew` take a lock on the operator's ledger copy and ask the daemon
 for its head before they sign. If the daemon is ahead, they pull the missing
 entries with `ledger.entries` and verify them first. They refuse if the daemon holds
 an entry at a sequence number the operator's copy has, with a different identity.
 They hand the entry to a daemon with `ledger.append` on the control socket they are
-given (`--addr`, as other `loom` commands), and when no daemon is reachable they
-write the entry to the operator's copy and tell the operator to run `import` on a
-member's machine.
+given (`--state-dir DIR` for a daemon on this host, or `--addr URL --token-file
+PATH` as `loom access` takes them), and when no daemon is reachable they write the
+entry to the operator's copy and tell the operator to run `import` on a member's
+machine. A command does not wait for the member it just enrolled or renewed, which
+cannot confirm until its bundle is installed. `loom distribution enroll`, `revoke`
+and `renew` need `--passphrase-file`, because the launcher cannot pass a terminal
+to `loomd`.
 
 There is no command that resets a node after a fork. The design note documents the
 procedure: stop the daemon, truncate the ledger file to the lines before the fork
 point, start it, and let it sync.
+
+An operator's copy that has forked from the deployment is repaired by hand: copy a
+member's ledger file over `~/.loom/authority/<deployment id>/ledger.log`. The
+signing commands refuse to run against a copy that disagrees with the daemon, and
+the member's file is a ledger that every other member also holds.
 
 ### Phase 3: the directory
 
@@ -454,7 +545,7 @@ member daemon is a member continues to hold.
 | `distribution.start` and `Membership` | Fixed, finite, immutable | Takes an optional loaded ledger; `Membership` resolves against the live member set |
 | `distribution.Fault` | Seven constructors | Adds `InvalidLedger`, `NotEnrolled`, `Revoked` |
 | Bundle | `loom-distribution-bundle/1` | Adds `/2`; `/1` still installs |
-| Node-name atoms | Created once at start from the configured list | Also created when a verified `member` entry is applied, at most 256 |
+| Node-name atoms | Created once at start from the configured list | Also created when a verified `member` entry is applied, at most one per entry (10,000) |
 | `net_kernel:allow/1` | Called once | Called per enrolled name; never reduced |
 | Node vocabulary | `HostMessage`, `OwnerMessage`, orchestrator `Message` | Adds `loom_ledger` `Message` (`Head`, `Pull`); the others and `protocol.version` unchanged |
 | Control protocol, Part 1.6 | | Adds owner-only `ledger.append`, `ledger.entries` and `ledger.status`, and the refusal `ledger_invalid` |

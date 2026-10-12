@@ -7,6 +7,12 @@
 %% directory is deleted afterwards.
 -module(client_distribution_fixture_ffi).
 -export([scenario/1, child/2, installed/4, free_port/0, certificate_facts/1]).
+%% The pieces the membership-ledger spike fixtures reuse, so that there is one
+%% way to mint a node, boot an emulator with the production TLS flags and wait
+%% for what it prints.
+-export([root_cert/1, cookie/1, name/1, provision/6, cert_of/1, name_of/1,
+         bin/1, str/1, open_vm/6, child_for/3, await_ready/2, await_complete/2,
+         await_text/3, await_unregistered/2, close_port/1, command/2, ready/0]).
 -include_lib("public_key/include/public_key.hrl").
 
 -define(DIST, 'client@distribution').
@@ -293,6 +299,61 @@ run(<<"directory_join_kill">>, Root) ->
         true = port_command(PortA, <<"stop\n">>),
         await_complete(PortA, <<>>)
     after close_port(PortA) end,
+    ok;
+
+%% Three ledger nodes (protocol-change/086) pinned in a chain: the first trusts
+%% the second, the second trusts both, and the third trusts the second, so the
+%% first and the third never connect. All start with only the genesis entry.
+%% The first applies two entries, the second connects to it and must catch up,
+%% the third connects to the second and must catch up through it, and then a
+%% revoke applied at the first must reach the third without any connection
+%% between them. The waits are the nodes' own bounded polls; the parent only
+%% reads their witnesses.
+run(<<"ledger_relay">>, Root) ->
+    Ca = root_cert("fixture ca"),
+    Cookie = cookie("shared"),
+    A = provision(Root, "first", Ca, name("first"), same, Cookie),
+    B = provision(Root, "middle", Ca, name("middle"), same, Cookie),
+    C = provision(Root, "third", Ca, name("third"), same, Cookie),
+    ConfigA = config_all(A, [B], none),
+    ConfigB = config_all(B, [A, C], none),
+    ConfigC = config_all(C, [B], none),
+    [write_options(N, Cfg) || {N, Cfg} <- [{A, ConfigA}, {B, ConfigB}, {C, ConfigC}]],
+    [Genesis | _] = 'support@ledger_nodes':script(),
+    Aux = fun(#{home := Home}) ->
+        Path = filename:join(Home, "ledger.log"),
+        ok = file:write_file(Path, [Genesis, <<"\n">>]),
+        #{ledger => bin(Path), lifetime => 300000}
+    end,
+    PortC = open_vm(C, ConfigC, ledger_node, Aux(C), []),
+    try
+        await_text(PortC, <<"FIXTURE_READY">>, 60000),
+        PortB = open_vm(B, ConfigB, ledger_node, Aux(B), []),
+        try
+            await_text(PortB, <<"FIXTURE_READY">>, 60000),
+            PortA = open_vm(A, ConfigA, ledger_node, Aux(A), []),
+            try
+                await_text(PortA, <<"FIXTURE_READY">>, 60000),
+                ledger_step(PortA, "offer 1", <<"OFFERED accepted">>),
+                ledger_step(PortA, "offer 2", <<"OFFERED accepted">>),
+                ledger_step(PortB, "connect " ++ str(name_of(A)), <<"CONNECTED">>),
+                ledger_step(PortB, "await 2", <<"AT 2">>),
+                ledger_step(PortC, "connect " ++ str(name_of(B)), <<"CONNECTED">>),
+                ledger_step(PortC, "await 2", <<"AT 2">>),
+                ledger_step(PortC, "describe", <<"members hub,laptop">>),
+                ledger_step(PortA, "offer 3", <<"OFFERED accepted">>),
+                ledger_step(PortC, "await 3", <<"AT 3">>),
+                ledger_step(PortC, "describe", <<"members hub id">>),
+                ledger_step(PortC, "nodes", <<"NODES 1">>),
+                true = port_command(PortA, <<"stop\n">>),
+                await_complete(PortA, <<>>)
+            after close_port(PortA) end,
+            true = port_command(PortB, <<"stop\n">>),
+            await_complete(PortB, <<>>)
+        after close_port(PortB) end,
+        true = port_command(PortC, <<"stop\n">>),
+        await_complete(PortC, <<>>)
+    after close_port(PortC) end,
     ok;
 
 %% Boot-precondition and credential refusals, one emulator each.
@@ -682,11 +743,16 @@ run_expect(Node, Config, Expected, Extra) ->
     try await_complete(Port, <<>>) after close_port(Port) end,
     ok.
 
-open_vm(#{home := Home, options := Options}, Config, Role, Aux, Extra) ->
+open_vm(Node, Config, Role, Aux, Extra) ->
+    open_vm(?MODULE, Node, Config, Role, Aux, Extra).
+
+%% `Module` is the fixture whose `child/2` the emulator enters, so that another
+%% fixture can define its own roles and still boot through this function.
+open_vm(Module, #{home := Home, options := Options}, Config, Role, Aux, Extra) ->
     Paths = [filename:absname(Path) || Path <- code:get_path()],
     Encoded = binary_to_list(base64:encode(term_to_binary({Config, Aux}))),
     Eval = lists:flatten(io_lib:format(
-        "client_distribution_fixture_ffi:child(~p, ~p).", [Encoded, Role])),
+        "~s:child(~p, ~p).", [Module, Encoded, Role])),
     Args = ["+S", "2", "-pa"] ++ Paths
         ++ ["-proto_dist", "inet_tls", "-ssl_dist_optfile", str(Options)]
         ++ Extra ++ ["-noshell", "-eval", Eval],
@@ -732,13 +798,18 @@ close_port(Port) -> try port_close(Port) catch _:_ -> ok end.
 %% The entry point of each child emulator. It has a finite lifetime and prints
 %% a witness only after every assertion of its role held.
 child(Encoded, Role) ->
+    child_for(fun role/3, Encoded, Role).
+
+%% The same entry point for a fixture with roles of its own: `Handler` runs the
+%% role, and the watchdog, the stdin forwarding and the witness stay shared.
+child_for(Handler, Encoded, Role) ->
     {Config, Aux} = binary_to_term(base64:decode(Encoded)),
     Lifetime = maps:get(lifetime, Aux, 50000),
     _ = spawn(fun() -> timer:sleep(Lifetime), halt(3) end),
     Self = self(),
     _ = spawn(fun() -> stdin_loop(Self) end),
     try
-        role(Role, Config, Aux),
+        Handler(Role, Config, Aux),
         io:format("BOOTSTRAP_COMPLETE~n"),
         halt(0)
     catch Class:Reason:Stack ->
@@ -836,6 +907,13 @@ role(dir_member_restart, Config, #{members := Members, directory := Dir}) ->
             io:format("RESTART refused ~s~n", [Reason])
     end,
     ready_and_stop();
+%% A node of the membership ledger: distribution as the production daemon starts
+%% it, the real ledger process over this node's file, and commands on stdin.
+role(ledger_node, Config, #{ledger := Path}) ->
+    {ok, Membership} = ?DIST:start(Config, not_member),
+    {ok, Node} = support@ledger_nodes:start(Path),
+    ready(),
+    ledger_commands(Membership, Node);
 role(serve, Config, _Aux) ->
     {ok, _} = ?DIST:start(Config, not_member),
     true = register(loom_dist_probe, self()),
@@ -942,6 +1020,41 @@ directory_commands(Handle) ->
             directory_commands(Handle)
     after 280000 -> error(no_command)
     end.
+
+%% The commands a ledger node takes on stdin. Each prints one witness line.
+ledger_commands(Membership, Node) ->
+    receive
+        stop -> ok;
+        {line, "offer " ++ N} ->
+            case support@ledger_nodes:offer(Node, list_to_integer(N)) of
+                {ok, Word} -> io:format("OFFERED ~s~n", [Word]);
+                {error, Why} -> io:format("OFFER FAILED ~s~n", [Why])
+            end,
+            ledger_commands(Membership, Node);
+        {line, "connect " ++ Name} ->
+            {ok, Peer} = ?DIST:peer(Membership, list_to_binary(Name)),
+            {ok, nil} = ?DIST:connect(Peer, 15000),
+            io:format("CONNECTED~n"),
+            ledger_commands(Membership, Node);
+        {line, "await " ++ N} ->
+            case support@ledger_nodes:await(Node, list_to_integer(N), 40000) of
+                {ok, nil} -> io:format("AT ~s~n", [N]);
+                {error, Why} -> io:format("AWAIT FAILED ~s~n", [Why])
+            end,
+            ledger_commands(Membership, Node);
+        {line, "describe"} ->
+            {ok, Text} = support@ledger_nodes:describe(Node),
+            io:format("DESCRIBE ~s~n", [Text]),
+            ledger_commands(Membership, Node);
+        {line, "nodes"} ->
+            io:format("NODES ~p~n", [length(nodes(connected))]),
+            ledger_commands(Membership, Node)
+    after 140000 -> error(no_command)
+    end.
+
+ledger_step(Port, Text, Witness) ->
+    command(Port, Text),
+    await_text(Port, Witness, 60000).
 
 await_snapshot(_Port, 0) -> error(no_snapshot);
 await_snapshot(Port, Tries) ->

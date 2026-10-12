@@ -1054,8 +1054,7 @@ fn parse_launch(arguments: List(String)) -> Launch {
     ["version"] | ["--version"] -> Version
     ["version", ..] | ["--version", ..] -> Invalid(version_usage())
     ["ext", ..rest] -> Forward(verb: "ext", arguments: rest)
-    ["distribution", ..rest] | ["dist", ..rest] ->
-      Forward(verb: "distribution", arguments: rest)
+    ["distribution", ..rest] | ["dist", ..rest] -> forward_distribution(rest)
     ["executor", ..rest] -> Forward(verb: "executor", arguments: rest)
     ["update", ..rest] -> Update(arguments: rest)
     ["help", "ext"] -> Forward(verb: "ext", arguments: ["--help"])
@@ -2166,16 +2165,36 @@ fn distribution_usage() -> String {
   "usage: loom distribution <command>   (also: loomd distribution, and `dist` for short)
 
 Provision a trusted Erlang distribution between Loom daemons with one plan, one
-file per machine, and one command on each machine. No openssl is needed.
+file per machine, and one command on each machine. No openssl is needed. The
+deployment's membership is a signed ledger, so `enroll`, `revoke` and `renew`
+change it later without provisioning the other nodes again.
 
 commands:
   init [PATH]                     Write an example plan (default
                                   distribution-plan.toml). Refuses to overwrite.
-  provision PLAN OUT [--force]    Read PLAN (.toml or .json), mint the CA, the
+  provision PLAN OUT [--force] [--drop-authority] [--passphrase-file PATH]
+            [--home DIR] [--static]
+                                  Read PLAN (.toml or .json), mint the CA, the
                                   node certificates and the shared cookie, and
                                   write OUT/<node>.loombundle (mode 0600) for
                                   each node plus OUT/system.json (no secrets).
-                                  Refuses a non-empty OUT without --force.
+                                  The bundles carry a signed membership ledger
+                                  (also written to OUT/ledger.log), and the CA
+                                  key is sealed under a passphrase in
+                                  DIR/.loom/authority/<deployment id> (DIR
+                                  defaults to $HOME) so that the ledger can be
+                                  extended. The passphrase is asked for twice on
+                                  the terminal, or read from PATH, a file only
+                                  you can read. --drop-authority keeps no key,
+                                  and the ledger can then never change. Only
+                                  `loomd distribution provision` can ask on the
+                                  terminal; `loom distribution provision` needs
+                                  --passphrase-file or --drop-authority.
+                                  --static writes the older bundles instead:
+                                  each lists its peers' pins, the key is
+                                  discarded, and adding a node means
+                                  provisioning again. Refuses a non-empty OUT
+                                  without --force.
   show OUT                        Print OUT/system.json as a table.
   install BUNDLE [--home DIR] [--config PATH] [--force]
                                   Run on the node's machine. Installs the
@@ -2183,22 +2202,76 @@ commands:
                                   (default $HOME), the [distribution] and role
                                   tables in PATH (default DIR/.loom/loom.toml)
                                   and the TLS options file, then prints the
-                                  command that starts the daemon. Running it
-                                  again with the same bundle changes nothing.
-                                  A different existing cookie, credential file
-                                  or table is refused unless --force.
+                                  command that starts the daemon. A ledger
+                                  bundle also writes the ledger beside the
+                                  credentials, and the node trusts that snapshot
+                                  until it syncs with a peer that holds more.
+                                  Running it again with the same bundle changes
+                                  nothing. A different existing cookie,
+                                  credential file or table is refused unless
+                                  --force.
+  enroll NAME --node N --role orchestrator|executor [--host H] [--port P]
+         [--links A,B] [--workspace NAME=ROOT]... [--bundle-dir DIR]
+         [--out DIR] [--force] [--wait SECONDS] [COMMON]
+                                  Run on the operator's machine. Mints a
+                                  certificate for N under the kept authority,
+                                  signs a `member` entry, appends it to the
+                                  operator's copy of the ledger, hands it to a
+                                  daemon, writes OUT/NAME.loombundle (default
+                                  OUT: the current directory) and prints which
+                                  members hold the new head, after at most
+                                  SECONDS (default 10). --links names the
+                                  members NAME may connect to; an executor
+                                  needs at least one orchestrator there, and
+                                  --workspace to serve anything.
+  revoke NAME [--reason TEXT] [--force] [--wait SECONDS] [COMMON]
+                                  Signs a `revoke`, hands it to a daemon and
+                                  prints confirmations. Refuses when the revoke
+                                  would leave an executor with no orchestrator
+                                  linked to it, or cut members off from the
+                                  rest, unless --force. It does not check
+                                  whether NAME owns sessions: a daemon cannot
+                                  ask another.
+  renew NAME [--bundle-dir DIR] [--out DIR] [--force] [--wait SECONDS]
+         [COMMON]
+                                  Mints a new certificate for a member, signs a
+                                  `member` entry with the new pin and writes a
+                                  new bundle. Install it with --force on the
+                                  node and restart the daemon. Connections to
+                                  the node are dropped when the entry is
+                                  applied. Give the same --bundle-dir the node
+                                  was enrolled with, so the bundle installs
+                                  over its credentials in place.
+  log [--json] [--config PATH] [COMMON]
+                                  Print the ledger's entries with their
+                                  identities, then the last refusal and each
+                                  member's reported head when a daemon answers.
+                                  Reads the operator's copy, or the ledger that
+                                  the [distribution] table of PATH names.
+  import FILE [--state-dir DIR | --addr URL --token-file PATH]
+                                  Feed the lines of a ledger file to the local
+                                  daemon, for a node nothing else can reach.
   options CONFIG OUTPUT           Render the TLS distribution options file for
                                   the [distribution] table of CONFIG (mode
                                   0600). `install` does this for you.
+
+COMMON is [--home DIR] [--deployment ID] [--passphrase-file PATH]
+[--state-dir DIR | --addr URL --token-file PATH]. The key is found under
+DIR/.loom/authority (DIR defaults to $HOME); --deployment picks one when
+several are kept. The passphrase is asked for on the terminal, which only
+`loomd distribution` can do; `loom distribution enroll`, `revoke` and `renew`
+need --passphrase-file. The daemon is the one on this host, found through its
+state directory (default $HOME/.loom), unless --addr names another.
 
 A .loombundle holds the node's private key and the deployment's cookie. Copy it
 to its machine over a channel you trust, and delete it there after installing.
 
 Example:
   loom dist init plan.toml
-  loom dist provision plan.toml out
+  loom dist provision plan.toml out --passphrase-file ~/.loom-passphrase
   scp out/devbox.loombundle devbox:
-  ssh devbox loom dist install devbox.loombundle"
+  ssh devbox loom dist install devbox.loombundle
+  loom dist enroll laptop2 --node loom@laptop2.example --role orchestrator --links devbox --passphrase-file ~/.loom-passphrase"
 }
 
 // The help text of `loom executor`, held here for the reason
@@ -2251,6 +2324,51 @@ pub fn server_arguments(arguments: List(String)) -> Option(List(String)) {
   case parse_launch(arguments) {
     Forward(verb:, arguments:) -> Some([verb, ..arguments])
     _other -> None
+  }
+}
+
+// `loom distribution` forwards to `loomd`, with one refusal made here. The
+// forwarded child's stdin is a pipe, so a command that opens or seals the
+// authority key cannot ask for the passphrase on the terminal, and would fail
+// only after the server booted. Those are `provision` (ledger mode, which is the
+// default) and `enroll`, `revoke` and `renew`. Refusing up front gives the
+// operator the same answer and the way out, and leaves the prompt to
+// `loomd distribution`, which owns the terminal.
+fn forward_distribution(arguments: List(String)) -> Launch {
+  let has = fn(rest, flag) { list.contains(rest, flag) }
+  case arguments {
+    ["provision", ..rest] ->
+      case
+        has(rest, "--static")
+        || has(rest, "--passphrase-file")
+        || has(rest, "--drop-authority")
+        || has(rest, "--help")
+        || has(rest, "-h")
+      {
+        True -> Forward(verb: "distribution", arguments:)
+        False ->
+          Invalid(
+            "distribution provision needs --passphrase-file PATH, "
+            <> "--drop-authority or --static here; the passphrase prompt works "
+            <> "only when run as `loomd distribution provision`",
+          )
+      }
+    [verb, ..rest] if verb == "enroll" || verb == "revoke" || verb == "renew" ->
+      case
+        has(rest, "--passphrase-file") || has(rest, "--help") || has(rest, "-h")
+      {
+        True -> Forward(verb: "distribution", arguments:)
+        False ->
+          Invalid(
+            "distribution "
+            <> verb
+            <> " needs --passphrase-file PATH here; the passphrase prompt "
+            <> "works only when run as `loomd distribution "
+            <> verb
+            <> "`",
+          )
+      }
+    _other -> Forward(verb: "distribution", arguments:)
   }
 }
 

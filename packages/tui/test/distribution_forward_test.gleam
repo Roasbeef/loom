@@ -5,7 +5,9 @@
 //// own commands are not forwarded. The shipped acceptance in
 //// `scripts/cli_help_test.sh` runs the built binaries for the rest.
 
+import gleam/list
 import gleam/option.{None, Some}
+import gleam/string
 import tui
 
 pub fn distribution_is_forwarded_with_its_arguments_untouched_test() {
@@ -15,8 +17,16 @@ pub fn distribution_is_forwarded_with_its_arguments_untouched_test() {
       "plan.toml",
       "out",
       "--force",
+      "--static",
     ])
-    == Some(["distribution", "provision", "plan.toml", "out", "--force"])
+    == Some([
+      "distribution",
+      "provision",
+      "plan.toml",
+      "out",
+      "--force",
+      "--static",
+    ])
   assert tui.server_arguments([
       "distribution",
       "install",
@@ -38,6 +48,63 @@ pub fn dist_is_the_same_command_as_distribution_test() {
     == Some(["distribution", "--help"])
   assert tui.server_arguments(["help", "distribution"])
     == Some(["distribution", "--help"])
+}
+
+// The forwarded `loomd` has a pipe for stdin, so it cannot ask for the
+// passphrase. A provision seals a key unless it is static or drops the key, and
+// `enroll`, `revoke` and `renew` open one. The launcher says so before it spawns
+// anything.
+pub fn a_command_that_needs_the_passphrase_and_has_no_source_is_refused_test() {
+  let refused = fn(arguments, fragment) {
+    assert tui.server_arguments(arguments) == None
+    let assert Error(reason) = tui.launch_options(arguments)
+    assert string.contains(reason, fragment)
+  }
+  refused(
+    ["distribution", "provision", "plan.toml", "out"],
+    "--passphrase-file PATH, --drop-authority or --static",
+  )
+  refused(
+    ["dist", "provision", "plan.toml", "out", "--force"],
+    "loomd distribution provision",
+  )
+  refused(
+    ["distribution", "enroll", "laptop2", "--node", "loom@l.example"],
+    "distribution enroll needs --passphrase-file PATH",
+  )
+  refused(["dist", "revoke", "laptop2", "--force"], "loomd distribution revoke")
+  refused(["dist", "renew", "laptop2"], "distribution renew needs")
+}
+
+pub fn a_command_with_a_passphrase_source_or_none_to_ask_is_forwarded_test() {
+  let forwarded = fn(arguments) {
+    assert tui.server_arguments(arguments)
+      == Some(["distribution", ..list.drop(arguments, 1)])
+  }
+  forwarded([
+    "distribution", "provision", "plan.toml", "out", "--passphrase-file",
+    "pass.txt",
+  ])
+  forwarded([
+    "distribution",
+    "provision",
+    "plan.toml",
+    "out",
+    "--drop-authority",
+  ])
+  forwarded(["distribution", "provision", "plan.toml", "out", "--static"])
+  forwarded(["distribution", "enroll", "l", "--passphrase-file", "pass.txt"])
+  forwarded(["distribution", "revoke", "l", "--passphrase-file", "pass.txt"])
+  forwarded(["distribution", "renew", "l", "--passphrase-file", "pass.txt"])
+
+  // Help never asks for anything, and the commands that read the ledger or
+  // install a bundle have no passphrase to give.
+  forwarded(["distribution", "provision", "--help"])
+  forwarded(["distribution", "enroll", "-h"])
+  forwarded(["distribution", "log", "--json"])
+  forwarded(["distribution", "import", "ledger.log"])
+  forwarded(["distribution", "install", "n.loombundle"])
+  forwarded(["distribution", "show", "out"])
 }
 
 pub fn ext_is_still_forwarded_the_same_way_test() {

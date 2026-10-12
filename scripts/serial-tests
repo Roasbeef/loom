@@ -99,3 +99,5 @@ client|client@directory@store_test|the Khepri store and its Ra system are regist
 client|client@directory@daemon_record_test|the Khepri store and its Ra system are registered once per emulator under fixed names
 client|client@directory@ownership_test|the Khepri store and its Ra system are registered once per emulator under fixed names
 client|client@directory@migrate_test|the Khepri store and its Ra system are registered once per emulator under fixed names
+client|client@ledger_install_test|starts the production ledger process, which registers the fixed name loom_ledger once per emulator
+client|client@ledger_boot_test|starts the production ledger process, which registers the fixed name loom_ledger once per emulator

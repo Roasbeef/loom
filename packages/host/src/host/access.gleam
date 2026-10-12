@@ -564,6 +564,37 @@ pub fn raw_request(
   Request(Local(directory), Passthrough, command, subject, fields, NoClaim)
 }
 
+/// The same request for a daemon on another host, reached over `wss` (or `ws`
+/// to a literal loopback address) with the owner token in a private file. The
+/// address is checked as `loom access --addr` checks it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // access.raw_remote_request(url, token_file, "ledger.status", "", [])
+/// ```
+@internal
+pub fn raw_remote_request(
+  address: String,
+  token_file: String,
+  command: String,
+  subject: String,
+  fields: List(#(String, JsonValue)),
+) -> Result(Request, String) {
+  use Nil <- result.try(
+    claim.remote_address(address)
+    |> result.map_error(fn(reason) { "--addr: " <> reason }),
+  )
+  Ok(Request(
+    Remote(address, token_file),
+    Passthrough,
+    command,
+    subject,
+    fields,
+    NoClaim,
+  ))
+}
+
 // The options an invitation or rotation takes, gathered whole before any
 // field is built. `--credential-digest` enrolls the invitee's own credential
 // and creates no claim, so it excludes both claim options: a lifetime or an
@@ -1402,6 +1433,14 @@ fn refusal_code(fields) {
     Ok(json.String("not_found")) -> "not_found"
     Ok(json.String("stale_epoch")) -> "stale_epoch"
     Ok(json.String("bad_request")) -> "bad_request"
+
+    // The message of a refused ledger line is the step that failed, which is
+    // what the operator needs to act on (protocol-change/086).
+    Ok(json.String("ledger_invalid")) ->
+      case list.key_find(fields, "message") {
+        Ok(json.String(step)) -> "ledger_invalid: " <> step
+        _ -> "ledger_invalid"
+      }
     Ok(json.String("isolation_required")) ->
       "isolation_required: stop the session and explicitly isolate its existing transcript before sharing"
     Ok(json.String(code)) -> code

@@ -1059,7 +1059,7 @@ a leaf over `core`.
 ### Operator access
 
 The brief asked for an operator route without a new wire. None exists. Every
-daemon command, `loomd access` (`client/daemon/admin.gleam:108`) and `loomd
+daemon command, `loomd access` (`client/daemon/admin.gleam:146`) and `loomd
 peer` (`client/daemon/peer_cli.gleam:185`) among them, is a request on the
 authenticated control protocol, decoded by `client/daemon/protocol` and bounded
 by Part 1.6. An `executor.snapshot` verb would be a new command on that wire.

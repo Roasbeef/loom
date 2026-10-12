@@ -11,6 +11,14 @@
 %% ever turned into an atom: peer names become atoms once, from the finite
 %% configuration, inside start/5.
 %%
+%% The pins come from one of two places. Static mode carries them in the
+%% options file, as the state of the callback. Live mode (protocol-change/086)
+%% names no pin in the file: the state is the atom `live`, and a leaf is checked
+%% against the row `pins` of the protected ETS table `loom_dist_pins`, which a
+%% process on this node replaces while the VM runs. Only the module that owns
+%% the callback can read that table inside a handshake, which is why the live
+%% read is here and not behind a wrapper.
+%%
 %% A node that is a member of the session directory's Khepri cluster
 %% (protocol-change/083) is started visible, because Ra reads `nodes()` to
 %% decide where to send snapshots and heartbeats, and every connection it makes
@@ -20,9 +28,14 @@
 %% is not a member, stays hidden exactly as before.
 -module(client_distribution_ffi).
 -export([options/2, start/5, peer/2, link/2, connect/2, verify/4,
-         ensure_epmd/0]).
+         ensure_epmd/0, publish_pins/1]).
 -include_lib("kernel/include/file.hrl").
 -include_lib("public_key/include/public_key.hrl").
+
+%% The ETS table that live mode reads, and the row in it that holds the map
+%% from a 32-byte leaf pin to the node name that pin must present.
+-define(PIN_TABLE, loom_dist_pins).
+-define(PIN_ROW, pins).
 
 %% The ssl_dist_optfile text for a configuration. The same term is rebuilt in
 %% start/5 and compared with what the emulator actually loaded, so the file
@@ -31,7 +44,7 @@ options(Peers, Files) ->
     unicode:characters_to_binary(io_lib:format("~p.~n", [tls_options(Peers, Files)])).
 
 tls_options(Peers, {credential_files, Ca, Cert, Key, _Cookie}) ->
-    Pins = [{binary_to_list(Name), Pin} || {Name, Pin} <- Peers],
+    Pins = verify_state(Peers),
     Shared = [{cacertfile, binary_to_list(Ca)},
               {certfile, binary_to_list(Cert)},
               {keyfile, binary_to_list(Key)},
@@ -41,9 +54,31 @@ tls_options(Peers, {credential_files, Ca, Cert, Key, _Cookie}) ->
               {log_level, none}],
     [{server, [{fail_if_no_peer_cert, true} | Shared]}, {client, Shared}].
 
+%% Static mode renders the pins into the file. Live mode renders none, so the
+%% file is a function of the credential paths alone and enrolling or revoking a
+%% node never changes it.
+verify_state(live) -> live;
+verify_state(Peers) -> [{binary_to_list(Name), Pin} || {Name, Pin} <- Peers].
+
 verify(_Cert, _Der, {bad_cert, Reason}, _Pins) -> {fail, Reason};
 verify(_Cert, _Der, {extension, _}, Pins) -> {unknown, Pins};
 verify(_Cert, _Der, valid, Pins) -> {valid, Pins};
+%% A leaf in live mode is checked against whatever map the table holds now. A
+%% missing table or row refuses every handshake, so a stopped owner can only
+%% close the node and never open it.
+verify(Cert, Der, valid_peer, live) ->
+    case live_pins() of
+        {ok, Pins} ->
+            case maps:find(crypto:hash(sha256, Der), Pins) of
+                {ok, Name} ->
+                    case exact_node_san(Cert, binary_to_list(Name)) of
+                        true -> {valid, live};
+                        false -> {fail, peer_identity_mismatch}
+                    end;
+                error -> {fail, peer_identity_mismatch}
+            end;
+        unavailable -> {fail, ledger_unavailable}
+    end;
 verify(Cert, Der, valid_peer, Pins) ->
     Digest = crypto:hash(sha256, Der),
     case lists:any(fun({Name, Pin}) ->
@@ -52,6 +87,30 @@ verify(Cert, Der, valid_peer, Pins) ->
         true -> {valid, Pins};
         false -> {fail, peer_identity_mismatch}
     end.
+
+live_pins() ->
+    try ets:lookup(?PIN_TABLE, ?PIN_ROW) of
+        [{?PIN_ROW, Pins}] when is_map(Pins) -> {ok, Pins};
+        _ -> unavailable
+    catch error:badarg -> unavailable
+    end.
+
+%% Replaces the row that live mode reads with the given pairs of a 32-byte pin
+%% and the node name it must present, using one insert so that a handshake
+%% sees the old map or the new one. The first call creates the table, so the
+%% calling process becomes its owner: the table is protected, only that process
+%% can insert, and it is deleted when that process ends. Exactly one process
+%% per VM, the ledger process, may call this. It is FFI because gleam_stdlib,
+%% gleam_erlang and gleam_otp expose no ETS table, and only this module's
+%% callback reads the row inside a handshake.
+publish_pins(Pairs) ->
+    case ets:whereis(?PIN_TABLE) of
+        undefined ->
+            ?PIN_TABLE = ets:new(?PIN_TABLE, [named_table, protected, set]);
+        _ -> ok
+    end,
+    true = ets:insert(?PIN_TABLE, {?PIN_ROW, maps:from_list(Pairs)}),
+    nil.
 
 %% Exactly one DNS name in the certificate contains an at sign, and it is the
 %% node name. Host-only names may accompany it for the TLS hostname check.
@@ -132,7 +191,7 @@ start_checked(Local, Peers, {credential_files, Ca, Cert, Key, Cookie}, Listen,
         ok = application:set_env(kernel, net_setuptime, 5),
         ok = set_listen(Listen),
         LocalNode = binary_to_atom(Local, utf8),
-        Nodes = [{Name, binary_to_atom(Name, utf8)} || {Name, _Pin} <- Peers],
+        Nodes = peer_nodes(Peers),
         %% Credentials are good by now, so a failure from here on is the
         %% environment's and gets its own error rather than a credential one.
         ok = case ensure_epmd() of
@@ -145,7 +204,8 @@ start_checked(Local, Peers, {credential_files, Ca, Cert, Key, Cookie}, Listen,
         end,
         CookieBytes = atom_to_binary(erlang:get_cookie(), utf8),
         ok = net_kernel:allow([Node || {_Name, Node} <- Nodes]),
-        {ok, {membership, LocalNode, Nodes, member_nodes(Nodes, Members)}}
+        {ok, {membership, LocalNode, mode_nodes(Peers, Nodes),
+              member_nodes(Nodes, Members)}}
     catch
         Class:Reason ->
             %% A partial boot never returns membership.
@@ -153,11 +213,22 @@ start_checked(Local, Peers, {credential_files, Ca, Cert, Key, Cookie}, Listen,
             {error, failure(Class, Reason)}
     end.
 
+%% Static mode makes one atom per configured peer. Live mode makes none at
+%% start: the ledger will make each atom when it applies a signed entry.
+peer_nodes(live) -> [];
+peer_nodes(Peers) -> [{Name, binary_to_atom(Name, utf8)} || {Name, _Pin} <- Peers].
+
 %% Only the two environment failures raised above keep their own name. Any
 %% other exception comes from reading or matching a credential.
 failure(throw, {epmd_unavailable, _} = Refusal) -> Refusal;
 failure(throw, start_failed) -> start_failed;
 failure(_, _) -> invalid_credentials.
+
+%% What the membership value remembers of its peers: the atoms made at start in
+%% static mode, and the atom `live` in live mode, where the peers are whatever
+%% the table holds when a name is resolved.
+mode_nodes(live, _Nodes) -> live;
+mode_nodes(_Peers, Nodes) -> Nodes.
 
 %% The peers that are directory members, as the atoms made for them above. A
 %% member name that is not a configured peer makes no atom and is dropped; the
@@ -301,6 +372,15 @@ bounded_file(Path, Maximum, Privacy) ->
     true = byte_size(Bytes) > 0 andalso byte_size(Bytes) =< Maximum,
     Bytes.
 
+%% In live mode a name resolves when the table lists it, which means it is an
+%% active member linked to this node. Its atom exists because the ledger process
+%% made it with net_kernel:allow/1 when it applied the member's entry, so a name
+%% that was never enrolled cannot make an atom here.
+peer({membership, Local, live, _Members}, Name) ->
+    case erlang:node() =:= Local andalso erlang:is_alive() of
+        true -> live_peer(Name);
+        false -> {error, unavailable}
+    end;
 peer({membership, Local, Nodes, _Members}, Name) ->
     case erlang:node() =:= Local andalso erlang:is_alive() of
         true ->
@@ -309,6 +389,17 @@ peer({membership, Local, Nodes, _Members}, Name) ->
                 false -> {error, invalid_configuration}
             end;
         false -> {error, unavailable}
+    end.
+
+live_peer(Name) ->
+    case live_pins() of
+        {ok, Pins} ->
+            try lists:member(Name, maps:values(Pins)) of
+                true -> {ok, binary_to_existing_atom(Name, utf8)};
+                false -> {error, invalid_configuration}
+            catch error:badarg -> {error, unavailable}
+            end;
+        unavailable -> {error, unavailable}
     end.
 
 %% How this node connects to a peer: visibly when both are directory members,

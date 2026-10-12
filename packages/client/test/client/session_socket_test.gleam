@@ -140,6 +140,7 @@ fn fixture_with(
       session_directory.none(),
       session_movers.idle(),
       deployment.alone("nonode@nohost"),
+      None,
       fn() {
         ids.generator(
           clock.from_function(ffi_os.system_time_ms),

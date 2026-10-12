@@ -39,6 +39,9 @@ import client/distribution_provision.{
   type Overwrite, RefuseExisting, ReplaceExisting,
 }
 import client/executors
+import client/membership_entry
+import client/membership_provision
+import gleam/bit_array
 import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -98,6 +101,21 @@ pub type Installed {
     steps: List(Step),
     /// The shell command that starts the daemon with the options file.
     start: String,
+    /// What a ledger bundle's snapshot is, or `None` for a bundle that lists
+    /// its peers.
+    snapshot: Option(Snapshot),
+  )
+}
+
+/// The ledger a bundle carried. The node trusts exactly this until it syncs
+/// with a peer that holds more, so an old bundle trusts an old membership
+/// (protocol-change/086).
+pub type Snapshot {
+  Snapshot(
+    /// The sequence number of the newest entry in the bundle.
+    seq: Int,
+    /// The signer's clock when it wrote that entry, as the ledger spells it.
+    time: String,
   )
 }
 
@@ -135,6 +153,7 @@ pub fn default_config(home: String) -> String {
 /// ```
 pub fn install(text: String, options: Options) -> Result(Installed, String) {
   use bundle <- result.try(distribution_bundle.decode(text))
+  use Nil <- result.try(runnable(bundle))
   let directory =
     option.lazy_unwrap(bundle.bundle_dir, fn() {
       default_directory(options.home)
@@ -159,7 +178,7 @@ pub fn install(text: String, options: Options) -> Result(Installed, String) {
     options.overwrite,
     options.config,
   ))
-  use config <- result.try(accepted(merged, tables, options.config))
+  use config <- result.try(accepted(merged, tables, options.config, bundle))
   let wanted = [
     Wanted("CA certificate", files.ca, bundle.ca),
     Wanted("node certificate", files.certificate, bundle.certificate),
@@ -167,6 +186,16 @@ pub fn install(text: String, options: Options) -> Result(Installed, String) {
     Wanted("TLS options", optfile, distribution.tls_options(config)),
   ]
   use steps <- result.try(list.try_map(wanted, plan(_, options.overwrite)))
+  use ledger_step <- result.try(case bundle.trust {
+    distribution_bundle.StaticPeers(_) -> Ok([])
+    distribution_bundle.SignedLedger(lines) ->
+      plan_ledger(
+        distribution_bundle.ledger_path(files),
+        membership_provision.file_text(lines),
+        options.overwrite,
+      )
+      |> result.map(fn(planned) { [planned] })
+  })
   use cookie <- result.try(plan_cookie(
     files.cookie,
     bundle.cookie,
@@ -181,16 +210,37 @@ pub fn install(text: String, options: Options) -> Result(Installed, String) {
     |> result.map_error(describe(options.home, _)),
   )
   use Nil <- result.try(list.try_each(steps, apply))
+  use Nil <- result.try(list.try_each(ledger_step, apply))
   use Nil <- result.try(apply(cookie))
   use config_step <- result.try(write_config(options.config, existing, merged))
   Ok(Installed(
     bundle:,
     steps: list.flatten([
       steps |> list.map(fn(planned) { planned.step }),
+      ledger_step |> list.map(fn(planned) { planned.step }),
       [cookie.step, config_step],
     ]),
     start: start_command(options, optfile),
+    snapshot: snapshot_of(bundle),
   ))
+}
+
+// A `/2` bundle installs a node that runs from its ledger. The one thing the
+// daemon cannot yet do with such a node is the session directory: a member of
+// the Khepri cluster takes its members from `[directory] members`, and deriving
+// them from the ledger is phase 3 of protocol-change/086. A bundle whose plan
+// has a directory would install a configuration that the daemon refuses at
+// start, so the refusal comes here, before anything is written.
+fn runnable(bundle: Bundle) -> Result(Nil, String) {
+  case bundle.trust, bundle.directory {
+    distribution_bundle.SignedLedger(_), [_, ..] ->
+      Error(
+        "this bundle puts its node in the session directory, which cannot "
+        <> "follow a membership ledger yet; provision the plan without a "
+        <> "directory, or with --static. Nothing was installed",
+      )
+    _, _ -> Ok(Nil)
+  }
 }
 
 // --- what is already on the machine -----------------------------------------
@@ -251,6 +301,72 @@ fn plan_cookie(
         <> "give the daemon its own home with --home DIR",
       )
     _, _ -> plan(wanted, overwrite)
+  }
+}
+
+// The ledger file is the one destination that rightfully differs between a
+// bundle and a machine: the node may have synced past the snapshot the bundle
+// carries, or the bundle may be newer than the node. Replacing it with a
+// different file would discard entries the node has applied, so the plan
+// compares the two as chains. A file the bundle's ledger extends is replaced by
+// the bundle's. A file that extends the bundle's ledger is kept, since it holds
+// everything the bundle says and more. Two ledgers that diverge are refused,
+// because one of them is a fork, unless `--force` says to take the bundle's.
+fn plan_ledger(
+  path: String,
+  bundled: String,
+  overwrite: Overwrite,
+) -> Result(Planned, String) {
+  let wanted = Wanted("membership ledger", path, bundled)
+  use found <- result.try(read_existing(path))
+  case found {
+    None -> Ok(planned(wanted, Created, Some(bundled)))
+    Some(content) if content == bundled -> Ok(planned(wanted, Unchanged, None))
+    Some(content) ->
+      case
+        string.starts_with(bundled, content),
+        string.starts_with(content, bundled)
+      {
+        True, _ -> Ok(planned(wanted, Replaced, Some(bundled)))
+        _, True -> Ok(planned(wanted, Unchanged, None))
+        False, False ->
+          case overwrite {
+            ReplaceExisting -> Ok(planned(wanted, Replaced, Some(bundled)))
+            RefuseExisting ->
+              Error(
+                path
+                <> " holds a ledger that neither extends this bundle's nor "
+                <> "is extended by it, so one of them is a fork; pass "
+                <> "--force to replace it with the bundle's",
+              )
+          }
+      }
+  }
+}
+
+// The sequence number and time of the bundle's newest ledger entry. The lines
+// were verified when the bundle decoded, so only their shape is read here.
+fn snapshot_of(bundle: Bundle) -> Option(Snapshot) {
+  case bundle.trust {
+    distribution_bundle.StaticPeers(_) -> None
+    distribution_bundle.SignedLedger(lines) ->
+      case list.last(lines) {
+        Error(Nil) -> None
+        Ok(line) -> {
+          let read = {
+            use raw <- result.try(
+              membership_entry.parse_line(bit_array.from_string(line))
+              |> result.replace_error(Nil),
+            )
+            membership_entry.decode_body(raw.body)
+            |> result.replace_error(Nil)
+          }
+          case read {
+            Ok(entry) -> Some(Snapshot(seq: entry.seq, time: entry.time))
+            Error(Nil) -> None
+          }
+        }
+      }
   }
 }
 
@@ -451,6 +567,7 @@ fn accepted(
   merged: String,
   tables: List(Table),
   path: String,
+  bundle: Bundle,
 ) -> Result(distribution.Config, String) {
   use document <- result.try(parse_document(merged, path))
 
@@ -476,10 +593,18 @@ fn accepted(
     distribution.from_document(document)
     |> result.map_error(fn(reason) { path <> ": " <> reason }),
   )
-  use _ <- result.try(
-    executors.from_document(document)
-    |> result.map_error(fn(reason) { path <> ": " <> reason }),
-  )
+
+  // A peer list is judged by the daemon's own reader. A ledger is not on the
+  // machine yet, so its executor rows cannot be read against it here; the
+  // bundle's decode already required each row to name a peer in the node's pin
+  // table, which is the check the daemon makes at start.
+  use Nil <- result.try(case bundle.trust {
+    distribution_bundle.SignedLedger(_) -> Ok(Nil)
+    distribution_bundle.StaticPeers(_) ->
+      executors.from_document(document)
+      |> result.replace(Nil)
+      |> result.map_error(fn(reason) { path <> ": " <> reason })
+  })
   case found {
     Some(config) -> Ok(config)
     None -> Error(path <> " has no [distribution] table after the merge")

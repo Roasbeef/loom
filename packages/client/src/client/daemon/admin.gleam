@@ -96,6 +96,44 @@ pub fn peer_request(
   Ok(request)
 }
 
+/// Which daemon an operator's ledger command talks to.
+pub type Where {
+  /// The daemon on this host, found through its state directory. An empty
+  /// directory means `$HOME/.loom`.
+  ThisHost(state_dir: String)
+
+  /// A daemon on another host, over `wss` (or `ws` to a literal loopback
+  /// address), with the owner token in a private file.
+  OverNetwork(address: String, token_file: String)
+}
+
+/// Builds a `ledger.*` control request for `where_` and validates it with the
+/// daemon's own decoder before any connection is made.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // admin.ledger_request(ThisHost(""), "ledger.status", [])
+/// ```
+@internal
+pub fn ledger_request(
+  where_: Where,
+  command: String,
+  fields: List(#(String, JsonValue)),
+) -> Result(Request, String) {
+  use request <- result.try(case where_ {
+    ThisHost(directory) ->
+      Ok(access.raw_request(directory, command, "", fields))
+    OverNetwork(address, token_file) ->
+      access.raw_remote_request(address, token_file, command, "", fields)
+  })
+  use _ <- result.try(
+    protocol.decode(access.envelope(request, "validation-only"))
+    |> result.replace_error("invalid or oversized ledger request"),
+  )
+  Ok(request)
+}
+
 /// Runs a parsed request against the local daemon, answering its reply as one
 /// value.
 ///

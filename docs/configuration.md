@@ -515,7 +515,8 @@ the host in the node name. The certificate of this daemon must carry its own
 | `key` | string | required | absolute path, mode 0600 | PEM file of this node's private key. |
 | `cookie` | string | required | absolute path, mode 0600 | The daemon's `$HOME/.erlang.cookie`: at least 16 characters of `A-Z`, `a-z`, `0-9`, `_` and `-`, no trailing newline. The emulator reads its cookie from that file, so the daemon refuses any other path. |
 | `listen_port` | integer | any free port | 1 to 65535 | Fixes the port of the distribution listener, for a firewall. Peers still find it through `epmd`. |
-| `peers` | array of tables | required | one to 32 `[[distribution.peers]]` rows | The nodes allowed to connect, and the nodes this daemon may connect to. |
+| `ledger` | string | none, and then `peers` is required | absolute path, exclusive with `peers` | The membership ledger file (protocol-change 086). When set, the ledger decides who may connect: the daemon opens the file, checks that its genesis names the certificate in `ca`, publishes the pin table of the members this node is linked to, and only then starts distribution, so the table exists before the listener does. It also runs the `loom_ledger` process, which keeps the file current by exchanging heads with the peers it is connected to, and disconnects a member as soon as an entry revokes it or replaces its certificate. The file must exist and hold a valid ledger, and the daemon refuses to start otherwise, and also when its own `node` is not an active member of the ledger. The daemon is the file's only writer: the operator's tool appends to the operator's own copy and hands entries to a daemon, and nothing else should edit the file while the daemon runs. A document with both `ledger` and `[[distribution.peers]]` is refused at load. A ledger has at most 64 active members, so a node trusts at most 63 peers in ledger mode, not the 32 that `peers` allows. `[executors.<name>]`, `[orchestrators.<name>]` and `[spawners.<name>]` are checked for shape when the file is parsed, which does not open the ledger. At start the daemon compares their `node` with the ledger: a node that no ledger entry has ever named is refused, and a node that was a member and has been revoked (or is not linked to this node) is kept as an inert row and logged as a warning, so a `revoke` never stops the daemon from starting or from opening a session. A call through an inert row fails. A `[directory]` table cannot be combined with a ledger yet. `loom distribution install` of a ledger bundle writes this key. |
+| `peers` | array of tables | required unless `ledger` is set | one to 32 `[[distribution.peers]]` rows | The nodes allowed to connect, and the nodes this daemon may connect to. Fixed for the life of the VM; a ledger replaces them. |
 
 ## `[[distribution.peers]]`
 
@@ -762,7 +763,7 @@ machine. Install it there.
 
 ```sh
 loom distribution init plan.toml            # write an example plan
-loom distribution provision plan.toml out   # mint everything, write out/
+loom distribution provision plan.toml out --passphrase-file pass.txt   # mint everything, sign a ledger, write out/
 scp out/devbox.loombundle devbox:           # a secure channel; see below
 ssh devbox loom distribution install devbox.loombundle
 ```
@@ -773,11 +774,18 @@ cookie, so copy it only over a channel you trust, and delete it after installing
 `system.json` holds no private material: each node's role, Erlang node name,
 host, port, certificate pin, peers, executors and workspaces. `loom distribution
 show out` prints it as a table. `provision` refuses a directory that already
-holds files unless you pass `--force`. It discards the certificate authority's key
-when it finishes, so adding a node, renewing a certificate or revoking one means
-provisioning again and reinstalling every bundle with `--force`. Certificates are
-valid for five years and the authority for ten; certificate rotation is later
-work.
+holds files unless you pass `--force`. By default it signs a membership ledger
+(`out/ledger.log`, and in every bundle) and seals the certificate authority's key
+under a passphrase in `~/.loom/authority/<deployment id>`, asking for the passphrase
+on the terminal or reading `--passphrase-file PATH`; `loom distribution provision`
+cannot ask, so it needs `--passphrase-file`, `--drop-authority` (keep no key, and
+the ledger can never change) or `--static`. With the key kept, `loom distribution
+enroll`, `renew` and `revoke` add, replace and remove nodes without provisioning
+again, and `log` and `import` read the ledger and carry it to a node. `provision
+--static` writes bundles that list their peers and discards the key, so every change
+means provisioning again and reinstalling every bundle with `--force`; a plan with
+a session directory needs it for now. Certificates are valid for five years and the
+authority for ten.
 
 `install BUNDLE [--home DIR] [--config PATH] [--force]` runs on the node's machine
 and does everything the daemon needs before it starts:
@@ -791,7 +799,7 @@ and does everything the daemon needs before it starts:
 - It writes the cookie to `<home>/.erlang.cookie`, where `home` is `--home` or
   `$HOME`. A different cookie already there is refused, because Erlang reads that
   one file for every distributed node you start; `--force` replaces it.
-- It merges `[distribution]`, its `[[distribution.peers]]` rows and the role tables
+- It merges `[distribution]`, its `[[distribution.peers]]` rows (or, from a ledger bundle, a `ledger` key and the ledger file beside the credentials) and the role tables
   (`[executors.<name>]` on an orchestrator, `[workspaces.<name>]` on an executor)
   into `--config`, which defaults to `<home>/.loom/loom.toml`. Every other table
   and comment stays as it was. A table that already exists with different values is

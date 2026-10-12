@@ -7,14 +7,23 @@
 //// holds no private material, so an operator can see who peers with whom and
 //// which pin each node presents without opening a bundle.
 ////
-//// ## What is minted, and what is thrown away
+//// ## What is minted, and what is kept
 ////
-//// The authority exists only for the length of this call. Its key signs the
-//// node certificates and is then dropped, so nothing an operator keeps can
-//// issue a certificate for a new node. Adding a node means provisioning again,
-//// which mints a new authority and replaces every bundle. Renewing a
-//// certificate before it expires, adding a node without touching the others
-//// and revoking one are all the same later work: certificate rotation.
+//// `provision` is the static mode of protocol-change/078. The authority exists
+//// only for the length of the call. Its key signs the node certificates and is
+//// then dropped, so nothing an operator keeps can issue a certificate for a
+//// new node, and each bundle lists the pins of its peers. Adding a node means
+//// provisioning again, which mints a new authority and replaces every bundle.
+////
+//// `provision_ledger` is the ledger mode of protocol-change/086. It mints the
+//// same certificates and then signs a membership ledger with the authority key
+//// (`client/membership_provision`), and each bundle carries that ledger in
+//// place of a peer list. It hands the authority key back to the caller as an
+//// `Authority`, because a ledger can only be extended by whoever holds the
+//// key. What to do with it is the caller's choice: `client/authority_key` seals
+//// it under a passphrase, and an operator who wants no persistent key drops
+//// it, which fixes the ledger as it was written. This module never writes the
+//// key anywhere.
 ////
 //// The cookie is shared by the whole deployment, because Erlang distribution
 //// refuses a connection between nodes whose cookies differ. It is 32 random
@@ -23,17 +32,20 @@
 //// ## Files
 ////
 //// `write` puts `<node>.loombundle` (mode 0600) and `system.json` in the output
-//// directory, which it creates with mode 0700. A directory that already holds
-//// anything is refused unless the caller asks to replace, so a second run
-//// cannot quietly mix bundles of two different authorities.
+//// directory, which it creates with mode 0700, and in ledger mode `ledger.log`
+//// beside them. A directory that already holds anything is refused unless the
+//// caller asks to replace, so a second run cannot quietly mix bundles of two
+//// different authorities.
 
 import client/distribution
-import client/distribution_bundle.{type Bundle, Bundle}
+import client/distribution_bundle.{type Bundle, type Trust, Bundle}
 import client/distribution_plan.{
   type Node, type Plan, type Role, type Workspace, Executor, Orchestrator,
 }
 import client/executors
 import client/internal/ffi_pki
+import client/membership_provision
+import client/membership_signing
 import gleam/bit_array
 import gleam/dynamic/decode
 import gleam/int
@@ -42,6 +54,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import gleam/time/timestamp.{type Timestamp}
 import host/bootstrap
 import simplifile
 
@@ -61,6 +74,37 @@ pub type Deployment {
     bundles: List(Bundle),
     /// The public description of the whole deployment.
     system: System,
+    /// The text of the ledger file in ledger mode, and nothing in static mode.
+    ledger: Option(String),
+  )
+}
+
+/// The authority of a deployment provisioned in ledger mode. It holds the
+/// private key: the caller must seal it or drop it, and print it nowhere.
+pub type Authority {
+  Authority(
+    /// The deployment id the genesis entry carries, 32 lowercase hex
+    /// characters.
+    deployment: String,
+    /// PEM of the authority certificate, which every node holds as its `ca`.
+    certificate: String,
+    /// PEM of the authority private key.
+    key: String,
+    /// The deployment's cookie, which every bundle carries. The operator keeps
+    /// it beside the key so that a node enrolled later gets the same one.
+    cookie: String,
+  )
+}
+
+/// A deployment provisioned in ledger mode and the authority that signed it.
+pub type Provisioned {
+  Provisioned(
+    deployment: Deployment,
+    authority: Authority,
+    /// The text of the ledger file, the same text `deployment.ledger` holds. A
+    /// ledger-mode result always has one, so the caller that seals it beside the
+    /// key reads it here and never unwraps an `Option` that cannot be `None`.
+    ledger: String,
   )
 }
 
@@ -106,7 +150,8 @@ pub const system_file = "system.json"
 pub const bundle_extension = ".loombundle"
 
 /// Mints the authority, the node certificates, the cookie and the bundles for a
-/// plan. Nothing is written.
+/// plan in static mode, each bundle listing its peers. The authority key is
+/// dropped. Nothing is written.
 ///
 /// ## Examples
 ///
@@ -114,6 +159,113 @@ pub const bundle_extension = ".loombundle"
 /// let assert Ok(deployment) = distribution_provision.provision(plan)
 /// ```
 pub fn provision(plan: Plan) -> Result(Deployment, String) {
+  use minted <- result.try(mint(plan))
+  let pinned = pinned_nodes(minted.issued)
+  let bundles =
+    list.map(minted.issued, fn(entry) {
+      let peers = peer_pins(plan, entry.node, pinned)
+      bundle(plan, entry, minted, distribution_bundle.StaticPeers(peers))
+    })
+  Ok(Deployment(bundles:, system: system(plan, minted.issued), ledger: None))
+}
+
+/// The peers a node trusts in static mode, with the pin of each: the plan's
+/// edges for the node, in plan order. It is the list `provision` writes into a
+/// static bundle, and the list a ledger's pin table for the same node must
+/// equal.
+///
+/// ## Examples
+///
+/// ```gleam
+/// distribution_provision.peer_pins(plan, laptop, pinned)
+/// // -> [PeerPin("loom@devbox.example", <<..32 bytes..>>)]
+/// ```
+pub fn peer_pins(
+  plan: Plan,
+  node: Node,
+  pinned: List(membership_provision.Pinned),
+) -> List(distribution.PeerPin) {
+  list.map(distribution_plan.peers(plan, node), fn(peer) {
+    distribution.PeerPin(node: peer.erlang_node, sha256: pin_of(pinned, peer))
+  })
+}
+
+fn pinned_nodes(issued: List(Issued)) -> List(membership_provision.Pinned) {
+  list.map(issued, fn(entry) {
+    membership_provision.Pinned(node: entry.node, pin: entry.pin)
+  })
+}
+
+/// Mints the same certificates as `provision` and signs a membership ledger
+/// for them (protocol-change/086), and each bundle carries that ledger in
+/// place of a peer list. `time` is the signer's clock for the entries. The
+/// authority comes back with its key, which the caller seals or drops.
+/// Nothing is written.
+///
+/// Each node's pin table, derived from the ledger, equals the peer list
+/// `provision` would give it for the same plan.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(Provisioned(deployment:, authority:, ledger: _)) =
+///   distribution_provision.provision_ledger(plan, timestamp.system_time())
+/// ```
+pub fn provision_ledger(
+  plan: Plan,
+  time: Timestamp,
+) -> Result(Provisioned, String) {
+  use minted <- result.try(mint(plan))
+  use sign <- result.try(
+    membership_signing.signer(minted.authority_key)
+    |> result.replace_error("the authority key cannot sign"),
+  )
+  let deployment_id =
+    bit_array.base16_encode(ffi_pki.random_bytes(16)) |> string.lowercase
+  use built <- result.try(membership_provision.build(
+    plan,
+    pinned_nodes(minted.issued),
+    membership_provision.Authority(
+      certificate: minted.authority,
+      sign:,
+      time: membership_provision.time_text(time),
+      deployment: deployment_id,
+    ),
+  ))
+  let bundles =
+    list.map(minted.issued, fn(entry) {
+      bundle(plan, entry, minted, distribution_bundle.SignedLedger(built.lines))
+    })
+  let ledger = membership_provision.file_text(built.lines)
+  Ok(Provisioned(
+    deployment: Deployment(
+      bundles:,
+      system: system(plan, minted.issued),
+      ledger: Some(ledger),
+    ),
+    authority: Authority(
+      deployment: deployment_id,
+      certificate: minted.authority,
+      key: minted.authority_key,
+      cookie: minted.cookie,
+    ),
+    ledger:,
+  ))
+}
+
+// What both modes share: one authority, one certificate per node and one
+// cookie. The authority key is in here until the mode decides what to do with
+// it.
+type Minted {
+  Minted(
+    authority: String,
+    authority_key: String,
+    issued: List(Issued),
+    cookie: String,
+  )
+}
+
+fn mint(plan: Plan) -> Result(Minted, String) {
   let #(authority, authority_key) = ffi_pki.authority("loom deployment CA")
   use issued <- result.try(
     list.try_map(plan.nodes, fn(node) {
@@ -134,15 +286,11 @@ pub fn provision(plan: Plan) -> Result(Deployment, String) {
     }),
   )
   let cookie = bit_array.base64_url_encode(ffi_pki.random_bytes(24), False)
-  let bundles =
-    list.map(issued, fn(entry) {
-      bundle(plan, issued, entry, authority, cookie)
-    })
-  Ok(Deployment(bundles:, system: system(plan, issued)))
+  Ok(Minted(authority:, authority_key:, issued:, cookie:))
 }
 
-/// Writes the bundles and `system.json` into `output` and returns the paths it
-/// wrote. The directory is created with mode 0700 when it is absent, and an
+/// Writes the bundles, `system.json` and, in ledger mode, `ledger.log` into
+/// `output` and returns the paths it wrote. The directory is created with mode 0700 when it is absent, and an
 /// existing directory that holds anything is refused under `RefuseExisting`.
 ///
 /// ## Examples
@@ -172,7 +320,34 @@ pub fn write(
       system_path <> " is unwritable: " <> simplifile.describe_error(error)
     }),
   )
-  Ok(list.append(bundle_paths, [system_path]))
+
+  // The ledger is public, but it is written like the bundles it travels in.
+  use ledger_paths <- result.try(case deployment.ledger {
+    None -> Ok([])
+    Some(text) -> {
+      let path = output <> "/" <> distribution_bundle.ledger_file
+      bootstrap.atomic_write_private(path, text)
+      |> result.replace([path])
+      |> result.map_error(fn(reason) { path <> " is unwritable: " <> reason })
+    }
+  })
+  Ok(list.flatten([bundle_paths, [system_path], ledger_paths]))
+}
+
+/// Refuses an output directory that already holds files, unless the caller
+/// chose to replace them. `write` makes this check itself; a caller that must
+/// not do anything irreversible before `write` makes it first.
+///
+/// ## Examples
+///
+/// ```gleam
+/// distribution_provision.check_output("out", RefuseExisting)
+/// ```
+pub fn check_output(
+  output: String,
+  overwrite: Overwrite,
+) -> Result(Nil, String) {
+  check_empty(output, overwrite)
 }
 
 /// The description as JSON text with a trailing newline.
@@ -288,13 +463,7 @@ type Issued {
   Issued(node: Node, certificate: String, key: String, pin: BitArray)
 }
 
-fn bundle(
-  plan: Plan,
-  issued: List(Issued),
-  entry: Issued,
-  authority: String,
-  cookie: String,
-) -> Bundle {
+fn bundle(plan: Plan, entry: Issued, minted: Minted, trust: Trust) -> Bundle {
   let node = entry.node
   Bundle(
     name: node.name,
@@ -303,26 +472,24 @@ fn bundle(
     host: node.host,
     listen_port: node.listen_port,
     bundle_dir: node.bundle_dir,
-    peers: list.map(distribution_plan.peers(plan, node), fn(peer) {
-      distribution.PeerPin(node: peer.erlang_node, sha256: pin_of(issued, peer))
-    }),
+    trust:,
     executors: list.map(distribution_plan.used_executors(plan, node), fn(row) {
       executors.plain(row.name, row.erlang_node)
     }),
     workspaces: node.workspaces,
     directory: distribution_plan.directory_members(plan, node),
-    ca: authority,
+    ca: minted.authority,
     certificate: entry.certificate,
     key: entry.key,
-    cookie:,
+    cookie: minted.cookie,
   )
 }
 
 // A pin is looked up by node name, which is unique in a validated plan. The
 // empty fallback is unreachable and would fail the daemon's 32-byte rule at
 // `decode`, so a bug here cannot produce a bundle that installs.
-fn pin_of(issued: List(Issued), node: Node) -> BitArray {
-  case list.find(issued, fn(entry) { entry.node.name == node.name }) {
+fn pin_of(pinned: List(membership_provision.Pinned), node: Node) -> BitArray {
+  case list.find(pinned, fn(entry) { entry.node.name == node.name }) {
     Ok(entry) -> entry.pin
     Error(Nil) -> <<>>
   }

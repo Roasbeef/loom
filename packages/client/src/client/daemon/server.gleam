@@ -59,6 +59,7 @@ import client/directory/member
 import client/directory/store
 import client/executors
 import client/internal/ffi_khepri
+import client/ledger_control
 import client/orchestrators
 import client/peer_mail
 import client/peers
@@ -125,6 +126,10 @@ pub type Config(instance) {
     /// it calls itself, which `deployment.status` reads (protocol-change/085).
     /// `deployment.alone` when the daemon has no distribution.
     deployment: deployment.Reach,
+    /// The membership ledger of a daemon that runs from one, which the
+    /// `ledger.*` owner commands read and extend (protocol-change/086). `None`
+    /// answers them `not_found`.
+    ledger: Option(ledger_control.Handle),
     /// Fresh entropy-seeded generator for explicit creation.
     generator: fn() -> ids.Generator,
     /// A v2-only conversation adapter, responsible for transferring its permit.
@@ -2246,6 +2251,9 @@ fn control(
             protocol.Shutdown(_) -> DrainDaemon
             protocol.DirectoryStatus -> KeepServing
             protocol.DeploymentStatus(_) -> KeepServing
+            protocol.LedgerAppend(..)
+            | protocol.LedgerEntries(..)
+            | protocol.LedgerStatus -> KeepServing
             protocol.InspectPeers(..)
             | protocol.LinkPeers(..)
             | protocol.UnlinkPeers(..)
@@ -2310,6 +2318,8 @@ fn control_use(command: protocol.Command) {
     | protocol.WorkspaceDefault(_)
     | protocol.DirectoryStatus
     | protocol.DeploymentStatus(_)
+    | protocol.LedgerEntries(..)
+    | protocol.LedgerStatus
     | protocol.GetOperation(..) -> root.ControlRead
     protocol.LinkPeers(..)
     | protocol.UnlinkPeers(..)
@@ -2332,6 +2342,7 @@ fn control_use(command: protocol.Command) {
     | protocol.MoveSession(..)
     | protocol.AbandonMove(..)
     | protocol.DeleteSession(..)
+    | protocol.LedgerAppend(..)
     | protocol.Shutdown(_) -> root.ControlMutation
   }
 }
@@ -2449,9 +2460,56 @@ fn dispatch(
       dispatch_class(config, state, digest, principal, reply_to, command)
       |> result.map_error(control_refusal)
       |> result.map_error(tombstoned(config, principal, id, _))
+
+    // The ledger commands answer with the step that failed, which the string
+    // codes of `dispatch_class` cannot carry, so they are served here.
+    protocol.LedgerAppend(..)
+    | protocol.LedgerEntries(..)
+    | protocol.LedgerStatus -> ledger_command(config, principal, command)
     _ ->
       dispatch_class(config, state, digest, principal, reply_to, command)
       |> result.map_error(control_refusal)
+  }
+}
+
+// The `ledger.*` owner commands (protocol-change/086). A member principal is
+// refused as for every owner command, and a daemon with no ledger answers
+// `not_found`. A line the ledger refuses is `ledger_invalid` and the message is
+// the step, which is all a client needs to tell a forged line from a stale one.
+fn ledger_command(
+  config: Config(instance),
+  principal: access.Principal,
+  command: protocol.Command,
+) -> Result(#(String, JsonValue), Refused) {
+  use Nil <- result.try(owner(principal) |> result.map_error(control_refusal))
+  use handle <- result.try(
+    option.to_result(config.ledger, Nil)
+    |> result.map_error(fn(_) { control_refusal("not_found") }),
+  )
+  case command {
+    protocol.LedgerAppend(lines) ->
+      ledger_control.append(handle, lines)
+      |> result.map(fn(body) { #("ledger.append", body) })
+      |> result.map_error(ledger_refusal)
+    protocol.LedgerEntries(after, limit) ->
+      ledger_control.entries(handle, after, limit)
+      |> result.map(fn(body) { #("ledger.entries", body) })
+      |> result.map_error(ledger_refusal)
+    _ ->
+      ledger_control.status(handle)
+      |> result.map(fn(body) { #("ledger.status", body) })
+      |> result.map_error(ledger_refusal)
+  }
+}
+
+/// The code `ledger.append` answers when a line fails the acceptance procedure.
+/// The message is the step (protocol-change/086).
+pub const ledger_invalid_code = "ledger_invalid"
+
+fn ledger_refusal(failure: ledger_control.Failure) -> Refused {
+  case failure {
+    ledger_control.Invalid(step:) -> Refused(ledger_invalid_code, step, [])
+    ledger_control.Unavailable(reason:) -> Refused("unavailable", reason, [])
   }
 }
 
@@ -3369,6 +3427,12 @@ fn dispatch_class(
       use Nil <- result.try(owner(principal))
       deployment_status(config, node)
     }
+
+    // Served by `ledger_command` in `dispatch`, because a refusal there names
+    // a step and this function's refusals are bare codes. They never reach here.
+    protocol.LedgerAppend(..)
+    | protocol.LedgerEntries(..)
+    | protocol.LedgerStatus -> Error("unavailable")
     protocol.Shutdown(supplied) -> {
       use Nil <- result.try(owner(principal))
       use Nil <- result.try(epoch(state, supplied))

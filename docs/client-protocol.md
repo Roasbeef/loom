@@ -546,7 +546,7 @@ Source: (`client/daemon/server.gleam:839-860`).
 A page stops on an authorized record boundary once its encoded size
 would exceed 60000 bytes. The next request resumes after the last
 emitted id. A single record too large for that budget is refused with
-`metadata_too_large`. Source: (`client/daemon/server.gleam:3153`).
+`metadata_too_large`. Source: (`client/daemon/server.gleam:3211`).
 
 Errors: `revision_changed` when `revision` was supplied and differs from
 the catalogue's current one; `metadata_too_large`; `unavailable`.
@@ -1228,7 +1228,7 @@ the `hello` states with its `ui` field. The request carries the canonical
 
 `page` is the page's ceiling: `"observer"`, which is also the value when
 the field is absent, or `"operator"`. Any other value is refused with
-`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:1071`). The
+`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:1132`). The
 ceiling caps the page's role and never grants one: the page acts with the
 smallest of the principal's membership role, the ceiling, and Operator.
 
@@ -1590,6 +1590,45 @@ that is not shaped like a key is `bad_request`. With `node`, `nodes` holds only
 the nodes the key names, and `edges`, `placements` and `orchestrators` are
 absent. A daemon built before this command refuses it `bad_request` with the
 message `unsupported control command`.
+
+### 3.30 `ledger.append`, `ledger.entries` and `ledger.status`
+
+Owner-only (a member is refused `forbidden`), and none needs an epoch. They read
+and extend the membership ledger of a daemon that runs from one
+([protocol-change/086](../protocol-change/086-membership-ledger.md)). A daemon
+with no `[distribution] ledger` answers each `not_found`. A frame is 64 KiB in
+both directions, so the bounds below are those of one frame.
+
+`ledger.append` takes `{"lines": ["<line>", ...]}`: one to 64 strings of at most
+8 KiB each. The daemon offers them to its ledger process in order, through the
+acceptance procedure a peer's line goes through, so the command adds no trust
+beyond the owner check. It replies `{"applied": 2, "head": {"seq": 9, "id":
+"<64 hex>"}}`, where `applied` does not count a line the ledger already held. A
+line that fails is refused `ledger_invalid` and the `message` is the step:
+`malformed`, `bad_signature`, `fork`, `chain`, `invalid`, `unsupported_format`, or
+`gap` for a line more than one past the head. Lines before the failing one stay
+applied. A line the file could not take is refused `unavailable`. A request over
+64 lines or 8 KiB a line is `bad_request`.
+
+`ledger.entries` takes `{"after": 7, "limit": 64}`: `after` is the sequence number
+the caller holds (0 or more) and `limit` a positive integer that the ledger
+clamps to 1 through 64. It replies `{"lines": ["<line>", ...], "head_seq": 9}`
+with at most 48,000 bytes of lines, so a page may hold fewer than `limit`; the
+caller continues from the last line it received.
+
+`ledger.status` takes `{}` and replies
+
+```json
+{"v":2,"reply_to":3,"event":"ledger.status","body":{"deployment":"3f9c...","state":"ok","head":{"seq":9,"id":"4c1e..."},"self":{"name":"hub","enrolled":true},"members":[{"name":"hub","node":"hub@10.0.0.1","role":"orchestrator","directory":"none","reported_seq":9,"ms_since_report":0},{"name":"laptop2","node":"loom@laptop2.example.net","role":"orchestrator","directory":"none"}],"last_refusal":null}}
+```
+
+`state` is `ok`, `revoked` or `not_enrolled`. `reported_seq` is the newest
+sequence number the member reported to the answering daemon and is absent for a
+member that has not reported; `ms_since_report` is the answering daemon's own
+elapsed time. The daemon reports itself at its own head. `last_refusal` is `null`
+or `{"seq": 7, "step": "fork", "ours": "<hex>", "theirs": "<hex>"}`, where `seq`
+is `null` when the line had none and `ours` and `theirs` appear only for a fork.
+`loom distribution enroll`, `revoke`, `renew`, `log` and `import` are the clients.
 
 ---
 
@@ -3968,7 +4007,7 @@ below have not been edited.
    `docs/loom-implementation-spec.md` §1.6 names ten control commands.
    The code implements six more: `sessions.isolate`, `sessions.invite`,
    `sessions.set_role`, `sessions.revoke`, `credentials.rotate` and
-   `credentials.revoke` (`client/daemon/protocol.gleam:494`). The
+   `credentials.revoke` (`client/daemon/protocol.gleam:507`). The
    six are specified in `protocol-change/015`'s addenda, so the gap is
    in the spec's summary rather than in the decision record.
    `protocol-change/053` adds a third route, `/v2/claim`, with its one

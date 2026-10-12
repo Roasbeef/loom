@@ -11,7 +11,7 @@
          owner_label_of/1, reductions_of/1, log_capture_start/0,
          log_capture_stop/0, log/2, utf_codepoint_calls/1,
          function_values/1, wire_round_trip/1, remote_pid/0,
-         ra_names_on_disk/1]).
+         ra_names_on_disk/1, rsa_key_pem/0]).
 
 -include_lib("public_key/include/public_key.hrl").
 
@@ -57,6 +57,12 @@ remote_pid() ->
 %% What a term becomes when it is sent to another node and decoded there.
 wire_round_trip(Term) ->
     binary_to_term(term_to_binary(Term)).
+
+%% A freshly generated RSA private key as PEM, the one key shape that
+%% `public_key:pem_entry_decode/1` accepts and a P-256 signer must still refuse.
+rsa_key_pem() ->
+    Key = public_key:generate_key({rsa, 2048, 65537}),
+    public_key:pem_encode([public_key:pem_entry_encode('RSAPrivateKey', Key)]).
 
 %% OTP's private trace session witnesses the removed Unicode list walk in
 %% this test process alone. No Gleam process primitive exposes function call

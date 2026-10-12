@@ -52,6 +52,10 @@ import client/executor_plane
 import client/executors
 import client/host
 import client/internal/ffi_os
+import client/ledger_boot
+import client/ledger_control
+import client/ledger_reference
+import client/ledger_service.{type Service}
 import client/orchestrators
 import client/peer_defaults
 import client/peer_mail
@@ -153,6 +157,12 @@ pub type Config {
     /// reaches the peers it asks, and a daemon without it asks nobody and
     /// answers nobody.
     membership: Option(distribution.Membership),
+    /// The membership ledger's process with this node's names, when
+    /// `[distribution]` names a ledger (protocol-change/086).
+    /// `start_distribution` started the process before distribution, so its pin
+    /// table existed before the listener did. The `ledger.*` control commands
+    /// append and read entries through this handle.
+    ledger: Option(ledger_control.Handle),
   )
 }
 
@@ -332,6 +342,7 @@ pub fn parse(arguments: List(String)) -> Result(Config, String) {
       None,
       [],
       None,
+      None,
     )
   use config <- result.try(parse_loop(arguments, initial))
   use state_root <- result.try(case config.state_root {
@@ -448,11 +459,22 @@ fn bind_address(value: String) -> Result(#(String, Int), String) {
 // Without a `[distribution]` table nothing happens and the VM stays
 // non-distributed. The membership is kept for the sessions registered on an
 // executor, which resolve their peer through it when they open.
+//
+// A configured ledger is opened and its process started first, and
+// distribution after it. The constraint is that the pin table must exist before
+// the listener does: in ledger mode the TLS callback refuses every handshake
+// with `ledger_unavailable` while the table is absent, so a listener opened
+// first would turn away the first peers for no reason of theirs. The ledger
+// process needs no distribution to start, because a monitor of node changes is
+// valid on a VM that is not distributed yet. `ledger_boot.start` does both in
+// that order and keeps the process linked to this one for the life of the
+// daemon, like the other services.
 fn start_distribution(
   document: dict.Dict(String, tom.Toml),
   configuration: String,
   cluster: distribution.Cluster,
-) -> Result(Option(distribution.Membership), String) {
+  logger: Logger,
+) -> Result(Option(ledger_boot.Booted), String) {
   use found <- result.try(
     distribution.from_document(document)
     |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
@@ -460,18 +482,130 @@ fn start_distribution(
   case found {
     None -> Ok(None)
     Some(settings) ->
-      distribution.start(settings, cluster)
+      ledger_boot.start(settings, cluster, logger)
       |> result.map(Some)
-      |> result.map_error(fn(fault) {
-        configuration <> ": " <> distribution.describe(fault)
-      })
+      |> result.map_error(fn(reason) { configuration <> ": " <> reason })
   }
+}
+
+// The tables that name a peer are checked against the ledger once, here, after
+// the ledger process holds the file and before the daemon listens. Parsing them
+// never reads the ledger (`client/ledger_reference`), because a session parses
+// them on every create and open and a ledger changes while a daemon runs. A
+// node no entry ever named refuses the start. A node that was a member and no
+// longer is a row the daemon logs and keeps, so that a `revoke` never turns the
+// next restart into an outage of the sessions that do not use that node.
+fn audit_started(
+  booted: Option(ledger_boot.Booted),
+  document: dict.Dict(String, tom.Toml),
+  rows: List(ledger_reference.Row),
+  logger: Logger,
+) -> Result(Nil, String) {
+  use found <- result.try(distribution.from_document(document))
+  case
+    option.then(booted, fn(started) { started.ledger }),
+    option.then(found, distribution.ledger_path)
+  {
+    Some(service), Some(path) ->
+      audit_references(
+        service,
+        atom.to_string(node.name(node.self())),
+        path,
+        rows,
+        logger,
+      )
+    _, _ -> Ok(Nil)
+  }
+}
+
+/// Compares the rows of the tables that name a peer with the ledger a running
+/// ledger process holds, for the node named `local` whose ledger file is
+/// `path`. A row naming a node that no entry has ever named is an `Error` with
+/// a sentence for the operator. A row naming a node that was a member and is
+/// not an active linked member now is logged as a warning and the start goes
+/// on, because the row is inert: peer resolution answers only for names in the
+/// current pin table, so a call to it fails when it is made.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let assert Ok(Nil) = main.audit_references(service, local, path, rows, logger)
+/// ```
+@internal
+pub fn audit_references(
+  service: Service,
+  local: String,
+  path: String,
+  rows: List(ledger_reference.Row),
+  logger: Logger,
+) -> Result(Nil, String) {
+  use status <- result.try(
+    ledger_service.status(service, 5000)
+    |> result.replace_error("the ledger process did not answer"),
+  )
+  use inert <- result.map(ledger_reference.audit(
+    status.ledger,
+    local,
+    path,
+    rows,
+  ))
+  list.each(inert, fn(found) {
+    log.warn(logger, "daemon.ledger_row_inert", [
+      field.text("row", found.row.key),
+      field.text("node", found.row.node),
+      field.text("reason", found.reason),
+    ])
+  })
+}
+
+/// The node every row of the tables that name a peer names, in the order a
+/// refusal should report them. `[directory]` is not among them: a directory
+/// member cannot use a ledger yet (`client/ledger_boot`), so a configuration
+/// with both never reaches this check.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // main.reference_rows([], [], []) == []
+/// ```
+@internal
+pub fn reference_rows(
+  configured_executors: List(executors.Executor),
+  configured_orchestrators: List(orchestrators.Orchestrator),
+  configured_spawners: List(spawners.Spawner),
+) -> List(ledger_reference.Row) {
+  list.flatten([
+    list.map(configured_executors, fn(row) {
+      ledger_reference.Row("executors." <> row.name <> ".node", row.node)
+    }),
+    list.map(configured_orchestrators, fn(row) {
+      ledger_reference.Row("orchestrators." <> row.name <> ".node", row.node)
+    }),
+    list.map(configured_spawners, fn(row) {
+      ledger_reference.Row("spawners." <> row.name <> ".node", row.node)
+    }),
+  ])
 }
 
 // Each served checkout has to be a directory now, so an operator who mistyped
 // a root learns it at startup and not from the first session that attaches.
 // The plane factory checks again at every attach, because a directory can go
 // away in between.
+// The handle the `ledger.*` commands use: the process and this node's names. The
+// node is distributed by now, so its own name is the VM's.
+fn ledger_handle(
+  booted: Option(ledger_boot.Booted),
+  configuration: String,
+) -> Result(Option(ledger_control.Handle), String) {
+  case option.then(booted, fn(started) { started.ledger }) {
+    None -> Ok(None)
+    Some(service) ->
+      ledger_control.handle(service, atom.to_string(node.name(node.self())))
+      |> result.map(Some)
+      |> result.map_error(fn(reason) { configuration <> ": " <> reason })
+  }
+}
+
 fn existing_roots(served: List(workspaces.Workspace)) -> Result(Nil, String) {
   list.try_each(served, fn(workspace) {
     bootstrap.canonical_directory(workspace.root)
@@ -1161,11 +1295,22 @@ pub fn prepare_startup(
     spawners.from_document(document)
     |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
   )
-  use membership <- result.try(start_distribution(
+  use booted <- result.try(start_distribution(
     document,
     configuration,
     directory_settings.cluster(directory),
+    logger,
   ))
+  use ledger <- result.try(ledger_handle(booted, configuration))
+  use Nil <- result.try(
+    audit_started(
+      booted,
+      document,
+      reference_rows(executors, orchestrators, spawners),
+      logger,
+    )
+    |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
+  )
   let config =
     Config(
       ..config,
@@ -1177,7 +1322,8 @@ pub fn prepare_startup(
       orchestrators:,
       directory:,
       spawners:,
-      membership:,
+      membership: option.map(booted, fn(started) { started.membership }),
+      ledger:,
     )
   root.start(
     root.Config(
@@ -1263,7 +1409,7 @@ pub fn prepare_startup(
               logger,
               owner,
               Some(services),
-              workspace.fixed(membership, config.executors, name, chosen),
+              workspace.fixed(config.membership, config.executors, name, chosen),
             )
           _, pool ->
             serve.assemble_registered(
@@ -1273,7 +1419,7 @@ pub fn prepare_startup(
               owner,
               Some(services),
               workspace.pooled(
-                membership,
+                config.membership,
                 config.executors,
                 config.pools,
                 pool,
@@ -1588,6 +1734,7 @@ pub fn listen_moving(
       directory: session_directory_of(config, ready.registry),
       movers:,
       deployment: deployment_reach(config),
+      ledger: config.ledger,
       generator: fn() {
         ids.generator(
           clock.from_function(ffi_os.system_time_ms),

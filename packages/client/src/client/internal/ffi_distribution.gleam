@@ -54,6 +54,14 @@ pub type Failure {
   Unavailable
 }
 
+/// The trust mode in which the pins are not in the options file or in the
+/// start arguments but in a table a process on this node publishes
+/// (protocol-change/086). It compiles to the atom `live` that the foreign code
+/// matches where it would otherwise take a peer list.
+pub type Live {
+  Live
+}
+
 /// How this node connects to one peer.
 pub type Link {
   /// A visible connection, made between two directory members.
@@ -76,6 +84,20 @@ pub type Link {
 /// ```
 @external(erlang, "client_distribution_ffi", "options")
 pub fn options(peers: List(#(String, BitArray)), files: files) -> String
+
+/// Renders the options file of live mode. It names no pin, so it is a function
+/// of the credential paths alone and enrolling or revoking a member never
+/// changes it.
+///
+/// The same foreign function as `options`, which takes a peer list or `live`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// ffi_distribution.live_options(Live, files) // -> "[{server, ..}, {client, ..}].\n"
+/// ```
+@external(erlang, "client_distribution_ffi", "options")
+pub fn live_options(trust: Live, files: files) -> String
 
 /// Checks the boot preconditions, reads the credentials, makes sure an epmd
 /// answers, and starts TLS distribution under `dist_auto_connect = never`:
@@ -102,10 +124,48 @@ pub fn start(
   members: Option(List(String)),
 ) -> Result(Membership, Failure)
 
-/// Resolves one configured peer name to the node made for it at boot.
+/// Starts distribution in live mode: the same checks and the same start as
+/// `start`, with no peer atoms made, because the pin table decides who may
+/// connect and the ledger process makes an atom when it applies a member.
 ///
-/// Erlang tuple lookup over the finite boot list. Node names are atoms, and
-/// a lookup by string must never create one.
+/// The same foreign function as `start`, which takes a peer list or `live`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// ffi_distribution.start_live(local, Live, files, option.None, option.None)
+/// ```
+@external(erlang, "client_distribution_ffi", "start")
+pub fn start_live(
+  local: String,
+  trust: Live,
+  files: files,
+  listen_port: Option(Int),
+  members: Option(List(String)),
+) -> Result(Membership, Failure)
+
+/// Replaces the table that live mode reads with these pins, each paired with
+/// the node name that pin must present. The first call creates the protected
+/// table, so the calling process owns it and is the only one that may call this
+/// again; the table goes away with that process.
+///
+/// OTP `ets:new/2` and `ets:insert/2`. An ETS table is not reachable from
+/// `gleam_stdlib`, `gleam_erlang` or `gleam_otp`, and one insert is what lets a
+/// handshake see the old pins or the new ones and never a mixture.
+///
+/// ## Examples
+///
+/// ```gleam
+/// ffi_distribution.publish_pins([#(pin, "loom@hub.example")])
+/// ```
+@external(erlang, "client_distribution_ffi", "publish_pins")
+pub fn publish_pins(pins: List(#(BitArray, String))) -> Nil
+
+/// Resolves one peer name to its node. In static mode that is the node made for
+/// it at boot; in live mode it is a member the pin table lists.
+///
+/// Erlang tuple lookup over the finite boot list, or over the published table.
+/// Node names are atoms, and a lookup by string must never create one.
 ///
 /// ## Examples
 ///
