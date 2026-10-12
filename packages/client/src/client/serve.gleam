@@ -570,6 +570,9 @@ pub type Instance {
   Instance(
     /// Small communication endpoint projected into the daemon registry.
     peer: peer_mail.Endpoint,
+    /// The questions another orchestrator's subagent messages put to this
+    /// session's Agency, projected into the daemon registry the same way.
+    spawns: agency.DelegateEndpoint,
     /// The sole conversation writer and its supervised strands.
     runtime: api.Runtime,
     /// The original storage actor, monitored before another writer call.
@@ -2186,6 +2189,9 @@ pub type Resident {
   Resident(
     /// Address-only peer service; no runtime graph crosses the registry.
     peer: peer_mail.Endpoint,
+    /// Address-only delegate questions for a parent on another orchestrator:
+    /// closures over the Agency holder's name and a trimmed configuration.
+    spawns: agency.DelegateEndpoint,
     /// The hub's stable address, which is all an attaching socket reads.
     gateway: hub.Gateway,
     /// The session's worktree observation (`Instance.worktree`), for the web
@@ -2213,6 +2219,7 @@ pub type Resident {
 pub fn resident(instance: Instance) -> Resident {
   Resident(
     peer: instance.peer,
+    spawns: instance.spawns,
     gateway: instance.gateway,
     worktree: instance.worktree,
     children: instance_children(instance),
@@ -4584,6 +4591,7 @@ fn assemble_in(
   process.unlink(started_services.pid)
   Ok(Instance(
     peer: peer_endpoint,
+    spawns: agency.delegate_endpoint(agency_config),
     runtime:,
     storage_owner:,
     broker: broker_actor,

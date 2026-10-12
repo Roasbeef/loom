@@ -25,6 +25,7 @@
 ////    loss of either of the last two ends the daemon.
 
 import argv
+import client/agency
 import client/catalog
 import client/daemon/limits
 import client/daemon/listener
@@ -38,6 +39,7 @@ import client/daemon/ui_assets
 import client/daemon/ui_login
 import client/daemon/ui_sessions
 import client/daemon/ui_socket
+import client/delegate_host
 import client/directory/deletion
 import client/directory/member
 import client/directory/migrate
@@ -589,7 +591,8 @@ pub fn directory_path(state_root: String) -> String {
 /// `[orchestrators.<name>]` of its own, since an orchestrator can be asked by a
 /// peer that lists it without listing that peer back. It also relays the three
 /// subagent messages to `spawn_host`, which refuses all of them for a daemon with
-/// no `[spawners.<name>]`. It is linked to the
+/// no `[spawners.<name>]` and otherwise serves them from the sender's delegate
+/// session. It is linked to the
 /// process that starts the daemon's services, so an abnormal exit of the port
 /// ends the daemon the way the executor host's does: a daemon that silently
 /// stopped answering would make every peer report it unreachable.
@@ -597,7 +600,7 @@ pub fn directory_path(state_root: String) -> String {
 /// ## Examples
 ///
 /// ```gleam
-/// // assert main.start_orchestrator_port(Config(..config, membership: None), daemon, logger, peer) == Ok(Nil)
+/// // assert main.start_orchestrator_port(Config(..config, membership: None), daemon, logger, peer, delegate) == Ok(Nil)
 /// ```
 @internal
 pub fn start_orchestrator_port(
@@ -605,6 +608,7 @@ pub fn start_orchestrator_port(
   daemon: root.Root(instance),
   logger: Logger,
   peer_endpoint: fn(instance) -> Option(peer_mail.Endpoint),
+  delegate_endpoint: fn(instance) -> agency.DelegateEndpoint,
 ) -> Result(Nil, String) {
   case config.membership {
     None -> Ok(Nil)
@@ -633,7 +637,22 @@ pub fn start_orchestrator_port(
           peer_command(ready.registry, peer_endpoint),
           server.local_description(ready.registry),
           importer,
-          spawn_host(config.spawners),
+          spawn_host(
+            config.spawners,
+            delegate_host.resolver(delegate_host.Context(
+              registry: ready.registry,
+              sessions_directory: ready.sessions_directory,
+              domain_configuration:,
+              generator: fn() {
+                ids.generator(
+                  clock.from_function(ffi_os.system_time_ms),
+                  ffi_os.unique_positive_integer(),
+                )
+              },
+              now_ms: ffi_os.system_time_ms,
+              endpoint: delegate_endpoint,
+            )),
+          ),
         )
         |> result.map_error(fn(error) {
           "the orchestrator port did not start: " <> string.inspect(error)
@@ -689,33 +708,56 @@ pub fn peer_command(
 /// answer is `UnknownSpawner`, which is also what a daemon with no spawners
 /// says to every node.
 ///
-/// A configured spawner is answered with `Unimplemented` for now. The delegate
-/// session that would serve its spawns is slice S2, and a daemon that has the
-/// table but cannot serve it still answers, so a spawning orchestrator reads a
-/// refusal and never waits out a silence.
+/// A message from a configured spawner is served by the Agency of that spawner's
+/// delegate session for the parent the message names. `delegates` finds that
+/// Agency, creating or opening the session as needed (`delegate_host.resolver`),
+/// and a refusal it returns is the answer. The spawner's table supplies the
+/// terms the Agency judges the spawn by: the tool ceiling, the depth and the
+/// deadlines. A join and a run end need no terms, because they concern children
+/// the Agency already holds.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // main.spawn_host([]).run_ended(origin, operation)
+/// // main.spawn_host([], delegates).run_ended(origin, operation)
 /// // -> Error(remote_spawn.UnknownSpawner(origin.node))
 /// ```
 @internal
 pub fn spawn_host(
   configured: List(spawners.Spawner),
+  delegates: fn(spawners.Spawner, remote_spawn.Parent) ->
+    Result(agency.DelegateEndpoint, remote_spawn.SpawnRefusal),
 ) -> orchestrator_port.SpawnHost {
-  let judged = fn(origin: remote_spawn.Origin) {
-    case spawners.by_node(configured, origin.node) {
-      Ok(_spawner) -> remote_spawn.Unimplemented
-      Error(Nil) -> remote_spawn.UnknownSpawner(node: origin.node)
-    }
+  let serving = fn(origin: remote_spawn.Origin) {
+    use spawner <- result.try(
+      spawners.by_node(configured, origin.node)
+      |> result.replace_error(remote_spawn.UnknownSpawner(node: origin.node)),
+    )
+    use endpoint <- result.map(delegates(spawner, origin.parent))
+    #(spawner, endpoint)
   }
   orchestrator_port.SpawnHost(
-    spawn: fn(origin, _call_site, _depth, _parent_tools, _request) {
-      Error(judged(origin))
+    spawn: fn(origin, call_site, depth, parent_tools, request) {
+      use #(spawner, endpoint) <- result.try(serving(origin))
+      endpoint.spawn(
+        remote_spawn.Delegation(
+          parent: origin.parent,
+          depth:,
+          parent_tools:,
+          terms: delegate_host.terms_of(spawner),
+        ),
+        call_site,
+        request,
+      )
     },
-    join: fn(origin, _handles, _within_ms) { Error(judged(origin)) },
-    run_ended: fn(origin, _operation) { Error(judged(origin)) },
+    join: fn(origin, handles, within_ms) {
+      use #(_spawner, endpoint) <- result.try(serving(origin))
+      endpoint.join(origin.parent, handles, within_ms)
+    },
+    run_ended: fn(origin, operation) {
+      use #(_spawner, endpoint) <- result.try(serving(origin))
+      endpoint.run_ended(operation)
+    },
   )
 }
 
@@ -1569,6 +1611,7 @@ fn run(
           daemon,
           logger,
           fn(resident: serve.Resident) { Some(resident.peer) },
+          fn(resident: serve.Resident) { resident.spawns },
         ),
       )
       use movers <- result.try(start_movers(config, daemon, logger))

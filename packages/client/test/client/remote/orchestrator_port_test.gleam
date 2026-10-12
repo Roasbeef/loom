@@ -499,7 +499,7 @@ pub fn a_refusal_from_the_host_is_the_answer_to_each_message_test() {
         Error(remote_spawn.CapReached(cap: remote_spawn.MaxSessions, limit: 4))
       },
       join: fn(_origin, _handles, _within_ms) {
-        Error(remote_spawn.Unimplemented)
+        Error(remote_spawn.StoreFailure(reason: "the store failed"))
       },
       run_ended: fn(_origin, _ended) { Error(remote_spawn.ParentRunEnded) },
     )
@@ -517,7 +517,7 @@ pub fn a_refusal_from_the_host_is_the_answer_to_each_message_test() {
       Error(remote_spawn.CapReached(cap: remote_spawn.MaxSessions, limit: 4)),
     )
   assert orchestrator_port.ask_join(port, parent(), [handle()], 25_000, 1000)
-    == Ok(Error(remote_spawn.Unimplemented))
+    == Ok(Error(remote_spawn.StoreFailure(reason: "the store failed")))
   assert orchestrator_port.ask_run_ended(port, parent(), operation(), 1000)
     == Ok(Error(remote_spawn.ParentRunEnded))
 }

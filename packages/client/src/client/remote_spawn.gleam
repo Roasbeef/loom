@@ -262,11 +262,6 @@ pub type SpawnRefusal {
     /// What failed.
     reason: String,
   )
-
-  /// The receiver is configured to serve this spawner but its build does not
-  /// serve spawns yet. Slice S2 gives the receiver its delegate session and
-  /// removes this variant.
-  Unimplemented
 }
 
 /// The longest one join waits on the receiver, in milliseconds. A sender may ask

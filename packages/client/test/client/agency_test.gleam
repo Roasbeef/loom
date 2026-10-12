@@ -22,14 +22,18 @@ import client/agency
 import client/async_codemode
 import client/async_runs
 import client/codemode
+import client/daemon/main as daemon_main
 import client/internal/ffi_os
 import client/owner_codemode
 import client/owner_services
 import client/peer_mail
 import client/peer_outbox
 import client/peers
+import client/remote/address
+import client/remote/orchestrator_port
 import client/remote_spawn
 import client/serve
+import client/spawners
 import client/workflow_ledger
 import codemode/satellite
 import codemode/vet/policy as vet_policy
@@ -46,6 +50,8 @@ import core/todo_list
 import core/tx
 import core/usage_evidence
 import gleam/bit_array
+import gleam/erlang/atom
+import gleam/erlang/node
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/io
@@ -5378,4 +5384,175 @@ pub fn an_agency_that_is_not_running_refuses_in_band_test() {
     == Error(unavailable)
   assert agency.delegate_run_ended(config, site.operation) == Error(unavailable)
   assert result.is_error(agency.delegate_join(config, remote_parent(), [], 0))
+}
+
+// --- through the orchestrator port ------------------------------------------
+//
+// The spawn host and the port in front of it, over a real Agency. The sender
+// is this test's own process, so the node the port sees is the node of this
+// VM, and the spawner's table names that node. Distribution itself carries the
+// same messages between two VMs; nothing about them changes on the way.
+
+fn own_node() -> String {
+  atom.to_string(node.name(node.self()))
+}
+
+fn spawner_table() -> String {
+  "[distribution]
+node = \"box@100.64.0.9\"
+ca = \"/etc/loom/ca.pem\"
+certificate = \"/etc/loom/cert.pem\"
+key = \"/etc/loom/key.pem\"
+cookie = \"/home/loom/.erlang.cookie\"
+
+[[distribution.peers]]
+node = \"laptop@100.64.0.5\"
+sha256 = \"0000000000000000000000000000000000000000000000000000000000000001\"
+
+[profiles.cheap-review.roles]
+main = [\"fast\"]
+
+[spawners.laptop]
+node = \"laptop@100.64.0.5\"
+directory = \"/srv/loom/scratch\"
+profile = \"cheap-review\"
+tools = [\"agent_note\", \"agent_send\", \"bash\", \"fs_read\"]
+"
+}
+
+fn serving(harness: Harness) -> address.Address(orchestrator_port.Message) {
+  let assert Ok(configured) = spawners.parse(spawner_table())
+    as "the spawner's table must parse"
+
+  // The table names a node a distribution peer can have. A test VM that is not
+  // distributed is `nonode@nohost`, which no table can name, so the spawner is
+  // moved to the node this process runs on after the table is read.
+  let configured =
+    list.map(configured, fn(spawner) {
+      spawners.Spawner(..spawner, node: own_node())
+    })
+  let name = process.new_name("orchestrator_port")
+  let assert Ok(_) =
+    orchestrator_port.start_with(
+      name,
+      fn(_session) { Error(Nil) },
+      fn(_session, _command) { Error(orchestrator_port.peer_unserved) },
+      fn(_session) { Error("not_found") },
+      orchestrator_port.declining(),
+      daemon_main.spawn_host(configured, fn(_spawner, _parent) {
+        Ok(agency.delegate_endpoint(harness.config))
+      }),
+    )
+    as "the port must start"
+  address.Address(node: node.self(), name:)
+}
+
+pub fn a_spawner_drives_the_delegate_agency_through_the_port_test() {
+  let harness = start_harness(Meters("the report", None))
+  let port = serving(harness)
+  let parent = remote_parent()
+  let site = site_of("turn-1:tools", 0)
+  let tools = remote_delegation().parent_tools
+
+  // The spawn is answered with the child and what it holds: the parent's tools
+  // under the table's ceiling.
+  let assert Ok(Ok(spawned)) =
+    orchestrator_port.ask_spawn(
+      port,
+      parent,
+      site,
+      0,
+      tools,
+      remote_request("review auth"),
+      5000,
+    )
+    as "the spawn must be answered"
+  assert spawned.tools == ["agent_note", "agent_send", "bash", "fs_read"]
+  assert string.starts_with(spawned.handle.strand, "sub:^main/review-auth-")
+
+  // Asking again, as a drainer does after a lost reply, is the same child.
+  let assert Ok(Ok(again)) =
+    orchestrator_port.ask_spawn(
+      port,
+      parent,
+      site,
+      0,
+      tools,
+      remote_request("review auth"),
+      5000,
+    )
+  assert again.handle == spawned.handle
+  assert list.length(sub_strands(harness)) == 1
+
+  // The join reports the settled child and what it cost.
+  assert settled(harness, spawned.handle)
+  let assert Ok(Ok([remote_spawn.Ready(report:, usage:, ..)])) =
+    orchestrator_port.ask_join(port, parent, [spawned.handle], 200, 5000)
+    as "the join must be answered"
+  assert report == "the report"
+  assert usage.input == 100
+  assert usage.cost == 0.5
+
+  // The run ends: nothing was left running, and from then on a spawn for that
+  // run is refused with the reason, over the same port.
+  assert orchestrator_port.ask_run_ended(port, parent, site.operation, 5000)
+    == Ok(Ok(0))
+  assert orchestrator_port.ask_spawn(
+      port,
+      parent,
+      remote_spawn.CallSite(..site, source_index: 1),
+      0,
+      tools,
+      remote_request("late"),
+      5000,
+    )
+    == Ok(Error(remote_spawn.ParentRunEnded))
+  close(harness)
+}
+
+pub fn the_port_refuses_a_spawn_the_spawners_table_forbids_test() {
+  let harness = start_harness(Settles("done"))
+  let port = serving(harness)
+  let ask = fn(request) {
+    orchestrator_port.ask_spawn(
+      port,
+      remote_parent(),
+      site_of("turn-1:tools", 0),
+      0,
+      remote_delegation().parent_tools,
+      request,
+      5000,
+    )
+  }
+
+  // A tool outside the table's ceiling, a deadline beyond its cap and a child
+  // below its depth are each a refusal that names the rule, and none made a
+  // child.
+  assert ask(
+      remote_spawn.Request(..remote_request("peer"), tools: Some(["peer_send"])),
+    )
+    == Ok(Error(remote_spawn.ToolOutsideCeiling(tool: "peer_send")))
+  assert ask(
+      remote_spawn.Request(
+        ..remote_request("long"),
+        within_ms: Some(1_000_000_000),
+      ),
+    )
+    == Ok(
+      Error(remote_spawn.InvalidArgument(
+        reason: "within_ms is above this spawner's max_within_s",
+      )),
+    )
+  assert orchestrator_port.ask_spawn(
+      port,
+      remote_parent(),
+      site_of("turn-2:tools", 0),
+      1,
+      remote_delegation().parent_tools,
+      remote_request("deep"),
+      5000,
+    )
+    == Ok(Error(remote_spawn.CapReached(cap: remote_spawn.MaxDepth, limit: 1)))
+  assert sub_strands(harness) == []
+  close(harness)
 }
