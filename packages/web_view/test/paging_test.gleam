@@ -145,15 +145,15 @@ pub fn the_newest_capture_is_drawn_while_the_read_is_out_test() {
 }
 
 // The page holds at most 300 rows. A read that would take it past them
-// leaves it holding its newest 300, and the lane says it loads no more; a
-// press then asks nothing, and new rows still push the oldest out.
+// leaves it holding its newest 300. Another press switches direction: the
+// bounded historical window can keep moving backward as live captures arrive.
 //
 // The lane refreshes as soon as a page arrives, so a press right after it
 // finds the lane busy: the read waits, and goes out in the reduction that
 // takes the refresh's reply. The fixture's lane carries an empty session,
 // so after that refresh the test puts back the capture a real one would
 // have carried.
-pub fn a_full_page_loads_no_more_test() {
+pub fn a_full_page_offers_backward_browsing_test() {
   let wire = process.new_subject()
   let page =
     page_fixture.ready(wire, "operator")
@@ -184,15 +184,14 @@ pub fn a_full_page_loads_no_more_test() {
     |> answer(read, lane_fixture.older_page(102, 201), 202)
   assert list.length(component.rows(page)) == component.held_rows
   assert first_text(page) == "question 52"
-  assert component.top(page) == lane.Full(component.held_rows)
+  assert component.top(page) == lane.Earlier
   assert component.paging(page) == component.Full
 
   let page = press(page)
-  assert reads(wire) == []
-
+  assert component.browsing(page)
+  let held = component.rows(page)
   let page = component.apply(page, [lane_fixture.conversation(301, 456)])
-  assert list.length(component.rows(page)) == component.held_rows
-  assert first_text(page) == "question 53"
+  assert component.rows(page) == held
 }
 
 // A refused read retires the demand: the page follows the session again,

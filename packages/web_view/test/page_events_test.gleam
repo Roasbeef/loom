@@ -9,6 +9,7 @@
 //// are exactly there on the observer's page, and at the same paths on the
 //// operator's.
 
+import gleam/erlang/process
 import gleam/list
 import gleam/option
 import gleam/string
@@ -259,4 +260,19 @@ pub fn the_session_controls_are_beneath_their_own_path_test() {
     string.starts_with(key, component.session_controls_path)
   })
   assert component.session_controls_path != component.invite_path
+}
+
+// Both server components keep the return beside the older control, including
+// when the historical page ends at the beginning of the conversation.
+pub fn the_history_return_uses_the_same_admitted_path_on_both_pages_test() {
+  let wire = process.new_subject()
+  let page =
+    page_fixture.ready(wire, "operator")
+    |> component.apply([
+      lane_fixture.long_running(1001, 1600, option.Some(lane_fixture.main_op())),
+    ])
+  let #(page, _) = component.older(page)
+  let click = component.latest_path <> "\nclick"
+  assert list.contains(every_handler(component.view(page)), click)
+  assert list.contains(every_handler(operator_page.view(page)), click)
 }

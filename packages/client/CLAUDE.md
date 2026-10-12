@@ -8563,3 +8563,13 @@ build" the rulings.
   touching the marker (about 12 s). `daemon_ledger_ownership_test` covers
   `main.ownership_of`.
 
+
+## Returning from web history
+
+`daemon/ui_socket.observer_path` admits a read-only click at
+`web_view/component.latest_path`, beside the existing older-history control.
+The handler retires the page's frozen ancestry endpoint and restores the
+latest authoritative capture; it sends no session mutation. Admission remains
+exact in path and event name, covered by `client/ui_socket_test`. The page's
+actual handler table is pinned on both roles by web_view's `page_events_test`.
+Protocol-change/051's history browsing addendum records this event admission.

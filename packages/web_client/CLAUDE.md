@@ -65,7 +65,13 @@ renders again just for it:
   stops and shows a "Jump to latest" button once it is more than
   `follow_rule.jump_gap` (96px, a row and the button) from the bottom, so the
   button never covers the row the reader is about to read, and scrolling back
-  to the bottom or pressing the button resumes it. When the reader presses the lane's
+  to the bottom or pressing the button resumes it. The server's `history`
+  attribute distinguishes a live endpoint from a frozen historical page.
+  While it is `reading`, the floating jump remains offered even at offset zero;
+  `jump_to_latest` clicks the fixed `[data-loom-latest]` control in the slot
+  before scrolling. A direct press on that server control also resumes the
+  browser follow. An ordinary resize or strand change never clicks it.
+  The composer send takes the same return path. When the reader presses the lane's
   "Load older" button, it keeps the row they were looking at in place while
   the older rows arrive above it. A press on a settled turn's divider (the
   button's `data-loom-fold` marker) is the reader's own move too: the element
@@ -713,3 +719,7 @@ The stylesheet lays out the daemon's explicit result viewer and wraps its long
 text lines within the viewport. The viewer uses ordinary navigation links and
 adds no client component, JavaScript state or websocket event. `make gen-client`
 regenerates its committed CSS and source digest alongside the existing assets.
+
+The explicit return keeps `follow_rule.Returning` until the server acknowledges
+`history="live"`. That acknowledgement restores following after paint, even
+when replacing the historical DOM temporarily shrinks the scroll extent.

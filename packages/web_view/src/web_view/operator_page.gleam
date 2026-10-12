@@ -340,11 +340,12 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
     sidebar_place(model),
     [
       component.crumb(model),
-      lane.view(
+      lane.navigable(
         component.pieces(model),
         component.live(model),
         component.top(model),
         Observed(component.OlderRequested),
+        component.latest_action(model, Observed(component.LatestRequested)),
         lane.Replies(
           reply: Replying,
           open: fn(session) { openable(model, session) },

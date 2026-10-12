@@ -1690,3 +1690,19 @@ pub fn an_observer_socket_accepts_a_message_button_click_test() {
     },
   )
 }
+
+// Returning to the live endpoint is read-only. Admission stays exact: neither
+// adjacent paths, nested paths nor non-click events gain access.
+pub fn an_observer_can_return_from_history_at_only_the_return_path_test() {
+  let at = fn(path, name) {
+    "{\"kind\":1,\"path\":"
+    <> json.to_string(json.string(path))
+    <> ",\"name\":"
+    <> json.to_string(json.string(name))
+    <> ",\"event\":{}}"
+  }
+  assert ui_socket.observer_accepts(at(component.latest_path, "click"))
+  assert !ui_socket.observer_accepts(at(component.latest_path, "submit"))
+  assert !ui_socket.observer_accepts(at(component.latest_path <> "\t0", "click"))
+  assert !ui_socket.observer_accepts(at("0\t2\t1\t0\t2", "click"))
+}

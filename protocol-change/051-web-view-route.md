@@ -4295,3 +4295,27 @@ finishes. `worktree_diff_test` observes a real linked worktree under
 `.claude/worktrees/` whose `.git` is a file. `worktree_read_test` (web_view)
 pins the pane, its bounds, its fallbacks, the escaping of a hostile path and
 line, and when the page asks.
+
+## Addendum: browse history while a turn runs (2026-10-12)
+
+The original row cap could refuse older history until the running turn settled.
+Load older now changes the page's presentation mode when that cap is reached:
+a frozen ancestry window can move backward by dropping its newer end. Current
+captures still own operation, membership and approval metadata. The existing
+history range protocol and its bounds and correlation are unchanged.
+
+Both the operator and observer components draw a Jump to latest button beside
+Load older, including when the frozen page reaches the conversation's beginning.
+Its Lustre path is `0\t2\t1\t0\t1` (`component.latest_path`); the existing
+older path remains `0\t2\t1\t0\t0`. The observer admits only a `click` at
+the new exact path. The handler retires the page's historical demand and adopts
+the latest authoritative capture. It sends no mutation, carries no browser
+payload, and grants no access to another session or strand.
+
+`<loom-follow>` additionally reads the fixed `history` attribute (`live` or
+`reading`). A reading endpoint keeps its floating Jump to latest offered even
+at offset zero. Its activation clicks the fixed `data-loom-latest` button in
+the slotted server view before following the resulting tail. Sending from the
+composer does the same. Resize and strand restoration never activate a return.
+The new handler path is pinned against both components' real handler tables,
+and socket tests refuse adjacent paths, descendants and non-click events.

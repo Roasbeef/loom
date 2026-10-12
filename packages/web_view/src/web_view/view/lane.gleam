@@ -168,6 +168,60 @@ pub fn view(
   )
 }
 
+/// A lane with a server-side return to the live endpoint. The return button
+/// always has the same sibling path as Load older, including at the beginning.
+/// The browser's floating jump control activates this read-only handler.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // lane.navigable(pieces, live, top, older, latest, option.None, replies, marks, folds, session)
+/// ```
+pub fn navigable(
+  pieces: List(turns.Piece),
+  live: List(live.Row),
+  top: Top,
+  load: message,
+  latest: Option(message),
+  replies: Replies(message),
+  marks: Marks,
+  folds: Folds(message),
+  session: String,
+) -> Element(message) {
+  let boundary = boundary(top, load)
+  let top = case latest {
+    None -> boundary
+    Some(latest) ->
+      html.div([attribute.class("lane-top")], [
+        boundary_content(top, load),
+        html.button(
+          [
+            attribute.type_("button"),
+            attribute.class("load-older"),
+            attribute.data("loom-latest", "return"),
+            event.on_click(latest),
+          ],
+          [html.text("Jump to latest")],
+        ),
+      ])
+  }
+  let endpoint = case latest {
+    None -> "live"
+    Some(_) -> "reading"
+  }
+  rows_at(
+    pieces,
+    live,
+    top,
+    line_element,
+    replies,
+    marks,
+    folds,
+    session,
+    endpoint,
+  )
+}
+
 /// What the lane needs to mark a piece as belonging to a strand: which strand
 /// is on screen and its hue, and the position of each strand the panel lists.
 ///
@@ -333,11 +387,27 @@ pub fn rows(
   folds: Folds(message),
   session: String,
 ) -> Element(message) {
+  rows_at(pieces, live, top, draw, replies, marks, folds, session, "live")
+}
+
+// The endpoint marker keeps the browser return visible on short pages.
+fn rows_at(
+  pieces: List(turns.Piece),
+  live: List(live.Row),
+  top: Element(message),
+  draw: fn(Line) -> Element(message),
+  replies: Replies(message),
+  marks: Marks,
+  folds: Folds(message),
+  session: String,
+  endpoint: String,
+) -> Element(message) {
   let newest = newest_thought(pieces)
   element.element(
     "loom-follow",
     [
       attribute.class("follow"),
+      attribute.attribute("history", endpoint),
       attribute.data(strand_key_marker, int.to_string(marks.key)),
     ],
     [
@@ -453,40 +523,43 @@ fn live_entry(
 // path the page socket admits an observer's click at
 // (`component.older_path`).
 fn boundary(top: Top, load: message) -> Element(message) {
-  html.div([attribute.class("lane-top")], [
-    case top {
-      Beginning ->
-        html.p([attribute.class("lane-boundary")], [
-          html.text("Beginning of this conversation."),
-        ])
-      Earlier ->
-        html.button(
-          [
-            attribute.type_("button"),
-            attribute.class("load-older"),
-            attribute.data(older_marker, "load"),
-            event.on_click(load),
-          ],
-          [html.text("Load older")],
-        )
-      Loading ->
-        html.p([attribute.class("lane-boundary")], [
-          html.text("Loading older rows…"),
-        ])
-      Full(rows:) ->
-        html.p([attribute.class("lane-boundary")], [
-          html.text(
-            "This page holds at most "
-            <> int.to_string(rows)
-            <> " rows, so it loads no older ones.",
-          ),
-        ])
-      Crowded ->
-        html.p([attribute.class("lane-boundary")], [
-          html.text("Older turns come back when the current turn finishes."),
-        ])
-    },
-  ])
+  html.div([attribute.class("lane-top")], [boundary_content(top, load)])
+}
+
+// Keeping this first child fixed preserves the admitted Load older path.
+fn boundary_content(top: Top, load: message) -> Element(message) {
+  case top {
+    Beginning ->
+      html.p([attribute.class("lane-boundary")], [
+        html.text("Beginning of this conversation."),
+      ])
+    Earlier ->
+      html.button(
+        [
+          attribute.type_("button"),
+          attribute.class("load-older"),
+          attribute.data(older_marker, "load"),
+          event.on_click(load),
+        ],
+        [html.text("Load older")],
+      )
+    Loading ->
+      html.p([attribute.class("lane-boundary")], [
+        html.text("Loading older rows…"),
+      ])
+    Full(rows:) ->
+      html.p([attribute.class("lane-boundary")], [
+        html.text(
+          "This page holds at most "
+          <> int.to_string(rows)
+          <> " rows, so it loads no older ones.",
+        ),
+      ])
+    Crowded ->
+      html.p([attribute.class("lane-boundary")], [
+        html.text("Older turns come back when the current turn finishes."),
+      ])
+  }
 }
 
 fn piece_key(piece: turns.Piece) -> String {

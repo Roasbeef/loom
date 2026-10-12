@@ -557,14 +557,28 @@ page keys and nonces, and the relay into the session's gateway.
   between turns (`turns.grouped`); once the reader loads older turns its limit is
   `held_rows`. The limit counts drawn rows: a settled turn is its prompt, its
   answer and one divider, and its steps are drawn only while the reader has
-  its fold open (below). `component.Paging` is `Tail | Paged | Crowded | Full`; `Full`
-  means a paged page had to cut a whole turn, so it loads no more, and a page
-  that fits again after a fold closed is `Paged` again. `Crowded` is the same
-  stop while the running turn's rows (drawn open) are what cut the page, and the
-  lane says older turns come back when the turn finishes (`lane.Crowded`, where
-  `Full` says the row limit): it is `Paged` again when the turn settles into one divider and the cut is gone, and
-  `Full` if it is still cut. A cut by the bytes of the closed turns, which only
-  grow, is `Full` for good (`component.paged`).
+  its fold open (below). `component.Paging` is `Tail | Paged | Crowded | Full |
+  Browsing`. `Full` and `Crowded` describe pressure on the live turn-summary
+  view; both still offer Load older. Another press enters `Browsing`, as does
+  an older press on a running turn already filling `live_rows`. `browse_at`
+  freezes the displayed record suffix or starts a read at the oldest held
+  summary. `browsed` draws the oldest blocks that fit `held_rows` and lowers
+  the frozen endpoint when newer records leave the page. The shared
+  `history_view` bounds retained records to 600 and payload to 16 MiB; range
+  reads use its existing correlated `Wanted` / `Pending` demand. New captures
+  continue updating live metadata and never move that historical endpoint.
+  The last historical group remains open even if the live operation settles,
+  because the endpoint may cut a turn. No live preview is drawn below it.
+  `latest_at` retires the historical demand, clears historical fold state and
+  projects the newest captured tail. A late history reply cannot attach.
+  The history mode parks with each strand's window.
+- **Return from history.** `lane.navigable` places the return button at
+  `component.latest_path` (`0\t2\t1\t0\t1`), beside the fixed older path,
+  on both pages and even at the beginning. Its `data-loom-latest` marker is
+  fixed. `<loom-follow history="reading">` keeps the floating Jump to latest
+  offered regardless of scroll gap, and activates that server handler on a
+  jump or composer send. The observer socket admits only a click at that
+  exact path (protocol-change/051, the history browsing addendum).
 - **Lazy folds** (protocol-change/070, `session_view/fold_budget`) and
   **turn summaries** (protocol-change/071, `session_view/turn_ledger`). A closed
   turn is not kept as records. `relaned` closes every turn of the history window
