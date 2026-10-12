@@ -113,6 +113,14 @@ const slow_prompt = "run the slow command"
 
 const slow_answer = "slow done"
 
+// How long the restart drill's callback may run. The wait for the crashed
+// orchestrator's writer lease (`serve.gleam` opens a session under a 60-second
+// lease, renewed every twenty) is up to a minute of it, and the rest is two
+// orchestrator boots, the slow call and the recovered turn, each of which a
+// loaded signoff stretches by half again or more. It leaves the fixture's
+// 240-second body deadline room for the provisioning that comes first.
+const restart_budget_ms = 200_000
+
 /// Starts an orchestrator and an executor from the shipment and takes one
 /// registered session through opening, a scripted turn, a stop and a reopen.
 ///
@@ -743,21 +751,35 @@ fn assert_ran_once(
 // state. The executor sees the connection drop, leaves the run going and keeps
 // its outcome in the ledger; the reopened session finds the call interrupted
 // and asks the executor for the outcome instead of running it again.
+//
+// This is the longest body in the module, and its length is mostly time no load
+// shortens. The restarted orchestrator cannot take the session until the crashed
+// one's writer lease runs out, up to a minute of wall clock, and `reopen_session`
+// polls through exactly that wait. Alone it takes about a minute and a signoff
+// that runs the shipped fixtures side by side about a hundred seconds, which
+// left the default callback budget of 120 seconds a margin the next fixture
+// added to that signoff used up. The callback is given `restart_budget_ms`
+// instead; the fixture's own deadline still bounds the whole body.
 fn restart_drill(prepared: Fixture) -> Nil {
   let keys = provision(prepared)
   make_checkout(prepared)
   let #(Nil, report) =
-    provider.with_server(slow_script(), fn(url) {
-      let #(_first, session, terminal) = start_slow_call(prepared, keys, url)
-      remote_daemons.crash(prepared.orchestrator)
-      tui_driver.stop(terminal)
-      let second = remote_daemons.start(prepared.orchestrator)
-      let control = remote_daemons.open_control(second)
-      let recovered = remote_daemons.reopen_session(control, 10, session)
-      assert remote_daemons.settled_state(recovered) == "resident"
-      let terminal = remote_daemons.attach(second, session)
-      remote_daemons.await_answers(terminal, [slow_answer], 60_000)
-    })
+    provider.with_server_for(
+      slow_script(),
+      provider.OnlySuccessful,
+      restart_budget_ms,
+      fn(url) {
+        let #(_first, session, terminal) = start_slow_call(prepared, keys, url)
+        remote_daemons.crash(prepared.orchestrator)
+        tui_driver.stop(terminal)
+        let second = remote_daemons.start(prepared.orchestrator)
+        let control = remote_daemons.open_control(second)
+        let recovered = remote_daemons.reopen_session(control, 10, session)
+        assert remote_daemons.settled_state(recovered) == "resident"
+        let terminal = remote_daemons.attach(second, session)
+        remote_daemons.await_answers(terminal, [slow_answer], 60_000)
+      },
+    )
   let assert Ok(requests) = report
     as "the provider saw the prompt and the recovered result, nothing else"
   assert_ran_once(prepared, requests)
