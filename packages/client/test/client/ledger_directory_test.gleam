@@ -312,3 +312,123 @@ pub fn the_directory_follows_the_ledger_test_() -> EunitTest {
     Nil
   })
 }
+
+/// The leader removes a member the ledger revoked, and Ra never stops the server
+/// it removed. When the same machine is enrolled again, on the same disk, its
+/// store still carries the `joined` marker and a server that belongs to no
+/// cluster. Nobody touches the marker: the node finds out by asking the leader
+/// through a peer, resets, and joins again in the seat its new entry gives it.
+pub fn a_revoked_member_enrolled_again_rejoins_by_itself_test_() -> EunitTest {
+  Timeout(seconds / scale, fn() {
+    let id = int.absolute_value(unique_integer([]))
+    let deployed = deployment.provision("live-rejoin", plan(id))
+    let hub_home = installed(deployed, "hub", deployed.out <> "/hub.loombundle")
+    let hub2_home =
+      installed(deployed, "hub2", deployed.out <> "/hub2.loombundle")
+    let box_home = installed(deployed, "box", deployed.out <> "/box.loombundle")
+    let hub = start(hub_home)
+    let hub2 = start(hub2_home)
+    let box = start(box_home)
+    ok(step(hub, "directory_seed", "DIRECTORY seeded"), "hub creates the store")
+    ok(step(hub2, "directory_member", "DIRECTORY started"), "hub2 starts")
+    ok(step(box, "directory_member", "DIRECTORY started"), "box starts")
+    let voters =
+      held(id, [#("box", "voter"), #("hub", "voter"), #("hub2", "voter")])
+    ok(step(hub, "await_ra " <> voters, "RA ok"), "hub lists three voters")
+    ok(step(hub2, "await_ra " <> voters, "RA ok"), "hub2 lists three voters")
+    ok(step(box, "await_ra " <> voters, "RA ok"), "box lists three voters")
+
+    // A learner is enrolled and joins, as in the test above.
+    let enroll = fn(out: String) {
+      ledger_cli.run_with(
+        "enroll",
+        list.flatten([
+          [
+            "laptop",
+            "--node",
+            node_name("laptop", id),
+            "--role",
+            "orchestrator",
+            "--links",
+            "hub,box",
+            "--directory",
+            "learner",
+            "--out",
+            deployed.base <> "/" <> out,
+            "--wait",
+            "30",
+          ],
+          deployment.signing(deployed),
+        ]),
+        relay(hub),
+      )
+    }
+    let assert Ok(_) = enroll("bundles") as "the enrollment succeeds"
+    let laptop_home =
+      installed(
+        deployed,
+        "laptop",
+        deployed.base <> "/bundles/laptop.loombundle",
+      )
+    let laptop = start(laptop_home)
+    ok(
+      step(laptop, "directory_member", "DIRECTORY started"),
+      "the laptop starts",
+    )
+    let with_learner =
+      held(id, [
+        #("box", "voter"),
+        #("hub", "voter"),
+        #("hub2", "voter"),
+        #("laptop", "learner"),
+      ])
+    ok(step(hub, "await_ra " <> with_learner, "RA ok"), "hub lists the learner")
+
+    // The learner is revoked. The leader removes it from Ra, and the machine
+    // ends, as a revoked one is shut down by its operator.
+    let assert Ok(_) =
+      ledger_cli.run_with(
+        "revoke",
+        list.flatten([
+          ["laptop", "--reason", "reinstalled", "--wait", "30"],
+          deployment.signing(deployed),
+        ]),
+        relay(hub),
+      )
+      as "the learner is revoked"
+    ok(step(hub, "await_ra " <> voters, "RA ok"), "the leader removes it")
+    ok(stop(laptop), "the laptop stops")
+
+    // The same machine is enrolled again, on the same disk. The new bundle is
+    // installed over the old files, and the directory the node keeps its store
+    // in is not among them.
+    let assert Ok(_) = enroll("bundles-again") as "the second enrollment"
+    let assert Ok(_) =
+      distribution_cli.run([
+        "install",
+        deployed.base <> "/bundles-again/laptop.loombundle",
+        "--home",
+        laptop_home,
+        "--force",
+      ])
+      as "the new bundle installs over the old one"
+    let again = start(laptop_home)
+    ok(
+      step(again, "directory_member", "DIRECTORY started"),
+      "the laptop starts again",
+    )
+
+    // Nothing is done to the marker. The node asks, finds the cluster without
+    // it, and joins again as a learner, which the other members list. (A learner
+    // learns who leads late, so its own view is not what is asked.)
+    ok(step(hub, "await_ra " <> with_learner, "RA ok"), "hub lists it again")
+    ok(step(box, "await_ra " <> with_learner, "RA ok"), "box lists it again")
+
+    ok(stop(again), "the laptop stops")
+    ok(stop(box), "the box stops")
+    ok(stop(hub2), "hub2 stops")
+    ok(stop(hub), "hub stops")
+    let _ = simplifile.delete(deployed.base)
+    Nil
+  })
+}
