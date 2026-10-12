@@ -253,6 +253,23 @@ pub fn parse_reads_each_operation_test() {
     == Ok(todos.Block(todos.OneTask("a"), Some("waiting")))
 }
 
+pub fn only_the_op_is_required_by_the_schema_test() {
+  // A provider that treats every schema property as required sends empty
+  // values for the fields a call does not use. The schema the model sees
+  // must list only `op`, and a `done` naming only a phase must parse.
+  let door = fn(_ctx, step: fn(Option(JsonValue)) -> Result(JsonValue, String)) {
+    step(None)
+  }
+  let assert json.Object(schema) = todos.tool(door).schema
+    as "the todo schema is an object"
+  assert list.key_find(schema, "required")
+    == Ok(json.Array([json.String("op")]))
+  assert todos.parse(
+      args([#("op", json.String("done")), #("phase", json.String("Review"))]),
+    )
+    == Ok(todos.Finish(todos.WholePhase("Review")))
+}
+
 pub fn parse_refuses_incomplete_calls_test() {
   let assert Error(_) = todos.parse(args([#("op", json.String("block"))]))
   let assert Error(_) = todos.parse(args([#("op", json.String("start"))]))

@@ -146,7 +146,7 @@ pub fn thinking_levels_and_request_overrides_test() {
   )
 }
 
-pub fn function_schemas_are_flat_and_unchanged_test() {
+pub fn function_schemas_are_flat_unchanged_and_never_strict_test() {
   let schema =
     json.Object([
       #("type", json.String("object")),
@@ -170,12 +170,12 @@ pub fn function_schemas_are_flat_and_unchanged_test() {
           #("name", json.String("read")),
           #("description", json.String("Read a path.")),
           #("parameters", schema),
+          #("strict", json.Bool(False)),
         ]),
       ]),
     )
   list.each(
     [
-      "strict",
       "options",
       "previous_response_id",
       "conversation",
@@ -487,6 +487,7 @@ pub fn subscription_request_namespace_and_restrictions_are_exact_test() {
                   #("name", json.String("read")),
                   #("description", json.String("Read a path.")),
                   #("parameters", schema),
+                  #("strict", json.Bool(False)),
                 ]),
               ]),
             ),

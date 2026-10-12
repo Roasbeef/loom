@@ -169,6 +169,14 @@ fn encode_tools(
         #("name", json.String(tool.name)),
         #("description", json.String(tool.description)),
         #("parameters", tool.input_schema),
+
+        // The Responses API defaults function tools to strict mode, where
+        // every property must be listed in `required` and unused optional
+        // arguments have to be sent as empty values. Loom's schemas mark
+        // fields optional and document omission as the way to leave them
+        // out, so strict is switched off for every function explicitly
+        // rather than left to a server default.
+        #("strict", json.Bool(False)),
       ])
     })
   case mode, functions {
