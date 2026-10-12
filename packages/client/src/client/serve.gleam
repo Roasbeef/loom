@@ -3528,10 +3528,9 @@ fn assemble_in(
         peer_mail.no_defaults,
       ),
       outbox_queued: fn() { peer_outbox_drain.poke(outbox_drain_name) },
-      remote: option.unwrap(
-        settings.remote_reach,
-        remote_reach.none(settings.session_id),
-      ),
+      remote: option.lazy_unwrap(settings.remote_reach, fn() {
+        remote_reach.none(settings.session_id)
+      }),
       remote_queued: fn() { peer_outbox_drain.poke(remote_drain_name) },
       models: list.map(settings.catalog.models, fn(entry) {
         #(

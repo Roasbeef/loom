@@ -108,7 +108,7 @@ fn reached(
 ) -> Result(address.Address(orchestrator_port.Message), Failure) {
   use orchestrator <- result.try(
     orchestrators.find(configured, name)
-    |> result.replace_error(remote_reach.not_configured(name)),
+    |> result.map_error(fn(_) { remote_reach.not_configured(name) }),
   )
   use peer <- result.try(
     distribution.peer(membership, orchestrator.node)

@@ -759,7 +759,7 @@ fn member(
   name: String,
 ) -> Result(JsonValue, String) {
   list.key_find(fields, name)
-  |> result.replace_error("missing `" <> name <> "`")
+  |> result.map_error(fn(_) { "missing `" <> name <> "`" })
 }
 
 fn text(
