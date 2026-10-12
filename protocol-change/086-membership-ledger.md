@@ -89,7 +89,11 @@ A ledger is a file of lines separated by `\n`. A line is
 where `body` is the unpadded URL-safe base64 of the entry body and `signature` is
 the unpadded URL-safe base64 of the DER ECDSA signature. A reader MUST reject a
 line with padding, whitespace inside the line, more than one dot, a body over
-4096 bytes after decoding, or a signature over 80 bytes after decoding. An
+4096 bytes after decoding, a signature over 80 bytes after decoding, or a half
+that is not the canonical encoding of its bytes (its unused trailing bits are not
+zero). Without that last rule a flipped trailing character decodes to the same
+bytes, so the text of a line could change while the entry, its identity and its
+signature did not. An
 unterminated last line (no `\n`) is a write that did not finish; a node discards
 it at boot and never acknowledges it.
 
@@ -150,8 +154,15 @@ Every body has these keys first:
 The state after entries `0..n` is a function of those entries alone:
 
 - `members`: a map from `name` to its latest `member` entry's fields, with
-  revoked names removed.
+  revoked names removed. Applying a `revoke` also removes the revoked name from
+  the `links` of every remaining member, so a name enrolled again later holds no
+  edge it was not given anew.
 - `ever`: the set of every `name` any `member` entry has named.
+
+A tool that writes a `member` entry for `enroll` or `renew` derives the member's
+current fields, `links` included, from this state and not from the member's last
+entry. The last entry still lists a revoked name, and an entry which copied that
+list would name a member that is no longer active and be refused as invalid.
 
 An entry is **valid** at state `S` when its `seq` and `prev` follow the head and:
 

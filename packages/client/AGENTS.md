@@ -8030,8 +8030,8 @@ modules yet except their tests, and static pins are unchanged.
   `decode_body`) and never parses a body whose signature failed. A reader does not
   re-serialize: a `SignedEntry` keeps the exact `body` bytes, and its `id` is the
   SHA-256 of them. `parse_line` also refuses a base64 half that is not the
-  canonical encoding of its bytes, which 086 does not say in words: without it a
-  flipped last character would still decode to the same bytes. `seal` is the
+  canonical encoding of its bytes, which 086 states: without it a flipped last
+  character would still decode to the same bytes. `seal` is the
   signer's side and does not validate the fields; `membership_ledger.check` does.
 - `Signer` and `Verifier` are function values, so the module has no `@external`
   and a test needs no key. `Verdict` is `Authentic | Forged`. `membership_signing`
@@ -8051,8 +8051,8 @@ modules yet except their tests, and static pins are unchanged.
   links only to other active members, at most 64 active and 256 names ever, at
   most 10,000 entries (`max_entries`), a revoke only of an active member, and a
   genesis only first. A revoke also removes the revoked name from every remaining
-  member's `links`, which 086 states for edges but not for the stored list: a name
-  enrolled again later must not get its old edges back.
+  member's `links`, which 086's fold states: a name enrolled again later must not
+  get its old edges back.
 - `pin_table(ledger, name)` is the table for one node: each active member other
   than `name` that is linked to it (either lists the other, or both have a
   directory standing other than `none`). `lookup_pin` is what the verify callback
