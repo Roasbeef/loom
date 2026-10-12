@@ -53,6 +53,7 @@ import client/executors
 import client/host
 import client/internal/ffi_os
 import client/ledger_boot
+import client/ledger_service
 import client/orchestrators
 import client/peer_defaults
 import client/peer_mail
@@ -154,6 +155,11 @@ pub type Config {
     /// reaches the peers it asks, and a daemon without it asks nobody and
     /// answers nobody.
     membership: Option(distribution.Membership),
+    /// The membership ledger's process, when `[distribution]` names a ledger
+    /// (protocol-change/086). `start_distribution` started it before
+    /// distribution, so its pin table existed before the listener did. The
+    /// control commands that append and read entries go through this handle.
+    ledger: Option(ledger_service.Service),
   )
 }
 
@@ -333,6 +339,7 @@ pub fn parse(arguments: List(String)) -> Result(Config, String) {
       None,
       [],
       None,
+      None,
     )
   use config <- result.try(parse_loop(arguments, initial))
   use state_root <- result.try(case config.state_root {
@@ -449,36 +456,32 @@ fn bind_address(value: String) -> Result(#(String, Int), String) {
 // Without a `[distribution]` table nothing happens and the VM stays
 // non-distributed. The membership is kept for the sessions registered on an
 // executor, which resolve their peer through it when they open.
+//
+// A configured ledger is opened and its process started first, and
+// distribution after it. The constraint is that the pin table must exist before
+// the listener does: in ledger mode the TLS callback refuses every handshake
+// with `ledger_unavailable` while the table is absent, so a listener opened
+// first would turn away the first peers for no reason of theirs. The ledger
+// process needs no distribution to start, because a monitor of node changes is
+// valid on a VM that is not distributed yet. `ledger_boot.start` does both in
+// that order and keeps the process linked to this one for the life of the
+// daemon, like the other services.
 fn start_distribution(
   document: dict.Dict(String, tom.Toml),
   configuration: String,
   cluster: distribution.Cluster,
   logger: Logger,
-) -> Result(Option(distribution.Membership), String) {
+) -> Result(Option(ledger_boot.Booted), String) {
   use found <- result.try(
     distribution.from_document(document)
     |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
   )
   case found {
     None -> Ok(None)
-    Some(settings) -> {
-      use membership <- result.try(
-        distribution.start(settings, cluster)
-        |> result.map_error(fn(fault) {
-          configuration <> ": " <> distribution.describe(fault)
-        }),
-      )
-
-      // A configured ledger is opened and served once distribution is up, so
-      // that the process can see peers connect. It stays linked to this
-      // process for the life of the daemon, like the other services, and a
-      // daemon without a `ledger` key starts nothing here.
-      use _service <- result.try(
-        ledger_boot.start(settings, logger)
-        |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
-      )
-      Ok(Some(membership))
-    }
+    Some(settings) ->
+      ledger_boot.start(settings, cluster, logger)
+      |> result.map(Some)
+      |> result.map_error(fn(reason) { configuration <> ": " <> reason })
   }
 }
 
@@ -1175,7 +1178,7 @@ pub fn prepare_startup(
     spawners.from_document(document)
     |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
   )
-  use membership <- result.try(start_distribution(
+  use booted <- result.try(start_distribution(
     document,
     configuration,
     directory_settings.cluster(directory),
@@ -1192,7 +1195,8 @@ pub fn prepare_startup(
       orchestrators:,
       directory:,
       spawners:,
-      membership:,
+      membership: option.map(booted, fn(started) { started.membership }),
+      ledger: option.then(booted, fn(started) { started.ledger }),
     )
   root.start(
     root.Config(
@@ -1278,7 +1282,7 @@ pub fn prepare_startup(
               logger,
               owner,
               Some(services),
-              workspace.fixed(membership, config.executors, name, chosen),
+              workspace.fixed(config.membership, config.executors, name, chosen),
             )
           _, pool ->
             serve.assemble_registered(
@@ -1288,7 +1292,7 @@ pub fn prepare_startup(
               owner,
               Some(services),
               workspace.pooled(
-                membership,
+                config.membership,
                 config.executors,
                 config.pools,
                 pool,

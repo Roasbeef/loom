@@ -369,10 +369,7 @@ pub fn the_ledger_path_is_optional_and_absolute_test() {
     document("ledger = \"ledger.log\"\n", ""),
     "distribution.ledger must be an absolute path",
   )
-  refused(
-    document("ledger = 3\n", ""),
-    "distribution.ledger must be a string",
-  )
+  refused(document("ledger = 3\n", ""), "distribution.ledger must be a string")
 }
 
 pub fn a_ledger_and_peers_together_are_refused_test() {

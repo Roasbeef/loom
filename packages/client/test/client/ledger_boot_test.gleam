@@ -11,14 +11,24 @@ import client/ledger_service
 import client/membership_entry.{Genesis, Upsert}
 import client/membership_signing
 import gleam/bit_array
+import gleam/dict.{type Dict}
+import gleam/erlang/atom.{type Atom}
 import gleam/erlang/process
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{Some}
 import gleam/string
 import simplifile
 import support/membership_fixture as fixture
 import support/remote_fixtures
 import telemetry/log
+
+// The `pins` row of the protected table the verify callback reads.
+@external(erlang, "ets", "lookup")
+fn lookup(table: Atom, key: Atom) -> List(#(Atom, Dict(BitArray, String)))
+
+fn pin_rows() -> List(#(Atom, Dict(BitArray, String))) {
+  lookup(atom.create("loom_dist_pins"), atom.create("pins"))
+}
 
 // A log of genesis and two members, signed by `key`, whose genesis names
 // `named`'s certificate as the authority.
@@ -59,29 +69,64 @@ fn files(label: String, lines: List(BitArray), certificate: String) {
   directory
 }
 
-pub fn a_table_without_a_ledger_starts_nothing_test() {
+// The node the fixture ledger enrolls as `hub`.
+const hub = "loom@hub.example.net"
+
+fn document(extra: String) -> String {
+  "[distribution]\nnode = \"a@10.0.0.1\"\nca = \"/c/ca.pem\"\n"
+  <> "certificate = \"/c/cert.pem\"\nkey = \"/c/key.pem\"\n"
+  <> "cookie = \"/c/cookie\"\n"
+  <> extra
+}
+
+pub fn a_table_without_a_ledger_starts_distribution_alone_test() {
+  // This VM was not booted for TLS distribution, so the start is refused, and
+  // refused for that reason: nothing about a ledger was tried.
   let text =
-    "[distribution]\nnode = \"a@10.0.0.1\"\nca = \"/c/ca.pem\"\n"
-    <> "certificate = \"/c/cert.pem\"\nkey = \"/c/key.pem\"\n"
-    <> "cookie = \"/c/cookie\"\n[[distribution.peers]]\nnode = \"b@10.0.0.2\"\n"
-    <> "sha256 = \""
-    <> string.repeat("00", 32)
-    <> "\"\n"
+    document(
+      "[[distribution.peers]]\nnode = \"b@10.0.0.2\"\nsha256 = \""
+      <> string.repeat("00", 32)
+      <> "\"\n",
+    )
   let assert Ok(Some(config)) = distribution.parse(text)
-  assert ledger_boot.start(config, log.discard()) == Ok(None)
+  let assert Error(reason) =
+    ledger_boot.start(config, distribution.NotMember, log.discard())
+  assert string.contains(reason, "-proto_dist inet_tls")
+  assert process.named(ledger_service.default_name()) == Error(Nil)
+}
+
+pub fn a_ledger_cannot_serve_a_directory_member_yet_test() {
+  let assert Ok(Some(config)) =
+    distribution.parse(document("ledger = \"/c/ledger.log\"\n"))
+  let assert Error(reason) =
+    ledger_boot.start(
+      config,
+      distribution.Member(members: ["a@10.0.0.1"]),
+      log.discard(),
+    )
+  assert string.contains(reason, "[directory] cannot be combined")
+  assert process.named(ledger_service.default_name()) == Error(Nil)
 }
 
 pub fn a_ledger_signed_by_the_ca_starts_the_process_test() {
   let #(certificate, key) = ffi_pki.authority("boot authority")
   let directory = files("boot-ok", signed_log(key, certificate), certificate)
-  let assert Ok(Some(service)) =
-    ledger_boot.start_at(
+  let assert Ok(service) =
+    ledger_boot.open_service(
       directory <> "/ledger.log",
       directory <> "/ca.pem",
+      hub,
       log.discard(),
     )
   let assert Ok(head) = ledger_service.head(service, 5000)
   assert head.seq == 2
+
+  // The pin table was published before the call returned: the laptop lists
+  // the hub, so it is the one peer in the hub's table, under the pin the
+  // ledger recorded and the node name it must present.
+  let assert [#(_, pins)] = pin_rows()
+  let laptop = fixture.member("laptop", ["hub"])
+  assert pins == dict.from_list([#(laptop.pin, laptop.node)])
 
   // The fixed name is registered, which is what a peer addresses.
   assert process.named(ledger_service.default_name())
@@ -99,9 +144,10 @@ pub fn a_ledger_signed_by_another_authority_is_refused_with_its_line_test() {
   let directory =
     files("boot-other", signed_log(other_key, other_certificate), certificate)
   let assert Error(reason) =
-    ledger_boot.start_at(
+    ledger_boot.open_service(
       directory <> "/ledger.log",
       directory <> "/ca.pem",
+      hub,
       log.discard(),
     )
   assert string.contains(reason, "not a valid ledger: line 1")
@@ -116,9 +162,10 @@ pub fn a_ledger_that_names_another_certificate_is_refused_test() {
   let directory =
     files("boot-named", signed_log(key, other_certificate), certificate)
   let assert Error(reason) =
-    ledger_boot.start_at(
+    ledger_boot.open_service(
       directory <> "/ledger.log",
       directory <> "/ca.pem",
+      hub,
       log.discard(),
     )
   assert string.contains(reason, "other than the certificate")
@@ -129,28 +176,49 @@ pub fn a_missing_file_or_ca_is_an_operator_sentence_test() {
   let directory =
     files("boot-missing", signed_log(key, certificate), certificate)
   let assert Error(reason) =
-    ledger_boot.start_at(
+    ledger_boot.open_service(
       directory <> "/absent.log",
       directory <> "/ca.pem",
+      hub,
       log.discard(),
     )
   assert string.contains(reason, "distribution.ledger")
   assert string.contains(reason, "could not be read")
 
   let assert Error(reason) =
-    ledger_boot.start_at(
+    ledger_boot.open_service(
       directory <> "/ledger.log",
       directory <> "/absent.pem",
+      hub,
       log.discard(),
     )
   assert string.contains(reason, "distribution.ca could not be read")
 
   let assert Ok(Nil) = simplifile.write(directory <> "/ca.pem", "not a pem")
   let assert Error(reason) =
-    ledger_boot.start_at(
+    ledger_boot.open_service(
       directory <> "/ledger.log",
       directory <> "/ca.pem",
+      hub,
       log.discard(),
     )
   assert string.contains(reason, "does not hold a certificate")
+}
+
+pub fn a_node_the_ledger_does_not_enroll_is_refused_before_anything_starts_test() {
+  let #(certificate, key) = ffi_pki.authority("boot authority")
+  let directory =
+    files("boot-stranger", signed_log(key, certificate), certificate)
+  let assert Error(reason) =
+    ledger_boot.open_service(
+      directory <> "/ledger.log",
+      directory <> "/ca.pem",
+      "loom@stranger.example.net",
+      log.discard(),
+    )
+  assert string.contains(reason, "is not an active member of the ledger")
+  assert string.contains(reason, "loom@stranger.example.net")
+
+  // Nothing was started, so the fixed name is free.
+  assert process.named(ledger_service.default_name()) == Error(Nil)
 }
