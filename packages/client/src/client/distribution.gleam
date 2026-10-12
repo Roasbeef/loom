@@ -320,14 +320,14 @@ pub fn credential_files(config: Config) -> CredentialFiles {
   config.files
 }
 
-/// The node names of the configured peers, in the order the file lists them.
+/// The node names of the configured `[[distribution.peers]]`, in the order the
+/// file lists them, and none in ledger mode.
 ///
-/// Another table that names a peer, such as `[executors.<name>]`, checks its
-/// reference against this list, so the reference means a node the operator
-/// has pinned and nothing else. A node in ledger mode has no configured peers:
-/// the ledger names them, and the reference checks against the ledger's members
-/// are a later phase of protocol-change/086, so for now this list is empty and
-/// those tables are refused.
+/// A table that names a peer, such as `[executors.<name>]`, checks its
+/// reference through `client/ledger_reference.nodes`, which answers with this
+/// list in static mode and with the nodes this node's ledger links it to in
+/// ledger mode. This module cannot read the ledger (it must not import a
+/// `membership_*` module), so it has no peers to give in that mode.
 ///
 /// ## Examples
 ///

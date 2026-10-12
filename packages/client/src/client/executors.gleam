@@ -6,9 +6,11 @@
 //// before it reserves anything. This module is that list and nothing else. An
 //// executor is a name the operator chooses and the peer node that answers to
 //// it, and the node has to be one of the `[[distribution.peers]]` the operator
-//// already pinned, so a reference here can only point at a machine the daemon
-//// trusts as an Erlang peer. It opens no connection and reads no file; the
-//// slices that attach a workspace use the node this table names.
+//// already pinned, or in ledger mode a member the node's ledger links it to
+//// (`client/ledger_reference`), so a reference here can only point at a machine
+//// the daemon trusts as an Erlang peer. It opens no connection, and reads a
+//// file only to check that reference against a ledger; the slices that attach
+//// a workspace use the node this table names.
 ////
 //// Like `[distribution]` and `[peers]`, the daemon reads the table once, when
 //// it starts, and never rereads it: a running daemon's executors are the ones
@@ -46,6 +48,7 @@
 ////    an attach census.
 
 import client/distribution
+import client/ledger_reference
 import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -179,7 +182,7 @@ pub fn from_document(
                 <> executor.name
                 <> ".node "
                 <> executor.node
-                <> " is not a node in [[distribution.peers]]",
+                <> " is not a peer of this node: pin it in [[distribution.peers]], or link it in the ledger",
               )
           }
         }),
@@ -209,7 +212,7 @@ fn peer_nodes(
 ) -> Result(List(String), String) {
   use found <- result.try(distribution.from_document(document))
   case found {
-    Some(settings) -> Ok(distribution.peer_nodes(settings))
+    Some(settings) -> ledger_reference.nodes(settings)
     None -> Error("executors needs a [distribution] table naming its peers")
   }
 }

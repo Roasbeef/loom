@@ -54,6 +54,7 @@
 
 import client/distribution
 import client/executors.{type Executor}
+import client/ledger_reference
 import client/pools.{type Pool}
 import client/tool_placement
 import client/workspaces
@@ -271,7 +272,7 @@ fn peer_nodes(
 ) -> Result(List(String), String) {
   use found <- result.try(distribution.from_document(document))
   case found {
-    Some(settings) -> Ok(distribution.peer_nodes(settings))
+    Some(settings) -> ledger_reference.nodes(settings)
     None -> Error("spawners needs a [distribution] table naming its peers")
   }
 }
@@ -402,7 +403,7 @@ fn node_of(
             place
             <> ".node "
             <> node
-            <> " is not a node in [[distribution.peers]]",
+            <> " is not a peer of this node: pin it in [[distribution.peers]], or link it in the ledger",
           )
       }
     Ok(_) -> Error(place <> ".node must be a string")

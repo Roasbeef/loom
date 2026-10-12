@@ -61,7 +61,7 @@ pub fn a_node_that_is_not_a_pinned_peer_is_refused_by_name_test() {
   refused(distribution <> "
 [executors.build-box]
 node = \"stranger@10.0.0.9\"
-", "executors.build-box.node stranger@10.0.0.9 is not a node in [[distribution.peers]]")
+", "executors.build-box.node stranger@10.0.0.9 is not a peer of this node: pin it in [[distribution.peers]], or link it in the ledger")
 }
 
 pub fn executors_without_a_distribution_table_are_refused_test() {

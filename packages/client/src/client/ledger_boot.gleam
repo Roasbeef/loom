@@ -41,15 +41,12 @@
 ////    and tells the process to dial.
 
 import client/distribution
+import client/ledger_reference
 import client/ledger_service.{type Observer, type Service}
 import client/ledger_trust
-import client/membership_ledger
-import client/membership_signing
 import client/membership_store
-import gleam/int
 import gleam/option.{type Option, None, Some}
 import gleam/result
-import simplifile
 import telemetry/field
 import telemetry/log.{type Logger}
 
@@ -182,55 +179,16 @@ pub fn open_service(
   observers: List(Observer),
   logger: Logger,
 ) -> Result(Service, String) {
-  use pem <- result.try(
-    simplifile.read(ca)
-    |> result.map_error(fn(_) { "distribution.ca could not be read: " <> ca }),
-  )
-  use verifier <- result.try(
-    membership_signing.verifier(pem)
-    |> result.replace_error("distribution.ca does not hold a certificate"),
-  )
-  use opened <- result.try(
-    membership_store.open(path, verifier)
-    |> result.map_error(describe_open(path, _)),
-  )
-  use pin <- result.try(
-    membership_signing.authority_pin(pem)
-    |> result.replace_error("distribution.ca does not hold a certificate"),
-  )
-  use Nil <- result.try(case membership_ledger.authority(opened.ledger) == pin {
-    True -> Ok(Nil)
-    False ->
-      Error(
-        "distribution.ledger names an authority other than the certificate in "
-        <> "distribution.ca: "
-        <> path,
-      )
-  })
-  use Nil <- result.try(case membership_ledger.member_at(opened.ledger, local) {
-    Ok(_) -> Ok(Nil)
-    Error(Nil) ->
-      Error(
-        "distribution.node "
-        <> local
-        <> " is not an active member of the ledger "
-        <> path
-        <> ": it was never enrolled or it has been revoked. On the operator's "
-        <> "machine, run `loom distribution enroll` for it and install the "
-        <> "bundle it writes here with `loom distribution install`, or correct "
-        <> "distribution.node. (`import` needs a running daemon, which this "
-        <> "node cannot be until it is enrolled.)",
-      )
-  })
-  case opened.tail {
+  use loaded <- result.try(ledger_reference.load(path, ca, local))
+  case loaded.tail {
     membership_store.Clean -> Nil
     membership_store.Repaired(bytes:) ->
       log.warn(logger, "ledger.tail_repaired", [field.count("bytes", bytes)])
   }
   ledger_service.configuration(
-    opened.store,
-    opened.ledger,
-    verifier,
+    loaded.store,
+    loaded.ledger,
+    loaded.verifier,
     observers,
     logger,
   )
@@ -238,23 +196,4 @@ pub fn open_service(
   |> result.map_error(fn(error) {
     "the ledger process did not start: " <> error.reason
   })
-}
-
-fn describe_open(path: String, error: membership_store.OpenError) -> String {
-  let place = "distribution.ledger " <> path
-  case error {
-    membership_store.Unreadable(reason:) ->
-      place <> " could not be read: " <> reason
-    membership_store.NoGenesis -> place <> " holds no complete entry"
-    membership_store.Corrupt(line:, refusal:) ->
-      place
-      <> " is not a valid ledger: line "
-      <> int.to_string(line)
-      <> " was refused at step "
-      <> membership_ledger.step(refusal)
-    membership_store.RepairFailed(reason:) ->
-      place
-      <> " ends in an unfinished line that could not be removed: "
-      <> reason
-  }
 }

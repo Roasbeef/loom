@@ -16,6 +16,7 @@
 //// decides by its catalogue rows.
 
 import client/distribution
+import client/ledger_reference
 import client/orchestrators.{type Orchestrator}
 import gleam/dict.{type Dict}
 import gleam/int
@@ -148,7 +149,7 @@ fn table(
     False ->
       Error("directory.members must include this daemon's own node " <> local)
   })
-  let peers = distribution.peer_nodes(config)
+  use peers <- result.try(ledger_reference.nodes(config))
   use Nil <- result.try(
     list.try_each(members, fn(member) {
       case member == local || list.contains(peers, member) {
@@ -157,7 +158,7 @@ fn table(
           Error(
             "directory.members names "
             <> member
-            <> ", which is not a node in [[distribution.peers]]",
+            <> ", which is not a peer of this node: pin it in [[distribution.peers]], or link it in the ledger",
           )
       }
     }),

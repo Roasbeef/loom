@@ -95,7 +95,7 @@ pub fn every_other_member_must_be_a_pinned_peer_test() {
 members = [\"alpha@10.0.0.1\", \"bravo@10.0.0.2\", \"stranger@10.0.0.9\"]
 ",
     ),
-    "stranger@10.0.0.9, which is not a node in [[distribution.peers]]",
+    "stranger@10.0.0.9, which is not a peer of this node: pin it in [[distribution.peers]], or link it in the ledger",
   )
 }
 

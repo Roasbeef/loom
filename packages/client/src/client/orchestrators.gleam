@@ -39,6 +39,7 @@
 //// 4. `find` and `by_node` resolve a configured orchestrator.
 
 import client/distribution
+import client/ledger_reference
 import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -130,7 +131,7 @@ pub fn from_document(
                 <> orchestrator.name
                 <> ".node "
                 <> orchestrator.node
-                <> " is not a node in [[distribution.peers]]",
+                <> " is not a peer of this node: pin it in [[distribution.peers]], or link it in the ledger",
               )
           }
         }),
@@ -179,7 +180,7 @@ fn peer_nodes(
 ) -> Result(List(String), String) {
   use found <- result.try(distribution.from_document(document))
   case found {
-    Some(settings) -> Ok(distribution.peer_nodes(settings))
+    Some(settings) -> ledger_reference.nodes(settings)
     None -> Error("orchestrators needs a [distribution] table naming its peers")
   }
 }
