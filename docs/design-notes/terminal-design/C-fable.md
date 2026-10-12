@@ -546,7 +546,7 @@ carries the source, target, body and `State`
 (`session_view/agent_messages.gleam:29`: pending, failed, accepted, started),
 projected from the sender's `agent_send` invocation and its result
 (`agent_send`, `tools/agent.gleam:1841`; the steered delivery at
-`steered_outcome`, `tools/agent.gleam:2178`). That state is receipt on the
+`steered_outcome`, `tools/agent.gleam:2184`). That state is receipt on the
 sender's side and never proof that the recipient read the message, and the
 row says `accepted`, not `read`.
 
