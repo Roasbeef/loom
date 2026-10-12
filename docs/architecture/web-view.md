@@ -1744,3 +1744,12 @@ for the same capture; `client/ui_http_test`, `ui_route_test`,
 `web_operator_page_test` cover the route's defences and the relay's ends;
 `web_view/test/invite_test` and the invitation tests in `ui_route_test` cover
 the owner's control.
+
+### Recorded child cancellation causes
+
+`session_view/child_stop` reads the reserved lifecycle fact captured for each
+strand's latest terminal operation. The shared transcript and agent inspector
+show parent completion or child budget expiry alongside the provider's
+cancellation acknowledgement diagnostic. Attribution requires the exact aborted
+operation, final assistant entry and recorded strand. Older history without
+that captured metadata retains its generic diagnostic.
