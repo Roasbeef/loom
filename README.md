@@ -17,6 +17,7 @@ Programs run concurrently within kernel-enforced execution boundaries.
 
 [Get started](#get-started) · [Multiplayer](#multiplayer-and-subagents) ·
 [Web UI](#web-ui) · [Code mode](#code-mode) ·
+[Distributed runtime](#distributed-runtime) ·
 [Async collaboration](#async-collaboration) · [Advisor mode](#advisor-mode) ·
 [Language servers](#language-servers) ·
 [Architecture](docs/loom-design.md) ·
@@ -30,7 +31,8 @@ Programs run concurrently within kernel-enforced execution boundaries.
 | **Multiplayer** | Several terminals and collaborators in one session, with attributed prompts, presence, shared approvals, and operator/observer roles. |
 | **Web UI** | A browser home page that lists and opens sessions, session creation and admin controls for the owner, and a thirty-day browser login — served from the same loopback daemon, no extra install. |
 | **Code mode** | Gleam programs that compose tools, run concurrently, and retain actors across turns in a background execution. |
-| **Agent collaboration** | Granted peer messaging across strands and resident sessions, plus named workflow steps that reuse durable child results. |
+| **Distributed runtime** | Keep a session's conversation and approvals on an orchestrator while an executor on another machine runs workspace tools against its checkout. |
+| **Agent collaboration** | Granted peer messaging across strands and resident sessions, including across orchestrators, plus named workflow steps that reuse durable child results. |
 | **BEAM concurrency** | Lightweight processes and OTP supervision for agents, streams, and tool execution, with independent lifecycles and explicit cancellation. |
 | **Controlled execution** | Sandboxed commands and agent-written programs, capability-checked effects, and approvals bound to the action being approved. |
 | **Model routing and advisors** | Choose models by role, configure fallbacks, pair a fast primary with a separate model that reviews its work, and pin a goal the pair works toward across runs. |
@@ -152,8 +154,9 @@ return structured results to a parent. Shared session state supports coordinatio
 without copying every intermediate result into the main conversation.
 
 The owner can grant directional peer links between siblings or across resident
-sessions. See [async collaboration](#async-collaboration) for the messaging and
-background workflow APIs.
+sessions, including sessions on separate orchestrators. See
+[async collaboration](#async-collaboration) for the messaging and background
+workflow APIs.
 
 One daemon hosts sessions across workspaces. Closing or switching a terminal's
 attachment leaves the session available to other clients. Remote connections
@@ -285,7 +288,7 @@ and runs in disposable sandboxed processes outside the trusted harness VM.
 
 [**Code mode at a glance**](docs/code-mode.md) is the one-page overview: what a
 program can import, notes and the blackboard, orchestration, launch mode, the
-safety model, and the distributed execution in development. The
+safety model, and executor placement. The
 [architecture document](docs/architecture/code-mode.md) has the mechanics.
 
 ## Language servers
@@ -389,6 +392,29 @@ should be treated as trusted installations.
 
 See the [effects architecture](docs/architecture/effects.md) and
 [sandbox guide](packages/sandbox/README.md) for the enforcement contract.
+
+## Distributed runtime
+
+A distributed Loom splits a session across an orchestrator and an executor. The
+orchestrator keeps the conversation, session state, approvals and provider
+credentials. The executor holds the checkout and runs workspace tools beside
+it, including shell commands, code mode, language servers and executor-placed
+MCP servers. Tool calls cross the boundary as whole calls and results; the
+executor does not get the conversation store. Both daemons run the same release
+and connect over TLS Erlang distribution with pinned certificates. A single
+machine running both roles is still the ordinary local setup.
+
+This moves workspace execution, not session availability: the runtime and its
+conversation are not replicated, and Loom does not automatically fail over to
+another executor. Remote subagents are also not available yet. `agent_spawn`
+creates strands within the session's orchestrator; the
+[remote subagents design note](docs/design-notes/remote-subagents.md) describes
+work that has not shipped.
+
+See the [distributed setup guide](docs/distributed-setup.md) for provisioning
+and configuration, and the
+[distributed runtime architecture](docs/architecture/distributed.md) for the
+ownership and recovery details.
 
 ## Model routing
 
