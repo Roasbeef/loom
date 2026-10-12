@@ -137,6 +137,10 @@ fn relay(node: Dynamic) -> fn(a) -> Daemon {
         )
         |> result.try(ledger_control.decode_applied)
       },
+      holdings: fn() {
+        ask(node, "ledger.holdings", json.Object([]))
+        |> result.try(ledger_control.decode_holdings)
+      },
     )
   }
 }
