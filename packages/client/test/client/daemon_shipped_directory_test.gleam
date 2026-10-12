@@ -74,7 +74,6 @@
 
 import client/tui_e2e_test.{type EunitTest}
 import core/json.{type JsonValue}
-import gleam/erlang/process
 import gleam/list
 import gleam/option.{Some}
 import host/bootstrap as native
@@ -390,31 +389,55 @@ pub fn a_remote_session_is_found_through_the_directory_test_() -> EunitTest {
   })
 }
 
-// Polls `sessions.get` on a member until it redirects for `session`, which a
-// local session's record does within one movers tick of its creation, and
+// Polls `sessions.get` on a member until it redirects for `session`, and
 // returns the refusal. Each poll is a new request, numbered from `first_id`.
+//
+// The wait is for the owner's record of a local session to reach this member's
+// copy of the store. The record is a lookup hint, so creating the session does
+// not wait for it: the owner's movers write it on their next pass, which
+// starts at most every five seconds and runs the seed and the deletions before
+// it writes the record. Each step of a pass is bounded by its own Khepri
+// deadline of a few seconds, the write is a majority commit among three
+// members connected over TLS, and the member under test then applies it from
+// the leader. On an idle host that is one tick. On a host running the whole
+// client lane at once a pass that times out is retried only on the tick after
+// it, so the record can take several passes, and the twenty seconds this poll
+// used to allow was a count of requests, which stretches with the cost of each.
+//
+// The bound is a time, ninety seconds, which is a dozen or more passes. The
+// body deadline is 420 seconds and the rest of this test needs far less than
+// the remainder even on a loaded host, so a record that has not landed by then
+// is a failure and not a slow run. The last reply is reported with the
+// failure, because "the record never landed" and "the member answered
+// something other than a redirect" are different bugs.
 fn await_redirect(
   control: remote_daemons.Control,
   first_id: Int,
   session: String,
 ) -> JsonValue {
-  redirect_polls(control, first_id, session, 80)
-}
-
-fn redirect_polls(
-  control: remote_daemons.Control,
-  id: Int,
-  session: String,
-  remaining: Int,
-) -> JsonValue {
-  assert remaining > 0 as "the local session's record lands"
-  let read = get(control, id, session)
-  case code_of_any(read) == json.String("not_owner") {
-    True -> read
-    False -> {
-      process.sleep(250)
-      redirect_polls(control, id + 1, session, remaining - 1)
-    }
+  let verdict =
+    poll.fold_until(
+      clock: poll.monotonic(),
+      within: 90_000,
+      every: poll.Fixed(250),
+      from: #(first_id, json.Null),
+      attempt: fn(state) {
+        let #(id, _last) = state
+        let read = get(control, id, session)
+        case code_of_any(read) == json.String("not_owner") {
+          True -> poll.Settled(read)
+          False -> poll.Pending(#(id + 1, read))
+        }
+      },
+    )
+  case verdict {
+    poll.Answer(read) -> read
+    poll.Failure(..) -> panic as "a redirect poll has no failure of its own"
+    poll.RanOut(state: #(_id, last)) ->
+      panic as {
+        "the local session's record did not land; the last reply was "
+        <> json.to_string(last)
+      }
   }
 }
 
