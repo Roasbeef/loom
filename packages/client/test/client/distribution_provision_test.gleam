@@ -821,7 +821,7 @@ pub fn the_commands_provision_show_and_install_a_deployment_test() {
   let assert Ok(Nil) = simplifile.write(plan, plan_json(base))
 
   let assert Ok(summary) =
-    distribution_cli.run(["provision", plan, base <> "/out"])
+    distribution_cli.run(["provision", plan, base <> "/out", "--static"])
   assert string.contains(summary, "Provisioned 4 nodes")
   assert string.contains(summary, "loom distribution install")
   let secrets = read(base <> "/out/laptop.loombundle")
@@ -831,10 +831,16 @@ pub fn the_commands_provision_show_and_install_a_deployment_test() {
 
   // A second provision into the same directory needs --force.
   let assert Error(refusal) =
-    distribution_cli.run(["provision", plan, base <> "/out"])
+    distribution_cli.run(["provision", plan, base <> "/out", "--static"])
   assert string.contains(refusal, "--force")
   let assert Ok(_) =
-    distribution_cli.run(["provision", plan, base <> "/out", "--force"])
+    distribution_cli.run([
+      "provision",
+      plan,
+      base <> "/out",
+      "--force",
+      "--static",
+    ])
 
   let assert Ok(shown) = distribution_cli.run(["show", base <> "/out"])
   assert string.contains(shown, "buildbox")

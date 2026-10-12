@@ -91,7 +91,6 @@ pub fn provision(label: String, plan: String) -> Deployed {
       "provision",
       plan_path,
       base <> "/out",
-      "--ledger",
       "--passphrase-file",
       phrase,
       "--home",

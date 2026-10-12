@@ -8,13 +8,16 @@
 //// 1. `init` writes an example plan.
 //// 2. `provision PLAN OUT` mints the authority, the certificates and the
 ////    cookie, and writes one `<node>.loombundle` per node plus `system.json`.
-////    With `--ledger` it also signs a membership ledger
-////    (protocol-change/086), puts it in every bundle and in `OUT/ledger.log`,
-////    and seals the authority key under a passphrase in
-////    `~/.loom/authority/<deployment id>` so that the ledger can be extended.
+////    It signs a membership ledger (protocol-change/086), puts it in every
+////    bundle and in `OUT/ledger.log`, and seals the authority key under a
+////    passphrase in `~/.loom/authority/<deployment id>` so that the ledger can
+////    be extended. `--static` writes the older bundles that list their peers
+////    and discards the key.
 //// 3. The operator copies each bundle, over a channel they trust, to the
 ////    machine that runs that node.
 //// 4. `install BUNDLE` on that machine puts the node in its role.
+//// 5. `enroll`, `revoke`, `renew`, `log` and `import` (`client/daemon/ledger_cli`)
+////    change and read the ledger afterwards, from the operator's machine.
 ////
 //// `options` is the step the daemon needs before it can boot: the VM is booted
 //// with TLS distribution flags before any Gleam code runs, so the options file
@@ -56,31 +59,36 @@ pub const usage =
   "usage: loom distribution <command>   (also: loomd distribution, and `dist` for short)
 
 Provision a trusted Erlang distribution between Loom daemons with one plan, one
-file per machine, and one command on each machine. No openssl is needed.
+file per machine, and one command on each machine. No openssl is needed. The
+deployment's membership is a signed ledger, so `enroll`, `revoke` and `renew`
+change it later without provisioning the other nodes again.
 
 commands:
   init [PATH]                     Write an example plan (default
                                   distribution-plan.toml). Refuses to overwrite.
-  provision PLAN OUT [--force] [--ledger [--drop-authority]
-            [--passphrase-file PATH] [--home DIR]]
+  provision PLAN OUT [--force] [--drop-authority] [--passphrase-file PATH]
+            [--home DIR] [--static]
                                   Read PLAN (.toml or .json), mint the CA, the
                                   node certificates and the shared cookie, and
                                   write OUT/<node>.loombundle (mode 0600) for
                                   each node plus OUT/system.json (no secrets).
-                                  Refuses a non-empty OUT without --force.
-                                  With --ledger the bundles carry a signed
-                                  membership ledger (also written to
-                                  OUT/ledger.log) in place of a peer list, and
-                                  the CA key is sealed under a passphrase in
+                                  The bundles carry a signed membership ledger
+                                  (also written to OUT/ledger.log), and the CA
+                                  key is sealed under a passphrase in
                                   DIR/.loom/authority/<deployment id> (DIR
-                                  defaults to $HOME). The passphrase is asked
-                                  for twice on the terminal, or read from PATH,
-                                  a file only you can read. --drop-authority
-                                  keeps no key, and the ledger can then never
-                                  change. Only `loomd distribution provision`
-                                  can ask on the terminal; `loom distribution
-                                  provision --ledger` needs --passphrase-file
-                                  or --drop-authority.
+                                  defaults to $HOME) so that the ledger can be
+                                  extended. The passphrase is asked for twice on
+                                  the terminal, or read from PATH, a file only
+                                  you can read. --drop-authority keeps no key,
+                                  and the ledger can then never change. Only
+                                  `loomd distribution provision` can ask on the
+                                  terminal; `loom distribution provision` needs
+                                  --passphrase-file or --drop-authority.
+                                  --static writes the older bundles instead:
+                                  each lists its peers' pins, the key is
+                                  discarded, and adding a node means
+                                  provisioning again. Refuses a non-empty OUT
+                                  without --force.
   show OUT                        Print OUT/system.json as a table.
   install BUNDLE [--home DIR] [--config PATH] [--force]
                                   Run on the node's machine. Installs the
@@ -88,22 +96,72 @@ commands:
                                   (default $HOME), the [distribution] and role
                                   tables in PATH (default DIR/.loom/loom.toml)
                                   and the TLS options file, then prints the
-                                  command that starts the daemon. Running it
-                                  again with the same bundle changes nothing.
-                                  A different existing cookie, credential file
-                                  or table is refused unless --force.
+                                  command that starts the daemon. A ledger
+                                  bundle also writes the ledger beside the
+                                  credentials, and the node trusts that snapshot
+                                  until it syncs with a peer that holds more.
+                                  Running it again with the same bundle changes
+                                  nothing. A different existing cookie,
+                                  credential file or table is refused unless
+                                  --force.
+  enroll NAME --node N --role orchestrator|executor [--host H] [--port P]
+         [--links A,B] [--workspace NAME=ROOT]... [--bundle-dir DIR]
+         [--out DIR] [--force] [--wait SECONDS] [COMMON]
+                                  Run on the operator's machine. Mints a
+                                  certificate for N under the kept authority,
+                                  signs a `member` entry, appends it to the
+                                  operator's copy of the ledger, hands it to a
+                                  daemon, writes OUT/NAME.loombundle (default
+                                  OUT: the current directory) and prints which
+                                  members hold the new head, after at most
+                                  SECONDS (default 10). --links names the
+                                  members NAME may connect to; an executor needs
+                                  --workspace to serve anything.
+  revoke NAME [--reason TEXT] [--force] [--wait SECONDS] [COMMON]
+                                  Signs a `revoke`, hands it to a daemon and
+                                  prints confirmations. Refuses when the revoke
+                                  would leave an executor with no orchestrator
+                                  linked to it, or cut members off from the
+                                  rest, unless --force. It does not check
+                                  whether NAME owns sessions: a daemon cannot
+                                  ask another.
+  renew NAME [--out DIR] [--force] [--wait SECONDS] [COMMON]
+                                  Mints a new certificate for a member, signs a
+                                  `member` entry with the new pin and writes a
+                                  new bundle. Install it with --force on the
+                                  node and restart the daemon. Connections to
+                                  the node are dropped when the entry is
+                                  applied.
+  log [--json] [--config PATH] [COMMON]
+                                  Print the ledger's entries with their
+                                  identities, then the last refusal and each
+                                  member's reported head when a daemon answers.
+                                  Reads the operator's copy, or the ledger that
+                                  the [distribution] table of PATH names.
+  import FILE [--state-dir DIR | --addr URL --token-file PATH]
+                                  Feed the lines of a ledger file to the local
+                                  daemon, for a node nothing else can reach.
   options CONFIG OUTPUT           Render the TLS distribution options file for
                                   the [distribution] table of CONFIG (mode
                                   0600). `install` does this for you.
+
+COMMON is [--home DIR] [--deployment ID] [--passphrase-file PATH]
+[--state-dir DIR | --addr URL --token-file PATH]. The key is found under
+DIR/.loom/authority (DIR defaults to $HOME); --deployment picks one when
+several are kept. The passphrase is asked for on the terminal, which only
+`loomd distribution` can do; `loom distribution enroll`, `revoke` and `renew`
+need --passphrase-file. The daemon is the one on this host, found through its
+state directory (default $HOME/.loom), unless --addr names another.
 
 A .loombundle holds the node's private key and the deployment's cookie. Copy it
 to its machine over a channel you trust, and delete it there after installing.
 
 Example:
   loom dist init plan.toml
-  loom dist provision plan.toml out
+  loom dist provision plan.toml out --passphrase-file ~/.loom-passphrase
   scp out/devbox.loombundle devbox:
-  ssh devbox loom dist install devbox.loombundle"
+  ssh devbox loom dist install devbox.loombundle
+  loom dist enroll laptop2 --node loom@laptop2.example --role orchestrator --links devbox --passphrase-file ~/.loom-passphrase"
 
 /// Runs the command and exits nonzero with a one-line reason when it fails.
 ///
@@ -273,6 +331,16 @@ fn provision_ledger(
   output: String,
   parsed: Parsed,
 ) -> Result(String, String) {
+  use Nil <- result.try(case plan.directory {
+    [] -> Ok(Nil)
+    _ ->
+      Error(
+        "this plan has a session directory, which cannot follow a membership "
+        <> "ledger yet (its members come from [directory] members until phase "
+        <> "3 of protocol-change/086); pass --static to provision it with a "
+        <> "peer list",
+      )
+  })
   use Nil <- result.try(distribution_provision.check_output(
     output,
     parsed.overwrite,
@@ -316,7 +384,8 @@ fn kept_closing(directory: String) -> String {
   "The authority key is sealed in "
   <> directory
   <> ". Keep its passphrase: without the key and the passphrase this ledger "
-  <> "cannot be extended."
+  <> "cannot be extended. Add, replace and remove nodes with `loom "
+  <> "distribution enroll`, `renew` and `revoke`."
 }
 
 // Seals the key and keeps the certificate and the operator's copy of the
@@ -436,10 +505,10 @@ fn install(arguments: List(String)) -> Result(String, String) {
   use parsed <- result.try(parse_flags(arguments))
   use Nil <- result.try(
     case parsed.mode, parsed.custody, parsed.passphrase_file {
-      StaticMode, KeepAuthority, None -> Ok(Nil)
+      LedgerMode, KeepAuthority, None -> Ok(Nil)
       _, _, _ ->
         Error(
-          "--ledger, --drop-authority and --passphrase-file belong to provision",
+          "--static, --drop-authority and --passphrase-file belong to provision",
         )
     },
   )
@@ -537,8 +606,8 @@ fn outcome_word(outcome: distribution_install.Outcome) -> String {
 
 // --- flags -------------------------------------------------------------------
 
-// How a deployment says who is trusted: a peer list in every bundle, or a
-// signed ledger.
+// How a deployment says who is trusted: a signed ledger, which is the default,
+// or a peer list in every bundle (`--static`).
 type Mode {
   StaticMode
   LedgerMode
@@ -568,18 +637,22 @@ type Parsed {
 fn parse_flags(arguments: List(String)) -> Result(Parsed, String) {
   use parsed <- result.try(parse_flags_loop(
     arguments,
-    Parsed([], RefuseExisting, None, None, StaticMode, KeepAuthority, None),
+    Parsed([], RefuseExisting, None, None, LedgerMode, KeepAuthority, None),
   ))
   check_ledger_flags(parsed)
 }
 
-// The ledger flags mean something only together. A request to drop a key that
-// static mode never keeps, or to read a passphrase for a key that is dropped,
-// is a mistake to name and not a flag to ignore.
+// The flags that shape a ledger mean nothing in static mode. A request to drop a
+// key that static mode never keeps, or to read a passphrase for a key that is
+// not kept, is a mistake to name and not a flag to ignore.
 fn check_ledger_flags(parsed: Parsed) -> Result(Parsed, String) {
   case parsed.mode, parsed.custody, parsed.passphrase_file {
-    StaticMode, DropAuthority, _ -> Error("--drop-authority needs --ledger")
-    StaticMode, _, Some(_) -> Error("--passphrase-file needs --ledger")
+    StaticMode, DropAuthority, _ ->
+      Error("--drop-authority cannot be combined with --static: no key is kept")
+    StaticMode, _, Some(_) ->
+      Error(
+        "--passphrase-file cannot be combined with --static: no key is kept",
+      )
     LedgerMode, DropAuthority, Some(_) ->
       Error(
         "--passphrase-file and --drop-authority cannot be combined: "
@@ -595,7 +668,8 @@ fn check_ledger_flags(parsed: Parsed) -> Result(Parsed, String) {
 // silently do nothing.
 fn check_provision_home(parsed: Parsed) -> Result(Parsed, String) {
   case parsed.mode, parsed.home {
-    StaticMode, Some(_) -> Error("--home needs --ledger")
+    StaticMode, Some(_) ->
+      Error("--home cannot be combined with --static: no key is kept")
     _, _ -> Ok(parsed)
   }
 }
@@ -614,8 +688,8 @@ fn parse_flags_loop(
       parse_flags_loop(rest, Parsed(..parsed, config: Some(value)))
     ["--passphrase-file", value, ..rest] ->
       parse_flags_loop(rest, Parsed(..parsed, passphrase_file: Some(value)))
-    ["--ledger", ..rest] ->
-      parse_flags_loop(rest, Parsed(..parsed, mode: LedgerMode))
+    ["--static", ..rest] ->
+      parse_flags_loop(rest, Parsed(..parsed, mode: StaticMode))
     ["--drop-authority", ..rest] ->
       parse_flags_loop(rest, Parsed(..parsed, custody: DropAuthority))
     ["--home"] -> Error("--home needs a value")

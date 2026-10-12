@@ -171,10 +171,10 @@ run_failure loomd distribution
 fake_server="$scratch/fake-loomd"
 printf '#!/bin/sh\nfor word in "$@"; do printf "%%s\\n" "$word"; done\n' >"$fake_server"
 chmod +x "$fake_server"
-want=$'distribution\nprovision\nplan.toml\nout\n--force'
+want=$'distribution\nprovision\nplan.toml\nout\n--force\n--static'
 for verb in distribution dist; do
   got="$(LOOM_SERVER="$fake_server" HOME="$scratch/forward.home" \
-    "$root/bin/loom" "$verb" provision plan.toml out --force)"
+    "$root/bin/loom" "$verb" provision plan.toml out --force --static)"
   if [ "$got" != "$want" ]; then
     echo "cli_help_test: loom $verb did not forward its words to the server" >&2
     printf '%s\n' "$got" >&2

@@ -511,7 +511,7 @@ fn write_passphrase(base: String, text: String) -> String {
   path
 }
 
-pub fn provision_with_a_ledger_seals_the_key_and_writes_the_ledger_test() {
+pub fn provision_seals_the_key_and_writes_the_ledger_by_default_test() {
   let base = scratch("command")
   let plan = write_plan(base)
   let passphrase = write_passphrase(base, "correct horse battery\n")
@@ -520,7 +520,6 @@ pub fn provision_with_a_ledger_seals_the_key_and_writes_the_ledger_test() {
       "provision",
       plan,
       base <> "/out",
-      "--ledger",
       "--passphrase-file",
       passphrase,
       "--home",
@@ -550,6 +549,11 @@ pub fn provision_with_a_ledger_seals_the_key_and_writes_the_ledger_test() {
   assert mode_of(directory <> "/key.enc") == 0o600
   assert simplifile.read(directory <> "/ledger.log") == Ok(file)
   assert simplifile.read(directory <> "/ca.pem") == Ok(bundle.ca)
+
+  // The cookie is kept beside the key, because the bundle of every node
+  // enrolled later carries the same one.
+  assert mode_of(directory <> "/cookie") == 0o600
+  assert authority_key.cookie(directory) == Ok(bundle.cookie)
   let assert Ok(good) = authority_key.passphrase("correct horse battery")
   let assert Ok(wrong) = authority_key.passphrase("correct horse batterz")
   assert authority_key.load(directory, id, wrong)
@@ -571,7 +575,6 @@ pub fn dropping_the_authority_keeps_no_key_test() {
       "provision",
       plan,
       base <> "/out",
-      "--ledger",
       "--drop-authority",
       "--home",
       base <> "/home",
@@ -596,20 +599,29 @@ pub fn the_ledger_flags_only_mean_something_together_test() {
       ))
     assert string.contains(reason, fragment)
   }
-  refused(["--drop-authority"], "--drop-authority needs --ledger")
-  refused(["--passphrase-file", passphrase], "--passphrase-file needs --ledger")
   refused(
-    ["--ledger", "--drop-authority", "--passphrase-file", passphrase],
+    ["--static", "--drop-authority"],
+    "--drop-authority cannot be combined with --static",
+  )
+  refused(
+    ["--static", "--passphrase-file", passphrase],
+    "--passphrase-file cannot be combined with --static",
+  )
+  refused(
+    ["--drop-authority", "--passphrase-file", passphrase],
     "cannot be combined",
   )
-  refused(["--ledger", "--passphrase-file"], "needs a value")
+  refused(["--passphrase-file"], "needs a value")
 
   // Static mode keeps no key, so a home directory has nothing to hold.
-  refused(["--home", base <> "/home"], "--home needs --ledger")
+  refused(
+    ["--static", "--home", base <> "/home"],
+    "--home cannot be combined with --static",
+  )
 
   // The flags belong to provision and no other command takes them.
   let assert Error(reason) =
-    distribution_cli.run(["install", base <> "/node.loombundle", "--ledger"])
+    distribution_cli.run(["install", base <> "/node.loombundle", "--static"])
   assert string.contains(reason, "belong to provision")
   assert simplifile.is_directory(base <> "/out") == Ok(False)
   discard(base)
@@ -626,7 +638,6 @@ pub fn a_refusal_leaves_no_key_and_no_bundle_test() {
       "provision",
       plan,
       base <> "/out",
-      "--ledger",
       "--passphrase-file",
       short,
       "--home",
@@ -644,7 +655,6 @@ pub fn a_refusal_leaves_no_key_and_no_bundle_test() {
       "provision",
       plan,
       base <> "/out",
-      "--ledger",
       "--passphrase-file",
       good,
       "--home",
@@ -661,7 +671,6 @@ pub fn a_refusal_leaves_no_key_and_no_bundle_test() {
       "provision",
       plan,
       base <> "/fresh",
-      "--ledger",
       "--passphrase-file",
       readable,
       "--home",
@@ -676,7 +685,7 @@ pub fn the_static_command_is_unchanged_test() {
   let base = scratch("static")
   let plan = write_plan(base)
   let assert Ok(report) =
-    distribution_cli.run(["provision", plan, base <> "/out"])
+    distribution_cli.run(["provision", plan, base <> "/out", "--static"])
   assert string.contains(report, "The CA key was discarded.")
   assert simplifile.is_file(base <> "/out/ledger.log") == Ok(False)
   let assert Ok(text) = simplifile.read(base <> "/out/laptop.loombundle")
@@ -693,5 +702,31 @@ pub fn the_static_command_is_unchanged_test() {
         overwrite: ReplaceExisting,
       ),
     )
+  discard(base)
+}
+
+pub fn a_plan_with_a_directory_is_provisioned_static_only_for_now_test() {
+  let base = scratch("directory")
+  let plan_path = base <> "/plan.toml"
+  let assert Ok(Nil) = simplifile.write(plan_path, directory_text <> plan_text)
+  let passphrase = write_passphrase(base, "correct horse battery\n")
+  let assert Error(reason) =
+    distribution_cli.run([
+      "provision",
+      plan_path,
+      base <> "/out",
+      "--passphrase-file",
+      passphrase,
+      "--home",
+      base <> "/home",
+    ])
+  assert string.contains(reason, "session directory")
+  assert string.contains(reason, "--static")
+  assert simplifile.is_directory(base <> "/out") == Ok(False)
+  assert simplifile.is_directory(base <> "/home") == Ok(False)
+
+  // Static provisioning of the same plan is what it always was.
+  let assert Ok(_) =
+    distribution_cli.run(["provision", plan_path, base <> "/out", "--static"])
   discard(base)
 }

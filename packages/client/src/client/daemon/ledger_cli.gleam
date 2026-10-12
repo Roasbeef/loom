@@ -64,52 +64,6 @@ import gleam/time/timestamp
 import host/bootstrap
 import simplifile
 
-/// The words of the five commands, for the usage text of `distribution_cli`.
-pub const usage =
-  "  enroll NAME --node N --role orchestrator|executor [--host H] [--port P]
-         [--links A,B] [--workspace NAME=ROOT]... [--bundle-dir DIR]
-         [--out DIR] [--force] [--wait SECONDS] [COMMON]
-                                  Run on the operator's machine. Mints a
-                                  certificate for N under the kept authority,
-                                  signs a `member` entry, appends it to the
-                                  operator's copy of the ledger, hands it to a
-                                  daemon, writes OUT/NAME.loombundle (default
-                                  OUT: the current directory) and prints which
-                                  members hold the new head, after at most
-                                  SECONDS (default 10). --links names the members
-                                  NAME may connect to; an executor needs --workspace
-                                  to serve anything. Session directory standing
-                                  is `none` until the directory follows the ledger.
-  revoke NAME [--reason TEXT] [--force] [--wait SECONDS] [COMMON]
-                                  Signs a `revoke`, hands it to a daemon and
-                                  prints confirmations. Refuses when the revoke
-                                  would leave an executor with no orchestrator
-                                  linked to it, or cut members off from the rest,
-                                  unless --force. It does not check whether NAME
-                                  owns sessions: a daemon cannot ask another.
-  renew NAME [--out DIR] [--force] [--wait SECONDS] [COMMON]
-                                  Mints a new certificate for a member, signs a
-                                  `member` entry with the new pin and writes a
-                                  new bundle. Install it on the node and restart
-                                  the daemon. Connections to the node are
-                                  dropped when the entry is applied.
-  log [--json] [--config PATH] [COMMON]
-                                  Print the ledger's entries with their
-                                  identities, then the last refusal and each
-                                  member's reported head when a daemon answers.
-                                  Reads the operator's copy, or the ledger that
-                                  the [distribution] table of PATH names.
-  import FILE [--state-dir DIR | --addr URL --token-file PATH]
-                                  Feed the lines of a ledger file to the local
-                                  daemon, for a node nothing else can reach.
-
-COMMON is [--home DIR] [--deployment ID] [--passphrase-file PATH]
-[--state-dir DIR | --addr URL --token-file PATH]. The key is found under
-DIR/.loom/authority (DIR defaults to $HOME); --deployment picks one when
-several are kept. The passphrase is asked for on the terminal, which only
-`loomd distribution` can do; `loom distribution enroll`, `revoke` and `renew`
-need --passphrase-file."
-
 /// Whether a command is one of this module's.
 ///
 /// ## Examples
