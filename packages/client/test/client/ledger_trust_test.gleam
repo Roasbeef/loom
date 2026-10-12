@@ -7,6 +7,8 @@
 import client/distribution_plan.{Orchestrator}
 import client/ledger_trust
 import client/membership_entry.{Member, Upsert}
+import gleam/int
+import gleam/list
 import support/membership_fixture as fixture
 import support/membership_log as history
 
@@ -98,4 +100,29 @@ pub fn an_executor_and_a_stranger_dial_nobody_test() {
       Upsert(Member(..fixture.member("desk", ["hub"]), role: Orchestrator)),
     )
   assert ledger_trust.executors_to_dial(peers.ledger, hub) == [box, laptop]
+}
+
+pub fn the_table_is_bounded_by_the_ledgers_members_and_not_the_static_peer_cap_test() {
+  // A hub linked to 63 executors is a full ledger of 64 active members. The
+  // static bound of 32 peers does not apply, and the table holds all 63 pins.
+  let hub_log =
+    history.must_push(
+      history.genesis(),
+      Upsert(Member(..fixture.member("hub", []), role: Orchestrator)),
+    )
+  let full =
+    int.range(from: 1, to: 64, with: hub_log, run: fn(log, index) {
+      history.enroll(log, "n" <> int.to_string(index), ["hub"])
+    })
+  assert ledger_trust.max_peers() == 63
+  assert list.length(ledger_trust.pairs(full.ledger, hub)) == 63
+
+  // Each row pairs a pin with the node name that pin must present.
+  assert list.contains(ledger_trust.pairs(full.ledger, hub), #(
+    fixture.pin_for("n1", 0),
+    "loom@n1.example.net",
+  ))
+
+  // A node that is not a member has no rows.
+  assert ledger_trust.pairs(full.ledger, "loom@x.example.net") == []
 }

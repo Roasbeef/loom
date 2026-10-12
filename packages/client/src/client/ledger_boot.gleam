@@ -29,13 +29,15 @@
 ////
 //// ## Flow
 ////
-//// 1. `start` with no `ledger` key only starts distribution, exactly as before.
-//// 2. With one, `open_service` reads and verifies the file, requires this node
-////    to be an active member, and starts the process with the observer of
-////    `client/ledger_trust`, which publishes the table before `start` returns.
+//// 1. `start` takes the configuration and calls `start_with` with the
+////    production observer. A table with no ledger key only starts
+////    distribution, exactly as before.
+//// 2. With a ledger, `open_service` reads and verifies the file, requires this
+////    node to be an active member, and starts the process with the observer of
+////    `client/ledger_trust`, which publishes the table before it returns.
 //// 3. `distribution.start` begins TLS distribution in live mode.
-//// 4. The members this node is linked to are added to the allow list, and the
-////    process is told to dial.
+//// 4. `begin_trust` adds the members this node is linked to to the allow list,
+////    and tells the process to dial.
 
 import client/distribution
 import client/ledger_service.{type Observer, type Service}

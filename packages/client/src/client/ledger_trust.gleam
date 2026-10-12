@@ -93,9 +93,45 @@ fn observe(local: String, logger: Logger, observation: Observation) -> Nil {
   }
 }
 
-/// Publishes the pins of this node's table: each linked member's pin, paired
-/// with the node name it must present. A node that is not an active member
-/// publishes the empty table, which refuses every peer.
+/// The most pins a node's table can hold: every active member but the node
+/// itself. The ledger's fold allows at most `membership_ledger.max_active`
+/// active members, so no entry makes the table larger, and `publish` also stops
+/// at this many. The live verify state is the atom `live`, so the options file
+/// has no bound of its own, and the allow list grows only by the names of
+/// members enrolled, at most `membership_ledger.max_names` over the life of a
+/// ledger. The 32-peer bound of `[[distribution.peers]]` does not apply in
+/// ledger mode.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ledger_trust.max_peers() == 63
+/// ```
+pub fn max_peers() -> Int {
+  membership_ledger.max_active - 1
+}
+
+/// The rows of the table this node publishes: each linked member's pin, paired
+/// with the node name it must present. A node that is not an active member has
+/// no rows, which refuses every peer.
+///
+/// ## Examples
+///
+/// ```gleam
+/// ledger_trust.pairs(ledger, "loom@hub.example") // -> [#(pin, "loom@laptop.example")]
+/// ```
+pub fn pairs(ledger: Ledger, local: String) -> List(#(BitArray, String)) {
+  let table = table_of(ledger, local)
+  membership_ledger.peers(table)
+  |> list.filter_map(fn(peer) {
+    membership_ledger.lookup_node(table, peer.node)
+    |> result.map(fn(pin) { #(pin, peer.node) })
+  })
+  |> list.take(max_peers())
+}
+
+/// Publishes this node's table, so the next handshake reads it. A node that is
+/// not an active member publishes the empty table.
 ///
 /// ## Examples
 ///
@@ -103,13 +139,7 @@ fn observe(local: String, logger: Logger, observation: Observation) -> Nil {
 /// ledger_trust.publish(ledger, "loom@hub.example")
 /// ```
 pub fn publish(ledger: Ledger, local: String) -> Nil {
-  let table = table_of(ledger, local)
-  membership_ledger.peers(table)
-  |> list.filter_map(fn(peer) {
-    membership_ledger.lookup_node(table, peer.node)
-    |> result.map(fn(pin) { #(pin, peer.node) })
-  })
-  |> ffi_distribution.publish_pins
+  ffi_distribution.publish_pins(pairs(ledger, local))
 }
 
 /// Adds the members this node is linked to to the allow list, once
