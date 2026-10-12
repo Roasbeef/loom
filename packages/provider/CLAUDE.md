@@ -487,3 +487,16 @@ retained prefix. Local refusals before dispatch return an empty report.
 An absent rate card leaves pricing unavailable, and a subscription card
 provides an API reference estimate, never measured ChatGPT credit usage.
 The settled assistant retains only final-attempt usage.
+
+## Selected response identity ownership
+
+The OpenAI-compatible SSE adapter keeps `id` and `model` after dropping each
+JSON event document. `retained_identity` materializes single selected values of
+65–256 bytes when the event is at least eight times larger, preventing a small
+identity from retaining a large ignored event payload on OTP 29. Fields up to
+64 bytes already materialize on that runtime. Larger identities keep sharing;
+values, missing-field fallback and settlement timing are unchanged. The pure
+standard-library copy adds no FFI or dependency. Generic JSON decoding keeps its
+existing ownership to avoid copying every field in documents retained whole.
+`scripts/json_retention_perf.sh` exercises the actual response machine alongside
+selected-field, whole-document and source-owned controls in disposable workers.

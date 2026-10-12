@@ -780,3 +780,31 @@ pub fn stale_preterminal_usage_remains_partial_after_output_finishes_test() {
   assert accounting.total(report).evidence
     == usage_evidence.partial(usage_evidence.Api)
 }
+
+// A compatible endpoint may attach large ignored fields to an identity event.
+// Missing later identities keep the exact multibyte values through settlement.
+pub fn selected_response_identity_survives_large_event_test() {
+  let id = string.repeat("é中🎉", 10)
+  let response_model = string.repeat("compatible-model-", 6)
+  let initial =
+    json.Object([
+      #("id", json.String(id)),
+      #("model", json.String(response_model)),
+      #("ignored", json.String(string.repeat("payload ", 2048))),
+      #("choices", json.Array([])),
+    ])
+    |> json.to_string
+    |> sse_data
+  let finish =
+    sse_data(
+      "{\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}",
+    )
+  let events = fixture.drive_ok(machine(), initial <> finish <> done())
+  let assert [stream.Settled(message: settled, ..)] = events
+    as "identity-only events still settle once"
+  let assert message.AssistantMessage(response_id:, response_model: actual, ..) =
+    stream.message(settled)
+    as "the settled response carries its observed identity"
+  assert response_id == Some(id)
+  assert actual == Some(response_model)
+}
