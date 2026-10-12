@@ -1567,6 +1567,19 @@ pub fn claim_delegate(
   })
 }
 
+fn validate_pair(
+  spawner: String,
+  parent_session: String,
+) -> Result(Nil, Error) {
+  case
+    is_profile_name(spawner)
+    && result.is_ok(ids.parse_session_id(parent_session))
+  {
+    True -> Ok(Nil)
+    False -> Error(Invalid("invalid delegate session metadata"))
+  }
+}
+
 fn validate_delegate(
   spawner: String,
   parent_session: String,
@@ -1587,6 +1600,11 @@ fn validate_delegate(
 /// Reads the delegate session record of a (spawner, parent session) pair, or
 /// `None` when the pair has no session yet.
 ///
+/// A spawner outside the profile-name grammar and a parent that is not a
+/// canonical session identity are `Invalid`. The registry reads the pair first,
+/// so a malformed one fails before it creates anything and leaves no
+/// registration behind.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -1597,6 +1615,7 @@ pub fn delegate_for(
   spawner: String,
   parent_session: String,
 ) -> Result(Option(Delegate), Error) {
+  use Nil <- result.try(validate_pair(spawner, parent_session))
   use rows <- result.try(query(
     catalogue,
     sql.delegate_session(spawner, parent_session),

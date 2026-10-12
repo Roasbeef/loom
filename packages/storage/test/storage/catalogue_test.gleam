@@ -2371,3 +2371,48 @@ pub fn version_fourteen_catalogue_gains_the_delegate_table_test() {
     == Ok([15])
   assert sqlight.close(check) == Ok(Nil)
 }
+
+pub fn a_malformed_pair_is_refused_before_it_is_read_test() {
+  let assert Ok(store) = catalogue.open(fresh_path("delegate-read-invalid"))
+    as "catalogue opens"
+  let assert Error(catalogue.Invalid(_)) =
+    catalogue.delegate_for(store, "laptop", "s1")
+  let assert Error(catalogue.Invalid(_)) =
+    catalogue.delegate_for(store, "Laptop", parent_of(90))
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn deleting_a_delegate_session_removes_its_row_and_registration_test() {
+  // The connection enforces foreign keys, so the delete would be refused if the
+  // delegate row were left behind to reference the registration.
+  let path = fresh_path("delegate-delete")
+  let assert Ok(store) = catalogue.open(path) as "catalogue opens"
+  let record = registration(91)
+  let parent = parent_of(92)
+  assert catalogue.reserve(store, record) == Ok(record)
+  let assert Ok(catalogue.Claimed(_)) =
+    catalogue.claim_delegate(
+      store,
+      "laptop",
+      parent,
+      record.id,
+      limit: 4,
+      now_ms: 1,
+    )
+  assert catalogue.delete(store, record.id) == Ok(record)
+  assert catalogue.delegate_for(store, "laptop", parent) == Ok(option.None)
+  assert catalogue.delegate_of(store, record.id) == Ok(option.None)
+  assert catalogue.get(store, record.id) == Error(catalogue.Missing)
+  assert catalogue.close(store) == Ok(Nil)
+
+  // Nothing remains in either table after a reopen.
+  let assert Ok(db) = sqlight.open(path) as "raw connection opens"
+  assert sqlight.query(
+      "SELECT (SELECT COUNT(*) FROM catalogue_delegate_sessions) + (SELECT COUNT(*) FROM catalogue_sessions)",
+      on: db,
+      with: [],
+      expecting: decode.at([0], decode.int),
+    )
+    == Ok([0])
+  assert sqlight.close(db) == Ok(Nil)
+}

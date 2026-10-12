@@ -136,7 +136,7 @@ with these forks: they define the same modules.
   records the pair for the given session unless the spawner already holds
   `limit` rows, which answers `AtLimit(held)` and writes nothing, so two callers
   cannot both pass `max_sessions`. A pair already bound to another session is
-  `Conflict`. `delegate_for` reads by pair, `delegate_of` reads by session and is
+  `Conflict`. `delegate_for` reads by pair and refuses a malformed pair as `Invalid` before anything else, so the registry's first step fails before it creates a session, `delegate_of` reads by session and is
   the marker the manager refuses a move on, and `delegates_held` counts a
   spawner's rows. A stored row that is duplicated or breaks its grammar fails the
   read with `Invalid` and is never read as "not a delegate". `delete` removes the
