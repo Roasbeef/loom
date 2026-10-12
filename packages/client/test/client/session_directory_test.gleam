@@ -6,7 +6,7 @@
 import client/directory/record
 import client/directory/store
 import client/orchestrators.{type Orchestrator}
-import client/remote/orchestrator_port.{NotOwned, Owned}
+import client/remote/orchestrator_port.{Moved, NotOwned, Owned}
 import client/session_directory.{Elsewhere, Here, Unknown, Unreachable}
 import client/session_move
 import core/json
@@ -334,7 +334,21 @@ pub fn a_directory_activates_nothing_until_it_is_given_the_question_test() {
 fn reading(
   answer: Result(option.Option(record.Record), store.Unavailable),
 ) -> session_directory.Directory {
-  session_directory.khepri([beta()], "alpha@10.0.0.1", fn(_session) { answer })
+  holding(Error(Nil), answer)
+}
+
+// A member whose own catalogue answers `held` for the session and whose copy of
+// the record answers `answer`.
+fn holding(
+  held: Result(orchestrator_port.Ownership, Nil),
+  answer: Result(option.Option(record.Record), store.Unavailable),
+) -> session_directory.Directory {
+  session_directory.khepri(
+    [beta()],
+    "alpha@10.0.0.1",
+    fn(_session) { held },
+    fn(_session) { answer },
+  )
 }
 
 pub fn a_member_with_no_record_answers_unknown_test() {
@@ -365,5 +379,39 @@ pub fn a_record_naming_an_unlisted_node_is_named_by_the_node_test() {
 
 pub fn a_store_that_cannot_be_read_is_unavailable_test() {
   assert reading(Error(store.Unavailable("not joined"))).lookup(id)
+    == Error(session_directory.Unavailable("not joined"))
+}
+
+// A daemon that handed a session away names the receiver from its own
+// tombstone, whatever its copy of the record says. A member that has just
+// restarted has a copy that is not running, or one that has not caught up and
+// holds no record, and neither may make it forget where the session went.
+pub fn a_tombstone_names_the_receiver_whatever_the_copy_says_test() {
+  let tombstone = Ok(Moved(to: "beta"))
+  let unreadable = Error(store.Unavailable("not joined"))
+  assert holding(tombstone, unreadable).lookup(id) == Ok(Elsewhere(beta()))
+  assert holding(tombstone, Ok(option.None)).lookup(id) == Ok(Elsewhere(beta()))
+}
+
+pub fn a_tombstone_naming_an_unlisted_orchestrator_names_it_alone_test() {
+  assert holding(Ok(Moved(to: "zeta")), Ok(option.None)).lookup(id)
+    == Ok(
+      Elsewhere(orchestrators.Orchestrator(
+        name: "zeta",
+        node: "",
+        address: option.None,
+      )),
+    )
+}
+
+// Only a tombstone is believed. A session this catalogue holds, or one it does
+// not hold at all, is the record's to answer.
+pub fn a_catalogue_that_is_not_a_tombstone_defers_to_the_record_test() {
+  let theirs = record.Record(owner: "beta@10.0.0.2", state: record.Serving)
+  assert holding(Ok(Owned), Ok(Some(theirs))).lookup(id)
+    == Ok(Elsewhere(beta()))
+  assert holding(Ok(NotOwned), Ok(Some(theirs))).lookup(id)
+    == Ok(Elsewhere(beta()))
+  assert holding(Ok(Owned), Error(store.Unavailable("not joined"))).lookup(id)
     == Error(session_directory.Unavailable("not joined"))
 }

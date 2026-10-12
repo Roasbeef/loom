@@ -727,7 +727,12 @@ fn session_directory_of(
       let local = atom.to_string(node.name(node.self()))
       let base = case config.directory {
         Some(_) ->
-          session_directory.khepri(config.orchestrators, local, store.read)
+          session_directory.khepri(
+            config.orchestrators,
+            local,
+            catalogue_holds(registry),
+            store.read,
+          )
         None ->
           session_directory.peers(
             config.orchestrators,

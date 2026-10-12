@@ -299,6 +299,12 @@ alpha's node, and bravo refuses `not_owner` naming its own row for alpha and,
 if that row configures one, alpha's address. A record with no owner other than
 bravo, or no record, leaves the answer `not_found`.
 
+A daemon that handed a session away does not read the record to say where it
+went. Its own catalogue holds the tombstone, which names the receiver, and the
+lookup believes it before the copy: a member that has just restarted may have a
+copy that is not joined or has not caught up, and `not_owner` for a session it
+moved must not wait for either.
+
 ## Writing an owner
 
 Every change of ownership is one Khepri command against one record, and Ra

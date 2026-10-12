@@ -136,8 +136,10 @@ custody row in the turn that reserves the slot, as it does today.
 
 ### The directory interface
 
-`Directory.lookup` keeps its signature. On a member daemon it reads the local
-replica:
+`Directory.lookup` keeps its signature. On a member daemon it first asks its own
+catalogue, whose tombstone for a session it handed away answers `Ok(Elsewhere(..))`
+with the receiver the tombstone names, as on a daemon with no directory; every
+other catalogue answer defers to the local replica:
 
 | Record | Answer |
 |---|---|

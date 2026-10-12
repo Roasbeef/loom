@@ -385,23 +385,38 @@ pub fn peers(
 /// named to a client. Like `peers`, it reaches and describes nobody until it is
 /// given `with_reach` and `describing`.
 ///
+/// `held` reads this daemon's own catalogue, as it does for `peers`, and only
+/// a tombstone in it is believed: a session this catalogue gave away is
+/// `Elsewhere` its receiver without a read of the record. The tombstone is the
+/// daemon's own durable account of the move, while the copy of the record can
+/// lag, most of all right after the member restarts, and a daemon that had just
+/// restarted would otherwise be unable to say where a session it handed away
+/// went. Every other catalogue answer defers to the record, which is the
+/// authority on a session this daemon still holds.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// // session_directory.khepri(config.orchestrators, local, store.read)
+/// // session_directory.khepri(config.orchestrators, local, catalogue_holds(registry), store.read)
 /// ```
 pub fn khepri(
   listed: List(Orchestrator),
   local: String,
+  held: fn(String) -> Result(Ownership, Nil),
   read: fn(String) -> Result(Option(Record), store.Unavailable),
 ) -> Directory {
   Directory(
     lookup: fn(session) {
-      case read(session) {
-        Ok(None) -> Error(Unknown)
-        Ok(Some(found)) if found.owner == local -> Ok(Here)
-        Ok(Some(found)) -> Ok(Elsewhere(by_node_or_named(listed, found.owner)))
-        Error(store.Unavailable(reason:)) -> Error(Unavailable(reason))
+      case held(session) {
+        Ok(Moved(to:)) -> Ok(Elsewhere(configured_or_named(listed, to)))
+        Ok(Owned) | Ok(NotOwned) | Error(Nil) ->
+          case read(session) {
+            Ok(None) -> Error(Unknown)
+            Ok(Some(found)) if found.owner == local -> Ok(Here)
+            Ok(Some(found)) ->
+              Ok(Elsewhere(by_node_or_named(listed, found.owner)))
+            Error(store.Unavailable(reason:)) -> Error(Unavailable(reason))
+          }
       }
     },
     reach: cannot_reach,

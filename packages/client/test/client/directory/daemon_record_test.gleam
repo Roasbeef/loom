@@ -56,7 +56,7 @@ fn member_daemon(
   run: fn(root.Ready(String), Int, String) -> Nil,
 ) {
   let directory =
-    session_directory.khepri([], alpha, store.read)
+    session_directory.khepri([], alpha, fn(_) { Error(Nil) }, store.read)
     |> session_directory.as_member(Some(writes), fn() { status() })
   wire.fixture_directing(
     limits.defaults,

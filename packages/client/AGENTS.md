@@ -7607,9 +7607,12 @@ ADR-020 the choice of Khepri and its measurements, and
   writes. `create` and `begin_move` answer a record already holding their
   value as committed. Tests bind two names over one shared book
   (`test/support/record_book`), because two registries in one VM share a node.
-- `session_directory.khepri` is the lookup over the local copy: absent is
-  `Unknown`, this node `Here`, another node `Elsewhere` (the configured row, or a
-  row carrying the node name), and an unreadable store `Unavailable(reason)`,
+- `session_directory.khepri` is the lookup over the local copy, after the daemon's
+  own catalogue: a tombstone there (`Moved(to)`) is `Elsewhere` its receiver
+  without a read, as `peers` answers it, so a restarted member whose copy lags or
+  is not joined still says where a session it handed away went. Otherwise
+  absent is `Unknown`, this node `Here`, another node `Elsewhere` (the configured
+  row, or a row carrying the node name), and an unreadable store `Unavailable(reason)`,
   which the server refuses `no_quorum` and peer mail treats as `Unreachable`.
   `as_member` adds the `ownership` and the `standing` (`Member(status)`) the
   server reads.
