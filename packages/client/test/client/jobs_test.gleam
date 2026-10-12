@@ -2905,8 +2905,21 @@ pub fn completion_wakes_only_after_the_terminal_fact_write_test() {
 
   // A timed-out wait leaves the job's single witness available to later
   // callers. No waiter subject or timeout entry is stored by the jobs actor.
+  let before = relations(harness.pid, "links")
   let pending = completion(harness, started, jobs.Cursors(0, 0), 0)
   assert pending.state == jobstate.Running
+  let assert [witness] =
+    list.filter(relations(harness.pid, "links"), fn(pid) {
+      !list.contains(before, pid)
+    })
+    as "the live job owns one completion witness"
+  let monitor = process.monitor(witness)
+  let stopped =
+    process.new_selector()
+    |> process.select_specific_monitor(monitor, fn(_down) { Nil })
+
+  // Observe the witness itself: an early stop could otherwise hide behind
+  // the authoritative reread, which is queued behind the blocked write.
   let results = process.new_subject()
   let waiter =
     weft.new([
@@ -2923,9 +2936,13 @@ pub fn completion_wakes_only_after_the_terminal_fact_write_test() {
   settle_with(harness, started, exited(0))
   let assert Ok(release) = process.receive(blocked, 1000)
     as "terminal persistence is blocked"
-  assert process.receive(results, 40) == Error(Nil)
+  assert process.selector_receive(stopped, 40) == Error(Nil)
+  assert process.receive(results, 0) == Error(Nil)
   let released = native.monotonic_time_ms()
   process.send(release, Nil)
+  let assert Ok(Nil) = process.selector_receive(stopped, 500)
+    as "terminal persistence releases the completion witness"
+  process.demonitor_process(monitor)
   let assert Ok(done) = process.receive(results, 500)
     as "commit wakes the production waiter"
   assert native.monotonic_time_ms() - released < 500
