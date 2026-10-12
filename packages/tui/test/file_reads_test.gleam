@@ -447,8 +447,8 @@ fn control_on(owner: Subject(Dynamic)) -> daemon.Connection
 fn attached_note(
   options: bootstrap.Options,
   selected: String,
+  token: String,
 ) -> option.Option(String) {
-  let token = "build/r8-attach-token"
   write(token, <<"token":utf8>>)
   let assert Ok(Nil) = simplifile.set_permissions_octal(token, 0o600)
   let owner: Subject(Dynamic) = process.new_subject()
@@ -482,7 +482,13 @@ fn names_kept_profile(note: option.Option(String)) -> Bool {
 pub fn a_local_launch_opening_a_session_says_the_profile_is_kept_test() {
   let options = bootstrap.Options(..absent_config(), profile: "beta")
 
-  assert names_kept_profile(attached_note(options, "01a11401"))
+  // Parallel tests own distinct credentials, so cleanup cannot retire another
+  // launch's token between its permission check and credential read.
+  assert names_kept_profile(attached_note(
+    options,
+    "01a11401",
+    "build/r8-attach-kept-token",
+  ))
 }
 
 // Nothing is opened when the launch lands on the picker, and a launch that
@@ -490,6 +496,11 @@ pub fn a_local_launch_opening_a_session_says_the_profile_is_kept_test() {
 pub fn a_local_launch_that_opens_nothing_or_names_no_profile_is_silent_test() {
   let options = bootstrap.Options(..absent_config(), profile: "beta")
 
-  assert attached_note(options, "") == None
-  assert attached_note(absent_config(), "01a11401") == None
+  assert attached_note(options, "", "build/r8-attach-picker-token") == None
+  assert attached_note(
+      absent_config(),
+      "01a11401",
+      "build/r8-attach-unnamed-token",
+    )
+    == None
 }
