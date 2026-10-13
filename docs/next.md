@@ -1,9 +1,9 @@
 # Current handoff
 
-Baselined October 13, 2026 against `b815734f3` on
+Baselined October 13, 2026 against `526fb44c4` on
 `docs/archive-ui-captures`, based on `main` at
 `dc70d25d42da531284225bf399f40f82e13539d4`. This edition covers the capture
-cleanup. It records evidence from this checkout; earlier validation does not
+cleanup and its CI repair. It records evidence from this checkout; earlier validation does not
 establish the state of this branch. The project plan remains `docs/issue-plan.md`.
 
 The previous edition still instructed the reader to publish the web browsing
@@ -50,32 +50,40 @@ local link to a deleted capture. Ignore checks covered capture/scratch paths
 and useful docs, scripts and curated assets. Independent review found two
 multiline-label image links; both were fixed and rechecked.
 
-The affected selector chooses the full gate because it does not classify
-`site/screenshots/`. Static gates passed. The first full-gate preparation failed
-to fetch a dependency from `repo.hex.pm`. The network-enabled rerun on
-`8de625cfd96b44fa0b25c39f0df490ca5e9b873f` completed preparation, then the client
-suite exhausted its 1,200-second test budget while the real TUI E2E test was
-running. The full lane exited 124; the affected gate reported RED after 1,905
-seconds. No failed assertions appeared before the timeout, and the final skip
-census passed. That is a failed gate, not a whole-tree validation claim.
+The initial network-enabled full gate on `8de625cfd` used the runner's
+sequential default. The client suite exhausted its 1,200-second test budget
+while the real TUI E2E test was running; the full lane exited 124 after no
+reported assertion failures, and the final skip census passed. That attempt
+is historical evidence of an aggregate timeout, not a whole-tree green claim.
+The follow-up uses the existing `LOOM_TEST_PARALLEL=8` arrangement documented in
+`docs/execution.md`, retaining the existing deadlines and `scripts/serial-tests`
+isolation. No test assertion or process deadline changes.
 
-[PR #976](https://github.com/Roasbeef/loom/pull/976) is a draft. Hosted Linux
-package, deliverable, jail, bootstrap, static and compiler jobs passed at
-`8de625cfd`; the Linux aggregate failed its skip census on
-`SKIP shipped deployment status: platform enforcement unavailable`. The
-fixture's label and Linux skip declarations are unchanged from the upstream
-baseline, which lacks that declaration. The deployment-status fixture ran
-locally against the real shipped daemons. Hosted macOS E2E passed; the macOS
-advisory suite was still running when checked. Final hosted results belong on
-the PR. The cleanup does not alter test budgets or skip policy.
+Hosted Linux jobs at `526fb44c4` passed beneath an aggregate census failure:
+`SKIP shipped deployment status: platform enforcement unavailable` had no
+ordinary-Linux declaration. The CI repair declares that measured prerequisite
+failure only in `.github/declared-skips-linux-gate`. The delegated jail also
+runs the exact deployment-status fixture and rejects every skip with an empty
+declaration set, so its live executor up/down assertions remain mandatory.
+The new step joins the existing delegated cgroup and uses the shipment built
+by that lane. Its log is included in the lane's artifacts.
+
+Replaying the actual failed Linux log fails with the old declarations, passes
+with the repair, and fails under the delegated lane's empty declarations.
+Skip-reporting tests, YAML/shell checks and independent review passed. These
+checks verify the repair's wiring; its actual Linux execution and all final
+hosted results belong on [PR #976](https://github.com/Roasbeef/loom/pull/976).
+Require the exact pushed head's hosted checks and genuine `signoff/linux`
+status before calling it merge-ready. Neither a local pass nor an earlier
+head's signoff substitutes for those results.
 
 ## What to do next
 
-1. Review the cleanup in PR #976 and resolve its validation blockers before
-   merging. Exit: archive recovery, links and preservation checks remain green,
-   the client timeout is accounted for, and CI has an explicit disposition for
-   the existing deployment-status skip. Changing skip policy is separate work.
-   The cleanup does not merge or update a daemon.
+1. Review the cleanup and CI repair in PR #976. Exit: archive recovery, links
+   and preservation checks remain green, hosted CI executes the delegated
+   deployment-status fixture, and the exact pushed head has green hosted checks
+   plus `signoff/linux`. Mark the PR ready after those checks; merging remains
+   the owner's decision. The cleanup does not update a daemon.
 2. Before considering a history rewrite or a new repository, export the
    checksummed captures to independent durable storage and update archive links.
    Exit: the archive is recoverable without the original Git objects. The
