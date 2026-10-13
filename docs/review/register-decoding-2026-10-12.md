@@ -58,8 +58,9 @@ Elapsed times include synchronous actor exchange and caller-side validation;
 list validation performs key/value lookup work too. They are verified fixture
 round trips, not user-tool latency. This Mac was running other agents and tests;
 it was not a quiet host. Figures below are pooled medians, normalized per query.
-The [raw counters and summary](register-decoding-2026-10-12.json) include cold
-batches, all three VM runs and retained actor measurements.
+The tables below summarize all three VM runs and retained actor measurements.
+The runner emits the detailed counters needed to reproduce the comparison;
+the large raw JSON export is not checked into the repository.
 
 ## Warm results
 
@@ -102,7 +103,7 @@ plumbing. The absolute extra allocation was 288 to 368 bytes per query.
 Cold admissions also have a cost: structured4k point-read medians were
 108.7 → 111.5 us, and structured16k list medians 2,829.0 → 3,015.5 us.
 These short loaded-host timing batches do not establish a stable cold latency
-percentage. Full cold counters are included rather than hidden by warmup.
+percentage. The runner reports cold counters separately from warmup.
 
 ## Retained memory
 

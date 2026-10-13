@@ -19,8 +19,7 @@ most 64 blobs and 256 KiB encoded bytes, clears on overflow and every close,
 and bypasses individually larger blobs. No public storage interface, lease,
 CAS or authorization rule changed.
 
-The [measurement report](review/register-decoding-2026-10-12.md) and
-[raw counters](review/register-decoding-2026-10-12.json) record three fresh VMs,
+The [measurement report](review/register-decoding-2026-10-12.md) records three fresh VMs,
 twelve alternating batches per implementation/case, VM CPU, actor reductions,
 heap allocation, cold/warm latency and synthetic retained-memory observations.
 Structured warm reads save 74.5% to 91.0% VM CPU and 99.1% to 99.8% actor
