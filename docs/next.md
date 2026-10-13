@@ -54,6 +54,7 @@ short interval measured the daemon at 17.9% CPU with the host 78.4% idle.
 Repeated register decoding is the separate open [PR #972](https://github.com/Roasbeef/loom/pull/972),
 not part of this branch and not installed. Re-profile after an explicitly
 requested upgrade before attributing production savings. There are no recurring
-automations for this task. The branch has passed local validation and independent reviews. Publish the
-idle-retirement PR and record hosted CI separately; do not merge
+automations for this task. The branch has passed local validation and independent reviews and is published
+as [PR #975](https://github.com/Roasbeef/loom/pull/975). Hosted CI is running
+and is not yet a passing gate; do not merge
 or deploy without authorization.
