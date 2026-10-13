@@ -76,6 +76,7 @@ fi
 # Rebar's production pc plugin points back to the build machine by absolute
 # path. Materialize that known in-seed link before proving the relocated clone;
 # neither runtime builds nor release archives may depend on the original root.
+# The same step drops rebar3's compile graphs, which embed paths and mtimes.
 python3 scripts/codemode_seed_plugin.py "$seed"
 
 # Prove it offline, here, rather than discovering it in a jail later. A

@@ -21,7 +21,13 @@ from its production `pc` build plugin to the default-profile plugin inside the
 seed. After compilation settles, seed preparation replaces only that known
 link with regular files before checking the relocated offline clone. It refuses
 an external target or nested links; the release archiver keeps its existing
-link restrictions. The helper is included in the release recipe digests.
+link restrictions. The same helper removes rebar3's incremental-compile graphs
+(`.rebar3/rebar_compiler_erl/*.dag`) from the native build. Rebar writes
+absolute source paths and wall-clock modification times into them, so they made
+two builds of identical sources differ (the v0.3.0 Linux reproducibility
+check). Gleam finds the compiled esqlite package in place and never runs rebar3
+for it, so the graphs are not needed and a clone builds offline without them.
+The helper is included in the release recipe digests.
 
 Reproducible release jobs use the maintained compiler described in the
 [toolchain instructions](../scripts/toolchain/gleam/README.md). It is the

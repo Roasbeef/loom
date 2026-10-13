@@ -33,6 +33,13 @@ class NativeSeedPluginTest(unittest.TestCase):
         self.plugin = native / '_build/prod/plugins/pc'
         self.plugin.parent.mkdir(parents=True)
         self.plugin.symlink_to(self.target)
+        self.caches = [
+            native / '_build/prod/lib/.rebar3/rebar_compiler_erl',
+            native / '_build/prod/plugins/.rebar3/rebar_compiler_erl',
+        ]
+        for cache in self.caches:
+            cache.mkdir(parents=True)
+            (cache / 'source.dag').write_bytes(b'mtimes and absolute paths')
 
     def test_native_seed_packages_and_relocates_without_the_original_root(self):
         archive = self.root / 'seed.tar.gz'
@@ -53,6 +60,13 @@ class NativeSeedPluginTest(unittest.TestCase):
         self.assertEqual((plugin / 'build-tool').stat().st_mode & 0o777, 0o755)
         library = relocated / self.native_library.relative_to(self.seed)
         self.assertEqual(library.read_bytes(), b'native fixture')
+
+    def test_rebar_compile_graphs_are_not_packaged(self):
+        # Rebar writes absolute paths and wall-clock times into these graphs,
+        # so keeping them makes two builds of one source tree differ.
+        materialize(self.seed)
+        self.assertEqual(list(self.seed.rglob('*.dag')), [])
+        self.assertEqual(self.native_library.read_bytes(), b'native fixture')
 
     def test_external_plugin_target_is_refused_without_changing_the_seed(self):
         outside = self.root / 'outside'
