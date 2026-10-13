@@ -47,5 +47,6 @@ production saving from this branch. The earlier 4.49 GiB summed gopls child
 RSS remains the main external-memory lead; summed RSS double-counts shared
 pages. Preserve session/jail isolation when investigating server lifetime.
 
-The branch is ready for PR publication; hosted CI remains pending. No recurring automation, installation, restart or merge
+Published as [PR #972](https://github.com/Roasbeef/loom/pull/972). Hosted CI
+is queued/running; it is not yet a passing gate. No recurring automation, installation, restart or merge
 is part of this task.
