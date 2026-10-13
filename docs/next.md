@@ -1,66 +1,86 @@
 # Current handoff
 
+Baselined October 13, 2026 against implementation commit `b3d1ade5d821ebd8d172af899837285ed4725152`,
+rebased onto main at `e86d6fddd002d8060b44aa5f10e9c99e3098bc51`.
+PR #977 has been merged into PR #979's branch; #979 now lands both Responses
+diagnostics and the deployment-status CI correction. The project-wide plan
+remains `docs/issue-plan.md`. No running daemon was updated by this work.
+
+Main's register-decoding work remains intact. Its exact persisted-blob cache,
+bounds, invalidation and corruption checks are described in
+[the measurement report](review/register-decoding-2026-10-12.md) and the
+[main handoff](https://github.com/Roasbeef/loom/blob/e86d6fddd002d8060b44aa5f10e9c99e3098bc51/docs/next.md).
+PR #972 is merged; its handoff's queued-CI wording is historical.
+
+## What changed
+
+A failed Responses attempt previously retained the same constant corruption
+report for every malformed event, semantic witness and resource limit. The
+recorded failures identified the affected operations, but neither the daemon
+log nor durable messages retained the rejected check or offending wire event.
+Those past failures cannot establish whether the provider violated the
+protocol or Loom rejected a valid response.
+
+Every malformed call site now supplies a fixed reason code. Private item
+verification preserves distinct phase, closure, status, contiguity and content
+reasons; final-response guards distinguish identity ordering, remote error,
+output mismatch, unclosed items, sparse indices and status mismatch. Decoder
+failures identify their local call site. `packages/provider/README.md`
+documents the diagnostic fields, reason families and stability convention.
+
+The existing corruption report carries an allowlisted current event family,
+sequence, output/content/summary/annotation positions, last accepted sequence
+and cumulative delivered bytes. Unknown event names become `unknown`;
+malformed numbers become `invalid`; integers outside signed 32-bit range become
+`range`. Missing or null positions become `absent`. The byte count describes
+chunks delivered to the adapter, not the offset of the failed event.
+
+These are diagnostic bounds, not new acceptance limits. No provider text,
+arguments, identifiers, model name, ciphertext, annotations or parser excerpt
+enters the report. Its subject and context fit the existing gateway and core
+bounds. Runtime retains the description in the existing durable `errorMessage`;
+request context remains in `diagnostics`. No error variant, wire field, retry
+policy or validation predicate was added or relaxed.
+
 ## Deployment-status CI correction
 
-The Responses follow-up exposed an undeclared ordinary-runner deployment-status
-skip. The CI correction declares that exact existing Linux marker and requires
-the real fixture to execute in the delegated Linux jail with an empty skip
-allowance. No fixture assertion or enforcement requirement was relaxed.
+The ordinary Linux runner's existing enforcement skip is declared by its exact
+marker. The delegated Linux jail job separately requires the real deployment
+fixture to execute with an empty skip allowance and uploads its log. No fixture
+assertion or enforcement demand was removed or relaxed.
 
-The branch has been rebased onto main at
-`e86d6fddd002d8060b44aa5f10e9c99e3098bc51`. Its previous combined head
-`f3d0c7bd3106de8eec98f5c076f0d5459a51d848` passed both hosted aggregate gates
-and full Linux signoff. Those are historical results; the rebased head needs
-new validation. The installed daemon has not been updated.
+## Verification boundary
 
-## Preserved main handoff
+At the previous combined head `f3d0c7bd3106de8eec98f5c076f0d5459a51d848`,
+required hosted CI passed both aggregate gates. Full containerized Linux signoff
+passed in 1,703 seconds, including client, runtime/storage/session/events,
+conformance, fast, static, enforcement and release verification, with a clean
+skip census. The delegated deployment fixture executed and passed. The hosted
+macOS advisory client suite hit its existing package-wide 1,200-second deadline;
+its successful job conclusion does not establish a completed test suite.
 
-Baselined October 12, 2026 against `e500bc260` on `codex/register-decode`.
-Implementation is `7db1fdd27dda2105a8d918ae5d13d63ae988372c`; the matched
-benchmark runner is `d60c39a5f`. PR #966 is merged. The installed daemon has
-not been changed by this work.
+Provider and runtime regression coverage, diagnostic redaction/bounds, baseline
+controls and independent reviews are recorded in PR #977. CI policy controls
+and independent review are recorded in PR #979. The rebase changes only the
+handoff resolution relative to applying these reviewed changes on the new main.
+The new pushed head needs fresh hosted CI and Linux signoff; previous-head
+results above are historical evidence, not signoff for this head.
 
-The prior handoff described web-history and LSP follow-ups. Those descriptions
-are historical context rather than this branch's validation boundary; see the
-[baseline handoff](https://github.com/Roasbeef/loom/blob/e500bc260/docs/next.md).
-The project plan remains `docs/issue-plan.md`.
+## Live failure distinction
 
-## Register decoding
+The later recurring `responses_error` failures are explicit provider-error
+responses with missing or unrecognized error codes. They take a different path
+from malformed-stream validation. Existing durable history retains only the
+generic error, so the original provider reason cannot be reconstructed and
+these diagnostics do not identify it. No provider-error acceptance, retry or
+redaction policy was changed to speculate about those failures.
 
-SQLite now reuses successful register decodes under exact persisted blob keys.
-Every read still queries SQL; current sequence, presence, prefix/order and
-corruption detection remain authoritative. The store-owned inventory holds at
-most 64 blobs and 256 KiB encoded bytes, clears on overflow and every close,
-and bypasses individually larger blobs. No public storage interface, lease,
-CAS or authorization rule changed.
+## Next steps
 
-The [measurement report](review/register-decoding-2026-10-12.md) records three fresh VMs,
-twelve alternating batches per implementation/case, VM CPU, actor reductions,
-heap allocation, cold/warm latency and synthetic retained-memory observations.
-Structured warm reads save 74.5% to 91.0% VM CPU and 99.1% to 99.8% actor
-heap allocation. Retention is a tradeoff, not an RSS saving. Byte-overflow point
-reads used 2.33 times baseline CPU; overflow, scalar and cold costs remain
-visible in the report. Larger working sets are an explicit limitation.
-
-Five focused regressions pass, including both limits, failed-close release,
-external corruption and warmed reads across CAS refusal/lease replacement.
-Two independent reviews signed off correctness and evidence, and both compiled
-bound mutants are rejected. The final serialized `LOOM_TEST_PARALLEL=8 make check` passed exit 0 after
-the complete regression suite landed, including all 286 storage tests, Go
-checks and lint with zero errors. Documentation checks also passed.
-The first attempt failed dependency acquisition with disk-full; an overlapping
-narrow Make invocation also failed shared shipment packaging. Neither is a
-passing gate, and no test was weakened or skipped.
-
-## Live follow-ups
-
-The installed daemon remains on `e289d93ab` in the observed cuts. Three passive
-snapshots during this task showed VM allocation dropping from about 486 to
-452 MiB and RSS from 634 to 622 MiB. These do not establish a leak or a
-production saving from this branch. The earlier 4.49 GiB summed gopls child
-RSS remains the main external-memory lead; summed RSS double-counts shared
-pages. Preserve session/jail isolation when investigating server lifetime.
-
-Published as [PR #972](https://github.com/Roasbeef/loom/pull/972). Hosted CI
-is queued/running; it is not yet a passing gate. No recurring automation, installation, restart or merge
-is part of this task.
+1. Validate the new pushed head and merge #979 with the owner's authorization
+   once required hosted checks and exact-head Linux signoff are green.
+2. After deployment, capture a malformed-stream recurrence's reason and safe
+   structural context, then build a minimal reproduction before attributing it
+   to provider behavior or Loom compatibility. A daemon update is separate.
+3. Keep generic provider-error diagnostics separate from stream-validation
+   diagnostics; further work on that path requires its own scoped change.
