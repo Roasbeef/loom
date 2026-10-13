@@ -1,6 +1,6 @@
 # Current handoff
 
-Baselined October 13, 2026 against `3b0203f80` on `web/queue-controls`,
+Baselined October 13, 2026 against `8fd775bc3` on `web/queue-controls`,
 starting from main `dc70d25d4`. This edition covers held-message Edit and
 Remove controls. The installed daemon has not been updated.
 
@@ -37,12 +37,14 @@ is refused before a deferred fetch can be lost to its acknowledgement.
 
 The complete web package gate passed 1,003 tests and the shared-session gate
 passed all 482, each with exit 0. Browser asset generation and its digest checks
-passed. House lint and documentation checks are recorded separately on the PR.
+passed. House lint, documentation checks and browser asset digests passed with exit 0.
 Gateway and protocol regressions passed for author/observer refusal, stale
 revisions, wrong strand, equal-text neighbors, repeated removal and admission
-before removal. The broad client run is still in progress at this checkpoint;
-its result belongs on the PR. It has reported prerequisite code-mode skips
-because this checkout has no prepared seed. No tests were removed or skipped
+before removal. The broad client run reported all 4,492 tests passed with exit 0 in 599.57
+seconds, with 82 prerequisite-skip diagnostics: 34 seed/helper diagnostics
+and 48 other prerequisites, including shipped-server environment and Linux-only
+process observation. That broad run started before the final shared-notice fixes;
+the final-tree queue gateway/protocol rerun passed all five tests. The final-tree client parity rerun passed all three tests. No test was removed or disabled
 by the implementation.
 
 An isolated browser loaded the actual Lustre 5.7.1 runtime, generated stylesheet,
@@ -56,13 +58,11 @@ correctness finding.
 
 ## Next steps
 
-1. Publish the branch as a PR and record the broad client result and exact head.
-   Exit: affected-package gates and the browser evidence are linked to that PR,
-   with prerequisite skips explicit.
-2. Inspect hosted CI and required Linux signoff for the published head.
-   Exit: required checks attest to that head; local tests do not substitute for
-   release or deployment signoff.
-3. Merge and update the running daemon only with the owner's authorization.
+1. Inspect hosted CI and required Linux signoff on
+   [PR #980](https://github.com/Roasbeef/loom/pull/980). Exit: required checks
+   attest to the published head, with prerequisite skips explicit; local tests
+   do not substitute for release or deployment signoff.
+2. Merge and update the running daemon only with the owner's authorization.
    Exit: the deployed operator page offers Edit and Remove on its own held
    messages, and edits preserve attachments and order.
 
