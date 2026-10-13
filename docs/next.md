@@ -52,16 +52,30 @@ multiline-label image links; both were fixed and rechecked.
 
 The affected selector chooses the full gate because it does not classify
 `site/screenshots/`. Static gates passed. The first full-gate preparation failed
-to fetch a dependency from `repo.hex.pm`; a network-enabled rerun is in progress.
-Record its final result and the exact tested head on the PR. Hosted CI at the
-upstream baseline has both successful and failed runs; no project-wide green
-claim follows from this cleanup.
+to fetch a dependency from `repo.hex.pm`. The network-enabled rerun on
+`8de625cfd96b44fa0b25c39f0df490ca5e9b873f` completed preparation, then the client
+suite exhausted its 1,200-second test budget while the real TUI E2E test was
+running. The full lane exited 124; the affected gate reported RED after 1,905
+seconds. No failed assertions appeared before the timeout, and the final skip
+census passed. That is a failed gate, not a whole-tree validation claim.
+
+[PR #976](https://github.com/Roasbeef/loom/pull/976) is a draft. Hosted Linux
+package, deliverable, jail, bootstrap, static and compiler jobs passed at
+`8de625cfd`; the Linux aggregate failed its skip census on
+`SKIP shipped deployment status: platform enforcement unavailable`. The
+fixture's label and Linux skip declarations are unchanged from the upstream
+baseline, which lacks that declaration. The deployment-status fixture ran
+locally against the real shipped daemons. Hosted macOS E2E passed; the macOS
+advisory suite was still running when checked. Final hosted results belong on
+the PR. The cleanup does not alter test budgets or skip policy.
 
 ## What to do next
 
-1. Publish the cleanup PR and inspect its exact-head checks. Exit: archive
-   recovery, links and preservation checks pass, and remaining gate failures
-   are explicitly accounted for. The PR does not merge or update a daemon.
+1. Review the cleanup in PR #976 and resolve its validation blockers before
+   merging. Exit: archive recovery, links and preservation checks remain green,
+   the client timeout is accounted for, and CI has an explicit disposition for
+   the existing deployment-status skip. Changing skip policy is separate work.
+   The cleanup does not merge or update a daemon.
 2. Before considering a history rewrite or a new repository, export the
    checksummed captures to independent durable storage and update archive links.
    Exit: the archive is recoverable without the original Git objects. The
