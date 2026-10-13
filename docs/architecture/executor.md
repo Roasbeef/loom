@@ -378,8 +378,11 @@ protocol-change/014 says is not a join witness. The only way to keep the proof
 under sharing is to retire helpers per session, and that is no sharing at all.
 
 Capacity across sessions is already bounded by the session slots times the
-pool ceiling of sixteen. If the baseline memory probe shows that bound too
-loose, the remedy is idle retirement (#283), not a daemon-wide semaphore. In
+pool ceiling of sixteen. Idle retirement (#283) now reclaims helpers sixty
+seconds after their successful return to the available inventory, allowing a
+pool to shrink to zero. Checkout cancels that idle interval, and replacement
+waits for the existing two retirement witnesses. The session policy and custody
+boundaries remain intact. In
 local mode the service lives inside `loomd`. A second VM would buy nothing,
 since the helper is already out of process and the kernel is the boundary, and
 it would cost a wire the epic is told not to define.
