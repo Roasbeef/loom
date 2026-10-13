@@ -1692,3 +1692,18 @@ positions and behavior on the other tabs.
 checks focus and stale handlers, and pins the actual Lustre handler table and
 numeric row paths. It also covers partial boards, raw text, literal excerpts,
 search, refresh selection and markup-looking content.
+
+## Side questions (protocol 087)
+
+The operator composer parses `/btw` through the shared command grammar even
+when its delivery mode is Steer. `operator_page.side_panel` draws a bounded,
+scrollable aside outside the transcript, with escaped plain text and explicit
+refresh, cancellation, clear and close controls. Main transcript updates and
+approval controls remain available. Follow-ups use `/btw <question>` in the
+composer. Observer pages expose no side-query controls.
+
+`component.btw_state` reads this private state through the opaque host model.
+`component.rearm` includes `surfaces.btw_due`, so a quiet main session does not
+leave a side answer unobserved. Closing the panel does not cancel inference, and
+a late board preserves its hidden visibility. The operator-page fixture verifies
+that an ask during a running turn sends `btw`, never a main prompt or steer.

@@ -186,6 +186,7 @@ import broker/policy.{type Grant}
 import client/advisor
 import client/advisor_pending
 import client/blocksummary
+import client/btw
 import client/catalog
 import client/daemon/transfer
 import client/directories
@@ -242,6 +243,7 @@ import runtime/escalation as runtime_escalation
 import runtime/hooks
 import runtime/writer
 import session/session
+import session_view/btw as btw_view
 import session_view/protocol as session_wire
 import storage/access
 import storage/snapshot
@@ -389,6 +391,8 @@ pub type Options {
     live_jobs: Option(fn(String) -> Result(JsonValue, String)),
     /// Bounded context observation, sharing the managed read workers.
     context: Option(fn(String) -> Result(JsonValue, String)),
+    /// Disposable side conversations are scoped to this connection incarnation.
+    btw: Option(address.Address(btw.Message)),
     /// Where the blocks a `block_summaries` read found no summary for are
     /// sent to be summarized on demand (protocol 050). `None` asks nothing.
     summary_demand: Option(fn(List(#(String, Int))) -> Nil),
@@ -468,6 +472,8 @@ type State {
     live_jobs: Option(fn(String) -> Result(JsonValue, String)),
     /// Bounded context observation, sharing the managed read workers.
     context: Option(fn(String) -> Result(JsonValue, String)),
+    /// Disposable side conversations are scoped to this connection incarnation.
+    btw: Option(address.Address(btw.Message)),
     /// On-demand summarization of blocks a read found unsummarized.
     summary_demand: Option(fn(List(#(String, Int))) -> Nil),
     // The report of the first accepted main-strand prompt, until it is made.
@@ -554,6 +560,7 @@ pub fn default_options(session_id: String, runtime: api.Runtime) -> Options {
     worktree_diff: None,
     live_jobs: None,
     context: None,
+    btw: None,
     summary_demand: None,
     first_prompt: None,
     profile: None,
@@ -666,6 +673,20 @@ pub fn with_context(
   read_context: fn(String) -> Result(JsonValue, String),
 ) -> Options {
   Options(..options, context: Some(read_context))
+}
+
+/// Supplies the session-lived, tool-free side-query service.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.with_btw(options, name)
+/// ```
+pub fn with_btw(
+  options: Options,
+  name: address.Address(btw.Message),
+) -> Options {
+  Options(..options, btw: Some(name))
 }
 
 /// Supplies an explicit bounded live jobs query.
@@ -1146,6 +1167,9 @@ fn start_with_delivery(
         process.new_selector()
         |> process.select(subject)
     }
+    let _reset_side_conversations =
+      option.map(options.btw, fn(name) { address.send(name, btw.Reset) })
+
     let state =
       State(
         subject:,
@@ -1156,6 +1180,7 @@ fn start_with_delivery(
         worktree_diff: options.worktree_diff,
         live_jobs: options.live_jobs,
         context: options.context,
+        btw: options.btw,
         summary_demand: options.summary_demand,
         first_prompt: options.first_prompt,
         profile: options.profile,
@@ -2229,6 +2254,7 @@ fn network_command(
     | protocol.ListSkills(..)
     | protocol.WorktreeDiffGet
     | protocol.ContextGet(..)
+    | protocol.Btw(..)
     | protocol.LiveJobsGet(..)
     | protocol.AdvisorPendingGet
     | protocol.BlockSummariesGet(..)
@@ -3075,6 +3101,8 @@ fn remove_connection(state: State, id: Int) -> State {
   case dict.get(state.connections, id) {
     Error(Nil) -> state
     Ok(link) -> {
+      let _forgotten =
+        option.map(state.btw, fn(name) { address.send(name, btw.Forget(id)) })
       case link.authentication {
         Authenticated(_, _, close, watch) -> {
           close()
@@ -3212,7 +3240,8 @@ fn read_only(command: Command) {
     | protocol.QueuedInputGet(..)
     | protocol.ProfileGet
     | protocol.ListSchedules -> True
-    protocol.Prompt(..)
+    protocol.Btw(..)
+    | protocol.Prompt(..)
     | protocol.PromptContent(..)
     | protocol.Steer(..)
     | protocol.FollowUp(..)
@@ -4482,6 +4511,31 @@ fn begin_worktree(state: State, connection: Int, id: Int) -> State {
   )
 }
 
+fn side_query(
+  state: State,
+  connection: Int,
+  id: Int,
+  strand: String,
+  action: btw_view.Action,
+) -> State {
+  use <- known_strand(state, connection, id, strand)
+  let answer = case state.btw {
+    None -> Error("side queries are unavailable on this daemon")
+    Some(name) -> btw.query(name, connection, strand, action)
+  }
+  case answer {
+    Ok(board) ->
+      reply(
+        state,
+        connection,
+        id,
+        protocol.SnapshotEvent(protocol.BtwSnapshot(board)),
+      )
+    Error(reason) -> reply_error(state, connection, id, "btw_refused", reason)
+  }
+  state
+}
+
 fn begin_context(
   state: State,
   connection: Int,
@@ -4979,6 +5033,8 @@ fn run_command(
       follow_up(state, connection, id, strand, text)
     protocol.WorktreeDiffGet, Subscribed ->
       begin_worktree(state, connection, id)
+    protocol.Btw(strand:, action:), Subscribed ->
+      side_query(state, connection, id, strand, action)
     protocol.ContextGet(strand:), Subscribed ->
       begin_context(state, connection, id, strand)
     protocol.LiveJobsGet(strand:), Subscribed ->

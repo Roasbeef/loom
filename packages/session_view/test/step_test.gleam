@@ -24,6 +24,7 @@ import gleam/option.{None, Some}
 import gleam/string
 import session_view/agent_roster
 import session_view/attempt
+import session_view/btw
 import session_view/command
 import session_view/connection_event
 import session_view/context_view
@@ -672,4 +673,31 @@ pub fn retained_custody_keeps_notes_and_queue_notices_together_test() {
   let consumed = step.forget_surfaces(retained)
   assert consumed.surface_facts == []
   assert consumed.queue_notices == []
+}
+
+// An overlapping action refusal belongs to the action, not the running answer.
+pub fn refused_side_action_preserves_running_history_test() {
+  let board =
+    btw.Board(
+      "main",
+      "snapshot",
+      "model",
+      "running",
+      [btw.Exchange("Why?", "Partial")],
+      "",
+    )
+  let shared = attached()
+  let shared =
+    Shared(
+      ..shared,
+      btw: btw.State(..btw.new(), board: Some(board), pending: Some(4)),
+    )
+  let after =
+    applied(
+      shared,
+      session_channel.RequestRefused("btw", 4, "busy", "Already running"),
+    )
+  assert after.btw.board == Some(btw.Board(..board, notice: "Already running"))
+  assert after.btw.pending == None
+  assert after.transcript == shared.transcript
 }

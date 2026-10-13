@@ -43,6 +43,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import session_view/advisor_pending
 import session_view/block_summary
+import session_view/btw
 import session_view/context_view
 import session_view/goal_view
 import session_view/live_jobs
@@ -162,6 +163,9 @@ pub type Event {
 
   /// A request-scoped context observation, independent of retained history.
   ContextSnapshot(observation: context_view.Event)
+
+  /// A private side-query board for the asking attachment.
+  BtwSnapshot(board: btw.Board)
 
   /// Current live jobs, observed separately from a completed operation.
   LiveJobsSnapshot(board: live_jobs.Board)
@@ -738,6 +742,7 @@ pub fn decode_v2_presentation(text: String) -> Result(Event, String) {
     | QueuedInputSnapshot(_)
     | WorktreeSnapshot(_)
     | ContextSnapshot(_)
+    | BtwSnapshot(_)
     | LiveJobsSnapshot(_)
     | AdvisorPendingSnapshot(_)
     | BlockSummariesSnapshot(_)
@@ -936,6 +941,13 @@ fn decode_snapshot(body: JsonValue) -> Result(Event, String) {
     "goal" -> {
       use board <- result.try(required_value(fields, "board"))
       goal_view.decode(board) |> result.map(GoalSnapshot)
+    }
+    "btw" -> {
+      use board <- result.try(
+        list.key_find(fields, "board")
+        |> result.replace_error("missing side board"),
+      )
+      btw.decode(board) |> result.map(BtwSnapshot)
     }
     "context" -> {
       use board <- result.try(required_value(fields, "board"))
@@ -1577,4 +1589,23 @@ pub fn goal_resume(id: Int) -> String {
 /// ```
 pub fn skills(id: Int, offset: Int) -> String {
   command(id, "skills", [#("offset", json.Int(offset))])
+}
+
+/// Encodes a private side action without admitting a main operation.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // protocol.btw(1, "main", btw.Ask("Why this design?"))
+/// ```
+pub fn btw(id: Int, strand: String, action: btw.Action) -> String {
+  let text = case action {
+    btw.Ask(text) -> text
+    _ -> ""
+  }
+  command(id, "btw", [
+    #("strand", json.String(strand)),
+    #("action", json.String(btw.action_name(action))),
+    #("text", json.String(text)),
+  ])
 }

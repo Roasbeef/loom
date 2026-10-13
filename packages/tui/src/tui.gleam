@@ -85,6 +85,7 @@ import session_view/agent_roster
 import session_view/attempt
 import session_view/attempt_replay
 import session_view/block_summary
+import session_view/btw
 import session_view/cache_watch
 import session_view/completion_summary
 import session_view/connection_event
@@ -647,6 +648,7 @@ pub fn new_model_with_clock(
       answer: "",
       worktree: worktree_view.new(),
       context: context_view.new(),
+      btw: btw.new(),
       completion: completion_summary.new(),
       completion_owner: "",
       jobs: None,

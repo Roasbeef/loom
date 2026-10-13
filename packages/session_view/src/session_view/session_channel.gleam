@@ -961,6 +961,7 @@ fn apply_pushed(
     | protocol.HeldInputReturned(..)
     | protocol.WorktreeSnapshot(_)
     | protocol.ContextSnapshot(_)
+    | protocol.BtwSnapshot(_)
     | protocol.UsageChanged(..)
     | protocol.BlockSummarized(..) -> #(channel, [
       Auxiliary(event),
@@ -1318,6 +1319,7 @@ fn matching_presentation(name, intent, event) {
     "notes", Read, protocol.NotesSnapshot(_) -> True
     "queued_input", Read, protocol.QueuedInputSnapshot(_) -> True
     "worktree_diff", Read, protocol.WorktreeSnapshot(_) -> True
+    "btw", Read, protocol.BtwSnapshot(_) -> True
     "context", Read, protocol.ContextSnapshot(_) -> True
     "live_jobs", Read, protocol.LiveJobsSnapshot(_) -> True
     "advisor_pending", Read, protocol.AdvisorPendingSnapshot(_) -> True
@@ -1963,6 +1965,7 @@ pub fn is_read(command: String) -> Bool {
     | "permissions"
     | "notes"
     | "queued_input"
+    | "btw"
     | "context"
     | "worktree_diff"
     | "live_jobs"

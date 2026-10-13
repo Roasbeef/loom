@@ -56,6 +56,7 @@ import runtime/writer
 import session/session
 import session_view/advisor_pending as terminal_nudges
 import session_view/block_summary as terminal_summaries
+import session_view/btw
 import session_view/notes_view as terminal_notes
 import session_view/remembered as session_remembered
 import simplifile
@@ -7375,4 +7376,25 @@ pub fn queued_input_remove_authority_revision_and_drain_test() {
       protocol.RemoveQueuedInput("main", queued_id(second), 0),
     )
     as "removal cannot reach an admitted message"
+}
+
+pub fn authenticated_observer_cannot_ask_or_read_private_side_queries_test() {
+  let harness = start_harness()
+  let #(handle, _, _) =
+    authenticated(harness, access.Participant(access.Observer), process.self())
+  list.each(
+    [btw.Ask("Question"), btw.Read, btw.Refresh, btw.Clear, btw.Cancel],
+    fn(action) {
+      gateway.connection_text(
+        handle,
+        protocol.encode_command(protocol.CommandEnvelope(
+          801,
+          protocol.Btw("main", action),
+        )),
+      )
+      let assert protocol.ErrorEvent(code: "forbidden", ..) =
+        next_reply(harness, 801, 8).event
+        as "observers cannot use side inference or read side history"
+    },
+  )
 }

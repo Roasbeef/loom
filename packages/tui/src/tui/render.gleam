@@ -70,6 +70,7 @@ import session_view/agent_messages
 import session_view/agent_roster
 import session_view/agent_view
 import session_view/approval
+import session_view/btw
 import session_view/command
 import session_view/completion_summary
 import session_view/composer
@@ -624,6 +625,17 @@ fn render_reading_row(
 }
 
 fn render_transcript(
+  buf: buffer.Buffer,
+  area: Rect,
+  model: Model,
+) -> buffer.Buffer {
+  case model.shared.btw.visibility {
+    btw.Visible -> render_btw(buf, area, model)
+    btw.Hidden -> render_main_transcript(buf, area, model)
+  }
+}
+
+fn render_main_transcript(
   buf: buffer.Buffer,
   area: Rect,
   model: Model,
@@ -2782,4 +2794,33 @@ fn render_context_surface(buf, cursor, screen, model: Model) {
       #(rendered, Error(Nil))
     }
   }
+}
+
+// Main rows keep updating above a bounded side panel. The composer accepts
+// /btw follow-ups explicitly, so ordinary input keeps its existing recipient.
+fn render_btw(buf: buffer.Buffer, area: Rect, model: Model) -> buffer.Buffer {
+  let height = int.max(1, area.size.height / 2)
+  let main =
+    geometry.Rect(
+      ..area,
+      size: geometry.Size(..area.size, height: area.size.height - height),
+    )
+  let side =
+    geometry.Rect(
+      position: geometry.Position(
+        ..area.position,
+        y: area.position.y + area.size.height - height,
+      ),
+      size: geometry.Size(..area.size, height:),
+    )
+  let lines =
+    btw.lines(model.shared.btw)
+    |> list.flat_map(string.split(_, "\n"))
+    |> list.flat_map(fn(text) { text.wrap(text, int.max(1, side.size.width)) })
+  let lines =
+    lines
+    |> list.drop(model.shared.btw.scroll)
+    |> list.map(fn(text) { span.line_plain(text) })
+  render_main_transcript(buf, main, model)
+  |> paragraph.render_styled(side, lines)
 }

@@ -15,6 +15,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import session_view/btw
 
 /// One action entered at the prompt: a command the host acts on itself, or
 /// one it hands to the session.
@@ -100,6 +101,12 @@ pub type Surface {
 
 /// A command the shared step dispatches.
 pub type Session {
+  /// A side question or explicit side-history action.
+  Btw(action: btw.Action)
+
+  /// Hide the panel without cancelling its request.
+  BtwClose
+
   /// Add read access to a directory, or write access with an explicit flag.
   AddDirectory(path: String, access: String)
 
@@ -415,6 +422,7 @@ fn all_suggestions() -> List(Suggestion) {
     Suggestion("/rename", "rename the current session", True),
     Suggestion("/notes", "browse agent notes", False),
     Suggestion("/diff", "observe current worktree changes", False),
+    Suggestion("/btw", "ask a side question while main work continues", True),
     Suggestion("/context", "inspect current context usage", False),
     Suggestion("/contextall", "inspect context items", False),
     Suggestion("/summary", "inspect the latest completed operation", False),
@@ -507,6 +515,12 @@ pub fn parse(input: String) -> Command {
     "/diff" -> Surface(Diff)
     "/summary" -> Surface(Summary)
     "/trace" -> Surface(Trace)
+    "/btw" -> Session(Btw(btw.Read))
+    "/btw refresh" -> Session(Btw(btw.Refresh))
+    "/btw clear" -> Session(Btw(btw.Clear))
+    "/btw cancel" -> Session(Btw(btw.Cancel))
+    "/btw close" -> Session(BtwClose)
+    "/btw " <> text -> Session(Btw(btw.Ask(text)))
     "/context" -> Surface(Context)
     "/context all" | "/contextall" -> Surface(ContextAll)
     "/details" -> Surface(Details)
@@ -769,6 +783,8 @@ pub fn help_text() -> String {
   <> "/sessions         switch locally managed sessions (← on an empty prompt)\n"
   <> "/rename <name>    rename the current session\n"
   <> "/notes            refresh current agent notes\n"
+  <> "/btw <question>   ask against frozen context while main work continues\n"
+  <> "/btw refresh      capture newer context; clear/cancel/close also available\n"
   <> "/context          inspect current context usage\n"
   <> "/context all      expand context item estimates\n"
   <> "/diff             observe current worktree changes\n"

@@ -8637,3 +8637,42 @@ that same exact input event. No other input event gains admission, and the
 existing owner-only Session controls keep their paths. `ui_socket_test` checks
 the search path, its siblings and descendants, the pane prefix separator and
 all three page roles.
+
+## Side queries (protocol 087)
+
+`client/btw` is a session-lived `weft/state_machine` with four latest effective
+request snapshots, eight private attachment conversations, and two managed
+requests at once. `serve.side_and_summary_tap` composes its observer with the
+existing block-summary observer. `wiring.request_builder` captures only provider
+configuration and rendered definitions, never tool executors. The request
+contains request-local context transforms, not the terminal's retained history.
+A settled response pins its actual fallback identity before its text can extend
+the latest base. Unknown identities retire that candidate.
+
+`gateway.with_btw` supplies the service address. Operator-only `protocol.Btw`
+actions immediately return a private `BtwSnapshot`; polling does not wait for
+inference. Gateway start sends `Reset` before serving a new connection-number
+namespace, and detach sends `Forget`. A service restart loses only ephemeral
+state. Read boards never broadcast to other attachments.
+
+Each answer has a managed collector and provider owner. The collector prepares
+the provider itself because event subjects belong to their creating process.
+It begins only after ledger adoption, retains at most 32 KiB of answer text,
+counts at most 8192 events, and emits at most 32 text previews. The 60-second
+state timeout and 90-second weft backstop do not renew on deltas. Cancellation
+keeps a slot until the relay's last word. Final usage commits once through
+`distill.record_request` with phase `btw`; lost terminals retain unknown usage
+evidence. No transcript entry, operation, executor, Agency, advisor feed, or
+main context hook runs for a side question.
+
+The first ask freezes a base; up to eight exchanges and 128 KiB of side text
+append after it. Refresh replaces it; clear and detach release it. Base snapshots
+are bounded to 8 MiB serialized apiece. The provider's original output-token
+setting remains intact so its inherited thinking budget stays valid. The
+collector's byte ceiling remains effective for subscription inference.
+
+`client/btw_test` drives real provider encoding through scripted HTTP: frozen
+follow-ups across newer captures, explicit refresh, private history, independent
+usage, tool-call rejection, bounds, reset, cancellation and disconnect. The
+gateway regression refuses all five actions to an authenticated observer.
+Anthropic live cache measurements remain pending operator credits.

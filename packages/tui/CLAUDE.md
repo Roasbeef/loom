@@ -3354,3 +3354,17 @@ Generation throughput and elapsed observation clocks live in the shared
 through `session_view/model` accessors, and switching focus preserves every
 strand's clock and latest complete measurement. Background usage settles its
 own clock without changing the selected strand's header.
+
+## Side questions (protocol 087)
+
+The shared `/btw` parser accepts questions during a running main operation and
+sends the separate side protocol command. `render_btw` splits the conversation
+area: main rows continue updating above a bounded side panel. PageUp/PageDown
+scroll only the side text while it is open, and Escape hides it without sending
+Abort. The ordinary composer still names its main recipient; follow-ups require
+`/btw <question>`. Refresh, clear, cancel and close have explicit slash actions.
+
+The panel reads only shared `btw.State`, so it never enters transcript projection,
+replay, model context, or the main turn's history. Text is sanitized before
+terminal rendering. `btw_test` pins grammar, correlated board isolation, Escape
+behavior, and malformed/oversized board refusal.

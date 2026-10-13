@@ -1367,6 +1367,22 @@ pub fn provider_request(
   provider_request_from(provider_configuration(config), spec)
 }
 
+/// Captures only provider-shaped configuration for request observers.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let build = wiring.request_builder(config)
+/// // build(spec)
+/// ```
+@internal
+pub fn request_builder(
+  config: Config,
+) -> fn(effects.RequestSpec) -> ProviderRequest {
+  let configuration = provider_configuration(config)
+  fn(spec) { provider_request_from(configuration, spec) }
+}
+
 fn provider_request_from(
   config: ProviderConfiguration,
   spec: effects.RequestSpec,
