@@ -157,3 +157,10 @@ class TaggingTest(unittest.TestCase):
         self.assertIn(original + '\trefs/heads/main', refs)
         self.assertNotIn('refs/tags/', refs)
         self.assertEqual(self.run_git('cat-file', '-t', 'v0.2.0'), 'tag')
+
+
+class NativeLinkFlagsTest(unittest.TestCase):
+    def test_macos_candidate_links_without_debug_map(self):
+        """ld64's N_OSO stabs carry object mtimes, so the NIF link must drop them."""
+        script = Path(__file__).with_name('release-build.sh').read_text()
+        self.assertIn('Darwin) export LDFLAGS="${LDFLAGS:-} -Wl,-S"', script)

@@ -985,6 +985,13 @@ records the builder identity, executable digests, and complete OTP and Go tree
 digests. The image must provide the repository's documented Gleam, OTP, Go,
 rebar3, C compiler, Python and release-smoke dependencies.
 
+On macOS the recipe also exports `LDFLAGS=-Wl,-S`. ld64 records every object
+file's path and modification time as a debug-map entry in `esqlite3_nif.so`,
+derives `LC_UUID` from the result and seals it in the ad-hoc signature, so two
+builds of identical sources never agreed. Dropping the stabs at link time makes
+the server copy and the code-mode seed copy byte-identical across builders.
+Linux's linker emits no such entry and is unchanged.
+
 The recipe retains the warm code-mode seed and its compiler caches.
 The maintained [Gleam patch](../scripts/toolchain/gleam/README.md) makes their
 serialization and imported type-ID assignment deterministic. CI and both Docker
