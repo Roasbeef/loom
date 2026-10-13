@@ -460,6 +460,14 @@ flowchart TB
 Start with the [advisor catalogue](docs/examples/loom-advisor.toml), then read
 the [advisor guide](docs/architecture/advisor.md) for delivery semantics.
 
+### Side questions
+
+Ask `/btw <question>` in the terminal or web composer while the main strand
+continues. Follow-ups use frozen context until `/btw refresh`; side queries
+cannot execute tools and stay outside the main transcript. `/btw cancel` stops
+the side answer, `/btw clear` forgets its history, and `/btw close` hides the panel.
+See [side queries](docs/architecture/side-queries.md) for bounds and cache behavior.
+
 ### Session goals
 
 With an advisor configured, you can pin an objective and let Loom work toward

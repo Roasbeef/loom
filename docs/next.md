@@ -1,78 +1,56 @@
 # Current handoff
 
-Baselined October 16, 2026 against rebased source `f58934f91` on
-`web/queue-controls`, starting from main `6430703a9`. This edition covers held-message Edit and
-Remove controls. The installed daemon has not been updated.
+October 13, 2026. This work starts at `dc70d25d4` (v0.3.2) and develops
+`feature/btw-side-queries`. The previous edition described the history browsing
+branch and separate LSP/child-completion follow-ups; its validation is historical,
+not evidence for this feature. The installed daemon has not been replaced.
 
-The previous edition described history browsing and separate parent-completion
-and LSP follow-ups. Those claims are historical evidence, not validation of
-this branch; their recorded results remain in the
-[prior handoff](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/next.md).
-The project-wide plan remains `docs/issue-plan.md`.
+## Accepted design
 
-## What changed
+Protocol-change/087 records the owner's accepted baseline: frozen context,
+bounded follow-ups, explicit refresh, and no tool execution, available from both
+TUI and web while main work continues. Context is the latest effective dispatched
+request, including request-local transformations, plus a settled final answer.
+It excludes streaming fragments and pending tool exchanges. Questions and answers
+remain private, ephemeral attachment state outside the transcript.
 
-Each held input explicitly marked editable now offers Edit and Remove on the
-operator page. Edit fetches its complete document before opening a multiline
-editor with Save and Cancel. Save preserves image blocks and queue position.
-Remove compares the drawn identity and revision before withdrawing one item.
-It cannot affect another author's message, an updated revision or admitted work.
-Protocol-change/088 records the new command and `removed` acknowledgement.
-Observers draw the held text without mutation handlers.
+The implementation adds the daemon side service, a dedicated correlated command,
+shared panel state and polling, and both UI surfaces. Anthropic's request-scoped
+cache-prefix hint preserves the frozen user-block endpoint before adjacent-user
+merging, within the existing four markers. Model, system, tool and thinking
+settings stay stable. Original output-token settings prevent an inherited thinking
+budget exceeding a newly lowered ceiling. A settled fallback pins its actual
+model before replaying the answer.
 
-Queue notices now survive shared ticks and focus changes until the web host
-consumes them. Previously the shared step discarded them because its second
-host had no queue editor. A real-wire regression caught that assumption: the
-read reply was valid but the page stayed Loading. Restoring the old discard
-makes the new complete-read regression fail.
+## Verification evidence
 
-The editor uses an explicitly constructed uncontrolled textarea and a keyed
-held row. Browser keystrokes survive unrelated patches, neighbor removal,
-refusal and history browsing. Lustre's textarea helper would create a controlled
-value, so it is deliberately not used here. An uncertain save stays locked
-through unrelated refusals. Opening another input while Remove owns the lane
-is refused before a deferred fetch can be lost to its acknowledgement.
+The scripted side-service tests passed: frozen follow-ups, refresh, private
+histories, bounds, generated-tool-call refusal, cancellation/drain, disconnect
+and gateway restart. Shared UI, web, provider, runtime and conformance lanes
+passed, including 483 session-view tests, 999 web tests and 302 provider tests.
+Static checks, warning-free builds, shipment preparation, documentation checks
+and the skip census passed. The initial provider socket failures were sandbox
+`eperm`; the full provider suite passed outside that execution sandbox.
 
-## Verification boundary
+The affected gate's client lane exhausted its default 1200-second test budget
+without an assertion failure, after shipped-daemon tests and into ledger tests.
+A full rerun with `LOOM_TEST_TIMEOUT_SECONDS=3600` is required, followed by the
+TUI gate that the client lane had not reached. Consult the PR for the rerun and
+exact-head hosted/Linux results; the timed-out run is not a green gate.
 
-Rebased October 16, 2026 onto main `6430703a9`, with production sources
-unchanged by conflict resolution. Main's current project-wide rulings remain
-in its [handoff](https://github.com/Roasbeef/loom/blob/6430703a9/docs/next.md).
-The queued-input proposal is now 088 because main already assigned 087.
+The independent advisor review found that refusing an overlapping side action
+erased a running board and stopped polling. Preserve its history/status and
+update only the notice; a regression passed. Web panel buttons now use the
+existing control path, preserving the main draft; that regression also passed.
 
-The rebased tree passed all 486 shared-session tests, 1,011 web tests and 15
-focused queued client tests, each with exit 0. Browser asset generation and
-documentation checks passed. Independent review rechecked the integration and
-found no remaining correctness issue.
-
-A real browser connected to a freshly built isolated native daemon and a
-local deterministic Anthropic SSE provider. During a held generation it queued
-three messages, cancelled and reopened a multiline edit, removed one input,
-and saved another carrying an image. After release, recorded provider requests
-proved the removed and cancelled text absent, the saved multiline text before
-the final sentinel, and its image block retained. This exercised the actual
-browser, command transport, runtime queue and provider request construction.
-The installed daemon was untouched.
-
-The earlier simulated-transport Lustre browser check remains evidence for
-textarea identity and cursor preservation across neighbor removal and refusal
-patches. The old broad client run and its prerequisite skips are historical;
-they do not substitute for fresh hosted CI and exact-head Linux signoff.
+The owner has no Anthropic credits hooked up; live Anthropic cache/latency testing
+is deliberately deferred to the PR. Fixtures prove request shape and custody,
+not live cache reads or savings. The installed daemon has not been replaced.
 
 ## Next steps
 
-1. Publish the rebased branch to [PR #980](https://github.com/Roasbeef/loom/pull/980)
-   and inspect all applicable hosted checks, including advisory macOS logs,
-   plus Linux signoff for the exact published head.
-2. Merge with a normal merge commit once those checks and independent review
-   are complete. The owner authorized rebase and merge on October 16.
-   Deployment remains a separate action.
-
-## Integration of strand notes
-
-Main advanced to `d9553247f` while the first signoff waited. Its strand-notes
-work is retained; see the [main handoff](https://github.com/Roasbeef/loom/blob/d9553247f/docs/next.md).
-The web host consumes both notes facts and queue notices before cleanup. The
-shared ordinary step still retains queue notices, while the retaining entry
-also transfers notes facts. Fresh tests, review, hosted CI and Linux signoff
-are required for this integration; prior-head results cannot authorize merge.
+1. Complete the longer-budget client rerun and TUI gate, then check exact-head
+   hosted CI and Linux signoff. Record the results in the PR before readiness.
+2. Exercise live Anthropic cache usage when credits are configured. Record model,
+   prefix size, cache reads/writes, latency, and main-request reuse after the side
+   query. Merge and replace the installed daemon only with owner authorization.
