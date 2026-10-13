@@ -48,13 +48,19 @@ import gleam/string
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
+import lustre/element/keyed
+import session_view/snapshot_view
 import session_view/step_words
 import session_view/transcript_line.{type Line, Line}
+import session_view/transcript_lines
 import web_view/markdown_view
 import web_view/view/fold_row
 
 /// One row of the live region.
 pub type Row {
+  /// A host-owned queued input, identified independently of its excerpt.
+  Pending(input: snapshot_view.PendingInput)
+
   /// A reasoning block still streaming. Closed, the row is its words and a
   /// one-line preview of the latest line the model wrote; opened, it is the
   /// reasoning so far as Markdown.
@@ -110,19 +116,43 @@ pub fn view(
   rows: List(Row),
   draw: fn(Line) -> Element(message),
 ) -> Element(message) {
-  html.div(
+  with_queue(rows, draw, fn(input) {
+    row(Held(input.text, transcript_lines.held_words(input.kind)), draw)
+  })
+}
+
+/// Draws held inputs through the operator host while retaining shared live rows.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // live.with_queue(rows, draw, held)
+/// ```
+pub fn with_queue(
+  rows: List(Row),
+  draw: fn(Line) -> Element(message),
+  held: fn(snapshot_view.PendingInput) -> Element(message),
+) -> Element(message) {
+  keyed.div(
     [
       attribute.class("block"),
       attribute.class("live"),
       attribute.attribute("aria-live", "off"),
       attribute.attribute("aria-busy", "true"),
     ],
-    list.map(rows, row(_, draw)),
+    list.index_map(rows, fn(item, index) {
+      case item {
+        Pending(input) -> #("held-" <> input.id, held(input))
+        _ -> #("stream-" <> int.to_string(index), row(item, draw))
+      }
+    }),
   )
 }
 
-fn row(row: Row, draw: fn(Line) -> Element(message)) -> Element(message) {
-  case row {
+fn row(item: Row, draw: fn(Line) -> Element(message)) -> Element(message) {
+  case item {
+    Pending(input) ->
+      row(Held(input.text, transcript_lines.held_words(input.kind)), draw)
     Answer(line:) -> draw(line)
 
     // The person's words and, beneath them, how the daemon will run them.

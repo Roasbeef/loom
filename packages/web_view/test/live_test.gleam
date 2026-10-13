@@ -827,7 +827,7 @@ pub fn a_held_input_is_drawn_without_a_stream_test() {
     ])
   list.each(pages(model), fn(view) {
     let drawn = region(view)
-    assert string.contains(drawn, "<div class=\"held\">")
+    assert query.has(view, query.class("held"))
     assert string.contains(drawn, "then the tests")
     assert string.contains(drawn, "queued · after this turn")
   })

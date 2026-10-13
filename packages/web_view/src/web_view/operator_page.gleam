@@ -346,10 +346,15 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
         component.top(model),
         Observed(component.OlderRequested),
         component.latest_action(model, Observed(component.LatestRequested)),
-        lane.Replies(
-          reply: Replying,
-          open: fn(session) { openable(model, session) },
-          name: fn(session) { component.session_name(model, session) },
+        lane.WithQueue(
+          lane.Replies(
+            reply: Replying,
+            open: fn(session) { openable(model, session) },
+            name: fn(session) { component.session_name(model, session) },
+          ),
+          fn(input) {
+            component.queue_row(model, input) |> element.map(Observed)
+          },
         ),
         component.marks(model),
         lane.Folds(

@@ -33,6 +33,7 @@ import session_view/model.{type Shared, Shared} as session_model
 import session_view/msg
 import session_view/operator
 import session_view/protocol
+import session_view/queue_request
 import session_view/session_channel
 import session_view/snapshot
 import session_view/step
@@ -260,14 +261,18 @@ pub fn a_tick_runs_the_terminals_units_in_its_order_test() {
 
   let #(by_step, effects) = step.update(held, tick(10))
   let #(by_terminal, terminal_effects) = as_the_terminal_ticks(held, 10)
-  assert by_step == by_terminal
+
+  // The terminal consumes queue notices in hold_shared; the web host consumes
+  // them after the shared step returns. Other state must still be identical.
+  assert Shared(..by_step, queue_notices: []) == by_terminal
   assert effects == terminal_effects
   assert by_step.notices == 2 as "the two pushes reached the lane"
   assert by_step.peer == session_model.Disconnected
     as "the fault ended the lane"
   assert effects != [] as "the subscribe is queued ahead of the lane's close"
 
-  let #(later, later_effects) = step.update(by_step, tick(10_000_000))
+  let #(later, later_effects) =
+    step.update(step.forget_surfaces(by_step), tick(10_000_000))
   let #(later_terminal, later_terminal_effects) =
     as_the_terminal_ticks(by_terminal, 10_000_000)
   assert later == later_terminal
@@ -284,7 +289,10 @@ pub fn a_capture_drained_in_a_tick_is_read_in_that_tick_test() {
   let held = filed(attached(), transfer())
   let #(by_step, effects) = step.update(held, tick(10))
   let #(by_terminal, terminal_effects) = as_the_terminal_ticks(held, 10)
-  assert by_step == by_terminal
+
+  // The terminal consumes queue notices in hold_shared; the web host consumes
+  // them after the shared step returns. Other state must still be identical.
+  assert Shared(..by_step, queue_notices: []) == by_terminal
   assert effects == terminal_effects
   assert by_step.captured != None as "the capture was drained"
   assert list.any(effects, fn(effect) {
@@ -306,7 +314,10 @@ pub fn a_deadline_that_passes_fails_the_lane_in_the_same_order_test() {
   let #(by_step, effects) = step.update(started, tick(10_000_000))
   let #(by_terminal, terminal_effects) =
     as_the_terminal_ticks(started, 10_000_000)
-  assert by_step == by_terminal
+
+  // The terminal consumes queue notices in hold_shared; the web host consumes
+  // them after the shared step returns. Other state must still be identical.
+  assert Shared(..by_step, queue_notices: []) == by_terminal
   assert effects == terminal_effects
   assert by_step.peer == session_model.Disconnected
 }
@@ -361,15 +372,15 @@ pub fn a_tick_with_no_lane_keeps_the_frames_test() {
   assert ticked.stamp == msg.Stamp(5, 5)
 }
 
-// The facts a tick records are dropped at its end, so a host that never
-// applies them does not grow them for the life of the session. A refused
-// queue save leaves a notice for the queue editor, which the failed lane
-// records too.
+// Unshown surface facts retire at the end of a tick. Both hosts now have a
+// queue editor, so its refusal remains until the host consumes it.
 pub fn a_tick_drops_the_facts_a_host_has_no_surface_for_test() {
   let held = filed(attached(), [connection_event.NetworkFault("boom")])
   let #(ticked, _) = step.update(held, tick(1))
   assert ticked.surface_facts == []
-  assert ticked.queue_notices == []
+  let assert [queue_request.Refused("Disconnected; draft retained")] =
+    ticked.queue_notices
+    as "the host receives the queue refusal"
   assert ticked.goal_observations == []
 }
 

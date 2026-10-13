@@ -967,6 +967,11 @@
      the terminal's "steer · runs next" and "queued · after this turn". */
   .held{min-width:0;margin-top:6px;}
   .held-text{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.5 var(--font-sans);color:var(--color-fg-quiet);}
+  .queue-actions{display:flex;gap:8px;margin:4px 0;}
+  .queue-actions button{padding:3px 8px;border:1px solid var(--color-divider);border-radius:5px;background:transparent;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);cursor:pointer;}
+  .queue-actions button:hover,.queue-actions button:focus-visible{color:var(--color-fg);border-color:currentColor;}
+  .queue-actions button:disabled{opacity:.5;cursor:default;}
+  .queue-editor textarea{display:block;box-sizing:border-box;width:100%;min-height:100px;resize:vertical;padding:8px;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg);color:var(--color-fg);font:14px/1.5 var(--font-sans);}
   .held-mark{margin:2px 0 0 0;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
   /* A row drawn from Markdown (web_view/markdown_view). Its text wraps as
      prose; only code keeps its whitespace. Every class is one the view

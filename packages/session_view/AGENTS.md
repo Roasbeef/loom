@@ -913,3 +913,13 @@ mutation, and both are answered by `protocol.ProfileSnapshot`
 (`session_channel.matching_presentation`). `event_fold.append_profile` writes the
 current profile and the names, with `default` first, or the switch confirmation
 that says the session is restarting. `attempt` accepts both names in a recording.
+
+## Held-input withdrawal (protocol 087)
+
+`protocol.remove_queued_input` names one strand, opaque input identity and
+expected revision. `session_wire` accepts the `removed` mutation outcome.
+`outbound` correlates its request through `queue_request`, and `lane_fold`
+reports acknowledgement, refusal or uncertain delivery to the host. The queue
+editor consumes these notices before `step.forget_surfaces` clears them; the
+web host now uses the same full-document read and replacement correlation as
+the terminal. No process, I/O or foreign binding is added here.

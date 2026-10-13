@@ -334,7 +334,8 @@ pub fn new(
 /// record with the one the event started from, as `session_step.settle` does
 /// after each of the terminal's events, and the facts such a host has no
 /// surface for are dropped (`forget_surfaces`). A prompt the daemon handed
-/// back stays in `Shared.returned_drafts` for the host to take.
+/// back stays in `Shared.returned_drafts` for the host to take. Queue-editor
+/// notices likewise remain for the host to consume before `forget_surfaces`.
 ///
 /// What the terminal alone does in its tick is absent: the recorded replay,
 /// its daemon-control drains, the activity poll and the footer's cache label.
@@ -429,7 +430,7 @@ pub fn focus(
     list.fold(updates, cancelled, apply_update)
     |> commands.focus(strand)
     |> commands.load_strand(strand, lane_fold.nothing_shown())
-  let reduced = settle(started, focused) |> forget_surfaces
+  let reduced = settle(started, focused) |> forget_unshown_surfaces
   #(shared_set.outbox(reduced, []), list.reverse(reduced.outbox))
 }
 
@@ -459,6 +460,17 @@ pub fn forget_surfaces(
   shared
   |> shared_set.surface_facts([])
   |> shared_set.queue_notices([])
+  |> shared_set.goal_observations([])
+}
+
+// Both hosts now have a queue editor. Tick and focus retain its notices until
+// the host consumes them; only surfaces neither shared-step host shows retire
+// here. Explicit forget_surfaces remains the host's end-of-message cleanup.
+fn forget_unshown_surfaces(
+  shared: Shared(socket, recorder, source, replay_source),
+) -> Shared(socket, recorder, source, replay_source) {
+  shared
+  |> shared_set.surface_facts([])
   |> shared_set.goal_observations([])
 }
 
@@ -493,7 +505,7 @@ fn tick(
     |> service_reads
     |> surfaces.service_block_summaries
     |> tick_lane
-  settle(started, after) |> forget_surfaces
+  settle(started, after) |> forget_unshown_surfaces
 }
 
 // The roster's clock moves with the stamp, and the frame is stale when a
