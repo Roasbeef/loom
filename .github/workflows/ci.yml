@@ -938,6 +938,9 @@ jobs:
         env:
           LOOM_BOOTSTRAP_E2E_SERVER: ${{ github.workspace }}/bin/loomd
           LOOM_SOAK_LATENCY_BOUND: observe
+          # Use signoff's concurrency and serial exemptions to keep the full
+          # suite within the existing runner budget.
+          LOOM_TEST_PARALLEL: 8
         run: set -o pipefail; .github/scripts/hex_retry.sh make check 2>&1 | tee check-macos.log
 
       # actions/upload-artifact v7.0.1

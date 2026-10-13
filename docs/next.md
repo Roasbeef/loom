@@ -57,7 +57,11 @@ reported assertion failures, and the final skip census passed. That attempt
 is historical evidence of an aggregate timeout, not a whole-tree green claim.
 The follow-up uses the existing `LOOM_TEST_PARALLEL=8` arrangement documented in
 `docs/execution.md`, retaining the existing deadlines and `scripts/serial-tests`
-isolation. No test assertion or process deadline changes.
+isolation. The macOS advisory log at `526fb44c4` showed the same aggregate
+client timeout despite a successful job status: its existing advisory setting
+masks a failed step. Its package gate now opts into the same eight-way runner.
+Final verification must inspect that step's actual outcome as well as the job.
+No test assertion, process deadline or advisory-policy changes.
 
 Hosted Linux jobs at `526fb44c4` passed beneath an aggregate census failure:
 `SKIP shipped deployment status: platform enforcement unavailable` had no
