@@ -13,9 +13,28 @@ import tempfile
 
 
 def materialize(seed):
-    """Replace the reviewed pc link with its regular in-seed contents."""
+    """Make the native seed relocatable and reproducible."""
     seed = Path(seed).resolve(strict=True)
     native = seed / 'build/dev/erlang/esqlite/_build'
+    drop_compile_caches(native)
+    materialize_plugin(native)
+
+
+def drop_compile_caches(native):
+    """Remove rebar3's incremental-compile graphs from the native build.
+
+    Rebar records absolute source paths and wall-clock modification times in
+    each `.rebar3/rebar_compiler_erl/*.dag`, so two builds of identical sources
+    never agree on those bytes. They only let a later rebar3 run skip work, and
+    a code-mode build never runs rebar3 here: Gleam finds the compiled package
+    already in place. A missing graph means a full recompile, which is correct.
+    """
+    for cache in native.glob('*/*/.rebar3/rebar_compiler_erl'):
+        shutil.rmtree(cache)
+
+
+def materialize_plugin(native):
+    """Replace the reviewed pc link with its regular in-seed contents."""
     plugin = native / 'prod/plugins/pc'
     if not plugin.is_symlink():
         return
