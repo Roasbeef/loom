@@ -17,6 +17,15 @@ builds the C library. No upstream `sqlight` or `esqlite` package may coexist
 with these forks: they define the same modules.
 [ADR-002](../../docs/adr/002-sqlite-binding.md) records the packaging decision.
 
+SQLite register reads share a store-owned `internal/register_cache.Cache`.
+Every request still selects and validates its current SQL row; complete persisted
+blob equality permits reusing a successful `RegisterValue` decode. Sequences,
+absence, ordering and prefixes always come from the current query. The inventory
+holds at most 64 blobs and 256 KiB of encoded bytes, clears on overflow and every
+close (including failed close), and bypasses larger values. Those limits bound
+encoded inventory, not decoded heap bytes. Old values can remain until overflow
+or close; there is no transaction, lease or authorization cache.
+
 ## Key Types
 
 - The catalogue is at `user_version` 15. Each later version has its own embedded
