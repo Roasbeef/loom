@@ -1391,6 +1391,21 @@ jobs:
       - name: Skip census (shipped multiplayer)
         run: .github/scripts/skip_census.sh "jail (linux, shipped multiplayer)" shipped-multiplayer.log
 
+      # The deployment-status fixture uses the shipped remote pair's enforcement
+      # probe. The ordinary runner may decline it, but this lane must execute
+      # the live executor up/down transitions without a skip declaration.
+      - name: Shipped deployment status with delegated enforcement
+        env:
+          LOOM_BOOTSTRAP_E2E_SERVER: ${{ github.workspace }}/bin/loomd
+          LOOM_TEST_TIMEOUT_SECONDS: 600
+        run: |
+          set -euo pipefail
+          . .github/scripts/join_delegated_cgroup.sh
+          bash scripts/test.sh client --match client@daemon_shipped_deployment_test: \
+            2>&1 | tee shipped-deployment.log
+          LOOM_DECLARED_SKIPS=/dev/null .github/scripts/skip_census.sh \
+            "jail (linux, shipped deployment status)" shipped-deployment.log
+
       # The background-jobs fixture belongs here more than anywhere else:
       # its scenarios turn on how an unattended payload is contained, and
       # the pid namespace that containment rests on exists only under this
@@ -1442,6 +1457,7 @@ jobs:
             e2e.log
             e2e-codemode.log
             shipped-multiplayer.log
+            shipped-deployment.log
             shipped-jobs.log
             ux-joined.log
             ux-worktree.log
