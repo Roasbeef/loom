@@ -24,6 +24,13 @@ export DIST_DEBUG=0 DIST_STRIP_ERTS=1 DIST_CODEMODE=1
 # Native compilation receives the same logical source prefix in both builders.
 export CFLAGS="${CFLAGS:-} -ffile-prefix-map=$ROOT=/work/loom -fdebug-prefix-map=$ROOT=/work/loom"
 export CXXFLAGS="${CXXFLAGS:-} -ffile-prefix-map=$ROOT=/work/loom -fdebug-prefix-map=$ROOT=/work/loom"
+# ld64 records each object file's path and modification time as a debug-map
+# stab (N_OSO), derives LC_UUID from the result, and seals it in the ad-hoc
+# signature, so two otherwise identical NIF links differ. Dropping the stabs at
+# link time removes the input; Linux ld has no such entry and is left alone.
+case "$(uname -s)" in
+  Darwin) export LDFLAGS="${LDFLAGS:-} -Wl,-S" ;;
+esac
 python3 - <<'PY'
 import os
 import subprocess
