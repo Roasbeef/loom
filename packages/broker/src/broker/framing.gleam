@@ -106,12 +106,15 @@ pub const envelope_version = 1
 ///   frame, which a helper at 2 answers as an unknown kind rather than
 ///   by retiring.
 ///
+/// - **4** — concurrent executions require a hello capacity and explicit
+///   execution targets on stdin and cancellation.
+///
 /// Two accepted changes touch Part 1.4 and are deliberately *not*
 /// counted. `protocol-change/012`'s `hook_call`/`hook_result` pair
 /// crosses only the capability socket, which carries no `hello` and so
 /// no `proto` — the exec helper neither sends nor parses those frames.
 /// `protocol-change/004` is still PROPOSED and unimplemented.
-pub const exec_protocol_version = 3
+pub const exec_protocol_version = 4
 
 /// The cap on a frame's msgpack payload, mirroring the Go helper's
 /// 16 MiB `MaxFrameLen`: a corrupt or hostile length prefix must not
@@ -138,8 +141,15 @@ pub type Body {
   /// The handshake: the helper sends its hello first; the broker must
   /// answer with its own before any other frame. `proto` is the peer's
   /// `exec_protocol_version`, and a mismatch is fatal to the channel on
-  /// both sides.
-  Hello(proto: Int, peer: String, features: List(String))
+  /// both sides. `max_concurrency` is required for a current exec helper
+  /// and ranges from 1 to 4. Older hellos remain readable so their owner
+  /// can report the version mismatch; other peers may omit capacity.
+  Hello(
+    proto: Int,
+    peer: String,
+    features: List(String),
+    max_concurrency: Option(Int),
+  )
 
   /// Starts an execution. `policy` overrides the helper's fd-3 base
   /// policy for this execution when present; `limits` is reserved for
@@ -154,10 +164,11 @@ pub type Body {
     limits: Option(Limits),
   )
 
-  /// A chunk of stdin for the running execution; `eof: True` closes the
+  /// A chunk of stdin for the positive `exec_start` id in `exec_id`.
+  /// The envelope id identifies this write; `eof: True` closes the
   /// child's stdin after `data` is written. Writes after eof are
   /// refused by the helper.
-  ExecStdin(data: BitArray, eof: Bool)
+  ExecStdin(exec_id: Int, data: BitArray, eof: Bool)
 
   /// One chunk of child output. `bytes` is the cumulative per-stream
   /// count including this chunk; `truncated` marks the single final
@@ -220,12 +231,16 @@ pub type Body {
   /// destroys the node over, never a frame it tries to match up.
   HookResult(outcome: CapOutcome)
 
-  /// Cancels the running execution. Idempotent; the receiver must kill
-  /// its pgroup within 2s or the broker escalates to SIGKILL of the
-  /// whole helper.
+  /// Cancels a capability-channel invocation using the envelope id.
+  /// Exec helpers require `CancelExecution` instead, so a control request
+  /// cannot accidentally cancel a different execution.
   Cancel
 
-  /// Retires an exec helper after it cancels and joins its current jail.
+  /// Cancels only the positive exec_start id named by this control frame.
+  /// The envelope id identifies the control request independently.
+  CancelExecution(exec_id: Int)
+
+  /// Retires an exec helper after it cancels and joins all active jails.
   /// The empty body has no acknowledgement; native exit is the witness.
   Shutdown
 
@@ -315,7 +330,7 @@ fn kind_name(body: Body) -> String {
     CapResult(..) -> "cap_result"
     HookCall(..) -> "hook_call"
     HookResult(..) -> "hook_result"
-    Cancel -> "cancel"
+    Cancel | CancelExecution(..) -> "cancel"
     Shutdown -> "shutdown"
     Heartbeat -> "heartbeat"
     ErrorBody(..) -> "error"
@@ -324,12 +339,25 @@ fn kind_name(body: Body) -> String {
 
 fn body_to_msgpack(body: Body) -> MsgPackValue {
   case body {
-    Hello(proto:, peer:, features:) ->
-      msgpack.MapValue([
+    Hello(proto:, peer:, features:, max_concurrency:) -> {
+      let base = [
         #(msgpack.StringValue("proto"), msgpack.IntValue(proto)),
         #(msgpack.StringValue("peer"), msgpack.StringValue(peer)),
         #(msgpack.StringValue("features"), string_array(features)),
-      ])
+      ]
+      case max_concurrency {
+        None -> msgpack.MapValue(base)
+        Some(capacity) ->
+          msgpack.MapValue(
+            list.append(base, [
+              #(
+                msgpack.StringValue("max_concurrency"),
+                msgpack.IntValue(capacity),
+              ),
+            ]),
+          )
+      }
+    }
     ExecStart(argv:, env:, cwd:, policy: exec_policy, token:, limits:) -> {
       let base = [
         #(msgpack.StringValue("argv"), string_array(argv)),
@@ -361,8 +389,9 @@ fn body_to_msgpack(body: Body) -> MsgPackValue {
           )
       }
     }
-    ExecStdin(data:, eof:) ->
+    ExecStdin(exec_id:, data:, eof:) ->
       msgpack.MapValue([
+        #(msgpack.StringValue("exec_id"), msgpack.IntValue(exec_id)),
         #(msgpack.StringValue("data"), msgpack.BinaryValue(data)),
         #(msgpack.StringValue("eof"), msgpack.BoolValue(eof)),
       ])
@@ -435,6 +464,10 @@ fn body_to_msgpack(body: Body) -> MsgPackValue {
       ])
     HookResult(outcome:) -> outcome_to_msgpack(outcome)
     Cancel -> msgpack.MapValue([])
+    CancelExecution(exec_id:) ->
+      msgpack.MapValue([
+        #(msgpack.StringValue("exec_id"), msgpack.IntValue(exec_id)),
+      ])
     Shutdown -> msgpack.MapValue([])
     Heartbeat -> msgpack.MapValue([])
     ErrorBody(code:, message:) ->
@@ -549,7 +582,7 @@ fn decode_body(
     "cap_result" -> decode_cap_result(entries)
     "hook_call" -> decode_hook_call(entries)
     "hook_result" -> decode_hook_result(entries)
-    "cancel" -> Ok(Cancel)
+    "cancel" -> decode_cancel(entries)
     "shutdown" -> {
       use Nil <- result.try(check_keys(entries, []))
       Ok(Shutdown)
@@ -561,11 +594,27 @@ fn decode_body(
 }
 
 fn decode_hello(entries: Entries) -> Result(Body, FrameError) {
-  use Nil <- result.try(check_keys(entries, ["proto", "peer", "features"]))
+  use Nil <- result.try(
+    check_keys(entries, ["proto", "peer", "features", "max_concurrency"]),
+  )
   use proto <- result.try(body_int(entries, "hello", "proto"))
   use peer <- result.try(body_string(entries, "hello", "peer"))
   use features <- result.try(body_strings(entries, "hello", "features"))
-  Ok(Hello(proto:, peer:, features:))
+  use max_concurrency <- result.try(case find(entries, "max_concurrency") {
+    Error(Nil) if peer != "exec-helper" || proto != exec_protocol_version ->
+      Ok(None)
+    Error(Nil) ->
+      Error(malformed(
+        "hello.max_concurrency",
+        "an integer from 1 to 4",
+        "missing",
+      ))
+    Ok(msgpack.IntValue(capacity)) if capacity >= 1 && capacity <= 4 ->
+      Ok(Some(capacity))
+    Ok(_) ->
+      Error(malformed("hello.max_concurrency", "an integer from 1 to 4", ""))
+  })
+  Ok(Hello(proto:, peer:, features:, max_concurrency:))
 }
 
 fn decode_exec_start(entries: Entries) -> Result(Body, FrameError) {
@@ -640,10 +689,35 @@ fn decode_limits(value: MsgPackValue) -> Result(Limits, FrameError) {
 }
 
 fn decode_exec_stdin(entries: Entries) -> Result(Body, FrameError) {
-  use Nil <- result.try(check_keys(entries, ["data", "eof"]))
+  use Nil <- result.try(check_keys(entries, ["exec_id", "data", "eof"]))
+  use exec_id <- result.try(execution_target(entries, "exec_stdin"))
   use data <- result.try(body_binary(entries, "exec_stdin", "data"))
   use eof <- result.try(body_bool(entries, "exec_stdin", "eof"))
-  Ok(ExecStdin(data:, eof:))
+  Ok(ExecStdin(exec_id:, data:, eof:))
+}
+
+fn decode_cancel(entries: Entries) -> Result(Body, FrameError) {
+  use Nil <- result.try(check_keys(entries, ["exec_id"]))
+  case entries {
+    [] -> Ok(Cancel)
+    _ -> {
+      use exec_id <- result.try(execution_target(entries, "cancel"))
+      Ok(CancelExecution(exec_id:))
+    }
+  }
+}
+
+fn execution_target(entries: Entries, kind: String) -> Result(Int, FrameError) {
+  use exec_id <- result.try(body_int(entries, kind, "exec_id"))
+  case exec_id > 0 && exec_id < 18_446_744_073_709_551_616 {
+    True -> Ok(exec_id)
+    False ->
+      Error(malformed(
+        kind <> ".exec_id",
+        "a positive u64",
+        int.to_string(exec_id),
+      ))
+  }
 }
 
 fn decode_exec_out(entries: Entries) -> Result(Body, FrameError) {

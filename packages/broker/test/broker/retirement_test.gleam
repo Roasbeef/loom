@@ -93,6 +93,7 @@ fn ready_controlled_with(
         proto: framing.exec_protocol_version,
         peer: "exec-helper",
         features:,
+        max_concurrency: option.Some(1),
       ),
     ))
     as "hello encodes"
@@ -343,6 +344,7 @@ pub fn prepared_helper_has_no_acquisition_before_begin_test() {
         proto: framing.exec_protocol_version,
         peer: "exec-helper",
         features: [],
+        max_concurrency: option.Some(1),
       ),
     ))
     as "hello encodes"
@@ -652,6 +654,7 @@ pub fn version_mismatch_kill_retires_a_helper_with_no_jail_test() {
         proto: framing.exec_protocol_version + 1,
         peer: "exec-helper",
         features: ["bwrap"],
+        max_concurrency: option.Some(1),
       ),
     ))
     as "hello encodes"

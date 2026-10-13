@@ -165,10 +165,11 @@ protocol (spec Part 1.4). WP-G.
   `ExecFailure.HelperUnresponsive`, and `HelperStatus.StatusUnresponsive`
   — separate facts from `AllBusy`, `ChannelClosed` and `StatusDead`,
   which are things a live peer said.
-  `HelperStatus.StatusBusy` (handshake done, an execution in flight:
-  `Running` or `Cancelling`) is not ready: `helper_ready` lends only on
-  `StatusReady`, so a helper checked in mid-execution (a relay crash)
-  is retired rather than re-lent, at the cost of one lazy respawn.
+  `HelperStatus.StatusBusy` means that a physical owner has live work.
+  Pool checkout registers a single-use lease against the owner's advertised
+  quota; the returned opaque handle carries that lease. Checkin revokes the
+  matching lease, and returning one with live work withdraws the physical
+  helper. Other live executions settle through the shared failure path.
   `ExecResult.cancelled` says the helper truncated the run;
   `ExecResult.enforcement` is the ground truth `required_layers` and
   `unapplied_layers` check the policy's demands against.
@@ -296,50 +297,22 @@ protocol (spec Part 1.4). WP-G.
   - `relay` messages are `execution.Event`: the helper's `exec.ExecEvent`
     mapped by `from_exec`, `CallerDown`, `HelperDown`, `CancelRequested`
     (from the service) and the two state timeouts.
-  - `exec.Msg` (per helper) — `AwaitReady(reply)`, `QueryStatus(reply)`,
-    `Run(request, events, reply)`, `Stdin(data, eof)`, `CancelExec`,
-    `CancelDeadline`, `HandshakeDeadline`, `HeartbeatTick`,
-    `Heartbeat(reply)`, `Shutdown`, `AwaitRetirement(reply)`,
-    `ForgetRetired`, `FromWire(event)`. The helper is a
-    `weft/state_machine`, not a `gleam/otp/actor`: its state is
-    `exec.Phase` — `Prepared | AwaitingHello | Idle(features) | Running(features,
-    exec) | Cancelling(features, exec) | Dead(failure, retirement)` — and everything
-    else the process carries is `exec.Data`. `handle` is one exhaustive
-    `case phase, message` matrix; `entered` is where each state's
-    deadline is armed.
-    Two of those messages are delivered by **state timeouts** rather than
-    by anyone: `HandshakeDeadline` is armed on entering `AwaitingHello`
-    and `CancelDeadline` on entering `Cancelling`, and each is cancelled
-    by the move out of the state that armed it. That is why
-    `CancelDeadline` carries no execution id and neither handler
-    re-checks whether it is still relevant — reaching `Idle` or `Dead`
-    *is* the cancellation, and a fire that raced the move is dropped by
-    weft's timer book. `HeartbeatTick` is the third kind, a **periodic
-    timeout**: it fires every `heartbeat_interval_ms` regardless of
-    activity, which is what a liveness probe means and what neither a
-    state timeout (dies with its state) nor an event timeout (measures
-    quiet, so a chatty helper is never probed) says. It is armed in
-    `entered` on the way out of `AwaitingHello` and only there — arming
-    on every entry to `Idle` would make a helper that settles executions
-    faster than the interval push its own probe out for ever — and
-    cancelled on the way into `Dead`. That is why the `AwaitingHello,
-    HeartbeatTick` and `Dead(..), HeartbeatTick` arms are unreachable by
-    construction: a tick in flight at either boundary carries a stale
-    generation stamp and dies in the timer book. An interval of `0`
-    disables the probe, so nothing is armed at all.
-    An `AwaitReady` asked during `AwaitingHello` is parked with weft's
-    `postpone` rather than a hand-rolled list: the `AwaitingHello,
-    AwaitReady` arm answers `keep(data) |> postpone`, and weft replays
-    the event, in arrival order, exactly once, on the next change of
-    state — the hello's move to `Idle` or a death's move to `Dead` —
-    where the ordinary `Idle`/`Running`/`Cancelling` and `Dead` arms
-    answer it with that state's outcome. No queue is threaded through
-    `Data`, and no settle site has to remember to flush one.
-    A state's payload is immutable for the life of that state. A state
-    timeout dies only on a move to a state that compares *unequal*, so
-    per-frame bookkeeping (the deframer, the id counter,
-    `tick_outstanding`) lives in `Data` — putting any of it in `Phase`
-    would have an ordinary inbound chunk restart the cancel escalation.
+  - `exec.Msg` belongs to the physical helper owner. `RegisterLease` mints
+    a checkout identity, `ReleaseLease` revokes it, and `QueryCapacity` reads
+    the validated hello capacity. `Run`, `Stdin` and `CancelExec` carry the
+    handle's lease. `CancelDeadline(id)` targets one wire execution identity.
+    Lifecycle messages retain handshake, heartbeat, shutdown, retirement and
+    wire-event responsibilities.
+    `Phase` is `Prepared | AwaitingHello | Live(features) | Dead(failure,
+    retirement)`. Bounded runner and lease dictionaries live in `Data`; sibling
+    traffic changes data without changing `Live` or resetting another runner's
+    deadline. The handshake and killed-helper witness use state timeouts.
+    Execution cancellation uses named weft timeouts keyed by wire ID and removes
+    the corresponding name at settlement. Heartbeat remains one periodic timer
+    for the physical transport. Death settles every accepted runner once.
+    `AwaitReady` remains postponed while handshake is in flight and is replayed
+    on entry to `Live` or `Dead`. A physical helper's native exit and original
+    normal owner monitor event remain the two retirement witnesses.
   - `exec.PoolMsg` includes checkout/checkin, stop, retirement queries,
     helper retirement reports, and original helper monitors. The pool is a
     Weft state machine with `PoolLive`, `PoolClosing`, and
@@ -692,9 +665,9 @@ protocol (spec Part 1.4). WP-G.
   a kill, or an exit nobody asked for (`Unprompted`), it depends on the
   `Exposure` of the phase the helper died in: `NoJail` (`AwaitingHello`:
   the helper writes hello before reading, and no `exec_start` precedes
-  `Idle`) and `SettledJail` (`Idle`: `Settle` killed the last jail before
-  the `exec_exit` that made the helper idle) retire on **every platform**;
-  `LiveJail` (`Running`, `Cancelling`) retires only when the accepted
+  `Live`) and `SettledJail` (`Live` with no runners: any accepted jail has
+  settled before its terminal report) retire on **every platform**;
+  `LiveJail` (a `Live` owner with runners) retires only when the accepted
   hello advertised `bwrap`, because `--die-with-parent` and `--unshare-pid`
   make the helper's death the jail's. A live jail without bwrap (degraded
   Linux, where a payload can `setsid` away; Darwin, whose descendant
@@ -735,18 +708,15 @@ protocol (spec Part 1.4). WP-G.
   clock), which is the case that matters: the broker's relay dies with its
   call. A caller that is alive but gave up is not caught and must treat the
   outcome as unknown.
-- **`exec_stdin` frames carry ids of their own, never the execution's.**
-  The helper answers a refused stdin write (`stdin already closed`, or the
-  payload's end of the pipe gone) with `error{no_exec}` under the *stdin
-  frame's* id, and uses a stdin id for nothing else. `settle` treats an
-  error under the execution's own id as that execution's refusal, so a
-  stdin frame sent with `exec.id` made a refused write settle a running
-  payload `Failed(RefusedByHelper)` and send the machine `Idle` while the
-  helper still ran it: the real `exec_exit` was dropped and the next `Run`
-  got a Go `busy`. A fresh id from `fresh_id` makes the error correlate to
-  nothing. `cancel` cannot hit the same trap: the helper never answers a
-  `cancel` with an error. This changes an id value, not the frame's shape,
-  kind, keys or version.
+- **Control frames carry fresh envelope IDs and explicit execution targets.**
+  `exec_stdin` and `cancel` name the original start ID only in their body.
+  A refused control write reports an error under its own envelope ID, which
+  cannot settle a runner as an execution-start refusal. This avoids the old
+  singleton failure where a refused stdin write falsely settled the running
+  payload, dropped its later terminal report and exposed a busy slot to reuse.
+  Protocol 4 makes target identity explicit for both controls. An overflowing
+  stdin queue refuses input and cancels that target so truncated input cannot
+  later be reported as successful work.
 - **Pool close includes borrowed helpers.** `close_pool` stops admissions
   before requesting each helper's shutdown. Native proof is recorded
   before `ForgetRetired` asks the helper actor to stop. The original
@@ -783,7 +753,7 @@ protocol (spec Part 1.4). WP-G.
   the ceiling on real parallelism, while the pooled `max_outstanding`
   below is the anti-amplification cap. They answer different questions
   and neither substitutes for the other.
-- **Idle helpers retire after sixty seconds.** Only a successful return to
+- **Idle helpers retire after sixty seconds.** Only the last successful lease return to
   `Available` starts a helper's own weft named timeout. Checkout ends that
   idle interval; duplicate checkins, census queries and other helpers do not
   extend it. The pool can shrink to zero, and its configured size remains a
@@ -926,9 +896,16 @@ protocol (spec Part 1.4). WP-G.
   under the widened policy and a second consume is refused. Widening the
   session base is the caller applying approved grants explicitly — never
   silently, and never by this package.
-- **One helper runs one execution at a time**; a second `exec_start` gets a
-  `busy` error. Concurrency lives in the pool by running more helpers,
-  which keeps "the pgroup" in the cancel contract unambiguous.
+- **One physical helper runs at most four executions.** Protocol 4 announces
+  capacity and targets stdin/cancel by the original start ID. Each execution
+  owns its output, enforcement expectations and cancel timer. A stale pooled
+  handle cannot dispatch or affect another borrower. Direct unpooled handles
+  retain singleton behavior. Physical death or escalation is a shared failure.
+- **Quotas count executions, custody counts physical helpers.** Each entry
+  reserves at most four slots from the configured pool ceiling. Draining and
+  unconfirmed entries keep their entire quota. A partially borrowed helper can
+  lend spare quota; the `Lent` display tag does not describe spare slots.
+  Only the last valid lease return starts its sixty-second idle timer.
 - **The cancel ladder's rungs have different addressees, and the grace is
   real on both sides of the jail.** `cancel` is `TERM` → 2 s grace →
   `KILL`, but `TERM` is addressed to the payload and everything it

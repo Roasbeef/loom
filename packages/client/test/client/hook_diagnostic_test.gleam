@@ -60,13 +60,18 @@ fn run(script: Script) -> hookrunner.Outcome {
         wire,
         framing.Frame(
           1,
-          framing.Hello(framing.exec_protocol_version, "exec-helper", [
-            "bwrap",
-            "rlimits",
-            "pgroup",
-            "landlock",
-            "seccomp",
-          ]),
+          framing.Hello(
+            framing.exec_protocol_version,
+            "exec-helper",
+            [
+              "bwrap",
+              "rlimits",
+              "pgroup",
+              "landlock",
+              "seccomp",
+            ],
+            option.Some(1),
+          ),
         ),
       )
       respond(outgoing, wire, framing.deframer(), script)

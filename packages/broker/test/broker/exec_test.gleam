@@ -1195,6 +1195,7 @@ fn gated_helper(
         proto: framing.exec_protocol_version,
         peer: "exec-helper",
         features: ["bwrap"],
+        max_concurrency: option.Some(1),
       ),
     ))
     as "hello encodes"

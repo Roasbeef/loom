@@ -1,17 +1,13 @@
-// Package server implements the helper's side of the effect-plane
-// protocol: frames in on stdin, frames out on stdout, one execution at
-// a time.
-//
-// One-exec-at-a-time is deliberate: the broker's ExecPool owns
-// concurrency by running more helpers, which keeps "the pgroup" in the
-// cancel contract unambiguous (cancel → SIGTERM the pgroup → SIGKILL
-// within 2s → the broker's own escalation kills the whole helper).
+// Package server multiplexes a bounded number of independent jailed executions.
+// The shared transport and helper death remain a shared failure boundary.
 package server
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"sync"
 
 	"github.com/roasbeef/loom/sandbox/internal/framing"
 	"github.com/roasbeef/loom/sandbox/internal/jail"
@@ -24,31 +20,29 @@ type Server struct {
 	feat    jail.Features
 	selfExe string
 	basePol policy.Policy
-	nextID  uint64 // ids for frames the helper originates
-	running *jail.Exec
+	nextID  uint64
+	mu      sync.Mutex
+	running map[uint64]*execution
+}
 
-	// execFreed is closed as soon as the running execution's Wait has
-	// returned, before its exec_exit frame is written. It answers
-	// "is the helper free to start another execution".
-	execFreed chan struct{}
+// MaxConcurrency bounds both running jails and terminal cleanup obligations.
+const MaxConcurrency = 4
 
-	// waitDone is closed after that exec_exit frame has been written and
-	// the execution's cgroup removed, and not before the previous
-	// execution's waitDone. It answers "has the terminal frame reached the
-	// channel", which is the weaker moment reapRunning must not exit
-	// before.
-	waitDone chan struct{}
+// execution keeps custody until both the terminal write and cleanup finish.
+type execution struct {
+	exec *jail.Exec
+	done chan struct{}
 }
 
 // New builds a server. basePol is the fd-3 policy: the default for
 // exec_start frames that omit their own.
 func New(conn *framing.Conn, feat jail.Features, selfExe string, basePol policy.Policy) *Server {
-	return &Server{conn: conn, feat: feat, selfExe: selfExe, basePol: basePol}
+	return &Server{conn: conn, feat: feat, selfExe: selfExe, basePol: basePol, running: make(map[uint64]*execution)}
 }
 
 // Run performs the hello exchange and serves frames until the peer
 // requests shutdown, closes the channel, or a protocol violation forces us
-// to stop. Every return joins the current jail before the helper exits.
+// to stop. Every return joins all admitted jails before the helper exits.
 // Per spec §3.3.6 a malformed frame closes the channel (after an error
 // frame so the broker can settle the effect in-band).
 func (s *Server) Run() error {
@@ -60,9 +54,10 @@ func (s *Server) Run() error {
 	// The helper introduces itself first: the broker learns the honest
 	// feature set before it commits any work to us.
 	if err := s.conn.Write(s.originID(), framing.KindHello, framing.Hello{
-		Proto:    framing.ExecProtocolVersion,
-		Peer:     "exec-helper",
-		Features: s.feat.List(),
+		Proto:          framing.ExecProtocolVersion,
+		Peer:           "exec-helper",
+		Features:       s.feat.List(),
+		MaxConcurrency: MaxConcurrency,
 	}); err != nil {
 		return err
 	}
@@ -114,10 +109,16 @@ func (s *Server) Run() error {
 			s.handleExecStdin(f)
 
 		case framing.KindCancel:
-			// Idempotent by contract: with no (or an already-finished)
-			// execution there is nothing to do and no error to raise.
-			if s.running != nil {
-				s.running.Cancel()
+			var body framing.Cancel
+			if err := framing.DecodeBody(f.Body, &body); err != nil || body.ExecID == 0 {
+				_ = s.conn.WriteError(f.ID, framing.ErrCodeMalformed, "cancel: positive exec_id required")
+				continue
+			}
+			s.mu.Lock()
+			entry := s.running[uint64(body.ExecID)]
+			s.mu.Unlock()
+			if entry != nil {
+				entry.exec.Cancel()
 			}
 
 		case framing.KindShutdown:
@@ -128,7 +129,7 @@ func (s *Server) Run() error {
 			}
 
 			// Stop dispatch before cancellation. The deferred join emits the
-			// running execution's terminal frame, then allows native exit.
+			// admitted executions' terminal frames, then allows native exit.
 			// Stdin stays open so the broker can retain its exit-status witness;
 			// neither a reply frame nor port closure is that witness.
 			return nil
@@ -143,19 +144,18 @@ func (s *Server) Run() error {
 }
 
 func (s *Server) handleExecStart(f framing.Frame) {
-	// Busy is decided by the child, not by the frame that reports it.
-	// execFreed closes when Wait returns, which is strictly before the
-	// exec_exit write; consulting waitDone here instead made a broker
-	// that dispatched the moment it read exec_exit race the helper's own
-	// close and get a spurious busy refusal for a sequential caller.
-	if s.running != nil {
-		select {
-		case <-s.execFreed:
-			s.running = nil
-		default:
-			_ = s.conn.WriteError(f.ID, framing.ErrCodeBusy, "an execution is already running")
-			return
-		}
+	// Capacity includes terminal writes and cleanup, not just live children.
+	s.mu.Lock()
+	_, duplicate := s.running[f.ID]
+	full := len(s.running) >= MaxConcurrency
+	s.mu.Unlock()
+	if f.ID == 0 || duplicate {
+		_ = s.conn.WriteError(f.ID, framing.ErrCodeMalformed, "exec_start: duplicate or zero execution id")
+		return
+	}
+	if full {
+		_ = s.conn.WriteError(f.ID, framing.ErrCodeBusy, "execution capacity exhausted")
+		return
 	}
 
 	var body framing.ExecStart
@@ -194,37 +194,20 @@ func (s *Server) handleExecStart(f framing.Frame) {
 		return
 	}
 
-	s.running = ex
+	entry := &execution{exec: ex, done: make(chan struct{})}
+	s.mu.Lock()
+	s.running[f.ID] = entry
+	s.mu.Unlock()
 
-	// Two signals, closed either side of the terminal write. Freeing
-	// before the write is what makes a strictly sequential broker
-	// sequential: it reads exec_exit and dispatches the next
-	// exec_start, and by then the child has long been reaped. Signalling
-	// only after the write leaves a window in which the helper is idle
-	// and still calls itself busy.
-	//
-	// Nothing is lost by freeing early. Settle joins the output pumps, so
-	// no further exec_out can be emitted for this id, and the one frame
-	// still owed carries this execution's id, which is not the next
-	// one's. Conn.Write is mutex-serialized and emits a frame in a
-	// single Write, so that frame cannot interleave with the next
-	// execution's bytes even if a broker dispatched without waiting for
-	// it.
-	//
-	// The cgroup's removal follows the frame, because it waits out the
-	// jail's namespace teardown and a broker reading exec_exit has no use
-	// for that wait. It still precedes done, and
-	// each execution's done also waits for the previous one's, so the
-	// join in reapRunning covers every removal still in flight, not only
-	// the current execution's.
-	freed := make(chan struct{})
-	done := make(chan struct{})
-	previous := s.waitDone
-	s.execFreed = freed
-	s.waitDone = done
 	go func() {
 		res, release := ex.Settle()
-		close(freed)
+
+		// Cleanup runs without the registry lock so it cannot delay sibling
+		// cancellation. The terminal frame then releases capacity atomically
+		// with its visibility to the peer: a refill after reading exec_exit
+		// must not observe this completed execution as a busy slot.
+		release()
+		s.mu.Lock()
 		_ = s.conn.Write(f.ID, framing.KindExecExit, framing.ExecExit{
 			Code:            res.Code,
 			Signal:          res.Signal,
@@ -238,33 +221,32 @@ func (s *Server) handleExecStart(f framing.Frame) {
 			TimedOut:        res.TimedOut,
 			Cancelled:       res.Cancelled,
 		})
-		release()
-		if previous != nil {
-			<-previous
-		}
-		close(done)
+		delete(s.running, f.ID)
+		close(entry.done)
+		s.mu.Unlock()
 	}()
 }
 
-// handleExecStdin queues a chunk; it does not write the child's pipe. It
-// runs on the frame loop, which must keep reading cancel, heartbeat and
-// shutdown whatever the payload does with its stdin, so Exec.WriteStdin only
-// hands the bytes to the execution's writer goroutine (jail/stdin.go).
-// Waiting here is possible only when jail.StdinPendingMax bytes are already
-// queued for a payload that is not reading, and the wall deadline and the
-// execution's end both still bound it.
+// handleExecStdin admits bounded input without blocking the shared frame loop.
+// Refusal is correlated to this stdin request, not the target execution start.
 func (s *Server) handleExecStdin(f framing.Frame) {
-	if s.running == nil {
-		_ = s.conn.WriteError(f.ID, framing.ErrCodeNoExec, "no execution running")
-		return
-	}
 	var body framing.ExecStdin
-	if err := framing.DecodeBody(f.Body, &body); err != nil {
-		_ = s.conn.WriteError(f.ID, framing.ErrCodeMalformed, err.Error())
+	if err := framing.DecodeBody(f.Body, &body); err != nil || body.ExecID == 0 {
+		_ = s.conn.WriteError(f.ID, framing.ErrCodeMalformed, "exec_stdin: positive exec_id required")
 		return
 	}
-	if err := s.running.WriteStdin(body.Data, body.EOF); err != nil {
+	s.mu.Lock()
+	entry := s.running[uint64(body.ExecID)]
+	s.mu.Unlock()
+	if entry == nil {
+		_ = s.conn.WriteError(f.ID, framing.ErrCodeNoExec, "no execution running for exec_id")
+		return
+	}
+	if err := entry.exec.WriteStdin(body.Data, body.EOF); err != nil {
 		_ = s.conn.WriteError(f.ID, framing.ErrCodeNoExec, err.Error())
+		if errors.Is(err, jail.ErrStdinPendingLimit) {
+			entry.exec.Cancel()
+		}
 	}
 }
 
@@ -281,25 +263,21 @@ func (s *Server) outputSink(id uint64) jail.OutputSink {
 	}
 }
 
-// reapRunning cancels and joins any in-flight execution before server exit.
-// Joining proves completion of the jail runner's existing cleanup, not a
-// stronger descendant-containment guarantee than the platform provides.
-//
-// This waits on waitDone rather than execFreed, and the difference is the
-// whole point of keeping two signals: the shutdown witness the broker
-// relies on is that the terminal frame reached the channel before native
-// exit, and only waitDone says that. It joins the *current* execution,
-// which is enough even in the out-of-contract case where a broker started
-// a second execution while the first exit frame was still being written:
-// that write holds the connection mutex, so the second execution's own
-// exit frame cannot have been written until the first one was.
+// reapRunning cancels every admitted jail before joining all terminal writes
+// and native cleanup. No admission occurs after Run starts this deferred join.
 func (s *Server) reapRunning() {
-	if s.running == nil {
-		return
+	s.mu.Lock()
+	entries := make([]*execution, 0, len(s.running))
+	for _, entry := range s.running {
+		entries = append(entries, entry)
 	}
-	s.running.Cancel()
-	<-s.waitDone
-	s.running = nil
+	s.mu.Unlock()
+	for _, entry := range entries {
+		entry.exec.Cancel()
+	}
+	for _, entry := range entries {
+		<-entry.done
+	}
 }
 
 // originID mints ids for helper-originated frames (hello). Odd ids

@@ -35,10 +35,10 @@ const EnvelopeVersion = 1
 // bumps this constant and broker/framing.exec_protocol_version in the
 // same commit. 1 was the vocabulary as first frozen; 2 is
 // protocol-change/006's required exec_exit "cancelled" key; 3 is
-// protocol-change/014's shutdown frame. The Gleam constant's doc comment
+// protocol-change/014's shutdown frame; 4 is targeted concurrent executions. The Gleam constant's doc comment
 // carries the full mapping, and broker's protocol_version_test reads this
 // file to prove the two literals have not drifted apart.
-const ExecProtocolVersion = 3
+const ExecProtocolVersion = 4
 
 // MaxFrameLen caps a frame's payload. The helper's own frames are small
 // (output is chunked well below this); the cap exists so a corrupt or
@@ -71,11 +71,13 @@ type Frame struct {
 	Body msgpack.RawMessage `msgpack:"body"`
 }
 
-// Hello is the handshake body: {proto, peer, features}.
+// Hello is the handshake body. Native exec helpers advertise their bounded
+// capacity; other framing peers may omit max_concurrency.
 type Hello struct {
-	Proto    int      `msgpack:"proto"`
-	Peer     string   `msgpack:"peer"`
-	Features []string `msgpack:"features"`
+	Proto          int      `msgpack:"proto"`
+	Peer           string   `msgpack:"peer"`
+	Features       []string `msgpack:"features"`
+	MaxConcurrency int      `msgpack:"max_concurrency,omitempty"`
 }
 
 // ExecStart is the body of exec_start. Policy is kept raw so the strict
@@ -91,11 +93,62 @@ type ExecStart struct {
 	Limits msgpack.RawMessage `msgpack:"limits"`
 }
 
-// ExecStdin carries a chunk of stdin for the running execution. EOF true
+// ExecutionID rejects negative numbers rather than wrapping them to uint64.
+// The zero value represents a missing required target and is refused by dispatch.
+type ExecutionID uint64
+
+// DecodeMsgpack accepts positive integer representations without signed wrap.
+func (id *ExecutionID) DecodeMsgpack(d *msgpack.Decoder) error {
+	value, err := d.DecodeInterface()
+	if err != nil {
+		return err
+	}
+	var n uint64
+	switch v := value.(type) {
+	case int8:
+		if v > 0 {
+			n = uint64(v)
+		}
+	case int16:
+		if v > 0 {
+			n = uint64(v)
+		}
+	case int32:
+		if v > 0 {
+			n = uint64(v)
+		}
+	case int64:
+		if v > 0 {
+			n = uint64(v)
+		}
+	case uint8:
+		n = uint64(v)
+	case uint16:
+		n = uint64(v)
+	case uint32:
+		n = uint64(v)
+	case uint64:
+		n = v
+	}
+	if n == 0 {
+		return fmt.Errorf("framing: exec_id must be a positive integer")
+	}
+	*id = ExecutionID(n)
+	return nil
+}
+
+// ExecStdin carries a chunk of stdin for its targeted execution. EOF true
 // closes the child's stdin after any data in this frame is written.
 type ExecStdin struct {
-	Data []byte `msgpack:"data"`
-	EOF  bool   `msgpack:"eof"`
+	ExecID ExecutionID `msgpack:"exec_id"`
+	Data   []byte      `msgpack:"data"`
+	EOF    bool        `msgpack:"eof"`
+}
+
+// Cancel targets one original exec_start envelope id. Unknown or completed
+// execution targets are no-ops; a missing exec_id is malformed.
+type Cancel struct {
+	ExecID ExecutionID `msgpack:"exec_id"`
 }
 
 // ExecOut is one chunk of child output. Bytes is the cumulative count

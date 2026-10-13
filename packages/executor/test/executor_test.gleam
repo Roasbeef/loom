@@ -63,9 +63,9 @@ pub fn the_base_policy_is_a_writable_scratch_with_the_network_off_test() {
 }
 
 pub fn the_census_line_is_one_line_of_json_test() {
-  let line = executor.census_line(census.Census(1, 3, 2, ["a", "b"]))
+  let line = executor.census_line(census.Census(1, 4, 2, ["a", "b"]))
   assert line
-    == "{\"service\":1,\"exec_proto\":3,\"policy_v\":2,\"features\":[\"a\",\"b\"]}"
+    == "{\"service\":1,\"exec_proto\":4,\"policy_v\":2,\"features\":[\"a\",\"b\"]}"
 }
 
 /// A restart is a fresh incarnation. Pools spawn helpers lazily, so two

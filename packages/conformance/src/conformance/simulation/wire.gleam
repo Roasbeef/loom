@@ -161,7 +161,11 @@ fn frame(rng: Rng) -> #(Frame, Rng) {
         truncated: code % 3 == 0,
       )
     n if n <= 80 ->
-      framing.ExecStdin(data: filler(size, code), eof: code % 2 == 0)
+      framing.ExecStdin(
+        exec_id: 2,
+        data: filler(size, code),
+        eof: code % 2 == 0,
+      )
     _ ->
       framing.ErrorBody(
         code: "e" <> int.to_string(code),

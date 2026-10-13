@@ -12,17 +12,10 @@
 //// would be a second sender, and nothing would order its cancel before that
 //// `Run`.
 ////
-//// The absorbing relay core never cancels after settling, so a real relay
-//// does not produce a stale cancel, and no test of the real path could fail
-//// if the fence were gone. These tests produce the stale cancel by hand. A
-//// helper runs one execution that ends by itself, is returned and runs a
-//// second that sleeps; then the first execution's relay link is called, late.
-//// Through the link the service builds, nothing happens to the second
-//// execution. Through a link that sends to the helper directly, as a control,
-//// the second execution is cancelled, which shows the hazard is real and
-//// that the test can see it. The mutation that proves the first test is
-//// recorded in the commit that added it: sending directly from `link_over`
-//// makes it fail.
+//// The absorbing relay core never cancels after settlement, so these tests
+//// inject a stale cancel through both the service link and a direct helper
+//// link. Single-use helper leases now provide a second fence: neither path
+//// can cancel the next execution even though it reuses the physical actor.
 
 import broker/dispatch
 import broker/exec
@@ -132,11 +125,9 @@ pub fn a_stale_relay_cancel_never_reaches_the_next_execution_test() {
     == Error(Nil)
 }
 
-/// The control: a link whose cancel goes straight to the helper reaches the
-/// second execution, because the helper cannot tell whose cancel it is. This
-/// is the hazard the single sender removes, and it is what makes the test
-/// above able to fail.
-pub fn a_relay_cancelling_the_helper_directly_cancels_the_next_execution_test() {
+/// A direct cancel also carries the original lease identity. Once returned,
+/// that handle cannot address a new borrower on the same physical helper.
+pub fn a_direct_cancel_with_a_returned_lease_cannot_cancel_the_next_execution_test() {
   let direct = fn(_service, _id, helper) {
     relay.Link(
       cancel: fn() { exec.cancel(helper) },
@@ -144,6 +135,5 @@ pub fn a_relay_cancelling_the_helper_directly_cancels_the_next_execution_test() 
       progress: fn(_progress) { Nil },
     )
   }
-  let assert Ok(dispatch.Completed(result)) = stale_cancel_outcome(direct)
-  assert result.cancelled
+  assert stale_cancel_outcome(direct) == Error(Nil)
 }
