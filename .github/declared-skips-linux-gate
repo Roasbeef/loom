@@ -4,6 +4,12 @@
 # The census also rejects this declaration if the skip stops occurring.
 declared|linux|SKIP shipped multiplayer live tool: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the delegated jail job must execute the live-tool subsection without this waiver.
 
+# The deployment-status fixture boots an orchestrator and an executor through
+# the same enforcement-gated pair as the distributed runtime fixtures. The
+# delegated jail job runs this exact fixture with an empty declaration set;
+# the ordinary runner may lack the required helper enforcement.
+declared|linux|SKIP shipped deployment status: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the delegated Linux jail job runs the deployment-status up/down scenario with no skip allowance.
+
 # The shipped background-jobs fixture runs unattended jailed processes and
 # asks the same measured question through the same probe. On a runner whose
 # helper cannot enforce a policy, the scenarios are not weaker — they are
