@@ -1,5 +1,20 @@
 # Current handoff
 
+## Deployment-status CI correction
+
+The Responses follow-up exposed an undeclared ordinary-runner deployment-status
+skip. The CI correction declares that exact existing Linux marker and requires
+the real fixture to execute in the delegated Linux jail with an empty skip
+allowance. No fixture assertion or enforcement requirement was relaxed.
+
+The branch has been rebased onto main at
+`e86d6fddd002d8060b44aa5f10e9c99e3098bc51`. Its previous combined head
+`f3d0c7bd3106de8eec98f5c076f0d5459a51d848` passed both hosted aggregate gates
+and full Linux signoff. Those are historical results; the rebased head needs
+new validation. The installed daemon has not been updated.
+
+## Preserved main handoff
+
 Baselined October 12, 2026 against `e500bc260` on `codex/register-decode`.
 Implementation is `7db1fdd27dda2105a8d918ae5d13d63ae988372c`; the matched
 benchmark runner is `d60c39a5f`. PR #966 is merged. The installed daemon has
