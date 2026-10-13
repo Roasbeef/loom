@@ -67,10 +67,11 @@ rerun then passed without any code or timeout changes. The cause remains
 unidentified, so this is not recorded as a diagnosed flake. Both runs are
 preserved in the measurement report.
 
-Implementation is committed as `8d21799a5`. The separate PR will target
-`codex/helper-idle-retirement` while #975 remains open, so its diff contains only
-concurrency. Hosted Linux/macOS CI is a separate gate. There is no authorization
-to merge or deploy this PR.
+Implementation is committed as `8d21799a5` and published as
+[PR #978](https://github.com/Roasbeef/loom/pull/978), targeting
+`codex/helper-idle-retirement` while #975 remains open. Its diff contains only
+concurrency. Hosted Linux/macOS CI is running and remains a separate gate.
+There is no authorization to merge or deploy this PR.
 
 ## Follow-ups
 
