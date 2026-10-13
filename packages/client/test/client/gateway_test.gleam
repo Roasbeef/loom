@@ -7294,3 +7294,85 @@ pub fn a_member_may_not_switch_the_profile_test() {
     as "only the owner switches the profile"
   assert process.receive(reported, within: 50) == Error(Nil)
 }
+
+/// Withdrawal respects author, revision, identity and the drain boundary.
+///
+/// ## Examples
+///
+/// `scripts/test.sh client --match queued_input_remove` runs this regression.
+pub fn queued_input_remove_authority_revision_and_drain_test() {
+  let gate = start_gate()
+  let harness = parked_network_harness(gate)
+  let alice =
+    queued_socket(
+      harness,
+      operator("alice", "Alice"),
+      access.Participant(access.Operator),
+    )
+  let bob =
+    queued_socket(
+      harness,
+      access.Principal("owner", "Owner", access.OwnerPrincipal),
+      access.Owner,
+    )
+  let observer =
+    queued_socket(
+      harness,
+      operator("alice", "Alice"),
+      access.Participant(access.Observer),
+    )
+  let _ = queued_request(alice, 1200, protocol.Prompt("main", "open"))
+  assert_queue_outcome(queued_request(
+    alice,
+    1201,
+    protocol.FollowUp("main", "duplicate"),
+  ))
+  assert_queue_outcome(queued_request(
+    alice,
+    1202,
+    protocol.FollowUp("main", "duplicate"),
+  ))
+  let assert [first, second] = queued_rows(alice, 1210)
+    as "duplicate text has distinct identities"
+  let id = queued_id(first)
+
+  // Neither owner override nor matching identity with observer authority may withdraw it.
+  list.each([bob, observer], fn(socket) {
+    let assert protocol.ErrorEvent(code: "forbidden", ..) =
+      queued_request(socket, 1211, protocol.RemoveQueuedInput("main", id, 0))
+      as "withdrawal belongs to the mutable author"
+  })
+  assert_queue_outcome(queued_edit(alice, 1212, id, 0, "edited"))
+  let assert protocol.ErrorEvent(code: "conflict", ..) =
+    queued_request(alice, 1213, protocol.RemoveQueuedInput("main", id, 0))
+    as "a stale button cannot remove an updated revision"
+  let assert protocol.ErrorEvent(code: "conflict", ..) =
+    queued_request(alice, 1214, protocol.RemoveQueuedInput("other", id, 1))
+    as "the strand is part of the target"
+  let assert protocol.MutationOutcome(removed) =
+    queued_request(alice, 1215, protocol.RemoveQueuedInput("main", id, 1))
+    as "one exact revision is withdrawn"
+  assert queue_field(removed, "status") == json.String("removed")
+  let assert [remaining] = queued_rows(alice, 1216)
+    as "the equal-text neighbor remains"
+  assert queued_id(remaining) == queued_id(second)
+  let assert protocol.ErrorEvent(code: "conflict", ..) =
+    queued_request(alice, 1217, protocol.RemoveQueuedInput("main", id, 1))
+    as "repeated removal is a conflict"
+  release_gate(gate)
+  let assert poll.Answered(Nil) =
+    poll.until(within: 15_000, every: 25, attempt: fn() {
+      case user_prompt_texts(harness) == ["open", "duplicate"] {
+        True -> poll.Done(Nil)
+        False -> poll.Retry
+      }
+    })
+    as "only the remaining message reaches the runtime"
+  let assert protocol.ErrorEvent(code: "conflict", ..) =
+    queued_request(
+      alice,
+      1218,
+      protocol.RemoveQueuedInput("main", queued_id(second), 0),
+    )
+    as "removal cannot reach an admitted message"
+}

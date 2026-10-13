@@ -1393,6 +1393,26 @@ pub fn edit_queued_input(
   ])
 }
 
+/// Withdraws one exact held revision without affecting running work.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // protocol.remove_queued_input(8, "main", "2:19", 0)
+/// ```
+pub fn remove_queued_input(
+  id: Int,
+  strand: String,
+  input_id: String,
+  revision: Int,
+) -> String {
+  command(id, "remove_queued_input", [
+    #("strand", json.String(strand)),
+    #("id", json.String(input_id)),
+    #("expected_revision", json.Int(revision)),
+  ])
+}
+
 /// Reads the active projection and model window for one strand.
 ///
 /// ## Examples

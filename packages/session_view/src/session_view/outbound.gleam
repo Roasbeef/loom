@@ -192,7 +192,7 @@ fn record_sent(
   }
 
   let shared = case command {
-    "queued_input" | "edit_queued_input" ->
+    "queued_input" | "edit_queued_input" | "remove_queued_input" ->
       shared_set.queue_request(
         shared,
         queue_request.State(

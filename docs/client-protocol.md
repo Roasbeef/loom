@@ -2199,7 +2199,7 @@ See [protocol 022](../protocol-change/022-human-input-priority.md).
 
 #### 4.9.4 `follow_up`
 
-Body is identical to `steer`. Source: (`client/protocol.gleam:1296`).
+Body is identical to `steer`. Source: (`client/protocol.gleam:1307`).
 
 ```json
 {"v":2,"id":5,"cmd":"follow_up","body":{"strand":"main","text":"now add tests"}}
@@ -2261,7 +2261,7 @@ Source: (`client/gateway.gleam:3883-3915`).
 Three checks, in order:
 
 1. `expected_seq` MUST equal the record's current sequence. A mismatch
-   is `stale_approval`. Source: (`client/gateway.gleam:6556`).
+   is `stale_approval`. Source: (`client/gateway.gleam:6606`).
 2. The record MUST still be pending. Otherwise the code is
    `not_pending`.
    Source: (`client/gateway.gleam:3941-3952`).
@@ -2510,7 +2510,7 @@ A client must label excerpts and omissions and must not equate an older
 run-start digest with this current observation. See
 [protocol 023](../protocol-change/023-current-client-observations.md).
 
-#### 4.9.17 `queued_input` and `edit_queued_input`
+#### 4.9.17 `queued_input`, `edit_queued_input`, `remove_queued_input`
 
 `queued_input` takes `strand` and the opaque held item `id`. Its `snapshot`
 mode is `queued_input`, and `board` contains the complete `text`, `revision`,
@@ -2526,6 +2526,15 @@ status `queued`. A stale or drained item returns `conflict`. Full encoded
 boards must fit 48,000 bytes; oversized text is refused rather than excerpted.
 An uncertain edit must be explicitly reconciled, never resubmitted as a new
 prompt. See [protocol 024](../protocol-change/024-edit-queued-input.md).
+
+`remove_queued_input` takes `strand`, `id`, and nonnegative
+`expected_revision`. The same mutable-author check applies. A successful
+comparison withdraws only that item and replies with `mutation_outcome` status
+`removed`; `input_queue_changed` invalidates all peers' captures. Remaining
+items retain their order, content and revisions. A stale, drained or previously
+removed identity returns `conflict`. Removing the final item retires its queue
+and halt. Running work is unaffected. See
+[protocol 087](../protocol-change/087-queued-input-removal.md).
 
 #### 4.9.18 `worktree_diff`
 

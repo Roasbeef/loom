@@ -321,6 +321,7 @@ fn decode_selection(kind, fields) {
     | "notes"
     | "queued_input"
     | "edit_queued_input"
+    | "remove_queued_input"
     | "context"
     | "worktree_diff"
     | "live_jobs"

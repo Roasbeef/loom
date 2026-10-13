@@ -67,6 +67,7 @@ pub fn outcome(command: String, status: String) -> String {
   case status, command {
     "queued", "prompt" | "queued", "prompt_content" ->
       "Queued for the next turn"
+    "removed", "remove_queued_input" -> "Queued input removed"
     "queued", "edit_queued_input" -> "Queued input updated"
     "queued", "steer" -> "Steering · runs next"
     "queued", _ -> "Queued"
@@ -126,6 +127,7 @@ pub fn done(command: String) -> String {
     "set_config" -> "Setting saved"
     "schedule_cancel" -> "Schedule cancelled"
     "permission_forget" -> "Forgotten"
+    "remove_queued_input" -> "Queued input removed"
     "edit_queued_input" -> "Queued input updated"
     _ -> "Done"
   }
