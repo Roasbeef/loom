@@ -259,7 +259,7 @@ pub fn notice(state: State, notice: queue_request.Notice) -> State {
         document,
         text,
         Unknown,
-        "Outcome unknown; draft retained. Cancel and reopen to refresh before saving again.",
+        "Outcome unknown; draft retained. Copy this text before reloading the page, then reopen the queued message to check its current revision.",
       )
     _, _ -> state
   }
