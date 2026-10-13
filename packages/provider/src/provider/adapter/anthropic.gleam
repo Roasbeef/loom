@@ -178,6 +178,26 @@ pub fn build_request(
   resolved resolved: ResolvedModel,
   request request: ProviderRequest,
 ) -> HttpRequest {
+  build_request_with_prefix(base_url, api_key, resolved, request, None)
+}
+
+/// Builds a side request while retaining a breakpoint at its frozen base.
+/// Two head markers, one frozen-user marker and one side-user marker stay
+/// within the API's four-breakpoint limit, even when adjacent users merge.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // anthropic.build_request_with_prefix(url, key, model, request, Some(12))
+/// ```
+@internal
+pub fn build_request_with_prefix(
+  base_url base_url: String,
+  api_key api_key: String,
+  resolved resolved: ResolvedModel,
+  request request: ProviderRequest,
+  prefix prefix: Option(Int),
+) -> HttpRequest {
   let max_tokens =
     option.unwrap(request.max_output_tokens, resolved.max_output_tokens)
   let thinking = case resolved.thinking {
@@ -214,7 +234,15 @@ pub fn build_request(
           [] -> []
           tools -> [#("tools", encode_tools(tools))]
         },
-        [#("messages", json.Array(encode_messages(request.messages)))],
+        [
+          #(
+            "messages",
+            json.Array(case prefix {
+              None -> encode_messages(request.messages)
+              Some(count) -> encode_frozen_messages(request.messages, count)
+            }),
+          ),
+        ],
       ]),
     )
   HttpRequest(
@@ -1330,4 +1358,26 @@ fn fail(
       Failed(error:, accounting: accounting.from_usage(build_usage(acc))),
     ])
   }
+}
+
+// Mark before merging: a side boundary adjacent to the parent's final user
+// turn must not move that parent's cached content-block endpoint.
+fn encode_frozen_messages(
+  messages: List(AgentMessage),
+  prefix: Int,
+) -> List(JsonValue) {
+  let base =
+    list.take(messages, prefix) |> list.filter_map(to_turn) |> merge_turns([])
+  let side =
+    list.drop(messages, prefix) |> list.filter_map(to_turn) |> merge_turns([])
+  let base = mark_user_turns(list.reverse(base), 1, [])
+  let side = mark_user_turns(list.reverse(side), 1, [])
+  list.append(base, side)
+  |> merge_turns([])
+  |> list.map(fn(turn) {
+    json.Object([
+      #("role", json.String(turn.0)),
+      #("content", json.Array(turn.1)),
+    ])
+  })
 }

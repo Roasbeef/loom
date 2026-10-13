@@ -554,3 +554,22 @@ standard-library copy adds no FFI or dependency. Generic JSON decoding keeps its
 existing ownership to avoid copying every field in documents retained whole.
 `scripts/json_retention_perf.sh` exercises the actual response machine alongside
 selected-field, whole-document and source-owned controls in disposable workers.
+
+
+## Frozen side-query cache endpoints (protocol 087)
+
+`gateway.with_cache_prefix` adds a request-scoped message-count hint without
+changing frozen ProviderRequest or ResolvedModel fields. Anthropic's
+`build_request_with_prefix` spends its two tail breakpoints on the frozen base's
+last user block and the side suffix's newest user block. It marks each region
+before merging adjacent user turns, preserving a cached endpoint when a side
+question is asked during a parent response. Tools and system retain the two
+existing one-hour markers; the total remains four. Ordinary requests retain
+their rolling two-user policy. OpenAI-compatible and Responses encoders retain
+their ordinary message boundaries and settings.
+
+`resolve_identity` reads actual fallback model settings from the immutable role
+registry. A side request pins that identity rather than walking the fallback
+chain. Tool definitions remain prefix material; the side service has no executor.
+The adapter fixture verifies frozen endpoint placement, four-marker accounting,
+and identical tool definitions. It does not establish a live cache hit.

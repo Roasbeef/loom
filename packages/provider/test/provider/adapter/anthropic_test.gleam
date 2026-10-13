@@ -1081,3 +1081,30 @@ pub fn finished_usage_requires_a_final_output_witness_test() {
   assert accounting.total(report).evidence
     == usage_evidence.reported(usage_evidence.Api)
 }
+
+pub fn frozen_base_breakpoint_survives_an_adjacent_side_question_test() {
+  let request =
+    model.ProviderRequest(
+      model.ForResolved(resolved()),
+      Some("Pinned system"),
+      [user("Main input"), user("Side boundary"), user("Side question")],
+      [tool("bash")],
+      None,
+    )
+  let body =
+    anthropic.build_request_with_prefix(
+      "https://example.invalid",
+      "dummy",
+      resolved(),
+      request,
+      Some(1),
+    ).body
+  assert turn_breakpoints(body) == [#("user", [Some("5m"), None, Some("5m")])]
+  assert list.length(all_breakpoints(body)) == 4
+  let main = cached_request([tool("bash")], [user("Main input")])
+  let assert Ok(main_tools) = wire.field(parsed(main), "tools")
+    as "main tools exist"
+  let assert Ok(side_tools) = wire.field(parsed(body), "tools")
+    as "side tools exist"
+  assert main_tools == side_tools
+}
