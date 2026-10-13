@@ -59,8 +59,13 @@ The follow-up uses the existing `LOOM_TEST_PARALLEL=8` arrangement documented in
 `docs/execution.md`, retaining the existing deadlines and `scripts/serial-tests`
 isolation. The macOS advisory log at `526fb44c4` showed the same aggregate
 client timeout despite a successful job status: its existing advisory setting
-masks a failed step. Its package gate now opts into the same eight-way runner.
-Final verification must inspect that step's actual outcome as well as the job.
+masks a failed step. Eight-way hosted execution at `c7e628a8d` completed within
+budget but failed ten native daemon fixtures: provider callbacks exhausted
+their deadlines, and four executor startups could not reach or start epmd.
+Fixture review found no concrete shared-resource collision; hosted resource
+pressure remains an inference. The hosted package gate now uses two-way
+execution, preserving the existing serial exemptions. Final verification must
+inspect that step's actual outcome as well as the job.
 No test assertion, process deadline or advisory-policy changes.
 
 Hosted Linux jobs at `526fb44c4` passed beneath an aggregate census failure:
