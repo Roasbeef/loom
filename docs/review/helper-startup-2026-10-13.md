@@ -337,3 +337,20 @@ provider/runtime slice passes `LOOM_TEST_PARALLEL=8 bash scripts/check.sh provid
 runtime` (direct exit 0): `/private/tmp/pr978-current-main-provider-runtime-check.log`.
 The earlier full real-server gate and this slice result retain their separate
 source boundaries. Final hosted CI must cover the complete published head.
+
+
+## Hosted four-way follow-up
+
+The underlying macOS full check in run 38560046378 failed despite the workflow
+reporting success under its existing advisory policy. Its client package hit
+the 1,200-second budget, and the directory-rejoin distribution fixture had an
+earlier child exit with status 2. EUnit truncated the captured child output,
+so the hosted child reason is unclassified. The unchanged direct scenario
+passed outside the sandbox in 13.31 seconds; the initial sandbox attempt
+reported `epmd_unavailable`, which does not establish the hosted cause.
+
+The distribution proof now emits captured child failure output to standard
+error before retaining its existing successful-scenario assertion. No refusal
+is accepted and no scenario is retried. This branch also incorporates the
+reviewed four-way advisory setting and opening-refusal diagnostic from #975.
+Fresh exact-head hosted validation and Linux signoff remain required.

@@ -9,7 +9,9 @@ import client/distribution
 import client/internal/ffi_os
 import gleam/dict
 import gleam/int
+import gleam/io
 import gleam/option.{None, Some}
+import gleam/result
 import gleam/string
 import simplifile
 
@@ -216,7 +218,15 @@ pub fn the_options_command_writes_a_private_file_test() {
 fn scenario(name: String) -> Result(Nil, String)
 
 fn proves(name: String, why: String) {
-  let assert Ok(Nil) = scenario(name) as why
+  // EUnit bounds assertion values, which can hide the child VM failure.
+  // Emit its captured output on failure before retaining the same assertion.
+  let outcome =
+    scenario(name)
+    |> result.map_error(fn(reason) {
+      io.println_error(reason)
+      reason
+    })
+  let assert Ok(Nil) = outcome as why
   Nil
 }
 
