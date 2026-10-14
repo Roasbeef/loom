@@ -254,3 +254,38 @@ on the hosted runner. Four-way execution is the bounded intermediate between
 that timeout and the earlier eight-way startup failures. All test discovery,
 serial exceptions, assertions and deadlines remain unchanged. This setting
 requires fresh hosted validation and exact-head Linux signoffs.
+
+
+## Nested test VM resource budget
+
+Four-way run 38574323311 still failed native daemon readiness before the helper
+feature paths, then exhausted the client package budget. The corresponding
+#978 run also preserved an epmd startup refusal. The epmd audit found no
+demonstrated global kill or environment race; launcher exit-status races are
+already handled. These hosted failures remain genuine and unclassified.
+
+A private wrapper trial compared four original shipped fixtures with the
+default child VM settings and `+S 2:2 +SDcpu 1 +SDio 1 +sbwt none
++sbwtdcpu none +sbwtdio none`. The EUnit harness used two schedulers in both
+trials. Both trials passed all four fixtures without skips, and all fourteen
+recorded wrapper PIDs per trial were absent afterward. Peak scoped RSS fell
+from 1,025,824 to 874,528 KiB (147.75 MiB, 14.75%). Last-observed cumulative
+child CPU was a lower bound, 30.26 versus 6.41 CPU-seconds: sampling cannot
+recover work after a process has exited. Nine daemon PIDs per profile were
+sampled; harness, helper and tool CPU is excluded. Summed RSS can double-count
+shared pages and is not physical RAM. EUnit totals were 62.672 and 62.250
+seconds, dominated by the identity fixture; this pair establishes no stable
+latency improvement. The first three fixture times were 6.042/6.557/5.746
+versus 5.316/5.439/5.153 seconds.
+
+Default child probes reported sixteen normal schedulers, sixteen dirty CPU
+schedulers and ten dirty I/O schedulers on this Mac, versus two/one/one with
+the budget. Observed individual thread counts were 48 and 10; early baseline
+aggregate thread samples had a parser error and are not used. Raw artifacts
+remain ignored under `build/fixture-vm-profile/trial-1791988183793173000`.
+
+The shipped fixture launcher now appends that budget to its child `ERL_FLAGS`,
+preserving existing flags and the later TLS/timing configuration. The parent
+test VM and production launch defaults are unchanged. All tests, concurrency,
+assertions and deadlines remain. The local trial does not prove a hosted fix;
+fresh full gates and exact-head signoffs are still required.

@@ -19,7 +19,10 @@
 //// fresh `HOME`, an `XDG_CONFIG_HOME` inside it, and a `GIT_CONFIG_GLOBAL`
 //// naming a generated identity, then execs the real server with its
 //// arguments unchanged. The fixture passes that script wherever it passed
-//// the server path before. `exec` keeps the process id, so the endpoint's
+//// the server path before. Each child receives a small scheduler budget
+//// with busy waiting disabled, because parallel fixtures start several VMs
+//// beside one another. The parent test VM keeps its own resource settings.
+//// `exec` keeps the process id, so the endpoint's
 //// process-birth fence names the daemon itself, as it did before.
 ////
 //// The launcher derives `--helper` from the server's directory, and the
@@ -34,6 +37,13 @@ import gleam/bit_array
 import gleam/string
 import host/bootstrap as native
 import simplifile
+
+// A parallel fixture run starts several independent daemon VMs. Giving each
+// the host's full scheduler pools multiplies idle spinning and thread costs.
+// Two ordinary schedulers retain parallel execution inside each daemon; the
+// single dirty pools and disabled busy waiting bound this test-only overhead.
+const fixture_vm_flags =
+  "+S 2:2 +SDcpu 1 +SDio 1 +sbwt none +sbwtdcpu none +sbwtdio none"
 
 /// The isolated launcher for the shipped server, or `Error(Nil)` when
 /// `LOOM_BOOTSTRAP_E2E_SERVER` is unset and the fixture should skip.
@@ -107,7 +117,8 @@ fn isolate(server: String) -> String {
           "HOME=" <> quote(home),
           "XDG_CONFIG_HOME=" <> quote(home <> "/.config"),
           "GIT_CONFIG_GLOBAL=" <> quote(git_config),
-          "export HOME XDG_CONFIG_HOME GIT_CONFIG_GLOBAL",
+          "ERL_FLAGS=\"${ERL_FLAGS-} " <> fixture_vm_flags <> "\"",
+          "export HOME XDG_CONFIG_HOME GIT_CONFIG_GLOBAL ERL_FLAGS",
           timing_script(directory),
           "exec " <> quote(server) <> " \"$@\"",
           "",
