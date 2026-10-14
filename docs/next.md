@@ -85,9 +85,9 @@ normal permissions. Preparation must finish before package lanes start.
 
 ## What to do next
 
-1. Review and land the per-strand TPS PR once its exact-head affected checks,
-   hosted checks and required Linux signoff pass. Exit: the reviewed head is
-   merged. Deployment remains a separate operation.
+1. Per-strand TPS PR #982 is merged in `99975fe00`. Land helper retirement
+   #975, then retarget concurrent helpers #978 to main after their exact-head
+   checks and independent reviews pass. Deployment remains separate.
 2. Follow `docs/issue-plan.md` for the next project milestone. The queue-control
    PR is separate work and is not included in this branch.
 
