@@ -9,3 +9,21 @@ erl_crash.dump
 /.claude/worktrees/
 /scripts/__pycache__/
 /.codemode/
+
+# UI exploration captures are archived in docs/design-notes/capture-archive.md.
+# Keep the design prose and generators, but ignore their generated output.
+/docs/design-notes/terminal-design/*
+!/docs/design-notes/terminal-design/*.md
+!/docs/design-notes/terminal-design/*.py
+/docs/design-notes/web-design/
+/docs/design-notes/tui-agent-workspace/*
+!/docs/design-notes/tui-agent-workspace/*.md
+!/docs/design-notes/tui-agent-workspace/*.py
+/site/screenshots/
+
+# Local journals and nested worktrees must not become repository content.
+/.sessions/
+/.worktrees/
+/.fl/
+/.fp/
+/.fv/

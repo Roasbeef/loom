@@ -154,6 +154,17 @@ fn fixture_lasting(
   session_ms: Int,
   run: fn(root.Ready(String), Int, String) -> Nil,
 ) -> Nil {
+  fixture_lasting_with_root(serving, session_ms, fn(ready, port, credential, _) {
+    run(ready, port, credential)
+  })
+}
+
+// Exposes custody only to fixtures that need to witness a connection retiring.
+fn fixture_lasting_with_root(
+  serving: Upgrade,
+  session_ms: Int,
+  run: fn(root.Ready(String), Int, String, root.Root(String)) -> Nil,
+) -> Nil {
   let directory =
     "build/test_db/daemon-ui-"
     <> bit_array.base16_encode(token.production_entropy()(8))
@@ -413,7 +424,7 @@ fn fixture_lasting(
   process.unlink(listener.pid)
   let assert Ok(port) = process.receive(ports, 1000) as "listener port is known"
   let outcomes =
-    weft.new([fn() { Ok(run(ready, port, credential)) }])
+    weft.new([fn() { Ok(run(ready, port, credential, daemon)) }])
     |> weft.deadline(40_000)
     |> weft.start
   assert root.shutdown(daemon, within: 5000) == Ok(Nil)
@@ -7622,7 +7633,7 @@ pub fn a_browser_claim_lands_on_an_operator_fresh_home_with_a_login_test() {
 // which binds nothing and leaves the claim open for another try. None of them
 // sets a cookie or repeats the token.
 pub fn a_claim_that_cannot_redeem_is_refused_in_fixed_words_test() {
-  fixture(fn(ready, port, credential) {
+  let run = fn(ready, port, credential, daemon) {
     let session = create_shared_session(ready, "browser-claim-refusals", 1301)
 
     // Spent: a second redemption of one that bound.
@@ -7640,6 +7651,27 @@ pub fn a_claim_that_cannot_redeem_is_refused_in_fixed_words_test() {
     let bearer = claim.random_credential()
     let wire = daemon_claim_test.redeem(port, other, claim.digest(bearer))
     assert field(wire, "event") == Ok(json.String("credentials.claim"))
+
+    // The reply precedes the socket's death and the root's DOWN handling.
+    // Reacquiring its digest witnesses retirement before the browser asks
+    // about the spent claim rather than a still-reserved claim socket.
+    let assert Ok(presented) = access.claim_digest(claim.digest(other))
+      as "the issued claim digest is valid"
+    let assert poll.Answered(permit) =
+      poll.until(within: 2000, every: 1, attempt: fn() {
+        case root.acquire_claim(daemon, presented, within: 1000) {
+          Ok(permit) -> poll.Done(permit)
+          Error(refusal) -> {
+            let assert root.ClaimInFlight = refusal
+              as "only the retiring claim socket can delay the custody witness"
+            poll.Retry
+          }
+        }
+      })
+      as "the terminal claim socket releases its allocation"
+    root.release(daemon, permit)
+    let assert Ok(_) = root.ready(daemon, within: 1000)
+      as "the root processes the witness release before the browser request"
     claim_refused(
       redeemed_in_browser(port, other, ""),
       409,
@@ -7712,7 +7744,8 @@ pub fn a_claim_that_cannot_redeem_is_refused_in_fixed_words_test() {
     assert claim_rows(ready.state_root, named) == ["open"]
     assert redeemed_in_browser(port, named, "Second try").status == 200
     assert claim_rows(ready.state_root, named) == ["claimed"]
-  })
+  }
+  fixture_lasting_with_root(Stubbed, ui_sessions.session_ms, run)
 }
 
 // A cross-site post is refused before the claim is touched, and so is every

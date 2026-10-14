@@ -1,17 +1,19 @@
 # Native agent workspace
 
+Historical captures and mockups are preserved in the [capture archive](capture-archive.md).
+
 ## Agent messages and notebooks, September 21
 
 | Messages between agents | Selected agent's notebook |
 | --- | --- |
-| ![Messages](tui-agent-workspace/after-messages.png) | ![Agent notes](tui-agent-workspace/after-agent-notes.png) |
+| ![Messages](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/tui-agent-workspace/after-messages.png) | ![Agent notes](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/tui-agent-workspace/after-agent-notes.png) |
 
 | Worktree diff | Compact 40×12 inspector |
 | --- | --- |
-| ![Diff](tui-agent-workspace/after-diff.png) | ![Tiny inspector](tui-agent-workspace/after-tiny.png) |
+| ![Diff](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/tui-agent-workspace/after-diff.png) | ![Tiny inspector](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/tui-agent-workspace/after-tiny.png) |
 
-[Captured approval owner](tui-agent-workspace/after-approval-owner.png) ·
-[Standalone notes at 80 columns](tui-agent-workspace/after-notes-narrow.png).
+[Captured approval owner](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/tui-agent-workspace/after-approval-owner.png) ·
+[Standalone notes at 80 columns](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/tui-agent-workspace/after-notes-narrow.png).
 The adjacent ANSI files preserve the actual terminal output.
 
 This follow-up rebases the implementation onto `543d641a` and keeps the original
@@ -169,23 +171,23 @@ remains available for comparison with the first implementation pass.
 
 | Agents: exact pending decision | Composer: still addressed to main |
 | --- | --- |
-| ![Native approval detail](tui-agent-workspace/after-approval.png) | ![Native retained draft](tui-agent-workspace/after-composer.png) |
+| ![Native approval detail](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/tui-agent-workspace/after-approval.png) | ![Native retained draft](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/tui-agent-workspace/after-composer.png) |
 
 | Failed strand and recent result | Advisor detail |
 | --- | --- |
-| ![Failed strand](tui-agent-workspace/after-failure.png) | ![Advisor detail](tui-agent-workspace/after-advisor.png) |
+| ![Failed strand](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/tui-agent-workspace/after-failure.png) | ![Advisor detail](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/tui-agent-workspace/after-advisor.png) |
 
-![Focus conversation](tui-agent-workspace/after-focus.png)
+![Focus conversation](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/tui-agent-workspace/after-focus.png)
 
-![Studio conversation and agent rail](tui-agent-workspace/after-rail.png)
+![Studio conversation and agent rail](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/tui-agent-workspace/after-rail.png)
 
-![Native narrow workspace](tui-agent-workspace/after-narrow.png)
+![Native narrow workspace](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/tui-agent-workspace/after-narrow.png)
 
 | Light palette | ANSI fallback |
 | --- | --- |
-| ![Light](tui-agent-workspace/after-light.png) | ![ANSI](tui-agent-workspace/after-ansi.png) |
+| ![Light](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/tui-agent-workspace/after-light.png) | ![ANSI](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/tui-agent-workspace/after-ansi.png) |
 
-![Color-free workspace](tui-agent-workspace/after-plain.png)
+![Color-free workspace](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/tui-agent-workspace/after-plain.png)
 
 Reproduce from `packages/tui` with `gleam dev agents dark`, substituting
 `light`, `ansi`, or `plain` for other palettes. `F2` closes the initial

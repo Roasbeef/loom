@@ -289,3 +289,21 @@ preserving existing flags and the later TLS/timing configuration. The parent
 test VM and production launch defaults are unchanged. All tests, concurrency,
 assertions and deadlines remain. The local trial does not prove a hosted fix;
 fresh full gates and exact-head signoffs are still required.
+
+
+## Main runner integration
+
+The pre-integration full gate at `baa7e46c5` finished with direct exit 2 from
+make: 4,490 client tests passed and one directory bootstrap failed with
+`options_mismatch`. The complete diagnostic is preserved in
+`/private/tmp/pr975-vm-budget-full-check.log`. No retry or production change
+is justified by that observation alone.
+
+Merged main `3ee679ca7` supplies an independently reviewed runner correction:
+parallel modules explicitly contain sequential test bodies, preventing inherited
+EUnit group ordering from multiplying concurrency. Earlier two/four/eight-way
+settings were nested group limits, not global test-body limits. Two hosted
+client shards cover the complete module inventory exactly once, retain the
+serial barrier and unchanged deadlines, and preserve both full logs for census.
+This branch adopts that workflow unchanged. Fresh combined-head gates remain
+required; historical advisory success badges did not prove successful tests.
