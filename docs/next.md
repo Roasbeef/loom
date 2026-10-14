@@ -3,8 +3,9 @@
 Baselined October 13, 2026 against `526fb44c4` on
 `docs/archive-ui-captures`, based on `main` at
 `dc70d25d42da531284225bf399f40f82e13539d4`. This edition covers the capture
-cleanup and its CI repair. It records evidence from this checkout; earlier validation does not
-establish the state of this branch. The project plan remains `docs/issue-plan.md`.
+cleanup and its CI repair, integrated with `main` at `e86d6fddd`. It records
+evidence from this checkout; earlier validation does not establish the state
+of this branch. The project plan remains `docs/issue-plan.md`.
 
 The previous edition still instructed the reader to publish the web browsing
 branch. [PR #967](https://github.com/Roasbeef/loom/pull/967) merged on October 12,
@@ -25,6 +26,19 @@ The useful design notes, review records, both terminal generators, tmux renderer
 README images and published website assets remain. The generators and renderer
 retain their existing paths. Ignore rules cover generated exploration captures,
 website QA screenshots, local session journals and nested scratch worktrees.
+
+## Upstream state
+
+[PR #972](https://github.com/Roasbeef/loom/pull/972) merged at `e86d6fddd`
+while cleanup validation was running. Its register-decode cache and regressions
+are included here. Every read still queries SQL, and the store-owned cache
+uses exact persisted blob keys, bounded at 64 blobs and 256 KiB encoded bytes.
+The [measurement report](review/register-decoding-2026-10-12.md) preserves its
+warm-read savings, cold/overflow costs and retained-memory tradeoff. Its prior
+validation belongs to that change; final hosted CI and signoff must cover this
+merged tree. The [upstream handoff](https://github.com/Roasbeef/loom/blob/e86d6fddd/docs/next.md)
+retains its detailed evidence and live memory follow-ups. No installed daemon
+was changed by this cleanup.
 
 ## Rulings already made
 
