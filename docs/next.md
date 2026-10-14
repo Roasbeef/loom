@@ -1,7 +1,7 @@
 # Current handoff
 
-Baselined October 13, 2026 against `bcb02be01` on `fix/strand-tps`,
-with main through `e86d6fddd` integrated.
+Baselined October 13, 2026 against `c37d9a892` on `fix/strand-tps`,
+with main through `c47175004` integrated.
 This edition covers per-strand generation timing. The installed daemon has
 not been updated. Rewrite this file when the next body of work finishes.
 
@@ -19,6 +19,16 @@ live memory follow-ups remain in the
 [register-decoding handoff](https://github.com/Roasbeef/loom/blob/e86d6fddd/docs/next.md).
 Those branch results are historical evidence, not validation of this combined
 head. No storage source conflict occurred during integration.
+
+Main also includes the Responses validation diagnostics and deployment CI
+correction from merged PR #979. Provider acceptance predicates and redaction
+bounds remain as reviewed in that work; its diagnostic limits and provider-error
+follow-ups are preserved in the
+[Responses handoff](https://github.com/Roasbeef/loom/blob/c47175004/docs/next.md)
+and `packages/provider/README.md`. The deployment-status fixture now executes
+in the delegated Linux jail job with no skip allowance. This branch keeps main's
+CI repair exactly once rather than duplicating the independently landed fix.
+No provider or runtime source required manual conflict resolution.
 
 ## Where the tree is
 
