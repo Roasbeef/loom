@@ -39,8 +39,12 @@ to apply. A keepalive cannot make an unfinished stream settle.
 
 All 309 provider tests passed. Removing only the keepalive no-op made the new
 regression fail with `event_unsupported`; restoring it passed. Provider lint,
-formatting and diff checks passed. Independent review and a patched live
-response that both crosses a keepalive and settles remain in progress.
+formatting, diff and documentation checks passed. One independent adversarial
+review found no actionable findings. A live native response using the committed
+adapter crossed `keepalive` at sequence 333 and reached canonical completion at
+338, settling successfully in 54.73 seconds. The probe verified the loaded BEAM
+and source against implementation commit `489fd0703`. It used a known synthetic
+prompt, no tools and no private context.
 Broader affected checks, hosted CI and exact-head Linux signoff are separate
 requirements. No installed daemon, operator configuration or audit session has
 been changed by this work.
@@ -56,8 +60,8 @@ validate this provider change.
 
 ## Next steps
 
-1. Finish baseline-failing regression controls, provider validation and one
-   independent review, then verify a live patched keepalive stream settles.
+1. Finish the running affected-package gate and publish the reviewed provider
+   PR with its baseline-failing regression and successful live settlement.
 2. Publish the scoped provider PR and obtain its current-head affected checks,
    hosted CI and Linux signoff. Do not carry forward other branches' results.
 3. Merge #985 only under its own authorization and gates. Installation and
