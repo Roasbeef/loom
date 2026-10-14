@@ -1,86 +1,99 @@
 # Current handoff
 
-Baselined October 13, 2026 against implementation commit `b3d1ade5d821ebd8d172af899837285ed4725152`,
-rebased onto main at `e86d6fddd002d8060b44aa5f10e9c99e3098bc51`.
-PR #977 has been merged into PR #979's branch; #979 now lands both Responses
-diagnostics and the deployment-status CI correction. The project-wide plan
-remains `docs/issue-plan.md`. No running daemon was updated by this work.
+Baselined October 13, 2026 against `c37d9a892` on `fix/strand-tps`,
+with main through `c47175004` integrated.
+This edition covers per-strand generation timing. The installed daemon has
+not been updated. Rewrite this file when the next body of work finishes.
 
-Main's register-decoding work remains intact. Its exact persisted-blob cache,
-bounds, invalidation and corruption checks are described in
-[the measurement report](review/register-decoding-2026-10-12.md) and the
-[main handoff](https://github.com/Roasbeef/loom/blob/e86d6fddd002d8060b44aa5f10e9c99e3098bc51/docs/next.md).
-PR #972 is merged; its handoff's queued-CI wording is historical.
+The previous edition covered web history browsing and reported gates for its
+own head. Those results do not validate this branch. Its evidence and open
+history decisions remain in the
+[prior handoff](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/next.md).
+The project-wide plan remains `docs/issue-plan.md`.
 
-## What changed
+Main also includes the register-decode cache from merged PR #972. Its exact
+blob keys, bounded store-owned inventory and corruption/lease regressions live
+in the storage package. The [measurement report](review/register-decoding-2026-10-12.md)
+records its performance evidence and limits. Its complete prior handoff and
+live memory follow-ups remain in the
+[register-decoding handoff](https://github.com/Roasbeef/loom/blob/e86d6fddd/docs/next.md).
+Those branch results are historical evidence, not validation of this combined
+head. No storage source conflict occurred during integration.
 
-A failed Responses attempt previously retained the same constant corruption
-report for every malformed event, semantic witness and resource limit. The
-recorded failures identified the affected operations, but neither the daemon
-log nor durable messages retained the rejected check or offending wire event.
-Those past failures cannot establish whether the provider violated the
-protocol or Loom rejected a valid response.
+Main also includes the Responses validation diagnostics and deployment CI
+correction from merged PR #979. Provider acceptance predicates and redaction
+bounds remain as reviewed in that work; its diagnostic limits and provider-error
+follow-ups are preserved in the
+[Responses handoff](https://github.com/Roasbeef/loom/blob/c47175004/docs/next.md)
+and `packages/provider/README.md`. The deployment-status fixture now executes
+in the delegated Linux jail job with no skip allowance. This branch keeps main's
+CI repair exactly once rather than duplicating the independently landed fix.
+No provider or runtime source required manual conflict resolution.
 
-Every malformed call site now supplies a fixed reason code. Private item
-verification preserves distinct phase, closure, status, contiguity and content
-reasons; final-response guards distinguish identity ordering, remote error,
-output mismatch, unclosed items, sparse indices and status mismatch. Decoder
-failures identify their local call site. `packages/provider/README.md`
-documents the diagnostic fields, reason families and stability convention.
+## Where the tree is
 
-The existing corruption report carries an allowlisted current event family,
-sequence, output/content/summary/annotation positions, last accepted sequence
-and cumulative delivered bytes. Unknown event names become `unknown`;
-malformed numbers become `invalid`; integers outside signed 32-bit range become
-`range`. Missing or null positions become `absent`. The byte count describes
-chunks delivered to the adapter, not the offset of the failed event.
+The terminal and web view now share `session_view/generation_rate.State`,
+a session-scoped ledger indexed by strand. Every observed strand owns its
+request clock and last measured output rate, including background agents.
+The header reads the selected strand through `session_view/model` accessors.
+Switching focus neither clears a running clock nor borrows the parent's rate.
 
-These are diagnostic bounds, not new acceptance limits. No provider text,
-arguments, identifiers, model name, ciphertext, annotations or parser excerpt
-enters the report. Its subject and context fit the existing gateway and core
-bounds. Runtime retains the description in the existing durable `errorMessage`;
-request context remains in `diagnostics`. No error variant, wire field, retry
-policy or validation predicate was added or relaxed.
+Live phase events and fresh coherent captures update the ledger. Captures
+observe phases after transcript stream retirement, and reprojecting an older
+capture on focus does not observe its phases again. Request identity survives
+the active-only stream projection, so a lagging capture cannot turn a partial
+background window into a complete measurement. Settlement consumes only its
+strand's clock. Roster replacement prunes removed strands; a session change
+clears the ledger.
 
-## Deployment-status CI correction
+## Rulings already made
 
-The ordinary Linux runner's existing enforcement skip is declared by its exact
-marker. The delegated Linux jail job separately requires the real deployment
-fixture to execute with an empty skip allowance and uploads its log. No fixture
-assertion or enforcement demand was removed or relaxed.
+Each of these is settled. Re-open one only with new evidence, and record the
+reopening where the ruling lives.
 
-## Verification boundary
+**A partial observation cannot measure full-request TPS.** A client joining an
+already running generation cannot know its original start from the current
+wire data. The ledger can show elapsed observation time, but retains that
+strand's previous complete rate, or no rate if none exists. The rule lives in
+`generation_rate` and its regression tests. No protocol extension was added.
 
-At the previous combined head `f3d0c7bd3106de8eec98f5c076f0d5459a51d848`,
-required hosted CI passed both aggregate gates. Full containerized Linux signoff
-passed in 1,703 seconds, including client, runtime/storage/session/events,
-conformance, fast, static, enforcement and release verification, with a clean
-skip census. The delegated deployment fixture executed and passed. The hosted
-macOS advisory client suite hit its existing package-wide 1,200-second deadline;
-its successful job conclusion does not establish a completed test suite.
+**Focus selects timing; it does not own timing.** The ledger belongs to the
+shared session state. Both hosts use the same strand-specific accessors.
 
-Provider and runtime regression coverage, diagnostic redaction/bounds, baseline
-controls and independent reviews are recorded in PR #977. CI policy controls
-and independent review are recorded in PR #979. The rebase changes only the
-handoff resolution relative to applying these reviewed changes on the new main.
-The new pushed head needs fresh hosted CI and Linux signoff; previous-head
-results above are historical evidence, not signoff for this head.
+## How to verify
 
-## Live failure distinction
+`make check-affected` selects the gates affected by the current diff against
+main, together with the static gates and native prerequisites.
+Full Linux signoff remains required for the combined head. Run `make signoff-remote` against the pushed head; the PR's exact-head
+commit statuses are the record of hosted checks and Linux signoff.
 
-The later recurring `responses_error` failures are explicit provider-error
-responses with missing or unrecognized error codes. They take a different path
-from malformed-stream validation. Existing durable history retains only the
-generic error, so the original provider reason cannot be reconstructed and
-these diagnostics do not identify it. No provider-error acceptance, retry or
-redaction policy was changed to speculate about those failures.
+`packages/web_view/test/strand_rate_test.gleam` drives the actual component and
+header with an injected clock. It covers independent parent/child rates,
+switching back, focusing a background generation midway through it, attaching
+mid-generation, consecutive requests, and lagging captures. The shared ledger
+suite checks clock consumption, new request identity and roster removal.
 
-## Next steps
+Mutation checks restored three old behaviors separately: reading main's rate
+for every strand, resetting a clock on focus, and accepting a lagging background
+phase. Each compiled and failed its corresponding header assertion. The
+independent review's capture-ordering findings were fixed and rechecked.
 
-1. Validate the new pushed head and merge #979 with the owner's authorization
-   once required hosted checks and exact-head Linux signoff are green.
-2. After deployment, capture a malformed-stream recurrence's reason and safe
-   structural context, then build a minimal reproduction before attributing it
-   to provider behavior or Loom compatibility. A daemon update is separate.
-3. Keep generic provider-error diagnostics separate from stream-validation
-   diagnostics; further work on that path requires its own scoped change.
+**Read a gate's own exit code.** `check-affected` records each lane's status and
+its skip census under `build/affected`. Native socket tests need the host's
+normal permissions. Preparation must finish before package lanes start.
+`docs/execution.md` carries the remaining gate and sandbox hazards.
+
+## What to do next
+
+1. Review and land the per-strand TPS PR once its exact-head affected checks,
+   hosted checks and required Linux signoff pass. Exit: the reviewed head is
+   merged. Deployment remains a separate operation.
+2. Follow `docs/issue-plan.md` for the next project milestone. The queue-control
+   PR is separate work and is not included in this branch.
+
+## Deliberately open
+
+An exact TPS for a request already running before attachment would require an
+original start timestamp or duration from the server. The current client
+conservatively leaves that request unmeasured. None of this is unfinished work
+somebody forgot.

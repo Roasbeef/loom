@@ -76,6 +76,7 @@ import session_view/completion_summary
 import session_view/composer
 import session_view/connection_event
 import session_view/context_view
+import session_view/generation_rate
 import session_view/goal_view
 import session_view/history_view
 import session_view/inbox
@@ -364,17 +365,9 @@ pub type Shared(socket, recorder, source, replay_source) {
     next_id: Int,
     /// The token usage the last capture or settlement reported.
     usage: message.Usage,
-    /// When the active strand's streaming generation produced its first
-    /// fragment, on the monotonic clock; `None` between generations.
-    /// Paired with the output count the settlement's usage reports, it
-    /// yields the rate. Usage reports carry no strand, so the figure is
-    /// exact only while one strand streams at a time; a child settling
-    /// under a streaming parent skews one reading, which a footer can
-    /// bear.
-    generation_started_ms: Option(Int),
-    /// Output tokens per second of the last settled generation, for the
-    /// footer. `None` until one generation has both streamed and settled.
-    output_rate_tps: Option(Int),
+    /// Per-strand request clocks and latest complete TPS measurements. Focus
+    /// selects a reading and never transfers or resets another strand's clock.
+    generation_rates: generation_rate.State,
     /// Whether transcript lines are drawn with their full details. The
     /// shared line builders read it through `presentation`, and the generation
     /// clock checks it.
@@ -1173,4 +1166,28 @@ pub fn presentation(
     worktree: shared.worktree,
     clock: shared.clock_offset,
   )
+}
+
+/// The active strand's own generation observation clock.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // session_model.generation_started_ms(shared)
+/// ```
+@internal
+pub fn generation_started_ms(shared: Shared(s, r, a, b)) -> Option(Int) {
+  generation_rate.started(shared.generation_rates, shared.active_strand)
+}
+
+/// The active strand's latest complete TPS measurement, if one was observed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // session_model.output_rate_tps(shared)
+/// ```
+@internal
+pub fn output_rate_tps(shared: Shared(s, r, a, b)) -> Option(Int) {
+  generation_rate.rate(shared.generation_rates, shared.active_strand)
 }

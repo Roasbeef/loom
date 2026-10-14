@@ -26,6 +26,7 @@
 //// use most, and every other setter has the same one-field shape, roughly in
 //// the order of how many call sites set them when the module was written.
 
+import session_view/generation_rate
 import session_view/model.{type Shared, Shared} as _
 
 /// Replaces `Shared.notice`; the record documents the field.
@@ -754,7 +755,7 @@ pub fn todo_seed(shared: Shared(a, b, c, d), todo_seed) -> Shared(a, b, c, d) {
   Shared(..shared, todo_seed:)
 }
 
-/// Replaces `Shared.generation_started_ms`; the record documents the field.
+/// Sets the active strand's explicit generation boundary in its timing ledger.
 ///
 /// ## Examples
 ///
@@ -766,7 +767,14 @@ pub fn generation_started_ms(
   shared: Shared(a, b, c, d),
   generation_started_ms,
 ) -> Shared(a, b, c, d) {
-  Shared(..shared, generation_started_ms:)
+  Shared(
+    ..shared,
+    generation_rates: generation_rate.with_started(
+      shared.generation_rates,
+      shared.active_strand,
+      generation_started_ms,
+    ),
+  )
 }
 
 /// Replaces `Shared.jobs_awaiting`; the record documents the field.
@@ -1006,7 +1014,7 @@ pub fn next_id(shared: Shared(a, b, c, d), next_id) -> Shared(a, b, c, d) {
   Shared(..shared, next_id:)
 }
 
-/// Replaces `Shared.output_rate_tps`; the record documents the field.
+/// Sets the active strand's settled rate without touching another strand.
 ///
 /// ## Examples
 ///
@@ -1018,7 +1026,14 @@ pub fn output_rate_tps(
   shared: Shared(a, b, c, d),
   output_rate_tps,
 ) -> Shared(a, b, c, d) {
-  Shared(..shared, output_rate_tps:)
+  Shared(
+    ..shared,
+    generation_rates: generation_rate.with_rate(
+      shared.generation_rates,
+      shared.active_strand,
+      output_rate_tps,
+    ),
+  )
 }
 
 /// Replaces `Shared.replay_inbox`; the record documents the field.

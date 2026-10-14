@@ -99,7 +99,7 @@ pub type Tone {
 /// draws no `ctx`, and a `cost` that ends in the dash (`est —`, a model with
 /// no price) draws no `est`, since two dashes beside each other read as
 /// missing data rather than as "not known". `rate` is the output speed of the
-/// last timed generation in tokens per second (`Shared.output_rate_tps`), and
+/// selected strand's last complete timed generation (`model.output_rate_tps`), and
 /// is `None` until one long enough to time has settled.
 ///
 /// ## Examples
