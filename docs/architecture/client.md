@@ -257,7 +257,14 @@ Replacement is conservative because a failed probe never proves that the
 previous daemon or its native children retired. Automatic replacement is
 blocked by a PID+birth pair that is still live, by an error while observing
 identity, or by an existing catalogue with no endpoint record. The endpoint
-record survives normal root shutdown until the VM departs. Once the launcher
+record survives normal root shutdown until the VM departs. Darwin birth
+observations use a `darwin:utc:` marker and run `ps` with UTC and the C locale,
+so launchers in different environments agree. Legacy `darwin:` records can
+still match in the inherited environment; a mismatching live PID is ambiguous
+and blocks replacement rather than reporting retirement. UTC records use
+schemas three/four, so older clients refuse them before they can misclassify
+the native owner and overwrite discovery. Legacy schemas one/two remain
+readable by new clients. Once the launcher
 has released a child to execute, closing the launcher's handle does not
 guarantee that the daemon died. Executable, helper, and configuration discovery
 comes from trusted launcher choices, never from files the workspace selects.
