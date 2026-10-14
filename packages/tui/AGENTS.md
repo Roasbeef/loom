@@ -3359,12 +3359,19 @@ own clock without changing the selected strand's header.
 
 The shared `/btw` parser accepts questions during a running main operation and
 sends the separate side protocol command. `render_btw` splits the conversation
-area: main rows continue updating above a bounded side panel. PageUp/PageDown
-scroll only the side text while it is open, and Escape hides it without sending
+area through `layout.transcript_areas`: main rows continue updating above a
+bounded side panel. Painting, main scroll limits, image placement and copy
+gutters consume the same main rectangle; side drag-copy uses its own plain-text
+rectangle. The reading row stays below both. PageUp/PageDown scroll only the
+side text while it is open, and Escape hides it without sending
 Abort. The ordinary composer still names its main recipient; follow-ups require
 `/btw <question>`. Refresh, clear, cancel and close have explicit slash actions.
 
 The panel reads only shared `btw.State`, so it never enters transcript projection,
 replay, model context, or the main turn's history. Text is sanitized before
 terminal rendering. `btw_test` pins grammar, correlated board isolation, Escape
-behavior, and malformed/oversized board refusal.
+behavior, malformed/oversized board refusal, main wheel bounds and drag-copy
+gutters, and the long-answer tail with the rail shown or hidden. Side paging
+wraps at `layout.transcript_width`, the width both reading rectangles share.
+`image_draw_test` pins the shared image window against the painted
+main rectangle while the side panel is visible.

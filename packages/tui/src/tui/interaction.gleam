@@ -1538,7 +1538,7 @@ fn scroll_btw(model: Model, by: Int) -> Model {
     btw.lines(model.shared.btw)
     |> list.flat_map(string.split(_, "\n"))
     |> list.flat_map(fn(line) {
-      text.wrap(line, int.max(1, model.view.width - 4))
+      text.wrap(line, layout.transcript_width(model))
     })
     |> list.length
   tui_model.run_shared(model, fn(shared) {
@@ -1951,7 +1951,8 @@ fn selection_covers_transcript(
   let #(_, body_area, _, _) = layout.layout(screen, model)
   let #(conversation, _) = layout.queue_body_layout(body_area, model)
   let transcript_panel = conversation
-  selected.area == layout.transcript_inner(transcript_panel)
+  selected.area
+  == layout.transcript_areas(layout.transcript_inner(transcript_panel), model).0
   && !layout.diff_covers_transcript(model)
 }
 
@@ -2002,7 +2003,8 @@ pub fn selection_gutters_on_display(model: Model) -> List(#(Int, Int)) {
   let #(_, body_area, _, _) = layout.layout(screen, model)
   let #(conversation, _) = layout.queue_body_layout(body_area, model)
   let transcript_panel = conversation
-  let area = layout.transcript_inner(transcript_panel)
+  let area =
+    layout.transcript_areas(layout.transcript_inner(transcript_panel), model).0
   model.view.rendered_gutters
   |> list.drop(model.view.scroll_offset + tui_model.viewport_backlog(model))
   |> list.take(area.size.height)

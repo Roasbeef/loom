@@ -682,7 +682,8 @@ fn window(rows: List(span.Line), offset: Int, height: Int) -> List(span.Line) {
 }
 
 /// The rectangle the transcript rows are painted into on a screen: the
-/// panel the layout gives the main strand, less its border and margin.
+/// panel the layout gives the main strand, less its border, margin and any
+/// visible side-question area.
 ///
 /// Anything that reasons about where a transcript row landed on screen reads
 /// it here rather than from `layout` itself, so that it asks the same
@@ -698,7 +699,7 @@ pub fn transcript_area(model: Model, screen: Rect) -> Rect {
   let #(_, body_area, _, _) = layout.layout(screen, model)
   let #(conversation_area, _) = layout.queue_body_layout(body_area, model)
   let transcript_panel = conversation_area
-  layout.transcript_inner(transcript_panel)
+  layout.transcript_areas(layout.transcript_inner(transcript_panel), model).0
 }
 
 /// The transcript rows the frame shows in `area`, top first: exactly the
@@ -2799,20 +2800,7 @@ fn render_context_surface(buf, cursor, screen, model: Model) {
 // Main rows keep updating above a bounded side panel. The composer accepts
 // /btw follow-ups explicitly, so ordinary input keeps its existing recipient.
 fn render_btw(buf: buffer.Buffer, area: Rect, model: Model) -> buffer.Buffer {
-  let height = int.max(1, area.size.height / 2)
-  let main =
-    geometry.Rect(
-      ..area,
-      size: geometry.Size(..area.size, height: area.size.height - height),
-    )
-  let side =
-    geometry.Rect(
-      position: geometry.Position(
-        ..area.position,
-        y: area.position.y + area.size.height - height,
-      ),
-      size: geometry.Size(..area.size, height:),
-    )
+  let #(main, side) = layout.transcript_areas(area, model)
   let lines =
     btw.lines(model.shared.btw)
     |> list.flat_map(string.split(_, "\n"))
