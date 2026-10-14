@@ -85,6 +85,7 @@ import gleam/uri
 import simplifile
 import sqlight.{type Connection}
 import storage/internal/branch
+import storage/internal/register_cache
 import storage/internal/snapshot_call
 import storage/internal/snapshot_sqlite
 import storage/session_schema
@@ -231,6 +232,7 @@ type ActorState {
     fence: Int,
     lease_ttl_ms: Int,
     phase: ConnectionPhase,
+    registers: register_cache.Cache,
   )
 }
 
@@ -804,6 +806,7 @@ fn start_actor(
       fence:,
       lease_ttl_ms: config.lease_ttl_ms,
       phase: OpenConnection,
+      registers: register_cache.new(),
     )
   let started =
     actor.new(state)
@@ -2250,12 +2253,18 @@ fn handle_open(
       actor.continue(state)
     }
     GetRegister(ns:, key:, reply:) -> {
-      process.send(reply, do_get_register(state.conn, ns, key))
-      actor.continue(state)
+      case do_get_register(state.conn, ns, key, state.registers) {
+        Ok(#(value, registers)) ->
+          answer(ActorState(..state, registers:), reply, Ok(value))
+        Error(error) -> answer(state, reply, Error(error))
+      }
     }
     ListRegisters(ns:, key_prefix:, reply:) -> {
-      process.send(reply, do_list_registers(state.conn, ns, key_prefix))
-      actor.continue(state)
+      case do_list_registers(state.conn, ns, key_prefix, state.registers) {
+        Ok(#(value, registers)) ->
+          answer(ActorState(..state, registers:), reply, Ok(value))
+        Error(error) -> answer(state, reply, Error(error))
+      }
     }
     ScanBranch(q:, reply:) -> {
       process.send(reply, do_scan_branch(state.conn, q))
@@ -2318,7 +2327,13 @@ fn handle_open(
           ))
       }
       process.send(reply, outcome)
-      actor.continue(ActorState(..state, phase: ClosedConnection(outcome)))
+      actor.continue(
+        ActorState(
+          ..state,
+          phase: ClosedConnection(outcome),
+          registers: register_cache.new(),
+        ),
+      )
     }
   }
 }
@@ -3049,7 +3064,8 @@ fn do_get_register(
   conn: Connection,
   ns: RegisterNs,
   key: String,
-) -> Result(Option(Register), StorageError) {
+  cache: register_cache.Cache,
+) -> Result(#(Option(Register), register_cache.Cache), StorageError) {
   let cell_decoder = {
     use seq <- decode.field(0, decode.int)
     use value <- decode.field(1, decode.bit_array)
@@ -3065,12 +3081,12 @@ fn do_get_register(
     |> result.map_error(fail_to_storage_error)
   use rows <- result.try(rows)
   case rows {
-    [] -> Ok(None)
+    [] -> Ok(#(None, cache))
     [#(seq, blob), ..] -> {
-      use value <- result.map(
-        register_of_blob(blob) |> result.map_error(CorruptRow),
+      use #(value, cache) <- result.map(
+        register_cache.read(cache, blob) |> result.map_error(CorruptRow),
       )
-      Some(Register(value:, seq:))
+      #(Some(Register(value:, seq:)), cache)
     }
   }
 }
@@ -3079,7 +3095,8 @@ fn do_list_registers(
   conn: Connection,
   ns: RegisterNs,
   key_prefix: Option(String),
-) -> Result(List(#(String, Register)), StorageError) {
+  cache: register_cache.Cache,
+) -> Result(#(List(#(String, Register)), register_cache.Cache), StorageError) {
   let cell_decoder = {
     use key <- decode.field(0, decode.string)
     use seq <- decode.field(1, decode.int)
@@ -3107,13 +3124,17 @@ fn do_list_registers(
     }
     |> result.map_error(fail_to_storage_error)
   use rows <- result.try(rows)
-  list.try_map(rows, fn(row) {
-    let #(key, seq, blob) = row
-    use value <- result.map(
-      register_of_blob(blob) |> result.map_error(CorruptRow),
-    )
-    #(key, Register(value:, seq:))
-  })
+  use #(reversed, cache) <- result.map(
+    list.try_fold(rows, #([], cache), fn(acc, row) {
+      let #(reversed, cache) = acc
+      let #(key, seq, blob) = row
+      use #(value, cache) <- result.map(
+        register_cache.read(cache, blob) |> result.map_error(CorruptRow),
+      )
+      #([#(key, Register(value:, seq:)), ..reversed], cache)
+    }),
+  )
+  #(list.reverse(reversed), cache)
 }
 
 // Escapes LIKE metacharacters so a register key prefix matches literally.
@@ -3879,13 +3900,6 @@ fn json_of_blob(
 fn entry_of_blob(blob: BitArray) -> Result(Entry, CorruptionReport) {
   use value <- result.try(json_of_blob(blob, "entry payload"))
   codec.decode_entry(value)
-}
-
-fn register_of_blob(
-  blob: BitArray,
-) -> Result(register.RegisterValue, CorruptionReport) {
-  use value <- result.try(json_of_blob(blob, "register payload"))
-  codec.decode_register_value(value)
 }
 
 // --- dynamic WHERE clause assembly ---------------------------------------

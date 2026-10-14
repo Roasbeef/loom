@@ -3,7 +3,9 @@
 Baselined October 13, 2026 on `codex/helper-concurrency`, starting from
 `b28dd654e2cb05a5f05257ea149cddfc91ebfadb` on the open idle-retirement
 [PR #975](https://github.com/Roasbeef/loom/pull/975). This is a separate,
-stacked concurrency change. The parent main was `dc70d25d4` (v0.3.2).
+stacked concurrency change. Current integration also includes main `e86d6fddd` (merged register decoding
+#972) through the updated #975 branch; historical benchmarks retain their
+original source and binary hashes.
 The installed daemon remains untouched; no merge, installation, restart or
 recurring automation was performed. The broader project plan remains
 `docs/issue-plan.md`.
@@ -75,13 +77,15 @@ normal-exit monitor witness. A compiled old-recursion mutant fails that witness;
 focused tests and independent review pass. The fresh full gate passed exit 0
 on an unchanged rerun after one unrelated web-operator deadline failure; focused
 reproduction passed and the cause remains unclassified. Fresh hosted checks
-remain a separate gate for the updated workflow head. There is no authorization
-to merge or deploy this PR.
+remain a separate gate for the updated workflow head. The owner authorized landing #975 first, then retargeting and merging #978
+on main after exact-head green checks and sufficient review. No deployment
+or daemon restart is authorized.
 
 ## Follow-ups
 
-Repeated register decoding is the separate open
-[PR #972](https://github.com/Roasbeef/loom/pull/972), outside this branch. Prior
+Repeated register decoding
+[PR #972](https://github.com/Roasbeef/loom/pull/972) is now merged on main and
+included through integration. Its report remains separate evidence. Prior
 busy-period sampling found JSON parsing prominent, but stack-sample shares are
 not CPU-time percentages. Re-profile the installed system after an explicitly
 requested upgrade before attributing production memory or CPU savings to either
@@ -95,3 +99,15 @@ Their start offsets tracked the preceding command durations. That is program
 sequencing; existing `cap/task.parallel_map` can express independent fetches
 concurrently. Helper multiplexing does not automatically parallelize sequential
 Gleam programs.
+
+## Main integration checkpoint
+
+The updated idle-retirement branch integrates main `e86d6fddd` and the strict
+deployment CI correction. Merging it here conflicted only in this handoff;
+production helper concurrency code merged unchanged. Fresh local gates and
+independent integration review must precede publication. Hosted run 38498413979
+on superseded `c9781b6ac` proved the strict delegated deployment fixture and
+passed the Linux aggregate, but its advisory macOS underlying web-view delivery
+assertion failed despite a green job conclusion. Focused unchanged reproduction
+passed; cause remains unclassified. Fresh hosted checks on the integrated head
+must complete both hard gates and underlying advisory tests before landing.
