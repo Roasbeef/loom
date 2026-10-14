@@ -63,8 +63,10 @@ masks a failed step. Eight-way hosted execution at `c7e628a8d` completed within
 budget but failed ten native daemon fixtures: provider callbacks exhausted
 their deadlines, and four executor startups could not reach or start epmd.
 Fixture review found no concrete shared-resource collision; hosted resource
-pressure remains an inference. The hosted package gate now uses two-way
-execution, preserving the existing serial exemptions. Final verification must
+pressure remains an inference. Two-way hosted execution at `352bcf6ad`
+reported no assertion failures before exhausting the unchanged 1,200-second
+client budget. The hosted package gate now uses four-way execution, preserving
+the existing serial exemptions. Final verification must
 inspect that step's actual outcome as well as the job.
 No test assertion, process deadline or advisory-policy changes.
 

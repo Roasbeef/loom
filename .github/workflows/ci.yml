@@ -940,7 +940,7 @@ jobs:
           LOOM_SOAK_LATENCY_BOUND: observe
           # Bound hosted concurrency while preserving the runner's existing
           # serial exemptions and budget for the full suite.
-          LOOM_TEST_PARALLEL: 2
+          LOOM_TEST_PARALLEL: 4
         run: set -o pipefail; .github/scripts/hex_retry.sh make check 2>&1 | tee check-macos.log
 
       # actions/upload-artifact v7.0.1
