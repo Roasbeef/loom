@@ -65,16 +65,22 @@ completed suite. Current main uses a two-shard macOS client matrix; inspect both
 raw logs before describing the combined checks. Existing owner-approved deadline
 policy cannot excuse unexplained assertions.
 
-Fresh combined-head review, focused and affected validation, hosted CI and Linux
-signoff remain required. No installed daemon, operator configuration, audit tools
-or hooks have been changed or executed by this integration.
+The owner revised the merge criteria to focused affected tests and integration
+review, explicitly choosing not to wait for the full gate. The combined provider
+suite passed all 311 tests and the Codex authentication group passed all 34.
+Catalogue tests passed 134 cases and gateway tests passed 153. Formatting,
+focused provider/client lint, documentation checks and independent integration
+review passed; the review found no actionable integration issues or lost tests.
+Full combined hosted CI and Linux signoff
+are not established by those results. No installed daemon, operator configuration,
+audit tools or hooks have been changed or executed by this integration.
 
 ## Next steps
 
-1. Verify the merged implementations and every regression remain intact, run
-   integration review and new combined-head checks, and update PR #985's scope.
-2. Use the explicitly approved background follow-up to merge only the exact
-   reviewed combined head after required checks and Linux signoff pass. Preserve
-   failures honestly, with no bypass or weakened test.
+1. Publish the combined head and update PR #985's scope and the focused
+   validation evidence recorded above.
+2. Merge the exact reviewed head using the normal merge path, as authorized
+   after focused checks. Do not claim the full gate passed. If branch protection
+   prevents the merge, report its actual refusal before considering a bypass.
 3. Verify main contains all three reviewed changes, report the merge and stop
    the follow-up. Installation and daemon restart remain separate owner actions.
