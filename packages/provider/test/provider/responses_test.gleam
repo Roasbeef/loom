@@ -1661,3 +1661,86 @@ pub fn responses_failure_terminal_guards_have_distinct_reasons_test() {
     )
   })
 }
+
+// Live subscription streams send a bare control event during long reasoning.
+// Its sequence participates in wire ordering, while its body changes no turn.
+fn keepalive(sequence: Int) -> String {
+  event("keepalive", [#("sequence_number", json.Int(sequence))])
+}
+
+pub fn responses_keepalive_preserves_text_and_tools_across_chunks_test() {
+  list.each(
+    [
+      text_events("Hello 🧵", "output_text"),
+      namespaced_call_events(json.String("loom")),
+    ],
+    fn(body) {
+      let interleaved =
+        body
+        |> list.index_map(fn(frame, index) { [keepalive(343 + index), frame] })
+        |> list.flatten
+        |> string.concat
+        |> bit_array.from_string
+      list.each(
+        [
+          machine(),
+          responses.subscription_response_machine(resolved(), now: 123),
+        ],
+        fn(parser) {
+          let expected = fixture.drive_ok(parser, string.concat(body))
+          let _assistant = settled(expected)
+          list.each([1, 7, 64], fn(size) {
+            assert fixture.drive(
+                parser,
+                200,
+                [],
+                fixture.chunked(interleaved, size),
+              )
+              == expected
+          })
+        },
+      )
+    },
+  )
+}
+
+pub fn responses_keepalive_still_checks_names_and_sequences_test() {
+  let wrong_name =
+    fixture.sse_event(
+      "response.in_progress",
+      "{\"type\":\"keepalive\",\"sequence_number\":343}",
+    )
+  let report = failure_report(run([created(), wrong_name]))
+  assert string.contains(report.subject, "event=keepalive; seq=343")
+  assert string.contains(report.context, "reason=event_name;")
+  list.each([343, 342], fn(next) {
+    let report =
+      failure_report(run([created(), keepalive(343), keepalive(next)]))
+    assert string.contains(report.context, "reason=sequence;")
+    assert string.contains(report.context, "last_seq=343;")
+  })
+  let progress =
+    event("response.in_progress", [
+      #("sequence_number", json.Int(343)),
+      #("response", response("in_progress", [])),
+    ])
+  let report = failure_report(run([created(), keepalive(343), progress]))
+  assert string.contains(report.context, "reason=sequence;")
+}
+
+pub fn responses_keepalive_never_substitutes_for_semantic_witnesses_test() {
+  let partial = list.take(text_events("partial", "output_text"), 7)
+  let events = run(list.append(partial, [keepalive(343)]))
+  let assert Ok(stream.Failed(stream.StreamDisconnected(_), _)) =
+    list.last(events)
+    as "A keepalive cannot settle an otherwise closed item without a response terminal."
+  let report = failure_report(run([keepalive(343), completed([])]))
+  assert string.contains(report.context, "reason=terminal_before_created;")
+  let report =
+    failure_report(
+      run([created(), keepalive(343), event("secret-control-canary", [])]),
+    )
+  assert string.contains(report.subject, "event=unknown;")
+  assert string.contains(report.context, "reason=event_unsupported;")
+  assert !string.contains(corruption.describe(report), "secret-control-canary")
+}

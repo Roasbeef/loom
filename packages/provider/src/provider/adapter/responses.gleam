@@ -471,7 +471,8 @@ fn handle_sse(
 fn event_witness(value: JsonValue) -> #(String, String) {
   let kind = wire.string_field_or(value, "type", "")
   let kind = case kind {
-    "response.created"
+    "keepalive"
+    | "response.created"
     | "response.in_progress"
     | "response.output_item.added"
     | "response.content_part.added"
@@ -554,6 +555,10 @@ fn dispatch(
   value: JsonValue,
 ) -> #(Accumulator, List(StreamEvent)) {
   case kind {
+    // Subscription streams send this control frame during long reasoning.
+    // Framing and sequence validation already ran; no semantic witness changes.
+    "keepalive" -> #(acc, [])
+
     "response.created" | "response.in_progress" -> {
       use response <- or_malformed(
         wire.field(value, "response"),
