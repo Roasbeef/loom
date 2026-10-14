@@ -1,5 +1,20 @@
 # client
 
+## Responses service tier
+
+`client/catalog.CatalogModel.service_tier` is an optional typed
+`provider/model.ResponsesServiceTier`. Only `openai-responses` and
+`codex-subscription` accept `[models.<name>].service_tier`, with `fast` or
+`default`. Catalogue installation attaches the selection through
+`provider/gateway.with_service_tier`, whose opaque per-provider map preserves
+the frozen resolved-model and request contracts. Every attempt, including a
+fallback, encodes its own entry's selection in the Responses request body.
+An absent selection omits the field. Fast mode encodes the documented
+`priority` wire alias for compatibility with native subscription inference.
+Requesting Fast mode neither grants
+eligibility nor proves the served tier, and does not change reasoning or
+cybersecurity access. Operator pricing remains an estimate.
+
 ## Responses cybersecurity access
 
 `client/catalog.CatalogModel.cyber_access` holds an optional typed
@@ -1226,7 +1241,11 @@ catalogue without opening runtimes. Explicit admission invokes
   `oidc.Verification` distinguishes browser nonce validation from refresh
   subject continuity. Gose pins RS256 to the fixed issuer JWKS and validates
   issuer, issued-client audience, expiry and subject; multiple audiences
-  require a matching authorized party. Identity-only grants are saved,
+  require a matching authorized party. Time claims allow only five seconds
+  of UTC clock drift, and fixed `invalid_identity_*` labels identify the
+  rejected check without copying token claims, key IDs or parser excerpts.
+  Browser nonce and refresh subject checks remain exact. Identity-only grants
+  are saved,
   including grants without a refresh token, while plan inference requires
   `resource.invoke` and `chatgpt.tokens.use.direct`.
 - `client/demo.run` — the M3 acceptance flow end to end, executed as a

@@ -2011,6 +2011,7 @@ fn env_catalog() -> catalog.Catalog {
         vision: catalog.ReadsImages,
         max_images: 8,
         cyber_access: None,
+        service_tier: None,
       ),
     ],
     roles: [#(model.Main, ["anthropic"])],

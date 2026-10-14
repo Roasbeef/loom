@@ -1991,6 +1991,142 @@ plan = [\"plain\"]
   )
 }
 
+pub fn service_tier_values_are_typed_and_dialect_scoped_test() {
+  let public = responses_catalogue("auth = \"api-key\"\napi_key_env = \"KEY\"")
+  list.each(
+    [
+      #("default", model.DefaultServiceTier),
+      #("fast", model.FastServiceTier),
+    ],
+    fn(pair) {
+      let #(value, expected) = pair
+      let assert Ok(parsed) =
+        catalog.parse(string.replace(
+          public,
+          "model_id =",
+          "service_tier = \"" <> value <> "\"\nmodel_id =",
+        ))
+        as "Every documented tier value must parse as a typed selection."
+      let assert Ok(entry) = catalog.main_model(parsed)
+        as "The configured main entry must exist."
+      assert entry.service_tier == Some(expected)
+    },
+  )
+
+  // Absence leaves entitlement defaults to the server. Invalid values and
+  // other dialects refuse the configuration instead of dropping the option.
+  let assert Ok(defaults) = catalog.parse(public)
+    as "Existing Responses catalogues must still load."
+  let assert Ok(entry) = catalog.main_model(defaults)
+    as "The default entry must exist."
+  assert entry.service_tier == None
+  list.each(["1", "\"unknown\""], fn(value) {
+    let assert Error(_) =
+      catalog.parse(string.replace(
+        public,
+        "model_id =",
+        "service_tier = " <> value <> "\nmodel_id =",
+      ))
+      as "Invalid tier values must be refused."
+  })
+  list.each(["anthropic", "openai", "gemini"], fn(dialect) {
+    let text =
+      minimal
+      |> string.replace(
+        "dialect = \"anthropic\"",
+        "dialect = \"" <> dialect <> "\"",
+      )
+      |> string.replace("model_id =", "service_tier = \"fast\"\nmodel_id =")
+    assert catalog.parse(text)
+      == Error(
+        "models.one.service_tier is only supported for Responses dialects",
+      )
+  })
+}
+
+pub fn service_tier_dispatches_each_entry_for_role_and_resolved_test() {
+  let text =
+    "
+[models.plain]
+dialect = \"openai-responses\"
+auth = \"api-key\"
+api_key_env = \"KEY\"
+model_id = \"gpt-6-sol\"
+context_window = 272000
+max_output_tokens = 8192
+service_tier = \"default\"
+[models.fast]
+dialect = \"codex-subscription\"
+auth = \"codex\"
+profile = \"personal\"
+model_id = \"gpt-6-sol\"
+context_window = 272000
+max_output_tokens = 8192
+service_tier = \"fast\"
+[roles]
+main = [\"fast\"]
+plan = [\"plain\"]
+"
+  let assert Ok(parsed) = catalog.parse(text)
+    as "Same model IDs can have distinct named tier selections."
+  let requests = process.new_subject()
+  let transport =
+    provider_test.transport(fn(sent, events) {
+      process.send(requests, sent)
+      process.send(events, http.ResponseStatus(403, []))
+      process.send(events, http.ResponseEnd)
+    })
+  let gateway =
+    catalog.gateway(
+      parsed,
+      transport:,
+      secrets: secret.from_list([#("KEY", "fixture-key")]),
+      clock: clock.fixed(0),
+    )
+    |> provider_gateway.with_codex_transport(
+      provider_gateway.CodexTransport(
+        prepare_streaming: fn(profile, sent, _events) {
+          assert profile == "personal"
+          process.send(requests, sent)
+          Error("intentional native admission refusal")
+        },
+      ),
+    )
+
+  // The tier belongs to the named endpoint, so the same underlying model
+  // selects correctly through both role resolution and pinned identity dispatch.
+  list.each([#(model.Main, "priority"), #(model.Plan, "default")], fn(pair) {
+    let #(role, tier) = pair
+    let assert Ok(resolved) = provider_gateway.resolve(gateway, role)
+      as "Both routes must resolve."
+    list.each(
+      [model.ForRole(role, None), model.ForResolved(resolved)],
+      fn(target) {
+        let handle =
+          provider_gateway.request(
+            gateway,
+            model.ProviderRequest(
+              target:,
+              system: None,
+              messages: [],
+              tools: [],
+              max_output_tokens: None,
+            ),
+          )
+        let assert Ok(#(_, stream.Failed(_, _))) =
+          stream.await_terminal(handle, within: 2000)
+          as "Each intentional refusal must settle."
+        let assert Ok(sent) = process.receive(requests, within: 1000)
+          as "Each dispatch must reach the intended transport."
+        let assert Ok(body) = json.parse(sent.body)
+          as "Requests must be valid JSON."
+        assert wire.field(body, "model") == Ok(json.String("gpt-6-sol"))
+        assert wire.field(body, "service_tier") == Ok(json.String(tier))
+      },
+    )
+  })
+}
+
 // --- model choice (protocol-change/080) --------------------------------------
 
 pub fn model_keys_list_every_entry_sorted_test() {

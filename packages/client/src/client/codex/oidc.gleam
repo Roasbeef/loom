@@ -4,6 +4,8 @@
 //// requires a matching published key ID, and verifies issuer, audience and
 //// expiry before this module inspects subject and attempt nonce. The network
 //// path loads keys from the fixed issuer, never a token-controlled URL.
+//// Time claims allow five seconds of UTC clock drift. Fixed failure labels
+//// identify the refused check without exposing claims or parser excerpts.
 ////
 //// A token that names a key the published set does not hold is refused as
 //// `unknown_signing_key` rather than `invalid_identity`, and the network path
@@ -116,25 +118,28 @@ pub fn verify_with_keys(
 ) -> Result(String, String) {
   use <- bool.guard(
     when: string.byte_size(token) > 16_384 || string.byte_size(jwks) > 65_536,
-    return: Error("invalid_identity"),
+    return: Error("invalid_identity_size"),
   )
   use keys <- result.try(
     key_set.from_json(without_certificates(jwks))
-    |> result.replace_error("invalid_identity"),
+    |> result.replace_error("invalid_identity_key_set"),
   )
 
-  // Asked before the verifier, whose own refusal of a missing key ID is the
-  // same `invalid_identity` a forged signature earns.
+  // Asked before signature validation so an unpublished key earns its
+  // bounded refetch rather than a generic library verification refusal.
   use <- bool.guard(
     when: names_unpublished_key(token, keys),
     return: Error(unknown_signing_key),
   )
+
+  // The issuer and this host need not agree to the second. A five-second
+  // tolerance admits small UTC clock drift without making time checks optional.
   let options =
     jwt.JwtValidationOptions(
       ..jwt.default_validation(),
       issuer: Some("https://auth.openai.com"),
       audience: Some(client_id),
-      clock_skew: 0,
+      clock_skew: 5,
       kid_policy: jwt.RequireKidMatch,
     )
   use verifier <- result.try(
@@ -143,7 +148,7 @@ pub fn verify_with_keys(
       keys: key_set.to_list(keys),
       options: options,
     )
-    |> result.replace_error("invalid_identity"),
+    |> result.replace_error("invalid_identity_verifier"),
   )
   use verified <- result.try(
     jwt.verify_and_validate(
@@ -151,22 +156,22 @@ pub fn verify_with_keys(
       token: token,
       now: timestamp.from_unix_seconds(now_ms / 1000),
     )
-    |> result.replace_error("invalid_identity"),
+    |> result.map_error(identity_failure),
   )
   use claims <- result.try(
     jwt.decode(verified, identity_decoder())
-    |> result.replace_error("invalid_identity"),
+    |> result.replace_error("invalid_identity_claims"),
   )
   use <- bool.guard(
     when: claims.subject == "" || string.byte_size(claims.subject) > 512,
-    return: Error("invalid_identity"),
+    return: Error("invalid_identity_subject"),
   )
 
   // Multiple audiences require the authorized party to identify this client.
   use <- bool.guard(
     when: list.drop(claims.audience, 1) != []
       && claims.authorized_party != Some(client_id),
-    return: Error("invalid_identity"),
+    return: Error("invalid_identity_authorized_party"),
   )
   use Nil <- result.try(case verification {
     Browser(expected) ->
@@ -179,9 +184,9 @@ pub fn verify_with_keys(
             )
           {
             True -> Ok(Nil)
-            False -> Error("invalid_identity")
+            False -> Error("invalid_identity_nonce")
           }
-        None -> Error("invalid_identity")
+        None -> Error("invalid_identity_nonce_missing")
       }
     Refresh(expected) ->
       case claims.subject == expected {
@@ -190,6 +195,31 @@ pub fn verify_with_keys(
       }
   })
   Ok(claims.subject)
+}
+
+// Library errors may carry claims, key identifiers or parser excerpts. Only
+// fixed labels cross the identity boundary into operator diagnostics.
+fn identity_failure(error: jwt.JwtError) -> String {
+  case error {
+    jwt.InvalidSignature -> "invalid_identity_signature"
+    jwt.TokenExpired(_) -> "invalid_identity_expired"
+    jwt.TokenNotYetValid(_) -> "invalid_identity_not_yet_valid"
+    jwt.MissingExpiration -> "invalid_identity_expiration_missing"
+    jwt.MissingIssuedAt -> "invalid_identity_issued_at_missing"
+    jwt.IssuedInFuture(_) -> "invalid_identity_issued_in_future"
+    jwt.TokenTooOld(_, _) -> "invalid_identity_too_old"
+    jwt.IssuerMismatch(_, _) -> "invalid_identity_issuer"
+    jwt.AudienceMismatch(_, _) -> "invalid_identity_audience"
+    jwt.JwsAlgorithmMismatch(_, _) | jwt.JweAlgorithmMismatch(_, _, _, _) ->
+      "invalid_identity_algorithm"
+    jwt.MissingKid -> "invalid_identity_key_id_missing"
+    jwt.UnknownKid(_) -> unknown_signing_key
+    jwt.MalformedToken(_) -> "invalid_identity_token"
+    jwt.ClaimDecodingFailed(_) -> "invalid_identity_claims"
+    jwt.InsecureUnprotectedHeader(_) -> "invalid_identity_header"
+    jwt.InvalidJti(_) | jwt.InvalidClaim(_) -> "invalid_identity_claim"
+    jwt.DecryptionFailed(_) | jwt.JoseError(_) -> "invalid_identity_crypto"
+  }
 }
 
 /// Drops the X.509 members from every key of a published key set.
@@ -243,9 +273,8 @@ fn certificate_free_key(key: dict.Dict(String, Option(String))) -> json.Json {
 
 /// Whether the token names a key ID that the published set does not hold.
 ///
-/// A token that will not parse, or names no key, is left to the verifier,
-/// which refuses it as `invalid_identity`; only a readable key ID absent from
-/// the set is the issuer's change rather than the token's fault.
+/// A token that will not parse, or names no key, is left to the verifier.
+/// Only a readable key ID absent from the set earns the bounded refetch.
 fn names_unpublished_key(token: String, keys: key_set.JwkSet) -> Bool {
   let named =
     jwt.parse(token)

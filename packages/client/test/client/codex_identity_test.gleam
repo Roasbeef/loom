@@ -50,7 +50,7 @@ pub fn codex_signed_identity_pins_key_issuer_audience_expiry_nonce_test() {
       1_000_000,
       jwks,
     )
-    == Error("invalid_identity")
+    == Error("invalid_identity_audience")
   assert oidc.verify_with_keys(
       token,
       "oaiapp_loom",
@@ -58,15 +58,15 @@ pub fn codex_signed_identity_pins_key_issuer_audience_expiry_nonce_test() {
       1_000_000,
       jwks,
     )
-    == Error("invalid_identity")
+    == Error("invalid_identity_nonce")
   assert oidc.verify_with_keys(
       token,
       "oaiapp_loom",
       oidc.Browser("attempt-nonce"),
-      2_001_000,
+      2_005_000,
       jwks,
     )
-    == Error("invalid_identity")
+    == Error("invalid_identity_expired")
   assert oidc.verify_with_keys(
       token,
       "oaiapp_loom",
@@ -82,7 +82,7 @@ pub fn codex_signed_identity_pins_key_issuer_audience_expiry_nonce_test() {
       1_000_000,
       jwks,
     )
-    == Error("invalid_identity")
+    == Error("invalid_identity_issuer")
   assert oidc.verify_with_keys(
       signed(jwt.with_subject(claims, ""), key),
       "oaiapp_loom",
@@ -90,7 +90,7 @@ pub fn codex_signed_identity_pins_key_issuer_audience_expiry_nonce_test() {
       1_000_000,
       jwks,
     )
-    == Error("invalid_identity")
+    == Error("invalid_identity_subject")
 
   // A key ID the set does not hold is still refused, under its own name.
   let unknown_key = gose.with_kid(key, "unknown-key")
@@ -118,7 +118,7 @@ pub fn codex_signed_identity_pins_key_issuer_audience_expiry_nonce_test() {
       1_000_000,
       jwks,
     )
-    == Error("invalid_identity")
+    == Error("invalid_identity_expiration_missing")
 
   // Multiple audiences require the authorized party to identify this client.
   let assert Ok(many_audiences) =
@@ -131,7 +131,7 @@ pub fn codex_signed_identity_pins_key_issuer_audience_expiry_nonce_test() {
       1_000_000,
       jwks,
     )
-    == Error("invalid_identity")
+    == Error("invalid_identity_authorized_party")
   let assert Ok(bound_audiences) =
     jwt.with_claim(many_audiences, "azp", json.string("oaiapp_loom"))
     as "The authorized party identifies the issued client."
@@ -154,7 +154,86 @@ pub fn codex_signed_identity_pins_key_issuer_audience_expiry_nonce_test() {
       1_000_000,
       jwks,
     )
-    == Error("invalid_identity")
+    == Error("invalid_identity_signature")
+}
+
+pub fn codex_identity_allows_only_five_seconds_of_clock_drift_test() {
+  let assert Ok(key) = gose.generate_rsa(2048)
+    as "RSA fixture generation succeeds."
+  let key = gose.with_kid(key, "clock-key")
+  let jwks = published([key])
+  let assert Ok(claims) =
+    jwt.claims()
+    |> jwt.with_issuer("https://auth.openai.com")
+    |> jwt.with_audience("oaiapp_loom")
+    |> jwt.with_subject("account-one")
+    |> jwt.with_expiration(timestamp.from_unix_seconds(2000))
+    |> jwt.with_claim("nonce", json.string("attempt-nonce"))
+    as "The time-bound fixture has a valid nonce."
+  let verify = fn(claims) {
+    oidc.verify_with_keys(
+      signed(claims, key),
+      "oaiapp_loom",
+      oidc.Browser("attempt-nonce"),
+      1_000_000,
+      jwks,
+    )
+  }
+
+  // Both login and refresh see issued-at timestamps from the same issuer.
+  // The observed four-second offset and the five-second boundary remain valid.
+  list.each([1004, 1005], fn(issued_at) {
+    let claims =
+      jwt.with_issued_at(claims, timestamp.from_unix_seconds(issued_at))
+    assert verify(claims) == Ok("account-one")
+    assert oidc.verify_with_keys(
+        signed(claims, key),
+        "oaiapp_loom",
+        oidc.Refresh("account-one"),
+        1_000_000,
+        jwks,
+      )
+      == Ok("account-one")
+  })
+  assert verify(jwt.with_issued_at(claims, timestamp.from_unix_seconds(1006)))
+    == Error("invalid_identity_issued_in_future")
+
+  // Not-before and expiry use the same bounded tolerance, not a missing check.
+  assert verify(jwt.with_not_before(claims, timestamp.from_unix_seconds(1005)))
+    == Ok("account-one")
+  assert verify(jwt.with_not_before(claims, timestamp.from_unix_seconds(1006)))
+    == Error("invalid_identity_not_yet_valid")
+  assert verify(jwt.with_expiration(claims, timestamp.from_unix_seconds(996)))
+    == Ok("account-one")
+  assert verify(jwt.with_expiration(claims, timestamp.from_unix_seconds(995)))
+    == Error("invalid_identity_expired")
+}
+
+pub fn codex_identity_diagnostics_never_echo_untrusted_input_test() {
+  let assert Ok(key) = gose.generate_rsa(2048)
+    as "RSA fixture generation succeeds."
+  let jwks = published([gose.with_kid(key, "private-key-id")])
+  let verification = oidc.Browser("private-nonce")
+
+  // Size, key parsing and token parsing keep only the rejected check's label.
+  list.each(
+    [
+      #(string.repeat("private-token", 1400), jwks, "invalid_identity_size"),
+      #("private-token", "private-key-body", "invalid_identity_key_set"),
+      #("private-token", jwks, "invalid_identity_token"),
+    ],
+    fn(fixture) {
+      let #(token, keys, expected) = fixture
+      assert oidc.verify_with_keys(
+          token,
+          "private-client",
+          verification,
+          1_000_000,
+          keys,
+        )
+        == Error(expected)
+    },
+  )
 }
 
 fn signed(claims: jwt.Claims, key: gose.Key(String)) -> String {
