@@ -25,6 +25,11 @@ declared|linux|SKIP daemon state-root masking: platform enforcement unavailable|
 # gate run every scenario for real.
 declared|linux|SKIP shipped remote: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the macOS gate and the local Linux sign-off gate run the registered-session, restart and partition scenarios for real.
 
+# The deployment-status fixture boots the same orchestrator/executor pair and
+# inherits its enforcement prerequisite. The delegated jail job runs this exact
+# fixture with an empty declaration set, so it must execute there.
+declared|linux|SKIP shipped deployment status: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the delegated Linux jail job runs the deployment-status fixture with no skip waiver.
+
 # The remote capabilities fixture compiles a code-mode program in the executor
 # daemon's jail and asks the same measured question through the same probe. A
 # runner whose helper cannot enforce a policy declines the whole fixture rather
