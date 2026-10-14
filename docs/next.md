@@ -1,189 +1,77 @@
 # Current handoff
 
-Baselined October 13, 2026 against `526fb44c4` on
-`docs/archive-ui-captures`, based on `main` at
-`dc70d25d42da531284225bf399f40f82e13539d4`. This edition covers the capture
-cleanup and its CI repair, integrated with `main` at `99975fe00`. It records
-evidence from this checkout; earlier validation does not establish the state
-of this branch. The project plan remains `docs/issue-plan.md`.
+Baselined October 14, 2026 against main
+`3ee679ca7b7a36bb2e518f4494214de364217e7b`. PR #985's login implementation
+is rebased without source changes from reviewed `2c7a99c61`.
+Main includes #972's register decoding, #979's Responses diagnostics and
+deployment CI enforcement, #982's per-strand timing, and #976's capture archive
+and CI repair. The cleanup manifest, recovery commands and upstream timing
+rulings remain in the [main handoff](https://github.com/Roasbeef/loom/blob/3ee679ca7b7a36bb2e518f4494214de364217e7b/docs/next.md).
+Its pending-validation wording describes that historical branch. The project
+plan remains `docs/issue-plan.md`. No installed daemon was changed by this work.
 
-The previous edition still instructed the reader to publish the web browsing
-branch. [PR #967](https://github.com/Roasbeef/loom/pull/967) merged on October 12,
-2026 at `138fe472ae5897ef95182298ccf3ef9be019c53b`. Its implementation details,
-validation and separate parent/child follow-up remain in the
-[previous handoff](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/next.md).
-Those historical test counts are not carried forward as cleanup validation.
+## Confirmed login failure
 
-## Where the tree is
+A fresh native `personal` sign-in failed the JWT issued-at check:
+`invalid_identity_issued_in_future`. This was reproduced with diagnostic labels
+and the existing zero-second clock tolerance. With a five-second tolerance,
+a second fresh browser sign-in succeeded and saved the grant normally.
+The host's HTTP Date comparison suggested a small clock offset; the explicit
+JWT refusal, rather than that approximate measurement, identifies the check.
+A displayed timezone change does not change UTC JWT timestamps.
 
-The cleanup removes 782 historical terminal, web and website capture files,
-representing 55,965,157 bytes. Tracked content falls from 99.53 MiB to 46.32 MiB
-at the baseline above, including the manifest and repaired links. The
-[capture archive](design-notes/capture-archive.md) names the original GitHub
-snapshot and recovery commands; its SHA-256 manifest covers every deletion.
-
-The useful design notes, review records, both terminal generators, tmux renderer,
-README images and published website assets remain. The generators and renderer
-retain their existing paths. Ignore rules cover generated exploration captures,
-website QA screenshots, local session journals and nested scratch worktrees.
-
-## Upstream state
-
-[PR #972](https://github.com/Roasbeef/loom/pull/972) merged at `e86d6fddd`
-while cleanup validation was running. Its register-decode cache and regressions
-are included here. Every read still queries SQL, and the store-owned cache
-uses exact persisted blob keys, bounded at 64 blobs and 256 KiB encoded bytes.
-The [measurement report](review/register-decoding-2026-10-12.md) preserves its
-warm-read savings, cold/overflow costs and retained-memory tradeoff. Its prior
-validation belongs to that change; final hosted CI and signoff must cover this
-merged tree. The [upstream handoff](https://github.com/Roasbeef/loom/blob/e86d6fddd/docs/next.md)
-retains its detailed evidence and live memory follow-ups. No installed daemon
-was changed by this cleanup.
-
-[PR #979](https://github.com/Roasbeef/loom/pull/979) subsequently merged at
-`c47175004`, including the Responses diagnostic work from #977 and the
-mandatory delegated deployment-status coverage. The CI merge keeps upstream's
-single enforcement step, its 180-second bound and exact ordinary-Linux skip
-declaration. Responses validation failures now retain fixed reason codes and
-bounded structural context without provider text or identifiers; no acceptance
-or retry rule changed. The provider README and
-[upstream handoff](https://github.com/Roasbeef/loom/blob/c47175004/docs/next.md)
-preserve its evidence and the distinction between malformed streams and generic
-provider-error responses. Final verification must cover the combined tree.
-
-[PR #982](https://github.com/Roasbeef/loom/pull/982) subsequently merged at
-`99975fe00`. The terminal and web view now share a session-scoped generation
-rate ledger indexed by strand. Focus selects a strand's timing, and partial
-observations retain the previous complete rate instead of reporting a full
-request measurement. Its [upstream handoff](https://github.com/Roasbeef/loom/blob/99975fe00/docs/next.md)
-preserves the capture-ordering rules, regression and mutation evidence, and the
-open need for server timing to measure requests already active at attachment.
-These upstream results do not validate the combined cleanup head. No daemon
-has been updated, and deployment remains separate.
-
-## Rulings already made
-
-Each of these is settled. Re-open one only with new evidence, and record the
-reopening where the ruling lives.
-
-**Preserve history for this PR.** Historical links name the exact original
-commit. The archive guide explains that this removes captures from current
-checkouts, while full-history clones retain their original objects.
-
-**Keep published assets curated.** README and website assets remain tracked
-under `docs/images/` and `site/public/img/`. Temporary captures belong outside
-the checkout or in the ignored exploration directories.
+The client now tolerates five seconds for issued-at, not-before and expiry,
+matching OpenAI's published ID-token verification example. Larger offsets remain
+refused. Signature, algorithm, issuer, audience, authorized party, nonce and
+subject validation remain enforced. Fixed diagnostic codes identify refused
+checks without reflecting tokens, claims, key identifiers or parser messages.
+Unknown signing keys retain the existing bounded key-set refetch path.
 
 ## Verification boundary
 
-The website gate passed 68 tests, its copy check and build. Both preserved
-terminal generators ran from an empty scratch directory without the archived
-captures; the tmux renderer produced a PNG. All 782 manifest entries matched
-the original Git blobs and an independently exported tarball. A whole-tree
-Markdown sweep verified 570 pinned archive destinations and found no remaining
-local link to a deleted capture. Ignore checks covered capture/scratch paths
-and useful docs, scripts and curated assets. Independent review found two
-multiline-label image links; both were fixed and rechecked.
+All 34 focused Codex tests passed. All eight identity tests passed under both
+UTC and America/New_York. Real RSA-signed boundary tests cover browser and refresh
+issued-at validation, not-before and expiry. A zero-skew control failed the new
+clock test as expected; restoring five seconds passed. The live patched browser
+login succeeded. At prior head `be753e0c67c027680ec3acf0164e97ec1911aa82`,
+the affected gate passed in 571 seconds and full Linux signoff passed in 1,647
+seconds. Independent review found no actionable issues. Hosted aggregate gates
+passed, but the macOS advisory raw log contained a native-launcher readiness
+assertion failure and later reached the separate client 1,200-second deadline.
+Five focused unchanged local controls passed; one hosted advisory retry was
+requested. The original assertion failure is retained as evidence rather than
+counted as a completed advisory suite.
 
-The initial network-enabled full gate on `8de625cfd` used the runner's
-sequential default. The client suite exhausted its 1,200-second test budget
-while the real TUI E2E test was running; the full lane exited 124 after no
-reported assertion failures, and the final skip census passed. That attempt
-is historical evidence of an aggregate timeout, not a whole-tree green claim.
-The follow-up uses the existing `LOOM_TEST_PARALLEL=8` arrangement documented in
-`docs/execution.md`, retaining the existing deadlines and `scripts/serial-tests`
-isolation. The macOS advisory log at `526fb44c4` showed the same aggregate
-client timeout despite a successful job status: its existing advisory setting
-masks a failed step. Eight-way hosted execution at `c7e628a8d` completed within
-budget but failed ten native daemon fixtures: provider callbacks exhausted
-their deadlines, and four executor startups could not reach or start epmd.
-Fixture review found no concrete shared-resource collision; hosted resource
-pressure remains an inference. Two-way hosted execution at `352bcf6ad`
-reported no assertion failures before exhausting the unchanged 1,200-second
-client budget. Four-way execution at `cc28ea21d` exposed a code-mode fixture's
-500 ms invocation deadline before reaching the client suite; five focused
-native runs passed, but do not establish a hosted flake. The hosted package
-gate now opts only the client suite into four-way execution, through
-`LOOM_CLIENT_TEST_PARALLEL`. Other packages retain their sequential default,
-and the existing global `LOOM_TEST_PARALLEL` knob still applies elsewhere.
-Client serial exemptions remain unchanged. The saved four-way client log still
-showed six remote-fixture failures and more simultaneous starts than four.
-An actual OTP EUnit probe identified the runner defect: its inherited parallel
-order applied separately to nested groups, allowing 16 simultaneous test
-bodies at a setting of four. The runner now wraps each parallel module in
-`inorder`, bounding concurrent modules while keeping each module's tests and
-generators sequential. The probe measured four simultaneous bodies with that
-shape; the existing exclusive serial barrier remains intact. Final verification
-must inspect the advisory step's actual outcome as well as the job. The
-integrated head `681bcc25e` obtained genuine Linux signoff and hosted Linux
-and macOS E2E passes, but the bounded four-module macOS client run exhausted
-its unchanged 1,200-second budget without assertion failures. The next hosted attempt used eight bounded modules, matching signoff's
-module limit; other packages retained their scheduling and all deadlines
-remained unchanged. Its result and the current configuration follow below.
-No test assertion, process deadline or advisory-policy changes.
+The rebase preserves main's source, CI and capture cleanup. Current-head
+integration review, hosted CI and Linux signoff must finish before merge;
+prior-head validation is historical evidence.
 
-The sequential macOS E2E lane at `3a53ebcff` exposed a separate fixture race:
-`a_deadline_keeps_the_calls_made_so_far_test` could start its 200 ms timer
-before the fake peer's first call was admitted. Zero recorded calls is valid
-in that ordering. The fixture now waits for the existing precheck admission
-witness before handing off the connection and arming the unchanged timer.
-It still requires `DeadlineExceeded`, one total call and one unsettled call;
-missing admission rejects the launch within a bounded wait. No production
-behavior changes. Independent review verified the admission and timer order.
+The successful login updates the saved profile, which the daemon rereads for
+operations. The installed daemon does not yet contain this clock-policy fix;
+installing a future reviewed release and restarting remains a separate operator
+action. This work has not installed or restarted the daemon.
 
-Hosted Linux jobs at `526fb44c4` passed beneath an aggregate census failure:
-`SKIP shipped deployment status: platform enforcement unavailable` had no
-ordinary-Linux declaration. The CI repair declares that measured prerequisite
-failure only in `.github/declared-skips-linux-gate`. The delegated jail also
-runs the exact deployment-status fixture and rejects every skip with an empty
-declaration set, so its live executor up/down assertions remain mandatory.
-The new step joins the existing delegated cgroup and uses the shipment built
-by that lane. Its log is included in the lane's artifacts.
+## Separate provider failure
 
-Replaying the actual failed Linux log fails with the old declarations, passes
-with the repair, and fails under the delegated lane's empty declarations.
-Skip-reporting tests, YAML/shell checks and independent review passed. These
-checks verify the repair's wiring; its actual Linux execution and all final
-hosted results belong on [PR #976](https://github.com/Roasbeef/loom/pull/976).
-Require the exact pushed head's hosted checks and genuine `signoff/linux`
-status before calling it merge-ready. Neither a local pass nor an earlier
-head's signoff substitutes for those results.
+Model discovery initially returned HTTP 520 from Cloudflare after successful
+login. The owner subsequently reported progress with a VPN. A later Responses
+attempt failed with `event_unsupported`, `event=unknown`, `last_seq=5` and
+`bytes=316248`. Saved history identifies the rejected dispatch check but does
+not retain the unknown event name. This evidence cannot establish which event
+was sent or whether it was valid. The byte count is cumulative delivered chunks,
+not the offending event's size. No provider acceptance rule has been changed. A read-only context-only replay
+settled successfully; a closer replay with 23 production builtin tool definitions
+reproduced an unsupported event at sequence 19. Five extension definitions and
+dynamic MCP surfaces were omitted, so it was not a byte-exact request replay.
+No tool or hook ran, and no audit session was changed. The owner subsequently
+reported that the real session was responding again without a provider patch;
+that recovery does not identify the earlier unknown event.
 
-The next same-head run (`919d0646d`) and its bounded retry exposed two
-pre-existing fixture observation races. The web code-block measurement
-repeatedly subtracted a catch-up from a patch that also carried new lines;
-its code-specific collector now attributes patches by exact new-row content,
-requires all eight new rows in one patch and retains the 2 KiB payload bound.
-It uses Lustre's public JSON encoder; `gleam_json` is declared as a test-only
-dependency at its already-resolved version, with no package/version changes.
-The claim-refusal fixture could request the browser refusal before the terminal
-claim socket's allocation retired. It now witnesses that custody release,
-releases its probe permit and crosses a root-message barrier before asserting
-the original fixed refusal words. No production behavior or deadline changes.
+## Next steps
 
-The integrated fixture-repair head `d6c5dc6cc` passed web-view, code-mode,
-Linux and macOS E2E coverage, but its bounded eight-module macOS client run
-failed five native distribution fixtures in 1,170.91 seconds. Inner failures
-included epmd unavailability, ERPC disconnection and incomplete status responses.
-Four modules had avoided assertions but exhausted the aggregate budget. The
-hosted gate now partitions the complete client module collection between two
-runners at four concurrent modules each. Each matrix member still runs the
-default full gate and all other packages; only client is partitioned. Unique
-outcomes and log artifacts retain both results, and the census consumes both
-complete logs. No assertion, deadline or advisory policy is relaxed.
-
-## What to do next
-
-1. Review the cleanup and CI repair in PR #976. Exit: archive recovery, links
-   and preservation checks remain green, hosted CI executes the delegated
-   deployment-status fixture, and the exact pushed head has green hosted checks
-   plus `signoff/linux`. Mark the PR ready and merge after those checks, as authorized by the owner. The cleanup does not update a daemon.
-2. Before considering a history rewrite or a new repository, export the
-   checksummed captures to independent durable storage and update archive links.
-   Exit: the archive is recoverable without the original Git objects. The
-   current local tarball alone is not a replacement for that migration.
-3. Measure a disposable rewritten clone before choosing a GitHub migration.
-   Exit: actual clone-size savings and consequences for branches, tags and
-   collaborators are known. Existing refs and history remain untouched here.
-
-Full verification and sandbox hazards are documented in `docs/execution.md`.
+1. Complete rebased-head integration review, required hosted checks and Linux
+   signoff, then merge #985 under the owner's explicit authorization.
+2. Keep the separate Fast-mode PR #987 and its CI investigation independent.
+3. Identify the reproduced unsupported Responses event with fixed allowlisted
+   structural diagnostics before changing acceptance. Preserve the distinction
+   between observed recovery and a demonstrated fix.

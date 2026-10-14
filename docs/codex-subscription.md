@@ -355,9 +355,21 @@ in the UI are estimates and do not show actual plan allowance remaining.
 `unknown_signing_key` means the ID token named a signing key that the
 issuer's published key set did not contain, even after Loom fetched the set a
 second time. It points at the issuer's key publication, not at the account or
-the saved grant, so signing in again does not help. `invalid_identity` covers
-the remaining token checks: signature, issuer, audience, expiry, nonce and
-subject.
+the saved grant, so signing in again does not help. `invalid_identity_*` codes
+identify the refused check without exposing token contents. For example,
+`invalid_identity_signature`, `invalid_identity_issuer`,
+`invalid_identity_audience`, `invalid_identity_nonce`, and
+`invalid_identity_subject` keep those refusals separate.
+
+`invalid_identity_issued_in_future` means the ID token's UTC `iat` is more
+than five seconds ahead of the local clock. The same five-second tolerance
+bounds `nbf` and expiry; `invalid_identity_not_yet_valid` and
+`invalid_identity_expired` identify those failures. Changing the displayed
+timezone does not change JWT timestamps. Check actual clock synchronization
+when a fresh login fails these time checks. Larger offsets are still refused,
+and signature, issuer, audience, nonce and subject checks remain mandatory.
+The bound follows the five-second tolerance in
+[OpenAI's ID-token verification example](https://developers.openai.com/siwc/website).
 
 ## Refresh and logout
 

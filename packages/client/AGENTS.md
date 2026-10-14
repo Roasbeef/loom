@@ -1226,7 +1226,11 @@ catalogue without opening runtimes. Explicit admission invokes
   `oidc.Verification` distinguishes browser nonce validation from refresh
   subject continuity. Gose pins RS256 to the fixed issuer JWKS and validates
   issuer, issued-client audience, expiry and subject; multiple audiences
-  require a matching authorized party. Identity-only grants are saved,
+  require a matching authorized party. Time claims allow only five seconds
+  of UTC clock drift, and fixed `invalid_identity_*` labels identify the
+  rejected check without copying token claims, key IDs or parser excerpts.
+  Browser nonce and refresh subject checks remain exact. Identity-only grants
+  are saved,
   including grants without a refresh token, while plan inference requires
   `resource.invoke` and `chatgpt.tokens.use.direct`.
 - `client/demo.run` — the M3 acceptance flow end to end, executed as a
