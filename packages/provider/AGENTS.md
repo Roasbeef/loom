@@ -1,5 +1,16 @@
 # provider
 
+## Responses keepalive control
+
+`provider/adapter/responses` consumes the fixed `keepalive` control frame after
+its existing JSON, SSE-name and sequence checks. The frame emits no content or
+settlement and changes no item, part, usage or final-response witness. The
+outer response byte budget and gateway attempt deadline remain authoritative;
+keepalive cannot replace a missing terminal or excuse unknown semantic events.
+The diagnostic event allowlist includes the fixed literal without reflecting
+arbitrary remote strings. Both public and subscription Responses machines share
+this fold.
+
 ## Responses cybersecurity access
 
 `client/catalog.CatalogModel.cyber_access` holds an optional typed
