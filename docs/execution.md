@@ -392,7 +392,7 @@ bodies beyond N. Modules that touch a VM-global resource are held back and
 run alone, declared with a reason in `scripts/serial-tests`. It defaults to 8;
 `SIGNOFF_PARALLEL=1` reproduces the sequential run when a failure has
 to be told apart from a concurrency effect. The hosted macOS full gate uses
-`LOOM_CLIENT_TEST_PARALLEL=4` to override only the client package; other
+`LOOM_CLIENT_TEST_PARALLEL=8` to override only the client package; other
 packages retain their default scheduling.
 
 `LOOM_SIGNOFF_HOST=<ssh alias> make signoff-remote` runs the same gate

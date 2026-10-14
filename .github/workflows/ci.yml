@@ -940,7 +940,7 @@ jobs:
           LOOM_SOAK_LATENCY_BOUND: observe
           # Bound client concurrency without changing other packages' scheduling.
           # Preserve the runner's serial exemptions and the full suite's budget.
-          LOOM_CLIENT_TEST_PARALLEL: 4
+          LOOM_CLIENT_TEST_PARALLEL: 8
         run: set -o pipefail; .github/scripts/hex_retry.sh make check 2>&1 | tee check-macos.log
 
       # actions/upload-artifact v7.0.1

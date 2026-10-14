@@ -93,7 +93,12 @@ bodies at a setting of four. The runner now wraps each parallel module in
 `inorder`, bounding concurrent modules while keeping each module's tests and
 generators sequential. The probe measured four simultaneous bodies with that
 shape; the existing exclusive serial barrier remains intact. Final verification
-must inspect the advisory step's actual outcome as well as the job.
+must inspect the advisory step's actual outcome as well as the job. The
+integrated head `681bcc25e` obtained genuine Linux signoff and hosted Linux
+and macOS E2E passes, but the bounded four-module macOS client run exhausted
+its unchanged 1,200-second budget without assertion failures. Hosted client
+now uses eight bounded modules, matching signoff's module limit; other
+packages retain their scheduling and all deadlines remain unchanged.
 No test assertion, process deadline or advisory-policy changes.
 
 The sequential macOS E2E lane at `3a53ebcff` exposed a separate fixture race:
