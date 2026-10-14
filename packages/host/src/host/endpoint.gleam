@@ -15,6 +15,7 @@ import gleam/result
 import gleam/string
 import host/bootstrap
 import host/build_identity
+import host/internal/ffi_process
 
 /// Fixed paths beneath the caller's canonical private state directory.
 pub type Paths {
@@ -127,13 +128,31 @@ pub fn observe(pid: Int) -> Result(Fence, String) {
 /// // endpoint.is_present(record.fence)
 /// ```
 pub fn is_present(fence: Fence) -> Result(Bool, String) {
-  bootstrap.process_identity(fence.pid)
-  |> result.map(fn(identity) {
-    case identity {
-      bootstrap.ProcessPresent(birth) -> birth == fence.birth
-      bootstrap.ProcessAbsent -> False
-    }
-  })
+  use identity <- result.try(bootstrap.process_identity(fence.pid))
+  case identity, fence.birth {
+    bootstrap.ProcessPresent(birth), expected if birth == expected -> Ok(True)
+
+    // Canonical records can prove PID reuse. Old local-time records cannot:
+    // another timezone can change the birth string of the very same process.
+    bootstrap.ProcessPresent("darwin:utc:" <> _), "darwin:utc:" <> _ ->
+      Ok(False)
+    bootstrap.ProcessPresent("darwin:utc:" <> _), "darwin:" <> _ ->
+      legacy_is_present(fence)
+    bootstrap.ProcessPresent(_), _ -> Ok(False)
+    bootstrap.ProcessAbsent, _ -> Ok(False)
+  }
+}
+
+fn legacy_is_present(fence: Fence) -> Result(Bool, String) {
+  use identity <- result.try(ffi_process.legacy_darwin_identity(fence.pid))
+  case identity {
+    bootstrap.ProcessPresent(birth) if birth == fence.birth -> Ok(True)
+    bootstrap.ProcessPresent(_) ->
+      Error(
+        "legacy daemon birth identity differs for a live PID; timezone or locale may have changed; verify and gracefully stop the old daemon before retrying; its endpoint was preserved",
+      )
+    bootstrap.ProcessAbsent -> Ok(False)
+  }
 }
 
 /// Reads a bounded private record; malformed or inaccessible records are errors.

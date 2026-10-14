@@ -15,6 +15,7 @@
          reserve_loopback_port/0,
          spawn_server/4, release_server_process/1, close_server_process/1,
          terminate_process_group/1, process_identity/1,
+         legacy_darwin_process_identity/1,
          current_log_tail/3]).
 
 %% Every path arriving from Gleam is a UTF-8 binary. `binary_to_list/1` would
@@ -462,17 +463,30 @@ linux_identity_from_stat(Stat, BootId) ->
     end.
 
 darwin_process_identity(Pid) ->
+    % Birth markers cross process environments and survive shell restarts.
+    % Fix presentation in this subprocess only; changing the VM environment
+    % would race every other port launch and alter provider/tool behaviour.
+    darwin_process_identity(Pid, <<"darwin:utc:">>,
+                            [{env, [{"TZ", "UTC0"}, {"LC_ALL", "C"}]}]).
+
+% Old records did not store a timezone. A matching observation can retain
+% them, but a mismatch cannot distinguish PID reuse from a different locale.
+legacy_darwin_process_identity(Pid) ->
+    darwin_process_identity(Pid, <<"darwin:">>, []).
+
+darwin_process_identity(Pid, Prefix, Options) ->
     case run_capture_status(
         "/bin/ps",
         ["-p", integer_to_list(Pid), "-o", "lstart="],
-        2000
+        2000,
+        Options
     ) of
         {ok, 0, Output} ->
             Started = string:trim(Output),
             case Started of
                 <<>> -> {error, <<"process has no birth time">>};
                 _ -> {ok, {process_present,
-                           <<"darwin:", Started/binary>>}}
+                           <<Prefix/binary, Started/binary>>}}
             end;
         {ok, 1, <<>>} ->
             darwin_absent_or_unrunnable(Pid);
@@ -509,11 +523,14 @@ ps_unrunnable() ->
       "(refused by the sandbox or did not answer)">>.
 
 run_capture_status(Executable, Arguments, TimeoutMs) ->
+    run_capture_status(Executable, Arguments, TimeoutMs, []).
+
+run_capture_status(Executable, Arguments, TimeoutMs, Options) ->
     try
         Port = open_port(
             {spawn_executable, Executable},
             [binary, exit_status, use_stdio, stderr_to_stdout, hide,
-             {args, Arguments}]
+             {args, Arguments} | Options]
         ),
         collect_port_status(Port, [], TimeoutMs)
     catch
