@@ -111,3 +111,8 @@ passed the Linux aggregate, but its advisory macOS underlying web-view delivery
 assertion failed despite a green job conclusion. Focused unchanged reproduction
 passed; cause remains unclassified. Fresh hosted checks on the integrated head
 must complete both hard gates and underlying advisory tests before landing.
+
+The final published #975 integration is `450ad56e2`, with a passing full local
+gate and independent review. This merge also carries its validation report;
+production source remains identical to the earlier integration. #975 must pass
+fresh hosted CI and merge before #978 is retargeted to main.
