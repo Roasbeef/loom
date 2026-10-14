@@ -75,6 +75,15 @@ Client serial exemptions remain unchanged. Final verification must inspect
 that step's actual outcome as well as the job.
 No test assertion, process deadline or advisory-policy changes.
 
+The sequential macOS E2E lane at `3a53ebcff` exposed a separate fixture race:
+`a_deadline_keeps_the_calls_made_so_far_test` could start its 200 ms timer
+before the fake peer's first call was admitted. Zero recorded calls is valid
+in that ordering. The fixture now waits for the existing precheck admission
+witness before handing off the connection and arming the unchanged timer.
+It still requires `DeadlineExceeded`, one total call and one unsettled call;
+missing admission rejects the launch within a bounded wait. No production
+behavior changes. Independent review verified the admission and timer order.
+
 Hosted Linux jobs at `526fb44c4` passed beneath an aggregate census failure:
 `SKIP shipped deployment status: platform enforcement unavailable` had no
 ordinary-Linux declaration. The CI repair declares that measured prerequisite
