@@ -1086,6 +1086,7 @@ fn entry(
     vision: catalog.TextOnly,
     max_images: 8,
     cyber_access: None,
+    service_tier: None,
     pricing: None,
   )
 }

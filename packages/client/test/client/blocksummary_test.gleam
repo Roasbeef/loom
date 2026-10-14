@@ -1019,6 +1019,7 @@ fn an_entry_named(name: String) -> catalog.CatalogModel {
     vision: catalog.ReadsImages,
     max_images: 8,
     cyber_access: None,
+    service_tier: None,
   )
 }
 

@@ -95,6 +95,16 @@ pub type CyberAccessProgram {
   DaybreakRed
 }
 
+/// The explicitly requested Responses serving tier.
+/// The provider decides eligibility and which tier actually serves a request.
+pub type ResponsesServiceTier {
+  /// Request the provider's standard serving tier.
+  DefaultServiceTier
+
+  /// Request the provider's fast serving tier.
+  FastServiceTier
+}
+
 /// A fully resolved model identity, produced by `gateway.resolve` or
 /// carried in durable operation state. This is the value the machine
 /// persists at intent time so recovery re-dispatches to exactly the same

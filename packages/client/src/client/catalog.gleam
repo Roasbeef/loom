@@ -256,6 +256,8 @@ pub type CatalogModel {
     max_images: Int,
     /// An explicit Responses cybersecurity program; absent uses server defaults.
     cyber_access: Option(model.CyberAccessProgram),
+    /// An explicit Responses serving tier; absent uses provider defaults.
+    service_tier: Option(model.ResponsesServiceTier),
   )
 }
 
@@ -663,7 +665,7 @@ fn parse_model(name: String, value: tom.Toml) -> Result(CatalogModel, String) {
     [
       "dialect", "base_url", "api_key_env", "model_id", "context_window",
       "max_output_tokens", "thinking", "pricing", "vision", "max_images", "auth",
-      "profile", "cyber_access",
+      "profile", "cyber_access", "service_tier",
     ],
     place,
   ))
@@ -686,6 +688,7 @@ fn parse_model(name: String, value: tom.Toml) -> Result(CatalogModel, String) {
   })
   use Nil <- result.try(validate_auth(fields, place, dialect))
   use cyber_access <- result.try(parse_cyber_access(fields, place, dialect))
+  use service_tier <- result.try(parse_service_tier(fields, place, dialect))
   use base_url <- result.try(case dialect {
     CodexSubscription(profile: _) -> Ok("")
     Anthropic | OpenAiCompatible | OpenAiResponses | Gemini ->
@@ -740,6 +743,7 @@ fn parse_model(name: String, value: tom.Toml) -> Result(CatalogModel, String) {
     vision:,
     max_images:,
     cyber_access:,
+    service_tier:,
   ))
 }
 
@@ -771,6 +775,34 @@ fn parse_cyber_access(
             <> ".cyber_access must be standard, daybreak_blue or daybreak_red, got "
             <> other,
           )
+      }
+    }
+  }
+}
+
+// A serving tier is meaningful only on Responses endpoints. Invalid selections
+// fail during catalogue loading rather than silently changing request policy.
+fn parse_service_tier(
+  fields: Dict(String, tom.Toml),
+  place: String,
+  dialect: Dialect,
+) -> Result(Option(model.ResponsesServiceTier), String) {
+  use selection <- result.try(optional_string(fields, place, "service_tier"))
+  case selection {
+    Error(Nil) -> Ok(None)
+    Ok(value) -> {
+      use Nil <- result.try(case dialect {
+        OpenAiResponses | CodexSubscription(profile: _) -> Ok(Nil)
+        Anthropic | OpenAiCompatible | Gemini ->
+          Error(
+            place <> ".service_tier is only supported for Responses dialects",
+          )
+      })
+      case value {
+        "default" -> Ok(Some(model.DefaultServiceTier))
+        "fast" -> Ok(Some(model.FastServiceTier))
+        other ->
+          Error(place <> ".service_tier must be default or fast, got " <> other)
       }
     }
   }
@@ -2580,6 +2612,7 @@ pub fn gateway(
         provider_gateway.add_provider(gateway, provider_config(entry))
         |> priced(entry)
         |> cyber_selected(entry)
+        |> tier_selected(entry)
         |> provider_gateway.with_image_limit(
           entry.name,
           entry.model_id,
@@ -2622,6 +2655,18 @@ fn cyber_selected(
     None -> gateway
     Some(program) ->
       provider_gateway.with_cyber_access(gateway, entry.name, program)
+  }
+}
+
+// Each route attempt selects its own tier, including explicit default and
+// omitted selections on fallbacks after a fast endpoint fails.
+fn tier_selected(
+  gateway: provider_gateway.Gateway,
+  entry: CatalogModel,
+) -> provider_gateway.Gateway {
+  case entry.service_tier {
+    None -> gateway
+    Some(tier) -> provider_gateway.with_service_tier(gateway, entry.name, tier)
   }
 }
 

@@ -1661,3 +1661,57 @@ pub fn responses_failure_terminal_guards_have_distinct_reasons_test() {
     )
   })
 }
+
+pub fn responses_service_tier_is_explicit_and_omission_is_preserved_test() {
+  let request = fixture.request_for(resolved())
+  list.each(
+    [
+      #(model.DefaultServiceTier, "default"),
+      #(model.FastServiceTier, "priority"),
+    ],
+    fn(pair) {
+      let #(tier, value) = pair
+      list.each(
+        [
+          responses.build_request_with_options(
+            "https://example.test/v1",
+            "key",
+            resolved(),
+            request,
+            Some(model.DaybreakBlue),
+            Some(tier),
+          ),
+          responses.build_subscription_request_with_options(
+            resolved(),
+            request,
+            Some(model.DaybreakBlue),
+            Some(tier),
+          ),
+        ],
+        fn(sent) {
+          let assert Ok(body) = json.parse(sent.body)
+            as "Both request builders must encode valid JSON."
+          assert wire.field(body, "service_tier") == Ok(json.String(value))
+          assert wire.field(body, "access_programs")
+            == Ok(json.Object([#("cyber", json.String("daybreak_blue"))]))
+        },
+      )
+    },
+  )
+  list.each(
+    [
+      responses.build_request(
+        "https://example.test/v1",
+        "key",
+        resolved(),
+        request,
+      ),
+      responses.build_subscription_request(resolved(), request),
+    ],
+    fn(sent) {
+      let assert Ok(body) = json.parse(sent.body)
+        as "Legacy builders must preserve valid JSON."
+      assert wire.field(body, "service_tier") == Error(Nil)
+    },
+  )
+}

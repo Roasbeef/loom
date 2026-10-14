@@ -505,6 +505,7 @@ fn scripted_catalog() -> catalog.Catalog {
         vision: catalog.TextOnly,
         max_images: 8,
         cyber_access: None,
+        service_tier: None,
       ),
     ],
     roles: [#(model.Main, ["acme"])],

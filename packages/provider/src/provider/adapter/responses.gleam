@@ -87,6 +87,24 @@ pub fn build_request_with_access(
   request: ProviderRequest,
   access: Option(model.CyberAccessProgram),
 ) -> http.HttpRequest {
+  build_request_with_options(base_url, api_key, resolved, request, access, None)
+}
+
+/// Builds a Responses request with explicit access and serving policy.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // build_request_with_options(..., None, Some(model.FastServiceTier))
+/// ```
+pub fn build_request_with_options(
+  base_url: String,
+  api_key: String,
+  resolved: ResolvedModel,
+  request: ProviderRequest,
+  access: Option(model.CyberAccessProgram),
+  tier: Option(model.ResponsesServiceTier),
+) -> http.HttpRequest {
   http.HttpRequest(
     method: "POST",
     url: base_url <> "/responses",
@@ -95,7 +113,7 @@ pub fn build_request_with_access(
       #("content-type", "application/json"),
       #("accept", "text/event-stream"),
     ],
-    body: responses_request.body_with_access(resolved, request, access),
+    body: responses_request.body_with_options(resolved, request, access, tier),
   )
 }
 
@@ -126,6 +144,22 @@ pub fn build_subscription_request_with_access(
   request: ProviderRequest,
   access: Option(model.CyberAccessProgram),
 ) -> http.HttpRequest {
+  build_subscription_request_with_options(resolved, request, access, None)
+}
+
+/// Builds a Responses request with explicit access and serving policy.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // build_subscription_request_with_options(..., None, Some(model.FastServiceTier))
+/// ```
+pub fn build_subscription_request_with_options(
+  resolved: ResolvedModel,
+  request: ProviderRequest,
+  access: Option(model.CyberAccessProgram),
+  tier: Option(model.ResponsesServiceTier),
+) -> http.HttpRequest {
   http.HttpRequest(
     method: "POST",
     url: "/responses",
@@ -133,10 +167,11 @@ pub fn build_subscription_request_with_access(
       #("content-type", "application/json"),
       #("accept", "text/event-stream"),
     ],
-    body: responses_request.subscription_body_with_access(
+    body: responses_request.subscription_body_with_options(
       resolved,
       request,
       access,
+      tier,
     ),
   )
 }
