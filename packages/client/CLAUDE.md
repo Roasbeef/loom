@@ -1,5 +1,20 @@
 # client
 
+## Responses service tier
+
+`client/catalog.CatalogModel.service_tier` is an optional typed
+`provider/model.ResponsesServiceTier`. Only `openai-responses` and
+`codex-subscription` accept `[models.<name>].service_tier`, with `fast` or
+`default`. Catalogue installation attaches the selection through
+`provider/gateway.with_service_tier`, whose opaque per-provider map preserves
+the frozen resolved-model and request contracts. Every attempt, including a
+fallback, encodes its own entry's selection in the Responses request body.
+An absent selection omits the field. Fast mode encodes the documented
+`priority` wire alias for compatibility with native subscription inference.
+Requesting Fast mode neither grants
+eligibility nor proves the served tier, and does not change reasoning or
+cybersecurity access. Operator pricing remains an estimate.
+
 ## Responses cybersecurity access
 
 `client/catalog.CatalogModel.cyber_access` holds an optional typed
