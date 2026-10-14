@@ -1,205 +1,208 @@
 # Current handoff
 
-Baselined October 13, 2026 against `c37d9a892` on `fix/strand-tps`,
-with main through `c47175004` integrated.
-This edition covers per-strand generation timing. The installed daemon has
-not been updated. Rewrite this file when the next body of work finishes.
+Baselined October 13, 2026 against `526fb44c4` on
+`docs/archive-ui-captures`, based on `main` at
+`dc70d25d42da531284225bf399f40f82e13539d4`. This edition covers the capture
+cleanup and its CI repair, integrated with `main` at `99975fe00`. It records
+evidence from this checkout; earlier validation does not establish the state
+of this branch. The project plan remains `docs/issue-plan.md`.
 
-The previous edition covered web history browsing and reported gates for its
-own head. Those results do not validate this branch. Its evidence and open
-history decisions remain in the
-[prior handoff](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/next.md).
-The project-wide plan remains `docs/issue-plan.md`.
-
-Main also includes the register-decode cache from merged PR #972. Its exact
-blob keys, bounded store-owned inventory and corruption/lease regressions live
-in the storage package. The [measurement report](review/register-decoding-2026-10-12.md)
-records its performance evidence and limits. Its complete prior handoff and
-live memory follow-ups remain in the
-[register-decoding handoff](https://github.com/Roasbeef/loom/blob/e86d6fddd/docs/next.md).
-Those branch results are historical evidence, not validation of this combined
-head. No storage source conflict occurred during integration.
-
-Main also includes the Responses validation diagnostics and deployment CI
-correction from merged PR #979. Provider acceptance predicates and redaction
-bounds remain as reviewed in that work; its diagnostic limits and provider-error
-follow-ups are preserved in the
-[Responses handoff](https://github.com/Roasbeef/loom/blob/c47175004/docs/next.md)
-and `packages/provider/README.md`. The deployment-status fixture now executes
-in the delegated Linux jail job with no skip allowance. This branch keeps main's
-CI repair exactly once rather than duplicating the independently landed fix.
-No provider or runtime source required manual conflict resolution.
+The previous edition still instructed the reader to publish the web browsing
+branch. [PR #967](https://github.com/Roasbeef/loom/pull/967) merged on October 12,
+2026 at `138fe472ae5897ef95182298ccf3ef9be019c53b`. Its implementation details,
+validation and separate parent/child follow-up remain in the
+[previous handoff](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/next.md).
+Those historical test counts are not carried forward as cleanup validation.
 
 ## Where the tree is
 
-The terminal and web view now share `session_view/generation_rate.State`,
-a session-scoped ledger indexed by strand. Every observed strand owns its
-request clock and last measured output rate, including background agents.
-The header reads the selected strand through `session_view/model` accessors.
-Switching focus neither clears a running clock nor borrows the parent's rate.
+The cleanup removes 782 historical terminal, web and website capture files,
+representing 55,965,157 bytes. Tracked content falls from 99.53 MiB to 46.32 MiB
+at the baseline above, including the manifest and repaired links. The
+[capture archive](design-notes/capture-archive.md) names the original GitHub
+snapshot and recovery commands; its SHA-256 manifest covers every deletion.
 
-Live phase events and fresh coherent captures update the ledger. Captures
-observe phases after transcript stream retirement, and reprojecting an older
-capture on focus does not observe its phases again. Request identity survives
-the active-only stream projection, so a lagging capture cannot turn a partial
-background window into a complete measurement. Settlement consumes only its
-strand's clock. Roster replacement prunes removed strands; a session change
-clears the ledger.
+The useful design notes, review records, both terminal generators, tmux renderer,
+README images and published website assets remain. The generators and renderer
+retain their existing paths. Ignore rules cover generated exploration captures,
+website QA screenshots, local session journals and nested scratch worktrees.
+
+## Upstream state
+
+[PR #972](https://github.com/Roasbeef/loom/pull/972) merged at `e86d6fddd`
+while cleanup validation was running. Its register-decode cache and regressions
+are included here. Every read still queries SQL, and the store-owned cache
+uses exact persisted blob keys, bounded at 64 blobs and 256 KiB encoded bytes.
+The [measurement report](review/register-decoding-2026-10-12.md) preserves its
+warm-read savings, cold/overflow costs and retained-memory tradeoff. Its prior
+validation belongs to that change; final hosted CI and signoff must cover this
+merged tree. The [upstream handoff](https://github.com/Roasbeef/loom/blob/e86d6fddd/docs/next.md)
+retains its detailed evidence and live memory follow-ups. No installed daemon
+was changed by this cleanup.
+
+[PR #979](https://github.com/Roasbeef/loom/pull/979) subsequently merged at
+`c47175004`, including the Responses diagnostic work from #977 and the
+mandatory delegated deployment-status coverage. The CI merge keeps upstream's
+single enforcement step, its 180-second bound and exact ordinary-Linux skip
+declaration. Responses validation failures now retain fixed reason codes and
+bounded structural context without provider text or identifiers; no acceptance
+or retry rule changed. The provider README and
+[upstream handoff](https://github.com/Roasbeef/loom/blob/c47175004/docs/next.md)
+preserve its evidence and the distinction between malformed streams and generic
+provider-error responses. Final verification must cover the combined tree.
+
+[PR #982](https://github.com/Roasbeef/loom/pull/982) subsequently merged at
+`99975fe00`. The terminal and web view now share a session-scoped generation
+rate ledger indexed by strand. Focus selects a strand's timing, and partial
+observations retain the previous complete rate instead of reporting a full
+request measurement. Its [upstream handoff](https://github.com/Roasbeef/loom/blob/99975fe00/docs/next.md)
+preserves the capture-ordering rules, regression and mutation evidence, and the
+open need for server timing to measure requests already active at attachment.
+These upstream results do not validate the combined cleanup head. No daemon
+has been updated, and deployment remains separate.
 
 ## Rulings already made
 
 Each of these is settled. Re-open one only with new evidence, and record the
 reopening where the ruling lives.
 
-**A partial observation cannot measure full-request TPS.** A client joining an
-already running generation cannot know its original start from the current
-wire data. The ledger can show elapsed observation time, but retains that
-strand's previous complete rate, or no rate if none exists. The rule lives in
-`generation_rate` and its regression tests. No protocol extension was added.
+**Preserve history for this PR.** Historical links name the exact original
+commit. The archive guide explains that this removes captures from current
+checkouts, while full-history clones retain their original objects.
 
-**Focus selects timing; it does not own timing.** The ledger belongs to the
-shared session state. Both hosts use the same strand-specific accessors.
+**Keep published assets curated.** README and website assets remain tracked
+under `docs/images/` and `site/public/img/`. Temporary captures belong outside
+the checkout or in the ignored exploration directories.
 
-## How to verify
+## Verification boundary
 
-`make check-affected` selects the gates affected by the current diff against
-main, together with the static gates and native prerequisites.
-Full Linux signoff remains required for the combined head. Run `make signoff-remote` against the pushed head; the PR's exact-head
-commit statuses are the record of hosted checks and Linux signoff.
+The website gate passed 68 tests, its copy check and build. Both preserved
+terminal generators ran from an empty scratch directory without the archived
+captures; the tmux renderer produced a PNG. All 782 manifest entries matched
+the original Git blobs and an independently exported tarball. A whole-tree
+Markdown sweep verified 570 pinned archive destinations and found no remaining
+local link to a deleted capture. Ignore checks covered capture/scratch paths
+and useful docs, scripts and curated assets. Independent review found two
+multiline-label image links; both were fixed and rechecked.
 
-`packages/web_view/test/strand_rate_test.gleam` drives the actual component and
-header with an injected clock. It covers independent parent/child rates,
-switching back, focusing a background generation midway through it, attaching
-mid-generation, consecutive requests, and lagging captures. The shared ledger
-suite checks clock consumption, new request identity and roster removal.
+The initial network-enabled full gate on `8de625cfd` used the runner's
+sequential default. The client suite exhausted its 1,200-second test budget
+while the real TUI E2E test was running; the full lane exited 124 after no
+reported assertion failures, and the final skip census passed. That attempt
+is historical evidence of an aggregate timeout, not a whole-tree green claim.
+The follow-up uses the existing `LOOM_TEST_PARALLEL=8` arrangement documented in
+`docs/execution.md`, retaining the existing deadlines and `scripts/serial-tests`
+isolation. The macOS advisory log at `526fb44c4` showed the same aggregate
+client timeout despite a successful job status: its existing advisory setting
+masks a failed step. Eight-way hosted execution at `c7e628a8d` completed within
+budget but failed ten native daemon fixtures: provider callbacks exhausted
+their deadlines, and four executor startups could not reach or start epmd.
+Fixture review found no concrete shared-resource collision; hosted resource
+pressure remains an inference. Two-way hosted execution at `352bcf6ad`
+reported no assertion failures before exhausting the unchanged 1,200-second
+client budget. Four-way execution at `cc28ea21d` exposed a code-mode fixture's
+500 ms invocation deadline before reaching the client suite; five focused
+native runs passed, but do not establish a hosted flake. The hosted package
+gate now opts only the client suite into four-way execution, through
+`LOOM_CLIENT_TEST_PARALLEL`. Other packages retain their sequential default,
+and the existing global `LOOM_TEST_PARALLEL` knob still applies elsewhere.
+Client serial exemptions remain unchanged. The saved four-way client log still
+showed six remote-fixture failures and more simultaneous starts than four.
+An actual OTP EUnit probe identified the runner defect: its inherited parallel
+order applied separately to nested groups, allowing 16 simultaneous test
+bodies at a setting of four. The runner now wraps each parallel module in
+`inorder`, bounding concurrent modules while keeping each module's tests and
+generators sequential. The probe measured four simultaneous bodies with that
+shape; the existing exclusive serial barrier remains intact. Final verification
+must inspect the advisory step's actual outcome as well as the job. The
+integrated head `681bcc25e` obtained genuine Linux signoff and hosted Linux
+and macOS E2E passes, but the bounded four-module macOS client run exhausted
+its unchanged 1,200-second budget without assertion failures. The next hosted attempt used eight bounded modules, matching signoff's
+module limit; other packages retained their scheduling and all deadlines
+remained unchanged. Its result and the current configuration follow below.
+No test assertion, process deadline or advisory-policy changes.
 
-Mutation checks restored three old behaviors separately: reading main's rate
-for every strand, resetting a clock on focus, and accepting a lagging background
-phase. Each compiled and failed its corresponding header assertion. The
-independent review's capture-ordering findings were fixed and rechecked.
+The sequential macOS E2E lane at `3a53ebcff` exposed a separate fixture race:
+`a_deadline_keeps_the_calls_made_so_far_test` could start its 200 ms timer
+before the fake peer's first call was admitted. Zero recorded calls is valid
+in that ordering. The fixture now waits for the existing precheck admission
+witness before handing off the connection and arming the unchanged timer.
+It still requires `DeadlineExceeded`, one total call and one unsettled call;
+missing admission rejects the launch within a bounded wait. No production
+behavior changes. Independent review verified the admission and timer order.
 
-**Read a gate's own exit code.** `check-affected` records each lane's status and
-its skip census under `build/affected`. Native socket tests need the host's
-normal permissions. Preparation must finish before package lanes start.
-`docs/execution.md` carries the remaining gate and sandbox hazards.
+Hosted Linux jobs at `526fb44c4` passed beneath an aggregate census failure:
+`SKIP shipped deployment status: platform enforcement unavailable` had no
+ordinary-Linux declaration. The CI repair declares that measured prerequisite
+failure only in `.github/declared-skips-linux-gate`. The delegated jail also
+runs the exact deployment-status fixture and rejects every skip with an empty
+declaration set, so its live executor up/down assertions remain mandatory.
+The new step joins the existing delegated cgroup and uses the shipment built
+by that lane. Its log is included in the lane's artifacts.
+
+Replaying the actual failed Linux log fails with the old declarations, passes
+with the repair, and fails under the delegated lane's empty declarations.
+Skip-reporting tests, YAML/shell checks and independent review passed. These
+checks verify the repair's wiring; its actual Linux execution and all final
+hosted results belong on [PR #976](https://github.com/Roasbeef/loom/pull/976).
+Require the exact pushed head's hosted checks and genuine `signoff/linux`
+status before calling it merge-ready. Neither a local pass nor an earlier
+head's signoff substitutes for those results.
+
+The next same-head run (`919d0646d`) and its bounded retry exposed two
+pre-existing fixture observation races. The web code-block measurement
+repeatedly subtracted a catch-up from a patch that also carried new lines;
+its code-specific collector now attributes patches by exact new-row content,
+requires all eight new rows in one patch and retains the 2 KiB payload bound.
+It uses Lustre's public JSON encoder; `gleam_json` is declared as a test-only
+dependency at its already-resolved version, with no package/version changes.
+The claim-refusal fixture could request the browser refusal before the terminal
+claim socket's allocation retired. It now witnesses that custody release,
+releases its probe permit and crosses a root-message barrier before asserting
+the original fixed refusal words. No production behavior or deadline changes.
+
+The integrated fixture-repair head `d6c5dc6cc` passed web-view, code-mode,
+Linux and macOS E2E coverage, but its bounded eight-module macOS client run
+failed five native distribution fixtures in 1,170.91 seconds. Inner failures
+included epmd unavailability, ERPC disconnection and incomplete status responses.
+Four modules had avoided assertions but exhausted the aggregate budget. The
+hosted gate now partitions the complete client module collection between two
+runners at four concurrent modules each. Each matrix member still runs the
+default full gate and all other packages; only client is partitioned. Unique
+outcomes and log artifacts retain both results, and the census consumes both
+complete logs. No assertion, deadline or advisory policy is relaxed.
+
+## Helper integration checkpoint (October 14)
+
+PR #976 is now merged at `3ee679ca7`. This integration adopts its CI workflow
+unchanged, including the two client shards, explicit sequential module bodies,
+serial barriers and complete module inventory. Earlier parallel settings bounded
+nested groups rather than the total simultaneous test bodies; the upstream
+runner correction removes that multiplication. Historical failures above remain
+historical evidence, not current-head validation.
+
+PR #975 adds idle helper retirement. Its production implementation and measured
+replacement costs are recorded in [the retirement report](review/helper-idle-retirement-2026-10-13.md).
+The shipped test factory additionally bounds child VM schedulers and disables
+busy waiting while retaining inherited flags and later TLS configuration. The
+isolated comparison reduced peak summed RSS by 147.75 MiB; its limitations and
+CPU observations are recorded in that report. Production launch defaults stay
+unchanged. The pre-integration full gate passed 4,490 client tests and failed one
+directory bootstrap with `options_mismatch`; this is not a full pass or a proved
+flake. Fresh integrated tests, hosted checks and Linux signoff remain required.
 
 ## What to do next
 
-1. Per-strand TPS PR #982 is merged in `99975fe00`. Land helper retirement
-   #975, then retarget concurrent helpers #978 to main after their exact-head
-   checks and independent reviews pass. Deployment remains separate.
-2. Follow `docs/issue-plan.md` for the next project milestone. The queue-control
-   PR is separate work and is not included in this branch.
+1. Finish exact-head full validation and independent integration review for
+   PR #975. Inspect both macOS shards' underlying full-check outcomes, not only
+   advisory job badges. Require genuine `signoff/linux` and all hosted gates,
+   then merge #975 as authorized by the owner.
+2. Retarget PR #978 to main after #975 lands. Preserve its concurrency benchmark
+   evidence and validate its exact head with tests, independent review and
+   hosted checks plus Linux signoff before merging.
+3. Preserve capture archive recovery and curated assets. A future history
+   rewrite requires independent durable capture storage and measured migration
+   consequences; current refs and history stay intact.
 
-## Deliberately open
-
-An exact TPS for a request already running before attachment would require an
-original start timestamp or duration from the server. The current client
-conservatively leaves that request unmeasured. None of this is unfinished work
-somebody forgot.
-
-## Helper retirement integration checkpoint
-
-Integrated October 13, 2026 with main `e86d6fddd`, which includes merged register
-decoding PR #972. The original performance baseline remains
-`dc70d25d42da531284225bf399f40f82e13539d4` (v0.3.2). Idle helper retirement is on `codex/helper-idle-retirement`, with
-implementation `0ae4589be`. The installed daemon remains 0.2.0 at `e289d93ab`;
-no installation, restart, hotpatch or merge was performed.
-
-The previous main handoff covers broader project work and remains available
-at [the baseline](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/next.md).
-The project plan remains `docs/issue-plan.md`. This rewrite records the current
-branch's evidence rather than carrying older gate claims onto a new head.
-
-## Idle helper retirement
-
-Issue #283 is implemented with a fixed sixty-second idle interval per available
-helper. Successful checkin starts a weft named timer; checkout cancels it.
-Observation, duplicate checkins and activity elsewhere do not extend it. Pools
-shrink to zero and spawn replacements lazily. Borrowed work is untouched,
-including long-lived execution. Native exit and normal helper-owner retirement
-must both be witnessed before capacity is reused; failed retirement retains
-custody and capacity. No wire protocol, user configuration or public constructor
-changed. Both local and distributed workspace planes use this pool mechanism.
-
-The [report](review/helper-idle-retirement-2026-10-13.md) and benchmark runner
-record three fresh matched VMs. Four used helpers reclaim about 40 MiB summed
-RSS on retirement; the real sixty-second trial confirms native exit. Warm
-checkout/checkin costs about 1.24 us extra; actual short-command medians overlap
-under loaded-host variation. The production trial's first command costs
-58.540 ms with replacement versus 16.976 ms with a retained helper. One pair
-cannot establish a stable minute-idle startup penalty; accelerated trials are
-reported separately. Summed RSS includes shared pages and is not physical RAM
-or a production daemon saving.
-
-Seven deterministic regressions and one real-helper regression passed. The
-independent correctness review found no actionable issue; the evidence review
-recomputed all medians and signed off after correcting a platform-skip wording.
-Three compiled mutation checks were rejected by runtime assertions; source
-was restored exactly and the eight regressions passed again. The full serialized
-`LOOM_TEST_PARALLEL=8 make check` passed exit 0, including 409 broker, 4,491
-client and 1,365 TUI tests, all other packages, Go, lint and configuration
-checks. Documentation checks passed. Hosted CI remains pending. No test was
-weakened or skipped to enable performance measurement. The isolated Mac fixture
-uses BestEffort with explicit Seatbelt and network-confinement assertions and
-records unavailable resource/lifecycle layers.
-
-## Live follow-ups
-
-The new busy-period profile again found JSON object parsing in roughly 73% of
-active stack observations. A separate five-second probe counted 154 register
-lookups, 81 register lists and 1,319 JSON parses in selected processes. Sample
-shares are not CPU-time percentages. OS utilization varied by cut; a later
-short interval measured the daemon at 17.9% CPU with the host 78.4% idle.
-
-Repeated register decoding [PR #972](https://github.com/Roasbeef/loom/pull/972)
-is now merged on main and included by integration. Its report and cache tests
-remain the evidence for that separate optimization. Re-profile after an explicitly
-requested upgrade before attributing production savings. There are no recurring
-automations for this task. The branch has passed local validation and independent reviews and is published
-as [PR #975](https://github.com/Roasbeef/loom/pull/975). The owner authorized landing #975, then #978 on main after exact-head checks
-and sufficient review. Fresh integrated validation remains required before merge;
-no installation or daemon restart is authorized.
-
-## Integration gates
-
-The conflict with current main affected only this handoff document. Source
-changes from register decoding merged automatically. Old hosted run 38458267713
-failed its Linux census on the missing deployment-status declaration; macOS
-advisory failed downloading its artifact with DNS ENOTFOUND before tests ran.
-The CI-only fix from #979 pairs the ordinary-runner declaration with exact
-fixture execution under delegated Linux enforcement and an empty skip allowance.
-No source or test assertion is weakened for those failures. Fresh `LOOM_TEST_PARALLEL=8 make check` passed direct exit 0 on the integrated
-source: `/private/tmp/pr975-integrated-full-check.log`. Independent integration
-review found no actionable issue and verified idle custody/timer behavior,
-unchanged main register cache and strict deployment coverage. Fresh hosted
-checks must attest to the published integration head before merging.
-
-## macOS remediation checkpoint
-
-Run 38503180456 passed all Linux checks at `450ad56e2`, including real idle
-retirement/replacement and strict delegated deployment. macOS e2e exposed a
-pre-admission accept budget that began before daemon bootstrap; initial accept
-now shares the existing whole-fixture lifetime while all post-admission bounds
-and closure/recovery assertions remain. Its real local fixture and negative
-controls pass. Advisory serial client execution exceeded the unchanged package
-budget; the step now uses the existing eight-way mode without changing its
-deadlines, serial exceptions or discovery. The shared LSP fixture now establishes
-its pending-request precondition before the unchanged short cancellation budget.
-Independent reviews and the corrected full local gate pass (direct exit 0):
-`/private/tmp/pr975-macos-fixed-full-check.log`. Fresh hosted checks remain
-required on the published correction head; earlier green Linux gates do not
-validate it. The delayed-start comparison passes with corrected admission and
-fails with the old bound, as recorded in the measurement report.
-
-Main advanced to `c47175004` with merged #979 during validation. Integration
-conflicts only in this handoff; its Responses diagnostics/runtime regressions
-and provider docs merge unchanged. The deployment coverage correction is now
-also on main. Idle-retirement production source remains unchanged, and fresh
-mergeable-head hosted checks must validate the integration before landing.
-
-Main advanced to `99975fe00` with merged strand-rate PR #982. This integration
-preserves its session-view, TUI and web-view sources unchanged. The conflict
-affected only this handoff. Helper production and corrected fixture sources
-remain unchanged from `53fec5003`; fresh hosted CI must validate this head.
-No daemon installation or restart was performed.
+No installed daemon update or restart is authorized. No recurring monitor is
+needed. Full verification and sandbox hazards are in `docs/execution.md`.

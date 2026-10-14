@@ -1,5 +1,7 @@
 # The web UI redesign: three columns, a tabbed panel and a timeline
 
+Historical captures and mockups are preserved in the [capture archive](capture-archive.md).
+
 **Status: proposed, for the owner's review.** This note turns the mockup the
 owner approved on 2026-09-29 (A2) into a plan that can be built in small
 pull requests. It is the visual and structural companion to
@@ -25,7 +27,7 @@ planned as a follow-up to #636, with its own 051 addendum. It is built
 (step 11 of section 8): the addendum "switching sessions" in 051 records the
 rule, and section 3.4 says what the redesign needs from it.
 
-The mockup is [`web-design/A2-refined.html`](web-design/A2-refined.html). It
+The mockup is [web-design/A2-refined.html](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/web-design/A2-refined.html). It
 is a static page with a small script, and it is the source of truth for
 layout and behaviour. Where this note and the mockup differ, the note says so
 in section 9 and gives the reason.
@@ -37,9 +39,9 @@ Fable 5.1:
 
 | Concept | Idea | Light screenshot |
 |---|---|---|
-| A | A strand rail beside a calm transcript | [A-sonnet-light.png](web-design/A-sonnet-light.png) |
-| B | A strand roster with a decision dock, in three columns | [B-opus-light.png](web-design/B-opus-light.png) |
-| C | A "Now" board with a dock | [C-fable-light.png](web-design/C-fable-light.png) |
+| A | A strand rail beside a calm transcript | [A-sonnet-light.png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/web-design/A-sonnet-light.png) |
+| B | A strand roster with a decision dock, in three columns | [B-opus-light.png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/web-design/B-opus-light.png) |
+| C | A "Now" board with a dock | [C-fable-light.png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/web-design/C-fable-light.png) |
 
 The owner picked A. B and C showed too much at once. The team's feedback was
 that A is minimal, quieter and easier to approach; that B carries useful
@@ -60,10 +62,10 @@ line where B shows five facts). Screenshots:
 
 | View | Light | Dark |
 |---|---|---|
-| Default | [A2-refined-light.png](web-design/A2-refined-light.png) | [A2-refined-dark.png](web-design/A2-refined-dark.png) |
-| Both sidebars hidden | [A2-refined-focus.png](web-design/A2-refined-focus.png) | |
-| One strand focused | [A2-refined-strand.png](web-design/A2-refined-strand.png) | |
-| Another session viewed | [A2-refined-session.png](web-design/A2-refined-session.png) | |
+| Default | [A2-refined-light.png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/web-design/A2-refined-light.png) | [A2-refined-dark.png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/web-design/A2-refined-dark.png) |
+| Both sidebars hidden | [A2-refined-focus.png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/web-design/A2-refined-focus.png) | |
+| One strand focused | [A2-refined-strand.png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/web-design/A2-refined-strand.png) | |
+| Another session viewed | [A2-refined-session.png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/web-design/A2-refined-session.png) | |
 
 ## 2. The layout
 

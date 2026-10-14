@@ -55,7 +55,7 @@ not composited or rewritten.
 ## Web home capture
 
 `web-home.png` shows the web home page in dark mode from the live drive of the
-round 5 UI changes (`docs/design-notes/web-design/drive-b19/01-home-words.png`).
+round 5 UI changes ([docs/design-notes/web-design/drive-b19/01-home-words.png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/web-design/drive-b19/01-home-words.png)).
 It lists sessions grouped by workspace with activity status (`working`, `idle`,
 `saved`), session actions (`Rename`, `Stop`, `Archive`, `Delete`), the "New session"
 button, and top-bar controls including the connected indicator and the Admin button.
@@ -63,7 +63,7 @@ button, and top-bar controls including the connected indicator and the Admin but
 ## Web session capture
 
 `web-session.png` shows the web session view in dark mode from the live drive of
-the round 5 UI changes (`docs/design-notes/web-design/drive-b18/01-failed-step-dark.png`).
+the round 5 UI changes ([docs/design-notes/web-design/drive-b18/01-failed-step-dark.png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/web-design/drive-b18/01-failed-step-dark.png)).
 It displays the live streaming transcript with collapsible tool execution steps,
 reasoning blocks, code edit feedback, sub-agent and advisor reviews in the right-hand
 rail, the context gauge, and the message composer targeting the active strand.

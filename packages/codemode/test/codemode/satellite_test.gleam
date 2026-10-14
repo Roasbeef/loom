@@ -29,6 +29,7 @@ import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
 import gleam/string
 import simplifile
 import support/fake_helper
@@ -1249,17 +1250,40 @@ pub fn reusing_a_settled_call_id_is_accepted_test() {
 }
 
 pub fn a_deadline_keeps_the_calls_made_so_far_test() {
+  let dir = fresh_dir("rec-deadline")
+  let broker = start_broker(holding())
+  let admitted = process.new_subject()
+  let cfg =
+    satellite.SatelliteConfig(..config(dir), precheck: fn(_request) {
+      process.send(admitted, Nil)
+      Ok(Nil)
+    })
+  let launch =
+    satellite_peer.launcher(fn(ctx) {
+      satellite_peer.send_proc_run(ctx, ctx.token, 1, ["held"])
+      satellite_peer.wait_for_close(ctx)
+    })
+
+  // Precheck runs after the host records admission. Waiting before connection
+  // handoff starts the real 200 ms timer only once there is a call to retain,
+  // rather than racing peer scheduling against the deadline under host load.
   let ran =
-    run_calls(
-      "rec-deadline",
-      start_broker(holding()),
-      config("x"),
-      budget.Budget(max_outstanding: 8, deadline_ms: t + 200),
-      fn(ctx) {
-        satellite_peer.send_proc_run(ctx, ctx.token, 1, ["held"])
-        satellite_peer.wait_for_close(ctx)
+    satellite.run(
+      artifact(),
+      run_phase(budget.Budget(max_outstanding: 8, deadline_ms: t + 200)),
+      broker,
+      cfg,
+      fn(spec) {
+        use connection <- result.try(launch(spec))
+        process.receive(admitted, 1000)
+        |> result.map(fn(_) { connection })
+        |> result.map_error(fn(_) {
+          let _ = connection.destroy()
+          "the call was not admitted before connection handoff"
+        })
       },
     )
+  broker.stop(broker)
   assert ran.outcome == Error(satellite.DeadlineExceeded)
   assert ran.calls.total == 1
   assert ran.calls.unsettled == 1

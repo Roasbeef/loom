@@ -90,13 +90,10 @@
 #
 # Parallelism inside a package. SIGNOFF_PARALLEL is exported to every
 # lane as LOOM_TEST_PARALLEL, so each package's EUnit run may execute up
-# to that many tests at once (scripts/test.sh, and scripts/serial-tests
-# for the modules held back). It defaults to 8: measured on a 32-core
-# box, every package passed three runs of three at that setting once the
-# fixture-hygiene work landed, and the client package, the whole critical
-# path, fell from about 390 seconds to about 220. Set it to 1 to
-# reproduce the sequential run when a failure needs to be told apart
-# from a concurrency effect.
+# to that many modules at once, with tests inside each module sequential
+# (scripts/test.sh, and scripts/serial-tests for modules held back). It
+# defaults to 8. Set it to 1 to reproduce the sequential run when a
+# failure needs to be told apart from a concurrency effect.
 #
 # Hex. Gleam 1.18.1 as released re-resolved path dependencies through
 # the Hex API on every invocation (issue #248), and seven lanes at once

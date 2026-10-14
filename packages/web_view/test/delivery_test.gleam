@@ -19,6 +19,7 @@
 import gleam/erlang/atom
 import gleam/erlang/process.{type Subject}
 import gleam/int
+import gleam/json
 import gleam/list
 import gleam/option.{None}
 import gleam/otp/system
@@ -46,14 +47,9 @@ type Page {
     runtime: lustre.Runtime(component.Msg(Subject(String))),
     inbox: Subject(connection_event.Message),
     wire: Subject(String),
-    renders: Subject(Int),
+    renders: Subject(String),
   )
 }
-
-// The size in bytes of the message the runtime hands a client, as its
-// transport encodes it.
-@external(erlang, "lane_memo_ffi", "wire_bytes")
-fn wire_bytes(message: server_component.ClientMessage(message)) -> Int
 
 // Starts a real server component whose transport hands the test the inbox
 // it reads and the subject the open is answered on, and whose client is a
@@ -98,7 +94,10 @@ fn started() -> Page {
   lustre.send(
     runtime,
     server_component.register_callback(fn(message) {
-      process.send(renders, wire_bytes(message))
+      process.send(
+        renders,
+        server_component.client_message_to_json(message) |> json.to_string,
+      )
     }),
   )
   process.sleep(50)
@@ -108,15 +107,15 @@ fn started() -> Page {
 }
 
 // How many patches arrived before the runtime went quiet for `quiet_ms`.
-fn settle(renders: Subject(Int), quiet_ms: Int) -> Int {
+fn settle(renders: Subject(String), quiet_ms: Int) -> Int {
   list.length(patches(renders, quiet_ms))
 }
 
-// The sizes, in bytes, of the patches that arrived before the runtime went
-// quiet for `quiet_ms`, oldest first.
-fn patches(renders: Subject(Int), quiet_ms: Int) -> List(Int) {
+// The encoded patches that arrived before the runtime went quiet for
+// `quiet_ms`, oldest first.
+fn patches(renders: Subject(String), quiet_ms: Int) -> List(String) {
   case process.receive(renders, quiet_ms) {
-    Ok(bytes) -> [bytes, ..patches(renders, quiet_ms)]
+    Ok(patch) -> [patch, ..patches(renders, quiet_ms)]
     Error(Nil) -> []
   }
 }
@@ -138,13 +137,21 @@ fn burst_patches(
   page: Page,
   frames: List(connection_event.Message),
 ) -> List(Int) {
+  let sizes = burst_text(page, frames) |> list.map(string.byte_size)
+
+  list.drop(sizes, catch_ups(written(page.wire, 0)))
+}
+
+// Keeps the payload so a test can attribute a render to the content it added.
+fn burst_text(
+  page: Page,
+  frames: List(connection_event.Message),
+) -> List(String) {
   let pid = server_component.pid(page.runtime)
   system.suspend(pid)
   list.each(frames, process.send(page.inbox, _))
   system.resume(pid)
-  let sizes = patches(page.renders, 200)
-
-  list.drop(sizes, catch_ups(written(page.wire, 0)))
+  patches(page.renders, 200)
 }
 
 fn delta(n: Int) -> connection_event.Message {
@@ -317,18 +324,35 @@ fn indexes(last: Int) -> List(Int) {
 // patch is still the size of eight lines and an envelope.
 pub fn a_live_code_block_costs_its_new_lines_test() {
   let page = following_pushed()
-  let opening = burst_patches(page, code_lines(1, 8))
+  let opening = code_burst_patches(page, 1, 8)
   assert list.length(opening) == 1
 
   let later =
     list.map(indexes(26), fn(index) {
-      burst_patches(page, code_lines(index * 8 + 1, index * 8 + 8))
+      code_burst_patches(page, index * 8 + 1, index * 8 + 8)
     })
   list.each(later, fn(sizes) {
     assert list.length(sizes) == 1
   })
   let assert Ok(largest) = list.reduce(list.flatten(later), int.max)
   assert largest < 2048
+}
+
+// A refresh can be ticked by the same Arrived update that adds these lines.
+// Attribute that shared patch to its actual new rows instead of subtracting
+// every catch-up request as though it necessarily had a separate render.
+fn code_burst_patches(page: Page, from: Int, to: Int) -> List(Int) {
+  let markers =
+    indexes(to - from + 1)
+    |> list.map(fn(index) {
+      "let value_" <> int.to_string(from + index - 1) <> " = compute(input, "
+    })
+  let relevant =
+    burst_text(page, code_lines(from, to))
+    |> list.filter(fn(patch) { list.any(markers, string.contains(patch, _)) })
+  let assert [patch] = relevant as "one patch carries the new code rows"
+  assert list.all(markers, string.contains(patch, _))
+  list.map(relevant, string.byte_size)
 }
 
 // An idle page does no work between refreshes: with the lane pushing, the

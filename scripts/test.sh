@@ -18,19 +18,16 @@ if [ "$#" -ne 0 ]; then
   match="$2"
 fi
 
-# LOOM_TEST_PARALLEL asks EUnit to run tests concurrently, up to this many at
+# LOOM_TEST_PARALLEL asks EUnit to run modules concurrently, up to this many at
 # a time, on the one emulator the runner already starts. Unset, empty, or 1
 # leaves the run exactly as it was: the same sequential order and the same
 # output. Anything else must be a positive integer, because a typo that
 # silently fell back to sequential would make a timing measurement claim a
 # speedup it never had.
 #
-# The concurrency is not per module. EUnit propagates an inparallel group's
-# ordering down the whole subtree beneath it, so wrapping the module list
-# makes every individual test in the package eligible to run beside every
-# other one, including two tests inside the same module. A suite whose tests
-# share a fixture between themselves is therefore just as exposed as two
-# suites that share one.
+# Each module runs its tests in order. EUnit otherwise inherits inparallel
+# ordering into nested groups, each with its own limit, so a limit on the
+# module list alone multiplies concurrency rather than bounding test bodies.
 #
 # The variable is opt-in rather than a default because EUnit gives concurrent
 # test representations no isolation whatsoever. They share one node, so they
@@ -43,6 +40,25 @@ fi
 parallel="${LOOM_TEST_PARALLEL:-1}"
 if ! [[ "$parallel" =~ ^[1-9][0-9]*$ ]]; then
   echo "LOOM_TEST_PARALLEL must be a positive integer, got: $parallel" >&2
+  exit 2
+fi
+
+# Shards partition the sorted module inventory, including serial exemptions.
+# Compare positive decimal strings without shell integer overflow.
+shard="${LOOM_TEST_SHARD:-1/1}"
+if ! [[ "$shard" =~ ^([1-9][0-9]*)/([1-9][0-9]*)$ ]]; then
+  echo "LOOM_TEST_SHARD must be i/n with positive integers and i <= n, got: $shard" >&2
+  exit 2
+fi
+shard_index="${BASH_REMATCH[1]}"
+shard_count="${BASH_REMATCH[2]}"
+if [ "${#shard_index}" -gt "${#shard_count}" ] ||
+  { [ "${#shard_index}" -eq "${#shard_count}" ] && [[ "$shard_index" > "$shard_count" ]]; }; then
+  echo "LOOM_TEST_SHARD index exceeds its count, got: $shard" >&2
+  exit 2
+fi
+if [ -n "$match" ] && [ "$shard" != "1/1" ]; then
+  echo "LOOM_TEST_SHARD must be 1/1 with --match, got: $shard" >&2
   exit 2
 fi
 
@@ -79,6 +95,7 @@ fi
 export LOOM_TEST_PACKAGE="$package" LOOM_TEST_MATCH="$match"
 export LOOM_TEST_PARALLEL="$parallel"
 export LOOM_TEST_SERIAL="$serial"
+export LOOM_TEST_SHARD="$shard"
 cd "$root/packages/$package"
 # The compile runs under its own deadline, ahead of and separate from the
 # test deadline below. A cold-cache client build has taken up to ~158s on
@@ -116,28 +133,10 @@ python3 "$root/scripts/with_timeout.py" "${LOOM_TEST_TIMEOUT_SECONDS:-1200}" -- 
         \".erl\" -> filename:basename(F, \".erl\");
         \".gleam\" -> string:replace(filename:rootname(string:prefix(F, \"test/\")), \"/\", \"@\", all)
       end)) || F <- Files]),
-      Pattern = os:getenv(\"LOOM_TEST_MATCH\"),
-      Tests = case Pattern of
-        \"\" -> Modules;
-        _ -> lists:flatmap(fun(M) ->
-          {module, M} = code:ensure_loaded(M),
-          lists:filtermap(fun({F, Arity}) ->
-            Name = atom_to_list(F),
-            Matched = string:find(atom_to_list(M) ++ \":\" ++ Name, Pattern) =/= nomatch,
-            case {Arity, Matched, lists:suffix(\"_test\", Name), lists:suffix(\"_test_\", Name)} of
-              {0, true, true, _} -> {true, {M, F}};
-              {0, true, _, true} -> {true, {generator, M, F}};
-              _ -> false
-            end
-          end, M:module_info(exports))
-        end, Modules)
-      end,
-
-      %% A parallel run splits the module list into two groups. EUnit pushes
-      %% the inparallel ordering down into every nested item, so the
-      %% limit counts individual tests rather than modules and no module is
-      %% internally sequential; that is what makes the split necessary, since
-      %% a module cannot opt itself out from inside. Only the unfiltered path
+      %% A parallel run splits the module list into two groups. Each module
+      %% has an explicit inorder boundary, so the outer limit bounds modules
+      %% and their bodies run sequentially rather than inheriting a fresh
+      %% parallel limit at every nested group. Only the unfiltered path
       %% is grouped: --match already names individual tests, and reordering
       %% those would change what a focused debugging run means.
       %%
@@ -165,13 +164,37 @@ python3 "$root/scripts/with_timeout.py" "${LOOM_TEST_TIMEOUT_SECONDS:-1200}" -- 
             [os:getenv(\"LOOM_TEST_PACKAGE\"), Stale]),
           Halt(2)
       end,
+      [ShardIndex, ShardCount] = [list_to_integer(S) || S <- string:split(os:getenv(\"LOOM_TEST_SHARD\"), \"/\")],
+      ShardModules = [M || {M, Index} <- lists:zip(Modules, lists:seq(1, length(Modules))),
+                           (Index - 1) rem ShardCount =:= ShardIndex - 1],
+      Pattern = os:getenv(\"LOOM_TEST_MATCH\"),
+      Tests = case Pattern of
+        \"\" -> ShardModules;
+        _ -> lists:flatmap(fun(M) ->
+          {module, M} = code:ensure_loaded(M),
+          lists:filtermap(fun({F, Arity}) ->
+            Name = atom_to_list(F),
+            Matched = string:find(atom_to_list(M) ++ \":\" ++ Name, Pattern) =/= nomatch,
+            case {Arity, Matched, lists:suffix(\"_test\", Name), lists:suffix(\"_test_\", Name)} of
+              {0, true, true, _} -> {true, {M, F}};
+              {0, true, _, true} -> {true, {generator, M, F}};
+              _ -> false
+            end
+          end, M:module_info(exports))
+        end, Modules)
+      end,
+
+      %% Validate against the complete inventory before restricting exemptions
+      %% to this shard. Every module, including an exemption, belongs to one.
+      ShardSerial = [M || M <- Serial, lists:member(M, ShardModules)],
       Grouped = case {Pattern, Parallel} of
         {\"\", N} when N > 1 ->
-          [{inorder, [{inparallel, N, Tests -- Serial}, {inorder, Serial}]}];
+          Concurrent = [{inorder, M} || M <- Tests -- ShardSerial],
+          [{inorder, [{inparallel, N, Concurrent}, {inorder, ShardSerial}]}];
         _ -> Tests
       end,
       case Tests of
-        [] -> io:format(standard_error, \"No tests matched ~tp~n\", [Pattern]), Halt(2);
+        [] -> io:format(standard_error, \"No tests matched ~tp in shard ~s~n\", [Pattern, os:getenv(\"LOOM_TEST_SHARD\")]), Halt(2);
         _ -> case eunit:test(Grouped, [verbose, {scale_timeouts, 10}]) of
           ok -> Halt(0);
           error -> Halt(1)
