@@ -29,10 +29,11 @@ fn peer(inbox, wire, sent) {
         as "whole frame written"
       process.send(sent, frame)
       case frame.body {
+        // Synthetic native retirement must also retire its linked peer.
+        // Otherwise its idle receive later crashes an unrelated test group.
         framing.Shutdown -> process.send(wire, exec.WireClosed(0))
-        _ -> Nil
+        _ -> peer(inbox, wire, sent)
       }
-      peer(inbox, wire, sent)
     }
     Closed -> process.send(wire, exec.WireClosed(137))
     Attach(_) -> peer(inbox, wire, sent)
@@ -41,13 +42,15 @@ fn peer(inbox, wire, sent) {
 
 fn controlled(sent, grace) {
   let ready = process.new_subject()
-  process.spawn(fn() {
-    let inbox = process.new_subject()
-    process.send(ready, inbox)
-    let assert Ok(Attach(wire)) = process.receive(inbox, 1000)
-      as "peer attached"
-    peer(inbox, wire, sent)
-  })
+  let peer_pid =
+    process.spawn(fn() {
+      let inbox = process.new_subject()
+      process.send(ready, inbox)
+      let assert Ok(Attach(wire)) = process.receive(inbox, 1000)
+        as "peer attached"
+      peer(inbox, wire, sent)
+    })
+  let peer_monitor = process.monitor(peer_pid)
   let assert Ok(inbox) = process.receive(ready, 1000) as "peer starts"
   let config =
     exec.default_config(
@@ -82,7 +85,7 @@ fn controlled(sent, grace) {
   let assert Ok(framing.Frame(body: framing.Hello(..), ..)) =
     process.receive(sent, 1000)
     as "broker hello written"
-  helper
+  #(helper, peer_monitor)
 }
 
 fn inject(helper, frame) {
@@ -137,7 +140,7 @@ fn drain(pool) {
 
 pub fn multiplex_leases_route_control_and_reject_stale_handles_test() {
   let sent = process.new_subject()
-  let physical = controlled(sent, 500)
+  let #(physical, peer_monitor) = controlled(sent, 500)
   let assert Ok(pool) = exec.start_pool(size: 4, spawn: fn() { Ok(physical) })
     as "pool starts"
   let assert Ok(first) = exec.checkout(pool, waiting: 1000) as "first lease"
@@ -208,11 +211,12 @@ pub fn multiplex_leases_route_control_and_reject_stale_handles_test() {
   exec.checkin(pool, second)
   exec.checkin(pool, third)
   drain(pool)
+  assert_peer_stopped(peer_monitor)
 }
 
 pub fn multiplex_failure_settles_all_and_retains_execution_quota_test() {
   let sent = process.new_subject()
-  let physical = controlled(sent, 100)
+  let #(physical, peer_monitor) = controlled(sent, 100)
   let assert Ok(pool) = exec.start_pool(size: 2, spawn: fn() { Ok(physical) })
     as "pool starts"
   let assert Ok(first) = exec.checkout(pool, waiting: 1000) as "first lease"
@@ -233,11 +237,12 @@ pub fn multiplex_failure_settles_all_and_retains_execution_quota_test() {
   assert process.receive(first_events, 0) == Error(Nil)
   assert process.receive(second_events, 0) == Error(Nil)
   drain(pool)
+  assert_peer_stopped(peer_monitor)
 }
 
 pub fn multiplex_last_lease_starts_idle_retirement_test() {
   let sent = process.new_subject()
-  let physical = controlled(sent, 100)
+  let #(physical, peer_monitor) = controlled(sent, 100)
   let armings = process.new_subject()
   let timers =
     timer.Injected(after: fn(delay, wake) {
@@ -266,11 +271,12 @@ pub fn multiplex_last_lease_starts_idle_retirement_test() {
     })
     as "physical helper retires after final lease"
   drain(pool)
+  assert_peer_stopped(peer_monitor)
 }
 
 pub fn multiplex_cancel_deadlines_survive_sibling_settlement_test() {
   let sent = process.new_subject()
-  let physical = controlled(sent, 40)
+  let #(physical, peer_monitor) = controlled(sent, 40)
   let assert Ok(pool) = exec.start_pool(size: 4, spawn: fn() { Ok(physical) })
     as "pool starts"
   let assert Ok(first) = exec.checkout(pool, waiting: 1000) as "first lease"
@@ -319,4 +325,16 @@ pub fn multiplex_cancel_deadlines_survive_sibling_settlement_test() {
   // cannot allow a replacement that doubles those potentially live jails.
   assert exec.checkout(pool, waiting: 1000) == Error(exec.AllBusy(size: 0))
   assert exec.close_pool(pool, waiting: 1000) == Error(exec.RetirementExit(137))
+  assert_peer_stopped(peer_monitor)
+}
+
+// The original monitor proves the fixture released its peer before returning,
+// rather than relying on the VM exiting before an idle assertion can fire.
+fn assert_peer_stopped(monitor: process.Monitor) -> Nil {
+  let assert Ok(process.ProcessDown(reason: process.Normal, ..)) =
+    process.new_selector()
+    |> process.select_specific_monitor(monitor, fn(down) { down })
+    |> process.selector_receive(1000)
+    as "the controlled peer retires normally with its helper"
+  Nil
 }
