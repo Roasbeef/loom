@@ -63,8 +63,20 @@ logs preserved in the follow-up report.
 exposed two concrete Linux failures: an untargeted protocol-4 stdin fixture and
 a registry mutex held over terminal I/O. Both are fixed with regression coverage.
 Its macOS e2e job failed fetching the Hex pc plugin before assertions, with DNS
-failure during artifact upload. Fresh hosted checks remain a separate gate for
-the updated head. There is no authorization to merge or deploy this PR.
+failure during artifact upload. Run 38493712617 reported successful substantive
+job conclusions on `03cac66db`, then its Linux
+aggregate rejected an undeclared deployment-status enforcement skip. The CI-only
+fix from #979 now pairs the ordinary-runner declaration with strict execution
+in the delegated Linux jail lane. Real local deployment, census controls and
+independent review pass. Inspecting the advisory log also found a linked test
+peer that recursed after reporting shutdown, later cancelling the broker group.
+It now returns normally, and all four multiplex tests require its original
+normal-exit monitor witness. A compiled old-recursion mutant fails that witness;
+focused tests and independent review pass. The fresh full gate passed exit 0
+on an unchanged rerun after one unrelated web-operator deadline failure; focused
+reproduction passed and the cause remains unclassified. Fresh hosted checks
+remain a separate gate for the updated workflow head. There is no authorization
+to merge or deploy this PR.
 
 ## Follow-ups
 

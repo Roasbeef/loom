@@ -233,3 +233,70 @@ Raw log: `/private/tmp/loom-helper-startup-full-check-rerun.log`.
 Final documentation checking also passed exit 0 with zero errors and existing
 warnings: `/private/tmp/loom-helper-startup-final-doc-check.log`.
 Fresh hosted CI remains a separate gate on the pushed head.
+
+## Hosted census follow-up
+
+Run [38493712617](https://github.com/Roasbeef/loom/actions/runs/38493712617)
+on `03cac66dbb651a6e8365714bc2d6b0fa0db83a7a` reported success for every substantive Linux
+and macOS job. The advisory macOS check hid an underlying test cancellation,
+detailed below. Its Linux aggregate failed the census on the existing shipped
+deployment-status enforcement skip. The ordinary runner lacks the enforcement
+prerequisite; this was not a native assertion failure or a diagnosed flake.
+
+The CI-only fix from [PR #979](https://github.com/Roasbeef/loom/pull/979),
+original commit `0d2b9405a`, is reused here. It pairs the precise ordinary-runner
+declaration with the exact deployment-status fixture in the delegated Linux
+jail job. That step joins the verified cgroup and uses an empty skip allowance,
+so both executor-up/down assertions must execute. Its log is always uploaded.
+No provider changes or fixture assertion changes are included.
+
+Independent review found no actionable issue. Replaying the four actual Linux
+check logs fails with the old policy and passes with the corrected policy.
+Empty skip allowance still rejects those skipped inputs; removing the deployment
+marker makes the new declaration fail as stale. Controls are preserved under
+`/private/tmp/pr978-census-controls/`. Workflow YAML and shell syntax passed,
+as did all three skip-reporting self-tests.
+
+After building an isolated server shipment, the real local deployment fixture
+passed exit 0 and its empty-allowance census passed exit 0:
+`/private/tmp/pr978-deployment-enforced-local-ready.log`. An earlier local attempt
+failed because the server shipment did not yet exist; its prerequisite error is
+retained in `/private/tmp/pr978-deployment-enforced-local.log`. The installed
+daemon was not rebuilt or restarted. Native source is unchanged from the full
+gate and benchmark; fresh hosted CI must verify the new workflow head.
+
+## Advisory test-peer cleanup
+
+The successful advisory macOS job conclusion did not establish a passing
+underlying suite. Its downloaded `check-macos.log` ended with broker test-group
+cancellation and exit 1: 388 tests passed before a linked controlled peer
+crashed. After sending synthetic `WireClosed(0)` on shutdown, the peer
+unconditionally recursed, then its five-second idle receive assertion fired
+while unrelated retirement tests were running. This is a concrete fixture
+ownership defect, not a native helper regression or a waived test failure.
+
+The peer now returns normally on shutdown. All four existing multiplex tests
+retain its original monitor and require a specific normal `ProcessDown` before
+returning. Links, receive deadlines and existing behavioral assertions remain.
+Independent changed-slice review found no actionable issue; all four focused
+tests passed unchanged concurrency. A private compiled mutant restoring the
+old recursion fails the new monitor witness within one second (exit 1), while
+the shared source and build artifacts remain corrected. Mutant log:
+`/private/tmp/pr978-peer-mutant/result.log`; focused log:
+`/private/tmp/pr978-peer-cleanup-focused.log`.
+
+A preliminary direct Erlang evaluation reproduced the idle crash in its log
+but still exited zero because its evaluation process traps exits. That probe
+is diagnostic evidence only, not a failing regression control. The compiled
+monitor-witness mutant above is the negative control.
+
+The first full gate after this correction passed broker but failed the client
+web-operator page's existing 20-second connection wait, with 4,490 other client
+passes. Focused unchanged reproduction passed in 169 ms (exit 0), and the
+cause remains unclassified. Logs: `/private/tmp/pr978-peer-cleanup-full-check.log`
+and `/private/tmp/pr978-web-operator-repro.log`. No timeout or assertion changed.
+The unchanged full `LOOM_TEST_PARALLEL=8 make check` rerun passed direct exit 0,
+including all 419 broker and 4,491 client tests, remaining packages, native checks
+and lint: `/private/tmp/pr978-peer-cleanup-full-check-rerun.log`. Native production source and
+the benchmarked helper/broker binaries are unchanged. Fresh hosted validation
+must inspect underlying advisory results as well as job conclusions.
