@@ -1,7 +1,8 @@
 # Current handoff
 
-Baselined October 13, 2026 against main `dc70d25d42da531284225bf399f40f82e13539d4`
-(v0.3.2). Idle helper retirement is on `codex/helper-idle-retirement`, with
+Integrated October 13, 2026 with main `e86d6fddd`, which includes merged register
+decoding PR #972. The original performance baseline remains
+`dc70d25d42da531284225bf399f40f82e13539d4` (v0.3.2). Idle helper retirement is on `codex/helper-idle-retirement`, with
 implementation `0ae4589be`. The installed daemon remains 0.2.0 at `e289d93ab`;
 no installation, restart, hotpatch or merge was performed.
 
@@ -51,10 +52,22 @@ lookups, 81 register lists and 1,319 JSON parses in selected processes. Sample
 shares are not CPU-time percentages. OS utilization varied by cut; a later
 short interval measured the daemon at 17.9% CPU with the host 78.4% idle.
 
-Repeated register decoding is the separate open [PR #972](https://github.com/Roasbeef/loom/pull/972),
-not part of this branch and not installed. Re-profile after an explicitly
+Repeated register decoding [PR #972](https://github.com/Roasbeef/loom/pull/972)
+is now merged on main and included by integration. Its report and cache tests
+remain the evidence for that separate optimization. Re-profile after an explicitly
 requested upgrade before attributing production savings. There are no recurring
 automations for this task. The branch has passed local validation and independent reviews and is published
-as [PR #975](https://github.com/Roasbeef/loom/pull/975). Hosted CI is running
-and is not yet a passing gate; do not merge
-or deploy without authorization.
+as [PR #975](https://github.com/Roasbeef/loom/pull/975). The owner authorized landing #975, then #978 on main after exact-head checks
+and sufficient review. Fresh integrated validation remains required before merge;
+no installation or daemon restart is authorized.
+
+## Integration gates
+
+The conflict with current main affected only this handoff document. Source
+changes from register decoding merged automatically. Old hosted run 38458267713
+failed its Linux census on the missing deployment-status declaration; macOS
+advisory failed downloading its artifact with DNS ENOTFOUND before tests ran.
+The CI-only fix from #979 pairs the ordinary-runner declaration with exact
+fixture execution under delegated Linux enforcement and an empty skip allowance.
+No source or test assertion is weakened for those failures. Fresh full local,
+independent integration review and hosted checks must attest to the new head.
