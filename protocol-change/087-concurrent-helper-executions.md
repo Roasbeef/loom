@@ -57,7 +57,10 @@ ceiling. The sum of all quotas, including draining and unconfirmed helpers,
 cannot exceed `LOOM_HELPER_POOL`. Packing several slots into one native process
 does not multiply the allowed number of simultaneous jails. Pool census
 availability counts describe physical entries; `size` remains the execution
-ceiling. Each execution owns its output, enforcement expectations and named
+ceiling. Native starting, live, cleanup and reporting entries all occupy the announced
+capacity. The native helper reserves its entry before launching the execution
+worker, so overlapping startup cannot exceed that bound. Each execution owns
+its output, enforcement expectations and named
 cancel-escalation timer. Sibling traffic cannot reset that timer.
 
 Idle retirement begins only when the last checkout lease returns. A partially
@@ -80,7 +83,11 @@ Stdin queue admission must be bounded and nonblocking. The existing per-executio
 request ID and cancels only that target execution. Cancellation prevents a
 silently truncated input stream from later being reported as successful work.
 No unbounded goroutine or queue may be allocated for each incoming frame. FIFO
-and EOF ordering remain per execution. One nonreading child must not prevent
+and EOF ordering remain per execution. Before startup finishes, the helper may
+coalesce input into one lazy buffer under the same 16-MiB byte limit. It
+transfers those bytes and EOF before admitting later input to the running jail.
+Early cancellation is retained until startup settles; shutdown joins starting
+entries as well as running jails and terminal writes. One nonreading child must not prevent
 the frame loop from handling sibling cancellation, heartbeat or shutdown.
 
 Output frames share the transport and remain serialized at frame boundaries.

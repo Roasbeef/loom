@@ -5,6 +5,9 @@ October 13, 2026. Compare the complete idle-retirement stack at
 at implementation commit `8d21799a5` on `codex/helper-concurrency`. This is stacked on [PR #975](https://github.com/Roasbeef/loom/pull/975).
 The installed daemon was not rebuilt, restarted, collected or changed.
 
+The [startup follow-up](helper-startup-2026-10-13.md) measures the later
+optimization. The numbers below remain the historical implementation result.
+
 ## Result
 
 Packing four execution slots into each native helper reduces active helper

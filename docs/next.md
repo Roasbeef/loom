@@ -26,52 +26,45 @@ accepted sibling once. Idle retirement starts only when the last lease returns,
 and still requires native exit plus the original normal owner-exit witness.
 
 Stdin admission refuses overflow without blocking sibling controls and cancels
-only the overflowing target. Terminal cleanup precedes the terminal report;
-registry removal is serialized with that report to prevent a refill from
-seeing stale full capacity. Linux cgroup cleanup is consequently on the
-completion path. Its latency and Linux containment have not been validated
-locally. Do not claim the Mac measurements establish Linux deployment readiness.
+only the overflowing target. Four bounded native workers reserve custody before
+acquisition, then independently start, settle, clean up and report. Early stdin
+and EOF transfer in order; early cancellation reaches the real jail after
+acquisition. Reporting writes hold no registry mutex, and shutdown joins starting
+workers too. Darwin trackers take fresh snapshots under a process-local capture
+mutex, which bounds overlapping large buffers without sharing stale snapshots.
 
 ## Evidence and gates
 
-The [measurement report](review/helper-concurrency-2026-10-13.md) and committed
-runner compare three matched fresh-VM pairs against the complete protocol-3
-idle-retirement stack. Four/eight slots use one/two helpers instead of four/eight
-and save 37.27/73.28 MiB summed helper RSS (71.3%/69.8%). RSS double-counts
-shared pages; payloads and driver are excluded. This is not a measured reduction
-in the installed daemon's memory.
+The [startup follow-up](review/helper-startup-2026-10-13.md) supersedes the
+original report's batch slowdown for the final implementation. Three rotated
+production comparisons against complete separate-helper and frozen #978 stacks
+measure four-slot batches at 21.055 / 24.883 / 21.056 ms and eight-slot batches
+at 24.831 / 27.909 / 23.343 ms. Final batches improve 15.38% / 16.36% against
+frozen multiplexing, and match / improve 5.99% against separate helpers.
 
-Sequential command medians are close to baseline (+0.35%/+0.86% at four/eight
-slots). Submitted short-command batches are slower (+17.1%/+32.3%). Only the
-memory fixture guarantees all payloads are alive simultaneously. Cold-start and
-warm-cycle improvements are fixture measurements, not production percentiles.
-No end-to-end distributed RPC, Go CPU or per-call allocation saving is claimed.
-Both local and distributed workspace planes use the same changed pool.
+Summed helper RSS remains 69.59% / 68.72% lower than separate helpers, saving
+36.50 / 73.36 MiB. Eight-slot RSS is 2.72 MiB above frozen multiplexing; the
+report records this cost and the intermediate memory regression that led to
+the capture bound. These isolated local fixtures do not establish installed
+application memory savings, total CPU savings, Linux latency or end-to-end
+distributed RPC latency. Both workspace planes share the changed helper pool.
 
-Independent lifecycle review found one control-envelope mismatch; cancellation
-now uses a fresh request ID, and the reviewer verified the correction. The
-evidence review recomputed the results and checked overlap, PID ownership,
-output/exit assertions and all 18 successful close witnesses. Three compiled
-private broker mutants fail on stale dispatch, quota over-admission and premature
-idle transition; shared source/build artifacts stayed byte-identical. A native
-refill-order mutant also fails the deterministic regression. Final native
-`go test -race ./...` passed every package. Documentation checks pass with zero
-errors and existing warnings.
+Independent review found no reachable correctness issue in startup custody,
+pending input/cancellation transfer, reporting admission, capture lock ordering,
+freshness or ledger isolation. Deterministic private mutations fail the new
+capacity, ordered-input and held-terminal regressions. Fresh native race and
+full repository gates passed exit 0. The full gate's first run had one fake-LSP
+cancellation timeout outside the native path; all 17 focused observation tests
+and the unchanged full rerun passed. Its cause remains unclassified, with both
+logs preserved in the follow-up report.
 
-The complete `LOOM_TEST_PARALLEL=8 make check` rerun passed exit 0: 419 broker,
-4,491 client, 1,365 TUI and every remaining package, native checks and lint
-(zero errors). The first full run had 20 unchanged daemon-fixture readiness
-timeouts before helper dispatch. The failed test and all three affected modules
-passed focused reproduction at the original parallelism and deadlines; the full
-rerun then passed without any code or timeout changes. The cause remains
-unidentified, so this is not recorded as a diagnosed flake. Both runs are
-preserved in the measurement report.
-
-Implementation is committed as `8d21799a5` and published as
-[PR #978](https://github.com/Roasbeef/loom/pull/978), targeting
-`codex/helper-idle-retirement` while #975 remains open. Its diff contains only
-concurrency. Hosted Linux/macOS CI is running and remains a separate gate.
-There is no authorization to merge or deploy this PR.
+[PR #978](https://github.com/Roasbeef/loom/pull/978) targets
+`codex/helper-idle-retirement` while #975 remains open. The original hosted run
+exposed two concrete Linux failures: an untargeted protocol-4 stdin fixture and
+a registry mutex held over terminal I/O. Both are fixed with regression coverage.
+Its macOS e2e job failed fetching the Hex pc plugin before assertions, with DNS
+failure during artifact upload. Fresh hosted checks remain a separate gate for
+the updated head. There is no authorization to merge or deploy this PR.
 
 ## Follow-ups
 

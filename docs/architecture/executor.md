@@ -200,20 +200,31 @@ in `[secrets]`, and the daemon's own launch helpers.
 ### The native side
 
 Protocol 4 gives one native helper at most four independent executions. Its
-bounded start-ID registry routes stdin and cancellation, rejects duplicate and
-over-capacity starts, and retains every accepted cleanup obligation. A terminal
-report follows cleanup; registry admission is serialized with terminal writing
-and removal so immediate refill cannot observe stale full capacity. This moves
-Linux cgroup removal onto the terminal path, an explicit latency tradeoff whose
-historical cleanup estimate is about fifty milliseconds; local Mac measurements
-do not establish its Linux cost.
+bounded start-ID registry reserves custody before launching each execution's
+worker. Startup work can overlap; starting, live, cleanup and reporting entries
+all consume that same bound. Stdin received during startup is coalesced into a
+lazy buffer of at most 16 MiB, with byte order and EOF preserved at handoff to
+the jail's input queue. On Darwin, one process-local capture mutex bounds the
+large temporary process-table buffers while each tracker still reads a fresh
+snapshot at its requested capture. Launch planning and forking remain
+concurrent. Early cancellation is remembered and applied when the
+real jail becomes available; it does not fabricate an enforcement report.
+
+A terminal report follows cleanup and retains its registry entry until the
+write returns. Transport I/O holds no registry mutex, so a blocked report does
+not consume other spare slots. At full capacity, admission waits for an
+already-reporting entry before checking again, avoiding a spurious busy refusal
+when the peer has received a report whose write has not yet returned locally.
+Linux cgroup removal remains on the terminal path; Mac measurements do not
+establish its Linux latency cost.
 
 Stdin admission is bounded and nonblocking. Overflow refuses the control frame
 and cancels only its target, so one nonreading child cannot hold the shared
 frame loop indefinitely. Output remains one shared, frame-serialized pipe.
 Transport failure can affect all four siblings. Native exit still supplies the
 helper retirement witness; an individual terminal report does not retire the
-physical helper. Shutdown and EOF cancel and join every accepted execution.
+physical helper. Shutdown and EOF cancel and join every accepted execution,
+including one still starting or reporting a spawn failure.
 See [protocol-change/087](../../protocol-change/087-concurrent-helper-executions.md).
 
 ## The target shape

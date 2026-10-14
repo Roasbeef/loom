@@ -531,13 +531,20 @@ defines routing, capacity and the shared failure domain. Each execution owns
 its jail policy, scratch, limits, streams and deadline. A helper-wide failure
 settles every accepted sibling once, and shutdown joins all native work.
 
-Native cleanup completes before each terminal report. Registry admission is
-serialized with terminal writing and removal, so a broker that immediately
-refills a slot after reading `exec_exit` cannot observe stale full capacity.
-Linux cgroup cleanup now lies on the terminal path; Mac measurements do not
-establish the Linux latency cost. Stdin queue overflow refuses the request and
-cancels only its target. Output is still one shared, frame-serialized pipe, so
-a blocked reader or helper-wide escalation can affect all siblings.
+Native startup runs in the reserved execution worker, allowing up to four
+launches to overlap without adding helpers. Starting entries retain bounded
+stdin and cancellation state until their real jail is published. Startup,
+cleanup and terminal reporting all count against the same four-entry bound.
+Darwin trackers serialize fresh kernel-table capture and traversal to bound
+transient native heap; they retain independent descendant ledgers and the
+requested tracking interval.
+Native cleanup completes before each terminal report. Reports retain custody
+through the write, but hold no registry mutex: spare slots stay usable, while a
+full-capacity refill waits for a reporting entry to finish. Linux cgroup cleanup
+remains on the terminal path; Mac measurements do not establish its latency
+cost. Stdin overflow refuses the request and cancels only its target. Output
+is still one shared, frame-serialized pipe, so a blocked reader or helper-wide
+escalation can affect all siblings.
 
 A Linux execution looks like this:
 
