@@ -89,6 +89,11 @@ for pkg in "${targets[@]}"; do
       format_paths+=(dev)
     fi
     gleam format --check "${format_paths[@]}"
+    # The hosted client suite needs concurrency to fit its aggregate budget.
+    # Keep that opt-in local to this package and preserve the global runner knob.
+    if [ "$pkg" = "client" ]; then
+      export LOOM_TEST_PARALLEL="${LOOM_CLIENT_TEST_PARALLEL:-${LOOM_TEST_PARALLEL:-1}}"
+    fi
     bash ../../scripts/test.sh "$pkg"
   )
   # This fixture checks the work removed by leaf memoisation and the provider

@@ -65,9 +65,14 @@ their deadlines, and four executor startups could not reach or start epmd.
 Fixture review found no concrete shared-resource collision; hosted resource
 pressure remains an inference. Two-way hosted execution at `352bcf6ad`
 reported no assertion failures before exhausting the unchanged 1,200-second
-client budget. The hosted package gate now uses four-way execution, preserving
-the existing serial exemptions. Final verification must
-inspect that step's actual outcome as well as the job.
+client budget. Four-way execution at `cc28ea21d` exposed a code-mode fixture's
+500 ms invocation deadline before reaching the client suite; five focused
+native runs passed, but do not establish a hosted flake. The hosted package
+gate now opts only the client suite into four-way execution, through
+`LOOM_CLIENT_TEST_PARALLEL`. Other packages retain their sequential default,
+and the existing global `LOOM_TEST_PARALLEL` knob still applies elsewhere.
+Client serial exemptions remain unchanged. Final verification must inspect
+that step's actual outcome as well as the job.
 No test assertion, process deadline or advisory-policy changes.
 
 Hosted Linux jobs at `526fb44c4` passed beneath an aggregate census failure:
