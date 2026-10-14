@@ -151,13 +151,23 @@ claim socket's allocation retired. It now witnesses that custody release,
 releases its probe permit and crosses a root-message barrier before asserting
 the original fixed refusal words. No production behavior or deadline changes.
 
+The integrated fixture-repair head `d6c5dc6cc` passed web-view, code-mode,
+Linux and macOS E2E coverage, but its bounded eight-module macOS client run
+failed five native distribution fixtures in 1,170.91 seconds. Inner failures
+included epmd unavailability, ERPC disconnection and incomplete status responses.
+Four modules had avoided assertions but exhausted the aggregate budget. The
+hosted gate now partitions the complete client module collection between two
+runners at four concurrent modules each. Each matrix member still runs the
+default full gate and all other packages; only client is partitioned. Unique
+outcomes and log artifacts retain both results, and the census consumes both
+complete logs. No assertion, deadline or advisory policy is relaxed.
+
 ## What to do next
 
 1. Review the cleanup and CI repair in PR #976. Exit: archive recovery, links
    and preservation checks remain green, hosted CI executes the delegated
    deployment-status fixture, and the exact pushed head has green hosted checks
-   plus `signoff/linux`. Mark the PR ready after those checks; merging remains
-   the owner's decision. The cleanup does not update a daemon.
+   plus `signoff/linux`. Mark the PR ready and merge after those checks, as authorized by the owner. The cleanup does not update a daemon.
 2. Before considering a history rewrite or a new repository, export the
    checksummed captures to independent durable storage and update archive links.
    Exit: the archive is recoverable without the original Git objects. The

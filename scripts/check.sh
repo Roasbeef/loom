@@ -93,6 +93,7 @@ for pkg in "${targets[@]}"; do
     # Keep that opt-in local to this package and preserve the global runner knob.
     if [ "$pkg" = "client" ]; then
       export LOOM_TEST_PARALLEL="${LOOM_CLIENT_TEST_PARALLEL:-${LOOM_TEST_PARALLEL:-1}}"
+      export LOOM_TEST_SHARD="${LOOM_CLIENT_TEST_SHARD:-${LOOM_TEST_SHARD:-1/1}}"
     fi
     bash ../../scripts/test.sh "$pkg"
   )
