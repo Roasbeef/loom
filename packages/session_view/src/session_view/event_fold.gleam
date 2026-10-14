@@ -73,6 +73,7 @@ import session_view/cache_watch
 import session_view/command
 import session_view/composer
 import session_view/context_view
+import session_view/generation_rate
 import session_view/history_view
 import session_view/live_jobs
 import session_view/model.{
@@ -134,7 +135,7 @@ pub fn apply_event(
         streams: [],
         // A new session or strand has its own generations; the previous
         // view's start time is not theirs.
-        generation_started_ms: None,
+        generation_rates: generation_rate.new(),
         tool_tails: [],
         record_cache_epoch: shared.record_cache_epoch + 1,
         compact_call_cache: dict.new(),
@@ -152,9 +153,11 @@ pub fn apply_event(
         notice: "session synchronized",
         transcript: [Line(System, "attached to session " <> session)],
       )
+      |> observe_generation_phases(strands)
       |> session_model.invalidate_transcript
     }
-    protocol.StrandsSnapshot(strands:) -> shared_set.strands(shared, strands)
+    protocol.StrandsSnapshot(strands:) ->
+      observe_generation_phases(shared, strands) |> shared_set.strands(strands)
     protocol.SkillsSnapshot(page:) -> {
       let previous = case page.offset {
         0 -> []
@@ -322,11 +325,16 @@ pub fn apply_event(
       }
     }
     protocol.StreamDelta(strand:, operation:, generation:, kind:, text:) -> {
-      // The generation clock normally started when the strand entered
-      // its `assistant` phase (see `OperationChanged`); a fragment that
-      // finds it unset is the fallback, for a phase sequence that never
-      // said so. Later fragments, and other strands, leave it alone.
-      let generation_started_ms = generation_clock(shared, strand)
+      // Every strand is timed even when its transcript is off-screen. A
+      // fragment without an observed start supplies elapsed display time only.
+      let generation_rates =
+        generation_rate.stream(
+          shared.generation_rates,
+          strand,
+          generation,
+          kind,
+          shared.stamp.now_ms,
+        )
       let streams =
         receive_stream(
           streams_before_end(shared, strand, operation, generation, kind),
@@ -340,7 +348,7 @@ pub fn apply_event(
       let updated =
         shared
         |> shared_set.streams(streams)
-        |> shared_set.generation_started_ms(generation_started_ms)
+        |> hold_generation_rates(generation_rates)
         |> shared_set.notice(case kind {
           "end" -> "request finished"
           _ -> "streaming " <> kind
@@ -357,34 +365,22 @@ pub fn apply_event(
       }
       let strands = set_strand_phase(shared.strands, strand, phase)
 
-      // The rate's clock starts when the request goes out, not when the
-      // first fragment lands. A provider that streams whole parts —
-      // Gemini does — can deliver a short reply as one burst at the end
-      // of a generation, and a clock started on that burst measured a
-      // millisecond and reported six-figure tokens per second.
-      //
-      // Settlement is not the only way a generation ends. A refused or
-      // aborted request never reports usage, so its start time would
-      // outlive it and be read as the next generation's. A turn that
-      // finishes (`done`) drops the clock of its own strand, and an
-      // `assistant` phase entered from any other phase begins a new
-      // generation and restarts it. A repeated `assistant` transition
-      // is the same generation and leaves the clock alone.
-      let generation_started_ms = case phase, strand == shared.active_strand {
-        "done", True -> None
-        "assistant", True ->
-          case strand_was_generating(shared.strands, strand) {
-            True -> generation_clock(shared, strand)
-            False -> Some(shared.stamp.now_ms)
-          }
-        _other, _ -> shared.generation_started_ms
-      }
+      // Phase boundaries are request boundaries for the named strand, never
+      // for whichever transcript the operator happened to select.
+      let generation_rates =
+        generation_rate.phase(
+          shared.generation_rates,
+          strand,
+          phase,
+          generation_rate.Transition,
+          shared.stamp.now_ms,
+        )
 
       let updated =
         shared
         |> shared_set.submitting(submitting)
         |> shared_set.strands(strands)
-        |> shared_set.generation_started_ms(generation_started_ms)
+        |> hold_generation_rates(generation_rates)
         |> shared_set.streams(case phase == "done" {
           True -> transcript_lines.clear_streams(shared.streams, strand)
           False -> shared.streams
@@ -700,18 +696,6 @@ fn set_strand_phase(
       True, _ -> Strand(..strand, live_phase: Some(phase))
       False, _ -> strand
     }
-  })
-}
-
-// Whether the strand's last reported phase was already `assistant`, which
-// makes a further `assistant` transition a repeat rather than a new
-// generation.
-fn strand_was_generating(
-  strands: List(protocol.Strand),
-  target: String,
-) -> Bool {
-  list.any(strands, fn(strand) {
-    strand.id == target && strand.live_phase == Some("assistant")
   })
 }
 
@@ -1130,46 +1114,19 @@ fn settle_usage(
   settled: message.Usage,
   notice: String,
 ) -> Shared(socket, recorder, source, replay_source) {
-  // The settlement's own output count over the time since the request went
-  // out. A settlement whose clock never started (a refusal, an empty turn)
-  // leaves the last rate standing. `generation_clock` starts the clock only
-  // for the active strand's own row, so only that strand's settlement may
-  // read it or clear it — a sub-agent's row arriving mid-generation must
-  // not report its own output over the primary's window, and must not stop
-  // the primary's clock out from under it.
-  let #(output_rate_tps, generation_started_ms) = case
-    strand == shared.active_strand,
-    shared.peer,
-    shared.generation_started_ms
-  {
-    False, _, _ -> #(shared.output_rate_tps, shared.generation_started_ms)
-
-    // The window is this client's own clock from the request going out to
-    // the settlement, and a replay spends that window playing a file rather
-    // than waiting on a provider. `output_rate_min_ms` already discards the
-    // short ones, so a brief replay would report nothing anyway; a long one
-    // would report how fast the replay ran. Declining outright is the same
-    // rule that stops a replay echoing a prompt.
-    True, Replaying, _ | True, Disconnected, _ -> #(
-      shared.output_rate_tps,
-      None,
-    )
-
-    True, Attached, Some(started) | True, Preview, Some(started) -> #(
-      transcript_lines.output_rate(
+  let rates = case shared.peer {
+    Attached | Preview ->
+      generation_rate.settle(
+        shared.generation_rates,
+        strand,
         settled.output,
-        shared.stamp.now_ms - started,
-      ),
-      None,
-    )
-    True, Attached, None | True, Preview, None -> #(
-      shared.output_rate_tps,
-      None,
-    )
+        shared.stamp.now_ms,
+      )
+    Replaying | Disconnected ->
+      generation_rate.untimed(shared.generation_rates, strand)
   }
   shared
-  |> shared_set.generation_started_ms(generation_started_ms)
-  |> shared_set.output_rate_tps(output_rate_tps)
+  |> hold_generation_rates(rates)
   |> shared_set.notice(notice)
 }
 
@@ -1297,19 +1254,41 @@ fn note_cache_miss(
   }
 }
 
-/// Formats the server-reported session usage for the terminal footer.
-/// The generation clock after an event that may start it: started now
-/// if the event is the active strand's and no clock is running, otherwise
-/// left as it was. Two events may start it — the `assistant` phase, and
-/// the first fragment as a fallback — and whichever comes first wins.
-fn generation_clock(
-  shared: Shared(socket, recorder, source, replay_source),
-  strand: String,
-) -> Option(Int) {
-  case shared.generation_started_ms, strand == shared.active_strand {
-    None, True -> Some(shared.stamp.now_ms)
-    started, _ -> started
-  }
+/// Observes every captured strand's phase before replacing the roster.
+/// The timing ledger retains request identity after off-screen fragments leave
+/// the view, so lagging phases cannot re-time them. The roster bounds the ledger.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // event_fold.observe_generation_phases(shared, strands)
+/// ```
+@internal
+pub fn observe_generation_phases(
+  shared: Shared(s, r, a, b),
+  strands: List(protocol.Strand),
+) -> Shared(s, r, a, b) {
+  let rates =
+    list.fold(strands, shared.generation_rates, fn(rates, strand) {
+      generation_rate.phase(
+        rates,
+        strand.id,
+        option.unwrap(strand.live_phase, "done"),
+        generation_rate.Capture,
+        shared.stamp.now_ms,
+      )
+    })
+  hold_generation_rates(
+    shared,
+    generation_rate.retain(rates, list.map(strands, fn(strand) { strand.id })),
+  )
+}
+
+fn hold_generation_rates(
+  shared: Shared(s, r, a, b),
+  rates: generation_rate.State,
+) -> Shared(s, r, a, b) {
+  Shared(..shared, generation_rates: rates)
 }
 
 /// The local submitting marker closes the interval between writing a prompt
@@ -1562,7 +1541,7 @@ fn settle_interrupt(
 pub fn leave_session(
   shared: Shared(socket, recorder, source, replay_source),
 ) -> Shared(socket, recorder, source, replay_source) {
-  shared
+  hold_generation_rates(shared, generation_rate.new())
   |> shared_set.nudges(None)
   |> shared_set.nudges_refresh(worktree_view.Settled)
   |> shared_set.nudges_awaiting(None)

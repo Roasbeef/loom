@@ -76,6 +76,7 @@ import session_view/composer
 import session_view/context_view
 import session_view/lane_fold
 import session_view/live_jobs
+import session_view/model as session_model
 import session_view/notes_view
 import session_view/protocol
 import session_view/queued_input
@@ -1756,7 +1757,10 @@ fn footer_sections(
   // not fit is dropped from the right rather than cut, because an ellipsis
   // through the middle of `cache 1.2m/40k` hid the very figures the
   // expanded footer exists to show.
-  let rate = transcript_lines.output_rate_label(model.shared.output_rate_tps)
+  let rate =
+    transcript_lines.output_rate_label(session_model.output_rate_tps(
+      model.shared,
+    ))
   let #(cache, spend) =
     transcript_lines.usage_pieces(model.shared.usage, model.view.cache_outlook)
   let usage =

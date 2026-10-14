@@ -1817,7 +1817,7 @@ untouched.
   (`a_summarized_block_keeps_anchors_parallel_to_rows_test`,
   `a_summary_off_screen_leaves_the_reader_in_place_test`). The live
   row's elapsed time is `Model.shared.generation_elapsed_s`, read from
-  `generation_started_ms` on the tick (`tick.advance_generation_clock`); a
+  `session_view/model.generation_started_ms` on the tick (`session_view/step.advance_activity_clocks`); a
   change repaints only while a reasoning row is on screen and leaves the
   record cache valid.
 - **A summary never re-attributes text.** The header above a label names
@@ -3348,3 +3348,9 @@ test seam for the parse.
 
 Tests: `deployment_command_test` (the parse, the frame, the decoder's total
 cases, goldens for both views, a hostile reply, and `--json`).
+
+Generation throughput and elapsed observation clocks live in the shared
+`generation_rate` ledger per strand. The terminal reads the selected strand
+through `session_view/model` accessors, and switching focus preserves every
+strand's clock and latest complete measurement. Background usage settles its
+own clock without changing the selected strand's header.
