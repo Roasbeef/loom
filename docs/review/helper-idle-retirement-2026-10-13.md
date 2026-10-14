@@ -307,3 +307,27 @@ client shards cover the complete module inventory exactly once, retain the
 serial barrier and unchanged deadlines, and preserve both full logs for census.
 This branch adopts that workflow unchanged. Fresh combined-head gates remain
 required; historical advisory success badges did not prove successful tests.
+
+
+## Subsequent main integration
+
+Head `b8dc7575c` passed complete real-server local validation (direct exit 0;
+4,491 client tests in 852.60 seconds) and genuine Linux signoff (1,797 seconds).
+Hosted shard one passed its 1,965 client tests but failed the unchanged TUI
+throughput assertion at 1,438 deltas/second against 2,000. Five unchanged local
+repetitions under concurrent test load passed at 15,706/13,611/16,592/17,964/16,465
+deltas/second. TUI and relevant dependencies matched main, and test-child VM
+flags do not enter this holder fixture. This supports suspected environment
+variance, not a proved flake or waiver. Logs: `/private/tmp/pr975-tui-stream-focused-{1..5}.log`.
+
+Hosted shard two passed 2,526 client tests in 829.91 seconds and all 1,365 TUI
+tests (stream rate 2,029/second). Conformance dependency resolution then failed
+with Hex 502 after 478.28 seconds; the existing retry restarted the whole gate
+and exhausted the 50-minute job budget. Final logs are preserved in
+`/private/tmp/pr975-b8dc7575-macos-shard{1,2-final}.log`. Manual rerun requests
+were rejected while the aggregate was pending; no manual retry started.
+
+Main subsequently advanced to `13508cb58` with merged provider keepalives,
+Responses Fast mode and identity clock tolerance. The conflict is only in the
+handoff; their source and tests merge unchanged. Fresh tests, reviews, hosted
+CI and exact-head signoff must validate the new integration before merge.

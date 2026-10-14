@@ -1646,3 +1646,51 @@ pub fn cyber_access_fallback_uses_each_entry_and_denial_stops_test() {
     }
   })
 }
+
+pub fn service_tier_fallback_uses_own_selection_for_both_dialects_test() {
+  list.each([None, Some(model.DefaultServiceTier)], fn(selection) {
+    let requests = process.new_subject()
+    let public =
+      fixture.routing_transport(fn(sent) {
+        process.send(requests, sent)
+        fixture.ok_response(measured_failure_transcript())
+      })
+    let bridge =
+      gateway.CodexTransport(prepare_streaming: fn(_profile, sent, events) {
+        process.send(requests, sent)
+        let http.Transport(prepare_streaming:) =
+          fixture.transport(fixture.ok_response(measured_success_transcript()))
+        prepare_streaming(sent, events)
+      })
+    let configured =
+      mixed_accounting_gateway(public, bridge)
+      |> gateway.with_service_tier("primary", model.FastServiceTier)
+    let configured = case selection {
+      None -> configured
+      Some(tier) -> gateway.with_service_tier(configured, "subscription", tier)
+    }
+    let handle = gateway.request(configured, main_request())
+    let assert Ok(#(_, stream.Settled(_, report))) =
+      stream.await_terminal(handle, within: 2000)
+      as "A retryable primary failure must reach the subscription fallback."
+    assert accounting.attempts(report) == 2
+    let assert Ok(first) = process.receive(requests, within: 1000)
+      as "The primary request must execute."
+    let assert Ok(second) = process.receive(requests, within: 1000)
+      as "The fallback request must execute."
+    let assert Ok(first_body) = json.parse(first.body)
+      as "The primary body must parse."
+    let assert Ok(second_body) = json.parse(second.body)
+      as "The fallback body must parse."
+    assert wire.field(first_body, "service_tier") == Ok(json.String("priority"))
+    case selection {
+      None -> {
+        assert wire.field(second_body, "service_tier") == Error(Nil)
+      }
+      Some(_) -> {
+        assert wire.field(second_body, "service_tier")
+          == Ok(json.String("default"))
+      }
+    }
+  })
+}

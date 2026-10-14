@@ -240,6 +240,8 @@ pub opaque type Gateway {
     image_limits: List(#(#(String, String), Int)),
     /// Each provider name owns its optional Responses access selection.
     cyber_access: List(#(String, CyberAccessProgram)),
+    /// Each provider name owns its optional Responses serving tier.
+    service_tiers: List(#(String, model.ResponsesServiceTier)),
     protected_images: Int,
     transport: Transport,
     codex_transport: Option(CodexTransport),
@@ -484,6 +486,7 @@ pub fn new(
     prices: [],
     image_limits: [],
     cyber_access: [],
+    service_tiers: [],
     protected_images: 0,
     transport:,
     codex_transport: None,
@@ -567,6 +570,25 @@ pub fn with_cyber_access(
   Gateway(..gateway, cyber_access: [
     #(provider, program),
     ..list.filter(gateway.cyber_access, fn(entry) { entry.0 != provider })
+  ])
+}
+
+/// Selects the Responses serving tier for one configured provider.
+/// Fallback attempts read their own selection rather than inheriting a tier.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway |> gateway.with_service_tier("fast", model.FastServiceTier)
+/// ```
+pub fn with_service_tier(
+  gateway: Gateway,
+  provider: String,
+  tier: model.ResponsesServiceTier,
+) -> Gateway {
+  Gateway(..gateway, service_tiers: [
+    #(provider, tier),
+    ..list.filter(gateway.service_tiers, fn(entry) { entry.0 != provider })
   ])
 }
 
@@ -1909,12 +1931,16 @@ fn attempt_one(
         name,
         api_key_secret,
         fn(api_key) {
-          responses.build_request_with_access(
+          responses.build_request_with_options(
             base_url,
             api_key,
             target,
             request,
             cyber_access,
+            option.from_result(list.key_find(
+              gateway.service_tiers,
+              target.provider,
+            )),
           )
         },
         responses.response_machine(target, now:),
@@ -2002,11 +2028,15 @@ fn subscription_attempt(
         http.Transport(prepare_streaming: fn(built, events) {
           prepare_streaming(profile, built, events)
         }),
-        responses.build_subscription_request_with_access(
+        responses.build_subscription_request_with_options(
           target,
           request,
           option.from_result(list.key_find(
             walk.gateway.cyber_access,
+            target.provider,
+          )),
+          option.from_result(list.key_find(
+            walk.gateway.service_tiers,
             target.provider,
           )),
         ),

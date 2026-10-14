@@ -378,6 +378,13 @@ one owner of the conversation. Its encrypted reasoning items are opaque
 replay data, stored once on the first thinking block of an item. ADR-012
 records why subscription credentials are out of scope for this dialect.
 
+A Responses `keepalive` frame is transport control, not an output item or a
+terminal response. The adapter consumes this fixed event after JSON decoding,
+SSE-name agreement and sequence validation. It emits no delta and preserves all
+item, content, usage and terminal witnesses. It does not extend the gateway's
+attempt deadline or reset the cumulative byte budget. An interrupted stream
+still needs its normal terminal proof, and unknown semantic events still fail.
+
 Responses validation failures retain a fixed reason code in the existing
 `MalformedStream` corruption report. The report's subject names an allowlisted
 event and its sequence; its context carries `reason`, `output`, `content`,
