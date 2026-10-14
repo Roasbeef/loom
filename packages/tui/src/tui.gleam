@@ -89,6 +89,7 @@ import session_view/cache_watch
 import session_view/completion_summary
 import session_view/connection_event
 import session_view/context_view
+import session_view/generation_rate
 import session_view/history_view
 import session_view/model.{
   Disconnected, HoldGoalReport, Preview, Replaying, Shared,
@@ -701,8 +702,7 @@ pub fn new_model_with_clock(
       replay_error: None,
       next_id: 1,
       usage: accounting.zero_usage(),
-      generation_started_ms: None,
-      output_rate_tps: None,
+      generation_rates: generation_rate.new(),
       details_expanded: False,
       activity_started_ms: None,
       generation_elapsed_s: 0,

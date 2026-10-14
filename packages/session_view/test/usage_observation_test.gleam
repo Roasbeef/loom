@@ -13,22 +13,22 @@ import session_view/inbox
 import session_view/model.{type Shared, Shared} as session_model
 import session_view/msg
 import session_view/protocol
+import session_view/shared_set
 import session_view/step
 
 pub fn unknown_zero_push_preserves_context_cache_rate_and_notice_test() {
   let known = observed(warm(), Some(5), starting())
   let known =
-    Shared(
-      ..known,
-      stamp: msg.Stamp(2000, 2000),
-      generation_started_ms: Some(1000),
-    )
+    Shared(..known, stamp: msg.Stamp(2000, 2000))
+    |> shared_set.generation_started_ms(Some(1000))
   let after = observed(missing(), Some(6), known)
   assert after.roster == known.roster
   assert after.cache == known.cache
   assert after.cache_notices == known.cache_notices
-  assert after.output_rate_tps == known.output_rate_tps
-  assert after.generation_started_ms == known.generation_started_ms
+  assert session_model.output_rate_tps(after)
+    == session_model.output_rate_tps(known)
+  assert session_model.generation_started_ms(after)
+    == session_model.generation_started_ms(known)
   assert after.notice == known.notice
   assert dict.get(after.roster.pushed, "main") == Ok(#("op", 40_600))
   assert after.usage == known.usage
@@ -40,7 +40,8 @@ pub fn legacy_unknown_zero_retains_aggregate_uncertainty_without_projection_test
   assert after.cache == known.cache
   assert after.roster == known.roster
   assert after.notice == known.notice
-  assert after.output_rate_tps == known.output_rate_tps
+  assert session_model.output_rate_tps(after)
+    == session_model.output_rate_tps(known)
   assert after.usage.total_tokens == known.usage.total_tokens
   assert after.usage.evidence == usage_evidence.partial(usage_evidence.Api)
   assert cache_watch.outlook(after.cache, "main", 2000)
@@ -92,7 +93,8 @@ fn starting() -> Shared(String, Nil, String, String) {
       inbox.new("frames"),
       inbox.new("replay"),
     )
-  Shared(..shared, peer: session_model.Attached, generation_started_ms: Some(0))
+  Shared(..shared, peer: session_model.Attached)
+  |> shared_set.generation_started_ms(Some(0))
 }
 
 fn observed(

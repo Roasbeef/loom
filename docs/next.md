@@ -3,7 +3,7 @@
 Baselined October 13, 2026 against `526fb44c4` on
 `docs/archive-ui-captures`, based on `main` at
 `dc70d25d42da531284225bf399f40f82e13539d4`. This edition covers the capture
-cleanup and its CI repair, integrated with `main` at `c47175004`. It records
+cleanup and its CI repair, integrated with `main` at `99975fe00`. It records
 evidence from this checkout; earlier validation does not establish the state
 of this branch. The project plan remains `docs/issue-plan.md`.
 
@@ -50,6 +50,16 @@ or retry rule changed. The provider README and
 [upstream handoff](https://github.com/Roasbeef/loom/blob/c47175004/docs/next.md)
 preserve its evidence and the distinction between malformed streams and generic
 provider-error responses. Final verification must cover the combined tree.
+
+[PR #982](https://github.com/Roasbeef/loom/pull/982) subsequently merged at
+`99975fe00`. The terminal and web view now share a session-scoped generation
+rate ledger indexed by strand. Focus selects a strand's timing, and partial
+observations retain the previous complete rate instead of reporting a full
+request measurement. Its [upstream handoff](https://github.com/Roasbeef/loom/blob/99975fe00/docs/next.md)
+preserves the capture-ordering rules, regression and mutation evidence, and the
+open need for server timing to measure requests already active at attachment.
+These upstream results do not validate the combined cleanup head. No daemon
+has been updated, and deployment remains separate.
 
 ## Rulings already made
 

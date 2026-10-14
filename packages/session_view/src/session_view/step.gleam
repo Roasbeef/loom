@@ -46,6 +46,7 @@ import session_view/commands
 import session_view/completion_summary
 import session_view/connection_event
 import session_view/context_view
+import session_view/generation_rate
 import session_view/history_view
 import session_view/inbox.{type Inbox}
 import session_view/lane_fold
@@ -166,7 +167,7 @@ pub fn advance_activity_clocks(
 fn advance_generation_clock(
   shared: Shared(socket, recorder, source, replay_source),
 ) -> Shared(socket, recorder, source, replay_source) {
-  let elapsed = case shared.generation_started_ms {
+  let elapsed = case session_model.generation_started_ms(shared) {
     None -> 0
     Some(started) -> int.max({ shared.stamp.now_ms - started } / 1000, 0)
   }
@@ -293,8 +294,7 @@ pub fn new(
     replay_error: None,
     next_id: 1,
     usage: accounting.zero_usage(),
-    generation_started_ms: None,
-    output_rate_tps: None,
+    generation_rates: generation_rate.new(),
     details_expanded: False,
     activity_started_ms: None,
     activity_elapsed_s: 0,
