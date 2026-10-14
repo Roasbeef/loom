@@ -133,3 +133,7 @@ it here conflicts only in this handoff. Provider/runtime match main, while
 concurrency production code and reviewed fixture corrections are unchanged.
 The entered provider/runtime slice and fresh hosted final-head checks remain
 required before landing.
+
+The entered current-main provider/runtime slice passed exit 0. The full
+real-server gate validates the unchanged concurrency/fixture implementation;
+fresh hosted CI must validate the final complete publication before merging.

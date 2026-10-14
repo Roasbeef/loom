@@ -331,3 +331,9 @@ advisory observation policy passed direct exit 0 on the integration through
 than relying on their unset-server declines. Log:
 `/private/tmp/pr978-final-real-server-full-check.log`. Later current-main
 Responses integration remains a separately checked slice and fresh hosted gate.
+
+After integrating current main `c47175004` through #975 `53fec5003`, the entered
+provider/runtime slice passes `LOOM_TEST_PARALLEL=8 bash scripts/check.sh provider
+runtime` (direct exit 0): `/private/tmp/pr978-current-main-provider-runtime-check.log`.
+The earlier full real-server gate and this slice result retain their separate
+source boundaries. Final hosted CI must cover the complete published head.
