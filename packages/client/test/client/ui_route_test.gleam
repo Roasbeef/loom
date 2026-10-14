@@ -81,6 +81,9 @@ import weft/poll
 // How long a session named `slow-...` takes to build, in milliseconds.
 const slow_build_ms = 1200
 
+// The managed body owns the whole fixture, including a blocking session change.
+const fixture_body_ms = 40_000
+
 // What the page's upgrade does: answer with the role the router handed it, or
 // be the daemon's own page socket over a gateway that is not running.
 type Upgrade {
@@ -425,7 +428,7 @@ fn fixture_lasting_with_root(
   let assert Ok(port) = process.receive(ports, 1000) as "listener port is known"
   let outcomes =
     weft.new([fn() { Ok(run(ready, port, credential, daemon)) }])
-    |> weft.deadline(40_000)
+    |> weft.deadline(fixture_body_ms)
     |> weft.start
   assert root.shutdown(daemon, within: 5000) == Ok(Nil)
   process.kill(listener.pid)
@@ -1301,6 +1304,20 @@ fn send_request(
   headers: List(#(String, String)),
   body: String,
 ) -> Answer {
+  send_request_within(port, method, path, headers, body, 1000)
+}
+
+// A synchronous session change waits for its final outcome before writing the
+// response head. Its caller can use the managed body's existing lifetime while
+// ordinary routing probes retain their one-second receive bound.
+fn send_request_within(
+  port: Int,
+  method: String,
+  path: String,
+  headers: List(#(String, String)),
+  body: String,
+  within_ms: Int,
+) -> Answer {
   let assert Ok(socket) =
     ffi_daemon_socket.connect(
       #(127, 0, 0, 1),
@@ -1321,7 +1338,7 @@ fn send_request(
     <> body
   assert ffi_daemon_socket.send(socket, bit_array.from_string(request))
     == Ok(Nil)
-  let head = read_head(socket, "")
+  let head = read_head_within(socket, "", within_ms)
   let assert [status_line, ..header_lines] = string.split(head, "\r\n")
     as "a status line"
   let assert [_, code, ..] = string.split(status_line, " ") as "a status code"
@@ -1350,13 +1367,19 @@ fn send_request(
 }
 
 fn read_head(socket, accumulated: String) -> String {
+  read_head_within(socket, accumulated, 1000)
+}
+
+// The managed fixture still bounds the entire response, including every byte
+// read here, and owns the socket if the body reaches that deadline.
+fn read_head_within(socket, accumulated: String, within_ms: Int) -> String {
   case string.split_once(accumulated, "\r\n\r\n") {
     Ok(#(head, _)) -> head
     Error(Nil) -> {
-      let assert Ok(byte) = ffi_ws.tcp_receive(socket, 1, 1000)
+      let assert Ok(byte) = ffi_ws.tcp_receive(socket, 1, within_ms)
         as "the response head arrives"
       let assert Ok(text) = bit_array.to_string(byte) as "the head is ASCII"
-      read_head(socket, accumulated <> text)
+      read_head_within(socket, accumulated <> text, within_ms)
     }
   }
 }
@@ -8477,13 +8500,31 @@ fn shareable_with(
   entered: Entered,
   more: List(#(String, String)),
 ) -> Answer {
-  get(port, entered.page <> "/ws?csrf-token=" <> entered.nonce, [
-    host(port),
-    #("cookie", "loom_ui=" <> entered.cookie),
-    #("origin", "http://127.0.0.1:" <> int.to_string(port)),
-    #("x-shareable", "1"),
-    ..more
-  ])
+  shareable_within(port, entered, more, 1000)
+}
+
+// Only the running-session proof waits for the synchronous stop/isolate/resume
+// result. Refusals, detached admission and idempotent asks keep the short probe.
+fn shareable_within(
+  port: Int,
+  entered: Entered,
+  more: List(#(String, String)),
+  within_ms: Int,
+) -> Answer {
+  send_request_within(
+    port,
+    "GET",
+    entered.page <> "/ws?csrf-token=" <> entered.nonce,
+    [
+      host(port),
+      #("cookie", "loom_ui=" <> entered.cookie),
+      #("origin", "http://127.0.0.1:" <> int.to_string(port)),
+      #("x-shareable", "1"),
+      ..more
+    ],
+    "",
+    within_ms,
+  )
 }
 
 // The scope the catalogue holds for a session.
@@ -8554,12 +8595,15 @@ pub fn the_daemon_refuses_a_forced_make_shareable_test() {
 // made after, and asking again changes nothing.
 pub fn an_owner_makes_a_running_private_session_shareable_test() {
   fixture_with(Inviting, fn(ready, port, credential) {
-    let session = create_session(ready, "shareable-run", 1503)
+    // The existing slow assembly makes resume take longer than the ordinary
+    // one-second HTTP probe.
+    let session = create_session(ready, "slow-shareable-run", 1503)
     let page = enter(port, operate(port, credential, session))
     assert invite(port, page, "observer").body == "NotIsolated"
     assert scope_in(ready.state_root, session) == ["workspace_private"]
 
-    let answer = shareable_with(port, page, [])
+    // The reply follows completion, within the unchanged whole-body deadline.
+    let answer = shareable_within(port, page, [], fixture_body_ms)
     assert answer.status == 296
     assert scope_in(ready.state_root, session) == ["session_only"]
 

@@ -354,3 +354,47 @@ error before retaining its existing successful-scenario assertion. No refusal
 is accepted and no scenario is retried. This branch also incorporates the
 reviewed four-way advisory setting and opening-refusal diagnostic from #975.
 Fresh exact-head hosted validation and Linux signoff remain required.
+
+
+## Final hosted fixture correction
+
+PR #975 merged at `1ae797c1e` after its exact-head hosted checks and Linux
+signoff passed. PR #978 then targeted main with unchanged head `1ec732407`.
+That head passed the complete local gate against a newly built shipment
+(all 4,495 client tests in 657.41 seconds) and genuine Linux signoff in
+1,797 seconds. Earlier local commands had combined current dev tests/helpers
+with a cached `450ad56e` daemon; those commands are not proof of current shipped
+behavior. The rebuilt daemon's metadata and keepalive/OIDC/serving-policy
+semantics were inspected, and its broker/framing code fingerprints matched the
+current dev implementation before the fresh complete gate.
+
+Hosted attempt one failed only the concurrent native-bootstrap readiness probe.
+Five unchanged local native runs passed in 0.439–0.512 seconds. One bounded
+same-head shard retry passed that probe in 3.818 seconds but failed a different
+fixture, `an_owner_makes_a_running_private_session_shareable_test`, at its first
+response-head read. Both failures remained recorded; a green advisory badge
+and an aggregate which skipped its census did not meet the merge gate.
+
+The sharing fixture's synchronous adapter calls the real stop/isolate/resume
+operation before writing its response. Production permits a 15-second stop wait
+and a 30-second resume wait, plus registry calls; the actual page uses a detached
+task. The fixture's generic first-byte probe instead allowed only one second.
+Five unchanged local reproductions passed in 0.187–0.328 seconds, but that fast
+case did not cover permitted slower resume.
+
+Only the primary blocking success request now waits within the existing managed
+body's 40-second lifetime. The whole-body deadline, connection/body reads and all
+ordinary, refusal, detached-admission and idempotent request bounds are unchanged.
+The same test uses its existing `slow-` assembly, which takes 1,200 ms to build,
+so resume deliberately exceeds the old first-byte probe. The original status,
+private-to-session-only scope, residency, invitation and idempotence assertions
+remain. No production helper, broker, provider or UI implementation changed.
+
+The focused correction passed in 3.35 seconds. A private compiled control with
+the corrected receive bound passed (2.607 seconds); changing exactly that one
+request's bound back to 1,000 ms failed at the same response-header timeout.
+The control preserved the slow assembly and every outcome assertion and left
+tracked source and normal build artifacts unchanged. Logs are
+`/private/tmp/pr978-shareable-{positive,negative}-control.log`. Two independent
+changed-slice reviews found no issue. Fresh complete correction-head gates remain
+required; the predecessor's passes are not reused as final signoff.

@@ -77,28 +77,31 @@ audit tools or hooks have been changed or executed by this integration.
 
 ## Helper integration checkpoint
 
-The combined provider/login changes above are now on main at `13508cb58` via
-PR #985. This helper integration preserves them unchanged. Main's two-shard CI
-and bounded module runner remain unchanged. The conflict affected only this
-handoff; helper production sources and reviewed fixtures were preserved.
-
-PR #975 adds idle helper retirement; its measured memory savings, replacement
-costs and fixture VM resource budget are in the
-[retirement report](review/helper-idle-retirement-2026-10-13.md). On predecessor
-`b8dc7575c`, full local validation passed direct exit 0, including all 4,491 client
-tests in 852.60 seconds. Genuine Linux signoff also passed. Hosted shard one
-failed only an unchanged TUI throughput assertion; five focused repetitions
-passed at 13,611–17,964 deltas/second and source review found no helper-change
-path into that fixture. Shard two passed its 2,526 client tests and all TUI tests,
-then hit Hex 502; a whole-gate retry exhausted the job budget. Neither attempted
-manual retry started while the aggregate was pending. These results do not
-validate this newer integrated head, and failures are not waived.
+The combined provider/login changes above landed through PR #985 at `13508cb58`.
+PR #975 subsequently merged at `1ae797c1e` after exact-head hosted CI, both actual
+macOS full-check outcomes and genuine Linux signoff passed. Its refreshed local
+shipment also passed all 4,495 client tests. The retirement report preserves its
+memory savings, replacement costs and earlier failures. No installed daemon was
+changed or restarted.
 
 PR #978 preserves the reviewed concurrent helper implementation and isolated
-benchmark evidence. Its predecessor `7794f754b` passed full local validation
-with all 4,491 client tests in 869.97 seconds. Hard hosted gates and the second
-macOS shard passed; Linux signoff and the first shard were still active when
-main advanced. Fresh integrated-head gates remain required for both PRs.
+benchmark evidence. Head `1ec732407` passed its complete fresh-shipment local
+gate (4,495 client tests in 657.41 seconds), genuine Linux signoff and all hard
+hosted jobs. Its second macOS full-check shard failed a native bootstrap readiness
+probe; five unchanged local repetitions passed, and one bounded shard retry
+passed that bootstrap fixture but exposed a different sharing-fixture timeout.
+Green advisory badges and the skipped aggregate census were not accepted as
+complete validation.
+
+The sharing fixture waits synchronously for stop/isolate/resume before writing
+its HTTP response head, but its generic probe allowed only one second. Only that
+blocking success request now uses the existing managed body's 40-second lifetime;
+ordinary requests, refusals, detached admission and idempotent asks retain their
+one-second probes. The existing 1,200 ms slow assembly makes the same test prove
+a legitimately slower resume. Every original outcome assertion remains. A private
+control restoring only the one-second receive bound fails at the same header
+read; the corrected case passes. Independent changed-slice reviews passed.
+Fresh full gates and Linux signoff must validate the published correction head.
 
 ## Concurrent helper evidence
 
@@ -110,17 +113,18 @@ Four-slot batch latency matched separate helpers; eight slots improved by 5.99%.
 Summed helper RSS was 69.59% and 68.72% lower. These isolated local comparisons
 do not establish live-daemon or distributed latency savings.
 
-Both predecessor macOS shards ultimately passed their actual full checks,
-covering 1,965 plus 2,526 client tests. This newer head still needs its own
-combined validation and Linux signoff; earlier results are not reused.
+The older `7794f754b` macOS shards passed their actual full checks, covering
+1,965 plus 2,526 client tests. The later `1ec732407` hosted failures are recorded
+above. The correction head still needs its own combined validation and Linux
+signoff; earlier results are not reused.
 
 ## Next steps
 
-1. Finish full tests, independent integration reviews, both actual macOS shard
-   outcomes and genuine exact-head Linux signoff for #975, then merge it.
-2. Retarget #978 to main after #975 lands. Require complete current-head tests,
-   reviews, hosted gates and Linux signoff before merging it.
-3. Preserve the provider/login source and security boundaries above, capture
+1. Finish the corrected #978 full local gate, both actual macOS shard outcomes,
+   hard hosted gates and genuine exact-head Linux signoff, then merge it into main.
+   The retarget is complete and the independent implementation and fixture reviews
+   passed. Earlier heads' successes do not substitute for these gates.
+2. Preserve the provider/login source and security boundaries above, capture
    archive recovery and all helper custody invariants. Historical results belong
    to their recorded heads; green advisory badges alone are not test passes.
 
