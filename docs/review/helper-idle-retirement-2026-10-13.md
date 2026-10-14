@@ -224,3 +224,15 @@ build artifacts are untouched by the probe. Logs:
 The corrected full `LOOM_TEST_PARALLEL=8 make check` passed direct exit 0:
 `/private/tmp/pr975-macos-fixed-full-check.log`. Fresh hosted checks remain a
 separate gate for these test/workflow corrections.
+
+
+## Hosted native-fixture scheduling correction
+
+Run 38555614758 on `53fec5003` exposed authenticated control-hello and
+native startup readiness timeouts before cancellation. Eight-way EUnit execution
+allows several multi-daemon fixtures to boot simultaneously; their homes, state
+and TLS paths remain distinct. There is no evidence of a shared-name collision
+or a proved resource-exhaustion error. The macOS advisory lane now uses two-way
+execution to bound that overlap, retaining every test, serial exception,
+assertion and existing deadline. This is a scheduling hypothesis requiring
+fresh hosted validation, not a claim that the predecessor passed.
