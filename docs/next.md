@@ -32,11 +32,21 @@ Static checks, warning-free builds, shipment preparation, documentation checks
 and the skip census passed. The initial provider socket failures were sandbox
 `eperm`; the full provider suite passed outside that execution sandbox.
 
-The affected gate's client lane exhausted its default 1200-second test budget
-without an assertion failure, after shipped-daemon tests and into ledger tests.
-A full rerun with `LOOM_TEST_TIMEOUT_SECONDS=3600` is required, followed by the
-TUI gate that the client lane had not reached. Consult the PR for the rerun and
-exact-head hosted/Linux results; the timed-out run is not a green gate.
+The affected gate's first client lane exhausted its default 1200-second test
+budget without an assertion failure. The exact affected gate rerun with
+`LOOM_TEST_TIMEOUT_SECONDS=3600` passed in 1352 seconds: all 4497 client tests,
+1369 TUI tests, the other affected lanes and the strict skip census. An earlier
+ordinary client rerun omitted the shipped-fixture environment and is not the
+replacement-gate evidence.
+
+Hosted test, build, jail, soak and end-to-end jobs passed on `a25e80fe6`, including
+the macOS aggregate gate. The Linux aggregate gate found one pre-existing missing
+ordinary-runner skip declaration for `shipped deployment status`. The owner
+authorized the narrow CI fix. Its census replay against the captured hosted log
+is clean. Enforced Linux signoff on `a25e80fe6` passed in 1710 seconds with a
+strict clean skip census, proving the fixture ran without that waiver. The
+configured `gilgamesh-signoff` alias targets `obelisk`; the driver confirmed that
+hostname. The declaration applies only to the ordinary hosted Linux gate.
 
 The independent advisor review found that refusing an overlapping side action
 erased a running board and stopped polling. Preserve its history/status and
@@ -49,8 +59,9 @@ not live cache reads or savings. The installed daemon has not been replaced.
 
 ## Next steps
 
-1. Complete the longer-budget client rerun and TUI gate, then check exact-head
-   hosted CI and Linux signoff. Record the results in the PR before readiness.
+1. Check hosted CI on the final head after the narrow CI declaration fix.
+   Confirm whether `gilgamesh-signoff` targeting `obelisk` is the intended host,
+   then run signoff on that final head. Record results in PR #981 before readiness.
 2. Exercise live Anthropic cache usage when credits are configured. Record model,
    prefix size, cache reads/writes, latency, and main-request reuse after the side
    query. Merge and replace the installed daemon only with owner authorization.
