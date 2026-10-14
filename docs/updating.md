@@ -204,6 +204,29 @@ launch a daemon. If recovery fails, reopen `loom` and select the saved session;
 uncertain submissions are not automatically replayed. Installing files does
 not hot-load code into a running VM.
 
+## Darwin process identity upgrade
+
+New macOS builds record process birth in UTC with a `darwin:utc:` prefix. The
+`ps` subprocess uses UTC and the C locale regardless of the terminal's
+`TZ` and locale; the daemon and tools retain their normal environment.
+
+An older `darwin:` record has no timezone metadata. The updater can still
+capture and gracefully retire its daemon when the inherited observation
+matches. If its PID is alive but its birth text differs, the updater refuses
+replacement and preserves the record. Verify the old daemon's process identity
+and stop it gracefully before retrying. Do not remove the endpoint or lock
+file to force startup.
+
+UTC markers use endpoint schemas three/four (without/with build identity).
+Older clients reject these versions before their local-time comparison can
+mistake the new daemon for a departed owner and overwrite its endpoint. Restart
+older terminal clients to attach after the update. New clients still read
+legacy schemas one/two.
+
+This is also a downgrade boundary: stop the daemon and all clients before
+selecting an older release, and use release-specific endpoint recovery as
+described below. No endpoint fields or gateway protocol messages changed.
+
 ## Roll back
 
 Coordinate shutdown first, including local terminals that could automatically

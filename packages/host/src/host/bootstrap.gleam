@@ -566,7 +566,8 @@ pub fn terminate_process_group(pid: Int) -> Nil
 /// Returns a birth-qualified identity or confirms that the process is absent.
 ///
 /// Linux proves procfs is observable before reading `/proc/<pid>/stat` plus the
-/// kernel boot id; Darwin asks `ps` for the full start time. Absence is distinct
+/// kernel boot id; Darwin asks `ps` for the full start time in UTC and the C
+/// locale, with a `darwin:utc:` prefix. Absence is distinct
 /// from an observation failure so stale endpoints can be replaced without
 /// treating uncertainty as death.
 ///

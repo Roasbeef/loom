@@ -1,5 +1,27 @@
 # Current handoff
 
+## Darwin restart and discovery integration
+
+Rebased October 14, 2026 onto main `25c34d3493a79837b3c4eafcf9eb82a2caa68201` for PR #986.
+The owner explicitly requested rebase and force merge without waiting for a
+new full CI or Linux signoff cycle. The previous published head `3188d27c3`
+passed hosted CI; those results are historical evidence, not exact-head
+validation of this rebase. The host implementation and regression sources
+replayed byte-identically. Focused host tests and documentation checks are
+recorded on the PR before merge.
+
+Darwin process birth is observed in UTC and the C locale only in the `ps`
+subprocess. Ambiguous live legacy records fail closed. UTC records use
+endpoint schemas three/four so older clients refuse them before overwriting
+discovery. Restart older terminal clients after updating; the
+[upgrade guide](updating.md#darwin-process-identity-upgrade) records the
+legacy recovery and downgrade boundaries. No installed daemon was changed.
+
+## Prior merged work
+
+The following main checkpoint is preserved from the rebase baseline. Its
+individual validation boundaries and deliberately open work remain as stated.
+
 Baselined October 14, 2026 against main
 `3ee679ca7b7a36bb2e518f4494214de364217e7b`. The owner requested one combined
 merge of login PR #985, Fast-mode PR #987 and keepalive PR #988 through #985.

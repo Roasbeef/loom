@@ -102,7 +102,11 @@ callers own launch timing, authentication policy, and application messages.
   token shape and `loomd access`; `tui` for local server bootstrap, its own
   bounded file reads, the remote-address rule, `loom claim` and `loom access`. Terminal logger suppression,
   stdout forwarding, and VM exit remain in `tui`.
-- **FFI**: `host/internal/ffi_zlib` exposes the shared bounded gzip inflater
+- **FFI**: `host/internal/ffi_process` exposes only the inherited-environment
+  Darwin birth observation needed to compare legacy endpoints. New observations
+  use `host/bootstrap.process_identity`, with a UTC/C-locale subprocess and a
+  `darwin:utc:` marker. `host/internal/ffi_zlib` exposes the shared bounded
+  gzip inflater
   in `host_zlib_ffi.erl`. Extension installation retains its original client
   adapter, while release installation calls the shared primitive directly.
   OTP zlib produces bounded chunks; the shim rejects excess output before
@@ -156,7 +160,15 @@ callers own launch timing, authentication policy, and application messages.
   Darwin's `ps -o lstart=` has one-second resolution, so two processes born
   within the same second under one recycled pid are indistinguishable there.
   Nothing in the design closes that gap; it bounds how much a Darwin birth
-  marker proves.
+  marker proves. New Darwin markers use UTC and the C locale independently of
+  the caller's environment. Legacy `darwin:` markers remain usable when their
+  inherited-environment observation matches. A mismatch on a live PID is an
+  error, because the old record cannot distinguish PID reuse from a timezone or
+  locale change; only confirmed process absence permits its replacement.
+  UTC records use schema three without build identity and four with it; older
+  decoders reject both before their unsafe native comparison can authorize
+  replacement. New decoders retain schemas one/two for legacy/Linux markers
+  and reject any mismatch between the schema pair and the birth format.
 - A daemon log is arbitrary child output, so `current_log_tail` returns bytes
   and `host/bootstrap` decodes them. A byte offset can land inside a codepoint,
   and a `String` minted from such a slice breaks the type's invariant for every
