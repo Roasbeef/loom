@@ -91,3 +91,9 @@ Independent reviews and the corrected full local gate pass (direct exit 0):
 required on the published correction head; earlier green Linux gates do not
 validate it. The delayed-start comparison passes with corrected admission and
 fails with the old bound, as recorded in the measurement report.
+
+Main advanced to `c47175004` with merged #979 during validation. Integration
+conflicts only in this handoff; its Responses diagnostics/runtime regressions
+and provider docs merge unchanged. The deployment coverage correction is now
+also on main. Idle-retirement production source remains unchanged, and fresh
+mergeable-head hosted checks must validate the integration before landing.
