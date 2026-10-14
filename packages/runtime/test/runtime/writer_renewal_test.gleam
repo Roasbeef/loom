@@ -85,15 +85,21 @@ pub fn the_writer_renews_its_lease_on_its_own_interval_test() {
     })
   let #(pid, namespace, _) = start_writer(session)
 
-  // Repeatedly, not once: a one-shot timer or a re-arm that never happened
-  // would leave this at exactly one, which is the failure this count is
-  // chosen to separate from.
-  process.sleep(300)
-  assert recorder.read(rec, "renew") >= 3
-  assert process.is_alive(pid)
+  // Fixed-delay renewal re-arms after its handler returns, so scheduling and
+  // callback delays are not a promise to finish within one fixed sleep.
+  // Three observed renewals still distinguish repetition from a one-shot.
+  let renewed = wait_for(fn() { recorder.read(rec, "renew") >= 3 })
+  let count = recorder.read(rec, "renew")
+  let alive = process.is_alive(pid)
 
+  // Retire the unlinked writer before an assertion can abandon its cadence.
   process.kill(pid)
   assert address.stop(namespace) == Ok(Nil)
+
+  assert renewed == poll.Answered(Nil)
+    as "the writer repeatedly renews within the bounded observation"
+  assert count >= 3
+  assert alive
 }
 
 pub fn a_session_with_no_lease_renews_nothing_test() {

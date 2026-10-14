@@ -101,7 +101,15 @@ one-second probes. The existing 1,200 ms slow assembly makes the same test prove
 a legitimately slower resume. Every original outcome assertion remains. A private
 control restoring only the one-second receive bound fails at the same header
 read; the corrected case passes. Independent changed-slice reviews passed.
-Fresh full gates and Linux signoff must validate the published correction head.
+Correction head `7cf9db80f` passed the complete fresh-shipment local gate and
+Linux signoff, plus all hard hosted jobs and the second actual macOS full check.
+The first shard failed an unchanged TUI throughput assertion; five unchanged
+focused reproductions passed, but its one bounded retry failed an earlier runtime
+renewal test after a fixed 300 ms sleep. The positive renewal fixture now uses
+its existing bounded observation for at least three renewals, retaining count
+and liveness assertions and cleaning up before assertion. Production specifies
+fixed delay after handler completion, not a 300 ms scheduling guarantee.
+Fresh full gates and Linux signoff must validate this next correction head.
 
 ## Concurrent helper evidence
 

@@ -398,3 +398,35 @@ tracked source and normal build artifacts unchanged. Logs are
 `/private/tmp/pr978-shareable-{positive,negative}-control.log`. Two independent
 changed-slice reviews found no issue. Fresh complete correction-head gates remain
 required; the predecessor's passes are not reused as final signoff.
+
+
+## Renewal observation follow-up
+
+Correction head `7cf9db80f` passed the fresh-shipment complete local gate with
+its own exit 0 (4,495 client tests in 640.69 seconds). Genuine Linux signoff
+passed in 1,882 seconds, and containerized signoff passed in 1,888 seconds with
+no undeclared skip. All hard hosted jobs passed. The second macOS shard passed
+its actual full check, including 2,526 client and 1,365 TUI tests.
+
+The first macOS shard passed all 1,969 client tests but failed the unchanged
+TUI drain-rate requirement: 1,445 updates/second against 2,000 required. Five
+unchanged focused local runs passed at 18,115 to 19,011/second with the memory
+bounds intact. Relevant source matched main and the fixture executed no native
+helpers. One bounded shard retry instead failed an earlier runtime fixture:
+only two lease renewals were observed after its fixed 300 ms sleep. Neither
+advisory badges nor the aggregate's skipped census established full success.
+
+The renewal test explicitly distinguishes a repeating timer from a one-shot.
+Production specifies fixed delay after each handler finishes, including its
+synchronous recorder call in this fixture; it promises no 300 ms scheduling
+bound. The positive test now observes at least three renewals through the
+existing file-local bounded poll, as its sibling hibernation test already does.
+It retains the count and live-writer assertions and captures observations before
+cleanup, so a failure cannot leave its unlinked writer renewing. Negative tests
+and production timing policy remain unchanged. Independent design reviews found
+this preserves the intended repeated-renewal invariant. The focused module passed all four tests (exit 0). A private control delaying
+the third callback passed with bounded observation; restoring only the old
+sleep failed with exactly two renewals, matching the hosted shape. A private
+rearm-only mutation left the initial timer intact but failed the bounded
+repetition observation. Normal generated artifacts were unchanged by the
+controls. Fresh exact-head full gates remain required before merge.
