@@ -1,6 +1,7 @@
 # Current handoff
 
-Baselined October 13, 2026 against `efba3f470` on `fix/strand-tps`.
+Baselined October 13, 2026 against `bcb02be01` on `fix/strand-tps`,
+with main through `e86d6fddd` integrated.
 This edition covers per-strand generation timing. The installed daemon has
 not been updated. Rewrite this file when the next body of work finishes.
 
@@ -9,6 +10,15 @@ own head. Those results do not validate this branch. Its evidence and open
 history decisions remain in the
 [prior handoff](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/next.md).
 The project-wide plan remains `docs/issue-plan.md`.
+
+Main also includes the register-decode cache from merged PR #972. Its exact
+blob keys, bounded store-owned inventory and corruption/lease regressions live
+in the storage package. The [measurement report](review/register-decoding-2026-10-12.md)
+records its performance evidence and limits. Its complete prior handoff and
+live memory follow-ups remain in the
+[register-decoding handoff](https://github.com/Roasbeef/loom/blob/e86d6fddd/docs/next.md).
+Those branch results are historical evidence, not validation of this combined
+head. No storage source conflict occurred during integration.
 
 ## Where the tree is
 
@@ -42,10 +52,9 @@ shared session state. Both hosts use the same strand-specific accessors.
 
 ## How to verify
 
-`make check-affected` selects `session_view`, `web_view`, `web_client`, `client`,
-`tui` and `conformance`, together with the static gates and native prerequisites.
-The selector also requires full Linux signoff because three packages changed
-directly. Run `make signoff-remote` against the pushed head; the PR's exact-head
+`make check-affected` selects the gates affected by the current diff against
+main, together with the static gates and native prerequisites.
+Full Linux signoff remains required for the combined head. Run `make signoff-remote` against the pushed head; the PR's exact-head
 commit statuses are the record of hosted checks and Linux signoff.
 
 `packages/web_view/test/strand_rate_test.gleam` drives the actual component and

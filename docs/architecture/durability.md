@@ -300,6 +300,15 @@ seq on entries, seq on the ledger, three on the branch index, and a unique
 index giving a tip entry at most one segment. The single `session` row
 carries both the seq allocator and the statistics projection.
 
+Register reads still select current rows, but the SQLite actor reuses successful
+decodes of identical complete payload bytes through
+`storage/internal/register_cache`. Returned sequences always come from the
+current query. This also preserves detection of external same-sequence edits
+and corrupt rows. The inventory holds at most 64 blobs and 256 KiB of encoded
+bytes, bypasses larger blobs, and clears on overflow or close, including failed
+close. Encoded inventory limits do not describe decoded heap size. A working
+set that repeatedly exceeds the limits can pay admission overhead without reuse.
+
 Session databases use WAL so ordinary snapshot readers can coexist with the
 writer. Every session write transaction opens with `BEGIN IMMEDIATE`,
 because allocating a seq range reads `session.next_seq` before writing it.
