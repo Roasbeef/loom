@@ -170,3 +170,59 @@ pub fn endpoint_reused_pid_birth_is_replaceable_and_publication_is_fenced_test()
   assert endpoint.load(paths) == Ok(Some(endpoint.Starting(own)))
   assert simplifile.delete(paths.root) == Ok(Nil)
 }
+
+// Older discovery must fail at the schema boundary, before its local-time
+// comparison can classify a live UTC owner as departed and overwrite it.
+pub fn utc_birth_markers_require_schemas_old_clients_refuse_test() {
+  let fence = endpoint.Fence(123, "darwin:utc:Wed Oct 14 10:00:00 2026", 1234)
+  let identity = build_identity.Identity("0.3.2", "abcdef12")
+  list.each(
+    [
+      #(endpoint.Starting(fence), "3"),
+      #(endpoint.Ready(fence, "127.0.0.1", 4242, "epoch", None), "3"),
+      #(endpoint.Ready(fence, "127.0.0.1", 4242, "epoch", Some(identity)), "4"),
+    ],
+    fn(pair) {
+      let encoded = endpoint.encode(pair.0)
+      let version = "\"version\":" <> pair.1
+      assert string.contains(encoded, version)
+      assert endpoint.decode(encoded) == Ok(pair.0)
+
+      // Downgrading just the schema cannot remove the UTC compatibility fence.
+      list.each(["1", "2"], fn(old) {
+        let assert Error(_) =
+          endpoint.decode(string.replace(
+            encoded,
+            version,
+            "\"version\":" <> old,
+          ))
+          as "UTC markers cannot be decoded through a legacy schema"
+      })
+
+      let assert Error(_) =
+        endpoint.decode(string.replace(encoded, "darwin:utc:", "darwin:"))
+        as "new schemas require a canonical UTC birth marker"
+
+      // Build metadata and the existing exact field counts still apply.
+      let assert Error(_) =
+        endpoint.decode(string.replace(encoded, version, "\"version\":5"))
+        as "unknown endpoint schemas fail closed"
+    },
+  )
+
+  let starting = endpoint.encode(endpoint.Starting(fence))
+  let assert Error(_) =
+    endpoint.decode(string.replace(starting, "\"version\":3", "\"version\":4"))
+    as "Starting records cannot claim the build-identity schema"
+  let ready =
+    endpoint.encode(endpoint.Ready(
+      fence,
+      "127.0.0.1",
+      4242,
+      "epoch",
+      Some(identity),
+    ))
+  let assert Error(_) =
+    endpoint.decode(string.replace(ready, ",\"build_commit\":\"abcdef12\"", ""))
+    as "schema four still requires the complete build identity"
+}

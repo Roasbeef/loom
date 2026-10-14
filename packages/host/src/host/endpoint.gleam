@@ -290,11 +290,11 @@ pub fn address(record: Endpoint) -> Result(String, String) {
 
 /// Encodes the endpoint record for gateway protocol two.
 ///
-/// A record that carries a build identity is schema version two; one that
-/// does not is version one. The version is chosen from the value rather than
-/// from a caller flag, so the two can never disagree: a v2 record always has
-/// its identity keys and a v1 record never does, which is what lets `decode`
-/// count each shape's keys without tolerating the other's.
+/// Legacy markers use schemas one/two; UTC Darwin markers use three/four.
+/// Each pair distinguishes records without/with build identity. Old clients
+/// refuse the new schemas before their local-time comparison can mistake a
+/// live UTC owner for a reused PID and overwrite its endpoint. The version is
+/// derived from the record, so callers cannot downgrade that fence.
 ///
 /// ## Examples
 ///
@@ -303,10 +303,14 @@ pub fn address(record: Endpoint) -> Result(String, String) {
 /// ```
 pub fn encode(record: Endpoint) -> String {
   let fence = record.fence
+  let base_version = case string.starts_with(fence.birth, "darwin:utc:") {
+    True -> 3
+    False -> 1
+  }
   let version = case record {
-    Starting(_) -> 1
-    Ready(_, _, _, _, None) -> 1
-    Ready(_, _, _, _, Some(_)) -> 2
+    Starting(_) -> base_version
+    Ready(_, _, _, _, None) -> base_version
+    Ready(_, _, _, _, Some(_)) -> base_version + 1
   }
   let common = [
     #("version", json.Int(version)),
@@ -330,11 +334,9 @@ pub fn encode(record: Endpoint) -> String {
   json.to_string(json.Object(fields))
 }
 
-// The identity keys sit between the epoch and the schema tail, so a v2
-// record reads as the v1 record with two fields inserted rather than as a
-// shape of its own. `None` contributes nothing: a record written without an
-// identity is exactly a version-one record, not a version-two one carrying
-// an empty identity.
+// The identity keys sit between the epoch and the schema tail. Within either
+// version pair, the higher version inserts both fields. `None` contributes
+// nothing; absence is never encoded as an empty build identity.
 fn identity_fields(identity: Option(build_identity.Identity)) {
   case identity {
     None -> []
@@ -383,7 +385,8 @@ pub fn decode(text: String) -> Result(Endpoint, String) {
   // This is an identity fence, not a loosely interpreted connection hint.
   use <- bool.guard(
     !{
-      { version == 1 || version == 2 }
+      { version >= 1 && version <= 4 }
+      && { { version >= 3 } == string.starts_with(birth, "darwin:utc:") }
       && protocol == 2
       && pid > 1
       && started > 0
@@ -396,14 +399,14 @@ pub fn decode(text: String) -> Result(Endpoint, String) {
   case status {
     "starting" -> {
       // A starting record is reservation only and never carries an
-      // identity, so it is version one by definition. Six required keys
+      // identity, so it uses the lower version of its pair. Six required keys
       // were each found above, so an object with nothing past its sixth
       // field cannot also carry a duplicate: a repeat of any key would make
       // a seventh. That is what refuses a record whose second `pid` a
       // different parser might have preferred. `list.drop` rather than
       // `list.length` because the question stops at the bound.
       use <- bool.guard(
-        version != 1 || list.drop(fields, 6) != [],
+        { version != 1 && version != 3 } || list.drop(fields, 6) != [],
         Error("invalid daemon endpoint"),
       )
       Ok(Starting(fence))
@@ -415,22 +418,21 @@ pub fn decode(text: String) -> Result(Endpoint, String) {
 
       // The record's schema version selects which identity keys are present
       // *and* how many keys the object may hold, so the count check is
-      // per-version rather than one number that would have to tolerate the
-      // other shape. A version-one record (nine keys) predates build
-      // identity and reads as an unknown build; a version-two record
-      // (eleven keys) always carries both identity fields, so their absence
-      // is a malformed record rather than an old one. Duplicate keys were
+      // per-shape rather than one number that tolerates both. Versions one
+      // and three (nine keys) read as an unknown build; versions two and four
+      // (eleven keys) require both identity fields, so their absence is a
+      // malformed record rather than an old one. Duplicate keys were
       // already refused by the parser, so "at most N fields" plus the N
       // distinct keys read above is exactly N.
       use identity <- result.try(case version {
-        1 -> {
+        1 | 3 -> {
           use <- bool.guard(
             list.drop(fields, 9) != [],
             Error("invalid daemon endpoint"),
           )
           Ok(None)
         }
-        2 -> {
+        2 | 4 -> {
           use <- bool.guard(
             list.drop(fields, 11) != [],
             Error("invalid daemon endpoint"),
