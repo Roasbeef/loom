@@ -64,7 +64,23 @@ pub fn body_with_access(
   request: model.ProviderRequest,
   access: option.Option(model.CyberAccessProgram),
 ) -> String {
-  encode_body(resolved, request, PublicApi, access)
+  body_with_options(resolved, request, access, None)
+}
+
+/// Builds a Responses request with explicit access and serving policy.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // body_with_options(..., None, Some(model.FastServiceTier))
+/// ```
+pub fn body_with_options(
+  resolved: model.ResolvedModel,
+  request: model.ProviderRequest,
+  access: option.Option(model.CyberAccessProgram),
+  tier: option.Option(model.ResponsesServiceTier),
+) -> String {
+  encode_body(resolved, request, PublicApi, access, tier)
 }
 
 /// Builds a subscription body with the operator's explicit access program.
@@ -79,7 +95,23 @@ pub fn subscription_body_with_access(
   request: model.ProviderRequest,
   access: option.Option(model.CyberAccessProgram),
 ) -> String {
-  encode_body(resolved, request, Subscription, access)
+  subscription_body_with_options(resolved, request, access, None)
+}
+
+/// Builds a Responses request with explicit access and serving policy.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // subscription_body_with_options(..., None, Some(model.FastServiceTier))
+/// ```
+pub fn subscription_body_with_options(
+  resolved: model.ResolvedModel,
+  request: model.ProviderRequest,
+  access: option.Option(model.CyberAccessProgram),
+  tier: option.Option(model.ResponsesServiceTier),
+) -> String {
+  encode_body(resolved, request, Subscription, access, tier)
 }
 
 fn encode_body(
@@ -87,6 +119,7 @@ fn encode_body(
   request: model.ProviderRequest,
   mode: RequestMode,
   access: option.Option(model.CyberAccessProgram),
+  tier: option.Option(model.ResponsesServiceTier),
 ) -> String {
   let system = case request.system {
     None -> []
@@ -127,6 +160,7 @@ fn encode_body(
       ],
       output_options,
       cyber_access(access),
+      service_tier(tier),
       reasoning,
       [
         #("include", json.Array([json.String("reasoning.encrypted_content")])),
@@ -153,6 +187,21 @@ fn cyber_access(
       }
       [#("access_programs", json.Object([#("cyber", json.String(value))]))]
     }
+  }
+}
+
+// Only the typed operator selection reaches the wire. Omission preserves the
+// provider default and explicit default remains distinct from omission. Fast
+// uses the documented priority alias shared by public and subscription endpoints.
+fn service_tier(
+  tier: option.Option(model.ResponsesServiceTier),
+) -> List(#(String, JsonValue)) {
+  case tier {
+    None -> []
+    Some(model.DefaultServiceTier) -> [
+      #("service_tier", json.String("default")),
+    ]
+    Some(model.FastServiceTier) -> [#("service_tier", json.String("priority"))]
   }
 }
 

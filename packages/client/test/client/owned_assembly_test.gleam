@@ -62,6 +62,7 @@ pub fn settings() -> serve.Settings {
           vision: catalog.TextOnly,
           max_images: 8,
           cyber_access: None,
+          service_tier: None,
         ),
       ],
       roles: [#(model.Main, ["test"])],

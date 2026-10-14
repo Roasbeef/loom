@@ -232,6 +232,41 @@ and an `api_key_env` name. Configured subscription prices are API reference
 estimates, not ChatGPT plan credits or account charges. Failed attempts retain
 reported usage; missing usage or pricing remains unknown or partial.
 
+## Request Fast mode
+
+Set `service_tier = "fast"` on a specific model entry to request Fast mode:
+
+```toml
+[models.codex-sol-fast]
+dialect = "codex-subscription"
+auth = "codex"
+profile = "personal"
+model_id = "gpt-6.1-sol"
+service_tier = "fast"
+context_window = 272000
+max_output_tokens = 32768
+thinking = "medium"
+```
+
+Load the updated configuration, then select `/model codex-sol-fast`. The same
+key works for API-key `openai-responses` entries. It sends the request's
+`service_tier = "priority"`, OpenAI's compatible Fast-mode wire alias,
+independently of reasoning effort and cybersecurity access. The native
+subscription endpoint currently rejects the newer `"fast"` wire spelling.
+Omitting the key leaves the provider default in place; `"default"` explicitly
+requests standard processing. Other values and dialects refuse configuration.
+Each fallback entry sends its own selection.
+
+Fast mode is opt-in and can consume more included subscription allowance or
+incur higher API charges. The provider decides eligibility and may serve a
+standard tier despite the requested tier. Configuration does not establish
+that a response was served faster. Loom's configured price estimates are not
+an authoritative subscription charge or a confirmation of the served tier.
+Use a separate model entry and matching price card when comparing estimates.
+See [Codex speed](https://learn.chatgpt.com/docs/agent-configuration/speed) and
+[Responses Fast mode](https://developers.openai.com/api/docs/guides/fast-mode)
+for current availability and billing.
+
 ## Select Daybreak on a specific model
 
 Model selection and cybersecurity access are separate. An exact model entry can
@@ -355,9 +390,21 @@ in the UI are estimates and do not show actual plan allowance remaining.
 `unknown_signing_key` means the ID token named a signing key that the
 issuer's published key set did not contain, even after Loom fetched the set a
 second time. It points at the issuer's key publication, not at the account or
-the saved grant, so signing in again does not help. `invalid_identity` covers
-the remaining token checks: signature, issuer, audience, expiry, nonce and
-subject.
+the saved grant, so signing in again does not help. `invalid_identity_*` codes
+identify the refused check without exposing token contents. For example,
+`invalid_identity_signature`, `invalid_identity_issuer`,
+`invalid_identity_audience`, `invalid_identity_nonce`, and
+`invalid_identity_subject` keep those refusals separate.
+
+`invalid_identity_issued_in_future` means the ID token's UTC `iat` is more
+than five seconds ahead of the local clock. The same five-second tolerance
+bounds `nbf` and expiry; `invalid_identity_not_yet_valid` and
+`invalid_identity_expired` identify those failures. Changing the displayed
+timezone does not change JWT timestamps. Check actual clock synchronization
+when a fresh login fails these time checks. Larger offsets are still refused,
+and signature, issuer, audience, nonce and subject checks remain mandatory.
+The bound follows the five-second tolerance in
+[OpenAI's ID-token verification example](https://developers.openai.com/siwc/website).
 
 ## Refresh and logout
 
