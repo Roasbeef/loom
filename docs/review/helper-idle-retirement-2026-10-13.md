@@ -236,3 +236,21 @@ or a proved resource-exhaustion error. The macOS advisory lane now uses two-way
 execution to bound that overlap, retaining every test, serial exception,
 assertion and existing deadline. This is a scheduling hypothesis requiring
 fresh hosted validation, not a claim that the predecessor passed.
+
+
+## Four-way hosted follow-up
+
+Run 38560026302 on `dd21a6b5d` passed every hard hosted lane and its isolated
+Linux signoff, but the underlying macOS full check failed: a remote-strand
+opening returned an object without `status`, then the client package exhausted
+its unchanged 1,200-second budget. The existing decoder discarded the refusal
+code and message; the fixture now asserts the successful event before reading
+status and includes the complete reply on failure. It adds no retries or
+accepted refusal. The unchanged focused remote-strand test passed locally in
+5.80 seconds; that does not classify the hosted failure as a flake.
+
+Two-way execution completed the real-server local full gate, but was too slow
+on the hosted runner. Four-way execution is the bounded intermediate between
+that timeout and the earlier eight-way startup failures. All test discovery,
+serial exceptions, assertions and deadlines remain unchanged. This setting
+requires fresh hosted validation and exact-head Linux signoffs.

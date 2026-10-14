@@ -1159,6 +1159,12 @@ pub fn create_local_and_settle(
 /// // remote_daemons.settled_state(settled) // -> "resident"
 /// ```
 pub fn settled_state(settled: JsonValue) -> String {
+  // Refusals carry a code and message rather than status. Preserve that
+  // evidence before projecting the success shape; neither reply is retried.
+  assert field(settled, "event") == json.String("operations.get")
+    as {
+      "opening did not return operation status: " <> json.to_string(settled)
+    }
   let assert json.String(state) =
     field(field(field(settled, "body"), "status"), "state")
     as "a settled opening reports a state"
