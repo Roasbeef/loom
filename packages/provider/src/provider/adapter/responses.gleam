@@ -234,6 +234,10 @@ pub opaque type Accumulator {
     identity: Option(#(String, String)),
     /// Last present sequence number; omission does not erase it.
     sequence: Option(Int),
+    /// Bounded structural witness for the current event, never remote text.
+    event: String,
+    /// Bounded numeric positions from the same event, separated for label limits.
+    positions: String,
     /// Independently addressable item states, retained through final proof.
     items: List(Item),
     /// Next never-reused durable block position.
@@ -293,6 +297,8 @@ fn machine_for(
       life: Streaming,
       identity: None,
       sequence: None,
+      event: "event=none",
+      positions: "",
       items: [],
       next_block: 0,
       bytes: 0,
@@ -333,11 +339,16 @@ fn on_chunk(
   chunk: BitArray,
 ) -> #(Accumulator, List(StreamEvent)) {
   use <- bool.guard(acc.life == Terminal, #(acc, []))
-  use <- bool.lazy_guard(
-    acc.bytes + bit_array.byte_size(chunk) > 16_777_216,
-    fn() { malformed(acc) },
-  )
-  let acc = Accumulator(..acc, bytes: acc.bytes + bit_array.byte_size(chunk))
+  let acc =
+    Accumulator(
+      ..acc,
+      bytes: acc.bytes + bit_array.byte_size(chunk),
+      event: "event=none",
+      positions: "",
+    )
+  use <- bool.lazy_guard(acc.bytes > 16_777_216, fn() {
+    malformed(acc, "stream_bytes")
+  })
   case acc.status {
     200 -> {
       let #(sse, events) = stream.feed(acc.sse, chunk)
@@ -355,21 +366,30 @@ fn on_chunk(
     _ ->
       case diagnostic.append_error_body(acc.error_body, chunk) {
         Ok(error_body) -> #(Accumulator(..acc, error_body:), [])
-        Error(Nil) -> malformed(acc)
+        Error(Nil) -> malformed(acc, "error_body_bytes")
       }
   }
 }
 
 // The failure describes the violated boundary, never the remote data. A JSON
 // parser excerpt could otherwise copy provider-reflected credentials here.
-fn malformed(acc: Accumulator) -> #(Accumulator, List(StreamEvent)) {
+fn malformed(
+  acc: Accumulator,
+  reason: String,
+) -> #(Accumulator, List(StreamEvent)) {
   fail(
     acc,
     stream.MalformedStream(corruption.report(
       at: "provider/adapter/responses",
-      on: "provider stream",
+      on: "provider stream; " <> acc.event,
       expected: "consistent Responses item and terminal witnesses",
-      context: "invalid Responses stream",
+      context: "reason="
+        <> reason
+        <> acc.positions
+        <> "; last_seq="
+        <> diagnostic_number(acc.sequence)
+        <> "; bytes="
+        <> diagnostic_number(Some(acc.bytes)),
     )),
   )
 }
@@ -391,11 +411,22 @@ fn fail(
 fn or_malformed(
   value: Result(a, Nil),
   acc: Accumulator,
+  reason: String,
+  then: fn(a) -> #(Accumulator, List(StreamEvent)),
+) -> #(Accumulator, List(StreamEvent)) {
+  or_invalid(result.replace_error(value, reason), acc, then)
+}
+
+// Internal semantic validators carry a fixed reason through their composed
+// checks. No remote string is ever used as this error value.
+fn or_invalid(
+  value: Result(a, String),
+  acc: Accumulator,
   then: fn(a) -> #(Accumulator, List(StreamEvent)),
 ) -> #(Accumulator, List(StreamEvent)) {
   case value {
     Ok(value) -> then(value)
-    Error(Nil) -> malformed(acc)
+    Error(reason) -> malformed(acc, reason)
   }
 }
 
@@ -406,20 +437,94 @@ fn handle_sse(
   event: stream.SseEvent,
 ) -> #(Accumulator, List(StreamEvent)) {
   use <- bool.guard(acc.life == Terminal, #(acc, []))
+  let acc = Accumulator(..acc, event: "event=unparsed", positions: "")
   case event {
-    stream.SseMalformed(..) -> malformed(acc)
+    stream.SseMalformed(..) -> malformed(acc, "sse_framing")
     stream.SseMessage(event: name, data:) -> {
       use value <- or_malformed(
         result.replace_error(json.parse(data), Nil),
         acc,
+        "json_decode",
       )
-      use kind <- or_malformed(wire.string_field(value, "type"), acc)
+      let #(event, positions) = event_witness(value)
+      let acc = Accumulator(..acc, event:, positions:)
+      use kind <- or_malformed(
+        wire.string_field(value, "type"),
+        acc,
+        "event_type",
+      )
       use <- bool.lazy_guard(name != None && name != Some(kind), fn() {
-        malformed(acc)
+        malformed(acc, "event_name")
       })
-      use sequence <- or_malformed(sequence(acc.sequence, value), acc)
+      use sequence <- or_malformed(
+        sequence(acc.sequence, value),
+        acc,
+        "sequence",
+      )
       dispatch(Accumulator(..acc, sequence:), kind, value)
     }
+  }
+}
+
+// Only protocol literals and bounded numbers cross into a failure report. An
+// unknown event name may contain reflected secrets, so it is never echoed.
+fn event_witness(value: JsonValue) -> #(String, String) {
+  let kind = wire.string_field_or(value, "type", "")
+  let kind = case kind {
+    "response.created"
+    | "response.in_progress"
+    | "response.output_item.added"
+    | "response.content_part.added"
+    | "response.reasoning_summary_part.added"
+    | "response.output_text.delta"
+    | "response.refusal.delta"
+    | "response.reasoning_summary_text.delta"
+    | "response.reasoning_text.delta"
+    | "response.output_text.done"
+    | "response.refusal.done"
+    | "response.reasoning_summary_text.done"
+    | "response.reasoning_text.done"
+    | "response.content_part.done"
+    | "response.reasoning_summary_part.done"
+    | "response.output_text.annotation.added"
+    | "response.function_call_arguments.delta"
+    | "response.function_call_arguments.done"
+    | "response.output_item.done"
+    | "response.completed"
+    | "response.incomplete"
+    | "response.cancelled"
+    | "response.failed"
+    | "error" -> kind
+    _ -> "unknown"
+  }
+  #(
+    "event=" <> kind <> "; seq=" <> diagnostic_field(value, "sequence_number"),
+    "; output="
+      <> diagnostic_field(value, "output_index")
+      <> "; content="
+      <> diagnostic_field(value, "content_index")
+      <> "; summary="
+      <> diagnostic_field(value, "summary_index")
+      <> "; annotation="
+      <> diagnostic_field(value, "annotation_index"),
+  )
+}
+
+// Missing and malformed numbers remain distinguishable without serializing the
+// provider value. Large arbitrary-precision integers receive a fixed marker.
+fn diagnostic_field(value: JsonValue, name: String) -> String {
+  case wire.field(value, name) {
+    Error(Nil) -> "absent"
+    Ok(json.Int(number)) -> diagnostic_number(Some(number))
+    Ok(_) -> "invalid"
+  }
+}
+
+fn diagnostic_number(value: Option(Int)) -> String {
+  case value {
+    None -> "absent"
+    Some(number) if number < -2_147_483_648 || number > 2_147_483_647 -> "range"
+    Some(number) -> int.to_string(number)
   }
 }
 
@@ -450,15 +555,24 @@ fn dispatch(
 ) -> #(Accumulator, List(StreamEvent)) {
   case kind {
     "response.created" | "response.in_progress" -> {
-      use response <- or_malformed(wire.field(value, "response"), acc)
+      use response <- or_malformed(
+        wire.field(value, "response"),
+        acc,
+        "response_field",
+      )
       use acc <- or_malformed(
         record_usage(acc, response, usage_evidence.Partial),
         acc,
+        "initial_usage",
       )
-      use identity <- or_malformed(identity(acc, response), acc)
+      use identity <- or_malformed(
+        identity(acc, response),
+        acc,
+        "initial_identity",
+      )
       use <- bool.lazy_guard(
         wire.string_field(response, "status") != Ok("in_progress"),
-        fn() { malformed(acc) },
+        fn() { malformed(acc, "initial_status") },
       )
       #(Accumulator(..acc, identity: Some(identity)), [])
     }
@@ -487,6 +601,7 @@ fn dispatch(
       use acc <- or_malformed(
         record_usage(acc, response, usage_evidence.Complete),
         acc,
+        "failed_usage",
       )
       let error = result.unwrap(wire.field(response, "error"), json.Null)
       let #(code, description) = error_fields(error)
@@ -496,7 +611,7 @@ fn dispatch(
       let #(code, description) = error_fields(value)
       fail(acc, stream.StreamError(code, description))
     }
-    _ -> malformed(acc)
+    _ -> malformed(acc, "event_unsupported")
   }
 }
 
@@ -557,18 +672,27 @@ fn add_item(
   acc: Accumulator,
   value: JsonValue,
 ) -> #(Accumulator, List(StreamEvent)) {
-  use index <- or_malformed(wire.int_field(value, "output_index"), acc)
-  use value <- or_malformed(wire.field(value, "item"), acc)
-  use id <- or_malformed(items.nonempty(value, "id"), acc)
-  use kind <- or_malformed(wire.string_field(value, "type"), acc)
+  use index <- or_malformed(
+    wire.int_field(value, "output_index"),
+    acc,
+    "item_index",
+  )
+  use value <- or_malformed(wire.field(value, "item"), acc, "item_field")
+  use id <- or_malformed(items.nonempty(value, "id"), acc, "item_id")
+  use kind <- or_malformed(wire.string_field(value, "type"), acc, "item_type")
   use phase <- or_malformed(
     case kind {
       "message" -> items.message_phase(value)
       _ -> Ok(None)
     },
     acc,
+    "item_phase",
   )
-  use start_status <- or_malformed(items.optional_string(value, "status"), acc)
+  use start_status <- or_malformed(
+    items.optional_string(value, "status"),
+    acc,
+    "item_status",
+  )
 
   // Message items can arrive marked completed before their parts stream. That
   // metadata never closes our item: every content and item witness is required.
@@ -576,13 +700,13 @@ fn add_item(
     start_status != None
       && start_status != Some("in_progress")
       && start_status != Some("completed"),
-    fn() { malformed(acc) },
+    fn() { malformed(acc, "item_start_status") },
   )
   use <- bool.lazy_guard(
     acc.identity == None
       || index < 0
       || list.any(acc.items, fn(item) { item.index == index || item.id == id }),
-    fn() { malformed(acc) },
+    fn() { malformed(acc, "item_start_identity") },
   )
   use kind <- or_malformed(
     case kind {
@@ -637,6 +761,7 @@ fn add_item(
       _ -> Error(Nil)
     },
     acc,
+    "item_start",
   )
   let next_block = case kind {
     Function(..) -> acc.next_block + 1
@@ -703,10 +828,10 @@ fn add_part(
   event: String,
   value: JsonValue,
 ) -> #(Accumulator, List(StreamEvent)) {
-  use item <- or_malformed(find_item(acc, value), acc)
-  use index <- or_malformed(part_index(event, value), acc)
-  use raw <- or_malformed(wire.field(value, "part"), acc)
-  use raw <- or_malformed(items.part(raw), acc)
+  use item <- or_malformed(find_item(acc, value), acc, "part_item")
+  use index <- or_malformed(part_index(event, value), acc, "part_index")
+  use raw <- or_malformed(wire.field(value, "part"), acc, "part_field")
+  use raw <- or_malformed(items.part(raw), acc, "part_decode")
   use kind <- or_malformed(
     case wire.string_field(raw, "type"), item.kind {
       Ok("output_text"), Message -> Ok(OutputText)
@@ -716,6 +841,7 @@ fn add_part(
       _, _ -> Error(Nil)
     },
     acc,
+    "part_kind",
   )
   use <- bool.lazy_guard(
     index < 0
@@ -726,7 +852,7 @@ fn add_part(
       != { event == "response.reasoning_summary_part.added" }
       || part_text(raw, kind) != ""
       || result.unwrap(wire.array_field(raw, "annotations"), []) != [],
-    fn() { malformed(acc) },
+    fn() { malformed(acc, "part_start") },
   )
   let part =
     Part(
@@ -779,14 +905,15 @@ fn change_part(
   event: String,
   value: JsonValue,
 ) -> #(Accumulator, List(StreamEvent)) {
-  use item <- or_malformed(find_item(acc, value), acc)
-  use index <- or_malformed(part_index(event, value), acc)
+  use item <- or_malformed(find_item(acc, value), acc, "text_item")
+  use index <- or_malformed(part_index(event, value), acc, "text_index")
   let kind = event_part_kind(event)
   use part <- or_malformed(
     list.find(item.parts, fn(part) {
       part.index == index && part.kind == kind && part.closure == Open
     }),
     acc,
+    "text_part",
   )
   let done =
     list.contains(
@@ -805,8 +932,11 @@ fn change_part(
       True, _ -> "text"
     }),
     acc,
+    "text_field",
   )
-  use <- bool.lazy_guard(done && text != part.text, fn() { malformed(acc) })
+  use <- bool.lazy_guard(done && text != part.text, fn() {
+    malformed(acc, "text_done_witness")
+  })
   let next = case done {
     True -> Part(..part, closure: TextDone)
     False -> Part(..part, text: part.text <> text)
@@ -866,20 +996,21 @@ fn close_part(
   event: String,
   value: JsonValue,
 ) -> #(Accumulator, List(StreamEvent)) {
-  use item <- or_malformed(find_item(acc, value), acc)
-  use index <- or_malformed(part_index(event, value), acc)
-  use raw <- or_malformed(wire.field(value, "part"), acc)
-  use raw <- or_malformed(items.part(raw), acc)
+  use item <- or_malformed(find_item(acc, value), acc, "part_done_item")
+  use index <- or_malformed(part_index(event, value), acc, "part_done_index")
+  use raw <- or_malformed(wire.field(value, "part"), acc, "part_done_field")
+  use raw <- or_malformed(items.part(raw), acc, "part_done_decode")
   use <- bool.lazy_guard(
     { wire.string_field(raw, "type") == Ok("summary_text") }
       != { event == "response.reasoning_summary_part.done" },
-    fn() { malformed(acc) },
+    fn() { malformed(acc, "part_done_namespace") },
   )
   use part <- or_malformed(
     list.find(item.parts, fn(part) {
       part.index == index && part.closure == TextDone && part_value(part) == raw
     }),
     acc,
+    "part_done_witness",
   )
   #(
     replace(
@@ -904,24 +1035,38 @@ fn add_annotation(
   acc: Accumulator,
   value: JsonValue,
 ) -> #(Accumulator, List(StreamEvent)) {
-  use item <- or_malformed(find_item(acc, value), acc)
-  use index <- or_malformed(wire.int_field(value, "content_index"), acc)
+  use item <- or_malformed(find_item(acc, value), acc, "annotation_item")
+  use index <- or_malformed(
+    wire.int_field(value, "content_index"),
+    acc,
+    "annotation_content_index",
+  )
   use part <- or_malformed(
     list.find(item.parts, fn(part) {
       part.index == index && part.kind == OutputText && part.closure != Closed
     }),
     acc,
+    "annotation_part",
   )
   use annotation_index <- or_malformed(
     wire.int_field(value, "annotation_index"),
     acc,
+    "annotation_index",
   )
   use <- bool.lazy_guard(
     annotation_index != list.length(part.annotations),
-    fn() { malformed(acc) },
+    fn() { malformed(acc, "annotation_order") },
   )
-  use raw <- or_malformed(wire.field(value, "annotation"), acc)
-  use annotation <- or_malformed(items.annotation(raw), acc)
+  use raw <- or_malformed(
+    wire.field(value, "annotation"),
+    acc,
+    "annotation_field",
+  )
+  use annotation <- or_malformed(
+    items.annotation(raw),
+    acc,
+    "annotation_decode",
+  )
   let next =
     Part(..part, annotations: list.append(part.annotations, [annotation]))
   #(
@@ -948,7 +1093,7 @@ fn arguments(
   event: String,
   value: JsonValue,
 ) -> #(Accumulator, List(StreamEvent)) {
-  use item <- or_malformed(find_item(acc, value), acc)
+  use item <- or_malformed(find_item(acc, value), acc, "arguments_item")
   use fields <- or_malformed(
     case item.kind {
       Function(call_id:, name:, namespace:, block:, arguments:, closure: Open) ->
@@ -956,11 +1101,24 @@ fn arguments(
       _ -> Error(Nil)
     },
     acc,
+    "arguments_open",
   )
   let #(call_id, name, namespace, block, previous) = fields
-  use named <- or_malformed(items.optional_string(value, "name"), acc)
-  use called <- or_malformed(items.optional_string(value, "call_id"), acc)
-  use namespaced <- or_malformed(items.function_namespace(value), acc)
+  use named <- or_malformed(
+    items.optional_string(value, "name"),
+    acc,
+    "arguments_name",
+  )
+  use called <- or_malformed(
+    items.optional_string(value, "call_id"),
+    acc,
+    "arguments_call_id",
+  )
+  use namespaced <- or_malformed(
+    items.function_namespace(value),
+    acc,
+    "arguments_namespace",
+  )
 
   // Deltas may omit the namespace, but an explicit witness must agree with
   // the item that allocated this block before any arguments were emitted.
@@ -968,7 +1126,7 @@ fn arguments(
     { named != None && named != Some(name) }
       || { called != None && called != Some(call_id) }
       || { namespaced != None && namespaced != namespace },
-    fn() { malformed(acc) },
+    fn() { malformed(acc, "arguments_identity") },
   )
   let done = event == "response.function_call_arguments.done"
   use text <- or_malformed(
@@ -977,8 +1135,11 @@ fn arguments(
       False -> "delta"
     }),
     acc,
+    "arguments_field",
   )
-  use <- bool.lazy_guard(done && text != previous, fn() { malformed(acc) })
+  use <- bool.lazy_guard(done && text != previous, fn() {
+    malformed(acc, "arguments_done_witness")
+  })
   let #(arguments, closure, events) = case done {
     True -> #(previous, TextDone, [])
     False -> #(previous <> text, Open, [
@@ -1010,9 +1171,13 @@ fn close_item(
   acc: Accumulator,
   value: JsonValue,
 ) -> #(Accumulator, List(StreamEvent)) {
-  use index <- or_malformed(wire.int_field(value, "output_index"), acc)
-  use raw <- or_malformed(wire.field(value, "item"), acc)
-  use canonical <- or_malformed(items.item(raw), acc)
+  use index <- or_malformed(
+    wire.int_field(value, "output_index"),
+    acc,
+    "item_done_index",
+  )
+  use raw <- or_malformed(wire.field(value, "item"), acc, "item_done_field")
+  use canonical <- or_malformed(items.item(raw), acc, "item_done_decode")
   use item <- or_malformed(
     list.find(acc.items, fn(item) {
       item.index == index
@@ -1020,8 +1185,9 @@ fn close_item(
       && wire.string_field(canonical, "id") == Ok(item.id)
     }),
     acc,
+    "item_done_lookup",
   )
-  use Nil <- or_malformed(verify_item(item, canonical), acc)
+  use Nil <- or_invalid(verify_item(item, canonical), acc)
   let #(empty_block, next_block) = case item.kind, item.parts {
     Thought, [] -> #(Some(acc.next_block), acc.next_block + 1)
     _, _ -> #(None, acc.next_block)
@@ -1037,27 +1203,27 @@ fn close_item(
 
 // Part arrays are indexed arrays, not sparse maps. Summary and content arrays
 // each prove their own contiguous positions before matching the item witness.
-fn verify_item(item: Item, canonical: JsonValue) -> Result(Nil, Nil) {
+fn verify_item(item: Item, canonical: JsonValue) -> Result(Nil, String) {
   // A supplied initial phase is a witness, not a default. An omitted phase
   // may be learned at completion, but an observed one cannot be rewritten.
   use <- bool.guard(
     item.phase != None
       && item.phase != option.from_result(wire.string_field(canonical, "phase")),
-    Error(Nil),
+    Error("item_phase_mismatch"),
   )
   use <- bool.guard(
     list.any(item.parts, fn(part) { part.closure != Closed }),
-    Error(Nil),
+    Error("item_parts_unclosed"),
   )
   use <- bool.guard(
     wire.string_field(canonical, "status") == Ok("in_progress"),
-    Error(Nil),
+    Error("item_status_in_progress"),
   )
   let parts = list.sort(item.parts, fn(a, b) { int.compare(a.index, b.index) })
   use <- bool.guard(
     !contiguous(list.filter(parts, fn(part) { part.kind == Summary }))
       || !contiguous(list.filter(parts, fn(part) { part.kind != Summary })),
-    Error(Nil),
+    Error("item_parts_noncontiguous"),
   )
   case item.kind {
     Function(call_id:, name:, namespace:, arguments:, closure: TextDone, ..) -> {
@@ -1067,17 +1233,17 @@ fn verify_item(item: Item, canonical: JsonValue) -> Result(Nil, Nil) {
           || wire.string_field(canonical, "name") != Ok(name)
           || items.function_namespace(canonical) != Ok(namespace)
           || wire.string_field(canonical, "arguments") != Ok(arguments),
-        Error(Nil),
+        Error("item_function_mismatch"),
       )
       Ok(Nil)
     }
-    Function(..) -> Error(Nil)
+    Function(..) -> Error("item_arguments_unclosed")
     Message -> {
       use <- bool.guard(
         wire.string_field(canonical, "type") != Ok("message")
           || wire.array_field(canonical, "content")
           != Ok(list.map(parts, part_value)),
-        Error(Nil),
+        Error("item_message_mismatch"),
       )
       Ok(Nil)
     }
@@ -1090,7 +1256,7 @@ fn verify_item(item: Item, canonical: JsonValue) -> Result(Nil, Nil) {
           != Ok(list.map(summary, part_value))
           || result.unwrap(wire.array_field(canonical, "content"), [])
           != list.map(content, part_value),
-        Error(Nil),
+        Error("item_reasoning_mismatch"),
       )
       Ok(Nil)
     }
@@ -1113,18 +1279,37 @@ fn terminal(
   event: String,
   value: JsonValue,
 ) -> #(Accumulator, List(StreamEvent)) {
-  use response <- or_malformed(wire.field(value, "response"), acc)
+  use response <- or_malformed(
+    wire.field(value, "response"),
+    acc,
+    "terminal_response",
+  )
   use acc <- or_malformed(
     record_usage(acc, response, usage_evidence.Complete),
     acc,
+    "terminal_usage",
   )
-  use identity <- or_malformed(identity(acc, response), acc)
-  use <- bool.lazy_guard(
-    acc.identity == None || wire.field(response, "error") != Error(Nil),
-    fn() { malformed(acc) },
+  use identity <- or_malformed(
+    identity(acc, response),
+    acc,
+    "terminal_identity",
   )
-  use output <- or_malformed(wire.array_field(response, "output"), acc)
-  use output <- or_malformed(list.try_map(output, items.item), acc)
+  use <- bool.lazy_guard(acc.identity == None, fn() {
+    malformed(acc, "terminal_before_created")
+  })
+  use <- bool.lazy_guard(wire.field(response, "error") != Error(Nil), fn() {
+    malformed(acc, "terminal_error")
+  })
+  use output <- or_malformed(
+    wire.array_field(response, "output"),
+    acc,
+    "terminal_output",
+  )
+  use output <- or_malformed(
+    list.try_map(output, items.item),
+    acc,
+    "terminal_item_decode",
+  )
   let ordered = list.sort(acc.items, fn(a, b) { int.compare(a.index, b.index) })
   let expected =
     list.filter_map(ordered, fn(item) {
@@ -1141,22 +1326,30 @@ fn terminal(
     "codex-subscription", [] -> expected
     _, _ -> output
   }
+  use <- bool.lazy_guard(output != expected, fn() {
+    malformed(acc, "terminal_output_mismatch")
+  })
+  use <- bool.lazy_guard(list.length(output) != list.length(ordered), fn() {
+    malformed(acc, "terminal_items_unclosed")
+  })
   use <- bool.lazy_guard(
-    output != expected
-      || list.length(output) != list.length(ordered)
-      || !list.all(
+    !list.all(
       list.index_map(ordered, fn(item, index) { item.index == index }),
       fn(value) { value },
     ),
-    fn() { malformed(acc) },
+    fn() { malformed(acc, "terminal_items_noncontiguous") },
   )
-  use status <- or_malformed(wire.string_field(response, "status"), acc)
+  use status <- or_malformed(
+    wire.string_field(response, "status"),
+    acc,
+    "terminal_status",
+  )
   use <- bool.lazy_guard(
     status == "completed"
       && list.any(output, fn(item) {
       wire.string_field(item, "status") == Ok("incomplete")
     }),
-    fn() { malformed(acc) },
+    fn() { malformed(acc, "terminal_incomplete_item") },
   )
   let has_calls =
     list.any(ordered, fn(item) {
@@ -1185,7 +1378,7 @@ fn terminal(
     _, _ -> Error("invalid_status")
   }
   case stop {
-    Error("invalid_status") -> malformed(acc)
+    Error("invalid_status") -> malformed(acc, "terminal_status_mismatch")
     Error(_reason) ->
       fail(
         acc,
@@ -1268,7 +1461,7 @@ fn settle(
   use <- bool.lazy_guard(
     bit_array.byte_size(bit_array.from_string(json.to_string(diagnostics)))
       > 65_536,
-    fn() { malformed(acc) },
+    fn() { malformed(acc, "replay_metadata_bytes") },
   )
   let assistant =
     message.AssistantMessage(
@@ -1287,7 +1480,7 @@ fn settle(
       end_turn: Some(stop == message.Stop),
       timestamp: acc.now,
     )
-  use settled <- or_malformed(stream.settle(assistant), acc)
+  use settled <- or_malformed(stream.settle(assistant), acc, "settled_message")
   #(Accumulator(..acc, life: Terminal), [
     stream.Settled(settled, accounting.from_usage(usage)),
   ])

@@ -381,6 +381,15 @@ not split the batch. These are transient wire projections.
   keeps its narrower meaning: bytes the *provider* produced that were not
   the protocol. Gemini needs none of this; its `args` arrive already parsed
   inside the response document.
+- **Responses failures identify the rejected check without remote content.**
+  `adapter/responses.malformed` attaches a fixed local reason code, an
+  allowlisted event name, bounded numeric positions, last accepted sequence
+  and cumulative bytes to the existing corruption report. Unknown names and
+  malformed or oversized numeric fields become fixed markers. The subject
+  fits the gateway's 128-byte label bound and context fits core's 256-character
+  bound. Runtime retains the report in the durable assistant error message;
+  the error vocabulary, retry policy and validation predicates are unchanged.
+  `README.md` documents the reason families and their stability convention.
 - **Responses has one local conversation owner.** The request carries
   reconstructed history, never `conversation` or `previous_response_id`.
   Encrypted reasoning is opaque replay data, not an authentication token.

@@ -127,3 +127,9 @@ The real-server full gate passed exit 0 through integration `2e712451f`, using
 the same eight-way mode/environment as advisory CI. The current-main Responses
 integration is checked separately and fresh hosted results must attest to the
 final published head. Log: `/private/tmp/pr978-final-real-server-full-check.log`.
+
+Current #975 head `53fec5003` also integrates main `c47175004` (#979). Merging
+it here conflicts only in this handoff. Provider/runtime match main, while
+concurrency production code and reviewed fixture corrections are unchanged.
+The entered provider/runtime slice and fresh hosted final-head checks remain
+required before landing.
