@@ -300,3 +300,34 @@ including all 419 broker and 4,491 client tests, remaining packages, native chec
 and lint: `/private/tmp/pr978-peer-cleanup-full-check-rerun.log`. Native production source and
 the benchmarked helper/broker binaries are unchanged. Fresh hosted validation
 must inspect underlying advisory results as well as job conclusions.
+
+## Integrated validation checkpoint
+
+The concurrency branch now includes merged register decoding from main
+`e86d6fddd` and the updated idle-retirement branch. Production helper, broker,
+protocol and benchmark sources remain unchanged from the measured implementation;
+independent integration review verified that storage matches main exactly.
+
+The integrated full run's LSP cancellation fixture again expired before its
+expected notification. The fixture now establishes its server/document before
+the unchanged 150-ms deadline, collects only the positioned reference target,
+and requires that request was seen. Cancellation, no shutdown and subsequent
+shared-lease success remain asserted. All 17 focused observation tests and
+independent changed-slice review pass. Raw logs are
+`/private/tmp/pr978-main-integrated-full-check.log` and
+`/private/tmp/pr978-lsp-precondition-focused.log`. Earlier failures remain
+recorded; no production deadline or interface changed.
+
+The branch also carries #975's reviewed held-provider pre-admission and advisory
+scheduling corrections, recorded in its [report](helper-idle-retirement-2026-10-13.md).
+The delayed-admission positive/old-bound comparison proves that fix without
+relaxing the overall fixture, hold or recovery bounds. Fresh complete local
+and hosted gates are required for the final integrated head before landing.
+
+The full `LOOM_TEST_PARALLEL=8 make check` with `LOOM_BOOTSTRAP_E2E_SERVER`
+set to the isolated #978 shipment, the dummy fixture provider key, and the same
+advisory observation policy passed direct exit 0 on the integration through
+`2e712451f`. This exercises shipped fixtures alongside the package tests, rather
+than relying on their unset-server declines. Log:
+`/private/tmp/pr978-final-real-server-full-check.log`. Later current-main
+Responses integration remains a separately checked slice and fresh hosted gate.

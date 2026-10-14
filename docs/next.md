@@ -116,3 +116,14 @@ The final published #975 integration is `450ad56e2`, with a passing full local
 gate and independent review. This merge also carries its validation report;
 production source remains identical to the earlier integration. #975 must pass
 fresh hosted CI and merge before #978 is retargeted to main.
+
+The integrated LSP fixture now establishes the server/document before its
+unchanged 150-ms cancellation budget and explicitly requires the positioned
+reference to arrive. Focused module tests and independent review pass. This
+branch also carries #975's reviewed provider admission and advisory scheduling
+fixes; fresh complete local and hosted checks remain the landing gates.
+
+The real-server full gate passed exit 0 through integration `2e712451f`, using
+the same eight-way mode/environment as advisory CI. The current-main Responses
+integration is checked separately and fresh hosted results must attest to the
+final published head. Log: `/private/tmp/pr978-final-real-server-full-check.log`.
