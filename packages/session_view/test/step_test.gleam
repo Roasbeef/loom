@@ -40,6 +40,7 @@ import session_view/session_channel
 import session_view/snapshot
 import session_view/step
 import session_view/step_effect
+import session_view/surfaces
 
 // A session record holding an adopted lane whose subscribe is queued, and
 // nothing else: the state a host is in the moment its transport opens.
@@ -700,4 +701,89 @@ pub fn refused_side_action_preserves_running_history_test() {
   assert after.btw.board == Some(btw.Board(..board, notice: "Already running"))
   assert after.btw.pending == None
   assert after.transcript == shared.transcript
+}
+
+// Side polling waits for the lane's existing reply edge, even when its own
+// deadline has passed. No extra timer is needed to resume the read.
+pub fn busy_lane_hides_side_deadline_until_matching_reply_test() {
+  let shared = running_side()
+  let assert Some(channel) = shared.channel
+  assert session_channel.ready_for_read(channel)
+  assert surfaces.btw_due(shared) == Some(100)
+  let #(channel, disposition) =
+    session_channel.submit(
+      channel,
+      protocol.notes(shared.next_id, "main"),
+      now: 200,
+    )
+  let assert session_channel.Sent("notes", request) = disposition
+  let busy = session_model.hold_channel(shared, channel)
+  assert surfaces.btw_due(busy) == None
+  assert surfaces.service_btw(busy) == busy
+  let assert Some(lane_due) = session_channel.next_due(channel)
+  assert lane_due > busy.stamp.now_ms
+
+  let #(ready, updates) =
+    lane_fold.receive(
+      busy,
+      channel,
+      reply(
+        request,
+        "snapshot",
+        json.Object([
+          #("mode", json.String("notes")),
+          #(
+            "board",
+            json.Object([
+              #("strand", json.String("main")),
+              #("as_of", json.Int(10)),
+              #("total", json.Int(0)),
+              #("notes", json.Array([])),
+            ]),
+          ),
+        ]),
+      ),
+    )
+  let ready = list.fold(updates, ready, applied)
+  assert ready.btw.owner == session_model.queue_owner(ready)
+  let assert Some(ready_channel) = ready.channel
+  assert session_channel.ready_for_read(ready_channel)
+  assert surfaces.btw_due(ready) == Some(100)
+  let polling = surfaces.service_btw(ready)
+  assert polling.btw.pending == Some(request + 1)
+  assert surfaces.btw_due(polling) == None
+}
+
+// A retained board supplies no wake-up after its lane has gone away.
+pub fn absent_or_closed_lane_has_no_side_deadline_test() {
+  let shared = running_side()
+  let assert Some(channel) = shared.channel
+  assert surfaces.btw_due(Shared(..shared, channel: None)) == None
+  let closed =
+    session_model.hold_channel(shared, session_channel.close(channel))
+  assert surfaces.btw_due(closed) == None
+}
+
+// A new attachment must not inherit the old attachment's poll deadline.
+pub fn stale_side_owner_has_no_deadline_test() {
+  let shared = running_side()
+  let stale =
+    Shared(..shared, btw: btw.State(..shared.btw, owner: "old connection"))
+  assert surfaces.btw_due(stale) == None
+  assert surfaces.service_btw(stale).btw == btw.new()
+}
+
+fn running_side() -> Shared(String, Nil, String, String) {
+  let shared = drain(filed(attached(), transfer()), 3)
+  let board = btw.Board("main", "snapshot", "model", "running", [], "")
+  Shared(
+    ..shared,
+    stamp: msg.Stamp(200, 200),
+    btw: btw.State(
+      ..btw.new(),
+      board: Some(board),
+      due: 100,
+      owner: session_model.queue_owner(shared),
+    ),
+  )
 }

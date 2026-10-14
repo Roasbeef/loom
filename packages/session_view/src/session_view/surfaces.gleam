@@ -1398,6 +1398,8 @@ pub fn service_btw(
 }
 
 /// A browser timer keeps a running side answer live while main work is quiet.
+/// A busy lane wakes through its own deadline or reply; advertising an expired
+/// side deadline before that lane can read would repeatedly wake the host.
 ///
 /// ## Examples
 ///
@@ -1408,8 +1410,14 @@ pub fn service_btw(
 pub fn btw_due(
   shared: Shared(socket, recorder, source, replay_source),
 ) -> Option(Int) {
-  case shared.btw.board, shared.btw.pending {
-    Some(board), None if board.status == "running" -> Some(shared.btw.due)
-    _, _ -> None
+  use <- bool.guard(shared.btw.owner != session_model.queue_owner(shared), None)
+  case shared.channel, shared.btw.board, shared.btw.pending {
+    Some(channel), Some(board), None if board.status == "running" -> {
+      case session_channel.ready_for_read(channel) {
+        True -> Some(shared.btw.due)
+        False -> None
+      }
+    }
+    _, _, _ -> None
   }
 }
