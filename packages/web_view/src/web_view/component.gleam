@@ -2138,44 +2138,7 @@ fn refreshed(model: Model(socket)) -> Model(socket) {
         False -> model
       }
   }
-  model |> clocked |> streamed |> statused
-}
-
-// Starts and stops the generation clock from the phase the page can see.
-//
-// A page draws captures, and the strand's `assistant` phase reaches it in
-// the capture; the shared record's own start (`event_fold`, on the
-// operation's phase event) runs only where that event is delivered, which is
-// the terminal. Without this the opened row has a phase and no clock and
-// says `Thinking` alone until a fragment starts one, which a model that
-// streams nothing for ten seconds never does. The clock starts the first
-// time the page sees the phase, which is the turn's open for a page that
-// was watching, and a later reading than that for one that attached mid
-// generation; it never runs backwards, because a fragment finding the clock
-// set leaves it alone.
-//
-// Any other phase ends the generation, so the next one starts from its own
-// open, unless a stream is still being drawn: a capture that lags a fragment
-// must not stop the reasoning row's clock under it.
-fn clocked(model: Model(socket)) -> Model(socket) {
-  let shared = model.shared
-  let started = case
-    session_model.active_strand_phase(shared),
-    shared.generation_started_ms
-  {
-    Some("assistant"), None -> Some(shared.stamp.now_ms)
-    Some("assistant"), kept -> kept
-    _, kept ->
-      case shared.streams {
-        [] -> None
-        _ -> kept
-      }
-  }
-  case started == shared.generation_started_ms {
-    True -> model
-    False ->
-      Model(..model, shared: Shared(..shared, generation_started_ms: started))
-  }
+  model |> streamed |> statused
 }
 
 // Follows the shared record's live streams for the followed strand, which
@@ -6342,7 +6305,7 @@ pub fn live(model: Model(socket)) -> List(live.Row) {
 fn live_rows_of(model: Model(socket)) -> List(live.Row) {
   let shared = model.shared
   let elapsed_ms =
-    option.map(shared.generation_started_ms, fn(started) {
+    option.map(session_model.generation_started_ms(shared), fn(started) {
       int.max(0, shared.stamp.now_ms - started)
     })
   let streamed =
@@ -7226,7 +7189,7 @@ pub fn heading(
     context: context_figure(model),
     breakdown: context_breakdown.panel(model.shared.context, context_actions),
     cost: transcript_lines.cost_words(model.shared.usage),
-    rate: model.shared.output_rate_tps,
+    rate: session_model.output_rate_tps(model.shared),
     notice: ended.view(ended_ending(model.view.status), model.shared.session),
   )
 }
