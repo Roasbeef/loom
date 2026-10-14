@@ -177,3 +177,50 @@ The integrated full `LOOM_TEST_PARALLEL=8 make check` passed direct exit 0:
 `/private/tmp/pr975-integrated-full-check.log`. Fresh hosted CI must validate the
 published head, including actual Linux idle retirement/replacement and strict
 deployment execution. No daemon installation or restart is performed.
+
+## macOS fixture and execution-mode follow-up
+
+Integrated run 38503180456 on `450ad56e2` passed every Linux lane and aggregate,
+including actual idle retirement/replacement and strict delegated deployment.
+macOS e2e failed because the held provider's first 30-second accept interval
+began before native bootstrap and two workspace initializations. Its listener
+expired before the first provider effect, which arrived roughly 1.6 seconds
+later. The raw job and fixture timing artifact preserve that ordering.
+
+Initial admission now shares the already-existing 110-second managed fixture
+lifetime. The complete run remains bounded by that same deadline, and its
+original socket-owner process still closes all sockets on cancellation.
+The post-admission 30-second hold, actual-client-closure requirement, second
+30-second accept and identical recovered-request assertion remain unchanged.
+No public API or production execution path changed. The real shipped stop/peer
+continuity/recovery fixture and all five held-provider negative controls pass
+exit 0. Logs: `/private/tmp/pr975-held-provider-stop-focused.log` and
+`/private/tmp/pr975-held-provider-negative-controls.log`.
+
+The advisory job's green conclusion also hid a client package timeout: serial
+execution was still progressing when the unchanged 1,200-second package budget
+expired. That step now uses the existing eight-way mode already used by local
+full gates. Full discovery, serial exceptions, package/job deadlines and the
+advisory policy remain unchanged. Workflow parsing and independent changed-slice
+review passed. Hosted evidence is preserved in
+`/private/tmp/pr975-450ad56e-macos-e2e-raw.log` and
+`/private/tmp/pr975-450ad56e-macos-advisory-raw.log`.
+
+The shared LSP cancellation fixture is preconditioned before its unchanged
+150-ms deadline: establish the server/document, request only the positioned
+reference, and require it was seen before checking cancellation. No-shutdown
+and subsequent shared-lease query assertions remain. All 17 observation tests
+passed on the same correction in #978, and independent review passed. Earlier
+full-run timeouts remain preserved rather than erased by this correction.
+
+A private compiled comparison prepends exactly 31 seconds of setup to the real
+shipped stop fixture. Corrected admission passes exit 0 in 34.240 seconds;
+restoring only the old first-accept bound fails exit 1 with the admitted-prompt
+accept assertion and `{error, timeout}`. The 90-second body, 110-second whole
+fixture and 30-second hold/recovery bounds stay unchanged. Shared source and
+build artifacts are untouched by the probe. Logs:
+`/private/tmp/loom-held-admission-{positive,negative}.log`.
+
+The corrected full `LOOM_TEST_PARALLEL=8 make check` passed direct exit 0:
+`/private/tmp/pr975-macos-fixed-full-check.log`. Fresh hosted checks remain a
+separate gate for these test/workflow corrections.

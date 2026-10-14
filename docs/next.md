@@ -74,3 +74,20 @@ source: `/private/tmp/pr975-integrated-full-check.log`. Independent integration
 review found no actionable issue and verified idle custody/timer behavior,
 unchanged main register cache and strict deployment coverage. Fresh hosted
 checks must attest to the published integration head before merging.
+
+## macOS remediation checkpoint
+
+Run 38503180456 passed all Linux checks at `450ad56e2`, including real idle
+retirement/replacement and strict delegated deployment. macOS e2e exposed a
+pre-admission accept budget that began before daemon bootstrap; initial accept
+now shares the existing whole-fixture lifetime while all post-admission bounds
+and closure/recovery assertions remain. Its real local fixture and negative
+controls pass. Advisory serial client execution exceeded the unchanged package
+budget; the step now uses the existing eight-way mode without changing its
+deadlines, serial exceptions or discovery. The shared LSP fixture now establishes
+its pending-request precondition before the unchanged short cancellation budget.
+Independent reviews and the corrected full local gate pass (direct exit 0):
+`/private/tmp/pr975-macos-fixed-full-check.log`. Fresh hosted checks remain
+required on the published correction head; earlier green Linux gates do not
+validate it. The delayed-start comparison passes with corrected admission and
+fails with the old bound, as recorded in the measurement report.
