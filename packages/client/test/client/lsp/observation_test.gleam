@@ -291,9 +291,17 @@ pub fn fixed_deadline_cancels_the_pending_request_without_stopping_the_server_te
         _ -> fake_lsp.Answer(json.Null)
       }
     })
+
+  // Establish the shared lease and synced document before testing withdrawal
+  // of a pending request. Cold setup can consume the short invocation budget
+  // without ever admitting the request whose cancellation this fixture proves.
+  let assert Ok(_) = manager.door(manager).outline("a.gleam")
+    as "the shared server and document are ready before the deadline"
+  let scope = observation.Request(..request(root), outlines: [])
   let assert Error(_) =
-    manager.observation_door(manager).collect(request(root), control(150))
+    manager.observation_door(manager).collect(scope, control(150))
     as "the invocation bounds the entire collection"
+  assert list.contains(fake_lsp.methods(fake), "textDocument/references")
   await_method(fake, "$/cancelRequest")
   assert !list.contains(fake_lsp.methods(fake), "shutdown")
   let assert Ok(_) = manager.door(manager).outline("a.gleam")

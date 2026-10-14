@@ -21,6 +21,10 @@ import weft
 import weft/actor
 import weft/poll
 
+// Initial admission includes native daemon boot and workspace initialization.
+// The managed run still bounds the complete fixture by the same lifetime.
+const fixture_lifetime_ms = 110_000
+
 /// Original connection termination, never inferred from elapsed time.
 pub type Closure {
   /// The native client actually closed its accepted connection.
@@ -167,7 +171,7 @@ pub fn with_server(run: fn(String, Witness) -> a) -> a {
         )
       },
     ])
-    |> weft.deadline(110_000)
+    |> weft.deadline(fixture_lifetime_ms)
     |> weft.start
 
   // Retain the original actor witness through both outcomes, including a
@@ -194,7 +198,7 @@ fn serve(book: process.Subject(Message)) -> Nil {
   let assert Ok(port) = socket.tcp_port(listener)
     as "the listener has a bound port"
   process.send(book, Update(State(port, 0, None)))
-  let assert Ok(first) = socket.tcp_accept(listener, 30_000)
+  let assert Ok(first) = socket.tcp_accept(listener, fixture_lifetime_ms)
     as "the admitted A prompt connects to the held provider"
   let initial = request(first)
   send(

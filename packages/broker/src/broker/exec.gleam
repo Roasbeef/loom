@@ -164,6 +164,7 @@ import gleam/result
 import gleam/string
 import weft/poll
 import weft/state_machine
+import weft/timer
 
 /// How strictly the caller demands kernel enforcement for an execution.
 pub type EnforcementDemand {
@@ -2858,7 +2859,8 @@ pub fn watch_cleanup(pid: Pid, cleanup: fn() -> Nil) -> Nil {
 
 /// A fixed-size pool that owns helpers across checkout and checkin. A
 /// helper occupies capacity until native exit and normal BEAM retirement
-/// are confirmed. Replacement helpers are spawned lazily after that proof.
+/// are confirmed. Available helpers retire after one minute without being
+/// borrowed, and replacement helpers are spawned lazily after that proof.
 pub opaque type Pool {
   Pool(subject: Subject(PoolMsg), pid: Pid)
 }
@@ -2867,6 +2869,9 @@ pub opaque type Pool {
 pub opaque type PoolMsg {
   Checkout(reply: Subject(Result(Helper, CheckoutError)))
   Checkin(helper: Helper)
+
+  /// One uninterrupted available interval elapsed for this helper.
+  HelperIdle(pid: Pid)
   StopPool
   AwaitPoolRetirement(reply: Subject(Result(Nil, RetirementFailure)))
   HelperRetired(pid: Pid, outcome: Result(Nil, RetirementFailure))
@@ -3159,6 +3164,24 @@ pub fn start_pool(
   size size: Int,
   spawn spawn: fn() -> Result(Helper, SpawnError),
 ) -> Result(Pool, actor.StartError) {
+  start_pool_with_timers(size:, spawn:, timers: timer.WallClock)
+}
+
+/// Starts the ordinary pool on an injected timer source for deterministic
+/// idle-lifetime tests. Only the clock changes; lending and retirement use
+/// the production handlers and the fixed one-minute idle period.
+///
+/// ## Examples
+///
+/// ```gleam
+/// exec.start_pool_with_timers(size: 2, spawn:, timers: timer.WallClock)
+/// ```
+@internal
+pub fn start_pool_with_timers(
+  size size: Int,
+  spawn spawn: fn() -> Result(Helper, SpawnError),
+  timers timers: timer.Source,
+) -> Result(Pool, actor.StartError) {
   let parent = process.self()
   state_machine.new_with_initialiser(5000, fn(commands) {
     let state =
@@ -3178,6 +3201,7 @@ pub fn start_pool(
   })
   |> state_machine.trapping_exits(True)
   |> state_machine.on_event(handle_pool)
+  |> state_machine.with_timer_source(timers)
   |> state_machine.start
   |> result.map(fn(started) { Pool(subject: started.data, pid: started.pid) })
 }
@@ -3330,9 +3354,27 @@ fn handle_pool(
       process.send(reply, Error(PoolUnavailable))
       state_machine.keep(state)
     }
-    PoolLive, Checkin(helper:) ->
-      pool_step(PoolLive, handle_checkin(state, helper))
+    PoolLive, Checkin(helper:) -> handle_checkin(state, helper)
     PoolClosing, Checkin(..) | PoolFinished(..), Checkin(..) ->
+      state_machine.keep(state)
+    PoolLive, HelperIdle(pid) -> {
+      // Only available helpers can outlive an idle deadline. A borrowed
+      // execution has no idle timer, and a withdrawn entry keeps custody.
+      let entries =
+        list.map(state.entries, fn(entry) {
+          case entry.helper.pid == pid, entry.availability {
+            True, Available -> retire_entry(entry, state.commands)
+            False, _
+            | True, Borrowed
+            | True, Draining
+            | True, RetiringActor
+            | True, Unconfirmed(_)
+            -> entry
+          }
+        })
+      pool_step(PoolLive, PoolState(..state, entries:))
+    }
+    PoolClosing, HelperIdle(_) | PoolFinished(..), HelperIdle(_) ->
       state_machine.keep(state)
     PoolLive, StopPool -> {
       let entries =
@@ -3478,9 +3520,30 @@ fn pool_step(
       }
     PoolLive, _ | PoolFinished(..), _ -> phase
   }
-  state_machine.transition(phase, state)
-  |> state_machine.with_selector(pool_selector(state))
+  let next =
+    state_machine.transition(phase, state)
+    |> state_machine.with_selector(pool_selector(state))
+
+  // A timer belongs only to an available entry. Every withdrawal cancels
+  // its name before another event can run; weft rejects a wake already in
+  // flight by generation, including one delivered after a later checkin.
+  list.fold(state.entries, next, fn(next, entry) {
+    case entry.availability {
+      Available -> next
+      Borrowed | Draining | RetiringActor | Unconfirmed(_) ->
+        state_machine.cancel_timeout(next, name: idle_timer_name(entry))
+    }
+  })
 }
+
+// Ordinals are never reused, so one helper's timer cannot name a replacement.
+fn idle_timer_name(entry: PoolEntry) -> String {
+  "helper-idle/" <> int.to_string(entry.ordinal)
+}
+
+// One minute amortises bursts without retaining their peak native inventory
+// for the rest of the session. Borrowed helpers have no idle deadline.
+const helper_idle_ms = 60_000
 
 fn retire_entry(entry: PoolEntry, commands: Subject(PoolMsg)) -> PoolEntry {
   case entry.availability {
@@ -3547,24 +3610,40 @@ fn record_owner_exit(
 // Returns a borrowed helper. Only one `helper_ready` accepts rejoins the
 // lendable set; a dead, unresponsive or still-busy one is retired, so a
 // helper that is mid-execution at checkin is never lent again.
-fn handle_checkin(state: PoolState, helper: Helper) -> PoolState {
-  let entries =
-    list.map(state.entries, fn(entry) {
+fn handle_checkin(
+  state: PoolState,
+  helper: Helper,
+) -> state_machine.Next(PoolPhase, PoolState, PoolMsg) {
+  let #(returned, entries) =
+    list.map_fold(state.entries, None, fn(returned, entry) {
       case entry.helper.pid == helper.pid, entry.availability {
         True, Borrowed ->
           case helper_ready(helper) {
-            True -> PoolEntry(..entry, availability: Available)
-            False -> retire_entry(entry, state.commands)
+            True -> #(Some(entry), PoolEntry(..entry, availability: Available))
+            False -> #(returned, retire_entry(entry, state.commands))
           }
         False, _
         | True, Available
         | True, Draining
         | True, RetiringActor
         | True, Unconfirmed(_)
-        -> entry
+        -> #(returned, entry)
       }
     })
-  PoolState(..state, entries:)
+  let next = pool_step(PoolLive, PoolState(..state, entries:))
+
+  // Only the successful borrowed-to-available edge starts a new interval.
+  // Duplicate checkins and observation cannot extend an existing deadline.
+  case returned {
+    None -> next
+    Some(entry) ->
+      state_machine.with_named_timeout(
+        next,
+        name: idle_timer_name(entry),
+        after: helper_idle_ms,
+        sending: HelperIdle(entry.helper.pid),
+      )
+  }
 }
 
 fn next_helper(

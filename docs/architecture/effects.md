@@ -114,6 +114,15 @@ than the pool therefore *waits* for a slot instead of handing the model a
 resource error for its third call: `clear_call` retries within the
 caller's own clearance budget.
 
+Healthy helpers returned to the pool retire after sixty seconds without a new
+checkout. Each helper has its own named timeout, so status queries and activity
+in another helper or session do not postpone retirement. The pool can shrink to
+zero; the next checkout starts a replacement on demand. Borrowed helpers are
+excluded, including long-lived MCP, LSP and code-mode executions. Idle retirement
+uses the existing native-exit and normal-owner-exit witnesses before releasing
+capacity. This trades a later cold-start handshake for reclaiming idle native
+process memory; it does not evict sessions or alter their sandbox policy.
+
 The wait happens in the borrower's process, and that placement is what
 makes it correct. The broker checks a helper out synchronously inside its
 own message handler, and checks one back in only from `Settle`, a message

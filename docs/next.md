@@ -75,12 +75,40 @@ Full combined hosted CI and Linux signoff
 are not established by those results. No installed daemon, operator configuration,
 audit tools or hooks have been changed or executed by this integration.
 
+## Helper integration checkpoint
+
+The combined provider/login changes above are now on main at `13508cb58` via
+PR #985. This helper integration preserves them unchanged. Main's two-shard CI
+and bounded module runner remain unchanged. The conflict affected only this
+handoff; helper production sources and reviewed fixtures were preserved.
+
+PR #975 adds idle helper retirement; its measured memory savings, replacement
+costs and fixture VM resource budget are in the
+[retirement report](review/helper-idle-retirement-2026-10-13.md). On predecessor
+`b8dc7575c`, full local validation passed direct exit 0, including all 4,491 client
+tests in 852.60 seconds. Genuine Linux signoff also passed. Hosted shard one
+failed only an unchanged TUI throughput assertion; five focused repetitions
+passed at 13,611–17,964 deltas/second and source review found no helper-change
+path into that fixture. Shard two passed its 2,526 client tests and all TUI tests,
+then hit Hex 502; a whole-gate retry exhausted the job budget. Neither attempted
+manual retry started while the aggregate was pending. These results do not
+validate this newer integrated head, and failures are not waived.
+
+PR #978 preserves the reviewed concurrent helper implementation and isolated
+benchmark evidence. Its predecessor `7794f754b` passed full local validation
+with all 4,491 client tests in 869.97 seconds. Hard hosted gates and the second
+macOS shard passed; Linux signoff and the first shard were still active when
+main advanced. Fresh integrated-head gates remain required for both PRs.
+
 ## Next steps
 
-1. Publish the combined head and update PR #985's scope and the focused
-   validation evidence recorded above.
-2. Merge the exact reviewed head using the normal merge path, as authorized
-   after focused checks. Do not claim the full gate passed. If branch protection
-   prevents the merge, report its actual refusal before considering a bypass.
-3. Verify main contains all three reviewed changes, report the merge and stop
-   the follow-up. Installation and daemon restart remain separate owner actions.
+1. Finish full tests, independent integration reviews, both actual macOS shard
+   outcomes and genuine exact-head Linux signoff for #975, then merge it.
+2. Retarget #978 to main after #975 lands. Require complete current-head tests,
+   reviews, hosted gates and Linux signoff before merging it.
+3. Preserve the provider/login source and security boundaries above, capture
+   archive recovery and all helper custody invariants. Historical results belong
+   to their recorded heads; green advisory badges alone are not test passes.
+
+The owner explicitly authorized that landing order. No installed daemon update
+or restart is authorized, and no recurring automation is needed.

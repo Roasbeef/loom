@@ -783,6 +783,16 @@ protocol (spec Part 1.4). WP-G.
   the ceiling on real parallelism, while the pooled `max_outstanding`
   below is the anti-amplification cap. They answer different questions
   and neither substitutes for the other.
+- **Idle helpers retire after sixty seconds.** Only a successful return to
+  `Available` starts a helper's own weft named timeout. Checkout ends that
+  idle interval; duplicate checkins, census queries and other helpers do not
+  extend it. The pool can shrink to zero, and its configured size remains a
+  ceiling. Borrowed helpers, including long-lived executions, are not idle.
+  Expiry uses the ordinary retirement path: native exit and normal owner
+  retirement must both be witnessed before the slot is reusable. Failed
+  retirement retains custody and capacity. The production timeout is fixed;
+  the internal timer-source seam supports deterministic tests without changing
+  the public pool constructor or wire protocol.
 - **Reservations cannot leak.** They are released on settlement, freed
   wholesale on `abort`, and reclaimed when a call's guarantor process
   dies unsettled (every guarantor is monitored; it is the relay). Releases are generation-checked, so

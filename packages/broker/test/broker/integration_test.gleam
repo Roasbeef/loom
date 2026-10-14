@@ -28,6 +28,7 @@ import gleam/option.{None, Some}
 import gleam/string
 import simplifile
 import weft/poll
+import weft/timer
 
 // Locates the prebuilt helper and returns a ready SpawnConfig, or the
 // reason to skip.
@@ -200,6 +201,75 @@ pub fn real_pool_orderly_borrowed_retirement_test() {
       assert !process.is_alive(exec.pool_pid(pool))
     }
   }
+}
+
+/// Native helpers exit through the same idle deadline as the deterministic
+/// channel fixtures, and the next borrow starts a replacement that can run.
+pub fn real_pool_idle_retirement_and_replacement_test() {
+  case helper_config() {
+    Error(reason) ->
+      io.println_error(
+        "SKIP real_pool_idle_retirement_and_replacement: " <> reason,
+      )
+    Ok(config) -> {
+      let armings = process.new_subject()
+      let timers =
+        timer.Injected(after: fn(delay, wake) {
+          process.send(armings, #(delay, wake))
+        })
+      let assert Ok(pool) =
+        exec.start_pool_with_timers(
+          size: 1,
+          spawn: fn() { exec.prepare_helper(config) },
+          timers:,
+        )
+        as "native pool starts"
+      let assert Ok(first) = exec.checkout(pool, waiting: 5000)
+        as "first native helper"
+      idle_retirement_echo(first)
+      exec.checkin(pool, first)
+      let assert Ok(#(delay, wake)) = process.receive(armings, 1000)
+        as "native helper checkin arms timer"
+      assert delay == 60_000
+      wake()
+
+      // The pool removes the entry only after native exit and the original
+      // owner's normal monitor event. No replacement is spawned by retirement.
+      let assert poll.Answered(Nil) =
+        poll.until(within: 5000, every: 5, attempt: fn() {
+          case exec.pool_census(pool, waiting: 1000) {
+            Ok(exec.PoolCensus(retired: 1, spawned: 1, ..)) -> poll.Done(Nil)
+            Ok(_) -> poll.Retry
+            Error(error) -> poll.Fail(error)
+          }
+        })
+        as "native idle helper retires completely"
+      assert !process.is_alive(exec.pid(first))
+      let assert Ok(second) = exec.checkout(pool, waiting: 5000)
+        as "native replacement starts lazily"
+      assert exec.pid(second) != exec.pid(first)
+      idle_retirement_echo(second)
+      assert exec.close_pool(pool, waiting: 5000) == Ok(Nil)
+    }
+  }
+}
+
+// A complete run on either side of retirement proves that shrinking does
+// not merely change census counters while breaking later dispatch.
+fn idle_retirement_echo(helper: exec.Helper) -> Nil {
+  let events = process.new_subject()
+  assert exec.run(
+      helper,
+      request(["/bin/echo", "idle-replacement"], 1024),
+      events:,
+      waiting: 3000,
+    )
+    == Ok(Nil)
+  let assert Ok(#(output, result)) = collect_exit(events, <<>>, 5000)
+    as "native echo completes"
+  assert result.code == 0
+  assert output == <<"idle-replacement\n":utf8>>
+  Nil
 }
 
 pub fn real_helper_echo_test() {

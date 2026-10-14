@@ -1,0 +1,333 @@
+# Idle helper retirement, October 13, 2026
+
+Baseline: `dc70d25d42da531284225bf399f40f82e13539d4` (main, v0.3.2).
+Implementation: `0ae4589be`; matched benchmark runner: `6a7a018fb`.
+The candidate adds a fixed sixty-second available interval to each helper pool.
+A successful checkin starts the interval, checkout cancels it, and expiry uses
+the existing orderly retirement path. A pool can shrink to zero. Borrowed
+helpers and long-lived executions are excluded. No session eviction, policy
+sharing, user configuration or installed-daemon change is part of this work.
+
+## Ownership and races
+
+Each helper's monotone inventory ordinal names a weft timeout. Queries and
+checkins of an already-available helper do not refresh it. Weft's timer book
+rejects callbacks from an earlier idle interval after cancellation. Separate
+helpers and separate pools have independent deadlines. Native exit and the
+original monitor's normal helper-owner exit both remain necessary before a
+slot can be reused; failed retirement retains custody and capacity.
+
+The existing pool constructor keeps its interface. An internal timer-source
+constructor runs the same handlers with recorded callbacks in unit tests.
+Production uses the wall clock and the fixed 60,000-ms duration. Tests and
+benchmarks may accelerate timer delivery, but that does not measure sixty
+seconds of production idling.
+
+## Measurement
+
+Clean baseline broker build completed before any implementation edit, and its
+`broker@exec.beam` was saved. The runner renames only the module attribute,
+preserves compile attributes and rejects remote self-calls before loading it
+beside the candidate. Both versions use the same newly built native helper and
+sandbox policy in unique isolated scratch workspaces. No live daemon or session
+store is opened. To reproduce, build the baseline broker and save that BEAM,
+then build the candidate broker and native helper and run:
+
+```sh
+bash scripts/helper_idle_perf.sh "$PWD" /path/to/baseline/broker@exec.beam 1 production
+bash scripts/helper_idle_perf.sh "$PWD" /path/to/baseline/broker@exec.beam 2 accelerated
+bash scripts/helper_idle_perf.sh "$PWD" /path/to/baseline/broker@exec.beam 3 accelerated
+```
+
+Three fresh OTP 29 VMs use one normal scheduler and alternate implementation
+order. Each version has 21 warm batches of 2,000 checkout/checkin cycles and
+105 actual jailed `/usr/bin/true` calls. Timing includes pool/helper exchange;
+command timing ends at a successful exit event. It excludes provider, storage,
+broker budget/token admission and the full user-tool round trip. Warm batches
+use the production timer source. The Mac ran other work and was not established
+as quiet; per-VM command medians change direction, so the pooled difference is
+an observation rather than a stable regression estimate.
+
+| Warm measurement | Baseline median | Candidate median |
+| --- | ---: | ---: |
+| Checkout/checkin cycle, batch average | 13.314 us | 14.554 us |
+| VM CPU per cycle | 6.0 us | 7.5 us |
+| Pool/helper actor reductions per cycle | 644.67 | 755.45 |
+| Actual jailed short command | 15.914 ms | 16.139 ms |
+
+Warm pool bookkeeping adds 1.240 us elapsed per cycle (9.3%) and about 1.5 us
+VM CPU (25%). VM CPU is millisecond-quantized over each batch and includes the
+driver; it excludes native helper CPU. Actor reductions increase 17.2%.
+Command ranges overlap: baseline 14.236–19.780 ms, candidate 14.179–19.851 ms.
+The 0.225-ms pooled command difference is small compared with the loaded-host
+variation and is not a claim of uniform end-to-end overhead.
+
+### Native memory and replacement cost
+
+Each lifecycle trial borrows four helpers together, runs a real jailed command
+on every helper, then returns all four. RSS is sampled only for their exact
+owned-port OS PIDs. After expiry, the candidate must show empty inventory and
+`spawned = retired = 4`, and all four OS PIDs must be absent. All seven candidate
+trials passed both witnesses and returned zero native RSS. Controls retain all
+four processes. Summed RSS can double-count shared pages and is not reclaimed
+physical RAM or a whole-daemon RSS measurement.
+
+| Lifecycle observation | Baseline | Candidate |
+| --- | ---: | ---: |
+| Production 60-second trial, four-helper summed RSS | 40.203 MiB retained | 39.969 MiB reclaimed |
+| Six accelerated trials, plus production, candidate reclaimed RSS | — | median 39.984 MiB; range 39.547–41.766 MiB |
+| Production first command after idle | 16.976 ms, warm helper | 58.540 ms, replacement helper |
+| Six accelerated trials, first command median | 18.0165 ms, warm helper | 28.170 ms, replacement helper |
+
+The production timer expires sixty seconds after checkin. Its observed watch
+was 59.980 seconds because the watch starts after RSS and synthetic-GC probes;
+the baseline control waits 61.001 seconds and retains its four helpers. The
+other six trials accelerate only timer delivery to one second while using the
+same retirement handlers. They validate repeated drain/regrowth, not production
+minute-idle latency. Their candidate cold-command range was 24.360–31.306 ms.
+The production pair adds 41.564 ms on the first call; this single loaded-host
+pair does not establish a stable cold-start penalty. Keeping the scopes separate
+prevents the accelerated median from concealing that production observation.
+
+Only synthetic pool/helper actors receive full GC for the secondary BEAM
+measurement. Both versions start at 38,560 allocated actor bytes. The baseline
+retains 23,168 bytes after idling and collection; the candidate retains 3,920
+bytes in the production trial and 5,792 with the injected source. These are
+allocated process bytes after GC, not exact reachable state or OS RSS. The
+principal measured saving is native process retirement.
+
+The fixture uses `BestEffort`, with successful zero exit, no timeout/cancellation,
+and explicit Seatbelt and network-confinement assertions on macOS. It records
+all applied/skip layers and the helper's `degraded` flag (false in these trials).
+The policy could not establish the address-space limit; the existing user
+process count exceeded its process-limit request; Darwin also reports its
+missing PID namespace, subreaper and stable process handle. An initial strict-demand
+attempt refused these gaps and is excluded, as is an earlier exploratory driver
+run. No existing test or production enforcement requirement was weakened. These
+figures measure pool/jail performance, not complete kernel enforcement.
+
+## Live CPU investigation
+
+The running daemon remains `e289d93ab74ef88d35717757f5d6299b94441256`, version
+0.2.0, PID 65976. It has neither the encoder nor repeated-register-decode
+follow-ups installed. A ten-second Pickglass sample selected the twelve busiest
+listed processes by reductions and counted 359 running/runnable observations
+out of 10,008 observations. JSON object parsing appeared in about 73% of active
+stacks; UTF-8 validation and string parsing were prominent. These are stack
+sample shares at reduction safe points, not CPU-time percentages. Native work
+is undersampled and stacks are limited to eight frames.
+
+A separate five-second bounded allocation probe of eight selected processes
+and the storage/JSON modules counted 154 `do_get_register`, 81
+`do_list_registers`, 243 `handle_open` and 1,319 JSON `parse` calls. Root storage
+handler allocation was 2,876,016 heap bytes excluding its traced callees; these
+are cumulative allocations, not retained memory or RSS. The separately open
+register optimization PR #972 addresses repeated decoding; this branch does
+not incorporate it or claim its production savings.
+
+An OS process snapshot showed the daemon at 8.4% CPU and one helper at 7.3%,
+with WindowServer and browser/UI processes higher at that cut. A later
+two-second `top` interval measured the daemon at 17.9% CPU (a fraction of one
+core), while the host was 78.4% idle. These cuts do not measure peak utilization. Earlier passive
+censuses found 34 helpers with approximately 517 MiB summed RSS. This is a
+workload snapshot, not proof all helpers were idle or that all their RSS can be
+reclaimed. Summed RSS can double-count shared pages. No live forced GC, restart,
+hotpatch or process termination was performed.
+
+## Validation
+
+Seven deterministic idle-pool regressions and the native run → idle retirement
+→ replacement → successful run regression passed, then passed again after
+mutation checks. Three separately compiled faults were rejected by runtime
+assertions: missing idle arming, premature inventory removal and a shared timer
+name across helpers. The source was restored byte-for-byte before rebuilding.
+Missing checkout cancellation alone is guarded in reachable delivery paths;
+its cleanup semantics were verified against the pinned weft timer book rather
+than claiming that an equivalent behavior mutation was killed.
+
+The independent correctness review found no actionable issue. The independent
+evidence review recomputed every reported median, range and sample count from
+the three final VM logs and passed after one platform-skip wording correction.
+Format and broker lint checks passed with zero lint errors. The full serialized
+`LOOM_TEST_PARALLEL=8 make check` passed with exit code 0, including all 409
+broker tests, 4,491 client tests, 1,365 TUI tests, the other packages, Go, lint
+with zero errors and configuration checks. Documentation checks passed after
+updating source citations moved by this change. Linux behavior and hosted CI
+remain separate gates.
+The initial strict benchmark refused unavailable platform layers and is not
+counted as successful validation. No test was weakened, removed or newly skipped by this change. Existing
+platform exclusions remain visible in the full-gate log.
+
+## Main integration validation
+
+The October 13 integration includes main `e86d6fddd` (merged register decoding
+#972). Its only conflict was `docs/next.md`; idle-retirement broker source
+merged unchanged. The existing deployment CI correction from #979 is included:
+the ordinary-runner declaration is paired with exact execution in the delegated
+Linux jail lane and an empty skip allowance. No fixture assertion is weakened.
+
+Old run 38458267713 failed its Linux skip census on the missing deployment
+marker; macOS advisory failed downloading its build artifact with ENOTFOUND
+before running tests. Those are recorded separately from source assertion
+failures. Independent integration review found no actionable issue and verified
+timer cancellation, available-only retirement, retained unconfirmed quota and
+native plus original-normal-owner witnesses. Main's register source is unchanged.
+
+The integrated full `LOOM_TEST_PARALLEL=8 make check` passed direct exit 0:
+`/private/tmp/pr975-integrated-full-check.log`. Fresh hosted CI must validate the
+published head, including actual Linux idle retirement/replacement and strict
+deployment execution. No daemon installation or restart is performed.
+
+## macOS fixture and execution-mode follow-up
+
+Integrated run 38503180456 on `450ad56e2` passed every Linux lane and aggregate,
+including actual idle retirement/replacement and strict delegated deployment.
+macOS e2e failed because the held provider's first 30-second accept interval
+began before native bootstrap and two workspace initializations. Its listener
+expired before the first provider effect, which arrived roughly 1.6 seconds
+later. The raw job and fixture timing artifact preserve that ordering.
+
+Initial admission now shares the already-existing 110-second managed fixture
+lifetime. The complete run remains bounded by that same deadline, and its
+original socket-owner process still closes all sockets on cancellation.
+The post-admission 30-second hold, actual-client-closure requirement, second
+30-second accept and identical recovered-request assertion remain unchanged.
+No public API or production execution path changed. The real shipped stop/peer
+continuity/recovery fixture and all five held-provider negative controls pass
+exit 0. Logs: `/private/tmp/pr975-held-provider-stop-focused.log` and
+`/private/tmp/pr975-held-provider-negative-controls.log`.
+
+The advisory job's green conclusion also hid a client package timeout: serial
+execution was still progressing when the unchanged 1,200-second package budget
+expired. That step now uses the existing eight-way mode already used by local
+full gates. Full discovery, serial exceptions, package/job deadlines and the
+advisory policy remain unchanged. Workflow parsing and independent changed-slice
+review passed. Hosted evidence is preserved in
+`/private/tmp/pr975-450ad56e-macos-e2e-raw.log` and
+`/private/tmp/pr975-450ad56e-macos-advisory-raw.log`.
+
+The shared LSP cancellation fixture is preconditioned before its unchanged
+150-ms deadline: establish the server/document, request only the positioned
+reference, and require it was seen before checking cancellation. No-shutdown
+and subsequent shared-lease query assertions remain. All 17 observation tests
+passed on the same correction in #978, and independent review passed. Earlier
+full-run timeouts remain preserved rather than erased by this correction.
+
+A private compiled comparison prepends exactly 31 seconds of setup to the real
+shipped stop fixture. Corrected admission passes exit 0 in 34.240 seconds;
+restoring only the old first-accept bound fails exit 1 with the admitted-prompt
+accept assertion and `{error, timeout}`. The 90-second body, 110-second whole
+fixture and 30-second hold/recovery bounds stay unchanged. Shared source and
+build artifacts are untouched by the probe. Logs:
+`/private/tmp/loom-held-admission-{positive,negative}.log`.
+
+The corrected full `LOOM_TEST_PARALLEL=8 make check` passed direct exit 0:
+`/private/tmp/pr975-macos-fixed-full-check.log`. Fresh hosted checks remain a
+separate gate for these test/workflow corrections.
+
+
+## Hosted native-fixture scheduling correction
+
+Run 38555614758 on `53fec5003` exposed authenticated control-hello and
+native startup readiness timeouts before cancellation. Eight-way EUnit execution
+allows several multi-daemon fixtures to boot simultaneously; their homes, state
+and TLS paths remain distinct. There is no evidence of a shared-name collision
+or a proved resource-exhaustion error. The macOS advisory lane now uses two-way
+execution to bound that overlap, retaining every test, serial exception,
+assertion and existing deadline. This is a scheduling hypothesis requiring
+fresh hosted validation, not a claim that the predecessor passed.
+
+
+## Four-way hosted follow-up
+
+Run 38560026302 on `dd21a6b5d` passed every hard hosted lane and its isolated
+Linux signoff, but the underlying macOS full check failed: a remote-strand
+opening returned an object without `status`, then the client package exhausted
+its unchanged 1,200-second budget. The existing decoder discarded the refusal
+code and message; the fixture now asserts the successful event before reading
+status and includes the complete reply on failure. It adds no retries or
+accepted refusal. The unchanged focused remote-strand test passed locally in
+5.80 seconds; that does not classify the hosted failure as a flake.
+
+Two-way execution completed the real-server local full gate, but was too slow
+on the hosted runner. Four-way execution is the bounded intermediate between
+that timeout and the earlier eight-way startup failures. All test discovery,
+serial exceptions, assertions and deadlines remain unchanged. This setting
+requires fresh hosted validation and exact-head Linux signoffs.
+
+
+## Nested test VM resource budget
+
+Four-way run 38574323311 still failed native daemon readiness before the helper
+feature paths, then exhausted the client package budget. The corresponding
+#978 run also preserved an epmd startup refusal. The epmd audit found no
+demonstrated global kill or environment race; launcher exit-status races are
+already handled. These hosted failures remain genuine and unclassified.
+
+A private wrapper trial compared four original shipped fixtures with the
+default child VM settings and `+S 2:2 +SDcpu 1 +SDio 1 +sbwt none
++sbwtdcpu none +sbwtdio none`. The EUnit harness used two schedulers in both
+trials. Both trials passed all four fixtures without skips, and all fourteen
+recorded wrapper PIDs per trial were absent afterward. Peak scoped RSS fell
+from 1,025,824 to 874,528 KiB (147.75 MiB, 14.75%). Last-observed cumulative
+child CPU was a lower bound, 30.26 versus 6.41 CPU-seconds: sampling cannot
+recover work after a process has exited. Nine daemon PIDs per profile were
+sampled; harness, helper and tool CPU is excluded. Summed RSS can double-count
+shared pages and is not physical RAM. EUnit totals were 62.672 and 62.250
+seconds, dominated by the identity fixture; this pair establishes no stable
+latency improvement. The first three fixture times were 6.042/6.557/5.746
+versus 5.316/5.439/5.153 seconds.
+
+Default child probes reported sixteen normal schedulers, sixteen dirty CPU
+schedulers and ten dirty I/O schedulers on this Mac, versus two/one/one with
+the budget. Observed individual thread counts were 48 and 10; early baseline
+aggregate thread samples had a parser error and are not used. Raw artifacts
+remain ignored under `build/fixture-vm-profile/trial-1791988183793173000`.
+
+The shipped fixture launcher now appends that budget to its child `ERL_FLAGS`,
+preserving existing flags and the later TLS/timing configuration. The parent
+test VM and production launch defaults are unchanged. All tests, concurrency,
+assertions and deadlines remain. The local trial does not prove a hosted fix;
+fresh full gates and exact-head signoffs are still required.
+
+
+## Main runner integration
+
+The pre-integration full gate at `baa7e46c5` finished with direct exit 2 from
+make: 4,490 client tests passed and one directory bootstrap failed with
+`options_mismatch`. The complete diagnostic is preserved in
+`/private/tmp/pr975-vm-budget-full-check.log`. No retry or production change
+is justified by that observation alone.
+
+Merged main `3ee679ca7` supplies an independently reviewed runner correction:
+parallel modules explicitly contain sequential test bodies, preventing inherited
+EUnit group ordering from multiplying concurrency. Earlier two/four/eight-way
+settings were nested group limits, not global test-body limits. Two hosted
+client shards cover the complete module inventory exactly once, retain the
+serial barrier and unchanged deadlines, and preserve both full logs for census.
+This branch adopts that workflow unchanged. Fresh combined-head gates remain
+required; historical advisory success badges did not prove successful tests.
+
+
+## Subsequent main integration
+
+Head `b8dc7575c` passed complete real-server local validation (direct exit 0;
+4,491 client tests in 852.60 seconds) and genuine Linux signoff (1,797 seconds).
+Hosted shard one passed its 1,965 client tests but failed the unchanged TUI
+throughput assertion at 1,438 deltas/second against 2,000. Five unchanged local
+repetitions under concurrent test load passed at 15,706/13,611/16,592/17,964/16,465
+deltas/second. TUI and relevant dependencies matched main, and test-child VM
+flags do not enter this holder fixture. This supports suspected environment
+variance, not a proved flake or waiver. Logs: `/private/tmp/pr975-tui-stream-focused-{1..5}.log`.
+
+Hosted shard two passed 2,526 client tests in 829.91 seconds and all 1,365 TUI
+tests (stream rate 2,029/second). Conformance dependency resolution then failed
+with Hex 502 after 478.28 seconds; the existing retry restarted the whole gate
+and exhausted the 50-minute job budget. Final logs are preserved in
+`/private/tmp/pr975-b8dc7575-macos-shard{1,2-final}.log`. Manual rerun requests
+were rejected while the aggregate was pending; no manual retry started.
+
+Main subsequently advanced to `13508cb58` with merged provider keepalives,
+Responses Fast mode and identity clock tolerance. The conflict is only in the
+handoff; their source and tests merge unchanged. Fresh tests, reviews, hosted
+CI and exact-head signoff must validate the new integration before merge.
