@@ -682,7 +682,7 @@ page keys and nonces, and the relay into the session's gateway.
   (`online | pending | ended`), the `ctx ~41%` estimate and the cost
   `transcript_lines.cost_words` words as `est $0.04` or `est —` when tokens
   were spent and none priced, and the last timed generation's `87 tok/s`
-  (`Shared.output_rate_tps`, `rate`, drawn only once one has settled), each as a word and a `span.num`; a figure with no
+  (`session_view/model.output_rate_tps`, `rate`, drawn only once the selected strand has a complete timed settlement), each as a word and a `span.num`; a figure with no
   value is not drawn, so no `est` for an unpriced model and no `ctx` on the
   primary strand before its first turn), with the ended
   page's notice as its last child; `component.heading(model, going_home, context_actions)` reads those
@@ -856,8 +856,12 @@ page keys and nonces, and the relay into the session's gateway.
   row before anything streams: while the followed strand's phase is `assistant`
   or `streaming` and no stream is held, `component.live` returns it alone,
   `Thinking · <loom-elapsed offset>` (the browser counts the reading on, so no
-  server timer; before the generation clock starts it says `Thinking` alone; `component.clocked` starts the clock the first time the page sees the `assistant` phase in a capture, since the phase event that starts it is the terminal's, and ends it when another phase comes with no stream drawn), and the first fragment replaces it with `Reasoning` or the
-  answer. The region is a row of the
+  server timer; before the generation clock starts it says `Thinking` alone).
+  The first fragment replaces it with `Reasoning` or the answer. The shared
+  `generation_rate` ledger observes captures for every strand, and focus reads
+  the selected strand's existing clock without resetting it. Joining an already
+  running request starts a partial observation window and leaves its
+  full-request TPS unmeasured. The region is a row of the
   timeline with its own dot, which pulses while the region exists. `live.Answer(line)` is the answer so far,
   drawn by the lane's own assistant line. A tool call being composed is not
   drawn. `View.streams` holds what the page last drew and is maintained by

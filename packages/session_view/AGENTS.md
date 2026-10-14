@@ -533,6 +533,17 @@ recorded (the terminal through `tui_model.hold_shared`, `run_shared` and
   `decide_review`, `select_model` and `quit`. `decide` (by ID) is the
   `/approve` and `/deny` arm, and `focus` and `load_strand` are the second
   and third units of a strand switch, after the lane's `cancel_unsent`.
+- `generation_rate.State` owns one request clock and latest measured rate per
+  strand in `Shared.generation_rates`. Live phase events and coherent captures
+  observe every strand, including background agents. A first capture or fragment
+  of an already running request opens a partial window, which can show elapsed
+  observation time but cannot divide the full output count. Settlement consumes
+  that strand's clock; late fragments and repeated captures cannot restart it.
+  Stream identity survives active-only transcript projection, so a lagging
+  capture cannot upgrade a partial window. Fresh captures observe phases after
+  retiring recorded streams. Focus only selects the reading through
+  `model.generation_started_ms` and `model.output_rate_tps`. Roster replacement
+  prunes removed strands, and session replacement discards the ledger.
 - `step.settle(before, after)`: the shared step's own settle after every
   event, `sync_context`, `sync_advisor_nudges` and `sync_goal` in that
   order. Beside it are a tick's two session units besides the lane's:
