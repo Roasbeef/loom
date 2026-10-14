@@ -262,6 +262,7 @@ fn wait_attach(script: Script, inbox: Subject(FakeMsg)) -> Nil {
                 proto: 1,
                 peer: "exec-helper",
                 features: features(script),
+                max_concurrency: option.Some(1),
               ),
             ),
           )
@@ -274,6 +275,7 @@ fn wait_attach(script: Script, inbox: Subject(FakeMsg)) -> Nil {
                 proto: framing.exec_protocol_version,
                 peer: "exec-helper",
                 features: features(script),
+                max_concurrency: option.Some(1),
               ),
             ),
           )
@@ -332,8 +334,16 @@ fn react(state: FakeState, frame: framing.Frame) -> FakeState {
       }
     framing.ExecStart(argv:, token:, policy: exec_policy, ..) ->
       exec_start(state, frame.id, argv, token, exec_policy)
-    framing.ExecStdin(data:, eof:) -> stdin(state, data, eof)
-    framing.Cancel -> cancelled(state)
+    framing.ExecStdin(exec_id:, data:, eof:) ->
+      case state.running {
+        Some(#(id, _)) if id == exec_id -> stdin(state, data, eof)
+        _ -> state
+      }
+    framing.CancelExecution(exec_id:) ->
+      case state.running {
+        Some(#(id, _)) if id == exec_id -> cancelled(state)
+        _ -> state
+      }
     _ -> state
   }
 }

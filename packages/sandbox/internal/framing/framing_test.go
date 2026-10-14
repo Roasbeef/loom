@@ -14,10 +14,10 @@ func TestRoundtripAllKinds(t *testing.T) {
 		body any
 	}{
 		{KindHello, Hello{Proto: 1, Peer: "exec-helper", Features: []string{"bwrap", "landlock"}}},
-		{KindExecStdin, ExecStdin{Data: []byte("input\n"), EOF: true}},
+		{KindExecStdin, ExecStdin{ExecID: 8, Data: []byte("input\n"), EOF: true}},
 		{KindExecOut, ExecOut{Stream: "stdout", Data: []byte("chunk"), Bytes: 5, Truncated: false}},
 		{KindExecExit, ExecExit{Code: 3, StdoutBytes: 10, Enforcement: []string{"bwrap"}, WallMs: 42}},
-		{KindCancel, map[string]any{}},
+		{KindCancel, Cancel{ExecID: 8}},
 		{KindShutdown, map[string]any{}},
 		{KindHeartbeat, map[string]any{}},
 		{KindError, ErrorBody{Code: ErrCodeBusy, Msg: "an execution is already running"}},
@@ -200,4 +200,26 @@ func FuzzReadFrame(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
 		_, _ = ReadFrame(bytes.NewReader(data)) // must not panic
 	})
+}
+
+// Target identifiers must not turn negative integers into large unsigned IDs.
+func TestExecutionTargetsRequirePositiveIntegers(t *testing.T) {
+	for _, target := range []any{nil, int64(-1), int64(0), "1", true, float64(1)} {
+		body, err := MarshalBody(map[string]any{"exec_id": target})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var cancel Cancel
+		if DecodeBody(body, &cancel) == nil && cancel.ExecID != 0 {
+			t.Fatalf("accepted target %#v", target)
+		}
+	}
+	body, err := MarshalBody(Cancel{ExecID: ExecutionID(^uint64(0))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cancel Cancel
+	if err := DecodeBody(body, &cancel); err != nil || cancel.ExecID != ExecutionID(^uint64(0)) {
+		t.Fatalf("max target: %+v %v", cancel, err)
+	}
 }

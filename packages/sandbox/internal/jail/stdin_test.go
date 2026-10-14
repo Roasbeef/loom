@@ -65,62 +65,46 @@ func TestStdinQueuePreservesOrderAndEOFFollowsData(t *testing.T) {
 	}
 }
 
-// With a reader that never reads, the bound is the whole of what the frame
-// loop may hand over without waiting, and one more byte waits. Abandon is
-// what releases that wait, and it joins a writer that is blocked inside the
-// kernel by closing the pipe under it.
+// Saturated admission must return immediately so a shared frame loop can
+// continue servicing siblings. A rejected EOF must not seal the queue.
 func TestStdinQueueBoundsPendingBytesAndAbandonReleasesIt(t *testing.T) {
 	_, w := pipePair(t)
 	q := newStdinQueue(w)
-
-	// Fill to exactly the bound. The first 64 KiB or so drains into the
-	// kernel buffer, so the accounting is by what the writer completed:
-	// keep putting until a put blocks, and require that to happen only
-	// after at least the bound was accepted.
 	chunk := make([]byte, 1<<20)
 	accepted := 0
-	blocked := make(chan struct{})
-	released := make(chan error, 1)
-	go func() {
-		for {
-			probe := make(chan error, 1)
-			go func() { probe <- q.put(chunk, false) }()
-			select {
-			case err := <-probe:
-				if err != nil {
-					released <- err
-					return
-				}
-				accepted += len(chunk)
-			case <-time.After(300 * time.Millisecond):
-				close(blocked)
-				released <- <-probe
-				return
-			}
+	within(t, 5*time.Second, "bounded stdin admission", func() {
+		for q.put(chunk, false) == nil {
+			accepted += len(chunk)
 		}
-	}()
-
-	select {
-	case <-blocked:
-	case <-time.After(20 * time.Second):
-		t.Fatal("put never waited: the pending bound is not enforced")
+	})
+	if accepted < StdinPendingMax || accepted > StdinPendingMax+(64<<10)+len(chunk) {
+		t.Fatalf("accepted %d bytes, bound %d", accepted, StdinPendingMax)
 	}
-	if accepted < StdinPendingMax {
-		t.Fatalf("put waited after only %d accepted bytes, below the %d bound", accepted, StdinPendingMax)
+	if err := q.put(chunk, true); err == nil {
+		t.Fatal("saturated EOF admitted")
 	}
-	if accepted > StdinPendingMax+(64<<10)+len(chunk) {
-		t.Fatalf("accepted %d bytes for a reader that never read, bound is %d", accepted, StdinPendingMax)
+	q.mu.Lock()
+	sealed := q.sealed
+	q.mu.Unlock()
+	if sealed {
+		t.Fatal("rejected EOF sealed input")
 	}
+	within(t, 5*time.Second, "abandon of blocked writer", func() { _ = q.abandon() })
+	if err := q.put(nil, false); err == nil {
+		t.Fatal("late input admitted")
+	}
+}
 
-	within(t, 5*time.Second, "abandon of a blocked writer", func() { _ = q.abandon() })
-
-	select {
-	case err := <-released:
-		if err == nil {
-			t.Fatal("a put waiting for room was accepted after the execution ended")
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("abandon did not release the put waiting for room")
+// Even the direct Go API cannot admit an oversized chunk into an empty queue.
+func TestStdinQueueRejectsOversizedChunk(t *testing.T) {
+	_, w := pipePair(t)
+	q := newStdinQueue(w)
+	defer q.abandon()
+	if q.put(make([]byte, StdinPendingMax+1), false) == nil {
+		t.Fatal("oversized chunk admitted")
+	}
+	if err := q.put([]byte("small"), true); err != nil {
+		t.Fatal(err)
 	}
 }
 

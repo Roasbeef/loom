@@ -316,8 +316,8 @@ pub fn census(standalone: Standalone) -> Result(Census, String) {
 /// ## Examples
 ///
 /// ```gleam
-/// assert executor.census_line(census.Census(1, 3, 2, ["a"]))
-///   == "{\"service\":1,\"exec_proto\":3,\"policy_v\":2,\"features\":[\"a\"]}"
+/// assert executor.census_line(census.Census(1, 4, 2, ["a"]))
+///   == "{\"service\":1,\"exec_proto\":4,\"policy_v\":2,\"features\":[\"a\"]}"
 /// ```
 ///
 pub fn census_line(here: Census) -> String {

@@ -107,6 +107,7 @@ fn wait_for_attach(inbox: Subject(Message)) -> Nil {
             proto: framing.exec_protocol_version,
             peer: "exec-helper",
             features: ["rlimits", "pgroup", "bwrap", "landlock", "seccomp"],
+            max_concurrency: option.Some(1),
           ),
         ),
       )
@@ -150,7 +151,7 @@ fn react(state: State, frame: framing.Frame) -> State {
     framing.Heartbeat ->
       reply(state, framing.Frame(id: frame.id, body: framing.Heartbeat))
     framing.ExecStart(..) -> State(..state, running: Some(frame.id))
-    framing.Cancel -> cancelled(state)
+    framing.CancelExecution(..) -> cancelled(state)
     _ignored -> state
   }
 }

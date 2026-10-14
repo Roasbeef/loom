@@ -10,11 +10,16 @@ fn sample_frames() -> List(framing.Frame) {
   [
     framing.Frame(
       id: 1,
-      body: framing.Hello(proto: 1, peer: "exec-helper", features: [
-        "rlimits",
-        "pgroup",
-        "bwrap",
-      ]),
+      body: framing.Hello(
+        proto: 1,
+        peer: "exec-helper",
+        features: [
+          "rlimits",
+          "pgroup",
+          "bwrap",
+        ],
+        max_concurrency: option.Some(1),
+      ),
     ),
     framing.Frame(
       id: 2,
@@ -27,7 +32,10 @@ fn sample_frames() -> List(framing.Frame) {
         limits: None,
       ),
     ),
-    framing.Frame(id: 2, body: framing.ExecStdin(data: <<"stdin">>, eof: True)),
+    framing.Frame(
+      id: 2,
+      body: framing.ExecStdin(exec_id: 2, data: <<"stdin">>, eof: True),
+    ),
     framing.Frame(
       id: 2,
       body: framing.ExecOut(
@@ -115,6 +123,7 @@ fn sample_frames() -> List(framing.Frame) {
       )),
     ),
     framing.Frame(id: 2, body: framing.Cancel),
+    framing.Frame(id: 7, body: framing.CancelExecution(exec_id: 2)),
     framing.Frame(id: 4, body: framing.Heartbeat),
     framing.Frame(
       id: 0,
@@ -147,7 +156,12 @@ pub fn golden_hello_frame_fixture_test() {
   let frame =
     framing.Frame(
       id: 1,
-      body: framing.Hello(proto: 1, peer: "broker", features: []),
+      body: framing.Hello(
+        proto: 1,
+        peer: "broker",
+        features: [],
+        max_concurrency: option.None,
+      ),
     )
   let assert Ok(payload) = framing.encode_payload(frame)
   let path = "../../protocol/msgpack-fixtures/frame_hello_1.bin"
@@ -560,4 +574,149 @@ pub fn hook_result_rejects_usage_test() {
       #("usage", msgpack.IntValue(1)),
     ])
   let assert Error(framing.Malformed(..)) = framing.decode_payload(payload)
+}
+
+// Control requests identify their own envelope independently of the execution.
+pub fn targeted_controls_roundtrip_test() {
+  let target = 18_446_744_073_709_551_615
+  list.each(
+    [
+      framing.Frame(id: 42, body: framing.CancelExecution(exec_id: target)),
+      framing.Frame(
+        id: 43,
+        body: framing.ExecStdin(exec_id: target, data: <<1>>, eof: False),
+      ),
+    ],
+    fn(frame) {
+      let assert Ok(payload) = framing.encode_payload(frame)
+        as "targeted controls encode with distinct request and execution ids"
+      assert framing.decode_payload(payload) == Ok(frame)
+    },
+  )
+}
+
+pub fn execution_target_validation_test() {
+  list.each([0, -1], fn(target) {
+    list.each(
+      [
+        framing.CancelExecution(exec_id: target),
+        framing.ExecStdin(exec_id: target, data: <<>>, eof: False),
+      ],
+      fn(body) {
+        let assert Ok(payload) =
+          framing.encode_payload(framing.Frame(id: 42, body:))
+          as "the malformed target is representable on the wire"
+        let assert Error(framing.Malformed(_)) = framing.decode_payload(payload)
+          as "nonpositive execution targets never route to another execution"
+      },
+    )
+  })
+  let missing_target =
+    envelope(
+      v: msgpack.IntValue(1),
+      id: msgpack.IntValue(42),
+      kind: msgpack.StringValue("exec_stdin"),
+      body: msgpack.MapValue([
+        #(msgpack.StringValue("data"), msgpack.BinaryValue(<<>>)),
+        #(msgpack.StringValue("eof"), msgpack.BoolValue(False)),
+      ]),
+    )
+  let assert Error(framing.Malformed(_)) =
+    framing.decode_payload(missing_target)
+    as "legacy stdin cannot silently choose an execution"
+  let unknown_key =
+    envelope(
+      v: msgpack.IntValue(1),
+      id: msgpack.IntValue(42),
+      kind: msgpack.StringValue("cancel"),
+      body: msgpack.MapValue([
+        #(msgpack.StringValue("exec_id"), msgpack.IntValue(1)),
+        #(msgpack.StringValue("other"), msgpack.IntValue(1)),
+      ]),
+    )
+  let assert Error(framing.Malformed(_)) = framing.decode_payload(unknown_key)
+    as "cancellation admits only its explicit target key"
+}
+
+pub fn hello_capacity_validation_test() {
+  list.each([None, Some(0), Some(-1), Some(5)], fn(max_concurrency) {
+    let assert Ok(payload) =
+      framing.encode_payload(framing.Frame(
+        id: 1,
+        body: framing.Hello(
+          proto: framing.exec_protocol_version,
+          peer: "exec-helper",
+          features: [],
+          max_concurrency:,
+        ),
+      ))
+      as "the malformed hello is representable on the wire"
+    let assert Error(framing.Malformed(_)) = framing.decode_payload(payload)
+      as "an exec helper must announce a bounded positive capacity"
+  })
+  list.each([Some(1), Some(4)], fn(max_concurrency) {
+    let frame =
+      framing.Frame(
+        id: 1,
+        body: framing.Hello(
+          proto: framing.exec_protocol_version,
+          peer: "exec-helper",
+          features: [],
+          max_concurrency:,
+        ),
+      )
+    let assert Ok(payload) = framing.encode_payload(frame)
+      as "the capacity boundaries encode"
+    assert framing.decode_payload(payload) == Ok(frame)
+  })
+}
+
+pub fn hello_capacity_rejects_wrong_type_and_unknown_keys_test() {
+  list.each(
+    [
+      [#(msgpack.StringValue("max_concurrency"), msgpack.StringValue("4"))],
+      [
+        #(msgpack.StringValue("max_concurrency"), msgpack.IntValue(4)),
+        #(msgpack.StringValue("capacity"), msgpack.IntValue(4)),
+      ],
+    ],
+    fn(extra) {
+      let payload =
+        envelope(
+          v: msgpack.IntValue(1),
+          id: msgpack.IntValue(1),
+          kind: msgpack.StringValue("hello"),
+          body: msgpack.MapValue(list.append(
+            [
+              #(
+                msgpack.StringValue("proto"),
+                msgpack.IntValue(framing.exec_protocol_version),
+              ),
+              #(msgpack.StringValue("peer"), msgpack.StringValue("exec-helper")),
+              #(msgpack.StringValue("features"), msgpack.ArrayValue([])),
+            ],
+            extra,
+          )),
+        )
+      let assert Error(framing.Malformed(_)) = framing.decode_payload(payload)
+        as "hello capacity is typed and its vocabulary is closed"
+    },
+  )
+}
+
+// Reading the old vocabulary is necessary to report a named version mismatch.
+pub fn legacy_helper_hello_without_capacity_remains_decodable_test() {
+  let frame =
+    framing.Frame(
+      id: 1,
+      body: framing.Hello(
+        proto: 3,
+        peer: "exec-helper",
+        features: ["rlimits", "pgroup"],
+        max_concurrency: None,
+      ),
+    )
+  let assert Ok(payload) = framing.encode_payload(frame)
+    as "a legacy hello omits the newly introduced capacity"
+  assert framing.decode_payload(payload) == Ok(frame)
 }

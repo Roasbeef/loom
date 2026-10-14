@@ -48,7 +48,7 @@ only Go module.
 - `internal/framing` — the helper side of the wire: `u32_be length ++
   msgpack(map)`, keys `v`, `id`, `kind`, `body`.
 - `internal/server` — the frame loop: frames in on stdin, frames out on
-  stdout, one execution at a time.
+  stdout, up to four independent executions at a time.
 - `internal/jail.{Request, Features, Report, StreamLimiter}` — one
   execution's description, what the kernel actually offers, the
   enforcement summary stage 2 sends back on fd 4, and the per-stream
@@ -189,7 +189,16 @@ only Go module.
   identity immediately before signaling. This narrows PID reuse but cannot
   make the check and `kill(2)` atomic. It complements rather than replaces
   process-group signals for children that call `setsid(2)`. Each 20 ms sample
-  reads a fresh kernel process table. A parent-head map and one-based sibling
+  reads a fresh kernel process table. One process-local mutex covers each
+  table acquisition and its indexing, including startup and cancellation
+  captures, so simultaneous trackers do not multiply these large transient
+  allocations. It never shares or caches a snapshot, changes the 20 ms ticker,
+  or serializes other jail setup. Lock order is capture mutex then tracker
+  mutex; signal captures before taking its tracker lock, and close joins
+  without holding either. Startup uses the same fresh capture as its
+  fail-closed preflight. `BenchmarkProcessTrackerStartup` reports cumulative
+  startup allocation separately from retained heap or RSS.
+  A parent-head map and one-based sibling
   indices traverse that snapshot without copying process records or allocating
   a child slice per host process. The ledger lock also owns reusable index and
   frontier buffers; every capture clears the heads and overwrites active links
@@ -391,10 +400,15 @@ only Go module.
   is still in the cgroup tearing them down, and an rmdir in that window
   fails with EBUSY. Every exec cgroup leaked that way until the wait was
   added, which on a signoff host meant 50,000 cgroups and several GB of
-  kernel memory. The wait is about 50 ms, so the server takes
-  `Exec.Settle`'s release after writing `exec_exit` rather than inside
-  `Wait`; each execution's `waitDone` also waits for the previous one's,
-  so `reapRunning` still joins every removal in flight.
+  kernel memory. The wait is about 50 ms. The multiplexing server runs
+  `Exec.Settle`'s release before writing `exec_exit`, with no registry lock
+  held, so sibling control stays responsive during cleanup. This adds the
+  teardown wait to terminal latency. A reporting marker retains the terminal
+  obligation without holding the registry lock across its write. Admission
+  can use spare slots immediately; at full capacity it waits for an existing
+  report to finish before checking again, so a broker refilling a slot after
+  reading that frame cannot observe stale full capacity. The bounded registry
+  retains each cleanup obligation, so `reapRunning` joins every removal in flight.
 - **The environment is constructed, never inherited.** A name absent from
   `env_allow` is dropped even when the broker sent it, so the policy alone
   is enough to audit what a jail could see. Output is sorted for
@@ -428,9 +442,31 @@ only Go module.
   After the cap the helper keeps draining and discards; stopping would
   wedge the child on a full pipe, turning an output limit into an
   accidental deadlock. The cap is crossed exactly once per stream.
-- **One execution at a time per helper**; a second `exec_start` gets a
-  `busy` error. Concurrency lives in the broker's pool, which keeps "the
-  pgroup" in the cancel contract unambiguous.
+- **Four independent executions at most per helper.** Protocol 4's hello
+  advertises `max_concurrency: 4`. The registry is keyed by the original
+  `exec_start` envelope ID; duplicate active IDs are refused, and capacity
+  includes startup, terminal writes and cleanup still in flight. The frame
+  loop reserves the entry before launching its one lifecycle worker, so slow
+  startup cannot serialize sibling acquisition or create uncounted jails.
+  That worker owns `jail.Start`, settlement, cleanup and terminal reporting;
+  there is no goroutine per input frame. Each execution has
+  its own jail, output limits, stdin queue, deadline and cancellation state.
+  `cancel.exec_id` and `exec_stdin.exec_id` select that execution; control
+  errors echo the fresh control request ID. Unknown cancellation targets are
+  no-ops. Helper death and a blocked shared transport remain shared failures.
+- **Control remains addressed while startup is in flight.** Before `Start`
+  returns, the entry coalesces stdin into one lazy buffer capped at 16 MiB,
+  with a separate EOF marker. Empty frames add no buffer or queue metadata.
+  Activation transfers the accepted bytes and EOF to the new jail queue under
+  the registry mutex before later input can reach it, preserving byte order.
+  Overflow refuses the fresh control request and marks only that execution
+  cancelled. Early cancellation and shutdown likewise set the entry's flag;
+  its worker still acquires and cancels the real jail, then joins it and
+  reports real enforcement rather than fabricating a successful drain.
+  Startup input references are cleared on transfer, cancellation or failure.
+  Startup failure itself remains a retained terminal report until its original
+  `exec_start`-correlated error write finishes. Native helper escalation is
+  still the shared failure boundary if acquisition fails to make progress.
 - **Stdin never blocks the frame loop, and Cancel never waits on stdin.**
   `exec_stdin` is handled on the helper's single frame-reading goroutine,
   and a pipe write blocks once the kernel buffer (64 KiB) is full, which a
@@ -446,43 +482,33 @@ only Go module.
   execution, started by the first chunk. `Exec.mu` is not involved in
   stdin at all. Pending bytes are bounded by `jail.StdinPendingMax`, 16 MiB,
   equal to `framing.MaxFrameLen` (pinned by a test in `internal/server`,
-  since `jail` does not import `framing`); only a chunk that would exceed
-  it makes the frame loop wait, and that wait ends when the payload reads or
-  when the execution does, with `Cancel` and the deadline still able to
-  terminate the payload meanwhile. `exec_stdin` with `eof` closes the pipe
+  since `jail` does not import `framing`). A chunk that would exceed the
+  bound is refused without admitting bytes or EOF, and only the targeted
+  execution is cancelled. The void stdin API cannot otherwise report lost
+  input to its caller; this prevents a later successful exit from hiding
+  rejected input. Sibling cancellation and heartbeats stay serviceable.
+  `exec_stdin` with `eof` closes the pipe
   after every queued chunk has been written, so byte order is unchanged.
   `Settle` calls `stdinQueue.abandon` after the child is reaped: it drops
   the queue, closes the pipe (which interrupts a blocked write) and joins
-  the writer, before `execFreed` or `waitDone` can close, so "freed" and
-  "joined" below still hold with no writer goroutine outliving its
+  the writer before terminal output, so no writer goroutine outlives its
   execution. Consequences visible to a caller: `WriteStdin` returns when the
   chunk is accepted, not when the child read it, and a failed pipe write
   (EPIPE from a child that closed stdin) is reported by the *next*
   `exec_stdin` as the same `no_exec` error frame, not by the failing one.
-  No wire change.
-- **Busy ends when the child is reaped, not when the exit frame has been
-  written.** `internal/server` keeps two signals for the running
-  execution and closes them either side of the terminal write:
-  `execFreed` closes as soon as `jail.Exec.Wait` returns and is what
-  `handleExecStart` consults, and `waitDone` closes after the `exec_exit`
-  frame is on the channel and is what `reapRunning` waits on before
-  native exit. One signal cannot serve both. The broker moves its own
-  state machine to `Idle` on reading `exec_exit` and may dispatch the
-  next `exec_start` at once, so a helper freeing itself only after the
-  write refused a strictly sequential caller whenever the two orders
-  raced — seen once on CI as `RefusedByHelper("busy", …)` on a `git
-  commit` that had already settled, and green on rerun. Freeing early
-  costs nothing: `Wait` joins the output pumps, so no further `exec_out`
-  can be emitted for the finished id, and the one frame still owed
-  carries that id rather than the next execution's. `framing.Conn`
-  serializes writes and emits a frame in a single `Write`, so it cannot
-  interleave with the next execution's bytes either. `reapRunning`
-  joining only the current execution stays sufficient for the same
-  reason: a later execution's exit frame cannot have been written until
-  the earlier one released the connection mutex.
+- **Shutdown joins every admitted execution.** The frame loop stops admitting
+  on shutdown, EOF or malformed traffic, marks every starting entry cancelled,
+  cancels every already-acquired jail, then waits for all startup workers,
+  terminal writes and native cleanup before returning. A slot
+  leaves the registry only after these obligations complete. There is no
+  unbounded history of completed executions or per-execution output queue.
+  `framing.Conn` serializes whole-frame writes; a slow reader can stall the
+  shared transport, and broker escalation kills the entire helper with all
+  its siblings rather than claiming independent recovery.
+
 - **Shutdown preserves the native exit witness.** After the hello exchange,
-  `shutdown` with an empty map body stops command dispatch, cancels the active
-  jail, and joins its existing `Wait` path before the helper exits with status
+  `shutdown` with an empty map body stops command dispatch, cancels every
+  acquired or starting jail, and joins every lifecycle worker before the helper exits with status
   zero. The broker keeps stdin open and drains stdout until the port reports
   native exit; there is no shutdown acknowledgement. A deadline, port closure,
   or nonzero exit does not prove an orderly join. The join retains the existing
@@ -929,7 +955,7 @@ only Go module.
   the threat model and Rule Zero, the jail, enforced versus reported.
 - [docs/spec-gaps.md](../../docs/spec-gaps.md) — "From WP-H (`sandbox`)":
   policy source, `exec_start.limits`, output caps, hello ordering,
-  one-exec-at-a-time, network filtering, degraded mode, unknown input.
+  helper concurrency, network filtering, degraded mode, unknown input.
 - [packages/broker/CLAUDE.md](../broker/CLAUDE.md) — the other end of the
   wire.
 - [Root CLAUDE.md](../../CLAUDE.md) — repo ground rules and the doc graph.

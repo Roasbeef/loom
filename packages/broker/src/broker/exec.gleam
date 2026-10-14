@@ -1,17 +1,14 @@
 //// The ExecPool: supervised lifecycle of `loom-exec` sandbox helpers.
 ////
-//// Each helper is one OS process speaking the Part 1.4 framing protocol
-//// on stdio, running **one execution at a time** (the helper answers a
-//// second `exec_start` with a `busy` error); concurrency lives here, in
-//// the pool, by running more helpers. A broker-side `Helper` machine
-//// owns each helper's channel: it performs the hello handshake, deframes
-//// inbound bytes with the pure `broker/framing` deframer, streams
-//// output events to the caller, heartbeats the helper while idle, and
-//// mirrors the cancel escalation (the helper TERMs the payload and then
-//// KILLs its pgroup within 2s of `cancel`; if no `exec_exit` arrives
-//// within the grace period the machine kills the whole helper — belt and
-//// braces). The two rungs are addressed differently under a jail, and
-//// what the exit reports differs with them: see `cancel` below.
+//// Each helper owns one native process and up to four concurrent jailed
+//// executions. The pool lends single-use opaque lease handles that share
+//// that physical actor, while the configured pool size remains an execution
+//// ceiling. Each lease selects only its own stdin, output and cancellation.
+//// Unpooled canonical handles preserve singleton execution semantics.
+////
+//// A physical failure settles every accepted execution exactly once. Native
+//// retirement remains a shared custody boundary: a draining or unconfirmed
+//// helper occupies its entire quota until retirement is actually witnessed.
 ////
 //// ## A kill keeps its witness
 ////
@@ -49,27 +46,13 @@
 ////
 //// ## The helper's lifecycle is a `weft/state_machine`
 ////
-//// `Prepared → AwaitingHello → Idle → Running → Cancelling → Idle`, with
-//// `Dead` as the absorbing state every failure settles into. Those six are
-//// the `Phase` type — the machine's *state* — and everything else the
-//// process carries is its *data*. The split is what makes both of the
-//// helper's deadlines structural rather than guarded by hand: the
-//// handshake window is a **state timeout** on `AwaitingHello` and the
-//// cancel grace is a **state timeout** on `Cancelling`, so each dies
-//// with the state that armed it. No handler re-checks whether its own
-//// timer is still relevant, no settle site remembers to cancel one, and
-//// no timer message carries an execution id for the sole purpose of
-//// recognising a stale fire. Reaching `Idle` or `Dead` *is* the
-//// cancellation.
-////
-//// The idle heartbeat is the third, and it is a **periodic timeout**:
-//// it must fire every N ms regardless of activity, which is what a
-//// liveness probe means and what neither a state timeout (dies with its
-//// state) nor an event timeout (measures quiet, so a chatty helper is
-//// never probed) says. It is armed on the way out of `AwaitingHello`
-//// and cancelled on the way into `Dead`, so the two arms that used to
-//// absorb a tick arriving in a phase with nothing to probe are now
-//// unreachable rather than merely unlikely.
+//// `Prepared → AwaitingHello → Live`, with `Dead` absorbing every failure.
+//// Runner and lease dictionaries live in Data, so sibling starts, output and
+//// settlements never change Live's structural state. Handshake and native
+//// witness deadlines remain state timeouts. Each cancellation owns a named
+//// timeout keyed by its never-reused execution id; settlement removes it,
+//// and weft rejects a callback that raced that cancellation by generation.
+//// The periodic heartbeat belongs to the physical helper until death.
 ////
 //// ## Policy delivery (the fd-3 gap)
 ////
@@ -119,12 +102,12 @@
 ////    `AwaitingHello`, whose `entered` call arms the handshake deadline.
 //// 4. `handle_bytes` deframes inbound bytes, and `apply_inbound` gives each
 ////    frame to `handle_frame`; `handle_hello` and `complete_handshake` move the
-////    machine to `Idle`.
+////    machine to `Live`.
 //// 5. `handle_run` weighs the hello's features against the request's demand,
-////    and `dispatch_exec` records the execution in the `Running` state and
+////    and `dispatch_exec` records the execution in the bounded runner table and
 ////    writes the exec_start frame.
-//// 6. `handle_exec_exit` checks the enforcement report, and `settle` returns
-////    the machine to `Idle`; `mark_dead` and `die` are where every failure
+//// 6. `handle_exec_exit` checks the enforcement report, and `settle` removes
+////    that runner and its cancel deadline; `mark_dead` and `die` are where every failure
 ////    lands, notifying waiters through `notify_death` and killing the helper
 ////    with `kill_transport`.
 //// 7. `native_exit` receives the status the port reports, and `native_verdict`
@@ -134,14 +117,12 @@
 ////
 //// <!-- transitions: exec.Phase -->
 ////
-//// | state | `Begin` | hello frame | `Run` | `CancelExec` | exit or error frame | deadline | `Shutdown` | wire closed or fault |
-//// | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-//// | `Prepared` | `AwaitingHello`, or `Dead` if the transport will not open | ignored | refused, `NotReady` | ignored | ignored | ignored | `Dead`, no native resource | ignored |
-//// | `AwaitingHello` | ignored | `Idle`; `Dead` on a protocol version mismatch | refused, `NotReady` | ignored | ignored | `HandshakeDeadline` gives `Dead` | postponed until the handshake settles | `Dead` |
-//// | `Idle` | ignored | `Dead`, protocol violation | `Running`; refused if the helper is degraded or the caller's events owner is gone | ignored | ignored | stale, ignored | `Dead` | `Dead`; a missed heartbeat also gives `Dead` |
-//// | `Running` | ignored | `Dead`, protocol violation | refused, `HelperBusy` | `Cancelling` after the TERM write, `Dead` if the write fails | the execution's own id gives `Idle`; other ids dropped | stale, ignored | `Dead`, in-flight caller told | `Dead`, in-flight caller told |
-//// | `Cancelling` | ignored | `Dead`, protocol violation | refused, `HelperBusy` | ignored, the first deadline keeps running | the execution's own id gives `Idle` and disarms the deadline | `CancelDeadline` kills the helper and keeps its port, `Dead` | `Dead`, in-flight caller told | `Dead`, in-flight caller told |
-//// | `Dead` | ignored | dropped | refused with the stored failure | ignored | dropped | stale, ignored; `KillWitnessDeadline` on a killed helper, or one whose write failed, whose status never came closes the port and gives `LostExit` | ignored | the exit status of a retained port is the retirement proof; after a closed port it is ignored |
+//// | state | Begin | hello | Run | cancellation | terminal frame | shutdown or fault |
+//// | --- | --- | --- | --- | --- | --- | --- |
+//// | `Prepared` | acquire transport | ignored | refused | ignored | ignored | `Dead`, no native resource |
+//// | `AwaitingHello` | ignored | `Live` after validated capacity | refused | ignored | ignored | shutdown postponed; fault gives `Dead` |
+//// | `Live` | ignored | protocol violation | admit valid unused lease within quota | per-execution named grace; expiry gives `Dead` | settle matching runner | `Dead`, every runner notified |
+//// | `Dead` | ignored | dropped | refused | ignored | dropped | retain native exit evidence |
 
 import broker/framing.{type Fault, type Frame, type OutputStream}
 import broker/internal/call
@@ -152,6 +133,7 @@ import broker/policy.{type SandboxPolicy}
 import core/msgpack
 import envoy
 import gleam/bit_array
+import gleam/dict.{type Dict}
 import gleam/dynamic.{type Dynamic}
 import gleam/erlang/port.{type Port}
 import gleam/erlang/process.{type Pid, type Subject}
@@ -385,8 +367,8 @@ pub type HelperStatus {
   /// hello features. The only answer that makes a helper fit to lend.
   StatusReady(features: List(String))
 
-  /// Handshake done and an execution is in flight (`Running` or
-  /// `Cancelling`); these are the helper's hello features. The helper
+  /// Handshake done and at least one execution is in flight; these are
+  /// the helper's hello features. The helper
   /// is alive and well but occupied, so it is not fit to lend: a
   /// borrower's `run` would be refused in-band with `HelperBusy` for a
   /// call that was never theirs.
@@ -476,6 +458,7 @@ pub opaque type Helper {
     wire: Subject(WireEvent),
     pid: Pid,
     handshake_wait: Int,
+    lease: Option(Int),
   )
 }
 
@@ -486,22 +469,24 @@ pub opaque type Msg {
   Begin
   AwaitReady(reply: Subject(Result(List(String), ExecFailure)))
   QueryStatus(reply: Subject(HelperStatus))
+  RegisterLease(reply: Subject(Result(Int, ExecFailure)))
+  ReleaseLease(id: Int, reply: Subject(Result(Nil, ExecFailure)))
+  QueryCapacity(reply: Subject(Int))
   Run(
+    lease: Option(Int),
     request: ExecRequest,
     events: Subject(ExecEvent),
     reply: Subject(Result(Nil, ExecFailure)),
   )
-  Stdin(data: BitArray, eof: Bool)
-  CancelExec
+  Stdin(lease: Option(Int), data: BitArray, eof: Bool)
+  CancelExec(lease: Option(Int))
 
-  /// The cancel grace expired. Carries no execution id, because the
-  /// state timeout on `Cancelling` that delivers it dies with that
-  /// state — and leaving `Cancelling` is the only way the execution it
-  /// speaks for can settle.
-  CancelDeadline
+  /// One execution's named cancel grace expired. Weft rejects callbacks
+  /// racing settlement through the named timer's generation stamp.
+  CancelDeadline(id: Int)
 
   /// The handshake window expired. A state timeout on `AwaitingHello`,
-  /// so reaching `Idle` or `Dead` cancels it.
+  /// so reaching `Live` or `Dead` cancels it.
   HandshakeDeadline
 
   /// The killed helper's exit status did not arrive within
@@ -605,37 +590,22 @@ type Awaiting {
 type Exposure {
   /// The helper had not accepted a hello. The Go helper writes its hello
   /// before it reads any frame, and the broker sends no `exec_start` before
-  /// `Idle`, so no jail was ever dispatched.
+  /// `Live`, so no jail was ever dispatched.
   NoJail
 
-  /// The helper was `Idle`. That phase is entered on an `exec_exit`, which
-  /// the helper writes only after `Settle` returned, and `Settle` has
+  /// No runners remain. The helper writes each `exec_exit` only after
+  /// `Settle` returned, and `Settle` has
   /// already SIGKILLed the execution's process group (and, on Darwin, its
   /// tracked descendants). The last jail was killed before the helper was.
   SettledJail
 
-  /// The helper was `Running` or `Cancelling`: a jail may be alive and the
+  /// At least one runner remains: a jail may be alive and the
   /// helper's death is the only thing that ends it.
   LiveJail
 }
 
-/// Where the helper is in its lifecycle: the machine's *state* in
-/// `weft/state_machine`'s sense, which is what makes both deadlines
-/// structural instead of guarded by hand.
-///
-/// `Idle`, `Running` and `Cancelling` are the three ways to be past the
-/// handshake, and each carries the hello features so a status query is
-/// answered from the state alone. The two busy ones additionally carry
-/// the execution in flight, which is how a settlement knows who to tell.
-///
-/// **A state's payload must not change while the machine is in it.** A
-/// state timeout is cancelled by a move to a state that compares
-/// *unequal*, and a `transition` to an equal value is not a move at all
-/// — so re-entering `Cancelling` with a mutated payload would silently
-/// restart the escalation deadline, and re-entering it with an equal one
-/// is a no-op that looks like a move. Every field here is fixed at the
-/// moment its state is entered: `features` at hello, `RunningExec` at
-/// dispatch. Anything that moves per frame belongs in `Data`.
+/// Physical lifecycle states remain stable while execution membership changes.
+/// Mutable runner and lease data never becomes a state's structural payload.
 type Phase {
   /// The owner exists, but no transport or policy file has been acquired.
   Prepared
@@ -644,16 +614,9 @@ type Phase {
   /// handshake deadline.
   AwaitingHello
 
-  /// Handshake done, nothing running.
-  Idle(features: List(String))
-
-  /// One execution in flight, running normally.
-  Running(features: List(String), exec: RunningExec)
-
-  /// One execution in flight that has been told to stop. Entering this
-  /// state arms the cancel-escalation deadline; settling back to `Idle`
-  /// is what disarms it.
-  Cancelling(features: List(String), exec: RunningExec)
+  /// Handshake done. Runner and lease membership changes only in Data,
+  /// so sibling activity never resets an execution's cancellation grace.
+  Live(features: List(String))
 
   /// The channel is gone. Absorbing: every request is answered with this
   /// failure until the machine is shut down, and no second failure
@@ -661,11 +624,12 @@ type Phase {
   Dead(failure: ExecFailure, retirement: Retirement)
 }
 
-/// The execution a `Running` or `Cancelling` state carries. Immutable
-/// for the life of that state — see `Phase`.
+/// One accepted execution, addressed independently inside the physical owner.
 type RunningExec {
   RunningExec(
     id: Int,
+    lease: Option(Int),
+    cancellation: Cancellation,
     events: Subject(ExecEvent),
     demand: EnforcementDemand,
     /// The layer tags this execution's policy calls for, computed at
@@ -680,21 +644,29 @@ type RunningExec {
   )
 }
 
-/// Everything the machine carries *across* states: the channel, the
-/// deframer, and the bookkeeping that belongs to no single phase.
-///
-/// The split from `Phase` is weft's, and it is load-bearing rather than
-/// tidy. Data may change on every frame without disturbing a state
-/// timeout; a change of state cancels one. So the deframer, the id
-/// counter and the outstanding-tick flag live here — putting any of them
-/// in the state would make an ordinary inbound chunk cancel the cancel
-/// escalation. The heartbeat itself is in neither: it is a periodic
-/// timeout, which belongs to the machine rather than to a phase, and
-/// what stays here is only the one-deep record of whether the last probe
-/// was answered.
+// A cancellation deadline belongs to the execution, not the physical helper.
+type Cancellation {
+  Executing
+  Stopping
+}
+
+// A minted pooled lease is single-use, including after its execution settles.
+type LeaseState {
+  Unused
+  Used
+}
+
+/// Mutable execution membership, framing, liveness and lease bookkeeping.
+/// Per-execution cancellation names remain independent of Live's stable
+/// structural state. Pending timer cancellations are applied once by advance
+/// after folding all frames in an inbound chunk.
 type Data {
   Data(
     config: HelperConfig,
+    runners: Dict(Int, RunningExec),
+    leases: Dict(Int, LeaseState),
+    capacity: Int,
+    cancel_timers: List(Int),
     wire_out: Wire,
     deframer: framing.Deframer,
     next_id: Int,
@@ -715,7 +687,7 @@ type Data {
 /// A phase and its data in one value, for the inbound-frame path.
 ///
 /// One deframed chunk can carry several frames and any of them may move
-/// the machine — a hello to `Idle`, an `exec_exit` to `Idle`, a frame the
+/// the machine — a hello to `Live`, an execution settling, a frame the
 /// helper had no business sending to `Dead`. Folding over them needs both
 /// halves in hand, so the fold threads this and the dispatch arm turns
 /// the result back into a step with `advance`.
@@ -783,6 +755,10 @@ pub fn prepare(config: HelperConfig) -> Result(Helper, actor.StartError) {
     let data =
       Data(
         config:,
+        runners: dict.new(),
+        leases: dict.new(),
+        capacity: 1,
+        cancel_timers: [],
         wire_out: WireUnopened,
         deframer: framing.deframer(),
         next_id: 1,
@@ -809,6 +785,7 @@ pub fn prepare(config: HelperConfig) -> Result(Helper, actor.StartError) {
       wire:,
       pid: started.pid,
       handshake_wait: config.handshake_timeout_ms + 1000,
+      lease: None,
     )
   })
 }
@@ -936,7 +913,7 @@ pub fn run(
 ) -> Result(Nil, ExecFailure) {
   or_unresponsive(
     call.try_call(helper.commands, waiting: timeout, sending: fn(reply) {
-      Run(request:, events:, reply:)
+      Run(lease: helper.lease, request:, events:, reply:)
     }),
   )
 }
@@ -944,7 +921,7 @@ pub fn run(
 /// Sends a chunk of stdin to the running execution; `eof: True` closes
 /// the child's stdin after `data`. Ignored when nothing is running.
 pub fn stdin(helper: Helper, data data: BitArray, eof eof: Bool) -> Nil {
-  process.send(helper.commands, Stdin(data:, eof:))
+  process.send(helper.commands, Stdin(lease: helper.lease, data:, eof:))
 }
 
 /// Cancels the running execution. Idempotent. If `exec_exit` still does
@@ -984,7 +961,7 @@ pub fn stdin(helper: Helper, data data: BitArray, eof eof: Bool) -> Nil {
 /// jail boundary; `signal` distinguishes them and must not be read as
 /// "the payload was/was not signalled".
 pub fn cancel(helper: Helper) -> Nil {
-  process.send(helper.commands, CancelExec)
+  process.send(helper.commands, CancelExec(helper.lease))
 }
 
 /// A protocol-level liveness probe: sends `heartbeat` and waits for the
@@ -1116,294 +1093,255 @@ fn handle(
   data: Data,
   message: Msg,
 ) -> state_machine.Next(Phase, Data, Msg) {
-  case phase, message {
-    Prepared, Begin -> activate(data)
-    AwaitingHello, Begin
-    | Idle(..), Begin
-    | Running(..), Begin
-    | Cancelling(..), Begin
-    | Dead(..), Begin
-    -> state_machine.keep(data)
-
-    Prepared, FromWire(..)
-    | Prepared, Stdin(..)
-    | Prepared, CancelExec
-    | Prepared, CancelDeadline
-    | Prepared, HandshakeDeadline
-    | Prepared, KillWitnessDeadline
-    | Prepared, HeartbeatTick
-    | Prepared, ForgetRetired
-    -> state_machine.keep(data)
-    Prepared, AwaitReady(..) | Prepared, AwaitRetirement(..) ->
-      state_machine.keep(data) |> state_machine.postpone
-    Prepared, Run(reply:, ..) -> refuse_run(data, reply, NotReady)
-    Prepared, Heartbeat(reply) -> {
-      process.send(reply, Error(NotReady))
-      state_machine.keep(data)
-    }
-    Prepared, Shutdown ->
-      state_machine.transition(Dead(ChannelClosed(0), NoNativeResource), data)
-
-    // Inbound bytes are deframed in every phase. `apply_inbound` asks
-    // the phase question once per frame rather than once per chunk,
-    // because a chunk can carry the frame that kills the channel and
-    // the frames behind it.
-    phase, FromWire(WireBytes(data: bytes)) ->
-      advance(handle_bytes(Machine(phase:, data:), bytes))
-
-    phase, FromWire(WireClosed(status:)) ->
-      native_exit(Machine(phase:, data:), status)
-
-    Dead(retirement: NativeExit(status:, awaited:), ..), AwaitRetirement(reply)
-    -> {
-      reply(native_verdict(status, awaited, data.hello_features))
-      state_machine.keep(data)
-    }
-    Dead(retirement: NoNativeResource, ..), AwaitRetirement(reply) -> {
-      reply(Ok(Nil))
-      state_machine.keep(data)
-    }
-    Dead(retirement: LostExit, ..), AwaitRetirement(reply) -> {
-      reply(Error(RetirementProofLost))
-      state_machine.keep(data)
-    }
-    Dead(retirement: PendingExit(..), ..), AwaitRetirement(..)
-    | AwaitingHello, AwaitRetirement(..)
-    | Idle(..), AwaitRetirement(..)
-    | Running(..), AwaitRetirement(..)
-    | Cancelling(..), AwaitRetirement(..)
-    -> state_machine.keep(data) |> state_machine.postpone
-
-    // The actor retires only on a verdict that is `Ok`, which is the same
-    // test `AwaitRetirement` answers with: the pool sends this after an
-    // `Ok` outcome, and `close` does the same, so a status that cannot
-    // retire the helper must not be able to retire its owner either.
-    Dead(retirement: NativeExit(status:, awaited:), ..), ForgetRetired ->
-      case native_verdict(status, awaited, data.hello_features) {
-        Ok(Nil) -> state_machine.stop()
-        Error(_) -> state_machine.keep(data)
+  case message {
+    Begin ->
+      case phase {
+        Prepared -> activate(data)
+        AwaitingHello | Live(..) | Dead(..) -> state_machine.keep(data)
       }
-    Dead(retirement: NoNativeResource, ..), ForgetRetired ->
-      state_machine.stop()
-    Dead(..), ForgetRetired
-    | AwaitingHello, ForgetRetired
-    | Idle(..), ForgetRetired
-    | Running(..), ForgetRetired
-    | Cancelling(..), ForgetRetired
-    -> state_machine.keep(data)
-
-    // The status query reads the phase alone, which is why the hello
-    // features are carried by the three live states rather than beside
-    // them.
-    phase, QueryStatus(reply:) -> {
-      process.send(reply, status_of(phase))
+    FromWire(event) ->
+      case phase, event {
+        Prepared, _ -> state_machine.keep(data)
+        _, WireBytes(bytes) ->
+          advance(handle_bytes(Machine(phase:, data:), bytes))
+        _, WireClosed(status) -> native_exit(Machine(phase:, data:), status)
+      }
+    QueryStatus(reply) -> {
+      process.send(reply, status_of(phase, data))
       state_machine.keep(data)
     }
-
-    // Shutdown settles what is in flight before the machine stops, so a
-    // caller whose execution is still running learns why it ended
-    // instead of watching its events subject go quiet.
-    AwaitingHello, Shutdown ->
-      state_machine.keep(data) |> state_machine.postpone
-    Dead(..), Shutdown -> state_machine.keep(data)
-    Idle(..) as phase, Shutdown
-    | Running(..) as phase, Shutdown
-    | Cancelling(..) as phase, Shutdown
-    -> handle_shutdown(Machine(phase:, data:))
-
-    // The handshake has not settled, so the asker is parked. `postpone`
-    // re-queues this exact event; weft replays it, in arrival order,
-    // exactly once, on the next change of state — the hello's move to
-    // `Idle` or a death's move to `Dead` — where the arms below answer
-    // it with that state's outcome. Invariant: every `AwaitReady` asked
-    // during the handshake is answered exactly once with the outcome of
-    // the next state.
-    AwaitingHello, AwaitReady(..) ->
-      state_machine.keep(data) |> state_machine.postpone
-
-    Idle(features:), AwaitReady(reply:)
-    | Running(features:, ..), AwaitReady(reply:)
-    | Cancelling(features:, ..), AwaitReady(reply:)
-    -> {
-      process.send(reply, Ok(features))
+    QueryCapacity(reply) -> {
+      process.send(reply, data.capacity)
       state_machine.keep(data)
     }
+    RegisterLease(reply) ->
+      case phase {
+        Live(..) ->
+          case
+            dict.size(data.leases) < data.capacity
+            && dict.size(data.runners) <= dict.size(data.leases)
+          {
+            True -> {
+              let #(data, id) = fresh_id(data)
+              process.send(reply, Ok(id))
+              state_machine.keep(
+                Data(..data, leases: dict.insert(data.leases, id, Unused)),
+              )
+            }
+            False -> {
+              process.send(reply, Error(HelperBusy))
+              state_machine.keep(data)
+            }
+          }
+        Prepared | AwaitingHello | Dead(..) -> {
+          process.send(reply, Error(NotReady))
+          state_machine.keep(data)
+        }
+      }
+    ReleaseLease(id, reply) ->
+      case phase {
+        Live(..) -> release_registered_lease(data, id, reply)
+        Prepared | AwaitingHello -> refuse_run(data, reply, NotReady)
+        Dead(failure:, ..) -> refuse_run(data, reply, failure)
+      }
+    Run(lease:, request:, events:, reply:) ->
+      case phase {
+        Live(features:) ->
+          case runnable_lease(data, lease) {
+            True -> handle_run(data, features, lease, request, events, reply)
+            False -> refuse_run(data, reply, HelperBusy)
+          }
+        Dead(failure:, ..) -> refuse_run(data, reply, failure)
+        Prepared | AwaitingHello -> refuse_run(data, reply, NotReady)
+      }
+    Stdin(lease:, data: bytes, eof:) ->
+      case runner_for_lease(data, lease) {
+        None -> state_machine.keep(data)
+        Some(exec) -> {
+          let #(data, id) = fresh_id(data)
+          send_or_die(
+            Machine(phase:, data:),
+            framing.Frame(
+              id:,
+              body: framing.ExecStdin(exec_id: exec.id, data: bytes, eof:),
+            ),
+          )
+        }
+      }
+    CancelExec(lease) ->
+      case runner_for_lease(data, lease) {
+        None -> state_machine.keep(data)
+        Some(RunningExec(cancellation: Stopping, ..)) ->
+          state_machine.keep(data)
+        Some(exec) -> {
+          let exec = RunningExec(..exec, cancellation: Stopping)
+          let data =
+            Data(..data, runners: dict.insert(data.runners, exec.id, exec))
+          let #(data, control_id) = fresh_id(data)
+          let machine =
+            send_frame(
+              Machine(phase:, data:),
+              framing.Frame(
+                id: control_id,
+                body: framing.CancelExecution(exec.id),
+              ),
+            )
+          let next = advance(machine)
+          case machine.phase {
+            Live(..) ->
+              state_machine.with_named_timeout(
+                next,
+                name: cancel_timer_name(exec.id),
+                after: data.config.cancel_grace_ms,
+                sending: CancelDeadline(exec.id),
+              )
+            Prepared | AwaitingHello | Dead(..) -> next
+          }
+        }
+      }
+    CancelDeadline(_id) ->
+      case phase {
+        Live(..) -> die(Machine(phase:, data:), CancelEscalated)
+        Prepared | AwaitingHello | Dead(..) -> state_machine.keep(data)
+      }
+    AwaitReady(reply) ->
+      case phase {
+        Prepared | AwaitingHello ->
+          state_machine.keep(data) |> state_machine.postpone
+        Live(features:) -> {
+          process.send(reply, Ok(features))
+          state_machine.keep(data)
+        }
+        Dead(failure:, ..) -> {
+          process.send(reply, Error(failure))
+          state_machine.keep(data)
+        }
+      }
+    Shutdown ->
+      case phase {
+        Prepared ->
+          state_machine.transition(
+            Dead(ChannelClosed(0), NoNativeResource),
+            data,
+          )
+        AwaitingHello -> state_machine.keep(data) |> state_machine.postpone
+        Live(..) -> handle_shutdown(Machine(phase:, data:))
+        Dead(..) -> state_machine.keep(data)
+      }
+    AwaitRetirement(reply) ->
+      case phase {
+        Dead(retirement: NativeExit(status:, awaited:), ..) -> {
+          reply(native_verdict(status, awaited, data.hello_features))
+          state_machine.keep(data)
+        }
+        Dead(retirement: NoNativeResource, ..) -> {
+          reply(Ok(Nil))
+          state_machine.keep(data)
+        }
+        Dead(retirement: LostExit, ..) -> {
+          reply(Error(RetirementProofLost))
+          state_machine.keep(data)
+        }
+        Prepared
+        | AwaitingHello
+        | Live(..)
+        | Dead(retirement: PendingExit(..), ..) ->
+          state_machine.keep(data) |> state_machine.postpone
+      }
+    ForgetRetired ->
+      case phase {
+        Dead(retirement: NoNativeResource, ..) -> state_machine.stop()
+        Dead(retirement: NativeExit(status:, awaited:), ..) ->
+          case native_verdict(status, awaited, data.hello_features) {
+            Ok(Nil) -> state_machine.stop()
+            Error(_) -> state_machine.keep(data)
+          }
+        Prepared
+        | AwaitingHello
+        | Live(..)
+        | Dead(retirement: LostExit, ..)
+        | Dead(retirement: PendingExit(..), ..) -> state_machine.keep(data)
+      }
+    HandshakeDeadline ->
+      case phase {
+        AwaitingHello -> die(Machine(phase:, data:), HandshakeTimeout)
+        Prepared | Live(..) | Dead(..) -> state_machine.keep(data)
+      }
+    KillWitnessDeadline ->
+      case phase {
+        Dead(failure:, retirement: PendingExit(AfterKill(..)))
+        | Dead(failure:, retirement: PendingExit(Unprompted(..))) ->
+          state_machine.transition(
+            Dead(failure, close_transport(data.wire_out)),
+            data,
+          )
+        Prepared
+        | AwaitingHello
+        | Live(..)
+        | Dead(retirement: NoNativeResource, ..)
+        | Dead(retirement: PendingExit(AfterShutdown), ..)
+        | Dead(retirement: NativeExit(..), ..)
+        | Dead(retirement: LostExit, ..) -> state_machine.keep(data)
+      }
+    HeartbeatTick ->
+      case phase {
+        Live(..) -> handle_heartbeat_tick(Machine(phase:, data:))
+        Prepared | AwaitingHello | Dead(..) -> state_machine.keep(data)
+      }
+    Heartbeat(reply) ->
+      case phase {
+        Live(..) -> send_heartbeat(Machine(phase:, data:), reply)
+        Prepared | AwaitingHello -> {
+          process.send(reply, Error(NotReady))
+          state_machine.keep(data)
+        }
+        Dead(failure:, ..) -> {
+          process.send(reply, Error(failure))
+          state_machine.keep(data)
+        }
+      }
+  }
+}
 
-    Dead(failure:, ..), AwaitReady(reply:) -> {
-      process.send(reply, Error(failure))
-      state_machine.keep(data)
-    }
-
-    // A dispatch is answered now or never: nothing is postponed here,
-    // because a caller that cannot run holds a budget reservation and a
-    // deadline, and would rather be refused than parked.
-    Dead(failure:, ..), Run(request: _, events: _, reply:) ->
-      refuse_run(data, reply, failure)
-
-    AwaitingHello, Run(request: _, events: _, reply:) ->
-      refuse_run(data, reply, NotReady)
-
-    // One helper runs one execution at a time, and a cancel in flight is
-    // still an execution in flight.
-    Running(..), Run(request: _, events: _, reply:)
-    | Cancelling(..), Run(request: _, events: _, reply:)
-    -> refuse_run(data, reply, HelperBusy)
-
-    Idle(features:), Run(request:, events:, reply:) ->
-      handle_run(data, features, request, events, reply)
-
-    // Stdin follows the execution rather than the phase: a payload that
-    // has been TERMed but has not exited may still be reading.
-    //
-    // The frame gets an id of its own and not the execution's. The helper
-    // answers a refused write (the payload closed its stdin, or stdin was
-    // already at end of file) with `error{no_exec}` carrying the *stdin
-    // frame's* id, and `settle` treats an error under the execution's own
-    // id as that execution's refusal: the running payload would be settled
-    // `Failed` and the machine sent `Idle` while the helper still runs it.
-    // The helper uses a stdin frame's id for nothing but addressing that
-    // reply, so a fresh id makes the reply correlate to nothing and `settle`
-    // drops it. Cancel needs no such care: the helper never answers a
-    // `cancel` with an error, and an unknown cancel is a no-op.
-    Running(..) as phase, Stdin(data: bytes, eof:)
-    | Cancelling(..) as phase, Stdin(data: bytes, eof:)
-    -> {
-      let #(data, id) = fresh_id(data)
-      send_or_die(
-        Machine(phase:, data:),
-        framing.Frame(id:, body: framing.ExecStdin(data: bytes, eof:)),
-      )
-    }
-
-    AwaitingHello, Stdin(..) | Idle(..), Stdin(..) | Dead(..), Stdin(..) ->
-      state_machine.keep(data)
-
-    // The TERM goes out and the machine moves to `Cancelling`, whose
-    // enter call arms the escalation deadline. Arming it there rather
-    // than here is what makes a write that fails on the way — landing in
-    // `Dead` instead — leave no deadline running against a machine that
-    // has already settled.
-    Running(features:, exec:), CancelExec ->
-      send_or_die(
-        Machine(phase: Cancelling(features:, exec:), data:),
-        framing.Frame(id: exec.id, body: framing.Cancel),
-      )
-
-    // Idempotent: `keep` is not a state change, so the first cancel's
-    // deadline keeps running rather than being restarted by the second.
-    Cancelling(..), CancelExec -> state_machine.keep(data)
-
-    AwaitingHello, CancelExec | Idle(..), CancelExec | Dead(..), CancelExec ->
-      state_machine.keep(data)
-
-    // The helper missed its own 2s TERM-to-KILL ladder. Belt and braces:
-    // kill it and settle the execution in band. `die` does the killing,
-    // with the port still open (the helper is alive, if unresponsive, or
-    // the deadline would not have fired), so the exit status the kill
-    // produces can still be selected: this is the witnessed kill.
-    Cancelling(..) as phase, CancelDeadline ->
-      die(Machine(phase:, data:), CancelEscalated)
-
-    // Unreachable by construction. The escalation deadline is a state
-    // timeout on `Cancelling`, so any move out of that state cancels it
-    // and a fire that raced the move is dropped by weft's timer book
-    // before it reaches this handler. The arm exists because the matrix
-    // is exhaustive, not because the case can arise.
-    AwaitingHello, CancelDeadline
-    | Idle(..), CancelDeadline
-    | Running(..), CancelDeadline
-    | Dead(..), CancelDeadline
-    -> state_machine.keep(data)
-
-    // The helper never reported the status that was owed: its SIGKILL
-    // should have produced one, or the port closed under a failed write
-    // and its status never reached the mailbox. Closing the port abandons
-    // the wait (and is a no-op for a port that has already closed), and
-    // the move to `LostExit` is an unequal state, so weft replays every
-    // postponed `AwaitRetirement` against it and the pool reads the proof
-    // as lost. This can only lose a proof: no arm here grants one.
-    Dead(failure:, retirement: PendingExit(AfterKill(..))), KillWitnessDeadline
-    | Dead(failure:, retirement: PendingExit(Unprompted(..))),
-      KillWitnessDeadline
-    ->
-      state_machine.transition(
-        Dead(failure, close_transport(data.wire_out)),
-        data,
-      )
-
-    // Unreachable: the status arriving or the port closing leaves
-    // `PendingExit`, which cancels the witness timeout, and no other state
-    // arms it (`AfterShutdown` waits on the helper's own orderly teardown
-    // and is bounded by the caller's deadline instead). The arms exist
-    // because the matrix is exhaustive.
-    AwaitingHello, KillWitnessDeadline
-    | Idle(..), KillWitnessDeadline
-    | Running(..), KillWitnessDeadline
-    | Cancelling(..), KillWitnessDeadline
-    | Dead(retirement: NoNativeResource, ..), KillWitnessDeadline
-    | Dead(retirement: PendingExit(AfterShutdown), ..), KillWitnessDeadline
-    | Dead(retirement: NativeExit(..), ..), KillWitnessDeadline
-    | Dead(retirement: LostExit, ..), KillWitnessDeadline
-    -> state_machine.keep(data)
-
-    AwaitingHello, HandshakeDeadline ->
-      die(Machine(phase: AwaitingHello, data:), HandshakeTimeout)
-
-    // Unreachable for the same reason the stale `CancelDeadline` is:
-    // reaching `Idle` or `Dead` cancels the handshake deadline, and this
-    // is where the actor's `case state.phase` guard used to live.
-    Idle(..), HandshakeDeadline
-    | Running(..), HandshakeDeadline
-    | Cancelling(..), HandshakeDeadline
-    | Dead(..), HandshakeDeadline
-    -> state_machine.keep(data)
-
-    Idle(..) as phase, HeartbeatTick
-    | Running(..) as phase, HeartbeatTick
-    | Cancelling(..) as phase, HeartbeatTick
-    -> handle_heartbeat_tick(Machine(phase:, data:))
-
-    // Unreachable by construction, and written out because weft's
-    // exhaustiveness is what proves it: the probe is armed on the way
-    // out of `AwaitingHello` and cancelled on the way into `Dead`, and a
-    // tick in flight at either boundary is flushed by the timer book.
-    AwaitingHello, HeartbeatTick | Dead(..), HeartbeatTick ->
-      state_machine.keep(data)
-
-    Idle(..) as phase, Heartbeat(reply:)
-    | Running(..) as phase, Heartbeat(reply:)
-    | Cancelling(..) as phase, Heartbeat(reply:)
-    -> send_heartbeat(Machine(phase:, data:), reply)
-
-    AwaitingHello, Heartbeat(reply:) -> {
-      process.send(reply, Error(NotReady))
-      state_machine.keep(data)
-    }
-
-    Dead(failure:, ..), Heartbeat(reply:) -> {
-      process.send(reply, Error(failure))
-      state_machine.keep(data)
+// Checkin is atomic with execution membership. A live execution cannot be
+// returned to lending; the pool must retire its physical owner instead.
+fn release_registered_lease(
+  data: Data,
+  id: Int,
+  reply: Subject(Result(Nil, ExecFailure)),
+) -> state_machine.Next(Phase, Data, Msg) {
+  case list.any(dict.values(data.runners), fn(run) { run.lease == Some(id) }) {
+    True -> refuse_run(data, reply, HelperBusy)
+    False -> {
+      process.send(reply, Ok(Nil))
+      state_machine.keep(Data(..data, leases: dict.delete(data.leases, id)))
     }
   }
 }
 
-/// The deadline each state owns, armed by every path into it — including
-/// the initial entry into `AwaitingHello`, which weft makes for the
-/// starting state on the far side of the start acknowledgement.
-///
-/// This callback is where the port's whole benefit is concentrated. Both
-/// deadlines were hand-rolled `send_after` timers whose handlers had to
-/// re-establish their own relevance: the handshake one re-read
-/// `state.phase`, the cancel one compared an execution id it carried for
-/// no other purpose, and three settle sites had to remember to cancel the
-/// timer they had armed. As state timeouts they are cancelled by the move
-/// out of the state that armed them, so the guards are deleted rather
-/// than relocated.
-///
-/// Arming here rather than at the transition site matters for
-/// `Cancelling`: the transition and the TERM write are one step, and a
-/// write that fails lands in `Dead` instead. Only a machine that really
-/// reached `Cancelling` gets the deadline.
+// Only unused live leases dispatch; the canonical handle remains singleton.
+fn runnable_lease(data: Data, lease: Option(Int)) -> Bool {
+  case lease {
+    None -> dict.size(data.leases) == 0 && dict.size(data.runners) == 0
+    Some(id) ->
+      dict.get(data.leases, id) == Ok(Unused)
+      && dict.size(data.runners) < data.capacity
+  }
+}
+
+// Lease identity is distinct from incidental heartbeat and stdin request ids.
+fn runner_for_lease(data: Data, lease: Option(Int)) -> Option(RunningExec) {
+  dict.values(data.runners)
+  |> list.find(fn(run) { run.lease == lease })
+  |> option.from_result
+}
+
+fn cancel_timer_name(id: Int) -> String {
+  "helper.cancel." <> int.to_string(id)
+}
+
+/// Handshake and native-exit evidence own state timeouts. Cancellation
+/// deadlines are independently named because several runners share Live.
 fn entered(
   from: Phase,
   to: Phase,
@@ -1418,23 +1356,10 @@ fn entered(
         sending: HandshakeDeadline,
       )
 
-    Cancelling(..) ->
-      state_machine.keep(data)
-      |> state_machine.with_state_timeout(
-        after: data.config.cancel_grace_ms,
-        sending: CancelDeadline,
-      )
-
-    // The probe starts when the handshake finishes, and the move out of
-    // `AwaitingHello` is the only path that arms it. Arming on every
-    // entry to `Idle` would turn a liveness probe into an idle timeout:
-    // a helper settling executions faster than the interval would push
-    // the next tick out for ever and never be probed at all.
-    Idle(..) ->
+    Live(..) ->
       case from {
         AwaitingHello -> arm_heartbeat(data)
-        Prepared | Idle(..) | Running(..) | Cancelling(..) | Dead(..) ->
-          state_machine.keep(data)
+        Prepared | Live(..) | Dead(..) -> state_machine.keep(data)
       }
 
     // Nothing left to probe. Cancelling rather than letting the ticks
@@ -1459,8 +1384,6 @@ fn entered(
     Dead(..) ->
       state_machine.keep(data)
       |> state_machine.cancel_timeout(name: heartbeat_timer)
-
-    Running(..) -> state_machine.keep(data)
   }
 }
 
@@ -1500,20 +1423,27 @@ fn arm_heartbeat(data: Data) -> state_machine.Enter(Phase, Data, Msg) {
 // the frame path can be written as `Machine -> Machine` and turned into
 // a step in one place.
 fn advance(machine: Machine) -> state_machine.Next(Phase, Data, Msg) {
-  state_machine.transition(to: machine.phase, data: machine.data)
+  let data = machine.data
+  let next =
+    state_machine.transition(
+      to: machine.phase,
+      data: Data(..data, cancel_timers: []),
+    )
+  list.fold(data.cancel_timers, next, fn(next, id) {
+    state_machine.cancel_timeout(next, name: cancel_timer_name(id))
+  })
 }
 
-// The lifecycle position a `status` query reports. `Running` and
-// `Cancelling` are both "busy" to an outside observer: the helper
-// answered its hello but its single execution slot is taken, and a
-// `Cancelling` helper stays taken until the helper reports the
-// execution's exit. Reporting either as ready is what once let the
-// pool lend a helper that a relay crash had checked in mid-execution.
-fn status_of(phase: Phase) -> HelperStatus {
+// Status describes the physical helper. The pool's private lease registration
+// asks about free concurrency separately, including already borrowed entries.
+fn status_of(phase: Phase, data: Data) -> HelperStatus {
   case phase {
     Prepared | AwaitingHello -> StatusStarting
-    Idle(features:) -> StatusReady(features:)
-    Running(features:, ..) | Cancelling(features:, ..) -> StatusBusy(features:)
+    Live(features:) ->
+      case dict.size(data.runners) == 0 {
+        True -> StatusReady(features:)
+        False -> StatusBusy(features:)
+      }
     Dead(failure:, ..) -> StatusDead(failure:)
   }
 }
@@ -1558,12 +1488,9 @@ fn handle_shutdown(machine: Machine) -> state_machine.Next(Phase, Data, Msg) {
   // already queued, or with none.
   let retirement = case sent {
     Ok(Nil) -> PendingExit(AfterShutdown)
-    Error(Nil) -> PendingExit(Unprompted(exposure_of(machine.phase)))
+    Error(Nil) -> PendingExit(Unprompted(exposure_of(machine)))
   }
-  state_machine.transition(
-    Dead(ChannelClosed(0), retirement),
-    run_cleanup(data),
-  )
+  advance(Machine(Dead(ChannelClosed(0), retirement), run_cleanup(data)))
 }
 
 // Only an exit event selected while the port was retained may establish
@@ -1589,13 +1516,13 @@ fn native_exit(
         Dead(failure, NativeExit(status:, awaited: awaiting)),
         machine.data,
       )
-    AwaitingHello | Idle(..) | Running(..) | Cancelling(..) -> {
-      let awaited = Unprompted(exposure_of(machine.phase))
+    AwaitingHello | Live(..) -> {
+      let awaited = Unprompted(exposure_of(machine))
       let data = notify_death(machine, ChannelClosed(status)) |> run_cleanup
-      state_machine.transition(
+      advance(Machine(
         Dead(ChannelClosed(status), NativeExit(status:, awaited:)),
         data,
-      )
+      ))
     }
   }
 }
@@ -1603,11 +1530,14 @@ fn native_exit(
 // What jail a live phase leaves behind when its helper stops. `Prepared` and
 // `Dead` have no live port to speak of; they answer `NoJail` so the match is
 // total, and no caller reaches them.
-fn exposure_of(phase: Phase) -> Exposure {
-  case phase {
+fn exposure_of(machine: Machine) -> Exposure {
+  case machine.phase {
     Prepared | AwaitingHello | Dead(..) -> NoJail
-    Idle(..) -> SettledJail
-    Running(..) | Cancelling(..) -> LiveJail
+    Live(..) ->
+      case dict.size(machine.data.runners) == 0 {
+        True -> SettledJail
+        False -> LiveJail
+      }
   }
 }
 
@@ -1704,7 +1634,7 @@ fn send_heartbeat(
   )
 }
 
-// The one dispatch path: `Idle`, with a helper whose hello features the
+// The one dispatch path: `Live`, with a helper whose hello features the
 // request's demand can live with. Every other phase was refused in
 // `handle`, so this only has to weigh the caller's liveness and degradation.
 //
@@ -1725,6 +1655,7 @@ fn send_heartbeat(
 fn handle_run(
   data: Data,
   features: List(String),
+  lease: Option(Int),
   request: ExecRequest,
   events: Subject(ExecEvent),
   reply: Subject(Result(Nil, ExecFailure)),
@@ -1735,7 +1666,7 @@ fn handle_run(
       refuse_run(data, reply, DegradedHelper(features:))
     True, PlatformEnforcement, True ->
       refuse_run(data, reply, DegradedHelper(features:))
-    True, _, _ -> dispatch_exec(data, features, request, events, reply)
+    True, _, _ -> dispatch_exec(data, features, lease, request, events, reply)
   }
 }
 
@@ -1767,18 +1698,20 @@ fn refuse_run(
 // event on the events subject, and a write that fails settles the
 // execution with one — so the acknowledgement must already be out.
 //
-// Everything the settlement will need is fixed here and never touched
-// again, which is what lets `RunningExec` sit inside the state. See
-// `Phase` for why a mutable payload there would silently disarm the
-// escalation deadline.
+// Immutable execution requirements live beside its lease and cancellation
+// state in Data; their membership changes do not alter the physical phase.
 fn dispatch_exec(
   data: Data,
   features: List(String),
+  lease: Option(Int),
   request: ExecRequest,
   events: Subject(ExecEvent),
   reply: Subject(Result(Nil, ExecFailure)),
 ) -> state_machine.Next(Phase, Data, Msg) {
-  let #(data, id) = fresh_id(data)
+  let #(data, id) = case lease {
+    Some(id) -> #(Data(..data, leases: dict.insert(data.leases, id, Used)), id)
+    None -> fresh_id(data)
+  }
   let frame =
     framing.Frame(
       id:,
@@ -1794,6 +1727,8 @@ fn dispatch_exec(
   let exec =
     RunningExec(
       id:,
+      lease:,
+      cancellation: Executing,
       events:,
       demand: request.demand,
       required: required_layers_for_demand(
@@ -1808,7 +1743,13 @@ fn dispatch_exec(
       ),
     )
   process.send(reply, Ok(Nil))
-  send_or_die(Machine(phase: Running(features:, exec:), data:), frame)
+  send_or_die(
+    Machine(
+      phase: Live(features:),
+      data: Data(..data, runners: dict.insert(data.runners, id, exec)),
+    ),
+    frame,
+  )
 }
 
 // A helper advertising "degraded" (bwrap unavailable) cannot provide
@@ -2086,7 +2027,7 @@ fn handle_bytes(machine: Machine, bytes: BitArray) -> Machine {
 fn apply_inbound(machine: Machine, item: framing.Inbound) -> Machine {
   case machine.phase {
     Prepared | Dead(..) -> machine
-    AwaitingHello | Idle(..) | Running(..) | Cancelling(..) ->
+    AwaitingHello | Live(..) ->
       case item {
         framing.Known(frame:) -> handle_frame(machine, frame)
         framing.UnknownInbound(id:, kind:) ->
@@ -2107,8 +2048,8 @@ fn apply_inbound(machine: Machine, item: framing.Inbound) -> Machine {
 // channel-fatal conditions mark it dead via `mark_dead`.
 fn handle_frame(machine: Machine, frame: Frame) -> Machine {
   case frame.body {
-    framing.Hello(proto:, peer: _, features:) ->
-      handle_hello(machine, proto, features)
+    framing.Hello(proto:, peer: _, features:, max_concurrency:) ->
+      handle_hello(machine, proto, features, max_concurrency)
     framing.ExecOut(stream:, data:, bytes:, truncated:) ->
       handle_exec_out(machine, frame.id, stream, data, bytes, truncated)
     framing.ExecExit(
@@ -2163,6 +2104,8 @@ fn handle_frame(machine: Machine, frame: Frame) -> Machine {
       mark_dead(machine, ProtocolViolation(kind: "hook_call"))
     framing.HookResult(..) ->
       mark_dead(machine, ProtocolViolation(kind: "hook_result"))
+    framing.CancelExecution(..) ->
+      mark_dead(machine, ProtocolViolation(kind: "cancel"))
     framing.Cancel -> mark_dead(machine, ProtocolViolation(kind: "cancel"))
     framing.Shutdown -> mark_dead(machine, ProtocolViolation(kind: "shutdown"))
   }
@@ -2175,6 +2118,7 @@ fn handle_hello(
   machine: Machine,
   proto: Int,
   features: List(String),
+  capacity: Option(Int),
 ) -> Machine {
   case machine.phase {
     // A version disagreement is not a malformed frame: the hello parsed,
@@ -2191,10 +2135,19 @@ fn handle_hello(
               broker: framing.exec_protocol_version,
             ),
           )
-        True -> complete_handshake(machine, features)
+        True ->
+          case capacity {
+            Some(capacity) if capacity >= 1 && capacity <= 4 ->
+              complete_handshake(
+                Machine(..machine, data: Data(..machine.data, capacity:)),
+                features,
+              )
+            None | Some(_) ->
+              mark_dead(machine, ProtocolViolation(kind: "hello.capacity"))
+          }
       }
 
-    Prepared | Idle(..) | Running(..) | Cancelling(..) | Dead(..) ->
+    Prepared | Live(..) | Dead(..) ->
       mark_dead(machine, ProtocolViolation(kind: "hello"))
   }
 }
@@ -2202,7 +2155,7 @@ fn handle_hello(
 // Answers the helper's hello, unlinks the fd-3 policy file (proof it was
 // read), and releases anything blocked on `await_ready`.
 //
-// The move to `Idle` at the end is also what retires the handshake
+// The move to `Live` at the end is also what retires the handshake
 // deadline: it is a state timeout on `AwaitingHello`, so leaving that
 // state is the cancellation and a fire that raced this transition is
 // dropped by weft's timer book rather than handled.
@@ -2220,27 +2173,28 @@ fn complete_handshake(machine: Machine, features: List(String)) -> Machine {
           proto: framing.exec_protocol_version,
           peer: "broker",
           features: [],
+          max_concurrency: None,
         ),
       ),
     )
 
   // A hello the channel refused to carry has already settled every
-  // waiter and closed the transport. Promoting that to `Idle` would
+  // waiter and closed the transport. Promoting that to `Live` would
   // resurrect a helper with no channel behind it, and the pool would
   // lend it out.
   //
   // Any `AwaitReady` postponed during the handshake replays against this
-  // move to `Idle` — weft delivers it ahead of the mailbox, after this
-  // function returns — and the `Idle(..), AwaitReady` arm in `handle`
+  // move to `Live` — weft delivers it ahead of the mailbox, after this
+  // function returns — and the `Live(..), AwaitReady` arm in `handle`
   // answers it with `features`. Nothing here has to flush a queue.
   case machine.phase {
     Prepared | Dead(..) -> machine
-    AwaitingHello | Idle(..) | Running(..) | Cancelling(..) -> {
+    AwaitingHello | Live(..) -> {
       // The features are kept in the data as well as in the phase because a
       // retirement verdict is asked for in `Dead`, where the phase no
       // longer has them and the verdict needs to know about bwrap.
       let data = Data(..run_cleanup(machine.data), hello_features: features)
-      Machine(phase: Idle(features:), data:)
+      Machine(phase: Live(features:), data:)
     }
   }
 }
@@ -2253,7 +2207,7 @@ fn handle_exec_out(
   bytes: Int,
   truncated: Bool,
 ) -> Machine {
-  case running_with_id(machine.phase, id) {
+  case running_with_id(machine.data, id) {
     Some(exec) -> {
       process.send(
         exec.events,
@@ -2317,50 +2271,33 @@ fn handle_error_frame(
   Failed(failure: RefusedByHelper(code:, message:))
 }
 
-// Settles the running execution with `event` and returns the machine to
-// `Idle`, if `id` is the execution's own.
-//
-// This is where a cancel escalation is called off, and it does so by
-// arriving at `Idle` rather than by cancelling anything: the deadline is
-// a state timeout on `Cancelling`, so the state change *is* the
-// cancellation, and a deadline that fired into the mailbox a moment
-// before is recognised as stale and dropped. The hand-rolled
-// `cancel_pending_timer` this replaces had to be remembered at all three
-// settle sites, and the timer's own message had to carry an execution id
-// so its handler could tell a stale fire from a live one.
-//
-// An id that correlates to nothing is dropped: stale output from a
-// settled execution, or the id 0 that usually precedes a channel close,
-// where the close itself settles what is left.
+// Settlement removes one runner and cancels only its named grace timer.
+// Unknown or repeated terminal ids find no runner and cannot notify twice.
 fn settle(
   machine: Machine,
   id: Int,
   event: fn(RunningExec) -> ExecEvent,
 ) -> Machine {
-  case machine.phase {
-    Running(features:, exec:) | Cancelling(features:, exec:) ->
-      case exec.id == id {
-        True -> {
-          process.send(exec.events, event(exec))
-          Machine(..machine, phase: Idle(features:))
-        }
-        False -> machine
-      }
-    Prepared | AwaitingHello | Idle(..) | Dead(..) -> machine
+  case dict.get(machine.data.runners, id) {
+    Error(Nil) -> machine
+    Ok(exec) -> {
+      process.send(exec.events, event(exec))
+      let data = machine.data
+      Machine(
+        ..machine,
+        data: Data(
+          ..data,
+          runners: dict.delete(data.runners, id),
+          cancel_timers: [id, ..data.cancel_timers],
+        ),
+      )
+    }
   }
 }
 
-// The running execution, when `id` correlates to it. `Cancelling` counts:
-// output keeps arriving between the TERM and the exit that answers it.
-fn running_with_id(phase: Phase, id: Int) -> Option(RunningExec) {
-  case phase {
-    Running(exec:, ..) | Cancelling(exec:, ..) ->
-      case exec.id == id {
-        True -> Some(exec)
-        False -> None
-      }
-    Prepared | AwaitingHello | Idle(..) | Dead(..) -> None
-  }
+// Output remains routed while that execution's cancellation is pending.
+fn running_with_id(data: Data, id: Int) -> Option(RunningExec) {
+  dict.get(data.runners, id) |> option.from_result
 }
 
 fn fresh_id(data: Data) -> #(Data, Int) {
@@ -2497,8 +2434,8 @@ fn mark_dead(machine: Machine, failure: ExecFailure) -> Machine {
   case machine.phase {
     Prepared -> Machine(Dead(failure, NoNativeResource), machine.data)
     Dead(..) -> machine
-    AwaitingHello | Idle(..) | Running(..) | Cancelling(..) -> {
-      let exposure = exposure_of(machine.phase)
+    AwaitingHello | Live(..) -> {
+      let exposure = exposure_of(machine)
       bury(machine, failure, kill_transport(_, exposure))
     }
   }
@@ -2528,8 +2465,8 @@ fn mark_gone(machine: Machine, failure: ExecFailure) -> Machine {
   case machine.phase {
     Prepared -> Machine(Dead(failure, NoNativeResource), machine.data)
     Dead(..) -> machine
-    AwaitingHello | Idle(..) | Running(..) | Cancelling(..) -> {
-      let exposure = exposure_of(machine.phase)
+    AwaitingHello | Live(..) -> {
+      let exposure = exposure_of(machine)
       bury(machine, failure, fn(_) { PendingExit(Unprompted(exposure:)) })
     }
   }
@@ -2556,27 +2493,25 @@ fn die(
   advance(mark_dead(machine, failure))
 }
 
-// Tells everything waiting on this helper that it has failed, and
-// returns the data with those queues emptied.
-//
-// The execution in flight needs no timer cancelled on its way out. It
-// lives in the state, and the caller's move to `Dead` is what takes a
-// pending cancel escalation with it — the deletion this port is for.
-//
-// An `AwaitReady` postponed during the handshake needs no flush here
-// either: this move to `Dead` is exactly the state change weft replays
-// it against, and the `Dead(..), AwaitReady` arm in `handle` answers it
-// with `failure`.
+// Physical death empties all accepted runners before subsequent wire events
+// can be selected. Each named grace timer is cancelled by advance, while
+// postponed handshake waiters replay against the new Dead state.
 fn notify_death(machine: Machine, failure: ExecFailure) -> Data {
-  case machine.phase {
-    Running(exec:, ..) | Cancelling(exec:, ..) ->
-      process.send(exec.events, Failed(failure:))
-    Prepared | AwaitingHello | Idle(..) | Dead(..) -> Nil
-  }
+  list.each(dict.values(machine.data.runners), fn(exec) {
+    process.send(exec.events, Failed(failure:))
+  })
   list.each(machine.data.pending_heartbeats, fn(pending) {
     process.send(pending.1, Error(failure))
   })
-  Data(..machine.data, pending_heartbeats: [])
+  Data(
+    ..machine.data,
+    pending_heartbeats: [],
+    runners: dict.new(),
+    cancel_timers: list.append(
+      dict.keys(machine.data.runners),
+      machine.data.cancel_timers,
+    ),
+  )
 }
 
 // --- what this host's helper can be asked to do --------------------------
@@ -2889,8 +2824,8 @@ pub opaque type PoolMsg {
 ///
 /// `available + borrowed + draining + retiring + unconfirmed` is the
 /// number of entries the pool holds, and it is never more than `size`: an
-/// entry occupies its slot until it leaves the inventory, and only the
-/// proof of retirement removes it.
+/// entry occupies its whole execution quota until it leaves the inventory,
+/// and only the proof of retirement removes it.
 ///
 /// `spawned` and `retired` are the pool's lifetime churn, two monotone
 /// counters beside the six gauges: every helper the pool has ever put in
@@ -2900,12 +2835,12 @@ pub opaque type PoolMsg {
 /// any history being kept.
 pub type PoolCensus {
   PoolCensus(
-    /// The pool's configured ceiling on entries.
+    /// The configured execution-slot ceiling, including retained quotas.
     size: Int,
     /// Idle and lendable, subject to the readiness probe at checkout.
     available: Int,
-    /// Lent to a borrower. A checkout reply lost to its borrower's deadline
-    /// still counts here, because custody never left the pool.
+    /// Physical helpers with at least one borrowed lease. A lost checkout
+    /// reply still counts, because custody never left the pool.
     borrowed: Int,
     /// Shutdown requested; native exit not yet reported.
     draining: Int,
@@ -3049,6 +2984,8 @@ type PoolState {
 type PoolEntry {
   PoolEntry(
     helper: Helper,
+    quota: Int,
+    borrowed: List(Int),
     monitor: process.Monitor,
     availability: Availability,
     // Which spawn this was, from one. Introspection only.
@@ -3146,20 +3083,14 @@ pub const min_pool_size = 4
 /// The largest default pool. See `pool_size_for`.
 pub const max_pool_size = 16
 
-/// Starts a pool of up to `size` helpers, spawned lazily with `spawn`
-/// (a seam: production passes `exec.spawn_helper` applied to a
-/// `SpawnConfig`; tests pass a fake-transport spawner).
+/// Starts a pool with at most `size` concurrent execution slots. Each
+/// physical helper contributes up to its announced capacity, clamped by the
+/// remaining slot budget. Existing spare capacity is preferred over spawning.
 ///
-/// Spawning runs inside the pool actor, which is deliberate rather than
-/// merely tolerated: the pool has exactly one borrower at run time —
-/// the broker's `checkout` seam — and the broker is a serial actor, so
-/// there is never a second checkout in flight to be delayed behind a
-/// spawn. (`client/serve.degraded` borrows once more, at boot, before
-/// the broker serves anything.) What growing the pool *does* cost is
-/// paid by the broker: it blocks for one helper handshake per slot the
-/// pool has not filled yet, so the first wide batch of a session
-/// dispatches behind a short series of spawns. Pre-warming is the fix
-/// if that ever shows up in a trace; it has not.
+/// The spawn seam runs inside the pool actor. Custody and provisional quota
+/// are recorded before Begin, so a handshake timeout never frees an owner
+/// whose native resource might already exist. Production passes a configured
+/// helper spawner; tests can supply a fake transport with capacity one.
 pub fn start_pool(
   size size: Int,
   spawn spawn: fn() -> Result(Helper, SpawnError),
@@ -3607,33 +3538,38 @@ fn record_owner_exit(
   PoolState(..state, entries:, retired: state.retired + left)
 }
 
-// Returns a borrowed helper. Only one `helper_ready` accepts rejoins the
-// lendable set; a dead, unresponsive or still-busy one is retired, so a
-// helper that is mid-execution at checkin is never lent again.
+// Returns a registered lease after its execution settles. Releasing a
+// dead, unresponsive or still-running lease retires its physical helper,
+// preserving custody for every sibling execution.
 fn handle_checkin(
   state: PoolState,
   helper: Helper,
 ) -> state_machine.Next(PoolPhase, PoolState, PoolMsg) {
   let #(returned, entries) =
     list.map_fold(state.entries, None, fn(returned, entry) {
-      case entry.helper.pid == helper.pid, entry.availability {
-        True, Borrowed ->
-          case helper_ready(helper) {
-            True -> #(Some(entry), PoolEntry(..entry, availability: Available))
-            False -> #(returned, retire_entry(entry, state.commands))
+      case entry.helper.pid == helper.pid, helper.lease, entry.availability {
+        True, Some(id), Borrowed ->
+          case list.contains(entry.borrowed, id) {
+            False -> #(returned, entry)
+            True ->
+              case release_lease(helper, id) {
+                Error(_) -> #(returned, retire_entry(entry, state.commands))
+                Ok(Nil) -> returned_lease(entry, id, returned)
+              }
           }
-        False, _
-        | True, Available
-        | True, Draining
-        | True, RetiringActor
-        | True, Unconfirmed(_)
+        False, _, _
+        | True, None, _
+        | True, Some(_), Available
+        | True, Some(_), Draining
+        | True, Some(_), RetiringActor
+        | True, Some(_), Unconfirmed(_)
         -> #(returned, entry)
       }
     })
   let next = pool_step(PoolLive, PoolState(..state, entries:))
 
-  // Only the successful borrowed-to-available edge starts a new interval.
-  // Duplicate checkins and observation cannot extend an existing deadline.
+  // The last lease returning begins the idle interval; a sibling return
+  // cannot retire a helper still carrying another borrower's custody.
   case returned {
     None -> next
     Some(entry) ->
@@ -3646,23 +3582,69 @@ fn handle_checkin(
   }
 }
 
+// One lease return changes physical availability only when no sibling
+// remains. The returned marker arms the new idle interval in handle_checkin.
+fn returned_lease(
+  entry: PoolEntry,
+  id: Int,
+  returned: Option(PoolEntry),
+) -> #(Option(PoolEntry), PoolEntry) {
+  let borrowed = list.filter(entry.borrowed, fn(lease) { lease != id })
+  case borrowed {
+    [] -> {
+      let available = PoolEntry(..entry, borrowed:, availability: Available)
+      #(Some(available), available)
+    }
+    [_, ..] -> #(returned, PoolEntry(..entry, borrowed:))
+  }
+}
+
+fn release_lease(helper: Helper, id: Int) -> Result(Nil, ExecFailure) {
+  call.try_call(helper.commands, waiting: ready_probe_ms, sending: fn(reply) {
+    ReleaseLease(id, reply)
+  })
+  |> or_unresponsive
+}
+
+// Actor registration precedes publishing a handle. Late replies still leave
+// their lease inventoried, so a caller timeout cannot amplify execution slots.
+fn acquire_lease(helper: Helper) -> Result(Helper, ExecFailure) {
+  call.try_call(
+    helper.commands,
+    waiting: ready_probe_ms,
+    sending: RegisterLease,
+  )
+  |> or_unresponsive
+  |> result.map(fn(id) { Helper(..helper, lease: Some(id)) })
+}
+
 fn next_helper(
   state: PoolState,
 ) -> #(PoolState, Result(Helper, CheckoutError)) {
-  case list.find(state.entries, fn(entry) { entry.availability == Available }) {
+  let candidate =
+    list.find(state.entries, fn(entry) {
+      { entry.availability == Available || entry.availability == Borrowed }
+      && list.length(entry.borrowed) < entry.quota
+    })
+  case candidate {
     Ok(entry) ->
-      case helper_ready(entry.helper) {
-        True -> {
+      case acquire_lease(entry.helper) {
+        Ok(helper) -> {
+          let borrowed = case helper.lease {
+            Some(id) -> [id, ..entry.borrowed]
+            None -> entry.borrowed
+          }
           let entries =
             list.map(state.entries, fn(candidate) {
               case candidate.helper.pid == entry.helper.pid {
-                True -> PoolEntry(..candidate, availability: Borrowed)
+                True ->
+                  PoolEntry(..candidate, borrowed:, availability: Borrowed)
                 False -> candidate
               }
             })
-          #(PoolState(..state, entries:), Ok(entry.helper))
+          #(PoolState(..state, entries:), Ok(helper))
         }
-        False -> {
+        Error(_) -> {
           let entries =
             list.map(state.entries, fn(candidate) {
               case candidate.helper.pid == entry.helper.pid {
@@ -3674,20 +3656,25 @@ fn next_helper(
         }
       }
     Error(Nil) ->
-      case state.size > 0 && list.drop(state.entries, state.size - 1) == [] {
-        // A refusal has to say whether waiting can change it. Reporting
-        // the configured size here made a pool whose every slot was held
-        // by an unconfirmed helper indistinguishable from a busy one, so
-        // each later clearance napped out its whole budget to be refused
-        // for the same permanent reason. Counting the entries that can
-        // still return to lending answers the borrower's actual question.
+      case occupied_quota(state) < state.size {
+        True -> spawn_new(state)
         False -> {
-          let returning = list.count(state.entries, lendable_again)
+          let returning =
+            list.fold(state.entries, 0, fn(total, entry) {
+              case lendable_again(entry) {
+                True -> total + entry.quota
+                False -> total
+              }
+            })
           #(state, Error(AllBusy(size: returning)))
         }
-        True -> spawn_new(state)
       }
   }
+}
+
+// Unconfirmed and draining helpers retain their entire execution quota.
+fn occupied_quota(state: PoolState) -> Int {
+  list.fold(state.entries, 0, fn(total, entry) { total + entry.quota })
 }
 
 // Whether this entry's slot can still come back to lending. Borrowed
@@ -3709,6 +3696,8 @@ fn spawn_new(state: PoolState) -> #(PoolState, Result(Helper, CheckoutError)) {
       let entry =
         PoolEntry(
           helper:,
+          quota: int.min(4, state.size - occupied_quota(state)),
+          borrowed: [],
           monitor: process.monitor(helper.pid),
           availability: Borrowed,
           ordinal: state.spawned + 1,
@@ -3725,18 +3714,42 @@ fn spawn_new(state: PoolState) -> #(PoolState, Result(Helper, CheckoutError)) {
       // caller's deadline can expire during the handshake without losing
       // the owner or converting partial acquisition into an empty slot.
       begin(helper)
-      case await_ready(helper, waiting: helper.handshake_wait) {
-        Ok(features) -> {
-          // The entry is still the head: the pool is one actor and nothing
-          // else ran between the insertion and the handshake's answer.
-          let known = PoolEntry(..entry, features:)
-          #(
-            PoolState(..state, entries: [known, ..list.drop(state.entries, 1)]),
-            Ok(helper),
+      let admitted = {
+        use features <- result.try(
+          await_ready(helper, waiting: helper.handshake_wait)
+          |> result.map_error(fn(failure) { #(entry, failure) }),
+        )
+
+        // Only the advertised capacity narrows provisional custody. Failure
+        // to read it preserves the full reservation until retirement proof.
+        let capacity =
+          call.try_call(
+            helper.commands,
+            waiting: ready_probe_ms,
+            sending: QueryCapacity,
           )
+        let quota = case capacity {
+          Ok(capacity) -> int.min(entry.quota, capacity)
+          Error(_) -> entry.quota
         }
-        Error(failure) -> {
-          let retired = retire_entry(entry, state.commands)
+        let known = PoolEntry(..entry, features:, quota:)
+        use leased <- result.try(
+          acquire_lease(helper)
+          |> result.map_error(fn(failure) { #(known, failure) }),
+        )
+        let borrowed = case leased.lease {
+          Some(id) -> [id]
+          None -> []
+        }
+        Ok(#(PoolEntry(..known, borrowed:), leased))
+      }
+      case admitted {
+        Ok(#(known, leased)) -> #(
+          PoolState(..state, entries: [known, ..list.drop(state.entries, 1)]),
+          Ok(leased),
+        )
+        Error(#(known, failure)) -> {
+          let retired = retire_entry(known, state.commands)
           #(
             PoolState(..state, entries: [retired, ..list.drop(state.entries, 1)]),
             Error(SpawnFailed(HandshakeFailed(failure))),
@@ -3748,37 +3761,6 @@ fn spawn_new(state: PoolState) -> #(PoolState, Result(Helper, CheckoutError)) {
   }
 }
 
-// Whether an idle helper is still fit to lend. The probe round-trip
-// runs inside the pool actor, so its timeout is time the next checkout
-// may wait — but an idle helper is by construction running nothing and
-// answers in microseconds, and one that cannot answer within
-// `ready_probe_ms` is wedged, which is exactly what this is here to
-// catch. The cost is therefore bounded by the number of *wedged*
-// helpers and paid once each: an unanswered probe removes the helper
-// from lending while retaining its custody until retirement is confirmed,
-// so it is never probed again. Shortening the timeout
-// to make a larger pool cheaper would trade that for retiring healthy
-// helpers under load, which is the worse failure.
-//
-// That accounting is only true because the probe cannot fault. It once
-// had to be a private `try_call` to get that, because the public
-// `status` panicked on a timeout — inside the pool actor that is not a
-// retired helper, it is a dead pool, and a dead pool kills the broker
-// with it. `status` now answers `StatusUnresponsive` instead, so the
-// probe is the ordinary public question plus this function's policy on
-// the answer: only a helper that says it is ready gets lent.
-fn helper_ready(helper: Helper) -> Bool {
-  case process.is_alive(helper.pid) {
-    False -> False
-    True ->
-      case status(helper, waiting: ready_probe_ms) {
-        StatusReady(_) -> True
-        StatusStarting | StatusBusy(_) | StatusDead(_) | StatusUnresponsive ->
-          False
-      }
-  }
-}
-
-// How long an idle helper has to answer a readiness probe before the
-// pool treats it as wedged. See `helper_ready`.
+// How long a physical helper may take to register or release a lease
+// before the pool withdraws it while retaining native custody.
 const ready_probe_ms = 1000

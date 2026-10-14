@@ -115,6 +115,7 @@ fn wait_attach(behavior: Behavior, inbox: Subject(FakeMsg)) -> Nil {
               proto: framing.exec_protocol_version,
               peer: "codemode-fake",
               features: ["rlimits", "pgroup", "bwrap", "landlock", "seccomp"],
+              max_concurrency: option.Some(1),
             ),
           ),
         )
@@ -148,7 +149,7 @@ fn loop(state: FakeState) -> Nil {
 fn react(state: FakeState, frame: framing.Frame) -> FakeState {
   case frame.body {
     framing.ExecStart(argv:, ..) -> exec_start(state, frame.id, argv)
-    framing.Cancel -> cancelled(state)
+    framing.CancelExecution(..) -> cancelled(state)
     framing.Heartbeat ->
       reply(state, framing.Frame(id: frame.id, body: framing.Heartbeat))
     _ -> state

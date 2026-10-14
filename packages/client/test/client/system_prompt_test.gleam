@@ -912,6 +912,7 @@ fn pool_of(features: List(String)) -> exec.Pool {
             proto: framing.exec_protocol_version,
             peer: "helper",
             features:,
+            max_concurrency: option.Some(1),
           ),
         ))
         as "the hello must encode"

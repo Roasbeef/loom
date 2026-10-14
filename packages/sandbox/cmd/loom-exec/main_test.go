@@ -101,7 +101,7 @@ func TestServerModeEndToEnd(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := conn.Write(3, framing.KindExecStdin, framing.ExecStdin{EOF: true}); err != nil {
+	if err := conn.Write(3, framing.KindExecStdin, framing.ExecStdin{ExecID: 2, EOF: true}); err != nil {
 		t.Fatal(err)
 	}
 

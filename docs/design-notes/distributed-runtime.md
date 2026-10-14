@@ -325,7 +325,7 @@ that check.
 Close is a ledger transition. The host sets `closing` (this commit is the
 fence), cancels live calls and jobs, stops the LSP manager, code-mode host and
 broker, then closes the helper pool and waits for its retirement result
-(`exec.close_pool`, `broker/exec.gleam:3290-3310`; job runners, language
+(`exec.close_pool`, `broker/exec.gleam:3244-3310`; job runners, language
 servers and satellites are all helper children, so pool retirement covers
 them). It removes the scope's sockets and work directories. Then it sets
 `closed` with `close_outcome = all_retired` or `unknown(count)`. A monitor

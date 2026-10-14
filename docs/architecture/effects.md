@@ -105,8 +105,10 @@ double settlement must never underflow into free budget.
 
 **The helper pool is a separate ceiling from the budget, and a full pool
 makes a call wait rather than refusing it at once.** `max_outstanding` refuses amplification.
-The pool size is how many jails this host can afford at once, since every
-helper is an OS process running bwrap and a jail. It is sized from the
+The pool size is how many jails this host can afford at once. One native
+helper now carries up to four independent executions under protocol 4. Each
+physical entry reserves quota from that same execution ceiling, including
+while draining or unconfirmed; multiplexing does not multiply admission. It is sized from the
 node's scheduler count, clamped to `[4, 16]`, and overridable with
 `LOOM_HELPER_POOL`. It is a number, never a literal, because it is also
 the real ceiling on how wide a parallel tool batch runs. A batch wider
@@ -114,8 +116,8 @@ than the pool therefore *waits* for a slot instead of handing the model a
 resource error for its third call: `clear_call` retries within the
 caller's own clearance budget.
 
-Healthy helpers returned to the pool retire after sixty seconds without a new
-checkout. Each helper has its own named timeout, so status queries and activity
+Healthy helpers whose last checkout lease returns retire after sixty seconds
+without a new checkout. Each helper has its own named timeout, so status queries and activity
 in another helper or session do not postpone retirement. The pool can shrink to
 zero; the next checkout starts a replacement on demand. Borrowed helpers are
 excluded, including long-lived MCP, LSP and code-mode executions. Idle retirement
@@ -124,8 +126,8 @@ capacity. This trades a later cold-start handshake for reclaiming idle native
 process memory; it does not evict sessions or alter their sandbox policy.
 
 The wait happens in the borrower's process, and that placement is what
-makes it correct. The broker checks a helper out synchronously inside its
-own message handler, and checks one back in only from `Settle`, a message
+makes it correct. The broker checks an execution lease out synchronously inside its
+own message handler, and returns it only from `Settle`, a message
 it can process only while it is not blocked. A queueing pool that
 deferred its checkout reply, or a broker that blocked waiting on one,
 would wait for a resource that only its own message loop could release.
@@ -136,7 +138,7 @@ reserved budget slot and revokes the minted token before it answers, so a
 waiter owns no ledger slot, no token and no helper. Progress depends only
 on running executions ending, which their wall deadlines guarantee. The
 wait is bounded rather than indefinite, so a nested borrower (a code-mode
-satellite holding one helper while its capability calls ask for another)
+satellite holding one execution lease while its capability calls ask for another)
 gets the refusal it always got instead of stalling.
 
 **Every waiter leaves with a verdict.** This second property needs its
@@ -452,7 +454,7 @@ satellites and remote pools later.
 frame    := u32_be length ++ msgpack(map)
 map keys := "v":1, "id":u64, "kind":str, "body":map
 kinds    :  hello, exec_start, exec_stdin, exec_out, exec_exit,
-            cap_call, cap_result, cancel, heartbeat, error
+            cap_call, cap_result, cancel, heartbeat, shutdown, error
 ```
 
 The `id` correlates frames: `exec_out` and `exec_exit` reuse their
@@ -466,9 +468,11 @@ the broker's hello answers it.
 versions the container (the length prefix and the four map keys) and has
 never changed. The `proto` field in `hello` versions the *body*
 vocabulary of the exec channel. Every protocol change to that vocabulary
-bumps `proto` on both sides in the same commit. It is at 3, for
-`protocol-change/006`'s required `exec_exit.cancelled` and
-`protocol-change/014`'s `shutdown` frame.
+bumps `proto` on both sides in the same commit. It is at 4: protocol changes
+006 and 014 added `exec_exit.cancelled` and `shutdown`, and protocol change 087
+adds helper capacity and independently targeted stdin and cancellation. Native
+helpers announce `max_concurrency: 4` in their hello; other framing peers may
+omit that helper-specific field.
 
 Keeping the two apart makes a stale helper diagnosable rather than merely
 unreadable. Its frames still decode, so the broker reads its hello, detects
@@ -519,10 +523,30 @@ helper.
 
 `loom-exec` is one static Go binary with three roles: server mode (read
 fd 3, speak the protocol on stdio), stage 2 (restrict itself and exec
-the target), and `--self-test`. It runs **one execution at a time**; a
-second `exec_start` gets a `busy` error. Concurrency comes from the
-broker's pool running more helpers, which keeps lifecycle ownership
-unambiguous. A Linux execution looks like this:
+the target), and `--self-test`. It runs at most four executions at a time.
+Each start ID names independent output, stdin, cancellation and cleanup. The
+broker lends single-use execution leases from a bounded physical-helper quota;
+[protocol-change/087](../../protocol-change/087-concurrent-helper-executions.md)
+defines routing, capacity and the shared failure domain. Each execution owns
+its jail policy, scratch, limits, streams and deadline. A helper-wide failure
+settles every accepted sibling once, and shutdown joins all native work.
+
+Native startup runs in the reserved execution worker, allowing up to four
+launches to overlap without adding helpers. Starting entries retain bounded
+stdin and cancellation state until their real jail is published. Startup,
+cleanup and terminal reporting all count against the same four-entry bound.
+Darwin trackers serialize fresh kernel-table capture and traversal to bound
+transient native heap; they retain independent descendant ledgers and the
+requested tracking interval.
+Native cleanup completes before each terminal report. Reports retain custody
+through the write, but hold no registry mutex: spare slots stay usable, while a
+full-capacity refill waits for a reporting entry to finish. Linux cgroup cleanup
+remains on the terminal path; Mac measurements do not establish its latency
+cost. Stdin overflow refuses the request and cancels only its target. Output
+is still one shared, frame-serialized pipe, so a blocked reader or helper-wide
+escalation can affect all siblings.
+
+A Linux execution looks like this:
 
 ```
   helper ─spawn(setsid)─▶ bwrap ─▶ loom-exec --exec ─execve─▶ target

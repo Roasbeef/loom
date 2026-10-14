@@ -655,8 +655,8 @@ func (e *Exec) pump(name string, r *os.File, lim *StreamLimiter, sink OutputSink
 // the pipe write happens on the execution's writer goroutine (stdin.go),
 // because the caller is the helper's frame loop and a payload that does not
 // read stdin would otherwise hold it, and Cancel with it, behind a full
-// pipe. The one wait left is the bounded-pending case, which needs
-// StdinPendingMax bytes queued for a payload that is not reading. A failed
+// pipe. Saturated queues refuse admission immediately so sibling control
+// traffic remains serviceable. A failed
 // write is reported by the next call, since the failing chunk was already
 // accepted.
 func (e *Exec) WriteStdin(data []byte, eof bool) error {

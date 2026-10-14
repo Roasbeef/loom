@@ -158,7 +158,7 @@ func TestExecThroughProtocol(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.conn.Write(11, framing.KindExecStdin, framing.ExecStdin{EOF: true}); err != nil {
+	if err := h.conn.Write(11, framing.KindExecStdin, framing.ExecStdin{ExecID: 10, EOF: true}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -222,10 +222,10 @@ func TestExecStdinThroughProtocol(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.conn.Write(21, framing.KindExecStdin, framing.ExecStdin{Data: []byte("ping\n")}); err != nil {
+	if err := h.conn.Write(21, framing.KindExecStdin, framing.ExecStdin{ExecID: 20, Data: []byte("ping\n")}); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.conn.Write(22, framing.KindExecStdin, framing.ExecStdin{EOF: true}); err != nil {
+	if err := h.conn.Write(22, framing.KindExecStdin, framing.ExecStdin{ExecID: 20, EOF: true}); err != nil {
 		t.Fatal(err)
 	}
 	var stdout strings.Builder
@@ -250,50 +250,34 @@ func TestExecStdinThroughProtocol(t *testing.T) {
 	}
 }
 
-func TestBusyRefusesSecondExec(t *testing.T) {
+func TestBusyRefusesBeyondCapacity(t *testing.T) {
 	h := newHarness(t, testPol(t))
 	expectHello(t, h)
 	sendHello(t, h)
-
-	startBody := framing.ExecStart{
-		Argv:  []string{"/bin/sleep", "10"},
-		Env:   map[string]string{"PATH": "/usr/bin:/bin"},
-		Cwd:   "/",
-		Token: make([]byte, 32),
-	}
-	if err := h.conn.Write(30, framing.KindExecStart, startBody); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.conn.Write(31, framing.KindExecStart, startBody); err != nil {
-		t.Fatal(err)
-	}
-	// The second start must be refused as busy; then cancel the first
-	// and see its exec_exit.
-	sawBusy := false
-	if err := h.conn.Write(32, framing.KindCancel, map[string]any{}); err != nil {
-		t.Fatal(err)
-	}
-	for {
-		f, err := h.conn.Read()
-		if err != nil {
-			t.Fatalf("read: %v", err)
+	body := framing.ExecStart{Argv: []string{"/bin/sleep", "10"}, Env: map[string]string{"PATH": "/usr/bin:/bin"}, Cwd: "/", Token: make([]byte, 32)}
+	for id := uint64(30); id <= 34; id++ {
+		if err := h.conn.Write(id, framing.KindExecStart, body); err != nil {
+			t.Fatal(err)
 		}
-		if f.Kind == framing.KindError {
-			var e framing.ErrorBody
-			_ = framing.DecodeBody(f.Body, &e)
-			if e.Code == framing.ErrCodeBusy && f.ID == 31 {
-				sawBusy = true
-			}
+	}
+	f, err := h.conn.Read()
+	var refusal framing.ErrorBody
+	if err != nil || f.ID != 34 || f.Kind != framing.KindError || framing.DecodeBody(f.Body, &refusal) != nil || refusal.Code != framing.ErrCodeBusy {
+		t.Fatalf("capacity refusal: %+v %+v %v", f, refusal, err)
+	}
+	_ = h.conn.Write(40, framing.KindShutdown, map[string]any{})
+	seen := map[uint64]bool{}
+	for len(seen) < 4 {
+		f, err = h.conn.Read()
+		if err != nil {
+			t.Fatal(err)
 		}
 		if f.Kind == framing.KindExecExit {
-			if f.ID != 30 {
-				t.Fatalf("exec_exit id = %d, want 30", f.ID)
-			}
-			if !sawBusy {
-				t.Fatal("second exec_start was not refused busy")
-			}
-			return
+			seen[f.ID] = true
 		}
+	}
+	if err := h.waitStopped(t); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -341,8 +325,7 @@ func (g *frameGate) letThrough() {
 //
 // What it does not prove: nothing about the broker's side of the
 // dispatch, and nothing about an execution overlapping another for real
-// — one at a time still holds, and the second start here is only
-// admitted because the first child is gone.
+// — this test admits only two executions below the four-slot bound.
 func TestExitFrameWriteDoesNotHoldTheHelperBusy(t *testing.T) {
 	dir := t.TempDir()
 	pol := testPol(t)
@@ -563,11 +546,11 @@ func writeRaw(h *harness, raw []byte) (int, error) {
 // buffer, so a helper that has stopped reading stalls the sender, and a
 // test that sent inline would hang in the very place it is trying to
 // observe from the outside.
-func stdinFlood(h *harness, firstID uint64, total int, trailer func()) {
+func stdinFlood(h *harness, execID, firstID uint64, total int, trailer func()) {
 	go func() {
 		chunk := make([]byte, 64*1024)
 		for sent, id := 0, firstID; sent < total; sent, id = sent+len(chunk), id+1 {
-			if err := h.conn.Write(id, framing.KindExecStdin, framing.ExecStdin{Data: chunk}); err != nil {
+			if err := h.conn.Write(id, framing.KindExecStdin, framing.ExecStdin{ExecID: framing.ExecutionID(execID), Data: chunk}); err != nil {
 				return
 			}
 		}
@@ -669,8 +652,8 @@ func TestCancelIsReadWhileStdinIsFlooded(t *testing.T) {
 
 	awaitUp(t, h)
 	start := time.Now()
-	stdinFlood(h, 1000, 1<<20, func() {
-		_ = h.conn.Write(2000, framing.KindCancel, map[string]any{})
+	stdinFlood(h, 70, 1000, 1<<20, func() {
+		_ = h.conn.Write(2000, framing.KindCancel, framing.Cancel{ExecID: 70})
 	})
 	exit := awaitExit(t, h, 70, 3*time.Second)
 	t.Logf("exec_exit after %v: %+v", time.Since(start), exit)
@@ -702,7 +685,7 @@ func TestWallDeadlineFiresWhileStdinIsFlooded(t *testing.T) {
 
 	awaitUp(t, h)
 	start := time.Now()
-	stdinFlood(h, 3000, 1<<20, nil)
+	stdinFlood(h, 80, 3000, 1<<20, nil)
 	exit := awaitExit(t, h, 80, 4*time.Second)
 	t.Logf("exec_exit after %v: %+v", time.Since(start), exit)
 
@@ -744,11 +727,11 @@ func TestStdinFloodArrivesIntactAndInOrder(t *testing.T) {
 				chunk[j] = byte(i*31 + j*7)
 			}
 			hash.Write(chunk)
-			if err := h.conn.Write(uint64(100+i), framing.KindExecStdin, framing.ExecStdin{Data: chunk}); err != nil {
+			if err := h.conn.Write(uint64(100+i), framing.KindExecStdin, framing.ExecStdin{ExecID: 90, Data: chunk}); err != nil {
 				return
 			}
 		}
-		_ = h.conn.Write(500, framing.KindExecStdin, framing.ExecStdin{EOF: true})
+		_ = h.conn.Write(500, framing.KindExecStdin, framing.ExecStdin{ExecID: 90, EOF: true})
 	}()
 
 	var stdout strings.Builder
@@ -813,7 +796,7 @@ func TestHeartbeatIsEchoedWhileStdinIsFlooded(t *testing.T) {
 	}
 	awaitUp(t, h)
 
-	stdinFlood(h, 4000, 1<<20, func() {
+	stdinFlood(h, 95, 4000, 1<<20, func() {
 		_ = h.conn.Write(777, framing.KindHeartbeat, map[string]any{})
 	})
 
@@ -835,5 +818,5 @@ func TestHeartbeatIsEchoedWhileStdinIsFlooded(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("heartbeat behind a stdin flood was not echoed")
 	}
-	_ = h.conn.Write(778, framing.KindCancel, map[string]any{})
+	_ = h.conn.Write(778, framing.KindCancel, framing.Cancel{ExecID: 95})
 }

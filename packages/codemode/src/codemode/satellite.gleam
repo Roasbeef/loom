@@ -3035,6 +3035,7 @@ fn read_frame(
     // ignored; only a malformed one closes the channel.
     framing.Hello(..), _
     | framing.ExecStart(..), _
+    | framing.CancelExecution(..), _
     | framing.ExecStdin(..), _
     | framing.ExecOut(..), _
     | framing.ExecExit(..), _

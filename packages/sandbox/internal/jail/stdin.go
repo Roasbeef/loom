@@ -1,6 +1,7 @@
 package jail
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -15,6 +16,10 @@ import (
 // This package does not import framing, so the equality is a convention
 // pinned by a test in internal/server rather than by the type system.
 const StdinPendingMax = 1 << 24
+
+// ErrStdinPendingLimit means no bytes or EOF were admitted. The server
+// cancels the targeted execution because stdin has no positive acknowledgement.
+var ErrStdinPendingLimit = errors.New("jail: stdin pending limit exceeded")
 
 // stdinQueue decouples the frame loop from the child's stdin pipe.
 //
@@ -36,12 +41,11 @@ const StdinPendingMax = 1 << 24
 // # Backpressure
 //
 // Pending bytes are counted until their write has completed and are
-// bounded by StdinPendingMax. Only a chunk that would push the count past
-// the bound makes put wait for room. That wait is the pathological case:
-// it requires 16 MiB queued for a payload that is not reading, and it ends
-// the moment the payload reads, or the execution ends and abandon releases
-// it. Cancel and the deadline are lock-free with respect to the writer, so
-// they still bound it by terminating the payload.
+// bounded by StdinPendingMax. A chunk that would push the count past
+// the bound is refused immediately. Saturation must not stall sibling control:
+// the shared frame loop must remain able to cancel sibling executions even
+// when this payload never reads. Refusal admits neither bytes nor EOF, so a
+// wire caller receives an error and the server cancels only this execution.
 //
 // # Lifetime
 //
@@ -50,7 +54,7 @@ const StdinPendingMax = 1 << 24
 // is the end-of-execution join: it drops whatever is still queued, closes
 // the pipe, which interrupts a write blocked in the kernel, and waits for
 // the writer to return. Exec.Settle calls it before the execution's exit
-// frame can be written, so by the time the helper's waitDone closes no
+// frame can be written, so by the time registry custody is released no
 // writer goroutine of that execution is left.
 type stdinQueue struct {
 	w io.WriteCloser
@@ -85,35 +89,27 @@ func newStdinQueue(w io.WriteCloser) *stdinQueue {
 }
 
 // put accepts one chunk, and eof marks the stream finished after it. It
-// returns without waiting for the chunk to reach the child, except in the
-// bounded-pending case described on stdinQueue. The data is copied: the
+// returns without waiting for room or for the chunk to reach the child. The
+// data is copied: the
 // pipe write happens after put returns, and callers are entitled to reuse
 // their buffer, as they could when the write was synchronous.
 //
 // An error means the chunk was not accepted: stdin was already ended, the
-// execution is over, or an earlier chunk's write failed (typically EPIPE
+// execution is over, the pending limit is exceeded, or an earlier chunk's write failed (typically EPIPE
 // from a child that closed its stdin).
 func (q *stdinQueue) put(data []byte, eof bool) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
-	for {
-		switch {
-		case q.sealed:
-			return fmt.Errorf("jail: stdin already closed")
-		case q.abandoned:
-			return fmt.Errorf("jail: write stdin: execution has ended")
-		case q.failed != nil:
-			return fmt.Errorf("jail: write stdin: %w", q.failed)
-		}
-
-		// An empty queue always admits, so a chunk larger than the bound
-		// (not reachable through the wire, reachable through the Go API)
-		// cannot wait for room that will never exist.
-		if q.pending == 0 || q.pending+len(data) <= StdinPendingMax {
-			break
-		}
-		q.changed.Wait()
+	switch {
+	case q.sealed:
+		return fmt.Errorf("jail: stdin already closed")
+	case q.abandoned:
+		return fmt.Errorf("jail: write stdin: execution has ended")
+	case q.failed != nil:
+		return fmt.Errorf("jail: write stdin: %w", q.failed)
+	case len(data) > StdinPendingMax-q.pending:
+		return ErrStdinPendingLimit
 	}
 
 	if len(data) > 0 {
@@ -180,8 +176,8 @@ func (q *stdinQueue) run() {
 	}
 }
 
-// abandon ends the queue: pending chunks are dropped, a put that is waiting
-// for room is released with an error, the pipe is closed, and the writer
+// abandon ends the queue: pending chunks are dropped, the pipe is closed,
+// and the writer
 // goroutine is joined. It is safe to call more than once and when no chunk
 // was ever put.
 func (q *stdinQueue) abandon() error {

@@ -6,7 +6,7 @@ import broker/exec
 import broker/framing
 import broker/support/fake_helper
 import gleam/erlang/process
-import gleam/option.{None}
+import gleam/option.{None, Some}
 import weft/poll
 import weft/timer
 
@@ -102,7 +102,7 @@ pub fn idle_pool_cancelled_epoch_cannot_kill_a_borrowed_execution_test() {
       token: <<0:size(32)-unit(8)>>,
       demand: exec.BestEffort,
     )
-  assert exec.run(helper, request, events:, waiting: 1000) == Ok(Nil)
+  assert exec.run(reborrowed, request, events:, waiting: 1000) == Ok(Nil)
 
   // An injected source cannot retract an already scheduled callback. Even
   // repeated delivery must leave a borrowed, potentially unbounded run alone.
@@ -112,10 +112,10 @@ pub fn idle_pool_cancelled_epoch_cannot_kill_a_borrowed_execution_test() {
   let assert exec.StatusBusy(_) = exec.status(helper, waiting: 1000)
     as "borrowed execution survives idle wake"
   assert process.receive(events, 0) == Error(Nil)
-  exec.cancel(helper)
+  exec.cancel(reborrowed)
   let assert Ok(exec.Exited(_)) = process.receive(events, 1000)
     as "explicit cancellation settles the run"
-  exec.checkin(pool, helper)
+  exec.checkin(pool, reborrowed)
   let new_idle = next_idle(armings)
 
   // The next available interval receives the entire fixed period. A wake
@@ -169,6 +169,7 @@ fn controlled(sent: process.Subject(BitArray)) -> exec.Helper {
         proto: framing.exec_protocol_version,
         peer: "exec-helper",
         features: [],
+        max_concurrency: Some(1),
       ),
     ))
     as "hello encodes"

@@ -34,6 +34,7 @@ import gleam/int
 import gleam/io
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
 import simplifile
 
 // Locates the prebuilt helper and returns a ready SpawnConfig, or the
@@ -354,5 +355,70 @@ pub fn twenty_sequential_runs_on_one_real_helper_see_no_busy_window_test() {
       })
       planes.stop(plane)
     }
+  }
+}
+
+/// Two native jails reach their readiness marker before either receives
+/// stdin or cancellation, proving overlap beyond broker-side acceptance.
+pub fn real_helper_multiplexes_live_jails_and_isolates_control_test() {
+  case helper_config() {
+    Error(reason) -> io.println_error("SKIP real_helper_multiplex: " <> reason)
+    Ok(config) -> {
+      let assert Ok(pool) =
+        exec.start_pool(size: 2, spawn: fn() { exec.prepare_helper(config) })
+        as "real pool starts"
+      let assert Ok(first) = exec.checkout(pool, waiting: 10_000)
+        as "first lease"
+      let assert Ok(second) = exec.checkout(pool, waiting: 10_000)
+        as "second lease"
+      assert exec.pid(first) == exec.pid(second)
+      let request =
+        exec.ExecRequest(
+          argv: ["/bin/sh", "-c", "printf ready; exec /bin/cat"],
+          env: [#("PATH", "/usr/bin:/bin")],
+          cwd: config.base_policy.writable_roots
+            |> list.first
+            |> result.unwrap("/"),
+          policy: None,
+          token: <<0:size(32)-unit(8)>>,
+          demand: exec.BestEffort,
+        )
+      let first_events = process.new_subject()
+      let second_events = process.new_subject()
+      assert exec.run(first, request, events: first_events, waiting: 1000)
+        == Ok(Nil)
+      assert exec.run(second, request, events: second_events, waiting: 1000)
+        == Ok(Nil)
+      let assert Ok(exec.Output(data: <<"ready">>, ..)) =
+        process.receive(first_events, 10_000)
+        as "first jail is running"
+      let assert Ok(exec.Output(data: <<"ready">>, ..)) =
+        process.receive(second_events, 10_000)
+        as "second jail overlaps first"
+      exec.cancel(first)
+      exec.stdin(second, data: <<"second-only">>, eof: True)
+      let #(first_output, first_result) = helper_terminal(first_events, <<>>)
+      let #(second_output, second_result) = helper_terminal(second_events, <<>>)
+      assert first_result.cancelled
+      assert first_output == <<>>
+      assert second_result.code == 0
+      assert !second_result.cancelled
+      assert second_output == <<"second-only">>
+      exec.checkin(pool, first)
+      exec.checkin(pool, second)
+      assert exec.close_pool(pool, waiting: 10_000) == Ok(Nil)
+    }
+  }
+}
+
+// Stream chunking is arbitrary, so terminal verification assembles all bytes.
+fn helper_terminal(events, output) {
+  let assert Ok(event) = process.receive(events, 10_000)
+    as "native execution responds"
+  case event {
+    exec.Output(data:, ..) ->
+      helper_terminal(events, bit_array.append(output, data))
+    exec.Exited(result) -> #(output, result)
+    exec.Failed(_) -> panic as "Native execution must exit normally."
   }
 }

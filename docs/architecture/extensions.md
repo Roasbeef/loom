@@ -867,13 +867,13 @@ no actor of its own.
 
 **Two frames, flowing from harness to satellite for the first time.**
 Before phase 3 the capability channel carried requests only from
-satellite to broker. `framing.HookCall` (`broker/framing.gleam:209`)
+satellite to broker. `framing.HookCall` (`broker/framing.gleam:220`)
 carries a token, a kind (`tool` or `event`), a name, the arguments and a
-deadline. `HookResult` (`broker/framing.gleam:221`) carries the
+deadline. `HookResult` (`broker/framing.gleam:232`) carries the
 `CapOutcome` that answers it, correlated by the same frame id. Spec
 §1.4's frozen `kinds` list gained both names. They cross the *capability*
 socket and nothing else. A helper on the exec channel that sends one is
-marked dead as a protocol violation (`framing.HookCall` at `broker/exec.gleam:2158`), because the two channels are two protocols,
+marked dead as a protocol violation (`framing.HookCall` at `broker/exec.gleam:2099`), because the two channels are two protocols,
 and a peer that confuses them is a peer whose next frame cannot be
 trusted either.
 
