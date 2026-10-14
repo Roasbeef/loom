@@ -133,6 +133,7 @@ fn test_catalog() -> catalog.Catalog {
         vision: catalog.TextOnly,
         max_images: 8,
         cyber_access: None,
+        service_tier: None,
       ),
       catalog.CatalogModel(
         name: "fallback",
@@ -147,6 +148,7 @@ fn test_catalog() -> catalog.Catalog {
         vision: catalog.TextOnly,
         max_images: 8,
         cyber_access: None,
+        service_tier: None,
       ),
     ],
     roles: [#(model.Main, ["acme", "fallback"])],

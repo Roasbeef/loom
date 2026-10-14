@@ -1,77 +1,80 @@
 # Current handoff
 
 Baselined October 14, 2026 against main
-`3ee679ca7b7a36bb2e518f4494214de364217e7b`. PR #985's login implementation
-is rebased without source changes from reviewed `2c7a99c61`.
-Main includes #972's register decoding, #979's Responses diagnostics and
-deployment CI enforcement, #982's per-strand timing, and #976's capture archive
-and CI repair. The cleanup manifest, recovery commands and upstream timing
-rulings remain in the [main handoff](https://github.com/Roasbeef/loom/blob/3ee679ca7b7a36bb2e518f4494214de364217e7b/docs/next.md).
-Its pending-validation wording describes that historical branch. The project
-plan remains `docs/issue-plan.md`. No installed daemon was changed by this work.
+`3ee679ca7b7a36bb2e518f4494214de364217e7b`. The owner requested one combined
+merge of login PR #985, Fast-mode PR #987 and keepalive PR #988 through #985.
+Their reviewed commits are preserved as merge parents. Main's register cache,
+Responses diagnostics, deployment enforcement, per-strand timing and capture
+archive remain intact; their detailed rulings and recovery commands remain in
+the [pinned main handoff](https://github.com/Roasbeef/loom/blob/3ee679ca7b7a36bb2e518f4494214de364217e7b/docs/next.md).
+The project plan remains `docs/issue-plan.md`.
 
-## Confirmed login failure
+## Confirmed login bug
 
-A fresh native `personal` sign-in failed the JWT issued-at check:
-`invalid_identity_issued_in_future`. This was reproduced with diagnostic labels
-and the existing zero-second clock tolerance. With a five-second tolerance,
-a second fresh browser sign-in succeeded and saved the grant normally.
-The host's HTTP Date comparison suggested a small clock offset; the explicit
-JWT refusal, rather than that approximate measurement, identifies the check.
-A displayed timezone change does not change UTC JWT timestamps.
+Fresh native sign-in failed `invalid_identity_issued_in_future` with zero clock
+tolerance. With five seconds, fresh browser login succeeded. Signed regression
+fixtures cover the exact issued-at, not-before and expiry boundaries under UTC
+and America/New_York. Signature, algorithm, issuer, audience, authorized party,
+nonce, subject and account binding remain mandatory. Fixed refusal codes discard
+untrusted error payloads. A displayed timezone does not alter UTC JWT timestamps.
 
-The client now tolerates five seconds for issued-at, not-before and expiry,
-matching OpenAI's published ID-token verification example. Larger offsets remain
-refused. Signature, algorithm, issuer, audience, authorized party, nonce and
-subject validation remain enforced. Fixed diagnostic codes identify refused
-checks without reflecting tokens, claims, key identifiers or parser messages.
-Unknown signing keys retain the existing bounded key-set refetch path.
+## Confirmed stream bug
 
-## Verification boundary
+A real native stream sent `keepalive` at sequence 343 and was rejected as
+`event_unsupported`, aborting after 57.46 seconds before its 60-second deadline.
+The fix consumes only that fixed control after JSON, SSE-name and sequence
+validation. It emits no content and preserves item, usage and terminal witnesses,
+cumulative bytes and the absolute attempt deadline. Unknown semantic events
+still fail; keepalive cannot settle an unfinished response.
 
-All 34 focused Codex tests passed. All eight identity tests passed under both
-UTC and America/New_York. Real RSA-signed boundary tests cover browser and refresh
-issued-at validation, not-before and expiry. A zero-skew control failed the new
-clock test as expected; restoring five seconds passed. The live patched browser
-login succeeded. At prior head `be753e0c67c027680ec3acf0164e97ec1911aa82`,
-the affected gate passed in 571 seconds and full Linux signoff passed in 1,647
-seconds. Independent review found no actionable issues. Hosted aggregate gates
-passed, but the macOS advisory raw log contained a native-launcher readiness
-assertion failure and later reached the separate client 1,200-second deadline.
-Five focused unchanged local controls passed; one hosted advisory retry was
-requested. The original assertion failure is retained as evidence rather than
-counted as a completed advisory suite.
+The patched native stream crossed keepalive at 333, completed canonically at
+338 and settled in 54.73 seconds. The loaded adapter BEAM and source were checked
+against `489fd0703`. The probe used a known synthetic prompt and executed no tools
+or private audit context. Original screenshots match the failure class and shape,
+but their unknown event names were not retained, so not every historical error
+is attributed to keepalive. Observed real-session recovery alone was not treated
+as a code fix.
 
-The rebase preserves main's source, CI and capture cleanup. Current-head
-integration review, hosted CI and Linux signoff must finish before merge;
-prior-head validation is historical evidence.
+## Optional Fast mode
 
-The successful login updates the saved profile, which the daemon rereads for
-operations. The installed daemon does not yet contain this clock-policy fix;
-installing a future reviewed release and restarting remains a separate operator
-action. This work has not installed or restarted the daemon.
+Responses model entries accept `service_tier = "fast"` or `"default"`; omission
+preserves provider defaults. Fast mode sends the documented `priority` alias
+because native subscription inference rejected the newer `fast` wire spelling.
+A live priority request completed but reported the served tier as `default`,
+so eligibility and a speed improvement are not established by configuration.
+Each fallback sends its own selection. Reasoning and cybersecurity access are
+independent. Fast processing can consume more allowance or cost more; configured
+price estimates are not authoritative subscription charges. This integration
+does not enable Fast mode in the owner's configuration.
 
-## Separate provider failure
+## Prior evidence and current gate
 
-Model discovery initially returned HTTP 520 from Cloudflare after successful
-login. The owner subsequently reported progress with a VPN. A later Responses
-attempt failed with `event_unsupported`, `event=unknown`, `last_seq=5` and
-`bytes=316248`. Saved history identifies the rejected dispatch check but does
-not retain the unknown event name. This evidence cannot establish which event
-was sent or whether it was valid. The byte count is cumulative delivered chunks,
-not the offending event's size. No provider acceptance rule has been changed. A read-only context-only replay
-settled successfully; a closer replay with 23 production builtin tool definitions
-reproduced an unsupported event at sequence 19. Five extension definitions and
-dynamic MCP surfaces were omitted, so it was not a byte-exact request replay.
-No tool or hook ran, and no audit session was changed. The owner subsequently
-reported that the real session was responding again without a provider patch;
-that recovery does not identify the earlier unknown event.
+Each individual change passed one independent adversarial review. Login's
+rebased source and tests were byte-identical to its reviewed original, and the
+integration review preserved main. Its 34 focused tests passed and affected gate
+passed in 737 seconds. The keepalive provider suite passed 309 tests; removing
+only its no-op made the new regression fail as intended. Fast mode's provider
+suite passed 308 tests, its focused catalogue cases passed, and its affected gate
+passed in 589 seconds. The scoped Linux remote-move reproduction passed all four
+variants after an earlier full Fast signoff hit an unchanged options-file refusal.
+These are individual-head results, not signoff for the combined head.
+
+A prior login macOS advisory retry had no assertion failures but reached the
+client's 1,200-second suite deadline. Its successful job does not establish a
+completed suite. Current main uses a two-shard macOS client matrix; inspect both
+raw logs before describing the combined checks. Existing owner-approved deadline
+policy cannot excuse unexplained assertions.
+
+Fresh combined-head review, focused and affected validation, hosted CI and Linux
+signoff remain required. No installed daemon, operator configuration, audit tools
+or hooks have been changed or executed by this integration.
 
 ## Next steps
 
-1. Complete rebased-head integration review, required hosted checks and Linux
-   signoff, then merge #985 under the owner's explicit authorization.
-2. Keep the separate Fast-mode PR #987 and its CI investigation independent.
-3. Identify the reproduced unsupported Responses event with fixed allowlisted
-   structural diagnostics before changing acceptance. Preserve the distinction
-   between observed recovery and a demonstrated fix.
+1. Verify the merged implementations and every regression remain intact, run
+   integration review and new combined-head checks, and update PR #985's scope.
+2. Use the explicitly approved background follow-up to merge only the exact
+   reviewed combined head after required checks and Linux signoff pass. Preserve
+   failures honestly, with no bypass or weakened test.
+3. Verify main contains all three reviewed changes, report the merge and stop
+   the follow-up. Installation and daemon restart remain separate owner actions.

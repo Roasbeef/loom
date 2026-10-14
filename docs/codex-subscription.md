@@ -232,6 +232,41 @@ and an `api_key_env` name. Configured subscription prices are API reference
 estimates, not ChatGPT plan credits or account charges. Failed attempts retain
 reported usage; missing usage or pricing remains unknown or partial.
 
+## Request Fast mode
+
+Set `service_tier = "fast"` on a specific model entry to request Fast mode:
+
+```toml
+[models.codex-sol-fast]
+dialect = "codex-subscription"
+auth = "codex"
+profile = "personal"
+model_id = "gpt-6.1-sol"
+service_tier = "fast"
+context_window = 272000
+max_output_tokens = 32768
+thinking = "medium"
+```
+
+Load the updated configuration, then select `/model codex-sol-fast`. The same
+key works for API-key `openai-responses` entries. It sends the request's
+`service_tier = "priority"`, OpenAI's compatible Fast-mode wire alias,
+independently of reasoning effort and cybersecurity access. The native
+subscription endpoint currently rejects the newer `"fast"` wire spelling.
+Omitting the key leaves the provider default in place; `"default"` explicitly
+requests standard processing. Other values and dialects refuse configuration.
+Each fallback entry sends its own selection.
+
+Fast mode is opt-in and can consume more included subscription allowance or
+incur higher API charges. The provider decides eligibility and may serve a
+standard tier despite the requested tier. Configuration does not establish
+that a response was served faster. Loom's configured price estimates are not
+an authoritative subscription charge or a confirmation of the served tier.
+Use a separate model entry and matching price card when comparing estimates.
+See [Codex speed](https://learn.chatgpt.com/docs/agent-configuration/speed) and
+[Responses Fast mode](https://developers.openai.com/api/docs/guides/fast-mode)
+for current availability and billing.
+
 ## Select Daybreak on a specific model
 
 Model selection and cybersecurity access are separate. An exact model entry can
