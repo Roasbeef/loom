@@ -33,17 +33,26 @@ type processTracker struct {
 
 const processTrackInterval = 20 * time.Millisecond
 
+// A fresh Darwin process table is large. Limit its acquisition and indexing
+// to one capture in this helper so overlapping trackers do not multiply the
+// transient heap footprint. No snapshot is shared or retained by this lock.
+// Lock order is processCaptureMu then one tracker's mu; signal and close
+// never acquire this lock while holding a tracker lock.
+var processCaptureMu sync.Mutex
+
 func startProcessTracker(root int) (*processTracker, error) {
-	if _, err := darwinProcessTable(); err != nil {
-		return nil, fmt.Errorf("jail: read Darwin process table: %w", err)
-	}
 	t := &processTracker{
 		root: root,
 		seen: make(map[int]uint64),
 		stop: make(chan struct{}),
 		done: make(chan struct{}),
 	}
-	t.capture()
+
+	// The jail's start gate is still closed. This successful fresh capture
+	// is the initial descendant ledger as well as the fail-closed preflight.
+	if err := t.capture(); err != nil {
+		return nil, fmt.Errorf("jail: read Darwin process table: %w", err)
+	}
 	go t.run()
 	return t, nil
 }
@@ -55,19 +64,25 @@ func (t *processTracker) run() {
 	for {
 		select {
 		case <-ticker.C:
-			t.capture()
+			_ = t.capture()
 		case <-t.stop:
 			return
 		}
 	}
 }
 
-func (t *processTracker) capture() {
+// capture consumes one fresh kernel snapshot while its process-local permit
+// is held. Startup propagates failure; periodic and signal paths retain their
+// existing best-effort treatment of an unavailable kernel table.
+func (t *processTracker) capture() error {
+	processCaptureMu.Lock()
+	defer processCaptureMu.Unlock()
 	table, err := darwinProcessTable()
 	if err != nil {
-		return
+		return err
 	}
 	t.captureTable(table)
+	return nil
 }
 
 // captureTable walks parent links in this fresh kernel snapshot. Child lists
@@ -114,7 +129,7 @@ func (t *processTracker) captureTable(table []unix.KinfoProc) {
 // final exit-and-reuse race remains between this check and kill(2); every
 // execution's lifecycle skip records that the tracker is not kernel ownership.
 func (t *processTracker) signal(sig syscall.Signal) bool {
-	t.capture()
+	_ = t.capture()
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	delivered := false

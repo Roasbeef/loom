@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"io"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,10 +20,11 @@ import (
 // muxHarness uses real pipes with read deadlines so a stalled control loop
 // fails the assertion instead of hanging the suite.
 type muxHarness struct {
-	conn   *framing.Conn
-	input  *os.File
-	output *os.File
-	done   chan error
+	conn      *framing.Conn
+	input     *os.File
+	output    *os.File
+	done      chan error
+	workspace string
 }
 
 func newMuxHarness(t *testing.T) *muxHarness {
@@ -39,13 +41,14 @@ func newMuxHarnessWriter(t *testing.T, wrap func(io.Writer) io.Writer) *muxHarne
 	if err != nil {
 		t.Fatal(err)
 	}
-	pol := policy.Policy{WritableRoots: []string{t.TempDir()}, ReadableRoots: []string{}, Protected: []string{}, Network: policy.Network{Mode: policy.NetworkOff}, Limits: policy.Limits{WallSeconds: 30, OutputBytes: 1 << 20}, EnvAllow: []string{"PATH"}, Scratch: "tmpfs"}
+	workspace := t.TempDir()
+	pol := policy.Policy{WritableRoots: []string{workspace}, ReadableRoots: []string{}, Protected: []string{}, Network: policy.Network{Mode: policy.NetworkOff}, Limits: policy.Limits{WallSeconds: 30, OutputBytes: 1 << 20}, EnvAllow: []string{"PATH"}, Scratch: "tmpfs"}
 	var writer io.Writer = outW
 	if wrap != nil {
 		writer = wrap(writer)
 	}
 	srv := server.New(framing.NewConn(inR, writer), jail.DetectFeatures(), testbin.Helper(t), pol)
-	h := &muxHarness{conn: framing.NewConn(outR, inW), input: inW, output: outR, done: make(chan error, 1)}
+	h := &muxHarness{workspace: workspace, conn: framing.NewConn(outR, inW), input: inW, output: outR, done: make(chan error, 1)}
 	go func() { h.done <- srv.Run() }()
 	t.Cleanup(func() {
 		inW.Close()
@@ -313,5 +316,47 @@ func TestMultiplexTerminalReceiptAllowsImmediateFullCapacityRefill(t *testing.T)
 		active = uint64(100 + iteration)
 		h.start(t, active, "echo ready; exec cat")
 		h.up(t, active)
+	}
+}
+
+// heldTerminalWrite keeps one report in flight while a second execution must
+// still use the remaining native capacity. It pins the original Linux
+// regression on Darwin too without depending on output through the held pipe.
+type heldTerminalWrite struct {
+	writer  io.Writer
+	reached chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (w *heldTerminalWrite) Write(p []byte) (int, error) {
+	if bytes.Contains(p, []byte(framing.KindExecExit)) {
+		w.once.Do(func() { close(w.reached) })
+		<-w.release
+	}
+	return w.writer.Write(p)
+}
+
+func TestMultiplexBlockedTerminalDoesNotBlockSpareSlotStartup(t *testing.T) {
+	gate := &heldTerminalWrite{reached: make(chan struct{}), release: make(chan struct{})}
+	h := newMuxHarnessWriter(t, func(w io.Writer) io.Writer { gate.writer = w; return gate })
+	defer close(gate.release)
+	h.start(t, 10, "exit 0")
+	select {
+	case <-gate.reached:
+	case <-time.After(5 * time.Second):
+		t.Fatal("terminal write not reached")
+	}
+	marker := h.workspace + "/second-started"
+	h.start(t, 20, ": > '"+marker+"'")
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(marker); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("spare native slot could not start while sibling terminal write was held")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

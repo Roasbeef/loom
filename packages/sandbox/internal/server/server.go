@@ -20,6 +20,7 @@ type Server struct {
 	feat    jail.Features
 	selfExe string
 	basePol policy.Policy
+	start   func(jail.Request, jail.Features, string, jail.OutputSink) (*jail.Exec, error)
 	nextID  uint64
 	mu      sync.Mutex
 	running map[uint64]*execution
@@ -30,14 +31,23 @@ const MaxConcurrency = 4
 
 // execution keeps custody until both the terminal write and cleanup finish.
 type execution struct {
-	exec *jail.Exec
-	done chan struct{}
+	exec      *jail.Exec
+	done      chan struct{}
+	reporting bool
+	// Startup input and cancellation belong to the reserved entry. They are
+	// protected by Server.mu until transferred into the live jail.
+	pending   []byte
+	eof       bool
+	cancelled bool
 }
 
 // New builds a server. basePol is the fd-3 policy: the default for
 // exec_start frames that omit their own.
 func New(conn *framing.Conn, feat jail.Features, selfExe string, basePol policy.Policy) *Server {
-	return &Server{conn: conn, feat: feat, selfExe: selfExe, basePol: basePol, running: make(map[uint64]*execution)}
+	return &Server{
+		conn: conn, feat: feat, selfExe: selfExe, basePol: basePol,
+		start: jail.Start, running: make(map[uint64]*execution),
+	}
 }
 
 // Run performs the hello exchange and serves frames until the peer
@@ -116,9 +126,15 @@ func (s *Server) Run() error {
 			}
 			s.mu.Lock()
 			entry := s.running[uint64(body.ExecID)]
-			s.mu.Unlock()
+			var ex *jail.Exec
 			if entry != nil {
-				entry.exec.Cancel()
+				entry.cancelled = true
+				entry.pending = nil
+				ex = entry.exec
+			}
+			s.mu.Unlock()
+			if ex != nil {
+				ex.Cancel()
 			}
 
 		case framing.KindShutdown:
@@ -144,18 +160,36 @@ func (s *Server) Run() error {
 }
 
 func (s *Server) handleExecStart(f framing.Frame) {
-	// Capacity includes terminal writes and cleanup, not just live children.
-	s.mu.Lock()
-	_, duplicate := s.running[f.ID]
-	full := len(s.running) >= MaxConcurrency
-	s.mu.Unlock()
-	if f.ID == 0 || duplicate {
-		_ = s.conn.WriteError(f.ID, framing.ErrCodeMalformed, "exec_start: duplicate or zero execution id")
-		return
-	}
-	if full {
-		_ = s.conn.WriteError(f.ID, framing.ErrCodeBusy, "execution capacity exhausted")
-		return
+	// Capacity includes terminal reports. Spare slots stay available even
+	// while a sibling's terminal write is blocked. At full capacity, waiting
+	// for an already-reporting slot avoids refusing an immediate peer refill
+	// whose exit frame was received before its Write returned locally.
+	for {
+		s.mu.Lock()
+		_, duplicate := s.running[f.ID]
+		full := len(s.running) >= MaxConcurrency
+		var reporting <-chan struct{}
+		if full {
+			for _, entry := range s.running {
+				if entry.reporting {
+					reporting = entry.done
+					break
+				}
+			}
+		}
+		s.mu.Unlock()
+		if f.ID == 0 || duplicate {
+			_ = s.conn.WriteError(f.ID, framing.ErrCodeMalformed, "exec_start: duplicate or zero execution id")
+			return
+		}
+		if !full {
+			break
+		}
+		if reporting == nil {
+			_ = s.conn.WriteError(f.ID, framing.ErrCodeBusy, "execution capacity exhausted")
+			return
+		}
+		<-reporting
 	}
 
 	var body framing.ExecStart
@@ -182,49 +216,67 @@ func (s *Server) handleExecStart(f framing.Frame) {
 		pol = p
 	}
 
-	ex, err := jail.Start(jail.Request{
-		Argv:   body.Argv,
-		Env:    body.Env,
-		Cwd:    body.Cwd,
-		Policy: pol,
-		ID:     f.ID,
-	}, s.feat, s.selfExe, s.outputSink(f.ID))
-	if err != nil {
-		_ = s.conn.WriteError(f.ID, framing.ErrCodeSpawn, err.Error())
-		return
-	}
-
-	entry := &execution{exec: ex, done: make(chan struct{})}
+	// Reservation precedes the worker. Startup, output, cleanup and reporting
+	// all count against the same four-entry bound, including early control.
+	entry := &execution{done: make(chan struct{})}
 	s.mu.Lock()
 	s.running[f.ID] = entry
 	s.mu.Unlock()
+	go s.execute(f.ID, entry, jail.Request{Argv: body.Argv, Env: body.Env, Cwd: body.Cwd, Policy: pol, ID: f.ID})
+}
 
-	go func() {
-		res, release := ex.Settle()
+// execute is the entry's one lifecycle worker. Even an early cancellation
+// obtains the real jail result rather than fabricating enforcement evidence.
+func (s *Server) execute(id uint64, entry *execution, request jail.Request) {
+	ex, err := s.start(request, s.feat, s.selfExe, s.outputSink(id))
+	if err != nil {
+		s.report(id, entry, framing.KindError, framing.ErrorBody{Code: framing.ErrCodeSpawn, Msg: err.Error()})
+		return
+	}
+	s.mu.Lock()
+	entry.exec = ex
+	if !entry.cancelled && (len(entry.pending) > 0 || entry.eof) {
+		// The new jail queue is empty. One bounded admission preserves byte/EOF
+		// order before any subsequent frame can obtain this published pointer.
+		if err := ex.WriteStdin(entry.pending, entry.eof); err != nil {
+			entry.cancelled = true
+		}
+	}
+	entry.pending = nil
+	cancelled := entry.cancelled
+	s.mu.Unlock()
+	if cancelled {
+		ex.Cancel()
+	}
+	res, release := ex.Settle()
+	release()
+	s.report(id, entry, framing.KindExecExit, framing.ExecExit{
+		Code:            res.Code,
+		Signal:          res.Signal,
+		StdoutBytes:     res.StdoutBytes,
+		StderrBytes:     res.StderrBytes,
+		StdoutTruncated: res.StdoutTruncated,
+		StderrTruncated: res.StderrTruncated,
+		Enforcement:     res.Enforcement,
+		Degraded:        res.Degraded,
+		WallMs:          res.WallMs,
+		TimedOut:        res.TimedOut,
+		Cancelled:       res.Cancelled,
+	})
+}
 
-		// Cleanup runs without the registry lock so it cannot delay sibling
-		// cancellation. The terminal frame then releases capacity atomically
-		// with its visibility to the peer: a refill after reading exec_exit
-		// must not observe this completed execution as a busy slot.
-		release()
-		s.mu.Lock()
-		_ = s.conn.Write(f.ID, framing.KindExecExit, framing.ExecExit{
-			Code:            res.Code,
-			Signal:          res.Signal,
-			StdoutBytes:     res.StdoutBytes,
-			StderrBytes:     res.StderrBytes,
-			StdoutTruncated: res.StdoutTruncated,
-			StderrTruncated: res.StderrTruncated,
-			Enforcement:     res.Enforcement,
-			Degraded:        res.Degraded,
-			WallMs:          res.WallMs,
-			TimedOut:        res.TimedOut,
-			Cancelled:       res.Cancelled,
-		})
-		delete(s.running, f.ID)
-		close(entry.done)
-		s.mu.Unlock()
-	}()
+// report retains the bounded terminal obligation without holding the registry
+// lock across transport I/O. Full-capacity refill waits; spare slots proceed.
+func (s *Server) report(id uint64, entry *execution, kind string, body any) {
+	s.mu.Lock()
+	entry.pending = nil
+	entry.reporting = true
+	s.mu.Unlock()
+	_ = s.conn.Write(id, kind, body)
+	s.mu.Lock()
+	delete(s.running, id)
+	close(entry.done)
+	s.mu.Unlock()
 }
 
 // handleExecStdin admits bounded input without blocking the shared frame loop.
@@ -237,15 +289,36 @@ func (s *Server) handleExecStdin(f framing.Frame) {
 	}
 	s.mu.Lock()
 	entry := s.running[uint64(body.ExecID)]
-	s.mu.Unlock()
-	if entry == nil {
-		_ = s.conn.WriteError(f.ID, framing.ErrCodeNoExec, "no execution running for exec_id")
+	if entry == nil || entry.reporting || entry.cancelled {
+		s.mu.Unlock()
+		_ = s.conn.WriteError(f.ID, framing.ErrCodeNoExec, "no execution accepting stdin for exec_id")
 		return
 	}
-	if err := entry.exec.WriteStdin(body.Data, body.EOF); err != nil {
+	ex := entry.exec
+	if ex == nil {
+		var err error
+		switch {
+		case entry.eof:
+			err = fmt.Errorf("jail: stdin already closed")
+		case len(body.Data) > jail.StdinPendingMax-len(entry.pending):
+			entry.cancelled = true
+			entry.pending = nil
+			err = jail.ErrStdinPendingLimit
+		default:
+			entry.pending = append(entry.pending, body.Data...)
+			entry.eof = body.EOF
+		}
+		s.mu.Unlock()
+		if err != nil {
+			_ = s.conn.WriteError(f.ID, framing.ErrCodeNoExec, err.Error())
+		}
+		return
+	}
+	s.mu.Unlock()
+	if err := ex.WriteStdin(body.Data, body.EOF); err != nil {
 		_ = s.conn.WriteError(f.ID, framing.ErrCodeNoExec, err.Error())
 		if errors.Is(err, jail.ErrStdinPendingLimit) {
-			entry.exec.Cancel()
+			ex.Cancel()
 		}
 	}
 }
@@ -268,13 +341,20 @@ func (s *Server) outputSink(id uint64) jail.OutputSink {
 func (s *Server) reapRunning() {
 	s.mu.Lock()
 	entries := make([]*execution, 0, len(s.running))
+	live := make([]*jail.Exec, 0, len(s.running))
 	for _, entry := range s.running {
+		entry.cancelled = true
+		entry.pending = nil
 		entries = append(entries, entry)
+		if entry.exec != nil {
+			live = append(live, entry.exec)
+		}
 	}
 	s.mu.Unlock()
-	for _, entry := range entries {
-		entry.exec.Cancel()
+	for _, ex := range live {
+		ex.Cancel()
 	}
+
 	for _, entry := range entries {
 		<-entry.done
 	}

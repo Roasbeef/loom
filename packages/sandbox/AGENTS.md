@@ -189,7 +189,16 @@ only Go module.
   identity immediately before signaling. This narrows PID reuse but cannot
   make the check and `kill(2)` atomic. It complements rather than replaces
   process-group signals for children that call `setsid(2)`. Each 20 ms sample
-  reads a fresh kernel process table. A parent-head map and one-based sibling
+  reads a fresh kernel process table. One process-local mutex covers each
+  table acquisition and its indexing, including startup and cancellation
+  captures, so simultaneous trackers do not multiply these large transient
+  allocations. It never shares or caches a snapshot, changes the 20 ms ticker,
+  or serializes other jail setup. Lock order is capture mutex then tracker
+  mutex; signal captures before taking its tracker lock, and close joins
+  without holding either. Startup uses the same fresh capture as its
+  fail-closed preflight. `BenchmarkProcessTrackerStartup` reports cumulative
+  startup allocation separately from retained heap or RSS.
+  A parent-head map and one-based sibling
   indices traverse that snapshot without copying process records or allocating
   a child slice per host process. The ledger lock also owns reusable index and
   frontier buffers; every capture clears the heads and overwrites active links
@@ -394,10 +403,12 @@ only Go module.
   kernel memory. The wait is about 50 ms. The multiplexing server runs
   `Exec.Settle`'s release before writing `exec_exit`, with no registry lock
   held, so sibling control stays responsive during cleanup. This adds the
-  teardown wait to terminal latency. The registry lock spans the terminal
-  write and removal; a broker refilling a slot after reading that frame
-  cannot observe stale full capacity. The bounded registry retains each
-  cleanup obligation, so `reapRunning` joins every removal in flight.
+  teardown wait to terminal latency. A reporting marker retains the terminal
+  obligation without holding the registry lock across its write. Admission
+  can use spare slots immediately; at full capacity it waits for an existing
+  report to finish before checking again, so a broker refilling a slot after
+  reading that frame cannot observe stale full capacity. The bounded registry
+  retains each cleanup obligation, so `reapRunning` joins every removal in flight.
 - **The environment is constructed, never inherited.** A name absent from
   `env_allow` is dropped even when the broker sent it, so the policy alone
   is enough to audit what a jail could see. Output is sorted for
@@ -434,11 +445,28 @@ only Go module.
 - **Four independent executions at most per helper.** Protocol 4's hello
   advertises `max_concurrency: 4`. The registry is keyed by the original
   `exec_start` envelope ID; duplicate active IDs are refused, and capacity
-  includes terminal writes and cleanup still in flight. Each execution has
+  includes startup, terminal writes and cleanup still in flight. The frame
+  loop reserves the entry before launching its one lifecycle worker, so slow
+  startup cannot serialize sibling acquisition or create uncounted jails.
+  That worker owns `jail.Start`, settlement, cleanup and terminal reporting;
+  there is no goroutine per input frame. Each execution has
   its own jail, output limits, stdin queue, deadline and cancellation state.
   `cancel.exec_id` and `exec_stdin.exec_id` select that execution; control
   errors echo the fresh control request ID. Unknown cancellation targets are
   no-ops. Helper death and a blocked shared transport remain shared failures.
+- **Control remains addressed while startup is in flight.** Before `Start`
+  returns, the entry coalesces stdin into one lazy buffer capped at 16 MiB,
+  with a separate EOF marker. Empty frames add no buffer or queue metadata.
+  Activation transfers the accepted bytes and EOF to the new jail queue under
+  the registry mutex before later input can reach it, preserving byte order.
+  Overflow refuses the fresh control request and marks only that execution
+  cancelled. Early cancellation and shutdown likewise set the entry's flag;
+  its worker still acquires and cancels the real jail, then joins it and
+  reports real enforcement rather than fabricating a successful drain.
+  Startup input references are cleared on transfer, cancellation or failure.
+  Startup failure itself remains a retained terminal report until its original
+  `exec_start`-correlated error write finishes. Native helper escalation is
+  still the shared failure boundary if acquisition fails to make progress.
 - **Stdin never blocks the frame loop, and Cancel never waits on stdin.**
   `exec_stdin` is handled on the helper's single frame-reading goroutine,
   and a pipe write blocks once the kernel buffer (64 KiB) is full, which a
@@ -469,8 +497,9 @@ only Go module.
   (EPIPE from a child that closed stdin) is reported by the *next*
   `exec_stdin` as the same `no_exec` error frame, not by the failing one.
 - **Shutdown joins every admitted execution.** The frame loop stops admitting
-  on shutdown, EOF or malformed traffic, cancels all registry entries, then
-  waits for every terminal write and native cleanup before returning. A slot
+  on shutdown, EOF or malformed traffic, marks every starting entry cancelled,
+  cancels every already-acquired jail, then waits for all startup workers,
+  terminal writes and native cleanup before returning. A slot
   leaves the registry only after these obligations complete. There is no
   unbounded history of completed executions or per-execution output queue.
   `framing.Conn` serializes whole-frame writes; a slow reader can stall the
@@ -478,8 +507,8 @@ only Go module.
   its siblings rather than claiming independent recovery.
 
 - **Shutdown preserves the native exit witness.** After the hello exchange,
-  `shutdown` with an empty map body stops command dispatch, cancels the active
-  jail, and joins its existing `Wait` path before the helper exits with status
+  `shutdown` with an empty map body stops command dispatch, cancels every
+  acquired or starting jail, and joins every lifecycle worker before the helper exits with status
   zero. The broker keeps stdin open and drains stdout until the port reports
   native exit; there is no shutdown acknowledgement. A deadline, port closure,
   or nonzero exit does not prove an orderly join. The join retains the existing
