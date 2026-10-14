@@ -189,7 +189,7 @@ Today's terminal (`layout`, `tui/layout.gleam:105`) is a header, a body, a
 composer and a footer with the agent strip under it. The body holds the
 transcript and, at the right, either the agent rail (34 cells, from 100
 columns, `body_layout` at `tui/layout.gleam:138`) or the changes pane (up to
-72 cells, from 140 columns, `diff_pane_width` at `tui/layout.gleam:359`), never
+72 cells, from 140 columns, `diff_pane_width` at `tui/layout.gleam:397`), never
 both. Eight more surfaces are overlays or transcript replacements, each with
 its own keys: the agent workspace, the picker, the model selector, the
 approval dialog, the peer-link and access overlays, `/notes`, `/summary`,
@@ -250,7 +250,7 @@ Taken:
   per awaited strand (`└ sub:main/adversarial-…-48f3c1 still working after
   30s`) using the roster's own words.
 - **The activity line above the input with its cancel key**, which the band
-  already has (`composer_status_lines`, `tui/layout.gleam:715`) minus the key.
+  already has (`composer_status_lines`, `tui/layout.gleam:758`) minus the key.
 - **Tinted blocks, not boxes**, for the two things the terminal already tints:
   the user turn and the assistant's prose. Tool calls stay one-line rows
   without a tint, because the owner's recordings show that a wall of tinted
@@ -355,7 +355,7 @@ today, so the composer never loses width to a column.
 | < 100 | transcript | none beside it; `Shift+Tab` or `Ctrl+O` opens the panel over the transcript, `Esc` returns | drawn, from 16 rows and two agents, up to a quarter of the height |
 
 The transcript keeps at least 68 cells beside a panel, the rule
-`diff_pane_width` (`tui/layout.gleam:359`) applies today. The strip's height
+`diff_pane_width` (`tui/layout.gleam:397`) applies today. The strip's height
 rule is unchanged (`height_for_count`, `tui/agent_strip.gleam:212`). The
 rows a panel's tab needs are never taken from the composer.
 

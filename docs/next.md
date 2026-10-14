@@ -57,11 +57,60 @@ The owner has no Anthropic credits hooked up; live Anthropic cache/latency testi
 is deliberately deferred to the PR. Fixtures prove request shape and custody,
 not live cache reads or savings. The installed daemon has not been replaced.
 
+## Review iteration and personal E2E
+
+The review loop confirmed three medium findings in round one: busy command lanes
+could repeatedly arm an expired browser polling timer; the painted TUI split
+disagreed with scrolling, image and copy geometry; and typed drain outcomes were
+lost before capacity accounting. Round two found a separate side paging width
+mismatch under the docked rail. All four are fixed in `7c96483dc`, `348a7e113`
+and `69d4d6461`. Round three and its separate triage are clean at the medium
+cutoff. Three fresh, bounded cold reviewers approve the service/runtime,
+shared UI, and provider/protocol slices at `69d4d6461`.
+
+Drain proof loss now reserves capacity for the remaining side-service lifetime,
+including across Clear, Forget and Reset. Clearing a failed panel cannot admit
+more than two possibly live transports. The regression uses a real HTTP owner
+loss, also checks clean request reuse, and settles usage once. Focused client
+side-service tests pass (6), shared session-view tests pass (486), and TUI side
+regressions pass (8), alongside the selection and image checks.
+
+The primary reviewer personally drove the real TUI, daemon and web UI against a
+local deterministic OpenAI SSE fixture. Main streaming continued during private
+side queries from both attachments. Raw outbound requests prove that TUI
+follow-ups retained the old base after main context advanced and web refresh
+adopted the new base. Overlap made no provider call. Side cancellation closed
+only the side transport while main output advanced and the web draft survived.
+A generated call to the advertised bash tool was refused: one inference request,
+no continuation, no execution marker. The six durable conversation entries at
+that checkpoint contained only main questions and answers, with no side markers.
+
+On rebuilt source, a 15 KB side answer's tail is reachable through ordinary TUI
+paging with the rail docked. Main mouse-wheel scrolling reaches the oldest
+loaded rows while the panel remains open. A real mouse drag emits an OSC52
+clipboard payload of `LONG_START`, preserving the side answer's leading characters. A new attachment forgets side history;
+the rebuilt web controls preserve the main draft through Clear and Close.
+Evidence lives under the ignored `build/pr981-personal-e2e/` fixture directory
+and `/private/tmp/loom-pr981-review/`, rather than in the tracked source tree.
+
+Hosted CI on `04dd10575` has now completed successfully on both Linux and macOS;
+that precedes the review fixes. The new full affected run is still in progress. Its first static lane found five
+line citations shifted by the layout fix; those references were corrected and
+`make doc-check` passes. This initial run will retain its failed static status;
+its package checks and skip census must be assessed independently, followed by
+a clean complete run if necessary. No successful final-head gate is implied.
+
+Low UX observations remain follow-ups: resetting side scroll after refresh,
+side-wheel routing, and side paging key precedence over help/notes (#983). A direct
+integrated observer/fallback capture regression remains a coverage improvement (#984).
+The missing v2 client-protocol reference has been filled in.
+
 ## Next steps
 
-1. Check hosted CI on the final head after the narrow CI declaration fix.
-   Confirm whether `gilgamesh-signoff` targeting `obelisk` is the intended host,
-   then run signoff on that final head. Record results in PR #981 before readiness.
+1. Finish the local affected run, verify the corrected static gates, and record
+   exact-head hosted CI and strict Linux signoff after pushing this iteration.
+   Use the owner-confirmed `gilgamesh-signoff` alias. Its `obelisk` hostname and
+   separate signoff account are intentional; do not ask for confirmation again.
 2. Exercise live Anthropic cache usage when credits are configured. Record model,
    prefix size, cache reads/writes, latency, and main-request reuse after the side
    query. Merge and replace the installed daemon only with owner authorization.
