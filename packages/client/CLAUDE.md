@@ -8660,7 +8660,11 @@ the provider itself because event subjects belong to their creating process.
 It begins only after ledger adoption, retains at most 32 KiB of answer text,
 counts at most 8192 events, and emits at most 32 text previews. The 60-second
 state timeout and 90-second weft backstop do not renew on deltas. Cancellation
-keeps a slot until the relay's last word. Final usage commits once through
+keeps a slot until the relay's last word and a proven drain outcome. Lost or
+unconfirmed drain, including a lost run without an outcome, consumes a slot for
+the service lifetime. Clear, forget and reset retire history without reclaiming
+that uncertain capacity. Settled flights drop their relay so usage records once.
+Final usage commits once through
 `distill.record_request` with phase `btw`; lost terminals retain unknown usage
 evidence. No transcript entry, operation, executor, Agency, advisor feed, or
 main context hook runs for a side question.

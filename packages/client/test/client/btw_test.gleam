@@ -359,3 +359,128 @@ pub fn cancellation_holds_the_slot_until_drain_and_disconnect_cancels_test() {
   assert storage.scan_entries(opened.store, storage.entry_scan()) == Ok([])
   stop(started.pid)
 }
+
+pub fn lost_transport_drain_reserves_capacity_across_history_retirement_test() {
+  let assert Ok(opened) = session.open_memory(clock.fixed(1000))
+    as "session opens"
+  let observed = process.new_subject()
+  let clean =
+    provider.transport(fn(request, events) {
+      process.send(observed, Nil)
+      case string.contains(request.body, "Clean failure") {
+        True -> process.send(events, http.ResponseStatus(400, []))
+        False -> {
+          process.send(events, http.ResponseStatus(200, []))
+          process.send(
+            events,
+            http.ResponseChunk(bit_array.from_string(text_response())),
+          )
+        }
+      }
+      process.send(events, http.ResponseEnd)
+    })
+  let transport =
+    http.Transport(prepare_streaming: fn(request, events) {
+      case string.contains(request.body, "Lose proof") {
+        False -> clean.prepare_streaming(request, events)
+        True -> {
+          // This is the gateway's real transitive ownership boundary: death
+          // follows begin, after the provider has adopted the transport owner.
+          let creator = process.self()
+          let ready = process.new_subject()
+          let owner =
+            process.spawn_unlinked(fn() {
+              let begin = process.new_subject()
+              let creator_monitor = process.monitor(creator)
+              process.send(ready, begin)
+              let _permit =
+                process.new_selector()
+                |> process.select_map(begin, fn(_nil) { Nil })
+                |> process.select_specific_monitor(creator_monitor, fn(_down) {
+                  Nil
+                })
+                |> process.selector_receive_forever()
+              process.demonitor_process(creator_monitor)
+              process.send(observed, Nil)
+              process.kill(process.self())
+            })
+          let begin = process.receive_forever(ready)
+          Ok(
+            http.PreparedRequest(
+              running: http.RunningRequest(owner:, cancel: fn() { Nil }),
+              begin: fn() { process.send(begin, Nil) },
+            ),
+          )
+        }
+      }
+    })
+  let gateway =
+    gateway.new(
+      transport,
+      secret.from_list([#("key", "dummy")]),
+      clock.fixed(1000),
+    )
+    |> gateway.add_provider(gateway.OpenAiCompatibleProvider(
+      "fixture",
+      "https://fixture.invalid",
+      "key",
+    ))
+  let name = addresses.new()
+  let assert Ok(started) = btw.start(name, gateway, opened)
+    as "side service starts"
+  let assert Ok(Nil) =
+    address.send(name, btw.Capture("main", "base", request("Base")))
+    as "base exists"
+
+  // More than two proven failures and completions must reuse capacity.
+  list.each(["Clean failure", "Clean completion"], fn(question) {
+    list.each([1, 2, 3], fn(_) {
+      let assert Ok(_) = btw.query(name, 1, "main", view.Ask(question))
+        as "proven drain releases its slot"
+      let done = completed(name, 1)
+      assert done.status
+        == case question {
+          "Clean failure" -> "failed"
+          _ -> "ready"
+        }
+      let assert Ok(Nil) = process.receive(observed, 1000)
+        as "clean transport began"
+      let assert Ok(_) = btw.query(name, 1, "main", view.Clear)
+        as "clear retires proven history"
+    })
+  })
+
+  list.each([1, 2], fn(owner) {
+    let assert Ok(_) = btw.query(name, owner, "main", view.Ask("Lose proof"))
+      as "remaining service capacity admits an uncertain request"
+    let done = completed(name, owner)
+    assert done.status == "failed"
+    assert string.contains(done.notice, "drain proof was lost")
+    let assert Ok(Nil) = process.receive(observed, 1000)
+      as "uncertain transport began before abnormal death"
+    let assert Ok(_) = btw.query(name, owner, "main", view.Clear)
+      as "clear retires uncertain history"
+    let assert Ok(Nil) = address.send(name, btw.Forget(owner))
+      as "forget retires the attachment"
+    let assert Ok(Nil) = address.send(name, btw.Reset)
+      as "reset retires the connection namespace"
+  })
+
+  // History retirement cannot manufacture evidence that external work drained.
+  assert result.is_error(btw.query(name, 3, "main", view.Ask("Third request")))
+  let assert Ok(_) = btw.query(name, 3, "main", view.Clear)
+    as "clear remains available when capacity is exhausted"
+  assert result.is_error(btw.query(name, 3, "main", view.Ask("After clear")))
+  let assert Ok(Nil) = address.send(name, btw.Forget(3))
+    as "forget remains available"
+  assert result.is_error(btw.query(name, 3, "main", view.Ask("After forget")))
+  let assert Ok(Nil) = address.send(name, btw.Reset)
+    as "reset remains available"
+  assert result.is_error(btw.query(name, 1, "main", view.Ask("After reset")))
+  assert process.receive(observed, 20) == Error(Nil)
+  let assert Ok(usage) = storage.scan_usage(opened.store, storage.usage_scan())
+    as "each terminal settles auxiliary usage once"
+  assert list.length(usage) == 8
+  assert storage.scan_entries(opened.store, storage.entry_scan()) == Ok([])
+  stop(started.pid)
+}

@@ -1,7 +1,8 @@
 //// Side queries have model context but no tool dispatcher or operation.
 //// One session-lived machine retains bounded effective request snapshots and
 //// attachment-local conversations. Each answer runs under a managed weft scope;
-//// its slot remains occupied until the scope reports transitive drain.
+//// its slot remains occupied until the scope reports transitive drain. Lost
+//// drain evidence reserves capacity for the remaining service lifetime.
 //// Captured instructions and tools are prefix material, never capabilities.
 
 import client/distill
@@ -79,7 +80,7 @@ type Flight {
   Flight(
     cancel: weft.Cancel,
     reports: Subject(weft.Pulled(stream.StreamEvent, String)),
-    landed: Option(Result(stream.StreamEvent, String)),
+    landed: Option(weft.Outcome(stream.StreamEvent, String)),
   )
 }
 
@@ -91,6 +92,8 @@ type Data {
     latest: List(Base),
     conversations: Dict(Int, Conversation),
     flights: Dict(Int, Flight),
+    // Settled requests with missing drain proof still consume the two slots.
+    uncertain: Int,
   )
 }
 
@@ -191,7 +194,7 @@ pub fn start(
     Ok(
       sm.initialised(
         Watching,
-        Data(gateway, session, inbox, [], dict.new(), dict.new()),
+        Data(gateway, session, inbox, [], dict.new(), dict.new(), 0),
       )
       |> sm.returning(inbox),
     )
@@ -460,7 +463,8 @@ fn ask(
   let attempt = fn() {
     use _ <- result.try(view.action("ask", text))
     use <- bool.guard(
-      dict.has_key(data.flights, owner) || dict.size(data.flights) >= 2,
+      dict.has_key(data.flights, owner)
+        || dict.size(data.flights) + data.uncertain >= 2,
       Error("a side request is already running; wait or cancel it"),
     )
     use <- bool.guard(
@@ -680,40 +684,23 @@ fn relayed(
     Ok(flight) ->
       case pulled {
         weft.PulledOutcome(outcome) -> {
-          let landed = case outcome {
-            weft.Completed(value:, ..) -> Ok(value)
-            weft.Failed(error:, ..) -> Error(error)
-            weft.Crashed(..) -> Error("side request crashed")
-            weft.Abandoned(..) -> Error("side request cancelled or timed out")
-            weft.NeverStarted(..) -> Error("side request never started")
-            weft.DrainProofLost(..) ->
-              Error("side request drain proof was lost")
-            weft.CancellationUnconfirmed(..) ->
-              Error("side request cancellation was not confirmed")
-          }
           settle(
             Data(
               ..data,
               flights: dict.insert(
                 data.flights,
                 owner,
-                Flight(..flight, landed: Some(landed)),
+                Flight(..flight, landed: Some(outcome)),
               ),
             ),
           )
         }
         weft.NotYet -> settle(data)
-        weft.AllDelivered ->
-          finished(
-            data,
-            owner,
-            option.unwrap(
-              flight.landed,
-              Error("side request ended without an outcome"),
-            ),
-          )
-        weft.RunLost(_) ->
-          finished(data, owner, Error("side request owner was lost"))
+        weft.AllDelivered -> finished(data, owner, flight.landed)
+
+        // A delivered managed outcome already seals its ownership proof;
+        // without one, a lost run leaves the reservation uncertain.
+        weft.RunLost(_) -> finished(data, owner, flight.landed)
       }
   }
 }
@@ -721,8 +708,35 @@ fn relayed(
 fn finished(
   data: Data,
   owner: Int,
-  terminal: Result(stream.StreamEvent, String),
+  landed: Option(weft.Outcome(stream.StreamEvent, String)),
 ) -> sm.Next(Phase, Data, Message) {
+  // AllDelivered settles the account, but only the outcome proves drain.
+  // Drop the relay after settlement so retained reservations cannot bill twice.
+  let #(terminal, uncertain) = case landed {
+    Some(weft.Completed(value:, ..)) -> #(Ok(value), data.uncertain)
+    Some(weft.Failed(error:, ..)) -> #(Error(error), data.uncertain)
+    Some(weft.Crashed(..)) -> #(Error("side request crashed"), data.uncertain)
+    Some(weft.Abandoned(..)) -> #(
+      Error("side request cancelled or timed out"),
+      data.uncertain,
+    )
+    Some(weft.NeverStarted(..)) -> #(
+      Error("side request never started"),
+      data.uncertain,
+    )
+    Some(weft.DrainProofLost(..)) -> #(
+      Error("side request drain proof was lost"),
+      data.uncertain + 1,
+    )
+    Some(weft.CancellationUnconfirmed(..)) -> #(
+      Error("side request cancellation was not confirmed"),
+      data.uncertain + 1,
+    )
+    None -> #(
+      Error("side request owner or outcome was lost"),
+      data.uncertain + 1,
+    )
+  }
   let report = case terminal {
     Ok(event) -> stream.terminal_accounting(event)
     Error(_) -> unknown_accounting()
@@ -753,7 +767,12 @@ fn finished(
       })
     })
   settle(
-    Data(..data, conversations:, flights: dict.delete(data.flights, owner)),
+    Data(
+      ..data,
+      conversations:,
+      flights: dict.delete(data.flights, owner),
+      uncertain:,
+    ),
   )
 }
 
