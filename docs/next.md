@@ -128,6 +128,18 @@ Require the exact pushed head's hosted checks and genuine `signoff/linux`
 status before calling it merge-ready. Neither a local pass nor an earlier
 head's signoff substitutes for those results.
 
+The next same-head run (`919d0646d`) and its bounded retry exposed two
+pre-existing fixture observation races. The web code-block measurement
+repeatedly subtracted a catch-up from a patch that also carried new lines;
+its code-specific collector now attributes patches by exact new-row content,
+requires all eight new rows in one patch and retains the 2 KiB payload bound.
+It uses Lustre's public JSON encoder; `gleam_json` is declared as a test-only
+dependency at its already-resolved version, with no package/version changes.
+The claim-refusal fixture could request the browser refusal before the terminal
+claim socket's allocation retired. It now witnesses that custody release,
+releases its probe permit and crosses a root-message barrier before asserting
+the original fixed refusal words. No production behavior or deadline changes.
+
 ## What to do next
 
 1. Review the cleanup and CI repair in PR #976. Exit: archive recovery, links
