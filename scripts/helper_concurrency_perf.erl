@@ -8,7 +8,7 @@ main() ->
     Version = list_to_existing_atom(Version0),
     Round = list_to_integer(Round0),
     {ok, _} = application:ensure_all_started(broker),
-    io:format("META version=~p round=~p otp=~s schedulers=~p root=~s~n",
+    io:format("META version=~p round=~p otp=~s schedulers=~p parallel_samples=15 root=~s~n",
               [Version, Round, erlang:system_info(otp_release),
                erlang:system_info(schedulers_online), Root]),
     lists:foreach(fun(Slots) -> fixture(Root, Version, Slots) end, [1, 4, 8]),
@@ -22,7 +22,7 @@ fixture(Root, Version, Slots) ->
     _ = batch(P, Helpers, <<"cold">>),
     ColdUs = now_us() - ColdStart,
     Native = native_pids() -- Before,
-    Expected = case Version of baseline -> Slots; candidate -> (Slots + 3) div 4 end,
+    Expected = case Version of baseline -> Slots; candidate -> (Slots + 3) div 4; preoptimization -> (Slots + 3) div 4 end,
     Expected = length(Native),
     Actors = lists:usort(['broker@exec':pool_pid(element(1, P)) |
                          ['broker@exec':pid(H) || H <- Helpers]]),
@@ -49,8 +49,9 @@ fixture(Root, Version, Slots) ->
         return_all(P, Hs),
         io:format("PARALLEL version=~p slots=~p sample=~p elapsed_us=~p~n",
                   [Version, Slots, Index, Elapsed])
-    end, lists:seq(1, 5)),
+    end, lists:seq(1, 15)),
     memory(P, Version, Slots, Native, Actors),
+    lists:foreach(fun(I) -> startup(P, Version, Slots, I) end, lists:seq(1, 5)),
     {ok, nil} = 'broker@exec':close_pool(element(1, P), 15000),
     'broker@exec':stop_pool(element(1, P)),
     await_dead(Native, now_us() + 5000000),
@@ -154,6 +155,32 @@ await_marker(S, Expected, Acc) ->
                                            await_marker(S, Expected, New) end;
         Other -> error({payload_not_concurrent, Other})
     end.
+
+%% Attribution is separate from the original short-command timings. Every
+%% payload emits a unique marker, waits for all peers, and sleeps briefly.
+%% The gate prevents marker and terminal output merging on a loaded host. Submission measures
+%% synchronous broker acceptance; marker observation also includes queued work.
+startup(P = {_, Dir}, Version, Slots, Sample) ->
+    Gate = <<Dir/binary, "/work/startup-release-", (integer_to_binary(Sample))/binary>>,
+    Hs = leases(P, Slots),
+    Begin = now_us(),
+    Runs = [begin
+        Marker = <<"phase-", (integer_to_binary(I))/binary, "\n">>,
+        Done = <<"done-", (integer_to_binary(I))/binary, "\n">>,
+        Script = <<"printf '", Marker/binary, "'; while [ ! -f '", Gate/binary,
+                   "' ]; do /bin/sleep 0.01; done; /bin/sleep 0.05; printf '", Done/binary, "'">>,
+        {start(P, H, Script), Marker, Done}
+    end || {H, I} <- lists:zip(Hs, lists:seq(1, Slots))],
+    Submitted = now_us() - Begin,
+    [await_marker(S, Marker, <<>>) || {S, Marker, _} <- Runs],
+    Marked = now_us() - Begin,
+    ok = file:write_file(Gate, <<"release">>),
+    Results = [finish(S, Done, <<>>) || {S, _, Done} <- Runs],
+    Finished = now_us() - Begin,
+    io:format("STARTUP version=~p slots=~p sample=~p submit_us=~p all_markers_us=~p total_us=~p exec_wall_ms=~w~n",
+              [Version, Slots, Sample, Submitted, Marked, Finished,
+               [element(10, R) || R <- Results]]),
+    return_all(P, Hs).
 
 %% These identities come from this VM's ports. Payloads and driver are not
 %% included in native helper RSS; RSS totals may double-count shared pages.
