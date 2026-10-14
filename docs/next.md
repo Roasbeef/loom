@@ -32,8 +32,11 @@ Loom's configured price estimates are not authoritative subscription charges.
 
 All 308 provider tests passed, as did both focused catalogue tier tests.
 Client compilation was warning-free, both package lint gates had no errors,
-and formatting and diff checks passed. Independent review, affected-package
-validation, hosted checks and exact-head Linux signoff remain pending. No result from the prior login branch or main validates this feature
+and formatting, diff and documentation checks passed. One independent
+adversarial review found no actionable findings. The implemented native
+gateway sent `priority` and settled a live response in 3.46 seconds. Broader
+affected-package validation, hosted checks and exact-head Linux signoff remain
+pending. No result from the prior login branch or main validates this feature
 head. Record exact commands and exit statuses in the PR before marking it ready.
 
 ## Separate investigations
@@ -48,8 +51,8 @@ not change Responses event acceptance or claim to fix that failure.
 
 ## Next steps
 
-1. Finish focused and affected checks, one independent adversarial review, and
-   publish this scoped Fast-mode PR with the live served-tier limitation.
+1. Finish the running affected checks and publish this scoped Fast-mode PR
+   with the live served-tier limitation and completed independent review.
 2. Obtain current-head hosted CI and Linux signoff. Merge, installation and
    enabling a potentially more expensive mode remain separate operator actions.
 3. Continue the unsupported-event investigation once its required authorization
