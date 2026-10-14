@@ -378,6 +378,39 @@ one owner of the conversation. Its encrypted reasoning items are opaque
 replay data, stored once on the first thinking block of an item. ADR-012
 records why subscription credentials are out of scope for this dialect.
 
+Responses validation failures retain a fixed reason code in the existing
+`MalformedStream` corruption report. The report's subject names an allowlisted
+event and its sequence; its context carries `reason`, `output`, `content`,
+`summary`, `annotation`, `last_seq` and cumulative response `bytes`. `last_seq`
+is the last accepted sequence, so it differs from the event sequence when
+sequence validation fails. Missing or null positions read `absent`, malformed
+positions read `invalid`, and integers outside signed 32-bit range read `range`.
+These markers describe diagnostics only; acceptance rules remain unchanged.
+
+For example, a changed text completion reports
+`reason=text_done_witness` with `event=response.output_text.done` and the
+item/part positions. Item completion distinguishes phase, closure, status,
+contiguity and content checks (`item_phase_mismatch`, `item_parts_unclosed`,
+`item_status_in_progress`, `item_parts_noncontiguous`, and the
+`item_*_mismatch` codes). Final-response checks distinguish
+`terminal_before_created`, `terminal_error`, `terminal_output_mismatch`,
+`terminal_items_unclosed`, `terminal_items_noncontiguous`,
+`terminal_incomplete_item` and `terminal_status_mismatch`. Decoder failures name
+their call site, such as `item_done_decode` or `terminal_usage`; framing and
+resource limits use `json_decode`, `sse_framing`, `stream_bytes`,
+`error_body_bytes` and `replay_metadata_bytes`. Keep these codes stable when
+moving checks, and introduce a distinct code for a new check rather than
+reusing an existing code for a different condition.
+
+Unknown event names become `unknown`. No response/item/call ID, model name,
+text, argument, ciphertext, annotation, parser excerpt or provider error body
+is copied into the report. Its fields fit the existing gateway scrubber's
+bounds. The human-readable report survives runtime failure settlement and the
+durable message codec in `errorMessage`; it does not add a new structured
+wire field or enable raw-stream recording. Diagnosing an actual provider
+compatibility defect can still require a minimal reproduction after the code
+identifies the rejected check.
+
 Gemini has two quirks worth knowing before reading its adapter. It has no
 tool-use finish reason, so a `STOP` on a response that carried a function
 call settles as `ToolUse`. And any part may carry a `thoughtSignature`

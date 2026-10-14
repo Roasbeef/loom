@@ -3,7 +3,7 @@
 Baselined October 13, 2026 against `526fb44c4` on
 `docs/archive-ui-captures`, based on `main` at
 `dc70d25d42da531284225bf399f40f82e13539d4`. This edition covers the capture
-cleanup and its CI repair, integrated with `main` at `e86d6fddd`. It records
+cleanup and its CI repair, integrated with `main` at `c47175004`. It records
 evidence from this checkout; earlier validation does not establish the state
 of this branch. The project plan remains `docs/issue-plan.md`.
 
@@ -39,6 +39,17 @@ validation belongs to that change; final hosted CI and signoff must cover this
 merged tree. The [upstream handoff](https://github.com/Roasbeef/loom/blob/e86d6fddd/docs/next.md)
 retains its detailed evidence and live memory follow-ups. No installed daemon
 was changed by this cleanup.
+
+[PR #979](https://github.com/Roasbeef/loom/pull/979) subsequently merged at
+`c47175004`, including the Responses diagnostic work from #977 and the
+mandatory delegated deployment-status coverage. The CI merge keeps upstream's
+single enforcement step, its 180-second bound and exact ordinary-Linux skip
+declaration. Responses validation failures now retain fixed reason codes and
+bounded structural context without provider text or identifiers; no acceptance
+or retry rule changed. The provider README and
+[upstream handoff](https://github.com/Roasbeef/loom/blob/c47175004/docs/next.md)
+preserve its evidence and the distinction between malformed streams and generic
+provider-error responses. Final verification must cover the combined tree.
 
 ## Rulings already made
 

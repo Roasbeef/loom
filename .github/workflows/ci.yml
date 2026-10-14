@@ -1394,21 +1394,6 @@ jobs:
       - name: Skip census (shipped multiplayer)
         run: .github/scripts/skip_census.sh "jail (linux, shipped multiplayer)" shipped-multiplayer.log
 
-      # The deployment-status fixture uses the shipped remote pair's enforcement
-      # probe. The ordinary runner may decline it, but this lane must execute
-      # the live executor up/down transitions without a skip declaration.
-      - name: Shipped deployment status with delegated enforcement
-        env:
-          LOOM_BOOTSTRAP_E2E_SERVER: ${{ github.workspace }}/bin/loomd
-          LOOM_TEST_TIMEOUT_SECONDS: 600
-        run: |
-          set -euo pipefail
-          . .github/scripts/join_delegated_cgroup.sh
-          bash scripts/test.sh client --match client@daemon_shipped_deployment_test: \
-            2>&1 | tee shipped-deployment.log
-          LOOM_DECLARED_SKIPS=/dev/null .github/scripts/skip_census.sh \
-            "jail (linux, shipped deployment status)" shipped-deployment.log
-
       # The background-jobs fixture belongs here more than anywhere else:
       # its scenarios turn on how an unattended payload is contained, and
       # the pid namespace that containment rests on exists only under this
@@ -1430,6 +1415,21 @@ jobs:
 
       - name: Skip census (shipped background jobs)
         run: .github/scripts/skip_census.sh "jail (linux, shipped jobs)" shipped-jobs.log
+
+      # The ordinary client bucket may decline the deployment-status fixture
+      # at its shared pair's enforcement probe. This job has supplied those
+      # prerequisites, so its up/down assertions must execute without a waiver.
+      - name: Shipped deployment status with delegated enforcement
+        env:
+          LOOM_BOOTSTRAP_E2E_SERVER: ${{ github.workspace }}/bin/loomd
+          LOOM_TEST_TIMEOUT_SECONDS: 180
+        run: |
+          set -euo pipefail
+          . .github/scripts/join_delegated_cgroup.sh
+          bash scripts/test.sh client --match client@daemon_shipped_deployment_test: \
+            2>&1 | tee shipped-deployment.log
+          LOOM_DECLARED_SKIPS=/dev/null .github/scripts/skip_census.sh \
+            "jail (linux, shipped deployment status)" shipped-deployment.log
 
       # The ordinary runner cannot supply all of these fixtures' required
       # enforcement layers. This lane has verified them and must execute both
@@ -1460,8 +1460,8 @@ jobs:
             e2e.log
             e2e-codemode.log
             shipped-multiplayer.log
-            shipped-deployment.log
             shipped-jobs.log
+            shipped-deployment.log
             ux-joined.log
             ux-worktree.log
           retention-days: 14

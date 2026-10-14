@@ -4,6 +4,7 @@
 
 import core/accounting
 import core/codec
+import core/corruption
 import core/json.{type JsonValue}
 import core/message
 import core/usage_evidence
@@ -14,6 +15,7 @@ import gleam/option.{None, Some}
 import gleam/string
 import provider/adapter/responses
 import provider/fixture
+import provider/internal/diagnostic
 import provider/internal/responses_request
 import provider/internal/wire
 import provider/model
@@ -142,9 +144,7 @@ fn settled(events: List(stream.StreamEvent)) -> message.AgentMessage {
 }
 
 fn malformed(events: List(stream.StreamEvent)) -> Nil {
-  let assert Ok(stream.Failed(stream.MalformedStream(_), accounting: _)) =
-    list.last(events)
-    as "the changed provider witness fails as malformed"
+  let _ = failure_report(events)
   Nil
 }
 
@@ -316,16 +316,26 @@ pub fn responses_every_byte_split_preserves_events_test() {
 
 pub fn responses_changed_done_item_and_final_witnesses_fail_test() {
   let events = text_events("original", "output_text")
-  list.each([4, 5, 6, 7], fn(index) {
-    let changed =
-      list.index_map(events, fn(event, position) {
-        case position == index {
-          True -> string.replace(event, "original", "changed")
-          False -> event
-        }
-      })
-    malformed(run(changed))
-  })
+  list.each(
+    [
+      #(4, "text_done_witness"),
+      #(5, "part_done_witness"),
+      #(6, "item_message_mismatch"),
+      #(7, "terminal_output_mismatch"),
+    ],
+    fn(scenario) {
+      let #(index, reason) = scenario
+      let changed =
+        list.index_map(events, fn(event, position) {
+          case position == index {
+            True -> string.replace(event, "original", "changed")
+            False -> event
+          }
+        })
+      let report = failure_report(run(changed))
+      assert string.contains(report.context, "reason=" <> reason <> ";")
+    },
+  )
 }
 
 pub fn responses_missing_each_closure_fails_test() {
@@ -964,16 +974,30 @@ pub fn responses_stream_and_http_errors_preserve_retry_without_remote_text_test(
 }
 
 pub fn responses_wire_and_error_body_budgets_fail_in_band_test() {
-  malformed(
-    fixture.drive(machine(), 200, [], [
-      bit_array.from_string("data: " <> string.repeat("x", 4_194_305)),
-    ]),
-  )
-  malformed(
-    fixture.drive(machine(), 500, [], [
-      bit_array.from_string(string.repeat("x", 65_537)),
-    ]),
-  )
+  let report =
+    failure_report(
+      fixture.drive(machine(), 200, [], [
+        bit_array.from_string("data: " <> string.repeat("x", 4_194_305)),
+      ]),
+    )
+  assert string.contains(report.context, "reason=sse_framing;")
+  let report =
+    failure_report(
+      fixture.drive(machine(), 500, [], [
+        bit_array.from_string(string.repeat("x", 65_537)),
+      ]),
+    )
+  assert string.contains(report.context, "reason=error_body_bytes;")
+  assert string.contains(report.context, "bytes=65537")
+  let report =
+    failure_report(
+      fixture.drive(machine(), 200, [], [
+        bit_array.from_string(string.repeat("x", 16_777_217)),
+      ]),
+    )
+  assert report.subject == "provider stream; event=none"
+  assert string.contains(report.context, "reason=stream_bytes;")
+  assert string.contains(report.context, "bytes=16777217")
 }
 
 pub fn responses_reasoning_cipher_is_stored_once_and_replays_losslessly_test() {
@@ -1479,4 +1503,161 @@ pub fn responses_cyber_access_is_explicit_and_defaults_are_omitted_test() {
       assert wire.field(body, "access_programs") == Error(Nil)
     },
   )
+}
+
+// Every malformed transcript must retain a reason, including fixtures that
+// predate reason codes. This helper also proves failure remains once-only.
+fn failure_report(
+  events: List(stream.StreamEvent),
+) -> corruption.CorruptionReport {
+  let terminals =
+    list.filter(events, fn(event) {
+      case event {
+        stream.Delta(..) -> False
+        stream.Failed(..) | stream.Settled(..) -> True
+      }
+    })
+  let assert [stream.Failed(stream.MalformedStream(report), _)] = terminals
+    as "Exactly one malformed terminal is emitted."
+  assert list.last(events) == list.last(terminals)
+  assert string.contains(report.context, "reason=")
+  assert string.length(report.context) <= corruption.max_context_length
+  report
+}
+
+pub fn responses_failure_structural_context_survives_gateway_scrubbing_test() {
+  let progress = fn(sequence) {
+    event("response.in_progress", [
+      #("sequence_number", json.Int(sequence)),
+      #("output_index", json.Int(2_147_483_647)),
+      #("content_index", json.Int(-2_147_483_648)),
+      #("summary_index", json.Int(2_147_483_647)),
+      #("annotation_index", json.Int(-2_147_483_648)),
+      #("response", response("in_progress", [])),
+    ])
+  }
+  let report = failure_report(run([progress(42), progress(41)]))
+  let error =
+    diagnostic.scrub_error(
+      stream.MalformedStream(report),
+      secret: "canary-credential",
+    )
+  let assert stream.MalformedStream(scrubbed) = error
+    as "Gateway scrubbing preserves a malformed-stream report."
+  assert scrubbed == report
+  assert string.contains(report.subject, "event=response.in_progress; seq=41")
+  assert string.contains(report.context, "reason=sequence;")
+  assert string.contains(report.context, "last_seq=42;")
+  assert string.contains(report.context, "output=2147483647;")
+  assert string.contains(report.context, "content=-2147483648;")
+  assert string.contains(report.context, "summary=2147483647;")
+  assert string.contains(report.context, "annotation=-2147483648;")
+  assert string.contains(report.context, "bytes=")
+  assert retry.classify(error) == retry.Terminal
+}
+
+pub fn responses_failure_context_never_echoes_remote_values_test() {
+  let canary = "canary-provider-secret"
+  let report =
+    failure_report(
+      run([
+        event(canary, [
+          #("sequence_number", json.String(canary)),
+          #("output_index", json.String(canary)),
+          #("content_index", json.Int(99_999_999_999_999_999_999)),
+          #("summary_index", json.Int(-99_999_999_999_999_999_999)),
+          #("annotation_index", json.Object([#("secret", json.String(canary))])),
+          #("item_id", json.String(canary)),
+          #("delta", json.String(canary)),
+          #("response", json.String(canary)),
+        ]),
+      ]),
+    )
+  let description = corruption.describe(report)
+  assert !string.contains(description, canary)
+  assert !string.contains(description, "99999999999999999999")
+  assert string.contains(report.subject, "event=unknown; seq=invalid")
+  assert string.contains(report.context, "reason=sequence;")
+  assert string.contains(report.context, "output=invalid;")
+  assert string.contains(report.context, "content=range;")
+  assert string.contains(report.context, "summary=range;")
+  assert string.contains(report.context, "annotation=invalid;")
+}
+
+pub fn responses_failure_framing_context_does_not_reuse_previous_event_test() {
+  let report =
+    failure_report(
+      run([
+        created(),
+        "data: {canary-provider-secret}\n\n",
+        completed([]),
+      ]),
+    )
+  assert report.subject == "provider stream; event=unparsed"
+  assert string.contains(report.context, "reason=json_decode;")
+  assert !string.contains(corruption.describe(report), "canary-provider-secret")
+}
+
+pub fn responses_failure_unknown_event_and_name_are_not_echoed_test() {
+  let report =
+    failure_report(run([created(), event("canary-provider-secret", [])]))
+  assert string.contains(report.subject, "event=unknown;")
+  assert string.contains(report.context, "reason=event_unsupported;")
+  assert !string.contains(corruption.describe(report), "canary-provider-secret")
+  let report =
+    failure_report(
+      run([
+        "event: canary-provider-secret\ndata: {\"type\":\"response.created\"}\n\n",
+      ]),
+    )
+  assert string.contains(report.subject, "event=response.created;")
+  assert string.contains(report.context, "reason=event_name;")
+  assert !string.contains(corruption.describe(report), "canary-provider-secret")
+}
+
+pub fn responses_failure_terminal_guards_have_distinct_reasons_test() {
+  let scenarios = [
+    #([completed([])], "terminal_before_created"),
+    #(
+      [
+        created(),
+        event("response.completed", [
+          #(
+            "response",
+            put(
+              response("completed", []),
+              "error",
+              json.String("canary-provider-secret"),
+            ),
+          ),
+        ]),
+      ],
+      "terminal_error",
+    ),
+    #(
+      [created(), completed([text_item("completed", [])])],
+      "terminal_output_mismatch",
+    ),
+    #(
+      list.append(list.take(text_events("text", "output_text"), 2), [
+        completed([]),
+      ]),
+      "terminal_items_unclosed",
+    ),
+    #(
+      [
+        created(),
+        event("response.completed", [#("response", response("in_progress", []))]),
+      ],
+      "terminal_status_mismatch",
+    ),
+  ]
+  list.each(scenarios, fn(scenario) {
+    let report = failure_report(run(scenario.0))
+    assert string.contains(report.context, "reason=" <> scenario.1 <> ";")
+    assert !string.contains(
+      corruption.describe(report),
+      "canary-provider-secret",
+    )
+  })
 }

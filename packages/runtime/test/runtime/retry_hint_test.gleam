@@ -5,8 +5,12 @@ import core/codec
 import core/json
 import core/message
 import core/usage_evidence
+import gleam/bit_array
 import gleam/option.{None, Some}
 import gleam/string
+import provider/adapter/responses
+import provider/internal/diagnostic
+import provider/model
 import provider/stream
 import runtime/effects
 import support/harness
@@ -76,4 +80,46 @@ pub fn contextual_failure_and_retry_hint_survive_durable_message_codec_test() {
   assert string.contains(encoded, "local-operation/request")
   assert !string.contains(encoded, "provider text")
   assert string.contains(description, "runtime: request deadline")
+}
+
+// Exercise the adapter, gateway scrubber, failure bridge and durable codec
+// together. A synthetic error would miss a dropped or truncated witness.
+pub fn responses_validation_reason_survives_durable_failure_test() {
+  let target =
+    model.ResolvedModel("fixture", "fixture", model.ThinkingOff, 200_000, 8192)
+  let machine = responses.subscription_response_machine(target, now: 0)
+  let state = machine.on_status(machine.init, 200, [])
+  let body =
+    "event: canary-provider-secret\ndata: {\"type\":\"canary-provider-secret\",\"sequence_number\":7,\"output_index\":2,\"item_id\":\"canary-provider-secret\",\"delta\":\"canary-provider-secret\"}\n\n"
+  let #(_, events) = machine.on_chunk(state, bit_array.from_string(body))
+  let assert [stream.Failed(error, report)] = events
+    as "The subscription adapter rejects the unknown event exactly once."
+  let failure =
+    diagnostic.scrub_error(error, secret: "request-credential")
+    |> stream.with_context(stream.FailureObservation(
+      stream.RuntimeSource,
+      stream.TerminalResponse,
+      Some(1),
+      Some(300_000),
+      Some(2000),
+      Some("local/request"),
+    ))
+  let settled =
+    effects.settle_failure(failure, harness.configuration(), 50, report)
+  let encoded = codec.encode_message(settled)
+  assert codec.decode_message(encoded) == Ok(settled)
+  let assert message.AssistantMessage(
+    error_message: Some(description),
+    raw_stop_reason: Some("terminal"),
+    ..,
+  ) = settled
+    as "Validation failures remain terminal and preserve the diagnostic text."
+  assert string.contains(description, "reason=event_unsupported;")
+  assert string.contains(description, "event=unknown; seq=7")
+  assert string.contains(description, "output=2;")
+  assert string.contains(description, "last_seq=7;")
+  assert string.contains(description, "bytes=")
+  assert string.contains(json.to_string(encoded), "local/request")
+  assert !string.contains(description, "canary-provider-secret")
+  assert !string.contains(json.to_string(encoded), "canary-provider-secret")
 }
