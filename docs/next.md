@@ -71,8 +71,15 @@ native runs passed, but do not establish a hosted flake. The hosted package
 gate now opts only the client suite into four-way execution, through
 `LOOM_CLIENT_TEST_PARALLEL`. Other packages retain their sequential default,
 and the existing global `LOOM_TEST_PARALLEL` knob still applies elsewhere.
-Client serial exemptions remain unchanged. Final verification must inspect
-that step's actual outcome as well as the job.
+Client serial exemptions remain unchanged. The saved four-way client log still
+showed six remote-fixture failures and more simultaneous starts than four.
+An actual OTP EUnit probe identified the runner defect: its inherited parallel
+order applied separately to nested groups, allowing 16 simultaneous test
+bodies at a setting of four. The runner now wraps each parallel module in
+`inorder`, bounding concurrent modules while keeping each module's tests and
+generators sequential. The probe measured four simultaneous bodies with that
+shape; the existing exclusive serial barrier remains intact. Final verification
+must inspect the advisory step's actual outcome as well as the job.
 No test assertion, process deadline or advisory-policy changes.
 
 The sequential macOS E2E lane at `3a53ebcff` exposed a separate fixture race:

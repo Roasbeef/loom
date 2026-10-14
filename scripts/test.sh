@@ -18,19 +18,16 @@ if [ "$#" -ne 0 ]; then
   match="$2"
 fi
 
-# LOOM_TEST_PARALLEL asks EUnit to run tests concurrently, up to this many at
+# LOOM_TEST_PARALLEL asks EUnit to run modules concurrently, up to this many at
 # a time, on the one emulator the runner already starts. Unset, empty, or 1
 # leaves the run exactly as it was: the same sequential order and the same
 # output. Anything else must be a positive integer, because a typo that
 # silently fell back to sequential would make a timing measurement claim a
 # speedup it never had.
 #
-# The concurrency is not per module. EUnit propagates an inparallel group's
-# ordering down the whole subtree beneath it, so wrapping the module list
-# makes every individual test in the package eligible to run beside every
-# other one, including two tests inside the same module. A suite whose tests
-# share a fixture between themselves is therefore just as exposed as two
-# suites that share one.
+# Each module runs its tests in order. EUnit otherwise inherits inparallel
+# ordering into nested groups, each with its own limit, so a limit on the
+# module list alone multiplies concurrency rather than bounding test bodies.
 #
 # The variable is opt-in rather than a default because EUnit gives concurrent
 # test representations no isolation whatsoever. They share one node, so they
@@ -133,11 +130,10 @@ python3 "$root/scripts/with_timeout.py" "${LOOM_TEST_TIMEOUT_SECONDS:-1200}" -- 
         end, Modules)
       end,
 
-      %% A parallel run splits the module list into two groups. EUnit pushes
-      %% the inparallel ordering down into every nested item, so the
-      %% limit counts individual tests rather than modules and no module is
-      %% internally sequential; that is what makes the split necessary, since
-      %% a module cannot opt itself out from inside. Only the unfiltered path
+      %% A parallel run splits the module list into two groups. Each module
+      %% has an explicit inorder boundary, so the outer limit bounds modules
+      %% and their bodies run sequentially rather than inheriting a fresh
+      %% parallel limit at every nested group. Only the unfiltered path
       %% is grouped: --match already names individual tests, and reordering
       %% those would change what a focused debugging run means.
       %%
@@ -167,7 +163,8 @@ python3 "$root/scripts/with_timeout.py" "${LOOM_TEST_TIMEOUT_SECONDS:-1200}" -- 
       end,
       Grouped = case {Pattern, Parallel} of
         {\"\", N} when N > 1 ->
-          [{inorder, [{inparallel, N, Tests -- Serial}, {inorder, Serial}]}];
+          Concurrent = [{inorder, M} || M <- Tests -- Serial],
+          [{inorder, [{inparallel, N, Concurrent}, {inorder, Serial}]}];
         _ -> Tests
       end,
       case Tests of
