@@ -157,3 +157,23 @@ remain separate gates.
 The initial strict benchmark refused unavailable platform layers and is not
 counted as successful validation. No test was weakened, removed or newly skipped by this change. Existing
 platform exclusions remain visible in the full-gate log.
+
+## Main integration validation
+
+The October 13 integration includes main `e86d6fddd` (merged register decoding
+#972). Its only conflict was `docs/next.md`; idle-retirement broker source
+merged unchanged. The existing deployment CI correction from #979 is included:
+the ordinary-runner declaration is paired with exact execution in the delegated
+Linux jail lane and an empty skip allowance. No fixture assertion is weakened.
+
+Old run 38458267713 failed its Linux skip census on the missing deployment
+marker; macOS advisory failed downloading its build artifact with ENOTFOUND
+before running tests. Those are recorded separately from source assertion
+failures. Independent integration review found no actionable issue and verified
+timer cancellation, available-only retirement, retained unconfirmed quota and
+native plus original-normal-owner witnesses. Main's register source is unchanged.
+
+The integrated full `LOOM_TEST_PARALLEL=8 make check` passed direct exit 0:
+`/private/tmp/pr975-integrated-full-check.log`. Fresh hosted CI must validate the
+published head, including actual Linux idle retirement/replacement and strict
+deployment execution. No daemon installation or restart is performed.

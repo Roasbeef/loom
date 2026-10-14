@@ -69,5 +69,8 @@ failed its Linux census on the missing deployment-status declaration; macOS
 advisory failed downloading its artifact with DNS ENOTFOUND before tests ran.
 The CI-only fix from #979 pairs the ordinary-runner declaration with exact
 fixture execution under delegated Linux enforcement and an empty skip allowance.
-No source or test assertion is weakened for those failures. Fresh full local,
-independent integration review and hosted checks must attest to the new head.
+No source or test assertion is weakened for those failures. Fresh `LOOM_TEST_PARALLEL=8 make check` passed direct exit 0 on the integrated
+source: `/private/tmp/pr975-integrated-full-check.log`. Independent integration
+review found no actionable issue and verified idle custody/timer behavior,
+unchanged main register cache and strict deployment coverage. Fresh hosted
+checks must attest to the published integration head before merging.
