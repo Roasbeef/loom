@@ -24,7 +24,7 @@ the rail.
 The source of truth for every frame is a plain-text grid,
 `A-sonnet-<frame>.txt`, at its exact cell size. The PNGs are
 renderings of those grids. `A-sonnet-gen.py` writes the grids
-and `A-sonnet.html`, so a late adjustment is an edit to the
+and [A-sonnet.html](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet.html), so a late adjustment is an edit to the
 script and a rerun. The colours are the terminal's own palette
 (`packages/tui/src/tui/theme.gleam`) and its light remapping
 (`packages/tui/src/tui/appearance.gleam`). The PNGs render the glyphs with
@@ -47,8 +47,8 @@ Today's picker is `session_selector.render`
 (`packages/tui/src/tui/session_selector.gleam:716`). Captures from the real
 renderer with eight fixture sessions, at 120 by 40 and 80 by 24:
 
-![Before, picker 120](before-picker-120.png)
-![Before, picker 80](before-picker-80.png)
+![Before, picker 120](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/before-picker-120.png)
+![Before, picker 80](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/before-picker-80.png)
 
 What is wrong with it, concretely:
 
@@ -84,8 +84,8 @@ What is wrong with it, concretely:
 The redesign keeps the overlay, the filter tabs, the preview split, and every
 key. It changes what is drawn:
 
-![After, picker 120, dark](A-sonnet-picker-120-dark.png)
-![After, picker 120, light](A-sonnet-picker-120-light.png)
+![After, picker 120, dark](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-picker-120-dark.png)
+![After, picker 120, light](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-picker-120-light.png)
 
 - Sessions are grouped under **one header per workspace**, with the path
   shortened from the left of the home directory (`~/code/loom`), and a count
@@ -111,9 +111,9 @@ Narrow (80 by 24) and the empty state:
 
 | Frame | Dark | Light |
 |---|---|---|
-| 80x24 | ![](A-sonnet-picker-80-dark.png) | ![](A-sonnet-picker-80-light.png) |
-| Empty, 120x40 | ![](A-sonnet-picker-120-empty-dark.png) | ![](A-sonnet-picker-120-empty-light.png) |
-| Empty, 80x24 | ![](A-sonnet-picker-80-empty-dark.png) | ![](A-sonnet-picker-80-empty-light.png) |
+| 80x24 | ![](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-picker-80-dark.png) | ![](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-picker-80-light.png) |
+| Empty, 120x40 | ![](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-picker-120-empty-dark.png) | ![](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-picker-120-empty-light.png) |
+| Empty, 80x24 | ![](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-picker-80-empty-dark.png) | ![](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-picker-80-empty-light.png) |
 
 At 80 columns the preview is not drawn. The selected row alone expands by one
 line, with its approval count and last message, and a `↓ 5 more below` row
@@ -136,8 +136,8 @@ Today's view is `agents.render_inspection`
 wide terminals, and the selected row stacked above its detail on narrow ones.
 Captures with six fixture agents (one needing approval, one failed):
 
-![Before, agents 120](before-agents-many-120.png)
-![Before, agents 80](before-agents-many-80.png)
+![Before, agents 120](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/before-agents-many-120.png)
+![Before, agents 80](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/before-agents-many-80.png)
 
 What is wrong with it:
 
@@ -174,8 +174,8 @@ The redesign keeps the overlay, the four views (Activity, Messages, Notes,
 Collaborate on keys 1 to 4), the selection rule (browsing never retargets the
 composer), and the actions (Enter opens, `n` jumps to attention, `a` reviews).
 
-![After, agents 120, dark](A-sonnet-agents-120-dark.png)
-![After, agents 120, light](A-sonnet-agents-120-light.png)
+![After, agents 120, dark](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-agents-120-dark.png)
+![After, agents 120, light](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-agents-120-light.png)
 
 - **One line per agent, in columns**: state glyph, name, current action, elapsed,
   context size. Truncation cuts the action with `…`, never the status.
@@ -196,12 +196,12 @@ composer), and the actions (Enter opens, `n` jumps to attention, `a` reviews).
 
 | State | Dark | Light |
 |---|---|---|
-| Failed agent | ![](A-sonnet-agents-120-failed-dark.png) | ![](A-sonnet-agents-120-failed-light.png) |
-| Long description | ![](A-sonnet-agents-120-long-dark.png) | ![](A-sonnet-agents-120-long-light.png) |
-| Empty, 120x40 | ![](A-sonnet-agents-120-empty-dark.png) | ![](A-sonnet-agents-120-empty-light.png) |
-| 80x24, list and detail | ![](A-sonnet-agents-80-dark.png) | ![](A-sonnet-agents-80-light.png) |
-| 80x24, Messages | ![](A-sonnet-agents-80-messages-dark.png) | ![](A-sonnet-agents-80-messages-light.png) |
-| Empty, 80x24 | ![](A-sonnet-agents-80-empty-dark.png) | ![](A-sonnet-agents-80-empty-light.png) |
+| Failed agent | ![](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-agents-120-failed-dark.png) | ![](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-agents-120-failed-light.png) |
+| Long description | ![](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-agents-120-long-dark.png) | ![](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-agents-120-long-light.png) |
+| Empty, 120x40 | ![](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-agents-120-empty-dark.png) | ![](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-agents-120-empty-light.png) |
+| 80x24, list and detail | ![](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-agents-80-dark.png) | ![](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-agents-80-light.png) |
+| 80x24, Messages | ![](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-agents-80-messages-dark.png) | ![](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-agents-80-messages-light.png) |
+| Empty, 80x24 | ![](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-agents-80-empty-dark.png) | ![](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-agents-80-empty-light.png) |
 
 At 80 by 24 the list (up to eight rows) sits above a compact detail, with a
 one-row footer. The detail scrolls with PgUp and PgDn, as today.
@@ -245,8 +245,8 @@ source and the result's message and details in the danger colour; a running
 program shows its first lines and elapsed time. No call count appears,
 because none is known.
 
-![Code mode, today, dark](A-sonnet-code-mode-today-120-dark.png)
-![Code mode, today, 80](A-sonnet-code-mode-today-80-dark.png)
+![Code mode, today, dark](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-code-mode-today-120-dark.png)
+![Code mode, today, 80](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-code-mode-today-80-dark.png)
 
 **Needs protocol-change.** The counted call tree (`program · 7 calls · 1
 failed`, each capability call in order with its status) cannot be drawn from
@@ -254,8 +254,8 @@ any record the client holds. It needs the daemon to write a call record, which
 is the call list itself and not only timing. The frame is a mockup of that
 change and is marked as one in its heading:
 
-![Code mode, call tree, dark](A-sonnet-code-mode-120-dark.png)
-![Code mode, call tree, 80](A-sonnet-code-mode-80-dark.png)
+![Code mode, call tree, dark](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-code-mode-120-dark.png)
+![Code mode, call tree, 80](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-code-mode-80-dark.png)
 
 This also bears on the web Trace tab (#656): its step one is described as
 drawn from what the page already receives, and a call list is not among
@@ -290,8 +290,8 @@ admitted message, for example a strand variant of `message.Origin`.
 
 What draws today, and the mockup of the corrected received side:
 
-![Strand messages, today](A-sonnet-strand-messages-today-120-dark.png)
-![Strand messages, mockup](A-sonnet-strand-messages-120-dark.png)
+![Strand messages, today](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-strand-messages-today-120-dark.png)
+![Strand messages, mockup](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-strand-messages-120-dark.png)
 
 The second frame is marked in its heading as needing the protocol change.
 Once the origin exists, a received message is drawn like the sent one: the
@@ -307,7 +307,7 @@ from the authenticated origin. The security rule is that an unauthenticated
 string must never look like an authenticated origin. The design makes the
 difference structural:
 
-![Peer messages, dark](A-sonnet-peer-messages-120-dark.png)
+![Peer messages, dark](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-peer-messages-120-dark.png)
 
 - An authenticated message gets a **full-width band on the raised
   background** that begins `⇄ from <peer>`, with the source strand and the
@@ -322,7 +322,7 @@ difference structural:
   shape but `origin not verified` in the danger colour and `shown as text
   only`, so it is visibly worse than a verified one and cannot be mistaken
   for it.
-- The 80 by 24 frame is `A-sonnet-peer-messages-80-dark.png`.
+- The 80 by 24 frame is [A-sonnet-peer-messages-80-dark.png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-peer-messages-80-dark.png).
 
 No wire change: the origin is already authenticated by the daemon on the
 entry. The one new rule is a test that no transcript text of any speaker
@@ -343,10 +343,10 @@ The design has three cases and one placeholder that is always correct:
 
 | Case | Frame |
 |---|---|
-| No graphics, or Herdr: one placeholder line with name, size, dimensions and the open key | ![](A-sonnet-image-placeholder-120-dark.png) |
-| No graphics, optional braille preview through `etui/braille` | ![](A-sonnet-image-braille-120-dark.png) |
-| Capable terminal: a reserved, labelled box that the terminal fills | ![](A-sonnet-image-rendered-120-dark.png) |
-| 80x24 placeholder | ![](A-sonnet-image-placeholder-80-dark.png) |
+| No graphics, or Herdr: one placeholder line with name, size, dimensions and the open key | ![](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-image-placeholder-120-dark.png) |
+| No graphics, optional braille preview through `etui/braille` | ![](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-image-braille-120-dark.png) |
+| Capable terminal: a reserved, labelled box that the terminal fills | ![](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-image-rendered-120-dark.png) |
+| 80x24 placeholder | ![](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-image-placeholder-80-dark.png) |
 
 - The **placeholder is the durable row** in every case. The rendered box is an
   addition on top of it, so scrollback, a recording replay and `loom replay`
@@ -402,11 +402,11 @@ content; the structure is what matters. They are dark terminal captures only.
 
 | Capture | Image | Grid |
 |---|---|---|
-| 200x50, `/diff` pane open | ![before, 200 wide](before-wide-diff.png) | [txt](before-wide-diff.txt) |
-| 120x40 | ![before, 120 wide](before-120.png) | [txt](before-120.txt) |
-| 120x40, rail toggled on | ![before, rail](before-120-rail.png) | [txt](before-120-rail.txt) |
-| 120x40, `/agents` overlay | ![before, agents](before-120-agents.png) | [txt](before-120-agents.txt) |
-| 80x24 | ![before, 80 wide](before-80.png) | [txt](before-80.txt) |
+| 200x50, `/diff` pane open | ![before, 200 wide](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/before-wide-diff.png) | [txt](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/before-wide-diff.txt) |
+| 120x40 | ![before, 120 wide](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/before-120.png) | [txt](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/before-120.txt) |
+| 120x40, rail toggled on | ![before, rail](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/before-120-rail.png) | [txt](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/before-120-rail.txt) |
+| 120x40, `/agents` overlay | ![before, agents](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/before-120-agents.png) | [txt](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/before-120-agents.txt) |
+| 80x24 | ![before, 80 wide](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/before-80.png) | [txt](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/before-80.txt) |
 
 ## 2. What translates from A2 and what does not
 
@@ -438,10 +438,10 @@ Both columns dock by default, as in A2: `30 + 1 + 112 + 1 + 56 = 200`. The
 composer sits under the transcript only; the two side columns run down to the
 footer. The footer is today's footer with one added hint.
 
-![Wide, dark](A-sonnet-wide-dark.png)
-![Wide, light](A-sonnet-wide-light.png)
+![Wide, dark](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-wide-dark.png)
+![Wide, light](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-wide-light.png)
 
-Grid: [A-sonnet-wide.txt](A-sonnet-wide.txt).
+Grid: [A-sonnet-wide.txt](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-wide.txt).
 
 **Left column, Sessions.** Workspaces as headings with a count, sessions under
 them, the current one marked `▌` with one bar per live strand (`▮`). `●` is a
@@ -458,14 +458,14 @@ need input. Section 4 describes each tab.
 **Both columns collapsed** (focus mode) is the transcript alone with today's
 strip under the footer:
 
-![Focus, dark](A-sonnet-wide-focus-dark.png)
+![Focus, dark](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-wide-focus-dark.png)
 
 ### 3.2 Standard, about 120 columns
 
 Nothing is open by default. The screen is today's screen plus a breadcrumb row
 and the gutter marks:
 
-![Standard, dark](A-sonnet-standard-dark.png)
+![Standard, dark](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-standard-dark.png)
 
 Opening the panel (F2 to F5, or Shift+Tab) docks it at 44 cells and hides the
 strip, because the Strands tab says the same thing. `75 + 1 + 44 = 120`. The
@@ -474,10 +474,10 @@ the picker as an overlay, as today.
 
 | Tab | Dark | Light |
 |---|---|---|
-| Strands | ![](A-sonnet-standard-strands-dark.png) | ![](A-sonnet-standard-strands-light.png) |
-| Changes | ![](A-sonnet-standard-changes-dark.png) | ![](A-sonnet-standard-changes-light.png) |
-| Trace | ![](A-sonnet-standard-trace-dark.png) | ![](A-sonnet-standard-trace-light.png) |
-| Session | ![](A-sonnet-standard-session-dark.png) | ![](A-sonnet-standard-session-light.png) |
+| Strands | ![](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-standard-strands-dark.png) | ![](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-standard-strands-light.png) |
+| Changes | ![](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-standard-changes-dark.png) | ![](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-standard-changes-light.png) |
+| Trace | ![](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-standard-trace-dark.png) | ![](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-standard-trace-light.png) |
+| Session | ![](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-standard-session-dark.png) | ![](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-standard-session-light.png) |
 
 ### 3.3 Narrow, 80 by 24
 
@@ -488,9 +488,9 @@ place, so a person can still type. Esc closes it.
 
 | Frame | Dark | Light |
 |---|---|---|
-| Default | ![](A-sonnet-narrow-dark.png) | ![](A-sonnet-narrow-light.png) |
-| Sheet, Strands | ![](A-sonnet-narrow-strands-dark.png) | ![](A-sonnet-narrow-strands-light.png) |
-| Sheet, Changes | ![](A-sonnet-narrow-changes-dark.png) | ![](A-sonnet-narrow-changes-light.png) |
+| Default | ![](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-narrow-dark.png) | ![](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-narrow-light.png) |
+| Sheet, Strands | ![](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-narrow-strands-dark.png) | ![](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-narrow-strands-light.png) |
+| Sheet, Changes | ![](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-narrow-changes-dark.png) | ![](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-narrow-changes-light.png) |
 
 At 24 rows the composer takes four rows and the footer two; the sheet gets
 the remaining fifteen and scrolls when a tab is longer.
@@ -512,7 +512,7 @@ section 9). With more than a few strands the header becomes a filter, taken
 from Codex's command center: `All 6 · Needs you 1 · Working 4 · Done 1`, Tab
 cycles it, and `n` jumps to the next strand that needs you.
 
-![Six agents at 120 columns](A-sonnet-standard-multi-dark.png)
+![Six agents at 120 columns](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-standard-multi-dark.png)
 
 **Changes.** Files with counts and the first file's hunks, bounded by
 `changes_view`. Where the terminal holds a worktree observation, which is the
@@ -550,7 +550,7 @@ The web timeline has a dot per row. The terminal version is two things.
    cancels. `0` is also the way back ("All strands"), because Esc in the
    composer already interrupts work and must keep doing so.
 
-![Hint mode](A-sonnet-standard-hints-dark.png)
+![Hint mode](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-standard-hints-dark.png)
 
 A focus is the existing `submit.switch_active_strand`
 (`packages/tui/src/tui/submit.gleam:533`): the transcript, the composer's
@@ -558,7 +558,7 @@ recipient and the panel's detail follow it together. The heading row
 becomes a breadcrumb, `ws · main ▸ sub:tests`, where it reads
 `transcript / main` today (`render.transcript_title`):
 
-![Focused strand, wide](A-sonnet-wide-strand-dark.png)
+![Focused strand, wide](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-wide-strand-dark.png)
 
 A focus cancels nothing the operator typed: a draft stays in the editor,
 addressed to the new strand, as the strip's Enter already does.
@@ -698,15 +698,15 @@ frame above.
 
 | Observation | Frame | Change |
 |---|---|---|
-| About fifteen identical `✓ agent_wait · 2 subagents` rows | [standard-multi](A-sonnet-standard-multi-dark.png) and [narrow-multi](A-sonnet-narrow-multi-dark.png) | One counted, updating line: `✓ agent_wait · 2 subagents ×15 · last 51s ago` |
+| About fifteen identical `✓ agent_wait · 2 subagents` rows | [standard-multi](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-standard-multi-dark.png) and [narrow-multi](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-narrow-multi-dark.png) | One counted, updating line: `✓ agent_wait · 2 subagents ×15 · last 51s ago` |
 | A `[loom] background job ... was lost` notice drawn as a `› User` turn | same | A `◇ harness` notice in the signal colour, marked "a notice from Loom, not a message from you". Needs the data check in section 8 |
 | A wall of identical 429 errors | same | `! provider 429 rate limited ×7 · retry in 8s` |
 | The roster, queue strip and attention count work | same | Kept: the strip stays whenever the panel is closed, and `queue · 1 pending · Alt+q` moves to the heading row's right end |
-| Claude Code's list under the input with a selected row | [narrow-multi](A-sonnet-narrow-multi-dark.png) | The strip is the same idea and stays; it shows the top four and `+2 more · F2 opens the list` |
-| Codex's "Needs you 1" filter tabs | [standard-multi](A-sonnet-standard-multi-dark.png) | The Strands header counts: `All 6 · Needs you 1 · Working 4 · Done 1`; `n` jumps to the next one that needs you |
+| Claude Code's list under the input with a selected row | [narrow-multi](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-narrow-multi-dark.png) | The strip is the same idea and stays; it shows the top four and `+2 more · F2 opens the list` |
+| Codex's "Needs you 1" filter tabs | [standard-multi](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-standard-multi-dark.png) | The Strands header counts: `All 6 · Needs you 1 · Working 4 · Done 1`; `n` jumps to the next one that needs you |
 | pi's pinned TODO | every main frame | The one-line `▸ Todo · 3 of 5 done` stays above the composer, expanded by the existing key |
 | Full-width approval blocks with numbered choices | not redrawn | The approval dialog (`approval_panel`) is already modal and selects no choice by default; it is out of scope and stays |
-| A scrollback indicator with a jump to latest | [narrow-multi](A-sonnet-narrow-multi-dark.png) | The existing `↓ Scrollback · End for latest` heading, kept |
+| A scrollback indicator with a jump to latest | [narrow-multi](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-narrow-multi-dark.png) | The existing `↓ Scrollback · End for latest` heading, kept |
 | Slash overlays anchored above the prompt | not redrawn | Already the palette's behaviour; unchanged |
 
 Six agents at 80 by 24: the strip has room for four rows plus the overflow

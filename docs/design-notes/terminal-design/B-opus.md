@@ -20,19 +20,19 @@ the session picker, and `↓` enters the agent strip.
 
 All frames are character grids at the widths they claim. Each is committed as
 a `.txt` file, rendered in the terminal's palette by
-[`B-opus.html`](B-opus.html), and screenshotted in light and dark. The image
+[B-opus.html](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus.html), and screenshotted in light and dark. The image
 index is in section 14.
 
 ## 1. The session picker
 
 ### Before
 
-![Today's picker at 120×40](B-opus-before-picker-120x40-dark.png)
+![Today's picker at 120×40](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-before-picker-120x40-dark.png)
 
-[before, 120×40](B-opus-before-picker-120x40.txt) ·
-[before, 80×24](B-opus-before-picker-80x24.txt) ·
-[light](B-opus-before-picker-120x40-light.png) ·
-[80×24 png](B-opus-before-picker-80x24-dark.png)
+[before, 120×40](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-before-picker-120x40.txt) ·
+[before, 80×24](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-before-picker-80x24.txt) ·
+[light](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-before-picker-120x40-light.png) ·
+[80×24 png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-before-picker-80x24-dark.png)
 
 The before frames were rendered from `render` at `tui/session_selector.gleam:815` with six fixture sessions, because `--demo` has no daemon and
 answers `←` with "daemon control is unavailable". What is wrong with it:
@@ -64,14 +64,14 @@ answers `←` with "daemon control is unavailable". What is wrong with it:
 
 ### After
 
-![Picker at 120×40](B-opus-picker-120x40-dark.png)
+![Picker at 120×40](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-picker-120x40-dark.png)
 
-[120×40](B-opus-picker-120x40.txt) ·
-[80×24](B-opus-picker-80x24.txt) ·
-[empty and loading](B-opus-picker-empty-120x40.txt)
+[120×40](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-picker-120x40.txt) ·
+[80×24](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-picker-80x24.txt) ·
+[empty and loading](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-picker-empty-120x40.txt)
 
-![Picker at 80×24](B-opus-picker-80x24-dark.png)
-![Picker empty and loading states](B-opus-picker-empty-120x40-dark.png)
+![Picker at 80×24](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-picker-80x24-dark.png)
+![Picker empty and loading states](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-picker-empty-120x40-dark.png)
 
 - The picker takes the whole body, above the composer frame, so its size
   does not move with its content. The composer frame stays drawn and says
@@ -108,12 +108,12 @@ protocol-change; this concept does not ask for one (question 6).
 
 ### Before
 
-![Today's agent workspace at 120×40](B-opus-before-agents-120x40-dark.png)
+![Today's agent workspace at 120×40](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-before-agents-120x40-dark.png)
 
-[before, 120×40](B-opus-before-agents-120x40.txt) ·
-[before, 80×24](B-opus-before-agents-80x24.txt) ·
-[light](B-opus-before-agents-120x40-light.png) ·
-[80×24 png](B-opus-before-agents-80x24-dark.png)
+[before, 120×40](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-before-agents-120x40.txt) ·
+[before, 80×24](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-before-agents-80x24.txt) ·
+[light](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-before-agents-120x40-light.png) ·
+[80×24 png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-before-agents-80x24-dark.png)
 
 Captured from `gleam dev agents dark` (six fixture agents) in a private tmux
 session. `--demo` gives the same layout with three strands and every field
@@ -148,16 +148,16 @@ session. `--demo` gives the same layout with three strands and every field
 
 ### After
 
-![Agent workspace at 120×40](B-opus-strands-120x40-dark.png)
+![Agent workspace at 120×40](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-strands-120x40-dark.png)
 
-[many strands, 120×40](B-opus-strands-120x40.txt) ·
-[failed strand with a long task](B-opus-strands-failed-120x40.txt) ·
-[80×24](B-opus-strands-80x24.txt) ·
-[empty, 80×24](B-opus-strands-empty-80x24.txt)
+[many strands, 120×40](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-strands-120x40.txt) ·
+[failed strand with a long task](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-strands-failed-120x40.txt) ·
+[80×24](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-strands-80x24.txt) ·
+[empty, 80×24](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-strands-empty-80x24.txt)
 
-![A failed strand with a long task](B-opus-strands-failed-120x40-dark.png)
-![Agent workspace at 80×24](B-opus-strands-80x24-dark.png)
-![Agent workspace, one strand](B-opus-strands-empty-80x24-dark.png)
+![A failed strand with a long task](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-strands-failed-120x40-dark.png)
+![Agent workspace at 80×24](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-strands-80x24-dark.png)
+![Agent workspace, one strand](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-strands-empty-80x24-dark.png)
 
 - **One row per strand, in columns:** glyph, name, doing, time, ctx. Names
   lose their middle, so `sub:adversarial-code-review-48f3` and `…-ec14` stay
@@ -226,7 +226,7 @@ No protocol change is needed for the view as drawn.
 
 Row budget at 80×24 with two strands listed: today the transcript gets 14
 rows ([today's capture](#today-at-8024)); concept B gives it 17 with a todo
-line ([narrow frame](B-opus-narrow-80x24.txt)).
+line ([narrow frame](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-narrow-80x24.txt)).
 
 <a id="today-at-8024"></a>Today's 80×24 rows, from a `--demo` capture: header
 1, `transcript / main` 1, transcript 14, composer rule 1, status 1, input 1,
@@ -234,29 +234,29 @@ divider 1, footer 2, strip 2.
 
 ## 4. The layout at each width
 
-![Default, 200×50](B-opus-wide-200x50-dark.png)
+![Default, 200×50](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-wide-200x50-dark.png)
 
-**Wide, 200 columns and more** ([frame](B-opus-wide-200x50.txt)). The drawer
+**Wide, 200 columns and more** ([frame](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-wide-200x50.txt)). The drawer
 docks by default at 160 columns and wider, 60 cells wide, full height, on the
 Strands tab. While Strands is showing in the drawer, the roster under the
 input is not drawn, so the strand list is on screen once. Prose in the
 transcript keeps a measure of 110 cells after the gutter; code, tables and
 diffs may use the column's full width.
 
-![Standard, 120×40](B-opus-standard-120x40-dark.png)
+![Standard, 120×40](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-standard-120x40-dark.png)
 
-**Standard, about 120 columns** ([frame](B-opus-standard-120x40.txt)). One
+**Standard, about 120 columns** ([frame](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-standard-120x40.txt)). One
 column by default, with the roster under the input as today. `Shift+Tab`
 docks the drawer at 38 cells, which leaves the transcript 81
-([focus frame](B-opus-focus-120x40.txt)).
+([focus frame](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-focus-120x40.txt)).
 
-![Narrow, 80×24](B-opus-narrow-80x24-dark.png)
+![Narrow, 80×24](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-narrow-80x24-dark.png)
 
-**Narrow, 80×24** ([frame](B-opus-narrow-80x24.txt)). The drawer never
+**Narrow, 80×24** ([frame](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-narrow-80x24.txt)). The drawer never
 docks. Opening it puts it in the transcript's place, above the input frame,
-and `Esc` puts the transcript back ([drawer frame](B-opus-drawer-80x24.txt)).
+and `Esc` puts the transcript back ([drawer frame](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-drawer-80x24.txt)).
 
-![The drawer at 80×24](B-opus-drawer-80x24-dark.png)
+![The drawer at 80×24](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-drawer-80x24-dark.png)
 
 **How columns collapse.** The drawer docks only if the transcript keeps at
 least 80 cells, which is the rule today's changes pane follows at 68. Its
@@ -265,9 +265,9 @@ cannot dock. There is no left column at any width (question 1): sessions stay
 in the `←` picker, and a person running several sessions at once already has
 them in tmux or Herdr panes, which is what the owner's recordings show.
 
-![Drawer hidden at 200×50](B-opus-collapsed-200x50-dark.png)
+![Drawer hidden at 200×50](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-collapsed-200x50-dark.png)
 
-**Side column collapsed** ([frame](B-opus-collapsed-200x50.txt)). With the
+**Side column collapsed** ([frame](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-collapsed-200x50.txt)). With the
 drawer hidden at 200 columns, the transcript keeps its 110-cell prose measure
 and the roster returns under the input.
 
@@ -312,9 +312,9 @@ empty composer while a strand other than `main` is focused puts the strip's
 cursor on `main`, so `↓ Enter` returns. Today the cursor lands on the row after
 the viewed strand; this is the one change to the strip's keys.
 
-![A focused strand](B-opus-focus-120x40-dark.png)
+![A focused strand](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-focus-120x40-dark.png)
 
-[frame](B-opus-focus-120x40.txt)
+[frame](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-focus-120x40.txt)
 
 The spawn row in `main`'s transcript carries a small tree of the strands it
 started (`├ ? sub:tests Needs approval · 34s · 9k`). The rows themselves are
@@ -331,12 +331,12 @@ a status change repaints the frame without invalidating the row cache.
 | Trace | the latest `code_mode` program: state, program, result, budget; calls once a call record exists | `/trace` (new) |
 | Session | goal, jobs, schedules, viewers, context, cost, last completion, usage | `/summary` |
 
-![Changes tab](B-opus-changes-120x40-dark.png)
-![Trace tab](B-opus-trace-120x40-dark.png)
-![Session tab](B-opus-session-120x40-dark.png)
+![Changes tab](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-changes-120x40-dark.png)
+![Trace tab](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-trace-120x40-dark.png)
+![Session tab](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-session-120x40-dark.png)
 
-[changes](B-opus-changes-120x40.txt) · [trace](B-opus-trace-120x40.txt) ·
-[session](B-opus-session-120x40.txt)
+[changes](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-changes-120x40.txt) · [trace](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-trace-120x40.txt) ·
+[session](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-session-120x40.txt)
 
 With the drawer focused: `←` `→` switch tabs, `↑` `↓` select, `Enter` acts,
 and `Esc` or `Tab` return to the composer. The Strands tab carries a badge
@@ -423,11 +423,11 @@ origin on local strand messages (question 5).
 Two sets of frames, because only one can be drawn from what the client
 receives.
 
-**Drawable today** ([120×40](B-opus-codemode-today-120x40.txt) ·
-[80×24](B-opus-codemode-today-80x24.txt)):
+**Drawable today** ([120×40](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-codemode-today-120x40.txt) ·
+[80×24](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-codemode-today-80x24.txt)):
 
-![Code mode today at 120×40](B-opus-codemode-today-120x40-dark.png)
-![Code mode today at 80×24](B-opus-codemode-today-80x24-dark.png)
+![Code mode today at 120×40](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-codemode-today-120x40-dark.png)
+![Code mode today at 80×24](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-codemode-today-80x24-dark.png)
 
 - A settled program is one row: `✓ code_mode probe_calc.gleam · completed ·
   result {"ok": true} · Ctrl+G`.
@@ -439,11 +439,11 @@ receives.
   in when the program ends, and the budget in the foot.
 - At 80 columns the program preview shrinks to two lines.
 
-**Needs protocol-change** ([120×40](B-opus-codemode-calls-120x40.txt) ·
-[80×24](B-opus-codemode-calls-80x24.txt)):
+**Needs protocol-change** ([120×40](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-codemode-calls-120x40.txt) ·
+[80×24](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-codemode-calls-80x24.txt)):
 
-![Code mode call tree at 120×40](B-opus-codemode-calls-120x40-dark.png)
-![Code mode call tree at 80×24](B-opus-codemode-calls-80x24-dark.png)
+![Code mode call tree at 120×40](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-codemode-calls-120x40-dark.png)
+![Code mode call tree at 80×24](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-codemode-calls-80x24-dark.png)
 
 - The running block adds `CALLS · 7 · 1 failed`, grouped by capability with
   a count (`cap/fs.read ×3`), a failed call in the danger colour with its exit
@@ -466,10 +466,10 @@ and result today, and shows its `CALLS` section as needing that record.
 
 ## 11. Messages between strands and between sessions
 
-![Messages at 120×40](B-opus-messages-120x40-dark.png)
-![Messages at 80×24](B-opus-messages-80x24-dark.png)
+![Messages at 120×40](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-messages-120x40-dark.png)
+![Messages at 80×24](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-messages-80x24-dark.png)
 
-[120×40](B-opus-messages-120x40.txt) · [80×24](B-opus-messages-80x24.txt)
+[120×40](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-messages-120x40.txt) · [80×24](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-messages-80x24.txt)
 
 - **Sent.** `→` in the gutter, then `to sub:tests · agent_send · admitted to
   its queue`, in the recipient's hue, with the body under a bar. The words say what is known:
@@ -505,13 +505,13 @@ asks whether to add an origin for local sends.
 
 ## 12. Images
 
-![An image, drawn](B-opus-image-drawn-120x40-dark.png)
-![An image, text fallback](B-opus-image-fallback-120x40-dark.png)
-![An image inside Herdr](B-opus-image-herdr-80x24-dark.png)
+![An image, drawn](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-image-drawn-120x40-dark.png)
+![An image, text fallback](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-image-fallback-120x40-dark.png)
+![An image inside Herdr](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-image-herdr-80x24-dark.png)
 
-[drawn](B-opus-image-drawn-120x40.txt) ·
-[fallback](B-opus-image-fallback-120x40.txt) ·
-[Herdr, 80×24](B-opus-image-herdr-80x24.txt)
+[drawn](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-image-drawn-120x40.txt) ·
+[fallback](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-image-fallback-120x40.txt) ·
+[Herdr, 80×24](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-image-herdr-80x24.txt)
 
 Three cases:
 
@@ -563,14 +563,14 @@ which no allowed library offers in Gleam today, and the FFI rule makes a new
 
 ## 13. Today's pain points, and the inspiration
 
-![Pain points fixed](B-opus-fixes-120x40-dark.png)
-![Seven strands at 120×40](B-opus-multi-120x40-dark.png)
-![Seven strands at 80×24](B-opus-multi-80x24-dark.png)
-![An approval at 80×24](B-opus-approval-80x24-dark.png)
+![Pain points fixed](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-fixes-120x40-dark.png)
+![Seven strands at 120×40](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-multi-120x40-dark.png)
+![Seven strands at 80×24](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-multi-80x24-dark.png)
+![An approval at 80×24](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-approval-80x24-dark.png)
 
-[fixes](B-opus-fixes-120x40.txt) · [multi, 120×40](B-opus-multi-120x40.txt) ·
-[multi, 80×24](B-opus-multi-80x24.txt) ·
-[approval, 80×24](B-opus-approval-80x24.txt)
+[fixes](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-fixes-120x40.txt) · [multi, 120×40](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-multi-120x40.txt) ·
+[multi, 80×24](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-multi-80x24.txt) ·
+[approval, 80×24](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-approval-80x24.txt)
 
 ### What we took from the owner's drives
 
@@ -624,39 +624,39 @@ yet.
 
 | Frame | Grid | Light | Dark |
 |---|---|---|---|
-| Picker before, 120×40 | [txt](B-opus-before-picker-120x40.txt) | [png](B-opus-before-picker-120x40-light.png) | [png](B-opus-before-picker-120x40-dark.png) |
-| Picker before, 80×24 | [txt](B-opus-before-picker-80x24.txt) | [png](B-opus-before-picker-80x24-light.png) | [png](B-opus-before-picker-80x24-dark.png) |
-| Picker, 120×40 | [txt](B-opus-picker-120x40.txt) | [png](B-opus-picker-120x40-light.png) | [png](B-opus-picker-120x40-dark.png) |
-| Picker, 80×24 | [txt](B-opus-picker-80x24.txt) | [png](B-opus-picker-80x24-light.png) | [png](B-opus-picker-80x24-dark.png) |
-| Picker empty and loading | [txt](B-opus-picker-empty-120x40.txt) | [png](B-opus-picker-empty-120x40-light.png) | [png](B-opus-picker-empty-120x40-dark.png) |
-| Workspace before, 120×40 | [txt](B-opus-before-agents-120x40.txt) | [png](B-opus-before-agents-120x40-light.png) | [png](B-opus-before-agents-120x40-dark.png) |
-| Workspace before, 80×24 | [txt](B-opus-before-agents-80x24.txt) | [png](B-opus-before-agents-80x24-light.png) | [png](B-opus-before-agents-80x24-dark.png) |
-| Workspace, many strands | [txt](B-opus-strands-120x40.txt) | [png](B-opus-strands-120x40-light.png) | [png](B-opus-strands-120x40-dark.png) |
-| Workspace, failed and long | [txt](B-opus-strands-failed-120x40.txt) | [png](B-opus-strands-failed-120x40-light.png) | [png](B-opus-strands-failed-120x40-dark.png) |
-| Workspace, 80×24 | [txt](B-opus-strands-80x24.txt) | [png](B-opus-strands-80x24-light.png) | [png](B-opus-strands-80x24-dark.png) |
-| Workspace, empty | [txt](B-opus-strands-empty-80x24.txt) | [png](B-opus-strands-empty-80x24-light.png) | [png](B-opus-strands-empty-80x24-dark.png) |
-| Default wide, 200×50 | [txt](B-opus-wide-200x50.txt) | [png](B-opus-wide-200x50-light.png) | [png](B-opus-wide-200x50-dark.png) |
-| Standard, 120×40 | [txt](B-opus-standard-120x40.txt) | [png](B-opus-standard-120x40-light.png) | [png](B-opus-standard-120x40-dark.png) |
-| Narrow, 80×24 | [txt](B-opus-narrow-80x24.txt) | [png](B-opus-narrow-80x24-light.png) | [png](B-opus-narrow-80x24-dark.png) |
-| Focused strand | [txt](B-opus-focus-120x40.txt) | [png](B-opus-focus-120x40-light.png) | [png](B-opus-focus-120x40-dark.png) |
-| Changes tab | [txt](B-opus-changes-120x40.txt) | [png](B-opus-changes-120x40-light.png) | [png](B-opus-changes-120x40-dark.png) |
-| Trace tab | [txt](B-opus-trace-120x40.txt) | [png](B-opus-trace-120x40-light.png) | [png](B-opus-trace-120x40-dark.png) |
-| Session tab | [txt](B-opus-session-120x40.txt) | [png](B-opus-session-120x40-light.png) | [png](B-opus-session-120x40-dark.png) |
-| Drawer hidden, 200×50 | [txt](B-opus-collapsed-200x50.txt) | [png](B-opus-collapsed-200x50-light.png) | [png](B-opus-collapsed-200x50-dark.png) |
-| Drawer at 80×24 | [txt](B-opus-drawer-80x24.txt) | [png](B-opus-drawer-80x24-light.png) | [png](B-opus-drawer-80x24-dark.png) |
-| Seven strands, 120×40 | [txt](B-opus-multi-120x40.txt) | [png](B-opus-multi-120x40-light.png) | [png](B-opus-multi-120x40-dark.png) |
-| Seven strands, 80×24 | [txt](B-opus-multi-80x24.txt) | [png](B-opus-multi-80x24-light.png) | [png](B-opus-multi-80x24-dark.png) |
-| Pain points fixed | [txt](B-opus-fixes-120x40.txt) | [png](B-opus-fixes-120x40-light.png) | [png](B-opus-fixes-120x40-dark.png) |
-| Approval, 80×24 | [txt](B-opus-approval-80x24.txt) | [png](B-opus-approval-80x24-light.png) | [png](B-opus-approval-80x24-dark.png) |
-| Code mode today, 120×40 | [txt](B-opus-codemode-today-120x40.txt) | [png](B-opus-codemode-today-120x40-light.png) | [png](B-opus-codemode-today-120x40-dark.png) |
-| Code mode today, 80×24 | [txt](B-opus-codemode-today-80x24.txt) | [png](B-opus-codemode-today-80x24-light.png) | [png](B-opus-codemode-today-80x24-dark.png) |
-| Code mode call tree, needs protocol-change, 120×40 | [txt](B-opus-codemode-calls-120x40.txt) | [png](B-opus-codemode-calls-120x40-light.png) | [png](B-opus-codemode-calls-120x40-dark.png) |
-| Code mode call tree, needs protocol-change, 80×24 | [txt](B-opus-codemode-calls-80x24.txt) | [png](B-opus-codemode-calls-80x24-light.png) | [png](B-opus-codemode-calls-80x24-dark.png) |
-| Messages, 120×40 | [txt](B-opus-messages-120x40.txt) | [png](B-opus-messages-120x40-light.png) | [png](B-opus-messages-120x40-dark.png) |
-| Messages, 80×24 | [txt](B-opus-messages-80x24.txt) | [png](B-opus-messages-80x24-light.png) | [png](B-opus-messages-80x24-dark.png) |
-| Image drawn | [txt](B-opus-image-drawn-120x40.txt) | [png](B-opus-image-drawn-120x40-light.png) | [png](B-opus-image-drawn-120x40-dark.png) |
-| Image fallback | [txt](B-opus-image-fallback-120x40.txt) | [png](B-opus-image-fallback-120x40-light.png) | [png](B-opus-image-fallback-120x40-dark.png) |
-| Image in Herdr, 80×24 | [txt](B-opus-image-herdr-80x24.txt) | [png](B-opus-image-herdr-80x24-light.png) | [png](B-opus-image-herdr-80x24-dark.png) |
+| Picker before, 120×40 | [txt](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-before-picker-120x40.txt) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-before-picker-120x40-light.png) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-before-picker-120x40-dark.png) |
+| Picker before, 80×24 | [txt](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-before-picker-80x24.txt) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-before-picker-80x24-light.png) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-before-picker-80x24-dark.png) |
+| Picker, 120×40 | [txt](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-picker-120x40.txt) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-picker-120x40-light.png) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-picker-120x40-dark.png) |
+| Picker, 80×24 | [txt](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-picker-80x24.txt) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-picker-80x24-light.png) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-picker-80x24-dark.png) |
+| Picker empty and loading | [txt](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-picker-empty-120x40.txt) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-picker-empty-120x40-light.png) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-picker-empty-120x40-dark.png) |
+| Workspace before, 120×40 | [txt](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-before-agents-120x40.txt) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-before-agents-120x40-light.png) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-before-agents-120x40-dark.png) |
+| Workspace before, 80×24 | [txt](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-before-agents-80x24.txt) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-before-agents-80x24-light.png) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-before-agents-80x24-dark.png) |
+| Workspace, many strands | [txt](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-strands-120x40.txt) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-strands-120x40-light.png) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-strands-120x40-dark.png) |
+| Workspace, failed and long | [txt](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-strands-failed-120x40.txt) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-strands-failed-120x40-light.png) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-strands-failed-120x40-dark.png) |
+| Workspace, 80×24 | [txt](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-strands-80x24.txt) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-strands-80x24-light.png) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-strands-80x24-dark.png) |
+| Workspace, empty | [txt](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-strands-empty-80x24.txt) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-strands-empty-80x24-light.png) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-strands-empty-80x24-dark.png) |
+| Default wide, 200×50 | [txt](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-wide-200x50.txt) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-wide-200x50-light.png) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-wide-200x50-dark.png) |
+| Standard, 120×40 | [txt](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-standard-120x40.txt) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-standard-120x40-light.png) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-standard-120x40-dark.png) |
+| Narrow, 80×24 | [txt](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-narrow-80x24.txt) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-narrow-80x24-light.png) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-narrow-80x24-dark.png) |
+| Focused strand | [txt](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-focus-120x40.txt) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-focus-120x40-light.png) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-focus-120x40-dark.png) |
+| Changes tab | [txt](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-changes-120x40.txt) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-changes-120x40-light.png) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-changes-120x40-dark.png) |
+| Trace tab | [txt](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-trace-120x40.txt) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-trace-120x40-light.png) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-trace-120x40-dark.png) |
+| Session tab | [txt](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-session-120x40.txt) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-session-120x40-light.png) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-session-120x40-dark.png) |
+| Drawer hidden, 200×50 | [txt](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-collapsed-200x50.txt) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-collapsed-200x50-light.png) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-collapsed-200x50-dark.png) |
+| Drawer at 80×24 | [txt](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-drawer-80x24.txt) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-drawer-80x24-light.png) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-drawer-80x24-dark.png) |
+| Seven strands, 120×40 | [txt](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-multi-120x40.txt) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-multi-120x40-light.png) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-multi-120x40-dark.png) |
+| Seven strands, 80×24 | [txt](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-multi-80x24.txt) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-multi-80x24-light.png) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-multi-80x24-dark.png) |
+| Pain points fixed | [txt](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-fixes-120x40.txt) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-fixes-120x40-light.png) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-fixes-120x40-dark.png) |
+| Approval, 80×24 | [txt](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-approval-80x24.txt) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-approval-80x24-light.png) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-approval-80x24-dark.png) |
+| Code mode today, 120×40 | [txt](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-codemode-today-120x40.txt) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-codemode-today-120x40-light.png) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-codemode-today-120x40-dark.png) |
+| Code mode today, 80×24 | [txt](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-codemode-today-80x24.txt) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-codemode-today-80x24-light.png) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-codemode-today-80x24-dark.png) |
+| Code mode call tree, needs protocol-change, 120×40 | [txt](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-codemode-calls-120x40.txt) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-codemode-calls-120x40-light.png) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-codemode-calls-120x40-dark.png) |
+| Code mode call tree, needs protocol-change, 80×24 | [txt](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-codemode-calls-80x24.txt) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-codemode-calls-80x24-light.png) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-codemode-calls-80x24-dark.png) |
+| Messages, 120×40 | [txt](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-messages-120x40.txt) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-messages-120x40-light.png) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-messages-120x40-dark.png) |
+| Messages, 80×24 | [txt](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-messages-80x24.txt) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-messages-80x24-light.png) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-messages-80x24-dark.png) |
+| Image drawn | [txt](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-image-drawn-120x40.txt) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-image-drawn-120x40-light.png) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-image-drawn-120x40-dark.png) |
+| Image fallback | [txt](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-image-fallback-120x40.txt) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-image-fallback-120x40-light.png) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-image-fallback-120x40-dark.png) |
+| Image in Herdr, 80×24 | [txt](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-image-herdr-80x24.txt) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-image-herdr-80x24-light.png) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-image-herdr-80x24-dark.png) |
 
 The palette is today's `tui/theme` for dark and `tui/appearance`'s light
 mapping. Four colours are new and would be tokens in `tui/theme`: two strand
@@ -742,7 +742,7 @@ concept does not decide it; slices 1, 2 and 10 do not depend on it.
 The grids are written in a small markup by a script kept outside the
 repository, which fails if any row is not exactly the frame's width or any
 frame not exactly its height. The `.txt` files are its plain output, and
-`B-opus.html` embeds the same rows with palette classes and renders one frame
+[B-opus.html](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus.html) embeds the same rows with palette classes and renders one frame
 alone for `?f=<id>&t=light|dark`, which is how the screenshots were taken
 with headless Chrome. A frame can be changed and every output regenerated in
 one run.

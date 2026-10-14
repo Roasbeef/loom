@@ -3677,7 +3677,7 @@ drawing no control. `page_events_test` pins the section's handler at
 `ui_socket_test` pins the admissions. `operator_page_test` shows the decision
 line drawn from a rejected and an approved ledger entry for the strand the
 page follows and not for another's. No browser was in the loop for the tests;
-the drive screenshots under `docs/design-notes/web-design/drive-b4/` show the
+the drive screenshots under [docs/design-notes/web-design/drive-b4/](https://github.com/Roasbeef/loom/tree/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/web-design/drive-b4/) show the
 rendered dock and Session tab.
 
 ## Addendum: the right panel's content (2026-10-03)
@@ -3777,7 +3777,7 @@ viewer. `right_panel_test` shows the glyph, the tooltip, a never-run strand
 drawn live without a focus change, and the strand view's new rows.
 `commentary_test` shows the closed `details`, the summary line and the Markdown
 body with markup still escaped. The drive screenshots under
-`docs/design-notes/web-design/drive-b5/` show the rendered panel.
+[docs/design-notes/web-design/drive-b5/](https://github.com/Roasbeef/loom/tree/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/web-design/drive-b5/) show the rendered panel.
 
 ## Addendum: navigation, the per-page nonce and Back (2026-10-04)
 

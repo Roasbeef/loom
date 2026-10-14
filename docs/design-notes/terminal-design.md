@@ -1,5 +1,7 @@
 # The terminal revamp, refined design
 
+Historical captures and mockups are preserved in the [capture archive](capture-archive.md).
+
 **Status: proposal for owner sign-off.** This note combines the three
 concepts for [issue #655](https://github.com/Roasbeef/loom/issues/655) into
 one design, following the owner's rulings on
@@ -70,14 +72,14 @@ A draft or a pending attachment keeps `←` as a cursor key, as today. The view
 is `session_selector.render` (`packages/tui/src/tui/session_selector.gleam:815`)
 (`render`), and this note redraws it without changing its keys.
 
-![Picker, 120x40](terminal-design/terminal-design-picker-120-dark.png)
+![Picker, 120x40](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-picker-120-dark.png)
 
-Light: [120x40](terminal-design/terminal-design-picker-120-light.png) ·
-[80x24 light](terminal-design/terminal-design-picker-80-light.png).
-Grids: [120x40](terminal-design/terminal-design-picker-120.txt) ·
-[80x24](terminal-design/terminal-design-picker-80.txt).
+Light: [120x40](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-picker-120-light.png) ·
+[80x24 light](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-picker-80-light.png).
+Grids: [120x40](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-picker-120.txt) ·
+[80x24](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-picker-80.txt).
 
-![Picker, 80x24](terminal-design/terminal-design-picker-80-dark.png)
+![Picker, 80x24](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-picker-80-dark.png)
 
 What changes from today (A's list; the "before" captures are in
 [A's note](terminal-design/A-sonnet.md#the-session-picker)):
@@ -113,18 +115,18 @@ four sub-views (Activity, Messages, Notes, Collaborate on keys 1 to 4), the
 rule that browsing never retargets the composer, and the actions (`Enter`
 opens, `n` jumps to the next strand that needs you, `a` reviews an approval).
 
-![Workspace, 120x40](terminal-design/terminal-design-workspace-120-dark.png)
+![Workspace, 120x40](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-workspace-120-dark.png)
 
-![Workspace, failed agent, 120x40](terminal-design/terminal-design-workspace-120-failed-dark.png)
+![Workspace, failed agent, 120x40](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-workspace-120-failed-dark.png)
 
 | Frame | Dark | Light | Grid |
 |---|---|---|---|
-| 120x40, attention selected | [png](terminal-design/terminal-design-workspace-120-dark.png) | [png](terminal-design/terminal-design-workspace-120-light.png) | [txt](terminal-design/terminal-design-workspace-120.txt) |
-| 120x40, failed agent selected | [png](terminal-design/terminal-design-workspace-120-failed-dark.png) | [png](terminal-design/terminal-design-workspace-120-failed-light.png) | [txt](terminal-design/terminal-design-workspace-120-failed.txt) |
-| 80x24, list above detail | [png](terminal-design/terminal-design-workspace-80-dark.png) | [png](terminal-design/terminal-design-workspace-80-light.png) | [txt](terminal-design/terminal-design-workspace-80.txt) |
-| 80x24, failed agent selected | [png](terminal-design/terminal-design-workspace-80-failed-dark.png) | [png](terminal-design/terminal-design-workspace-80-failed-light.png) | [txt](terminal-design/terminal-design-workspace-80-failed.txt) |
+| 120x40, attention selected | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-workspace-120-dark.png) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-workspace-120-light.png) | [txt](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-workspace-120.txt) |
+| 120x40, failed agent selected | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-workspace-120-failed-dark.png) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-workspace-120-failed-light.png) | [txt](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-workspace-120-failed.txt) |
+| 80x24, list above detail | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-workspace-80-dark.png) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-workspace-80-light.png) | [txt](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-workspace-80.txt) |
+| 80x24, failed agent selected | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-workspace-80-failed-dark.png) | [png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-workspace-80-failed-light.png) | [txt](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-workspace-80-failed.txt) |
 
-![Workspace, 80x24, failed agent](terminal-design/terminal-design-workspace-80-failed-dark.png)
+![Workspace, 80x24, failed agent](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-workspace-80-failed-dark.png)
 
 What changes from today:
 
@@ -168,32 +170,32 @@ the input frame (3), and the strip (2 rows with two strands, up to 8 with
 seven). The todo line is one line below 40 rows; today's todo panel returns at
 40 rows and taller.
 
-![Default layout, 200x50](terminal-design/terminal-design-layout-200-dark.png)
+![Default layout, 200x50](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-layout-200-dark.png)
 
 **200x50.** The rail docks by default on Strands: `143 + 1 + 56 = 200`. The
 input frame spans the transcript column only, and the rail runs to the bottom.
-Grid: [txt](terminal-design/terminal-design-layout-200.txt) ·
-[light](terminal-design/terminal-design-layout-200-light.png).
+Grid: [txt](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-layout-200.txt) ·
+[light](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-layout-200-light.png).
 
-![Default layout, 120x40](terminal-design/terminal-design-layout-120-dark.png)
+![Default layout, 120x40](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-layout-120-dark.png)
 
 **120x40.** One column, with the strip under the input as today. Grid:
-[txt](terminal-design/terminal-design-layout-120.txt) ·
-[light](terminal-design/terminal-design-layout-120-light.png).
+[txt](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-layout-120.txt) ·
+[light](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-layout-120-light.png).
 
-![Rail docked, 120x40](terminal-design/terminal-design-layout-120-rail-dark.png)
+![Rail docked, 120x40](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-layout-120-rail-dark.png)
 
 **120x40, rail docked.** `Shift+Tab` docks the rail at 44 cells
 (`75 + 1 + 44 = 120`) and hides the strip. Grid:
-[txt](terminal-design/terminal-design-layout-120-rail.txt) ·
-[light](terminal-design/terminal-design-layout-120-rail-light.png).
+[txt](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-layout-120-rail.txt) ·
+[light](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-layout-120-rail-light.png).
 
-![Default layout, 80x24](terminal-design/terminal-design-layout-80-dark.png)
+![Default layout, 80x24](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-layout-80-dark.png)
 
 **80x24.** One column. The rail never docks; `Shift+Tab` opens it as a sheet
-and `Esc` closes it. Grid: [txt](terminal-design/terminal-design-layout-80.txt) ·
-[light](terminal-design/terminal-design-layout-80-light.png). The sheet looks
-like [A's narrow sheet](terminal-design/A-sonnet-narrow-strands-dark.png).
+and `Esc` closes it. Grid: [txt](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-layout-80.txt) ·
+[light](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-layout-80-light.png). The sheet looks
+like [A's narrow sheet](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-narrow-strands-dark.png).
 
 Before slice 13 `layout.layout` (`packages/tui/src/tui/layout.gleam:105`)
 (`layout`) stacked header, body, composer and footer, and `body_layout` gave the
@@ -303,14 +305,14 @@ cut in the middle so that `adversarial…48f3` and `adversarial…ec14` stay
 distinct. The needs-you count on the frame (`1 needs you`) names the agent
 that needs attention; `n` in the workspace jumps to it.
 
-![Seven agents, 120x40](terminal-design/terminal-design-seven-120-dark.png)
+![Seven agents, 120x40](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-seven-120-dark.png)
 
-![Seven agents, 80x24](terminal-design/terminal-design-seven-80-dark.png)
+![Seven agents, 80x24](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-seven-80-dark.png)
 
-Grids: [120x40](terminal-design/terminal-design-seven-120.txt) ·
-[80x24](terminal-design/terminal-design-seven-80.txt). Light:
-[120x40](terminal-design/terminal-design-seven-120-light.png) ·
-[80x24](terminal-design/terminal-design-seven-80-light.png).
+Grids: [120x40](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-seven-120.txt) ·
+[80x24](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-seven-80.txt). Light:
+[120x40](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-seven-120-light.png) ·
+[80x24](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-seven-80-light.png).
 
 ## 6. Messages (from B)
 
@@ -346,13 +348,13 @@ dim body text under `sub:tests`' bar, because a heading is only ever built from
 metadata. A test must pin that no body text of any speaker produces a `⇄` band
 or a `←` heading.
 
-![Messages, 120x40](terminal-design/terminal-design-messages-120-dark.png)
+![Messages, 120x40](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-messages-120-dark.png)
 
-Grid: [txt](terminal-design/terminal-design-messages-120.txt) ·
-[light](terminal-design/terminal-design-messages-120-light.png). The top row
+Grid: [txt](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-messages-120.txt) ·
+[light](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-messages-120-light.png). The top row
 says which rows need 059. A's frames for the unchanged parts remain valid
-([strand messages today](terminal-design/A-sonnet-strand-messages-today-120-dark.png),
-[peer messages at 80x24](terminal-design/A-sonnet-peer-messages-80-dark.png)).
+([strand messages today](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-strand-messages-today-120-dark.png),
+[peer messages at 80x24](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-peer-messages-80-dark.png)).
 
 The peers also appear in the rail's Strands tab, in a read-only `PEERS` section.
 `collaboration_view.peer_messages`
@@ -380,9 +382,9 @@ activity already drives, rather than on the block, whose rows are cached. At 80 
 (`packages/session_view/src/session_view/transcript_lines.gleam:2834`)
 (`code_mode_result_lines`).
 
-![Code mode today, 120x40](terminal-design/terminal-design-codemode-today-120-dark.png)
+![Code mode today, 120x40](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-codemode-today-120-dark.png)
 
-![Code mode today, 80x24](terminal-design/terminal-design-codemode-today-80-dark.png)
+![Code mode today, 80x24](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-codemode-today-80-dark.png)
 
 **Needs protocol-change 060.** A's summary (`7 calls · 1 failed · 2 not run`),
 and B's calls grouped by capability with a count (`cap/fs.read ×3`), a failed
@@ -396,14 +398,14 @@ block still awaiting its result has none, which the frames above, drawn as the
 target, do not show. `not run` is not a status the record carries either; it
 has `ok`, `failed`, `cancelled` and `unsettled`, and the summary counts those.
 
-![Code mode with calls, 120x40](terminal-design/terminal-design-codemode-calls-120-dark.png)
+![Code mode with calls, 120x40](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-codemode-calls-120-dark.png)
 
-![Code mode with calls, 80x24](terminal-design/terminal-design-codemode-calls-80-dark.png)
+![Code mode with calls, 80x24](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-codemode-calls-80-dark.png)
 
-Grids: [today 120](terminal-design/terminal-design-codemode-today-120.txt) ·
-[today 80](terminal-design/terminal-design-codemode-today-80.txt) ·
-[calls 120](terminal-design/terminal-design-codemode-calls-120.txt) ·
-[calls 80](terminal-design/terminal-design-codemode-calls-80.txt). Light PNGs
+Grids: [today 120](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-codemode-today-120.txt) ·
+[today 80](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-codemode-today-80.txt) ·
+[calls 120](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-codemode-calls-120.txt) ·
+[calls 80](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-codemode-calls-80.txt). Light PNGs
 sit beside each grid.
 
 The rail's Trace tab reads the same data: program, state and result today, the
@@ -436,15 +438,15 @@ scrollback, a recording replay and `loom replay` stay text:
 - **Inside Herdr.** The same placeholder, saying pane graphics are not passed
   through (Herdr removed its pane-graphics API in 0.9.3).
 
-![Image inline, 120x40](terminal-design/terminal-design-image-inline-120-dark.png)
+![Image inline, 120x40](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-image-inline-120-dark.png)
 
-![Image placeholder, 120x40](terminal-design/terminal-design-image-placeholder-120-dark.png)
+![Image placeholder, 120x40](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-image-placeholder-120-dark.png)
 
-![Image placeholder inside Herdr, 80x24](terminal-design/terminal-design-image-herdr-80-dark.png)
+![Image placeholder inside Herdr, 80x24](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-image-herdr-80-dark.png)
 
-Grids: [inline](terminal-design/terminal-design-image-inline-120.txt) ·
-[placeholder](terminal-design/terminal-design-image-placeholder-120.txt) ·
-[Herdr](terminal-design/terminal-design-image-herdr-80.txt). The shaded box in
+Grids: [inline](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-image-inline-120.txt) ·
+[placeholder](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-image-placeholder-120.txt) ·
+[Herdr](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-image-herdr-80.txt). The shaded box in
 the first frame stands for the picture, which a character grid cannot show.
 
 **Detection without guessing.** The client asks and believes only a positive
@@ -493,10 +495,10 @@ the same way.
 
 The owner's recordings show four problems. Each is fixed in one frame.
 
-![Pain points fixed, 120x40](terminal-design/terminal-design-fixes-120-dark.png)
+![Pain points fixed, 120x40](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-fixes-120-dark.png)
 
-Grid: [txt](terminal-design/terminal-design-fixes-120.txt) ·
-[light](terminal-design/terminal-design-fixes-120-light.png).
+Grid: [txt](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-fixes-120.txt) ·
+[light](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-fixes-120-light.png).
 
 | Observation | Fix |
 |---|---|
@@ -522,10 +524,10 @@ defers. The rail carries no decision control; an approval is decided here only,
 as the owner ruled on 2026-09-27. The renderer is `approval_panel.render`
 (`packages/tui/src/tui/approval_panel.gleam:263`) (`render`).
 
-![Approval, 80x24](terminal-design/terminal-design-approval-80-dark.png)
+![Approval, 80x24](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-approval-80-dark.png)
 
-Grid: [txt](terminal-design/terminal-design-approval-80.txt) ·
-[light](terminal-design/terminal-design-approval-80-light.png).
+Grid: [txt](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-approval-80.txt) ·
+[light](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-approval-80-light.png).
 
 ## 10. The rail's tabs and strand focus
 
@@ -541,7 +543,7 @@ together. Changes shows the session's own edits from `changes_view.fold`
 schedules, viewers, model, context and cost from `session_summary`
 (`packages/session_view/src/session_view/session_summary.gleam:99`) (`jobs`).
 The layouts of the Changes, Trace and Session tabs are as drawn in
-[A](terminal-design/A-sonnet-standard-changes-dark.png), with the F-key hints
+[A](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/A-sonnet-standard-changes-dark.png), with the F-key hints
 replaced by this note's keys. Cache outlook per strand is `cache_watch.outlook`
 (`packages/session_view/src/session_view/cache_watch.gleam:120`) (`outlook`).
 

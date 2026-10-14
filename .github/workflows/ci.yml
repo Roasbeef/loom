@@ -860,17 +860,25 @@ jobs:
   # job cancelled at its limit fails `gate (macos)` like any other. On main
   # the job took 8 to 28 minutes, and the distributed runtime (issue #697)
   # adds about ten shipped modules that boot two or three daemons each and
-  # run for real here, so the old 30-minute limit cancelled it.
+  # run for real here, so the old 30-minute limit cancelled it. Two runners
+  # partition client modules at bounded concurrency; every other package and
+  # the default full-gate checks still run in each matrix member.
   check-macos:
-    name: check (macos, advisory)
+    name: check (macos, advisory, client shard ${{ matrix.client_shard }}/2)
     needs: deps-macos
+    strategy:
+      fail-fast: false
+      matrix:
+        client_shard: [1, 2]
     runs-on: macos-15
     timeout-minutes: 50
     outputs:
       # `gate (macos)`'s skip census needs to know whether `make check`
       # ran to a real conclusion or aborted partway through, and a job
       # output is the only way that survives the boundary to another job.
-      check_outcome: ${{ steps.check_macos.outcome }}
+      # Each matrix member writes its own output key so both must complete.
+      check_outcome_1: ${{ steps.check_outcomes.outputs.check_outcome_1 }}
+      check_outcome_2: ${{ steps.check_outcomes.outputs.check_outcome_2 }}
     steps:
       # actions/checkout v7.0.1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -938,14 +946,24 @@ jobs:
         env:
           LOOM_BOOTSTRAP_E2E_SERVER: ${{ github.workspace }}/bin/loomd
           LOOM_SOAK_LATENCY_BOUND: observe
-        run: set -o pipefail; .github/scripts/hex_retry.sh make check 2>&1 | tee check-macos.log
+          # Bound client concurrency without changing other packages' scheduling.
+          # Preserve the runner's serial exemptions and the full suite's budget.
+          LOOM_CLIENT_TEST_PARALLEL: 4
+          LOOM_CLIENT_TEST_SHARD: ${{ matrix.client_shard }}/2
+        run: set -o pipefail; .github/scripts/hex_retry.sh make check 2>&1 | tee check-macos-${{ matrix.client_shard }}.log
+
+      # Unique outputs are combined across matrix members, without last-job wins.
+      - name: Record package gate outcome
+        id: check_outcomes
+        if: always()
+        run: echo "check_outcome_${{ matrix.client_shard }}=${{ steps.check_macos.outcome }}" >> "$GITHUB_OUTPUT"
 
       # actions/upload-artifact v7.0.1
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
-          name: check-macos-log
-          path: check-macos.log
+          name: check-macos-log-${{ matrix.client_shard }}
+          path: check-macos-${{ matrix.client_shard }}.log
           retention-days: 14
 
   # The Seatbelt self-test and enforcement report (hard, not advisory — a
@@ -1127,12 +1145,13 @@ jobs:
       # below reads exactly the files the old single job censused
       # together.
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
-        if: needs.check-macos.outputs.check_outcome == 'success'
+        if: needs.check-macos.outputs.check_outcome_1 == 'success' && needs.check-macos.outputs.check_outcome_2 == 'success'
         with:
-          name: check-macos-log
+          pattern: check-macos-log-*
+          merge-multiple: true
 
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
-        if: needs.check-macos.outputs.check_outcome == 'success'
+        if: needs.check-macos.outputs.check_outcome_1 == 'success' && needs.check-macos.outputs.check_outcome_2 == 'success'
         with:
           name: e2e-macos-logs
 
@@ -1145,10 +1164,10 @@ jobs:
       # visible as `check-macos`'s own step outcome, carried here as the
       # `check_outcome` job output.
       - name: Skip census
-        if: needs.check-macos.outputs.check_outcome == 'success'
+        if: needs.check-macos.outputs.check_outcome_1 == 'success' && needs.check-macos.outputs.check_outcome_2 == 'success'
         run: |
           .github/scripts/skip_census.sh "gate (macos)" \
-            check-macos.log e2e-macos.log e2e-codemode-macos.log
+            check-macos-1.log check-macos-2.log e2e-macos.log e2e-codemode-macos.log
 
   # ------------------------------------------------------------- the jail
   #

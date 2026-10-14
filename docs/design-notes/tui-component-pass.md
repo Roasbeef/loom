@@ -1,5 +1,7 @@
 # TUI component pass
 
+Historical captures and mockups are preserved in the [capture archive](capture-archive.md).
+
 Status: all six phases implemented, reviewed, component-verified, and pushed at
 `ff4c5fa3`, September 22, 2026. The inline queue follow-up is committed at
 `6c796795`, with test calibration at `0003f32f`; both are pushed through
@@ -79,8 +81,8 @@ compact PgDn advancing to the next wrapped line. A later native finding gave the
 wide list three rows per message: direction, short observed-result badge, and
 excerpt, so the earlier gate was not the closing result.
 
-The [wide capture](tui-agent-workspace/messages-component.png) and
-[40×12 capture](tui-agent-workspace/messages-component-40.png) have adjacent
+The [wide capture](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/tui-agent-workspace/messages-component.png) and
+[40×12 capture](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/tui-agent-workspace/messages-component-40.png) have adjacent
 ANSI recordings. After the obsolete test labels were corrected, the closing TUI
 gate passed all 676 tests with exit zero in 9.16 seconds. This was an incremental
 gate; the prior measured compile was 7.38 seconds.
@@ -113,8 +115,8 @@ raw form, PgUp/PgDn scroll its body, and `r` refreshes it. Independent review
 found five issues; all five were fixed and reverified. The same pass repaired an
 adjacent message-body overscroll boundary. Native QA covered 132×42, 80×24, and
 40×12 inspector layouts plus standalone `/notes` at 80 columns, including raw
-mode, selection, and controls. The [wide capture](tui-agent-workspace/notes-component.png)
-and [40×12 capture](tui-agent-workspace/notes-component-40.png) have adjacent
+mode, selection, and controls. The [wide capture](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/tui-agent-workspace/notes-component.png)
+and [40×12 capture](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/tui-agent-workspace/notes-component-40.png) have adjacent
 ANSI recordings.
 
 The closing TUI gate passed all 678 tests with exit zero in 9.30 seconds. It was
@@ -161,8 +163,8 @@ placement, and compact geometry, are closed. Native QA typed `/goal` and pressed
 Enter through the real palette path, then inspected 132×42, 80×24, and 40×12.
 End reached reviewer feedback, Home returned to the start, the wide gutter was
 clear, and the compact busy fixture retained status, objective, and controls.
-The [wide capture](tui-agent-workspace/goals-component.png) and
-[40×12 capture](tui-agent-workspace/goals-component-40.png) have adjacent ANSI
+The [wide capture](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/tui-agent-workspace/goals-component.png) and
+[40×12 capture](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/tui-agent-workspace/goals-component-40.png) have adjacent ANSI
 recordings.
 
 The closing TUI gate passed all 685 tests with exit zero in 9.15 seconds. It was
@@ -205,9 +207,9 @@ covered by automated tests, not this no-daemon native fixture. On the compact
 view, PgDown reached the tail of a twelve-line excerpt; resizing to 132 columns
 without another key restored the visible start instead of leaving a blank
 preview. The
-[wide capture](tui-agent-workspace/queue-component.png),
-[40×12 capture](tui-agent-workspace/queue-component-40.png), and
-[editor capture](tui-agent-workspace/queue-editor-component.png) have adjacent
+[wide capture](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/tui-agent-workspace/queue-component.png),
+[40×12 capture](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/tui-agent-workspace/queue-component-40.png), and
+[editor capture](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/tui-agent-workspace/queue-editor-component.png) have adjacent
 ANSI recordings.
 
 The closing TUI gate passed all 687 tests with exit zero in 9.29 seconds. It was
@@ -249,8 +251,8 @@ reached both start and tail. Enter returned to the composer, typing `retained
 draft` and pressing Ctrl+d preserved both draft and selected file, and F2
 replaced the borrowed view. Automated tests cover mouse hits and wheel routing;
 the native pass did not exercise a physical mouse. The
-[wide capture](tui-agent-workspace/diff-component.png) and
-[40×12 capture](tui-agent-workspace/diff-component-40.png) have adjacent ANSI
+[wide capture](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/tui-agent-workspace/diff-component.png) and
+[40×12 capture](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/tui-agent-workspace/diff-component-40.png) have adjacent ANSI
 recordings.
 
 The footer-one-row snapshot was regenerated only for the intentional diff rows;
@@ -312,12 +314,12 @@ mutation.
 The compact context help now keeps `Esc` visible at 40 columns. All six final
 PNGs and their adjacent ANSI recordings were inspected:
 
-- [context, wide](tui-agent-workspace/context-component.png) and
-  [context, 40×12](tui-agent-workspace/context-component-40.png);
-- [jobs, wide](tui-agent-workspace/summary-jobs-component.png) and
-  [jobs, 40×12](tui-agent-workspace/summary-jobs-component-40.png);
-- [completion, 80×24](tui-agent-workspace/summary-completion-component.png);
-- [usage, 80×24](tui-agent-workspace/summary-usage-component.png).
+- [context, wide](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/tui-agent-workspace/context-component.png) and
+  [context, 40×12](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/tui-agent-workspace/context-component-40.png);
+- [jobs, wide](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/tui-agent-workspace/summary-jobs-component.png) and
+  [jobs, 40×12](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/tui-agent-workspace/summary-jobs-component-40.png);
+- [completion, 80×24](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/tui-agent-workspace/summary-completion-component.png);
+- [usage, 80×24](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/tui-agent-workspace/summary-usage-component.png).
 
 The focused 13-test pass compiled in 8.44 seconds. The closing TUI gate passed
 all 693 tests with exit zero in 9.46 seconds; it was incremental. The private
@@ -403,10 +405,10 @@ saving.
 
 The private fixture is stopped.
 
-The [passive card](tui-agent-workspace/queue-inline-wide.png),
-[inspector](tui-agent-workspace/queue-inline-inspector.png),
-[editor](tui-agent-workspace/queue-inline-editor.png), and
-[compact view](tui-agent-workspace/queue-inline-40.png) have adjacent ANSI
+The [passive card](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/tui-agent-workspace/queue-inline-wide.png),
+[inspector](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/tui-agent-workspace/queue-inline-inspector.png),
+[editor](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/tui-agent-workspace/queue-inline-editor.png), and
+[compact view](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/tui-agent-workspace/queue-inline-40.png) have adjacent ANSI
 recordings. Each capture was inspected during native verification.
 
 The closing `make check` passed with exit zero at documentation head
