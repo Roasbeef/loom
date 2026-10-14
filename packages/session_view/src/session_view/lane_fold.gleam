@@ -67,6 +67,7 @@ import session_view/completion_summary
 import session_view/connection_event
 import session_view/context_view
 import session_view/event_fold
+import session_view/generation_rate
 import session_view/history_view
 import session_view/inbox
 import session_view/model.{
@@ -459,6 +460,7 @@ fn fold_update(
           Shared(
             ..session_model.record_surface(discarded, GoalReleased),
             peer: after_close(shared.peer),
+            generation_rates: generation_rate.new(),
             ended: Some(reason),
             scrollback: history_view.cancel(shared.scrollback),
             streams: [],
@@ -517,6 +519,7 @@ fn reconcile_cut(
     Some(_) | None -> {
       let updated =
         apply_cut(Shared(..shared, last_capture: trigger), cut, view, around)
+        |> event_fold.observe_generation_phases(view.strands)
       let updated = case shared.captured {
         Some(#(previous, _)) if previous.next_seq == cut.next_seq -> updated
         Some(_) | None -> request_visible_worktree(updated, around.worktree)

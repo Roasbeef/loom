@@ -17,6 +17,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import session_view/commands
 import session_view/connection_event
+import session_view/model as session_model
 import session_view/msg
 import session_view/session_channel
 import session_view/shared_set
@@ -137,20 +138,20 @@ pub fn generation_and_usage_measure_one_injected_clock_test() {
     |> deliver(
       "{\"v\":1,\"event\":\"op_transition\",\"body\":{\"strand\":\"main\",\"phase\":\"assistant\"}}",
     )
-  assert started.shared.generation_started_ms == Some(-10_000)
+  assert session_model.generation_started_ms(started.shared) == Some(-10_000)
 
   let streaming =
     started
     |> at(-9500)
     |> deliver(gateway.stream_delta("main", "text", "answer"))
-  assert streaming.shared.generation_started_ms == Some(-10_000)
+  assert session_model.generation_started_ms(streaming.shared) == Some(-10_000)
 
   let settled =
     streaming
     |> at(-8000)
     |> deliver(gateway.usage("main", 10, 300, 0.0))
-  assert settled.shared.output_rate_tps == Some(150)
-  assert settled.shared.generation_started_ms == None
+  assert session_model.output_rate_tps(settled.shared) == Some(150)
+  assert session_model.generation_started_ms(settled.shared) == None
 }
 
 pub fn a_subagent_usage_row_does_not_settle_the_primary_clock_test() {
@@ -159,20 +160,18 @@ pub fn a_subagent_usage_row_does_not_settle_the_primary_clock_test() {
     |> deliver(
       "{\"v\":1,\"event\":\"op_transition\",\"body\":{\"strand\":\"main\",\"phase\":\"assistant\"}}",
     )
-  assert started.shared.generation_started_ms == Some(-10_000)
+  assert session_model.generation_started_ms(started.shared) == Some(-10_000)
 
-  // A sub-agent's own request settles mid-generation. `generation_clock`
-  // only ever starts the clock for the active strand's row, so only that
-  // same strand's settlement may read it or clear it: the sub-agent's row
-  // must not report its output over the primary's window, and must not
-  // stop the primary's clock out from under it.
+  // A sub-agent's own request settles mid-generation. Its independent
+  // reading must neither replace the selected primary's rate nor consume
+  // the primary's still-running clock.
   let crossed =
     started
     |> at(-9500)
     |> deliver(gateway.usage("sub:main/audit", 10, 300, 0.0))
-  assert crossed.shared.generation_started_ms == Some(-10_000)
+  assert session_model.generation_started_ms(crossed.shared) == Some(-10_000)
     as "a sub-agent's settlement must not clear the primary's clock"
-  assert crossed.shared.output_rate_tps == None
+  assert session_model.output_rate_tps(crossed.shared) == None
     as "a sub-agent's settlement must not report its own output rate"
 
   // The primary's own settlement afterward still works as before.
@@ -180,8 +179,8 @@ pub fn a_subagent_usage_row_does_not_settle_the_primary_clock_test() {
     crossed
     |> at(-8000)
     |> deliver(gateway.usage("main", 10, 300, 0.0))
-  assert settled.shared.output_rate_tps == Some(150)
-  assert settled.shared.generation_started_ms == None
+  assert session_model.output_rate_tps(settled.shared) == Some(150)
+  assert session_model.generation_started_ms(settled.shared) == None
 }
 
 pub fn an_unsettled_generation_does_not_leak_its_start_into_the_next_test() {
@@ -194,21 +193,21 @@ pub fn an_unsettled_generation_does_not_leak_its_start_into_the_next_test() {
   let first =
     initial(-10_000)
     |> deliver(assistant)
-  assert first.shared.generation_started_ms == Some(-10_000)
+  assert session_model.generation_started_ms(first.shared) == Some(-10_000)
 
   // A repeated `assistant` transition is the same generation.
   let repeated =
     first
     |> at(-9500)
     |> deliver(assistant)
-  assert repeated.shared.generation_started_ms == Some(-10_000)
+  assert session_model.generation_started_ms(repeated.shared) == Some(-10_000)
 
   // The turn ending without settlement drops the clock.
   let ended =
     repeated
     |> at(-9000)
     |> deliver(done)
-  assert ended.shared.generation_started_ms == None
+  assert session_model.generation_started_ms(ended.shared) == None
     as "a turn that ends unsettled must not keep its start time"
 
   // The next generation reads from its own start.
@@ -216,44 +215,46 @@ pub fn an_unsettled_generation_does_not_leak_its_start_into_the_next_test() {
     ended
     |> at(-5000)
     |> deliver(assistant)
-  assert second.shared.generation_started_ms == Some(-5000)
+  assert session_model.generation_started_ms(second.shared) == Some(-5000)
   let settled =
     second
     |> at(-3000)
     |> deliver(gateway.usage("main", 10, 300, 0.0))
-  assert settled.shared.output_rate_tps == Some(150)
+  assert session_model.output_rate_tps(settled.shared) == Some(150)
     as "the rate covers 2 s from the new request, not 7 s from the old one"
 }
 
-pub fn focusing_another_strand_drops_the_generation_clock_test() {
+pub fn focusing_another_strand_selects_its_own_clock_test() {
   let generating =
     initial(-10_000)
     |> deliver(
       "{\"v\":1,\"event\":\"op_transition\",\"body\":{\"strand\":\"main\",\"phase\":\"assistant\"}}",
     )
-  assert generating.shared.generation_started_ms == Some(-10_000)
+  assert session_model.generation_started_ms(generating.shared) == Some(-10_000)
 
-  // The operator focuses a worker while main is still generating. Main's
-  // start is not the worker's, and main's later `done` is no longer the
-  // active strand's, so nothing else would ever clear it.
+  // The operator focuses a worker while main is still generating. Each
+  // selected reading belongs to its strand, and returning restores main's
+  // original start.
   let focused = commands.focus(generating.shared, "worker")
-  assert focused.generation_started_ms == None
+  assert session_model.generation_started_ms(focused) == None
     as "the clock times the active strand, so focus must not carry it over"
+  assert session_model.generation_started_ms(commands.focus(focused, "main"))
+    == Some(-10_000)
 }
 
 pub fn stream_fallback_uses_the_injected_clock_test() {
   let other =
     initial(-10_000)
     |> deliver(gateway.stream_delta("another", "text", "other answer"))
-  assert other.shared.generation_started_ms == None
+  assert session_model.generation_started_ms(other.shared) == None
 
   let started = deliver(other, gateway.stream_delta("main", "text", "answer"))
-  assert started.shared.generation_started_ms == Some(-10_000)
+  assert session_model.generation_started_ms(started.shared) == Some(-10_000)
   let settled =
     started
     |> at(-9999)
     |> deliver(gateway.usage("main", 10, 300, 0.0))
-  assert settled.shared.output_rate_tps == None
+  assert session_model.output_rate_tps(settled.shared) == None
 }
 
 pub fn activity_elapsed_time_uses_the_injected_clock_test() {
@@ -335,7 +336,7 @@ pub fn a_step_reads_the_stamp_and_never_the_clock_test() {
     connection_event.Incoming(assistant_phase),
   )
   let #(started, _) = stepping.step(backend.Tick, runtime.receive(model))
-  assert started.shared.generation_started_ms == Some(-10_000)
+  assert session_model.generation_started_ms(started.shared) == Some(-10_000)
   let #(live, _) = stepping.step(backend.Tick, started)
   assert live.shared.activity_started_ms == Some(-10_000)
 
@@ -356,7 +357,7 @@ pub fn a_step_reads_the_stamp_and_never_the_clock_test() {
   )
   let #(settled, _) =
     stepping.step(backend.Tick, runtime.receive(stamped_at(later, -8000)))
-  assert settled.shared.output_rate_tps == Some(150)
+  assert session_model.output_rate_tps(settled.shared) == Some(150)
   let #(resized, _) = stepping.step(backend.Resize(100, 30), settled)
   assert resized.view.last_frame_ms == -8000
   let #(typed, _) = stepping.step(backend.KeyPress("a"), resized)
