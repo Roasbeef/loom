@@ -49,7 +49,12 @@ retry classification and once-only terminal delivery. Removing the new context
 made its targeted regression fail at the expected assertion; restored source
 passed. Documentation checks passed with existing warnings.
 
-The full provider package gate and independent adversarial review are pending.
-Finish them, disposition any findings, then publish this scoped diagnostics PR
-with actual validation evidence. Hosted CI and Linux signoff must be described
-separately from local tests. Installation and daemon restart remain owner actions.
+The provider package gate passed, including warning-free compilation, format
+checks and all 315 tests. Provider lint passed with zero errors and 58 warnings;
+documentation checks passed with zero errors and existing warnings. One fresh
+independent adversarial review approved the committed source with no actionable
+findings, including privacy, fragmentation and adjacent variants.
+
+Publish this scoped diagnostics PR with that local evidence. Hosted CI and
+Linux signoff remain unverified for this branch and must be described separately.
+Installation and daemon restart remain owner actions.
