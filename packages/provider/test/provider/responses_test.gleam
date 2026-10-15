@@ -1798,3 +1798,118 @@ pub fn responses_service_tier_is_explicit_and_omission_is_preserved_test() {
     },
   )
 }
+
+pub fn responses_disconnect_retains_last_event_across_partial_chunks_test() {
+  let body = event("keepalive", [#("sequence_number", json.Int(5))])
+  let prefix = created() <> body
+  let partial = "data: {\"type\":\"private-canary"
+  let chunks = [bit_array.from_string(prefix), bit_array.from_string(partial)]
+  let upstream_id = "req_0123456789abcdef0123456789abcdef"
+  list.each(
+    [machine(), responses.subscription_response_machine(resolved(), now: 123)],
+    fn(machine) {
+      let assert [stream.Failed(stream.StreamDisconnected(context), report)] =
+        fixture.drive(
+          machine,
+          200,
+          [
+            #("content-type", "text/event-stream; charset=utf-8"),
+            #("x-request-id", upstream_id),
+            #("authorization", "Bearer private-canary"),
+          ],
+          chunks,
+        )
+        as "An incomplete stream remains one retryable failure."
+      assert string.contains(context, "status=200; event=keepalive; seq=5;")
+      assert string.contains(context, "last_seq=5;")
+      assert string.contains(
+        context,
+        "bytes=" <> int.to_string(string.byte_size(prefix <> partial)) <> ";",
+      )
+      assert string.contains(context, "media=sse;")
+      assert string.ends_with(context, "upstream_request_id=" <> upstream_id)
+      assert !string.contains(context, "private-canary")
+      assert accounting.total(report).total_tokens == 0
+      assert accounting.attempts(report) == 1
+    },
+  )
+}
+
+pub fn responses_disconnect_rejects_untrusted_header_values_test() {
+  list.each(
+    [
+      "Bearer private-canary",
+      "req_0123456789abcdef0123456789abcdeé",
+      "req_0123456789abcdef0123456789abcdeg",
+      "req_0123456789abcdef0123456789abcdef\nprivate-canary",
+      "req_0123456789abcdef0123456789abcde",
+      "req_0123456789abcdef0123456789abcdef0",
+      string.repeat("private-canary", 1000),
+    ],
+    fn(value) {
+      let assert [stream.Failed(stream.StreamDisconnected(context), _)] =
+        fixture.drive(
+          machine(),
+          200,
+          [
+            #("x-request-id", value),
+            #("content-type", value),
+            #("other-header", "private-canary"),
+          ],
+          [],
+        )
+        as "Unvalidated remote values are replaced by fixed markers."
+      assert string.contains(context, "event=none; last_seq=absent; bytes=0;")
+      assert string.contains(context, "media=other;")
+      assert string.ends_with(context, "upstream_request_id=invalid")
+      assert !string.contains(context, "private-canary")
+      assert string.byte_size(context) < 400
+    },
+  )
+}
+
+pub fn responses_disconnect_categories_and_absent_headers_test() {
+  list.each(
+    [
+      #([], "absent"),
+      #([#("content-type", "application/json")], "json"),
+      #([#("content-type", " Text/HTML ; charset=utf-8")], "html"),
+    ],
+    fn(pair) {
+      let #(headers, media) = pair
+      let assert [stream.Failed(stream.StreamDisconnected(context), _)] =
+        fixture.drive(machine(), 200, headers, [])
+        as "HTTP success without a terminal never becomes settlement."
+      assert string.contains(context, "media=" <> media <> ";")
+      assert string.ends_with(context, "upstream_request_id=absent")
+      assert retry.classify(stream.StreamDisconnected(context))
+        == retry.Retryable(backoff_hint_ms: None)
+    },
+  )
+}
+
+pub fn responses_transport_failure_uses_safe_state_and_stays_once_only_test() {
+  let machine = machine()
+  let state =
+    machine.on_status(machine.init, 200, [
+      #("content-type", "text/event-stream"),
+    ])
+  let #(state, _) = machine.on_chunk(state, bit_array.from_string(created()))
+  let assert [stream.Failed(stream.TransportFailed(reason), _)] =
+    machine.on_failure(state, "Bearer private-canary")
+    as "Transport failure reports structure, never its arbitrary reason."
+  assert string.contains(reason, "status=200; event=response.created;")
+  assert !string.contains(reason, "private-canary")
+  assert diagnostic.scrub_error(
+      stream.TransportFailed(reason),
+      "private-canary",
+    )
+    == stream.TransportFailed(reason)
+
+  let #(terminal, events) =
+    machine.on_chunk(state, bit_array.from_string(completed([])))
+  let assert [stream.Settled(_, _)] = events
+    as "A valid terminal still settles normally."
+  assert machine.on_end(terminal) == []
+  assert machine.on_failure(terminal, "private-canary") == []
+}

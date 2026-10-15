@@ -15,7 +15,8 @@
 ////    wires the transport callbacks to it.
 //// 3. `on_chunk` bounds the attempt's bytes, feeds a 200 body to the SSE
 ////    parser and each event to `handle_sse`; other statuses collect the error
-////    body for `http_error`.
+////    body for `http_error`. `disconnect_context` retains only structural facts,
+////    with `request_id` and `media_type` discarding untrusted header values.
 //// 4. `handle_sse` checks the event name against the JSON `"type"` and the
 ////    sequence number with `sequence`, then calls `dispatch`.
 //// 5. `dispatch` gives every supported event its own transition: `add_item`,
@@ -39,6 +40,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import provider/http
 import provider/internal/diagnostic
 import provider/internal/responses_items as items
@@ -257,6 +259,10 @@ pub opaque type Accumulator {
     now: Int,
     /// HTTP status received before body chunks.
     status: Int,
+    /// Validated upstream correlation ID, or a fixed absence/refusal marker.
+    request_id: String,
+    /// Fixed media-type category, never the remote header value.
+    media_type: String,
     /// Parsed retry delay, used only for HTTP errors.
     retry_after: Option(Int),
     /// Error-body bytes retained under the shared 64 KiB bound.
@@ -269,7 +275,7 @@ pub opaque type Accumulator {
     identity: Option(#(String, String)),
     /// Last present sequence number; omission does not erase it.
     sequence: Option(Int),
-    /// Bounded structural witness for the current event, never remote text.
+    /// Bounded structural witness for the last complete event, never remote text.
     event: String,
     /// Bounded numeric positions from the same event, separated for label limits.
     positions: String,
@@ -326,6 +332,8 @@ fn machine_for(
       resolved:,
       now:,
       status: 0,
+      request_id: "absent",
+      media_type: "absent",
       retry_after: None,
       error_body: <<>>,
       sse: stream.new_parser(),
@@ -344,7 +352,13 @@ fn machine_for(
       case acc.life {
         Terminal -> acc
         Streaming ->
-          Accumulator(..acc, status:, retry_after: wire.retry_after_ms(headers))
+          Accumulator(
+            ..acc,
+            status:,
+            request_id: request_id(headers),
+            media_type: media_type(headers),
+            retry_after: wire.retry_after_ms(headers),
+          )
       }
     },
     on_chunk: on_chunk,
@@ -355,16 +369,93 @@ fn machine_for(
           fail(
             acc,
             stream.StreamDisconnected(
-              "Responses ended before a verified terminal",
+              "Responses ended before a verified terminal; "
+              <> disconnect_context(acc),
             ),
           ).1
         status -> fail(acc, http_error(acc, status)).1
       }
     },
     on_failure: fn(acc, _) {
-      fail(acc, stream.TransportFailed("Responses transport failed")).1
+      fail(
+        acc,
+        stream.TransportFailed(
+          "Responses transport failed; " <> disconnect_context(acc),
+        ),
+      ).1
     },
   )
+}
+
+// Disconnect diagnostics describe the last complete event even when the final
+// chunk is only a partial SSE frame. A known HTTP status is not proof that a
+// Responses terminal arrived, and none of these facts establish capacity.
+fn disconnect_context(acc: Accumulator) -> String {
+  "status="
+  <> diagnostic_number(Some(acc.status))
+  <> "; "
+  <> acc.event
+  <> "; last_seq="
+  <> diagnostic_number(acc.sequence)
+  <> "; bytes="
+  <> diagnostic_number(Some(acc.bytes))
+  <> "; media="
+  <> acc.media_type
+  <> "; upstream_request_id="
+  <> acc.request_id
+}
+
+// Correlation IDs are the only remote strings retained here. Accept only the
+// fixed OpenAI request-ID shape; a proxy's arbitrary header is not log text.
+fn request_id(headers: List(#(String, String))) -> String {
+  case list.key_find(headers, "x-request-id") {
+    Error(Nil) -> "absent"
+    Ok(value) ->
+      case bit_array.from_string(value) {
+        <<"req_":utf8, suffix:bytes-size(32)>> ->
+          case hex_bytes(suffix) {
+            True -> value
+            False -> "invalid"
+          }
+        _ -> "invalid"
+      }
+  }
+}
+
+// The validated suffix is exactly 32 bytes, so this walk is constant-bounded.
+fn hex_bytes(bytes: BitArray) -> Bool {
+  case bytes {
+    <<>> -> True
+    <<digit:8, rest:bits>> if digit >= 48 && digit <= 57 -> hex_bytes(rest)
+    <<digit:8, rest:bits>> if digit >= 97 && digit <= 102 -> hex_bytes(rest)
+    _ -> False
+  }
+}
+
+// A media category distinguishes an SSE stream from a 200 proxy error page.
+// Parameters and unfamiliar values are discarded, including oversized headers.
+fn media_type(headers: List(#(String, String))) -> String {
+  case list.key_find(headers, "content-type") {
+    Error(Nil) -> "absent"
+    Ok(value) -> {
+      use <- bool.guard(
+        bit_array.byte_size(bit_array.from_string(value)) > 128,
+        "other",
+      )
+      case
+        value
+        |> string.split(";")
+        |> list.first
+        |> result.map(string.trim)
+        |> result.map(string.lowercase)
+      {
+        Ok("text/event-stream") -> "sse"
+        Ok("application/json") -> "json"
+        Ok("text/html") -> "html"
+        Ok(_) | Error(Nil) -> "other"
+      }
+    }
+  }
 }
 
 // Framing and attempt limits are independent of semantic assembly. Reverse
@@ -374,13 +465,7 @@ fn on_chunk(
   chunk: BitArray,
 ) -> #(Accumulator, List(StreamEvent)) {
   use <- bool.guard(acc.life == Terminal, #(acc, []))
-  let acc =
-    Accumulator(
-      ..acc,
-      bytes: acc.bytes + bit_array.byte_size(chunk),
-      event: "event=none",
-      positions: "",
-    )
+  let acc = Accumulator(..acc, bytes: acc.bytes + bit_array.byte_size(chunk))
   use <- bool.lazy_guard(acc.bytes > 16_777_216, fn() {
     malformed(acc, "stream_bytes")
   })

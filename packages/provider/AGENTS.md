@@ -1,5 +1,24 @@
 # provider
 
+## Responses disconnect diagnostics
+
+`provider/adapter/responses` adds bounded structural context to
+`StreamDisconnected` and `TransportFailed`: HTTP status (zero before status),
+last complete allowlisted event and sequence, cumulative delivered body bytes,
+a fixed media category, and a validated upstream `x-request-id`. Only
+`req_` followed by exactly 32 lowercase hexadecimal bytes is retained; missing
+and unfamiliar IDs become `absent` and `invalid`. Other headers and arbitrary
+transport error strings never enter this context. Media values are reduced to
+`sse`, `json`, `html`, `other` or `absent`, with bounded parsing.
+
+Partial SSE chunks preserve the last complete event's structural witness.
+Both Responses dialects use the same state and diagnostics. This changes no
+terminal proof, usage accounting, retry classification, byte budget or deadline.
+An HTTP 200 end without a verified terminal remains retryable failure; the
+context can distinguish a proxy media type and correlate provider support logs,
+but does not establish a capacity cause. The gateway's existing 400-byte error
+scrubber remains authoritative.
+
 ## Responses keepalive control
 
 `provider/adapter/responses` consumes the fixed `keepalive` control frame after
