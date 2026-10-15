@@ -300,10 +300,10 @@ pub fn nudge(runtime: Runtime) -> Nil {
 
 That is the doorbell doctrine in six lines (`runtime/api.gleam:765`).
 Every payload travels in a commit; the process message that follows
-carries nothing and asks only for promptness. Losing it costs one poll
-interval — 200 ms by default — because the driver's periodic `PollTick`
-drives a planning pass that re-reads the same durable state and finds the
-same work. The api exposes `_quietly` variants that commit without
+carries nothing and asks only for promptness. Losing it costs the next poll
+interval: 200 ms while occupied or two minutes while idle by default. The
+periodic `PollTick` reads durable controls and takes a full planning pass when
+work has changed. The api exposes `_quietly` variants that commit without
 ringing at all, and the doorbell-loss tests use them to prove a run
 completes on the poll alone.
 
@@ -315,7 +315,7 @@ process message is fine.
 ## 6. The machine wakes
 
 The strand driver is an actor whose entire loop is the machine's contract
-read literally (`runtime/strand_runtime.gleam:616`):
+read literally (`runtime/strand_runtime.gleam:1293`):
 
 ```
 load registers  →  build PlannerInputs  →  next_action  →  act  →  repeat
@@ -325,11 +325,14 @@ load registers  →  build PlannerInputs  →  next_action  →  act  →  repea
 and `strand.leaf` on *every* pass, then fetches exactly what the loaded
 state names — the assistant entry behind a tool batch, the deferred
 handle behind a suspended poll, the pending payloads for every queued id
-(`runtime/strand_runtime.gleam:1705`). No process-local memory of durable
-state exists to go stale, which is why a pass after a restart runs the
-same code as a pass mid-run.
+(`runtime/strand_runtime.gleam:2879`). A poll parked on a live effect first
+checks strand/op/configuration sequences and the leaf. If that frontier is
+unchanged and no observation is queued, it can keep waiting without fetching
+those large payloads again. A changed frontier, a doorbell, an effect event or
+a restart takes the full load. The remembered frontier contains only identities
+and sequences, and every restart reconstructs it from durable state.
 
-`plan` (`runtime/strand_runtime.gleam:1225`) then calls the one frozen
+`plan` (`runtime/strand_runtime.gleam:1314`) then calls the one frozen
 entry point:
 
 ```gleam
@@ -498,7 +501,7 @@ to rerun.
 
 ## 8. The request
 
-`start_effect` (`runtime/strand_runtime.gleam:1828`) projects the context
+`start_effect` (`runtime/strand_runtime.gleam:1933`) projects the context
 and hands a `RequestSpec` to the injected provider surface. The
 projection is a branch scan from the leaf that stops at the first
 compaction entry, run through `session.project_scan`
@@ -729,7 +732,7 @@ clearance proceeds under the base policy; a crash after consumption
 spends the approval without an execution. Both directions fail safe: one
 approval is worth at most one widened execution of exactly the call a
 human approved. What the clearance won then travels onto the dispatch it
-authorized — `take_cleared` (`runtime/strand_runtime.gleam:1885`) hands
+authorized — `take_cleared` (`runtime/strand_runtime.gleam:2201`) hands
 `ToolRun.grants` only the carry keyed to this call's own step and source
 index — and `client/wiring.tool_context` decodes it there onto
 `Ctx.grants` (`run_grants`, `client/wiring.gleam:2162`). That is the

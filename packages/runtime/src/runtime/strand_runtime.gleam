@@ -51,6 +51,14 @@
 //// a doorbell lost against an idle strand still costs latency alone, and
 //// the latency it costs is the idle period rather than never.
 ////
+//// A tick parked on a live effect reads the small control registers first.
+//// `poll_wait_unchanged` compares the strand and operation sequences, the
+//// configuration sequence and the leaf with the last parked pass. A matching
+//// frontier with no observation can only keep waiting, so `poll_drive` skips
+//// payload reconstruction. Quiet admissions change the control frontier;
+//// every doorbell, effect event and recovery still takes the full drive.
+//// Only identities and sequences are retained, never a loaded preparation.
+////
 //// Every drive re-arms, so the period follows the occupancy immediately:
 //// a message that opens work on an idle strand arms the short tick as
 //// part of handling that message, and the run does not wait out the idle
@@ -364,6 +372,22 @@ type State {
     /// clearance whose dispatch never happened (a stale commit that
     /// re-plans, a fault) can never widen a *different* call.
     cleared: Option(Cleared),
+    /// The small durable frontier at which a live effect last parked. A poll
+    /// checks this frontier before reconstructing unchanged sibling payloads.
+    poll_wait: Option(PollWait),
+  )
+}
+
+// A parked pass retains identities and sequences, never its preparation or
+// pending payloads. Queue admissions and aborts advance the operation state;
+// configuration and leaf changes must also force the ordinary full load.
+type PollWait {
+  PollWait(
+    operation: OpId,
+    strand_state_seq: Seq,
+    op_state_seq: Seq,
+    configuration_seq: Seq,
+    leaf: Option(EntryId),
   )
 }
 
@@ -496,6 +520,7 @@ pub fn start(
       reaper:,
       live: [],
       observations: [],
+      poll_wait: None,
       poll_permit: False,
       retry_wake: None,
       poll_generation: 0,
@@ -626,11 +651,73 @@ fn polled(
   // This tick has arrived, so nothing is outstanding until `finish` arms
   // again — and the permit never outlives the drive it was offered to.
   let state = State(..state, armed_poll_ms: None, poll_permit: True)
-  case drive(state) {
+  case poll_drive(state) {
     Halt(reason) -> finish(logger, Halt(reason))
     Continue(next) ->
       finish(logger, Continue(State(..next, poll_permit: False)))
   }
+}
+
+// The backstop still reads durable control on every accepted tick. A parked
+// live effect cannot progress from an unchanged frontier without an observation,
+// so only that case can omit the large preparation, pending and tool payloads.
+fn poll_drive(state: State) -> Outcome {
+  case state.poll_wait, state.live, state.observations {
+    Some(wait), [_, ..], [] -> {
+      use unchanged <- or_halt(poll_wait_unchanged(state, wait))
+      case unchanged {
+        True -> Continue(state)
+        False -> drive(state)
+      }
+    }
+    _, _, _ -> drive(state)
+  }
+}
+
+// Legitimate admissions advance strand.state or op.state in the same atomic
+// transaction as their payloads. Reading both keeps quiet admissions and aborts
+// visible; the configuration and leaf reads cover independent operator changes.
+// These reads remain total even when a matching sequence contains corruption.
+fn poll_wait_unchanged(state: State, wait: PollWait) -> Result(Bool, String) {
+  use strand <- result.try(read_decoded(
+    state,
+    register.StrandState,
+    state.strand,
+    codec.decode_strand_state,
+  ))
+  let same_strand = case strand {
+    Some(#(seq, value)) ->
+      seq == wait.strand_state_seq
+      && value.current_operation == Some(wait.operation)
+    None -> False
+  }
+  use <- bool.lazy_guard(!same_strand, fn() { Ok(False) })
+
+  use operation <- result.try(read_decoded(
+    state,
+    register.OpState,
+    ids.op_id_to_string(wait.operation),
+    codec.decode_state,
+  ))
+  let same_operation = case operation {
+    Some(#(seq, _)) -> seq == wait.op_state_seq
+    None -> False
+  }
+  use <- bool.lazy_guard(!same_operation, fn() { Ok(False) })
+
+  use configuration <- result.try(read_decoded(
+    state,
+    register.StrandConfig,
+    state.strand,
+    codec.decode_configuration,
+  ))
+  let same_configuration = case configuration {
+    Some(#(seq, _)) -> seq == wait.configuration_seq
+    None -> False
+  }
+  use <- bool.lazy_guard(!same_configuration, fn() { Ok(False) })
+  use leaf <- result.map(read_leaf(state))
+  leaf == wait.leaf
 }
 
 // The recovery gate, collapsed onto weft's `continuing` contract: this
@@ -1198,7 +1285,9 @@ fn interrupt_live_effects(state: State) -> State {
 const fuel = 10_000
 
 fn drive(state: State) -> Outcome {
-  drive_loop(state, fuel)
+  // Only parking on a newly planned live wait can establish another frontier.
+  // Doorbells, settlements, retries and recovery always take the full load.
+  drive_loop(State(..state, poll_wait: None), fuel)
 }
 
 fn drive_loop(state: State, fuel: Int) -> Outcome {
@@ -1300,8 +1389,8 @@ fn await_effect_action(
 ) -> Outcome {
   case resolve_key(state, loaded, key, observation, now) {
     KeyHalt(reason) -> Halt(reason)
-    KeyWait -> park_on_live(state, observation)
-    KeySpawned(state) -> park_on_live(state, observation)
+    KeyWait -> park_on_live(state, loaded, observation)
+    KeySpawned(state) -> park_on_live(state, loaded, observation)
     KeyObservation(refined) -> plan(state, loaded, refined, fuel - 1)
     KeyCleared(observation: refined, cleared:) ->
       plan(State(..state, cleared: Some(cleared)), loaded, refined, fuel - 1)
@@ -1310,9 +1399,25 @@ fn await_effect_action(
 
 // Parked on a live effect. An unconsumed real observation goes back to the
 // front of the queue.
-fn park_on_live(state: State, observation: Observation) -> Outcome {
+fn park_on_live(
+  state: State,
+  loaded: Loaded,
+  observation: Observation,
+) -> Outcome {
   case observation {
-    NoObservation -> Continue(state)
+    NoObservation ->
+      Continue(
+        State(
+          ..state,
+          poll_wait: Some(PollWait(
+            operation: loaded.op.id,
+            strand_state_seq: loaded.strand_state_seq,
+            op_state_seq: loaded.op_state_seq,
+            configuration_seq: loaded.configuration_seq,
+            leaf: loaded.leaf,
+          )),
+        ),
+      )
     other -> Continue(push_observation_front(state, other))
   }
 }
@@ -2832,12 +2937,10 @@ fn load_operation(
         register.OpToolArgs,
         op_key,
       ))
-      use preparation_keys <- result.try(list_keys(
+      use #(preparation, preparation_keys) <- result.try(load_preparation(
         state,
-        register.OpPreparation,
         op_key,
       ))
-      use preparation <- result.try(load_preparation(state, preparation_keys))
       Ok(
         Open(Loaded(
           op:,
@@ -2974,22 +3077,24 @@ fn load_pending(state: State) -> Result(Dict(String, PendingEntry), String) {
 
 fn load_preparation(
   state: State,
-  keys: List(String),
-) -> Result(Option(StructuralPreparation), String) {
-  case keys {
-    [] -> Ok(None)
-    [key, ..] -> {
-      use cell <- result.try(
-        writer.get_register(state.writer, register.OpPreparation, key)
-        |> result.map_error(describe_read_error),
+  prefix: String,
+) -> Result(#(Option(StructuralPreparation), List(String)), String) {
+  // The listing already transfers decoded values from the writer. Reuse its
+  // first payload rather than reading and decoding a large preparation twice.
+  // Keep every listed key for terminal cleanup, in the backend's original order.
+  use cells <- result.try(
+    writer.list_registers(state.writer, register.OpPreparation, Some(prefix))
+    |> result.map_error(describe_read_error),
+  )
+  let keys = list.map(cells, fn(pair) { pair.0 })
+  case cells {
+    [] -> Ok(#(None, keys))
+    [#(_, storage.Register(value:, ..)), ..] -> {
+      use preparation <- result.map(
+        codec.decode_preparation(value.payload)
+        |> result.map_error(corruption.describe),
       )
-      case cell {
-        None -> Ok(None)
-        Some(storage.Register(value:, ..)) ->
-          codec.decode_preparation(value.payload)
-          |> result.map(Some)
-          |> result.map_error(corruption.describe)
-      }
+      #(Some(preparation), keys)
     }
   }
 }

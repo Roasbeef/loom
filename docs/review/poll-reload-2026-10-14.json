@@ -1,0 +1,318 @@
+{
+  "baseline": "23532b5f9",
+  "candidate": "c4c6d141449166ad0836e32eca2aaf0a67237264",
+  "runtime_source_sha256": "a6cee6f90afa88ef4f36c149dfe0bb7108c55426d07aae0863eb7d3a60f1aa39",
+  "otp": "29",
+  "gleam": "1.19.0",
+  "word_bytes": 8,
+  "schedulers": 1,
+  "held_text_bytes": 1360000,
+  "configured_poll_ms": 200,
+  "window_ms": 3000,
+  "allocation_roots": [
+    "storage@internal@register_cache:decode_blob/1",
+    "runtime@strand_runtime:load_operation/4"
+  ],
+  "forced_gc": false,
+  "scope": "fresh synthetic SQLite VM; separate CPU and allocation runs; capacity snapshots are not live memory",
+  "runs": [
+    {
+      "mode": "cpu",
+      "version": "baseline",
+      "run": 1,
+      "exit": 0,
+      "measurement": {
+        "elapsed_us": 3000286,
+        "cpu_ms": 878,
+        "reductions": 55709726,
+        "control_reads": 9,
+        "preparation_lists": 9
+      },
+      "memory": {
+        "vm_total_before": 53525195,
+        "vm_total_after": 72433971,
+        "driver_bytes_before": 68392,
+        "driver_bytes_after": 55272,
+        "rss_kib_before": 103648,
+        "rss_kib_after": 166160
+      }
+    },
+    {
+      "mode": "cpu",
+      "version": "candidate",
+      "run": 1,
+      "exit": 0,
+      "measurement": {
+        "elapsed_us": 3000257,
+        "cpu_ms": 8,
+        "reductions": 58026,
+        "control_reads": 14,
+        "preparation_lists": 0
+      },
+      "memory": {
+        "vm_total_before": 72435763,
+        "vm_total_after": 72490547,
+        "driver_bytes_before": 76000,
+        "driver_bytes_after": 109760,
+        "rss_kib_before": 141152,
+        "rss_kib_after": 125136
+      }
+    },
+    {
+      "mode": "cpu",
+      "version": "baseline",
+      "run": 2,
+      "exit": 0,
+      "measurement": {
+        "elapsed_us": 3000319,
+        "cpu_ms": 893,
+        "reductions": 55993664,
+        "control_reads": 9,
+        "preparation_lists": 9
+      },
+      "memory": {
+        "vm_total_before": 52625755,
+        "vm_total_after": 72421219,
+        "driver_bytes_before": 68392,
+        "driver_bytes_after": 42480,
+        "rss_kib_before": 102064,
+        "rss_kib_after": 160768
+      }
+    },
+    {
+      "mode": "cpu",
+      "version": "candidate",
+      "run": 2,
+      "exit": 0,
+      "measurement": {
+        "elapsed_us": 3000892,
+        "cpu_ms": 9,
+        "reductions": 58576,
+        "control_reads": 14,
+        "preparation_lists": 0
+      },
+      "memory": {
+        "vm_total_before": 72428827,
+        "vm_total_after": 72433827,
+        "driver_bytes_before": 55304,
+        "driver_bytes_after": 55352,
+        "rss_kib_before": 145712,
+        "rss_kib_after": 129680
+      }
+    },
+    {
+      "mode": "cpu",
+      "version": "baseline",
+      "run": 3,
+      "exit": 0,
+      "measurement": {
+        "elapsed_us": 3000614,
+        "cpu_ms": 876,
+        "reductions": 55780036,
+        "control_reads": 9,
+        "preparation_lists": 9
+      },
+      "memory": {
+        "vm_total_before": 53518035,
+        "vm_total_after": 72434507,
+        "driver_bytes_before": 68392,
+        "driver_bytes_after": 55272,
+        "rss_kib_before": 103168,
+        "rss_kib_after": 166000
+      }
+    },
+    {
+      "mode": "cpu",
+      "version": "candidate",
+      "run": 3,
+      "exit": 0,
+      "measurement": {
+        "elapsed_us": 3000141,
+        "cpu_ms": 9,
+        "reductions": 58699,
+        "control_reads": 14,
+        "preparation_lists": 0
+      },
+      "memory": {
+        "vm_total_before": 72428739,
+        "vm_total_after": 72442571,
+        "driver_bytes_before": 55304,
+        "driver_bytes_after": 68256,
+        "rss_kib_before": 141568,
+        "rss_kib_after": 125536
+      }
+    },
+    {
+      "mode": "cpu",
+      "version": "baseline",
+      "run": 4,
+      "exit": 0,
+      "measurement": {
+        "elapsed_us": 3000511,
+        "cpu_ms": 894,
+        "reductions": 55820899,
+        "control_reads": 9,
+        "preparation_lists": 9
+      },
+      "memory": {
+        "vm_total_before": 56406683,
+        "vm_total_after": 72420507,
+        "driver_bytes_before": 68392,
+        "driver_bytes_after": 55272,
+        "rss_kib_before": 106464,
+        "rss_kib_after": 166608
+      }
+    },
+    {
+      "mode": "cpu",
+      "version": "candidate",
+      "run": 4,
+      "exit": 0,
+      "measurement": {
+        "elapsed_us": 3000960,
+        "cpu_ms": 8,
+        "reductions": 58289,
+        "control_reads": 14,
+        "preparation_lists": 0
+      },
+      "memory": {
+        "vm_total_before": 72442643,
+        "vm_total_after": 72483723,
+        "driver_bytes_before": 76000,
+        "driver_bytes_after": 109832,
+        "rss_kib_before": 142864,
+        "rss_kib_after": 126800
+      }
+    },
+    {
+      "mode": "cpu",
+      "version": "baseline",
+      "run": 5,
+      "exit": 0,
+      "measurement": {
+        "elapsed_us": 3001026,
+        "cpu_ms": 880,
+        "reductions": 55785005,
+        "control_reads": 9,
+        "preparation_lists": 9
+      },
+      "memory": {
+        "vm_total_before": 53739347,
+        "vm_total_after": 72433803,
+        "driver_bytes_before": 68392,
+        "driver_bytes_after": 55272,
+        "rss_kib_before": 104640,
+        "rss_kib_after": 163648
+      }
+    },
+    {
+      "mode": "cpu",
+      "version": "candidate",
+      "run": 5,
+      "exit": 0,
+      "measurement": {
+        "elapsed_us": 3000588,
+        "cpu_ms": 7,
+        "reductions": 62867,
+        "control_reads": 15,
+        "preparation_lists": 0
+      },
+      "memory": {
+        "vm_total_before": 72428795,
+        "vm_total_after": 72427859,
+        "driver_bytes_before": 55304,
+        "driver_bytes_after": 68224,
+        "rss_kib_before": 141184,
+        "rss_kib_after": 125184
+      }
+    },
+    {
+      "mode": "allocation",
+      "version": "baseline",
+      "run": 1,
+      "exit": 0,
+      "measurement": {
+        "elapsed_us": 3000194,
+        "cpu_ms": 886,
+        "reductions": 56011866,
+        "control_reads": 9,
+        "preparation_lists": 9
+      },
+      "memory": {
+        "vm_total_before": 52120843,
+        "vm_total_after": 72541263,
+        "driver_bytes_before": 68392,
+        "driver_bytes_after": 68176,
+        "rss_kib_before": 147824,
+        "rss_kib_after": 169696
+      },
+      "selected_root_words": 151084426
+    },
+    {
+      "mode": "allocation",
+      "version": "candidate",
+      "run": 1,
+      "exit": 0,
+      "measurement": {
+        "elapsed_us": 3000127,
+        "cpu_ms": 10,
+        "reductions": 58528,
+        "control_reads": 14,
+        "preparation_lists": 0
+      },
+      "memory": {
+        "vm_total_before": 72390115,
+        "vm_total_after": 72484335,
+        "driver_bytes_before": 55304,
+        "driver_bytes_after": 55352,
+        "rss_kib_before": 142000,
+        "rss_kib_after": 125584
+      },
+      "selected_root_words": 0
+    },
+    {
+      "mode": "allocation",
+      "version": "baseline",
+      "run": 2,
+      "exit": 0,
+      "measurement": {
+        "elapsed_us": 3000545,
+        "cpu_ms": 881,
+        "reductions": 55719018,
+        "control_reads": 9,
+        "preparation_lists": 9
+      },
+      "memory": {
+        "vm_total_before": 53551635,
+        "vm_total_after": 72532999,
+        "driver_bytes_before": 68392,
+        "driver_bytes_after": 68176,
+        "rss_kib_before": 104512,
+        "rss_kib_after": 161536
+      },
+      "selected_root_words": 151084426
+    },
+    {
+      "mode": "allocation",
+      "version": "candidate",
+      "run": 2,
+      "exit": 0,
+      "measurement": {
+        "elapsed_us": 3000990,
+        "cpu_ms": 9,
+        "reductions": 62133,
+        "control_reads": 15,
+        "preparation_lists": 0
+      },
+      "memory": {
+        "vm_total_before": 72395723,
+        "vm_total_after": 72513223,
+        "driver_bytes_before": 55304,
+        "driver_bytes_after": 68288,
+        "rss_kib_before": 143856,
+        "rss_kib_after": 128464
+      },
+      "selected_root_words": 0
+    }
+  ]
+}

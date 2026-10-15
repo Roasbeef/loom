@@ -19,10 +19,10 @@ run(Build, Check) ->
     {ok, Module, Beam, _Warnings} = compile:forms(Forms, [binary, export_all, return_errors, return_warnings]),
     {module, Module} = code:load_binary(Module, Path, Beam),
     [{type, _, tuple, Fields}] = [T || {attribute, _, type, {state, T, []}} <- Forms],
-    21 = length(Fields),
+    22 = length(Fields),
     %% Refuse a changed State layout rather than timing a different private slot.
     {remote_type, _, [{atom, _, gleam@option}, {atom, _, option}, [_]]} = lists:nth(20, Fields),
-    Empty = setelement(20, list_to_tuple([state | lists:duplicate(20, undefined)]), none),
+    Empty = setelement(20, list_to_tuple([state | lists:duplicate(21, undefined)]), none),
     io:format("otp=~s erts=~s word_bytes=~p schedulers=~p~n",
         [erlang:system_info(otp_release), erlang:system_info(version),
          erlang:system_info(wordsize), erlang:system_info(schedulers_online)]),
