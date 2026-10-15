@@ -216,3 +216,25 @@ pub fn the_attached_attribute_is_yes_or_nothing_test() {
   assert composer_rule.attachments("no") == composer_rule.Unattached
   assert composer_rule.attachments("") == composer_rule.Unattached
 }
+
+pub fn model_and_profile_catalogues_narrow_independently_test() {
+  let rows =
+    list.append(table(), [
+      Entry("/model", "choose a model", Continues),
+      Entry("/model sonnet", "switch", Complete),
+      Entry("/model opus", "switch", Complete),
+      Entry("/profile", "choose a profile", Continues),
+      Entry("/profile default", "switch", Complete),
+      Entry("/profile coding", "switch", Complete),
+      Entry("/model-profile coding", "switch", Complete),
+    ])
+  assert commands(composer_rule.matching(rows, "/mo")) == ["/model"]
+  assert commands(composer_rule.matching(rows, "/model "))
+    == ["/model sonnet", "/model opus"]
+  assert commands(composer_rule.matching(rows, "/model so"))
+    == ["/model sonnet"]
+  assert commands(composer_rule.matching(rows, "/profile c"))
+    == ["/profile coding"]
+  assert commands(composer_rule.matching(rows, "/model-profile c"))
+    == ["/model-profile coding"]
+}

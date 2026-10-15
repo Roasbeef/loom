@@ -154,6 +154,8 @@ fn capture() -> #(snapshot.Captured, snapshot_view.View) {
 
 fn start() -> component.Start(process.Subject(String)) {
   component.Start(
+    completion_models: [],
+    completion_profiles: [],
     session_id: "session",
     label: None,
     workspace_digest: "",

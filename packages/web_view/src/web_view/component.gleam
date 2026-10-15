@@ -475,6 +475,10 @@ pub type Start(socket) {
     /// What the daemon knows about the page's principal and session that the
     /// capture does not carry.
     standing: Standing,
+    /// Catalogue model keys offered by the operator composer.
+    completion_models: List(String),
+    /// Catalogue profile names offered by the operator composer.
+    completion_profiles: List(String),
     /// The host's transport.
     transport: Transport(socket),
   )
@@ -935,6 +939,8 @@ type View(socket) {
     expected: snapshot.Expected,
     reader: Reader,
     transport: Transport(socket),
+    completion_models: List(String),
+    completion_profiles: List(String),
     /// How many rows the page holds. This is the page's own view state.
     paging: Paging,
     /// The folds the reader has open, as `turns.Work.id` numbers, the most
@@ -1330,6 +1336,8 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       expected: start.expected,
       reader: start.standing.reader,
       transport: start.transport,
+      completion_models: start.completion_models,
+      completion_profiles: start.completion_profiles,
       paging: Tail,
       folds: [],
       said: [],
@@ -7233,4 +7241,19 @@ fn status_text(status: Status) -> String {
     Connected -> "connected"
     Ended(_) -> "disconnected"
   }
+}
+
+/// The catalogue names captured when this page opened, for slash completion.
+/// The daemon validates the selected name again when the command runs.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.completion_choices(model)
+/// ```
+@internal
+pub fn completion_choices(
+  model: Model(socket),
+) -> #(List(String), List(String)) {
+  #(model.view.completion_models, model.view.completion_profiles)
 }

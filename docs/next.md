@@ -1,6 +1,6 @@
 # Current handoff
 
-Baselined October 14, 2026 after integrating main `806d0cd20` on
+Baselined October 14, 2026 after integrating main `6554b27e3` on
 `perf/preparation-reuse`.
 Runtime commit `c4c6d1414` optimizes repeated checkpoint reloads while
 retaining lost-doorbell recovery. The plan remains `docs/issue-plan.md`; execution and
@@ -11,7 +11,10 @@ verification rules remain `docs/execution.md`.
 The branch starts from main `7f82bb498`, which includes helper concurrency
 through #978 and Darwin discovery through #986. Their historical integration
 boundaries remain in the [main handoff](https://github.com/Roasbeef/loom/blob/7f82bb498f5990a0382873ac84521b50802e21cd/docs/next.md).
-Main integration also includes provider disconnect diagnostics through #989.
+Main integration includes provider disconnect diagnostics through #989 and
+model/profile autocomplete through #992. The completion change and its
+configuration/observer boundaries remain in the
+[pinned upstream handoff](https://github.com/Roasbeef/loom/blob/6554b27e3/docs/next.md).
 Its privacy, retry and terminal-validation boundaries remain in the
 [pinned upstream handoff](https://github.com/Roasbeef/loom/blob/806d0cd20/docs/next.md).
 This round does not revalidate historical hosted or Linux results.
@@ -62,15 +65,23 @@ The private State layout grew from 21 to 22 fields, with the frontier appended
 to preserve existing projection slots. The projection benchmark's layout guard
 and synthetic constructor were updated together; its full final gate passes.
 The benchmark uses a provider-owned release subject, so it releases and drains
-the held request before checking observations. Full repository tests, hosted CI
-and Linux signoff have not been run for this candidate.
+the held request before checking observations. All local Gleam suites passed on `bf9709776`; a one-off unchanged Seatbelt
+tool-path failure passed focused and complete sandbox reruns. Hosted Linux
+CI and normal/containerised Linux signoff with a clean census also passed
+that head. One advisory macOS shard failed the existing provider delta-flood
+deadline test; the same test passed the other shard, focused reproduction,
+five baseline/candidate pairs and all 206 runtime tests on the unchanged
+rerun. Main then advanced, so those results are historical evidence rather
+than acceptance of this integration. Exact-head gates must run again.
 
 ## What to do next
 
-1. Publish the scoped performance PR after the completed retention check.
-   The owner now authorizes publication and merge once ready. Exit: independent
-   review, hosted CI, normal/containerised Linux signoff and a clean skip census
-   for the exact final head. Keep `caffeinate` running through completion.
+1. Finish exact-head validation and merge [PR #991](https://github.com/Roasbeef/loom/pull/991).
+   The owner authorizes merge once ready. The PR carries current head, review
+   and validation status; do not infer readiness from this source checkpoint
+   or an advisory job badge. Exit: independent review, actual full macOS shard
+   success, hosted CI, normal/containerised Linux signoff and clean skip
+   censuses for the final head. Keep `caffeinate` running through completion.
 2. After owner authorization to update and restart the installed daemon, capture
    Pickglass CPU and allocation cuts under a comparable web workload. Exit:
    identify the installed head, workload and observation coverage and report
