@@ -913,3 +913,12 @@ mutation, and both are answered by `protocol.ProfileSnapshot`
 (`session_channel.matching_presentation`). `event_fold.append_profile` writes the
 current profile and the names, with `default` first, or the switch confirmation
 that says the session is restarting. `attempt` accepts both names in a recording.
+
+## Explicit surface custody
+
+`step.update_retaining_surfaces` runs the shared step while leaving its surface
+facts for a host to consume. The web notes browser adopts the existing
+`NotesArrived` board before calling `step.forget_surfaces`. The ordinary
+`step.update` preserves its previous behavior: a tick drops facts for a host
+with no surfaces. Both entries return the same effects and the same state once
+the retaining host has forgotten its facts. `step_test` pins this equivalence.
