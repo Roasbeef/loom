@@ -67,7 +67,7 @@ and Linux signoff have not been run for this candidate.
 
 ## What to do next
 
-1. Investigate remaining retention, then publish the scoped performance PR.
+1. Publish the scoped performance PR after the completed retention check.
    The owner now authorizes publication and merge once ready. Exit: independent
    review, hosted CI, normal/containerised Linux signoff and a clean skip census
    for the exact final head. Keep `caffeinate` running through completion.
@@ -99,8 +99,12 @@ and capacity/RSS snapshots are not reachable-state sizes.
 ## Deliberately open
 
 The live daemon remains unchanged. Production CPU and retained-memory savings
-need an approved deployment and a matched capture. Parser tuning, supervisor
-sharing and additional rendering changes are outside this implementation.
+need an approved deployment and a matched capture. The follow-up retention check in the checkpoint report found identical
+restart-input copy sizes before and after, with six root and three/two factory
+copies of a synthetic effects payload. Production tool-registry sharing is
+already active. No additional retention patch was justified; field-level
+attribution in an isolated representative release remains the next experiment.
+Parser tuning, supervisor sharing and additional rendering changes remain open.
 None of these is unfinished work somebody forgot.
 
 ## How to verify

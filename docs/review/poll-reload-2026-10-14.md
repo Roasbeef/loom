@@ -137,3 +137,61 @@ same checkout concurrently because the synthetic database path is fixed.
 These commands inspect only their synthetic VM and database. Full repository
 tests, hosted CI, Linux signoff and deployment verification have not been run
 for this candidate. The installed daemon was not restarted or hotpatched.
+
+## Follow-up retention check
+
+The owner subsequently requested another memory investigation and publication
+with merge after exact-head readiness. Main `806d0cd20` was integrated at
+`e2b28a588`; its provider diagnostics do not change the runtime ownership paths.
+The installed daemon remains unchanged.
+
+An isolated synthetic session measured restart-input copy cost on the baseline
+`23532b5f9` and integrated candidate `e2b28a588`. The same Erlang probe used
+OTP 29, ERTS 17.0.5, eight-byte words and one scheduler. It opened an in-memory
+session with the existing fake effects, varied only an entropy callback's
+captured integer list from zero to 4,096 elements, inspected the root and both
+factory states with bounded `sys:get_state`, and closed the runtime. It neither
+forced GC nor inspected the installed daemon. `erts_debug:flat_size` measures
+flattened term words, including the inspection copy, rather than reachable
+heap bytes or RSS. Both builds produced identical values:
+
+| Measured term | Empty marker words | Padded marker words | Increase |
+| --- | ---: | ---: | ---: |
+| Effects | 99 | 8,291 | 8,192 |
+| Root supervisor state | 4,161 | 53,313 | 49,152 |
+| Primary factory state | 748 | 25,324 | 24,576 |
+| Subagent factory state | 523 | 16,907 | 16,384 |
+
+The root therefore contains six flattened copies of this effects environment;
+the primary and subagent factories contain three and two. The root's
+publication callback needs Effects to construct the published runtime, and its
+two factory specifications need Effects to restart strand drivers. OTP retains
+initial and active child specifications. Factory ownership similarly retains
+the driver builder and active child restart inputs. These are real copy
+boundaries, but this fixture does not attribute the live supervisors' five-to-six
+MiB allocations to a specific production field.
+
+The large tool registry already has a separate owner in production:
+`serve` starts both tool holders before publishing the runtime, calls
+`wiring.build_effects_held`, and retires the holders after runtime drain.
+`held_run_slot_does_not_copy_the_registry_test` varies the registry while
+requiring the held callback's flat size to remain constant; its direct-builder
+control must grow. The provider facades project definitions, compaction hooks
+project their fields, and the runtime provider worker projects inputs before
+spawn. Removing the remaining necessary restart inputs would require changing
+ownership rather than a further local capture projection. No such change is
+justified by the current attribution, so this PR adds no speculative retention
+mechanism. The existing projection cache also intentionally retains the branch
+and default projection to avoid repeated reconstruction while the leaf is still.
+
+The earlier allocation reduction remains the demonstrated memory improvement:
+1.21 GB of avoided allocation per measured three-second held-summary window in
+the selected roots. Retained-memory savings remain unestablished. The next
+useful experiment is bounded field-level attribution of one large supervisor
+in an isolated release using a representative synthetic registry, before
+considering another owner or altering cache lifetime.
+
+Local probe source and raw output are preserved at
+`/private/tmp/loom_retention_probe.erl`,
+`/private/tmp/loom-retention-baseline.log`, and
+`/private/tmp/loom-retention-candidate.log`.
