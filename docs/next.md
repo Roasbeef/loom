@@ -1,162 +1,89 @@
 # Current handoff
 
-## Darwin restart and discovery integration
+Baselined October 14, 2026 against `7f82bb498f5990a0382873ac84521b50802e21cd`.
+Runtime commit `6435d874b` contains the measured preparation-read change below.
+The project plan remains `docs/issue-plan.md`; verification procedure remains
+`docs/execution.md`.
 
-Rebased October 14, 2026 onto main `25c34d3493a79837b3c4eafcf9eb82a2caa68201` for PR #986.
-The owner explicitly requested rebase and force merge without waiting for a
-new full CI or Linux signoff cycle. The previous published head `3188d27c3`
-passed hosted CI; those results are historical evidence, not exact-head
-validation of this rebase. The host implementation and regression sources
-replayed byte-identically. Focused host tests and documentation checks are
-recorded on the PR before merge.
+## Where the tree is
 
-Darwin process birth is observed in UTC and the C locale only in the `ps`
-subprocess. Ambiguous live legacy records fail closed. UTC records use
-endpoint schemas three/four so older clients refuse them before overwriting
-discovery. Restart older terminal clients after updating; the
-[upgrade guide](updating.md#darwin-process-identity-upgrade) records the
-legacy recovery and downgrade boundaries. No installed daemon was changed.
+Main's baseline includes helper concurrency through PR #978 at `25c34d349`
+and Darwin discovery through PR #986 at `7f82bb498`. The prior edition's
+instruction to finish and merge #978 is therefore stale. The source commits
+are present in this baseline; this profiling round has not rechecked their
+historical hosted checks or Linux signoff. Their historical integration notes
+remain in the [previous handoff](https://github.com/Roasbeef/loom/blob/7f82bb498f5990a0382873ac84521b50802e21cd/docs/next.md).
 
-## Prior merged work
+The fresh [resource report](review/loom-live-resource-profile-2026-10-14.md)
+profiles the installed daemon at `13508cb5895e338aa60109259f66c025d81447c6`,
+which predates those two merges. The owner confirmed that the workload uses
+the web UI, so there is no terminal-client profile in this round.
 
-The following main checkpoint is preserved from the rebase baseline. Its
-individual validation boundaries and deliberately open work remain as stated.
+## Measured runtime change
 
-Baselined October 14, 2026 against main
-`3ee679ca7b7a36bb2e518f4494214de364217e7b`. The owner requested one combined
-merge of login PR #985, Fast-mode PR #987 and keepalive PR #988 through #985.
-Their reviewed commits are preserved as merge parents. Main's register cache,
-Responses diagnostics, deployment enforcement, per-strand timing and capture
-archive remain intact; their detailed rulings and recovery commands remain in
-the [pinned main handoff](https://github.com/Roasbeef/loom/blob/3ee679ca7b7a36bb2e518f4494214de364217e7b/docs/next.md).
-The project plan remains `docs/issue-plan.md`.
+Two ten-second Pickglass CPU cuts attributed about 83% of selected active
+stack observations to JSON parsing, including the owner's reported CPU spike.
+Register-cache tracing localized the expensive work to oversized preparation
+decoding. One active preparation was 1,577,693 encoded bytes, above the
+existing 262,144-byte cache bound.
 
-## Confirmed login bug
+`strand_runtime.load_operation` listed preparation registers, discarded their
+values and point-read the first key again. The candidate uses the first
+listed value and preserves all listed keys for terminal cleanup. It adds no
+cross-reload cache or storage API. The large summary-input regression completes
+navigation and cleanup while requiring zero preparation point reads. The same
+regression on the unchanged baseline fails with six point reads.
 
-Fresh native sign-in failed `invalid_identity_issued_in_future` with zero clock
-tolerance. With five seconds, fresh browser login succeeded. Signed regression
-fixtures cover the exact issued-at, not-before and expiry boundaries under UTC
-and America/New_York. Signature, algorithm, issuer, audience, authorized party,
-nonce, subject and account binding remain mandatory. Fixed refusal codes discard
-untrusted error payloads. A displayed timezone does not alter UTC JWT timestamps.
+The matched SQLite fixture's median operation-sequence time fell from
+1.452695 seconds to 0.802891 seconds over five fresh-VM runs per version.
+Register-decode heap allocation fell by 50.32% in both allocation comparisons.
+These are synthetic fixture results, not live daemon CPU or RSS savings.
+The installed daemon remains unchanged.
 
-## Confirmed stream bug
+## What to do next
 
-A real native stream sent `keepalive` at sequence 343 and was rejected as
-`event_unsupported`, aborting after 57.46 seconds before its 60-second deadline.
-The fix consumes only that fixed control after JSON, SSE-name and sequence
-validation. It emits no content and preserves item, usage and terminal witnesses,
-cumulative bytes and the absolute attempt deadline. Unknown semantic events
-still fail; keepalive cannot settle an unfinished response.
+1. Review and land the scoped runtime change. Exit: retain the successful
+   summary-input, zero-point-read and cleanup regression; require any additional
+   merge gates the owner selects. The runtime package gate passed all 203 tests,
+   and runtime lint passed. Independent adversarial review found no actionable
+   issues. Full repository tests, hosted CI and Linux signoff
+   have not been run for this candidate.
+2. After owner authorization to update and restart the installed daemon, repeat
+   the live Pickglass census and CPU sample under a comparable web workload.
+   Exit: report exact installed commit, observation windows and workload, and
+   distinguish CPU, cumulative allocation, process capacity and OS RSS.
 
-The patched native stream crossed keepalive at 333, completed canonically at
-338 and settled in 54.73 seconds. The loaded adapter BEAM and source were checked
-against `489fd0703`. The probe used a known synthetic prompt and executed no tools
-or private audit context. Original screenshots match the failure class and shape,
-but their unknown event names were not retained, so not every historical error
-is attributed to keepalive. Observed real-session recovery alone was not treated
-as a code fix.
+## Rulings already made
 
-## Optional Fast mode
+**Reuse a value already returned before adding retention.** Preparation values
+are reused within one reload. Storage is still queried on each reload, its
+listing order still selects the first payload and every listed key still reaches
+terminal cleanup. The code and regression own this rule.
 
-Responses model entries accept `service_tier = "fast"` or `"default"`; omission
-preserves provider defaults. Fast mode sends the documented `priority` alias
-because native subscription inference rejected the newer `fast` wire spelling.
-A live priority request completed but reported the served tier as `default`,
-so eligibility and a speed improvement are not established by configuration.
-Each fallback sends its own selection. Reasoning and cybersecurity access are
-independent. Fast processing can consume more allowance or cost more; configured
-price estimates are not authoritative subscription charges. This integration
-does not enable Fast mode in the owner's configuration.
+**Keep live evidence separate from fixture comparisons.** The resource report
+records the live capture coverage and truncated trace. A changing live workload
+and unmatched builds cannot establish an optimization's direction. Raw captures
+remain private because they contain owner and process identities.
 
-## Prior evidence and current gate
+## Deliberately open
 
-Each individual change passed one independent adversarial review. Login's
-rebased source and tests were byte-identical to its reviewed original, and the
-integration review preserved main. Its 34 focused tests passed and affected gate
-passed in 737 seconds. The keepalive provider suite passed 309 tests; removing
-only its no-op made the new regression fail as intended. Fast mode's provider
-suite passed 308 tests, its focused catalogue cases passed, and its affected gate
-passed in 589 seconds. The scoped Linux remote-move reproduction passed all four
-variants after an earlier full Fast signoff hit an unchanged options-file refusal.
-These are individual-head results, not signoff for the combined head.
+Production CPU and retained-memory savings are unmeasured until an approved
+update and matched capture. The remaining JSON decode, runtime reload frequency,
+supervisor memory and allocator capacity have not been optimized in this change.
+No installed daemon update, restart, forced collection or state walk was done.
+None of these is unfinished work somebody forgot.
 
-A prior login macOS advisory retry had no assertion failures but reached the
-client's 1,200-second suite deadline. Its successful job does not establish a
-completed suite. Current main uses a two-shard macOS client matrix; inspect both
-raw logs before describing the combined checks. Existing owner-approved deadline
-policy cannot excuse unexplained assertions.
+## How to verify
 
-The owner revised the merge criteria to focused affected tests and integration
-review, explicitly choosing not to wait for the full gate. The combined provider
-suite passed all 311 tests and the Codex authentication group passed all 34.
-Catalogue tests passed 134 cases and gateway tests passed 153. Formatting,
-focused provider/client lint, documentation checks and independent integration
-review passed; the review found no actionable integration issues or lost tests.
-Full combined hosted CI and Linux signoff
-are not established by those results. No installed daemon, operator configuration,
-audit tools or hooks have been changed or executed by this integration.
+```sh
+LOOM_TEST_TIMEOUT_SECONDS=90 bash scripts/test.sh runtime --match preparation_listing
+make check-runtime
+make lint-runtime
+make doc-check
+```
 
-## Helper integration checkpoint
-
-The combined provider/login changes above landed through PR #985 at `13508cb58`.
-PR #975 subsequently merged at `1ae797c1e` after exact-head hosted CI, both actual
-macOS full-check outcomes and genuine Linux signoff passed. Its refreshed local
-shipment also passed all 4,495 client tests. The retirement report preserves its
-memory savings, replacement costs and earlier failures. No installed daemon was
-changed or restarted.
-
-PR #978 preserves the reviewed concurrent helper implementation and isolated
-benchmark evidence. Head `1ec732407` passed its complete fresh-shipment local
-gate (4,495 client tests in 657.41 seconds), genuine Linux signoff and all hard
-hosted jobs. Its second macOS full-check shard failed a native bootstrap readiness
-probe; five unchanged local repetitions passed, and one bounded shard retry
-passed that bootstrap fixture but exposed a different sharing-fixture timeout.
-Green advisory badges and the skipped aggregate census were not accepted as
-complete validation.
-
-The sharing fixture waits synchronously for stop/isolate/resume before writing
-its HTTP response head, but its generic probe allowed only one second. Only that
-blocking success request now uses the existing managed body's 40-second lifetime;
-ordinary requests, refusals, detached admission and idempotent asks retain their
-one-second probes. The existing 1,200 ms slow assembly makes the same test prove
-a legitimately slower resume. Every original outcome assertion remains. A private
-control restoring only the one-second receive bound fails at the same header
-read; the corrected case passes. Independent changed-slice reviews passed.
-Correction head `7cf9db80f` passed the complete fresh-shipment local gate and
-Linux signoff, plus all hard hosted jobs and the second actual macOS full check.
-The first shard failed an unchanged TUI throughput assertion; five unchanged
-focused reproductions passed, but its one bounded retry failed an earlier runtime
-renewal test after a fixed 300 ms sleep. The positive renewal fixture now uses
-its existing bounded observation for at least three renewals, retaining count
-and liveness assertions and cleaning up before assertion. Production specifies
-fixed delay after handler completion, not a 300 ms scheduling guarantee.
-Fresh full gates and Linux signoff must validate this next correction head.
-
-## Concurrent helper evidence
-
-The [concurrency report](review/helper-concurrency-2026-10-13.md) and
-[startup report](review/helper-startup-2026-10-13.md) preserve the measured
-production implementation: bounded four-slot lifecycle workers, targeted input
-and cancellation, terminal custody and fresh serialized Darwin census capture.
-Four-slot batch latency matched separate helpers; eight slots improved by 5.99%.
-Summed helper RSS was 69.59% and 68.72% lower. These isolated local comparisons
-do not establish live-daemon or distributed latency savings.
-
-The older `7794f754b` macOS shards passed their actual full checks, covering
-1,965 plus 2,526 client tests. The later `1ec732407` hosted failures are recorded
-above. The correction head still needs its own combined validation and Linux
-signoff; earlier results are not reused.
-
-## Next steps
-
-1. Finish the corrected #978 full local gate, both actual macOS shard outcomes,
-   hard hosted gates and genuine exact-head Linux signoff, then merge it into main.
-   The retarget is complete and the independent implementation and fixture reviews
-   passed. Earlier heads' successes do not substitute for these gates.
-2. Preserve the provider/login source and security boundaries above, capture
-   archive recovery and all helper custody invariants. Historical results belong
-   to their recorded heads; green advisory badges alone are not test passes.
-
-The owner explicitly authorized that landing order. No installed daemon update
-or restart is authorized, and no recurring automation is needed.
+Read each command's own exit status. The package gate passed with 203 tests;
+the new regression failed on the unchanged baseline at its zero-point-read
+assertion. The report preserves the local SQLite benchmark runner, fixture and
+raw-result locations. Those scratch databases are synthetic and do not use the
+live session store. See `docs/execution.md` for the broader verification rules.
