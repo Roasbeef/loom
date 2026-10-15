@@ -32,6 +32,8 @@ import web_view/sessions
 // component starts and what reaches it, not the session.
 fn start() -> component.Start(ui_relay.Relay) {
   component.Start(
+    completion_models: [],
+    completion_profiles: [],
     session_id: "A",
     label: None,
     workspace_digest: "",

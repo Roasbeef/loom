@@ -383,6 +383,11 @@ pub type Attachment(instance) {
     /// protocol-change/077). They are the daemon's own and a page never
     /// supplies one.
     peers: peers.Directory,
+    /// Configured model keys for an operator page's completion table.
+    /// Read once during socket admission, outside the component runtime.
+    models: fn() -> List(String),
+    /// Configured profile names for the same completion table.
+    profiles: fn() -> List(String),
   )
 }
 
@@ -1748,6 +1753,14 @@ fn resident_upgrade(
                 registration:,
                 activity: home_activity(config, state.registry, digest),
                 peers: peer_directory(config, state.registry),
+                models: fn() {
+                  profiles.model_keys(config.domain_configuration)
+                  |> result.unwrap([])
+                },
+                profiles: fn() {
+                  profiles.names(config.domain_configuration)
+                  |> result.unwrap([])
+                },
               ),
             )
           root.release(config.daemon, permit)

@@ -14,12 +14,12 @@
 ////
 //// ## What the element is told
 ////
-//// The server sets two attributes and one child:
+//// The server sets counts as attributes and text as slotted children:
 ////
-//// - `commands` is the table of completions as JSON. It is the terminal's
+//// - The `commands` slot is the table of completions as JSON text. It is the terminal's
 ////   own table (`session_view/command.suggestions`) less the commands the
-////   page does not run, encoded by `web_view/view/completion`, so the names
-////   and hints are the terminal's and no session text is in it.
+////   page does not run, plus configured model and profile names, encoded by
+////   `web_view/completion`. Catalogue names stay text throughout rendering.
 //// - `returned` counts the prompts the daemon has handed back, from one, in
 ////   the order they came. A number that rises means the children in the slot
 ////   named `returned` hold text to put in the editor. The element takes the
@@ -137,6 +137,9 @@ pub type Submitting {
 
 /// Everything the element can be told.
 pub type Msg {
+  /// The server changed the slotted completion table.
+  CommandsChanged
+
   /// The server sent the table of completions.
   Configured(entries: List(Entry))
 
@@ -193,9 +196,6 @@ pub type Msg {
 /// ```
 pub fn register() -> Result(Nil, lustre.Error) {
   lustre.component(init, update, view, [
-    component.on_attribute_change("commands", fn(value) {
-      Ok(Configured(composer_rule.entries(value)))
-    }),
     component.on_attribute_change("returned", fn(value) {
       int.parse(value) |> result.map(Returned)
     }),
@@ -254,7 +254,11 @@ fn shown(model: Model) -> List(Entry) {
 /// ```
 pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
   case message {
-    Configured(entries:) -> #(Model(..model, entries:), effect.none())
+    CommandsChanged -> #(model, configuring())
+    Configured(entries:) -> #(
+      Model(..model, entries:, selected: 0),
+      effect.none(),
+    )
 
     // The first count is the baseline: an editor the server draws afresh
     // after a send starts with the count as it stands, and that count was
@@ -341,7 +345,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
 
     Connected -> #(
       model,
-      effect.batch([unlistening(model.submitting), listening()]),
+      effect.batch([unlistening(model.submitting), listening(), configuring()]),
     )
     Listening(submitting:) -> #(
       Model(..model, submitting: Some(submitting)),
@@ -583,10 +587,18 @@ fn revealing() -> Effect(Msg) {
 // The list sits above the editor in the flow, so opening it grows the dock
 // upward and leaves the editor and its buttons where they were. The editor
 // is the slot's child and is drawn by the server; every word in the list is
-// the static table's.
+// the daemon's completion table's.
 fn view(model: Model) -> Element(Msg) {
   let rows = shown(model)
   element.fragment([
+    component.named_slot(
+      "commands",
+      [
+        attribute.hidden(True),
+        event.on("slotchange", decode.success(CommandsChanged)),
+      ],
+      [],
+    ),
     pending(model.pending),
     case rows {
       [] -> element.none()
@@ -711,4 +723,19 @@ fn keystroke(
         "a key",
       )
   }
+}
+
+// Catalogue names remain text throughout the server and browser rendering.
+// Slot changes reload the table without replacing the operator's draft.
+fn configuring() -> Effect(Msg) {
+  use dispatch, root <- effect.after_paint
+  let read = {
+    use table <- result.try(ffi_dom.query_selector(
+      ffi_dom.host(ffi_dom.as_element(root)),
+      "[slot=commands]",
+    ))
+    dispatch(Configured(composer_rule.entries(ffi_dom.text_content(table))))
+    Ok(Nil)
+  }
+  result.unwrap(read, Nil)
 }

@@ -808,8 +808,8 @@ fn draft(model: component.Model(socket)) -> Element(Msg(socket)) {
 // with Enter. The textarea is still the uncontrolled editor it was, and the
 // element only listens to it: the browser owns the text, the form's submit is
 // the one event the server hears, and Enter in the editor is a newline. The
-// element's `commands` attribute is the static table of completions, which
-// holds no session text (`web_view/completion`).
+// element's `commands` slot holds the completion table as escaped text,
+// including the configured model and profile names (`web_view/completion`).
 //
 // A prompt the daemon handed back is put in the editor by the element, which
 // alone knows whether the operator has typed there since. The server tells it
@@ -830,6 +830,7 @@ fn editor(model: component.Model(socket)) -> Element(Msg(socket)) {
   let returns = component.returns(model)
   let returned = component.returned(model)
   let refusals = component.refusals(model)
+  let #(models, profiles) = component.completion_choices(model)
 
   // Provider fragments do not change the editor. Keep its command table and
   // returned drafts until an editor input changes, and capture only those
@@ -838,15 +839,19 @@ fn editor(model: component.Model(socket)) -> Element(Msg(socket)) {
     element.ref(returns),
     element.ref(returned),
     element.ref(refusals),
+    element.ref(models),
+    element.ref(profiles),
   ])
   element.element(
     "loom-composer",
     [
-      attribute.attribute("commands", completion.table()),
       attribute.attribute("returned", int.to_string(returns)),
       attribute.attribute("refused", int.to_string(refusals)),
     ],
     [
+      html.span([attribute.attribute("slot", "commands")], [
+        html.text(completion.table_with(models, profiles)),
+      ]),
       html.textarea(
         [
           attribute.name("draft"),

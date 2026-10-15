@@ -83,6 +83,8 @@ fn start_page(
     )
   let start =
     component.Start(
+      completion_models: [],
+      completion_profiles: [],
       session_id: session,
       label: None,
       workspace_digest: "",

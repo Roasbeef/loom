@@ -1,5 +1,5 @@
 //// The slash commands the composer offers are the terminal's, less the ones
-//// the page refuses, and nothing in the table is session text.
+//// the page refuses, plus configured model and profile names as escaped text.
 ////
 //// The table is what `<loom-composer>` narrows as the draft grows, so what
 //// these tests hold to is its content: the names and hints are the ones
@@ -76,8 +76,8 @@ pub fn the_argument_rows_are_offered_test() {
 
 // `/profile` is a session command, so the page runs it exactly as the terminal
 // does, under both spellings, and offers the one argument it can know, `default`.
-// The profile names are the daemon's text and the table is an attribute, so they
-// are never rows (the page prints them when `/profile` is answered).
+// The profile names are the daemon's text, so they
+// arrive as escaped child text in the catalogue table.
 pub fn the_profile_commands_are_offered_under_both_spellings_test() {
   let rows = completion.rows()
   let offered = commands(rows)
@@ -107,7 +107,7 @@ pub fn the_page_carries_the_profile_commands_as_session_commands_test() {
 pub fn a_command_the_page_refuses_is_not_offered_test() {
   let offered = commands(completion.rows())
   list.each(
-    ["/help", "/model", "/sessions", "/access", "/add-dir", "/add-write-dir"],
+    ["/help", "/sessions", "/access", "/add-dir", "/add-write-dir"],
     fn(name) {
       assert !list.contains(offered, name)
     },
@@ -143,15 +143,68 @@ pub fn the_table_is_json_the_element_can_read_test() {
     as "each row names its command, its hint and whether an argument follows"
 }
 
-// The table rides on the editor's element as an attribute and is the same on
-// every render, and the editor stays the plain textarea inside it.
+// The table rides on the editor as escaped slotted text, while the editor
+// stays the plain textarea inside it.
 pub fn the_composer_carries_the_table_on_its_editor_test() {
   let model = page_fixture.ready(process.new_subject(), "operator")
   let html = element.to_string(operator_page.view(model))
   assert string.contains(html, "<loom-composer")
-  assert string.contains(html, "commands=\"")
+  assert string.contains(html, "slot=\"commands\"")
   assert string.contains(html, "&quot;c&quot;:&quot;/compact&quot;")
   let assert Ok(#(_, editor)) = string.split_once(html, "<loom-composer")
     as "the editor is inside the element"
   assert string.contains(editor, "<textarea")
+}
+
+// The model head continues into a daemon catalogue argument even though the
+// terminal's bare command opens a selector which the page does not render.
+pub fn model_completion_continues_to_a_session_command_test() {
+  let assert Ok(head) =
+    list.find(completion.rows(), fn(row) { row.command == "/model" })
+    as "the model head is offered"
+  assert head.takes_argument
+  assert component.page_command(command.parse("/model sonnet"))
+    == Ok(command.Model("sonnet"))
+}
+
+pub fn catalogue_models_and_profiles_are_complete_argument_rows_test() {
+  let assert Ok(json.Array(items)) =
+    json.parse(completion.table_with(["sonnet"], ["coding"]))
+    as "the catalogue table is JSON"
+  list.each(
+    ["/model sonnet", "/profile coding", "/model-profile coding"],
+    fn(name) {
+      assert list.contains(
+        items,
+        json.Object([
+          #("c", json.String(name)),
+          #(
+            "d",
+            json.String(case name {
+              "/model " <> _ -> "switch the strand model"
+              _ -> "switch the session profile"
+            }),
+          ),
+          #("a", json.Bool(False)),
+        ]),
+      )
+    },
+  )
+}
+
+pub fn catalogue_names_reach_the_composer_only_as_escaped_text_test() {
+  let start = page_fixture.start()
+  let model =
+    component.new(
+      component.Start(
+        ..start,
+        completion_models: ["model<unsafe>"],
+        completion_profiles: ["profile<unsafe>"],
+      ),
+    )
+  let html = element.to_string(operator_page.view(model))
+  assert string.contains(html, "/model model&lt;unsafe&gt;")
+  assert string.contains(html, "/profile profile&lt;unsafe&gt;")
+  assert !string.contains(html, "commands=\"")
+  assert !string.contains(html, "<unsafe>")
 }
