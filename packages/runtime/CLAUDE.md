@@ -1001,6 +1001,17 @@ report establishes no consumption; owner loss without a report becomes an
 unknown observation. The existing usage hook sees the committed aggregate
 row once, and context readers use the assistant's final response usage.
 
+## Structural preparation reads
+
+`strand_runtime.load_preparation` lists the operation's preparation registers
+once per reload, decodes the first listed payload and carries every listed key
+into terminal cleanup. It reuses the value already transferred by the listing;
+a second point read would decode and transfer oversized preparations again.
+There is no cross-reload preparation cache. The storage backend's listing order
+still selects the first preparation, and malformed structural payloads still
+fault the load. `preparation_read_test` proves summary-input delivery, successful
+navigation, cleanup and zero preparation point reads across the real driver.
+
 ## Writer residency
 
 A writer uses `runtime/residency.hibernate_after_ms` when it has no lease.

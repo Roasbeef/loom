@@ -2832,12 +2832,10 @@ fn load_operation(
         register.OpToolArgs,
         op_key,
       ))
-      use preparation_keys <- result.try(list_keys(
+      use #(preparation, preparation_keys) <- result.try(load_preparation(
         state,
-        register.OpPreparation,
         op_key,
       ))
-      use preparation <- result.try(load_preparation(state, preparation_keys))
       Ok(
         Open(Loaded(
           op:,
@@ -2974,22 +2972,24 @@ fn load_pending(state: State) -> Result(Dict(String, PendingEntry), String) {
 
 fn load_preparation(
   state: State,
-  keys: List(String),
-) -> Result(Option(StructuralPreparation), String) {
-  case keys {
-    [] -> Ok(None)
-    [key, ..] -> {
-      use cell <- result.try(
-        writer.get_register(state.writer, register.OpPreparation, key)
-        |> result.map_error(describe_read_error),
+  prefix: String,
+) -> Result(#(Option(StructuralPreparation), List(String)), String) {
+  // The listing already transfers decoded values from the writer. Reuse its
+  // first payload rather than reading and decoding a large preparation twice.
+  // Keep every listed key for terminal cleanup, in the backend's original order.
+  use cells <- result.try(
+    writer.list_registers(state.writer, register.OpPreparation, Some(prefix))
+    |> result.map_error(describe_read_error),
+  )
+  let keys = list.map(cells, fn(pair) { pair.0 })
+  case cells {
+    [] -> Ok(#(None, keys))
+    [#(_, storage.Register(value:, ..)), ..] -> {
+      use preparation <- result.map(
+        codec.decode_preparation(value.payload)
+        |> result.map_error(corruption.describe),
       )
-      case cell {
-        None -> Ok(None)
-        Some(storage.Register(value:, ..)) ->
-          codec.decode_preparation(value.payload)
-          |> result.map(Some)
-          |> result.map_error(corruption.describe)
-      }
+      #(Some(preparation), keys)
     }
   }
 }
