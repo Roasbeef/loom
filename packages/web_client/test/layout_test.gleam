@@ -6,7 +6,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import web_client/layout_rule.{Anonymous, Identified}
 import web_client/shell_rule.{
-  Changes, Closed, Layout, Open, Panel, Session, Strands, Trace,
+  Changes, Closed, Layout, Notes, Open, Panel, Session, Strands, Trace,
 }
 
 const digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -34,7 +34,7 @@ pub fn every_layout_round_trips_test() {
     use tab <- list.flat_map(tabs)
     [Layout(sidebar:, panel:, tab:)]
   }
-  assert list.length(layouts) == 16
+  assert list.length(layouts) == 20
   assert list.all(layouts, fn(layout) {
     layout_rule.restore(Ok(layout_rule.encode(layout))) == layout
   })
@@ -45,6 +45,8 @@ pub fn the_encoding_is_a_plain_object_of_words_test() {
     == "{\"sidebar\":\"open\",\"panel\":\"open\",\"tab\":\"strands\"}"
   assert layout_rule.encode(Layout(sidebar: Closed, panel: Closed, tab: Changes))
     == "{\"sidebar\":\"closed\",\"panel\":\"closed\",\"tab\":\"changes\"}"
+  assert layout_rule.encode(Layout(sidebar: Open, panel: Open, tab: Notes))
+    == "{\"sidebar\":\"open\",\"panel\":\"open\",\"tab\":\"notes\"}"
 }
 
 // Whatever is in the item, the page draws. None of these is a layout, and
@@ -87,9 +89,9 @@ pub fn an_unknown_tab_is_the_default_tab_and_keeps_the_columns_test() {
     == Layout(sidebar: Open, panel: Closed, tab: Strands)
 }
 
-// A layout stored before the Trace tab existed names one of the three older
-// tabs and decodes as it did, and a stored `trace` is the new tab.
-pub fn a_layout_stored_before_the_trace_tab_still_decodes_test() {
+// A layout stored before the Trace and Notes tabs existed keeps its older
+// tab, and the new words decode to their matching tabs.
+pub fn older_and_new_tab_layouts_decode_test() {
   assert layout_rule.restore(Ok(
       "{\"sidebar\":\"closed\",\"panel\":\"open\",\"tab\":\"session\"}",
     ))
@@ -98,6 +100,10 @@ pub fn a_layout_stored_before_the_trace_tab_still_decodes_test() {
       "{\"sidebar\":\"open\",\"panel\":\"open\",\"tab\":\"trace\"}",
     ))
     == Layout(sidebar: Open, panel: Open, tab: Trace)
+  assert layout_rule.restore(Ok(
+      "{\"sidebar\":\"open\",\"panel\":\"open\",\"tab\":\"notes\"}",
+    ))
+    == Layout(sidebar: Open, panel: Open, tab: Notes)
 }
 
 pub fn an_unknown_column_word_is_open_and_keeps_the_tab_test() {
@@ -201,6 +207,7 @@ pub fn the_button_says_what_the_page_shows_and_what_pressing_does_test() {
 pub fn the_tab_has_its_own_item_per_browser_test() {
   assert layout_rule.tab_key == "loom.panel.tab.v1"
   assert layout_rule.encode_tab(Changes) == "changes"
+  assert layout_rule.encode_tab(Notes) == "notes"
   list.each(shell_rule.tabs(), fn(tab) {
     assert layout_rule.restored_tab(Ok(layout_rule.encode_tab(tab)))
       == Some(tab)

@@ -38,8 +38,8 @@ import gleam/result
 import gleam/string
 import web_client/grip_rule
 import web_client/shell_rule.{
-  type Layout, type State, type Tab, Changes, Closed, Layout, Open, Session,
-  Strands, Trace,
+  type Layout, type State, type Tab, Changes, Closed, Layout, Notes, Open,
+  Session, Strands, Trace,
 }
 
 /// The item the theme lives in. The theme is the reader's preference for the
@@ -280,6 +280,7 @@ fn tab_word(tab: Tab) -> String {
     Changes -> "changes"
     Session -> "session"
     Trace -> "trace"
+    Notes -> "notes"
   }
 }
 
@@ -289,6 +290,7 @@ fn tab_of(word: String) -> Result(Tab, Nil) {
     "changes" -> Ok(Changes)
     "session" -> Ok(Session)
     "trace" -> Ok(Trace)
+    "notes" -> Ok(Notes)
     _ -> Error(Nil)
   }
 }

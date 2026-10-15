@@ -85,6 +85,7 @@ import web_client/expand
 import web_client/fold
 import web_client/follow
 import web_client/link
+import web_client/notes
 import web_client/popover
 import web_client/rename
 import web_client/reveal
@@ -121,6 +122,7 @@ pub fn main() -> Nil {
   let _ = fold.register()
   let _ = follow.register()
   let _ = link.register()
+  let _ = notes.register()
   let _ = popover.register()
   let _ = rename.register()
   let _ = reveal.register()

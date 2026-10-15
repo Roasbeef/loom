@@ -1708,3 +1708,26 @@ pub fn an_observer_can_return_from_history_at_only_the_return_path_test() {
   assert !ui_socket.observer_accepts(at(component.latest_path <> "\t0", "click"))
   assert !ui_socket.observer_accepts(at("0\t2\t1\t0\t2", "click"))
 }
+
+pub fn notes_observer_events_are_confined_to_read_only_pane_test() {
+  let click = fn(path) {
+    "{\"kind\":1,\"name\":\"click\",\"path\":\""
+    <> string.replace(path, "\t", "\\t")
+    <> "\"}"
+  }
+  let input = fn(path) {
+    "{\"kind\":1,\"name\":\"input\",\"path\":\""
+    <> string.replace(path, "\t", "\\t")
+    <> "\"}"
+  }
+  let refresh = component.notes_path <> "\t0\t1"
+  assert ui_socket.observer_accepts(click(refresh))
+  assert ui_socket.observer_accepts(input(component.notes_search_path))
+  assert ui_socket.owner_accepts(input(component.notes_search_path))
+  assert ui_socket.operator_accepts(input(component.notes_search_path))
+  assert !ui_socket.observer_accepts(input(refresh))
+  assert !ui_socket.observer_accepts(input(component.notes_search_path <> "\t0"))
+  assert !ui_socket.observer_accepts(click(component.notes_path))
+  assert !ui_socket.observer_accepts(click(component.notes_path <> "0\t0"))
+  assert !ui_socket.observer_accepts(input(component.rename_path))
+}

@@ -204,6 +204,7 @@ import web_view/ending.{type Ending}
 import web_view/grants
 import web_view/image as web_image
 import web_view/invites
+import web_view/notes
 import web_view/peer_links
 import web_view/remembered as holding
 import web_view/renames
@@ -219,6 +220,7 @@ import web_view/view/expansion
 import web_view/view/heading
 import web_view/view/lane
 import web_view/view/live
+import web_view/view/notes as notes_panel
 import web_view/view/nudges
 import web_view/view/panel
 import web_view/view/peer_links as peer_links_view
@@ -374,6 +376,12 @@ pub const remembered_path = "0\t3\t2\t5"
 /// (`client/daemon/ui_socket.peer_links_for`). `peer_links_test` fails if the
 /// view moves the section.
 pub const peers_path = "0\t3\t2\t6"
+
+/// The appended read-only Notes pane after the existing panel children.
+pub const notes_path = "0\t3\t5"
+
+/// The search input’s exact path, admitted for input events only.
+pub const notes_search_path = "0\t3\t5\t2\t0"
 
 /// How long the peer links a page read stand before it reads them again, in
 /// milliseconds of the transport's clock. A link changes when the owner or a
@@ -943,6 +951,8 @@ type View(socket) {
     completion_profiles: List(String),
     /// How many rows the page holds. This is the page's own view state.
     paging: Paging,
+    /// This strand’s bounded board, search and selected cell.
+    notes: notes.State,
     /// The folds the reader has open, as `turns.Work.id` numbers, the most
     /// recently opened first. A fold is open only on this page and only
     /// while its turn is held: `relaned` drops the numbers of turns that
@@ -1219,6 +1229,12 @@ pub type Msg(socket) {
   /// (protocol-change/075).
   ContextRefreshRequested
 
+  /// A read-only action within this strand’s notes region.
+  NotesPressed(strand: String, press: notes.Press)
+
+  /// Search the available note keys and values.
+  NotesSearched(strand: String, query: String)
+
   /// The "Home" button was pressed. It carries nothing: the daemon mints a
   /// ticket for this page's own principal, so the press cannot name a place
   /// to go. It is the second message a browser can send an observer's page,
@@ -1339,6 +1355,7 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       completion_models: start.completion_models,
       completion_profiles: start.completion_profiles,
       paging: Tail,
+      notes: notes.new(),
       folds: [],
       said: [],
       parked_paging: dict.new(),
@@ -1570,6 +1587,30 @@ pub fn update(
     LatestRequested -> latest_at(model, at)
 
     ContextRefreshRequested -> context_refresh_at(model, at)
+
+    NotesPressed(target, press) ->
+      case target == strand(model) {
+        True -> notes_pressed(model, press, at)
+        False -> #(model, effect.none())
+      }
+
+    NotesSearched(target, query) ->
+      case target == strand(model) {
+        False -> #(model, effect.none())
+        True -> #(
+          Model(
+            ..model,
+            view: View(
+              ..model.view,
+              notes: notes.State(
+                ..model.view.notes,
+                query: string.slice(query, 0, 256),
+              ),
+            ),
+          ),
+          effect.none(),
+        )
+      }
 
     FoldToggled(fold:) -> folded_at(model, fold, at)
 
@@ -1846,7 +1887,7 @@ fn stepping(
 ) -> #(Model(socket), Effect(Msg(socket))) {
   let #(shared, effects) =
     list.fold(messages, #(model.shared, []), fn(done, message) {
-      let #(shared, effects) = step.update(done.0, message)
+      let #(shared, effects) = step.update_retaining_surfaces(done.0, message)
       #(shared, list.append(done.1, effects))
     })
 
@@ -1857,7 +1898,8 @@ fn stepping(
   let model = decisions_read(Model(..model, shared:), at)
   let #(shared, effects) = case owed, model.view.decided {
     Owed, Asked -> {
-      let #(shared, sent) = step.update(model.shared, tick_at(at))
+      let #(shared, sent) =
+        step.update_retaining_surfaces(model.shared, tick_at(at))
       #(shared, list.append(effects, sent))
     }
     Owed, Owed | Asked, _ -> #(model.shared, effects)
@@ -1921,7 +1963,8 @@ fn serviced(
   {
     None, None, None -> #(model, effects)
     Some(_), _, _ | None, Some(_), _ | None, None, Some(_) -> {
-      let #(shared, sent) = step.update(model.shared, tick_at(at))
+      let #(shared, sent) =
+        step.update_retaining_surfaces(model.shared, tick_at(at))
       let model = settled(Model(..model, shared:)) |> settled_projection
       #(model, list.append(effects, sent))
     }
@@ -2012,10 +2055,83 @@ fn taken(model: Model(socket)) -> Model(socket) {
 // are forgotten.
 fn settled(model: Model(socket)) -> Model(socket) {
   let held = taken(model)
+  let board =
+    list.fold(held.shared.surface_facts, held.view.notes, fn(state, fact) {
+      case fact {
+        session_model.NotesArrived(board) ->
+          notes.receive(state, held.shared.active_strand, board)
+        _ -> state
+      }
+    })
+  let read = case held.shared.ended, board.read {
+    Some(_), notes.Queued | Some(_), notes.Waiting -> notes.Unavailable
+    _, _ ->
+      case board.read, held.shared.notes_requested, held.shared.channel {
+        notes.Queued, None, _ -> notes.Waiting
+        notes.Waiting, None, Some(channel) ->
+          case session_channel.ready_for_read(channel) {
+            True -> notes.Unavailable
+            False -> notes.Waiting
+          }
+        notes.Waiting, _, None -> notes.Unavailable
+        _, _, _ -> board.read
+      }
+  }
   Model(
     shared: step.forget_surfaces(held.shared),
-    view: View(..held.view, strand_keys: numbered(held)),
+    view: View(
+      ..held.view,
+      strand_keys: numbered(held),
+      notes: notes.State(..board, read:),
+    ),
   )
+}
+
+/// The notes state for the strand on screen.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.notes_state(model)
+/// ```
+pub fn notes_state(model: Model(socket)) -> notes.State {
+  model.view.notes
+}
+
+// An explicit read joins the existing shared lane; local navigation sends
+// nothing. Repeated presses while the lane owes the read are coalesced.
+fn notes_pressed(
+  model: Model(socket),
+  press: notes.Press,
+  at: Int,
+) -> #(Model(socket), Effect(Msg(socket))) {
+  let state = notes.press(model.view.notes, press)
+  let changed = Model(..model, view: View(..model.view, notes: state))
+  case press, state.read, model.view.notes.read, model.view.status {
+    notes.Refresh, notes.Queued, notes.Queued, _
+    | notes.Refresh, notes.Queued, notes.Waiting, _
+    -> #(model, effect.none())
+    notes.Refresh, notes.Queued, _, Connected ->
+      stepping(
+        Model(
+          ..changed,
+          shared: Shared(..model.shared, notes_requested: Some(strand(model))),
+        ),
+        [tick_at(at)],
+        at,
+      )
+    notes.Refresh, _, _, Connecting | notes.Refresh, _, _, Ended(_) -> #(
+      Model(
+        ..changed,
+        view: View(
+          ..changed.view,
+          notes: notes.State(..state, read: notes.Unavailable),
+        ),
+      ),
+      effect.none(),
+    )
+    _, _, _, _ -> #(changed, effect.none())
+  }
 }
 
 // The strand keys with the strand on screen numbered, if the page has not
@@ -4570,7 +4686,7 @@ fn commanded(
   // emptied first so that a command which says nothing leaves nothing to
   // read, and not the words of whatever the session said before it.
   let #(shared, effects) =
-    step.update(
+    step.update_retaining_surfaces(
       Shared(..model.shared, notice: "", answer: ""),
       msg.Input(at: stamp(at), event: msg.Acted(command)),
     )
@@ -5619,6 +5735,9 @@ fn focus_at(
             Tail | Paged | Full | Crowded ->
               history_view.resume(shared.scrollback)
           },
+          // A queued notes read belongs to the departing scope. The in-flight
+          // lane reply may finish, but no unsent read should delay the new one.
+          notes_requested: None,
           notice: "",
           answer: "",
         )
@@ -5665,6 +5784,7 @@ fn focus_at(
           view: View(
             ..model.view,
             paging: arriving,
+            notes: notes.clear(model.view.notes),
             sealed: arriving_turns,
             parked_sealed: dict.delete(held_turns, strand),
             steps: dict.new(),
@@ -6865,6 +6985,7 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
     panel(
       model,
       FocusRequested,
+      fn(message) { message },
       None,
       element.none(),
       element.none(),
@@ -6939,6 +7060,7 @@ pub fn switch(model: Model(socket)) -> Element(message) {
 pub fn panel(
   model: Model(socket),
   focus: fn(String) -> message,
+  observed: fn(Msg(socket)) -> message,
   viewers: Option(session_summary.Viewers),
   share: Element(message),
   controls: Element(message),
@@ -6977,6 +7099,12 @@ pub fn panel(
     trace.view(trace(model)),
     nudges.view(pending_nudges(model)),
     commentary.view(advisor_commentary(model)),
+    notes_panel.view(
+      model.view.notes,
+      strand(model),
+      fn(press) { observed(NotesPressed(strand(model), press)) },
+      fn(query) { observed(NotesSearched(strand(model), query)) },
+    ),
   )
 }
 

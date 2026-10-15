@@ -320,7 +320,7 @@ flowchart LR
   composer, which the page parses as a command.
   The advisor's pending nudges are a card on both pages with no button,
   because the queue has no accept or dismiss command. It sits under the
-  strand panel's four panes, on every tab, so the dock holds only what the
+  strand panel’s original four panes, on every tab except Notes, so the dock holds only what the
   operator types into or answers.
 
 The socket's inbound frame limit follows the role: 64 KiB for an
@@ -574,11 +574,41 @@ the daemon may run a summarizer for a label it is asked for and the page
 draws no labels. The composer's notice line shows the outcome of the
 last command, not the shared record's `notice`, so "notes sent" after that
 first read and "streaming text" during an answer do not appear there; only
-the page's own refusals are drawn as warnings. The facts a
-fold records for surfaces the page lacks are dropped with
-`step.forget_surfaces`. That includes a held prompt the daemon hands back
+the page's own refusals are drawn as warnings. The web host uses `step.update_retaining_surfaces` and takes a matching
+`NotesArrived` fact into the Notes pane before dropping other surface facts
+with `step.forget_surfaces`. The default shared step still drops tick facts
+for hosts with no such surface. That includes a held prompt the daemon hands back
 (protocol-change/038's custody return): the page has no editor to put it
 in, so the operator does not see it, and it is the prompt's last copy.
+
+## Strand notes
+
+The Notes tab is a dedicated fifth panel pane. It is appended after the
+original panes and pending-nudge region, preserving their Lustre event paths.
+Only Notes is visible on its tab, including when the focused strand is `main`;
+advisor commentary and pending nudges are hidden there. The shell persists
+the tab preference through its existing layout storage and does not store
+note text, query or selection.
+
+Refresh sends the existing bounded notes read through the shared lane. The
+index searches supplied keys and content, states the snapshot revision and
+omitted count, and labels each cell's revision and completeness. A complete
+value uses the existing readable projection and safe Markdown renderer;
+Raw value keeps the exact supplied text. An excerpt remains literal in both
+the index and detail, regardless of whether its prefix happens to parse.
+
+The component owns one board, query and selected key for the focused strand.
+Focus clears that state. Matching snapshots cannot regress revision, and a
+refresh resolves selection against the replacement board. Numeric row
+identities are never reused within a page, including across strand changes;
+removed keys leave the identity map. The observer admits clicks only beneath
+this read-only pane and `input` only at its exact search field. None of these
+controls can mutate a note or issue a session command.
+
+The client helper `<loom-notes>` keeps browser geometry while the server keeps
+content and selection. Entering detail focuses Back. Returning restores the
+query, row focus and panel scroll position. Escape inside notes detail presses
+its Back button before the shell's strand navigation; editors keep Escape.
 
 ## Paging older history
 
