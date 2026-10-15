@@ -230,6 +230,13 @@ fn proves(name: String, why: String) {
   Nil
 }
 
+pub fn tls_options_preserve_every_pin_byte_test() {
+  proves(
+    "options_encoding",
+    "OTP's distribution reader must preserve every pin byte in both TLS roles.",
+  )
+}
+
 pub fn pinned_peers_connect_and_exchange_a_message_test() {
   proves(
     "connect",

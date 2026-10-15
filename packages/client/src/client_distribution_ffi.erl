@@ -54,7 +54,10 @@
 %% start/5 and compared with what the emulator actually loaded, so the file
 %% cannot drift from the configuration the daemon validated.
 options(Peers, Files) ->
-    unicode:characters_to_binary(io_lib:format("~p.~n", [tls_options(Peers, Files)])).
+    %% OTP defaults unmarked options files to Latin-1. Declare the UTF-8 that
+    %% we emit so quoted binary pins retain their exact bytes when consulted.
+    unicode:characters_to_binary(io_lib:format(
+        "%% coding: utf-8~n~p.~n", [tls_options(Peers, Files)])).
 
 tls_options(Peers, {credential_files, Ca, Cert, Key, _Cookie}) ->
     Pins = verify_state(Peers),

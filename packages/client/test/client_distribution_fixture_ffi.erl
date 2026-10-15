@@ -38,6 +38,28 @@ scenario(Name) ->
 
 %% ---------------------------------------------------------------- scenarios
 
+%% The options writer returns UTF-8, while OTP defaults an unmarked file to
+%% Latin-1. Repeated-byte pins cover both quoted and numeric binary rendering;
+%% the actual distribution reader must preserve each byte in both directions.
+run(<<"options_encoding">>, Root) ->
+    Files = {credential_files, <<Root/binary, "/ca">>,
+             <<Root/binary, "/cert">>, <<Root/binary, "/key">>,
+             <<Root/binary, "/cookie">>},
+    Path = binary_to_list(<<Root/binary, "/encoding.options">>),
+    lists:foreach(fun(Byte) ->
+        Pin = binary:copy(<<Byte>>, 32),
+        Text = client_distribution_ffi:options(
+            [{<<"probe@127.0.0.1">>, Pin}], Files),
+        ok = file:write_file(Path, Text),
+        [{server, Server}, {client, Client}] = ssl_dist_sup:consult(Path),
+        lists:foreach(fun(Options) ->
+            {verify_fun, {Verify, [{"probe@127.0.0.1", Pin}]}} =
+                lists:keyfind(verify_fun, 1, Options),
+            true = Verify =:= fun client_distribution_ffi:verify/4
+        end, [Server, Client])
+    end, lists:seq(0, 255)),
+    ok;
+
 %% Correct pins both ways: connect, exchange a message, stay hidden, and keep
 %% automatic connection off. The server listens on a fixed port.
 run(<<"connect">>, Root) ->
