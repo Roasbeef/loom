@@ -40,6 +40,23 @@ Register-decode heap allocation fell by 50.32% in both allocation comparisons.
 These are synthetic fixture results, not live daemon CPU or RSS savings.
 The installed daemon remains unchanged.
 
+## Follow-up hotspot ranking
+
+A fresh live CPU cut still showed JSON parsing in 358 of 431 selected active
+stack observations. A runtime-only trace recorded ten accepted poll callbacks
+and eighteen full operation loads in one strand over five seconds. A separate
+probe attributed about 104 MB of cumulative allocation to that driver's runtime
+and typed-decoder modules, led by preparation reconstruction and transfers.
+The report's follow-up section ranks repeated active loads first, typed
+reconstruction second and UTF-8/string-run scanning third. These costs overlap;
+they are not three independent savings estimates.
+
+The live daemon still runs the version before the local preparation fix.
+Measure that deployed fix before estimating the remaining costs. New parser,
+polling and cache changes have not been implemented. Rendering probes did not
+establish a new bottleneck, and hibernating-supervisor heap sizes remain an
+attribution lead rather than a leak finding.
+
 ## What to do next
 
 1. Review and land the scoped runtime change. Exit: retain the successful

@@ -142,3 +142,109 @@ passed with zero errors. Independent adversarial review found no actionable
 correctness, simplification or nearby variant findings in the changed path. The unchanged baseline failed only the new
 zero-point-read assertion in the focused comparison. Full repository tests,
 hosted CI and Linux signoff have not been run for this candidate.
+
+
+## Follow-up profiling: remaining candidates
+
+A fresh ten-second top-sixteen CPU cut counted 431 running/runnable
+observations and 9,569 waiting observations. JSON parsing appeared in 358
+active observations (83.1%). `gleam@bit_array:is_utf8_loop/1` accounted for
+106 flat observations (24.6%). Thirty-four active observations specifically
+showed whole-register UTF-8 validation in `register_cache.decode_blob` before
+JSON parsing; the parser also validates its individual string runs. These
+are sampled leads, not measured savings from removing validation. Both total
+UTF-8 refusal and the pure-package boundary must survive any optimization.
+
+### 1. Repeated full loads during active polling
+
+The runtime arms an occupied strand's poll at 200 ms by default
+(`runtime/api.gleam`, `default_options`). `strand_runtime.polled` calls the
+full driver, whose `drive_loop` calls `load_operation`, including preparation
+listing and typed reconstruction. Provider and tool completions have their own
+events; the module docs identify deferred polling as the short timer's
+functional role and retain the timer as a lost-doorbell backstop.
+
+A five-second runtime-only trace of one active driver completed its window
+with 1,076 calls and 1,654 folded events, below the event budget. It recorded
+ten accepted poll callbacks and eighteen `load_operation` /
+`load_preparation` calls. The two register-list/point-read paths accounted for
+about 3.21 seconds of traced exclusive duration. This includes waiting for the
+storage process and descheduling; it is not CPU time. Four calls remained open
+at the end and were closed at the observation frontier.
+
+This establishes a reachable repeated-work path, not that every load was
+avoidable. The next controlled experiment should hold a summary request open
+with fixed durable state, count accepted polls and preparation decodes, and
+compare a design that avoids reconstructing unchanged payloads on waiting
+passes. Preserve prompt/abort observation, deferred poll pacing, retry deadlines,
+writer replacement, crash replay and the lost-doorbell recovery test. Do not
+remove the backstop or change its timing based on this trace alone.
+
+### 2. Typed reconstruction and message copies
+
+A separate 5.14-second allocation probe of that driver traced
+`runtime@strand_runtime` and `machine@codec`. It read counters for all 337
+called functions, totaling 12,991,403 words (103,931,224 bytes). Its output
+listed the largest 200 functions, so the table coverage is truncated while the
+counter reading and window completed. Leading costs were:
+
+| Function | Calls | Allocated bytes |
+| --- | ---: | ---: |
+| `machine@codec:-decode_preparation/1-anonymous-17-/2` | 18 | 42,732,432 |
+| `runtime@strand_runtime:list_keys/3` | 38 | 27,857,160 |
+| `runtime@strand_runtime:load_preparation/2` | 19 | 26,572,416 |
+| `machine@codec:-decode_preparation/1-anonymous-13-/4` | 18 | 3,722,256 |
+
+The typed decoder walks preparation message arrays through
+`core/codec.decode_message`. Its untraced callees are included in those totals.
+The driver also receives decoded JSON structures from the writer. These are
+allocation and transfer costs in the receiving process, separate from the
+storage process's JSON parser allocation measured earlier. The prior local
+patch removes one redundant transfer and one JSON decode; it does not remove
+reconstruction of the typed preparation on each reload. The live daemon still
+runs the old version, so these cuts cannot establish the patch's residual cost.
+
+Keep reconstruction and active polling in one next experiment: reducing reloads
+can eliminate both costs, whereas adding a typed cache creates another retained
+value and invalidation responsibility. Measure the first patch deployed before
+attributing the old listing cost to the candidate.
+
+### 3. UTF-8 and ordinary-run scanning
+
+Whole-register validation uses the standard library's codepoint-by-codepoint
+`is_utf8_loop`. The JSON parser then scans ordinary runs in `clean_run` and
+validates their matched slices with `bit_array.to_string`. In the fresh CPU cut,
+`clean_run` had forty flat observations (9.3%), in addition to UTF-8 validation's
+106. A safe next parser experiment compares ASCII-heavy and multibyte synthetic
+inputs using `scripts/json_decode_perf.sh`, its complete-result equivalence mode
+and the raw-byte refusal corpus. Preserve malformed-input reports, offsets,
+UTF-8 validity, output ownership and the JavaScript target. No parser change or
+dependency change was made in this follow-up.
+
+### Memory lead and rendering limits
+
+The fresh census reported 457.77 MiB total VM allocation, 337.73 MiB process
+allocation and 71.19 MiB binary allocation. Its detailed rows included a
+17.34 MiB strand driver and five hibernating static supervisors at
+5.57–5.59 MiB each. Supervisor restart specifications are a plausible persistent
+owner, but those sizes alone establish neither reachable-state size nor a leak.
+No live state walk or forced collection was performed. An isolated restart-input
+fixture is the appropriate next attribution step; the existing supervisor
+copy-growth regression already checks that unrelated writer subscribers do not
+multiply across sibling restart closures.
+
+Two attempts to sample a previously observed page-adjacent actor were refused
+because it had exited. An immediate census-to-sample operation pinned a current
+actor, but all 500 observations in its five-second window were waiting; this
+did not verify its rendering role. A top-eight allocation probe of the component,
+operator page, lane, Markdown and Lustre diff modules observed no matched calls
+in 5.11 seconds. An earlier mixed probe did observe 81 fold-row calls, with
+small allocations compared with preparation processing. None of these cuts
+establishes a new rendering bottleneck or excludes short render bursts outside
+the selected processes and windows.
+
+The broad initial allocation patterns exceeded Pickglass's matched-function
+budget and were refused. Explicit module patterns succeeded. Raw follow-up
+captures are `/private/tmp/loom-profile-20261014-round2-*.pgcap`; they remain
+local. This follow-up changes documentation only and leaves the installed
+process and production code unchanged.
