@@ -1,6 +1,7 @@
 # Current handoff
 
-Baselined October 14, 2026 against `23532b5f9` on `perf/preparation-reuse`.
+Baselined October 14, 2026 after integrating main `806d0cd20` on
+`perf/preparation-reuse`.
 Runtime commit `c4c6d1414` optimizes repeated checkpoint reloads while
 retaining lost-doorbell recovery. The plan remains `docs/issue-plan.md`; execution and
 verification rules remain `docs/execution.md`.
@@ -10,7 +11,10 @@ verification rules remain `docs/execution.md`.
 The branch starts from main `7f82bb498`, which includes helper concurrency
 through #978 and Darwin discovery through #986. Their historical integration
 boundaries remain in the [main handoff](https://github.com/Roasbeef/loom/blob/7f82bb498f5990a0382873ac84521b50802e21cd/docs/next.md).
-This round does not revalidate those historical hosted or Linux results.
+Main integration also includes provider disconnect diagnostics through #989.
+Its privacy, retry and terminal-validation boundaries remain in the
+[pinned upstream handoff](https://github.com/Roasbeef/loom/blob/806d0cd20/docs/next.md).
+This round does not revalidate historical hosted or Linux results.
 
 Preparation-value reuse at `6435d874b` removes the duplicate point read after
 listing preparation registers. The earlier [resource report](review/loom-live-resource-profile-2026-10-14.md)
@@ -63,9 +67,10 @@ and Linux signoff have not been run for this candidate.
 
 ## What to do next
 
-1. Review and land the scoped preparation and checkpoint commits. Exit: preserve
-   their completion, cleanup and lost-doorbell regressions, plus any additional
-   merge gates the owner selects. No push or PR was requested in this work.
+1. Investigate remaining retention, then publish the scoped performance PR.
+   The owner now authorizes publication and merge once ready. Exit: independent
+   review, hosted CI, normal/containerised Linux signoff and a clean skip census
+   for the exact final head. Keep `caffeinate` running through completion.
 2. After owner authorization to update and restart the installed daemon, capture
    Pickglass CPU and allocation cuts under a comparable web workload. Exit:
    identify the installed head, workload and observation coverage and report
