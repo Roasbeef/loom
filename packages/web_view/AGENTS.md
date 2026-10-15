@@ -1193,8 +1193,9 @@ page keys and nonces, and the relay into the session's gateway.
   composer offers, built from `session_view/command.suggestions` (the
   one-word commands, and the argument rows of every word that has some once
   its space is typed) less the rows `component.page_command` refuses, as one
-  JSON string for the composer element's `commands` attribute. The names and
-  hints are the terminal's and no session text is in it.
+  JSON text in the composer element's `commands` slot. `completion.table_with`
+  adds the daemon's model and profile names, captured in `component.Start`
+  when an operator page opens. `/model` continues into those argument rows.
 - `component.Returned(number, text)`, `component.returns(model)` and
   `component.returned(model)`: a held prompt the daemon handed back for
   `main` (protocol-change/038), taken from `Shared.returned_drafts` at the
@@ -1291,7 +1292,7 @@ page keys and nonces, and the relay into the session's gateway.
   latest" button while they are not, and keeps the reader's place when a
   press of "Load older" brings rows in above them. They run in the browser
   and send the server nothing. The operator's editor is drawn inside
-  `<loom-composer commands returned refused>`, which lists the slash commands as
+  `<loom-composer returned refused>`, which lists the slash commands as
   the draft grows, sends the draft on Command or Control with Enter (by
   submitting the composer form), puts a returned prompt in the editor, and
   shows a pressed draft as a pending line until the server takes it.
@@ -1634,8 +1635,20 @@ package. No browser websocket event or component reader was added.
 The page runs `/profile` and `/model-profile` because they are session commands
 (`component.page_command` passes every `command.Session`), so no component, route
 or asset changed. `completion.rows` offers both spellings and `/profile default`
-automatically, and offers no profile name: the table is an attribute and a name is
-the daemon's text (051). The answer is written to the transcript as text by the
+automatically. `completion.table_with` adds configured profiles under both
+spellings and configured model keys under `/model`, as escaped slotted text. The answer is written to the transcript as text by the
 shared fold. A switch restarts the session, so the page shows the session-stopped
 notice and the owner reloads it, as after making a session shareable. A member
 operator is refused `forbidden` by the hub, which the page shows as the refusal.
+
+## Model and profile completion
+
+The operator page captures configured model keys and profile names once at
+socket admission (`ui_socket.admit`, `component.Start.completion_models` and
+`completion_profiles`); observer pages receive empty lists. These are suggestions,
+not authority: the existing model and profile commands validate at execution.
+The composer keeps the full JSON table as escaped text in its `commands` slot.
+`CommandsChanged` and connection setup read that child through existing DOM
+bindings; `Configured` replaces the table and resets its selection without
+changing the draft. Prefix matching, keyboard selection and click selection
+use `composer_rule` as before. Reopen the page to refresh configuration names.

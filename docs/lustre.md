@@ -600,9 +600,9 @@ keeps these rules, which `packages/web_client/CLAUDE.md` repeats:
   or `none`, written from a type, and a count of strands waiting on a
   decision. A control that has no handler carries `data-loom-focus`, and a
   strand card `data-loom-card`, each a number: a card's position among the
-  cards as drawn, never a name. `<loom-composer commands>` is the one attribute of
-  another kind: the static table of slash-command names and hints, written in
-  `session_view` and built for the page by `web_view/completion`.
+  cards as drawn, never a name. `<loom-composer>` reads its completion table
+  from escaped JSON text in a named `commands` slot. The table combines static
+  slash commands with model and profile names captured from configuration.
 - **Session text reaches it only as the server's children.** `<loom-fold>`
   shows the divider and the work through a named and a default slot,
   `<loom-expand>` shows a row's line and, once opened, its body through two

@@ -46,13 +46,13 @@ counted(Run) ->
     {module, 'session_view@markdown'} = code:ensure_loaded('session_view@markdown'),
     {ok, Session} = tprof:start(#{type => call_memory, session => render_memo_test}),
     try
-        tprof:set_pattern(Session, 'web_view@completion', table, 0),
+        tprof:set_pattern(Session, 'web_view@completion', table_with, 2),
         tprof:set_pattern(Session, 'session_view@markdown', parse, 1),
         tprof:enable_trace(Session, self(), #{set_on_spawn => false}),
         Value = Run(),
         tprof:pause(Session),
         {call_memory, Rows} = tprof:collect(Session),
-        {Value, calls('web_view@completion', table, Rows),
+        {Value, calls('web_view@completion', table_with, Rows),
                 calls('session_view@markdown', parse, Rows)}
     after
         tprof:stop(Session)

@@ -1588,6 +1588,14 @@ fn admit(
       workspace_digest: digest(attachment.registration.workspace),
       expected:,
       standing:,
+      completion_models: case role {
+        Observing -> []
+        Operating | Owning -> attachment.models()
+      },
+      completion_profiles: case role {
+        Observing -> []
+        Operating | Owning -> attachment.profiles()
+      },
       transport:,
     )
   }
