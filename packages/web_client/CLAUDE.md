@@ -90,7 +90,7 @@ renders again just for it:
   `follow_rule.sent_event`, which `<loom-composer>` dispatches (bubbling,
   composed, no data) when the reader presses Send, Queue or Steer with a draft;
   the transcript then follows the tail again and scrolls to it.
-- `<loom-composer commands="<json>" returned="<n>" refused="<n>">` wraps the
+- `<loom-composer returned="<n>" refused="<n>">` wraps the
   operator's editor, the server's uncontrolled textarea, which is its default
   slot. It lists the slash commands as the draft grows, sends the draft on
 
@@ -101,7 +101,7 @@ renders again just for it:
   the arriving strand's (`follow_rule.arriving`), following the tail for a
   strand left at the bottom or never seen. Nothing is stored outside the
   element.
-- `<loom-composer commands="<json>" returned="<n>">` wraps the operator's
+- `<loom-composer returned="<n>">` wraps the operator's
   editor, the server's uncontrolled textarea, which is its default slot.
   It lists the slash commands as the draft grows, sends the draft on
   Command or Control with Enter, and puts a prompt the daemon handed back
@@ -488,7 +488,7 @@ time builds anything.
   nor the DOM binding, and `layout_test` covers it on Node.
 - `composer.Model(entries, draft, selected, palette, returns, attachments,
   pending, refusals, submitting)` and
-  `composer.Msg` (`Configured`, `Returned`, `Holding`, `Typed`, `Moved`,
+  `composer.Msg` (`CommandsChanged`, `Configured`, `Returned`, `Holding`, `Typed`, `Moved`,
   `Accepted`, `Picked`, `Dismissed`, `Sent`, `Ignored`, `Refused`, `Pressed`,
   `Connected`, `Disconnected`, `Listening`): `commands` is the table the
   server built from the terminal's suggestions (`composer_rule.entries` decodes
@@ -608,9 +608,8 @@ sends the server nothing.
   never renders an attribute's value as text unless it is a number it
   computes from, and never takes session text as an attribute. Text inside
   `<loom-fold>` is the server's light-DOM children, projected through slots.
-  The one exception in kind is `<loom-composer commands>`, the static table
-  of command names and hints written in `session_view`; the returned
-  prompts it takes arrive as text-node children, never as attributes.
+  `<loom-composer>` reads its JSON completion table and returned prompts
+  from escaped text-node children, never from attributes.
 - **No key acts inside an approval card, and no key decides, dismisses or
   focuses one; no focus near an approval card.** `<loom-composer>` acts on a
   key on its own editor, through its slot. `<loom-shell>` holds the dock in its
@@ -723,3 +722,15 @@ regenerates its committed CSS and source digest alongside the existing assets.
 The explicit return keeps `follow_rule.Returning` until the server acknowledges
 `history="live"`. That acknowledgement restores following after paint, even
 when replacing the historical DOM temporarily shrinks the scroll extent.
+
+## Model and profile completion
+
+The operator page captures configured model keys and profile names once at
+socket admission (`ui_socket.admit`, `component.Start.completion_models` and
+`completion_profiles`); observer pages receive empty lists. These are suggestions,
+not authority: the existing model and profile commands validate at execution.
+The composer keeps the full JSON table as escaped text in its `commands` slot.
+`CommandsChanged` and connection setup read that child through existing DOM
+bindings; `Configured` replaces the table and resets its selection without
+changing the draft. Prefix matching, keyboard selection and click selection
+use `composer_rule` as before. Reopen the page to refresh configuration names.

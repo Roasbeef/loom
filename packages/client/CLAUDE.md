@@ -8602,3 +8602,15 @@ latest authoritative capture; it sends no session mutation. Admission remains
 exact in path and event name, covered by `client/ui_socket_test`. The page's
 actual handler table is pinned on both roles by web_view's `page_events_test`.
 Protocol-change/051's history browsing addendum records this event admission.
+
+## Model and profile completion
+
+The operator page captures configured model keys and profile names once at
+socket admission (`ui_socket.admit`, `component.Start.completion_models` and
+`completion_profiles`); observer pages receive empty lists. These are suggestions,
+not authority: the existing model and profile commands validate at execution.
+The composer keeps the full JSON table as escaped text in its `commands` slot.
+`CommandsChanged` and connection setup read that child through existing DOM
+bindings; `Configured` replaces the table and resets its selection without
+changing the draft. Prefix matching, keyboard selection and click selection
+use `composer_rule` as before. Reopen the page to refresh configuration names.
