@@ -415,20 +415,25 @@ The backstop is kept in both states rather than dropped in one. A doorbell
 lost between a caller's commit and its nudge therefore still costs latency
 and not the work, but up to the idle period rather than up to 200 ms.
 
-The tick chain replaces itself and nothing else joins it, so a strand
-keeps exactly one checkpoint deadline outstanding. The reason is that the
-effect seam arranges a wake and returns no handle to cancel it with, so a
-tick armed beside the pending one would stay pending too.
+The driver retains one current tick generation. If occupancy changes, `arm_poll`
+arms the new period immediately and advances that generation; the older tick
+still arrives but is discarded without re-arming. An unchanged period leaves
+its pending tick alone. Thus a doorbell that opens work gets the short period
+at once, including deferred poll permits and quietly admitted steering.
 
-That invariant costs one window. A doorbell that opens work on an idle
-strand drives at once but does not shorten the tick already pending, so for
-up to the idle period an occupied strand has no fast tick. Only the
-deferred poll depends on the fast tick; every other in-flight step is
-answered by its own monitor or its own timer. The cost is therefore that
-the first deferred poll after a strand has been idle may wait out the idle
-period for its permit. No production provider adapter emits a deferred
-handle today, which is why the window is documented rather than closed;
-`docs/design-notes/daemon-memory.md` records what closing it would cost.
+While parked on a live effect, the driver records only its operation identity,
+strand/op/configuration sequences and leaf. `poll_drive` still reads and totally
+decodes those small controls on every accepted tick. If they match and no
+observation is queued, it can keep waiting without loading the preparation,
+pending queue and tool payloads again. Quiet admissions advance `op.state`
+atomically with their payload, so the poll still discovers work after a lost
+doorbell. Independent configuration and leaf changes also force a full load.
+
+Doorbells, effect completions, retry events and recovery take the full drive.
+A restarted incarnation has no remembered frontier. Deferred suspensions and
+retry waits do not establish a live-effect frontier, so their existing permit
+and deadline behavior remains. This optimization retains no payload cache and
+changes neither configured poll period nor the lost-doorbell backstop.
 
 ## The supervision tree
 

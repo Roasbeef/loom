@@ -1001,6 +1001,25 @@ report establishes no consumption; owner loss without a report becomes an
 unknown observation. The existing usage hook sees the committed aggregate
 row once, and context readers use the assistant's final response usage.
 
+## Live-effect checkpoint reads
+
+`strand_runtime.park_on_live` records a private `PollWait` frontier containing
+only the operation identity, strand/op/configuration sequences and leaf. On an
+accepted `PollTick`, `poll_drive` checks the current total-decoded control
+registers and leaf before loading sibling payloads. An unchanged frontier can
+skip that full load only while a live effect exists and no observation is queued.
+The driver retains no preparation or pending payload in this frontier.
+
+The existing short/idle timer chain and generation stamps remain. A quiet queue
+admission advances `op.state` atomically with its pending payload, so the same
+backstop still finds it. Leaf and configuration changes are checked independently.
+Doorbells, settlements, retries and recovery take the ordinary full drive and
+clear the frontier; a restarted driver begins without one. Deferred permit and
+retry waits do not establish a live-effect frontier. `poll_frontier_test` holds
+requests open to prove skipped preparation loads and quiet invalidation before
+provider completion. The existing doorbell, deferred, retry and recovery tests
+remain part of the runtime gate.
+
 ## Structural preparation reads
 
 `strand_runtime.load_preparation` lists the operation's preparation registers
