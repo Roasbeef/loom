@@ -19,8 +19,10 @@ import gleam/erlang/node
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/int
 import gleam/list
+import gleam/option
 import runtime/effects.{type ToolRun}
 import sqlight
+import storage/exec_ledger
 import support/remote_fixtures as fixtures
 import tools/fs
 
@@ -883,4 +885,85 @@ pub fn a_late_run_for_an_acknowledged_result_does_not_run_it_again_test() {
   assert heard(send_run(rig, run, 0, token(1))) == protocol.RunLost
   assert fixtures.run_count(rig.probe, "call_1") == 1
   stop(rig)
+}
+
+// --- the host's own report ---------------------------------------------------
+
+fn reporting_rig(
+  gate: fixtures.Gate,
+  close_outcome: protocol.CloseOutcome,
+) -> #(Rig, fn(Int) -> Result(host.Snapshot(String), Nil)) {
+  let probe = fixtures.probe(gate)
+  let path = fixtures.scratch("host") <> "/ledger.db"
+  let config =
+    fixtures.host_config(
+      path,
+      fixtures.factory(probe, fixtures.AsksNothing, close_outcome),
+    )
+  let assert Ok(started) = host.start_reporting(config)
+    as "the reporting host starts"
+  let rig = Rig(address: started.data.address, pid: started.pid, probe:, path:)
+  #(rig, started.data.summarize)
+}
+
+pub fn a_host_with_no_attach_reports_an_empty_ledger_and_no_census_test() {
+  let #(rig, summarize) = reporting_rig(fixtures.Open, protocol.AllRetired)
+  let assert Ok(snapshot) = summarize(2000)
+  assert snapshot.census == option.None
+  assert snapshot.ledger
+    == exec_ledger.Summary(
+      scopes: exec_ledger.ScopeCounts(
+        open: 0,
+        closing: 0,
+        closed_clean: 0,
+        closed_unknown: 0,
+      ),
+      unclean: [],
+      bytes: 0,
+      unacknowledged: 0,
+    )
+  stop(rig)
+}
+
+pub fn an_attach_and_a_result_show_in_the_report_test() {
+  let #(rig, summarize) = reporting_rig(fixtures.Open, protocol.AllRetired)
+  let assert Ok(_attached) = attach(rig, 0, token(1))
+  let run = fixtures.tool_run("call_1", 0)
+  let _answer = heard(send_run(rig, run, 0, token(1)))
+
+  // The scope is open, the census is the one the attach carried, and the
+  // result nobody acknowledged holds bytes and counts as waiting.
+  let assert Ok(snapshot) = summarize(2000)
+  assert snapshot.census == option.Some("census-0")
+  assert snapshot.ledger.scopes.open == 1
+  assert snapshot.ledger.unacknowledged == 1
+  assert snapshot.ledger.bytes > 0
+  assert snapshot.ledger.unclean == []
+  stop(rig)
+}
+
+pub fn an_unclean_close_shows_as_a_blocking_scope_test() {
+  let #(rig, summarize) =
+    reporting_rig(fixtures.Open, protocol.UnknownCleanup(2))
+  let assert Ok(_attached) = attach(rig, 0, token(1))
+  assert close(rig, 0) == Ok(protocol.UnknownCleanup(2))
+
+  let assert Ok(snapshot) = summarize(2000)
+  assert snapshot.ledger.scopes.closed_unknown == 1
+  assert snapshot.ledger.scopes.open == 0
+  assert snapshot.ledger.unclean
+    == [
+      exec_ledger.UncleanScope(
+        session: "s1",
+        state: exec_ledger.Closed(exec_ledger.UnknownCleanup(2)),
+      ),
+    ]
+  stop(rig)
+}
+
+pub fn a_host_that_is_gone_does_not_answer_the_report_test() {
+  let #(rig, summarize) = reporting_rig(fixtures.Open, protocol.AllRetired)
+  stop(rig)
+  assert fixtures.eventually(fn() { !process.is_alive(rig.pid) })
+  assert summarize(200) == Error(Nil)
 }
