@@ -1,10 +1,13 @@
 # Current handoff
 
-Baselined October 16, 2026 against main `6430703a9` and the rebased `/btw`
+Baselined October 16, 2026 against main `d9553247f` and the rebased `/btw`
 branch for PR #981. The earlier instruction to merge `207c6571b` is obsolete:
 the owner requested a rebase and fresh UI screenshots after main advanced.
-That previous head passed hosted CI run 38558170965 and signed Gilgamesh
-Linux signoff. Those results do not validate the rebased head.
+`207c6571b` passed hosted CI run 38558170965 and signed Gilgamesh signoff.
+The first October 16 rebase, `bbeb4b61c`, also passed all 18 executed CI jobs
+(run 38935120272), both actual macOS advisory shards, and strict Gilgamesh
+signoff in 1809 seconds (driver 1815 seconds). Those results do not validate
+the next rebase: #990 merged just as the first rebase became green.
 
 ## Accepted side-query design
 
@@ -37,6 +40,20 @@ For the upstream performance and TLS investigations, consult main's
 and the linked review reports. CPU, cumulative allocation, retained memory and
 RSS are separate claims. This branch neither installs nor restarts the user's
 daemon.
+
+## Strand-notes integration
+
+Main `d9553247f` adds #990's bounded read-only strand-notes browser. Both the
+surface-custody equivalence test and the side-action refusal regression remain.
+Web components retain notes adoption and side polling; package docs preserve
+both boundaries. Production source merged without textual conflict. The generated
+web assets are rebuilt from the combined source.
+
+Fresh TUI/web captures from `bbeb4b61c` are posted in
+[the PR comment](https://github.com/Roasbeef/loom/pull/981#issuecomment-6220628018),
+outside Git history. Both UIs answered side questions during main streaming;
+raw requests and the two main-only durable entries prove context and history
+isolation. Repeat UI smoke checks after this notes integration.
 
 ## Verification and next steps
 
