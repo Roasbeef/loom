@@ -2215,6 +2215,7 @@ fn network_command(
     | protocol.PromptContent(..)
     | protocol.Steer(..)
     | protocol.FollowUp(..)
+    | protocol.RemoveQueuedInput(..)
     | protocol.EditQueuedInput(..)
     | protocol.Abort(..)
     | protocol.Approve(..)
@@ -3215,6 +3216,7 @@ fn read_only(command: Command) {
     | protocol.PromptContent(..)
     | protocol.Steer(..)
     | protocol.FollowUp(..)
+    | protocol.RemoveQueuedInput(..)
     | protocol.EditQueuedInput(..)
     | protocol.Abort(..)
     | protocol.Approve(..)
@@ -5003,6 +5005,17 @@ fn run_command(
       goal_command(state, connection, id, GoalResume)
     protocol.QueuedInputGet(strand:, id: input_id), Subscribed ->
       read_queued_input(state, connection, id, strand, input_id)
+    protocol.RemoveQueuedInput(strand:, id: input_id, expected_revision:),
+      Subscribed
+    ->
+      remove_queued_input(
+        state,
+        connection,
+        id,
+        strand,
+        input_id,
+        expected_revision,
+      )
     protocol.EditQueuedInput(strand:, id: input_id, expected_revision:, text:),
       Subscribed
     ->
@@ -6042,6 +6055,43 @@ fn read_queued_input(
     id,
     protocol.SnapshotEvent(protocol.QueuedInputSnapshot(board)),
   )
+  state
+}
+
+// Withdrawal and drain are serialized by the gateway. An admitted identity
+// conflicts rather than cancelling running work or removing a different row.
+fn remove_queued_input(
+  state: State,
+  connection: Int,
+  id: Int,
+  strand: String,
+  input_id: String,
+  expected_revision: Int,
+) -> State {
+  use item <- or_reply(
+    editable_input(state, connection, strand, input_id),
+    state,
+    connection,
+    id,
+  )
+  use Nil <- or_reply(
+    case item.revision == expected_revision {
+      True -> Ok(Nil)
+      False -> Error(#(protocol.code_conflict, "queued input revision changed"))
+    },
+    state,
+    connection,
+    id,
+  )
+  let state =
+    put_held(
+      state,
+      strand,
+      list.filter(held_items(state, strand), fn(candidate) {
+        held_id(candidate) != input_id
+      }),
+    )
+  reply(state, connection, id, mutation_outcome("removed"))
   state
 }
 

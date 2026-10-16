@@ -8619,6 +8619,15 @@ bindings; `Configured` replaces the table and resets its selection without
 changing the draft. Prefix matching, keyboard selection and click selection
 use `composer_rule` as before. Reopen the page to refresh configuration names.
 
+## Held-input withdrawal (protocol 088)
+
+`protocol.RemoveQueuedInput` is a mutation permitted only for a live mutable
+author of the exact held input. `gateway.remove_queued_input` compares its
+revision, removes that identity and calls `put_held`, preserving the remaining
+queue and its drain intent while broadcasting `InputQueueChanged`. A prior
+drain or edit conflicts. Owner authority does not override authorship, and
+withdrawal cannot abort runtime work. The acknowledgement is the memory-only
+`MutationOutcome` status `removed`; it commits no entry and returns no draft.
 ## Notes socket admission
 
 The observer's session socket admits clicks beneath the appended read-only

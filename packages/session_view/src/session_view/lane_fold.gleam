@@ -387,9 +387,14 @@ fn fold_update(
     // frame was written — so this confirms the booking in the footer rather
     // than writing a second copy of the same news. The saved draft leaves the
     // host's editor through the `Saved` notice.
-    session_channel.Acknowledged("edit_queued_input", "queued") ->
+    session_channel.Acknowledged(command, status)
+      if command == "remove_queued_input"
+      && status == "removed"
+      || command == "edit_queued_input"
+      && status == "queued"
+    ->
       shared
-      |> shared_set.notice(notice_words.outcome("edit_queued_input", "queued"))
+      |> shared_set.notice(notice_words.outcome(command, status))
       |> shared_set.queue_request(queue_request.new())
       |> shared_set.queue_notices(
         list.append(shared.queue_notices, [queue_request.Saved]),
@@ -436,7 +441,7 @@ fn fold_update(
           ..{
             shared
             |> shared_set.queue_notices(case command {
-              "edit_queued_input" ->
+              "edit_queued_input" | "remove_queued_input" ->
                 list.append(shared.queue_notices, [queue_request.Unknown])
               _ -> shared.queue_notices
             })
@@ -1472,7 +1477,7 @@ fn apply_request_refused(
   )
   let reason = code <> ": " <> message
   let updated = case command {
-    "queued_input" | "edit_queued_input" ->
+    "queued_input" | "edit_queued_input" | "remove_queued_input" ->
       case shared.queue_request.request_id == Some(request_id) {
         True ->
           shared

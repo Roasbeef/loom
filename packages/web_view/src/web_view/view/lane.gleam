@@ -78,6 +78,7 @@ import session_view/agent_roster
 import session_view/composer
 import session_view/decisions
 import session_view/markdown
+import session_view/snapshot_view
 import session_view/step_words
 import session_view/transcript_image.{type Image}
 import session_view/transcript_line.{type Line}
@@ -265,6 +266,12 @@ pub type Replies(message) {
   /// The lane offers no reply. An observer's page has none to send.
   NoReplies
 
+  /// Operator-only held-input drawing, alongside the existing peer controls.
+  WithQueue(
+    peer: Replies(message),
+    held: fn(snapshot_view.PendingInput) -> Element(message),
+  )
+
   /// Each peer message carries a Reply button that sends this message,
   /// given the piece's key.
   ///
@@ -434,7 +441,7 @@ fn rows_at(
                 ))
             }
           }),
-          live_entry(live, draw, marks),
+          live_entry(live, draw, marks, replies),
         ),
       ),
     ],
@@ -492,6 +499,7 @@ fn live_entry(
   rows: List(live.Row),
   draw: fn(Line) -> Element(message),
   marks: Marks,
+  replies: Replies(message),
 ) -> List(#(String, Element(message))) {
   case rows {
     [] -> []
@@ -507,7 +515,12 @@ fn live_entry(
             ],
             [],
           ),
-          html.div([attribute.class("tl-body")], [live.view(rows, draw)]),
+          html.div([attribute.class("tl-body")], [
+            case replies {
+              WithQueue(held:, ..) -> live.with_queue(rows, draw, held)
+              _ -> live.view(rows, draw)
+            },
+          ]),
         ]),
       ),
     ]
@@ -877,6 +890,7 @@ fn piece_element(
 fn sender(replies: Replies(message), session: String) -> String {
   let abbreviated = string.slice(session, 0, 8)
   case replies {
+    WithQueue(peer:, ..) -> sender(peer, session)
     NoReplies -> abbreviated
     Replies(name:, ..) -> option.unwrap(name(session), abbreviated)
   }
@@ -895,6 +909,7 @@ fn peer_actions(
   session: String,
 ) -> List(Element(message)) {
   case replies {
+    WithQueue(peer:, ..) -> peer_actions(peer, key, session)
     NoReplies -> []
     Replies(reply:, open:, ..) -> [
       html.p([attribute.class("card-actions")], [

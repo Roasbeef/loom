@@ -1,53 +1,78 @@
 # Current handoff
 
-Baselined October 16, 2026 on `6430703a98c6371020c09aedb5b067e8c5c570aa`,
-which includes performance PR #991, model/profile completion PR #992 and the TLS
-options encoding fix PR #993. Their remaining operational work is recorded in the
-[baseline handoff](https://github.com/Roasbeef/loom/blob/6430703a98c6371020c09aedb5b067e8c5c570aa/docs/next.md).
-No installed daemon or user session was changed during this work.
+Baselined October 16, 2026 against rebased source `f58934f91` on
+`web/queue-controls`, starting from main `6430703a9`. This edition covers held-message Edit and
+Remove controls. The installed daemon has not been updated.
 
-## Strand notes in the web view
+The previous edition described history browsing and separate parent-completion
+and LSP follow-ups. Those claims are historical evidence, not validation of
+this branch; their recorded results remain in the
+[prior handoff](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/next.md).
+The project-wide plan remains `docs/issue-plan.md`.
 
-The current branch adds a dedicated Notes tab to the resizable panel. The owner
-requested this separate tab so advisor information does not clutter the reader.
-The [design record](design-notes/strand-notes.md) records the independent selection and links to the candidate and production
-screenshots in [PR #990](https://github.com/Roasbeef/loom/pull/990). Images are not
-part of the branch's commits.
+## What changed
 
-The browser reuses the existing bounded notes command and shared presentation.
-It searches available keys and text, opens a note, preserves the query and browser
-position on return, and exposes the exact supplied raw value. Complete values use
-the safe Markdown renderer; excerpts remain literal and explicitly incomplete.
-Snapshot and cell revisions are separate. Omitted cells are counted, and search
-never claims to cover them. There is no editing or full-value fetch.
+Each held input explicitly marked editable now offers Edit and Remove on the
+operator page. Edit fetches its complete document before opening a multiline
+editor with Save and Cancel. Save preserves image blocks and queue position.
+Remove compares the drawn identity and revision before withdrawing one item.
+It cannot affect another author's message, an updated revision or admitted work.
+Protocol-change/088 records the new command and `removed` acknowledgement.
+Observers draw the held text without mutation handlers.
 
-`step.update_retaining_surfaces` transfers surface-fact custody to the web host;
-`component.settled` adopts matching notes replies and forgets the facts. The
-existing `step.update` behavior is preserved. A focus change clears the departing
-strand's queued notes request as well as its presentation. Row identities are
-numeric, stable across filtering and refresh, and never reused across focus
-changes; removed keys are pruned. Observer input is admitted only at the exact
-notes search path, with read-only clicks confined to the appended pane.
+Queue notices now survive shared ticks and focus changes until the web host
+consumes them. Previously the shared step discarded them because its second
+host had no queue editor. A real-wire regression caught that assumption: the
+read reply was valid but the page stayed Loading. Restoring the old discard
+makes the new complete-read regression fail.
 
-## Verification and remaining boundaries
+The editor uses an explicitly constructed uncontrolled textarea and a keyed
+held row. Browser keystrokes survive unrelated patches, neighbor removal,
+refusal and history browsing. Lustre's textarea helper would create a controlled
+value, so it is deliberately not used here. An uncertain save stays locked
+through unrelated refusals. Opening another input while Remove owns the lane
+is refused before a deferred fetch can be lost to its acknowledgement.
 
-Before this rebase, the web-view gate passed 1,009 tests, the shared reducer gate passed 487,
-and the browser-client gate passed 296. The client web-UI route/socket sweep
-passed 383 tests. Lint passed with zero errors and the existing warning census.
-Generated web assets passed their integrity gate. Removing either the queued-read
-reset or surface-fact custody made its real-lane regression fail at the expected
-assertion; restored source passed all eight focused notes tests.
+## Verification boundary
 
-One fresh independent adversarial review found an obsolete queued notes read
-surviving a focus change. The one-field fix and real-lane regression were verified
-by the same reviewer. Its follow-up check also approved the existing Markdown
-renderer and memo used for previews.
+Rebased October 16, 2026 onto main `6430703a9`, with production sources
+unchanged by conflict resolution. Main's current project-wide rulings remain
+in its [handoff](https://github.com/Roasbeef/loom/blob/6430703a9/docs/next.md).
+The queued-input proposal is now 088 because main already assigned 087.
 
-The production Lustre components were exercised in a disposable localhost
-WebSocket harness with representative notes replies, including readable/raw
-inspection, filtering, back navigation and empty/excerpt states. These captures
-are fixture-backed evidence, not a deployment or a read of an operator's session.
+The rebased tree passed all 486 shared-session tests, 1,011 web tests and 15
+focused queued client tests, each with exit 0. Browser asset generation and
+documentation checks passed. Independent review rechecked the integration and
+found no remaining correctness issue.
 
-PR #990 is rebased on this baseline. Its current head requires fresh hosted CI,
-Linux signoff and integration review before the authorized merge. Installation and daemon restart remain
-owner actions.
+A real browser connected to a freshly built isolated native daemon and a
+local deterministic Anthropic SSE provider. During a held generation it queued
+three messages, cancelled and reopened a multiline edit, removed one input,
+and saved another carrying an image. After release, recorded provider requests
+proved the removed and cancelled text absent, the saved multiline text before
+the final sentinel, and its image block retained. This exercised the actual
+browser, command transport, runtime queue and provider request construction.
+The installed daemon was untouched.
+
+The earlier simulated-transport Lustre browser check remains evidence for
+textarea identity and cursor preservation across neighbor removal and refusal
+patches. The old broad client run and its prerequisite skips are historical;
+they do not substitute for fresh hosted CI and exact-head Linux signoff.
+
+## Next steps
+
+1. Publish the rebased branch to [PR #980](https://github.com/Roasbeef/loom/pull/980)
+   and inspect all applicable hosted checks, including advisory macOS logs,
+   plus Linux signoff for the exact published head.
+2. Merge with a normal merge commit once those checks and independent review
+   are complete. The owner authorized rebase and merge on October 16.
+   Deployment remains a separate action.
+
+## Integration of strand notes
+
+Main advanced to `d9553247f` while the first signoff waited. Its strand-notes
+work is retained; see the [main handoff](https://github.com/Roasbeef/loom/blob/d9553247f/docs/next.md).
+The web host consumes both notes facts and queue notices before cleanup. The
+shared ordinary step still retains queue notices, while the retaining entry
+also transfers notes facts. Fresh tests, review, hosted CI and Linux signoff
+are required for this integration; prior-head results cannot authorize merge.

@@ -1653,6 +1653,21 @@ bindings; `Configured` replaces the table and resets its selection without
 changing the draft. Prefix matching, keyboard selection and click selection
 use `composer_rule` as before. Reopen the page to refresh configuration names.
 
+## Inline held-input controls (protocol 088)
+
+`view/queue_input.State` owns the page's selected complete document and
+`Ready`, `Saving`, or `Unknown` delivery state. `component.QueueAction` runs
+its controls through the shared lane; `queue_request.Notice` is consumed before
+`step.forget_surfaces` clears it. `lane.WithQueue` offers the row renderer only
+on the operator page. Live rows are keyed by opaque queue identity, so removing
+a neighboring row cannot rebind the editor. Excerpts never populate it.
+
+The textarea is uncontrolled: unsaved keystrokes remain in the browser during
+server patches. A failed save retains text, an uncertain save locks resubmission,
+and a selected row that leaves the capture retains its draft until cancellation.
+Save checks attachment, namespace, identity, revision and explicit editability.
+The browser supplies only one bounded `text` form field; it cannot choose a
+queue identity or revision. Observers draw held text without mutation controls.
 ## Strand notes
 
 The appended Notes pane is `component.notes_path` (`0\t3\t5`), after all existing

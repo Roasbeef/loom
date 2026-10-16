@@ -914,11 +914,21 @@ mutation, and both are answered by `protocol.ProfileSnapshot`
 current profile and the names, with `default` first, or the switch confirmation
 that says the session is restarting. `attempt` accepts both names in a recording.
 
+## Held-input withdrawal (protocol 088)
+
+`protocol.remove_queued_input` names one strand, opaque input identity and
+expected revision. `session_wire` accepts the `removed` mutation outcome.
+`outbound` correlates its request through `queue_request`, and `lane_fold`
+reports acknowledgement, refusal or uncertain delivery to the host. The queue
+editor consumes these notices before `step.forget_surfaces` clears them; the
+web host now uses the same full-document read and replacement correlation as
+the terminal. No process, I/O or foreign binding is added here.
 ## Explicit surface custody
 
 `step.update_retaining_surfaces` runs the shared step while leaving its surface
 facts for a host to consume. The web notes browser adopts the existing
 `NotesArrived` board before calling `step.forget_surfaces`. The ordinary
-`step.update` preserves its previous behavior: a tick drops facts for a host
-with no surfaces. Both entries return the same effects and the same state once
-the retaining host has forgotten its facts. `step_test` pins this equivalence.
+`step.update` drops unshown surface facts while retaining queue notices until
+the host consumes them. Both entries return the same effects; explicit cleanup
+retires both kinds of reply after adoption. `step_test` pins custody for notes
+and queue replies together.

@@ -224,6 +224,7 @@ import web_view/view/notes as notes_panel
 import web_view/view/nudges
 import web_view/view/panel
 import web_view/view/peer_links as peer_links_view
+import web_view/view/queue_input
 import web_view/view/rename as rename_view
 import web_view/view/session_tab
 import web_view/view/shell
@@ -951,6 +952,8 @@ type View(socket) {
     completion_profiles: List(String),
     /// How many rows the page holds. This is the page's own view state.
     paging: Paging,
+    /// One full queued document and its request lifecycle, local to this page.
+    queue_editor: queue_input.State,
     /// This strand’s bounded board, search and selected cell.
     notes: notes.State,
     /// The folds the reader has open, as `turns.Work.id` numbers, the most
@@ -1184,6 +1187,9 @@ pub type Msg(socket) {
   /// The timer armed for the lane's next due reading fired.
   Ticked
 
+  /// A held-input control, with identity fixed by the server-rendered row.
+  QueueAction(action: queue_input.Action)
+
   /// The lane's "Load older" button was pressed. It asks for a read of
   /// older history and nothing else (`older`), which is why an observer's
   /// page may carry it (protocol-change/051, the addendum on history
@@ -1355,6 +1361,7 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       completion_models: start.completion_models,
       completion_profiles: start.completion_profiles,
       paging: Tail,
+      queue_editor: queue_input.Closed,
       notes: notes.new(),
       folds: [],
       said: [],
@@ -1582,6 +1589,8 @@ pub fn update(
       |> relisted(at)
       |> peers_due(at)
       |> reobserved(at)
+
+    QueueAction(action) -> queue_action(model, action, at)
 
     OlderRequested -> older_at(model, at)
     LatestRequested -> latest_at(model, at)
@@ -2055,6 +2064,18 @@ fn taken(model: Model(socket)) -> Model(socket) {
 // are forgotten.
 fn settled(model: Model(socket)) -> Model(socket) {
   let held = taken(model)
+  let held =
+    Model(
+      ..held,
+      view: View(
+        ..held.view,
+        queue_editor: list.fold(
+          held.shared.queue_notices,
+          held.view.queue_editor,
+          queue_input.notice,
+        ),
+      ),
+    )
   let board =
     list.fold(held.shared.surface_facts, held.view.notes, fn(state, fact) {
       case fact {
@@ -6423,7 +6444,7 @@ pub fn pieces(model: Model(socket)) -> List(turns.Piece) {
 /// ```
 pub fn live(model: Model(socket)) -> List(live.Row) {
   case model.view.paging {
-    Browsing -> []
+    Browsing -> queue_input.retain(model.view.queue_editor, [])
     Tail | Paged | Full | Crowded -> live_rows_of(model)
   }
 }
@@ -6475,13 +6496,37 @@ fn live_rows_of(model: Model(socket)) -> List(live.Row) {
     session_model.presentation(shared)
     |> transcript_lines.held_inputs
     |> option.unwrap([])
-    |> list.map(fn(input) {
-      live.Held(
-        text: input.text,
-        words: transcript_lines.held_words(input.kind),
-      )
-    })
+    |> list.map(fn(input) { live.Pending(input) })
+  let held = queue_input.retain(model.view.queue_editor, held)
   list.append(streamed, held)
+}
+
+/// Draws a held row with the page's local editor state.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.queue_row(model, input)
+/// ```
+pub fn queue_row(
+  model: Model(socket),
+  input: snapshot_view.PendingInput,
+) -> Element(Msg(socket)) {
+  queue_input.view(model.view.queue_editor, input, QueueAction)
+}
+
+fn queue_action(
+  model: Model(socket),
+  action: queue_input.Action,
+  at: Int,
+) -> #(Model(socket), Effect(Msg(socket))) {
+  let #(editor, shared) =
+    queue_input.act(model.view.queue_editor, model.shared, action)
+  stepping(
+    Model(shared:, view: View(..model.view, queue_editor: editor)),
+    [tick_at(at)],
+    at,
+  )
 }
 
 /// The sidebar's groups: the principal's sessions by workspace, newest

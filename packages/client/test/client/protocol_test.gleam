@@ -447,6 +447,7 @@ pub fn queued_input_protocol_round_trip_and_required_revision_test() {
     [
       protocol.QueuedInputGet("main", "4:23"),
       protocol.EditQueuedInput("main", "4:23", 0, "complete\ntext"),
+      protocol.RemoveQueuedInput("main", "4:23", 0),
     ],
     fn(command) {
       let envelope = protocol.CommandEnvelope(9, command)
@@ -461,6 +462,11 @@ pub fn queued_input_protocol_round_trip_and_required_revision_test() {
   let assert Error(protocol.BadBody(..)) =
     protocol.decode_command(body <> ",\"expected_revision\":-1}}")
     as "negative revisions are not queue versions"
+  let removal =
+    "{\"v\":2,\"id\":9,\"cmd\":\"remove_queued_input\",\"body\":{\"strand\":\"main\",\"id\":\"4:23\""
+  assert protocol.decode_command(removal <> "}}") |> result.is_error
+  assert protocol.decode_command(removal <> ",\"expected_revision\":-1}}")
+    |> result.is_error
   let board =
     json.Object([
       #("id", json.String("4:23")),

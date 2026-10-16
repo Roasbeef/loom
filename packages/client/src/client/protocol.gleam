@@ -175,6 +175,9 @@ pub type Command {
   /// Reads complete text of one input still held by this principal.
   QueuedInputGet(strand: String, id: String)
 
+  /// Removes one held revision before runtime admission.
+  RemoveQueuedInput(strand: String, id: String, expected_revision: Int)
+
   /// Replaces held text only if the original revision has not changed.
   EditQueuedInput(
     strand: String,
@@ -926,6 +929,14 @@ fn command_body(command: Command) -> #(String, JsonValue) {
       "queued_input",
       json.Object([#("strand", json.String(strand)), #("id", json.String(id))]),
     )
+    RemoveQueuedInput(strand:, id:, expected_revision:) -> #(
+      "remove_queued_input",
+      json.Object([
+        #("strand", json.String(strand)),
+        #("id", json.String(id)),
+        #("expected_revision", json.Int(expected_revision)),
+      ]),
+    )
     EditQueuedInput(strand:, id:, expected_revision:, text:) -> #(
       "edit_queued_input",
       json.Object([
@@ -1300,6 +1311,16 @@ fn decode_command_body(
       use strand <- result.try(required_string(fields, "strand"))
       use id <- result.try(required_string(fields, "id"))
       Ok(QueuedInputGet(strand:, id:))
+    }
+    "remove_queued_input" -> {
+      use fields <- result.try(body_fields(body))
+      use strand <- result.try(required_string(fields, "strand"))
+      use id <- result.try(required_string(fields, "id"))
+      use expected_revision <- result.try(nonnegative_field(
+        fields,
+        "expected_revision",
+      ))
+      Ok(RemoveQueuedInput(strand:, id:, expected_revision:))
     }
     "edit_queued_input" -> {
       use fields <- result.try(body_fields(body))
@@ -1985,7 +2006,8 @@ fn decode_event_body(name: String, body: JsonValue) -> Result(Event, String) {
         // message in memory for a busy strand. It is deliberately not a
         // durable acknowledgement, so it is spelled beside the two that
         // are rather than folded in with them.
-        "admitted" | "committed" | "queued" -> Ok(MutationOutcome(body))
+        "admitted" | "committed" | "queued" | "removed" ->
+          Ok(MutationOutcome(body))
         _ -> Error("unknown mutation outcome")
       }
     }

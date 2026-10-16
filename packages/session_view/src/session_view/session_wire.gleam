@@ -224,6 +224,9 @@ fn mutation(body) {
         // strand's next turn. That is an accepted submission, not the refusal
         // a conflict used to be.
         json.String("queued") -> Ok(Mutation("queued"))
+
+        // Withdrawal acknowledges removal from the host queue only.
+        json.String("removed") -> Ok(Mutation("removed"))
         _ -> Error("invalid mutation outcome")
       }
     }
