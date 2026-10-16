@@ -139,6 +139,8 @@ pub fn a_stopped_store_answers_no_quorum_rather_than_absent_test() {
   store.stop()
   let assert Error(store.Unavailable(_)) = store.read(session)
     as "a read of a stopped store is unavailable"
+  let assert Error(store.Unavailable(_)) = store.confirm_current(alpha)
+    as "a stopped store cannot confirm its copy"
   let assert Error(store.NoQuorum(_)) =
     store.create(session, Record(owner: alpha, state: Serving))
     as "a write to a stopped store is refused"
@@ -197,4 +199,9 @@ pub fn the_joined_marker_follows_the_server_record_on_disk_test() {
       !list.contains(on_disk, "loom_directory")
     })
   assert missing == []
+}
+
+pub fn a_member_with_a_quorum_confirms_its_copy_is_current_test() {
+  use _directory <- with_store
+  assert store.confirm_current(alpha) == Ok(Nil)
 }

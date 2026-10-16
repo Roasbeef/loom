@@ -531,6 +531,28 @@ pub fn migrated(node: String) -> Result(Bool, Unavailable) {
   })
 }
 
+/// Whether this member's copy is current: a fence, then a read of the node's own
+/// migration marker, completing within `read_ms`. The answer carries nothing
+/// else. It is the check a report makes (protocol-change/085), where the
+/// question is whether this member can be trusted to read the cluster's state
+/// and no particular record is wanted. `Unavailable` says why it could not
+/// confirm, as `read_consistent` does: no quorum, or a copy too far behind to
+/// fence in time.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // store.confirm_current("alpha@10.0.0.1") // -> Ok(Nil)
+/// ```
+pub fn confirm_current(node: String) -> Result(Nil, Unavailable) {
+  bounded(2 * read_ms + 1000, Error(Unavailable("no quorum in time")), fn() {
+    case ffi_khepri.consistent(record.migrated_path(node), read_ms, read_ms) {
+      Ok(_marker) -> Ok(Nil)
+      Error(failure) -> Error(Unavailable(describe(failure)))
+    }
+  })
+}
+
 fn decoded(
   read: Result(Option(Dynamic), ffi_khepri.Failure),
 ) -> Result(Option(Record), Unavailable) {
