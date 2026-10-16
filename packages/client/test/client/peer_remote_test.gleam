@@ -255,6 +255,7 @@ fn hosts_on(seed: Int, sender_clock: clock.Clock) -> Hosts {
           orchestrator_port.declining(),
           orchestrator_port.refusing_spawns(),
           orchestrator_port.unheld,
+          orchestrator_port.unreported(),
         )
         as "the recipient's port starts"
       Nil

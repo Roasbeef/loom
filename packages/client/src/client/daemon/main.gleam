@@ -966,6 +966,7 @@ pub fn start_orchestrator_port(
             ready.registry,
             executor_roster(config),
           ),
+          orchestrator_port.unreported(),
         )
         |> result.map_error(fn(error) {
           "the orchestrator port did not start: " <> string.inspect(error)

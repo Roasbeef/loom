@@ -5674,6 +5674,7 @@ fn serving(harness: Harness) -> address.Address(orchestrator_port.Message) {
         Ok(agency.delegate_endpoint(harness.config))
       }),
       orchestrator_port.unheld,
+      orchestrator_port.unreported(),
     )
     as "the port must start"
   address.Address(node: node.self(), name:)

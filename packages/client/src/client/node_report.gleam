@@ -42,8 +42,9 @@
 //// 1. `to_json` renders a whole report, leaving out the facts a node does not
 ////    have (an executor-only node has no orchestrator facts).
 //// 2. `decode` reads one back, checking every bound the type documents.
-//// 3. The three `_json` functions render the optional facts and are public so
-////    a client that shows one part can render only that part.
+//// 3. `executor_json`, `orchestrator_json` and `directory_json` render the
+////    optional facts and are public so a client that shows one part can render
+////    only that part.
 
 import client/directory/member
 import client/directory/store
@@ -101,13 +102,14 @@ pub type NodeReport {
     /// The nodes of its configured `[[distribution.peers]]`, at most
     /// `max_peers`.
     peers: List(String),
-    /// What it says as an orchestrator, or `None` when it has no catalogue to
-    /// describe.
+    /// What it says as an orchestrator, or `None` when it is not one or its
+    /// catalogue did not answer in time.
     orchestrator: Option(OrchestratorFacts),
-    /// What it says as an executor, or `None` when it serves no workspace.
+    /// What it says as an executor, or `None` when it serves no workspace or
+    /// its host did not answer in time.
     executor: Option(ExecutorFacts),
     /// What it says as a member of the session directory, or `None` when it is
-    /// not one.
+    /// not one or its member did not answer in time.
     directory: Option(DirectoryFacts),
   )
 }
@@ -345,12 +347,12 @@ pub fn to_json(report: NodeReport) -> JsonValue {
 /// assert report.executor == None
 /// ```
 pub fn bare(
-  node: String,
-  build_version: String,
-  build_commit: String,
-  epoch: String,
-  started_ms: Int,
-  now_ms: Int,
+  node node: String,
+  build_version build_version: String,
+  build_commit build_commit: String,
+  epoch epoch: String,
+  started_ms started_ms: Int,
+  now_ms now_ms: Int,
 ) -> NodeReport {
   NodeReport(
     node:,
