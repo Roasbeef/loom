@@ -1085,3 +1085,61 @@ func TestBwrapArgsMountUnderASystemRoot(t *testing.T) {
 			"it: %q", got)
 	}
 }
+
+// Explicit binds run after private scratch, for both file and directory
+// mounts. A successful read must return host bytes, and a successful write
+// must land on the host rather than vanish into the execution's tmpfs.
+func TestJailedExplicitTmpMounts(t *testing.T) {
+	if _, err := exec.LookPath("bwrap"); err != nil {
+		t.Skip("bwrap is unavailable")
+	}
+	for _, access := range []policy.MountAccess{policy.MountReadOnly, policy.MountReadWrite} {
+		for _, kind := range []string{"file", "directory"} {
+			t.Run(string(access)+"/"+kind, func(t *testing.T) {
+				root, err := os.MkdirTemp("/tmp", "loom-explicit-mount-")
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { os.RemoveAll(root) })
+				inbox := filepath.Join(root, "inbox")
+				if err := os.Mkdir(inbox, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				file := filepath.Join(inbox, "proof.md")
+				sibling := filepath.Join(root, "unmounted.md")
+				for _, path := range []string{file, sibling} {
+					if err := os.WriteFile(path, []byte("proof"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				mount := file
+				if kind == "directory" {
+					mount = inbox
+				}
+				p := basePol()
+				p.ReadableRoots = nil
+				p.WritableRoots = nil
+				p.Protected = nil
+				p.Mounts = []policy.Mount{{Path: mount, Access: access, Required: true}}
+				script := "test \"$(cat " + file + ")\" = proof && ! cat " + sibling + " && "
+				if access == policy.MountReadOnly {
+					script += "! (echo written > " + file + ") && echo VERIFIED"
+				} else {
+					script += "echo written > " + file + " && echo VERIFIED"
+				}
+				out := inJail(t, p, nil, script)
+				if !strings.Contains(out, "VERIFIED") {
+					t.Fatalf("mount did not enforce its requested access: %s", out)
+				}
+				got, err := os.ReadFile(file)
+				want := "proof"
+				if access == policy.MountReadWrite {
+					want = "written\n"
+				}
+				if err != nil || string(got) != want {
+					t.Fatalf("host contents = %q, %v; want %q", got, err, want)
+				}
+			})
+		}
+	}
+}

@@ -305,3 +305,54 @@ func TestSeatbeltCanonicalizesInsideAGrantedRoot(t *testing.T) {
 		t.Fatalf("jailed realpath = %q, want %q", got, target)
 	}
 }
+
+// Explicit temporary mounts grant only their region; scratch's parent is
+// still outside the profile, and a read-only mount never grants a write.
+func TestSeatbeltExplicitTmpMounts(t *testing.T) {
+	for _, access := range []policy.MountAccess{policy.MountReadOnly, policy.MountReadWrite} {
+		for _, kind := range []string{"file", "directory"} {
+			t.Run(string(access)+"/"+kind, func(t *testing.T) {
+				root, err := os.MkdirTemp(SeatbeltScratchParent, "loom-mount-")
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { os.RemoveAll(root) })
+				inbox := filepath.Join(root, "inbox")
+				if err := os.Mkdir(inbox, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				file := filepath.Join(inbox, "proof.md")
+				sibling := filepath.Join(root, "unmounted.md")
+				for _, path := range []string{file, sibling} {
+					if err := os.WriteFile(path, []byte("proof"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				mount := file
+				if kind == "directory" {
+					mount = inbox
+				}
+				// Use the public spelling, while the fixture itself uses /private/tmp.
+				mount = "/tmp/" + strings.TrimPrefix(mount, SeatbeltScratchParent+"/")
+				pol := policy.Policy{Network: policy.Network{Mode: policy.NetworkOff}, Scratch: "tmpfs",
+					Mounts: []policy.Mount{{Path: mount, Access: access, Required: true}}}
+				plan := SeatbeltPlanFor(pol, filepath.Join(root, "scratch"), os.Args[0])
+				runSeatbeltChild(t, plan, "read", file)
+				runSeatbeltChildMustFail(t, plan, "read", sibling)
+				if access == policy.MountReadOnly {
+					runSeatbeltChildMustFail(t, plan, "write", file)
+					got, err := os.ReadFile(file)
+					if err != nil || string(got) != "proof" {
+						t.Fatalf("read-only contents changed: %q, %v", got, err)
+					}
+				} else {
+					runSeatbeltChild(t, plan, "write", file)
+					got, err := os.ReadFile(file)
+					if err != nil || string(got) != "written" {
+						t.Fatalf("write missed host file: %q, %v", got, err)
+					}
+				}
+			})
+		}
+	}
+}

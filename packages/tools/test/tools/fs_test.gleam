@@ -2547,3 +2547,137 @@ pub fn write_observer_is_not_called_on_a_refused_write_test() {
   assert outcome.is_error
   assert process.receive(seen, 0) == Error(Nil)
 }
+
+// The configured mount is authority for native reads and writes, just as
+// the explicit bind after scratch is authority inside the jail.
+pub fn explicit_tmp_mounts_honor_access_without_approval_test() {
+  list.each([policy.MountReadOnly, policy.MountReadWrite], fn(access) {
+    list.each(["/tmp/proof.md", "/tmp/inbox", "/tmp"], fn(root) {
+      let #(ctx, filesystem) = memory_ctx()
+      let path = case root {
+        "/tmp/inbox" -> root <> "/proof.md"
+        "/tmp" -> root <> "/proof.md"
+        _ -> root
+      }
+      let assert Ok(Nil) = filesystem.write(path, <<"proof\n":utf8>>)
+      let asked = process.new_subject()
+      let ctx =
+        tool.Ctx(
+          ..ctx,
+          base_policy: policy.SandboxPolicy(..ctx.base_policy, mounts: [
+            policy.Mount(root, access, policy.MountRequired),
+          ]),
+          raise_refusal: fn(request: tool.RaisedRefusal) {
+            process.send(asked, request.denial.wanted)
+            tool.Resume(request.denial.wanted)
+          },
+        )
+      let read = fs.read_tool().run(ctx, args([#("path", json.String(path))]))
+      assert !read.is_error
+      assert string.contains(first_text(read), "proof")
+      assert fs.resolve_for_read(ctx, path) == Ok(path)
+      let written =
+        fs.write_tool().run(
+          ctx,
+          args([
+            #("path", json.String(path)),
+            #("content", json.String("updated")),
+          ]),
+        )
+      case access {
+        policy.MountReadOnly -> {
+          assert written.is_error
+          assert result.is_error(fs.resolve_for_write(ctx, path))
+          assert filesystem.read(path) == Ok(<<"proof\n":utf8>>)
+          assert fs.edit_tool().run(ctx, insert_call(path, "proof\n")).is_error
+        }
+        policy.MountReadWrite -> {
+          assert !written.is_error
+          assert fs.resolve_for_write(ctx, path) == Ok(path)
+          assert filesystem.read(path) == Ok(<<"updated":utf8>>)
+        }
+      }
+      assert process.receive(asked, 0) == Error(Nil)
+    })
+  })
+}
+
+pub fn explicit_tmp_mounts_do_not_open_neighbors_or_protected_targets_test() {
+  let #(ctx, filesystem) = memory_ctx()
+  let base =
+    policy.SandboxPolicy(
+      ..ctx.base_policy,
+      readable_roots: ["/"],
+      mounts: [
+        policy.Mount("/tmp/inbox", policy.MountReadWrite, policy.MountRequired),
+      ],
+      protected: ["/tmp/inbox/secret"],
+    )
+  assert fs.resolve_readable(filesystem, workspace, base, "/tmp/inbox/proof")
+    == Ok("/tmp/inbox/proof")
+  list.each(["/tmp/inbox-other/proof", "/tmp/other/proof"], fn(path) {
+    assert fs.resolve_readable(filesystem, workspace, base, path)
+      == Error(fs.JailReplaced(path, "/tmp"))
+  })
+  assert fs.resolve_readable(filesystem, workspace, base, "/tmp/inbox/secret")
+    == Error(fs.ProtectedPath("/tmp/inbox/secret", "/tmp/inbox/secret"))
+}
+
+pub fn explicit_tmp_mounts_resolve_aliases_and_refuse_escaping_links_test() {
+  let #(ctx, filesystem) = memory_ctx()
+  let filesystem =
+    tool.FileSystem(..filesystem, read_link: fn(path) {
+      case path {
+        "/tmp" -> Ok(tool.LinkTarget("/private/tmp"))
+        "/private/tmp/inbox/escape" -> Ok(tool.LinkTarget("/private/tmp/other"))
+        _ -> Ok(tool.NotALink)
+      }
+    })
+  let ctx =
+    tool.Ctx(
+      ..ctx,
+      filesystem:,
+      base_policy: policy.SandboxPolicy(..ctx.base_policy, mounts: [
+        policy.Mount("/tmp/inbox", policy.MountReadWrite, policy.MountRequired),
+      ]),
+    )
+  list.each(["/tmp/inbox/proof", "/private/tmp/inbox/proof"], fn(path) {
+    assert fs.resolve_for_read(ctx, path) == Ok("/private/tmp/inbox/proof")
+    assert fs.resolve_for_write(ctx, path) == Ok("/private/tmp/inbox/proof")
+  })
+  assert result.is_error(fs.resolve_for_read(ctx, "/tmp/inbox/escape/proof"))
+  assert result.is_error(fs.resolve_for_write(ctx, "/tmp/inbox/escape/proof"))
+}
+
+pub fn a_read_only_tmp_mount_is_not_widened_by_a_write_grant_test() {
+  let #(ctx, filesystem) = memory_ctx()
+  let path = "/tmp/inbox/proof"
+  let assert Ok(Nil) = filesystem.write(path, <<"proof\n":utf8>>)
+  let reads = process.new_subject()
+  let observed =
+    tool.FileSystem(..filesystem, read: fn(path) {
+      process.send(reads, path)
+      filesystem.read(path)
+    })
+  let ctx =
+    tool.Ctx(
+      ..ctx,
+      filesystem: observed,
+      directory_access: directory_access.Access([], ["/tmp/inbox"]),
+      grants: [policy.GrantWritableRoot("/tmp/inbox")],
+      base_policy: policy.SandboxPolicy(..ctx.base_policy, mounts: [
+        policy.Mount("/tmp/inbox", policy.MountReadOnly, policy.MountRequired),
+      ]),
+    )
+  assert fs.write_tool().run(
+    ctx,
+    args([
+      #("path", json.String(path)),
+      #("content", json.String("forged")),
+    ]),
+  ).is_error
+  assert fs.edit_tool().run(ctx, insert_call(path, "proof\n")).is_error
+  assert result.is_error(fs.resolve_for_write(ctx, path))
+  assert process.receive(reads, 0) == Error(Nil)
+  assert filesystem.read(path) == Ok(<<"proof\n":utf8>>)
+}

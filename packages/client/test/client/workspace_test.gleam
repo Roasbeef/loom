@@ -19,6 +19,7 @@ import broker/exec
 import broker/policy
 import client/catalog
 import client/codemode
+import client/internal/ffi_os
 import client/scratch
 import client/workspace_policy
 import codemode/artifact
@@ -1070,4 +1071,84 @@ fn a_glob_query() -> engine.GlobQuery {
     hidden: engine.SkipHidden,
     prune: [],
   )
+}
+
+// These files live in host scratch, outside the workspace, so a bridge that
+// only honors workspace roots cannot accidentally pass this regression.
+pub fn explicit_tmp_mounts_reach_the_real_workspace_bridge_test() {
+  let root = fresh("explicit-tmp-mount")
+  let temp =
+    "/tmp/loom-mount-"
+    <> int.to_string(ffi_os.system_time_ms())
+    <> "-"
+    <> int.to_string(ffi_os.unique_positive_integer())
+  let assert Ok(Nil) = simplifile.create_directory_all(temp)
+    as "the temporary inbox must be creatable"
+  let path = temp <> "/proof.md"
+  let sibling = temp <> "/unmounted.md"
+  let assert Ok(Nil) = simplifile.write(path, "proof")
+    as "the mounted file must exist"
+  let assert Ok(Nil) = simplifile.write(sibling, "private")
+    as "the unmounted sibling must exist"
+  list.each([policy.MountReadOnly, policy.MountReadWrite], fn(access) {
+    // Parse the operator's actual TOML before assembling the session base.
+    let text =
+      "[[workspace.mounts]]\npath = \""
+      <> path
+      <> "\"\naccess = \""
+      <> case access {
+        policy.MountReadOnly -> "ro"
+        policy.MountReadWrite -> "rw"
+      }
+      <> "\"\n"
+    let assert Ok(configured) = catalog.parse_workspace(text)
+      as "an explicit temporary file mount must parse"
+    let session =
+      workspace_policy.admitting_config_mounts(
+        policy.workspace_default(root),
+        configured.mounts,
+      )
+    let request =
+      codemode_tool.Request(..request_over(root), base_policy: session)
+    let seam = codemode.workspace_seam(config_over(root), request)
+    assert seam.fs_read(path) == Ok("proof")
+    let assert Ok(canonical) = fs.resolve_real(fs.real_filesystem(), "/", path)
+      as "the temporary path alias must resolve"
+    assert seam.fs_read(canonical) == Ok("proof")
+    let search =
+      codemode.search_seam_with_access(root, session, root <> "/.blobs")
+    assert result.is_ok(search.stat(path))
+    assert result.is_error(search.stat(sibling))
+    assert result.is_error(seam.fs_read(sibling))
+    let written = seam.fs_write(path, "updated")
+    case access {
+      policy.MountReadOnly -> {
+        assert result.is_error(written)
+        assert result.is_error(
+          seam.fs_edit(path, [workspace.Replacement("proof", "updated")]),
+        )
+        assert simplifile.read(path) == Ok("proof")
+      }
+      policy.MountReadWrite -> {
+        assert written == Ok(Nil)
+        assert seam.fs_edit(path, [workspace.Replacement("updated", "edited")])
+          == Ok(Nil)
+        assert simplifile.read(path) == Ok("edited")
+      }
+    }
+  })
+  let assert Ok(Nil) = simplifile.delete(temp)
+    as "the temporary fixture must be removed"
+}
+
+pub fn stat_of_an_explicit_temporary_directory_mount_needs_no_parent_grant_test() {
+  let root = fresh("stat-tmp-mount")
+  let session =
+    policy.SandboxPolicy(..policy.workspace_default(root), mounts: [
+      policy.Mount("/tmp", policy.MountReadOnly, policy.MountRequired),
+    ])
+  let search =
+    codemode.search_seam_with_access(root, session, root <> "/.blobs")
+  assert result.is_ok(search.stat("/tmp"))
+  assert result.is_error(search.stat("/"))
 }

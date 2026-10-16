@@ -3120,8 +3120,9 @@ pub fn workspace_seam_for(
 ///
 /// `session_base` is the policy a jailed process of this session is built
 /// from. Reads are judged against its `readable_roots` widened by `access`,
-/// and refused under its `protected` list; writes keep the workspace plus
-/// `access.writable`, and the same `protected` list.
+/// and explicit mounts, and refused under its `protected` list. Writes keep
+/// the workspace, `access.writable` and read-write mounts; read-only mounts
+/// become additional write protection.
 pub fn workspace_seam_with_access(
   config: Config,
   access access: directory_access.Access,
@@ -3140,7 +3141,23 @@ pub fn workspace_seam_with_access(
   // reached: the extension bridge has no seam of its own and asks for the
   // workspace seam's.
   let arms = owner_arms(config, vet_policy.WorkspaceSeam)
-  let protected = session_base.protected
+  let writes =
+    policy.SandboxPolicy(
+      ..session_base,
+      readable_roots: access.writable,
+      mounts: list.filter(session_base.mounts, fn(mount) {
+        mount.access == policy.MountReadWrite
+      }),
+      protected: list.append(
+        session_base.protected,
+        list.filter_map(session_base.mounts, fn(mount) {
+          case mount.access {
+            policy.MountReadOnly -> Ok(mount.path)
+            policy.MountReadWrite -> Error(Nil)
+          }
+        }),
+      ),
+    )
   let reads =
     fs.exempting_blob_root(
       directory_access.widen(session_base, access),
@@ -3150,11 +3167,9 @@ pub fn workspace_seam_with_access(
     fs_read: fn(path) { read_in(filesystem, root, reads, path) },
     fs_list: fn(path) { list_in(filesystem, root, reads, path) },
     fs_write: fn(path, contents) {
-      write_in(filesystem, root, access.writable, protected, path, contents)
+      write_in(filesystem, root, writes, path, contents)
     },
-    fs_edit: fn(path, edits) {
-      edit_in(filesystem, root, access.writable, protected, path, edits)
-    },
+    fs_edit: fn(path, edits) { edit_in(filesystem, root, writes, path, edits) },
     kv_get: config.scratch.get,
     kv_set: config.scratch.set,
     kv_delete: config.scratch.delete,
@@ -3233,12 +3248,10 @@ fn jobs_in(
 /// - `read_lines` resolves the whole path exactly as `fs.read` does, so
 ///   reading *through* a contained link works and an escaping one is
 ///   refused.
-/// - `stat` resolves the path's **parent** and then names the final
-///   component beneath it, because the whole point of `stat` is to report
-///   a link as a link. Resolving the leaf too would follow it, and a
-///   contained link pointing outside the workspace would either be
-///   refused (an answer `stat` should be able to give) or, worse, report
-///   its target's kind.
+/// - `stat` resolves the path's parents and authorizes the exact final
+///   component without following its link. A mounted file needs no grant
+///   for its parent, and a contained link is reported as a link rather
+///   than resolved to its target's kind.
 ///
 /// ## Examples
 ///
@@ -3330,9 +3343,9 @@ fn grep_in(
   |> result.map_error(search_router.QueryRefused)
 }
 
-// `search.stat`: resolve the parent, name the leaf beneath it, and let
-// the engine `lstat` that. See `search_seam_with_access`'s doc for why the leaf
-// is deliberately not resolved.
+// `search.stat`: resolve parents, authorize the exact leaf without
+// following its final link, and let the engine `lstat` that object.
+// See `search_seam_with_access` for the mount and symlink invariants.
 //
 // `display` is the leaf's path relative to the resolved workspace root,
 // which is what the engine echoes back into `Entry.path` — so a program
@@ -3427,21 +3440,32 @@ fn resolved_leaf(
     NoLeaf -> fs.resolve_readable(filesystem, root, reads, path)
 
     Leaf(parent:, name:) -> {
-      use directory <- result.try(fs.resolve_readable(
+      let absolute_parent = case parent {
+        "/" <> _ -> parent
+        _ -> root <> "/" <> parent
+      }
+      use directory <- result.try(fs.resolve_real(
         filesystem,
-        root,
-        reads,
-        parent,
+        "/",
+        absolute_parent,
       ))
+      let leaf = case directory {
+        "/" -> "/" <> name
+        _ -> directory <> "/" <> name
+      }
 
-      // The leaf is not resolved, so the protected list is asked about it
-      // here: `stat` of a masked file would otherwise report its size.
-      fs.refuse_protected_read(
-        filesystem,
-        reads.protected,
-        path,
-        directory <> "/" <> name,
-      )
+      // Authorize the leaf itself, so an exact mount needs no parent grant.
+      // Suppressing only its final link preserves stat's lstat semantics;
+      // every parent and mount alias still uses the shared resolver.
+      let read_link = filesystem.read_link
+      let leaf_filesystem =
+        tool.FileSystem(..filesystem, read_link: fn(candidate) {
+          case candidate == leaf {
+            True -> Ok(tool.NotALink)
+            False -> read_link(candidate)
+          }
+        })
+      fs.resolve_readable(leaf_filesystem, root, reads, leaf)
     }
   }
 }
@@ -3631,9 +3655,9 @@ fn read_in(
   |> result.map_error(workspace.ReadRefused)
 }
 
-// `fs.write`: resolve through `resolve_writable` — containment plus the
-// protected-path refusal, the same one function the model's own
-// `fs_write` calls (#105) — then write whole through the seam. Both
+// `fs.write`: resolve through `resolve_readable` with the write policy's
+// roots, read-write mounts and write protection, then write whole through
+// the seam. The native tools use the same containment boundary. Both
 // decisions are `tools/fs`'s; the bridge's contribution is the seam name
 // on the refusal.
 //
@@ -3649,13 +3673,12 @@ fn read_in(
 fn write_in(
   filesystem: tool.FileSystem,
   root: String,
-  roots: List(String),
-  protected: List(String),
+  writes: policy.SandboxPolicy,
   path: String,
   contents: String,
 ) -> Result(Nil, workspace.FsRefusal) {
   use resolved <- result.try(
-    fs.resolve_writable_roots(filesystem, root, roots, protected, path)
+    fs.resolve_readable(filesystem, root, writes, path)
     |> result.map_error(workspace.PathRefused),
   )
   fs.write_whole(filesystem:, resolved:, bytes: <<contents:utf8>>)
@@ -3672,13 +3695,12 @@ fn write_in(
 fn edit_in(
   filesystem: tool.FileSystem,
   root: String,
-  roots: List(String),
-  protected: List(String),
+  writes: policy.SandboxPolicy,
   path: String,
   edits: List(workspace.Replacement),
 ) -> Result(Nil, workspace.FsRefusal) {
   use resolved <- result.try(
-    fs.resolve_writable_roots(filesystem, root, roots, protected, path)
+    fs.resolve_readable(filesystem, root, writes, path)
     |> result.map_error(workspace.PathRefused),
   )
   use text <- result.try(

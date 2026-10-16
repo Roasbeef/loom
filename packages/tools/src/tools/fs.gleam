@@ -138,8 +138,8 @@ pub type PathError {
 
   /// A read resolves at or under a root the jail replaces with its own
   /// (`broker/policy.jail_replaced_roots`: `/proc`, `/dev`, `/tmp`) and
-  /// outside the session workspace. A jailed process never sees the host's
-  /// version of that path, so a native read of it would show what no tool
+  /// outside the session workspace or an explicit temporary mount. A jailed
+  /// process never sees the host's version there, so a native read would show what no tool
   /// is meant to. `root` carries the replaced root that matched.
   JailReplaced(path: String, root: String)
 }
@@ -294,8 +294,9 @@ pub fn resolve_real(
 }
 
 /// Resolves a path for a **read** against the session's composed read
-/// policy: the workspace, every root in `base.readable_roots`, and nothing
-/// that `base.protected` covers.
+/// policy: the workspace, every root in `base.readable_roots`, explicit
+/// mounts, and nothing that `base.protected` covers. A mount at or below
+/// `/tmp` restores its host region; other replaced roots remain refused.
 ///
 /// `base` is the same `SandboxPolicy` value a jailed process is built from,
 /// already widened by session additions and approved grants
@@ -325,13 +326,53 @@ pub fn resolve_readable(
   base: policy.SandboxPolicy,
   path: String,
 ) -> Result(String, PathError) {
+  let base = mounted_policy(filesystem, base)
   resolve_contained(
     filesystem,
     workspace,
     base.readable_roots,
     base.protected,
     policy.jail_replaced_roots,
+    base.mounts,
     path,
+  )
+}
+
+// Explicit binds are host authority even beneath private scratch. Resolve
+// their aliases as the jail does, so `/tmp` and `/private/tmp` agree.
+fn mounted_policy(
+  filesystem: FileSystem,
+  base: policy.SandboxPolicy,
+) -> policy.SandboxPolicy {
+  let mounts =
+    list.map(base.mounts, fn(mount) {
+      policy.Mount(
+        ..mount,
+        path: walk(filesystem, mount.path)
+          |> result.unwrap(or: mount.path),
+      )
+    })
+  policy.SandboxPolicy(
+    ..base,
+    mounts:,
+    readable_roots: list.append(
+      base.readable_roots,
+      list.map(mounts, fn(mount) { mount.path }),
+    ),
+  )
+}
+
+// A read-only bind is a write prohibition, including when a broader grant
+// would otherwise permit writing. Reads still use the original protection.
+fn write_protection(base: policy.SandboxPolicy) -> List(String) {
+  list.append(
+    base.protected,
+    list.filter_map(base.mounts, fn(mount) {
+      case mount.access {
+        policy.MountReadOnly -> Ok(mount.path)
+        policy.MountReadWrite -> Error(Nil)
+      }
+    }),
   )
 }
 
@@ -415,7 +456,7 @@ pub fn resolve_writable_roots(
   protected: List(String),
   path: String,
 ) -> Result(String, PathError) {
-  resolve_contained(filesystem, workspace, roots, protected, [], path)
+  resolve_contained(filesystem, workspace, roots, protected, [], [], path)
 }
 
 // The one containment check behind reads and writes: the protected list must
@@ -428,10 +469,19 @@ fn resolve_contained(
   roots: List(String),
   protected: List(String),
   replaced: List(String),
+  mounts: List(policy.Mount),
   path: String,
 ) -> Result(String, PathError) {
   use _ <- result.try(all_absolute(protected, path))
-  resolve_within(filesystem, workspace, roots, protected, replaced, path)
+  resolve_within(
+    filesystem,
+    workspace,
+    roots,
+    protected,
+    replaced,
+    mounts,
+    path,
+  )
 }
 
 // Resolves a path against the real filesystem, refuses it if a protected
@@ -448,6 +498,7 @@ fn resolve_within(
   roots: List(String),
   protected: List(String),
   replaced: List(String),
+  mounts: List(policy.Mount),
   path: String,
 ) -> Result(String, PathError) {
   use <- bool.guard(path == "", Error(EmptyPath))
@@ -468,6 +519,7 @@ fn resolve_within(
   use _ <- result.try(refuse_replaced(
     filesystem,
     replaced,
+    mounts,
     real_root,
     path,
     resolved,
@@ -534,6 +586,7 @@ pub fn refuse_protected_read(
 fn refuse_replaced(
   filesystem: FileSystem,
   replaced: List(String),
+  mounts: List(policy.Mount),
   workspace_real: String,
   path: String,
   resolved: String,
@@ -541,7 +594,19 @@ fn refuse_replaced(
   case check_under(workspace_real, resolved, path) {
     Ok(_) -> Ok(resolved)
     Error(_) ->
-      case list.find(replaced, covers_target(filesystem, _, resolved)) {
+      case
+        list.find(replaced, fn(root) {
+          // A bind at or below scratch restores only its own host region.
+          // Broad roots and the other virtual filesystems keep their refusal.
+          let restored =
+            root == policy.jail_scratch_mount
+            && list.any(mounts, fn(mount) {
+              covers_target(filesystem, root, mount.path)
+              && covers_target(filesystem, mount.path, resolved)
+            })
+          covers_target(filesystem, root, resolved) && !restored
+        })
+      {
         Error(Nil) -> Ok(resolved)
         Ok(root) -> Error(JailReplaced(path:, root:))
       }
@@ -795,13 +860,17 @@ fn normalize(path: String) -> String {
 /// enforcement points drift.
 pub fn resolve_for_write(ctx: Ctx, path: String) -> Result(String, PathError) {
   let access = directory_access.approved(ctx.directory_access, ctx.grants)
-  resolve_writable_roots(
-    ctx.filesystem,
-    ctx.workspace,
-    access.writable,
-    ctx.base_policy.protected,
-    path,
-  )
+  let base = ctx.base_policy
+  let writes =
+    policy.SandboxPolicy(
+      ..base,
+      readable_roots: access.writable,
+      mounts: list.filter(base.mounts, fn(mount) {
+        mount.access == policy.MountReadWrite
+      }),
+      protected: write_protection(base),
+    )
+  resolve_readable(ctx.filesystem, ctx.workspace, writes, path)
 }
 
 // Native operations know their exact target before reading or writing it.
@@ -821,7 +890,7 @@ fn resolve_invocation(
     "/" <> _ -> path
     _ -> ctx.workspace <> "/" <> path
   }
-  let reads = readable_policy(ctx)
+  let reads = mounted_policy(ctx.filesystem, readable_policy(ctx))
   use workspace <- result.try(
     resolve_real(ctx.filesystem, ctx.workspace, ".")
     |> result.map_error(path_outcome),
@@ -835,12 +904,13 @@ fn resolve_invocation(
         ctx.filesystem,
         "/",
         [],
-        ctx.base_policy.protected,
+        write_protection(mounted_policy(ctx.filesystem, ctx.base_policy)),
         absolute,
       )
       |> result.try(refuse_replaced(
         ctx.filesystem,
         policy.jail_replaced_roots,
+        reads.mounts,
         workspace,
         absolute,
         _,
@@ -860,7 +930,16 @@ fn resolve_invocation(
       policy.SandboxPolicy(
         ..ctx.base_policy,
         readable_roots: readable,
-        writable_roots: [workspace, ..access.writable],
+        writable_roots: list.flatten([
+          [workspace],
+          access.writable,
+          list.filter_map(reads.mounts, fn(mount) {
+            case mount.access {
+              policy.MountReadWrite -> Ok(mount.path)
+              policy.MountReadOnly -> Error(Nil)
+            }
+          }),
+        ]),
       )
   }
   let requested = case intent {
@@ -900,11 +979,13 @@ fn resolve_target_for_read(
     [],
     reads.protected,
     [],
+    [],
     absolute,
   ))
   refuse_replaced(
     ctx.filesystem,
     policy.jail_replaced_roots,
+    reads.mounts,
     workspace,
     absolute,
     resolved,
@@ -2560,7 +2641,8 @@ pub fn jail_replaced_text(path: String, root: String) -> String {
   <> "` is not visible to tools: the jail replaces `"
   <> root
   <> "` with its own, so the host's version is not readable here. No approval "
-  <> "or `/add-dir` changes this."
+  <> "or `/add-dir` changes this. For host temporary files, configure an explicit "
+  <> "`[[workspace.mounts]]` entry with access `ro` or `rw` and reopen the session."
 }
 
 /// The refusal text for a read outside the readable roots, naming the two
