@@ -101,3 +101,16 @@ WHERE session = ? AND op = ? AND step = ? AND source_index = ?;
 
 -- name: DeleteLedgerAcks :exec
 DELETE FROM call_ack WHERE session = ?;
+
+-- name: LedgerScopeStates :many
+SELECT state, close_outcome, COUNT(*) AS scopes FROM scope
+GROUP BY state, close_outcome;
+
+-- name: LedgerUncleanScopes :many
+SELECT session, state, close_outcome FROM scope
+WHERE state = 'closing'
+  OR (state = 'closed' AND close_outcome IS NOT 'all_retired')
+ORDER BY session;
+
+-- name: LedgerUnackedCount :one
+SELECT COUNT(*) AS calls FROM call WHERE state IN ('terminal', 'unknown');
