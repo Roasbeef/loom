@@ -1,6 +1,6 @@
 # Current handoff
 
-Baselined October 16, 2026 against main `d9553247f` and the rebased `/btw`
+Baselined October 16, 2026 against main `1536934a4` and the rebased `/btw`
 branch for PR #981. The earlier instruction to merge `207c6571b` is obsolete:
 the owner requested a rebase and fresh UI screenshots after main advanced.
 `207c6571b` passed hosted CI run 38558170965 and signed Gilgamesh signoff.
@@ -54,6 +54,28 @@ Fresh TUI/web captures from `bbeb4b61c` are posted in
 outside Git history. Both UIs answered side questions during main streaming;
 raw requests and the two main-only durable entries prove context and history
 isolation. Repeat UI smoke checks after this notes integration.
+
+## Queue-control integration
+
+Main advanced through #980 to `1536934a4` while the notes-integrated head
+finished validation. Retain both `remove_queued_input` and `btw` in auxiliary
+command decoding, queue-removal authority and side-observer denial tests, and
+both queue/notes custody and side-refusal regressions. The shared host cleanup
+retains its current queue-aware rules; private side state remains separate.
+Generated assets are rebuilt from the combined source.
+
+At `2b42233a8`, strict Linux signoff passed all six lanes, release/update and
+the strict skip census in 1799 seconds (driver 1804 seconds). Linux CI and the
+second macOS advisory shard passed. The macOS E2E job hit the unchanged
+code-mode cancellation fixture's 500 ms invocation deadline. Five exact local
+attempts and the full local code-mode E2E gate (410 tests) passed, supporting a
+suspected timing flake. No test was changed and no hosted retry was issued;
+the run was cancelled as superseded when #980 created new conflicts.
+
+[Refreshed captures](https://github.com/Roasbeef/loom/pull/981#issuecomment-6221718804)
+show both real UIs and Notes beside the private web side answer on `2b42233a8`.
+Both private requests retained main context and their question/answer text was
+absent from durable entries. They are prior-head evidence for the next rebase.
 
 ## Verification and next steps
 

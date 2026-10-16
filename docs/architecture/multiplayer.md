@@ -322,8 +322,8 @@ sequenceDiagram
 
 The drain runs inside the gateway's pull, because that pull is the one
 place where the gateway observes that a strand has gone idle.
-`drain_idle_strands` (`client/gateway.gleam:5864`) is called from
-`pull_and_broadcast` (`client/gateway.gleam:3270`) after `state.live` has
+`drain_idle_strands` (`client/gateway.gleam:5877`) is called from
+`pull_and_broadcast` (`client/gateway.gleam:3272`) after `state.live` has
 been refreshed from the registers and before any frame leaves.
 
 Ordinarily the drain submits only the head of the queue. Natural
