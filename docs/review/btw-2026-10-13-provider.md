@@ -1,0 +1,26 @@
+# Provider / protocol / docs / CI cold acceptance
+
+Verdict: **APPROVE**. No concrete medium-or-higher defect found in this bounded read-only pass against the supplied HEAD `69d4d6461` slice. No builds, paid requests, git mutations, or production edits performed.
+
+## Verified claims
+
+- `packages/provider/src/provider/adapter/anthropic.gleam:1365` divides the raw AgentMessage list at the captured count, converts and merges each region, assigns one user-block marker per region, then merges the regions. Consequently an adjacent main-user / boundary / side-question turn retains the marker on the original main block instead of moving it to the question. Ordinary requests retain their existing rolling-two-user policy. Tools and system contribute at most two head markers, and the two region markers keep the total at most four. The adapter regression explicitly checks the adjacent-user shape, four markers, and identical tool definitions.
+- `packages/client/src/client/btw.gleam:563` copies the frozen request and changes only messages. `fresh` pins its target, `settled_identity` preserves the actual settled fallback identity and request-level thinking override, and `gateway` dispatches a `ForResolved` target as a singleton attempt chain. The catalogue names each provider after its model entry, so different catalogue entries cannot ambiguously share the provider/model lookup key merely because their upstream model identifiers match. Model, system, tools, max-output and thinking settings are retained by the reachable caller path; no newly lowered ceiling conflicts with an inherited thinking budget.
+- `client/serve.gleam:4160` installs the side tap on the effective provider observation path using `wiring.request_builder`; that builder shares production request construction, including vision/context projection. This is not reconstructed from transcript/UI history.
+- `packages/client/src/client/protocol.gleam:1459` uses fallible required-field/action decoding. Its BTW snapshot branch validates through the shared total board decoder before adoption (`:2413`). Shared decoder bounds metadata, rows and total text; shared host protocol uses the same decoder. `packages/client/src/client/gateway.gleam:4932` applies the observer refusal before dispatch; `read_only` excludes all BTW actions, including Read. Subscription gating remains in shared dispatch, and reply correlation goes through the existing snapshot reply path. The authenticated observer regression exercises Ask, Read, Refresh, Clear and Cancel.
+- `.github/declared-skips-linux-gate:32` adds exactly the platform-enforcement deployment-status marker with an explicit ordinary-runner rationale. The ordinary Linux aggregate selects this manifest at `.github/workflows/ci.yml:783`; `scripts/signoff.sh:165` still selects `.github/declared-skips`. The supplied diff does not change strict signoff declarations or weaken the prerequisite demand. Owner authorization and captured hosted-census evidence are supplied by the review brief, not independently re-established by this source-only pass.
+- Protocol 087 and `docs/architecture/side-queries.md` distinguish provider request-shape fixtures from live cache economics and preserve the explicit deferral of paid Anthropic validation. No live cache-hit, savings, or latency claim is inferred here.
+
+## Low / informational
+
+- **LOW DOC-01** — `docs/client-protocol.md` has no `btw` command/body/snapshot entry, despite this PR changing that public control surface. Protocol 087 describes its semantics and shared source is authoritative, so this does not establish a runtime fault. Small repair: document the command fields, allowed actions, correlated snapshot shape, operator-only/private attachment scope, and bounds in the client protocol reference, or add an explicit reference to protocol 087 from its command table. The older v1 `packages/client/protocol.md` also omits it; avoid accidentally presenting a v2-only body as a frozen v1 contract.
+
+## Acceptance boundaries
+
+This pass approves the reviewed source properties. It does not attest final-head hosted CI or remote signoff completion, personally driven UI E2E, deployment, or live Anthropic cache behavior. The root owns those evidence streams and the ongoing handoff update; the stale next-step host-confirmation text is intentionally not raised.
+
+## Documentation addendum
+
+Reviewed the new working-tree `docs/client-protocol.md` §4.9.31 against `client/protocol` command decoding/encoding, `client/gateway.side_query` and its observer gate, and `session_view/btw.encode`. **APPROVE with low wording corrections**: the listed fields, actions, board/exchange shape, operator-only reads, frozen context and lifecycle agree with source. No paid-provider or cache-economics claim is introduced. DOC-01 is addressed by the new section.
+
+Two small corrections remain in the currently inspected wording: `text` is a required string but is ignored for non-ask actions (the canonical encoder emits empty text); and “Each returns a correlated snapshot” should read “Each successful action returns…” because refusals are correlated errors. For reference consistency, also add `btw` to §5.1 auxiliary snapshot modes and §5.2 mode/board lists. These are low documentation issues, not grounds to reopen runtime acceptance.

@@ -64,6 +64,7 @@ import client/async_runs
 import client/blobs
 import client/blocksummary
 import client/blocksummarybook
+import client/btw
 import client/catalog
 import client/checkpoint
 import client/codemode as codemode_wiring
@@ -3914,6 +3915,7 @@ fn assemble_in(
   // `subagent` to `main`, so a catalogue that routes any model at all gets
   // a working glance with no configuration; only a catalogue that routes
   // nothing produces no wiring, and then no hook and no machine exist.
+  let btw_name = address.new_address(namespace)
   let glance_name = address.new_address(namespace)
   let glance_wiring =
     glance_wiring(settings, opened, agency_config, clock, logger, glance_name)
@@ -4156,11 +4158,16 @@ fn assemble_in(
       provider: hub.tap_provider_with(
         hub.tap_preview_provider(built.provider, to: name),
         to: name,
-        also: summary_tap(
-          summary_route,
-          settings.catalog,
-          summary_name,
-          wiring_config,
+        also: side_and_summary_tap(
+          btw_name,
+          opened,
+          wiring.request_builder(wiring_config),
+          summary_tap(
+            summary_route,
+            settings.catalog,
+            summary_name,
+            wiring_config,
+          ),
         ),
       ),
       // The only work this adds on the driver process is one
@@ -4358,6 +4365,7 @@ fn assemble_in(
   // record. The runtime and executor registry keep their intended owners.
   let async_heartbeat_ms = settings.jobs_policy.heartbeat_ms
   let hub_session_id = settings.session_id
+  let btw_gateway = settings.gateway
   let hub_catalog = settings.catalog
 
   // The two things the hub asks the workspace for, projected before the
@@ -4477,6 +4485,9 @@ fn assemble_in(
     // either durable or offered again: titles live in their cells, and the
     // next step on each strand books it afresh.
     |> with_glance_loop(glance_wiring)
+    |> sup.add(
+      supervision.worker(fn() { btw.start(btw_name, btw_gateway, opened) }),
+    )
     // The block summarizer is in this tier because what it would lose is
     // either stored or not worth keeping: a settled label is in its cell,
     // and a live one is replaced by the next or by the settled label.
@@ -4542,6 +4553,7 @@ fn assemble_in(
             |> with_summary_demand(summary_route, summary_name)
             |> hub.with_worktree_diff(observe_worktree)
             |> hub.with_context(context_reader)
+            |> hub.with_btw(btw_name)
             |> hub.with_live_jobs(live_jobs)
             |> hub.with_catalog(hub_catalog)
             |> with_first_prompt(settings.first_prompt)
@@ -5776,6 +5788,19 @@ fn summary_route(
         field.text(key: "reason", value: reason),
       ])
       None
+    }
+  }
+}
+
+// Both observers share the effective dispatch and terminal event ordering.
+fn side_and_summary_tap(name, opened, build, summaries) {
+  let side = btw.observer(name, opened, build)
+  fn(spec, generation) {
+    let observe_side = side(spec, generation)
+    let observe_summary = summaries(spec, generation)
+    fn(event) {
+      observe_side(event)
+      observe_summary(event)
     }
   }
 }

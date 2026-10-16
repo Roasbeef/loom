@@ -62,6 +62,7 @@ import core/clock.{type Clock}
 import core/message.{type Usage, AssistantMessage}
 import core/usage_evidence
 import gleam/erlang/process
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -243,6 +244,8 @@ pub opaque type Gateway {
     /// Each provider name owns its optional Responses serving tier.
     service_tiers: List(#(String, model.ResponsesServiceTier)),
     protected_images: Int,
+    /// Optional frozen message prefix for an independent side request.
+    cache_prefix: Option(Int),
     transport: Transport,
     codex_transport: Option(CodexTransport),
     secrets: SecretStore,
@@ -488,6 +491,7 @@ pub fn new(
     cyber_access: [],
     service_tiers: [],
     protected_images: 0,
+    cache_prefix: None,
     transport:,
     codex_transport: None,
     secrets:,
@@ -1906,11 +1910,12 @@ fn attempt_one(
         name,
         api_key_secret,
         fn(api_key) {
-          anthropic.build_request(
+          anthropic.build_request_with_prefix(
             base_url:,
             api_key:,
             resolved: target,
             request:,
+            prefix: gateway.cache_prefix,
           )
         },
         anthropic.response_machine(target, now:),
@@ -2317,4 +2322,38 @@ fn price_attempt(
     None -> report
     Some(usage) -> accounting.from_usage(pricing.price(usage, card))
   }
+}
+
+/// Preserves a frozen conversation breakpoint on a request-scoped gateway.
+/// This controls cache placement only and confers no execution authority.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.with_cache_prefix(gateway, 12)
+/// ```
+@internal
+pub fn with_cache_prefix(gateway: Gateway, messages: Int) -> Gateway {
+  Gateway(..gateway, cache_prefix: Some(int.max(0, messages)))
+}
+
+/// Finds a model identity actually used by a settled fallback attempt.
+/// The route registry, not provider response text, supplies its settings.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.resolve_identity(gateway, "provider", "model")
+/// ```
+@internal
+pub fn resolve_identity(
+  gateway: Gateway,
+  provider: String,
+  model_id: String,
+) -> Result(ResolvedModel, Nil) {
+  gateway.routes
+  |> list.flat_map(fn(route) { route.1 })
+  |> list.find(fn(resolved) {
+    resolved.provider == provider && resolved.model_id == model_id
+  })
 }

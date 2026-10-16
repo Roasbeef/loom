@@ -35,6 +35,15 @@
 //// strand active, and then `load_strand`, which shows the captured cut for
 //// it or asks for its configuration. The host applies `focus`'s facts before
 //// `load_strand` runs, so the cut sees the workspace the switch restored.
+////
+//// ## Flow
+////
+//// `act` → `submit` → `dispatch` → `release_submission`
+////
+//// 1. `act` dispatches host-authored commands over shared session state.
+//// 2. `submit` preserves drafts while attachment admission is unavailable.
+//// 3. `dispatch` separates main work from attachment-local side requests.
+//// 4. `release_submission` unlocks the composer after the lane owns its frame.
 
 import core/message
 import gleam/bool
@@ -44,6 +53,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import session_view/approval
+import session_view/btw
 import session_view/command
 import session_view/composer
 import session_view/event_fold
@@ -500,6 +510,26 @@ fn dispatch(
   let cleared = take_draft(shared, TakenByCommand)
   let prompt_cleared = take_draft(shared, TakenAsPrompt)
   case command {
+    command.BtwClose ->
+      Shared(..cleared, btw: btw.State(..cleared.btw, visibility: btw.Hidden))
+      |> session_model.invalidate_frame
+    command.Btw(action) -> {
+      let owner = session_model.queue_owner(cleared)
+      let side = case cleared.btw.owner == owner {
+        True -> cleared.btw
+        False -> btw.new()
+      }
+      let visible =
+        Shared(
+          ..cleared,
+          btw: btw.State(..side, visibility: btw.Visible, owner: owner),
+        )
+      outbound.send_frame(
+        visible,
+        protocol.btw(visible.next_id, visible.active_strand, action),
+      )
+      |> session_model.invalidate_frame
+    }
     command.Empty ->
       case shared.attachments {
         [] -> cleared
@@ -705,7 +735,9 @@ fn submit_with_images(
 ) -> Shared(socket, recorder, source, replay_source) {
   case command {
     command.Empty | command.Prompt(_) -> send_image_prompt(shared, draft)
-    command.Model(_)
+    command.Btw(_)
+    | command.BtwClose
+    | command.Model(_)
     | command.ProfileShow
     | command.ProfileSelect(_)
     | command.Schedules

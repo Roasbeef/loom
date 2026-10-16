@@ -69,6 +69,7 @@ import lustre/element/keyed
 import lustre/event
 import session_view/agent_roster
 import session_view/approval
+import session_view/btw
 import session_view/operator
 import session_view/snapshot
 import session_view/turns
@@ -364,6 +365,7 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
         ),
         component.session_id(model),
       ),
+      side_panel(model),
       html.footer([attribute.class("dock")], [
         component.plan(model),
         controls.dock(bar(model)),
@@ -1067,5 +1069,50 @@ fn image_list(encoded: String) -> Result(List(String), Nil) {
         }
       })
     _ -> Error(Nil)
+  }
+}
+
+// The side panel is outside transcript projection and uses only escaped text.
+// Its buttons submit the same slash commands as the terminal composer.
+fn side_panel(model: component.Model(socket)) -> Element(Msg(socket)) {
+  case component.btw_state(model).visibility {
+    btw.Hidden -> element.none()
+    btw.Visible ->
+      html.aside(
+        [
+          attribute.class("btw-panel"),
+          attribute.aria_label("Side conversation"),
+          attribute.style("max-height", "45vh"),
+          attribute.style("overflow", "auto"),
+        ],
+        [
+          html.pre([attribute.style("white-space", "pre-wrap")], [
+            element.text(string.join(
+              btw.lines(component.btw_state(model)),
+              "\n",
+            )),
+          ]),
+          html.div(
+            [],
+            list.map(
+              [
+                #("Refresh context", component.SideAction(btw.Refresh)),
+                #("Cancel side answer", component.SideAction(btw.Cancel)),
+                #("Clear", component.SideAction(btw.Clear)),
+                #("Close", component.CloseSide),
+              ],
+              fn(item) {
+                html.button(
+                  [
+                    attribute.type_("button"),
+                    event.on_click(Controlled(item.1)),
+                  ],
+                  [element.text(item.0)],
+                )
+              },
+            ),
+          ),
+        ],
+      )
   }
 }

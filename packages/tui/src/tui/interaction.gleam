@@ -38,6 +38,7 @@
 import etui/buffer
 import etui/geometry.{type Rect}
 import etui/keys
+import etui/text
 import etui/widgets/textarea as text_area
 import gleam/bool
 import gleam/int
@@ -48,6 +49,7 @@ import gleam/string
 import session_view/agent_messages
 import session_view/agent_roster
 import session_view/approval
+import session_view/btw
 import session_view/cache_watch
 import session_view/command
 import session_view/commands
@@ -1519,6 +1521,39 @@ pub fn command_palette_escape(key: keys.Key) -> Bool {
 }
 
 fn update_main_key_without_palette(key: keys.Key, model: Model) -> Model {
+  case model.shared.btw.visibility, key {
+    btw.Visible, keys.Escape ->
+      tui_model.run_shared(model, fn(shared) {
+        Shared(..shared, btw: btw.State(..shared.btw, visibility: btw.Hidden))
+        |> session_model.invalidate_frame
+      })
+    btw.Visible, keys.PageUp -> scroll_btw(model, -10)
+    btw.Visible, keys.PageDown -> scroll_btw(model, 10)
+    _, _ -> update_main_key_without_btw(key, model)
+  }
+}
+
+fn scroll_btw(model: Model, by: Int) -> Model {
+  let rows =
+    btw.lines(model.shared.btw)
+    |> list.flat_map(string.split(_, "\n"))
+    |> list.flat_map(fn(line) {
+      text.wrap(line, layout.transcript_width(model))
+    })
+    |> list.length
+  tui_model.run_shared(model, fn(shared) {
+    Shared(
+      ..shared,
+      btw: btw.State(
+        ..shared.btw,
+        scroll: int.clamp(shared.btw.scroll + by, 0, int.max(0, rows - 1)),
+      ),
+    )
+    |> session_model.invalidate_frame
+  })
+}
+
+fn update_main_key_without_btw(key: keys.Key, model: Model) -> Model {
   case key, layout.sheet_shown(model), model.view.diff_view {
     // The sheet is the surface on top, so Escape closes it, and the changes
     // with it, and never interrupts the strand behind it.
@@ -1916,7 +1951,8 @@ fn selection_covers_transcript(
   let #(_, body_area, _, _) = layout.layout(screen, model)
   let #(conversation, _) = layout.queue_body_layout(body_area, model)
   let transcript_panel = conversation
-  selected.area == layout.transcript_inner(transcript_panel)
+  selected.area
+  == layout.transcript_areas(layout.transcript_inner(transcript_panel), model).0
   && !layout.diff_covers_transcript(model)
 }
 
@@ -1967,7 +2003,8 @@ pub fn selection_gutters_on_display(model: Model) -> List(#(Int, Int)) {
   let #(_, body_area, _, _) = layout.layout(screen, model)
   let #(conversation, _) = layout.queue_body_layout(body_area, model)
   let transcript_panel = conversation
-  let area = layout.transcript_inner(transcript_panel)
+  let area =
+    layout.transcript_areas(layout.transcript_inner(transcript_panel), model).0
   model.view.rendered_gutters
   |> list.drop(model.view.scroll_offset + tui_model.viewport_backlog(model))
   |> list.take(area.size.height)

@@ -102,7 +102,7 @@ step, source index, strand, the call, its arguments, the persisted replay
 policy and the consumed grants going out; a finished `AgentMessage` or a
 failure reason coming back. No closure, port or local handle crosses.
 
-`wiring.run_tool` (`client/wiring.gleam:1770`) is two functions in sequence.
+`wiring.run_tool` (`client/wiring.gleam:1789`) is two functions in sequence.
 `read_authority` reads the call's authority from SQLite (directory additions
 and standing grants, no filesystem), then `run_workspace_tool` builds a
 `tool.Ctx` and dispatches the tool. For a session whose workspace lives on an
@@ -118,7 +118,7 @@ never one per file access.
 Tools that act on the conversation rather than the checkout (`agent_*`,
 `history_search`, `remember`, `schedule_*`, `context`, `advise`, skills,
 peers) keep running on the orchestrator. Clearance stays on the orchestrator
-too. `wiring.clear` is pure over `tool.Declarations` (`wiring.gleam:1717`,
+too. `wiring.clear` is pure over `tool.Declarations` (`wiring.gleam:1733`,
 `tools/tool.gleam:573-589`), so the orchestrator builds declarations for the
 workspace tools with the same registration code, fed by census facts instead
 of local probes, and clears every call before it is sent.

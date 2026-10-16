@@ -932,3 +932,20 @@ facts for a host to consume. The web notes browser adopts the existing
 the host consumes them. Both entries return the same effects; explicit cleanup
 retires both kinds of reply after adoption. `step_test` pins custody for notes
 and queue replies together.
+
+## Private side conversations (protocol 087)
+
+`btw.Action` names Read, Ask, Refresh, Clear and Cancel. `btw.Board` is bounded
+attachment-local presentation data; `btw.State` keeps visibility, its owning
+connection incarnation, exact pending request, refresh time and terminal scroll.
+The slash parser maps `/btw` and its actions to session commands; `/btw close`
+hides only the panel. Every ask remains explicit, independent of Send/Steer mode.
+
+`protocol.BtwSnapshot` is a correlated presentation event. `attempt` and
+`session_channel` classify its short command exchange as an auxiliary read;
+the daemon separately requires operator authority for every action. The event
+fold replaces only side state, never transcript rows. `surfaces.service_btw`
+polls a running request at most once per second through the ready lane, and
+`btw_due` supplies the web host's timer deadline. Connection changes clear the
+old board. Refusals retire its pending correlation without closing the lane.
+Both hosts draw `btw.lines`, which sanitizes terminal control characters.

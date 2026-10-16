@@ -1921,7 +1921,7 @@ single strand's chain. Source: (`client/gateway.gleam:1378-1381`) and
 (`storage/snapshot.gleam:42`).
 
 A `session` that is not this attachment's own is refused with the code
-`wrong_session`. Source: (`client/gateway.gleam:2175`).
+`wrong_session`. Source: (`client/gateway.gleam:2200`).
 
 `from_seq` exists in the command's decoder for the in-process host
 fixture, where it selects a resume reply. Over the authenticated
@@ -2199,7 +2199,7 @@ See [protocol 022](../protocol-change/022-human-input-priority.md).
 
 #### 4.9.4 `follow_up`
 
-Body is identical to `steer`. Source: (`client/protocol.gleam:1307`).
+Body is identical to `steer`. Source: (`client/protocol.gleam:1328`).
 
 ```json
 {"v":2,"id":5,"cmd":"follow_up","body":{"strand":"main","text":"now add tests"}}
@@ -2261,7 +2261,7 @@ Source: (`client/gateway.gleam:3883-3915`).
 Three checks, in order:
 
 1. `expected_seq` MUST equal the record's current sequence. A mismatch
-   is `stale_approval`. Source: (`client/gateway.gleam:6606`).
+   is `stale_approval`. Source: (`client/gateway.gleam:6662`).
 2. The record MUST still be pending. Otherwise the code is
    `not_pending`.
    Source: (`client/gateway.gleam:3941-3952`).
@@ -2849,6 +2849,24 @@ strands could not be moved after it was written. A `profile_set` to the profile
 the session already has is answered with the listing, as `profile_get`, and
 changes nothing.
 
+#### 4.9.31 `btw`
+
+`btw` asks an attachment-private side question while its strand keeps working.
+Its required body fields are `strand`, `action` (`read`, `ask`, `refresh`,
+`clear`, or `cancel`), and `text` (ignored for actions other than `ask`). All
+five actions require operator authority, including reads. Each successful action returns a
+correlated `snapshot` with `mode: "btw"` and a `board` containing `strand`,
+`snapshot`, `model`, `status`, `notice`, and `exchanges`; each exchange has
+`question` and `answer` text. Clients poll reads while status is `running`.
+
+The first ask freezes the latest effective dispatched request and any settled
+text-only answer. Follow-ups retain that base until explicit refresh. Side
+inference cannot execute tools or write main transcript entries. Disconnect
+cancels and forgets the attachment's history. See
+[protocol 087](../protocol-change/087-btw-side-queries.md) for the wire addition,
+limits and lifecycle, and [side queries](architecture/side-queries.md) for the
+implementation boundary.
+
 ## 5. Events
 
 ### 5.1 Which events reach which client
@@ -2858,7 +2876,7 @@ Over the authenticated session transport a client sees:
 - transfer frames: `snapshot_begin`, `snapshot_chunk`, `snapshot_end`;
 - mutation replies: `mutation_outcome`;
 - auxiliary replies: `snapshot` with mode `models`, `skills`, `schedules`, `notes`,
-  `permissions`, `queued_input`, `live_jobs`, `block_summaries`, or pending `worktree_diff` /
+  `permissions`, `queued_input`, `live_jobs`, `block_summaries`, `btw`, or pending `worktree_diff` /
   `context`;
 - pushed frames: `committed`, `stream_delta`, `tool_output`, `block_summary`, `goal_changed`,
   `presence`, `snapshot` with mode `config` or final `worktree_diff` /
@@ -2881,7 +2899,7 @@ One body, discriminated by `mode`.
 
 | Field | Type | Presence | Meaning |
 |---|---|---|---|
-| `mode` | string | required | `full`, `resume`, `strands`, `config`, `models`, `skills`, `notes`, `schedules`, `queued_input`, `worktree_diff`, `live_jobs`, `context` or `profile`. |
+| `mode` | string | required | `full`, `resume`, `strands`, `config`, `models`, `skills`, `notes`, `schedules`, `queued_input`, `worktree_diff`, `live_jobs`, `context`, `btw` or `profile`. |
 
 Source: (`client/protocol.gleam:1471-1540`).
 
@@ -2893,7 +2911,8 @@ replacement `strands` list. Mode `config` carries `config`. Mode
 Mode `schedules` carries `schedules`. Mode `profile` carries `profile`
 (absent for the default roles), `available` and, in the reply to `profile_set`
 only, `moved` (section 4.9.30). Modes `queued_input`, `worktree_diff`,
-`live_jobs`, `skills`, `context` and `goal` carry `board` (sections 4.9.17 through 4.9.27).
+`live_jobs`, `skills`, `context` and `goal` carry `board` (sections 4.9.17 through 4.9.27). Mode `btw` carries its attachment-private `board` (section
+4.9.31).
 Source: (`client/protocol.gleam:1036-1073`).
 
 ```json
@@ -4040,7 +4059,7 @@ below have not been edited.
 
 8. **Two operation phases are missing from the documented label set.**
    `packages/client/protocol.md` lists eight labels. The code also emits
-   `checkpoint` (`client/gateway.gleam:4063`) and `navigating`
+   `checkpoint` (`client/gateway.gleam:4092`) and `navigating`
    (`client/gateway.gleam:3052`).
 
 9. **The spec's control command list is incomplete.**

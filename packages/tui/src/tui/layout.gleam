@@ -36,6 +36,7 @@
 //// 6. Readers ask for one rectangle instead of repeating the arithmetic:
 ////    `hit_area` for a click, `transcript_width` and `transcript_viewport_height`
 ////    for the projection and the tick, and the `*_area` functions for each overlay.
+////    `transcript_areas` splits main and side reading rectangles for all consumers.
 
 import core/todo_list
 import etui/geometry.{type Rect, Fill, Length}
@@ -51,6 +52,7 @@ import gleam/string
 import session_view/advisor_pending
 import session_view/agent_roster
 import session_view/agent_view
+import session_view/btw
 import session_view/commands
 import session_view/composer
 import session_view/context_view
@@ -113,6 +115,42 @@ pub fn transcript_inner(panel: Rect) -> Rect {
     int.max(0, panel.size.width - 2),
     int.max(0, panel.size.height - 1),
   )
+}
+
+/// Splits the transcript reading area into main rows and the side question.
+///
+/// Painting, scrolling, copying and image placement share this split. The
+/// reading row remains outside both areas at the bottom of the panel.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let #(main, side) = layout.transcript_areas(area, model)
+/// ```
+@internal
+pub fn transcript_areas(area: Rect, model: Model) -> #(Rect, Rect) {
+  case model.shared.btw.visibility {
+    btw.Hidden -> #(area, geometry.rect_zero())
+    btw.Visible -> {
+      let side_height =
+        int.min(area.size.height, int.max(1, area.size.height / 2))
+      let main_height = area.size.height - side_height
+      #(
+        geometry.rect_new(
+          area.position.x,
+          area.position.y,
+          area.size.width,
+          main_height,
+        ),
+        geometry.rect_new(
+          area.position.x,
+          area.position.y + main_height,
+          area.size.width,
+          side_height,
+        ),
+      )
+    }
+  }
 }
 
 /// Splits the screen into the header, body, composer and footer rows.
@@ -1100,7 +1138,7 @@ pub fn note_detail_area(model: Model) -> Rect {
   let #(_, body, _, _) = layout(screen, model)
   let #(conversation, _) = queue_body_layout(body, model)
   let transcript = conversation
-  transcript_inner(transcript)
+  transcript_areas(transcript_inner(transcript), model).0
 }
 
 /// Returns the message preview's actual rectangle for viewport regressions.
@@ -1174,12 +1212,13 @@ pub fn hit_area(model: Model, at: geometry.Position) -> Rect {
 
   // The sheet covers the transcript, so a point on it is not on the
   // transcript whatever tab the sheet shows.
-  let transcript = case sheet_shown(model) {
-    True -> geometry.rect_zero()
-    False -> transcript_inner(conversation)
+  let #(transcript, side) = case sheet_shown(model) {
+    True -> #(geometry.rect_zero(), geometry.rect_zero())
+    False -> transcript_areas(transcript_inner(conversation), model)
   }
   [
     transcript,
+    side,
     panel_inner(changes_panel_area(screen, model)),
     panel_inner(input_area),
     panel_inner(queue),
@@ -1194,7 +1233,10 @@ pub fn transcript_viewport_height(model: Model) -> Int {
   let screen = model_screen(model)
   let #(_, body, _, _) = layout(screen, model)
   let #(conversation, _) = queue_body_layout(body, model)
-  int.max(1, transcript_inner(conversation).size.height)
+  int.max(
+    1,
+    transcript_areas(transcript_inner(conversation), model).0.size.height,
+  )
 }
 
 /// Returns the transcript rows left after fixed terminal surfaces are reserved.

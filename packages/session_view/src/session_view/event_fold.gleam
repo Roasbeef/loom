@@ -68,6 +68,7 @@ import gleam/string
 import session_view/advisor_history
 import session_view/agent_roster
 import session_view/block_summary
+import session_view/btw
 import session_view/cache_miss
 import session_view/cache_watch
 import session_view/command
@@ -242,6 +243,19 @@ pub fn apply_event(
     protocol.BlockSummarized(subject:, text:) ->
       receive_block_summary(shared, subject, text)
     protocol.GoalSnapshot(board) -> surfaces.receive_goal(shared, board)
+    protocol.BtwSnapshot(board) ->
+      Shared(
+        ..shared,
+        btw: btw.State(
+          shared.btw.visibility,
+          Some(board),
+          shared.stamp.now_ms + 1000,
+          session_model.queue_owner(shared),
+          None,
+          shared.btw.scroll,
+        ),
+      )
+      |> session_model.invalidate_frame
     protocol.ContextSnapshot(observation) ->
       shared_set.context(
         shared,
@@ -500,6 +514,7 @@ pub fn apply_event(
     | protocol.NotesSnapshot(..)
     | protocol.QueuedInputSnapshot(..)
     | protocol.ContextSnapshot(..)
+    | protocol.BtwSnapshot(..)
     | protocol.WorktreeSnapshot(..)
     | protocol.LiveJobsSnapshot(..)
     | protocol.AdvisorPendingSnapshot(..)

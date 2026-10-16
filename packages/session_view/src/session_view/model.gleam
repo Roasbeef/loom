@@ -70,6 +70,7 @@ import session_view/approval
 import session_view/attempt
 import session_view/attempt_replay
 import session_view/block_summary
+import session_view/btw
 import session_view/cache_watch
 import session_view/command
 import session_view/completion_summary
@@ -210,6 +211,8 @@ pub type Shared(socket, recorder, source, replay_source) {
     clock_offset: Option(Int),
     /// Server-observed current context and independent inspector state.
     context: context_view.State,
+    /// Attachment-local side answers, excluded from transcript projection.
+    btw: btw.State,
     /// Attachment-local terminal result provenance.
     completion: completion_summary.State,
     /// Exact attachment which owns the remembered operation boundaries.

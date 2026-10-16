@@ -70,6 +70,7 @@ import session_view/agent_messages
 import session_view/agent_roster
 import session_view/agent_view
 import session_view/approval
+import session_view/btw
 import session_view/command
 import session_view/completion_summary
 import session_view/composer
@@ -628,6 +629,17 @@ fn render_transcript(
   area: Rect,
   model: Model,
 ) -> buffer.Buffer {
+  case model.shared.btw.visibility {
+    btw.Visible -> render_btw(buf, area, model)
+    btw.Hidden -> render_main_transcript(buf, area, model)
+  }
+}
+
+fn render_main_transcript(
+  buf: buffer.Buffer,
+  area: Rect,
+  model: Model,
+) -> buffer.Buffer {
   case model.view.notes_open {
     True ->
       paragraph.render_styled(
@@ -670,7 +682,8 @@ fn window(rows: List(span.Line), offset: Int, height: Int) -> List(span.Line) {
 }
 
 /// The rectangle the transcript rows are painted into on a screen: the
-/// panel the layout gives the main strand, less its border and margin.
+/// panel the layout gives the main strand, less its border, margin and any
+/// visible side-question area.
 ///
 /// Anything that reasons about where a transcript row landed on screen reads
 /// it here rather than from `layout` itself, so that it asks the same
@@ -686,7 +699,7 @@ pub fn transcript_area(model: Model, screen: Rect) -> Rect {
   let #(_, body_area, _, _) = layout.layout(screen, model)
   let #(conversation_area, _) = layout.queue_body_layout(body_area, model)
   let transcript_panel = conversation_area
-  layout.transcript_inner(transcript_panel)
+  layout.transcript_areas(layout.transcript_inner(transcript_panel), model).0
 }
 
 /// The transcript rows the frame shows in `area`, top first: exactly the
@@ -2782,4 +2795,20 @@ fn render_context_surface(buf, cursor, screen, model: Model) {
       #(rendered, Error(Nil))
     }
   }
+}
+
+// Main rows keep updating above a bounded side panel. The composer accepts
+// /btw follow-ups explicitly, so ordinary input keeps its existing recipient.
+fn render_btw(buf: buffer.Buffer, area: Rect, model: Model) -> buffer.Buffer {
+  let #(main, side) = layout.transcript_areas(area, model)
+  let lines =
+    btw.lines(model.shared.btw)
+    |> list.flat_map(string.split(_, "\n"))
+    |> list.flat_map(fn(text) { text.wrap(text, int.max(1, side.size.width)) })
+  let lines =
+    lines
+    |> list.drop(model.shared.btw.scroll)
+    |> list.map(fn(text) { span.line_plain(text) })
+  render_main_transcript(buf, main, model)
+  |> paragraph.render_styled(side, lines)
 }

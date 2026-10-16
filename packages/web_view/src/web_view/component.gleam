@@ -154,6 +154,7 @@ import session_view/agent_roster
 import session_view/agent_view
 import session_view/approval
 import session_view/block_summary
+import session_view/btw
 import session_view/cache_miss
 import session_view/cache_watch
 import session_view/changes_view
@@ -813,6 +814,12 @@ pub type Control {
 
   /// `/compact`, from the context breakdown's Compact now button.
   CompactStrand
+
+  /// A side conversation action that preserves the main composer draft.
+  SideAction(action: btw.Action)
+
+  /// Hide the side conversation without consuming the main composer draft.
+  CloseSide
 }
 
 /// The transcript's retention and following mode. The live tail keeps turn
@@ -4519,6 +4526,8 @@ pub fn control(
         ),
         msg.Control(command: command.Compact),
       )
+    SideAction(action) -> commanded(model, msg.Control(command.Btw(action)))
+    CloseSide -> commanded(model, msg.Control(command.BtwClose))
     Fork(name:) -> written(model, "/fork ", name, forking)
   }
 }
@@ -6360,7 +6369,10 @@ fn rearm(model: Model(socket), now: Int) -> Model(socket) {
   let due =
     earliest(
       option.then(model.shared.channel, session_channel.next_due),
-      surfaces.context_deferred_until(model.shared),
+      earliest(
+        surfaces.context_deferred_until(model.shared),
+        surfaces.btw_due(model.shared),
+      ),
     )
   let armed = case model.view.timer, due {
     Some(timer), Some(due) ->
@@ -7429,4 +7441,16 @@ pub fn completion_choices(
   model: Model(socket),
 ) -> #(List(String), List(String)) {
   #(model.view.completion_models, model.view.completion_profiles)
+}
+
+/// Reads the private side panel without exposing the host's opaque model.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.btw_state(model)
+/// ```
+@internal
+pub fn btw_state(model: Model(socket)) -> btw.State {
+  model.shared.btw
 }

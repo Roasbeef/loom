@@ -21,6 +21,7 @@ import lustre/effect
 import lustre/element
 import page_fixture
 import session_view/approval
+import session_view/btw
 import session_view/connection_event
 import session_view/operator
 import session_view/session_channel
@@ -1147,4 +1148,44 @@ fn refuse_every_read(model, wire, written: List(String), rounds: Int) {
 
 fn count(html: String, part: String) -> Int {
   list.length(string.split(html, part)) - 1
+}
+
+pub fn btw_while_main_runs_uses_a_separate_protocol_command_test() {
+  let #(model, wire) = running("operator")
+  let model =
+    send(model, [
+      operator_page.Submitted("/btw Why this design?", operator.Steer, []),
+    ])
+  let assert [frame] = page_fixture.commands(page_fixture.sent(wire))
+    as "one side command is sent"
+  assert string.contains(frame, "\"cmd\":\"btw\"")
+  assert string.contains(frame, "\"action\":\"ask\"")
+  assert !string.contains(frame, "\"cmd\":\"steer\"")
+  let html = element.to_string(operator_page.view(model))
+  assert string.contains(html, "Side conversation")
+  assert string.contains(html, "Cancel side answer")
+}
+
+pub fn btw_close_keeps_the_main_composer_and_operation_test() {
+  let #(model, wire) = running("operator")
+  let model =
+    send(model, [operator_page.Submitted("/btw close", operator.Prompt, [])])
+  assert page_fixture.commands(page_fixture.sent(wire)) == []
+  let html = element.to_string(operator_page.view(model))
+  assert !string.contains(html, "btw-panel")
+  assert string.contains(html, "composer")
+}
+
+pub fn side_buttons_preserve_main_draft_generation_test() {
+  let #(model, wire) = running("operator")
+  let drafts = component.drafts(model)
+  let model =
+    send(model, [
+      operator_page.Controlled(component.SideAction(btw.Clear)),
+      operator_page.Controlled(component.CloseSide),
+    ])
+  assert component.drafts(model) == drafts
+  let assert [frame] = page_fixture.commands(page_fixture.sent(wire))
+    as "one side command is sent"
+  assert string.contains(frame, "\"cmd\":\"btw\"")
 }

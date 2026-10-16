@@ -37,6 +37,7 @@
 import gleam/bool
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import session_view/btw
 import session_view/command
 import session_view/context_view
 import session_view/model.{
@@ -200,6 +201,8 @@ fn record_sent(
           request_id: Some(request_id),
         ),
       )
+    "btw" ->
+      Shared(..shared, btw: btw.State(..shared.btw, pending: Some(request_id)))
     "context" ->
       shared_set.context(shared, context_view.sent(shared.context, request_id))
     "live_jobs" -> shared_set.jobs_request(shared, Some(request_id))
@@ -369,6 +372,7 @@ pub fn mutating_submission(
     | command.Queue(_) -> True
     command.Approve(_) | command.Deny(_) | command.AddDirectory(..) -> True
     command.Empty -> shared.attachments != []
+    command.Btw(_) | command.BtwClose -> False
     command.Schedules
     | command.ProfileShow
     | command.Approvals(_)

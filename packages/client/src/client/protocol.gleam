@@ -86,6 +86,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import session_view/btw
 import storage/catalogue
 
 /// The one protocol version this gateway speaks. A different `v` on the
@@ -295,6 +296,9 @@ pub type Command {
   /// Observes one strand's context without running hooks or a model.
   ContextGet(strand: String)
 
+  /// An attachment-local side query, never a main operation.
+  Btw(strand: String, action: btw.Action)
+
   /// Change gateway-defined configuration keys.
   SetConfig(strand: Option(String), config: JsonValue)
 
@@ -430,6 +434,9 @@ pub type Snapshot {
 
   /// Bounded asynchronous context accounting.
   ContextSnapshot(board: JsonValue)
+
+  /// The requesting attachment's private side-conversation board.
+  BtwSnapshot(board: JsonValue)
 
   /// Complete editable text and revision of one transient held input.
   QueuedInputSnapshot(board: JsonValue)
@@ -1002,6 +1009,20 @@ fn command_body(command: Command) -> #(String, JsonValue) {
       "create_strand",
       object_of([#("name", option.map(name, json.String))]),
     )
+    Btw(strand:, action:) -> #(
+      "btw",
+      json.Object([
+        #("strand", json.String(strand)),
+        #("action", json.String(btw.action_name(action))),
+        #(
+          "text",
+          json.String(case action {
+            btw.Ask(text) -> text
+            _ -> ""
+          }),
+        ),
+      ]),
+    )
     ContextGet(strand:) -> #(
       "context",
       json.Object([#("strand", json.String(strand))]),
@@ -1456,6 +1477,14 @@ fn decode_command_body(
       use _ <- result.try(body_fields(body))
       Ok(GoalResume)
     }
+    "btw" -> {
+      use fields <- result.try(body_fields(body))
+      use strand <- result.try(required_string(fields, "strand"))
+      use name <- result.try(required_string(fields, "action"))
+      use text <- result.try(required_string(fields, "text"))
+      use action <- result.try(btw.action(name, text))
+      Ok(Btw(strand, action))
+    }
     "context" -> {
       use fields <- result.try(body_fields(body))
       use strand <- result.try(required_string(fields, "strand"))
@@ -1769,6 +1798,8 @@ fn encode_snapshot(snapshot: Snapshot) -> JsonValue {
       ])
     WorktreeDiffSnapshot(board:) ->
       json.Object([#("mode", json.String("worktree_diff")), #("board", board)])
+    BtwSnapshot(board:) ->
+      json.Object([#("mode", json.String("btw")), #("board", board)])
     ContextSnapshot(board:) ->
       json.Object([#("mode", json.String("context")), #("board", board)])
     LiveJobsSnapshot(board:) ->
@@ -2400,6 +2431,14 @@ fn decode_snapshot(body: JsonValue) -> Result(Event, String) {
         |> result.replace_error("missing worktree_diff board"),
       )
       Ok(SnapshotEvent(WorktreeDiffSnapshot(board:)))
+    }
+    "btw" -> {
+      use board <- result.try(
+        list.key_find(fields, "board")
+        |> result.replace_error("missing side board"),
+      )
+      use _ <- result.try(btw.decode(board))
+      Ok(SnapshotEvent(BtwSnapshot(board)))
     }
     "context" -> {
       use board <- result.try(

@@ -26,8 +26,9 @@ import gleam/result
 import gleam/string
 import host/bootstrap as host_bootstrap
 import image_fixture
+import session_view/btw
 import session_view/image_header
-import session_view/model as _
+import session_view/model as session_model
 import session_view/shared_set
 import simplifile
 import tui/appearance
@@ -955,4 +956,41 @@ pub fn typing_a_wrapping_prompt_leaves_the_picture_alone_test() {
   assert typed.view.caches.record_rows == rows
     as "the record rows were kept, not rebuilt"
   assert list.length(lines_of(typed) |> list.filter(shows_placeholders)) == 9
+}
+
+// The image planner reads this same window to place boxes. With the panel
+// open, every placeholder it finds must still be in the painted main area.
+pub fn side_panel_image_window_matches_the_painted_main_rectangle_test() {
+  let base =
+    scene(kitty_support(), [#("image/png", image_fixture.png(1200, 700))])
+  let base =
+    Model(
+      ..base,
+      shared: session_model.Shared(
+        ..base.shared,
+        btw: btw.State(..btw.new(), visibility: btw.Visible),
+      ),
+    )
+  let #(model, _) = stepping.step(backend.Resize(120, 30), base)
+  let screen = geometry.rect_new(0, 0, 120, 30)
+  let area = render.transcript_area(model, screen)
+  let #(_, body, _, _) = layout.layout(screen, model)
+  let #(conversation, _) = layout.queue_body_layout(body, model)
+  let #(main, side) =
+    layout.transcript_areas(layout.transcript_inner(conversation), model)
+  assert area == main
+  let window = render.transcript_window(model, area)
+  let assert [found] = image_box.found(window)
+    as "the main window contains the visible image slice"
+  assert found.row + found.rows <= main.size.height
+  let shown = lines_of(model)
+  assert list.count(
+      list.take(list.drop(shown, main.position.y), main.size.height),
+      shows_placeholders,
+    )
+    == found.rows
+  assert !list.any(
+    list.take(list.drop(shown, side.position.y), side.size.height),
+    shows_placeholders,
+  )
 }

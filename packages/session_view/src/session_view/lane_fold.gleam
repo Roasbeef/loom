@@ -62,6 +62,7 @@ import session_view/agent_view
 import session_view/approval
 import session_view/attempt_replay
 import session_view/block_summary
+import session_view/btw
 import session_view/cache_watch
 import session_view/completion_summary
 import session_view/connection_event
@@ -1418,6 +1419,18 @@ fn apply_request_refused(
   message: String,
   around: Surroundings,
 ) -> Shared(socket, recorder, source, replay_source) {
+  use <- bool.lazy_guard(command == "btw", fn() {
+    let state =
+      btw.State(
+        ..shared.btw,
+        pending: None,
+        board: Some(case shared.btw.board {
+          Some(board) -> btw.Board(..board, notice: message)
+          None -> btw.Board(shared.active_strand, "", "", "failed", [], message)
+        }),
+      )
+    Shared(..shared, btw: state) |> session_model.invalidate_frame
+  })
   use <- bool.lazy_guard(command == "context", fn() {
     shared_set.context(
       shared,

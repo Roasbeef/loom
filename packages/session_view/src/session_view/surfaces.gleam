@@ -77,6 +77,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import session_view/advisor_pending
 import session_view/block_summary
+import session_view/btw
 import session_view/command
 import session_view/context_view
 import session_view/goal_view
@@ -1360,5 +1361,63 @@ fn nudge_boundary(
   case primary_settled || newly_listed || session_changed {
     True -> ReadNudges
     False -> HoldNudges
+  }
+}
+
+/// Polls a running private side answer without writing conversation entries.
+/// A connection change releases the old board before the next host render.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // surfaces.service_btw(shared)
+/// ```
+@internal
+pub fn service_btw(
+  shared: Shared(socket, recorder, source, replay_source),
+) -> Shared(socket, recorder, source, replay_source) {
+  let owner = session_model.queue_owner(shared)
+  use <- bool.guard(shared.btw.owner != owner, Shared(..shared, btw: btw.new()))
+  case shared.channel, shared.btw.board, shared.btw.pending {
+    Some(channel), Some(board), None -> {
+      case
+        board.status == "running"
+        && shared.stamp.now_ms >= shared.btw.due
+        && session_channel.ready_for_read(channel)
+      {
+        True ->
+          outbound.send_frame(
+            shared,
+            protocol.btw(shared.next_id, board.strand, btw.Read),
+          )
+        False -> shared
+      }
+    }
+    _, _, _ -> shared
+  }
+}
+
+/// A browser timer keeps a running side answer live while main work is quiet.
+/// A busy lane wakes through its own deadline or reply; advertising an expired
+/// side deadline before that lane can read would repeatedly wake the host.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // surfaces.btw_due(shared)
+/// ```
+@internal
+pub fn btw_due(
+  shared: Shared(socket, recorder, source, replay_source),
+) -> Option(Int) {
+  use <- bool.guard(shared.btw.owner != session_model.queue_owner(shared), None)
+  case shared.channel, shared.btw.board, shared.btw.pending {
+    Some(channel), Some(board), None if board.status == "running" -> {
+      case session_channel.ready_for_read(channel) {
+        True -> Some(shared.btw.due)
+        False -> None
+      }
+    }
+    _, _, _ -> None
   }
 }
