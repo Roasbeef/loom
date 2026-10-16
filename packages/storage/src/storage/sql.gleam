@@ -1992,6 +1992,63 @@ pub fn delete_ledger_acks(session session: String) {
   #(sql, [dev.ParamString(session)])
 }
 
+pub type LedgerScopeStates {
+  LedgerScopeStates(state: String, close_outcome: Option(String), scopes: Int)
+}
+
+pub fn ledger_scope_states() {
+  let sql =
+    "SELECT state, close_outcome, COUNT(*) AS scopes FROM scope
+GROUP BY state, close_outcome"
+  #(sql, [], ledger_scope_states_decoder())
+}
+
+pub fn ledger_scope_states_decoder() -> decode.Decoder(LedgerScopeStates) {
+  use state <- decode.field(0, decode.string)
+  use close_outcome <- decode.field(1, decode.optional(decode.string))
+  use scopes <- decode.field(2, decode.int)
+  decode.success(LedgerScopeStates(state:, close_outcome:, scopes:))
+}
+
+pub type LedgerUncleanScopes {
+  LedgerUncleanScopes(
+    session: String,
+    state: String,
+    close_outcome: Option(String),
+  )
+}
+
+pub fn ledger_unclean_scopes() {
+  let sql =
+    "SELECT session, state, close_outcome FROM scope
+WHERE state = 'closing'
+  OR (state = 'closed' AND close_outcome IS NOT 'all_retired')
+ORDER BY session"
+  #(sql, [], ledger_unclean_scopes_decoder())
+}
+
+pub fn ledger_unclean_scopes_decoder() -> decode.Decoder(LedgerUncleanScopes) {
+  use session <- decode.field(0, decode.string)
+  use state <- decode.field(1, decode.string)
+  use close_outcome <- decode.field(2, decode.optional(decode.string))
+  decode.success(LedgerUncleanScopes(session:, state:, close_outcome:))
+}
+
+pub type LedgerUnackedCount {
+  LedgerUnackedCount(calls: Int)
+}
+
+pub fn ledger_unacked_count() {
+  let sql =
+    "SELECT COUNT(*) AS calls FROM call WHERE state IN ('terminal', 'unknown')"
+  #(sql, [], ledger_unacked_count_decoder())
+}
+
+pub fn ledger_unacked_count_decoder() -> decode.Decoder(LedgerUnackedCount) {
+  use calls <- decode.field(0, decode.int)
+  decode.success(LedgerUnackedCount(calls:))
+}
+
 pub type HistorySourceHeader {
   HistorySourceHeader(metadata_bytes: Int, next_seq: Option(Int))
 }
