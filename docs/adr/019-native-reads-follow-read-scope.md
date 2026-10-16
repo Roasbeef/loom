@@ -106,3 +106,17 @@ policy's `protected` list covers it.
 - Only a regular file is read natively, and `read_lines` refuses anything
   that is not one, so a device or FIFO cannot hang a read.
 - The path check is point-in-time, as `resolve_real` always was.
+
+## Addendum: explicit temporary mounts (October 16, 2026)
+
+The replaced-root refusal originally rejected host `/tmp` even when an
+operator explicitly mounted a file beneath it. The jail already emits explicit
+binds after scratch; the native check was narrower than the declared policy.
+Native reads now include explicit mounts, and a mount at or below `/tmp`
+exempts only its resolved region from the scratch refusal. `/proc` and `/dev`
+keep their existing refusals. A host read root or approval is not a bind.
+
+Native and code-mode writes include read-write mounts. Read-only mounts are
+write protection checked before a write approval or an edit's pre-image read.
+Protected paths remain inaccessible. Existing filesystem and mount alias
+resolution applies; this adds no configuration key or wire field.

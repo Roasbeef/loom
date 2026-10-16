@@ -358,6 +358,34 @@ and per-user caches are derived and need no entry.
 | `path` | string | required | an absolute path | The host path to bind. A path that overlaps a protected region is refused when the session policy is composed. |
 | `access` | string | required | `ro`, `rw` | Read-only or read-write. |
 
+Explicit mounts also authorize native file tools and code-mode filesystem
+capabilities. A mount under `/tmp` exposes that host file or directory even
+though unmounted host temporary files stay hidden by private scratch. On macOS,
+`/tmp` and `/private/tmp` resolve to the same grant. `ro` permits reads;
+`rw` also permits creating and editing files. Protected paths remain refused,
+and a read-only mount cannot be widened by a write approval.
+
+For an existing temporary report:
+
+```toml
+[[workspace.mounts]]
+path = "/tmp/tapd-proof-issue.md"
+access = "ro"
+```
+
+For a reusable temporary inbox, create the directory first and configure:
+
+```toml
+[[workspace.mounts]]
+path = "/tmp/loom-inbox"
+access = "rw"
+```
+
+A mount of `/tmp` itself grants the whole host temporary directory at the
+selected access level. Use a child path when only those files should be shared.
+Mount sources must exist when the jail starts. Reopen a running session after
+editing the configuration.
+
 ## `[tools]`
 
 Optional. What the session's jailed shell may reach and carry in its environment.

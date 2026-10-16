@@ -1,5 +1,16 @@
 # tools
 
+## Explicit temporary mounts
+
+Native file reads and code-mode filesystem reads honor the session policy's
+explicit mounts, including files and directories under host `/tmp`. The shared
+`tools/fs.resolve_readable` boundary resolves mount aliases and exempts only
+explicitly mounted scratch regions from the replaced-root refusal. Native
+writes and the workspace bridge include read-write mounts; read-only mounts
+are write protection before approvals or edit pre-image reads. Protected paths
+still win. Ordinary readable roots and approvals do not restore host scratch.
+
+
 ## Shell directory selection
 
 `working_directory.Door` reads and writes the authenticated caller's shell

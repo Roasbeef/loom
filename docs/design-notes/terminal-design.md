@@ -414,7 +414,7 @@ well.
 ## 8. Images
 
 A tool result owns the images the tool returned, and `fs_read` of an image file
-returns one (`packages/tools/src/tools/fs.gleam:963`) (`ToolResultImage`). So an
+returns one (`packages/tools/src/tools/fs.gleam:1338`) (`ToolResultImage`). So an
 image appears wherever a tool returns one, under the call that returned it, and
 not only when a person attached it. `transcript_image.of_entry`
 (`packages/session_view/src/session_view/transcript_image.gleam:49`)
@@ -589,7 +589,7 @@ New `F` keys wait on a check of what Herdr and common terminals pass through
 | Peer messages | `PeerOrigin` | None |
 | Code-mode program and result | `code_mode_program`, `code_mode_result_lines` | None |
 | Code-mode call list | A call record in the result | **protocol-change 060** |
-| Images | The tool result block at `packages/tools/src/tools/fs.gleam:1257` (`ToolResultImage`), read through `of_entry` | None; etui work |
+| Images | The tool result block at `packages/tools/src/tools/fs.gleam:1338` (`ToolResultImage`), read through `of_entry` | None; etui work |
 | Repeats, repeated errors | New folds in `session_view` | None |
 | Harness notices | See section 9 | Possibly a marker |
 | Layout memory | A file in the state root | None |

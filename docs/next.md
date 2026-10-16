@@ -1,5 +1,55 @@
 # Current handoff
 
+Baselined October 16, 2026 against implementation `25188810c`, on base
+`e289d93ab` (the merge of PR #949). Current work is `fix/explicit-tmp-mounts`
+in the `a9c9/loom` worktree.
+The installed daemon and operator configuration have not been changed.
+
+## Explicit temporary mounts
+
+Configured `[[workspace.mounts]]` entries now authorize native file tools and
+code-mode filesystem operations for host temporary files. A mount at or below
+`/tmp` restores only its resolved region from the native scratch refusal;
+`/tmp` and `/private/tmp` agree on macOS. Read-write mounts permit native and
+code-mode writes, while read-only mounts are write protection checked before
+approval or an edit's pre-image read. Protected entries retain precedence.
+Ordinary host read roots, directory additions and approvals do not restore
+unmounted host scratch; `/proc` and `/dev` retain their existing refusals.
+
+The existing configuration syntax and wire types are unchanged. A file mount
+names an existing report; a directory mount can be a reusable inbox. A mount
+of `/tmp` itself shares the whole host temporary directory. Reopen a session
+after editing its configuration. See `docs/configuration.md` for examples.
+
+The independent review found that `search.stat` still authorized a mounted
+file's parent. It now resolves parents and authorizes the exact leaf without
+following its final link, preserving `lstat` semantics. The review's follow-up
+found no remaining correctness issue. The shared resolver also avoids the
+redundant workspace walks introduced by the first implementation.
+
+Focused validation passes 122 native filesystem tests and 43 workspace-bridge
+tests, including parsed TOML, real temporary files, aliases, exact mounted
+file/directory stat, neighboring paths, read-only grants and refusal before
+pre-image reads. Live macOS Seatbelt tests pass for read-only and read-write
+file/directory mounts. The Linux argv-order test passes, but the new live
+bubblewrap test is skipped on this Mac because `bwrap` is unavailable.
+Documentation checks and scoped lint have zero errors and retain warnings.
+The full `make check` ran every Gleam suite successfully, including 753 tools,
+410 code-mode, 4,490 client, 1,365 TUI and 98 conformance tests. It exited 2 in
+the sandbox package because the unchanged
+`TestSeatbeltJailedPathFindsHomebrewTools` selected Codex's bundled `rg` under
+`/Applications`, outside the jail's grants. With Homebrew first on PATH,
+`PATH=/opt/homebrew/bin:$PATH make check-sandbox` passed with exit 0. The
+remaining full-tree lint and configuration-key self-test passed separately
+with zero errors; the original full invocation is not claimed green. No hosted CI or Linux
+signoff is claimed.
+
+## Previous handoff: historical context
+
+The remainder is the October 12 handoff, retained for its performance evidence
+and follow-up work. Its CI, PR and host-state claims were not revalidated by
+this temporary-mount task and must not be treated as current status.
+
 Baselined October 12, 2026 against main `b197c9566` (through PR #964),
 with the tool-latency work rebased for PR #949. The original measurements use
 `4417fdb6a073865660bf029495a9ecf08bc9e315` and the candidates named in their

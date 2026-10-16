@@ -925,9 +925,14 @@ writes. Directory
 walks skip a protected subtree. Writes keep the workspace plus explicit
 writable additions. A read outside the roots is refused with a message naming
 `permissions.readable_roots` and `/add-dir`.
-A read under `/proc`, `/dev` or `/tmp` outside the workspace is refused too
-(`broker/policy.jail_replaced_roots`): the jail replaces those roots with its
-own, so the host's version is not what a tool sees.
+A read under `/proc`, `/dev` or unmounted host `/tmp` outside the workspace is
+refused too (`broker/policy.jail_replaced_roots`). An explicit mount at or below
+`/tmp` restores that host region after private scratch, so native reads honor
+it as well. Mount paths are resolved through aliases before containment;
+`/tmp` and `/private/tmp` agree on macOS. Native writes and code-mode writes
+honor read-write mounts and treat read-only mounts as write protection before
+any approval or pre-image read. Protected entries still win, and broad host
+read roots, directory additions and approvals do not restore unmounted scratch.
 
 `bash` exercises the composition path end to end. It requires the
 workspace writable, tmpfs scratch, and the environment names it actually
