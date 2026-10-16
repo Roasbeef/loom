@@ -31,6 +31,19 @@ import web_view/operator_page
 @external(erlang, "page_events_ffi", "handlers")
 fn handlers(view: Element(message)) -> List(String)
 
+fn notes_handlers(view: Element(message)) -> List(String) {
+  handlers(view)
+  |> list.filter(fn(key) {
+    string.starts_with(key, component.notes_path <> "\t")
+  })
+}
+
+fn event_name(key: String) -> String {
+  let assert Ok(name) = list.last(string.split(key, "\n"))
+    as "a handler key ends in its event name"
+  name
+}
+
 // A click beneath the agent strip's list, which is the one handler an
 // observer's page carries besides "Load older" (the strand focus addendum).
 fn is_chip_click(key: String) -> Bool {
@@ -245,8 +258,8 @@ pub fn a_pending_nudge_is_a_card_in_the_strand_panel_test() {
 
 // The queue has no accept or dismiss command: the only operation on it is the
 // read, and the primary's run start is the drain. So the card carries no
-// button, and the operator's page still registers only the clicks and
-// submits it did.
+// button. The operator page has only its existing clicks and submits plus
+// the Notes pane's read-only Refresh and search events.
 pub fn the_nudge_card_has_no_control_test() {
   let #(model, _) = page("operator", queued())
   let assert Ok(#(_, from_card)) =
@@ -256,19 +269,18 @@ pub fn the_nudge_card_has_no_control_test() {
     as "the card is closed"
   assert !string.contains(card, "<button")
   assert !string.contains(card, "<a ")
+  let view = operator_page.view(model)
   let names =
-    handlers(operator_page.view(model))
-    |> list.map(fn(key) {
-      let assert Ok(name) = list.last(string.split(key, "\n"))
-        as "a handler key ends in its event name"
-      name
-    })
+    handlers(view)
+    |> list.map(event_name)
     |> list.unique
-  assert list.all(names, fn(name) { name == "click" || name == "submit" })
+  assert list.sort(names, string.compare) == ["click", "input", "submit"]
+  assert list.sort(list.map(notes_handlers(view), event_name), string.compare)
+    == ["click", "input"]
 }
 
-// An observer reads the same card in the same place, and its page still
-// carries no handler but the strip's focus clicks.
+// An observer reads the same card in the same place. Only the strip and the
+// Notes pane's read-only Refresh and search have handlers.
 pub fn an_observer_sees_the_nudge_card_read_only_test() {
   let #(model, _) = page("observer", queued())
   let html = element.to_string(component.view(model))
@@ -281,7 +293,15 @@ pub fn an_observer_sees_the_nudge_card_read_only_test() {
     "held for your next prompt to main",
     "rebase &lt;b&gt;first&lt;/b&gt;",
   ])
-  assert list.all(handlers(component.view(model)), is_chip_click)
+  let view = component.view(model)
+  let note_events = list.map(notes_handlers(view), event_name)
+  let other_handlers =
+    handlers(view)
+    |> list.filter(fn(key) {
+      !string.starts_with(key, component.notes_path <> "\t")
+    })
+  assert list.sort(note_events, string.compare) == ["click", "input"]
+  assert list.all(other_handlers, is_chip_click)
 }
 
 pub fn no_pending_nudge_draws_no_card_test() {
@@ -691,14 +711,22 @@ pub fn an_observer_attachment_sends_no_control_test() {
   assert commands(wire) == []
 }
 
-// An observer's page has none of it: no bar, no form, no button, and still
-// no handler but the strip's focus clicks.
+// An observer's page has none of it: no bar or form. Notes retains its
+// read-only Refresh and search alongside the strip's focus clicks.
 pub fn an_observer_page_draws_no_controls_test() {
   let #(model, _) = page("observer", pinned("active", json.Null))
   let html = element.to_string(component.view(model))
   assert !string.contains(html, "class=\"controls\"")
   assert !string.contains(html, "control-")
-  assert list.all(handlers(component.view(model)), is_chip_click)
+  let view = component.view(model)
+  let notes_events = list.map(notes_handlers(view), event_name)
+  let other_handlers =
+    handlers(view)
+    |> list.filter(fn(key) {
+      !string.starts_with(key, component.notes_path <> "\t")
+    })
+  assert list.sort(notes_events, string.compare) == ["click", "input"]
+  assert list.all(other_handlers, is_chip_click)
 }
 
 // The approvals stay directly above the composer in the dock, and the
@@ -718,13 +746,12 @@ pub fn the_controls_leave_the_dock_for_the_session_pane_test() {
 // The controls add no event the socket did not already admit.
 pub fn the_controls_register_only_clicks_and_submits_test() {
   let #(model, _) = with_peer("operator")
+  let view = operator_page.view(model)
   let names =
-    handlers(operator_page.view(model))
-    |> list.map(fn(key) {
-      let assert Ok(name) = list.last(string.split(key, "\n"))
-        as "a handler key ends in its event name"
-      name
-    })
+    handlers(view)
+    |> list.map(event_name)
     |> list.unique
-  assert list.sort(names, string.compare) == ["click", "submit"]
+  assert list.sort(names, string.compare) == ["click", "input", "submit"]
+  assert list.sort(list.map(notes_handlers(view), event_name), string.compare)
+    == ["click", "input"]
 }

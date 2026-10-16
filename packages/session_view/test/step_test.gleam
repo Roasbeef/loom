@@ -31,6 +31,7 @@ import session_view/inbox
 import session_view/lane_fold
 import session_view/model.{type Shared, Shared} as session_model
 import session_view/msg
+import session_view/notes_view
 import session_view/operator
 import session_view/protocol
 import session_view/session_channel
@@ -607,4 +608,29 @@ pub fn focusing_a_strand_leaves_no_unsent_prompt_behind_test() {
   let #(focused, _) = step.focus(listing(), "advisor", msg.Stamp(5, 5))
   assert focused.pending_submission == None
   assert focused.queued == []
+}
+
+// A host with a notes surface takes custody explicitly; the default step
+// still drops facts, and forgetting after adoption restores the same state.
+pub fn retained_surface_custody_is_explicit_test() {
+  let bare =
+    step.new(
+      "main",
+      "session",
+      msg.Stamp(0, 0),
+      inbox.new("frames"),
+      inbox.new("replay"),
+    )
+  let held =
+    session_model.record_surface(
+      bare,
+      session_model.NotesArrived(notes_view.Board("main", 3, 0, [])),
+    )
+  let #(retained, retained_effects) =
+    step.update_retaining_surfaces(held, tick(1))
+  let #(dropped, dropped_effects) = step.update(held, tick(1))
+  assert retained.surface_facts == held.surface_facts
+  assert dropped.surface_facts == []
+  assert step.forget_surfaces(retained) == dropped
+  assert retained_effects == dropped_effects
 }

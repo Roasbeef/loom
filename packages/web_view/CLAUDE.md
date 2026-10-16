@@ -1652,3 +1652,28 @@ The composer keeps the full JSON table as escaped text in its `commands` slot.
 bindings; `Configured` replaces the table and resets its selection without
 changing the draft. Prefix matching, keyboard selection and click selection
 use `composer_rule` as before. Reopen the page to refresh configuration names.
+
+## Strand notes
+
+The appended Notes pane is `component.notes_path` (`0\t3\t5`), after all existing
+panel children; its search input is exactly `component.notes_search_path`
+(`0\t3\t5\t2\t0`). `notes.State` holds one focused strand's bounded board,
+query, selected key, read progress and presentation cache. Snapshot adoption
+projects previews and safe Markdown once, and assigns numeric row identities
+that survive filtering and refresh. The view (`view/notes`) keeps the index
+mounted while detail is open. Keys and values are text nodes; Raw value is the
+supplied text and Excerpt never enters a parser.
+
+`component.NotesPressed(strand, press)` and `NotesSearched(strand, query)` reject
+handlers from a former scope. Refresh uses `Shared.notes_requested` through the
+existing lane, coalesces repeated presses and reports unavailable reads. The web
+host uses `step.update_retaining_surfaces`, adopts matching `NotesArrived` facts
+in `settled`, then calls `step.forget_surfaces`. Focus resets notes state; a
+same-strand replacement resolves selection against its current keys. The Notes
+tab hides both advisor commentary and pending nudges, preserving their DOM
+positions and behavior on the other tabs.
+
+`notes_test` drives a real notes request, refusal, retry and snapshot reply,
+checks focus and stale handlers, and pins the actual Lustre handler table and
+numeric row paths. It also covers partial boards, raw text, literal excerpts,
+search, refresh selection and markup-looking content.

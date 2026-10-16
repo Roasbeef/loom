@@ -66,7 +66,8 @@ pub type Region {
 
 /// One of the strand panel's tabs. The server draws a pane for each, always,
 /// and the shell shows the chosen one, so a tab needs no round trip and the
-/// server never learns which is showing.
+/// server never learns which is showing. Notes is appended to preserve the
+/// existing tab order, and Strands remains the initial view.
 pub type Tab {
   /// The strand cards, and the detail of the strand in focus.
   Strands
@@ -81,6 +82,9 @@ pub type Tab {
   /// The session's `code_mode` programs, in order, with the newest one's
   /// state, result and budget.
   Trace
+
+  /// The focused strand’s bounded durable notes index and reader.
+  Notes
 }
 
 /// Whether a column is shown.
@@ -361,10 +365,11 @@ pub fn chosen(layout: Layout, tab: Tab) -> Layout {
 ///     shell_rule.Changes,
 ///     shell_rule.Trace,
 ///     shell_rule.Session,
+///     shell_rule.Notes,
 ///   ]
 /// ```
 pub fn tabs() -> List(Tab) {
-  [Strands, Changes, Trace, Session]
+  [Strands, Changes, Trace, Session, Notes]
 }
 
 /// The word on a tab's button.
@@ -380,6 +385,7 @@ pub fn tab_label(tab: Tab) -> String {
     Changes -> "Changes"
     Session -> "Session"
     Trace -> "Trace"
+    Notes -> "Notes"
   }
 }
 
@@ -400,6 +406,7 @@ pub fn tab_state(tab: Tab) -> String {
     Changes -> "tab-changes"
     Session -> "tab-session"
     Trace -> "tab-trace"
+    Notes -> "tab-notes"
   }
 }
 

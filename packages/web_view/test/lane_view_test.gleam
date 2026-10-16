@@ -462,6 +462,8 @@ pub fn session_markup_arrives_only_as_text_test() {
     assert !string.contains(drawn, "<a>")
     assert string.contains(drawn, "&lt;b&gt;review")
     assert string.contains(drawn, "src/&lt;a&gt;.gleam")
+    assert string.contains(drawn, "class=\"notes-search\"")
+    assert string.contains(drawn, "class=\"notes-refresh\"")
   })
 
   // An observer's page with every piece drawn holds no control but the
@@ -470,7 +472,11 @@ pub fn session_markup_arrives_only_as_text_test() {
   // nudge's, which carry a marker and no handler, and the divider of the one
   // fold the page has opened.
   let observer = html(missed)
-  assert list.length(string.split(observer, "<button")) == 9
+  let buttons = list.length(string.split(observer, "<button")) - 1
+  let notes_refreshes =
+    list.length(string.split(observer, "class=\"notes-refresh\"")) - 1
+  assert notes_refreshes == 1
+  assert buttons == 9
   assert list.length(string.split(observer, "class=\"chip-hit\"")) == 5
   assert list.length(string.split(observer, "class=\"tag\"")) == 4
   assert !string.contains(observer, "<form")

@@ -1,42 +1,53 @@
 # Current handoff
 
-Baselined October 15, 2026 against main
-`054816c5b9b57f0a3ea343e4158a2a074f3ec015`, which merged PR #991.
-The previous handoff's instruction to merge the performance PR is obsolete.
-Its measurements, recovery rulings and open retention investigation remain in
-the [performance handoff](https://github.com/Roasbeef/loom/blob/054816c5b9b57f0a3ea343e4158a2a074f3ec015/docs/next.md)
-and `docs/review/poll-reload-2026-10-14.md`.
+Baselined October 16, 2026 on `6430703a98c6371020c09aedb5b067e8c5c570aa`,
+which includes performance PR #991, model/profile completion PR #992 and the TLS
+options encoding fix PR #993. Their remaining operational work is recorded in the
+[baseline handoff](https://github.com/Roasbeef/loom/blob/6430703a98c6371020c09aedb5b067e8c5c570aa/docs/next.md).
+No installed daemon or user session was changed during this work.
 
-## TLS options encoding
+## Strand notes in the web view
 
-The options writer emits UTF-8, but OTP's `ssl_dist_sup:consult/1` defaults an
-unmarked file to Latin-1. Erlang's `~p` can print a binary pin as a quoted
-Latin-1 string, so consulting the generated file can change its bytes.
-The exact options comparison then refuses boot with `options_mismatch`.
-This is a fail-closed availability bug found during #991's macOS validation;
-its fix belongs to this separate PR at the owner's request.
+The current branch adds a dedicated Notes tab to the resizable panel. The owner
+requested this separate tab so advisor information does not clutter the reader.
+The [design record](design-notes/strand-notes.md) records the independent selection and links to the candidate and production
+screenshots in [PR #990](https://github.com/Roasbeef/loom/pull/990). Images are not
+part of the branch's commits.
 
-The writer now declares UTF-8 before the Erlang term. Pin verification, PKIX,
-node-name checks and the exact options comparison retain their existing rules.
-The deterministic regression uses the production encoder and OTP's actual
-reader for all 256 repeated-byte 32-byte pins, checking the callback and exact
-pin in both TLS roles. The fixture fails against the original encoder and
-passes with the declaration. Existing positive and negative handshake tests
-remain unchanged.
+The browser reuses the existing bounded notes command and shared presentation.
+It searches available keys and text, opens a note, preserves the query and browser
+position on return, and exposes the exact supplied raw value. Complete values use
+the safe Markdown renderer; excerpts remain literal and explicitly incomplete.
+Snapshot and cell revisions are separate. Omitted cells are counted, and search
+never claims to cover them. There is no editing or full-value fetch.
 
-## Remaining gates and work
+`step.update_retaining_surfaces` transfers surface-fact custody to the web host;
+`component.settled` adopts matching notes replies and forgets the facts. The
+existing `step.update` behavior is preserved. A focus change clears the departing
+strand's queued notes request as well as its presentation. Row identities are
+numeric, stable across filtering and refresh, and never reused across focus
+changes; removed keys are pruned. Observer input is admitted only at the exact
+notes search path, with read-only clicks confined to the appended pane.
 
-All 35 selected distribution tests passed, including the unchanged positive
-and negative handshake scenarios and live-ledger distribution scenarios.
-Formatting, client lint (zero errors), documentation checks and independent
-adversarial review passed. Hosted CI and normal/containerised Linux signoff
-still need to pass for the published head. Read saved macOS logs and actual skip censuses: advisory green badges
-alone do not prove `make check` passed. The PR carries current validation
-status; this source checkpoint is not merge evidence.
+## Verification and remaining boundaries
 
-The installed daemon has not been updated or restarted. A comparable live
-Pickglass capture still requires operator authorization to deploy. CPU,
-cumulative allocation, retained memory and RSS remain separate claims; no
-additional retained-memory reduction was established by #991. Field-level
-attribution in an isolated representative release is the next memory
-experiment, as recorded in the performance report.
+Before this rebase, the web-view gate passed 1,009 tests, the shared reducer gate passed 487,
+and the browser-client gate passed 296. The client web-UI route/socket sweep
+passed 383 tests. Lint passed with zero errors and the existing warning census.
+Generated web assets passed their integrity gate. Removing either the queued-read
+reset or surface-fact custody made its real-lane regression fail at the expected
+assertion; restored source passed all eight focused notes tests.
+
+One fresh independent adversarial review found an obsolete queued notes read
+surviving a focus change. The one-field fix and real-lane regression were verified
+by the same reviewer. Its follow-up check also approved the existing Markdown
+renderer and memo used for previews.
+
+The production Lustre components were exercised in a disposable localhost
+WebSocket harness with representative notes replies, including readable/raw
+inspection, filtering, back navigation and empty/excerpt states. These captures
+are fixture-backed evidence, not a deployment or a read of an operator's session.
+
+PR #990 is rebased on this baseline. Its current head requires fresh hosted CI,
+Linux signoff and integration review before the authorized merge. Installation and daemon restart remain
+owner actions.

@@ -8618,3 +8618,13 @@ The composer keeps the full JSON table as escaped text in its `commands` slot.
 bindings; `Configured` replaces the table and resets its selection without
 changing the draft. Prefix matching, keyboard selection and click selection
 use `composer_rule` as before. Reopen the page to refresh configuration names.
+
+## Notes socket admission
+
+The observer's session socket admits clicks beneath the appended read-only
+Notes pane (`component.notes_path`) and `input` only at the exact notes search
+field (`component.notes_search_path`). Owner and member operator sockets admit
+that same exact input event. No other input event gains admission, and the
+existing owner-only Session controls keep their paths. `ui_socket_test` checks
+the search path, its siblings and descendants, the pane prefix separator and
+all three page roles.
