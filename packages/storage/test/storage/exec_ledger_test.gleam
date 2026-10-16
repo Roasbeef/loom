@@ -1489,3 +1489,119 @@ pub fn a_version_two_ledger_gains_the_tombstone_table_on_open_test() {
   assert exec_ledger.query(migrated, call(0)) == Ok(Found(exec_ledger.Acked))
   assert count(file, "PRAGMA user_version") == 3
 }
+
+// --- summary ---------------------------------------------------------------
+
+fn counts(open: Int, closing: Int, clean: Int, unknown: Int) {
+  exec_ledger.ScopeCounts(
+    open:,
+    closing:,
+    closed_clean: clean,
+    closed_unknown: unknown,
+  )
+}
+
+pub fn an_empty_ledger_summarises_to_zeros_test() {
+  let ledger = open_at(path("summary-empty"))
+  assert exec_ledger.summary(ledger)
+    == Ok(exec_ledger.Summary(
+      scopes: counts(0, 0, 0, 0),
+      unclean: [],
+      bytes: 0,
+      unacknowledged: 0,
+    ))
+}
+
+pub fn scopes_are_counted_by_state_and_the_blocking_ones_are_listed_test() {
+  let ledger = open_at(path("summary-scopes"))
+
+  // Session 0 stays open, 1 is closing, 2 closed clean, 3 and 4 closed with
+  // different counts of children left, which group apart in the table.
+  list.each(upto(0, 4), fn(n) {
+    let assert Ok(_) = attach_scope(ledger, n) as "the scope attaches"
+    Nil
+  })
+  close_cleanly(ledger, 2)
+  assert exec_ledger.begin_close(ledger, scope_name(1), "/work", 0) == Ok(Nil)
+  list.each([#(3, 0), #(4, 2)], fn(entry) {
+    let #(n, left) = entry
+    let assert Ok(Nil) =
+      exec_ledger.begin_close(ledger, scope_name(n), "/work", 0)
+    let assert Ok(Nil) =
+      exec_ledger.finish_close(
+        ledger,
+        scope_name(n),
+        "/work",
+        0,
+        UnknownCleanup(left),
+      )
+    Nil
+  })
+
+  assert exec_ledger.summary(ledger)
+    == Ok(exec_ledger.Summary(
+      scopes: counts(1, 1, 1, 2),
+      unclean: [
+        exec_ledger.UncleanScope(session: scope_name(1), state: Closing),
+        exec_ledger.UncleanScope(
+          session: scope_name(3),
+          state: Closed(UnknownCleanup(0)),
+        ),
+        exec_ledger.UncleanScope(
+          session: scope_name(4),
+          state: Closed(UnknownCleanup(2)),
+        ),
+      ],
+      bytes: 0,
+      unacknowledged: 0,
+    ))
+}
+
+pub fn a_release_takes_a_scope_out_of_the_blocking_list_test() {
+  let ledger = open_at(path("summary-release"))
+  attached(ledger)
+  assert exec_ledger.begin_close(ledger, "s", "/work", 0) == Ok(Nil)
+  let assert Ok(before) = exec_ledger.summary(ledger)
+  assert before.scopes == counts(0, 1, 0, 0)
+  assert list.length(before.unclean) == 1
+
+  let assert Ok(_) = exec_ledger.release(ledger, "s", 5000)
+  let assert Ok(after) = exec_ledger.summary(ledger)
+  assert after.scopes == counts(0, 0, 1, 0)
+  assert after.unclean == []
+}
+
+pub fn bytes_and_unacknowledged_calls_follow_the_calls_test() {
+  let ledger = open_at(path("summary-calls"))
+  attached(ledger)
+
+  // One admitted reservation, one terminal outcome and one lost call.
+  assert admit(ledger, call(0), 100) == Ok(Fresh)
+  assert admit(ledger, call(1), 200) == Ok(Fresh)
+  assert admit(ledger, call(2), 300) == Ok(Fresh)
+  assert exec_ledger.finish(ledger, call(1), bytes("done")) == Ok(Nil)
+  assert exec_ledger.mark_unknown(ledger, call(2)) == Ok(Nil)
+
+  // The admitted row holds its reservation, the terminal row its real size,
+  // and the lost row nothing. Only the settled and lost rows are unacknowledged.
+  let assert Ok(held) = exec_ledger.summary(ledger)
+  assert held.bytes == 100 + 4
+  assert held.unacknowledged == 2
+
+  // An acknowledgement removes the outcome and its bytes.
+  assert exec_ledger.ack(ledger, call(1)) == Ok(Nil)
+  let assert Ok(acked) = exec_ledger.summary(ledger)
+  assert acked.bytes == 100
+  assert acked.unacknowledged == 1
+}
+
+pub fn a_scope_whose_state_and_outcome_disagree_is_a_malformed_row_test() {
+  let file = path("summary-malformed")
+  let ledger = open_at(file)
+  attached(ledger)
+  tamper(file, "UPDATE scope SET state = 'closed', close_outcome = 'bogus';")
+  assert exec_ledger.summary(ledger)
+    == Error(exec_ledger.MalformedRow(
+      "scope state does not match its close outcome",
+    ))
+}

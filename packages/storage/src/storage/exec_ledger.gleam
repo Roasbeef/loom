@@ -133,7 +133,7 @@
 //// ## Flow
 ////
 //// `open` → `attach` → `admit` → `finish` → `query` → `query_or_fence` → `ack` →
-//// `begin_close` → `finish_close` → `release`
+//// `begin_close` → `finish_close` → `release` → `summary`
 ////
 //// 1. `open` validates or creates the schema, sets full synchronous durability,
 ////    and records every run the previous VM had in flight as lost.
@@ -151,6 +151,9 @@
 //// 6. `begin_close` is the fence that stops new admissions, and `finish_close`
 ////    records how the cleanup ended. `release` is the operator's way out of a
 ////    scope no close will ever finish.
+//// 7. `summary` counts scopes by state, lists the ones that block a reopen,
+////    and totals the bytes and unacknowledged calls, for the report an
+////    executor gives of itself (protocol-change/085).
 
 import gleam/bit_array
 import gleam/bool
@@ -362,6 +365,51 @@ pub type Release {
     /// The executor's wall clock when the operator released it, in Unix
     /// milliseconds.
     released_at_ms: Int,
+  )
+}
+
+/// What the ledger holds, as `summary` counts it: enough for an operator to
+/// see how full the executor is and which scopes block a reopen, and no call,
+/// outcome or token.
+pub type Summary {
+  Summary(
+    /// How many scopes are in each state.
+    scopes: ScopeCounts,
+    /// The scopes that block a reopen, ordered by session: `Closing`, or
+    /// `Closed(UnknownCleanup(n))`. Each holds a slot against
+    /// `max_unclean_scopes`, as an open scope does, and none ends by itself.
+    unclean: List(UncleanScope),
+    /// The bytes `admitted` reservations and `terminal` outcomes hold, which is
+    /// what the byte budget is judged against.
+    bytes: Int,
+    /// The calls with a stored result or a lost outcome that the orchestrator
+    /// has not acknowledged.
+    unacknowledged: Int,
+  )
+}
+
+/// How many scopes the ledger holds in each state.
+pub type ScopeCounts {
+  ScopeCounts(
+    /// Admitting calls.
+    open: Int,
+    /// Fenced, with the cleanup unfinished.
+    closing: Int,
+    /// Closed with every child retired; a later attach reopens it.
+    closed_clean: Int,
+    /// Closed with unknown cleanup; only an operator's release frees the slot.
+    closed_unknown: Int,
+  )
+}
+
+/// A scope that blocks a reopen: no close will finish it, and only an
+/// operator's release frees its slot.
+pub type UncleanScope {
+  UncleanScope(
+    /// The session the scope belongs to.
+    session: String,
+    /// `Closing`, or `Closed(UnknownCleanup(count))`.
+    state: ScopeState,
   )
 }
 
@@ -1123,6 +1171,91 @@ pub fn releases(
       released_at_ms: row.released_at_ms,
     ))
   })
+}
+
+/// Counts what the ledger holds without reading any call or outcome: scopes by
+/// state, the scopes that block a reopen, the bytes against the budget, and the
+/// calls not yet acknowledged.
+///
+/// Four reads, no write. They run one after another on the ledger's connection,
+/// and the connection belongs to the node-level actor, which makes no write
+/// between them, so the four answers describe one state. A row whose state and
+/// close outcome disagree is `MalformedRow`, as everywhere else: a summary that
+/// guessed would hide the damage the operator is looking for.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // exec_ledger.summary(ledger)
+/// // -> Ok(Summary(ScopeCounts(1, 0, 2, 0), [], 0, 0))
+/// ```
+pub fn summary(ledger: Ledger) -> Result(Summary, Error) {
+  let connection = ledger.connection
+  use grouped <- result.try(rows(connection, sql.ledger_scope_states()))
+  use scopes <- result.try(count_scopes(grouped))
+
+  use blocking <- result.try(rows(connection, sql.ledger_unclean_scopes()))
+  use unclean <- result.try(list.try_map(blocking, unclean_scope))
+
+  use reserved <- result.try(rows(connection, sql.ledger_reserved_bytes()))
+  use bytes <- result.try(only(reserved, "reserved byte total"))
+  use unacked <- result.try(rows(connection, sql.ledger_unacked_count()))
+  use calls <- result.try(only(unacked, "unacknowledged call count"))
+  Ok(Summary(scopes:, unclean:, bytes: bytes.bytes, unacknowledged: calls.calls))
+}
+
+// The grouped rows carry a count each, and a state and close outcome that decode
+// together as every scope row does. Several unknown-cleanup groups, one for
+// each count of children, add into one `closed_unknown`.
+fn count_scopes(
+  grouped: List(sql.LedgerScopeStates),
+) -> Result(ScopeCounts, Error) {
+  list.try_fold(
+    grouped,
+    ScopeCounts(open: 0, closing: 0, closed_clean: 0, closed_unknown: 0),
+    fn(counts, row) {
+      use state <- result.try(scope_state(row.state, row.close_outcome))
+      case state {
+        Open -> Ok(ScopeCounts(..counts, open: counts.open + row.scopes))
+        Closing ->
+          Ok(ScopeCounts(..counts, closing: counts.closing + row.scopes))
+        Closed(AllRetired) ->
+          Ok(
+            ScopeCounts(
+              ..counts,
+              closed_clean: counts.closed_clean + row.scopes,
+            ),
+          )
+        Closed(UnknownCleanup(_)) ->
+          Ok(
+            ScopeCounts(
+              ..counts,
+              closed_unknown: counts.closed_unknown + row.scopes,
+            ),
+          )
+      }
+    },
+  )
+}
+
+// A scope that blocks a reopen is either closing or closed with unknown cleanup;
+// any other state in the result is a row the query should not have returned.
+fn unclean_scope(row: sql.LedgerUncleanScopes) -> Result(UncleanScope, Error) {
+  use state <- result.try(scope_state(row.state, row.close_outcome))
+  case state {
+    Closing | Closed(UnknownCleanup(_)) ->
+      Ok(UncleanScope(session: row.session, state:))
+    Open | Closed(AllRetired) ->
+      Error(MalformedRow("a scope that blocks no reopen was listed as unclean"))
+  }
+}
+
+// An aggregate statement answers exactly one row.
+fn only(found: List(a), what: String) -> Result(a, Error) {
+  case found {
+    [row] -> Ok(row)
+    [] | [_, _, ..] -> Error(MalformedRow("expected one " <> what))
+  }
 }
 
 // The schema is checked inside the transaction that may create it, so two opens
