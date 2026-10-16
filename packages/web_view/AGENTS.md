@@ -1653,7 +1653,7 @@ bindings; `Configured` replaces the table and resets its selection without
 changing the draft. Prefix matching, keyboard selection and click selection
 use `composer_rule` as before. Reopen the page to refresh configuration names.
 
-## Inline held-input controls (protocol 087)
+## Inline held-input controls (protocol 088)
 
 `view/queue_input.State` owns the page's selected complete document and
 `Ready`, `Saving`, or `Unknown` delivery state. `component.QueueAction` runs

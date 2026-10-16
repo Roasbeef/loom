@@ -8619,7 +8619,7 @@ bindings; `Configured` replaces the table and resets its selection without
 changing the draft. Prefix matching, keyboard selection and click selection
 use `composer_rule` as before. Reopen the page to refresh configuration names.
 
-## Held-input withdrawal (protocol 087)
+## Held-input withdrawal (protocol 088)
 
 `protocol.RemoveQueuedInput` is a mutation permitted only for a live mutable
 author of the exact held input. `gateway.remove_queued_input` compares its

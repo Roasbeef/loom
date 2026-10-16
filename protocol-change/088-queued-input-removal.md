@@ -1,4 +1,4 @@
-# protocol-change/087: Withdraw held client input
+# protocol-change/088: Withdraw held client input
 
 Status: ACCEPTED 2026-10-13. Extends Part 1.3's session protocol v2 and
 protocol-change/024's queued-input editor. The operator requested both inline

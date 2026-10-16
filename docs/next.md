@@ -1,7 +1,7 @@
 # Current handoff
 
-Baselined October 13, 2026 against `8fd775bc3` on `web/queue-controls`,
-starting from main `dc70d25d4`. This edition covers held-message Edit and
+Baselined October 16, 2026 against rebased source `f58934f91` on
+`web/queue-controls`, starting from main `6430703a9`. This edition covers held-message Edit and
 Remove controls. The installed daemon has not been updated.
 
 The previous edition described history browsing and separate parent-completion
@@ -17,7 +17,7 @@ operator page. Edit fetches its complete document before opening a multiline
 editor with Save and Cancel. Save preserves image blocks and queue position.
 Remove compares the drawn identity and revision before withdrawing one item.
 It cannot affect another author's message, an updated revision or admitted work.
-Protocol-change/087 records the new command and `removed` acknowledgement.
+Protocol-change/088 records the new command and `removed` acknowledgement.
 Observers draw the held text without mutation handlers.
 
 Queue notices now survive shared ticks and focus changes until the web host
@@ -35,41 +35,35 @@ is refused before a deferred fetch can be lost to its acknowledgement.
 
 ## Verification boundary
 
-The complete web package gate passed 1,003 tests and the shared-session gate
-passed all 482, each with exit 0. Browser asset generation and its digest checks
-passed. House lint, documentation checks and browser asset digests passed with exit 0.
-Gateway and protocol regressions passed for author/observer refusal, stale
-revisions, wrong strand, equal-text neighbors, repeated removal and admission
-before removal. The broad client run reported all 4,492 tests passed with exit 0 in 599.57
-seconds, with 82 prerequisite-skip diagnostics: 34 seed/helper diagnostics
-and 48 other prerequisites, including shipped-server environment and Linux-only
-process observation. That broad run started before the final shared-notice fixes;
-the final-tree queue gateway/protocol rerun passed all five tests. The final-tree client parity rerun passed all three tests. No test was removed or disabled
-by the implementation.
+Rebased October 16, 2026 onto main `6430703a9`, with production sources
+unchanged by conflict resolution. Main's current project-wide rulings remain
+in its [handoff](https://github.com/Roasbeef/loom/blob/6430703a9/docs/next.md).
+The queued-input proposal is now 088 because main already assigned 087.
 
-An isolated browser loaded the actual Lustre 5.7.1 runtime, generated stylesheet,
-and mount/diff JSON produced from the real queue row views. Multiline browser
-text, cursor position and the exact textarea node survived a patch that removed
-a neighbor and changed the server's submitted text, followed by a refusal
-patch. The transport was simulated; this did not exercise the installed daemon
-or a live provider. The gateway regressions exercise real runtime admission.
-The independent review findings were fixed and rechecked with no remaining
-correctness finding.
+The rebased tree passed all 486 shared-session tests, 1,011 web tests and 15
+focused queued client tests, each with exit 0. Browser asset generation and
+documentation checks passed. Independent review rechecked the integration and
+found no remaining correctness issue.
+
+A real browser connected to a freshly built isolated native daemon and a
+local deterministic Anthropic SSE provider. During a held generation it queued
+three messages, cancelled and reopened a multiline edit, removed one input,
+and saved another carrying an image. After release, recorded provider requests
+proved the removed and cancelled text absent, the saved multiline text before
+the final sentinel, and its image block retained. This exercised the actual
+browser, command transport, runtime queue and provider request construction.
+The installed daemon was untouched.
+
+The earlier simulated-transport Lustre browser check remains evidence for
+textarea identity and cursor preservation across neighbor removal and refusal
+patches. The old broad client run and its prerequisite skips are historical;
+they do not substitute for fresh hosted CI and exact-head Linux signoff.
 
 ## Next steps
 
-1. Inspect hosted CI and required Linux signoff on
-   [PR #980](https://github.com/Roasbeef/loom/pull/980). Exit: required checks
-   attest to the published head, with prerequisite skips explicit; local tests
-   do not substitute for release or deployment signoff.
-2. Merge and update the running daemon only with the owner's authorization.
-   Exit: the deployed operator page offers Edit and Remove on its own held
-   messages, and edits preserve attachments and order.
-
-## Rebase in progress
-
-This branch is being rebased on main `6430703a9`. The earlier validation above
-is historical evidence, not validation of the rebased head. Current main's
-TLS encoding, provider diagnostics, and prior rulings remain in the
-[main handoff](https://github.com/Roasbeef/loom/blob/6430703a9/docs/next.md).
-The final queue handoff will be rebaselined after current-head validation.
+1. Publish the rebased branch to [PR #980](https://github.com/Roasbeef/loom/pull/980)
+   and inspect all applicable hosted checks, including advisory macOS logs,
+   plus Linux signoff for the exact published head.
+2. Merge with a normal merge commit once those checks and independent review
+   are complete. The owner authorized rebase and merge on October 16.
+   Deployment remains a separate action.

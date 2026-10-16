@@ -2534,7 +2534,7 @@ comparison withdraws only that item and replies with `mutation_outcome` status
 items retain their order, content and revisions. A stale, drained or previously
 removed identity returns `conflict`. Removing the final item retires its queue
 and halt. Running work is unaffected. See
-[protocol 087](../protocol-change/087-queued-input-removal.md).
+[protocol 088](../protocol-change/088-queued-input-removal.md).
 
 #### 4.9.18 `worktree_diff`
 

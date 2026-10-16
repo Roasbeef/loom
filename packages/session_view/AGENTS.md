@@ -914,7 +914,7 @@ mutation, and both are answered by `protocol.ProfileSnapshot`
 current profile and the names, with `default` first, or the switch confirmation
 that says the session is restarting. `attempt` accepts both names in a recording.
 
-## Held-input withdrawal (protocol 087)
+## Held-input withdrawal (protocol 088)
 
 `protocol.remove_queued_input` names one strand, opaque input identity and
 expected revision. `session_wire` accepts the `removed` mutation outcome.
