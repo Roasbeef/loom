@@ -42,12 +42,20 @@
 //// give a move up at once (`Control.abandon`), and a deleted local session's
 //// record is removed best-effort (`Control.forget`).
 ////
+//// A daemon's report of itself lists these moves (protocol-change/085), so an
+//// entry also keeps the reason the last run stopped, cut to
+//// `node_report.max_reason_bytes`, and `Control.moves` reads the entries in the
+//// actor's own turn. How long a move has been stalled is a duration on this
+//// node's monotonic clock and never a timestamp, since the node that reads the
+//// report has a different clock.
+////
 //// The entry is a map from session to the move, and a session has one row, so
 //// one session can have only one move. A `Begin` carrying another operation
 //// replaces the entry, which can only happen after the earlier move ended and
 //// its row was replaced.
 
 import client/daemon/manager
+import client/node_report.{type MoveFacts}
 import client/orchestrators.{type Orchestrator}
 import client/remote/orchestrator_port.{type Ownership}
 import client/roster.{type Roster}
@@ -71,6 +79,10 @@ pub const retry_ms = 5000
 /// How long a move may stall, with the directory store answering, before a
 /// member gives it up: thirty minutes.
 pub const give_up_after_ms = 1_800_000
+
+/// How long `Control.moves` waits for the actor to list its entries. The actor
+/// answers from memory between runs, so a wait this long means it is wedged.
+pub const moves_wait_ms = 2000
 
 /// What the rest of the daemon holds to start moves: the orchestrators a move
 /// may go to, and the one way to tell the movers a move has begun.
@@ -97,6 +109,10 @@ pub type Control {
     /// Removes the record of a local session that was deleted, best-effort,
     /// and returns at once.
     forget: fn(String) -> Nil,
+    /// The moves in flight, as a report lists them. It asks the actor and
+    /// waits for its answer, so a stuck actor ends the caller's turn instead of
+    /// being reported as a daemon with no moves.
+    moves: fn() -> List(MoveFacts),
   )
 }
 
@@ -124,6 +140,7 @@ type Message {
   GiveUp(session: String)
   Cover
   Forget(session: String)
+  Moves(reply: Subject(List(MoveFacts)))
 
   // A pass of the upkeep ended. `covered` is the request count the pass wrote
   // the local records for, when it was asked to and succeeded.
@@ -138,8 +155,15 @@ type Phase {
 
 // A move that stalled while the store answered keeps the time its stalling
 // began; a stall for want of a quorum clears it, so that time is not counted.
+// `reason` is the last thing a run said when it stopped, kept through the retry
+// so a report can say why a move that is running again was waiting.
 type Entry {
-  Entry(move: catalogue.Pending, phase: Phase, stalled_since: Option(Int))
+  Entry(
+    move: catalogue.Pending,
+    phase: Phase,
+    stalled_since: Option(Int),
+    reason: Option(String),
+  )
 }
 
 // Whether a pass of the upkeep is running.
@@ -193,6 +217,7 @@ pub fn idle() -> Control {
     abandon: fn(_session) { Nil },
     cover: fn() { Nil },
     forget: fn(_session) { Nil },
+    moves: fn() { [] },
   )
 }
 
@@ -258,6 +283,7 @@ pub fn start_with(
           abandon: fn(session) { process.send(inbox, GiveUp(session)) },
           cover: fn() { process.send(inbox, Cover) },
           forget: fn(session) { process.send(inbox, Forget(session)) },
+          moves: fn() { process.call(inbox, moves_wait_ms, Moves) },
         ),
       )
     }
@@ -301,7 +327,7 @@ fn handle(
         Ok(_) | Error(Nil) ->
           actor.continue(start_mover(
             state,
-            Entry(move:, phase: Waiting, stalled_since: None),
+            Entry(move:, phase: Waiting, stalled_since: None, reason: None),
           ))
       }
 
@@ -334,6 +360,13 @@ fn handle(
 
     Cover -> actor.continue(State(..state, wanted: state.wanted + 1))
 
+    // The entries are read here, in the actor's turn, so the list is one
+    // moment's view and needs no table shared with other processes.
+    Moves(reply:) -> {
+      process.send(reply, move_facts(state, bootstrap.monotonic_time_ms()))
+      actor.continue(state)
+    }
+
     // The removal runs on its own and reports nothing: a record left behind
     // names this daemon, which answers `not_found` for the session.
     Forget(session:) -> {
@@ -364,15 +397,16 @@ fn handle(
           actor.continue(
             State(..state, entries: dict.delete(state.entries, move.session)),
           )
-        Stalled(..) -> {
+        Stalled(reason:) -> {
           let since = case dict.get(state.entries, move.session) {
             Ok(Entry(stalled_since: Some(since), ..)) -> Some(since)
             Ok(Entry(stalled_since: None, ..)) | Error(Nil) ->
               Some(bootstrap.monotonic_time_ms())
           }
-          actor.continue(waiting(state, move, since))
+          actor.continue(waiting(state, move, since, Some(reason)))
         }
-        Deferred(..) -> actor.continue(waiting(state, move, None))
+        Deferred(reason:) ->
+          actor.continue(waiting(state, move, None, Some(reason)))
       }
   }
 }
@@ -381,15 +415,49 @@ fn waiting(
   state: State(instance),
   move: catalogue.Pending,
   since: Option(Int),
+  reason: Option(String),
 ) -> State(instance) {
   State(
     ..state,
     entries: dict.insert(
       state.entries,
       move.session,
-      Entry(move:, phase: Waiting, stalled_since: since),
+      Entry(
+        move:,
+        phase: Waiting,
+        stalled_since: since,
+        reason: option.map(reason, node_report.cut_reason),
+      ),
     ),
   )
+}
+
+// The entries as a report lists them, ordered by session so that two reads of
+// the same moves agree. The destination is named by its node when this daemon
+// lists the orchestrator, and by the configured name otherwise, since a move
+// resumed after the configuration changed can name one that is gone.
+fn move_facts(state: State(instance), now: Int) -> List(MoveFacts) {
+  let listed = roster.rows(state.environment.orchestrators)
+  state.entries
+  |> dict.values
+  |> list.sort(fn(a, b) { string.compare(a.move.session, b.move.session) })
+  |> list.take(node_report.max_moves)
+  |> list.map(fn(entry) {
+    node_report.MoveFacts(
+      session: entry.move.session,
+      op: entry.move.op,
+      to_node: case orchestrators.find(listed, entry.move.to) {
+        Ok(receiver) -> receiver.node
+        Error(Nil) -> entry.move.to
+      },
+      phase: case entry.phase {
+        Running -> node_report.Running
+        Waiting -> node_report.Waiting
+      },
+      stalled_ms: option.map(entry.stalled_since, fn(since) { now - since }),
+      reason: entry.reason,
+    )
+  })
 }
 
 // Whether a member should give a move up: it has stalled for long enough while
