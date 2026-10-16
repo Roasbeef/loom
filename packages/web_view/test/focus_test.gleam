@@ -309,7 +309,10 @@ pub fn an_observer_can_focus_but_not_act_test() {
 
   // The bar's context figure draws its Refresh button once a board arrives.
   let refreshes = list.length(string.split(drawn, "class=\"ctx-button\"")) - 1
-  assert buttons == chips + markers + dividers + refreshes
+  let notes_refreshes =
+    list.length(string.split(drawn, "class=\"notes-refresh\"")) - 1
+  assert notes_refreshes == 1
+  assert buttons == chips + markers + dividers + refreshes + notes_refreshes
 }
 
 // How many buttons carry the marker that the shell relays, read from the

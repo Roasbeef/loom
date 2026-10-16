@@ -67,3 +67,12 @@ they do not substitute for fresh hosted CI and exact-head Linux signoff.
 2. Merge with a normal merge commit once those checks and independent review
    are complete. The owner authorized rebase and merge on October 16.
    Deployment remains a separate action.
+
+## Integration of strand notes
+
+Main advanced to `d9553247f` while the first signoff waited. Its strand-notes
+work is retained; see the [main handoff](https://github.com/Roasbeef/loom/blob/d9553247f/docs/next.md).
+The web host consumes both notes facts and queue notices before cleanup. The
+shared ordinary step still retains queue notices, while the retaining entry
+also transfers notes facts. Fresh tests, review, hosted CI and Linux signoff
+are required for this integration; prior-head results cannot authorize merge.

@@ -4319,3 +4319,43 @@ the slotted server view before following the resulting tail. Sending from the
 composer does the same. Resize and strand restoration never activate a return.
 The new handler path is pinned against both components' real handler tables,
 and socket tests refuse adjacent paths, descendants and non-click events.
+
+## Addendum: strand notes browser (2026-10-14)
+
+The right panel gains a Notes tab for the strand currently in focus, including
+`main`. Its pane is appended after the existing panes and pending-nudge region,
+so the existing strip, Session, Trace and nudge event paths keep their positions.
+The shell hides the advisor's commentary and pending nudges while Notes is
+selected. The browser saves the tab preference alongside its existing panel
+preferences; note text, search and selection are never persisted there.
+
+Refresh requests the existing bounded `notes` read through the shared lane.
+The web host explicitly takes custody of `NotesArrived` surface facts before
+forgetting them; the default shared step keeps its previous behavior. A board
+is adopted only for the focused strand and without moving its snapshot revision
+backwards. Changing focus drops the old board, query and selection. Handler
+messages carry their strand scope, and a selected key is resolved against each
+replacement board rather than retaining a removed value.
+
+The observer socket admits clicks beneath `component.notes_path`, the appended
+read-only pane, and `input` only at `component.notes_search_path`, its search
+field. Operator sockets admit that same exact input event. These handlers can
+request a notes read or change local presentation, and cannot mutate a note,
+prompt, approval or session. Notes keys never become handler paths: each is
+assigned a stable numeric identity for the current scope. Existing controls
+retain their positions and admission rules.
+
+The index searches only the supplied keys and text and states how many cells
+the bounded snapshot omitted. Snapshot revision and cell revision have separate
+labels. Complete values use the existing readable projection and safe Markdown
+renderer; Raw value shows the exact supplied text as a text node. Excerpts stay
+literal and visibly incomplete even when their prefix is valid JSON. No full
+value read, write endpoint, dependency or FFI is added.
+
+The empty `<loom-notes>` client element saves the panel's scroll position and
+numeric row mark when a row is opened. After the server paints detail it focuses
+Back; returning preserves the query, restores the row's focus and restores the
+panel's scroll position. An Escape within notes detail presses Back and stops
+propagation before the shell's strand-navigation shortcut; an editor retains its
+own Escape. The element handles no key outside the notes pane and never reaches
+an approval or composer.

@@ -8628,3 +8628,12 @@ queue and its drain intent while broadcasting `InputQueueChanged`. A prior
 drain or edit conflicts. Owner authority does not override authorship, and
 withdrawal cannot abort runtime work. The acknowledgement is the memory-only
 `MutationOutcome` status `removed`; it commits no entry and returns no draft.
+## Notes socket admission
+
+The observer's session socket admits clicks beneath the appended read-only
+Notes pane (`component.notes_path`) and `input` only at the exact notes search
+field (`component.notes_search_path`). Owner and member operator sockets admit
+that same exact input event. No other input event gains admission, and the
+existing owner-only Session controls keep their paths. `ui_socket_test` checks
+the search path, its siblings and descendants, the pane prefix separator and
+all three page roles.

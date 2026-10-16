@@ -29,6 +29,7 @@ fn every_handler(view: Element(message)) -> List(String)
 // the controls around the lane.
 fn handlers(view: Element(message)) -> List(String) {
   lane_fixture.beyond_dividers(every_handler(view))
+  |> list.filter(fn(key) { !is_notes_handler(key) })
 }
 
 fn refresh_click() -> String {
@@ -89,8 +90,12 @@ pub fn each_divider_has_one_click_at_the_admitted_path_test() {
         }
       })
     }
-    let observer = every_handler(component.view(page))
-    let operator = every_handler(operator_page.view(page))
+    let observer =
+      every_handler(component.view(page))
+      |> list.filter(fn(key) { !is_notes_handler(key) })
+    let operator =
+      every_handler(operator_page.view(page))
+      |> list.filter(fn(key) { !is_notes_handler(key) })
     assert list.length(dividers(observer)) == 2
     assert dividers(observer) == dividers(operator)
     assert list.all(observer, fn(key) {
@@ -275,4 +280,10 @@ pub fn the_history_return_uses_the_same_admitted_path_on_both_pages_test() {
   let click = component.latest_path <> "\nclick"
   assert list.contains(every_handler(component.view(page)), click)
   assert list.contains(every_handler(operator_page.view(page)), click)
+}
+
+// The dedicated notes tests pin this appended region independently, so these
+// pre-existing comparisons continue to isolate transcript and strand paths.
+fn is_notes_handler(key: String) -> Bool {
+  string.starts_with(key, component.notes_path <> "\t")
 }

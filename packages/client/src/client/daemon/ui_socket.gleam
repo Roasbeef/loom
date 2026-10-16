@@ -339,7 +339,14 @@ fn observer_click() -> decode.Decoder(Bool) {
   use kind <- decode.field("kind", decode.int)
   use name <- decode.field("name", decode.string)
   use path <- decode.field("path", decode.string)
-  decode.success(kind == 1 && name == "click" && observer_path(path))
+  decode.success(
+    kind == 1
+    && case name {
+      "click" -> observer_path(path)
+      "input" -> path == component.notes_search_path
+      _ -> False
+    },
+  )
 }
 
 // The six places an observer's click may fire: the older button, the Home
@@ -353,6 +360,7 @@ fn observer_path(path: String) -> Bool {
   || path == component.latest_path
   || path == component.home_path
   || path == component.context_refresh_path
+  || string.starts_with(path, component.notes_path <> "\t")
   || string.starts_with(path, component.strip_path <> "\t")
   || component.fold_click(path)
   || component.message_click(path)
@@ -423,7 +431,12 @@ fn accepted(reach: Reach) -> decode.Decoder(Bool) {
       use name <- decode.field("name", decode.string)
       use path <- decode.optional_field("path", "", decode.string)
       decode.success(
-        { name == "click" || name == "submit" } && reaches(reach, path),
+        {
+          name == "click"
+          || name == "submit"
+          || { name == "input" && path == component.notes_search_path }
+        }
+        && reaches(reach, path),
       )
     }
     3 -> {

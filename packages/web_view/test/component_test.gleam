@@ -223,11 +223,9 @@ pub fn a_refused_open_ends_the_page_test() {
 
 // Protocol-change/051, the operator addendum: an observer's page is a fixed
 // line with no composer, and a pending escalation draws no card and no
-// approval button. Its handlers are the agent strip's chips, which focus a
-// strand (the addendum on strand focus), and "Load older", which is drawn only
-// when older rows exist, which this empty session has none of (`paging_test`
-// covers it).
-pub fn an_observer_page_has_no_handler_and_no_card_test() {
+// approval button. The strip chip and Notes Refresh are its only buttons here;
+// Notes search is also read-only.
+pub fn an_observer_page_has_no_action_card_test() {
   let page =
     simulate.message(simulation(), component.Opened(wire()))
     |> arrive(
@@ -242,8 +240,14 @@ pub fn an_observer_page_has_no_handler_and_no_card_test() {
   assert !string.contains(html, "<form")
   assert !string.contains(html, "<textarea")
 
-  // Every button on the page is a strip chip, of which this session has one.
-  assert list.length(string.split(html, "<button")) == 2
+  // The one strand chip and the one read-only Notes button are present.
+  let buttons = list.length(string.split(html, "<button")) - 1
+  let chips = list.length(string.split(html, "class=\"chip-hit\"")) - 1
+  let refreshes = list.length(string.split(html, "class=\"notes-refresh\"")) - 1
+  assert chips == 1
+  assert refreshes == 1
+  assert buttons == chips + refreshes
+  assert string.contains(html, "class=\"notes-search\"")
   assert string.contains(
     html,
     "<button aria-current=\"true\" class=\"chip-hit\"",

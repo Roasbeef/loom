@@ -1,18 +1,18 @@
-//// The strand panel: the right-hand column, a tabbed panel of four panes,
-//// the Strands, Changes, Session and Trace tabs, with the advisor's pending
+//// The strand panel: the right-hand column, a tabbed panel of five panes,
+//// the Strands, Changes, Session, Trace and Notes tabs, with the advisor's pending
 //// nudges drawn under them.
 ////
 //// The panel is the page's last child (`view/shell`). It is an `aside` whose
-//// children are the four panes, always in the same order and all drawn, so
+//// children retain the original four panes and nudge region in the same order, so
 //// no pane's place depends on what another holds, and then the advisor's
 //// pending nudges, drawn by `view/nudges` as a section of their own under
 //// the panes. The nudge card is not a pane: the tab rules hide a tab's
 //// siblings, and the card belongs to none of them, so it shows whichever
 //// tab is chosen — the queue is the advisor's, not a view of one pane's
-//// data — and it is the aside's last child, so the paths the panes hold
+//// data — and Notes is appended after it, so the paths the panes hold
 //// (`component.strip_path`, `component.invite_path`) do not move. Its
 //// visibility is the column's: the card is on screen while the panel is
-//// open, is hidden with the column when the reader closes it, and below
+//// open except on Notes, is hidden with the column when the reader closes it, and below
 //// 980px the stylesheet hides it so the narrow row of cards is left alone
 //// (the cost is recorded in protocol-change/051's addendum of 2026-10-02).
 ////
@@ -24,7 +24,7 @@
 //// carries the class `detailed`, which the stylesheet reads to hide the title
 //// and the list: the detail replaces them on screen and the list stays in the
 //// page, because the marker relay clicks a card and the cards must exist to be
-//// clicked. The strip's cards are the only handlers in the panel, and
+//// clicked. Notes owns only read and local presentation handlers, and
 //// the panel carries no control that decides anything: a card that needs a
 //// decision says so in its status line, and the approval card that answers it
 //// stays in the dock, above the composer, where its rules hold
@@ -69,6 +69,7 @@ pub fn view(
   trace: Element(message),
   nudges: Element(message),
   commentary: Element(message),
+  notes: Element(message),
 ) -> Element(message) {
   html.aside(
     [
@@ -103,6 +104,7 @@ pub fn view(
       session,
       trace,
       nudges,
+      notes,
     ],
   )
 }

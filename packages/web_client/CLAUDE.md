@@ -734,3 +734,19 @@ The composer keeps the full JSON table as escaped text in its `commands` slot.
 bindings; `Configured` replaces the table and resets its selection without
 changing the draft. Prefix matching, keyboard selection and click selection
 use `composer_rule` as before. Reopen the page to refresh configuration names.
+
+## Notes navigation
+
+`<loom-notes mode="index|detail">` is an empty helper inside the Notes pane.
+The server owns the board, search and selected cell. The helper saves only the
+panel's scroll position and page-assigned numeric row mark on entry, focuses
+Back after detail is painted, and restores row focus and scroll on return.
+Its listeners belong to the enclosing notes region and are removed on
+replacement/disconnect. Escape within detail presses its ordinary Back button
+and stops propagation before shell strand navigation; inputs keep Escape.
+It handles no key outside notes and cannot reach the approval dock or composer.
+
+`shell_rule.Notes` is the appended panel tab, with `tab-notes` as its pseudo
+state and `notes` as its existing layout-storage word. `.pane-notes` is shown
+only on that tab, which also hides pending advisor nudges. Browser storage holds
+the tab preference and never a note, query or selection.

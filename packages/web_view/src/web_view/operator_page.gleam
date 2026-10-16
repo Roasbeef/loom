@@ -383,6 +383,7 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
     component.panel(
       model,
       fn(strand) { Observed(component.FocusRequested(strand)) },
+      Observed,
       Some(component.viewers(model)),
       share.view(
         component.share(model),

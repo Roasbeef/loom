@@ -1,4 +1,4 @@
-//// The strand panel: four panes in a fixed order as the frame's last child,
+//// The strand panel: five panes in a fixed order as the frame's last child,
 //// the badge's count, and the rule that the panel carries no decision.
 ////
 //// The tabs and the choice between them are `<loom-shell>`'s
@@ -73,6 +73,19 @@ fn count(haystack: String, needle: String) -> Int {
   list.length(string.split(haystack, needle)) - 1
 }
 
+fn notes_handlers(view: element.Element(message)) -> List(String) {
+  handlers(view)
+  |> list.filter(fn(key) {
+    string.starts_with(key, component.notes_path <> "\t")
+  })
+}
+
+fn event_name(key: String) -> String {
+  let assert Ok(name) = list.last(string.split(key, "\n"))
+    as "a handler key ends in its event name"
+  name
+}
+
 // Whether each part appears in `html` after the one before it.
 fn in_order(html: String, parts: List(String)) -> Bool {
   case parts {
@@ -96,15 +109,14 @@ pub fn every_pane_is_drawn_in_a_fixed_order_on_both_pages_test() {
       "pane pane-changes",
       "pane pane-session",
       "pane pane-trace",
+      "pane-notes",
     ])
   })
 
-  // The operator's Session pane also holds its controls, a section of their
-  // own after the invitation control's place. The owner's page adds the list of
-  // what the session remembers (protocol-change/073) as the pane's last child, so
-  // this member's page, which draws none, has five.
-  assert count(panel_of(operator(quiet())), "<section") == 5
-  assert count(panel_of(observer(quiet())), "<section") == 4
+  // The operator's Session pane also holds its controls and remembered list.
+  // Notes is appended after the existing children on both pages.
+  assert count(panel_of(operator(quiet())), "<section") == 6
+  assert count(panel_of(observer(quiet())), "<section") == 5
 }
 
 // The panel is the last child of the frame: nothing is drawn after it, so a
@@ -160,9 +172,10 @@ pub fn the_panel_carries_no_decision_control_test() {
   assert !string.contains(panel, "Deny")
   assert !string.contains(panel, "<textarea")
 
-  // The Session pane's Fork form is the one other control, and it decides
-  // nothing: its submit is the only button that is not a strand's card.
-  assert count(panel, "<button") == count(panel, "chip-hit") + 1
+  // The Session pane's Fork form and Notes Refresh are the two other
+  // controls, and neither decides anything.
+  assert count(panel, "<button") == count(panel, "chip-hit") + 2
+  assert count(panel, "notes-refresh") == 1
   assert count(panel, "<form") == 1
 }
 
@@ -173,7 +186,8 @@ pub fn an_observers_panel_names_the_wait_and_holds_no_card_test() {
   assert !string.contains(html, "approval-card")
   let panel = panel_of(html)
   assert string.contains(panel, "Needs approval")
-  assert count(panel, "<button") == count(panel, "chip-hit")
+  assert count(panel, "<button") == count(panel, "chip-hit") + 1
+  assert count(panel, "notes-refresh") == 1
 }
 
 // --- keys and the approval cards ----------------------------------------------
@@ -230,17 +244,32 @@ pub fn the_composer_and_the_approvals_are_separate_places_test() {
 // listener is the shell's, in the browser, which sends the server nothing. So
 // no keystroke reaches the server as a decision, or as anything.
 pub fn no_key_handler_exists_on_a_page_with_an_approval_pending_test() {
+  let operator_view = operator_page.view(main_waiting())
+  let operator_handlers = handlers(operator_view)
   let names =
-    handlers(operator_page.view(main_waiting()))
-    |> list.map(fn(key) {
-      let assert Ok(name) = list.last(string.split(key, "\n"))
-        as "a handler key ends in its event name"
-      name
-    })
+    operator_handlers
+    |> list.map(event_name)
     |> list.unique
     |> list.sort(string.compare)
-  assert names == ["click", "submit"]
-  assert list.all(handlers(component.view(main_waiting())), fn(key) {
-    string.ends_with(key, "\nclick")
-  })
+  assert names == ["click", "input", "submit"]
+  assert list.sort(
+      list.map(notes_handlers(operator_view), event_name),
+      string.compare,
+    )
+    == ["click", "input"]
+
+  let observer_handlers = handlers(component.view(main_waiting()))
+  let observer_notes =
+    observer_handlers
+    |> list.filter(fn(key) {
+      string.starts_with(key, component.notes_path <> "\t")
+    })
+  let observer_other =
+    observer_handlers
+    |> list.filter(fn(key) {
+      !string.starts_with(key, component.notes_path <> "\t")
+    })
+  assert list.sort(list.map(observer_notes, event_name), string.compare)
+    == ["click", "input"]
+  assert list.all(observer_other, fn(key) { string.ends_with(key, "\nclick") })
 }

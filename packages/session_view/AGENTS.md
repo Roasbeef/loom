@@ -923,3 +923,12 @@ reports acknowledgement, refusal or uncertain delivery to the host. The queue
 editor consumes these notices before `step.forget_surfaces` clears them; the
 web host now uses the same full-document read and replacement correlation as
 the terminal. No process, I/O or foreign binding is added here.
+## Explicit surface custody
+
+`step.update_retaining_surfaces` runs the shared step while leaving its surface
+facts for a host to consume. The web notes browser adopts the existing
+`NotesArrived` board before calling `step.forget_surfaces`. The ordinary
+`step.update` drops unshown surface facts while retaining queue notices until
+the host consumes them. Both entries return the same effects; explicit cleanup
+retires both kinds of reply after adoption. `step_test` pins custody for notes
+and queue replies together.

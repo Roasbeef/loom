@@ -333,7 +333,7 @@ pub fn new(
 /// approval inspector shows none of the three. The settle then compares the
 /// record with the one the event started from, as `session_step.settle` does
 /// after each of the terminal's events, and the facts such a host has no
-/// surface for are dropped (`forget_surfaces`). A prompt the daemon handed
+/// surface for are dropped (`forget_unshown_surfaces`). A prompt the daemon handed
 /// back stays in `Shared.returned_drafts` for the host to take. Queue-editor
 /// notices likewise remain for the host to consume before `forget_surfaces`.
 ///
@@ -368,6 +368,35 @@ pub fn new(
 /// ```
 @internal
 pub fn update(
+  shared: Shared(socket, recorder, source, replay_source),
+  message: msg.Msg(source),
+) -> #(
+  Shared(socket, recorder, source, replay_source),
+  List(step_effect.Effect(socket, recorder)),
+) {
+  let #(reduced, effects) = update_retaining_surfaces(shared, message)
+  #(
+    case message {
+      msg.Input(event: msg.Ticked, ..) -> forget_unshown_surfaces(reduced)
+      msg.Arrived(_) | msg.Input(event: msg.Acted(_), ..) -> reduced
+    },
+    effects,
+  )
+}
+
+/// Runs the same step while transferring surface-fact custody to the host.
+/// The host must consume and then forget the facts before its next update.
+/// This lets the web notes reader adopt the existing bounded notes reply
+/// without keeping terminal-only facts or changing the wire protocol.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let #(shared, effects) = step.update_retaining_surfaces(shared, message)
+/// // let shared = step.forget_surfaces(shared)
+/// ```
+@internal
+pub fn update_retaining_surfaces(
   shared: Shared(socket, recorder, source, replay_source),
   message: msg.Msg(source),
 ) -> #(
@@ -505,7 +534,7 @@ fn tick(
     |> service_reads
     |> surfaces.service_block_summaries
     |> tick_lane
-  settle(started, after) |> forget_unshown_surfaces
+  settle(started, after)
 }
 
 // The roster's clock moves with the stamp, and the frame is stale when a
