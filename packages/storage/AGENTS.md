@@ -439,6 +439,16 @@ or close; there is no transaction, lease or authorization cache.
   `Released`, and `releases` listing the `Release` rows), `scope`, and `unacked`, the attach reply's two
   key lists as a read that changes nothing (`Unacked(terminal, unknown)`), for
   a reconciler that must not replace the scope's token to look.
+  `summary` (`Summary(scopes, unclean, bytes, unacknowledged)`) is the read an
+  executor's report is built from (protocol-change/085): `ScopeCounts(open, closing,
+  closed_clean, closed_unknown)`, the scopes that block a reopen as
+  `UncleanScope(session, state)` (`Closing`, or `Closed(UnknownCleanup(n))`, ordered
+  by session; an open scope holds a slot against the limit but is not listed), the bytes
+  against the budget, and the calls nobody has acknowledged. It is four reads and no
+  write, on the connection the node-level actor owns, so they describe one state; a scope
+  whose state and close outcome disagree is `MalformedRow`. The statements are
+  `LedgerScopeStates`, `LedgerUncleanScopes` and `LedgerUnackedCount`, beside the
+  existing `LedgerReservedBytes`.
 
 ## Relationships
 
