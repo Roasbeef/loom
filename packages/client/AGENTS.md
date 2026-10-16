@@ -6412,6 +6412,10 @@ callback keeps every PKIX failure, and for the leaf it requires the SHA-256 pin
 and the exact node name (the certificate's only DNS name containing an `@`) of
 one configured peer, in both directions. Network input never makes an atom:
 peer names become atoms once inside `start`, and `peer` looks them up by string.
+The generated options file declares UTF-8 explicitly: OTP otherwise defaults to
+Latin-1 and can alter quoted binary pin bytes. The options-encoding regression
+round-trips all 256 repeated-byte pins through `ssl_dist_sup:consult/1`, checking
+both TLS roles and the verification callback itself.
 The foreign code also has a live mode (protocol-change/086), which `[distribution]
 ledger` selects: `tls_options` renders no pin and the callback checks a leaf
 against the `pins` row of the protected ETS table `loom_dist_pins`, refusing

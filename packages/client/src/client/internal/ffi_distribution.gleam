@@ -75,12 +75,13 @@ pub type Link {
 ///
 /// OTP `io_lib:format/2` with `~p`. The file holds an Erlang term that
 /// references the verify function, and only the module that defines that
-/// function can name it.
+/// function can name it. An explicit UTF-8 declaration keeps OTP's reader
+/// from decoding quoted binary pins with its Latin-1 default.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// ffi_distribution.options(peers, files) // -> "[{server, ..}, {client, ..}].\n"
+/// ffi_distribution.options(peers, files) // -> "%% coding: utf-8\n[{server, ..}, {client, ..}].\n"
 /// ```
 @external(erlang, "client_distribution_ffi", "options")
 pub fn options(peers: List(#(String, BitArray)), files: files) -> String
@@ -94,7 +95,7 @@ pub fn options(peers: List(#(String, BitArray)), files: files) -> String
 /// ## Examples
 ///
 /// ```gleam
-/// ffi_distribution.live_options(Live, files) // -> "[{server, ..}, {client, ..}].\n"
+/// ffi_distribution.live_options(Live, files) // -> "%% coding: utf-8\n[{server, ..}, {client, ..}].\n"
 /// ```
 @external(erlang, "client_distribution_ffi", "options")
 pub fn live_options(trust: Live, files: files) -> String
