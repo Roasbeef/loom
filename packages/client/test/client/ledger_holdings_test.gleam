@@ -10,6 +10,7 @@ import client/executors
 import client/ledger_holdings.{Answer}
 import client/membership_entry.{Upsert}
 import client/membership_ledger
+import client/node_report
 import client/remote/orchestrator_port.{type Held, Held, Placed}
 import client/roster
 import gleam/int
@@ -240,4 +241,67 @@ pub fn placements_on_exactly_the_most_the_port_carries_are_known_test() {
   let assert Ok(Held(sessions:, placed:)) = spread(orchestrator_port.max_placed)
   assert sessions == orchestrator_port.max_placed
   assert list.length(placed) == orchestrator_port.max_placed
+}
+
+// --- the placements a report lists ---------------------------------------------
+
+pub fn placements_split_the_sessions_on_an_executor_by_residency_test() {
+  let #(registry, store, directory) = held_catalogue.start()
+  let _ = held_catalogue.registered_n(store, directory, "box", 2)
+  let _ = held_catalogue.registered_n(store, directory, "", 1)
+  let listed = roster.fixed([executors.plain("box", "loom@box.example.net")])
+
+  // The fixture's sessions are saved and none has a runtime, and the session
+  // with no executor is a session and not a placement.
+  assert ledger_holdings.placements(registry, listed)
+    == Ok([
+      node_report.Placement(
+        executor_node: "loom@box.example.net",
+        resident: 0,
+        saved: 2,
+      ),
+    ])
+}
+
+pub fn a_session_handed_away_is_not_a_placement_test() {
+  let #(registry, store, directory) = held_catalogue.start()
+  let sessions = held_catalogue.registered_n(store, directory, "box", 3)
+  let assert [first, ..] = sessions
+  let assert Ok(_) = catalogue.begin_move(store, first, op: "op-1", to: "bravo")
+  let assert Ok(_) = catalogue.finish_move(store, first, op: "op-1")
+  let listed = roster.fixed([executors.plain("box", "loom@box.example.net")])
+  assert ledger_holdings.placements(registry, listed)
+    == Ok([
+      node_report.Placement(
+        executor_node: "loom@box.example.net",
+        resident: 0,
+        saved: 2,
+      ),
+    ])
+}
+
+pub fn more_executors_than_a_report_lists_are_unknown_not_truncated_test() {
+  let #(registry, store, directory) = held_catalogue.start()
+  let names =
+    list.repeat(Nil, node_report.max_placements + 1)
+    |> list.index_map(fn(_, n) { "box" <> int.to_string(n) })
+  list.each(names, fn(name) {
+    let _ = held_catalogue.registered_n(store, directory, name, 1)
+    Nil
+  })
+  let listed =
+    roster.fixed(
+      list.map(names, fn(name) {
+        executors.plain(name, "loom@" <> name <> ".example.net")
+      }),
+    )
+
+  // The full tally fits the port's `Holds` and does not fit a report, so the
+  // report is left without placements and nobody reads a short list as whole.
+  assert ledger_holdings.placements(registry, listed) == Error(Nil)
+}
+
+pub fn an_empty_catalogue_has_no_placements_test() {
+  let #(registry, _, _) = held_catalogue.start()
+  assert ledger_holdings.placements(registry, roster.fixed([])) == Ok([])
 }

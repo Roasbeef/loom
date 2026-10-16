@@ -42,7 +42,8 @@
 ////
 //// ## Flow
 ////
-//// `collect` → `targets` → `over_distribution` → `from_catalogue`
+//// `collect` → `targets` → `over_distribution` → `from_catalogue` →
+//// `placements`
 ////
 //// 1. `targets` lists the orchestrators to ask: this node, if it is an active
 ////    orchestrator, and each orchestrator its pin table lists.
@@ -51,12 +52,16 @@
 //// 3. `over_distribution` is the production `Asker`: it connects to the pinned
 ////    peer, or addresses its own port, and asks `Holds`.
 //// 4. `from_catalogue` is what the port runs when the question arrives.
+//// 5. `placements` is the same walk answering a different question, how many of
+////    the sessions placed on each executor are resident, for the report a
+////    daemon gives of itself (protocol-change/085).
 
 import client/daemon/manager.{type Manager}
 import client/distribution.{type Membership}
 import client/distribution_plan.{Orchestrator}
 import client/executors.{type Executor}
 import client/membership_ledger.{type Ledger}
+import client/node_report.{type Placement}
 import client/orchestrators
 import client/remote/address
 import client/remote/orchestrator_port.{type Held, type Holder, Held, Placed}
@@ -221,7 +226,13 @@ pub fn over_distribution(membership: Membership, local: String) -> Asker {
 
 // What a walk of the catalogue has counted.
 type Tally {
-  Tally(sessions: Int, by_executor: Dict(String, Int))
+  Tally(sessions: Int, by_executor: Dict(String, Counts))
+}
+
+// The sessions placed on one executor, and how many of them have a usable
+// resident runtime.
+type Counts {
+  Counts(placed: Int, resident: Int)
 }
 
 /// What the port answers to `Holds`: the sessions this daemon's catalogue owns
@@ -264,8 +275,53 @@ pub fn from_pages(
 ) -> Holder {
   fn() {
     use tally <- result.try(count(registry, "", Tally(0, dict.new()), pages))
-    use placed <- result.map(placed_on(tally.by_executor, roster.rows(listed)))
-    Held(sessions: tally.sessions, placed:)
+    use nodes <- result.map(placed_on(tally.by_executor, roster.rows(listed)))
+    Held(
+      sessions: tally.sessions,
+      placed: list.map(nodes, fn(entry) {
+        let #(executor_node, counts) = entry
+        Placed(executor_node:, sessions: counts.placed)
+      }),
+    )
+  }
+}
+
+/// How many sessions this daemon's catalogue has placed on each executor, and
+/// how many of those have a usable resident runtime, for a node's report
+/// (protocol-change/085). It is the walk `from_catalogue` makes, with the same
+/// exclusions: archived sessions and sessions handed to another orchestrator are
+/// not counted, and a session placed on an executor no row lists names no node.
+///
+/// `Error(Nil)` is not an empty list. A catalogue that cannot be read, one longer
+/// than `max_pages` pages, and sessions on more executors than a report lists
+/// (`node_report.max_placements`) are each unknown, and the caller leaves the
+/// facts out rather than state a partial count.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ledger_holdings.placements(registry, executors)
+/// // -> Ok([Placement("box@10.0.0.2", resident: 1, saved: 4)])
+/// ```
+pub fn placements(
+  registry: Manager(instance),
+  listed: Roster(Executor),
+) -> Result(List(Placement), Nil) {
+  use tally <- result.try(count(registry, "", Tally(0, dict.new()), max_pages))
+  use nodes <- result.try(placed_on(tally.by_executor, roster.rows(listed)))
+  case list.drop(nodes, node_report.max_placements) {
+    [] ->
+      Ok(
+        list.map(nodes, fn(entry) {
+          let counts = entry.1
+          node_report.Placement(
+            executor_node: entry.0,
+            resident: counts.resident,
+            saved: counts.placed - counts.resident,
+          )
+        }),
+      )
+    [_, ..] -> Error(Nil)
   }
 }
 
@@ -323,11 +379,23 @@ fn handed_away(
 
 fn add(tally: Tally, owned: List(manager.View)) -> Tally {
   list.fold(owned, tally, fn(tally, view) {
+    let resident = case view.status {
+      manager.Resident(..) -> 1
+      manager.Reserved
+      | manager.Saved
+      | manager.Opening(..)
+      | manager.Stopping(..)
+      | manager.RecoveryBlocked(..) -> 0
+    }
     let placed = case view.registration.executor {
       "" -> tally.by_executor
       name ->
         dict.upsert(tally.by_executor, name, fn(seen) {
-          option.unwrap(seen, 0) + 1
+          let before = option.unwrap(seen, Counts(placed: 0, resident: 0))
+          Counts(
+            placed: before.placed + 1,
+            resident: before.resident + resident,
+          )
         })
     }
     Tally(sessions: tally.sessions + 1, by_executor: placed)
@@ -340,9 +408,9 @@ fn add(tally: Tally, owned: List(manager.View)) -> Tally {
 // the first of them, because the operator's tool reads a node missing from the
 // list as a node with nothing placed on it.
 fn placed_on(
-  by_name: Dict(String, Int),
+  by_name: Dict(String, Counts),
   listed: List(Executor),
-) -> Result(List(orchestrator_port.Placed), Nil) {
+) -> Result(List(#(String, Counts)), Nil) {
   let by_node =
     dict.to_list(by_name)
     |> list.filter_map(fn(entry) {
@@ -350,16 +418,19 @@ fn placed_on(
       |> result.map(fn(executor) { #(executor.node, entry.1) })
     })
     |> list.fold(dict.new(), fn(sums, entry) {
-      dict.upsert(sums, entry.0, fn(seen) { option.unwrap(seen, 0) + entry.1 })
+      dict.upsert(sums, entry.0, fn(seen) {
+        let before = option.unwrap(seen, Counts(placed: 0, resident: 0))
+        Counts(
+          placed: before.placed + entry.1.placed,
+          resident: before.resident + entry.1.resident,
+        )
+      })
     })
   case dict.size(by_node) > orchestrator_port.max_placed {
     True -> Error(Nil)
     False ->
       dict.to_list(by_node)
       |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
-      |> list.map(fn(entry) {
-        Placed(executor_node: entry.0, sessions: entry.1)
-      })
       |> Ok
   }
 }
