@@ -5,8 +5,13 @@
 //// a VM booted for it, so the two-node tests live in `remote_nodes_test`.
 
 import client/daemon/main
+import client/executor_plane
+import client/internal/ffi_os
+import client/node_report.{ExecutorFacts, ScopeCounts}
 import client/peer_defaults
 import client/remote/address
+import client/remote/protocol
+import client/system_prompt
 import client/workspaces.{Workspace}
 import gleam/erlang/process
 import gleam/option.{None, Some}
@@ -73,7 +78,7 @@ pub fn a_daemon_that_serves_a_workspace_registers_the_host_test() {
     "--best-effort",
   ]
 
-  let assert Ok(Some(monitor)) =
+  let assert Ok(Some(hosted)) =
     main.start_executor(
       config(scratch <> "/state", served, arguments),
       log.discard(),
@@ -81,8 +86,32 @@ pub fn a_daemon_that_serves_a_workspace_registers_the_host_test() {
   let assert Ok(host) = process.named(address.default())
     as "the host registers under the fixed name"
 
+  // The host reports itself from its own ledger: nothing attached yet, so no
+  // scope, no census, and the workspace named without its root.
+  let limits = executor_plane.scope_limits()
+  assert hosted.facts()
+    == Some(
+      ExecutorFacts(
+        protocol: protocol.version,
+        scopes: ScopeCounts(
+          open: 0,
+          closing: 0,
+          closed_clean: 0,
+          closed_unknown: 0,
+        ),
+        scope_limit: limits.max_unclean_scopes,
+        unclean: [],
+        ledger_bytes: 0,
+        ledger_limit: limits.max_ledger_bytes,
+        unacknowledged: 0,
+        platform: system_prompt.platform(ffi_os.platform()),
+        observed: None,
+        workspaces: ["proj"],
+      ),
+    )
+
   // The host is not linked to this process, so it ends only when told to.
-  process.demonitor_process(monitor)
+  process.demonitor_process(hosted.monitor)
   assert process.is_alive(host)
   process.kill(host)
 

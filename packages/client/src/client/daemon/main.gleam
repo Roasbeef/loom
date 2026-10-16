@@ -8,17 +8,22 @@
 //// ## Flow
 ////
 //// `main` → `claim_endpoint` → `prepare_startup` → `run` → `start_executor` →
-//// `start_orchestrator_port` → `start_movers` → `listen_moving` →
+//// `start_movers` → `start_orchestrator_port` → `listen_moving` →
 //// `publish_endpoint` → `wait`
 ////
 //// 1. `main` parses the flags, `claim_endpoint` reserves this VM, and
 ////    `prepare_startup` reads the configuration once and prepares the root.
 //// 2. `run` starts the daemon's services in order. `start_executor` comes
 ////    first, so a machine that serves workspaces answers peers before any
-////    client can connect, and `start_orchestrator_port` follows it, so a
+////    client can connect. `sweep_delegate_sessions` then settles the delegate
+////    sessions a previous run left, before anything is served or moved.
+////    `start_movers` follows it and resumes every move this
+////    daemon had in flight, and `start_orchestrator_port` follows that, so a
 ////    daemon with distribution answers a peer's question about which sessions
-////    it holds and takes the sessions a peer moves to it. `start_movers`
-////    follows that and resumes every move this daemon had in flight.
+////    it holds, takes the sessions a peer moves to it, and reports itself
+////    (protocol-change/085). The port comes after the movers and the executor
+////    host because a report reads both: the moves in flight and the host's
+////    ledger.
 //// 3. `listen_moving` binds the listener, and `publish_endpoint` records the
 ////    bound port for the reservation this VM holds.
 //// 4. `wait` blocks on the signal relay, the root and the executor host, and a
@@ -30,6 +35,7 @@ import client/catalog
 import client/daemon/limits
 import client/daemon/listener
 import client/daemon/manager
+import client/daemon/node_facts
 import client/daemon/profiles
 import client/daemon/restart
 import client/daemon/root
@@ -61,6 +67,7 @@ import client/ledger_reference
 import client/ledger_rows
 import client/ledger_service.{type Service}
 import client/membership_ledger
+import client/node_report
 import client/orchestrators
 import client/peer_defaults
 import client/peer_mail
@@ -83,6 +90,7 @@ import client/session_move
 import client/session_mover
 import client/session_movers
 import client/spawners
+import client/system_prompt
 import client/workspaces
 import core/clock
 import core/glance
@@ -196,6 +204,25 @@ pub type Serving(instance) {
     listener: listener.Bound,
   )
 }
+
+/// The executor host this daemon started, as the rest of the daemon holds it.
+pub type ExecutorHost {
+  ExecutorHost(
+    /// A monitor on the host, whose `DOWN` ends the daemon (`wait`).
+    monitor: process.Monitor,
+    /// What the host says about itself, as the executor facts of a report.
+    /// `None` when the host did not answer within `executor_summary_ms`, which
+    /// a report treats as a source that said nothing and not as a host with
+    /// nothing in its ledger.
+    facts: fn() -> Option(node_report.ExecutorFacts),
+  )
+}
+
+// How long a report waits for the host to read its ledger. The host answers in
+// its own turn between calls, so a wait this long means it is busy with
+// admissions, and a report that is part-way through its own deadline is better
+// without the executor facts than late.
+const executor_summary_ms = 2000
 
 type Event {
   Signal(host.Stop)
@@ -794,7 +821,7 @@ fn existing_roots(served: List(workspaces.Workspace)) -> Result(Nil, String) {
 pub fn start_executor(
   config: Config,
   logger: Logger,
-) -> Result(Option(process.Monitor), String) {
+) -> Result(Option(ExecutorHost), String) {
   case config.workspaces {
     [] -> Ok(None)
     configured -> {
@@ -808,11 +835,12 @@ pub fn start_executor(
         config.state_root,
         logger,
       ))
+      let limits = executor_plane.scope_limits()
       use started <- result.try(
-        executor_host.start(executor_host.Config(
+        executor_host.start_reporting(executor_host.Config(
           name: address.default(),
           ledger_path: config.state_root <> "/exec-ledger.db",
-          limits: executor_plane.scope_limits(),
+          limits:,
           max_result_bytes: executor_host.default_max_result_bytes,
           execution_result_bytes: executor_host.default_execution_result_bytes,
           clock: clock.from_function(ffi_os.system_time_ms),
@@ -826,7 +854,18 @@ pub fn start_executor(
       log.info(logger, "daemon.executor_serving", [
         field.count("workspaces", list.length(configured)),
       ])
-      Ok(Some(process.monitor(started.pid)))
+      let platform = system_prompt.platform(ffi_os.platform())
+      let names = list.map(configured, fn(workspace) { workspace.name })
+      let summarize = started.data.summarize
+      Ok(
+        Some(
+          ExecutorHost(monitor: process.monitor(started.pid), facts: fn() {
+            summarize(executor_summary_ms)
+            |> result.map(node_facts.executor_facts(_, limits, platform, names))
+            |> option.from_result
+          }),
+        ),
+      )
     }
   }
 }
@@ -909,7 +948,7 @@ pub fn directory_path(state_root: String) -> String {
 /// ## Examples
 ///
 /// ```gleam
-/// // assert main.start_orchestrator_port(Config(..config, membership: None), daemon, logger, peer, delegate) == Ok(Nil)
+/// // assert main.start_orchestrator_port(Config(..config, membership: None), daemon, logger, peer, delegate, None, session_movers.idle()) == Ok(Nil)
 /// ```
 @internal
 pub fn start_orchestrator_port(
@@ -918,6 +957,8 @@ pub fn start_orchestrator_port(
   logger: Logger,
   peer_endpoint: fn(instance) -> Option(peer_mail.Endpoint),
   delegate_endpoint: fn(instance) -> agency.DelegateEndpoint,
+  executor: Option(ExecutorHost),
+  movers: session_movers.Control,
 ) -> Result(Nil, String) {
   case config.membership {
     None -> Ok(Nil)
@@ -966,7 +1007,7 @@ pub fn start_orchestrator_port(
             ready.registry,
             executor_roster(config),
           ),
-          orchestrator_port.unreported(),
+          node_reads(config, ready, executor, movers),
         )
         |> result.map_error(fn(error) {
           "the orchestrator port did not start: " <> string.inspect(error)
@@ -981,6 +1022,126 @@ pub fn start_orchestrator_port(
       ])
       Ok(Nil)
     }
+  }
+}
+
+// The report this daemon gives of itself when a peer asks. Each source is a
+// function the daemon holds and `node_facts.report` calls under one deadline:
+// the executor host's own account, the registry and the movers for the
+// orchestrator facts, and the directory member for the cluster view. The start
+// time is taken when the port starts, which is when the daemon begins to
+// answer, and uptime is the difference of two readings of this node's clock.
+fn node_reads(
+  config: Config,
+  ready: root.Ready(instance),
+  executor: Option(ExecutorHost),
+  movers: session_movers.Control,
+) -> orchestrator_port.Reads {
+  let local = atom.to_string(node.name(node.self()))
+  let identity = build_identity.current()
+  let version = identity.version
+  let commit = identity.commit
+  let epoch = ready.epoch
+  let registry = ready.registry
+  let started_ms = ffi_os.system_time_ms()
+  orchestrator_port.Reads(report: fn() {
+    node_facts.report(
+      node_facts.Sources(
+        node: local,
+        build_version: version,
+        build_commit: commit,
+        epoch:,
+        started_ms:,
+        now_ms: ffi_os.system_time_ms,
+        peers: fn() { listed_nodes(config) },
+        orchestrator: fn() {
+          orchestrator_facts(config, registry, local, movers)
+        },
+        executor: fn() {
+          case executor {
+            Some(hosted) -> hosted.facts()
+            None -> None
+          }
+        },
+        directory: fn() { directory_facts(config, local) },
+      ),
+    )
+  })
+}
+
+// The nodes of the orchestrators and executors this daemon lists, once each and
+// in name order. With a ledger these are the nodes it links this daemon to, so
+// the list names who this daemon would dial and not only who its file pinned.
+fn listed_nodes(config: Config) -> List(String) {
+  list.append(
+    list.map(roster.rows(orchestrator_roster(config)), fn(row) { row.node }),
+    list.map(roster.rows(executor_roster(config)), fn(row) { row.node }),
+  )
+  |> list.unique
+  |> list.sort(string.compare)
+}
+
+// What this daemon says as an orchestrator. A daemon that is none (an executor
+// in a ledger, or one with nothing listed) says nothing, as does one whose
+// registry or catalogue would not answer: a count it could not make is left out
+// and never reported as zero.
+fn orchestrator_facts(
+  config: Config,
+  registry: manager.Manager(instance),
+  local: String,
+  movers: session_movers.Control,
+) -> Option(node_report.OrchestratorFacts) {
+  case ownership_of(config, local) {
+    None -> None
+    Some(_) -> {
+      let listed = executor_roster(config)
+      {
+        use counts <- result.try(
+          manager.summary(registry) |> result.replace_error(Nil),
+        )
+        use placements <- result.map(ledger_holdings.placements(
+          registry,
+          listed,
+        ))
+        node_report.OrchestratorFacts(
+          capacity: counts.capacity,
+          occupied: counts.occupied,
+          resident: counts.resident,
+          imports: node_report.Receiving,
+          executor_nodes: roster.rows(listed)
+            |> list.map(fn(row) { row.node })
+            |> list.unique
+            |> list.sort(string.compare)
+            |> list.take(node_report.max_placements),
+          placements:,
+          moves: movers.moves(),
+        )
+      }
+      |> option.from_result
+    }
+  }
+}
+
+// What a directory member says: the cluster as it sees it, and whether its own
+// copy is current. The copy is confirmed by a fence and a read of this node's
+// own migration marker, so a member that has lost its quorum says `Unconfirmed`
+// instead of describing a cluster it can no longer vouch for.
+fn directory_facts(
+  config: Config,
+  local: String,
+) -> Option(node_report.DirectoryFacts) {
+  case config.directory, config.member {
+    Some(_), Some(handle) ->
+      Some(
+        node_report.DirectoryFacts(
+          status: member.status(handle),
+          copy: case store.confirm_current(local) {
+            Ok(Nil) -> node_report.Current
+            Error(_) -> node_report.Unconfirmed
+          },
+        ),
+      )
+    Some(_), None | None, Some(_) | None, None -> None
   }
 }
 
@@ -2147,16 +2308,16 @@ fn run(
         logger,
         ffi_os.system_time_ms(),
       ))
-      use Nil <- result.try(
-        start_orchestrator_port(
-          config,
-          daemon,
-          logger,
-          fn(resident: serve.Resident) { Some(resident.peer) },
-          fn(resident: serve.Resident) { resident.spawns },
-        ),
-      )
       use movers <- result.try(start_movers(config, daemon, logger))
+      use Nil <- result.try(start_orchestrator_port(
+        config,
+        daemon,
+        logger,
+        fn(resident: serve.Resident) { Some(resident.peer) },
+        fn(resident: serve.Resident) { resident.spawns },
+        executor,
+        movers,
+      ))
       use ui <- result.try(web_view(config, daemon))
       use serving <- result.try(listen_moving(
         config,
@@ -2281,14 +2442,20 @@ fn web_view(
   }
 }
 
-fn wait(daemon, watch, executor, signals, logger) {
+fn wait(
+  daemon: root.Root(instance),
+  watch: process.Monitor,
+  executor: Option(ExecutorHost),
+  signals: process.Subject(host.Stop),
+  logger: Logger,
+) {
   let selector =
     process.new_selector()
     |> process.select_map(signals, Signal)
     |> process.select_specific_monitor(watch, fn(down) { RootGone(down.reason) })
   let selector = case executor {
-    Some(monitor) ->
-      process.select_specific_monitor(selector, monitor, fn(down) {
+    Some(hosted) ->
+      process.select_specific_monitor(selector, hosted.monitor, fn(down) {
         ExecutorGone(down.reason)
       })
     None -> selector
