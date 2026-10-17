@@ -45,12 +45,23 @@ encoding order. The driver observes answer text on screen and saves terminal
 captures or browser screenshots; it then stops its session and waits for the
 daemon's `saved` state before admitting another.
 
+The reviewed driver records a successful timing only after the capture, idle
+observation, and `saved` check have succeeded. Rows carry `run_id` and
+`session_id`; captures carry the same identifiers in their filenames. Select
+one run when analyzing the append-only `ui.jsonl`. An ambiguous session-open
+failure still attempts cleanup. Each control RPC has one deadline covering
+connection, upgrade, hello, and reply; unrelated events do not renew it, and
+EOF during upgrade fails promptly.
+
 `scripts/request_compression.escript` separately measures the runtime we would
 actually use in production. It times OTP gzip/gunzip, then sends identical
 captured JSON through the existing `provider_ffi` native HTTP owner, bypassing
 the experiment proxy. Every attempt checks the decoded request's hash, the
 streamed answer and terminal event, and the original owner's **normal exit**.
 Completion without handler drain is a failure.
+The reviewed harness samples `drained_us` when it receives the normal owner
+exit, before response validation and hashing. The first-chunk measurements
+below are unchanged by this correction.
 
 The backend models upload serialization by delaying its response by
 `wire_bytes × 8 / (Mbps × 1_000_000)`. A rate of zero adds no delay. This is
@@ -138,6 +149,15 @@ make sandbox
 (cd packages/client && gleam build --warnings-as-errors)
 ```
 
+The focused harness regressions use only Python's standard library and local
+loopback sockets:
+
+```sh
+python3 -B scripts/test_request_compression.py -v
+```
+
+The UI driver's `--ui tui` mode does not load Playwright or launch Chromium.
+
 Use a private empty home, state directory, and workspace under
 `build/compression`; initialize the workspace with `git init`. Give the daemon
 this catalogue at `build/compression/state/loom.toml`:
@@ -182,6 +202,10 @@ python3 scripts/request_compression_ui.py build/compression \
 python3 scripts/request_compression.py summary build/compression/lab
 ```
 
+The request summary separates compression levels and rejects inconsistent
+byte sizes within a group. It aggregates all captured attempts in its input
+directory; use the UI rows' run identifiers for a particular UI series.
+
 The long request is saved as `build/compression/lab/<sha256>.json`. Substitute
 that path below. Run timings sequentially on an otherwise quiet machine.
 
@@ -214,11 +238,23 @@ a local TCP relay exposed its loopback daemon to the host browser. No model
 credentials were configured, no provider request was made, and no operator
 daemon was installed or restarted.
 
-Validation passed: the application build, Python syntax checks, documentation
+Original measurement validation passed: the application build, Python syntax checks, documentation
 gate, UI settlements and cleanup, all native transport attempts, and byte-exact
 compression controls. The documentation gate reported zero errors and 196
 existing citation warnings. The full application test suite was not rerun;
 production source is unchanged.
+
+Harness review independently recomputed the stored capture hash, gzip-6 size,
+and the UI/native table medians from the original artifacts. Fresh validation
+of the repaired scripts passed eight focused tests, including silent and
+truncated control peers, a peer sending unrelated events past the RPC deadline,
+ambiguous open cleanup, failed attempts producing no success row, and distinct
+run/session identities. Seven in-memory mutations were rejected: combining
+compression levels, accepting inconsistent sizes, renewing the RPC budget,
+ignoring upgrade EOF, recording before cleanup, skipping cleanup after an open
+failure, and dropping run identity. These focused tests do not rerun the real
+UI or native transport measurements above; those numbers remain evidence from
+the original experiment.
 
 ## What this supports next
 

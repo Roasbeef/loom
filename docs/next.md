@@ -4,7 +4,7 @@
 
 The [request compression note](design-notes/request-compression.md) records
 the shared provider path, a local gzip fixture, real terminal/browser checks,
-and native OTP CPU/transport measurements. Both UIs produced the same
+and native OTP compression elapsed-time and transport measurements. Both UIs produced the same
 586,331-byte synthetic conversation request; gzip-6 reduced it to 130,226
 bytes. The experiment changes no production transport default. Provider
 acceptance and real-network inference latency remain unmeasured because the

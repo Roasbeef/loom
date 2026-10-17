@@ -208,10 +208,15 @@ def summary(directory):
     groups = {}
     for line in (directory / 'requests.jsonl').read_text().splitlines():
         row = json.loads(line)
-        key = (row['sha256'], row['simulated_mbps'], row['encoding'])
+        key = (row['sha256'], row['simulated_mbps'], row['encoding'], row['level'])
         groups.setdefault(key, []).append(row)
+    # Validate every group before printing any apparently usable summary.
+    for key, rows in groups.items():
+        if len({(r['raw_bytes'], r['wire_bytes']) for r in rows}) != 1:
+            raise ValueError(f'inconsistent byte sizes in summary group {key}')
     for key, rows in sorted(groups.items()):
         print(json.dumps({'sha256': key[0], 'simulated_mbps': key[1], 'encoding': key[2],
+                          'level': key[3],
                           'samples': len(rows), 'raw_bytes': rows[0]['raw_bytes'],
                           'wire_bytes': rows[0]['wire_bytes'],
                           **{field: round(statistics.median(r[field] for r in rows), 3)

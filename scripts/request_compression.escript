@@ -1,6 +1,6 @@
 #!/usr/bin/env escript
 %%! +S 1:1
-%% OTP gzip CPU and real provider_ffi transport measurements. All network work
+%% OTP gzip elapsed-time and real provider_ffi transport measurements. All network work
 %% targets the companion loopback fixture. No provider credentials are used.
 %% Usage: escript scripts/request_compression.escript cpu|transport CAPTURE [LEVEL]
 %% For transport, build packages/client and set ERL_LIBS to its build/dev/erlang.
@@ -76,7 +76,7 @@ transport(Body, Encoding, Level, Rate, Round) ->
     provider_ffi:begin_stream_request(Owner, <<"POST">>, <<"http://127.0.0.1:18746/v1/messages">>,
         [{<<"content-type">>, <<"application/json">>}, {<<"x-api-key">>, <<"scripted">>},
          {<<"x-lab-mbps">>, integer_to_binary(Rate)} | Headers], Wire),
-    {First, Reply, Status, ReplyHeaders, Finished} = collect(Monitor, undefined, [], undefined, [], false),
+    {First, Reply, Status, ReplyHeaders, Finished, Drained} = collect(Monitor, undefined, [], undefined, [], false),
     true = Finished,
     200 = Status,
     true = binary:match(Reply, <<"gzip-probe-ok">>) =/= nomatch,
@@ -86,7 +86,7 @@ transport(Body, Encoding, Level, Rate, Round) ->
     emit(#{kind => transport, encoding => Encoding, level => Level, simulated_mbps => Rate, round => Round,
            sha256 => Expected, raw_bytes => byte_size(Body), wire_bytes => byte_size(Wire),
            first_chunk_us => First - Start,
-           drained_us => erlang:monotonic_time(microsecond) - Start}).
+           drained_us => Drained - Start}).
 
 %% The original owner monitor, rather than ResponseEnd alone, proves the
 %% production HTTP handler drained. A missing or abnormal witness fails the run.
@@ -99,7 +99,8 @@ collect(Monitor, First, Chunks, Status, Headers, Finished) ->
         finished -> collect(Monitor, First, Chunks, Status, Headers, true);
         {failed, Reason} -> error({transport_failed, Reason});
         {'DOWN', Monitor, process, _, normal} ->
-            {First, iolist_to_binary(lists:reverse(Chunks)), Status, Headers, Finished};
+            Drained = erlang:monotonic_time(microsecond),
+            {First, iolist_to_binary(lists:reverse(Chunks)), Status, Headers, Finished, Drained};
         {'DOWN', Monitor, process, _, Reason} -> error({drain_proof_lost, Reason})
     after 120000 -> error(transport_timeout)
     end.
