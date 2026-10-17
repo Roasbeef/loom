@@ -442,3 +442,23 @@ pub fn a_daemon_with_no_peers_lists_no_groups_test() {
     Nil
   })
 }
+
+// A peer is asked for 20 rows, and another daemon's code may send more. The reply
+// holds 20 and says more follow.
+pub fn a_peer_that_sends_more_rows_than_asked_is_cut_to_the_page_test() {
+  listing(
+    both_reachable(),
+    fn(_node, _after, _limit) { Ok(Page(..rows(60, 10), more: Last)) },
+    fn(_ready, port, credential, _notes) {
+      let #(socket, _) = wire.connect(port, credential, "/v2/control")
+      let _hello = wire.frame(socket, within_ms: 1000)
+      let body = field(elsewhere(socket, 1, json.Object([])), "body")
+      let assert json.Array([desk, _]) = field(body, "orchestrators")
+      let assert json.Array(shown) = field(desk, "sessions")
+      assert list.length(shown) == 20
+      assert field(desk, "more") == json.Bool(True)
+      let _ = ffi_ws.tcp_close(socket)
+      Nil
+    },
+  )
+}

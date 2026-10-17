@@ -83,10 +83,10 @@
 //// Protocol-change/085 also adds `Sessions`, one page of the sessions the
 //// catalogue would list to its own owner (`client/listed_sessions`). The owner's
 //// `sessions.elsewhere` asks it of every other orchestrator. It reads the
-//// catalogue a page at a time, so it runs apart from the port as `Holds` does,
-//// and a catalogue that cannot be read sends nothing: the asker's deadline turns
-//// that into silence, which is what it is, and an empty page is never sent for
-//// a failed read.
+//// catalogue a page at a time, so it runs apart from the port as `Holds` does.
+//// A catalogue that cannot be read answers `Error(Nil)` at once, which the asker
+//// reads as silence, and an empty page is never sent for a failed read. A
+//// catalogue so slow that the asker's deadline passes first is silence as well.
 ////
 //// The port reveals whether an identity is in this daemon's catalogue, and for
 //// `Holds` two counts of sessions, to a peer the operator pinned as a trusted

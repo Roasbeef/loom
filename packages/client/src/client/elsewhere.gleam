@@ -244,13 +244,23 @@ pub fn ask_all(
 
 fn hearing(outcome: weft.Outcome(Page, Nil)) -> Heard {
   case outcome {
-    weft.Completed(value:, ..) -> Answered(value)
+    weft.Completed(value:, ..) -> Answered(bounded(value))
     weft.Failed(..)
     | weft.Crashed(..)
     | weft.Abandoned(..)
     | weft.NeverStarted(..)
     | weft.DrainProofLost(..)
     | weft.CancellationUnconfirmed(..) -> Silent
+  }
+}
+
+// A peer is asked for `rows_per_group` rows but is another daemon's code, so a
+// page with more is cut to that many and marked as having more, which keeps the
+// fit below it linear in a bounded number of rows.
+fn bounded(page: Page) -> Page {
+  case list.drop(page.rows, rows_per_group) {
+    [] -> page
+    [_, ..] -> Page(rows: list.take(page.rows, rows_per_group), more: Further)
   }
 }
 

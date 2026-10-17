@@ -274,3 +274,12 @@ pub fn a_reply_that_is_not_shaped_as_the_protocol_says_is_not_drawn_test() {
   })
   let assert Error(_) = elsewhere_view.decode(json.Null)
 }
+
+// The command a "more:" line suggests carries a session identity, so a row whose
+// identity does not parse is refused as the web copy rule refuses it.
+pub fn a_row_whose_identity_is_not_a_session_identity_is_not_drawn_test() {
+  let document =
+    body([answered("desk", [row("not an id; rm -rf ~", "/w", "n")], True)])
+  let assert Error(reason) = tui.format_elsewhere(document, tui.AsText)
+  assert string.contains(reason, "session identity")
+}

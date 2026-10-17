@@ -32,6 +32,7 @@
 ////    each session, or the one line that says it was silent. A group with more
 ////    to show names the command that reads its next page.
 
+import core/ids
 import core/json.{type JsonValue}
 import gleam/int
 import gleam/list
@@ -139,6 +140,11 @@ fn group(value: JsonValue) -> Result(Group, String) {
 
 fn row(value: JsonValue) -> Result(Row, String) {
   use session_id <- result.try(text_at(value, "session_id"))
+  use Nil <- result.try(
+    ids.parse_session_id(session_id)
+    |> result.replace(Nil)
+    |> result.replace_error("session_id is not a session identity"),
+  )
   use workspace <- result.try(label_at(value, "workspace"))
   use name <- result.try(label_at(value, "name"))
   use status <- result.try(field(value, "status"))
