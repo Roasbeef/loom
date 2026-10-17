@@ -8,6 +8,7 @@ import client/catalog
 import client/spawners.{InDirectory, InPool, OnExecutor, Spawner}
 import gleam/dict
 import gleam/list
+import gleam/option.{None, Some}
 import gleam/string
 
 const distribution =
@@ -92,6 +93,9 @@ max_sessions = 16
 max_within_s = 3600
 default_within_s = 600
 retain_s = 7200
+token_budget_per_day = 5000000
+child_token_budget = 200000
+max_per_day = 20
 ",
     )
   assert spawners.parse(text)
@@ -107,6 +111,10 @@ retain_s = 7200
         max_within_s: 3600,
         default_within_s: 600,
         retain_s: 7200,
+        idle_close_s: 3600,
+        token_budget_per_day: Some(5_000_000),
+        child_token_budget: Some(200_000),
+        max_per_day: Some(20),
       ),
     ])
 }
@@ -119,6 +127,43 @@ pub fn omitted_keys_take_the_documented_defaults_test() {
   assert spawner.max_within_s == 14_400
   assert spawner.default_within_s == 1800
   assert spawner.retain_s == 604_800
+  assert spawner.idle_close_s == 3600
+
+  // The metering keys default to no bound, which is a spawner as it was before
+  // the keys existed.
+  assert spawner.token_budget_per_day == None
+  assert spawner.child_token_budget == None
+  assert spawner.max_per_day == None
+  assert !spawners.metered(spawner)
+}
+
+pub fn any_one_metering_key_makes_a_spawner_metered_test() {
+  let metered = fn(line) {
+    let assert Ok([spawner]) = spawners.parse(minimal_with(line))
+    spawners.metered(spawner)
+  }
+  assert metered("token_budget_per_day = 1000")
+  assert metered("child_token_budget = 1000")
+  assert metered("max_per_day = 3")
+}
+
+pub fn a_metering_key_is_a_positive_integer_test() {
+  refused(
+    minimal_with("token_budget_per_day = 0"),
+    "spawners.laptop.token_budget_per_day must be positive",
+  )
+  refused(
+    minimal_with("child_token_budget = -5"),
+    "spawners.laptop.child_token_budget must be positive",
+  )
+  refused(
+    minimal_with("max_per_day = \"ten\""),
+    "spawners.laptop.max_per_day must be an integer",
+  )
+  refused(
+    minimal_with("max_per_day = 2.5"),
+    "spawners.laptop.max_per_day must be an integer",
+  )
 }
 
 pub fn the_default_ceiling_leaves_out_what_reaches_beyond_the_session_test() {
@@ -166,7 +211,7 @@ profile = \"cheap-review\"
   assert spawners.by_node(configured, "runner@100.64.0.7") == Error(Nil)
 }
 
-pub fn retention_follows_the_table_and_falls_back_to_the_default_test() {
+pub fn standing_follows_the_table_and_a_removed_table_is_removed_test() {
   let text =
     with(
       "[spawners.laptop]
@@ -176,14 +221,30 @@ workspace = \"loom\"
 profile = \"cheap-review\"
 max_within_s = 3600
 retain_s = 7200
+idle_close_s = 120
 ",
     )
   let assert Ok(configured) = spawners.parse(text)
-  assert spawners.retention_ms(configured, "laptop") == 7_200_000
+  assert spawners.standing(configured, "laptop")
+    == spawners.Configured(retain_ms: 7_200_000, idle_close_ms: 120_000)
 
-  // A spawner whose table was removed is still swept, on the default.
-  assert spawners.retention_ms(configured, "gone")
-    == spawners.default_retain_s * 1000
+  // A spawner whose table was removed can send nothing more.
+  assert spawners.standing(configured, "gone") == spawners.Removed
+}
+
+pub fn idle_close_must_be_a_positive_integer_test() {
+  refused(
+    with(
+      "[spawners.laptop]
+node = \"laptop@100.64.0.5\"
+executor = \"runner\"
+workspace = \"loom\"
+profile = \"cheap-review\"
+idle_close_s = 0
+",
+    ),
+    "spawners.laptop.idle_close_s must be positive",
+  )
 }
 
 pub fn a_node_that_is_not_a_pinned_peer_is_refused_by_name_test() {
@@ -394,7 +455,7 @@ pub fn a_malformed_table_is_refused_with_the_key_it_names_test() {
   )
   refused(
     minimal_with("host = \"x\""),
-    "unknown key `host` in [spawners.laptop] (allowed: node, executor, pool, directory, workspace, profile, tools, max_depth, max_sessions, max_within_s, default_within_s, retain_s)",
+    "unknown key `host` in [spawners.laptop] (allowed: node, executor, pool, directory, workspace, profile, tools, max_depth, max_sessions, max_within_s, default_within_s, retain_s, idle_close_s, token_budget_per_day, child_token_budget, max_per_day)",
   )
   refused(
     with("[spawners]\nlaptop = \"laptop@100.64.0.5\"\n"),

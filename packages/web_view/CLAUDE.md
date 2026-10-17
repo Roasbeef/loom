@@ -1497,6 +1497,14 @@ surface does not leave the second host with an incompatible reducer path.
   onto this package, `ui_socket` and `ui_relay`, the view's security and
   accessibility rules, and the checklist for a change here.
 
+## Remote children in the context panel (protocol-change/084)
+
+`context_breakdown.panel_with_remote(state, remote, actions)` is `panel` plus a
+section after the board that lists the children that ran on other orchestrators,
+one row for each orchestrator (`remote_usage_words.entry`, text nodes). `panel`
+is `panel_with_remote` with no entries, and `component.heading` passes
+`model.shared.remote_usage`.
+
 ## Model profiles in the new-session forms (protocol 076)
 
 `Start.profiles` is the list of profile names the daemon's configuration defines,

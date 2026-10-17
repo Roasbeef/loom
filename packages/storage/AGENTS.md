@@ -28,7 +28,7 @@ or close; there is no transaction, lease or authorization cache.
 
 ## Key Types
 
-- The catalogue is at `user_version` 15. Each later version has its own embedded
+- The catalogue is at `user_version` 17. Each later version has its own embedded
   migration schema (`catalogue_names_schema`, `catalogue_archives_schema`,
   `catalogue_claims_schema`, `catalogue_subtitles_schema`,
   `catalogue_credential_kinds_schema`, `catalogue_logins_schema`,
@@ -36,7 +36,8 @@ or close; there is no transaction, lease or authorization cache.
   `catalogue_models_schema`, `catalogue_executors_schema`,
   `catalogue_pools_schema`, `catalogue_moves_schema`,
   `catalogue_deletions_schema`,
-  `catalogue_delegates_schema`), and
+  `catalogue_delegates_schema`, `catalogue_releases_schema`,
+  `catalogue_spend_schema`), and
   `initialize_schema` applies every
   schema an
   older catalogue lacks, then moves the version, in one transaction; a fresh
@@ -140,7 +141,17 @@ or close; there is no transaction, lease or authorization cache.
   run in (protocol-change/084). Version 15 adds `catalogue_delegate_sessions
   (spawner, parent_session, session_id, last_contact_ms)`, keyed by the pair
   `(spawner, parent_session)`, with `session_id` unique and a foreign key to
-  `catalogue_sessions`. `claim_delegate` is the one write: in one immediate
+  `catalogue_sessions`. Version 16 adds the `state` column (`open`, `releasing` or
+  `released`; `catalogue.DelegateState`), which `set_delegate_state` moves forward
+  only: repeating a word is a no-op, going back is `Conflict`, and a word this
+  build does not know reads as an `Invalid` row and never as an open session. The
+  same version adds `catalogue_remote_releases(parent_session, orchestrator,
+  written_ms)` for the spawning side: `write_remote_releases` writes one row per
+  orchestrator in one transaction and leaves existing rows alone,
+  `remote_releases` lists them and `settle_remote_release` deletes one. Those rows
+  name no registration, because the parent session they concern is deleted by the
+  time they matter. Both are defined in `sql/catalogue_releases.sql`.
+  `claim_delegate` is the one write: in one immediate
   transaction it answers the pair's existing row and moves its contact time, or
   records the pair for the given session unless the spawner already holds
   `limit` rows, which answers `AtLimit(held)` and writes nothing, so two callers
@@ -152,6 +163,18 @@ or close; there is no transaction, lease or authorization cache.
   read with `Invalid` and is never read as "not a delegate". `delete` removes the
   row first, which frees the slot. Claims do not move the catalogue revision,
   because no listing shows them.
+- `catalogue.Spend` is what a spawner has used over a rolling day (protocol-change/084,
+  catalogue version 17). `catalogue_spawner_spend(spawner, hour_bucket, tokens,
+  spawns)` holds one row per spawner and hour, the hour being Unix milliseconds
+  divided by `spend_bucket_ms` (`spend_bucket`). `add_spawner_spend` adds to the
+  bucket the reading falls in and prunes the spawner's buckets older than
+  `spend_day_buckets` (24) in the same immediate transaction, so the table stays
+  bounded with no sweep. `spawner_spend` sums the 24 buckets that end at a reading
+  in one bounded read, so a day rolls off one hour at a time. The rows name no
+  session and outlive every delegate session, which is what lets a day cap bind
+  a spawner that opens a fresh session per parent. A name outside the profile-name
+  grammar, a negative time and a negative amount are `Invalid` and write nothing.
+  The table is defined in `sql/catalogue_spend.sql`.
 - `catalogue.Visibility` separates active and archived rows from initialization
   state. Schema version 3 adds `catalogue_session_archives`, migrated atomically
   from versions 1 and 2. `set_visibility` changes the overlay, clears an archived

@@ -19,6 +19,8 @@ machine Chaos {
   var ends: seq[int];
   var finishes: int;
   var pokes: int;
+  var deletes: int;
+  var drains: int;
 
   start state Init {
     entry (p: (wire: machine, laptop: machine, port: machine, plan: tPlan)) {
@@ -31,6 +33,8 @@ machine Chaos {
       ends = p.plan.ends;
       finishes = p.plan.finishes;
       pokes = p.plan.pokes;
+      deletes = p.plan.deletes;
+      drains = p.plan.drains;
       send this, eChaosStep;
       goto Acting;
     }
@@ -38,7 +42,7 @@ machine Chaos {
 
   state Acting {
     on eChaosStep do {
-      if (breaks + crashes + aborts + sizeof(ends) + finishes + pokes == 0) {
+      if (breaks + crashes + aborts + sizeof(ends) + finishes + pokes + deletes + drains == 0) {
         finish();
         goto Finished;
       }
@@ -58,13 +62,14 @@ machine Chaos {
   fun finish() {
     send laptop, eDrain;
     send laptop, eDrain;
+    send port, eSlotDrained;
     send port, eDeadlineAll;
   }
 
   fun act() {
     var a: int;
     var run: int;
-    a = choose(6);
+    a = choose(8);
     if (a == 0 && breaks > 0) {
       breaks = breaks - 1;
       send wire, eBreak;
@@ -84,13 +89,21 @@ machine Chaos {
     } else if (a == 5 && pokes > 0) {
       pokes = pokes - 1;
       send laptop, eDrain;
+    } else if (a == 6 && deletes > 0) {
+      deletes = deletes - 1;
+      send laptop, eDelete;
+    } else if (a == 7 && drains > 0) {
+      drains = drains - 1;
+      send port, eSlotDrained;
     }
   }
 }
 
 // What a test case does: the call sites the parent starts and the faults the
-// environment may inflict.
-type tPlan = (sites: seq[tPlanSite], breaks: int, crashes: int, aborts: int, ends: seq[int], finishes: int, pokes: int);
+// environment may inflict. `deletes` is how often the parent session is deleted
+// and `drains` how often the remote's slot for a released session drains before
+// the run ends.
+type tPlan = (sites: seq[tPlanSite], breaks: int, crashes: int, aborts: int, ends: seq[int], finishes: int, pokes: int, deletes: int, drains: int);
 
 // Builds the system for one plan.
 machine Harness {

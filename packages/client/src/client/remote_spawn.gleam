@@ -218,6 +218,14 @@ pub type Cap {
 
   /// The spawner's `max_sessions`: delegate sessions it holds.
   MaxSessions
+
+  /// The spawner's `token_budget_per_day`: the tokens its children used over
+  /// the rolling day have reached it. The limit is the budget.
+  TokensPerDay
+
+  /// The spawner's `max_per_day`: the spawns admitted over the rolling day have
+  /// reached it. The limit is the cap.
+  SpawnsPerDay
 }
 
 /// Why the receiver declined a message. Every variant is a definitive answer,
@@ -452,5 +460,7 @@ fn cap_name(cap: Cap) -> String {
     FanOut -> "fan_out"
     SessionStrands -> "session_strands"
     MaxSessions -> "max_sessions"
+    TokensPerDay -> "token_budget_per_day"
+    SpawnsPerDay -> "max_per_day"
   }
 }

@@ -120,6 +120,12 @@ type Provider {
   /// Settles each request with a reported, priced usage, so the usage ledger
   /// has something to sum, and hangs for a request whose context holds `hold`.
   Meters(text: String, hold: Option(String))
+
+  /// Answers the first request with a priced tool call, which the harness
+  /// refuses, and hangs on the request that follows. The child therefore has
+  /// usage in the ledger while its run is still open, which is the state a
+  /// token budget is judged in.
+  CallsThenHangs
 }
 
 fn counting_clock(from: Int, by: Int) -> Clock {
@@ -175,6 +181,26 @@ fn start_harness_on(
   agency_clock: Clock,
   storage_shape: fn(session.Session) -> session.Session,
 ) -> Harness {
+  start_harness_hooked(
+    provider,
+    shape,
+    session_clock,
+    agency_clock,
+    storage_shape,
+    fn(hooks, _config) { hooks },
+  )
+}
+
+// The same, with the hooks shaped after the Agency's reaping hooks are in, so a
+// test can add the usage hook a delegate session has.
+fn start_harness_hooked(
+  provider: Provider,
+  shape: fn(agency.Config) -> agency.Config,
+  session_clock: Clock,
+  agency_clock: Clock,
+  storage_shape: fn(session.Session) -> session.Session,
+  hooks: fn(effects.Hooks, agency.Config) -> effects.Hooks,
+) -> Harness {
   let assert Ok(sess) = session.open_memory(session_clock)
     as "the memory session must open"
   let assert Ok(counter) =
@@ -223,7 +249,10 @@ fn start_harness_on(
           execution_mode: fn(_name) { effects.ExclusiveExecution },
           recover: None,
         ),
-        hooks: agency.reaping_hooks(effects.default_hooks(), config),
+        hooks: hooks(
+          agency.reaping_hooks(effects.default_hooks(), config),
+          config,
+        ),
       ),
       api.Options(
         ..base,
@@ -284,6 +313,15 @@ fn scripted_stream(
                 False -> settle_with(events, text, metered())
               }
             None -> settle_with(events, text, metered())
+          }
+        effects.PollRequest(..) | effects.SummaryRequest(..) -> Nil
+      }
+    CallsThenHangs ->
+      case spec {
+        effects.GenerationRequest(context:, ..) ->
+          case has_tool_result(context) {
+            True -> Nil
+            False -> settle_calling(events, metered())
           }
         effects.PollRequest(..) | effects.SummaryRequest(..) -> Nil
       }
@@ -354,10 +392,53 @@ fn settle_with(
   text: String,
   usage: message.Usage,
 ) -> Nil {
+  settle_blocks(
+    events,
+    [message.AssistantText(text:, text_signature: None)],
+    message.Stop,
+    usage,
+  )
+}
+
+// A response that asks for one tool, which the harness refuses.
+fn settle_calling(events: Subject(stream.StreamEvent), usage: message.Usage) {
+  settle_blocks(
+    events,
+    [
+      message.AssistantToolCall(call: message.ToolCall(
+        id: "call-1",
+        name: "bash",
+        arguments: json.Object([#("command", json.String("true"))]),
+        thought_signature: None,
+        namespace: None,
+      )),
+    ],
+    message.ToolUse,
+    usage,
+  )
+}
+
+fn has_tool_result(context: List(message.AgentMessage)) -> Bool {
+  list.any(context, fn(entry) {
+    case entry {
+      message.ToolResultMessage(..) -> True
+      message.UserMessage(..)
+      | message.AssistantMessage(..)
+      | message.CustomMessage(..) -> False
+    }
+  })
+}
+
+fn settle_blocks(
+  events: Subject(stream.StreamEvent),
+  content: List(message.AssistantBlock),
+  stop_reason: message.StopReason,
+  usage: message.Usage,
+) -> Nil {
   {
     let response =
       message.AssistantMessage(
-        content: [message.AssistantText(text:, text_signature: None)],
+        content:,
         api: "test",
         provider: "acme",
         model: "loom-1",
@@ -365,11 +446,11 @@ fn settle_with(
         response_id: None,
         diagnostics: None,
         usage:,
-        stop_reason: message.Stop,
+        stop_reason:,
         deferred: None,
         error_message: None,
         raw_stop_reason: None,
-        end_turn: Some(True),
+        end_turn: Some(stop_reason == message.Stop),
         timestamp: 0,
       )
     let assert Ok(settled) = stream.settle(response)
@@ -4901,7 +4982,8 @@ pub fn a_remote_call_for_an_unknown_or_foreign_execution_is_refused_test() {
 // --- a parent on another orchestrator (protocol-change/084) -----------------
 //
 // These drive the holder with the questions the orchestrator port relays:
-// `delegate_spawn`, `delegate_join` and `delegate_run_ended`. The session is an
+// `delegate_spawn`, `delegate_join`, `delegate_run_ended` and
+// `delegate_release`. The session is an
 // ordinary harness session whose `main` strand stands for the strand the
 // spawner's profile seeded, and the parent is a strand of some other
 // orchestrator, which this session has never seen.
@@ -5257,6 +5339,85 @@ pub fn a_run_end_stops_what_that_run_owns_and_nothing_else_test() {
   close(harness)
 }
 
+pub fn a_release_stops_every_running_child_whoever_owns_it_test() {
+  let harness = start_harness(Hangs)
+  let owned = remote_spawned(harness, "turn-1:tools", "owned")
+  let other_run = remote_spawned(harness, "turn-2:tools", "other run")
+  let assert Ok(detached) =
+    agency.delegate_spawn(
+      harness.config,
+      remote_delegation(),
+      site_of("turn-3:tools", 0),
+      remote_spawn.Request(
+        ..remote_request("detached"),
+        detach: remote_spawn.Detached,
+      ),
+    )
+
+  // The parent session was deleted: every child stops, with the reason that
+  // says why, and the answer counts them. A run end stops only what its run
+  // owns, and a release has no run to ask about.
+  assert agency.delegate_release(harness.config) == Ok(3)
+  assert until(
+    fn() {
+      run_for(harness, owned.handle).stop == child_run.Released
+      && run_for(harness, other_run.handle).stop == child_run.Released
+      && run_for(harness, detached.handle).stop == child_run.Released
+    },
+    200,
+  )
+
+  // Telling it again writes the same fence and stops nothing more.
+  assert agency.delegate_release(harness.config) == Ok(0)
+  assert run_for(harness, owned.handle).stop == child_run.Released
+  close(harness)
+}
+
+pub fn a_spawn_after_a_release_is_refused_and_creates_nothing_test() {
+  let harness = start_harness(Settles("done"))
+
+  // The release overtakes the spawn, as it can when the two come from
+  // different processes. Nothing is running, so nothing is stopped, and the
+  // fence for the whole session is the only trace.
+  assert agency.delegate_release(harness.config) == Ok(0)
+  let assert Ok(Some(_fence)) =
+    api.fact(harness.runtime, api.delegate_fact_prefix <> "released")
+    as "the release leaves a fence"
+  assert agency.delegate_spawn(
+      harness.config,
+      remote_delegation(),
+      site_of("turn-1:tools", 0),
+      remote_request("late"),
+    )
+    == Error(remote_spawn.ParentRunEnded)
+  assert sub_strands(harness) == []
+  close(harness)
+}
+
+pub fn a_resent_spawn_adopts_even_after_a_release_test() {
+  let harness = start_harness(Hangs)
+  let site = site_of("turn-1:tools", 0)
+  let request =
+    remote_spawn.Request(
+      ..remote_request("outlive"),
+      detach: remote_spawn.Detached,
+    )
+  let assert Ok(first) =
+    agency.delegate_spawn(harness.config, remote_delegation(), site, request)
+  assert agency.delegate_release(harness.config) == Ok(1)
+
+  // A resend of a spawn that already landed creates nothing for the release to
+  // have missed, so it is answered with the child it made, which is stopped.
+  let assert Ok(again) =
+    agency.delegate_spawn(harness.config, remote_delegation(), site, request)
+  assert again.handle == first.handle
+  assert until(
+    fn() { run_for(harness, first.handle).stop == child_run.Released },
+    200,
+  )
+  close(harness)
+}
+
 pub fn a_join_reports_a_settled_child_with_its_result_and_its_cost_test() {
   let harness = start_harness(Meters("the report", Some("hold this one")))
   let settled_child = remote_spawned(harness, "turn-1:tools", "finishes")
@@ -5500,6 +5661,7 @@ pub fn the_delegate_endpoint_answers_for_the_same_holder_test() {
     endpoint.join(remote_parent(), [spawned.handle], 200)
   assert handle == spawned.handle
   assert endpoint.run_ended(site.operation) == Ok(0)
+  assert endpoint.release() == Ok(0)
   close(harness)
 }
 
@@ -5537,7 +5699,30 @@ pub fn an_agency_that_is_not_running_refuses_in_band_test() {
     )
     == Error(unavailable)
   assert agency.delegate_run_ended(config, site.operation) == Error(unavailable)
+  assert agency.delegate_release(config) == Error(unavailable)
   assert result.is_error(agency.delegate_join(config, remote_parent(), [], 0))
+}
+
+pub fn occupancy_is_vacant_until_a_child_has_a_run_and_occupied_when_unreadable_test() {
+  let harness = start_harness(Hangs)
+  assert agency.delegate_occupancy(harness.config) == agency.Vacant
+
+  // A child that hangs has a run.
+  let _child = remote_spawned(harness, "turn-1:tools", "busy")
+  assert agency.delegate_occupancy(harness.config) == agency.Occupied
+
+  // Once the release has stopped it and its run has ended, nothing is left.
+  assert agency.delegate_release(harness.config) == Ok(1)
+  assert until(
+    fn() { agency.delegate_occupancy(harness.config) == agency.Vacant },
+    200,
+  )
+  close(harness)
+}
+
+pub fn occupancy_fails_closed_when_the_agency_is_not_running_test() {
+  let config = agency.default_config(addresses.new(), clock.fixed(at: 0))
+  assert agency.delegate_occupancy(config) == agency.Occupied
 }
 
 // --- the deadline tick -------------------------------------------------------
@@ -5670,9 +5855,13 @@ fn serving(harness: Harness) -> address.Address(orchestrator_port.Message) {
       fn(_session, _command) { Error(orchestrator_port.peer_unserved) },
       fn(_session) { Error("not_found") },
       orchestrator_port.declining(),
-      daemon_main.spawn_host(configured, fn(_spawner, _parent) {
-        Ok(agency.delegate_endpoint(harness.config))
-      }),
+      daemon_main.spawn_host(
+        configured,
+        fn(_spawner, _parent) { Ok(agency.delegate_endpoint(harness.config)) },
+        fn(_spawner, _parent) {
+          agency.delegate_endpoint(harness.config).release()
+        },
+      ),
       orchestrator_port.unheld,
       orchestrator_port.unreported(),
     )
@@ -5734,6 +5923,47 @@ pub fn a_spawner_drives_the_delegate_agency_through_the_port_test() {
       port,
       parent,
       remote_spawn.CallSite(..site, source_index: 1),
+      0,
+      tools,
+      remote_request("late"),
+      5000,
+    )
+    == Ok(Error(remote_spawn.ParentRunEnded))
+  close(harness)
+}
+
+pub fn a_spawner_releases_a_parent_through_the_port_and_its_children_stop_test() {
+  let harness = start_harness(Hangs)
+  let port = serving(harness)
+  let parent = remote_parent()
+  let tools = remote_delegation().parent_tools
+  let assert Ok(Ok(spawned)) =
+    orchestrator_port.ask_spawn(
+      port,
+      parent,
+      site_of("turn-1:tools", 0),
+      0,
+      tools,
+      remote_request("hang around"),
+      5000,
+    )
+    as "the spawn must be answered"
+
+  // The release is answered with the number of children it stopped, and the
+  // child's run records why it stopped.
+  assert orchestrator_port.ask_release(port, parent, 5000) == Ok(Ok(1))
+  assert until(
+    fn() { run_for(harness, spawned.handle).stop == child_run.Released },
+    200,
+  )
+
+  // Asking again, as a drainer does after a lost reply, stops nothing more, and
+  // a spawn that comes after is refused over the same port.
+  assert orchestrator_port.ask_release(port, parent, 5000) == Ok(Ok(0))
+  assert orchestrator_port.ask_spawn(
+      port,
+      parent,
+      site_of("turn-2:tools", 0),
       0,
       tools,
       remote_request("late"),
@@ -6809,5 +7039,249 @@ pub fn a_refusal_ends_a_stub_that_was_never_answered_until_a_child_outranks_it_t
   let assert remote_child.Spawned(placed) = moved.state
   assert placed.handle == an_answer("late").handle
   assert remote_child.find(harness.runtime, key) == Ok(Some(moved))
+  close(harness)
+}
+
+pub fn a_released_fence_refuses_a_local_spawn_too_test() {
+  let harness = start_harness(Settles("done"))
+  assert agency.delegate_release(harness.config) == Ok(0)
+
+  // The fence belongs to the session and not to one kind of caller, and only a
+  // delegate session ever holds it.
+  assert harness.seam.spawn(
+      caller_on("main", "turn-1:tools", 0),
+      a_spawn("late"),
+    )
+    == Error(agent.ParentRunEnded(strand: "main"))
+  close(harness)
+}
+
+// --- a spawner's budgets (protocol-change/084, phase 2) ----------------------
+
+// A harness whose usage hook is the metering one. The spend it reports is sent
+// to `spent`, and a child is judged against `budget`.
+fn start_metered(
+  provider: Provider,
+  budget: Option(Int),
+  spent: Subject(Int),
+) -> Harness {
+  start_harness_hooked(
+    provider,
+    fn(config) { config },
+    counting_clock(1_756_000_000_000, 3),
+    counting_clock(1_756_000_000_000, 3),
+    fn(sess) { sess },
+    fn(hooks, config) {
+      agency.metering_hooks(
+        hooks,
+        config,
+        agency.Metering(
+          spend: fn(tokens) { process.send(spent, tokens) },
+          child_budget: budget,
+          claim: None,
+        ),
+      )
+    },
+  )
+}
+
+pub fn a_child_that_spent_its_budget_is_stopped_by_the_hand_off_test() {
+  let spent = process.new_subject()
+  let harness = start_metered(CallsThenHangs, Some(100), spent)
+  let child = remote_spawned(harness, "turn-1:tools", "spends")
+
+  // The first request used 120 tokens, input plus output, and the hook's
+  // spawned process reported them. The child is still running its second
+  // request, and the same process found its total at the budget and asked the
+  // holder to stop it.
+  assert process.receive(spent, 5000) == Ok(120)
+  assert until(
+    fn() { run_for(harness, child.handle).stop == child_run.TokenBudgetSpent },
+    300,
+  )
+  close(harness)
+}
+
+pub fn a_child_under_its_budget_runs_on_and_the_spend_is_still_reported_test() {
+  let spent = process.new_subject()
+  let harness = start_metered(CallsThenHangs, Some(1000), spent)
+  let child = remote_spawned(harness, "turn-1:tools", "spends a little")
+  assert process.receive(spent, 5000) == Ok(120)
+
+  // Nothing stops it: give the judgment time to run, then look.
+  process.sleep(200)
+  assert run_for(harness, child.handle).stop == child_run.Unstopped
+  close(harness)
+}
+
+pub fn a_session_with_no_child_budget_only_reports_its_spend_test() {
+  let spent = process.new_subject()
+  let harness = start_metered(CallsThenHangs, None, spent)
+  let child = remote_spawned(harness, "turn-1:tools", "unbounded")
+  assert process.receive(spent, 5000) == Ok(120)
+  process.sleep(200)
+  assert run_for(harness, child.handle).stop == child_run.Unstopped
+  close(harness)
+}
+
+// --- a spawner's day, claimed by the holder (protocol-change/084) ----------------
+
+// Refusals waiting for the claims to come, kept by a process of their own
+// because the holder, not the test, takes them off.
+type RefusalQueue {
+  Push(remote_spawn.SpawnRefusal)
+  Pop(Subject(Option(remote_spawn.SpawnRefusal)))
+}
+
+fn refusal_queue() -> Subject(RefusalQueue) {
+  let assert Ok(queue) =
+    actor.new([])
+    |> actor.on_message(fn(waiting, message) {
+      case message {
+        Push(refusal) -> actor.continue(list.append(waiting, [refusal]))
+        Pop(reply) ->
+          case waiting {
+            [next, ..rest] -> {
+              process.send(reply, Some(next))
+              actor.continue(rest)
+            }
+            [] -> {
+              process.send(reply, None)
+              actor.continue([])
+            }
+          }
+      }
+    })
+    |> actor.start
+    as "the refusal queue must start"
+  queue.data
+}
+
+// A harness whose Agency claims each new spawn through a closure that reports
+// the call to `claimed` and refuses with whatever a test has put on `refusals`,
+// one refusal for each claim, and admits otherwise.
+fn start_claiming(
+  claimed: Subject(Int),
+  refusals: Subject(RefusalQueue),
+) -> Harness {
+  start_harness_with(Hangs, fn(config) {
+    agency.Config(
+      ..config,
+      claim: Some(fn(within_ms) {
+        process.send(claimed, within_ms)
+        case process.call(refusals, 1000, Pop) {
+          Some(refusal) -> Error(refusal)
+          None -> Ok(Nil)
+        }
+      }),
+    )
+  })
+}
+
+pub fn a_new_spawn_is_claimed_once_and_a_resend_is_not_test() {
+  let claimed = process.new_subject()
+  let harness = start_claiming(claimed, refusal_queue())
+  let site = site_of("turn-1:tools", 0)
+  let request = remote_request("claimed")
+  let assert Ok(first) =
+    agency.delegate_spawn(harness.config, remote_delegation(), site, request)
+
+  // The claim was bounded by the holder's own timeout, and the resend of the
+  // same call site adopts the child and claims nothing.
+  assert process.receive(claimed, 0) == Ok(harness.config.holder_timeout_ms)
+  let assert Ok(again) =
+    agency.delegate_spawn(harness.config, remote_delegation(), site, request)
+  assert again.handle == first.handle
+  assert process.receive(claimed, 0) == Error(Nil)
+  close(harness)
+}
+
+pub fn a_resend_is_answered_even_when_a_new_spawn_would_be_refused_test() {
+  let claimed = process.new_subject()
+  let refusals = refusal_queue()
+  let harness = start_claiming(claimed, refusals)
+  let site = site_of("turn-1:tools", 0)
+  let assert Ok(first) =
+    agency.delegate_spawn(
+      harness.config,
+      remote_delegation(),
+      site,
+      remote_request("lands"),
+    )
+
+  // The day cap is now reached for any new spawn. The resend still gets its
+  // child, and a different call site is refused with the cap.
+  let full = remote_spawn.CapReached(cap: remote_spawn.SpawnsPerDay, limit: 1)
+  process.send(refusals, Push(full))
+  let assert Ok(again) =
+    agency.delegate_spawn(
+      harness.config,
+      remote_delegation(),
+      site,
+      remote_request("lands"),
+    )
+  assert again.handle == first.handle
+
+  // The refusal waiting was not used up by the resend, so it is the next new
+  // spawn that meets it.
+  assert agency.delegate_spawn(
+      harness.config,
+      remote_delegation(),
+      site_of("turn-2:tools", 0),
+      remote_request("another"),
+    )
+    == Error(full)
+  close(harness)
+}
+
+pub fn a_new_spawn_at_the_cap_is_refused_and_creates_nothing_test() {
+  let claimed = process.new_subject()
+  let refusals = refusal_queue()
+  let full = remote_spawn.CapReached(cap: remote_spawn.SpawnsPerDay, limit: 1)
+  let harness = start_claiming(claimed, refusals)
+  process.send(refusals, Push(full))
+  assert agency.delegate_spawn(
+      harness.config,
+      remote_delegation(),
+      site_of("turn-1:tools", 0),
+      remote_request("over"),
+    )
+    == Error(full)
+  assert sub_strands(harness) == []
+  close(harness)
+}
+
+pub fn an_unanswered_claim_is_a_store_failure_and_creates_nothing_test() {
+  let claimed = process.new_subject()
+  let failure =
+    remote_spawn.StoreFailure(
+      reason: "the registry did not answer the spawn claim",
+    )
+  let refusals = refusal_queue()
+  let harness = start_claiming(claimed, refusals)
+  process.send(refusals, Push(failure))
+  assert agency.delegate_spawn(
+      harness.config,
+      remote_delegation(),
+      site_of("turn-1:tools", 0),
+      remote_request("unanswered"),
+    )
+    == Error(failure)
+  assert sub_strands(harness) == []
+  close(harness)
+}
+
+pub fn a_fenced_spawn_is_not_claimed_test() {
+  let claimed = process.new_subject()
+  let harness = start_claiming(claimed, refusal_queue())
+  assert agency.delegate_release(harness.config) == Ok(0)
+  assert agency.delegate_spawn(
+      harness.config,
+      remote_delegation(),
+      site_of("turn-1:tools", 0),
+      remote_request("late"),
+    )
+    == Error(remote_spawn.ParentRunEnded)
+  assert process.receive(claimed, 0) == Error(Nil)
   close(harness)
 }

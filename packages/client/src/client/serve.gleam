@@ -400,6 +400,10 @@ pub type Settings {
     /// the daemon sets it for a delegate session alone, whose children belong
     /// to a spawner that may never return (protocol-change/084).
     deadline_tick_ms: Option(Int),
+    /// What a delegate session reports about its children's spend and the
+    /// budget it enforces on one child (protocol-change/084, phase 2). `None`
+    /// for every session but the delegate session of a metered spawner.
+    metering: Option(agency.Metering),
     /// Told the first human prompt the session accepts on its main strand,
     /// once, so the daemon can seed the catalogue's subtitle
     /// (`protocol-change/067`). `None` for a host with no catalogue.
@@ -1438,6 +1442,7 @@ fn resolve(flags: Flags, placement: Placement) -> Result(Settings, String) {
       peer_defaults: None,
       remote_reach: None,
       deadline_tick_ms: None,
+      metering: None,
       first_prompt: None,
       profile_desk: None,
       codemode_sockets: None,
@@ -3549,6 +3554,7 @@ fn assemble_in(
       remote_queued: fn() { peer_outbox_drain.poke(remote_drain_name) },
       deadline_tick_ms: settings.deadline_tick_ms,
       abort_effects: effect_abort.abort(effect_abort_name),
+      claim: option.then(settings.metering, fn(metering) { metering.claim }),
       models: list.map(settings.catalog.models, fn(entry) {
         #(
           machine_strand.ModelIdentity(
@@ -4233,7 +4239,11 @@ fn assemble_in(
         // The glance cast rides the same usage slot as the advisor's step
         // counter and composes the same way: it casts and then calls the
         // inner slot, and it captures only the loop's name.
-        |> with_glance(glance_wiring),
+        |> with_glance(glance_wiring)
+        // A metered spawner's delegate session reports each request's tokens and
+        // judges the child against its budget, on a process the slot spawns, so
+        // the driver waits on neither the registry nor the holder.
+        |> with_metering(agency_config, settings.metering),
     )
 
   // The extension hook bus goes on last, over the composed record, so an
@@ -5950,6 +5960,17 @@ fn with_glance(
   case wiring {
     None -> hooks
     Some(wiring) -> glance.hooks(hooks, wiring.name)
+  }
+}
+
+fn with_metering(
+  hooks: effects.Hooks,
+  config: agency.Config,
+  metering: Option(agency.Metering),
+) -> effects.Hooks {
+  case metering {
+    None -> hooks
+    Some(metering) -> agency.metering_hooks(hooks, config, metering)
   }
 }
 

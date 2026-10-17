@@ -76,8 +76,8 @@ MUTATIONS = {
   # so a spawn whose effect process was killed is never answered.
   "M7-drainer-does-not-resend": ("tcOnlyEveryStubAnswered", 4000, r"hot state", [
     ("PSrc/Laptop.p",
-     "      if (stubs[s].st == ST_REQUESTED) {",
-     "      if (false) {")]),
+     "      if (stubs[s].st == ST_REQUESTED) {\n        send wire, eSend,",
+     "      if (false) {\n        send wire, eSend,")]),
 
   # The drainer's join names the stub's own child. Here it names child zero, so
   # a call site can be told the result of another site's child.
@@ -85,6 +85,30 @@ MUTATIONS = {
     ("PSrc/Laptop.p",
      "dest = port, site = s, child = stubs[s].child,",
      "dest = port, site = s, child = 0,")]),
+
+  # `Release` writes the released fence before it stops the children, and the
+  # session refuses every spawn from then on. Here it stops the children and
+  # writes no fence, so a spawn that arrives while the slot drains makes a child
+  # in a session that was released.
+  "M9-release-reaps-without-the-fence": ("tcOnlyReleasedSession", 20000, r"(which had been released|still running after the release)", [
+    ("PSrc/Port.p",
+     "    phase = SS_RELEASING;\n    cs = keys(children);",
+     "    cs = keys(children);")]),
+
+  # An unreachable call is not an answer: the release row stays and the next
+  # drainer pass sends it again. Here the unreachable call settles the row, so a
+  # `Release` the connection lost is never sent again.
+  "M10-unreachable-settles-the-release-row": ("tcOnlyReleaseIsTold", 20000, r"hot state", [
+    ("PSrc/Laptop.p",
+     "      // the row stays owed and the next pass sends it again.\n      watchingRelease = false;",
+     "      // the row stays owed and the next pass sends it again.\n      releaseOwed = false;")]),
+
+  # A `Release` for a parent with no session answers zero and makes nothing.
+  # Here it makes a session, as a `Spawn` does, and then deletes it.
+  "M11-release-makes-a-session": ("tcOnlyReleaseMakesNoSession", 20000, r"a release made a delegate session", [
+    ("PSrc/Port.p",
+     "    if (phase == SS_NONE) {\n      announce eReleaseNoSession;\n      answer(m, K_RELEASED, 0, CS_RUNNING);\n      return;\n    }\n",
+     "    if (phase == SS_NONE) {\n      makeSession(K_RELEASE);\n    }\n")]),
 }
 
 

@@ -35,9 +35,27 @@
 //// because each check protects a different thing. `default_within_s` is what a
 //// spawn gets when it names no deadline, so it cannot exceed the cap
 //// `max_within_s`. `retain_s` is how long a delegate session with no message
-//// from its spawner is kept before the boot sweep deletes it. A child stops at
+//// from its spawner is kept before the sweep deletes it. A child stops at
 //// its deadline at the latest, so with `retain_s` at or above `max_within_s` a
 //// session past retention holds no child that could still be running.
+////
+//// `idle_close_s` is separate and bounds nothing else: a resident delegate
+//// session never hibernates and so holds an executor scope, and the hourly
+//// sweep closes one whose children have all ended and whose spawner has been
+//// silent that long. Closing is not deleting, so it needs no relation to the
+//// other three.
+////
+//// ## Metering
+////
+//// Three optional keys bound what a spawner's children may spend on this
+//// machine. `token_budget_per_day` bounds the tokens (input plus output) used by
+//// every child of the spawner over a rolling day, `max_per_day` bounds the
+//// spawns admitted over the same day, and `child_token_budget` bounds one
+//// child's tokens. A key that is absent bounds nothing, which is how a spawner
+//// behaved before the keys existed. `metered` says whether any of the three is
+//// set, and the daemon records spend only for a spawner that is metered.
+//// Like the other limits they bound an honest spawner and a model that spawns
+//// too much, and are not a boundary against a compromised peer.
 ////
 //// ## Flow
 ////
@@ -48,8 +66,10 @@
 //// 3. `placement_of` requires exactly one placement and resolves it against the
 ////    executors and pools this file configures.
 //// 4. `tools_of` reads the ceiling, or builds the default one.
-//// 5. `windows` checks the three durations against each other.
-//// 6. `find` and `by_node` resolve a configured spawner by name or by the node
+//// 5. `windows` checks the three durations against each other, and
+////    `budget_of` reads one of the three optional metering keys.
+//// 6. `standing` tells the sweep what a session's spawner allows, or that it
+////    was removed. `find` and `by_node` resolve a configured spawner by name or by the node
 ////    a message came from.
 
 import client/distribution
@@ -86,6 +106,9 @@ pub const default_default_within_s = 1800
 
 /// `retain_s` when the table names none: seven days.
 pub const default_retain_s = 604_800
+
+/// `idle_close_s` when the table names none: one hour.
+pub const default_idle_close_s = 3600
 
 /// Where every delegate session of one spawner is put.
 pub type Placement {
@@ -143,6 +166,23 @@ pub type Spawner {
     /// How long a delegate session with no message from its spawner is kept, in
     /// seconds. At least `max_within_s`.
     retain_s: Int,
+    /// How long a resident delegate session with no live child and no message
+    /// from its spawner is kept open before the hourly sweep closes it, in
+    /// seconds. Closing frees the executor scope the session holds and deletes
+    /// nothing, so the next spawn or join reopens it.
+    idle_close_s: Int,
+    /// The tokens, input plus output, that every child of this spawner may use
+    /// over a rolling day. `None` bounds nothing. A spawn is refused once the
+    /// day's total has reached it, and a running child is not stopped by it:
+    /// the budget judges admission.
+    token_budget_per_day: Option(Int),
+    /// The tokens one child may use. `None` bounds nothing. A child that has
+    /// reached it is stopped after the request that took it there, so it
+    /// overshoots by at most one request.
+    child_token_budget: Option(Int),
+    /// The spawns admitted for this spawner over a rolling day. `None` bounds
+    /// nothing.
+    max_per_day: Option(Int),
   )
 }
 
@@ -249,20 +289,41 @@ pub fn find(configured: List(Spawner), name: String) -> Result(Spawner, Nil) {
   list.find(configured, fn(spawner) { spawner.name == name })
 }
 
-/// How long a delegate session of this spawner is kept with no message from it,
-/// in milliseconds. A spawner whose table has since been removed gets
-/// `default_retain_s`, so its sessions are still swept and not kept for good.
+/// What the retention sweep needs to know about the spawner of one delegate
+/// session.
+pub type Standing {
+  /// The spawner is still configured, with its two windows.
+  Configured(
+    /// How long a session with no message from the spawner is kept before it
+    /// is deleted, in milliseconds.
+    retain_ms: Int,
+    /// How long a resident session with no live child and no message is kept
+    /// open before it is closed, in milliseconds.
+    idle_close_ms: Int,
+  )
+
+  /// The table has been removed since the session was made. Nothing can send
+  /// the session a message again, so it is deleted whatever its age.
+  Removed
+}
+
+/// The standing of a delegate session's spawner, for the retention sweep
+/// (protocol-change/084).
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert spawners.retention_ms([], "gone") == 604_800_000
+/// assert spawners.standing([], "gone") == spawners.Removed
 /// ```
-pub fn retention_ms(configured: List(Spawner), name: String) -> Int {
+pub fn standing(configured: List(Spawner), name: String) -> Standing {
   find(configured, name)
-  |> result.map(fn(spawner) { spawner.retain_s })
-  |> result.unwrap(default_retain_s)
-  |> int.multiply(1000)
+  |> result.map(fn(spawner) {
+    Configured(
+      retain_ms: spawner.retain_s * 1000,
+      idle_close_ms: spawner.idle_close_s * 1000,
+    )
+  })
+  |> result.unwrap(Removed)
 }
 
 /// Finds the spawner that a node is the spawning orchestrator of. This is how
@@ -279,6 +340,22 @@ pub fn by_node(
   node: String,
 ) -> Result(Spawner, Nil) {
   list.find(configured, fn(spawner) { spawner.node == node })
+}
+
+/// Whether the spawner sets any of the three metering keys. A spawner that sets
+/// none is unmetered: the daemon counts nothing for it and refuses nothing on
+/// its account.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert !spawners.metered(unbounded)
+/// assert spawners.metered(Spawner(..unbounded, max_per_day: Some(20)))
+/// ```
+pub fn metered(spawner: Spawner) -> Bool {
+  option.is_some(spawner.token_budget_per_day)
+  || option.is_some(spawner.child_token_budget)
+  || option.is_some(spawner.max_per_day)
 }
 
 // The peers a spawner may name. A spawner with no distribution table has no
@@ -344,7 +421,8 @@ fn row(name: String, value: tom.Toml, known: Known) -> Result(Spawner, String) {
         [
           "node", "executor", "pool", "directory", "workspace", "profile",
           "tools", "max_depth", "max_sessions", "max_within_s",
-          "default_within_s", "retain_s",
+          "default_within_s", "retain_s", "idle_close_s", "token_budget_per_day",
+          "child_token_budget", "max_per_day",
         ],
         "[spawners." <> name <> "]",
       ))
@@ -383,6 +461,23 @@ fn row(name: String, value: tom.Toml, known: Known) -> Result(Spawner, String) {
         "retain_s",
         default_retain_s,
       ))
+      use idle_close_s <- result.try(count_of(
+        fields,
+        place,
+        "idle_close_s",
+        default_idle_close_s,
+      ))
+      use token_budget_per_day <- result.try(budget_of(
+        fields,
+        place,
+        "token_budget_per_day",
+      ))
+      use child_token_budget <- result.try(budget_of(
+        fields,
+        place,
+        "child_token_budget",
+      ))
+      use max_per_day <- result.try(budget_of(fields, place, "max_per_day"))
       use Nil <- result.map(windows(
         place,
         max_within_s,
@@ -400,6 +495,10 @@ fn row(name: String, value: tom.Toml, known: Known) -> Result(Spawner, String) {
         max_within_s:,
         default_within_s:,
         retain_s:,
+        idle_close_s:,
+        token_budget_per_day:,
+        child_token_budget:,
+        max_per_day:,
       )
     }
     _ -> Error(place <> " must be a table")
@@ -645,6 +744,20 @@ fn count_of(
     Ok(tom.Int(value)) if value >= 1 -> Ok(value)
     Ok(tom.Int(_)) -> Error(place <> "." <> key <> " must be positive")
     Ok(_) -> Error(place <> "." <> key <> " must be an integer")
+  }
+}
+
+// A metering key: absent is no bound, and a bound is a positive integer. Zero is
+// refused because it would admit nothing, which is a spawner that should not be
+// listed, and the same words as for the other counts say so.
+fn budget_of(
+  fields: Dict(String, tom.Toml),
+  place: String,
+  key: String,
+) -> Result(Option(Int), String) {
+  case dict.has_key(fields, key) {
+    False -> Ok(None)
+    True -> count_of(fields, place, key, 1) |> result.map(Some)
   }
 }
 

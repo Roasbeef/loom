@@ -1,12 +1,17 @@
 # protocol-change/084: subagents on another orchestrator
 
-**Status**: PROPOSED 2026-10-09, direction ruled by the owner the same day
-(transport, child shape, approvals, who spawns, and the defaults). Phase 1 was
-simplified after review on 2026-10-11, and the owner ruled the same day that
-remote children are detached by default (see "Turn end" below). Slices S1 (the policy and the port
-messages), S2 (the delegate session and the box's Agency) and S3 (the laptop's
-stubs, drainer and tools) of phase 1 are built; the rest is not, and every
-spelling below that is not built is provisional until phase 1 lands.
+**Status**: ACCEPTED 2026-10-16. Proposed 2026-10-09, with the direction ruled
+by the owner the same day (transport, child shape, approvals, who spawns, and
+the defaults). Phase 1 was simplified after review on 2026-10-11, and the owner
+ruled the same day that remote children are detached by default (see "Turn end"
+below). Phase 1 shipped in #960 and #969, with the spellings the sections below
+give as built. The three failure cases the shipped test does not drive (the
+laptop killed mid-spawn, the link cut mid-join, the parent's turn ended with the
+link down) are covered by the P model
+(`protocol/models/remote-subagents`, the cases `tcDrops`, `tcAbort` and
+`tcRestart`), not by the shipped test. Phase 2 lands as dated addenda at the end
+of this document, the first being `Release` (2026-10-16). Every spelling below
+that an addendum has not built is still provisional.
 **Affects**: the orchestrator port's closed message type (three constructors in
 phase 1, `Spawn`, `Join` and `RunEnded`; `Release` and `ChildSend` in phase 2;
 `ChildEscalation` and `Resolve` in phase 3), `loom.toml` (a `[spawners.<name>]`
@@ -448,8 +453,9 @@ Phase 1 has five slices, each of which lands on `origin/main` alone.
   reason, wherever it is heard. Remote children are always detached, the laptop
   sends no run end, and the drainer settles children that finish unwaited by a
   zero-window `Join`. Remote usage is recorded on the
-  settled stub; counting it against a goal and refusing `sessions.move` for a
-  parent that holds a live stub are not built. The design note's section 15 lists
+  settled stub; counting it against a goal is not built, and refusing
+  `sessions.move` for a parent that holds a live stub is built in S6 (see the
+  addendum of 2026-10-16). The design note's section 15 lists
   the differences.
 - **S4. Deadline tick and retention.** The per-delegate-session periodic timeout
   calling `reap_overdue` (as built, on the Agency holder actor), and the boot
@@ -468,7 +474,8 @@ Phase 1 has five slices, each of which lands on `origin/main` alone.
   ledger-provisioned pair of daemons: a join, a child that outlives the turn, and
   a deadline stop by the box's tick. It does not drive a `RunEnded` stop, which
   has no sender in phase 1, or the laptop-killed, link-cut and link-down cases.
-  The status stays PROPOSED until the owner decides whether those are required.
+  The model covers them (`tcDrops`, `tcAbort` and `tcRestart`), and the status
+  is ACCEPTED as of 2026-10-16.
 
 Phase 2 adds `Release` and its daemon-level drainer, `SpawnerRemoved`, the
 boot-time reopen, the open-time `RunEnded` repair, metering on the remote
@@ -541,5 +548,209 @@ owner holds alone, and the defaults above. `[spawners.<name>]` over
 protocol-change/083. The owner ruled on 2026-10-11 that ending a turn
 does not stop remote children: they are detached by default and bounded by
 their deadlines. One point remains for the owner (design note, section 17):
-accepting one-shot provisioning for adding a laptop. This document moves to ACCEPTED, with the implemented spellings, when
-S5 of phase 1 lands.
+accepting one-shot provisioning for adding a laptop. Phase 1 shipped in #960 and
+#969, and this document is ACCEPTED as of 2026-10-16.
+
+## Addendum 2026-10-16: `Release` (phase 2, slice S6)
+
+This records what slice S6 built, and where it differs from the proposal above.
+The proposal spelled `Release(parent_session, reply)`, a reuse of the `RunEnded`
+handler, and a delete of the delegate session by the retention sweep alone.
+
+### The message
+
+`orchestrator_port.Message.Release(parent, reply)` carries the `Parent` that
+every other message carries, and only its session names what is released. The
+answer is `Result(Int, SpawnRefusal)`: the number of children the box stopped.
+The pieces on each side are `ask_release` and `remote_spawner.release_over`
+(sending), `SpawnHost.release` (judging the sender against `[spawners]`, as for
+the other messages), `delegate_host.releaser` (the serving function),
+`agency.DelegateEndpoint.release` (the Agency's closure) and
+`remote_reach.Reach.release` (the laptop's record of functions). It runs in a
+task linked to the port, as the other three do.
+
+A `Release` for a pair with no delegate row answers `Ok(0)` and creates nothing.
+That is the opposite of `RunEnded` as built, whose handler resolves the pair
+through `delegate_host.resolver` and creates a session so that the ended fence
+exists before a late `Spawn`. A release that did the same would create a session
+only to delete it, and would count against `max_sessions` meanwhile, so
+`delegate_host.resolve_existing` is a separate path that reads the pair's row and
+finds the Agency only for a session that is open and resident. A closed session
+holds no running child, so the box neither opens it nor asks it anything.
+
+### The box
+
+The row gains a `state` column (catalogue version 16): `open`, `releasing` or
+`released`. A state only moves forward. The sequence for one `Release`:
+
+1. The Agency's holder writes `delegate/released`. This is a fence on the whole
+   session and not on one operation, in the same reserved prefix as
+   `delegate/ended/{operation}`. `admit_run` reads it beside the operation fence,
+   on the create path and after adoption, so a resent `Spawn` that already landed
+   is still answered with the child it made, and a new child is refused as
+   `ParentRunEnded`.
+2. The holder stops every child that is running, whoever owns it, with
+   `child_run.Stop.Released` and `tools/agent.Outcome.Released`. Both decode only
+   the words they know and every older row still decodes. The count is of runs
+   nobody had stopped, so a repeat answers zero. A parent that has been deleted
+   has no run left to own anything, which is why this is not a loop over
+   `reap_run`.
+3. The registry (`manager.release_delegate`) marks the row `releasing` and stops
+   the session's slot. From then on `delegate_session` refuses a message for the
+   pair as `ParentRunEnded`, so nothing opens the session again. The session and
+   its row are deleted when the slot has drained, which is when the row moves to
+   `released` and the registration is removed together with it. A closed session
+   is deleted at once.
+
+A repeat of `Release` answers `Ok(0)` without asking the Agency, and hands the
+session to the registry again, which finishes a deletion that failed. A row that
+stays `released` is a deletion that failed after the slot drained, and the
+retention sweep removes any delegate session that is not `open` and has no slot,
+whatever its age. Deleting the session removes everything stored under it: its
+conversation, and with it the facts, the outbox rows and the remembered
+permissions that later phases keep there.
+
+A `Release` can reach the box before the `Spawn` it concerns, because the two
+come from different processes. The box then has no session to delete, answers
+zero and creates nothing, and the `Spawn` that follows makes a session, which
+the child's deadline and the retention sweep bound. The sender cannot do better
+without the box remembering a deleted session, which would be a table that grows
+without bound.
+
+### The laptop
+
+Deleting a session (`manager.delete_session`, and the directory's finishing of a
+delete) first reads the stubs from the closed session file
+(`remote_release.stubs_at`), takes the orchestrators of every stub that is not
+`Refused` (`remote_child.holders`), and writes one row for each into
+`catalogue_remote_releases(parent_session, orchestrator, written_ms)`, a new
+catalogue table in version 16 that names no registration. It does this in the
+registry's turn and before the registration is removed. A crash between the two
+is safe in both orders: rows without a deletion release a pair that still holds
+its session, and a deletion without rows is the bound of phase 1. A file that
+cannot be read owes nothing, because such a session could not have been waited
+on. A catalogue that cannot take the rows refuses the deletion.
+
+The rows are drained by a third instance of `peer_outbox_drain`, one for the
+daemon and not for a session, which `daemon/main` starts beside the port
+(`start_release_drain`). The registry rings it when a deletion writes a row, as
+it sleeps while nothing is owed. A pass sends each orchestrator `Release` for its
+rows and settles a row on `Ok` or on a definitive `Refused`. A `StoreFailure` from the box (a registry timeout, a session still opening, a failed deletion) is not definitive: `release_over` reports it as `Unreachable`, so the row stays and the next pass sends again. An orchestrator that is removed
+from the configuration is a refusal and so settles its rows. `Unreachable` leaves
+the row and the orchestrator is not asked again in the same pass. The retry is
+the drainer's fixed five seconds, and the first attempt comes one interval after
+the deletion. A row has no time to live, which is longer than
+`spawners.default_retain_s` on every box, because the thing it concerns lives as
+long as the longest deadline plus that retention.
+
+### Moves
+
+`sessions.move` refuses a parent that has a stub that is `Requested`, or
+`Spawned` with a deadline that has not passed, because the child reports to this
+orchestrator by name and a third one would be unreachable for it. The check is in
+the session mover, after the slot has drained and before the close step, because
+that is the first moment the file can be read without a writer holding it. The
+move ends as `Aborted` with a reason that begins `not_movable` and names the
+orchestrator, and it is not the synchronous reply of the command.
+
+### The model
+
+`protocol/models/remote-subagents` gains the release row, the session's three
+phases, `eRelease`, and the specs `ReleasedSessionHasNoRunningChild`,
+`ReleaseMakesNoSession` and `EveryReleaseIsTold`. The last is the property the
+design called `EveryEndedRunIsTold`, with `Release` in place of `RunEnded`. Three
+mutants are caught: a release that reaps without the fence, a drainer that
+settles a row on an unreachable call, and a release that creates a session.
+
+## Addendum 2026-10-16: retention and spawner removal (phase 2, slice S7)
+
+`[spawners.<name>] idle_close_s` (default 3600, at least 1) is the one new key.
+The retention sweep now runs every hour as well as at boot
+(`daemon/main.start_delegate_sweep`, a weft periodic). It deletes a delegate
+session without a slot when its spawner's table was removed, whatever the
+session's age, and it closes, without deleting, a resident open session that
+has no child with a run and has had no message for `idle_close_s`. A resident
+delegate session never hibernates, so without the hourly pass an idle one holds
+an executor scope until the daemon restarts. The next `Spawn` or `Join` reopens
+a closed session. No `SpawnerRemoved` stop is added: nothing runs in a session
+that is not open, so there is no child to record a stop for.
+
+The close is a compare-and-close in two registry turns, with the question about
+the session's children asked between them, outside any turn. The second turn
+stops the session only if its row's `last_contact_ms` is still the value the
+first turn read, because a `Spawn` or `Join` moves it in a registry turn before it
+reaches the Agency. One window remains: a `Spawn` that arrives while a closed
+session is draining finds the slot stopping and is refused as
+`StoreFailure("the delegate session is stopping")`. The spawner's next attempt
+reopens the session. No further refusal is added for it.
+
+## Addendum 2026-10-16: metering (phase 2, slice S8)
+
+Three optional keys on `[spawners.<name>]` bound what a spawner's children spend
+on this machine: `token_budget_per_day` (tokens, input plus output, over a
+rolling day), `max_per_day` (spawns admitted over the same day) and
+`child_token_budget` (tokens of one child). An absent key bounds nothing, which
+is phase 1 behaviour, and a present one is a positive integer. A spawner that
+sets none is unmetered: nothing is recorded or judged for it.
+
+### The spend table
+
+Catalogue version 17 adds `catalogue_spawner_spend(spawner, hour_bucket, tokens,
+spawns)`, one row per spawner and hour, the hour being Unix milliseconds divided
+by 3,600,000. A rolling day is the 24 newest buckets. A write adds to the
+current bucket and prunes the spawner's expired ones in the same transaction, so
+the table stays bounded without a sweep. The rows name no session and outlive
+the delegate sessions they were made in. Tokens are recorded only for a spawner
+that sets `token_budget_per_day`.
+
+### Admission
+
+A new spawn is refused when the day's tokens have reached
+`token_budget_per_day` or the day's spawns have reached `max_per_day`, as
+`SpawnRefusal.CapReached(cap: TokensPerDay | SpawnsPerDay, limit:)`. The Agency's
+holder makes the claim, because only the holder can tell a resent spawn from a
+new one. It calls the closure `Config.claim` (the daemon's
+`manager.claim_spawn`) only when the call site has no child yet, the ended and
+released fences have passed, and the child is about to be created. A resent
+spawn is adopted before any claim, so it is answered with its child, is not
+counted, and is not refused even at the cap.
+
+The claim is one registry message, `ClaimSpawn`. In one turn it reads the
+spawner's last 24 buckets, judges both caps and counts the spawn, touching only
+the catalogue connection the registry already owns. It calls no session, and the
+registry never waits on a holder, so the holder waiting on it cannot deadlock.
+Two claims see each other because the registry handles one message at a time.
+The holder bounds the wait by `holder_timeout_ms`. A claim that goes unanswered
+is a `StoreFailure`, which the laptop retries, and never a cap. Only a spawner
+that sets `token_budget_per_day` or `max_per_day` has a claim; one with only
+`child_token_budget` writes no spawn counts. A spawn that is claimed and then
+refused further in (a depth cap, say) still counts, which errs toward the cap.
+
+### The child budget
+
+A delegate session of a metered spawner wraps its usage slot
+(`agency.metering_hooks`). The slot's only work on the strand driver is one
+`process.spawn_unlinked`. That process reports the request's tokens to the
+registry and, when `child_token_budget` is set, reads the child's total from the
+usage ledger (`child_usage.of_strands`) and sends the holder
+`StopChild(strand, TokenBudgetSpent)`. The holder records the stop and aborts the
+run through `reap`, as for every other stop. The child overshoots by at most the
+request that crossed the budget. `child_run.Stop` and `tools/agent.Outcome` gain
+`TokenBudgetSpent`, written `token_budget_spent`; every decoder keeps accepting
+older rows, and a model reading a wait sees an aborted outcome with that reason.
+
+### The laptop
+
+A goal's token budget counts the settled remote children. The goal cell gains
+`remote_tokens`, the part of `tokens_used` that remote children account for. It
+is a total beside the ledger cursor: an evaluation adds the growth of the sum
+over the settled stubs, so recomputing adds nothing, and a goal that is pinned,
+replaced or resumed starts the figure where it stands. A cell without the field
+reads as zero.
+
+The full snapshot gains an optional `remote_usage`, a list with one entry for
+each orchestrator (`orchestrator`, `input`, `output`, `cache_read`,
+`cache_write`, `cost`). It is omitted when empty, an old client ignores it, and
+an absent field decodes to no entries. The terminal shows it in the footer and
+the session tab, and the web view lists it after the context breakdown, each
+labelled by orchestrator.

@@ -749,6 +749,7 @@ pub fn new_model_with_clock(
       replay_error: None,
       next_id: 1,
       usage: accounting.zero_usage(),
+      remote_usage: [],
       generation_rates: generation_rate.new(),
       details_expanded: False,
       activity_started_ms: None,

@@ -11,6 +11,7 @@ import gleam/string
 import lustre/element.{type Element}
 import lustre/element/html
 import session_view/context_view
+import session_view/remote_usage
 import web_view/component
 import web_view/view/context_breakdown
 import web_view/view/heading
@@ -378,4 +379,35 @@ pub fn inventory_changes_refresh_labels_tokens_and_omissions_test() {
   let #(text, _) = patch(cache, omitted, empty)
   assert !string.contains(element.to_string(empty), "&lt;script&gt;")
   assert string.length(text) > 0
+}
+
+// Children that ran on other orchestrators spend where this session's context
+// cannot see, so the panel lists each orchestrator by name after the board, and
+// a session with none draws exactly what it drew before.
+pub fn remote_children_are_listed_by_orchestrator_test() {
+  let state = observed(board([]))
+  let actions = context_breakdown.Actions(refresh: Nil, compact: None)
+  let plain = context_breakdown.panel(state, actions) |> element.to_string
+  assert context_breakdown.panel_with_remote(state, [], actions)
+    |> element.to_string
+    == plain
+  let html =
+    context_breakdown.panel_with_remote(
+      state,
+      [
+        remote_usage.RemoteUsage(
+          orchestrator: "box",
+          input: 12_300,
+          output: 678,
+          cache_read: 0,
+          cache_write: 0,
+          cost: 0.0,
+        ),
+      ],
+      actions,
+    )
+    |> element.to_string
+  assert string.contains(html, "Children on other orchestrators")
+  assert string.contains(html, "box in 12.3k out 678")
+  assert !string.contains(plain, "other orchestrators")
 }

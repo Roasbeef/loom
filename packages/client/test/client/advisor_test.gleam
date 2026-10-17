@@ -18,6 +18,8 @@ import client/goalcheck
 import client/goalloop
 import client/goalstate
 import client/notes
+import client/remote_child
+import client/remote_spawn
 import core/accounting
 import core/clock
 import core/entry.{type Entry}
@@ -3555,4 +3557,103 @@ fn await_check_recorded_after(
     poll.Answered(value: goal) -> Ok(goal)
     poll.Expired | poll.Failed(error: _reason) -> Error(Nil)
   }
+}
+
+// --- remote children count against the goal (protocol-change/084) -----------
+
+// A settled stub of a child that ran on `orchestrator`, written the way a join
+// leaves it, with `input` and `output` tokens of reported usage.
+fn settle_remote(
+  rig: Rig,
+  digest: String,
+  orchestrator: String,
+  input: Int,
+  output: Int,
+) -> Nil {
+  let placed =
+    remote_child.Placed(
+      handle: agent.Handle(strand: "sub:^main/" <> digest, operation: an_op(5)),
+      tools: [],
+      model: "cheap",
+      model_id: "cheap-1",
+      deadline_ms: 1_756_000_900_000,
+    )
+  let stub =
+    remote_child.Stub(
+      orchestrator:,
+      strand: "main",
+      site: remote_spawn.CallSite(
+        operation: an_op(6),
+        step_id: "step-1",
+        source_index: 0,
+        minter: agent.ToolCall,
+      ),
+      depth: 0,
+      parent_tools: [],
+      request: remote_spawn.Request(
+        purpose: "run it",
+        brief: "run it",
+        model: None,
+        tools: None,
+        within_ms: None,
+        result_schema: None,
+        detach: remote_spawn.Attached,
+      ),
+      name: "sub:^main/" <> digest,
+      state: remote_child.Settled(
+        placed:,
+        outcome: agent.Completed,
+        usage: remote_spawn.ChildUsage(
+          input:,
+          output:,
+          cache_read: 0,
+          cache_write: 0,
+          cost: 0.0,
+        ),
+      ),
+    )
+  let assert Ok(remote_child.Fresh) =
+    remote_child.admit(rig.runtime, remote_child.stub_key(digest), stub)
+    as "the stub must be written"
+  Nil
+}
+
+fn an_op(seed: Int) -> ids.OpId {
+  let #(op, _generator) = ids.mint_op(ids.generator(clock.fixed(at: 0), seed:))
+  op
+}
+
+// A child that settled on another orchestrator after the goal was pinned is
+// charged to it, once, however many times the goal is evaluated again. A child
+// that settled before the goal existed is not.
+pub fn a_settled_remote_child_counts_against_the_goal_once_test() {
+  let assert Ok(rig) = a_rig() as "the advisor rig must open"
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+
+  settle_remote(rig, "0000000000000001", "box", 500, 50)
+  pin_goal(subject, 400_000)
+  assert goal_cell(rig).tokens_used == 0
+  assert goal_cell(rig).remote_tokens == 550
+
+  settle_remote(rig, "0000000000000002", "box", 1000, 100)
+  process.send(subject, advisor.PrimarySpent)
+  let _drained = settle(subject)
+  assert goal_cell(rig).tokens_used == 1100
+  assert goal_cell(rig).remote_tokens == 1650
+
+  // Another evaluation with nothing newly settled adds nothing.
+  process.send(subject, advisor.PrimarySpent)
+  let _drained = settle(subject)
+  process.send(subject, advisor.PrimarySpent)
+  let _drained = settle(subject)
+  assert goal_cell(rig).tokens_used == 1100
+
+  // Local spend and remote spend add together without either hiding the other.
+  let worked = a_primary_entry(rig)
+  let _spent = commit_usage(rig, worked, 101)
+  process.send(subject, advisor.PrimarySpent)
+  let _drained = settle(subject)
+  assert goal_cell(rig).tokens_used == 1100 + 33
+  stop(rig)
 }

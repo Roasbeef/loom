@@ -87,6 +87,7 @@ import session_view/notes_view
 import session_view/protocol
 import session_view/queue_request
 import session_view/remembered
+import session_view/remote_usage
 import session_view/reviewer_status
 import session_view/session_channel
 import session_view/snapshot
@@ -368,6 +369,11 @@ pub type Shared(socket, recorder, source, replay_source) {
     next_id: Int,
     /// The token usage the last capture or settlement reported.
     usage: message.Usage,
+    /// What the settled children on other orchestrators used, per orchestrator,
+    /// as the last full snapshot reported it. It changes only with a snapshot,
+    /// because a remote child's usage reaches the parent only when a join
+    /// settles it.
+    remote_usage: List(remote_usage.RemoteUsage),
     /// Per-strand request clocks and latest complete TPS measurements. Focus
     /// selects a reading and never transfers or resets another strand's clock.
     generation_rates: generation_rate.State,

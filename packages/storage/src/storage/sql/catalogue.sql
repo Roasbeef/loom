@@ -156,15 +156,15 @@ DELETE FROM catalogue_session_deletions WHERE session_id = ?;
 SELECT session_id FROM catalogue_session_deletions ORDER BY session_id;
 
 -- name: DelegateSession :many
-SELECT session_id, last_contact_ms FROM catalogue_delegate_sessions
+SELECT session_id, last_contact_ms, state FROM catalogue_delegate_sessions
 WHERE spawner = ? AND parent_session = ?;
 
 -- name: DelegateOfSession :many
-SELECT spawner, parent_session, last_contact_ms FROM catalogue_delegate_sessions
+SELECT spawner, parent_session, last_contact_ms, state FROM catalogue_delegate_sessions
 WHERE session_id = ?;
 
 -- name: AllDelegateSessions :many
-SELECT spawner, parent_session, session_id, last_contact_ms FROM catalogue_delegate_sessions
+SELECT spawner, parent_session, session_id, last_contact_ms, state FROM catalogue_delegate_sessions
 ORDER BY session_id;
 
 -- name: CountDelegateSessions :one
@@ -180,3 +180,31 @@ WHERE spawner = ? AND parent_session = ?;
 
 -- name: DeleteDelegateSession :exec
 DELETE FROM catalogue_delegate_sessions WHERE session_id = ?;
+
+-- name: SetDelegateSessionState :exec
+UPDATE catalogue_delegate_sessions SET state = ? WHERE session_id = ?;
+
+-- name: InsertRemoteRelease :exec
+INSERT OR IGNORE INTO catalogue_remote_releases (parent_session, orchestrator, written_ms)
+VALUES (?, ?, ?);
+
+-- name: AllRemoteReleases :many
+SELECT parent_session, orchestrator, written_ms FROM catalogue_remote_releases
+ORDER BY parent_session, orchestrator;
+
+-- name: DeleteRemoteRelease :exec
+DELETE FROM catalogue_remote_releases WHERE parent_session = ? AND orchestrator = ?;
+
+-- name: AddSpawnerSpend :exec
+INSERT INTO catalogue_spawner_spend (spawner, hour_bucket, tokens, spawns)
+VALUES (?, ?, ?, ?)
+ON CONFLICT (spawner, hour_bucket) DO UPDATE
+SET tokens = tokens + excluded.tokens, spawns = spawns + excluded.spawns;
+
+-- name: SpawnerSpendSince :many
+SELECT hour_bucket, tokens, spawns FROM catalogue_spawner_spend
+WHERE spawner = ? AND hour_bucket >= ?
+ORDER BY hour_bucket;
+
+-- name: PruneSpawnerSpend :exec
+DELETE FROM catalogue_spawner_spend WHERE spawner = ? AND hour_bucket < ?;

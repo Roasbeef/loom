@@ -594,6 +594,7 @@ fn event_witness(value: JsonValue) -> #(String, String) {
     "keepalive"
     | "response.created"
     | "response.in_progress"
+    | "response.metadata"
     | "response.output_item.added"
     | "response.content_part.added"
     | "response.reasoning_summary_part.added"
@@ -678,6 +679,21 @@ fn dispatch(
     // Subscription streams send this control frame during long reasoning.
     // Framing and sequence validation already ran; no semantic witness changes.
     "keepalive" -> #(acc, [])
+
+    // Subscription inference may send moderation metadata between content
+    // events. It changes no item or terminal witness, but must belong to the
+    // response whose identity was established by response.created.
+    "response.metadata" -> {
+      use response_id <- or_malformed(
+        wire.string_field(value, "response_id"),
+        acc,
+        "metadata_response_id",
+      )
+      case acc.identity {
+        Some(#(id, _)) if id == response_id -> #(acc, [])
+        _ -> malformed(acc, "metadata_identity")
+      }
+    }
 
     "response.created" | "response.in_progress" -> {
       use response <- or_malformed(

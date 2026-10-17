@@ -7251,10 +7251,11 @@ the session first opens and then never again.
   `chosen` is `manager.seed_executor`, a cast that runs `catalogue.seed_executor`
   in the registry's turn, which writes the `executor` column once, only for a
   registration with a pool and no executor.
-- The catalogue is at version 15 (v13 adds `catalogue_session_moves`, the
+- The catalogue is at version 16 (v13 adds `catalogue_session_moves`, the
   custody of a session moving between orchestrators, read with
   `catalogue.custody`; v14 adds the deletion mark; v15 adds `catalogue_delegate_sessions`, read by the
-  registry's `movable` check and written by `manager.delegate_session`).
+  registry's `movable` check and written by `manager.delegate_session`; v16
+  adds that table's `state` and `catalogue_remote_releases`, see "Release").
   `Registration.pool` is part of the creation
   request and `reserve_creation` compares it, and for a pooled request it does not
   compare the executor, which is the first open's choice (`named_same_executor`).
@@ -7776,19 +7777,95 @@ The box's deadline and retention (slice S4):
   interval after the session opens, and the session opens on the next `Spawn` or
   `Join` after a restart, so a child that went overdue while the daemon was down
   is stopped at that first pass and the time spent down counts.
-- The retention sweep. `catalogue.delegates` lists the rows, and
-  `manager.sweep_delegates(retain_ms, now_ms, sessions)` deletes, in one registry
-  turn, every delegate whose last contact is older than `retain_ms(spawner)` and
-  that holds no slot, through the same `remove_registration` a delete uses. A
-  failed deletion is skipped for the next sweep. `spawners.retention_ms` gives a
-  spawner's `retain_s` in milliseconds, and `default_retain_s` for a spawner whose
-  table is gone. `daemon/main.sweep_delegate_sessions` runs it once at boot, before
-  the orchestrator port starts, and logs `daemon.delegate_sweep`. There is no
-  periodic sweep: a daemon that stays up keeps an idle delegate session until its
-  next boot. The sweep does not remove a directory-member record (#934).
+- The retention sweep (slice S7 added the hourly run, idle close and spawner
+  removal). `catalogue.delegates` lists the rows, and
+  `manager.sweep_delegates(Sweep(standing:, activity:), now_ms, sessions)` does
+  three steps and answers `Swept(deleted:, closed:)`. In one registry turn
+  (`SweepDelegates`), a row with no slot is deleted, through the same
+  `remove_registration` a delete uses, when `spawners.standing` says `Removed`
+  (the table is gone, whatever the age), when its release has begun, or when its
+  last contact is older than `retain_ms`; and an `Open` row with a running slot
+  whose spawner is `Removed` or silent past `idle_close_ms` is returned as a
+  `Candidate(session_id, last_contact_ms, instance)`. Outside any registry turn,
+  the caller asks `activity` of each candidate; the daemon answers with
+  `agency.DelegateEndpoint.occupancy`, and `agency.delegate_occupancy` runs its
+  ledger reads in a deadline-bounded weft task and answers `Occupied` for any
+  child with a run or any fault. In a second turn, `CloseIdle` takes the `Quiet`
+  candidates as `(session_id, seen_contact)` and calls `stop_slot` (the ordinary
+  stop) only if the row is still `Open`, the slot is still running, and
+  `last_contact_ms` still equals `seen_contact`. A `Spawn` or `Join` claim moves
+  `last_contact_ms` in a registry turn before it reaches the Agency, so a claim
+  between the two turns changes the compared value and the session is kept. A
+  spawn that lands while a closed session is draining is refused with
+  `StoreFailure("the delegate session is stopping")`. A failed
+  deletion is skipped for the next sweep. `daemon/main.sweep_delegate_sessions`
+  runs it once at boot, before the orchestrator port starts, and
+  `daemon/main.start_delegate_sweep` runs it every `delegate_sweep_every_ms`
+  (one hour) from a weft periodic, logging `daemon.delegate_sweep` with the two
+  counts. `[spawners.<name>] idle_close_s` defaults to 3600. No `SpawnerRemoved`
+  stop exists: nothing runs in a closed session. The sweep does not remove a
+  directory-member record (#934).
+
+- Release (phase 2, slice S6; protocol-change/084 addendum of 2026-10-16). The
+  parent session was deleted on the spawning orchestrator, and the box stops its
+  children and deletes the session that held them. `orchestrator_port.Message`
+  gains `Release(parent, reply)` (answer: how many children were stopped),
+  `ask_release`, `SpawnHost.release`, `agency.DelegateEndpoint.release` and
+  `remote_reach.Reach.release`; `remote_spawner.release_over` is the
+  connect-and-ask for a caller that is not an Agency. On the box,
+  `delegate_host.resolve_existing` finds the Agency of a pair that already has a
+  session and creates none, and `delegate_host.releaser` composes the stop with
+  the registry. It must not reuse `resolver`: a `Release` for a pair with no row
+  answers `Ok(0)` and makes nothing. The holder's `DelegateRelease` writes
+  `delegate/released` (a fence on the whole session, read by `admit_run` on the
+  create path after adoption) and then stops every running child with
+  `child_run.Released` / `tools/agent.Outcome.Released`, whoever owns it.
+  `manager.release_delegate` marks the row `releasing`, stops the slot and
+  deletes the session when the slot drains (`finish_drained_release`, which moves
+  the row to `released` first); `delegate_session` answers `DelegateReleased`
+  (`ParentRunEnded` to the sender) for a releasing pair, and `sweep_now` deletes
+  any delegate session that is not open and holds no slot whatever its age. On
+  the laptop, `manager.delete_registration` (owner delete and the directory's
+  finish of one) reads the closed file's stubs (`remote_release.stubs_at`),
+  writes one `catalogue_remote_releases` row for each orchestrator in
+  `remote_child.holders` and rings the bell `manager.on_releases_owed` installed,
+  before the registration is removed. `main.start_release_drain` starts the
+  third `peer_outbox_drain` instance, whose pass is `remote_release.pass`: `Ok`
+  or `Refused` settles a row, `Unreachable` leaves it, a silent orchestrator is
+  asked once per pass, and a row has no time to live. `session_mover` abandons a
+  move whose session has a stub that is `Requested` or live (`remote_child.live_on`)
+  with a reason beginning `not_movable`. Tests: `delegate_host_test`,
+  `daemon_manager_test`, `remote_release_test`, `remote_release_drain_test`,
+  `session_mover_test`, `agency_test` (the holder and the port), the shipped
+  `daemon_shipped_remote_subagents_test` (delete with a child running), and the
+  P model's `EveryReleaseIsTold` and `ReleasedSessionHasNoRunningChild`.
+- Metering (slice S8). `[spawners.<name>] token_budget_per_day`,
+  `child_token_budget` and `max_per_day` are optional (`Spawner` fields of
+  `Option(Int)`; `spawners.metered` says whether any is set). The day's spend is
+  `catalogue_spawner_spend`, hourly buckets read as the last 24. A new spawn is claimed
+  by the Agency's holder (`agency.spawn_delegated`, `claim_if_new`): only when
+  the call site has no child yet and the fences have passed, it calls
+  `Config.claim`, which `main.spawn_claimer` makes from `manager.claim_spawn`. The
+  registry's `ClaimSpawn` turn (`claim_now`) reads the spawner's 24 buckets,
+  refuses with `DelegateDayCap` (mapped by `delegate_host.refused` to
+  `CapReached(TokensPerDay | SpawnsPerDay)`) and counts the spawn, touching only
+  the catalogue. A resend is adopted first and so is neither counted nor refused;
+  an unanswered claim is a `StoreFailure`. `manager.add_spend` is how tokens arrive, from the process the
+  usage hook spawns. For a delegate session of a metered spawner `main.metering_of`
+  fills `serve.Settings.metering`, and `serve.with_metering` wraps the usage slot
+  with `agency.metering_hooks`: one `spawn_unlinked` on the driver, which reports
+  the request's tokens and, with a `child_token_budget`, reads
+  `child_usage.of_strands` and sends the holder `StopChild(strand,
+  TokenBudgetSpent)`; the holder reaps through the usual path. The goal cell has
+  `remote_tokens` (a total beside the ledger cursor; `advisor.summed` adds only
+  its growth over `remote_child.settled_tokens`), and the gateway fills the full
+  snapshot's optional `remote_usage` from `remote_child.usage_by_orchestrator`.
+  Tests: `spawners_test`, `delegate_host_test` (the caps, the day rolling),
+  `agency_test` (the hand-off stop), `advisor_test` (counted once),
+  `goalstate_test`, `protocol_test`, `remote_child_test`.
 
 Tests: `spawners_test` (a valid table, defaults, every refusal, the catalogue
-parser, `retention_ms`), `orchestrators_test` (the `@` and `#` refusal),
+parser, `standing`), `orchestrators_test` (the `@` and `#` refusal),
 `remote/orchestrator_port_test` (each message reaches the host with its origin,
 refusals, a slow answer not delaying `Owns`, a crashing host),
 `remote_spawn_test` (the pure half), `daemon_spawn_host_test` (the production

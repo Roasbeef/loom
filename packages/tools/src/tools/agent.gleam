@@ -498,6 +498,14 @@ pub type Outcome {
 
   /// The parent operation owning this run ended.
   ParentFinished
+
+  /// The parent session on another orchestrator was deleted, and the
+  /// orchestrator running this child released it (protocol-change/084).
+  Released
+
+  /// The child used the whole of its spawner's `child_token_budget`, and the
+  /// orchestrator running it stopped the run (protocol-change/084).
+  TokenBudgetSpent
 }
 
 /// One handle's position when a wait returned.
@@ -2020,6 +2028,8 @@ fn outcome_text(outcome: Outcome) -> String {
     Aborted -> "aborted (reason not recorded)"
     BudgetExpired -> "aborted: wall-clock budget expired"
     ParentFinished -> "aborted: owning parent run ended"
+    Released -> "aborted: the parent session was deleted"
+    TokenBudgetSpent -> "aborted: the child's token budget was spent"
   }
 }
 
@@ -2104,7 +2114,8 @@ fn outcome_json(outcome: Outcome) -> JsonValue {
   case outcome {
     Completed -> json.String("completed")
     Failed(reason:) -> json.String("failed: " <> reason)
-    Aborted | BudgetExpired | ParentFinished -> json.String("aborted")
+    Aborted | BudgetExpired | ParentFinished | Released | TokenBudgetSpent ->
+      json.String("aborted")
   }
 }
 
@@ -2617,6 +2628,8 @@ fn abort_reason_json(outcome: Outcome) -> JsonValue {
   case outcome {
     BudgetExpired -> json.String("budget_expired")
     ParentFinished -> json.String("parent_finished")
+    Released -> json.String("released")
+    TokenBudgetSpent -> json.String("token_budget_spent")
     Aborted | Completed | Failed(_) -> json.Null
   }
 }

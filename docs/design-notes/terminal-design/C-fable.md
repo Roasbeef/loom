@@ -388,7 +388,7 @@ when a strand needs a decision (`needing`,
 `session_view/strand_card.gleam:69`). The panel has keyboard focus or the
 composer does; the panel's border is drawn in the signal colour while it has
 focus, and the composer's top rule says what the keys do, as it does for the
-strip today (`input_title_keys`, `tui/render.gleam:2044`).
+strip today (`input_title_keys`, `tui/render.gleam:2070`).
 
 | Key, panel focused | Does |
 |---|---|
@@ -545,8 +545,8 @@ arrow first so a reader scanning the gutter sees traffic, and the detail's
 carries the source, target, body and `State`
 (`session_view/agent_messages.gleam:29`: pending, failed, accepted, started),
 projected from the sender's `agent_send` invocation and its result
-(`agent_send`, `tools/agent.gleam:1841`; the steered delivery at
-`steered_outcome`, `tools/agent.gleam:2184`). That state is receipt on the
+(`agent_send`, `tools/agent.gleam:1850`; the steered delivery at
+`steered_outcome`, `tools/agent.gleam:2190`). That state is receipt on the
 sender's side and never proof that the recipient read the message, and the
 row says `accepted`, not `read`.
 

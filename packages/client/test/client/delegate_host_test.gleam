@@ -20,11 +20,13 @@ import core/ids
 import gleam/erlang/process
 import gleam/int
 import gleam/option.{None, Some}
+import gleam/result
 import host/bootstrap
 import simplifile
 import sqlight
 import storage/catalogue
 import storage/domain
+import weft/poll
 
 fn configuration(placement: String) -> String {
   "[distribution]
@@ -70,13 +72,59 @@ fn spawner(placement: String) -> spawners.Spawner {
 // The endpoint a resident session publishes, which answers a run end with the
 // number of its session in the registry, so a test can tell sessions apart.
 fn tagged(tag: Int) -> agency.DelegateEndpoint {
+  tagged_with(tag, agency.Vacant)
+}
+
+// The same, answering the sweep's question about children with `occupancy`.
+fn tagged_with(
+  tag: Int,
+  occupancy: agency.Occupancy,
+) -> agency.DelegateEndpoint {
   agency.DelegateEndpoint(
     spawn: fn(_delegation, _site, _request) {
       Error(remote_spawn.StoreFailure(reason: "tag " <> int.to_string(tag)))
     },
     join: fn(_parent, _handles, _within_ms) { Ok([]) },
     run_ended: fn(_operation) { Ok(tag) },
+    release: fn() { Ok(tag) },
+    occupancy: fn() { occupancy },
   )
+}
+
+// A sweep whose spawner keeps a session for `retain_ms` and closes it when idle
+// for `idle_close_ms`.
+fn sweeping(
+  retain_ms: Int,
+  idle_close_ms: Int,
+) -> manager.Sweep(agency.DelegateEndpoint) {
+  manager.Sweep(
+    standing: fn(_) { spawners.Configured(retain_ms:, idle_close_ms:) },
+    activity: activity_of,
+  )
+}
+
+// A sweep for which the spawner's table has been removed.
+fn removed() -> manager.Sweep(agency.DelegateEndpoint) {
+  manager.Sweep(standing: fn(_) { spawners.Removed }, activity: activity_of)
+}
+
+// The sweep's question, answered by the tagged endpoint.
+fn activity_of(endpoint: agency.DelegateEndpoint) -> manager.Activity {
+  case endpoint.occupancy() {
+    agency.Vacant -> manager.Quiet
+    agency.Occupied -> manager.Busy
+  }
+}
+
+// Whether the registry holds the session open.
+fn is_resident(
+  registry: manager.Manager(agency.DelegateEndpoint),
+  id: String,
+) -> Bool {
+  case manager.get(registry, id) {
+    Ok(manager.View(status: manager.Resident(_), ..)) -> True
+    _ -> False
+  }
 }
 
 fn context(
@@ -347,11 +395,12 @@ pub fn the_boot_sweep_deletes_the_sessions_a_spawner_has_left_idle_test() {
   // resident, and the sweep judges every delegate by its last contact.
   stop(first)
   let second = started(store, fn(built) { Ok(tagged(built)) })
-  let retain = fn(_spawner) { 100_000 }
+  let retain = sweeping(100_000, 100_000)
 
   // Idle for 599_000 ms passes the 100_000 ms retention. Idle for exactly the
   // retention does not.
-  assert manager.sweep_delegates(second, retain, 600_000, sessions) == Ok(1)
+  assert manager.sweep_delegates(second, retain, 600_000, sessions)
+    == Ok(manager.Swept(deleted: 1, closed: 0))
   assert catalogue.delegate_of(store, idle.session_id) == Ok(option.None)
   assert catalogue.get(store, idle.session_id) == Error(catalogue.Missing)
   assert catalogue.delegate_of(store, boundary.session_id)
@@ -360,7 +409,8 @@ pub fn the_boot_sweep_deletes_the_sessions_a_spawner_has_left_idle_test() {
 
   // The slot the deleted session held is free again, and a repeat sweep finds
   // nothing more to delete.
-  assert manager.sweep_delegates(second, retain, 600_000, sessions) == Ok(0)
+  assert manager.sweep_delegates(second, retain, 600_000, sessions)
+    == Ok(manager.Swept(deleted: 0, closed: 0))
   let assert Ok(_) =
     delegate_host.resolver(context_at(second, sessions, 700_000))(
       laptop,
@@ -383,8 +433,13 @@ pub fn a_resident_session_is_kept_by_the_sweep_whatever_its_age_test() {
     )
 
   // The session is open and its last contact is old, but something is using it.
-  assert manager.sweep_delegates(registry, fn(_) { 10 }, 9_000_000, sessions)
-    == Ok(0)
+  assert manager.sweep_delegates(
+      registry,
+      sweeping(10, 9_000_000_000),
+      9_000_000,
+      sessions,
+    )
+    == Ok(manager.Swept(deleted: 0, closed: 0))
   assert catalogue.delegates_held(store, "laptop") == Ok(1)
   stop(registry)
   assert catalogue.close(store) == Ok(Nil)
@@ -438,5 +493,460 @@ pub fn a_session_whose_delegate_marker_is_unreadable_has_no_answer_test() {
     daemon_main.deadline_tick_of(registry, recorded.session_id)
   let assert Ok(Nil) = sqlight.close(raw)
   stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+// --- releasing a pair (protocol-change/084, phase 2) --------------------------
+//
+// A release says the parent session was deleted. Deleting the delegate session
+// removes everything stored under it: its conversation, and with it the facts,
+// the outbox rows and the remembered permissions kept there. These tests check
+// the registry's half of that, and that a release never creates a session.
+
+pub fn a_release_for_a_pair_with_no_row_answers_zero_and_creates_nothing_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let registry = started(store, fn(built) { Ok(tagged(built)) })
+  let release =
+    delegate_host.releaser(context(registry, "/delegate-host/sessions"))
+  let laptop = spawner("executor = \"runner\"\nworkspace = \"loom\"\n")
+  let remote = parent(80)
+
+  // The release overtakes the spawn it concerns, or is simply sent twice: there
+  // is no session, so nothing is stopped and nothing is made. The key a
+  // creation would have used finds no registration.
+  assert release(laptop, remote) == Ok(0)
+  assert release(laptop, remote) == Ok(0)
+  assert catalogue.delegates_held(store, "laptop") == Ok(0)
+  assert catalogue.by_request_key(store, "delegate:laptop:" <> remote.session)
+    == Error(catalogue.Missing)
+  assert catalogue.delegate_for(store, "laptop", remote.session) == Ok(None)
+
+  // The spawn that comes after is the first message for its pair and makes a
+  // session of its own, which is the acceptable end of the ordering: the parent
+  // still exists, as far as this orchestrator can know.
+  let resolve =
+    delegate_host.resolver(context(registry, "/delegate-host/sessions"))
+  let assert Ok(_) = resolve(laptop, remote)
+  assert catalogue.delegates_held(store, "laptop") == Ok(1)
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn a_release_stops_the_resident_session_and_deletes_it_and_its_row_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let registry = started(store, fn(built) { Ok(tagged(built)) })
+  let here = context(registry, "/delegate-host/sessions")
+  let laptop = spawner("executor = \"runner\"\nworkspace = \"loom\"\n")
+  let remote = parent(81)
+  let assert Ok(first) = delegate_host.resolver(here)(laptop, remote)
+  let assert Ok(option.Some(recorded)) =
+    catalogue.delegate_for(store, "laptop", remote.session)
+
+  // The answer is the Agency's own count, here the session's tag, which shows
+  // the release reached the resident session's endpoint.
+  assert delegate_host.releaser(here)(laptop, remote) == Ok(tag_of(first))
+
+  // The slot drains, and the session and its row go together. A repeat finds no
+  // row and answers zero, without making a session.
+  assert eventually(fn() {
+    catalogue.delegate_of(store, recorded.session_id) == Ok(None)
+  })
+  assert catalogue.get(store, recorded.session_id) == Error(catalogue.Missing)
+  assert catalogue.delegates_held(store, "laptop") == Ok(0)
+  assert delegate_host.releaser(here)(laptop, remote) == Ok(0)
+  assert catalogue.delegates_held(store, "laptop") == Ok(0)
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn a_release_of_a_closed_session_deletes_it_without_opening_it_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let laptop = spawner("executor = \"runner\"\nworkspace = \"loom\"\n")
+  let sessions = "/delegate-host/sessions"
+  let remote = parent(82)
+  let first = started(store, fn(built) { Ok(tagged(built)) })
+  let assert Ok(_) =
+    delegate_host.resolver(context(first, sessions))(laptop, remote)
+  let assert Ok(option.Some(recorded)) =
+    catalogue.delegate_for(store, "laptop", remote.session)
+  stop(first)
+
+  // A new registry has no session resident. Nothing runs in a closed session, so
+  // there is no child to stop, and the build is never asked to open it.
+  let second = started(store, fn(_built) { Error("must not open") })
+  assert delegate_host.releaser(context(second, sessions))(laptop, remote)
+    == Ok(0)
+  assert catalogue.delegate_of(store, recorded.session_id) == Ok(None)
+  assert catalogue.get(store, recorded.session_id) == Error(catalogue.Missing)
+  stop(second)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn a_spawn_for_a_released_pair_is_refused_and_opens_nothing_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let laptop = spawner("executor = \"runner\"\nworkspace = \"loom\"\n")
+  let sessions = "/delegate-host/sessions"
+  let remote = parent(83)
+  let first = started(store, fn(built) { Ok(tagged(built)) })
+  let assert Ok(_) =
+    delegate_host.resolver(context(first, sessions))(laptop, remote)
+  let assert Ok(option.Some(recorded)) =
+    catalogue.delegate_for(store, "laptop", remote.session)
+  stop(first)
+
+  // The row says the release began and the deletion has not finished.
+  let assert Ok(Nil) =
+    catalogue.set_delegate_state(
+      store,
+      recorded.session_id,
+      catalogue.Releasing,
+    )
+  let second = started(store, fn(_built) { Error("must not open") })
+  assert delegate_host.resolver(context(second, sessions))(laptop, remote)
+    == Error(remote_spawn.ParentRunEnded)
+
+  // The refusal touched nothing: the row is as it was, and its contact time is
+  // not moved by a message the session will not serve.
+  assert catalogue.delegate_of(store, recorded.session_id)
+    == Ok(Some(catalogue.Delegate(..recorded, state: catalogue.Releasing)))
+
+  // A repeated release finishes the deletion the first began.
+  assert delegate_host.releaser(context(second, sessions))(laptop, remote)
+    == Ok(0)
+  assert catalogue.delegate_of(store, recorded.session_id) == Ok(None)
+  stop(second)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn the_sweep_deletes_a_released_session_whatever_its_age_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let laptop = spawner("executor = \"runner\"\nworkspace = \"loom\"\n")
+  let sessions = "/delegate-host/sessions"
+  let first = started(store, fn(built) { Ok(tagged(built)) })
+  let assert Ok(_) =
+    delegate_host.resolver(context_at(first, sessions, 1000))(
+      laptop,
+      parent(84),
+    )
+  let assert Ok(_) =
+    delegate_host.resolver(context_at(first, sessions, 1000))(
+      laptop,
+      parent(85),
+    )
+  let assert Ok(option.Some(failed)) =
+    catalogue.delegate_for(store, "laptop", parent(84).session)
+  let assert Ok(option.Some(open)) =
+    catalogue.delegate_for(store, "laptop", parent(85).session)
+  stop(first)
+
+  // A deletion that failed after the slot drained left its row released. The
+  // sweep removes it though it is far inside the retention, and leaves the open
+  // session that is equally recent.
+  let assert Ok(Nil) =
+    catalogue.set_delegate_state(store, failed.session_id, catalogue.Released)
+  let second = started(store, fn(built) { Ok(tagged(built)) })
+  assert manager.sweep_delegates(
+      second,
+      sweeping(1_000_000, 1_000_000),
+      2000,
+      sessions,
+    )
+    == Ok(manager.Swept(deleted: 1, closed: 0))
+  assert catalogue.delegate_of(store, failed.session_id) == Ok(None)
+  assert catalogue.delegate_of(store, open.session_id) == Ok(Some(open))
+  stop(second)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn the_sweep_deletes_a_removed_spawners_session_at_once_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let laptop = spawner("executor = \"runner\"\nworkspace = \"loom\"\n")
+  let sessions = "/delegate-host/sessions"
+  let first = started(store, fn(built) { Ok(tagged(built)) })
+  let assert Ok(_) =
+    delegate_host.resolver(context_at(first, sessions, 1000))(
+      laptop,
+      parent(90),
+    )
+  let assert Ok(option.Some(row)) =
+    catalogue.delegate_for(store, "laptop", parent(90).session)
+  stop(first)
+
+  // Contact was one millisecond ago and the retention is long, but the table
+  // is gone, so nothing could ever send the session a message again.
+  let second = started(store, fn(built) { Ok(tagged(built)) })
+  assert manager.sweep_delegates(second, removed(), 1001, sessions)
+    == Ok(manager.Swept(deleted: 1, closed: 0))
+  assert catalogue.delegate_of(store, row.session_id) == Ok(None)
+  assert catalogue.get(store, row.session_id) == Error(catalogue.Missing)
+  stop(second)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn a_removed_spawners_idle_resident_session_is_closed_then_deleted_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let laptop = spawner("executor = \"runner\"\nworkspace = \"loom\"\n")
+  let sessions = "/delegate-host/sessions"
+  let registry = started(store, fn(built) { Ok(tagged(built)) })
+  let assert Ok(_) =
+    delegate_host.resolver(context_at(registry, sessions, 1000))(
+      laptop,
+      parent(94),
+    )
+  let assert Ok(option.Some(row)) =
+    catalogue.delegate_for(store, "laptop", parent(94).session)
+
+  // A slot holds the session, so the first sweep can only close it.
+  assert manager.sweep_delegates(registry, removed(), 1001, sessions)
+    == Ok(manager.Swept(deleted: 0, closed: 1))
+  assert eventually(fn() { !is_resident(registry, row.session_id) })
+
+  // With the slot drained, the next sweep deletes it.
+  assert manager.sweep_delegates(registry, removed(), 1002, sessions)
+    == Ok(manager.Swept(deleted: 1, closed: 0))
+  assert catalogue.delegate_of(store, row.session_id) == Ok(None)
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn the_sweep_closes_an_idle_resident_session_and_deletes_nothing_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let laptop = spawner("executor = \"runner\"\nworkspace = \"loom\"\n")
+  let sessions = "/delegate-host/sessions"
+  let registry = started(store, fn(built) { Ok(tagged(built)) })
+  let assert Ok(_) =
+    delegate_host.resolver(context_at(registry, sessions, 1000))(
+      laptop,
+      parent(91),
+    )
+  let assert Ok(option.Some(row)) =
+    catalogue.delegate_for(store, "laptop", parent(91).session)
+  assert is_resident(registry, row.session_id)
+
+  // Silent for 5000 ms against a 2000 ms window, with no child running.
+  assert manager.sweep_delegates(
+      registry,
+      sweeping(1_000_000, 2000),
+      6000,
+      sessions,
+    )
+    == Ok(manager.Swept(deleted: 0, closed: 1))
+  assert eventually(fn() { !is_resident(registry, row.session_id) })
+
+  // The row and the registration stay, and the next message reopens it.
+  assert catalogue.delegate_of(store, row.session_id) == Ok(Some(row))
+  let assert Ok(_) =
+    delegate_host.resolver(context_at(registry, sessions, 7000))(
+      laptop,
+      parent(91),
+    )
+  assert eventually(fn() { is_resident(registry, row.session_id) })
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn the_sweep_keeps_a_session_with_a_live_child_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let laptop = spawner("executor = \"runner\"\nworkspace = \"loom\"\n")
+  let sessions = "/delegate-host/sessions"
+  let registry =
+    started(store, fn(built) { Ok(tagged_with(built, agency.Occupied)) })
+  let assert Ok(_) =
+    delegate_host.resolver(context_at(registry, sessions, 1000))(
+      laptop,
+      parent(92),
+    )
+  let assert Ok(option.Some(row)) =
+    catalogue.delegate_for(store, "laptop", parent(92).session)
+
+  // Long past the idle window, but a child still has a run.
+  assert manager.sweep_delegates(
+      registry,
+      sweeping(1_000_000_000, 2000),
+      9_000_000,
+      sessions,
+    )
+    == Ok(manager.Swept(deleted: 0, closed: 0))
+  assert is_resident(registry, row.session_id)
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn the_sweep_keeps_a_session_younger_than_the_idle_window_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let laptop = spawner("executor = \"runner\"\nworkspace = \"loom\"\n")
+  let sessions = "/delegate-host/sessions"
+  let registry = started(store, fn(built) { Ok(tagged(built)) })
+  let assert Ok(_) =
+    delegate_host.resolver(context_at(registry, sessions, 1000))(
+      laptop,
+      parent(93),
+    )
+  let assert Ok(option.Some(row)) =
+    catalogue.delegate_for(store, "laptop", parent(93).session)
+
+  // Silent for exactly the window is not past it.
+  assert manager.sweep_delegates(
+      registry,
+      sweeping(1_000_000, 2000),
+      3000,
+      sessions,
+    )
+    == Ok(manager.Swept(deleted: 0, closed: 0))
+  assert is_resident(registry, row.session_id)
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+// Waits for something the registry does on its own turn, such as deleting a
+// session once its slot drains.
+fn eventually(done: fn() -> Bool) -> Bool {
+  let waited =
+    poll.until(within: 2000, every: 10, attempt: fn() {
+      case done() {
+        True -> poll.Done(Nil)
+        False -> poll.Retry
+      }
+    })
+  case waited {
+    poll.Answered(Nil) -> True
+    poll.Failed(_) | poll.Expired -> False
+  }
+}
+
+pub fn a_release_of_a_session_that_is_still_opening_does_not_wait_for_it_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let laptop = spawner("executor = \"runner\"\nworkspace = \"loom\"\n")
+  let sessions = "/delegate-host/sessions"
+  let remote = parent(86)
+
+  // The build parks for a while, as an attach to a slow executor does.
+  let registry =
+    started(store, fn(_built) {
+      process.sleep(800)
+      Error("never reached")
+    })
+  let _opening =
+    process.spawn_unlinked(fn() {
+      let _ =
+        delegate_host.resolver(context(registry, sessions))(laptop, remote)
+      Nil
+    })
+  let assert Ok(recorded) = await_row(store, laptop, remote)
+
+  // The release answers at once with zero, marks the row, and cancels the build,
+  // so the session is deleted without ever serving a child.
+  let began = ffi_os.system_time_ms()
+  assert delegate_host.releaser(context(registry, sessions))(laptop, remote)
+    == Ok(0)
+  assert ffi_os.system_time_ms() - began < 3000
+  assert eventually(fn() {
+    catalogue.delegate_of(store, recorded.session_id) == Ok(None)
+  })
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+// Waits for the pair's row, which the registry writes in the turn that admits
+// the session.
+fn await_row(
+  store: catalogue.Catalogue,
+  laptop: spawners.Spawner,
+  remote: remote_spawn.Parent,
+) -> Result(catalogue.Delegate, Nil) {
+  let waited =
+    poll.until(within: 2000, every: 10, attempt: fn() {
+      case catalogue.delegate_for(store, laptop.name, remote.session) {
+        Ok(Some(found)) -> poll.Done(found)
+        Ok(None) | Error(_) -> poll.Retry
+      }
+    })
+  case waited {
+    poll.Answered(found) -> Ok(found)
+    poll.Failed(_) | poll.Expired -> Error(Nil)
+  }
+}
+
+// --- a spawner's rolling day (catalogue version 17) --------------------------
+//
+// The Agency's holder claims a spawn here for a child it is about to create, so
+// these drive the registry's claim directly.
+
+fn claim(
+  registry: manager.Manager(agency.DelegateEndpoint),
+  tokens: option.Option(Int),
+  spawns: option.Option(Int),
+  now_ms: Int,
+) -> Result(Nil, remote_spawn.SpawnRefusal) {
+  manager.claim_spawn(
+    registry,
+    "laptop",
+    tokens,
+    spawns,
+    now_ms:,
+    within_ms: 5000,
+  )
+  |> result.map_error(delegate_host.refused)
+}
+
+pub fn a_claim_past_max_per_day_is_refused_and_counts_nothing_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let registry = started(store, fn(built) { Ok(tagged(built)) })
+
+  // Two claims pass and the third meets the cap, which the refusal names with
+  // its own value. A refused claim is not counted.
+  assert claim(registry, None, Some(2), 4242) == Ok(Nil)
+  assert claim(registry, None, Some(2), 4242) == Ok(Nil)
+  let refusal =
+    Error(remote_spawn.CapReached(cap: remote_spawn.SpawnsPerDay, limit: 2))
+  assert claim(registry, None, Some(2), 4242) == refusal
+  assert claim(registry, None, Some(2), 4242) == refusal
+  assert catalogue.spawner_spend(store, "laptop", now_ms: 4242)
+    == Ok(catalogue.Spend(tokens: 0, spawns: 2))
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn a_claim_past_the_days_token_budget_is_refused_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let registry = started(store, fn(built) { Ok(tagged(built)) })
+  assert manager.add_spend(registry, "laptop", now_ms: 4242, tokens: 999)
+    == Ok(Nil)
+  assert claim(registry, Some(1000), None, 4242) == Ok(Nil)
+  assert manager.add_spend(registry, "laptop", now_ms: 4242, tokens: 1)
+    == Ok(Nil)
+  assert claim(registry, Some(1000), None, 4242)
+    == Error(remote_spawn.CapReached(
+      cap: remote_spawn.TokensPerDay,
+      limit: 1000,
+    ))
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn the_day_rolls_forward_with_the_clock_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let registry = started(store, fn(built) { Ok(tagged(built)) })
+  let hour = catalogue.spend_bucket_ms
+  assert manager.add_spend(registry, "laptop", now_ms: 0, tokens: 1000)
+    == Ok(Nil)
+
+  // Twenty-three hours later the spend is still inside the day. At the
+  // twenty-fourth hour its bucket has left it and the claim passes.
+  let assert Error(_) = claim(registry, Some(1000), None, 23 * hour + 5)
+  assert claim(registry, Some(1000), None, 24 * hour) == Ok(Nil)
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn a_registry_that_does_not_answer_a_claim_is_a_store_failure_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let registry = started(store, fn(built) { Ok(tagged(built)) })
+  stop(registry)
+
+  // The claim is bounded and unanswered, and what it reports is a failure the
+  // spawner retries. It is never a cap.
+  let assert Error(remote_spawn.StoreFailure(_)) =
+    claim(registry, None, Some(1), 4242)
   assert catalogue.close(store) == Ok(Nil)
 }
