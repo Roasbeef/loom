@@ -194,3 +194,17 @@ ORDER BY parent_session, orchestrator;
 
 -- name: DeleteRemoteRelease :exec
 DELETE FROM catalogue_remote_releases WHERE parent_session = ? AND orchestrator = ?;
+
+-- name: AddSpawnerSpend :exec
+INSERT INTO catalogue_spawner_spend (spawner, hour_bucket, tokens, spawns)
+VALUES (?, ?, ?, ?)
+ON CONFLICT (spawner, hour_bucket) DO UPDATE
+SET tokens = tokens + excluded.tokens, spawns = spawns + excluded.spawns;
+
+-- name: SpawnerSpendSince :many
+SELECT hour_bucket, tokens, spawns FROM catalogue_spawner_spend
+WHERE spawner = ? AND hour_bucket >= ?
+ORDER BY hour_bucket;
+
+-- name: PruneSpawnerSpend :exec
+DELETE FROM catalogue_spawner_spend WHERE spawner = ? AND hour_bucket < ?;
