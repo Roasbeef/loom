@@ -1447,6 +1447,22 @@ jobs:
           LOOM_DECLARED_SKIPS=/dev/null .github/scripts/skip_census.sh \
             "jail (linux, shipped deployment status)" shipped-deployment.log
 
+      # The ordinary client bucket cannot enforce the remote children's
+      # policies. This lane must run their lifecycle and release assertions;
+      # an environmental skip here is a failed prerequisite, not coverage.
+      - name: Shipped remote subagents with delegated enforcement
+        env:
+          LOOM_BOOTSTRAP_E2E_SERVER: ${{ github.workspace }}/bin/loomd
+          LOOM_TEST_PROVIDER_KEY: loom-provider-fixture-key
+          LOOM_TEST_TIMEOUT_SECONDS: 900
+        run: |
+          set -euo pipefail
+          . .github/scripts/join_delegated_cgroup.sh
+          bash scripts/test.sh client --match client@daemon_shipped_remote_subagents_test: \
+            2>&1 | tee shipped-remote-subagents.log
+          LOOM_DECLARED_SKIPS=/dev/null .github/scripts/skip_census.sh \
+            "jail (linux, shipped remote subagents)" shipped-remote-subagents.log
+
       # The ordinary runner cannot supply all of these fixtures' required
       # enforcement layers. This lane has verified them and must execute both
       # observations; an environmental skip is therefore a failure here.
@@ -1478,6 +1494,7 @@ jobs:
             shipped-multiplayer.log
             shipped-jobs.log
             shipped-deployment.log
+            shipped-remote-subagents.log
             ux-joined.log
             ux-worktree.log
           retention-days: 14

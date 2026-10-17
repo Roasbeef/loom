@@ -174,3 +174,18 @@ findings in the fix or the broader targeted recall/proposal review. Proposal
 (53 tests) and daemon-manager (50 tests) regressions also pass on that source.
 The review inspected the test evidence without independently rerunning it;
 full hosted CI, Linux signoff and live UI validation remain pending.
+
+Hosted run `39003421131` passed every Linux test job but its fan-in rejected
+inherited enforcement skips for deployment-status scope and remote subagents.
+The ordinary-runner census now declares those exact prerequisites. The
+existing strict delegated deployment step covers both scope and up/down;
+a new strict delegated subagent step executes the child lifecycle fixture
+with an empty skip allowance and retains its log. No fixture assertion or
+skip condition changed. The recorded Linux bucket logs pass the repaired
+census, and a delegated subagent skip is still rejected.
+
+Strict signoff on `9810ad1db` passed all six lanes, release/update and the
+skip census in 1882 seconds (container driver 1887 seconds). Its client log
+shows both deployment scenarios and the remote-subagent fixture executed.
+Those results are prior-head evidence: this CI integration must receive
+fresh hosted CI and Linux signoff before merge.
