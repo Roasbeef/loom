@@ -810,6 +810,9 @@ still be running.
 | `default_within_s` | integer | 1800 (30 minutes) | 1 to `max_within_s` | The deadline a spawn gets when it names none, in seconds. |
 | `retain_s` | integer | 604800 (7 days) | at least `max_within_s` | How long a delegate session with no message from its spawner is kept before the sweep deletes it, in seconds. A spawner whose table is removed has its sessions deleted at the next sweep whatever their age. |
 | `idle_close_s` | integer | 3600 (1 hour) | at least 1 | How long a resident delegate session with no running child and no message from its spawner stays open before the hourly sweep closes it, in seconds. Closing frees the executor scope the session holds and deletes nothing: the next spawn or join reopens it, and pays the open again. |
+| `token_budget_per_day` | integer | none (unmetered) | at least 1 | The tokens, input plus output, that every child of this spawner may use over a rolling day of 24 hours. A spawn is refused with `token_budget_per_day` named once the day's total has reached it. Children already running are not stopped by it. |
+| `child_token_budget` | integer | none (unmetered) | at least 1 | The tokens one child may use. A child is stopped, with its outcome recorded as spent, after the request that takes it to the budget, so it can overshoot by one request. |
+| `max_per_day` | integer | none (unmetered) | at least 1 | The spawns admitted for this spawner over a rolling day. A spawn is refused with `max_per_day` named once the day's count has reached it. A resent spawn counts again. |
 
 ## Provisioning a deployment
 
