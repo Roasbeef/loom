@@ -144,14 +144,20 @@ pub fn parse(text: String) -> Result(List(Rule), String) {
     tom.parse(text)
     |> result.map_error(describe_parse_error),
   )
-  parse_document(document)
+  from_document(document)
 }
 
-// The document half of `parse`. Deliberately not a public door:
-// `client/serve` hands each parser the raw text and pays one extra
-// `tom.parse` of a small file at boot, so each keeps its own worded
-// TOML failure — the decision is recorded at `serve.load_config`.
-fn parse_document(
+/// Reads rules from the document already parsed by the catalogue at load.
+/// The standalone `parse` keeps its TOML error wording; both doors apply the
+/// same rule validation and preserve file order.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert rules.from_document(dict.new()) == Ok([])
+/// ```
+@internal
+pub fn from_document(
   document: Dict(String, tom.Toml),
 ) -> Result(List(Rule), String) {
   use tables <- result.try(case dict.get(document, "rule") {

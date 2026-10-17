@@ -1654,13 +1654,12 @@ fn adapter_api(dialect: catalog.Dialect) -> String {
 // defines no rules and no schedules — both are a deliberate act, and
 // there is no environment variable that could be one by accident.
 //
-// The three parsers divide the document rather than sharing it: `catalog`
-// owns the top-level key check and the model tables, `rules` owns
-// everything inside a `[[rule]]`, `schedule` owns everything inside a
-// `[[schedule]]`. Each is handed the text and does its own decode, which
-// costs two extra parses of a small file at boot and keeps each parser's
-// own worded TOML failure — the message an operator actually has to act
-// on.
+// Each load reads and parses the file once. The catalogue still owns the
+// top-level check and validates first, then the profile and model are chosen,
+// then each table owner decodes the same document in the original error order.
+// Standalone text parsers retain their own worded TOML errors. No document or
+// resolved secret survives into another load: domain validation and every
+// session open still read the file independently.
 fn load_config(
   flag: Option(String),
   profile: Option(String),
@@ -1730,7 +1729,9 @@ fn load_config(
         }),
       )
       let named = fn(reason) { path <> ": " <> reason }
-      use parsed <- result.try(catalog.parse(text) |> result.map_error(named))
+      use #(parsed, document) <- result.try(
+        catalog.parse_with_document(text) |> result.map_error(named),
+      )
 
       // The profile and the model are resolved on every load, never remembered
       // from an earlier one, so a resume reads the file as it stands. One the
@@ -1739,33 +1740,35 @@ fn load_config(
       use catalogue <- result.try(
         with_choice(parsed, profile, model) |> result.map_error(named),
       )
-      use rule_list <- result.try(rules.parse(text) |> result.map_error(named))
+      use rule_list <- result.try(
+        rules.from_document(document) |> result.map_error(named),
+      )
       use schedule_list <- result.try(
-        schedule.parse(text) |> result.map_error(named),
+        schedule.from_document(document) |> result.map_error(named),
       )
       use schedule_policy <- result.try(
-        schedule.parse_policy(text) |> result.map_error(named),
+        schedule.policy_from_document(document) |> result.map_error(named),
       )
       use jobs_policy <- result.try(
-        jobs.parse_policy(text) |> result.map_error(named),
+        jobs.policy_from_document(document) |> result.map_error(named),
       )
       use retry_policy <- result.try(
-        retryconf.parse_policy(text) |> result.map_error(named),
+        retryconf.policy_from_document(document) |> result.map_error(named),
       )
       use memory <- result.try(
-        memory_config.parse(text) |> result.map_error(named),
+        memory_config.from_document(document) |> result.map_error(named),
       )
       use tools <- result.try(
-        catalog.parse_tools(text) |> result.map_error(named),
+        catalog.tools_from_document(document) |> result.map_error(named),
       )
       use secret_entries <- result.try(
-        secrets.parse(text) |> result.map_error(named),
+        secrets.from_document(document) |> result.map_error(named),
       )
       use workspace_config <- result.try(
-        catalog.parse_workspace(text) |> result.map_error(named),
+        catalog.workspace_from_document(document) |> result.map_error(named),
       )
       use advisor_config <- result.try(
-        catalog.parse_advisor(text) |> result.map_error(named),
+        catalog.advisor_from_document(document) |> result.map_error(named),
       )
       Ok(#(
         catalogue,

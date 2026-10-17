@@ -16,7 +16,8 @@
 //// `parse` / `build` → `encode` → `decode` → `interval_occurrence` / `cron_occurrence` → `fired_key` → `injection`
 ////
 //// 1. `parse` reads the operator's `[[schedule]]` tables at boot, through
-////    `parse_document` and `parse_schedule`, one table at a time.
+////    `from_document` and `parse_schedule`, one table at a time. Session
+////    loading shares the catalogue's document through that same reader.
 //// 2. `build` makes the model's schedule from tool arguments, enforcing the
 ////    same bounds with its `checked_*` helpers.
 //// 3. `encode` turns a `Schedule` into the config cell stored at `config_key`,
@@ -512,13 +513,20 @@ pub fn parse(text: String) -> Result(List(Schedule), String) {
     tom.parse(text)
     |> result.map_error(describe_parse_error),
   )
-  parse_document(document)
+  from_document(document)
 }
 
-// The document half of `parse`. Not a public door, for the same reason
-// `client/rules.parse_document` is not one: each config parser pays its
-// own small `tom.parse` at boot and keeps its own worded failure.
-fn parse_document(
+/// Reads operator schedules from the catalogue's already parsed document.
+/// The standalone `parse` retains its TOML errors; table validation and file
+/// order are shared by both doors.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert schedule.from_document(dict.new()) == Ok([])
+/// ```
+@internal
+pub fn from_document(
   document: Dict(String, tom.Toml),
 ) -> Result(List(Schedule), String) {
   use tables <- result.try(case dict.get(document, "schedule") {
@@ -2486,6 +2494,22 @@ pub fn parse_policy(text: String) -> Result(Policy, String) {
   use document <- result.try(
     tom.parse(text) |> result.map_error(describe_parse_error),
   )
+  policy_from_document(document)
+}
+
+/// Reads model schedule policy from the catalogue's already parsed document.
+/// The standalone `parse_policy` retains its TOML error wording; both doors use
+/// the same table validation and defaults.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert schedule.policy_from_document(dict.new()) == Ok(schedule.default_policy)
+/// ```
+@internal
+pub fn policy_from_document(
+  document: Dict(String, tom.Toml),
+) -> Result(Policy, String) {
   case dict.get(document, "schedules") {
     Error(Nil) -> Ok(default_policy)
     Ok(tom.Table(fields)) -> policy_table(fields)

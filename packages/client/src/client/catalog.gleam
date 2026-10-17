@@ -20,9 +20,9 @@
 //// `parse` → `parse_models` → `parse_roles` → `parse_profiles` → `parse_mcp_servers`
 //// → `select_profile` → `select_model` → `gateway`
 ////
-//// 1. `parse` reads the TOML, checks the top-level keys with `known_keys` so a
-////    typoed table is refused by exactly one parser, and requires `[models]`
-////    and `[roles]`.
+//// 1. `parse` uses `parse_with_document` to read the TOML and check the
+////    top-level keys with `known_keys`, requiring `[models]` and `[roles]`.
+////    Session loading keeps that document for the remaining table readers.
 //// 2. `parse_models` turns each entry into a `CatalogModel` through
 ////    `parse_model`, `parse_pricing` and `validate_auth`.
 //// 3. `parse_roles` resolves each role's chain of names against those models,
@@ -33,8 +33,9 @@
 ////    complete role set.
 //// 5. `parse_mcp_servers` reads the optional server tables, and
 ////    `mcp_server_name` holds each key to the import grammar.
-//// 6. `parse_tools`, `parse_workspace` and `parse_advisor` read their own
-////    tables from the same text; the host calls them beside `parse`.
+//// 6. `parse_tools`, `parse_workspace` and `parse_advisor` keep standalone
+////    text readers; `tools_from_document`, `workspace_from_document` and
+////    `advisor_from_document` let the host share its already parsed document.
 //// 7. `find`, `main_model`, `routed_roles`, `profile_names`, `model_keys`,
 ////    `select_profile` and `select_model` answer lookups over the result.
 ////    `select_profile` is how a session takes a profile: it returns the
@@ -460,6 +461,25 @@ const routable_roles = [
 /// ```
 ///
 pub fn parse(text: String) -> Result(Catalog, String) {
+  use #(catalogue, _document) <- result.map(parse_with_document(text))
+  catalogue
+}
+
+/// Validates the whole catalogue and retains its parsed document for the
+/// remaining configuration readers. The host selects a profile and model
+/// before reading those tables, preserving the existing error precedence.
+/// Nothing is cached: every call parses the supplied text again.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert catalog.parse_with_document("")
+///   == Error("the catalogue needs a [models.<name>] table")
+/// ```
+@internal
+pub fn parse_with_document(
+  text: String,
+) -> Result(#(Catalog, Dict(String, tom.Toml)), String) {
   use document <- result.try(
     tom.parse(text)
     |> result.map_error(describe_parse_error),
@@ -530,7 +550,10 @@ pub fn parse(text: String) -> Result(Catalog, String) {
   use profiles <- result.try(parse_profiles(document, models, roles))
   use mcp_servers <- result.try(parse_mcp_servers(document))
   use lsp_servers <- result.try(parse_lsp_servers(document))
-  Ok(Catalog(models:, roles:, profiles:, mcp_servers:, lsp_servers:))
+  Ok(#(
+    Catalog(models:, roles:, profiles:, mcp_servers:, lsp_servers:),
+    document,
+  ))
 }
 
 // Startup and session loading validate the same daemon table. Only the
@@ -1682,6 +1705,22 @@ pub fn parse_workspace(text: String) -> Result(WorkspaceConfig, String) {
     tom.parse(text)
     |> result.map_error(describe_parse_error),
   )
+  workspace_from_document(document)
+}
+
+/// Reads workspace policy from the catalogue's already parsed document.
+/// The standalone `parse_workspace` retains its TOML error wording; both doors use
+/// the same table validation and defaults.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert catalog.workspace_from_document(dict.new()) == Ok(catalog.default_workspace())
+/// ```
+@internal
+pub fn workspace_from_document(
+  document: Dict(String, tom.Toml),
+) -> Result(WorkspaceConfig, String) {
   case dict.get(document, "workspace") {
     Error(Nil) -> Ok(default_workspace())
     Ok(tom.Table(fields)) | Ok(tom.InlineTable(fields)) ->
@@ -1877,11 +1916,9 @@ fn parse_mount_access(word: String) -> Result(MountAccess, String) {
 /// catalogue comes from — the operator's opt-in to network egress and to
 /// an environment wider than the three names the server owns.
 ///
-/// It reads the document itself rather than taking one `parse` already
-/// produced, the arrangement `client/rules` and `client/memory_config`
-/// established: each parser owns its own table and its own worded
-/// failure, and `parse`'s top-level key check is what keeps a typoed
-/// table name from being ignored by every parser at once.
+/// This standalone reader retains its worded TOML errors. Session loading
+/// calls `tools_from_document` after the catalogue's top-level key check,
+/// sharing the parse without changing ownership of the table's validation.
 ///
 /// Total and strict, for the reason the model tables are: a setting that
 /// widens what a jailed shell can reach must never be arrived at by a
@@ -1905,6 +1942,22 @@ pub fn parse_tools(text: String) -> Result(ToolsConfig, String) {
     tom.parse(text)
     |> result.map_error(describe_parse_error),
   )
+  tools_from_document(document)
+}
+
+/// Reads tool policy from the catalogue's already parsed document.
+/// The standalone `parse_tools` retains its TOML error wording; both doors use
+/// the same table validation and defaults.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert catalog.tools_from_document(dict.new()) == Ok(catalog.default_tools())
+/// ```
+@internal
+pub fn tools_from_document(
+  document: Dict(String, tom.Toml),
+) -> Result(ToolsConfig, String) {
   case dict.get(document, "tools") {
     Error(Nil) -> Ok(default_tools())
     Ok(tom.Table(fields)) | Ok(tom.InlineTable(fields)) -> tools_table(fields)
@@ -2139,11 +2192,9 @@ pub fn default_advisor() -> AdvisorConfig {
 /// Parses the optional `[advisor]` table out of the same `loom.toml` the
 /// catalogue comes from.
 ///
-/// It reads the document itself rather than taking one `parse` already
-/// produced, the arrangement `parse_tools`, `client/rules` and
-/// `client/memory_config` established: each parser owns its own table and
-/// its own worded failure, and `parse`'s top-level key check is what
-/// keeps a typoed table name from being ignored by every parser at once.
+/// This standalone reader retains its worded TOML errors. Session loading
+/// calls `advisor_from_document` after the catalogue's top-level key check,
+/// sharing the parse without changing ownership of the table's validation.
 ///
 /// Total and strict, for the reason `parse_tools` is: an unknown key, a
 /// non-string tool name and a negative cooldown are each a worded
@@ -2166,6 +2217,22 @@ pub fn parse_advisor(text: String) -> Result(AdvisorConfig, String) {
     tom.parse(text)
     |> result.map_error(describe_parse_error),
   )
+  advisor_from_document(document)
+}
+
+/// Reads advisor policy from the catalogue's already parsed document.
+/// The standalone `parse_advisor` retains its TOML error wording; both doors use
+/// the same table validation and defaults.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert catalog.advisor_from_document(dict.new()) == Ok(catalog.default_advisor())
+/// ```
+@internal
+pub fn advisor_from_document(
+  document: Dict(String, tom.Toml),
+) -> Result(AdvisorConfig, String) {
   case dict.get(document, "advisor") {
     Error(Nil) -> Ok(default_advisor())
     Ok(tom.Table(fields)) | Ok(tom.InlineTable(fields)) -> advisor_table(fields)
