@@ -34,6 +34,7 @@ import tui/model as tui_model
 import tui/placement
 import tui/runtime
 import tui/session_selector
+import tui/startup
 import tui/workspace
 import weft
 import weft/poll
@@ -1011,5 +1012,160 @@ pub fn tui_daemon_changed_status_epoch_cannot_replace_hello_test() {
     process.send(peer, Send(reply(request.id, "status", body)))
     assert process.receive(outcomes, 1000) == Ok(Error(daemon.Disconnected))
     assert daemon.hello(control).epoch == protocol.Epoch("controlled")
+  })
+}
+
+// Startup's accounting must retain a real control socket after the worker
+// exits, and terminal death must close one even before the UI adopts it.
+fn startup_connected(port, terminal, within) {
+  let assert Ok(control) =
+    daemon.connect(address(port), "token", terminal, within)
+    as "startup fixture authenticates a real control socket"
+  let assert Ok(paths) = endpoint.paths("build/startup-overlap-unused-paths")
+    as "metadata names no opened session"
+  let assert Ok(fence) = endpoint.observe(native.current_process_id())
+    as "metadata names the fixture VM"
+  Ok(daemon_bootstrap.Connected(
+    control,
+    paths,
+    endpoint.Ready(fence, "127.0.0.1", port, "controlled", None),
+  ))
+}
+
+pub fn tui_startup_join_preserves_authenticated_control_test() {
+  peer_listener(Some(greeting), fn(port, _, _, closed) {
+    let pending =
+      startup.begin_with(fn(terminal, within) {
+        startup_connected(port, terminal, within)
+      })
+    let assert Ok(connected) = startup.join(pending)
+      as "the completed and accounted connection reaches the terminal"
+    assert daemon.hello(connected.control).epoch == protocol.Epoch("controlled")
+    assert process.is_alive(daemon.owner(connected.control))
+    assert process.receive(closed, 0) == Error(Nil)
+
+    // A caller that cannot use its prepared model still joins and then closes
+    // this same handle; no separate cancellation may cut its publication short.
+    daemon.close(connected.control)
+    assert process.receive(closed, 1000) == Ok(Nil)
+  })
+}
+
+pub fn tui_startup_normal_terminal_exit_during_handshake_closes_peer_test() {
+  peer_listener(None, fn(port, peers, _, closed) {
+    let ready = process.new_subject()
+    let terminal =
+      process.spawn(fn() {
+        let stop = process.new_subject()
+        let _pending =
+          startup.begin_with(fn(owner, within) {
+            process.send(ready, #(process.self(), stop))
+            startup_connected(port, owner, within)
+          })
+        let _ = process.receive(stop, 5000)
+        Nil
+      })
+    let assert Ok(#(worker, stop)) = process.receive(ready, 1000)
+      as "the worker exists before handshake completion"
+    let watch = process.monitor(worker)
+    let assert Ok(_) = process.receive(peers, 1000)
+      as "the socket is open but the peer has withheld hello"
+    process.send(stop, Nil)
+    let assert Ok(_) =
+      process.new_selector()
+      |> process.select_specific_monitor(watch, fn(down) { down })
+      |> process.selector_receive(1000)
+      as "normal terminal death cancels the resolver worker"
+    assert process.receive(closed, 1000) == Ok(Nil)
+    assert !process.is_alive(terminal)
+  })
+}
+
+pub fn tui_startup_normal_exit_closes_completed_unclaimed_control_test() {
+  peer_listener(Some(greeting), fn(port, _, _, closed) {
+    let ready = process.new_subject()
+    let terminal =
+      process.spawn(fn() {
+        let stop = process.new_subject()
+        let _pending =
+          startup.begin_with(fn(owner, within) {
+            let assert Ok(connected) = startup_connected(port, owner, within)
+              as "resolver owns a complete connection"
+            let release = process.new_subject()
+            process.send(ready, #(
+              connected.control,
+              process.self(),
+              release,
+              stop,
+            ))
+            let assert Ok(Nil) = process.receive(release, 2000)
+              as "the observer installs monitors before worker completion"
+            Ok(connected)
+          })
+        let _ = process.receive(stop, 5000)
+        Nil
+      })
+    let assert Ok(#(control, worker, release, stop)) =
+      process.receive(ready, 1000)
+      as "control is known before its result is published"
+    let worker_watch = process.monitor(worker)
+    let control_watch = process.monitor(daemon.owner(control))
+    let _ = system.get_state(daemon.owner(control))
+    process.send(release, Nil)
+    let assert Ok(process.ProcessDown(reason: process.Normal, ..)) =
+      process.new_selector()
+      |> process.select_specific_monitor(worker_watch, fn(down) { down })
+      |> process.selector_receive(1000)
+      as "resolver finished while the terminal has not joined"
+    assert process.is_alive(daemon.owner(control))
+    process.send(stop, Nil)
+    let assert Ok(process.ProcessDown(reason: process.Normal, ..)) =
+      process.new_selector()
+      |> process.select_specific_monitor(control_watch, fn(down) { down })
+      |> process.selector_receive(1000)
+      as "unclaimed completed control follows its original terminal"
+    assert process.receive(closed, 1000) == Ok(Nil)
+    assert !process.is_alive(terminal)
+  })
+}
+
+pub fn tui_startup_worker_crash_after_hello_retires_terminal_and_control_test() {
+  peer_listener(Some(greeting), fn(port, _, _, closed) {
+    let ready = process.new_subject()
+    let terminal =
+      process.spawn_unlinked(fn() {
+        // Account loss must terminate even a trapping terminal: a recoverable
+        // exit signal cannot reclaim an unpublished handle.
+        process.trap_exits(True)
+        let pending =
+          startup.begin_with(fn(owner, within) {
+            let assert Ok(connected) = startup_connected(port, owner, within)
+              as "the socket exists before its handle can be lost"
+            let crash = process.new_subject()
+            process.send(ready, #(connected.control, crash))
+            let assert Ok(Nil) = process.receive(crash, 2000)
+              as "the observer has installed its lifecycle monitors"
+            panic as "fixture crash before control publication"
+          })
+        let _ = startup.join(pending)
+        Nil
+      })
+    let terminal_watch = process.monitor(terminal)
+    let assert Ok(#(control, crash)) = process.receive(ready, 1000)
+      as "a real authenticated control owner is awaiting publication"
+    let control_watch = process.monitor(daemon.owner(control))
+    let _ = system.get_state(daemon.owner(control))
+    process.send(crash, Nil)
+    let assert Ok(process.ProcessDown(reason: process.Killed, ..)) =
+      process.new_selector()
+      |> process.select_specific_monitor(terminal_watch, fn(down) { down })
+      |> process.selector_receive(1000)
+      as "lost control publication cannot leave a surviving terminal"
+    let assert Ok(process.ProcessDown(reason: process.Normal, ..)) =
+      process.new_selector()
+      |> process.select_specific_monitor(control_watch, fn(down) { down })
+      |> process.selector_receive(1000)
+      as "the original terminal guardian closes the unpublished control"
+    assert process.receive(closed, 1000) == Ok(Nil)
   })
 }

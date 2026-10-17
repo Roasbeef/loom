@@ -147,6 +147,7 @@ import tui/render
 import tui/runtime
 import tui/session_control
 import tui/session_table
+import tui/startup
 import tui/submit
 import tui/summary_panel
 import tui/tick
@@ -833,6 +834,13 @@ pub fn new_model_with_clock(
 
 fn interactive(launch: Launch, record: String) -> Nil {
   let inbox = connection.new_inbox()
+
+  // Discovery needs no workspace or model. Start it first, retaining this
+  // terminal as owner while its own model and subjects are prepared below.
+  let resolving = case launch {
+    Local(options, _) -> Some(startup.begin(options))
+    _ -> None
+  }
   let base = new_model(inbox, workspace.discover())
 
   // The recording is opened on the model the launch produced, not on the
@@ -877,7 +885,11 @@ fn interactive(launch: Launch, record: String) -> Nil {
               placement.OnThisHost, path -> workspace.discover_from(path)
             }),
         )
-      case bootstrap.resolve_daemon(options, process.self(), 90_000) {
+      let connected = case resolving {
+        Some(pending) -> startup.join(pending)
+        None -> Error("local daemon startup was not started")
+      }
+      case connected {
         Error(reason) ->
           tui_model.append_error(
             Model(
