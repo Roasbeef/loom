@@ -564,7 +564,8 @@ was asked.
 
 ## Relationships
 
-- **Depends on**: `core` (json, messages, ids, clock), `broker` (policy
+- **Depends on** (tests also use `qcheck`; `test/support/gen` holds the
+  hashline line and file-content generators): `core` (json, messages, ids, clock), `broker` (policy
   vocabulary, `clear_call`, `exec` failure shapes, framing output streams —
   the spec DAG's `I → G`), `simplifile` (the production `FileSystem`),
   `gleam_erlang` (subjects for streamed call events), `lsp` (only
