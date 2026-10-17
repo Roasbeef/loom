@@ -740,10 +740,10 @@ and the epoch the page was admitted in:
    observer member is refused with the words "ask an operator to resume
 <<<<<<< ours
    it", the check `OpenSession` (`client/daemon/server.gleam:2404`) makes;
-3. `open` (`client/daemon/manager.gleam:1727`) is called, which is the same
+3. `open` (`client/daemon/manager.gleam:1826`) is called, which is the same
 =======
    it", the check `OpenSession` (`client/daemon/server.gleam:2404`) makes;
-3. `open` (`client/daemon/manager.gleam:1727`) is called, which is the same
+3. `open` (`client/daemon/manager.gleam:1826`) is called, which is the same
 >>>>>>> theirs
    registry turn `sessions.open` runs: capacity, `Reserved`, archived, the
    domain slot;
