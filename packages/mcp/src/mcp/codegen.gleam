@@ -72,8 +72,8 @@ pub const note_cap = 120
 /// One generated server module: the module name the façade lives under,
 /// its Gleam source, and the rendered description surface for the
 /// `code_mode` tool. The surface's `pub fn` lines state exactly the
-/// signatures the source declares, in `scripts/gen-prelude.py`'s one-line
-/// `label: Type` form.
+/// signatures the source declares, in the one-line `label: Type` form that
+/// `packages/tools/dev/gen_prelude.gleam` renders.
 pub type Generated {
   Generated(module_name: String, source: String, surface: String)
 }

@@ -338,7 +338,15 @@ or close; there is no transaction, lease or authorization cache.
   version-2 name-override table; `catalogue_archives_schema` embeds the version-3
   archive overlay. Generation loads all four schemas for
   query checking, but each database executes only its own schema. `make gen-sql`
-  regenerates these artifacts, and tests pin them to their sources.
+  regenerates these artifacts, and tests pin them to their sources. The
+  embedding is `dev/embed_schema.gleam` (`gleam run -m embed_schema` from this
+  package): it embeds every `sql/*.sql` file as `<stem>_schema.gleam` (except
+  `schema.sql`, which is `sql_schema`), refuses non-ASCII text because parrot
+  slices by byte offset, and with `load-order` prints the order a scratch
+  database loads the files in. That order is the base schema, the
+  `catalogue.migrations` list in version order, `session.sql`, then the rest
+  by name; a new `sql/*.sql` file needs no registration with the script.
+  `test/storage/embed_schema_test` pins every committed module to its source.
 - `storage/catalogue.{query, statement, atomic, coherent}` are internal
   generated-query adapters for access metadata. They reuse the catalogue
   connection and its existing daemon owner; they introduce neither a connection

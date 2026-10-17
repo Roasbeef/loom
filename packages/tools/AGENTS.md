@@ -579,7 +579,14 @@ was asked.
   `conformance` (the wiring/e2e suites drive the same adapter).
 - **Generated from**: `packages/cap`, at build time and not as a
   dependency edge — `scripts/gen-prelude.sh` runs `gleam export
-  package-interface` there and writes `tools/prelude`. Nothing in this
+  package-interface` there, hands the JSON to the dev module
+  `dev/gen_prelude.gleam` (with `dev/gen_prelude/interface.gleam`, a total
+  decoder for the slice of the interface it reads, and `dev/gen_prelude/wrap.gleam`,
+  a port of Python's `textwrap.wrap` so the wrapped prose keeps its breaks),
+  and writes `tools/prelude`. The generator uses `gleam_json` and `argv` as
+  dev-dependencies and no `@external`; its tests are
+  `test/tools/gen_prelude_test.gleam`, and the three files are inputs the
+  artifact's header digests, so editing one means `make gen-prelude`. Nothing in this
   package imports `cap`, and nothing at runtime shells out; the artifact
   is committed and `scripts/gen-prelude.sh --check` (inside `make check`)
   fails the build when it and its inputs part company.
