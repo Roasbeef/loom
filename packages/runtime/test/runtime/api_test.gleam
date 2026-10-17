@@ -468,6 +468,31 @@ pub fn put_fact_refuses_the_remote_child_prefix_test() {
   process.kill(rt.tree.supervisor)
 }
 
+// The receipts of mail from a remote child and the rows of sends owed to one
+// are the harness's cells. The model's `put_fact` refuses both prefixes, the
+// harness door writes them, and a key that merely contains the word is free.
+pub fn remote_mail_and_send_cells_are_reserved_test() {
+  let rt = answering_runtime()
+  assert api.reserved_fact_key("remote-mail/7b1c0a4e2d95f318")
+  assert api.reserved_fact_key("remote-send/7b1c0a4e2d95f318")
+  assert !api.reserved_fact_key("agent/main/remote-mail")
+  assert !api.reserved_fact_key("agent/main/remote-send")
+
+  let assert Error(api.ReservedFactKey(key: "remote-mail/a")) =
+    api.put_fact(rt, "remote-mail/a", json.Null)
+  let assert Error(api.ReservedFactKey(key: "remote-send/a")) =
+    api.put_fact(rt, "remote-send/a", json.Null)
+  let assert Ok(Nil) = api.put_reserved_fact(rt, "remote-mail/a", json.Null)
+  let assert Ok(Nil) = api.put_reserved_fact(rt, "remote-send/a", json.Null)
+  let assert Ok(mail) =
+    api.reserved_facts(rt, prefix: api.remote_mail_fact_prefix)
+  assert mail == [#("remote-mail/a", json.Null)]
+  let assert Ok(sends) =
+    api.reserved_facts(rt, prefix: api.remote_send_fact_prefix)
+  assert sends == [#("remote-send/a", json.Null)]
+  process.kill(rt.tree.supervisor)
+}
+
 // A strand name beginning with `^` is the reference to a parent strand on
 // another orchestrator, never a strand of this session. Both creation doors
 // refuse it, the one that accepts a brief and the one that does not, and
