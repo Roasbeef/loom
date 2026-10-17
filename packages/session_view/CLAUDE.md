@@ -958,3 +958,17 @@ token file on that host>`, with `unknown_address` when the configuration gives n
 The terminal's `not_owner` words and the web home's "Where" detail both use it, so
 the two say one thing. It is pure and names the token file with a placeholder, since
 the file is on the other machine.
+
+## Move candidates (protocol-change/085)
+
+`move_candidates.choose(offers, executor)` is the rule for which orchestrators a
+session on `executor` can move to: the asking daemon reached it (`Silent` is not),
+it gave a report (`Unreported` is not), it accepts moved sessions (`Receiving`), and
+the executors it serves include the session's. Each offer comes back as a
+`Candidate(name, Eligible | Ineligible(Reason))`, with the first reason that applies
+(`Unreachable | NoReport | NotAccepting | NotServing`) and fixed words for it
+(`reason_words`, `no_executor_words`, `none_words`). `eligible` lists the names that can
+be asked for. The module is pure, and `client/deployment.candidates`, the terminal's
+`tui/deployment_view.candidates` and the web home's chooser all use it, so the three say
+one thing. The caller gives `serves` and `executor` in one vocabulary, keys or node
+names.
