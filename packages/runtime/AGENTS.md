@@ -968,6 +968,11 @@ checkpoint cannot transfer cleanup custody because run-end hooks precede the
 terminal commit. Ordinary operator admission at that boundary is unowned.
 Lineage retains original spawn identity and a default budget for later runs.
 Proposal 042 specifies compatibility and the additional wire metadata.
+`child_run.Stop` records why a cancellation was requested: `BudgetExpired`,
+`ParentFinished`, `Released` (the parent session on another orchestrator was
+deleted, protocol-change/084) and `LegacyReaped` for rows that predate the
+cause. The decoder accepts every word, so a row written before `Released`
+existed still decodes.
 
 ## Async custody and guarded admission (protocol 048)
 

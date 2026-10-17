@@ -1258,8 +1258,9 @@ A spawner's children do not run in any session of the box's owner or members.
 The first message for a (spawner, parent session) pair creates a session for the
 pair through the registry (`manager.delegate_session`), with the spawner's
 placement and profile and the `session_only` memory domain, and records it in
-the catalogue table `catalogue_delegate_sessions` (catalogue version 15). The
-row is the pair, the session and the time of the last message. It is also the
+the catalogue table `catalogue_delegate_sessions` (catalogue version 15, with a
+`state` column added in version 16). The row is the pair, the session, the time
+of the last message and how far its release has got. It is also the
 marker that makes the session a delegate session, which the registry's `movable`
 check reads, so `sessions.move` answers `not_movable` for it. The spawner's
 `max_sessions` is the count of its rows. The count, the creation and the record
@@ -1395,7 +1396,25 @@ deadline on the box, which the retention sweep follows, and a later `agent_wait`
 reads its result. `agent_spawn` says so in the `on` description. Phase 1 has no
 remote token metering, so a child nobody waits on spends what it spends until its
 deadline, at most `max_within_s`. The port's `RunEnded` and the box's ended fence
-remain for phase 2, where `Release` reuses them.
+are built and nothing sends them. A deleted parent session ends its remote
+children through `Release`, below.
+
+**A deleted parent: `Release`.** The port's fourth message says the parent
+session was deleted. Deleting a session reads its closed file for stubs, writes
+one `catalogue_remote_releases` row (version 16) for each orchestrator that may
+hold a child, and only then removes the registration, in the registry's turn. A
+third instance of the outbox drainer, the daemon's own and not a session's, sends
+`Release` for the rows. An answer or a refusal settles a row, silence leaves it
+for the next pass five seconds later, and a row has no time to live. On the box,
+the holder writes the fence `delegate/released` and stops every running child
+with the `Released` reason, whoever owns it. The registry marks the pair's row
+`releasing`, so nothing is admitted for it, stops the session's slot, and deletes
+the session and its row when the slot drains. Everything stored under the session
+goes with it. A `Release` for a pair with no row answers zero and creates no
+session, so it is safe to send to an orchestrator that never held a child, safe
+to send twice, and safe when it overtakes the `Spawn` it concerns. A session with
+a stub that is `Requested` or live is not moved to a third orchestrator, because
+its child reports to this one by name.
 
 ## Failures
 
@@ -1568,8 +1587,8 @@ The directory holds no state of its own, so it has no model.
 | `client/session_move`, `client/session_mover`, `client/session_movers`, `client/session_importer` | Moving a session |
 | `client/deployment`; `tui/deployment_view`, `tui.run_deployment` | Reading the deployment: `deployment.status` and `loom deployment` |
 | `client/spawners`, `client/remote_spawn`; `daemon/main.spawn_host` | The `[spawners]` table, the subagent messages' vocabulary and the daemon's spawn host |
-| `client/delegate_host`, `client/child_usage`; `agency.delegate_spawn`, `delegate_join`, `delegate_run_ended`; `manager.delegate_session`; `storage/catalogue.claim_delegate` | The delegate session of a (spawner, parent session) pair: finding or creating it, the Agency's side of a remote parent, a child's usage, and the catalogue record |
-| `client/remote_child`, `client/remote_reach`, `client/remote/remote_spawner`, `client/remote_drain`; `agency.spawn_elsewhere`, `wait_across`; `runtime/lineage` | The parent's side: stubs, the Agency's reach, its sending end, the second drainer's pass, and the lineage cell's `orchestrator` |
+| `client/delegate_host`, `client/child_usage`; `agency.delegate_spawn`, `delegate_join`, `delegate_run_ended`, `delegate_release`; `manager.delegate_session`, `release_delegate`; `storage/catalogue.claim_delegate` | The delegate session of a (spawner, parent session) pair: finding or creating it, the Agency's side of a remote parent, a child's usage, and the catalogue record |
+| `client/remote_child`, `client/remote_reach`, `client/remote/remote_spawner`, `client/remote_drain`, `client/remote_release`; `agency.spawn_elsewhere`, `wait_across`; `runtime/lineage` | The parent's side: stubs, the Agency's reach, its sending end, the second drainer's pass, and the lineage cell's `orchestrator` |
 
 `packages/client/CLAUDE.md` has one section per phase, from "Trusted
 distribution membership" to "Moving a session between orchestrators", with the

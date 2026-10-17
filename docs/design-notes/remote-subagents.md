@@ -1255,7 +1255,13 @@ refuse with a sentence, and refused tool calls settle in band.
 - `Release` and a daemon-level drainer for release rows in the laptop's
   catalogue; `SpawnerRemoved`; the boot-time reopen of delegate sessions; the
   open-time `RunEnded` repair; and the `child_run.Stop` and `Outcome`
-  variants.
+  variants. Slice S6 built `Release`, the release rows and their drainer, the
+  `Released` stop and the delegate session's `state` column, as the addendum of
+  2026-10-16 in protocol-change/084 records. The differences from this note:
+  `Release` does not reuse the `RunEnded` handler, because that handler creates
+  the session of a pair that has none; a release row never expires; the stop
+  names no run, since a deleted parent has none; and `sessions.move` refuses a
+  parent with a live stub in the session mover, not in the command's reply.
 - Metering on the remote: `spawner_spend`, `token_budget_per_day`,
   `child_token_budget`, `max_per_day` and `TokenBudgetSpent`, handed off with
   `spawn_unlinked`.

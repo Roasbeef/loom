@@ -7251,10 +7251,11 @@ the session first opens and then never again.
   `chosen` is `manager.seed_executor`, a cast that runs `catalogue.seed_executor`
   in the registry's turn, which writes the `executor` column once, only for a
   registration with a pool and no executor.
-- The catalogue is at version 15 (v13 adds `catalogue_session_moves`, the
+- The catalogue is at version 16 (v13 adds `catalogue_session_moves`, the
   custody of a session moving between orchestrators, read with
   `catalogue.custody`; v14 adds the deletion mark; v15 adds `catalogue_delegate_sessions`, read by the
-  registry's `movable` check and written by `manager.delegate_session`).
+  registry's `movable` check and written by `manager.delegate_session`; v16
+  adds that table's `state` and `catalogue_remote_releases`, see "Release").
   `Registration.pool` is part of the creation
   request and `reserve_creation` compares it, and for a pooled request it does not
   compare the executor, which is the first open's choice (`named_same_executor`).
@@ -7786,6 +7787,40 @@ The box's deadline and retention (slice S4):
   the orchestrator port starts, and logs `daemon.delegate_sweep`. There is no
   periodic sweep: a daemon that stays up keeps an idle delegate session until its
   next boot. The sweep does not remove a directory-member record (#934).
+
+- Release (phase 2, slice S6; protocol-change/084 addendum of 2026-10-16). The
+  parent session was deleted on the spawning orchestrator, and the box stops its
+  children and deletes the session that held them. `orchestrator_port.Message`
+  gains `Release(parent, reply)` (answer: how many children were stopped),
+  `ask_release`, `SpawnHost.release`, `agency.DelegateEndpoint.release` and
+  `remote_reach.Reach.release`; `remote_spawner.release_over` is the
+  connect-and-ask for a caller that is not an Agency. On the box,
+  `delegate_host.resolve_existing` finds the Agency of a pair that already has a
+  session and creates none, and `delegate_host.releaser` composes the stop with
+  the registry. It must not reuse `resolver`: a `Release` for a pair with no row
+  answers `Ok(0)` and makes nothing. The holder's `DelegateRelease` writes
+  `delegate/released` (a fence on the whole session, read by `admit_run` on the
+  create path after adoption) and then stops every running child with
+  `child_run.Released` / `tools/agent.Outcome.Released`, whoever owns it.
+  `manager.release_delegate` marks the row `releasing`, stops the slot and
+  deletes the session when the slot drains (`finish_drained_release`, which moves
+  the row to `released` first); `delegate_session` answers `DelegateReleased`
+  (`ParentRunEnded` to the sender) for a releasing pair, and `sweep_now` deletes
+  any delegate session that is not open and holds no slot whatever its age. On
+  the laptop, `manager.delete_registration` (owner delete and the directory's
+  finish of one) reads the closed file's stubs (`remote_release.stubs_at`),
+  writes one `catalogue_remote_releases` row for each orchestrator in
+  `remote_child.holders` and rings the bell `manager.on_releases_owed` installed,
+  before the registration is removed. `main.start_release_drain` starts the
+  third `peer_outbox_drain` instance, whose pass is `remote_release.pass`: `Ok`
+  or `Refused` settles a row, `Unreachable` leaves it, a silent orchestrator is
+  asked once per pass, and a row has no time to live. `session_mover` abandons a
+  move whose session has a stub that is `Requested` or live (`remote_child.live_on`)
+  with a reason beginning `not_movable`. Tests: `delegate_host_test`,
+  `daemon_manager_test`, `remote_release_test`, `remote_release_drain_test`,
+  `session_mover_test`, `agency_test` (the holder and the port), the shipped
+  `daemon_shipped_remote_subagents_test` (delete with a child running), and the
+  P model's `EveryReleaseIsTold` and `ReleasedSessionHasNoRunningChild`.
 
 Tests: `spawners_test` (a valid table, defaults, every refusal, the catalogue
 parser, `retention_ms`), `orchestrators_test` (the `@` and `#` refusal),

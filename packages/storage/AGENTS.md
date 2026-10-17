@@ -140,7 +140,17 @@ or close; there is no transaction, lease or authorization cache.
   run in (protocol-change/084). Version 15 adds `catalogue_delegate_sessions
   (spawner, parent_session, session_id, last_contact_ms)`, keyed by the pair
   `(spawner, parent_session)`, with `session_id` unique and a foreign key to
-  `catalogue_sessions`. `claim_delegate` is the one write: in one immediate
+  `catalogue_sessions`. Version 16 adds the `state` column (`open`, `releasing` or
+  `released`; `catalogue.DelegateState`), which `set_delegate_state` moves forward
+  only: repeating a word is a no-op, going back is `Conflict`, and a word this
+  build does not know reads as an `Invalid` row and never as an open session. The
+  same version adds `catalogue_remote_releases(parent_session, orchestrator,
+  written_ms)` for the spawning side: `write_remote_releases` writes one row per
+  orchestrator in one transaction and leaves existing rows alone,
+  `remote_releases` lists them and `settle_remote_release` deletes one. Those rows
+  name no registration, because the parent session they concern is deleted by the
+  time they matter. Both are defined in `sql/catalogue_releases.sql`.
+  `claim_delegate` is the one write: in one immediate
   transaction it answers the pair's existing row and moves its contact time, or
   records the pair for the given session unless the spawner already holds
   `limit` rows, which answers `AtLimit(held)` and writes nothing, so two callers
