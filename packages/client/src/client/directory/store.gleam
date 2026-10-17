@@ -65,7 +65,8 @@ pub type Unavailable {
 /// Why a write did not commit.
 pub type WriteRefusal {
   /// The write did not commit within its deadline, the store is not running,
-  /// or the store answered something unrecognised, which the reason names.
+  /// or the store answered something unrecognised. The reason is a fixed
+  /// sentence and never the term, which can hold a process identifier.
   /// Its outcome may be unknown.
   NoQuorum(
     /// What went wrong, for a log line or a refusal's message.
@@ -688,8 +689,8 @@ fn describe(failure: ffi_khepri.Failure) -> String {
     ffi_khepri.NoQuorum -> "the directory has no quorum"
     ffi_khepri.NotRunning -> "the directory store is not running or not joined"
     ffi_khepri.Mismatch(..) -> "the directory record did not match"
-    ffi_khepri.Unexpected(term:) ->
-      "the directory store answered something unrecognised: " <> term
+    ffi_khepri.Unexpected(..) ->
+      "the directory store answered something unrecognised"
   }
 }
 
