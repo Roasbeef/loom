@@ -65,8 +65,7 @@ pub type Unavailable {
 /// Why a write did not commit.
 pub type WriteRefusal {
   /// The write did not commit within its deadline, the store is not running,
-  /// or the store answered something unrecognised. The reason is a fixed
-  /// sentence and never the term, which can hold a process identifier.
+  /// or the store answered something unrecognised, which the reason names.
   /// Its outcome may be unknown.
   NoQuorum(
     /// What went wrong, for a log line or a refusal's message.
@@ -417,12 +416,14 @@ pub fn holds_data(directory: String) -> Bool {
 /// // -> Ok(Membership([#("a@h.x", Voter)], Some("a@h.x"), ["a@h.x"]))
 /// ```
 pub fn membership() -> Result(Membership, Unavailable) {
-  membership_within(read_ms)
+  membership_asking(read_ms, describe)
 }
 
-/// `membership`, waiting at most `within_ms` for Ra to answer, and cut off a
-/// little after that. A report asks within a deadline shorter than `read_ms`,
-/// and a member with no leader would otherwise hold the answer for all of it.
+/// `membership` for a report: it waits at most `within_ms` for Ra and is cut off
+/// a little after that, because a report asks within a deadline shorter than
+/// `read_ms`, and a member with no leader would otherwise hold the answer for
+/// all of it. A failure is worded by `describe_for_report`, since the text
+/// reaches another machine.
 ///
 /// ## Examples
 ///
@@ -430,10 +431,17 @@ pub fn membership() -> Result(Membership, Unavailable) {
 /// // store.membership_within(500)
 /// ```
 pub fn membership_within(within_ms: Int) -> Result(Membership, Unavailable) {
+  membership_asking(within_ms, describe_for_report)
+}
+
+fn membership_asking(
+  within_ms: Int,
+  words: fn(ffi_khepri.Failure) -> String,
+) -> Result(Membership, Unavailable) {
   bounded(within_ms + 300, Error(Unavailable("no answer in time")), fn() {
     case ffi_khepri.membership(within_ms) {
       Ok(#(members, leader, up)) -> Ok(Membership(members:, leader:, up:))
-      Error(failure) -> Error(Unavailable(describe(failure)))
+      Error(failure) -> Error(Unavailable(words(failure)))
     }
   })
 }
@@ -574,7 +582,7 @@ pub fn confirm_current(
       )
     {
       Ok(_marker) -> Ok(Nil)
-      Error(failure) -> Error(Unavailable(describe(failure)))
+      Error(failure) -> Error(Unavailable(describe_for_report(failure)))
     }
   })
 }
@@ -685,6 +693,26 @@ fn written(
 }
 
 fn describe(failure: ffi_khepri.Failure) -> String {
+  case failure {
+    ffi_khepri.Unexpected(term:) ->
+      "the directory store answered something unrecognised: " <> term
+    ffi_khepri.NoQuorum | ffi_khepri.NotRunning | ffi_khepri.Mismatch(..) ->
+      describe_for_report(failure)
+  }
+}
+
+/// The words for a failure that goes into a report. They are those of the log
+/// line, except that an unrecognised answer is not followed by the term, which
+/// is an inspected value that can hold a process identifier and is the daemon's
+/// own to read in its log.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert store.describe_for_report(ffi_khepri.NoQuorum)
+///   == "the directory has no quorum"
+/// ```
+pub fn describe_for_report(failure: ffi_khepri.Failure) -> String {
   case failure {
     ffi_khepri.NoQuorum -> "the directory has no quorum"
     ffi_khepri.NotRunning -> "the directory store is not running or not joined"

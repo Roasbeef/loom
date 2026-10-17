@@ -8789,8 +8789,10 @@ that draw degraded and full states come with the slice that produces them.
   and a read of the node's own migration marker, cut off at one and a half times
   `within_ms`; `Unavailable` says why it could not confirm. `member.status_within` and
   `store.membership_within` are `status` and `membership` with the wait given. The
-  store's text for an unrecognised answer and the movers' `show` of a registry error
-  are fixed words, so a stall reason carries no path or process identifier.
+  report's `unavailable` text comes from `store.describe_for_report`, which leaves out
+  the term of an unrecognised answer (the daemon's log keeps it through `describe`),
+  and the movers' `show` of a registry error is fixed words, so a stall reason names
+  no path or process identifier.
 - A fact missing from a report means either that the node has none of that kind or
   that its source did not answer in time, and the report does not say which. The asking
   daemon compares what it expected of the node with what the report holds.

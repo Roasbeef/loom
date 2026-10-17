@@ -207,3 +207,9 @@ pub fn a_member_with_a_quorum_confirms_its_copy_is_current_test() {
   use _directory <- with_store
   assert store.confirm_current(alpha, 800) == Ok(Nil)
 }
+
+pub fn an_unrecognised_answer_reaches_a_report_without_its_term_test() {
+  let words =
+    store.describe_for_report(ffi_khepri.Unexpected(term: "{error,<0.123.0>}"))
+  assert words == "the directory store answered something unrecognised"
+}
