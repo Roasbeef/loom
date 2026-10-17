@@ -71,6 +71,8 @@ fn page_of(
       label: Some(component.Label(
         name: marker <> " name",
         workspace: "/work/" <> marker,
+        executor: "",
+        pool: "",
       )),
     )
   let #(model, _) =

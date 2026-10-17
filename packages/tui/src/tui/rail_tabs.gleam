@@ -35,6 +35,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import session_view/goal_view
+import session_view/remote_usage_words
 import session_view/session_summary
 import session_view/trace_view
 import session_view/transcript_lines
@@ -155,6 +156,13 @@ fn unread_jobs(model: Model) -> String {
 }
 
 fn session_rows(model: Model) -> List(Row) {
+  // Children on other orchestrators spend where this session's ledger cannot
+  // see, so their tokens get a row of their own, and none for a session that
+  // has no such child.
+  let remote = case remote_usage_words.line(model.shared.remote_usage) {
+    "" -> []
+    words -> [Row(Plain, "Remote  " <> words)]
+  }
   let goal = case model.shared.goal {
     Some(board) ->
       case goal_view.row(board) {
@@ -211,6 +219,7 @@ fn session_rows(model: Model) -> List(Row) {
     [
       Row(Plain, "Cost    " <> transcript_lines.cost_words(model.shared.usage)),
     ],
+    remote,
   ])
 }
 

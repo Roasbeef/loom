@@ -425,7 +425,7 @@ pub fn child_run_records_round_trip_and_reject_missing_custody_test() {
   list.each(
     [
       child_run.Unstopped, child_run.BudgetExpired, child_run.ParentFinished,
-      child_run.Released, child_run.LegacyReaped,
+      child_run.Released, child_run.TokenBudgetSpent, child_run.LegacyReaped,
     ],
     fn(stop) {
       let run = child_run.Run(..original, stop:)

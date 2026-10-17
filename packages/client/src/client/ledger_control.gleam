@@ -20,7 +20,8 @@
 ////   number. The operator's tool reads it to fetch what its own copy lacks
 ////   before it signs.
 //// - `status` reports the head, this node's standing, every active member with
-////   the head it last reported, and the last refusal.
+////   its links, its certificate pin and the head it last reported, and the last
+////   refusal.
 //// - `holdings` asks each orchestrator the daemon is linked to, and the daemon
 ////   itself, what its catalogue holds (`client/ledger_holdings`). The operator's
 ////   tool reads it before it signs a `revoke`. It is the one command that
@@ -221,8 +222,9 @@ pub fn fit_page(lines: List(String)) -> List(String) {
   list.reverse(kept)
 }
 
-/// `ledger.status`: the head, this node's standing, each active member with the
-/// head it last reported, and the last refusal.
+/// `ledger.status`: the head, this node's standing, each active member with its
+/// links, the hex SHA-256 of its certificate and the head it last reported, and
+/// the last refusal.
 ///
 /// ## Examples
 ///
@@ -269,6 +271,8 @@ pub fn status(handle: Handle) -> Result(JsonValue, Failure) {
               "directory",
               json.String(membership_entry.directory_word(member.directory)),
             ),
+            #("links", json.Array(list.map(member.links, json.String))),
+            #("pin", json.String(pin_hex(member.pin))),
           ],
           reported,
         ]),
@@ -288,6 +292,12 @@ pub fn status(handle: Handle) -> Result(JsonValue, Failure) {
     #("members", json.Array(members)),
     #("last_refusal", refusal_json(status.last_refusal)),
   ])
+}
+
+// The hex of a certificate pin, lower case: the SHA-256 of the leaf, which the
+// pin table already holds and a certificate's public bytes already determine.
+fn pin_hex(pin: BitArray) -> String {
+  string.lowercase(bit_array.base16_encode(pin))
 }
 
 /// `ledger.holdings`: asks every orchestrator this node is linked to, and this
@@ -402,6 +412,12 @@ pub type MemberView {
     reported_seq: Option(Int),
     /// Milliseconds on the answering daemon's own clock since that report.
     ms_since_report: Option(Int),
+    /// The plan names of the members this one is linked to. A daemon that
+    /// predates the member sends none, which reads as an empty list.
+    links: List(String),
+    /// The hex SHA-256 of the member's certificate, which its peers pin. `None`
+    /// from a daemon that predates the member.
+    pin: Option(String),
   )
 }
 
@@ -643,8 +659,19 @@ fn member_view(value: JsonValue) -> Result(MemberView, String) {
   use role <- result.try(string_of(fields, "role"))
   use directory <- result.try(string_of(fields, "directory"))
   use reported_seq <- result.try(optional_int(fields, "reported_seq"))
-  use ms_since_report <- result.map(optional_int(fields, "ms_since_report"))
-  MemberView(name:, node:, role:, directory:, reported_seq:, ms_since_report:)
+  use ms_since_report <- result.try(optional_int(fields, "ms_since_report"))
+  use links <- result.try(optional_strings(fields, "links"))
+  use pin <- result.map(optional_string(fields, "pin"))
+  MemberView(
+    name:,
+    node:,
+    role:,
+    directory:,
+    reported_seq:,
+    ms_since_report:,
+    links:,
+    pin:,
+  )
 }
 
 fn refusal_view(value: Result(JsonValue, Nil)) -> Result(RefusalView, String) {
@@ -717,6 +744,23 @@ fn optional_int(
     Error(Nil) | Ok(json.Null) -> Ok(None)
     Ok(json.Int(number)) -> Ok(Some(number))
     Ok(_) -> Error(key <> " is not an integer")
+  }
+}
+
+fn optional_strings(
+  fields: List(#(String, JsonValue)),
+  key: String,
+) -> Result(List(String), String) {
+  case list.key_find(fields, key) {
+    Error(Nil) | Ok(json.Null) -> Ok([])
+    Ok(json.Array(items)) ->
+      list.try_map(items, fn(item) {
+        case item {
+          json.String(text) -> Ok(text)
+          _ -> Error(key <> " holds something that is not a string")
+        }
+      })
+    Ok(_) -> Error(key <> " is not a list")
   }
 }
 

@@ -39,7 +39,9 @@
 //// been once, the deletions a crash or a missing quorum left marked are
 //// finished, and, at boot and after every local session's creation until a
 //// run succeeds, the local sessions' records are written. An owner can also
-//// give a move up at once (`Control.abandon`), and a deleted local session's
+//// give a move up at once (`Control.abandon`); a mover that is running is not
+//// interrupted, so the request is kept on its entry and the give-up starts when
+//// that run ends, through the same compare-and-set; and a deleted local session's
 //// record is removed best-effort (`Control.forget`).
 ////
 //// A daemon's report of itself lists these moves (protocol-change/085), so an
@@ -153,6 +155,14 @@ type Phase {
   Waiting
 }
 
+// Whether the owner asked to give a move up while its mover was running. A
+// running mover cannot be interrupted, so the request is kept on the entry and
+// honoured when that run ends.
+type Abandon {
+  Unasked
+  Asked
+}
+
 // A move that stalled while the store answered keeps the time its stalling
 // began; a stall for want of a quorum clears it, so that time is not counted.
 // `reason` is the last thing a run said when it stopped, kept through the retry
@@ -163,6 +173,7 @@ type Entry {
     phase: Phase,
     stalled_since: Option(Int),
     reason: Option(String),
+    abandon: Abandon,
   )
 }
 
@@ -327,7 +338,13 @@ fn handle(
         Ok(_) | Error(Nil) ->
           actor.continue(start_mover(
             state,
-            Entry(move:, phase: Waiting, stalled_since: None, reason: None),
+            Entry(
+              move:,
+              phase: Waiting,
+              stalled_since: None,
+              reason: None,
+              abandon: Unasked,
+            ),
           ))
       }
 
@@ -355,7 +372,23 @@ fn handle(
       case dict.get(state.entries, session) {
         Ok(Entry(phase: Waiting, ..) as entry) ->
           actor.continue(start_giving_up(state, entry))
-        Ok(Entry(phase: Running, ..)) | Error(Nil) -> actor.continue(state)
+
+        // A run in progress is not interrupted. The request is kept, and the
+        // run's end gives the move up in its place (`after_run`), through the
+        // same compare-and-set, so a receiver that already activated still
+        // finishes the move.
+        Ok(Entry(phase: Running, ..) as entry) ->
+          actor.continue(
+            State(
+              ..state,
+              entries: dict.insert(
+                state.entries,
+                session,
+                Entry(..entry, abandon: Asked),
+              ),
+            ),
+          )
+        Error(Nil) -> actor.continue(state)
       }
 
     Cover -> actor.continue(State(..state, wanted: state.wanted + 1))
@@ -403,11 +436,39 @@ fn handle(
             Ok(Entry(stalled_since: None, ..)) | Error(Nil) ->
               Some(bootstrap.monotonic_time_ms())
           }
-          actor.continue(waiting(state, move, since, Some(reason)))
+          actor.continue(after_run(state, move, since, Some(reason)))
         }
         Deferred(reason:) ->
-          actor.continue(waiting(state, move, None, Some(reason)))
+          actor.continue(after_run(state, move, None, Some(reason)))
       }
+  }
+}
+
+// A run that did not end the move. If the owner asked to give the move up while
+// it ran, the give-up starts now in place of waiting for the next tick. It goes
+// through `session_mover.give_up`, which expects the moving record, so it fails
+// if the receiver already took the session and the move finishes instead. The
+// request is spent by that run. Otherwise the move waits to run again.
+fn after_run(
+  state: State(instance),
+  move: catalogue.Pending,
+  since: Option(Int),
+  reason: Option(String),
+) -> State(instance) {
+  case dict.get(state.entries, move.session) {
+    Ok(Entry(abandon: Asked, ..)) ->
+      start_giving_up(
+        waiting(state, move, since, reason),
+        Entry(
+          move:,
+          phase: Waiting,
+          stalled_since: since,
+          reason: option.map(reason, node_report.cut_reason),
+          abandon: Unasked,
+        ),
+      )
+    Ok(Entry(abandon: Unasked, ..)) | Error(Nil) ->
+      waiting(state, move, since, reason)
   }
 }
 
@@ -427,6 +488,7 @@ fn waiting(
         phase: Waiting,
         stalled_since: since,
         reason: option.map(reason, node_report.cut_reason),
+        abandon: Unasked,
       ),
     ),
   )

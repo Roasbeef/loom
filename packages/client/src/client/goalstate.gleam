@@ -268,6 +268,15 @@ pub type Goal {
     /// The newest usage row the total covers. The accounting's durable
     /// claim, because the usage hook is at-most-once and non-replayable.
     accounted_through_seq: Int,
+    /// A watermark of the settled remote usage already charged to
+    /// `tokens_used` (protocol-change/084, phase 2): the tokens, input plus
+    /// output, of every settled remote child, as the last evaluation read them.
+    /// It is a total and not a cursor, because a settled child's usage is reported once and never
+    /// grows, so the evaluation replaces this figure with the current sum and
+    /// adds only the difference to `tokens_used`. Recomputing with nothing
+    /// settled since therefore adds nothing. A cell written before the field
+    /// existed reads as zero.
+    remote_tokens: Int,
     /// The summed dollar cost of accounted rows, recorded for display
     /// and never for gating.
     cost_used: Float,
@@ -356,6 +365,7 @@ pub fn new(
     token_budget:,
     tokens_used: 0,
     accounted_through_seq: accounted_from,
+    remote_tokens: 0,
     cost_used: 0.0,
     cost_evidence: usage_evidence.none(),
     continuations: 0,
@@ -581,6 +591,7 @@ pub fn encode(goal: Goal) -> JsonValue {
     #("token_budget", json.Int(goal.token_budget)),
     #("tokens_used", json.Int(goal.tokens_used)),
     #("accounted_through_seq", json.Int(goal.accounted_through_seq)),
+    #("remote_tokens", json.Int(goal.remote_tokens)),
     #("cost_used", json.Float(goal.cost_used)),
     #("cost_evidence", usage_evidence.encode(goal.cost_evidence)),
     #("continuations", json.Int(goal.continuations)),
@@ -935,6 +946,7 @@ pub fn decode(payload: JsonValue) -> Result(Goal, String) {
     token_budget: budget,
     tokens_used: counts.tokens_used,
     accounted_through_seq: counts.accounted_through_seq,
+    remote_tokens: counts.remote_tokens,
     cost_used:,
     cost_evidence:,
     continuations: counts.continuations,
@@ -968,6 +980,7 @@ type Counters {
   Counters(
     tokens_used: Int,
     accounted_through_seq: Int,
+    remote_tokens: Int,
     continuations: Int,
     zero_progress: Int,
     unanswered_feeds: Int,
@@ -979,6 +992,7 @@ fn decode_counters(
 ) -> Result(Counters, String) {
   use tokens_used <- result.try(counter(fields, "tokens_used"))
   use through <- result.try(counter(fields, "accounted_through_seq"))
+  use remote_tokens <- result.try(counter(fields, "remote_tokens"))
   use continuations <- result.try(counter(fields, "continuations"))
   use zero_progress <- result.try(counter(fields, "zero_progress"))
   use unanswered_feeds <- result.try(counter(fields, "unanswered_feeds"))
@@ -986,6 +1000,7 @@ fn decode_counters(
   Ok(Counters(
     tokens_used:,
     accounted_through_seq: through,
+    remote_tokens:,
     continuations:,
     zero_progress:,
     unanswered_feeds:,

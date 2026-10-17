@@ -294,6 +294,8 @@ pub fn the_heading_names_the_session_and_its_workspace_test() {
       label: Some(component.Label(
         name: "review <auth>",
         workspace: "/home/me/src/loom/",
+        executor: "",
+        pool: "",
       )),
     )
   let html =
@@ -324,7 +326,12 @@ pub fn a_session_without_a_name_is_named_by_its_short_identity_test() {
     component.Start(
       ..page_fixture.start(),
       session_id: id,
-      label: Some(component.Label(name: "", workspace: "")),
+      label: Some(component.Label(
+        name: "",
+        workspace: "",
+        executor: "",
+        pool: "",
+      )),
     )
   let unknown = component.Start(..page_fixture.start(), session_id: id)
   list.each([unnamed, unknown], fn(start) {

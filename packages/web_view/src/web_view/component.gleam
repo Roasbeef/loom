@@ -552,6 +552,12 @@ pub type Label {
     name: String,
     /// The canonical working directory the session runs in.
     workspace: String,
+    /// The `[executors.<name>]` key the session's workspace is registered on,
+    /// or the empty string for a session that runs on this host. For a session
+    /// created in a pool it is empty until the first attach chose one.
+    executor: String,
+    /// The `[pools.<name>]` the session was created in, or the empty string.
+    pool: String,
   )
 }
 
@@ -5130,7 +5136,10 @@ fn made_shareable(
 /// ```
 pub fn ask_archive(model: Model(socket), target: String) -> Model(socket) {
   case archivable(model, target), model.view.archiving {
-    Ok(action), actions.Calm | Ok(action), actions.Confirming(..) ->
+    Ok(action), actions.Calm
+    | Ok(action), actions.Confirming(..)
+    | Ok(action), actions.Choosing(..)
+    ->
       Model(
         ..model,
         view: View(
@@ -5201,7 +5210,11 @@ pub fn confirm_archive(
 fn working_words(action: actions.Action) -> String {
   case action {
     actions.StopArchive -> "Working on it. A running session is stopped first."
-    actions.Archive | actions.Stop | actions.Delete -> "Working on it."
+    actions.Archive
+    | actions.Stop
+    | actions.Delete
+    | actions.Destinations
+    | actions.Move(..) -> "Working on it."
   }
 }
 
@@ -5214,7 +5227,7 @@ fn working_words(action: actions.Action) -> String {
 /// ```
 pub fn cancel_archive(model: Model(socket)) -> Model(socket) {
   case model.view.archiving {
-    actions.Confirming(..) ->
+    actions.Confirming(..) | actions.Choosing(..) ->
       Model(..model, view: View(..model.view, archiving: actions.Calm))
     actions.Calm | actions.Working(..) -> model
   }
@@ -5265,7 +5278,18 @@ fn archive_answered(
       ),
       relist,
     )
-    actions.Calm, _ | actions.Confirming(..), _ -> #(model, effect.none())
+
+    // A session page asks only for what the sidebar offers, so a read of
+    // destinations is never its answer. If one arrived, the request is over and
+    // the sidebar is calm again.
+    actions.Working(..), actions.Heard(..) -> #(
+      Model(..model, view: View(..model.view, archiving: actions.Calm)),
+      effect.none(),
+    )
+    actions.Calm, _ | actions.Confirming(..), _ | actions.Choosing(..), _ -> #(
+      model,
+      effect.none(),
+    )
   }
 }
 
@@ -7147,6 +7171,10 @@ pub fn panel(
       jobs(model),
       viewers,
       option.map(model.view.label, fn(label) { label.workspace }),
+      option.map(model.view.label, fn(label) { label.executor })
+        |> option.unwrap(""),
+      option.map(model.view.label, fn(label) { label.pool })
+        |> option.unwrap(""),
       share,
       controls,
       rename,
@@ -7380,7 +7408,11 @@ pub fn heading(
     status: status_text(model.view.status),
     tone: status_tone(model.view.status),
     context: context_figure(model),
-    breakdown: context_breakdown.panel(model.shared.context, context_actions),
+    breakdown: context_breakdown.panel_with_remote(
+      model.shared.context,
+      model.shared.remote_usage,
+      context_actions,
+    ),
     cost: transcript_lines.cost_words(model.shared.usage),
     rate: session_model.output_rate_tps(model.shared),
     notice: ended.view(ended_ending(model.view.status), model.shared.session),

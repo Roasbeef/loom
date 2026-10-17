@@ -1404,6 +1404,47 @@ pub fn the_admin_socket_admits_only_events_beneath_the_pages_body_test() {
   )
 }
 
+// The machines section adds a row's button, a tab's button and Close, which are
+// clicks beneath the body, and the socket admits them as it admits the rest and
+// nothing beyond: not a submit-less sibling of the body, not the bar, and not
+// another event on a row.
+pub fn the_admin_socket_admits_the_machine_rows_and_tabs_and_nothing_more_test() {
+  // A row in the table (the section is the body's fourth child, the table its
+  // third) and a tab and Close in the machine's page under it.
+  let row = admin.body_path <> "\t3\t2\t0\t1\t2\t0\t0"
+  let tab = admin.body_path <> "\t3\t3\t1\t2"
+  let close = admin.body_path <> "\t3\t3\t0\t0\t2"
+  assert ui_socket.admin_accepts(click_on(row))
+  assert ui_socket.admin_accepts(click_on(tab))
+  assert ui_socket.admin_accepts(click_on(close))
+  assert ui_socket.admin_accepts(
+    "{\"kind\":3,\"messages\":["
+    <> click_on(row)
+    <> ","
+    <> click_on(tab)
+    <> "]}",
+  )
+  list.each(
+    [
+      "{\"kind\":1,\"path\":\""
+        <> "0\\t2\\t1\\t3\\t2"
+        <> "\",\"name\":\"keydown\"}",
+      "{\"kind\":1,\"path\":\"0\\t2\\t1\\t3\\t2\\t0\\t0\",\"name\":\"mouseover\"}",
+      "{\"kind\":1,\"path\":\"0\\t2\\t1\\t3\\t3\\t1\\t2\",\"name\":\"input\"}",
+      click_on("0\t2\t10\t3\t2"),
+      click_on("0\t0\t3\t2\t0"),
+      "{\"kind\":3,\"messages\":["
+        <> click_on(row)
+        <> ","
+        <> click_on("0\t0\t5")
+        <> "]}",
+    ],
+    fn(frame) {
+      assert !ui_socket.admin_accepts(frame)
+    },
+  )
+}
+
 // The paths the admin page adds are pinned beside the others: the button is the
 // bar's last child and the body is the centre's second, and none of the paths
 // pinned before moved.
@@ -1730,4 +1771,41 @@ pub fn notes_observer_events_are_confined_to_read_only_pane_test() {
   assert !ui_socket.observer_accepts(click(component.notes_path))
   assert !ui_socket.observer_accepts(click(component.notes_path <> "0\t0"))
   assert !ui_socket.observer_accepts(input(component.rename_path))
+}
+
+// Only the owner's operating home is handed the capability to read the other
+// orchestrators.
+pub fn only_an_owners_operating_home_is_handed_the_elsewhere_capability_test() {
+  let reads = home.Elsewhere(groups: fn(_) { Nil }, next: fn(_, _, _) { Nil })
+  let owner = home_principal(access.OwnerPrincipal)
+  let member = home_principal(access.MemberPrincipal)
+  let assert Some(_) =
+    ui_socket.home_elsewhere_capability(owner, access.Operator, reads)
+  assert ui_socket.home_elsewhere_capability(owner, access.Observer, reads)
+    == None
+  assert ui_socket.home_elsewhere_capability(member, access.Operator, reads)
+    == None
+  assert ui_socket.home_elsewhere_capability(member, access.Observer, reads)
+    == None
+}
+
+// "Where" and "Show more" are clicks beneath the sessions' region, which every
+// home admits, so the socket admits nothing new for them. A near miss is
+// dropped: another event class at the same path, a click on the bar, and a
+// path that only shares the region's digits.
+pub fn the_other_orchestrators_need_no_new_admission_test() {
+  let where_button = home.table_path <> "\t6\t1\t0\t0\t2"
+  let show_more = home.table_path <> "\t6\t1\t1"
+  list.each([where_button, show_more], fn(path) {
+    assert ui_socket.home_accepts(click_on(path))
+    assert ui_socket.home_owner_accepts(click_on(path))
+    list.each(["change", "input", "keydown", "focus", "submit"], fn(name) {
+      assert !ui_socket.home_accepts(
+        "{\"kind\":1,\"path\":\"" <> path <> "\",\"name\":\"" <> name <> "\"}",
+      )
+    })
+  })
+  assert !ui_socket.home_accepts(click_on("0\t0\t0"))
+  assert !ui_socket.home_accepts(click_on(home.table_path <> "9"))
+  assert !ui_socket.home_accepts(click_on("0\t3\t1\t6\t1\t1"))
 }

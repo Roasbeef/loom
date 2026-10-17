@@ -49,6 +49,8 @@ import lustre/element/html
 import lustre/event
 import session_view/agent_roster
 import session_view/context_view
+import session_view/remote_usage
+import session_view/remote_usage_words
 import session_view/text_hygiene
 
 /// The most rows either grouping of the item list draws before it says how
@@ -104,6 +106,25 @@ pub fn panel(
   state: context_view.State,
   actions: Actions(message),
 ) -> Element(message) {
+  panel_with_remote(state, [], actions)
+}
+
+/// `panel`, with a section after the board for the children that ran on other
+/// orchestrators (protocol-change/084, phase 2). Their tokens are spent where
+/// this session's context cannot see them, so each orchestrator gets a row of
+/// its own, labelled by name. A session with none draws exactly what `panel`
+/// draws.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // context_breakdown.panel_with_remote(state, snapshot_usage, actions)
+/// ```
+pub fn panel_with_remote(
+  state: context_view.State,
+  remote: List(remote_usage.RemoteUsage),
+  actions: Actions(message),
+) -> Element(message) {
   html.div(
     [attribute.class("ctx-panel"), attribute.aria_label("Context window")],
     [
@@ -116,8 +137,29 @@ pub fn panel(
           ])
         Some(board) -> board_view(state, board)
       },
+      remote_section(remote),
     ],
   )
+}
+
+// One row for each orchestrator whose children have settled, or nothing. The
+// name is a text node, like every name drawn from the session.
+fn remote_section(remote: List(remote_usage.RemoteUsage)) -> Element(message) {
+  case remote {
+    [] -> element.none()
+    entries ->
+      html.div([attribute.class("ctx-remote")], [
+        html.h3([attribute.class("ctx-note")], [
+          html.text("Children on other orchestrators"),
+        ]),
+        html.ul(
+          [],
+          list.map(entries, fn(entry) {
+            html.li([], [html.text(remote_usage_words.entry(entry))])
+          }),
+        ),
+      ])
+  }
 }
 
 // What the last Compact now press found, in a sentence under the buttons. It

@@ -683,3 +683,74 @@ reaches the Agency. One window remains: a `Spawn` that arrives while a closed
 session is draining finds the slot stopping and is refused as
 `StoreFailure("the delegate session is stopping")`. The spawner's next attempt
 reopens the session. No further refusal is added for it.
+
+## Addendum 2026-10-16: metering (phase 2, slice S8)
+
+Three optional keys on `[spawners.<name>]` bound what a spawner's children spend
+on this machine: `token_budget_per_day` (tokens, input plus output, over a
+rolling day), `max_per_day` (spawns admitted over the same day) and
+`child_token_budget` (tokens of one child). An absent key bounds nothing, which
+is phase 1 behaviour, and a present one is a positive integer. A spawner that
+sets none is unmetered: nothing is recorded or judged for it.
+
+### The spend table
+
+Catalogue version 17 adds `catalogue_spawner_spend(spawner, hour_bucket, tokens,
+spawns)`, one row per spawner and hour, the hour being Unix milliseconds divided
+by 3,600,000. A rolling day is the 24 newest buckets. A write adds to the
+current bucket and prunes the spawner's expired ones in the same transaction, so
+the table stays bounded without a sweep. The rows name no session and outlive
+the delegate sessions they were made in. Tokens are recorded only for a spawner
+that sets `token_budget_per_day`.
+
+### Admission
+
+A new spawn is refused when the day's tokens have reached
+`token_budget_per_day` or the day's spawns have reached `max_per_day`, as
+`SpawnRefusal.CapReached(cap: TokensPerDay | SpawnsPerDay, limit:)`. The Agency's
+holder makes the claim, because only the holder can tell a resent spawn from a
+new one. It calls the closure `Config.claim` (the daemon's
+`manager.claim_spawn`) only when the call site has no child yet, the ended and
+released fences have passed, and the child is about to be created. A resent
+spawn is adopted before any claim, so it is answered with its child, is not
+counted, and is not refused even at the cap.
+
+The claim is one registry message, `ClaimSpawn`. In one turn it reads the
+spawner's last 24 buckets, judges both caps and counts the spawn, touching only
+the catalogue connection the registry already owns. It calls no session, and the
+registry never waits on a holder, so the holder waiting on it cannot deadlock.
+Two claims see each other because the registry handles one message at a time.
+The holder bounds the wait by `holder_timeout_ms`. A claim that goes unanswered
+is a `StoreFailure`, which the laptop retries, and never a cap. Only a spawner
+that sets `token_budget_per_day` or `max_per_day` has a claim; one with only
+`child_token_budget` writes no spawn counts. A spawn that is claimed and then
+refused further in (a depth cap, say) still counts, which errs toward the cap.
+
+### The child budget
+
+A delegate session of a metered spawner wraps its usage slot
+(`agency.metering_hooks`). The slot's only work on the strand driver is one
+`process.spawn_unlinked`. That process reports the request's tokens to the
+registry and, when `child_token_budget` is set, reads the child's total from the
+usage ledger (`child_usage.of_strands`) and sends the holder
+`StopChild(strand, TokenBudgetSpent)`. The holder records the stop and aborts the
+run through `reap`, as for every other stop. The child overshoots by at most the
+request that crossed the budget. `child_run.Stop` and `tools/agent.Outcome` gain
+`TokenBudgetSpent`, written `token_budget_spent`; every decoder keeps accepting
+older rows, and a model reading a wait sees an aborted outcome with that reason.
+
+### The laptop
+
+A goal's token budget counts the settled remote children. The goal cell gains
+`remote_tokens`, the part of `tokens_used` that remote children account for. It
+is a total beside the ledger cursor: an evaluation adds the growth of the sum
+over the settled stubs, so recomputing adds nothing, and a goal that is pinned,
+replaced or resumed starts the figure where it stands. A cell without the field
+reads as zero.
+
+The full snapshot gains an optional `remote_usage`, a list with one entry for
+each orchestrator (`orchestrator`, `input`, `output`, `cache_read`,
+`cache_write`, `cost`). It is omitted when empty, an old client ignores it, and
+an absent field decodes to no entries. The terminal shows it in the footer and
+the session tab, and the web view lists it after the context breakdown, each
+labelled by orchestrator.

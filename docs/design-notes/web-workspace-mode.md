@@ -86,10 +86,10 @@ check anywhere.
 A UI session is a `Grant` (`ui_sessions.gleam:310`) of one session, one
 credential digest, one principal and one ceiling, kept with the digests of
 the page's cookie, key and nonce in one actor. A ticket for it is minted
-only by `UiLink` (`client/daemon/server.gleam:2287`) over the principal's own
+only by `UiLink` (`client/daemon/server.gleam:2386`) over the principal's own
 control connection, after `session_authority`
 (`client/daemon/manager.gleam:936`) finds a membership, and by a page
-switching to another session (`ticket_for` (`ui_socket.gleam:1550`)). The
+switching to another session (`ticket_for` (`ui_socket.gleam:1624`)). The
 exchange redeems it once (`redeem` (`ui_sessions.gleam:737`)), the page and
 its socket are re-authorized on every request (`page_grant`
 (`client/daemon/server.gleam:356`)), and every route is checked in 051's
@@ -297,11 +297,7 @@ that adds it says what the narrowed holder may ask.
 
 Keying the row by the digest of the identifier is what makes a login fit
 the existing model: every check in the tree takes a credential digest
-<<<<<<< ours
-(`authenticate` (`client/daemon/manager.gleam:1720`), `session_authority`,
-=======
-(`authenticate` (`client/daemon/manager.gleam:1720`), `session_authority`,
->>>>>>> theirs
+(`authenticate` (`client/daemon/manager.gleam:1756`), `session_authority`,
 `frame_authority`, `administer`), and a page minted from a login carries
 that digest as its `Grant.credential`. The page's socket, its relay, the
 gateway's per-frame re-check and the admin dispatch all run unchanged
@@ -313,7 +309,7 @@ anyone who sees the cookie knows it, and the row's digest is the digest of
 it. The first edition of this note said a login presented as a bearer is
 refused because the daemon would hash the whole token; that was true and
 beside the point, because the daemon hashes any presented string
-(`credential` (`client/daemon/server.gleam:848`)), and `Authorization:
+(`credential` (`client/daemon/server.gleam:887`)), and `Authorization:
 Bearer <id>` would have hashed to the row and authenticated as the
 principal with no ceiling, no expiry, no key and no nonce: for the owner's
 login, owner authority on the control socket. The review of 2026-10-04
@@ -645,11 +641,7 @@ login add these cases.
 `sessions.create` is owner-only (`CreateSession`
 (`client/daemon/server.gleam:1604`)): it canonicalizes a workspace path on the
 daemon's host, canonicalizes or inherits a configuration path, and runs
-<<<<<<< ours
-`create_scoped` (`client/daemon/manager.gleam:1826`) under an idempotency key.
-=======
-`create_scoped` (`client/daemon/manager.gleam:1826`) under an idempotency key.
->>>>>>> theirs
+`create_scoped` (`client/daemon/manager.gleam:1872`) under an idempotency key.
 The terminal builds that key from its own identity, the wall clock and a
 counter (`CreateSession` (`tui/session_control.gleam:788`)), names the session
 from the workspace, and then opens and attaches. A page has no path to any
@@ -738,13 +730,8 @@ and the epoch the page was admitted in:
 1. the page is open and its ceiling is Operator;
 2. `session_authority` finds Owner or Operator authority in the target: an
    observer member is refused with the words "ask an operator to resume
-<<<<<<< ours
-   it", the check `OpenSession` (`client/daemon/server.gleam:2305`) makes;
-3. `open` (`client/daemon/manager.gleam:1793`) is called, which is the same
-=======
-   it", the check `OpenSession` (`client/daemon/server.gleam:2305`) makes;
-3. `open` (`client/daemon/manager.gleam:1793`) is called, which is the same
->>>>>>> theirs
+   it", the check `OpenSession` (`client/daemon/server.gleam:2404`) makes;
+3. `open` (`client/daemon/manager.gleam:1826`) is called, which is the same
    registry turn `sessions.open` runs: capacity, `Reserved`, archived, the
    domain slot;
 4. the daemon waits for the session to become `Resident`, polling `get`
@@ -783,15 +770,9 @@ membership is.
 053 designed the admin page in full (phase 4) and the owner ruled on
 2026-09-30 that it waits for use of the terminal's `/access` overlay
 (`tui/access_overlay.gleam`). The daemon serves the two owner-only reads it
-<<<<<<< ours
-needs, `principal_page` (`client/daemon/manager.gleam:1560`) and
-`membership_page` (`client/daemon/manager.gleam:1583`), and every mutation
-through one dispatch, `administer` (`client/daemon/manager.gleam:1040`): invite,
-=======
-needs, `principal_page` (`client/daemon/manager.gleam:1560`) and
-`membership_page` (`client/daemon/manager.gleam:1583`), and every mutation
-through one dispatch, `administer` (`client/daemon/manager.gleam:1040`): invite,
->>>>>>> theirs
+needs, `principal_page` (`client/daemon/manager.gleam:1596`) and
+`membership_page` (`client/daemon/manager.gleam:1619`), and every mutation
+through one dispatch, `administer` (`client/daemon/manager.gleam:1076`): invite,
 set-role, revoke membership, rotate, revoke credentials, isolate. The owner's
 session page already starts one of those from a browser, `invite_for`
 (`ui_socket.gleam:812`), bounded to three an hour for the credential and shown
@@ -906,11 +887,7 @@ A principal has a stable ID and a display name (`Principal`
 SESSION PRINCIPAL ROLE NAME`, and `Guest <digits>` from the page). The
 catalogue can rename one (`rename` (`storage/access.gleam:1195`)) and no control
 command exposes it (053, Open). A claim binds a credential to the principal
-<<<<<<< ours
-(`claim` (`client/daemon/manager.gleam:1058`)) and carried no name before this change. The name
-=======
-(`claim` (`client/daemon/manager.gleam:1058`)) and carried no name before this change. The name
->>>>>>> theirs
+(`claim` (`client/daemon/manager.gleam:1104`)) and carried no name before this change. The name
 reaches everyone through the roster: the gateway stamps each connection and
 each admitted command with the principal's current name (`Origin`
 (`client/gateway.gleam:1783`)), presence frames carry it, and an origin keeps

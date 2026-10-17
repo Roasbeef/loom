@@ -33,6 +33,8 @@ fn drawn(jobs, viewers) -> String {
     jobs,
     viewers,
     None,
+    "",
+    "",
     element.none(),
     element.none(),
     element.none(),
@@ -68,6 +70,8 @@ pub fn the_groups_read_session_people_goal_jobs_cost_test() {
       Unread,
       Some(Viewers([], 1)),
       Some("/src/loom"),
+      "",
+      "",
       element.none(),
       element.none(),
       element.none(),
@@ -108,6 +112,8 @@ pub fn a_pinned_goal_is_the_terminals_row_and_no_goal_says_none_test() {
       Unread,
       None,
       None,
+      "",
+      "",
       element.none(),
       element.none(),
       element.none(),
@@ -134,6 +140,8 @@ pub fn the_goal_is_only_ever_a_text_node_test() {
       Unread,
       None,
       None,
+      "",
+      "",
       element.none(),
       element.none(),
       element.none(),
@@ -448,4 +456,31 @@ pub fn an_operators_page_names_its_viewers_and_an_observers_does_not_test() {
   assert !string.contains(observing, "Viewers")
   assert !string.contains(observing, "attached")
   assert !string.contains(observing, "the watcher")
+}
+
+pub fn where_a_session_runs_is_worded_from_the_executor_and_pool_test() {
+  assert session_tab.runs_on("", "") == None
+  assert session_tab.runs_on("box", "") == Some("runs on box")
+  assert session_tab.runs_on("box", "builders")
+    == Some("runs on box (pool builders)")
+  assert session_tab.runs_on("", "builders") == Some("runs in pool builders")
+}
+
+pub fn the_runs_on_line_is_text_inside_the_session_group_test() {
+  let html =
+    element.to_string(session_tab.view(
+      [],
+      "$0.12",
+      Unread,
+      None,
+      Some("/src/loom"),
+      "box<1>",
+      "",
+      element.none(),
+      element.none(),
+      element.none(),
+      element.none(),
+      element.none(),
+    ))
+  assert string.contains(html, "runs on box&lt;1&gt;")
 }

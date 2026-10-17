@@ -221,6 +221,17 @@ pub fn every_control_command_has_one_typed_decode_test() {
       [#("node", json.String("build-box"))],
       protocol.DeploymentStatus(Some("build-box")),
     ),
+    #("sessions.elsewhere", [], protocol.SessionsElsewhere(None, None)),
+    #(
+      "sessions.elsewhere",
+      [#("orchestrator", json.String("laptop"))],
+      protocol.SessionsElsewhere(Some("laptop"), None),
+    ),
+    #(
+      "sessions.elsewhere",
+      [#("orchestrator", json.String("laptop")), #("after", json.String(id))],
+      protocol.SessionsElsewhere(Some("laptop"), Some(id)),
+    ),
   ]
   list.each(cases, fn(example) {
     assert protocol.decode(envelope(7, example.0, example.1))
@@ -952,4 +963,23 @@ pub fn creation_model_composes_with_an_executor_and_a_pool_test() {
       #("model", json.Null),
     ])
     as "a model that is not a key is a bad request on an executor"
+}
+
+pub fn an_elsewhere_read_names_its_group_and_its_cursor_as_the_lists_do_test() {
+  let read = fn(fields) {
+    protocol.decode(envelope(1, "sessions.elsewhere", fields))
+  }
+  let key = #("orchestrator", json.String("laptop"))
+
+  // A cursor with no group is not a cursor into every group, a cursor is a
+  // session identity, and a key is a configuration key and not a node name.
+  let id = session_id()
+  assert result.is_error(read([#("after", json.String(id))]))
+  assert result.is_error(read([key, #("after", json.String("later"))]))
+  assert result.is_error(read([key, #("after", json.Int(1))]))
+  assert result.is_error(
+    read([#("orchestrator", json.String("laptop@10.0.0.7"))]),
+  )
+  assert result.is_error(read([#("orchestrator", json.Null)]))
+  assert result.is_ok(read([key, #("after", json.String(""))]))
 }

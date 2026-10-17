@@ -585,3 +585,157 @@ reply treats every member named here as optional, as the decision states.
   needs a release is named only when the reply carries the node's long lists
   (`--node`), so an overview says how many. `loom directory status` draws the
   `directory.status` body and has no member of its own.
+
+## Addendum 2026-10-16: the spellings slice 5 chose
+
+Slice 5 builds `sessions.elsewhere`: the orchestrator port's `Sessions`, the
+control command, the terminal's section and `loom sessions elsewhere`, and the
+owner's home group. 085 is silent or ambiguous on the points below, and this is
+what the code does. A reader of a reply treats every member named here as
+optional.
+
+- **`Row.executor_node`.** A row gains the optional member `executor_node`. A
+  row's `executor` is a key of the answering orchestrator's own `[executors]`
+  table, and two orchestrators need not call one executor by one name, so a reader
+  that attributes a row to a machine needs the node. The answering orchestrator
+  fills it from its own table, and leaves it out when the table does not list the
+  executor. It is not in the page vocabulary of the web view, which draws the
+  executor's key as the row's placement.
+- **A failed read is not an empty page.** `Sessions` is answered with
+  `Result(Page, Nil)`, as `Holds` is. A catalogue that cannot be read sends
+  `Error(Nil)`, and the asking daemon reports the orchestrator `silent`. The
+  decision says "a daemon with no catalogue to describe answers `Sessions` with an
+  empty page", which is the port started without a catalogue (`unreported`), and
+  not a catalogue that failed.
+- **How a page is read.** The answering daemon reads catalogue pages from the
+  identity it is given, drops the sessions that are archived, `moving` or `moved`,
+  and stops when it holds one row more than it was asked for. The extra row
+  decides `more`, so a page that ends exactly at the end of the catalogue is last.
+  If it has read `ledger_holdings.max_pages` catalogue pages and holds no row, it
+  cannot say where the next one is and does not answer; if it holds some, it
+  answers them with `more`.
+- **The request.** `orchestrator` alone is that group's first page, and `after`
+  without `orchestrator` is `bad_request`: identities are not ordered across
+  orchestrators, so a cursor into every group means nothing. A value of
+  `orchestrator` that is not shaped like a configuration key is `bad_request`, and
+  one that is shaped like a key and absent from the configuration is `not_found`.
+  Both are decided before any connection.
+- **The size of a reply.** The daemon asks for 20 rows for each group, then keeps
+  the body at or under 59,700 bytes, which with its envelope is under 60,000. It
+  removes the last row of whichever group has the most rows, the later group on a
+  tie, until the body fits, and marks that group `more`. A silent group is one
+  line and is never cut.
+- **The terminal.** `loom sessions list` appends the section to both of its text
+  forms, the table and the plain lines, after a blank line, unless `--local` is
+  given. A script that parses the lines uses `--local`. A daemon that does not know
+  the command has no section, and a read that failed for another reason adds one
+  line saying the other orchestrators were not read, because the listing above it
+  is still true and a missing section would read as "none". `loom sessions
+  elsewhere` prints only the section, and takes `--orchestrator <key>` and `--after
+  <id>` for a group's next page and `--json` for the reply as it was sent.
+- **The web home.** The owner's operating home reads the first page of every other
+  orchestrator in a weft task after each list read, numbered so that an answer a
+  newer read overtook is dropped, and "Show more" asks for one group's next page
+  after the last row the page holds for it. A row's "Where" opens a detail with the
+  launch line, in a `<loom-copy>` box. The page is given the configuration key, the
+  address and each row's fixed state and text, and no node. It adds no event class,
+  scope, route or content security policy change, and no stylesheet rule: the group
+  reuses the existing boxes. The launch line is the words the terminal prints for a
+  `not_owner` answer, which now live in `session_view/launch_words`.
+- **`<loom-copy>` takes a seventh subject.** The launch line is not any shape the
+  element copied, so `launch` is added to `web_client/copy_rule`: `loom --addr`, an
+  address of the characters an address has or the placeholder for none, `--session`,
+  an identity of hexadecimal digits and hyphens, and the fixed `--token-file`
+  ending. The built bundle and stylesheet are regenerated in their own commit.
+
+## Addendum 2026-10-16: the Admin page's machines list and read-only machine pages
+
+Slice 6 is built as a machines list and a read-only page for each machine, in place
+of a terminal and buttons on a page. The page's rules are Admin's: no new scope,
+route, ticket, event class or content security policy change, and every handler is a
+click beneath `admin.body_path`.
+
+- **The list shows every ledger member.** The Deployment section lists the nodes the
+  daemon dials and also the members of the membership ledger that it does not. A
+  member this daemon is not linked to is marked "not linked from here" and is never
+  dialled. The list is merged by node name.
+- **The page shows the certificate pin.** The Access tab states each member's pin, the
+  hex SHA-256 of the leaf certificate, a public value the pin table already holds.
+  `ledger.status` members gain optional `links` and `pin` for it (the 2026-10-16
+  addendum to protocol-change/086).
+- **Machine pages run nothing.** There is no terminal and no enroll, renew, revoke or
+  release button. A page states the exact command in a `<loom-copy>` box for the
+  operator to run on the right machine: `loom distribution renew NAME`, `loom
+  distribution revoke NAME --reason 'REASON'`, `loom distribution enroll NAME --node
+  NODE --role executor|orchestrator --links THIS` for a node the ledger does not list,
+  and `loomd executor release SESSION` for each scope that blocks a reopen. Each name
+  is written as one safely quoted shell word and a name that cannot be quoted gets no
+  command. `<loom-copy>` takes an eighth subject, `operate`, whose rule is that
+  grammar.
+- **Four tabs.** Overview, Sessions, Access and Activity, switched by a click
+  (`TabChosen`); choosing a machine (`MachineChosen`) reads that one node through
+  `deployment.status` with `node`. The asking daemon is listed and not read.
+- **The reads.** `server.AdminAttachment` gains `deployment` and `elsewhere`, each run
+  in a weft task of its own behind the owner check. The Sessions tab matches another
+  orchestrator's rows to a machine by `executor_node`, which the page's row now
+  carries.
+- **The home strip.** The owner's operating home draws a one-line strip under the bar
+  naming the peer orchestrators, as text.
+- **Abandon is not part of this slice.** It is on the Activity tab, built in slice 5 (the addendum below).
+
+
+## Addendum 2026-10-16: Move with candidates, Abandon, and where a session runs
+
+Slice 5 gives the owner's pages and the terminal the move the control socket already
+had (protocol-change/078, phase 5, and protocol-change/083), and adds no wire member.
+`sessions.move` already carries `abandon`; the terminal now sends it.
+
+- **One daemon function for each.** `server.move_session` and `server.abandon_move`
+  are the bodies of the control arms, and the home's Move and the Admin page's
+  Abandon call them, so the checks cannot differ between the terminal and a page.
+  A refusal is a typed `MoveRefusal`, which the control socket words as the codes it
+  always answered (`move_refusal_code`) and a page words in fixed sentences.
+- **The Move candidate rule.** A session on an executor can move to an orchestrator
+  the asking daemon lists when the daemon reached it, its report says
+  `imports: receiving`, and the executors it serves (`executor_nodes`) include the
+  session's executor node. The asking daemon is never a candidate. An orchestrator
+  that fails the rule is still listed, with the first reason that applies:
+  unreachable, no report, does not accept moved sessions, or does not serve the
+  executor. The rule is pure and lives in `session_view/move_candidates`, below both
+  hosts, with its words. `deployment.candidates` applies it to the judged nodes of a
+  `deployment.status` read, and the terminal applies it to the `orchestrators` member
+  of the same reply (`tui/deployment_view.candidates`). A session with no executor has
+  no destination.
+- **Web Move is the owner's fresh home only.** A saved row has a Move button; a row
+  with no executor has it disabled and its title says only a session on an executor
+  can move. The first press is an action of its own, `Destinations`, which changes
+  nothing: the daemon reads the deployment (up to its four-second bound, in a task)
+  and answers `Heard`, and the row's words are replaced by a button for each eligible
+  destination and a line for each ineligible one with its reason. A destination opens
+  the confirmation Delete uses, "Move this session to bravo?", and only its button
+  asks the daemon for `Move(to)`. Each step acts only for the stage the one before it
+  left, and `manage_for` decides every press again with its `fresh_home` and
+  `owner_operating` checks, so a resumed home, a member and a read-only page are
+  refused and reach nothing. The page then reads "moving to bravo" from the row's
+  residency. `move_session` checks that
+  the destination is one of the daemon's `[orchestrators.<name>]`. It does not judge
+  eligibility again, so a destination that stopped qualifying since the read is
+  accepted and the move stalls and retries like any move toward a silent receiver.
+- **Where a session runs.** The session page's Session tab says `runs on box (pool
+  builders)` under the workspace, as text, from the registration's executor and pool.
+  Only the owner's page says it; a member's page carries neither.
+- **Web Abandon is on the Admin Activity tab only.** It is not on the home row. It is
+  `grants.Action.AbandonMove(session)`, not a parallel action, because it is an owner
+  change that the Admin page's request machinery already carries: one request at a
+  time, the `administering` re-check, the `Armed` two-step, and the notice beside the
+  control. It costs no allowance. The button is drawn beside each move the asking
+  daemon has in flight, and only when that daemon is a directory member, since only a
+  member can abandon (`NotAMember` otherwise, and `NotMoving` for a move that has
+  ended). It is two presses, and the question reads "If bravo has already taken the
+  session, the move finishes instead", which is what the compare-and-set does.
+- **Terminal.** `loom sessions move ID` without `--to` reads the session's executor and
+  the deployment, prints the candidates with reasons, and exits nonzero because it
+  moved nothing. `loom sessions move ID --abandon` sends `abandon: true`. The two
+  flags do not combine.
+- **No new scope, route, ticket, event class or content security policy change.** Every
+  name, reason and executor is a text node, and every class is a literal.

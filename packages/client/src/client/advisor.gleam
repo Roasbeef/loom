@@ -154,6 +154,9 @@
 //// For clearing, read `clear_goal`, then `delete_cell` and `goal_written`.
 //// Both persistence paths publish only after the reserved writer replies.
 //// The policy and the durable goal shape live in separate domain modules.
+//// Accounting reads the usage ledger with `account_recompute` and adds the
+//// settled remote children through `remote_tokens`, so a goal cannot escape its
+//// budget by delegating.
 //// The publication path announces an invalidated observation, not a verdict.
 
 import client/advisorguard
@@ -163,6 +166,7 @@ import client/goalloop
 import client/goalstate
 import client/internal/session_owner
 import client/notes
+import client/remote_child
 import core/accounting
 import core/clock.{type Clock}
 import core/entry.{type Entry}
@@ -1723,7 +1727,7 @@ fn evaluate(
     None -> memory
 
     Some(goal) -> {
-      let fresh = accounted(state, goal)
+      let fresh = accounted(state, runtime, goal)
       let #(moved, action) =
         goalloop.next_action(fresh, observe(state, memory, event))
       let memory = stored_if_moved(state, runtime, memory, goal, moved)
@@ -2352,7 +2356,7 @@ fn answered(
   answer: goalloop.Answer,
   reply: Subject(Result(advise.Ack, String)),
 ) -> State {
-  let fresh = accounted(state, goal)
+  let fresh = accounted(state, runtime, goal)
   let #(moved, action) =
     goalloop.next_action(
       fresh,
@@ -2421,9 +2425,13 @@ fn verdict_ack(
 // moved, so spend from at most one harness-opened run goes uncharged. Against
 // a bound the budget reads as a floor that is one run of headroom, which is
 // what a durable write per row on every stopped goal was buying.
-fn accounted(state: State, goal: goalstate.Goal) -> goalstate.Goal {
+fn accounted(
+  state: State,
+  runtime: Runtime,
+  goal: goalstate.Goal,
+) -> goalstate.Goal {
   case goal.status {
-    goalstate.Active -> account_recompute(state, goal)
+    goalstate.Active -> account_recompute(state, runtime, goal)
 
     goalstate.Paused(..) | goalstate.Limited(..) | goalstate.Complete -> goal
   }
@@ -2455,7 +2463,11 @@ fn accounted(state: State, goal: goalstate.Goal) -> goalstate.Goal {
 // written in the same transaction as its entry, so this needs two
 // strands committing across one another, and the loss is one row of a
 // budget the bound reads as a floor.
-fn account_recompute(state: State, goal: goalstate.Goal) -> goalstate.Goal {
+fn account_recompute(
+  state: State,
+  runtime: Runtime,
+  goal: goalstate.Goal,
+) -> goalstate.Goal {
   let store = state.wiring.session.store
   let window =
     storage.usage_scan()
@@ -2467,7 +2479,12 @@ fn account_recompute(state: State, goal: goalstate.Goal) -> goalstate.Goal {
     Error(_unreadable) -> goal
 
     Ok(rows) ->
-      summed(goal, rows, primary_entries(state, goal.accounted_through_seq))
+      summed(
+        goal,
+        rows,
+        primary_entries(state, goal.accounted_through_seq),
+        remote_tokens(runtime),
+      )
   }
 }
 
@@ -2527,21 +2544,41 @@ fn summed(
   goal: goalstate.Goal,
   rows: List(entry.UsageRow),
   primaries: Set(EntryId),
+  remote: Option(Int),
 ) -> goalstate.Goal {
   let #(usage, through) =
     tally(rows, primaries, accounting.zero_usage(), goal.accounted_through_seq)
 
+  // Children on other orchestrators have no rows in this ledger. Their cost is
+  // the sum over the settled stubs, a total and not a cursor, so only its growth
+  // since the last evaluation is added. The figure never falls: a stub that
+  // cannot be read this time leaves the previous one, and a lower reading keeps
+  // it, so a recompute with nothing newly settled adds nothing.
+  let remote_now = int.max(goal.remote_tokens, option.unwrap(remote, 0))
+
   goalstate.Goal(
     ..goal,
+    remote_tokens: remote_now,
     // The delta a primary row adds is uncached input plus output. `input`
       // already excludes cache reads and writes, so subtracting them here would
       // discount the same tokens twice. `reasoning` is a subset of `output` and
       // is not added again (protocol 044 §5).
-      tokens_used: goal.tokens_used + usage.input + usage.output,
+      tokens_used: goal.tokens_used
+      + usage.input
+      + usage.output
+      + { remote_now - goal.remote_tokens },
     cost_used: goal.cost_used +. usage.cost.total,
     cost_evidence: usage_evidence.add(goal.cost_evidence, usage.evidence),
     accounted_through_seq: through,
   )
+}
+
+// The tokens the settled remote children used, or `None` when the stubs cannot
+// be read, which leaves the goal's last figure as it was.
+fn remote_tokens(runtime: Runtime) -> Option(Int) {
+  remote_child.all(runtime)
+  |> result.map(remote_child.settled_tokens)
+  |> option.from_result
 }
 
 // One pass over the window, oldest first. Every row advances the cursor
@@ -2658,12 +2695,20 @@ fn set_goal(
   // already spent two million tokens, a 400,000-token goal is
   // `budget_limited` on its first evaluation, before the loop runs at all.
   let accounted_from = newest_usage_seq(state)
+
+  // The remote children's total starts where it stands for the same reason: a
+  // goal pinned in a session that already delegated would otherwise be charged
+  // for every child that settled before it existed.
+  let remote_from = option.unwrap(remote_tokens(runtime), 0)
   let pinned = case memory.goal {
     Some(goal) if goal.objective == objective ->
-      refreshed(goal, token_budget, now_ms, accounted_from)
+      refreshed(goal, token_budget, now_ms, accounted_from, remote_from)
 
     Some(_replaced) | None ->
-      goalstate.new(objective, token_budget, now_ms, accounted_from:)
+      goalstate.Goal(
+        ..goalstate.new(objective, token_budget, now_ms, accounted_from:),
+        remote_tokens: remote_from,
+      )
   }
 
   // A check named here is pinned with the objective; an absent one leaves
@@ -2693,13 +2738,17 @@ fn refreshed(
   token_budget: Int,
   now_ms: Int,
   accounted_from: Int,
+  remote_from: Int,
 ) -> goalstate.Goal {
   case goal.status {
     // A replacement for a complete goal is a new goal, so its accounting
     // starts where the ledger stands now rather than where the finished
     // one left off.
     goalstate.Complete ->
-      goalstate.new(goal.objective, token_budget, now_ms, accounted_from:)
+      goalstate.Goal(
+        ..goalstate.new(goal.objective, token_budget, now_ms, accounted_from:),
+        remote_tokens: remote_from,
+      )
 
     // A running goal's cursor stays where the last accounted row left it:
     // the loop has been charged for every row up to there and the scan
@@ -2718,6 +2767,7 @@ fn refreshed(
       goalstate.Goal(
         ..refresh_of(goal, token_budget, now_ms),
         accounted_through_seq: accounted_from,
+        remote_tokens: remote_from,
       )
   }
 }
@@ -2853,7 +2903,7 @@ fn resume_goal(
 
         goalstate.Paused(..) | goalstate.Limited(..) -> #(
           Ok(Nil),
-          store_goal(state, runtime, memory, continued(state, goal)),
+          store_goal(state, runtime, memory, continued(state, runtime, goal)),
         )
       }
   }
@@ -2870,10 +2920,17 @@ fn resume_goal(
 // other half of "spend while the goal is stopped is not charged to it": a
 // stopped goal accounts nothing, so a resume that left the cursor behind
 // would charge the whole held stretch to the budget on its first evaluation —
-// the same trap `set_goal` avoids by reading the newest row at pin time.
-fn continued(state: State, goal: goalstate.Goal) -> goalstate.Goal {
+// the same trap `set_goal` avoids by reading the newest row at pin time. The
+// remote children's total moves with it, so a child that settled while the goal
+// was stopped is not charged either.
+fn continued(
+  state: State,
+  runtime: Runtime,
+  goal: goalstate.Goal,
+) -> goalstate.Goal {
   goalstate.Goal(
     ..goal,
+    remote_tokens: option.unwrap(remote_tokens(runtime), goal.remote_tokens),
     status: goalstate.Active,
     phase: goalstate.Idle,
     continuations: 0,

@@ -392,6 +392,7 @@ fn same_epoch(data: Data, reply: protocol.Reply) {
     | protocol.LifecycleReply(_), _
     | protocol.DeletedReply(_), _
     | protocol.MovedReply(..), _
+    | protocol.AbandonedReply(..), _
     | protocol.PeersInspectionReply(_), _
     | protocol.PeersMutationReply(_), _
     | protocol.AccessListingReply(_), _
@@ -399,6 +400,7 @@ fn same_epoch(data: Data, reply: protocol.Reply) {
     | protocol.ActivityReply(_), _
     | protocol.DeploymentReply(_), _
     | protocol.DirectoryReply(_), _
+    | protocol.ElsewhereReply(_), _
     | protocol.UiLinkReply(..), _
     | protocol.ShutdownReply, _
     -> True

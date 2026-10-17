@@ -152,12 +152,15 @@ pub fn a_full_snapshot_returns_the_viewport_to_the_tail_test() {
   let synchronized =
     inbound.apply_channel_update(
       scrolled,
-      session_channel.Auxiliary(protocol.FullSnapshot(
-        session: "demo",
-        strands: [],
-        entries: [],
-        usage: accounting.zero_usage(),
-      )),
+      session_channel.Auxiliary(
+        protocol.FullSnapshot(
+          session: "demo",
+          strands: [],
+          entries: [],
+          usage: accounting.zero_usage(),
+          remote_usage: [],
+        ),
+      ),
     )
   assert synchronized.view.scroll_offset == 0
     as "a replaced transcript starts at its tail"

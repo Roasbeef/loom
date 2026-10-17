@@ -95,6 +95,17 @@
 //// fading for a completed action, in the danger colour and staying for a
 //// refusal, and the list never moves.
 ////
+//// A saved row on an executor can also be moved to another orchestrator
+//// (protocol-change/085, the addendum on Move and Abandon). Move is the one
+//// action that reads first: its press asks the daemon which orchestrators could
+//// take the session (`actions.Destinations`), and the answer replaces the row's
+//// words with a button for each that could and a line for each that could not
+//// (`actions.Choosing`, `MoveChosen`). A destination opens the question Delete
+//// opens, and the daemon is asked to move only after that second press
+//// (`MoveConfirmed`). Each step acts only for the stage the one before it left,
+//// the daemon checks only that the destination is a configured orchestrator, and a moved row reads "moving to"
+//// the destination at the next list.
+////
 //// The page also lists the browsers signed in as its principal and lets the
 //// person end them (protocol-change/065, the eighth pull request). Each list
 //// that is read starts a read of the principal's sign-ins (`Start.signins`), an
@@ -137,6 +148,27 @@
 //// arrives as `AdminLinked`: the ticket's address departs through the same
 //// hidden `<loom-switch>`, or a refusal is the reason's fixed words.
 ////
+//// The owner's operating page also lists the sessions on the daemon's other
+//// orchestrators (protocol-change/085). `Start.elsewhere` is `Some` exactly
+//// where `create` is, and with it each list that answers starts a read of the
+//// first page of every other orchestrator, numbered by `Model.elsewhere_reads`
+//// and delivered as `ElsewhereRead`. The page draws them in a group after
+//// "Other folders" (`view/elsewhere`). A row is information and not a door: its
+//// "Where" button (`Locating`, honoured only for a row the page holds, checked
+//// by `holds_row`) opens a detail under the row with the launch that reaches the
+//// session where it lives, in a `<loom-copy>` box, and a group's "Show more"
+//// (`ShowingMore`) asks for the page after the last row the page holds for it
+//// (`next_cursor`), which arrives as `MoreRead` and is joined onto the group
+//// (`joined`) only if no newer read has replaced the rows. Both are clicks
+//// beneath `table_path`, which the owner's socket already admits, so the group
+//// adds no event class, scope or route. A press names the orchestrator and the
+//// session the server drew into the tree, `paging` asks the daemon from its own
+//// task, and `still_there` closes a detail whose row a later read removed. A
+//// refresh keeps the pages already fetched when its first page is unchanged
+//// (`refreshed`, `kept`) and answers `MoreRead` only for the group whose press is
+//// out (`elsewhere_reads` numbers the reads).
+//// `elsewhere_offer` is what the view is given.
+////
 //// ## Flow
 ////
 //// `app` → `init` → `update` → `refreshing` → `answered` → `view`
@@ -151,7 +183,8 @@
 ////    for the running sessions it listed.
 //// 4. A press is a message `update` handles, one of `Opening`, `Resuming`,
 ////    `Choosing`, `Creating`, `Renaming`, `StopRequested`, `ArchiveRequested`,
-////    `StopConfirmed`, `DeleteConfirmed`, `AdminRequested`, `SigningOut`, `SigningOutAll`,
+////    `StopConfirmed`, `DeleteConfirmed`, `MoveRequested`, `MoveChosen`,
+////    `MoveConfirmed`, `AdminRequested`, `SigningOut`, `SigningOutAll`,
 ////    `AddingDevice` or `NameSubmitted`, each of which asks the daemon through
 ////    its own `Start` field and leaves the answer to the effect's message.
 //// 5. `view` draws the groups through `shell_sidebar`, the offers
@@ -216,8 +249,10 @@ import lustre/effect.{type Effect}
 import lustre/element.{type Element}
 import lustre/event
 import lustre/server_component
+import session_view/move_candidates
 import web_view/actions
 import web_view/creations.{type Sharing}
+import web_view/elsewhere
 import web_view/ending.{type Ending}
 import web_view/names
 import web_view/placements
@@ -228,6 +263,7 @@ import web_view/sessions.{
 import web_view/signins.{type Signin}
 import web_view/view/archiving
 import web_view/view/create.{type Create}
+import web_view/view/elsewhere as elsewhere_view
 import web_view/view/ended
 import web_view/view/folders as folders_view
 import web_view/view/heading
@@ -414,6 +450,12 @@ pub type Start {
     /// and ignores the messages. The daemon checks the page, its ceiling and the
     /// owner again whenever either runs, whatever this page said.
     folders: Option(Folders),
+    /// Reads the sessions the owner's other orchestrators list
+    /// (protocol-change/085). It is `Some` exactly where `create` is, and a page
+    /// with `None` draws no group and ignores the messages. The daemon checks the
+    /// page, its ceiling and the owner again whenever a read runs, whatever this
+    /// page said.
+    elsewhere: Option(Elsewhere),
     /// Asks the daemon to rename the named session, for the owner's page that
     /// submitted a row's rename form (protocol-change/067): the daemon checks
     /// that the page is open and was minted to operate, that its credential
@@ -502,6 +544,24 @@ pub type Folders {
     /// Forgets the entry with this identity and answers the list that remains.
     /// An identity that is gone changes nothing.
     forget: fn(Int, fn(List(creations.Recent)) -> Nil) -> Nil,
+  )
+}
+
+/// What the daemon lets the owner's page read of its other orchestrators
+/// (protocol-change/085). Each function returns at once and answers from the
+/// daemon's own task, which is a weft run that dies with the page, and the answer
+/// arrives as `ElsewhereRead` or `MoreRead`.
+pub type Elsewhere {
+  Elsewhere(
+    /// Starts the read of the first page of every other orchestrator, once. It is
+    /// asked after each list that was not `Closed`, so a session created on
+    /// another orchestrator reaches an open page at its next read, and the
+    /// daemon bounds the whole read at three seconds.
+    groups: fn(fn(elsewhere.Read) -> Nil) -> Nil,
+    /// Starts the read of the page of one orchestrator that follows the session
+    /// it is given, and answers a `Heard` holding that one group. Both are
+    /// values the page took from a group it holds.
+    next: fn(String, String, fn(elsewhere.Read) -> Nil) -> Nil,
   )
 }
 
@@ -601,6 +661,20 @@ pub opaque type Model {
     /// The owner's remembered folders as the last read gave them, newest first.
     /// The view draws those that no group already shows.
     recent: List(creations.Recent),
+    /// The other orchestrators' sessions as the last read gave them, in the
+    /// order the daemon's configuration lists the orchestrators. An answer
+    /// replaces it whole, and a "Show more" page is joined onto one group.
+    elsewhere: List(elsewhere.Group),
+    /// How many reads of the other orchestrators have been started, which numbers
+    /// the next as `reads` does for the list: an answer a newer read overtook is
+    /// dropped, so a slow read cannot put older rows on the page.
+    elsewhere_reads: Int,
+    /// The row whose "Where" detail is open, as the orchestrator's key and the
+    /// session. Both are values of a group the page holds.
+    located: Option(elsewhere_view.Detail),
+    /// The orchestrator whose "Show more" is out, if one is, which disables its
+    /// button so a second press asks nothing.
+    paging: Option(String),
     /// Which row's rename form is open, and where it stands.
     edit: Edit,
     /// Which row is waiting on the owner's second press of Delete or on the
@@ -739,6 +813,28 @@ pub type Msg {
   /// handler carries it.
   FoldersRead(rows: List(creations.Recent))
 
+  /// A read of the other orchestrators' first pages arrived, numbered by the read
+  /// it answers. It is the effect's own message, dispatched from the daemon's
+  /// task, and no handler carries it, so a browser cannot put a row on the page.
+  ElsewhereRead(serial: Int, read: elsewhere.Read)
+
+  /// A row's "Where" was pressed: open its detail. The orchestrator's key and
+  /// the session are the group's and the row's, fixed when the tree was drawn,
+  /// and the page honours the press only for a pair it holds.
+  Locating(group: String, session: String)
+
+  /// The detail's "Close" was pressed.
+  Located
+
+  /// A group's "Show more" was pressed: ask for its next page. The key is the
+  /// group's, fixed when the tree was drawn, and the cursor is the last row the
+  /// page holds for it and never a value the browser sent.
+  ShowingMore(group: String)
+
+  /// The next page of one orchestrator arrived. It is the effect's own message,
+  /// dispatched from the daemon's task, and no handler carries it.
+  MoreRead(group: String, serial: Int, read: elsewhere.Read)
+
   /// The daemon answered a request to create a session. It is the effect's own
   /// message, dispatched from the daemon's task, and no handler carries it, so
   /// a browser cannot send one.
@@ -791,6 +887,19 @@ pub type Msg {
   /// The confirmation's Delete was pressed. It acts only for the row that is
   /// confirming a delete.
   DeleteConfirmed(session: String)
+
+  /// A saved row's Move was pressed: the page asks the daemon which
+  /// orchestrators could take the session, which changes nothing.
+  MoveRequested(session: String)
+
+  /// One of the row's destinations was pressed. It opens the confirmation, and
+  /// only for a row that is choosing and a destination that row was offered,
+  /// so a forged press names nothing the daemon did not say.
+  MoveChosen(session: String, to: String)
+
+  /// The confirmation's Move was pressed. It acts only for the row that is
+  /// confirming a move, and for the destination that confirmation names.
+  MoveConfirmed(session: String)
 
   /// A sidebar row's archive button was pressed (`view/archiving`): the page
   /// opens that row's question and sends nothing. Which action the question is
@@ -900,6 +1009,10 @@ pub fn new(start: Start) -> Model {
     cards: placements.listed(start.executors, start.pools),
     place_reads: 0,
     recent: [],
+    elsewhere: [],
+    elsewhere_reads: 0,
+    located: None,
+    paging: None,
     edit: NotEditing,
     acting: actions.Calm,
     signins: [],
@@ -976,6 +1089,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       case serial == model.reads {
         True -> {
           let model = answered(model, listing)
+          let model = Model(..model, elsewhere_reads: model.elsewhere_reads + 1)
           #(model, effect.batch([observing(model), following(model, listing)]))
         }
         False -> #(model, arming(model))
@@ -1228,6 +1342,82 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         None -> #(model, effect.none())
       }
 
+    // The first pages of the other orchestrators. An answer a newer read
+    // overtook is dropped, and so is one for a page that lists none; a read that
+    // could not ask keeps the rows the page has. A read that lists keeps the
+    // pages "Show more" fetched when the first page is unchanged (`refreshed`),
+    // and clears the page that was out, since its answer follows rows this read
+    // may have replaced.
+    ElsewhereRead(serial:, read:) ->
+      case serial == model.elsewhere_reads, model.start.elsewhere, read {
+        True, Some(_), elsewhere.Heard(groups:) -> {
+          let groups = refreshed(model.elsewhere, groups)
+          #(
+            Model(
+              ..model,
+              elsewhere: groups,
+              located: still_there(model, groups),
+              paging: None,
+            ),
+            effect.none(),
+          )
+        }
+        True, Some(_), elsewhere.Unread | True, None, _ | False, _, _ -> #(
+          model,
+          effect.none(),
+        )
+      }
+
+    // "Where" opens the detail of a row the page holds, and only on a page that
+    // lists the group. A press for a pair the page does not hold, such as one
+    // that was drawn before a read replaced the rows, opens nothing.
+    Locating(group:, session:) ->
+      case model.start.elsewhere, holds_row(model.elsewhere, group, session) {
+        Some(_), True -> #(
+          Model(..model, located: Some(elsewhere_view.Detail(group:, session:))),
+          effect.none(),
+        )
+        Some(_), False | None, _ -> #(model, effect.none())
+      }
+
+    Located -> #(Model(..model, located: None), effect.none())
+
+    // "Show more" asks for the page after the last row the page holds for that
+    // group, and only while the group has more and no page is out. The cursor is
+    // read from the page's own rows, so a forged press names nothing but a group.
+    ShowingMore(group:) ->
+      case model.start.elsewhere, model.status, model.paging {
+        Some(Elsewhere(next:, ..)), Connected, None ->
+          case next_cursor(model.elsewhere, group) {
+            Ok(after) -> #(
+              Model(..model, paging: Some(group)),
+              paging(next, group, after, model.elsewhere_reads),
+            )
+            Error(Nil) -> #(model, effect.none())
+          }
+        Some(_), _, _ | None, _, _ -> #(model, effect.none())
+      }
+
+    // The next page joins the group it was asked for, if the read that asked is
+    // still the latest. A newer first-page read replaced the rows, so a page that
+    // followed the old ones is dropped rather than joined to different rows.
+    MoreRead(group:, serial:, read:) ->
+      case
+        model.start.elsewhere,
+        serial == model.elsewhere_reads,
+        model.paging == Some(group)
+      {
+        Some(_), True, True -> #(
+          Model(
+            ..model,
+            elsewhere: joined(model.elsewhere, group, read),
+            paging: None,
+          ),
+          effect.none(),
+        )
+        Some(_), _, _ | None, _, _ -> #(model, effect.none())
+      }
+
     // A submit asks the daemon from its own task so the runtime stays free. It is
     // honoured only for the form that is open, so a second submit while the
     // first is out, a submit for a form that is not drawn, and a page that may
@@ -1371,6 +1561,16 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     StopConfirmed(session:) -> confirmed(model, actions.Stop, session)
     DeleteConfirmed(session:) -> confirmed(model, actions.Delete, session)
 
+    // Move reads before it asks. The first press only asks the daemon which
+    // orchestrators could take the session, and the answer opens the row's
+    // chooser. A destination opens the confirmation, and the confirmation's
+    // press is the one that asks the daemon to move. Each step acts only for
+    // the stage the one before it left, so a forged press changes nothing.
+    MoveRequested(session:) ->
+      start_action(model, actions.Destinations, session)
+    MoveChosen(session:, to:) -> chosen(model, session, to)
+    MoveConfirmed(session:) -> move_confirmed(model, session)
+
     // The sidebar's archive button opens its question for the action the row's
     // residency gives, a stop first for a running one. A row the page does not
     // list asks nothing.
@@ -1386,7 +1586,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
 
     ConfirmCancelled ->
       case model.acting {
-        actions.Confirming(..) -> #(
+        actions.Confirming(..) | actions.Choosing(..) -> #(
           Model(..model, acting: actions.Calm),
           effect.none(),
         )
@@ -1399,6 +1599,22 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     // is dropped.
     ActionAnswered(answer:) ->
       case model.acting, answer {
+        // The read of destinations opens the row's chooser and changes nothing
+        // on disk, so the list is not read again.
+        actions.Working(session:, action: actions.Destinations),
+          actions.Heard(candidates:)
+        -> #(
+          Model(
+            ..model,
+            acting: actions.Choosing(session, candidates),
+            note: None,
+          ),
+          effect.none(),
+        )
+        actions.Working(..), actions.Heard(..) -> #(
+          Model(..model, acting: actions.Calm),
+          effect.none(),
+        )
         actions.Working(session:, ..), actions.Done(action:) ->
           reading(
             Model(
@@ -1423,7 +1639,10 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
               )),
             ),
           )
-        actions.Calm, _ | actions.Confirming(..), _ -> #(model, effect.none())
+        actions.Calm, _ | actions.Confirming(..), _ | actions.Choosing(..), _ -> #(
+          model,
+          effect.none(),
+        )
       }
 
     // The answer: a stored name replaces the row's in the page's own state at
@@ -1675,6 +1894,7 @@ fn start_action(
       case model.start.manage, model.status, model.acting {
         Some(ask), Connected, actions.Calm
         | Some(ask), Connected, actions.Confirming(..)
+        | Some(ask), Connected, actions.Choosing(..)
         -> #(
           Model(..model, acting: actions.Working(session, action), note: None),
           managing(ask, action, session),
@@ -1742,6 +1962,7 @@ fn confirm_first(
   case model.start.manage, model.status, model.acting {
     Some(_), Connected, actions.Calm
     | Some(_), Connected, actions.Confirming(..)
+    | Some(_), Connected, actions.Choosing(..)
     -> #(
       Model(..model, acting: actions.Confirming(session, action), note: None),
       effect.none(),
@@ -1768,6 +1989,50 @@ fn confirmed(
     -> #(
       Model(..model, acting: actions.Working(session, action), note: None),
       managing(ask, action, session),
+    )
+    Some(_), _, _ | None, _, _ -> #(model, effect.none())
+  }
+}
+
+// A destination of the row's chooser was pressed: it opens that row's
+// confirmation for a move to it, and sends nothing. It acts only for the row
+// that is choosing and a destination that row was offered as eligible, which is
+// what makes a forged press harmless.
+fn chosen(model: Model, session: String, to: String) -> #(Model, Effect(Msg)) {
+  case model.start.manage, model.status, model.acting {
+    Some(_), Connected, actions.Choosing(session: open, candidates:)
+      if open == session
+    ->
+      case list.contains(move_candidates.eligible(candidates), to) {
+        True -> #(
+          Model(
+            ..model,
+            acting: actions.Confirming(session, actions.Move(to)),
+            note: None,
+          ),
+          effect.none(),
+        )
+        False -> #(model, effect.none())
+      }
+    Some(_), _, _ | None, _, _ -> #(model, effect.none())
+  }
+}
+
+// The move confirmation's press: it asks the daemon to move, and only for the
+// row that is confirming a move, to the destination that confirmation names.
+fn move_confirmed(model: Model, session: String) -> #(Model, Effect(Msg)) {
+  case model.start.manage, model.status, model.acting {
+    Some(ask),
+      Connected,
+      actions.Confirming(session: open, action: actions.Move(to:))
+      if open == session
+    -> #(
+      Model(
+        ..model,
+        acting: actions.Working(session, actions.Move(to)),
+        note: None,
+      ),
+      managing(ask, actions.Move(to), session),
     )
     Some(_), _, _ | None, _, _ -> #(model, effect.none())
   }
@@ -2061,6 +2326,13 @@ fn following(model: Model, listing: Listing) -> Effect(Msg) {
               recent(fn(rows) { dispatch(FoldersRead(rows)) })
             None -> Nil
           }
+          case model.start.elsewhere {
+            Some(Elsewhere(groups:, ..)) -> {
+              let serial = model.elsewhere_reads
+              groups(fn(read) { dispatch(ElsewhereRead(serial, read)) })
+            }
+            None -> Nil
+          }
         },
         arming(model),
       ])
@@ -2103,6 +2375,18 @@ fn answered(model: Model, listing: Listing) -> Model {
 /// ```
 pub fn reads(model: Model) -> Int {
   model.reads
+}
+
+/// How many reads of the other orchestrators the page has started. An answer
+/// carries the number of the read it answers (`ElsewhereRead`, `MoreRead`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // home.update(model, home.ElsewhereRead(home.elsewhere_reads(model), read))
+/// ```
+pub fn elsewhere_reads(model: Model) -> Int {
+  model.elsewhere_reads
 }
 
 pub fn groups(model: Model) -> List(Group) {
@@ -2155,8 +2439,9 @@ pub fn view(model: Model) -> Element(Msg) {
     ),
     shell_sidebar(model),
     [
-      // The empty node keeps the table at `table_path`.
-      element.none(),
+      // The first child keeps the table at `table_path`. It is the strip that
+      // says the daemon lists a peer orchestrator, or an empty node.
+      elsewhere_view.strip(elsewhere_offer(model)),
       home_table.view(
         model.groups,
         model.activity,
@@ -2167,6 +2452,7 @@ pub fn view(model: Model) -> Element(Msg) {
         manage_offer(model),
         create_offer(model),
         folders_offer(model),
+        elsewhere_offer(model),
         model.opening,
         model.note,
       ),
@@ -2249,6 +2535,9 @@ fn manage_offer(model: Model) -> home_table.Manage(Msg) {
         confirm_delete: DeleteConfirmed,
         cancel: ConfirmCancelled,
         stage: model.acting,
+        move: MoveRequested,
+        choose: MoveChosen,
+        confirm_move: MoveConfirmed,
       )
   }
 }
@@ -2394,6 +2683,149 @@ fn folders_offer(model: Model) -> folders_view.Folders(Msg) {
       )
     Some(_), Connecting | Some(_), Ended(_) | None, _ -> folders_view.Hidden
   }
+}
+
+// What the page offers for the other orchestrators' sessions: the group on a
+// page the daemon handed the capability, once it is connected, so the group does
+// not appear before the page knows its standing. A page with no such capability
+// draws nothing.
+fn elsewhere_offer(model: Model) -> elsewhere_view.Elsewhere(Msg) {
+  case model.start.elsewhere, model.status {
+    Some(_), Connected ->
+      elsewhere_view.Shown(
+        groups: model.elsewhere,
+        open: model.located,
+        asking: model.paging,
+        where: Locating,
+        close: Located,
+        more: ShowingMore,
+      )
+    Some(_), Connecting | Some(_), Ended(_) | None, _ -> elsewhere_view.Hidden
+  }
+}
+
+// Whether the page holds a row of that session in that orchestrator's group.
+fn holds_row(
+  groups: List(elsewhere.Group),
+  group: String,
+  session: String,
+) -> Bool {
+  list.any(groups, fn(each) {
+    case each.name == group, each.hearing {
+      True, elsewhere.Answered(rows:, ..) ->
+        list.any(rows, fn(row) { row.session_id == session })
+      True, elsewhere.Silent | False, _ -> False
+    }
+  })
+}
+
+// The groups a first-page read gave, with the pages "Show more" fetched kept
+// where they still follow it. A group whose held rows extend past the new first
+// page and begin with exactly the rows the new page lists, in order, keeps its
+// tail and takes the fresh first rows; any other group is replaced.
+fn refreshed(
+  held: List(elsewhere.Group),
+  fresh: List(elsewhere.Group),
+) -> List(elsewhere.Group) {
+  list.map(fresh, fn(group) {
+    case list.find(held, fn(each) { each.name == group.name }) {
+      Ok(before) ->
+        elsewhere.Group(..group, hearing: kept(before.hearing, group.hearing))
+      Error(Nil) -> group
+    }
+  })
+}
+
+fn kept(
+  held: elsewhere.Hearing,
+  fresh: elsewhere.Hearing,
+) -> elsewhere.Hearing {
+  case held, fresh {
+    elsewhere.Answered(rows: before, more:), elsewhere.Answered(rows: first, ..)
+    -> {
+      let same =
+        list.map(list.take(before, list.length(first)), fn(row) {
+          row.session_id
+        })
+        == list.map(first, fn(row) { row.session_id })
+      case same, first, list.drop(before, list.length(first)) {
+        True, [_, ..], [_, ..] as tail ->
+          elsewhere.Answered(rows: list.append(first, tail), more:)
+        True, _, _ | False, _, _ -> fresh
+      }
+    }
+    elsewhere.Answered(..), elsewhere.Silent | elsewhere.Silent, _ -> fresh
+  }
+}
+
+// The open detail, kept only if the replacement groups still hold its row.
+fn still_there(
+  model: Model,
+  groups: List(elsewhere.Group),
+) -> Option(elsewhere_view.Detail) {
+  case model.located {
+    Some(elsewhere_view.Detail(group:, session:)) ->
+      case holds_row(groups, group, session) {
+        True -> model.located
+        False -> None
+      }
+    None -> None
+  }
+}
+
+// The identity the next page of a group follows: the last row the page holds,
+// when the group has more. A group that is silent, has no more, or is not held
+// has none to ask for.
+fn next_cursor(
+  groups: List(elsewhere.Group),
+  group: String,
+) -> Result(String, Nil) {
+  use found <- result.try(list.find(groups, fn(each) { each.name == group }))
+  case found.hearing {
+    elsewhere.Answered(rows:, more: elsewhere.Further) ->
+      list.last(rows) |> result.map(fn(row) { row.session_id })
+    elsewhere.Answered(more: elsewhere.Last, ..) | elsewhere.Silent ->
+      Error(Nil)
+  }
+}
+
+// Joins the page that arrived onto the group it was asked for. A read that could
+// not ask, or that does not hold the group, leaves the rows alone.
+fn joined(
+  groups: List(elsewhere.Group),
+  group: String,
+  read: elsewhere.Read,
+) -> List(elsewhere.Group) {
+  case read {
+    elsewhere.Unread -> groups
+    elsewhere.Heard(groups: pages) ->
+      case list.find(pages, fn(page) { page.name == group }) {
+        Error(Nil) -> groups
+        Ok(page) ->
+          list.map(groups, fn(each) {
+            case each.name == group {
+              True ->
+                elsewhere.Group(
+                  ..each,
+                  hearing: elsewhere.append(each.hearing, page.hearing),
+                )
+              False -> each
+            }
+          })
+      }
+  }
+}
+
+// Starts the daemon's read of one orchestrator's next page and returns at once;
+// the answer arrives later as `MoreRead`, dispatched from the daemon's task.
+fn paging(
+  next: fn(String, String, fn(elsewhere.Read) -> Nil) -> Nil,
+  group: String,
+  after: String,
+  serial: Int,
+) -> Effect(Msg) {
+  use dispatch <- effect.from
+  next(group, after, fn(read) { dispatch(MoreRead(group, serial, read)) })
 }
 
 // The sidebar's column, or the frame's word that there is none.

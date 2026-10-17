@@ -251,6 +251,15 @@ pub type Command {
     to: String,
   )
 
+  /// Gives up the move of a session now (protocol-change/083 and 085). It is
+  /// the same wire command as `MoveSession`, `sessions.move`, with the member
+  /// `abandon` set; only a directory member accepts it, and a receiver that has
+  /// already taken the session makes the move finish instead.
+  AbandonMove(
+    /// Canonical registration whose move is given up.
+    session_id: String,
+  )
+
   /// Observes an operation only in the epoch where it was obtained.
   GetOperation(
     /// The authorized session whose lifecycle is being observed.
@@ -364,6 +373,19 @@ pub type Command {
   /// (`protocol-change/083`). Owner-only. A daemon that is not a member answers
   /// `not_found`.
   DirectoryStatus
+
+  /// Asks the daemon's other orchestrators for a page of the sessions each
+  /// lists (`protocol-change/085`). Owner-only. With neither member every
+  /// configured orchestrator is asked for its first page; with an
+  /// `orchestrator` key and the identity of the last row of its previous page
+  /// as `after`, that one is asked for the next. A daemon built before the
+  /// command existed refuses it `bad_request`.
+  SessionsElsewhere(
+    /// The configuration key of the one orchestrator to read, or `None` for all.
+    orchestrator: Option(String),
+    /// The identity the page follows. Present only with an `orchestrator`.
+    after: Option(String),
+  )
 }
 
 /// The most sessions one `SessionActivity` request may name.
@@ -607,6 +629,15 @@ pub type Reply {
     to: String,
   )
 
+  /// The daemon began giving a move up. The move is carried out by its movers,
+  /// so this says the abandon began and not that the move ended.
+  AbandonedReply(
+    /// The session whose move is being given up.
+    session_id: String,
+    /// The identity of the move that was in flight.
+    op: String,
+  )
+
   /// The daemon accepted its drain request.
   ShutdownReply
 
@@ -657,6 +688,14 @@ pub type Reply {
   /// applied index. The body is kept whole for the same reason as
   /// `DeploymentReply`'s, and `tui/directory_view` reads it.
   DirectoryReply(
+    /// The daemon's reply body, unread.
+    document: json.JsonValue,
+  )
+
+  /// What each of the daemon's other orchestrators lists
+  /// (`protocol-change/085`). The body is kept whole for the same reason as
+  /// `DeploymentReply`'s, and `tui/elsewhere_view` reads it.
+  ElsewhereReply(
     /// The daemon's reply body, unread.
     document: json.JsonValue,
   )
@@ -742,7 +781,7 @@ pub fn name(command: Command) -> String {
     OpenSession(..) -> "sessions.open"
     StopSession(..) -> "sessions.stop"
     DeleteSession(..) -> "sessions.delete"
-    MoveSession(..) -> "sessions.move"
+    MoveSession(..) | AbandonMove(..) -> "sessions.move"
     GetOperation(..) -> "operations.get"
     InspectPeers(..) -> "peers.inspect"
     LinkPeers(..) -> "peers.link"
@@ -755,6 +794,7 @@ pub fn name(command: Command) -> String {
     SessionActivity(..) -> "sessions.activity"
     DeploymentStatus(..) -> "deployment.status"
     DirectoryStatus -> "directory.status"
+    SessionsElsewhere(..) -> "sessions.elsewhere"
     Shutdown -> "daemon.shutdown"
   }
 }
@@ -780,6 +820,7 @@ pub fn mutates(command: Command) -> Bool {
     | PrincipalMemberships(..)
     | DeploymentStatus(..)
     | DirectoryStatus
+    | SessionsElsewhere(..)
     | SessionActivity(..) -> False
     SetDefault(..)
     | RenameSession(..)
@@ -788,6 +829,7 @@ pub fn mutates(command: Command) -> Bool {
     | StopSession(..)
     | DeleteSession(..)
     | MoveSession(..)
+    | AbandonMove(..)
     | ArchiveSession(..)
     | RestoreSession(..)
     | LinkPeers(..)
@@ -831,6 +873,35 @@ pub fn encode(
   }
 }
 
+// The members of a `sessions.elsewhere` request. A cursor follows one group's
+// rows, so it is sent only with the group it belongs to, and each is checked
+// here as the daemon will check it.
+fn elsewhere_fields(
+  orchestrator: Option(String),
+  after: Option(String),
+) -> Result(List(#(String, json.JsonValue)), String) {
+  case orchestrator, after {
+    None, None -> Ok([])
+    None, Some(_) -> Error("a cursor needs the orchestrator it follows")
+    Some(key), None ->
+      orchestrator_member(key) |> result.map(fn(member) { [member] })
+    Some(key), Some(id) -> {
+      use member <- result.try(orchestrator_member(key))
+      use Nil <- result.map(valid_id(id))
+      [member, #("after", json.String(id))]
+    }
+  }
+}
+
+fn orchestrator_member(
+  key: String,
+) -> Result(#(String, json.JsonValue), String) {
+  case placement.is_orchestrator_name(key) {
+    True -> Ok(#("orchestrator", json.String(key)))
+    False -> Error("orchestrator must be a configuration key")
+  }
+}
+
 fn command_fields(command: Command, epoch: Epoch) {
   let Epoch(epoch_value) = epoch
   case command {
@@ -840,6 +911,8 @@ fn command_fields(command: Command, epoch: Epoch) {
         True -> Ok([#("node", json.String(key))])
         False -> Error("node must be a configuration key")
       }
+    SessionsElsewhere(orchestrator, after) ->
+      elsewhere_fields(orchestrator, after)
     ListSessions(after, revision) | ListArchivedSessions(after, revision) -> {
       use Nil <- result.try(case after {
         "" -> Ok(Nil)
@@ -943,6 +1016,14 @@ fn command_fields(command: Command, epoch: Epoch) {
     | RestoreSession(id) -> {
       use fields <- result.map(identity_fields(id))
       [#("epoch", json.String(epoch_value)), ..fields]
+    }
+    AbandonMove(id) -> {
+      use fields <- result.map(identity_fields(id))
+      [
+        #("epoch", json.String(epoch_value)),
+        #("abandon", json.Bool(True)),
+        ..fields
+      ]
     }
     MoveSession(id, to) -> {
       use fields <- result.try(identity_fields(id))
@@ -1262,8 +1343,14 @@ fn decode_reply(event: String, body: json.JsonValue) {
     "sessions.move" -> {
       use session_id <- result.try(text_at(body, "session_id", 64))
       use op <- result.try(text_at(body, "op", 64))
-      use to <- result.map(text_at(body, "to", 64))
-      MovedReply(session_id, op, to)
+      case field(body, "state") {
+        // An abandon names no destination and says `abandoning`.
+        Ok(json.String("abandoning")) -> Ok(AbandonedReply(session_id, op))
+        Ok(_) | Error(_) -> {
+          use to <- result.map(text_at(body, "to", 64))
+          MovedReply(session_id, op, to)
+        }
+      }
     }
     "peers.inspect" -> Ok(PeersInspectionReply(body))
     "peers.link" | "peers.unlink" -> Ok(PeersMutationReply(body))
@@ -1273,6 +1360,7 @@ fn decode_reply(event: String, body: json.JsonValue) {
     "sessions.activity" -> result.map(activity(body), ActivityReply)
     "deployment.status" -> Ok(DeploymentReply(body))
     "directory.status" -> Ok(DirectoryReply(body))
+    "sessions.elsewhere" -> Ok(ElsewhereReply(body))
     "daemon.shutdown" ->
       case field(body, "state") {
         Ok(json.String("draining")) -> Ok(ShutdownReply)

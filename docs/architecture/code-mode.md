@@ -765,7 +765,7 @@ blocks for PNG, JPEG, GIF, and WebP.
 `make gen-prelude` runs `gleam export package-interface` over
 `packages/cap` — the compiler's own account of what it will accept, so
 the description and virtual read cannot describe a prelude the hermetic
-build would reject. `scripts/gen-prelude.py` renders each module twice:
+build would reject. `packages/tools/dev/gen_prelude.gleam` renders each module twice:
 `prelude.surfaces` contains its full public surface, while
 `prelude.type_surfaces` is a character-for-character prefix ending after
 its type declarations. `scripts/gen-prelude.sh --check` runs inside `make
@@ -773,7 +773,9 @@ check` and refuses a tree where the artifact and its inputs have parted
 company, naming the file that moved and the command that fixes it. The
 gate is digest comparison and nothing more, so it needs no toolchain and
 costs nothing to run constantly; regeneration is the step that needs
-`gleam` and `python3`, the way `make gen-sql` needs `sqlite3`.
+`gleam`, the way `make gen-sql` needs `sqlite3`. `scripts/gen-prelude.sh`
+exports the interface and hands the JSON to the generator, because Gleam has no
+in-process way to ask the compiler for it and a generator holds no `@external`.
 
 **Discovery is filtered through the offered seams.**
 `package-interface` reports the public modules. All three allowlists exclude
@@ -1699,7 +1701,7 @@ provides.
 | `client/mcp.gleam` | The MCP layer: a client per configured server, the generated modules, and the `mcp.<server>` router arm. |
 | `mcp/{client,transport,codegen,interchange}.gleam` | The protocol, the stdio client, the façade generator, and the msgpack ↔ JSON translation. |
 | `tools/prelude.gleam` | Generated full declarations for `cap://` reads and public-type prefixes for the `code_mode` description. |
-| `scripts/gen-prelude.sh`, `scripts/gen-prelude.py` | `make gen-prelude` regenerates that artifact; `--check` gates it and `--self-test` proves the gate bites. |
+| `scripts/gen-prelude.sh`, `packages/tools/dev/gen_prelude.gleam` | `make gen-prelude` regenerates that artifact; `--check` gates it and `--self-test` proves the gate bites. |
 | `cap/runtime.gleam` | The boot runtime inside the node: read the token, connect the socket, install the channel, run `main`, emit the outcome. |
 | `cap/internal/` | The channel actor, dispatch slot, wire codec, and socket FFI the program cannot import. |
 | `test/codemode/e2e_test.gleam` | The jailed acceptance described above. |

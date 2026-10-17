@@ -43,6 +43,14 @@
 //// (the page decides, from the activity it read: `home.update`). While a
 //// request for a row is out its buttons are disabled.
 ////
+//// A saved row also has Move (protocol-change/085's addendum on Move and
+//// Abandon). Its first press asks the daemon which orchestrators could take the
+//// session, and the row's words are replaced by a button for each that could,
+//// and a line for each that could not, naming it and why. A button opens the
+//// same in-place question Delete has, "Move this session to bravo?", and only
+//// its Move button asks the daemon to move. A session with no executor has the
+//// button disabled, and its title says only a session on an executor can move.
+////
 //// What the page last said about an action is a `Note`, and it never moves the
 //// list. A completed action is a quiet line that fades (`view/notice`): in the
 //// row it acted on, after the row's own words, or, when the row is gone (an
@@ -68,15 +76,17 @@
 ////
 //// 1. `view` is the memoized section: the heading, the page's note, a
 ////    `group` for each workspace, the section for folders that hold no session
-////    (`view/folders`), and `withheld_line` after them.
+////    (`view/folders`), the group for the other orchestrators' sessions
+////    (`view/elsewhere`), and `withheld_line` after them.
 //// 2. `landing` decides where the page's last note is drawn, so it never moves
 ////    the list.
 //// 3. `group` draws a workspace's heading and its rows, and `row` draws one
 ////    session, from its `standing` and, for the row's words, `described`.
 //// 4. `offered` and `acts` choose the buttons a row carries from the page's
 ////    `Manage`, and `act` draws each one.
-//// 5. `confirming` replaces a row for the second step of a Stop or a Delete,
-////    and `editing` replaces it for a rename.
+//// 5. `confirming` replaces a row for the second step of a Stop, a Delete or a
+////    Move, `choosing` replaces it for the choice of a Move's destination, and
+////    `editing` replaces it for a rename.
 
 import gleam/dict.{type Dict}
 import gleam/int
@@ -89,6 +99,7 @@ import lustre/element.{type Element}
 import lustre/element/html
 import lustre/element/keyed
 import lustre/event
+import session_view/move_candidates.{type Candidate}
 import web_view/actions.{type Stage}
 import web_view/renames.{type Control}
 import web_view/sessions.{
@@ -97,6 +108,7 @@ import web_view/sessions.{
 }
 import web_view/view/archiving
 import web_view/view/create.{type Create}
+import web_view/view/elsewhere.{type Elsewhere} as elsewhere_view
 import web_view/view/folders.{type Folders} as folders_view
 import web_view/view/heading
 import web_view/view/notice.{type Notice}
@@ -141,14 +153,18 @@ pub type Manage(message) {
   /// section's last child, so no row's path moves for it.
   Withheld
 
-  /// Each running row has a Stop button, and each saved row an Archive and a
-  /// Delete. `stop` and `archive` are the messages those two send given the
-  /// row's identity, and `delete` opens the row's confirmation. `confirm_stop`
-  /// and `confirm_delete` are the confirmations' own buttons, and `cancel` is
-  /// their Cancel. `stage` is where the page stands: the one row that is
-  /// confirming or waiting on the daemon. The identities are the catalogue's,
-  /// drawn into the tree by the server, so a browser's event never names a
-  /// session.
+  /// Each running row has a Stop button, and each saved row an Archive, a
+  /// Delete and a Move. `stop` and `archive` are the messages those two send
+  /// given the row's identity, and `delete` opens the row's confirmation.
+  /// `confirm_stop` and `confirm_delete` are the confirmations' own buttons, and
+  /// `cancel` is their Cancel. `move` is the message Move sends, which asks the
+  /// daemon which orchestrators could take the session; `choose` is the message
+  /// one of them sends given the row's identity and the destination's name,
+  /// which opens the confirmation; and `confirm_move` is that confirmation's
+  /// button. `stage` is where the page stands: the one row that is choosing,
+  /// confirming or waiting on the daemon. The identities and the names are the
+  /// daemon's, drawn into the tree by the server, so a browser's event never
+  /// names a session.
   Managed(
     stop: fn(String) -> message,
     archive: fn(String) -> message,
@@ -157,6 +173,9 @@ pub type Manage(message) {
     confirm_delete: fn(String) -> message,
     cancel: message,
     stage: Stage,
+    move: fn(String) -> message,
+    choose: fn(String, String) -> message,
+    confirm_move: fn(String) -> message,
   )
 }
 
@@ -219,7 +238,7 @@ type Landing {
 /// ## Examples
 ///
 /// ```gleam
-/// // home_table.view(home.groups(model), dict.new(), now, Opening, resume.Never, Never, Unmanaged, create.Never, folders.Hidden, None, None)
+/// // home_table.view(home.groups(model), dict.new(), now, Opening, resume.Never, Never, Unmanaged, create.Never, folders.Hidden, elsewhere.Hidden, None, None)
 /// ```
 pub fn view(
   groups: List(Group),
@@ -231,6 +250,7 @@ pub fn view(
   manage: Manage(message),
   offer: Create(message),
   folders: Folders(message),
+  elsewhere: Elsewhere(message),
   opening: Option(String),
   note: Option(Note),
 ) -> Element(message) {
@@ -244,6 +264,7 @@ pub fn view(
     element.ref(explains(manage)),
     element.ref(create.state(offer)),
     element.ref(folders_view.listed(folders)),
+    element.ref(elsewhere_view.keyed(elsewhere)),
     element.ref(opening),
     element.ref(note),
   ])
@@ -284,6 +305,7 @@ pub fn view(
           Some(InFolders(notice:)) -> Some(notice)
           Some(InRow(..)) | Some(InHeading(..)) | Some(Under(..)) | None -> None
         }),
+        elsewhere_view.view(elsewhere),
         ..withheld_line(manage)
       ],
     )
@@ -539,9 +561,22 @@ fn row(
       ])
     _,
       Managed(
+        stage: actions.Choosing(session:, candidates:),
+        choose:,
+        cancel:,
+        ..,
+      )
+      if session == entry.id
+    ->
+      html.li([attribute.class("confirming"), ..classes], [
+        choosing(entry, candidates, choose, cancel),
+      ])
+    _,
+      Managed(
         stage: actions.Confirming(session:, action:),
         confirm_stop:,
         confirm_delete:,
+        confirm_move:,
         cancel:,
         ..,
       )
@@ -561,6 +596,7 @@ fn row(
               actions.Delete -> confirm_delete(entry.id)
               actions.Stop | actions.Archive | actions.StopArchive ->
                 confirm_stop(entry.id)
+              actions.Destinations | actions.Move(..) -> confirm_move(entry.id)
             },
             cancel,
           ),
@@ -628,7 +664,13 @@ fn acts(
   let managing = case manage, entry.residency {
     Unmanaged, _ | Withheld, _ -> []
     Managed(stop:, ..), Live -> [
-      act("home-act", "Stop this session", "Stop", stop(entry.id), working),
+      act(
+        "home-act home-act-lead",
+        "Stop this session",
+        "Stop",
+        stop(entry.id),
+        working,
+      ),
     ]
 
     // A blocked row is on disk and nothing runs it, so it can be archived or
@@ -638,26 +680,77 @@ fn acts(
     // and the row says so, because releasing a slot whose holder is still
     // alive could let a second writer open the same database.
     Managed(..), Moving(_) -> []
-    Managed(archive:, delete:, ..), Saved
-    | Managed(archive:, delete:, ..), Blocked
-    -> [
-      act(
-        "home-act",
-        "Archive this session: hide it and keep its history",
-        "Archive",
-        archive(entry.id),
-        working,
-      ),
-      act(
-        "home-act home-act-delete",
-        "Delete this session",
-        "Delete",
-        delete(entry.id),
-        working,
-      ),
+    Managed(archive:, delete:, ..), Blocked -> [
+      archive_button(entry, archive, working),
+      delete_button(entry, delete, working),
+    ]
+
+    // Only a saved session on an executor can move. A session with no executor
+    // has its Move drawn disabled with the reason in its title, so a person
+    // who looks for it is told why it does nothing.
+    Managed(archive:, delete:, move:, ..), Saved -> [
+      move_button(entry, move, working),
+      archive_button(entry, archive, working),
+      delete_button(entry, delete, working),
     ]
   }
   list.append(renaming, managing)
+}
+
+fn archive_button(
+  entry: Entry,
+  archive: fn(String) -> message,
+  more: List(Attribute(message)),
+) -> Element(message) {
+  act(
+    "home-act",
+    "Archive this session: hide it and keep its history",
+    "Archive",
+    archive(entry.id),
+    more,
+  )
+}
+
+fn delete_button(
+  entry: Entry,
+  delete: fn(String) -> message,
+  more: List(Attribute(message)),
+) -> Element(message) {
+  act(
+    "home-act home-act-delete",
+    "Delete this session",
+    "Delete",
+    delete(entry.id),
+    more,
+  )
+}
+
+// Move asks which orchestrators could take the session. The handler stays on a
+// session with no executor, whose button is disabled, because the page is the
+// layer that ignores the press and the daemon refuses it again.
+fn move_button(
+  entry: Entry,
+  move: fn(String) -> message,
+  more: List(Attribute(message)),
+) -> Element(message) {
+  case entry.executor {
+    Some(_) ->
+      act(
+        "home-act home-act-lead",
+        "Move this session to another orchestrator",
+        "Move",
+        move(entry.id),
+        more,
+      )
+    None ->
+      act(
+        "home-act home-act-lead",
+        move_candidates.no_executor_words(),
+        "Move",
+        move(entry.id),
+        [attribute.disabled(True), ..more],
+      )
+  }
 }
 
 // One quiet button of the group.
@@ -685,7 +778,11 @@ fn act(
 fn confirm_class(action: actions.Action) -> String {
   case action {
     actions.Delete -> "confirm-delete"
-    actions.Stop | actions.Archive | actions.StopArchive -> "confirm-stop"
+    actions.Stop
+    | actions.Archive
+    | actions.StopArchive
+    | actions.Destinations
+    | actions.Move(..) -> "confirm-stop"
   }
 }
 
@@ -727,6 +824,21 @@ fn confirming(
       "Stop",
       "home-confirm-go",
     )
+
+    // Move's question names the destination the owner chose. It is the
+    // daemon's own name for an orchestrator, drawn as text.
+    actions.Move(to:) -> #(
+      "Move this session",
+      "Move this session to " <> to <> "?",
+      "Move",
+      "home-confirm-go",
+    )
+    actions.Destinations -> #(
+      "Move this session",
+      "Move this session?",
+      "Move",
+      "home-confirm-go",
+    )
   }
   html.div(
     [
@@ -754,6 +866,77 @@ fn confirming(
           html.text("Cancel"),
         ]),
       ]),
+    ],
+  )
+}
+
+// A row's chooser for Move, in place of its words: one button for each
+// orchestrator that could take the session, and one line for each that could
+// not, naming it and the reason in fixed words. When none could, the lead says
+// so and Cancel is all that is left. The names are the daemon's configuration
+// keys, drawn as text nodes; a button's handler names the session the row was
+// drawn for and the destination it was drawn with, and the page ignores a press
+// whose destination is not among the eligible ones it holds.
+fn choosing(
+  entry: Entry,
+  candidates: List(Candidate),
+  choose: fn(String, String) -> message,
+  cancel: message,
+) -> Element(message) {
+  let destinations = move_candidates.eligible(candidates)
+  let refused =
+    list.filter_map(candidates, fn(candidate) {
+      case candidate.eligibility {
+        move_candidates.Eligible -> Error(Nil)
+        move_candidates.Ineligible(reason:) ->
+          Ok(candidate.name <> " " <> move_candidates.reason_words(reason))
+      }
+    })
+  let lead = case destinations {
+    [] -> move_candidates.none_words()
+    [_, ..] -> "Move this session to:"
+  }
+  html.div(
+    [
+      attribute.class("home-confirm"),
+      attribute.role("group"),
+      attribute.aria_label("Move this session"),
+    ],
+    [
+      html.div(
+        [attribute.class("home-confirm-text")],
+        list.flatten([
+          [
+            html.p([attribute.class("home-confirm-lead")], [html.text(lead)]),
+            html.p([attribute.class("home-confirm-name")], [
+              html.text(sessions.label(entry)),
+            ]),
+          ],
+          list.map(refused, fn(words) {
+            html.p([attribute.class("home-confirm-name")], [html.text(words)])
+          }),
+        ]),
+      ),
+      html.div(
+        [attribute.class("home-confirm-actions")],
+        list.append(
+          list.map(destinations, fn(name) {
+            html.button(
+              [
+                attribute.type_("button"),
+                attribute.class("home-confirm-go"),
+                event.on_click(choose(entry.id, name)),
+              ],
+              [html.text(name)],
+            )
+          }),
+          [
+            html.button([attribute.type_("button"), event.on_click(cancel)], [
+              html.text("Cancel"),
+            ]),
+          ],
+        ),
+      ),
     ],
   )
 }

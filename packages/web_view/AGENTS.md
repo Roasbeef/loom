@@ -1497,6 +1497,14 @@ surface does not leave the second host with an incompatible reducer path.
   onto this package, `ui_socket` and `ui_relay`, the view's security and
   accessibility rules, and the checklist for a change here.
 
+## Remote children in the context panel (protocol-change/084)
+
+`context_breakdown.panel_with_remote(state, remote, actions)` is `panel` plus a
+section after the board that lists the children that ran on other orchestrators,
+one row for each orchestrator (`remote_usage_words.entry`, text nodes). `panel`
+is `panel_with_remote` with no entries, and `component.heading` passes
+`model.shared.remote_usage`.
+
 ## Model profiles in the new-session forms (protocol 076)
 
 `Start.profiles` is the list of profile names the daemon's configuration defines,
@@ -1709,3 +1717,94 @@ composer. Observer pages expose no side-query controls.
 leave a side answer unobserved. Closing the panel does not cancel inference, and
 a late board preserves its hidden visibility. The operator-page fixture verifies
 that an ask during a running turn sends `btw`, never a main prompt or steer.
+
+## Sessions on other orchestrators (protocol-change/085)
+
+The owner's operating home draws a group, "On other orchestrators", after "Other
+folders". `docs/architecture/web-view.md` ("Sessions on other orchestrators") is the
+account.
+
+- `web_view/elsewhere` is the page's vocabulary: `Group(name, address, hearing)` with
+  `Hearing` (`Answered(rows, more) | Silent`), `Row(session_id, workspace, name,
+  status, executor, executor_node)` with the closed `Status` and its fixed `word`, `Read` (`Heard |
+  Unread`), `append` (joins a later page, up to `max_rows`) and `launch`
+  (`session_view/launch_words`). It carries the executor node of a row, which the Admin page matches to a machine, and no
+  credential.
+- `home.Start.elsewhere` is `Some(home.Elsewhere(groups, next))` exactly where `create`
+  is. The model keeps `elsewhere`, `elsewhere_reads` (the number of the latest
+  first-page read; `Refreshed` bumps it), `located` (the open detail) and `paging` (the
+  group whose page is out). `ElsewhereRead(serial, read)` and `MoreRead(group, serial,
+  read)` are the effect's own messages. `Locating(group, session)` is honoured only for
+  a row the page holds (`holds_row`), `ShowingMore(group)` asks after the last row held
+  (`next_cursor`) and only while no page is out, and `still_there` closes a detail whose
+  row a later read removed.
+- `view/elsewhere` draws the group: a name and address as quiet text, a row for each
+  session with a "Where" button, the detail in a `<loom-copy subject="launch">` box, "No
+  answer from this orchestrator." for a silent group, and "Show more". Every name and
+  path is a text node, the classes are fixed words from the existing stylesheet, and the
+  rows are keyed by position. `home_table.view` takes it after the folders section.
+- No event class, scope, route or content security policy changed: the buttons are
+  clicks beneath `home.table_path`. `home_test` pins the group, the silent line, the
+  detail, "Show more" and the dropped stale page.
+
+## The Admin page's machines (protocol-change/085, addendum 2026-10-16)
+
+The admin page draws a Deployment section below People and Sessions: the verdict, a
+table of machines, and a page for the machine the owner chose.
+`docs/architecture/web-view.md` ("Deployment: the machines list and a page for each
+machine") is the account.
+
+- `web_view/machines` is the vocabulary and the total decoder: `Machine(name, node,
+  roles, whose, here, link, ledgered)` with `Here` (`Dialled(findings) |
+  NotLinkedFromHere`) and `Ledgered` (`Enrolled(standing) | NotListed | Unledgered`),
+  `Findings`, `Snapshot`, `Detail` (the long lists of one node), `Reading` (`Heard |
+  HeardOne | Unread`), `Held`, `Detailed`, `Tab`, and the words (`verdict_words`,
+  `reason_words`, `age_words`, `pill_class`). `decode_overview` merges the document's
+  nodes with the ledger's members by node name; `decode_detail` reads a read for one
+  node. `text_limit` 256 and `list_limit` 128 bound it.
+- `web_view/operator_commands` writes `renew`, `revoke`, `enroll` and `release`. `quote`
+  makes a name one shell word, or an error (empty, over 256 bytes, not printable ASCII,
+  leading dash); the browser's `copy_rule` `operate` subject holds the same grammar.
+- `admin.Start` gains `deployment: fn(Option(String), fn(Reading) -> Nil)` and
+  `elsewhere`. The model keeps `held`, `deployed` (the number of the latest deployment
+  read; an older answer is dropped, and reads are not held to one at a time), `machine`
+  (the chosen node), `tab`, `detail` and `listed`. `MachineChosen(node)` reads the node
+  by its key unless it is the asking daemon or not dialled; `TabChosen` reads the other
+  orchestrators for the Sessions tab; `MachineClosed` overtakes any read out. The
+  deployment follows the timer, one read together with the people read.
+- `view/admin_machines` is the section and table, `view/admin_machine` the page and its
+  four tabs. Every name is a text node, the classes are fixed words and the only data
+  chosen ones are the pill tints, rows are keyed by position, and every handler is a
+  click beneath `admin.body_path`.
+- `view/elsewhere.strip` is the one-line strip the owner's operating home draws in the
+  first child of its centre, so `home.table_path` does not move.
+- Tests: `machines_test` (decoder, bounds, words), `operator_commands_test` (the fixed
+  text, hostile names), `admin_test` (the section, choosing a machine, each tab, an
+  overtaken read, markup as text, handler paths), `stylesheet_test` (no accent bar or
+  shadow) and `home_test` (the strip).
+
+
+## Move and Abandon (protocol-change/085)
+
+- **Move** is `actions.Destinations` then `actions.Move(to)`. `Destinations` reads
+  and changes nothing: the daemon answers `Heard(candidates)` (the type is
+  `session_view/move_candidates.Candidate`), `home.update` sets the stage to
+  `Choosing(session, candidates)`, and `home_table.choosing` replaces the row's words
+  with a button for each eligible destination and a line for each ineligible one.
+  `MoveChosen(session, to)` opens `Confirming(session, Move(to))` only for a
+  destination that stage was offered; `MoveConfirmed(session)` asks only for a row
+  confirming a move. `Managed` gained `move`, `choose` and `confirm_move`, and a saved
+  row with no executor draws Move disabled with `move_candidates.no_executor_words()`
+  in its title. `Reason.NotMovable` has fixed words, and `Answer.Heard` is dropped by
+  the session page's sidebar, which never asks for it.
+- **Where it runs.** `component.Label` gained `executor` and `pool`;
+  `session_tab.runs_on` words them (`runs on box (pool builders)`) under the workspace
+  inside the Session group's rows, so the pane's children and their paths are
+  unchanged. `ui_socket` fills them for an owner's page only.
+- **Abandon** is `grants.AbandonMove(session)`, with `Reason.NotMember | NotMoving`.
+  `admin_machine.Page` gained `arm`, `ask`, `disarm`, `armed`, `waiting` and `notice`;
+  `abandoning` draws the button beside each move of the asking daemon when
+  `snapshot.directory` is `Some` (it is a directory member), and the armed question
+  reads "If bravo has already taken the session, the move finishes instead." It reuses
+  the Admin page's `Arming`, `Asking` and `confirmed`, which treat it as an armed action
+  like making a session shareable.

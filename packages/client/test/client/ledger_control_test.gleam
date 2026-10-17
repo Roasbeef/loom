@@ -135,6 +135,16 @@ pub fn the_status_names_the_standing_the_members_and_the_last_refusal_test() {
   assert laptop.reported_seq == None
   assert laptop.directory == "none"
 
+  // Each member states its links and the pin of its certificate (hex, lower
+  // case), so an operator reads who is linked to whom and which certificate a
+  // `renew` replaces.
+  assert hub.links == []
+  assert laptop.links == ["hub"]
+  let assert Some(pin) = laptop.pin
+  assert string.length(pin) == 64
+  assert pin == string.lowercase(pin)
+  assert hub.pin != laptop.pin
+
   // A refused line is the last refusal until the next one replaces it.
   assert result_is_error(ledger_control.append(handle, ["not a line"]))
   let assert Ok(reply) = ledger_control.status(handle)

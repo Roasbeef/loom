@@ -35,7 +35,12 @@ fn page(
   let start = page_fixture.start()
   component.Start(
     ..start,
-    label: Some(component.Label(name: "web ui", workspace: "/src/loom")),
+    label: Some(component.Label(
+      name: "web ui",
+      workspace: "/src/loom",
+      executor: "",
+      pool: "",
+    )),
     transport: component.Transport(
       ..start.transport,
       sessions: fn(deliver) {

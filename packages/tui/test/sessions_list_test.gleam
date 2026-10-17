@@ -117,12 +117,18 @@ pub fn plain_format_all_lists_every_row_test() {
 // shared local options see the remaining flags, so it composes with them
 // in either order.
 pub fn all_flag_parses_to_every_test() {
-  let assert Ok(tui.ListRegistrations(showing: tui.Every)) =
-    tui.launch_sessions(["list", "--all"])
-  let assert Ok(tui.ListRegistrations(showing: tui.ResidentOnly)) =
-    tui.launch_sessions(["list"])
-  let assert Ok(tui.ListRegistrations(showing: tui.Every)) =
-    tui.launch_sessions(["list", "--all", "--state-dir", "/tmp/x"])
+  let assert Ok(tui.ListRegistrations(
+    showing: tui.Every,
+    reach: tui.AllOrchestrators,
+  )) = tui.launch_sessions(["list", "--all"])
+  let assert Ok(tui.ListRegistrations(
+    showing: tui.ResidentOnly,
+    reach: tui.AllOrchestrators,
+  )) = tui.launch_sessions(["list"])
+  let assert Ok(tui.ListRegistrations(
+    showing: tui.Every,
+    reach: tui.AllOrchestrators,
+  )) = tui.launch_sessions(["list", "--all", "--state-dir", "/tmp/x"])
 }
 
 // The help text documents `--all` and names all three lifecycles a person

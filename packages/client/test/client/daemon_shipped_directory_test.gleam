@@ -27,6 +27,17 @@
 //// - `alpha` is started again and `bravo`'s next lookup finds it: the lookup
 ////   connects on demand and keeps no failed attempt.
 ////
+//// `a_session_is_listed_by_the_other_orchestrator_and_silence_is_not_empty_test_`
+////
+//// `sessions.elsewhere` (protocol-change/085) between the same two daemons.
+////
+//// - A session is created on each. `bravo` lists `alpha`'s session under
+////   `alpha`, answered, with the address its configuration holds for `alpha`
+////   and without its own session, and `alpha` lists `bravo`'s the same way.
+//// - A key the configuration lacks is `not_found`.
+//// - With `alpha` killed, `bravo` still lists the group, `silent` with no rows,
+////   inside the fan-out's own bound. Silent is not an empty group.
+////
 //// `a_remote_session_is_found_through_the_directory_test_`
 ////
 //// The same questions with the session directory's Khepri cluster
@@ -49,6 +60,15 @@
 ////   another remote session meanwhile.
 //// - `alpha` is started again, rejoins with three voters, and serves its own
 ////   session from its catalogue.
+////
+//// `the_admin_page_lists_each_machine_of_the_deployment_test_`
+////
+//// The Admin page's machines list (protocol-change/085, the addendum of
+//// 2026-10-16) over the same three members. `alpha` answers `deployment.status`
+//// over its control socket, the page's decoder reads the document, and the
+//// Deployment section draws a row for the asking daemon, its peer orchestrator
+//// and the executor. The browser's socket chain is not driven: no shipped
+//// fixture has a WebSocket client for the page's ticket exchange.
 ////
 //// ## Prerequisites and skips
 ////
@@ -76,9 +96,13 @@ import client/tui_e2e_test.{type EunitTest}
 import core/json.{type JsonValue}
 import gleam/list
 import gleam/option.{Some}
+import gleam/string
 import host/bootstrap as native
+import lustre/element
 import support/remote_daemons
 import support/remote_duo
+import web_view/machines
+import web_view/view/admin_machines
 import weft/poll
 
 const skip_label = "shipped remote directory"
@@ -283,6 +307,137 @@ pub fn a_session_is_found_on_the_orchestrator_that_owns_it_test_() -> EunitTest 
   })
 }
 
+// `sessions.elsewhere` on one orchestrator, read until the peer answers: the
+// first read that dials a peer pays for the TLS connection to it, and a read that
+// finds the peer silent while that handshake completes says nothing about the
+// listing these tests exist to check.
+fn elsewhere_once_reachable(
+  control: remote_daemons.Control,
+  first_id: Int,
+  group: String,
+) -> JsonValue {
+  let verdict =
+    poll.fold_until(
+      clock: poll.monotonic(),
+      within: 30_000,
+      every: poll.Fixed(250),
+      from: first_id,
+      attempt: fn(id) {
+        let read =
+          remote_daemons.command(
+            control,
+            id,
+            "sessions.elsewhere",
+            json.Object([]),
+          )
+        case group_state(read, group) == json.String("silent") {
+          True -> poll.Pending(id + 1)
+          False -> poll.Settled(read)
+        }
+      },
+    )
+  case verdict {
+    poll.Answer(read) -> read
+    poll.Failure(..) | poll.RanOut(..) ->
+      panic as "the peer stayed silent for the whole bound"
+  }
+}
+
+// The group a `sessions.elsewhere` reply holds under a configuration key.
+fn group_of(reply: JsonValue, key: String) -> JsonValue {
+  let assert json.Array(groups) =
+    remote_daemons.field(body_of(reply), "orchestrators")
+    as "the reply lists orchestrators"
+  let assert Ok(found) =
+    list.find(groups, fn(group) {
+      remote_daemons.field(group, "name") == json.String(key)
+    })
+    as "the reply has the group"
+  found
+}
+
+fn group_state(reply: JsonValue, key: String) -> JsonValue {
+  remote_daemons.field(group_of(reply, key), "state")
+}
+
+pub fn a_session_is_listed_by_the_other_orchestrator_and_silence_is_not_empty_test_() -> EunitTest {
+  remote_duo.shipped(skip_label, fn(duo) {
+    let keys = remote_duo.provision(duo)
+    remote_duo.configure(duo, keys, Some(alphas_address))
+    let alpha = remote_daemons.start(duo.alpha)
+    let bravo = remote_daemons.start(duo.bravo)
+    let on_alpha = remote_daemons.open_control(alpha)
+    let on_bravo = remote_daemons.open_control(bravo)
+
+    // One session on each orchestrator, created where the client was connected.
+    let #(session, _) =
+      remote_daemons.create_local_and_settle(
+        on_alpha,
+        1,
+        "e2e-alpha",
+        duo.alpha.workspace,
+      )
+    let #(bravos, _) =
+      remote_daemons.create_local_and_settle(
+        on_bravo,
+        1,
+        "e2e-bravo",
+        duo.bravo.workspace,
+      )
+
+    // `bravo` lists `alpha`'s session under `alpha`, with the address its own
+    // configuration holds for it, and not its own session.
+    let read = elsewhere_once_reachable(on_bravo, 10, "alpha")
+    assert remote_daemons.field(read, "event")
+      == json.String("sessions.elsewhere")
+    let group = group_of(read, "alpha")
+    assert remote_daemons.field(group, "state") == json.String("answered")
+    assert remote_daemons.field(group, "address") == json.String(alphas_address)
+    assert remote_daemons.field(group, "more") == json.Bool(False)
+    let assert json.Array([row]) = remote_daemons.field(group, "sessions")
+      as "alpha lists its one session"
+    assert remote_daemons.field(row, "session_id") == json.String(session)
+    assert remote_daemons.field(row, "name") == json.String("local e2e-alpha")
+
+    // The other direction lists `bravo`'s session, which has no address because
+    // `alpha`'s configuration gives none for it.
+    let read = elsewhere_once_reachable(on_alpha, 11, "bravo")
+    let group = group_of(read, "bravo")
+    let assert json.Array([row]) = remote_daemons.field(group, "sessions")
+      as "bravo lists its one session"
+    assert remote_daemons.field(row, "session_id") == json.String(bravos)
+
+    // A key the configuration lacks is `not_found` and nobody is asked.
+    let missing =
+      remote_daemons.command(
+        on_bravo,
+        12,
+        "sessions.elsewhere",
+        json.Object([#("orchestrator", json.String("ghost"))]),
+      )
+    assert code_of(missing) == json.String("not_found")
+
+    // `alpha` goes away without closing anything. `bravo` still lists the group,
+    // as one silent line with no rows, which is not the same as `alpha` holding
+    // nothing, and answers inside the fan-out's own bound.
+    remote_daemons.crash(duo.alpha)
+    let gone =
+      timed(fn() {
+        remote_daemons.command(
+          on_bravo,
+          20,
+          "sessions.elsewhere",
+          json.Object([]),
+        )
+      })
+    let group = group_of(gone, "alpha")
+    assert remote_daemons.field(group, "state") == json.String("silent")
+    assert remote_daemons.field(group, "sessions") == json.Array([])
+    assert remote_daemons.field(group, "more") == json.Bool(False)
+    Nil
+  })
+}
+
 pub fn a_remote_session_is_found_through_the_directory_test_() -> EunitTest {
   remote_duo.shipped(member_label, fn(duo) {
     let keys = remote_duo.provision(duo)
@@ -462,4 +617,46 @@ fn remote(
     remote_duo.executor_name,
     remote_duo.workspace_name,
   )
+}
+
+// The Admin page's machines list (protocol-change/085, the addendum of
+// 2026-10-16) against the three real daemons: `alpha` is asked for the
+// deployment over its control socket, the page's own decoder reads the reply the
+// way the page's read does (`server.admin_deployment` makes this very read), and
+// the Deployment section draws a row for each of the three nodes, the asking
+// daemon, its peer orchestrator and the executor.
+//
+// No shipped fixture drives the browser's WebSocket and the page's ticket chain,
+// so the page is not reached through them; the daemon's half of the read is the
+// real one and the page's half is its real view over the real document.
+pub fn the_admin_page_lists_each_machine_of_the_deployment_test_() -> EunitTest {
+  remote_duo.shipped(member_label, fn(duo) {
+    let keys = remote_duo.provision(duo)
+    remote_duo.configure_members(duo, keys, Some(alphas_address))
+    let members = remote_duo.start_members(duo)
+    let on_alpha = remote_daemons.open_control(members.alpha)
+    let reply =
+      remote_daemons.command(on_alpha, 1, "deployment.status", json.Object([]))
+    assert remote_daemons.field(reply, "event")
+      == json.String("deployment.status")
+    let assert Ok(snapshot) = machines.decode_overview(body_of(reply))
+      as "the page's decoder reads the daemon's own document"
+    let names = list.map(snapshot.machines, fn(machine) { machine.name })
+    assert list.length(names) == 3
+    assert list.contains(names, "bravo")
+    assert list.contains(names, remote_duo.executor_name)
+    let html =
+      admin_machines.view(admin_machines.Section(
+        held: machines.Known(snapshot),
+        chosen: option.None,
+        choose: fn(_) { Nil },
+        page: element.none(),
+      ))
+      |> element.to_string
+    list.each(names, fn(name) {
+      assert string.contains(html, ">" <> name <> "<")
+    })
+    assert string.contains(html, "Deployment · 3 nodes")
+    Nil
+  })
 }

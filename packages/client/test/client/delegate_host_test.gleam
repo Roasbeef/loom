@@ -20,6 +20,7 @@ import core/ids
 import gleam/erlang/process
 import gleam/int
 import gleam/option.{None, Some}
+import gleam/result
 import host/bootstrap
 import simplifile
 import sqlight
@@ -864,4 +865,88 @@ fn await_row(
     poll.Answered(found) -> Ok(found)
     poll.Failed(_) | poll.Expired -> Error(Nil)
   }
+}
+
+// --- a spawner's rolling day (catalogue version 17) --------------------------
+//
+// The Agency's holder claims a spawn here for a child it is about to create, so
+// these drive the registry's claim directly.
+
+fn claim(
+  registry: manager.Manager(agency.DelegateEndpoint),
+  tokens: option.Option(Int),
+  spawns: option.Option(Int),
+  now_ms: Int,
+) -> Result(Nil, remote_spawn.SpawnRefusal) {
+  manager.claim_spawn(
+    registry,
+    "laptop",
+    tokens,
+    spawns,
+    now_ms:,
+    within_ms: 5000,
+  )
+  |> result.map_error(delegate_host.refused)
+}
+
+pub fn a_claim_past_max_per_day_is_refused_and_counts_nothing_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let registry = started(store, fn(built) { Ok(tagged(built)) })
+
+  // Two claims pass and the third meets the cap, which the refusal names with
+  // its own value. A refused claim is not counted.
+  assert claim(registry, None, Some(2), 4242) == Ok(Nil)
+  assert claim(registry, None, Some(2), 4242) == Ok(Nil)
+  let refusal =
+    Error(remote_spawn.CapReached(cap: remote_spawn.SpawnsPerDay, limit: 2))
+  assert claim(registry, None, Some(2), 4242) == refusal
+  assert claim(registry, None, Some(2), 4242) == refusal
+  assert catalogue.spawner_spend(store, "laptop", now_ms: 4242)
+    == Ok(catalogue.Spend(tokens: 0, spawns: 2))
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn a_claim_past_the_days_token_budget_is_refused_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let registry = started(store, fn(built) { Ok(tagged(built)) })
+  assert manager.add_spend(registry, "laptop", now_ms: 4242, tokens: 999)
+    == Ok(Nil)
+  assert claim(registry, Some(1000), None, 4242) == Ok(Nil)
+  assert manager.add_spend(registry, "laptop", now_ms: 4242, tokens: 1)
+    == Ok(Nil)
+  assert claim(registry, Some(1000), None, 4242)
+    == Error(remote_spawn.CapReached(
+      cap: remote_spawn.TokensPerDay,
+      limit: 1000,
+    ))
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn the_day_rolls_forward_with_the_clock_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let registry = started(store, fn(built) { Ok(tagged(built)) })
+  let hour = catalogue.spend_bucket_ms
+  assert manager.add_spend(registry, "laptop", now_ms: 0, tokens: 1000)
+    == Ok(Nil)
+
+  // Twenty-three hours later the spend is still inside the day. At the
+  // twenty-fourth hour its bucket has left it and the claim passes.
+  let assert Error(_) = claim(registry, Some(1000), None, 23 * hour + 5)
+  assert claim(registry, Some(1000), None, 24 * hour) == Ok(Nil)
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn a_registry_that_does_not_answer_a_claim_is_a_store_failure_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let registry = started(store, fn(built) { Ok(tagged(built)) })
+  stop(registry)
+
+  // The claim is bounded and unanswered, and what it reports is a failure the
+  // spawner retries. It is never a cap.
+  let assert Error(remote_spawn.StoreFailure(_)) =
+    claim(registry, None, Some(1), 4242)
+  assert catalogue.close(store) == Ok(Nil)
 }

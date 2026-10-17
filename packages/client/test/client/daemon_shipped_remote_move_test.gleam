@@ -77,6 +77,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import host/bootstrap as native
+import session_view/move_candidates
 import simplifile
 import storage/exec_ledger
 import support/enforcement
@@ -84,6 +85,7 @@ import support/provider_http as provider
 import support/remote_daemons.{type Control, type Layout, type Running, Trust}
 import support/tui_driver
 import tui/daemon
+import tui/deployment_view
 import weft
 
 const skip_label = "shipped remote move"
@@ -605,6 +607,50 @@ fn took(target: Running, session: String) -> Nil {
   assert simplifile.is_file(held) == Ok(True)
 }
 
+// The candidates for the session on `box`, read from the shipped daemon's own
+// `deployment.status` reply by the terminal's decoder, and an abandon of a
+// session that is not moving, which the shipped function refuses on a daemon
+// that is not a directory member. The pages call the same two functions
+// (`server.move_session`, `server.abandon_move`) that the control arms run, so
+// these are the shipped answers a page is given.
+fn candidates_offer_bravo(
+  control: Control,
+  session: String,
+  records: Records,
+) -> Nil {
+  let status =
+    remote_daemons.command(control, 399, "deployment.status", json.Object([]))
+  assert remote_daemons.field(status, "event")
+    == json.String("deployment.status")
+  let body = remote_daemons.field(status, "body")
+  let assert Ok(found) = deployment_view.candidates(body, Some(executor_name))
+    as "the shipped reply lists the orchestrators"
+  assert found
+    == [move_candidates.Candidate(target_name, move_candidates.Eligible)]
+
+  let abandoned =
+    remote_daemons.command(
+      control,
+      398,
+      "sessions.move",
+      json.Object([
+        #("session_id", json.String(session)),
+        #("abandon", json.Bool(True)),
+        #("epoch", json.String(control.epoch)),
+      ]),
+    )
+  assert remote_daemons.field(abandoned, "event") == json.String("error")
+
+  // A member has a record to abandon against and finds no move; any other
+  // daemon cannot abandon at all.
+  let code = case records {
+    CatalogueRows -> "not_movable"
+    DirectoryMembers -> "conflict"
+  }
+  assert remote_daemons.field(remote_daemons.field(abandoned, "body"), "code")
+    == json.String(code)
+}
+
 // --- one clean move -----------------------------------------------------------------
 
 fn one_clean_move(prepared: Trio) -> Nil {
@@ -625,6 +671,12 @@ fn one_clean_move(prepared: Trio) -> Nil {
       })
       let control = remote_daemons.open_control(source)
       let session = begun(prepared, source, control, label)
+
+      // Before it asks, the owner can read who could take the session. The
+      // terminal's `loom sessions move ID` and the home's Move judge the real
+      // `deployment.status` reply by one rule, and `bravo` accepts moved
+      // sessions and serves the executor the session is on.
+      candidates_offer_bravo(control, session, prepared.records)
 
       // The move is accepted and named, and the daemon carries it out.
       let accepted =

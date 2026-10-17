@@ -148,6 +148,18 @@
 ////    it, returning the `Page` the socket holds for its life: forward a
 ////    browser frame (after `observer_accepts`, `operator_accepts` or
 ////    `owner_accepts`), shut down, read an image.
+////    `upgrade_home` also builds the home's capabilities. The owner's operating
+////    page is handed `home_elsewhere_capability` (protocol-change/085), whose
+////    reads run in `read_task` through `elsewhere_for`, which repeats the owner
+////    check before the daemon dials any other orchestrator. The page's "Where"
+////    and "Show more" are clicks beneath `home.table_path`, so `home_accepts`
+////    already admits them. The admin page's machines are read in tasks of their
+////    own, apart from the people read, so a fan-out that waits seconds for a
+////    machine never holds up the catalogue: `admin_deployment_task` runs
+////    `admin_deployment_for` and `admin_elsewhere_task` runs
+////    `admin_elsewhere_for`, each repeating the owner check before the daemon
+////    dials anything. The page's rows and tabs are clicks beneath
+////    `admin.body_path`, so `admin_accepts` already admits them.
 //// 4. Afterwards the handler forwards browser frames, writes the component's
 ////    frames to the browser, and on the relay's `Ended` schedules `Stop`.
 //// 5. `closing` turns an ending's close code into mist's clean stop (1000) or
@@ -212,10 +224,12 @@ import web_view/actions
 import web_view/admin
 import web_view/component
 import web_view/creations
+import web_view/elsewhere as page_elsewhere
 import web_view/ending
 import web_view/grants
 import web_view/home
 import web_view/invites
+import web_view/machines
 import web_view/names
 import web_view/operator_page
 import web_view/page
@@ -586,6 +600,7 @@ pub fn upgrade(
           open,
           attachment.epoch,
           attachment.sessions_directory,
+          server.no_moves(),
           action,
           target,
           deliver,
@@ -891,6 +906,36 @@ pub fn upgrade_home(
       ),
     )
 
+  // The owner's other orchestrators (protocol-change/085) are read in tasks of
+  // their own, because the daemon dials them, and delivered by the page's
+  // numbered read. The "Where" and "Show more" presses are clicks beneath
+  // `home.table_path`, which every home's socket admits, so no admission is
+  // added: the capability is what makes the group exist, and the page honours a
+  // press only for a row it holds.
+  let elsewhere =
+    home_elsewhere_capability(
+      attachment.principal,
+      ceiling,
+      home.Elsewhere(
+        groups: fn(deliver) {
+          read_task(deliver, fn() {
+            elsewhere_for(standing, open, attachment.elsewhere, None, None)
+          })
+        },
+        next: fn(group, after, deliver) {
+          read_task(deliver, fn() {
+            elsewhere_for(
+              standing,
+              open,
+              attachment.elsewhere,
+              Some(group),
+              Some(after),
+            )
+          })
+        },
+      ),
+    )
+
   // The same fresh home may stop, archive and delete the sessions it lists
   // (protocol-change/065, the addendum on session actions). The click on a row's
   // button is beneath `home.table_path`, which every home's socket admits, so no
@@ -908,6 +953,7 @@ pub fn upgrade_home(
           open,
           attachment.epoch,
           attachment.sessions_directory,
+          attachment.moves,
           action,
           target,
           deliver,
@@ -972,6 +1018,7 @@ pub fn upgrade_home(
       pools,
       placing,
       folders,
+      elsewhere,
       signing,
       administering,
       admits,
@@ -1119,6 +1166,33 @@ pub fn home_folders_capability(
 ) -> Option(home.Folders) {
   case principal.kind, ceiling {
     access.OwnerPrincipal, access.Operator -> Some(folders)
+    access.OwnerPrincipal, access.Observer
+    | access.MemberPrincipal, access.Operator
+    | access.MemberPrincipal, access.Observer
+    -> None
+  }
+}
+
+/// The capability to read the owner's other orchestrators that a home page
+/// minted for `principal` with `ceiling` is handed (protocol-change/085): `ask`
+/// for the daemon's owner on a page minted to operate, and none for any other,
+/// which is the creation capability's own rule. The group it draws is
+/// information about the owner's own deployment. The daemon checks both facts
+/// again when a read runs (`elsewhere_for`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ui_socket.home_elsewhere_capability(member, access.Operator, reads) == None
+/// ```
+@internal
+pub fn home_elsewhere_capability(
+  principal: access.Principal,
+  ceiling: access.Role,
+  reads: home.Elsewhere,
+) -> Option(home.Elsewhere) {
+  case principal.kind, ceiling {
+    access.OwnerPrincipal, access.Operator -> Some(reads)
     access.OwnerPrincipal, access.Observer
     | access.MemberPrincipal, access.Operator
     | access.MemberPrincipal, access.Observer
@@ -1279,6 +1353,7 @@ fn admit_home(
   pools: List(String),
   placing: fn(fn(placements.Read) -> Nil) -> Nil,
   folders: Option(home.Folders),
+  elsewhere: Option(home.Elsewhere),
   signing: Signing,
   administering: Option(fn(fn(sessions.Answer) -> Nil) -> Nil),
   admits: fn(String) -> Bool,
@@ -1324,6 +1399,7 @@ fn admit_home(
       pools:,
       placements: placing,
       folders:,
+      elsewhere:,
       signins: fn(deliver) { read_task(deliver, signing.read) },
       login: signing.login,
       bookmark: signing.bookmark,
@@ -1596,6 +1672,17 @@ fn admit(
       label: Some(component.Label(
         name: attachment.registration.name,
         workspace: attachment.registration.workspace,
+        // Where the session runs is the owner's configuration, so only the
+        // owner's page says it. A member or an observer is told the workspace
+        // and nothing about the machines behind it.
+        executor: case role {
+          Owning -> attachment.registration.executor
+          Observing | Operating -> ""
+        },
+        pool: case role {
+          Owning -> attachment.registration.pool
+          Observing | Operating -> ""
+        },
       )),
       // The digest, not the path, is what the page's storage is keyed by.
       workspace_digest: digest(attachment.registration.workspace),
@@ -3026,6 +3113,32 @@ pub fn recent_for(
   }
 }
 
+/// The other orchestrators' sessions as the owner's home may draw them
+/// (protocol-change/085). The same owner check as a creation runs first
+/// (`authorized_owner`), so a page that may not create is told of nothing and the
+/// daemon dials nobody for it, and so is a page whose registry did not answer.
+/// `read` is the daemon's read over its own configuration, which resolves a key
+/// before it connects.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.elsewhere_for(standing, open, attachment.elsewhere, None, None)
+/// ```
+@internal
+pub fn elsewhere_for(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+  read: fn(Option(String), Option(String)) -> page_elsewhere.Read,
+  orchestrator: Option(String),
+  after: Option(String),
+) -> page_elsewhere.Read {
+  case authorized_owner(standing, open) {
+    Ok(_) -> read(orchestrator, after)
+    Error(_) -> page_elsewhere.Unread
+  }
+}
+
 // The list `recent_for` answers once the owner check has passed, so a caller that
 // has made its own check does not make it twice.
 fn listed_recent(
@@ -3956,12 +4069,19 @@ const stop_wait_ms = 5000
 ///    (`Running`). The page offers neither on a running row, and the registry
 ///    does not rely on that.
 ///
+/// 3. Move reads first. `Destinations` is `moves.candidates`, the deployment
+///    read judged by `deployment.candidates`, and changes nothing. `Move` is
+///    `moves.begin`, which is the control command `sessions.move`'s own
+///    function (`server.move_session`): it refuses a destination the daemon
+///    does not list and a session that cannot move, whatever the page offered.
+///    It does not judge eligibility again.
+///
 /// The detail of every other refusal stays in the daemon.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // ui_socket.manage_for(standing, open, epoch, sessions, actions.Archive, session_id)
+/// // ui_socket.manage_for(standing, open, epoch, sessions, server.no_moves(), actions.Archive, session_id)
 /// ```
 @internal
 pub fn manage_for(
@@ -3969,6 +4089,7 @@ pub fn manage_for(
   open: fn() -> Result(Int, Nil),
   epoch: String,
   sessions_directory: String,
+  moves: server.Moves,
   action: actions.Action,
   target: String,
 ) -> actions.Answer {
@@ -3984,8 +4105,26 @@ pub fn manage_for(
       ids.parse_session_id(target) |> result.replace_error(actions.NotOwner),
     )
     case action {
-      actions.Stop -> stop_for(standing.registry, target)
-      actions.Archive -> archive_for(standing, epoch, target)
+      // Move reads before it asks. Which orchestrators could take the session
+      // is a read of the deployment and changes nothing; the move itself is the
+      // control command's own function, which refuses a destination the daemon
+      // does not list, whatever the page offered. It does not judge
+      // eligibility again: a destination that stopped qualifying since the
+      // read is accepted, and the move stalls and retries.
+      actions.Destinations ->
+        moves.candidates(target)
+        |> result.map(actions.Heard)
+        |> result.map_error(move_refusal)
+      actions.Move(to:) ->
+        moves.begin(epoch, target, to)
+        |> result.replace(actions.Done(action))
+        |> result.map_error(move_refusal)
+      actions.Stop ->
+        stop_for(standing.registry, target)
+        |> result.replace(actions.Done(action))
+      actions.Archive ->
+        archive_for(standing, epoch, target)
+        |> result.replace(actions.Done(action))
 
       // The sidebar's one action on a running row. The stop returns once the
       // registry reports the session saved, or when its wait ends, and the
@@ -3996,6 +4135,7 @@ pub fn manage_for(
       actions.StopArchive -> {
         use _ <- result.try(stop_for(standing.registry, target))
         archive_for(standing, epoch, target)
+        |> result.replace(actions.Done(action))
       }
       actions.Delete ->
         manager.delete_session(
@@ -4005,13 +4145,40 @@ pub fn manage_for(
           target,
           sessions_directory,
         )
-        |> result.replace(Nil)
+        |> result.replace(actions.Done(action))
         |> result.map_error(action_refusal)
     }
   }
   case outcome {
-    Ok(Nil) -> actions.Done(action)
+    Ok(answer) -> answer
     Error(reason) -> actions.Declined(reason)
+  }
+}
+
+// The fixed reason for a refused move. An owner check the registry repeated is
+// the page's `NotOwner`; a registry that did not answer is `Unavailable`; every
+// other refusal says the session cannot move now, since the page's one
+// sentence for it is all the owner can act on.
+fn move_refusal(refusal: server.MoveRefusal) -> actions.Reason {
+  case refusal {
+    server.Declined(manager.AdminForbidden)
+    | server.Declined(manager.AdminStaleEpoch)
+    | server.Unreadable(manager.Catalogue(catalogue.Missing)) ->
+      actions.NotOwner
+    server.Unanswered
+    | server.Declined(manager.AdminUnavailable)
+    | server.Declined(manager.AdminFailed(..)) -> actions.Unavailable
+    server.UnknownDestination
+    | server.Declined(manager.IsolationRequired)
+    | server.Declined(manager.AdminForeignPath)
+    | server.Declined(manager.AdminBusy)
+    | server.Declined(manager.AdminMoving(..))
+    | server.Declined(manager.AdminMoved(..))
+    | server.Declined(manager.AdminNotMovable(..))
+    | server.Declined(manager.AdminMetadata(..))
+    | server.NotAMember
+    | server.NotMoving
+    | server.Unreadable(..) -> actions.NotMovable
   }
 }
 
@@ -4144,6 +4311,7 @@ pub fn manage_task(
   open: fn() -> Result(Int, Nil),
   epoch: String,
   sessions_directory: String,
+  moves: server.Moves,
   action: actions.Action,
   target: String,
   deliver: fn(actions.Answer) -> Nil,
@@ -4156,6 +4324,7 @@ pub fn manage_task(
           open,
           epoch,
           sessions_directory,
+          moves,
           action,
           target,
         ))
@@ -4663,6 +4832,11 @@ fn admit_admin(
   // credential it asks with are the standing's, so its closure keeps that.
   let epoch = attachment.epoch
 
+  // The two machine reads are the daemon's own closures, projected here so the
+  // page's closures keep only them and not the whole attachment.
+  let read_deployment = attachment.deployment
+  let read_elsewhere = attachment.elsewhere
+
   // The page's end, read once as the page opens: the live UI session's deadline,
   // which already is the earlier of the home's end and fifteen minutes from the
   // exchange (`ui_sessions.mint_before`). The table answers it on its own
@@ -4695,6 +4869,7 @@ fn admit_admin(
           epoch,
           attachment.state_root,
           address,
+          attachment.abandon,
           action,
           deliver,
         )
@@ -4702,6 +4877,12 @@ fn admit_admin(
       now: bootstrap.system_time_ms,
       login: option.map(attachment.login, fn(issuer) { issuer.fingerprint }),
       ends_at:,
+      deployment: fn(node, deliver) {
+        admin_deployment_task(standing, open, read_deployment, node, deliver)
+      },
+      elsewhere: fn(deliver) {
+        admin_elsewhere_task(standing, open, read_elsewhere, deliver)
+      },
     )
   let started = case transferred {
     Error(reason) -> {
@@ -5044,6 +5225,94 @@ pub fn admin_read_task(
   Nil
 }
 
+/// The deployment as the admin page's machines list may draw it. The same owner
+/// check as a change runs first (`authorized_owner`), so a page that may not
+/// operate is told of nothing and the daemon dials nobody for it, and so is a
+/// page whose registry did not answer. `read` is the daemon's own
+/// `deployment.status` read, which resolves a key against its configuration
+/// before it connects.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.admin_deployment_for(standing, open, attachment.deployment, None)
+/// ```
+@internal
+pub fn admin_deployment_for(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+  read: fn(Option(String)) -> machines.Reading,
+  node: Option(String),
+) -> machines.Reading {
+  case authorized_owner(standing, open) {
+    Ok(_) -> read(node)
+    Error(_) -> machines.Unread
+  }
+}
+
+/// Starts `admin_deployment_for` in a run of its own and returns at once;
+/// `deliver` is called, from that run, with the reading, whatever it is.
+///
+/// The run is separate from the people read (`admin_read_task`), which the page
+/// runs one at a time and which can wait on the registry, so a fan-out to the
+/// machines, bounded at about four seconds, never delays the catalogue and the
+/// catalogue never delays it. The run is a weft run linked to the calling
+/// process, the page's runtime, so a page that goes away cancels it, and its
+/// last act is `deliver`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.admin_deployment_task(standing, open, attachment.deployment, None, deliver)
+/// ```
+@internal
+pub fn admin_deployment_task(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+  read: fn(Option(String)) -> machines.Reading,
+  node: Option(String),
+  deliver: fn(machines.Reading) -> Nil,
+) -> Nil {
+  read_task(deliver, fn() { admin_deployment_for(standing, open, read, node) })
+}
+
+/// The other orchestrators' sessions as the admin page's Sessions tab may draw
+/// them, after the same owner check as `admin_deployment_for`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.admin_elsewhere_for(standing, open, attachment.elsewhere)
+/// ```
+@internal
+pub fn admin_elsewhere_for(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+  read: fn() -> page_elsewhere.Read,
+) -> page_elsewhere.Read {
+  case authorized_owner(standing, open) {
+    Ok(_) -> read()
+    Error(_) -> page_elsewhere.Unread
+  }
+}
+
+/// Starts `admin_elsewhere_for` in a run of its own and returns at once.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.admin_elsewhere_task(standing, open, attachment.elsewhere, deliver)
+/// ```
+@internal
+pub fn admin_elsewhere_task(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+  read: fn() -> page_elsewhere.Read,
+  deliver: fn(page_elsewhere.Read) -> Nil,
+) -> Nil {
+  read_task(deliver, fn() { admin_elsewhere_for(standing, open, read) })
+}
+
 /// Makes one change the admin page asked for, or gives the reason it did not
 /// (protocol-change/065, the fifth pull request). It blocks the calling process
 /// for the registry's call, so a page's component never calls it directly:
@@ -5099,11 +5368,13 @@ pub fn admin_for(
   epoch: String,
   state_root: String,
   address: Result(String, Nil),
+  abandon: fn(String) -> Result(String, server.MoveRefusal),
   action: grants.Action,
 ) -> grants.Answer {
   let outcome = {
     use _ <- result.try(administering(standing, open))
     case action {
+      grants.AbandonMove(session:) -> abandon_for_admin(abandon, session)
       grants.Invite(session:, role:, name:) ->
         invite_for_admin(standing, tickets, epoch, address, session, role, name)
       grants.SetRole(session:, principal:, role: invites.Operator) ->
@@ -5148,6 +5419,34 @@ fn administering(
   owner_operating(standing, open)
   |> result.replace(Nil)
   |> result.replace_error(grants.NotOwner)
+}
+
+// A move given up, which is `server.abandon_move`, the control command's own
+// function. It is refused unless this daemon is a directory member, and it only
+// begins the abandon: the movers carry it out, and the receiver having taken the
+// session first makes the move finish instead. The session is the page's pick
+// from a machine's moves and must still be a canonical identity. It grants no
+// one anything, so it costs no allowance.
+fn abandon_for_admin(
+  abandon: fn(String) -> Result(String, server.MoveRefusal),
+  session: String,
+) -> Result(grants.Answer, grants.Reason) {
+  use _ <- result.try(
+    ids.parse_session_id(session) |> result.replace_error(grants.NotFound),
+  )
+  abandon(session)
+  |> result.replace(grants.Changed)
+  |> result.map_error(fn(refusal) {
+    case refusal {
+      server.NotAMember -> grants.NotMember
+      server.NotMoving -> grants.NotMoving
+      server.Unreadable(manager.Catalogue(catalogue.Missing)) -> grants.NotFound
+      server.UnknownDestination
+      | server.Declined(_)
+      | server.Unanswered
+      | server.Unreadable(_) -> grants.Unavailable
+    }
+  })
 }
 
 // A private session made shareable: stopped, isolated and resumed by
@@ -5451,15 +5750,26 @@ pub fn admin_task(
   epoch: String,
   state_root: String,
   address: Result(String, Nil),
+  abandon: fn(String) -> Result(String, server.MoveRefusal),
   action: grants.Action,
   deliver: fn(grants.Answer) -> Nil,
 ) -> Nil {
   let answer = fn() {
-    admin_for(standing, tickets, open, epoch, state_root, address, action)
+    admin_for(
+      standing,
+      tickets,
+      open,
+      epoch,
+      state_root,
+      address,
+      abandon,
+      action,
+    )
   }
   case action {
     grants.MakeShareable(..) -> detached(answer, deliver)
-    grants.Invite(..)
+    grants.AbandonMove(..)
+    | grants.Invite(..)
     | grants.SetRole(..)
     | grants.RevokeMembership(..)
     | grants.RevokeCredentials(..)

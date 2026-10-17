@@ -41,6 +41,27 @@
 //// holds it can resume the login while it lasts, so the element copies exactly
 //// that shape and nothing else.
 ////
+//// A seventh is the launch line the owner's home draws beside a session that
+//// another orchestrator lists (protocol-change/085): `loom --addr`, that
+//// orchestrator's control address (or the placeholder for an orchestrator whose
+//// configuration gives none), `--session`, the session's identity, and
+//// `--token-file` with the placeholder for the owner's token file on that
+//// machine. It is a command a person pastes into a terminal, so the element
+//// copies exactly that shape: an address of the characters an address has, an
+//// identity of hexadecimal digits and hyphens, and the fixed ending.
+////
+//// An eighth is an operator command the Admin page's machine pages show
+//// (protocol-change/085, the addendum of 2026-10-16): `loom distribution enroll`,
+//// `renew` or `revoke` for a member, or `loomd executor release` for a scope. The
+//// page runs none of them; it offers the text for the operator to paste into a
+//// terminal on the right machine. These commands carry a name, so the shape is
+//// a grammar and not a fixed ending. Each name is one shell word, either made of
+//// the characters a node name has, or single-quoted with any quote inside it
+//// closed, escaped and reopened. Only printable ASCII is allowed anywhere, so a
+//// name cannot become a second word, a second command, a substitution or a
+//// redirection. The command words and flags are fixed, and each command may have
+//// only its own flags in its own order.
+////
 //// The module imports neither Lustre nor the DOM binding, so the tests load
 //// it under Node.
 
@@ -73,6 +94,17 @@ pub type Subject {
   /// loopback host and port, `/ui/l/`, the login key's 32 lowercase
   /// hexadecimal digits and `/home`.
   Bookmark
+
+  /// The command that reaches a session on another orchestrator:
+  /// `loom --addr <address> --session <id> --token-file <owner token file on
+  /// that host>`, with the placeholder in place of an address the
+  /// configuration does not give.
+  Launch
+
+  /// An operator command for a machine: `loom distribution enroll`, `renew` or
+  /// `revoke`, or `loomd executor release`, with each name one safely quoted
+  /// shell word.
+  Operate
 }
 
 /// What the button has done so far.
@@ -112,6 +144,27 @@ const bookmark_tail = "/home"
 
 const key_digits = 32
 
+const launch_prefix = "loom --addr "
+
+const launch_session = " --session "
+
+const launch_ending = " --token-file <owner token file on that host>"
+
+const launch_unknown_address = "<its control address>"
+
+// The most characters an operator command may have, and the most one of its
+// words may have.
+const operate_limit = 1024
+
+const word_limit = 256
+
+// The characters a shell word may have unquoted: letters, digits and the
+// punctuation of a node name, a plan name and a path. No space, no quote, no
+// character a shell treats as syntax, and neither equals nor comma: zsh expands
+// a word that begins with an equals sign, and `--links` splits on commas.
+const bare_characters =
+  "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@.:/_+-"
+
 // The characters a loopback host and port are made of: letters, digits and the
 // punctuation of a name, an address and a port. No slash, no space, no quote.
 const host_characters =
@@ -145,6 +198,8 @@ pub fn subject(value: String) -> Result(Subject, Nil) {
     "device" -> Ok(Device)
     "claim-address" -> Ok(ClaimPage)
     "bookmark" -> Ok(Bookmark)
+    "launch" -> Ok(Launch)
+    "operate" -> Ok(Operate)
     _ -> Error(Nil)
   }
 }
@@ -166,6 +221,8 @@ pub fn text(subject: Subject, value: String) -> Result(String, Nil) {
     Device -> device(value)
     ClaimPage -> claim_page(value)
     Bookmark -> bookmark(value)
+    Launch -> launch(value)
+    Operate -> operate(value)
   }
   case shaped {
     True -> Ok(value)
@@ -265,6 +322,137 @@ fn bookmark(value: String) -> Bool {
   }
 }
 
+// `loom --addr `, an address or the placeholder for none, ` --session `, an
+// identity of hexadecimal digits and hyphens, and the fixed ending.
+fn launch(value: String) -> Bool {
+  case string.split_once(value, launch_prefix) {
+    Ok(#("", rest)) ->
+      case string.split_once(rest, launch_session) {
+        Ok(#(address, tail)) ->
+          { address == launch_unknown_address || launch_address(address) }
+          && case string.split_once(tail, launch_ending) {
+            Ok(#(identity, "")) ->
+              identity != ""
+              && !longer_than(identity, identity_limit)
+              && list.all(string.to_graphemes(identity), fn(character) {
+                string.contains("0123456789abcdefABCDEF-", character)
+              })
+            Ok(#(_, _)) | Error(Nil) -> False
+          }
+        Error(Nil) -> False
+      }
+    Ok(_) | Error(Nil) -> False
+  }
+}
+
+fn launch_address(address: String) -> Bool {
+  address != "" && !longer_than(address, address_limit) && made_of(address)
+}
+
+// One of the operator commands, with every name a safe shell word.
+fn operate(value: String) -> Bool {
+  case printable(value) && !longer_than(value, operate_limit) {
+    False -> False
+    True ->
+      case shell_words(string.to_graphemes(value), [], "", Outside) {
+        Ok(words) -> operator_command(words)
+        Error(Nil) -> False
+      }
+  }
+}
+
+// Whether every character is printable ASCII, so no control character, no
+// newline and no character that only looks like another is in the command.
+fn printable(value: String) -> Bool {
+  list.all(string.to_utf_codepoints(value), fn(codepoint) {
+    let number = string.utf_codepoint_to_int(codepoint)
+    number >= 32 && number <= 126
+  })
+}
+
+// Whether the walk through a command is between quoted runs or inside one.
+type Quoting {
+  Outside
+  Inside
+}
+
+// Splits a command into the words a shell would hand the program, quotes
+// removed. A word is a run of bare characters, single-quoted runs and escaped
+// quotes, and a space ends it only outside a quote. Anything else, a doubled
+// space, a backslash before anything but a quote or a quote left open, is no
+// command. The words are the values, so the rule judges what the program reads
+// and not how it was written.
+fn shell_words(
+  characters: List(String),
+  done: List(String),
+  current: String,
+  quoting: Quoting,
+) -> Result(List(String), Nil) {
+  case quoting, characters {
+    Outside, [] ->
+      case current {
+        "" -> Error(Nil)
+        word -> Ok(list.reverse([word, ..done]))
+      }
+    Inside, [] -> Error(Nil)
+    Outside, [" ", ..rest] ->
+      case current {
+        "" -> Error(Nil)
+        word -> shell_words(rest, [word, ..done], "", Outside)
+      }
+    Outside, ["\\", "'", ..rest] ->
+      shell_words(rest, done, current <> "'", Outside)
+    Outside, ["'", ..rest] -> shell_words(rest, done, current, Inside)
+    Inside, ["'", ..rest] -> shell_words(rest, done, current, Outside)
+    Inside, [character, ..rest] ->
+      shell_words(rest, done, current <> character, Inside)
+    Outside, [character, ..rest] ->
+      case string.contains(bare_characters, character) {
+        True -> shell_words(rest, done, current <> character, Outside)
+        False -> Error(Nil)
+      }
+  }
+}
+
+// The commands the page offers, each with only its own flags in its own order.
+// A placeholder the operator finishes is a word like any other.
+fn operator_command(words: List(String)) -> Bool {
+  case words {
+    [
+      "loom",
+      "distribution",
+      "enroll",
+      name,
+      "--node",
+      node,
+      "--role",
+      role,
+      "--links",
+      links,
+    ] ->
+      all_words([name, node, links])
+      && { role == "executor" || role == "orchestrator" }
+    ["loom", "distribution", "renew", name] -> all_words([name])
+    ["loom", "distribution", "renew", name, "--bundle-dir", directory] ->
+      all_words([name, directory])
+    ["loom", "distribution", "revoke", name, "--reason", reason] ->
+      all_words([name, reason])
+    ["loomd", "executor", "release", session] -> all_words([session])
+    _ -> False
+  }
+}
+
+// Whether every word is nonempty, of bounded length and does not begin with a
+// dash, since the program would read a name that does as an option of its own
+// whatever the shell did with its quotes.
+fn all_words(words: List(String)) -> Bool {
+  list.all(words, fn(word) {
+    word != ""
+    && !longer_than(word, word_limit)
+    && !string.starts_with(word, "-")
+  })
+}
+
 // `loomclaim_` and exactly 64 hexadecimal digits.
 fn token(value: String) -> Bool {
   case string.split_once(value, token_prefix) {
@@ -323,17 +511,21 @@ pub fn words(subject: Subject, copying: Copying) -> String {
     Idle, Device -> "Copy link"
     Idle, ClaimPage -> "Copy address"
     Idle, Bookmark -> "Copy bookmark"
+    Idle, Launch | Idle, Operate -> "Copy command"
     Copied, Command | Copied, Link -> "Command copied"
     Copied, Token -> "Token copied"
     Copied, Device -> "Link copied"
     Copied, ClaimPage -> "Address copied"
     Copied, Bookmark -> "Bookmark copied"
+    Copied, Launch | Copied, Operate -> "Command copied"
     Failed, Command
     | Failed, Token
     | Failed, Link
     | Failed, Device
     | Failed, ClaimPage
     | Failed, Bookmark
+    | Failed, Launch
+    | Failed, Operate
     -> "Copy failed. Select the text and copy it."
   }
 }

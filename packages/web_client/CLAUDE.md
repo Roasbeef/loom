@@ -227,7 +227,15 @@ renders again just for it:
   Escape is heard in the capture phase and, only when it closes an open panel,
   stopped and cancelled (`dismiss_rule.on_key`), so the shell's Escape does not
   also run; with the panel shut it is untouched.
-- `<loom-copy subject="command|token|link|device|claim-address|bookmark" text="...">`
+- `<loom-copy subject="command|token|link|device|claim-address|bookmark|launch|operate" text="...">`
+  (`operate` is an operator command for a machine, protocol-change/085, the
+  addendum of 2026-10-16: `loom distribution enroll`, `renew` or `revoke`, or
+  `loomd executor release`, each with only its own flags in its own order and each
+  name one shell word that is bare or single-quoted, printable ASCII, not
+  beginning with a dash, and nothing else) (`launch` is the command that reaches a session on another orchestrator,
+  protocol-change/085: `loom --addr`, an address or the placeholder `<its control
+  address>`, `--session`, an identity of hex digits and hyphens, and the fixed
+  ` --token-file <owner token file on that host>`, and nothing else)
   (`bookmark` is a remembered login's home address, `http://`, a loopback host,
   `/ui/l/`, 32 lowercase hex digits and `/home`, and nothing else) (`device` is the
   home's device-link address, protocol-change/065, PR 8: `http://`, a loopback
@@ -383,7 +391,7 @@ time builds anything.
   `Reading` more than `slack` pixels from the bottom, one button, "Jump to
   latest" (`Jumped`), whose wrapper has no height and sticks to the
   scroller's bottom edge.
-- `copy_rule.Subject` (`Command` | `Token` | `Link` | `Device` | `ClaimPage`), `Copying` (`Idle` | `Copied` |
+- `copy_rule.Subject` (`Command` | `Token` | `Link` | `Device` | `ClaimPage` | `Bookmark` | `Launch` | `Operate`), `Copying` (`Idle` | `Copied` |
   `Failed`), `subject`, `text`, `after` and `words`, and `copy.Model(subject,
   held, copying)` with `copy.Msg` (`Subjected`, `Texted`, `Pressed`,
   `Written`): the element keeps the raw `text` and checks it against the

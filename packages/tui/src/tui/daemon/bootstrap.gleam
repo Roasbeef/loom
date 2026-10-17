@@ -146,6 +146,7 @@ fn reconnect_probe(paths, record, owner, deadline) {
         | Ok(protocol.LifecycleReply(_))
         | Ok(protocol.DeletedReply(_))
         | Ok(protocol.MovedReply(..))
+        | Ok(protocol.AbandonedReply(..))
         | Ok(protocol.ShutdownReply)
         | Ok(protocol.PeersInspectionReply(_))
         | Ok(protocol.PeersMutationReply(_))
@@ -154,6 +155,7 @@ fn reconnect_probe(paths, record, owner, deadline) {
         | Ok(protocol.ActivityReply(_))
         | Ok(protocol.DeploymentReply(_))
         | Ok(protocol.DirectoryReply(_))
+        | Ok(protocol.ElsewhereReply(_))
         | Ok(protocol.UiLinkReply(..))
         | Error(_) -> {
           daemon.close(connected.control)

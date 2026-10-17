@@ -28,7 +28,7 @@ or close; there is no transaction, lease or authorization cache.
 
 ## Key Types
 
-- The catalogue is at `user_version` 15. Each later version has its own embedded
+- The catalogue is at `user_version` 17. Each later version has its own embedded
   migration schema (`catalogue_names_schema`, `catalogue_archives_schema`,
   `catalogue_claims_schema`, `catalogue_subtitles_schema`,
   `catalogue_credential_kinds_schema`, `catalogue_logins_schema`,
@@ -36,7 +36,8 @@ or close; there is no transaction, lease or authorization cache.
   `catalogue_models_schema`, `catalogue_executors_schema`,
   `catalogue_pools_schema`, `catalogue_moves_schema`,
   `catalogue_deletions_schema`,
-  `catalogue_delegates_schema`), and
+  `catalogue_delegates_schema`, `catalogue_releases_schema`,
+  `catalogue_spend_schema`), and
   `initialize_schema` applies every
   schema an
   older catalogue lacks, then moves the version, in one transaction; a fresh
@@ -162,6 +163,18 @@ or close; there is no transaction, lease or authorization cache.
   read with `Invalid` and is never read as "not a delegate". `delete` removes the
   row first, which frees the slot. Claims do not move the catalogue revision,
   because no listing shows them.
+- `catalogue.Spend` is what a spawner has used over a rolling day (protocol-change/084,
+  catalogue version 17). `catalogue_spawner_spend(spawner, hour_bucket, tokens,
+  spawns)` holds one row per spawner and hour, the hour being Unix milliseconds
+  divided by `spend_bucket_ms` (`spend_bucket`). `add_spawner_spend` adds to the
+  bucket the reading falls in and prunes the spawner's buckets older than
+  `spend_day_buckets` (24) in the same immediate transaction, so the table stays
+  bounded with no sweep. `spawner_spend` sums the 24 buckets that end at a reading
+  in one bounded read, so a day rolls off one hour at a time. The rows name no
+  session and outlive every delegate session, which is what lets a day cap bind
+  a spawner that opens a fresh session per parent. A name outside the profile-name
+  grammar, a negative time and a negative amount are `Invalid` and write nothing.
+  The table is defined in `sql/catalogue_spend.sql`.
 - `catalogue.Visibility` separates active and archived rows from initialization
   state. Schema version 3 adds `catalogue_session_archives`, migrated atomically
   from versions 1 and 2. `set_visibility` changes the overlay, clears an archived
@@ -348,7 +361,15 @@ or close; there is no transaction, lease or authorization cache.
   version-2 name-override table; `catalogue_archives_schema` embeds the version-3
   archive overlay. Generation loads all four schemas for
   query checking, but each database executes only its own schema. `make gen-sql`
-  regenerates these artifacts, and tests pin them to their sources.
+  regenerates these artifacts, and tests pin them to their sources. The
+  embedding is `dev/embed_schema.gleam` (`gleam run -m embed_schema` from this
+  package): it embeds every `sql/*.sql` file as `<stem>_schema.gleam` (except
+  `schema.sql`, which is `sql_schema`), refuses non-ASCII text because parrot
+  slices by byte offset, and with `load-order` prints the order a scratch
+  database loads the files in. That order is the base schema, the
+  `catalogue.migrations` list in version order, `session.sql`, then the rest
+  by name; a new `sql/*.sql` file needs no registration with the script.
+  `test/storage/embed_schema_test` pins every committed module to its source.
 - `storage/catalogue.{query, statement, atomic, coherent}` are internal
   generated-query adapters for access metadata. They reuse the catalogue
   connection and its existing daemon owner; they introduce neither a connection

@@ -7839,6 +7839,30 @@ The box's deadline and retention (slice S4):
   `session_mover_test`, `agency_test` (the holder and the port), the shipped
   `daemon_shipped_remote_subagents_test` (delete with a child running), and the
   P model's `EveryReleaseIsTold` and `ReleasedSessionHasNoRunningChild`.
+- Metering (slice S8). `[spawners.<name>] token_budget_per_day`,
+  `child_token_budget` and `max_per_day` are optional (`Spawner` fields of
+  `Option(Int)`; `spawners.metered` says whether any is set). The day's spend is
+  `catalogue_spawner_spend`, hourly buckets read as the last 24. A new spawn is claimed
+  by the Agency's holder (`agency.spawn_delegated`, `claim_if_new`): only when
+  the call site has no child yet and the fences have passed, it calls
+  `Config.claim`, which `main.spawn_claimer` makes from `manager.claim_spawn`. The
+  registry's `ClaimSpawn` turn (`claim_now`) reads the spawner's 24 buckets,
+  refuses with `DelegateDayCap` (mapped by `delegate_host.refused` to
+  `CapReached(TokensPerDay | SpawnsPerDay)`) and counts the spawn, touching only
+  the catalogue. A resend is adopted first and so is neither counted nor refused;
+  an unanswered claim is a `StoreFailure`. `manager.add_spend` is how tokens arrive, from the process the
+  usage hook spawns. For a delegate session of a metered spawner `main.metering_of`
+  fills `serve.Settings.metering`, and `serve.with_metering` wraps the usage slot
+  with `agency.metering_hooks`: one `spawn_unlinked` on the driver, which reports
+  the request's tokens and, with a `child_token_budget`, reads
+  `child_usage.of_strands` and sends the holder `StopChild(strand,
+  TokenBudgetSpent)`; the holder reaps through the usual path. The goal cell has
+  `remote_tokens` (a total beside the ledger cursor; `advisor.summed` adds only
+  its growth over `remote_child.settled_tokens`), and the gateway fills the full
+  snapshot's optional `remote_usage` from `remote_child.usage_by_orchestrator`.
+  Tests: `spawners_test`, `delegate_host_test` (the caps, the day rolling),
+  `agency_test` (the hand-off stop), `advisor_test` (counted once),
+  `goalstate_test`, `protocol_test`, `remote_child_test`.
 
 Tests: `spawners_test` (a valid table, defaults, every refusal, the catalogue
 parser, `standing`), `orchestrators_test` (the `@` and `#` refusal),
@@ -8897,3 +8921,100 @@ above).
   `session_mover_test` (a stalled reason kept and listed, a finished move gone),
   `ledger_holdings_test` (`placements`), `directory/store_test` (`confirm_current`),
   `daemon_executor_test` (the host's facts from a started daemon).
+
+## Other orchestrators' sessions (protocol-change/085, `sessions.elsewhere`)
+
+`sessions.elsewhere` is an owner-only control command that asks each other
+orchestrator the daemon is configured with for a page of its sessions.
+`docs/client-protocol.md` §3.31 is the wire and the 2026-10-16 addendum of 085
+(slice 5) records the spellings.
+
+- `client/listed_sessions` is the pure vocabulary: `Row` (the members of a
+  `sessions.list` record, plus the optional `executor_node`), `ListedStatus`,
+  `Page(rows, more)` with `More` (`Last | Further`), `clamp_limit` (1 to
+  `max_limit`, 100), `row_json`, and `Listing`, the closure type a daemon asks a
+  peer for a page with (`unlisted` is the one that is silent).
+- `remote/orchestrator_port` gains `Sessions(after, limit, reply)`, answered
+  through `detached` from `Reads.sessions`, and `ask_sessions`. The reply is
+  `Result(Page, Nil)`: a catalogue that cannot be read is `Error(Nil)`, which the
+  asker reads as silence and never as an empty page. `unreported()` answers an
+  empty page, since it has no catalogue. The module is past a thousand lines and
+  has a Flow spine.
+- `client/catalogue_page` is the daemon's side. `from_catalogue(registry,
+  executors)` walks `manager.page`, drops sessions whose custody is `moving` or
+  `moved`, and stops at one row more than asked, which decides `more`. The next
+  page begins after the last row returned. `ledger_holdings.max_pages` bounds the
+  walk, and a walk that holds no row at the bound is `Error(Nil)`.
+- `client/elsewhere` is the asking side. `heard` resolves the request's key with
+  `choose` against the configured orchestrators (so an unknown key dials nobody),
+  and `ask_all` runs one weft run (`deadline_ms` 3000): `Reach.dial`
+  (`deployment.connect_ms`), then `Reach.sessions` (`ask_ms` 1000), 20 rows per
+  group. A task the deadline cut off, one that crashed and one that never started
+  are `Silent`. `fit` removes the last row of the fullest group until the body is
+  within `max_body_bytes` (59,700) and marks the group `more`. `to_json` renders
+  the reply, and `for_page` the groups for the owner's home (`web_view/elsewhere`:
+  key, address, fixed state, no node).
+- `deployment.Reach` gains `sessions: Listing`, beside `dial` and `ask`; `over`
+  asks the port of the pinned peer, `alone` is silent. Every test that builds a
+  `Reach` names `listed_sessions.unlisted` or its own script.
+- `daemon/protocol.SessionsElsewhere(orchestrator, after)`: both optional, `after`
+  needs `orchestrator` (`elsewhere_request`), `after` is a canonical identity or
+  the empty text. `server.dispatch_class` serves it after `owner(principal)`, a
+  `ControlRead`, and answers `not_found` for an unknown key.
+- The owner's home: `server.HomeAttachment.elsewhere` is the read over the daemon's
+  own configuration, `ui_socket.home_elsewhere_capability` gives
+  `home.Start.elsewhere` to the owner's operating page, and
+  `ui_socket.elsewhere_for` repeats the owner check inside the weft task
+  (`read_task`) before the daemon dials. "Where" and "Show more" are clicks beneath
+  `home.table_path`, so `home_accepts` admits them and no admission was added.
+- Tests: `remote/orchestrator_port_test` (paging over a real registry, `moving` and
+  `moved` absent, a whole catalogue page of moved sessions skipped, the clamp, an
+  unreadable catalogue), `daemon_elsewhere_test` (the owner's read, the key and
+  cursor, `not_found` and `bad_request` dial nobody, a member `forbidden`, the byte
+  bound), `daemon_protocol_test`, `ui_socket_test` and `ui_route_test` (the
+  capability, admission, near misses, `elsewhere_for`), and the shipped
+  `daemon_shipped_directory_test` (two orchestrators, one stopped: `silent` with no
+  rows).
+
+## The Admin page's deployment read (protocol-change/085, addendum 2026-10-16)
+
+- `server.AdminAttachment` gains `deployment: fn(Option(String)) -> machines.Reading`
+  and `elsewhere: fn() -> page_elsewhere.Read`. `admin_deployment` makes the control
+  command's own `deployment_status` read (so the ledger's members ride with the whole
+  deployment) and decodes it with `web_view/machines`; a key that names nothing, a
+  document the decoder refuses and a failed read are `Unread`. `heard_elsewhere` is the
+  read the home shares.
+- `ui_socket.admin_deployment_task` and `admin_elsewhere_task` run the reads in weft
+  tasks of their own (`read_task`), apart from `admin_read_task`, so a fan-out of up to
+  four seconds never delays the people read. `admin_deployment_for` and
+  `admin_elsewhere_for` repeat the owner check (`authorized_owner`) before the daemon
+  dials. `admin_accepts` is unchanged: the rows and tabs are clicks beneath
+  `admin.body_path`.
+- `ledger.status` members gain `links` and `pin` (hex SHA-256 of the leaf);
+  `ledger_control.MemberView` carries `links` and `pin: Option(String)`, and an older
+  daemon's missing members read as none.
+- `elsewhere.for_page` carries each row's `executor_node` to the page.
+- Tests: `ui_route_test` (the owner check for both reads, two reads in flight),
+  `ui_socket_test` (the admission of a row, a tab and Close and of nothing beyond),
+  `ledger_control_test`, and the shipped `daemon_shipped_directory_test` (the machines
+  list over three real daemons).
+
+
+## Moving from a page and from the terminal (protocol-change/085)
+
+- `server.move_session(config, registry, digest, epoch, id, to)` and
+  `server.abandon_move(config, registry, id)` are the bodies of the `sessions.move`
+  arms; the caller has already checked the owner and the epoch. They return
+  `MoveBegun(op, to)` or a `MoveRefusal` (`UnknownDestination | Declined(AdminError) |
+  Unanswered | NotAMember | NotMoving | Unreadable(Error)`), which `move_refusal_code`
+  words as the control codes always were.
+- `server.Moves` is what the home is handed (`HomeAttachment.moves`): `candidates(id)`
+  reads the deployment and applies `deployment.candidates` to the session's executor
+  node, and `begin(epoch, id, to)` is `move_session`. `server.no_moves()` refuses
+  everything, for the session page's sidebar. `AdminAttachment.abandon` is
+  `abandon_move`.
+- `deployment.candidates(others, asker, executor_node)` is pure and uses
+  `session_view/move_candidates`. `ui_socket.manage_for` gained a `moves` argument and
+  runs `Destinations` and `Move(to)` under its `fresh_home` and `owner_operating`
+  checks; `admin_for` gained an `abandon` argument for `grants.AbandonMove`, refused with
+  `NotMember` off a directory member.
