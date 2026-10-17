@@ -1208,8 +1208,8 @@ page's runtime never waits on a connection, behind the same owner check as a cre
 (`elsewhere_for`). The answer is numbered by `Model.elsewhere_reads`, and an answer a
 newer read overtook is dropped, as a placement read's is. The page is given the key, the
 address and, for each row, a fixed state and text (`web_view/elsewhere`); it is given no
-node. An orchestrator that did not answer is one line, "No answer from this
-orchestrator.", and is never drawn as an empty group.
+node. An orchestrator that did not answer is one line, "No answer in time from
+this orchestrator.", and is never drawn as an empty group.
 
 A row is information and not a door: this daemon cannot open another daemon's session
 for a browser. Its "Where" button (`Locating`) opens a detail under the row with the

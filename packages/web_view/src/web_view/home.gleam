@@ -152,7 +152,10 @@
 //// beneath `table_path`, which the owner's socket already admits, so the group
 //// adds no event class, scope or route. A press names the orchestrator and the
 //// session the server drew into the tree, `paging` asks the daemon from its own
-//// task, and `still_there` closes a detail whose row a later read removed.
+//// task, and `still_there` closes a detail whose row a later read removed. A
+//// refresh keeps the pages already fetched when its first page is unchanged
+//// (`refreshed`, `kept`) and answers `MoreRead` only for the group whose press is
+//// out (`elsewhere_reads` numbers the reads).
 //// `elsewhere_offer` is what the view is given.
 ////
 //// ## Flow
@@ -1315,13 +1318,24 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
 
     // The first pages of the other orchestrators. An answer a newer read
     // overtook is dropped, and so is one for a page that lists none; a read that
-    // could not ask keeps the rows the page has.
+    // could not ask keeps the rows the page has. A read that lists keeps the
+    // pages "Show more" fetched when the first page is unchanged (`refreshed`),
+    // and clears the page that was out, since its answer follows rows this read
+    // may have replaced.
     ElsewhereRead(serial:, read:) ->
       case serial == model.elsewhere_reads, model.start.elsewhere, read {
-        True, Some(_), elsewhere.Heard(groups:) -> #(
-          Model(..model, elsewhere: groups, located: still_there(model, groups)),
-          effect.none(),
-        )
+        True, Some(_), elsewhere.Heard(groups:) -> {
+          let groups = refreshed(model.elsewhere, groups)
+          #(
+            Model(
+              ..model,
+              elsewhere: groups,
+              located: still_there(model, groups),
+              paging: None,
+            ),
+            effect.none(),
+          )
+        }
         True, Some(_), elsewhere.Unread | True, None, _ | False, _, _ -> #(
           model,
           effect.none(),
@@ -1362,8 +1376,12 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     // still the latest. A newer first-page read replaced the rows, so a page that
     // followed the old ones is dropped rather than joined to different rows.
     MoreRead(group:, serial:, read:) ->
-      case model.start.elsewhere, serial == model.elsewhere_reads {
-        Some(_), True -> #(
+      case
+        model.start.elsewhere,
+        serial == model.elsewhere_reads,
+        model.paging == Some(group)
+      {
+        Some(_), True, True -> #(
           Model(
             ..model,
             elsewhere: joined(model.elsewhere, group, read),
@@ -1371,10 +1389,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
           ),
           effect.none(),
         )
-        Some(_), False | None, _ -> #(
-          Model(..model, paging: None),
-          effect.none(),
-        )
+        Some(_), _, _ | None, _, _ -> #(model, effect.none())
       }
 
     // A submit asks the daemon from its own task so the runtime stays free. It is
@@ -2261,6 +2276,18 @@ pub fn reads(model: Model) -> Int {
   model.reads
 }
 
+/// How many reads of the other orchestrators the page has started. An answer
+/// carries the number of the read it answers (`ElsewhereRead`, `MoreRead`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // home.update(model, home.ElsewhereRead(home.elsewhere_reads(model), read))
+/// ```
+pub fn elsewhere_reads(model: Model) -> Int {
+  model.elsewhere_reads
+}
+
 pub fn groups(model: Model) -> List(Group) {
   model.groups
 }
@@ -2585,6 +2612,45 @@ fn holds_row(
       True, elsewhere.Silent | False, _ -> False
     }
   })
+}
+
+// The groups a first-page read gave, with the pages "Show more" fetched kept
+// where they still follow it. A group whose held rows extend past the new first
+// page and begin with exactly the rows the new page lists, in order, keeps its
+// tail and takes the fresh first rows; any other group is replaced.
+fn refreshed(
+  held: List(elsewhere.Group),
+  fresh: List(elsewhere.Group),
+) -> List(elsewhere.Group) {
+  list.map(fresh, fn(group) {
+    case list.find(held, fn(each) { each.name == group.name }) {
+      Ok(before) ->
+        elsewhere.Group(..group, hearing: kept(before.hearing, group.hearing))
+      Error(Nil) -> group
+    }
+  })
+}
+
+fn kept(
+  held: elsewhere.Hearing,
+  fresh: elsewhere.Hearing,
+) -> elsewhere.Hearing {
+  case held, fresh {
+    elsewhere.Answered(rows: before, more:), elsewhere.Answered(rows: first, ..)
+    -> {
+      let same =
+        list.map(list.take(before, list.length(first)), fn(row) {
+          row.session_id
+        })
+        == list.map(first, fn(row) { row.session_id })
+      case same, first, list.drop(before, list.length(first)) {
+        True, [_, ..], [_, ..] as tail ->
+          elsewhere.Answered(rows: list.append(first, tail), more:)
+        True, _, _ | False, _, _ -> fresh
+      }
+    }
+    elsewhere.Answered(..), elsewhere.Silent | elsewhere.Silent, _ -> fresh
+  }
 }
 
 // The open detail, kept only if the replacement groups still hold its row.

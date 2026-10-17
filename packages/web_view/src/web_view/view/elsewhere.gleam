@@ -150,7 +150,7 @@ fn group(
     case each.hearing {
       Silent ->
         html.p([attribute.class("home-empty")], [
-          html.text("No answer from this orchestrator."),
+          html.text("No answer in time from this orchestrator."),
         ])
       Answered(rows: [], ..) ->
         html.p([attribute.class("home-empty")], [

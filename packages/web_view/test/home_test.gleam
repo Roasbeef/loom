@@ -2902,7 +2902,7 @@ pub fn the_group_lists_what_each_orchestrator_said_test() {
   assert string.contains(html, "docs pass")
   assert string.contains(html, "/src/web")
   assert string.contains(html, "ws://10.0.0.8:7000")
-  assert string.contains(html, "No answer from this orchestrator.")
+  assert string.contains(html, "No answer in time from this orchestrator.")
   assert !string.contains(html, "No sessions on this orchestrator.")
   let assert Ok(#(before, _)) =
     string.split_once(html, "On other orchestrators")
@@ -2919,7 +2919,7 @@ pub fn an_orchestrator_with_no_sessions_says_so_and_is_not_silent_test() {
     ))
   let html = drawn(model)
   assert string.contains(html, "No sessions on this orchestrator.")
-  assert !string.contains(html, "No answer from this orchestrator.")
+  assert !string.contains(html, "No answer in time from this orchestrator.")
 }
 
 // "Where" opens the launch under its row in a copy box of the one subject that
@@ -3024,4 +3024,74 @@ pub fn another_orchestrators_text_is_escaped_and_builds_nothing_test() {
   assert list.all(keys, fn(key) {
     string.starts_with(key, "0\t1\t") || string.starts_with(key, "0\t2\t1\t")
   })
+}
+
+// A refresh whose first page is unchanged keeps the pages "Show more" fetched,
+// and only updates the rows of that first page. One whose first page changed
+// resets the group.
+pub fn a_refresh_keeps_the_pages_show_more_fetched_when_the_first_page_is_unchanged_test() {
+  let asked = process.new_subject()
+  let later =
+    elsewhere.Heard([
+      desk([elsewhere_row("0198-c", "third", "/src/c")], elsewhere.Last),
+    ])
+  let #(model, _) = opened(elsewhere_reader(two_groups(), asked, later))
+  let model = run(model, home.ShowingMore("desk"))
+  assert string.contains(drawn(model), "third")
+
+  // The same first page, with a row renamed.
+  let renamed =
+    elsewhere.Heard([
+      desk(
+        [
+          elsewhere_row("0198-a", "docs pass renamed", "/src/loom"),
+          elsewhere_row("0198-b", "ui", "/src/web"),
+        ],
+        elsewhere.Further,
+      ),
+      laptop(),
+    ])
+  let model =
+    run(model, home.ElsewhereRead(home.elsewhere_reads(model), renamed))
+  let html = drawn(model)
+  assert string.contains(html, "third")
+  assert string.contains(html, "docs pass renamed")
+  assert !string.contains(html, "Show more")
+
+  // A first page that differs resets the group to what it lists.
+  let changed =
+    elsewhere.Heard([
+      desk([elsewhere_row("0198-z", "new head", "/src/z")], elsewhere.Further),
+      laptop(),
+    ])
+  let model =
+    run(model, home.ElsewhereRead(home.elsewhere_reads(model), changed))
+  let html = drawn(model)
+  assert string.contains(html, "new head")
+  assert !string.contains(html, "third")
+  assert string.contains(html, "Show more")
+}
+
+// A "Show more" answer is joined only while its press is the page out, so one
+// taken from rows a refresh has since replaced is dropped.
+pub fn a_page_taken_from_replaced_rows_is_not_joined_test() {
+  let asked = process.new_subject()
+  let #(model, _) =
+    opened(elsewhere_reader(two_groups(), asked, elsewhere.Unread))
+  let late =
+    elsewhere.Heard([
+      desk([elsewhere_row("0198-c", "stale tail", "/src/c")], elsewhere.Last),
+    ])
+  let serial = home.elsewhere_reads(model)
+
+  // No press is out, so the answer is dropped.
+  let dropped = run(model, home.MoreRead("desk", serial, late))
+  assert !string.contains(drawn(dropped), "stale tail")
+
+  // A press that a refresh overtook: the refresh clears it, and the late answer
+  // is dropped as well.
+  let model = run(model, home.ShowingMore("desk"))
+  let model = run(model, home.ElsewhereRead(serial, two_groups()))
+  let model = run(model, home.MoreRead("desk", serial, late))
+  assert !string.contains(drawn(model), "stale tail")
 }
