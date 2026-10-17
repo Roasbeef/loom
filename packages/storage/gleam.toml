@@ -15,3 +15,5 @@ simplifile = ">= 2.0.0 and < 3.0.0"
 
 [dev_dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"
+qcheck = ">= 1.0.5 and < 2.0.0"
+statem = { path = "../statem" }
