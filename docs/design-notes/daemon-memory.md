@@ -788,9 +788,9 @@ run, an idle-hibernate policy in `weft/actor` is not justified by measurement.
 The 117.5 MiB `weft@state_machine` that the previous section left unattributed
 is the daemon's session admission registry, `client/daemon/manager`. Its
 <<<<<<< ours
-`Book.slots` dictionary (`packages/client/src/client/daemon/manager.gleam:807`)
+`Book.slots` dictionary (`packages/client/src/client/daemon/manager.gleam:847`)
 =======
-`Book.slots` dictionary (`packages/client/src/client/daemon/manager.gleam:807`)
+`Book.slots` dictionary (`packages/client/src/client/daemon/manager.gleam:847`)
 >>>>>>> theirs
 holds one `Slot` per resident session, and each slot's `phase` field
 (`daemon/manager.gleam:279`) carries `Occupancy.Running(instance)`
@@ -1017,9 +1017,9 @@ Described, not implemented, and none of it justified by this measurement alone.
 The narrowest change is to stop storing the value in the registry.
 `Occupancy.Running` could carry the instance's owning pid or a `Subject` rather
 <<<<<<< ours
-than the `serve.Instance`, and `Resolve` (`daemon/manager.gleam:789`) would ask that
+than the `serve.Instance`, and `Resolve` (`daemon/manager.gleam:831`) would ask that
 =======
-than the `serve.Instance`, and `Resolve` (`daemon/manager.gleam:789`) would ask that
+than the `serve.Instance`, and `Resolve` (`daemon/manager.gleam:831`) would ask that
 >>>>>>> theirs
 owner instead of reading a map. The reference already exists: the slot holds
 `host` and a monitor on the builder. The costs are real and on a hot path.

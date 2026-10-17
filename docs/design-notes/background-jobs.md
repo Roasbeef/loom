@@ -75,7 +75,7 @@ owns.
 The consequence we accept is that the machine cannot wait on a job. A
 model that wants to block on one calls `job_poll` with a wait, and a
 pending job is a successful result, not a failure (the "pending is an
-answer" rule `agent_wait` already follows, `client/agency.gleam:288`).
+answer" rule `agent_wait` already follows, `client/agency.gleam:300`).
 
 ### 2. The durable record is a reserved prefix, and restart reaps
 
