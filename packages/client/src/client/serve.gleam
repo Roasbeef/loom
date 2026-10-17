@@ -3443,6 +3443,10 @@ fn assemble_in(
   // consumes the config. `client/effect_abort` explains the join; the actor
   // behind the name is added to the services tier beside the async service.
   let effect_abort_name = address.new_address(namespace)
+
+  // The role resolver outlives assembly and needs only the gateway, so its
+  // environment must not retain the remaining session settings.
+  let subagent_gateway = settings.gateway
   let agency_config =
     agency.Config(
       ..agency.default_config(agency_name, clock),
@@ -3472,7 +3476,7 @@ fn assemble_in(
       // at boot, so the answer is a function of durable configuration.
       subagent_model: fn() {
         use resolved <- result.map(
-          provider_gateway.resolve(settings.gateway, model.Subagent)
+          provider_gateway.resolve(subagent_gateway, model.Subagent)
           |> result.replace_error(Nil),
         )
         #(
@@ -3820,15 +3824,17 @@ fn assemble_in(
   // The model's own door onto the compaction arithmetic. It reads the
   // strand's window the way the threshold will — the strand's own
   // catalogue entry, else the configured fallback — so what the model is
-  // told and what it is compacted on are one number.
+  // told and what it is compacted on are one number. Project the fallback
+  // before retaining this callback so it does not keep all session settings.
   let facts = catalogue_facts(settings.catalog)
+  let fallback_context_window = settings.context_window
   let context_seam =
     checkpoint.remaining_seam(opened, settings.compaction, fn(strand) {
       wiring.strand_window(
         opened,
         facts,
         strand,
-        fallback: settings.context_window,
+        fallback: fallback_context_window,
       )
     })
 
@@ -4320,6 +4326,9 @@ fn assemble_in(
   let hub_session_id = settings.session_id
   let btw_gateway = settings.gateway
   let hub_catalog = settings.catalog
+  let first_prompt = settings.first_prompt
+  let profile_desk = settings.profile_desk
+  let memory_settings = settings.memory
 
   // The two things the hub asks the workspace for, projected before the
   // hub's child specification closes over them: the plane itself holds the
@@ -4510,8 +4519,8 @@ fn assemble_in(
             |> hub.with_btw(btw_name)
             |> hub.with_live_jobs(live_jobs)
             |> hub.with_catalog(hub_catalog)
-            |> with_first_prompt(settings.first_prompt)
-            |> with_profile_desk(settings.profile_desk)
+            |> with_first_prompt(first_prompt)
+            |> with_profile_desk(profile_desk)
             |> hub.with_registry(tool_registry)
             |> hub.with_extension_refusals(extension_refusals)
             |> hub.with_skills(skills)
@@ -4545,7 +4554,7 @@ fn assemble_in(
                   store_path: memory_store,
                   notes_path: memory_notes,
                   rules_path:,
-                  memory: settings.memory,
+                  memory: memory_settings,
                   pending: fn() {
                     proposals.listing(proposal_wiring)
                     |> result.map(fn(held) { held.pending })
