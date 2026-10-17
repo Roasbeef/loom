@@ -42,11 +42,22 @@
 //// `Release` is the only thing that can make the session, and it is then
 //// refused when the row says released.
 ////
+//// ## Metering
+////
+//// A spawner that sets `token_budget_per_day` or `max_per_day` has its spawns
+//// judged against its rolling day, and the judgment belongs to the same turn of
+//// the registry that admits the session, for the reason above: two first spawns
+//// must not both pass `max_per_day`. So `spawn_resolver` differs from `resolver`
+//// by one field of the request (`manager.Metered`), and the other messages, which
+//// create no child, use `resolver` and are never refused by a day cap.
+////
 //// ## Flow
 ////
-//// `resolver` → `creation` → `terms_of` → `resolve_existing` → `releaser`
+//// `resolver` → `spawn_resolver` → `creation` → `terms_of` → `resolve_existing`
+//// → `releaser`
 ////
-//// 1. `resolver` returns the function the spawn host calls for every message.
+//// 1. `resolver` returns the function the spawn host calls for a join or a run
+////    end, and `spawn_resolver` the one it calls for a spawn.
 //// 2. `creation` builds the registration a first spawn makes, from the
 ////    spawner's placement and profile.
 //// 3. `terms_of` turns the spawner's table into the plain figures the Agency
@@ -165,6 +176,51 @@ pub fn creation(
 pub fn resolver(
   context: Context(instance),
 ) -> fn(Spawner, Parent) -> Result(agency.DelegateEndpoint, SpawnRefusal) {
+  resolving(context, fn(_spawner) { manager.Unmetered })
+}
+
+/// The function the spawn host calls for a `Spawn`: `resolver`, except that a
+/// metered spawner's day is judged and the spawn counted in the registry's turn.
+///
+/// A refusal at a cap is `CapReached(TokensPerDay)` or `CapReached(SpawnsPerDay)`
+/// with the spawner's own limit, and nothing is created.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let resolve = delegate_host.spawn_resolver(context)
+/// // resolve(spawner_at_max_per_day, parent)
+/// // == Error(remote_spawn.CapReached(cap: remote_spawn.SpawnsPerDay, limit: 20))
+/// ```
+pub fn spawn_resolver(
+  context: Context(instance),
+) -> fn(Spawner, Parent) -> Result(agency.DelegateEndpoint, SpawnRefusal) {
+  resolving(context, metering_of)
+}
+
+/// What a spawn costs the spawner's day: nothing to judge when the spawner sets
+/// no day cap, and otherwise its two caps.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // delegate_host.metering_of(unbounded) == manager.Unmetered
+/// ```
+pub fn metering_of(spawner: Spawner) -> manager.Metering {
+  case spawners.metered(spawner) {
+    True ->
+      manager.Metered(
+        token_budget: spawner.token_budget_per_day,
+        max_per_day: spawner.max_per_day,
+      )
+    False -> manager.Unmetered
+  }
+}
+
+fn resolving(
+  context: Context(instance),
+  metering: fn(Spawner) -> manager.Metering,
+) -> fn(Spawner, Parent) -> Result(agency.DelegateEndpoint, SpawnRefusal) {
   fn(spawner, parent) {
     use made <- result.try(creation(spawner, parent))
     use delegated <- result.try(
@@ -179,6 +235,7 @@ pub fn resolver(
           configuration: context.domain_configuration,
           limit: spawner.max_sessions,
           now_ms: context.now_ms(),
+          metering: metering(spawner),
         ),
       )
       |> result.map_error(refused),
@@ -352,6 +409,10 @@ fn refused(error: manager.DelegateError) -> SpawnRefusal {
     manager.DelegateReleased -> remote_spawn.ParentRunEnded
     manager.DelegateAtLimit(held:) ->
       remote_spawn.CapReached(cap: remote_spawn.MaxSessions, limit: held)
+    manager.DelegateDayCap(cap: manager.DayTokens, limit:) ->
+      remote_spawn.CapReached(cap: remote_spawn.TokensPerDay, limit:)
+    manager.DelegateDayCap(cap: manager.DaySpawns, limit:) ->
+      remote_spawn.CapReached(cap: remote_spawn.SpawnsPerDay, limit:)
     manager.DelegateFailed(manager.Catalogue(catalogue.Invalid(_))) ->
       remote_spawn.InvalidArgument(
         reason: "the parent session is not a session identity",

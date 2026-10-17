@@ -120,6 +120,12 @@ type Provider {
   /// Settles each request with a reported, priced usage, so the usage ledger
   /// has something to sum, and hangs for a request whose context holds `hold`.
   Meters(text: String, hold: Option(String))
+
+  /// Answers the first request with a priced tool call, which the harness
+  /// refuses, and hangs on the request that follows. The child therefore has
+  /// usage in the ledger while its run is still open, which is the state a
+  /// token budget is judged in.
+  CallsThenHangs
 }
 
 fn counting_clock(from: Int, by: Int) -> Clock {
@@ -175,6 +181,26 @@ fn start_harness_on(
   agency_clock: Clock,
   storage_shape: fn(session.Session) -> session.Session,
 ) -> Harness {
+  start_harness_hooked(
+    provider,
+    shape,
+    session_clock,
+    agency_clock,
+    storage_shape,
+    fn(hooks, _config) { hooks },
+  )
+}
+
+// The same, with the hooks shaped after the Agency's reaping hooks are in, so a
+// test can add the usage hook a delegate session has.
+fn start_harness_hooked(
+  provider: Provider,
+  shape: fn(agency.Config) -> agency.Config,
+  session_clock: Clock,
+  agency_clock: Clock,
+  storage_shape: fn(session.Session) -> session.Session,
+  hooks: fn(effects.Hooks, agency.Config) -> effects.Hooks,
+) -> Harness {
   let assert Ok(sess) = session.open_memory(session_clock)
     as "the memory session must open"
   let assert Ok(counter) =
@@ -223,7 +249,10 @@ fn start_harness_on(
           execution_mode: fn(_name) { effects.ExclusiveExecution },
           recover: None,
         ),
-        hooks: agency.reaping_hooks(effects.default_hooks(), config),
+        hooks: hooks(
+          agency.reaping_hooks(effects.default_hooks(), config),
+          config,
+        ),
       ),
       api.Options(
         ..base,
@@ -284,6 +313,15 @@ fn scripted_stream(
                 False -> settle_with(events, text, metered())
               }
             None -> settle_with(events, text, metered())
+          }
+        effects.PollRequest(..) | effects.SummaryRequest(..) -> Nil
+      }
+    CallsThenHangs ->
+      case spec {
+        effects.GenerationRequest(context:, ..) ->
+          case has_tool_result(context) {
+            True -> Nil
+            False -> settle_calling(events, metered())
           }
         effects.PollRequest(..) | effects.SummaryRequest(..) -> Nil
       }
@@ -354,10 +392,53 @@ fn settle_with(
   text: String,
   usage: message.Usage,
 ) -> Nil {
+  settle_blocks(
+    events,
+    [message.AssistantText(text:, text_signature: None)],
+    message.Stop,
+    usage,
+  )
+}
+
+// A response that asks for one tool, which the harness refuses.
+fn settle_calling(events: Subject(stream.StreamEvent), usage: message.Usage) {
+  settle_blocks(
+    events,
+    [
+      message.AssistantToolCall(call: message.ToolCall(
+        id: "call-1",
+        name: "bash",
+        arguments: json.Object([#("command", json.String("true"))]),
+        thought_signature: None,
+        namespace: None,
+      )),
+    ],
+    message.ToolUse,
+    usage,
+  )
+}
+
+fn has_tool_result(context: List(message.AgentMessage)) -> Bool {
+  list.any(context, fn(entry) {
+    case entry {
+      message.ToolResultMessage(..) -> True
+      message.UserMessage(..)
+      | message.AssistantMessage(..)
+      | message.CustomMessage(..) -> False
+    }
+  })
+}
+
+fn settle_blocks(
+  events: Subject(stream.StreamEvent),
+  content: List(message.AssistantBlock),
+  stop_reason: message.StopReason,
+  usage: message.Usage,
+) -> Nil {
   {
     let response =
       message.AssistantMessage(
-        content: [message.AssistantText(text:, text_signature: None)],
+        content:,
         api: "test",
         provider: "acme",
         model: "loom-1",
@@ -365,11 +446,11 @@ fn settle_with(
         response_id: None,
         diagnostics: None,
         usage:,
-        stop_reason: message.Stop,
+        stop_reason:,
         deferred: None,
         error_message: None,
         raw_stop_reason: None,
-        end_turn: Some(True),
+        end_turn: Some(stop_reason == message.Stop),
         timestamp: 0,
       )
     let assert Ok(settled) = stream.settle(response)
@@ -5777,6 +5858,7 @@ fn serving(harness: Harness) -> address.Address(orchestrator_port.Message) {
       daemon_main.spawn_host(
         configured,
         fn(_spawner, _parent) { Ok(agency.delegate_endpoint(harness.config)) },
+        fn(_spawner, _parent) { Ok(agency.delegate_endpoint(harness.config)) },
         fn(_spawner, _parent) {
           agency.delegate_endpoint(harness.config).release()
         },
@@ -6972,5 +7054,72 @@ pub fn a_released_fence_refuses_a_local_spawn_too_test() {
       a_spawn("late"),
     )
     == Error(agent.ParentRunEnded(strand: "main"))
+  close(harness)
+}
+
+// --- a spawner's budgets (protocol-change/084, phase 2) ----------------------
+
+// A harness whose usage hook is the metering one. The spend it reports is sent
+// to `spent`, and a child is judged against `budget`.
+fn start_metered(
+  provider: Provider,
+  budget: Option(Int),
+  spent: Subject(Int),
+) -> Harness {
+  start_harness_hooked(
+    provider,
+    fn(config) { config },
+    counting_clock(1_756_000_000_000, 3),
+    counting_clock(1_756_000_000_000, 3),
+    fn(sess) { sess },
+    fn(hooks, config) {
+      agency.metering_hooks(
+        hooks,
+        config,
+        agency.Metering(
+          spend: fn(tokens) { process.send(spent, tokens) },
+          child_budget: budget,
+        ),
+      )
+    },
+  )
+}
+
+pub fn a_child_that_spent_its_budget_is_stopped_by_the_hand_off_test() {
+  let spent = process.new_subject()
+  let harness = start_metered(CallsThenHangs, Some(100), spent)
+  let child = remote_spawned(harness, "turn-1:tools", "spends")
+
+  // The first request used 120 tokens, input plus output, and the hook's
+  // spawned process reported them. The child is still running its second
+  // request, and the same process found its total at the budget and asked the
+  // holder to stop it.
+  assert process.receive(spent, 5000) == Ok(120)
+  assert until(
+    fn() { run_for(harness, child.handle).stop == child_run.TokenBudgetSpent },
+    300,
+  )
+  close(harness)
+}
+
+pub fn a_child_under_its_budget_runs_on_and_the_spend_is_still_reported_test() {
+  let spent = process.new_subject()
+  let harness = start_metered(CallsThenHangs, Some(1000), spent)
+  let child = remote_spawned(harness, "turn-1:tools", "spends a little")
+  assert process.receive(spent, 5000) == Ok(120)
+
+  // Nothing stops it: give the judgment time to run, then look.
+  process.sleep(200)
+  assert run_for(harness, child.handle).stop == child_run.Unstopped
+  close(harness)
+}
+
+pub fn a_session_with_no_child_budget_only_reports_its_spend_test() {
+  let spent = process.new_subject()
+  let harness = start_metered(CallsThenHangs, None, spent)
+  let child = remote_spawned(harness, "turn-1:tools", "unbounded")
+  assert process.receive(spent, 5000) == Ok(120)
+  process.sleep(200)
+  assert run_for(harness, child.handle).stop == child_run.Unstopped
   close(harness)
 }

@@ -33,6 +33,10 @@
 ////    starts the hourly pass that deletes delegate sessions whose spawner was
 ////    removed and closes idle resident ones, using the same
 ////    `sweep_delegate_sessions` the boot ran once.
+//// 2a. Each delegate session is assembled with `deadline_tick_of` and
+////    `metering_of`: the first gives it the tick that enforces its children's
+////    deadlines, the second the recorder and the child budget of a metered
+////    spawner (protocol-change/084, phase 2).
 //// 3. `listen_moving` binds the listener, and `publish_endpoint` records the
 ////    bound port for the reservation this VM holds.
 //// 4. `wait` blocks on the signal relay, the root and the executor host, and a
@@ -1017,6 +1021,7 @@ pub fn start_orchestrator_port(
           spawn_host(
             config.spawners,
             delegate_host.resolver(delegates),
+            delegate_host.spawn_resolver(delegates),
             delegate_host.releaser(delegates),
           ),
           ledger_holdings.from_catalogue(
@@ -1275,6 +1280,10 @@ pub fn peer_command(
 /// deadlines. A join and a run end need no terms, because they concern children
 /// the Agency already holds.
 ///
+/// A spawn is served by `spawning`, which is `delegates` plus the judgment of
+/// the spawner's rolling day (`delegate_host.spawn_resolver`): a join or a run
+/// end creates no child, so a day cap never refuses it.
+///
 /// A release is served by `releasing` and not by `delegates`: it finds the
 /// session the pair already has and creates none, which `delegates` would do
 /// for a pair with no row (`delegate_host.releaser`). The sender is judged the
@@ -1283,7 +1292,7 @@ pub fn peer_command(
 /// ## Examples
 ///
 /// ```gleam
-/// // main.spawn_host([], delegates, releasing).run_ended(origin, operation)
+/// // main.spawn_host([], delegates, spawning, releasing).run_ended(origin, operation)
 /// // -> Error(remote_spawn.UnknownSpawner(origin.node))
 /// ```
 @internal
@@ -1291,20 +1300,23 @@ pub fn spawn_host(
   configured: List(spawners.Spawner),
   delegates: fn(spawners.Spawner, remote_spawn.Parent) ->
     Result(agency.DelegateEndpoint, remote_spawn.SpawnRefusal),
+  spawning: fn(spawners.Spawner, remote_spawn.Parent) ->
+    Result(agency.DelegateEndpoint, remote_spawn.SpawnRefusal),
   releasing: fn(spawners.Spawner, remote_spawn.Parent) ->
     Result(Int, remote_spawn.SpawnRefusal),
 ) -> orchestrator_port.SpawnHost {
-  let serving = fn(origin: remote_spawn.Origin) {
+  let serving_by = fn(resolve, origin: remote_spawn.Origin) {
     use spawner <- result.try(
       spawners.by_node(configured, origin.node)
       |> result.replace_error(remote_spawn.UnknownSpawner(node: origin.node)),
     )
-    use endpoint <- result.map(delegates(spawner, origin.parent))
+    use endpoint <- result.map(resolve(spawner, origin.parent))
     #(spawner, endpoint)
   }
+  let serving = serving_by(delegates, _)
   orchestrator_port.SpawnHost(
     spawn: fn(origin, call_site, depth, parent_tools, request) {
-      use #(spawner, endpoint) <- result.try(serving(origin))
+      use #(spawner, endpoint) <- result.try(serving_by(spawning, origin))
       endpoint.spawn(
         remote_spawn.Delegation(
           parent: origin.parent,
@@ -1901,6 +1913,12 @@ pub fn prepare_startup(
             ),
             remote_reach: reach_of(config, directory, registration.id),
             deadline_tick_ms: tick,
+            metering: metering_of(
+              directory,
+              config.spawners,
+              registration.id,
+              logger,
+            ),
           )
         let settings =
           serve.Settings(
@@ -1997,6 +2015,76 @@ pub fn deadline_tick_of(
     Ok(Some(_delegate)) -> Ok(Some(agency.delegate_deadline_tick_ms))
     Ok(None) -> Ok(None)
     Error(_) -> Error("the session's delegate marker could not be read")
+  }
+}
+
+/// What a delegate session reports about its children's spend, or `None`.
+///
+/// Only the delegate session of a spawner whose table is still configured and
+/// sets a metering key has one. The day's tokens are recorded only when
+/// `token_budget_per_day` is set, since nothing else reads them, and the child's
+/// budget travels as it is. The recorder runs on the process the usage hook
+/// spawns (`agency.metering_hooks`), so a registry that cannot be reached costs
+/// that process a warning and the day a few uncounted tokens, never a stalled
+/// child.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // main.metering_of(registry, [], delegate_session_id, logger) == None
+/// ```
+@internal
+pub fn metering_of(
+  registry: manager.Manager(instance),
+  configured: List(spawners.Spawner),
+  id: String,
+  logger: Logger,
+) -> Option(agency.Metering) {
+  case manager.delegate_of(registry, id) {
+    Ok(Some(marker)) ->
+      case spawners.find(configured, marker.spawner) {
+        Ok(spawner) ->
+          case spawners.metered(spawner) {
+            True ->
+              Some(agency.Metering(
+                spend: spend_recorder(registry, spawner, logger),
+                child_budget: spawner.child_token_budget,
+              ))
+            False -> None
+          }
+        Error(Nil) -> None
+      }
+    Ok(None) -> None
+    Error(_) -> None
+  }
+}
+
+// The function that adds a child's tokens to the spawner's day, or one that does
+// nothing when the spawner sets no day budget.
+fn spend_recorder(
+  registry: manager.Manager(instance),
+  spawner: spawners.Spawner,
+  logger: Logger,
+) -> fn(Int) -> Nil {
+  case spawner.token_budget_per_day {
+    None -> fn(_tokens) { Nil }
+    Some(_budget) -> fn(tokens) {
+      case
+        manager.add_spend(
+          registry,
+          spawner.name,
+          now_ms: ffi_os.system_time_ms(),
+          tokens:,
+        )
+      {
+        Ok(Nil) -> Nil
+        Error(_) ->
+          log.warn(logger, "daemon.spawner_spend_lost", [
+            field.text("spawner", spawner.name),
+            field.count("tokens", tokens),
+          ])
+      }
+    }
   }
 }
 

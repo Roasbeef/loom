@@ -55,7 +55,10 @@
 ////    `remote_releases` and `settle_remote_release` are how the release
 ////    drainer reads and settles them.
 //// 10. `delegate_now` admits the delegate session of a spawner's pair and refuses
-////    one that is not open. `release_now` begins a release by marking the row
+////    one that is not open. For a spawn, `metered` first reads the spawner's
+////    rolling day with `spend_room` and refuses at a cap, then counts the spawn
+////    with `count_spawn`; `add_spend` is how a child's tokens reach the same
+////    table. `release_now` begins a release by marking the row
 ////    and stopping the slot, `finish_drained_release` deletes the session when
 ////    the slot drains, and `sweep_now` deletes what a failed deletion left, what
 ////    `due_for_deletion` finds due, and `close_idle` closes the resident
@@ -225,8 +228,30 @@ pub type DelegateRequest {
     configuration: String,
     /// The most delegate sessions the spawner may hold.
     limit: Int,
-    /// The current time, which becomes the pair's last contact.
+    /// The current time, which becomes the pair's last contact and picks the
+    /// spend bucket a day cap is judged in.
     now_ms: Int,
+    /// Whether this request is a spawn that a day cap judges and counts.
+    metering: Metering,
+  )
+}
+
+/// What a request for a delegate session costs the spawner's day
+/// (protocol-change/084, phase 2).
+pub type Metering {
+  /// The request is a join, a run end or a release, or the spawner sets no
+  /// day cap: nothing is read, judged or counted.
+  Unmetered
+
+  /// The request is a spawn for a metered spawner. The registry reads the
+  /// spawner's rolling day in the turn that admits the session, refuses at a
+  /// cap, and counts the spawn in that turn once it is admitted, so two first
+  /// spawns cannot both pass `max_per_day`.
+  Metered(
+    /// The tokens the spawner's children may use over the day, or `None`.
+    token_budget: Option(Int),
+    /// The spawns admitted over the day, or `None`.
+    max_per_day: Option(Int),
   )
 }
 
@@ -249,6 +274,15 @@ pub type DelegateError {
     held: Int,
   )
 
+  /// The spawner's rolling day has reached one of its caps, and no session was
+  /// made or admitted.
+  DelegateDayCap(
+    /// Which cap.
+    cap: DayCap,
+    /// Its value.
+    limit: Int,
+  )
+
   /// The pair's session was released: its spawner reported that the parent
   /// session was deleted, so the session accepts no more children and is being
   /// deleted.
@@ -259,6 +293,15 @@ pub type DelegateError {
     /// The registry's error.
     error: Error,
   )
+}
+
+/// The two caps a spawner's rolling day can reach.
+pub type DayCap {
+  /// The tokens its children used, against `token_budget_per_day`.
+  DayTokens
+
+  /// The spawns admitted, against `max_per_day`.
+  DaySpawns
 }
 
 /// Whether the daemon may admit a new runtime reservation.
@@ -660,6 +703,9 @@ type Message(instance) {
     Subject(Result(View, Error)),
   )
   DelegateSession(DelegateRequest, Subject(Result(Delegated, DelegateError)))
+
+  /// Adds tokens a spawner's child used to the spawner's current spend bucket.
+  SpendTokens(String, Int, Int, Subject(Result(Nil, Error)))
 
   /// The delegate record of a session, read without waking it.
   DelegateOf(String, Subject(Result(Option(catalogue.Delegate), Error)))
@@ -1890,6 +1936,32 @@ pub fn delegate_session(
   ))
   |> result.replace_error(DelegateFailed(Unavailable))
   |> result.flatten
+}
+
+/// Adds the tokens a spawner's child used to the spawner's spend for the hour
+/// `now_ms` falls in (protocol-change/084, phase 2). The usage hook of a
+/// delegate session calls it from a process of its own, never from the strand's
+/// driver, so the wait on the registry stalls only that process.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.add_spend(registry, "laptop", now_ms: 1_000, tokens: 512) == Ok(Nil)
+/// ```
+@internal
+pub fn add_spend(
+  manager: Manager(instance),
+  spawner: String,
+  now_ms now_ms: Int,
+  tokens tokens: Int,
+) -> Result(Nil, Error) {
+  call.try_call(manager.commands, waiting: 5000, sending: SpendTokens(
+    spawner,
+    now_ms,
+    tokens,
+    _,
+  ))
+  |> result.unwrap(Error(Unavailable))
 }
 
 /// Reads the delegate record of a session without waking it: `Some` for the
@@ -3464,6 +3536,20 @@ fn handle(
       process.send(reply, outcome)
       step(phase, book)
     }
+    SpendTokens(spawner, now_ms, tokens, reply) -> {
+      process.send(
+        reply,
+        catalogue.add_spawner_spend(
+          book.catalogue,
+          spawner,
+          now_ms:,
+          tokens:,
+          spawns: 0,
+        )
+          |> result.map_error(Catalogue),
+      )
+      sm.keep(book)
+    }
     DelegateOf(id, reply) -> {
       process.send(
         reply,
@@ -4615,14 +4701,98 @@ fn delegate_now(
         Ok(Some(found)) ->
           case found.state {
             catalogue.Open ->
-              returning_delegate(phase, book, request, found.session_id)
+              metered(book, request, fn() {
+                returning_delegate(phase, book, request, found.session_id)
+              })
             catalogue.Releasing | catalogue.Released -> #(
               book,
               Error(DelegateReleased),
             )
           }
-        Ok(None) -> first_delegate(phase, book, request)
+        Ok(None) ->
+          metered(book, request, fn() { first_delegate(phase, book, request) })
       }
+  }
+}
+
+// A spawn is judged against the spawner's rolling day before anything is
+// admitted or created, and counted after, in the same turn. The read is one
+// bounded catalogue query on the connection this actor already owns: it opens no
+// store and calls no session. Counting in the turn is what makes two first
+// spawns see each other, because the registry handles one message at a time.
+//
+// A spawn that is admitted and then refused further in (a tool outside the
+// ceiling, say) is still counted, and a resent spawn counts again. Both err
+// toward the cap, and a cap that undercounts is no cap.
+fn metered(
+  book: Book(instance),
+  request: DelegateRequest,
+  admit: fn() -> #(Book(instance), Result(Delegated, DelegateError)),
+) -> #(Book(instance), Result(Delegated, DelegateError)) {
+  case spend_room(book, request) {
+    Error(error) -> #(book, Error(error))
+    Ok(Nil) -> {
+      let #(book, admitted) = admit()
+      #(book, result.try(admitted, count_spawn(book, request, _)))
+    }
+  }
+}
+
+fn spend_room(
+  book: Book(instance),
+  request: DelegateRequest,
+) -> Result(Nil, DelegateError) {
+  case request.metering {
+    Unmetered -> Ok(Nil)
+    Metered(token_budget:, max_per_day:) -> {
+      use spent <- result.try(
+        catalogue.spawner_spend(
+          book.catalogue,
+          request.spawner,
+          now_ms: request.now_ms,
+        )
+        |> result.map_error(fn(error) { DelegateFailed(Catalogue(error)) }),
+      )
+      case
+        at_cap(spent.tokens, token_budget),
+        at_cap(spent.spawns, max_per_day)
+      {
+        Some(limit), _ -> Error(DelegateDayCap(cap: DayTokens, limit:))
+        None, Some(limit) -> Error(DelegateDayCap(cap: DaySpawns, limit:))
+        None, None -> Ok(Nil)
+      }
+    }
+  }
+}
+
+// The cap's value when `used` has reached it, and nothing when it has not or
+// when there is no cap.
+fn at_cap(used: Int, cap: Option(Int)) -> Option(Int) {
+  option.then(cap, fn(limit) {
+    case used >= limit {
+      True -> Some(limit)
+      False -> None
+    }
+  })
+}
+
+fn count_spawn(
+  book: Book(instance),
+  request: DelegateRequest,
+  delegated: Delegated,
+) -> Result(Delegated, DelegateError) {
+  case request.metering {
+    Unmetered -> Ok(delegated)
+    Metered(..) ->
+      catalogue.add_spawner_spend(
+        book.catalogue,
+        request.spawner,
+        now_ms: request.now_ms,
+        tokens: 0,
+        spawns: 1,
+      )
+      |> result.map(fn(_) { delegated })
+      |> result.map_error(fn(error) { DelegateFailed(Catalogue(error)) })
   }
 }
 

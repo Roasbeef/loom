@@ -154,6 +154,10 @@ pub fn every_refusal_reads_as_a_sentence_naming_its_rule_test() {
     == "the cap `max_depth` is 1 and was reached"
   assert sentence(CapReached(cap: remote_spawn.SessionStrands, limit: 16))
     == "the cap `session_strands` is 16 and was reached"
+  assert sentence(CapReached(cap: remote_spawn.TokensPerDay, limit: 5_000_000))
+    == "the cap `token_budget_per_day` is 5000000 and was reached"
+  assert sentence(CapReached(cap: remote_spawn.SpawnsPerDay, limit: 20))
+    == "the cap `max_per_day` is 20 and was reached"
   assert sentence(remote_spawn.UnknownSpawner(node: "laptop@100.64.0.5"))
     == "it has no spawner configured for this machine (`laptop@100.64.0.5`)"
   assert sentence(remote_spawn.ParentRunEnded)
