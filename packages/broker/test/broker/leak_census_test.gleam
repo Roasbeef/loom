@@ -96,11 +96,28 @@ const mix_seed = 3
 /// clean run.
 const shrink_retries = 2
 
-/// The most executions one shrink may spend, retries included. A candidate
-/// that fails on a poll deadline takes seconds to do it and gleeunit kills a
-/// test after fifty, so the bound ends the shrink early and reports the
-/// smallest mix found so far.
+/// The most executions one shrink may spend, retries included. This is the
+/// second bound: it ends the shrink early and reports the smallest mix found
+/// so far.
 const max_shrinks = 8
+
+/// How long into the test shrinking may begin another candidate, in
+/// milliseconds. gleeunit kills a test after fifty seconds. A failing
+/// execution of a mix can wait out the pool balance poll (four seconds) and
+/// the per-ending waits of `run_live` (up to eight seconds to collect one
+/// ending's events), and a candidate runs `shrink_retries` times. The
+/// deadline is read when the test starts and checked before each candidate,
+/// so a candidate already running is not interrupted. Fifteen seconds leaves
+/// thirty-five for the one candidate that may be running when the deadline
+/// passes; one that waits out several bounds on both runs can still overrun
+/// the kill.
+const shrink_budget_ms = 15_000
+
+/// The fewest endings the mixes may draw between them. The census this test
+/// replaced ran two seeds of exactly a hundred endings each, and a length
+/// drawn from `0..mix_length` can come out short, so `statem.commands` is
+/// asserted to reach at least that many in total.
+const ending_floor = 200
 
 fn mix_config() -> statem.Config {
   statem.default_config(seed: mix_seed)
@@ -320,10 +337,29 @@ fn check_vm(sut: Sut, at: String) -> Result(Nil, Violation) {
 /// Mixed executions, drawn four times over, leave the pool, the executor,
 /// the relays and the VM as they were.
 pub fn mixed_executions_leak_nothing_test() {
-  case statem.check(spec(), mix_config()) {
+  let config =
+    mix_config()
+    |> statem.with_shrink_stop(planes.shrink_stop_after(
+      within_ms: shrink_budget_ms,
+    ))
+
+  case statem.check(spec(), config) {
     Ok(Nil) -> Nil
     Error(failure) -> panic as statem.report(failure, string.inspect)
   }
+}
+
+/// The mixes the census draws are together at least as many endings as the
+/// two hundred it used to run, so a short draw cannot thin the census out.
+pub fn the_mixes_draw_enough_endings_test() {
+  let drawn =
+    list.repeat(Nil, mix_count)
+    |> list.index_map(fn(_, run) {
+      list.length(statem.commands(spec(), mix_config(), run))
+    })
+  let total = int.sum(drawn)
+
+  assert total >= ending_floor
 }
 
 // --- one execution ----------------------------------------------------------

@@ -538,8 +538,8 @@ protocol (spec Part 1.4). WP-G.
   Worst-case blocking of `close_instance`: 8 s (`close` above), pinned in
   `executor_test`.
 - **Executor service: random interleavings hold the same invariants.**
-  `executor_property_test` is a `statem` spec on a fixed seed (6 plans for
-  each of two pool sizes, per test): a plan is a list of commands (starts of
+  `executor_property_test` is a `statem` spec on a fixed seed (4 plans for
+  each of pool sizes 3, 4 and 5, per test): a plan is a list of commands (starts of
   four kinds, broker and caller cancels, caller death, helper crash, pause, a
   close mid-run), performed by `execute` against a real broker over fake
   helpers; `finish` reads the invariants. The `sut` is the plane plus the
@@ -560,13 +560,22 @@ protocol (spec Part 1.4). WP-G.
   run fails with the original tag. `new_sut` builds a plane and `teardown`
   (`planes.dismantle`) closes the service, stops the plane and reaps the pool
   on every path, so a failed case and its shrink candidates leak nothing and
-  no case needs a process of its own; `max_shrinks` (8) bounds shrinking by
-  executions, because gleeunit kills a test after fifty seconds and a failure
-  that waits out a poll deadline costs four seconds a candidate. A third test
-  asserts the generators reach every kind of command (`statem.commands`).
+  no case needs a process of its own. Shrinking has two bounds because an
+  execution count is not a measure of time: `max_shrinks` (8) by executions,
+  and `statem.with_shrink_stop` with `planes.shrink_stop_after(15_000)`, a
+  monotonic deadline read when the test starts and checked before each
+  candidate, so the shrunk-so-far plan is reported before gleeunit's fifty
+  second kill. A failing execution can wait out `await_heard` (12 s),
+  `close_hang` (8 s) or up to three 4 s polls, and each candidate runs twice,
+  so the figure is not four seconds a candidate; a candidate already running is
+  not interrupted; fifteen seconds leaves thirty-five for that one candidate,
+  and a pathological one that waits out several bounds can still overrun.
+  A third test asserts the generators reach every kind of command
+  (`statem.commands`).
   `leak_census_test` is a `statem` spec over a drawn mix of up to 100 endings
-  (four mixes; the model counts faults against the cap, the census is
-  `finish`). There are no seed or replay environment variables. Mutation
+  (four mixes, with the same two bounds, and a census test that the mixes draw
+  at least 200 endings between them, the old census's total; the model counts
+  faults against the cap, the census is `finish`). There are no seed or replay environment variables. Mutation
   checks: leaving a released row on the books fails the executor tests with a
   one-command plan (`Start(Quick, NoDeadline)`); re-sending the cancel while
   draining fails `execution_test`'s at-most-once property.

@@ -24,8 +24,11 @@
 //// on every path, a failed or crashed execution included, so a case that
 //// fails and the shrink candidates after it leave no service behind to
 //// disturb the next. Because `teardown` owns that, no case needs a process
-//// of its own, and no wall-clock budget is needed to cut shrinking short:
-//// `max_shrinks` bounds it by executions.
+//// of its own. Shrinking is bounded twice, because executions are not a
+//// measure of time here: `max_shrinks` bounds it by executions, and a
+//// deadline read when the test starts (`shrink_budget_ms`) stops it by wall
+//// time, so the shrunk-so-far plan is reported before gleeunit's fifty
+//// second kill.
 ////
 //// Each plan must leave the same things true, each reported under its own
 //// violation tag so that shrinking holds on to the invariant that broke
@@ -137,8 +140,9 @@ type Model {
 /// The plans each check draws for each pool size, and the seed a test draws
 /// them from. The two tests have their own seeds, so the quiet plans are not
 /// the faulty ones with the faults filtered out; the pool sizes add their own
-/// size to the seed so they draw different plans too.
-const plans_per_pool = 6
+/// size to the seed so they draw different plans too. Twelve plans a test,
+/// split over the three pool sizes.
+const plans_per_pool = 4
 
 const quiet_seed = 1000
 
@@ -146,8 +150,8 @@ const faulty_seed = 2000
 
 /// The pools a plan is run against. Three is the smallest the plans are
 /// written for; five leaves room for every start of a long plan to be lent a
-/// helper at once.
-const pool_sizes = [3, 5]
+/// helper at once, and four sits between them.
+const pool_sizes = [3, 4, 5]
 
 /// The most commands in one plan.
 const plan_length = 22
@@ -159,11 +163,23 @@ const plan_length = 22
 /// while shrinking.
 const shrink_retries = 2
 
-/// The most executions one shrink may spend, retries included. A candidate
-/// that fails on a poll deadline takes several seconds to do it, and gleeunit
-/// kills a test after fifty; the bound ends the shrink early and reports the
-/// smallest plan found so far, which is not always the smallest there is.
+/// The most executions one shrink may spend, retries included. This is the
+/// second bound: it ends the shrink early and reports the smallest plan found
+/// so far, which is not always the smallest there is.
 const max_shrinks = 8
+
+/// How long into the test shrinking may begin another candidate, in
+/// milliseconds. gleeunit kills a test after fifty seconds, and one failing
+/// execution can wait out the driver's longest bounds: `await_heard` twelve
+/// seconds, `close_hang` eight, or up to four seconds for each of the three
+/// polls (inventory, pool, relays), and a candidate runs `shrink_retries`
+/// times. The deadline is read when the test starts and checked before each
+/// candidate, so a candidate already running is not interrupted. Fifteen
+/// seconds leaves thirty-five for the one candidate that may be running when
+/// the deadline passes, which covers a candidate that waits out the longest
+/// single bound on both of its runs; one that waits out several bounds on
+/// both runs can still overrun the kill.
+const shrink_budget_ms = 15_000
 
 fn plan_config(seed seed: Int) -> statem.Config {
   statem.default_config(seed:)
@@ -822,10 +838,15 @@ fn check_second_close(
 // --- the tests --------------------------------------------------------------
 
 // Checks `plans_per_pool` plans against each pool size, and panics with the
-// shrunk plan of the first that fails.
+// shrunk plan of the first that fails. The shrink deadline is read here, once,
+// so the pool sizes share one budget of the test's wall time.
 fn check_plans(faults: Faults, seed seed: Int) -> Nil {
+  let stop = planes.shrink_stop_after(within_ms: shrink_budget_ms)
+
   list.each(pool_sizes, fn(size) {
-    case statem.check(spec(faults, size), plan_config(seed: seed + size)) {
+    let config = plan_config(seed: seed + size) |> statem.with_shrink_stop(stop)
+
+    case statem.check(spec(faults, size), config) {
       Ok(Nil) -> Nil
       Error(failure) ->
         panic as {

@@ -20,11 +20,13 @@ import broker/budget
 import broker/exec.{type Helper}
 import broker/executor
 import broker/policy
+import broker/support/bench_host
 import broker/token
 import core/clock.{type Clock}
 import core/ids
 import gleam/erlang/process.{type Subject}
 import gleam/list
+import statem
 import telemetry/log.{type Logger}
 
 /// One plane's parts.
@@ -186,6 +188,36 @@ fn start_with(
 /// A plane over fresh helpers of one script, with the clock fixed.
 pub fn start_scripted(size size: Int, script script: fn() -> Helper) -> Plane {
   start(size:, spawn: fn() { Ok(script()) }, clock: clock.fixed(at: 1000))
+}
+
+/// A `statem` shrink stop that says `StopShrinking` once `within_ms`
+/// milliseconds of monotonic time have passed since this call.
+///
+/// A stateful property shrinks by running real processes, and one failing
+/// candidate can wait out several poll deadlines, so shrinking by a count of
+/// executions cannot promise to finish before gleeunit kills the test. Call
+/// this when the test starts, so the deadline is the test's and not a
+/// candidate's, and pass the result to `statem.with_shrink_stop`. It is read
+/// between candidates, so a candidate already running is not interrupted and
+/// the total can exceed `within_ms` by that candidate's own cost.
+///
+/// ## Examples
+///
+/// ```gleam
+/// statem.default_config(seed: 7)
+/// |> statem.with_shrink_stop(planes.shrink_stop_after(within_ms: 30_000))
+/// ```
+pub fn shrink_stop_after(
+  within_ms within_ms: Int,
+) -> fn() -> statem.ShrinkStop {
+  let deadline_us = bench_host.now_us() + within_ms * 1000
+
+  fn() {
+    case bench_host.now_us() >= deadline_us {
+      True -> statem.StopShrinking
+      False -> statem.KeepShrinking
+    }
+  }
 }
 
 /// Stops the broker and asks the pool to retire every helper.
