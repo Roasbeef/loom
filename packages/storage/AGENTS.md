@@ -134,9 +134,10 @@ or close; there is no transaction, lease or authorization cache.
   `mark-answer`, `claim-answer`, `delegate-state-answer`, `registration-answer`
   for answers, and `custody-state`, `mark-state`, `delegate-state`,
   `moving-list`, `deleting-list`, `delegate-count`, `revision` for what is read
-  back. A claim is drawn only for a registered session (an unregistered one
-  answers a foreign-key `Database` error, which is no specified answer) and
-  never for a session already bound to another pair.
+  back. A claim for an unregistered session is drawn and answers `Missing`
+  (checked before the pair, so it wins over a `Conflict`); a claim is never
+  drawn for a session already bound to another pair, whose unique key answers
+  a `Database` error the machine does not specify.
 - `catalogue.Deletion` (`NotDeleting | Deleting`) marks a remote session whose
   deletion has begun on a session directory member (protocol-change/083).
   Version 14 adds `catalogue_session_deletions(session_id)`, one row per
@@ -170,8 +171,8 @@ or close; there is no transaction, lease or authorization cache.
   transaction it answers the pair's existing row and moves its contact time, or
   records the pair for the given session unless the spawner already holds
   `limit` rows, which answers `AtLimit(held)` and writes nothing, so two callers
-  cannot both pass `max_sessions`. A pair already bound to another session is
-  `Conflict`. `delegate_for` reads by pair and refuses a malformed pair as `Invalid` before anything else, so the registry's first step fails before it creates a session, `delegate_of` reads by session and is
+  cannot both pass `max_sessions`. A session with no registration is `Missing`,
+  checked first; a pair already bound to another session is `Conflict`. `delegate_for` reads by pair and refuses a malformed pair as `Invalid` before anything else, so the registry's first step fails before it creates a session, `delegate_of` reads by session and is
   the marker the manager refuses a move on, `delegates_held` counts a
   spawner's rows, and `delegates` lists every row in session identity order for
   the boot sweep that applies `retain_s`. A stored row that is duplicated or breaks its grammar fails the

@@ -910,9 +910,9 @@ fn command(model: Model) -> qcheck.Generator(Command) {
 // A claim binds a session to one pair for good, so a session that already
 // serves another pair has no meaningful claim for this one: the catalogue's
 // unique key on the session would answer a database error the machine does
-// not specify. The precondition keeps such a draw out, and so a claim for a
-// session with no registration; a shrink candidate that reaches either has
-// deleted the command it depended on.
+// not specify. The precondition keeps such a draw out; a shrink candidate that
+// reaches it has deleted the command it depended on. A claim for a session
+// with no registration is drawn, because the machine specifies it: `Missing`.
 fn admit(model: Model, command: Command) -> statem.Admission {
   case command {
     Claim(slot:, spawner:, parent:, ..) ->
@@ -924,10 +924,9 @@ fn admit(model: Model, command: Command) -> statem.Admission {
           }
         Ok(Row(binding: None, ..)) -> statem.Admit
 
-        // The registration must exist. The catalogue refuses a claim for one
-        // that does not with a foreign-key `Database` error, which is no
-        // answer the machine specifies, so the draw is not made.
-        Error(Nil) -> statem.Reject
+        // The registration must exist, and the catalogue answers `Missing`
+        // when it does not, so the model checks that refusal.
+        Error(Nil) -> statem.Admit
       }
     Register(..)
     | Delete(..)
@@ -1018,7 +1017,7 @@ fn drawn_commands() -> List(Seen) {
 // refusal the machine specifies: a delete refused on a moving session and on
 // a tombstone, a stale op, an import over a tombstone, an onward move, a
 // repeat that writes nothing, a late abort, a backward delegate state and a
-// claim at its limit.
+// claim at its limit and a claim for a session never registered.
 pub fn the_generator_reaches_the_refusals_test() {
   let drawn = drawn_commands()
   assert list.any(drawn, fn(seen) {
@@ -1077,6 +1076,12 @@ pub fn the_generator_reaches_the_refusals_test() {
   assert list.any(drawn, fn(seen) {
     case seen.command, seen.answer {
       Claim(..), Claimed(Ok(catalogue.AtLimit(..))) -> True
+      _, _ -> False
+    }
+  })
+  assert list.any(drawn, fn(seen) {
+    case seen.command, seen.answer {
+      Claim(..), Claimed(Error(catalogue.Missing)) -> True
       _, _ -> False
     }
   })

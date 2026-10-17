@@ -2124,6 +2124,46 @@ fn parent_of(seed: Int) -> String {
   registration(seed).id
 }
 
+pub fn a_delegate_claim_for_an_unregistered_session_is_missing_test() {
+  // The delegate row's foreign key would answer a bare `Database` error; the
+  // registration check makes it the domain refusal, and it comes before the
+  // pair is read, so a pair another session holds still answers `Missing`.
+  let path = fresh_path("delegate-claim-missing")
+  let assert Ok(store) = catalogue.open(path) as "catalogue opens"
+  let registered = registration(90)
+  let stranger = registration(91)
+  let parent = parent_of(92)
+  assert catalogue.reserve(store, registered) == Ok(registered)
+  assert catalogue.claim_delegate(
+      store,
+      "laptop",
+      parent,
+      stranger.id,
+      limit: 4,
+      now_ms: 1,
+    )
+    == Error(catalogue.Missing)
+  assert catalogue.delegates_held(store, "laptop") == Ok(0)
+  let assert Ok(catalogue.Claimed(_)) =
+    catalogue.claim_delegate(
+      store,
+      "laptop",
+      parent,
+      registered.id,
+      limit: 4,
+      now_ms: 2,
+    )
+  assert catalogue.claim_delegate(
+      store,
+      "laptop",
+      parent,
+      stranger.id,
+      limit: 4,
+      now_ms: 3,
+    )
+    == Error(catalogue.Missing)
+}
+
 pub fn a_delegate_claim_records_a_pair_once_and_a_repeat_only_touches_it_test() {
   let path = fresh_path("delegate-claim")
   let assert Ok(store) = catalogue.open(path) as "catalogue opens"
