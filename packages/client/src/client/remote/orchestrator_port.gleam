@@ -104,7 +104,8 @@
 ////
 //// ## Flow
 ////
-//// `start_with` → `answer` → `detached` → `ask_release` → `exchange`
+//// `start_with` → `answer` → `detached` → `ask_release` → `exchange` →
+//// `exchange_why`
 ////
 //// 1. `start_with` starts the port with the hosts a daemon supplies.
 //// 2. `answer` handles one message. A read it can answer from a function it
@@ -113,8 +114,9 @@
 ////    a task linked to the port, so a question about ownership never waits
 ////    behind them.
 //// 4. The `ask_*` functions are the sending ends, `ask_release` among them,
-////    and each makes its one request through `exchange`, which takes a monitor
-////    before it sends.
+////    and each makes its one request through `exchange`, which wraps
+////    `exchange_why`. That function takes a monitor before it sends, and
+////    `ask_report` uses it directly to learn why there was no answer.
 
 import client/internal/ffi_remote
 import client/node_report.{type NodeReport}
