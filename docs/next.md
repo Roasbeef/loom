@@ -169,4 +169,8 @@ Linux signoff and live UI validation are still required before merge.
 The follow-up fix passes 73 focused memory tests, including real server
 startup while another memory writer holds the lease. The exclusion regression
 fails against the original implementation and passes with the fix. A fresh
-Astra review is the remaining publication gate for this follow-up.
+Astra review of `36a465c9e` against base `877e05f56` found no actionable
+findings in the fix or the broader targeted recall/proposal review. Proposal
+(53 tests) and daemon-manager (50 tests) regressions also pass on that source.
+The review inspected the test evidence without independently rerunning it;
+full hosted CI, Linux signoff and live UI validation remain pending.
