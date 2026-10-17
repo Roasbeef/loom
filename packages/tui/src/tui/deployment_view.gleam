@@ -1623,11 +1623,28 @@ pub fn candidates(
   document: JsonValue,
   executor: Option(String),
 ) -> Result(List(move_candidates.Candidate), String) {
-  use found <- result.map(required_list(document, "orchestrators", offer))
-  move_candidates.choose(found, executor)
+  use self <- result.try(text_at(document, "self"))
+  use found <- result.map(
+    required_list(document, "orchestrators", offer(_, self)),
+  )
+  move_candidates.choose(option.values(found), executor)
 }
 
-fn offer(value: JsonValue) -> Result(move_candidates.Offer, String) {
+// One orchestrator of the reply as an offer, or none for the asking daemon: a
+// session does not move to the orchestrator it is on. The daemon leaves itself
+// out of the member already, so this is the client holding the daemon to it.
+fn offer(
+  value: JsonValue,
+  self: String,
+) -> Result(Option(move_candidates.Offer), String) {
+  use node <- result.try(text_at(value, "node"))
+  case node == self {
+    True -> Ok(None)
+    False -> offer_of(value) |> result.map(Some)
+  }
+}
+
+fn offer_of(value: JsonValue) -> Result(move_candidates.Offer, String) {
   use name <- result.try(text_at(value, "name"))
   use state <- result.try(text_at(value, "state"))
   let facts = case
