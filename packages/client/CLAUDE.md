@@ -8072,9 +8072,10 @@ reports; the 2026-10-16 addendum of 085 records the spellings it chose.
   the asking daemon's own report (`Reach.own`, only for a whole-deployment or
   one-node read) and, for each target, `dial` (`connect_ms` 1000) then `ask`
   (`report_ms` 2600, over `node_facts.read_ms`), each task in a slot of its own
-  (`weft.limit`) so black-holed targets cannot starve the rest. An ask that fails
-  in under half its bound is `Down(Silent)` (no port, or it ended), and one that
-  waits it out is `Down(TimedOut)`. `Reach(self, dial, ask, own)` is how it reaches: `over(
+  (`weft.limit`) so black-holed targets cannot starve the rest. `orchestrator_port.ask_report`
+  returns a typed `Silence`: `PortGone` (its monitor fired at once: nothing
+  registered there, or the port ended) is `Down(Silent)`, and `AskTimedOut` is
+  `Down(TimedOut)`. `Reach(self, dial, ask, own)` is how it reaches: `over(
   membership, self)` is `distribution.peer`, `distribution.connect`, then
   `orchestrator_port.ask_report` at the connected node's port, `alone(self)` (no
   `[distribution]`) connects to nobody, and `reporting(reach, own)` gives either

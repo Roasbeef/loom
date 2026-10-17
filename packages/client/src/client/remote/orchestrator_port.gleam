@@ -112,6 +112,7 @@ import core/json.{type JsonValue}
 import gleam/erlang/atom
 import gleam/erlang/node
 import gleam/erlang/process.{type Name, type Subject}
+import gleam/result
 import host/build_identity
 import runtime/residency
 import tools/agent.{type Handle}
@@ -802,11 +803,20 @@ pub fn ask_holds(at: Address(Message), within_ms: Int) -> Result(Held, Nil) {
   }
 }
 
+/// Why a port did not answer.
+pub type Silence {
+  /// The monitor fired at once: no port is registered there, the node is gone,
+  /// or the port ended.
+  PortGone
+
+  /// The wait ran out with the port still there.
+  AskTimedOut
+}
+
 /// Asks the port at `at` what the daemon says about itself, and waits at most
-/// `within_ms`. `Error(Nil)` means the daemon did not say: the node is
-/// unreachable, no port is registered there, or the report was late. A report
-/// that arrives is the daemon's own account, and its absence is never read as
-/// "nothing to report".
+/// `within_ms`. `Error` means the daemon did not say, and why: the port is gone
+/// or the report was late. A report that arrives is the daemon's own account, and
+/// its absence is never read as "nothing to report".
 ///
 /// ## Examples
 ///
@@ -816,8 +826,8 @@ pub fn ask_holds(at: Address(Message), within_ms: Int) -> Result(Held, Nil) {
 pub fn ask_report(
   at: Address(Message),
   within_ms: Int,
-) -> Result(NodeReport, Nil) {
-  exchange(at, fn(reply) { Report(reply:) }, within_ms)
+) -> Result(NodeReport, Silence) {
+  exchange_why(at, fn(reply) { Report(reply:) }, within_ms)
 }
 
 /// Sends one piece of a copy to the port at `at` and waits at most `within_ms`
@@ -940,27 +950,37 @@ pub fn ask_run_ended(
   exchange(at, fn(reply) { RunEnded(parent:, operation:, reply:) }, within_ms)
 }
 
-// One request and its reply. The monitor is taken before the request is sent,
-// so a node that is already gone ends the wait at once with its `DOWN` and not
-// with the deadline.
+// One request and its reply. Silence is `Error(Nil)`.
 fn exchange(
   at: Address(Message),
   request: fn(Subject(answer)) -> Message,
   within_ms: Int,
 ) -> Result(answer, Nil) {
+  exchange_why(at, request, within_ms) |> result.replace_error(Nil)
+}
+
+// One request and its reply, with the reason when there is none. The monitor is
+// taken before the request is sent, so a node that is already gone ends the wait
+// at once with its `DOWN` (`PortGone`: nothing is registered there, or the port
+// ended) and not with the deadline (`AskTimedOut`).
+fn exchange_why(
+  at: Address(Message),
+  request: fn(Subject(answer)) -> Message,
+  within_ms: Int,
+) -> Result(answer, Silence) {
   let reply = process.new_subject()
   let watch = address.watch(at)
   address.deliver(at, request(reply))
   let heard =
     process.new_selector()
     |> process.select_map(reply, Ok)
-    |> process.select_specific_monitor(watch, fn(_down) { Error(Nil) })
+    |> process.select_specific_monitor(watch, fn(_down) { Error(PortGone) })
     |> process.selector_receive(within_ms)
 
   // Demonitoring flushes a `DOWN` that arrived beside the reply.
   process.demonitor_process(watch)
   case heard {
     Ok(answered) -> answered
-    Error(Nil) -> Error(Nil)
+    Error(Nil) -> Error(AskTimedOut)
   }
 }

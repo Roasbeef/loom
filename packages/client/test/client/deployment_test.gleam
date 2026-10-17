@@ -17,12 +17,14 @@ import client/internal/ffi_khepri
 import client/node_report.{type NodeReport}
 import client/orchestrators
 import client/pools
+import client/remote/orchestrator_port
 import client/remote/protocol
 import core/json
 import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import web_view/placements as page
 
@@ -179,7 +181,10 @@ fn reach(
         Error(Nil) -> Error(Unreachable)
       }
     },
-    ask: fn(node, _within_ms) { list.key_find(reports, node) },
+    ask: fn(node, _within_ms) {
+      list.key_find(reports, node)
+      |> result.replace_error(orchestrator_port.PortGone)
+    },
     own: fn() { own },
   )
 }
@@ -316,7 +321,7 @@ pub fn a_connected_node_that_waits_out_its_bound_reads_as_a_timeout_test() {
       dial: fn(_node, _within_ms) { Ok(Nil) },
       ask: fn(_node, within_ms) {
         process.sleep(within_ms)
-        Error(Nil)
+        Error(orchestrator_port.AskTimedOut)
       },
       own: fn() { bare(self) },
     )
@@ -325,10 +330,10 @@ pub fn a_connected_node_that_waits_out_its_bound_reads_as_a_timeout_test() {
 }
 
 // Targets that never settle must not starve the ones that would answer: every
-// task holds a slot of its own, so none waits behind another. There are more slow
+// task holds a slot of its own, so none waits behind another. There are far more slow
 // targets here than any machine has schedulers.
 pub fn slow_targets_do_not_starve_the_fast_ones_test() {
-  let slow = upto(1, 40)
+  let slow = upto(1, 128)
   let slow_rows =
     list.map(slow, fn(each) {
       executors.plain(
@@ -398,7 +403,7 @@ pub fn a_connection_that_never_settles_reads_as_down_by_the_deadline_test() {
         process.sleep(60_000)
         Ok(Nil)
       },
-      ask: fn(_node, _within_ms) { Error(Nil) },
+      ask: fn(_node, _within_ms) { Error(orchestrator_port.PortGone) },
       own: fn() { bare(self) },
     )
   let probed = deployment.probe(stuck, deployment.targets([], [box()]))
@@ -412,7 +417,7 @@ pub fn a_report_that_never_arrives_reads_as_down_by_the_deadline_test() {
       dial: fn(_node, _within_ms) { Ok(Nil) },
       ask: fn(_node, _within_ms) {
         process.sleep(60_000)
-        Error(Nil)
+        Error(orchestrator_port.AskTimedOut)
       },
       own: fn() { bare(self) },
     )
@@ -425,7 +430,7 @@ pub fn a_connection_that_crashes_reads_as_down_test() {
     deployment.Reach(
       self:,
       dial: fn(_node, _within_ms) { panic as "boom" },
-      ask: fn(_node, _within_ms) { Error(Nil) },
+      ask: fn(_node, _within_ms) { Error(orchestrator_port.PortGone) },
       own: fn() { bare(self) },
     )
   let probed = deployment.probe(crashing, deployment.targets([], [box()]))
@@ -1499,7 +1504,8 @@ pub fn a_daemon_without_distribution_names_itself_and_connects_to_nobody_test() 
   let alone = deployment.alone("nonode@nohost")
   assert alone.self == "nonode@nohost"
   assert alone.dial("anywhere@10.0.0.1", 1000) == Error(Unavailable)
-  assert alone.ask("anywhere@10.0.0.1", 1000) == Error(Nil)
+  assert alone.ask("anywhere@10.0.0.1", 1000)
+    == Error(orchestrator_port.PortGone)
   let assert Ok(deployment.Overview(self: asker, others: [], edges: [], ..)) =
     deployment.status(alone, [OrchestratorRole], [], [], [], None)
   assert asker.node == "nonode@nohost"

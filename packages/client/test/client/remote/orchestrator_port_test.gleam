@@ -754,7 +754,8 @@ pub fn a_report_that_fails_is_silence_and_the_port_serves_on_test() {
 
   // No reply at all, so the asker's wait ends at its own bound and is never
   // read as a node with nothing to say.
-  assert orchestrator_port.ask_report(port, 200) == Error(Nil)
+  assert orchestrator_port.ask_report(port, 200)
+    == Error(orchestrator_port.AskTimedOut)
 
   // The failed report did not stop the port.
   assert orchestrator_port.ask(port, "owned-1", answers_within_ms) == Ok(Owned)

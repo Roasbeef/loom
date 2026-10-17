@@ -12,6 +12,7 @@ import client/daemon_server_test as wire
 import client/deployment
 import client/node_report.{type NodeReport}
 import client/orchestrators
+import client/remote/orchestrator_port
 import client/remote/protocol as remote_protocol
 import client/roster
 import client/session_directory
@@ -138,7 +139,7 @@ fn deploying(
 // The same daemon with the answer to a report ask scripted by node.
 fn reporting(
   answers: List(#(String, Result(Nil, deployment.Why))),
-  ask: fn(String, Int) -> Result(NodeReport, Nil),
+  ask: fn(String, Int) -> Result(NodeReport, orchestrator_port.Silence),
   run: fn(root.Ready(String), Int, String, process.Subject(Note)) -> Nil,
 ) {
   let told = recorder()
@@ -496,7 +497,7 @@ pub fn a_node_that_connects_and_reports_late_is_down_test() {
       case node {
         "laptop@10.0.0.7" -> {
           process.sleep(60_000)
-          Error(Nil)
+          Error(orchestrator_port.AskTimedOut)
         }
         _ -> Ok(bare(node))
       }

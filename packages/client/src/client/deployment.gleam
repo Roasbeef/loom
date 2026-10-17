@@ -93,7 +93,6 @@ import gleam/string
 import host/build_identity
 import web_view/placements as page
 import weft
-import weft/poll
 
 /// How long one connection attempt may take. A first TLS handshake to a loaded
 /// machine can outlast it; the handshake goes on in the background, so the node
@@ -155,9 +154,10 @@ pub type Dial =
   fn(String, Int) -> Result(Nil, Why)
 
 /// How a connected node is asked for its report: the node name and the time to
-/// wait. `Error(Nil)` is silence, as `orchestrator_port.ask_report` defines it.
+/// wait. `Error` is silence and its reason, as `orchestrator_port.ask_report`
+/// defines it.
 pub type Ask =
-  fn(String, Int) -> Result(NodeReport, Nil)
+  fn(String, Int) -> Result(NodeReport, orchestrator_port.Silence)
 
 /// What the daemon asks with: its own node name, which the reply is "as seen
 /// from", how it connects, how it asks a connected node for its report, and how
@@ -207,7 +207,7 @@ pub fn alone(self: String) -> Reach {
   Reach(
     self:,
     dial: fn(_node, _within_ms) { Error(Unavailable) },
-    ask: fn(_node, _within_ms) { Error(Nil) },
+    ask: fn(_node, _within_ms) { Error(orchestrator_port.PortGone) },
     own: unreported(self),
   )
 }
@@ -236,7 +236,8 @@ pub fn over(membership: distribution.Membership, self: String) -> Reach {
     },
     ask: fn(node, within_ms) {
       use peer <- result.try(
-        distribution.peer(membership, node) |> result.replace_error(Nil),
+        distribution.peer(membership, node)
+        |> result.replace_error(orchestrator_port.PortGone),
       )
       orchestrator_port.ask_report(
         address.Address(
@@ -568,21 +569,17 @@ fn fan_out(
 
 // A node is connected to, and only then asked. A node that connected and gave no
 // report is as good as down for the asking daemon, which can say nothing of it.
-// The ask answers `Error(Nil)` both when the wait ran out and when the port is
-// gone, so the clock tells them apart: an ask that failed in under half its wait
-// did not wait, and the node is `silent`, not `timeout`.
+// The ask says why it got none: a port that is gone (nothing registered there, or
+// it ended) is `silent`, and one that did not answer in time is a `timeout`.
 fn learn(reach: Reach, node: String) -> Result(NodeReport, Why) {
   use Nil <- result.try(reach.dial(node, connect_ms))
-  let clock = poll.monotonic()
-  let began = clock.now()
-  case reach.ask(node, report_ms) {
-    Ok(report) -> Ok(report)
-    Error(Nil) ->
-      case clock.now() - began < report_ms / 2 {
-        True -> Error(Silent)
-        False -> Error(TimedOut)
-      }
-  }
+  reach.ask(node, report_ms)
+  |> result.map_error(fn(silence) {
+    case silence {
+      orchestrator_port.PortGone -> Silent
+      orchestrator_port.AskTimedOut -> TimedOut
+    }
+  })
 }
 
 fn report_of(outcome: weft.Outcome(NodeReport, Why)) -> Option(NodeReport) {
