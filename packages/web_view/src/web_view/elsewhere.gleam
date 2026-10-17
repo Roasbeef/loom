@@ -32,7 +32,7 @@
 //// `append` → `launch` → `word`
 ////
 //// 1. `append` joins the page a "Show more" asked for onto the rows a group
-////    already holds, and stops at `max_rows` so a page that is asked again and
+////    already holds, and stops at the most rows a group may hold so a page that is asked again and
 ////    again does not grow without bound.
 //// 2. `launch` is the command that reaches one row's session.
 //// 3. `word` is the fixed word for a row's state.

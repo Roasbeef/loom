@@ -99,7 +99,7 @@ fn walk(
             })
             |> list.map(row_of(known, _))
           let so_far = list.append(gathered, kept)
-          case list.length(so_far) > limit {
+          case list.drop(so_far, limit) != [] {
             True -> Ok(Page(rows: list.take(so_far, limit), more: Further))
             False ->
               walk(

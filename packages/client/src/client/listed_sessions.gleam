@@ -32,8 +32,8 @@
 ////
 //// `clamp_limit` → `row_json` → `status_json` → `unlisted`
 ////
-//// 1. `clamp_limit` keeps an asker's page size between one and `max_limit`.
-//// 2. `row_json` renders a row as a `sessions.list` record.
+//// 1. `clamp_limit` keeps an asker's page size between one and 100 rows.
+//// 2. `row_json` renders a row as a record of the sessions.list reply.
 //// 3. `status_json` renders the status member of a row.
 //// 4. `unlisted` is the `Listing` of a daemon that cannot ask a peer.
 

@@ -14,8 +14,8 @@
 ////    which turns every failure into one `Fault` addressed to the request.
 //// 2. `decode_fields` maps each command name to its typed command through the
 ////    small field readers below it. `elsewhere_request` reads the optional pair
-////    of `sessions.elsewhere` together, because `after` means nothing without
-////    the orchestrator whose page it follows. A creation reads `executor_field` first,
+////    of the sessions.elsewhere command together, because a cursor means nothing
+////    without the orchestrator whose page it follows. A creation reads `executor_field` first,
 ////    because whether the workspace is a path (`text_field`) or a registered
 ////    name (`created_workspace`), and which scope is the default
 ////    (`domain_scope`), both depend on it.
