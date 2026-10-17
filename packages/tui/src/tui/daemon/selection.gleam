@@ -3,6 +3,26 @@
 //// Listing never calls this module's open path. An operator action sends open
 //// once, then observes only the returned operation within the same epoch.
 //// Losing admission's reply is reported as an unknown outcome, never retried.
+////
+//// The same module holds the one-shot owner reads of the launcher's
+//// subcommands (`list`, `deployment`, `directory` and `elsewhere`). Each sends
+//// one control command, keeps the reply document whole for `--json`, and words
+//// a daemon that predates the command as the absence of the view and not as a
+//// fault.
+////
+//// ## Flow
+////
+//// `open` → `open_selected` → `await` → `failure_for`
+////
+//// 1. `open` resolves the session the operator named in the daemon's listing
+////    and hands the row to `open_selected`.
+//// 2. `open_selected` sends the one open request, and `await` observes the
+////    returned operation within the same epoch.
+//// 3. `failure_for` words whatever refused or dropped along the way, including
+////    the launch line for a session another orchestrator owns
+////    (`session_view/launch_words`).
+//// 4. `elsewhere` is the read of the other orchestrators' sessions, with
+////    `elsewhere_failure` for its words.
 
 import core/json
 import gleam/bit_array
@@ -14,6 +34,7 @@ import gleam/string
 import gleam/uri
 import host/bootstrap as host_bootstrap
 import host/endpoint as daemon_endpoint
+import session_view/launch_words
 import session_view/snapshot
 import tui/bootstrap
 import tui/daemon
@@ -252,6 +273,7 @@ fn open_selected(host: Host, selected: protocol.Session) {
     | protocol.ActivityReply(_)
     | protocol.DeploymentReply(_)
     | protocol.DirectoryReply(_)
+    | protocol.ElsewhereReply(_)
     | protocol.UiLinkReply(..) ->
       Error("open returned an unexpected control reply")
   })
@@ -326,6 +348,7 @@ pub fn create_named(
     | protocol.ActivityReply(_)
     | protocol.DeploymentReply(_)
     | protocol.DirectoryReply(_)
+    | protocol.ElsewhereReply(_)
     | protocol.UiLinkReply(..) ->
       Error("create returned an unexpected control reply")
   }
@@ -463,6 +486,7 @@ fn remove_using(
     | protocol.ActivityReply(_)
     | protocol.DeploymentReply(_)
     | protocol.DirectoryReply(_)
+    | protocol.ElsewhereReply(_)
     | protocol.UiLinkReply(..) ->
       Error("stop returned an unexpected control reply; session kept")
   })
@@ -545,6 +569,7 @@ fn await_retirement(session, operation, request) {
         | Ok(protocol.ActivityReply(_))
         | Ok(protocol.DeploymentReply(_))
         | Ok(protocol.DirectoryReply(_))
+        | Ok(protocol.ElsewhereReply(_))
         | Ok(protocol.UiLinkReply(..)) ->
           poll.Fail(
             "stop observation returned an unexpected reply; session kept",
@@ -588,6 +613,7 @@ pub fn list(host: Host, after: String) -> Result(protocol.Page, String) {
     | protocol.ActivityReply(_)
     | protocol.DeploymentReply(_)
     | protocol.DirectoryReply(_)
+    | protocol.ElsewhereReply(_)
     | protocol.UiLinkReply(..) ->
       Error("listing returned an unexpected control reply")
   }
@@ -632,6 +658,7 @@ pub fn deployment(
     | protocol.AccessChangeReply(_)
     | protocol.ActivityReply(_)
     | protocol.DirectoryReply(_)
+    | protocol.ElsewhereReply(_)
     | protocol.UiLinkReply(..) ->
       Error("deployment returned an unexpected control reply")
   }
@@ -668,8 +695,92 @@ pub fn directory(host: Host) -> Result(json.JsonValue, String) {
     | protocol.AccessChangeReply(_)
     | protocol.ActivityReply(_)
     | protocol.DeploymentReply(_)
+    | protocol.ElsewhereReply(_)
     | protocol.UiLinkReply(..) ->
       Error("directory returned an unexpected control reply")
+  }
+}
+
+/// Why a read of the other orchestrators' sessions gave no document.
+pub type ElsewhereFailure {
+  /// The daemon was built before the command existed. A listing leaves its
+  /// section out, as it does for a daemon with no other orchestrators, because
+  /// the absence is not a fault.
+  NoElsewhereViews
+
+  /// Anything else, in the words to show: a refusal, a connection that dropped,
+  /// or a key the daemon's configuration lacks.
+  ElsewhereFailed(reason: String)
+}
+
+/// Reads the sessions the daemon's other orchestrators list
+/// (protocol-change/085), as the document the daemon sent. With an
+/// `orchestrator` key the read is of that one group, and `after` is the identity
+/// its previous page ended with.
+///
+/// The daemon connects to each orchestrator at once and gives the whole read
+/// three seconds, so the request waits longer than that.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // selection.elsewhere(host, None, None)
+/// ```
+pub fn elsewhere(
+  host: Host,
+  orchestrator: Option(String),
+  after: Option(String),
+) -> Result(json.JsonValue, ElsewhereFailure) {
+  use reply <- result.try(
+    daemon.request(
+      host.control,
+      protocol.SessionsElsewhere(orchestrator:, after:),
+      10_000,
+    )
+    |> result.map_error(elsewhere_failure),
+  )
+  case reply {
+    protocol.ElsewhereReply(document) -> Ok(document)
+    protocol.StatusReply(_)
+    | protocol.SessionsReply(_)
+    | protocol.SessionReply(_)
+    | protocol.LifecycleReply(_)
+    | protocol.DeletedReply(_)
+    | protocol.MovedReply(..)
+    | protocol.ShutdownReply
+    | protocol.PeersInspectionReply(_)
+    | protocol.PeersMutationReply(_)
+    | protocol.AccessListingReply(_)
+    | protocol.AccessChangeReply(_)
+    | protocol.ActivityReply(_)
+    | protocol.DeploymentReply(_)
+    | protocol.DirectoryReply(_)
+    | protocol.UiLinkReply(..) ->
+      Error(ElsewhereFailed(
+        "sessions elsewhere returned an unexpected control reply",
+      ))
+  }
+}
+
+/// The words for a failed read of the other orchestrators: `failure`'s, except
+/// that a daemon which does not know the command is not at fault, and a key the
+/// configuration lacks is said to be one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert selection.elsewhere_failure(daemon.Refused("bad_request", "unsupported control command"))
+///   == selection.NoElsewhereViews
+/// ```
+pub fn elsewhere_failure(reason: daemon.Failure) -> ElsewhereFailure {
+  case reason {
+    daemon.Refused("bad_request", "unsupported control command") ->
+      NoElsewhereViews
+    daemon.Refused("not_found", _) ->
+      ElsewhereFailed(
+        "the daemon's configuration has no orchestrator under that name",
+      )
+    other -> ElsewhereFailed(failure(other))
   }
 }
 
@@ -773,6 +884,7 @@ fn selected_row(reply) {
     | protocol.ActivityReply(_)
     | protocol.DeploymentReply(_)
     | protocol.DirectoryReply(_)
+    | protocol.ElsewhereReply(_)
     | protocol.UiLinkReply(..) ->
       Error("selection returned an unexpected control reply")
   }
@@ -843,6 +955,7 @@ fn await(host: Host, session, operation) {
         | Ok(protocol.ActivityReply(_))
         | Ok(protocol.DeploymentReply(_))
         | Ok(protocol.DirectoryReply(_))
+        | Ok(protocol.ElsewhereReply(_))
         | Ok(protocol.UiLinkReply(..)) ->
           poll.Fail("operation returned an unexpected control reply")
       }
@@ -924,13 +1037,6 @@ pub fn failure_for(session: String, reason: daemon.Failure) -> String {
 
 // What the terminal tells the operator when the daemon points elsewhere.
 fn redirect_words(session: String, redirect: protocol.Redirect) -> String {
-  let launch = fn(address: String) {
-    "loom --addr "
-    <> address
-    <> " --session "
-    <> session
-    <> " --token-file <owner token file on that host>"
-  }
   case redirect {
     protocol.NotOwner(orchestrator, Some(address)) ->
       "session "
@@ -938,14 +1044,14 @@ fn redirect_words(session: String, redirect: protocol.Redirect) -> String {
       <> " is owned by orchestrator "
       <> orchestrator
       <> "; connect to it with: "
-      <> launch(address)
+      <> launch_words.launch_line(Some(address), session)
     protocol.NotOwner(orchestrator, None) ->
       "session "
       <> session
       <> " is owned by orchestrator "
       <> orchestrator
       <> ", which has no address in this daemon's configuration; connect to it with: "
-      <> launch("<its control address>")
+      <> launch_words.launch_line(None, session)
     protocol.OwnerUnreachable(orchestrators) ->
       "session "
       <> session

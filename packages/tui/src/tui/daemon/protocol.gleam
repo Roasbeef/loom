@@ -364,6 +364,19 @@ pub type Command {
   /// (`protocol-change/083`). Owner-only. A daemon that is not a member answers
   /// `not_found`.
   DirectoryStatus
+
+  /// Asks the daemon's other orchestrators for a page of the sessions each
+  /// lists (`protocol-change/085`). Owner-only. With neither member every
+  /// configured orchestrator is asked for its first page; with an
+  /// `orchestrator` key and the identity of the last row of its previous page
+  /// as `after`, that one is asked for the next. A daemon built before the
+  /// command existed refuses it `bad_request`.
+  SessionsElsewhere(
+    /// The configuration key of the one orchestrator to read, or `None` for all.
+    orchestrator: Option(String),
+    /// The identity the page follows. Present only with an `orchestrator`.
+    after: Option(String),
+  )
 }
 
 /// The most sessions one `SessionActivity` request may name.
@@ -660,6 +673,14 @@ pub type Reply {
     /// The daemon's reply body, unread.
     document: json.JsonValue,
   )
+
+  /// What each of the daemon's other orchestrators lists
+  /// (`protocol-change/085`). The body is kept whole for the same reason as
+  /// `DeploymentReply`'s, and `tui/elsewhere_view` reads it.
+  ElsewhereReply(
+    /// The daemon's reply body, unread.
+    document: json.JsonValue,
+  )
 }
 
 /// One validated server envelope; uncorrelated hello is the only handshake.
@@ -755,6 +776,7 @@ pub fn name(command: Command) -> String {
     SessionActivity(..) -> "sessions.activity"
     DeploymentStatus(..) -> "deployment.status"
     DirectoryStatus -> "directory.status"
+    SessionsElsewhere(..) -> "sessions.elsewhere"
     Shutdown -> "daemon.shutdown"
   }
 }
@@ -780,6 +802,7 @@ pub fn mutates(command: Command) -> Bool {
     | PrincipalMemberships(..)
     | DeploymentStatus(..)
     | DirectoryStatus
+    | SessionsElsewhere(..)
     | SessionActivity(..) -> False
     SetDefault(..)
     | RenameSession(..)
@@ -831,6 +854,35 @@ pub fn encode(
   }
 }
 
+// The members of a `sessions.elsewhere` request. A cursor follows one group's
+// rows, so it is sent only with the group it belongs to, and each is checked
+// here as the daemon will check it.
+fn elsewhere_fields(
+  orchestrator: Option(String),
+  after: Option(String),
+) -> Result(List(#(String, json.JsonValue)), String) {
+  case orchestrator, after {
+    None, None -> Ok([])
+    None, Some(_) -> Error("a cursor needs the orchestrator it follows")
+    Some(key), None ->
+      orchestrator_member(key) |> result.map(fn(member) { [member] })
+    Some(key), Some(id) -> {
+      use member <- result.try(orchestrator_member(key))
+      use Nil <- result.map(valid_id(id))
+      [member, #("after", json.String(id))]
+    }
+  }
+}
+
+fn orchestrator_member(
+  key: String,
+) -> Result(#(String, json.JsonValue), String) {
+  case placement.is_orchestrator_name(key) {
+    True -> Ok(#("orchestrator", json.String(key)))
+    False -> Error("orchestrator must be a configuration key")
+  }
+}
+
 fn command_fields(command: Command, epoch: Epoch) {
   let Epoch(epoch_value) = epoch
   case command {
@@ -840,6 +892,8 @@ fn command_fields(command: Command, epoch: Epoch) {
         True -> Ok([#("node", json.String(key))])
         False -> Error("node must be a configuration key")
       }
+    SessionsElsewhere(orchestrator, after) ->
+      elsewhere_fields(orchestrator, after)
     ListSessions(after, revision) | ListArchivedSessions(after, revision) -> {
       use Nil <- result.try(case after {
         "" -> Ok(Nil)
@@ -1273,6 +1327,7 @@ fn decode_reply(event: String, body: json.JsonValue) {
     "sessions.activity" -> result.map(activity(body), ActivityReply)
     "deployment.status" -> Ok(DeploymentReply(body))
     "directory.status" -> Ok(DirectoryReply(body))
+    "sessions.elsewhere" -> Ok(ElsewhereReply(body))
     "daemon.shutdown" ->
       case field(body, "state") {
         Ok(json.String("draining")) -> Ok(ShutdownReply)
