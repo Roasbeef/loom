@@ -53,6 +53,12 @@ the stub is written before the first `Spawn` leaves, so mail that arrives before
 answer to the spawn finds a `ST_REQUESTED` stub. Only an answer other than
 `MAIL_NOT_OPEN` settles a row.
 
+`UpwardOnlyIntoOpenRun` holds because the modelled parent run never reopens once
+it has ended; a parent that starts a new run later would make a declined mail a
+delivery only for mail not yet sent. The model also leaves the keeper's vote
+abstract: the fair reconnection stands for the laptop holding the link while a
+stub is `Requested`, running, or settled with mail still owed.
+
 ### The spawn
 
 A call site is an integer. The stub is written when the parent starts the call

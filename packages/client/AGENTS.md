@@ -7887,8 +7887,11 @@ The box's deadline and retention (slice S4):
   (`main.spawner_link_of`) makes `queue_upward` write a
   `delegate_outbox` mail row and answer `Queued`; `serve.with_upward_drain`
   runs `delegate_drain.pass`, which sends only while
-  `remote_spawner.laptop_over(..).connected()` and never dials. A delegate
-  child's `default_within_ms` is its spawn's `within_ms` (`run_budget`).
+  `remote_spawner.laptop_over(..).connected()` and never dials. A run
+  a send starts on a delegate child gets the child's absolute spawn deadline
+  (`api.run_deadline_for`) and is refused after it; `Joined.Ready.owed` and
+  `Stub.owed` keep the link voted while a settled child's mail is undelivered;
+  `peer_outbox_drain.ring` runs a pass at once; `ChildRefusal.Busy` is retryable.
   Remote handles belong to a stub by strand. `ChildEscalation` is phase 3.
   Tests: `remote/link_keeper_test`, `remote_mail_test`, `delegate_outbox_test`,
   `remote/orchestrator_port_test`, `agency_test` (mail on a `Requested` stub,

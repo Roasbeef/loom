@@ -806,8 +806,11 @@ stub and asks the daemon's `admits(orchestrator)`, so the Agency never learns th
 roster and the roster never learns the stub.
 
 `remote_mail.ChildRefusal` is `UnknownChild | ParentSessionNotOpen |
-OriginMismatch | StoreFailure(reason)`, and only `ParentSessionNotOpen` is worth
-asking again. `Receipt` is `Delivered | Declined(reason)`, and a `Declined`
+OriginMismatch | Busy(reason) | StoreFailure(reason)`. `ParentSessionNotOpen` and
+`Busy` are worth asking again; `Busy` is a laptop whose holder was not up, did not
+answer, or whose store write failed, so nothing was decided. `StoreFailure` is
+final: an id reused for other content, a message beyond its bounds, a corrupt
+receipt. `Receipt` is `Delivered | Declined(reason)`, and a `Declined`
 receipt is final: a parent with no run open is never woken for a child's message.
 
 **Key on the name, never on the handle.** The laptop writes the stub in the
@@ -824,7 +827,8 @@ only with `Spawned`.
 
 A delegate session keeps `delegate/outbox/{kind}/{key}` rows in its own store:
 `mail/{message id}` for a child's upward message, and `progress/{strand}` for the
-`at` of the newest glance the laptop acknowledged. A progress message has no row,
+`at` of the newest glance the laptop acknowledged. A glance from the box is cut to the bounds a local glance has before the stub
+keeps it. A progress message has no row,
 because the glance it carries is already the durable `client/glance/{strand}`
 fact. A second `peer_outbox_drain` instance per delegate session runs
 `delegate_drain.pass`, rung when a row is written and when a child is admitted,
@@ -832,7 +836,9 @@ and ticking every five seconds while a row is pending or any child has a run.
 (The pass is in `delegate_drain` and the rows are in `delegate_outbox` because the
 Agency writes the rows and cannot import the drainer.)
 
-**The no-dial rule.** The pass asks `Laptop.connected`, which reads the
+**The no-dial rule.** A row rings the drainer with `peer_outbox_drain.ring`, which runs a pass at once
+where `poke` arms one a retry interval away (the release drainer rings the same
+way). The pass asks `Laptop.connected`, which reads the
 connection set. With no connection it sends nothing, makes no attempt and reports
 what it owes, so a laptop behind a NAT costs the box one read a tick. The box
 learns the laptop's node from `[spawners.<name>] node`, never from a message.
@@ -844,6 +850,14 @@ pending. A settled row stays, as the record the child can read back, and goes
 with the delegate session on `Release` and in the retention sweep. A glance the
 laptop did not acknowledge is sent again only as the newest glance, so an
 intermediate glance lost to a disconnect is never resent.
+
+A child that finishes before its mail is delivered would drop the laptop's vote,
+so `Joined.Ready` carries `owed`, the number of the child's mail rows the box has
+not settled. The laptop records it on the stub (`Stub.owed`), keeps voting `Hold`
+and keeps joining the settled child while it is nonzero, within an hour of the
+child's deadline, and drops the vote when a join reads zero. The keeper waits
+longer after a connect that fails to bring the node back, doubling from two
+seconds to thirty and resetting when it is up.
 
 ### Upward mail
 
@@ -862,10 +876,11 @@ A parent's `agent_send` to a remote child asks the child's orchestrator through
 stores the receipt, so a resend answers `Admitted`. A child with an open run takes
 the message as a steer. An idle child starts a run that is detached (a run of a
 child whose parent is a reference has no owner: `child_owner` returns none for a
-parent beginning with `^`) and bounded by the budget the spawn gave the child. A
-delegate child's lineage cell now keeps the spawn's `within_ms` as its
-`default_within_ms`, where a local child keeps the Agency's default, so a send
-cannot lengthen what the spawner allowed. `within_ms` on a send to a remote child
+parent beginning with `^`) and bounded by the child's existing deadline: the run
+record gets the absolute deadline the spawn gave the child, not a fresh budget,
+so any number of sends cannot lengthen the child's life. A send after that
+deadline is refused by the box (`ReadFailed`, "the child's deadline has
+passed") and, earlier, by the laptop, which knows the deadline from the stub. `within_ms` on a send to a remote child
 is refused. An `Unreachable` send writes `remote-send/{message id}` on the laptop
 and answers `queued`; the third step of `remote_drain.pass` resends it and removes
 it on any answer. A handle for a later run of a remote child belongs to the child's

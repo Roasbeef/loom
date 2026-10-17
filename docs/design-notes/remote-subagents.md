@@ -748,9 +748,9 @@ digest. The box commits the receipt `delegate/receipt/{id}` with the delivery, s
 a resend answers `Admitted` and delivers nothing twice: peer mail's receipt rule,
 reused. A child with an open run takes a steer. An idle child starts a run that is
 detached, because nothing owns a run of a child whose parent is a reference to a
-strand on another machine, and bounded by the budget the spawn gave the child (the
-delegate child's lineage cell keeps the spawn's `within_ms` as its
-`default_within_ms`). An `Unreachable` send becomes a `remote-send/{id}` row on
+strand on another machine, and bounded by the child's existing deadline (the run record gets the absolute
+deadline the spawn gave it, so repeated sends cannot extend the child's life, and
+a send after it is refused). An `Unreachable` send becomes a `remote-send/{id}` row on
 the laptop, and the remote drainer resends it until the box answers.
 
 **Upward.** A remote child's `agent_send` to `^main` writes a
