@@ -27,6 +27,7 @@ import storage/catalogue
 import support/fake_orchestrators.{Down, Up}
 import support/remote_stubs
 import telemetry/log
+import weft/poll
 import weft/registry as names
 
 fn registered(
@@ -93,17 +94,16 @@ fn start_registry(store: catalogue.Catalogue) -> manager.Manager(String) {
 
 // Waits for something another process does, polling at a short interval.
 fn eventually(done: fn() -> Bool) -> Bool {
-  eventually_within(done, 200)
-}
-
-fn eventually_within(done: fn() -> Bool, attempts: Int) -> Bool {
-  case done(), attempts {
-    True, _ -> True
-    False, 0 -> False
-    False, _ -> {
-      process.sleep(10)
-      eventually_within(done, attempts - 1)
-    }
+  let waited =
+    poll.until(within: 2000, every: 10, attempt: fn() {
+      case done() {
+        True -> poll.Done(Nil)
+        False -> poll.Retry
+      }
+    })
+  case waited {
+    poll.Answered(Nil) -> True
+    poll.Failed(_) | poll.Expired -> False
   }
 }
 
