@@ -2,8 +2,28 @@
 
 ## First-session startup — October 17
 
+Local TUI launches now resolve the daemon while the original terminal discovers
+its workspace and constructs its model. Weft owns the worker; joining consumes
+final accounting before control adoption. Terminal death cancels discovery and
+retires even an unclaimed control handle. Worker/account loss remains fatal so
+an unpublished handle cannot leak. Other launch modes keep their order.
+
+The independent three-pair smoke repeat measured roughly 50 ms faster warm
+attachment and 45 ms faster cold autostart in paired medians. The wider
+seven-pair/two-configuration series was noisy; 32-model cold startup remains
+inconclusive. These are selected saved-session journeys with explicit
+best-effort enforcement, not picker-to-New or deployment guarantees. All 80
+trials accepted a durable PTY user turn and shut down normally; all 120 native
+identities retired. The [raw async measurements and artifact audit](review/async-startup-2026-10-17.json)
+retain both series. The server is identical on both sides; 826 other common
+client BEAM modules match byte for byte.
+
+The full TUI gate passed 1,450 tests and the real-control TUI fixture passed all
+20 tests. Formatting, lint, docs, release smoke and deliberate fatal/accounting
+mutations passed. Final-head hosted CI remains required before merge.
+
 The [first-session startup note](design-notes/first-session-startup.md) records
-the release benchmarks, raw measurement data and validation limits. The latest
+the release benchmarks, raw measurement data and validation limits. The preceding
 wave batches 25 measured Gleam modules after domain configuration validation
 and before resource acquisition. OTP owns its existing code cache; a rejected
 hint keeps ordinary demand loading. There is no eager daemon warmup, native
@@ -17,7 +37,8 @@ real TUI composer 1414 → 1357 ms (seven of nine faster). Ten-session peak RSS
 fell 284 → 237 MiB and sampled growth 18.44 → 14.37 MiB in that same series.
 These measurements select explicit best-effort enforcement; they do not
 establish full-enforcement deployment latency or exact reachable memory.
-The unchanged TUI artifact provides no separate client-startup improvement.
+That earlier comparison used an unchanged TUI artifact and measures no separate
+client-startup improvement. The async client comparison above is separate.
 
 The earlier wave shares one TOML document within each load, preserving file
 rereads, secret rotation, strict validation and error precedence. Its concurrent

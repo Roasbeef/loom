@@ -71,8 +71,9 @@ default is five schedulers; the released client uses four. Parser-only timings
 use one scheduler and report the runtime and loaded catalogue BEAM path.
 
 Every run has a private HOME, state directory and nested Git workspace. Models
-point at an unreachable loopback port; there are no model requests or operator
-credentials. The smoke catalogue is 368 bytes. The second synthetic catalogue
+point at an unreachable loopback port; no operator credentials are available.
+The async fixture's post-timing prompt may attempt that synthetic provider.
+The smoke catalogue is 368 bytes. The second synthetic catalogue
 contains 32 model definitions and is 5,858 bytes. Input hashes accompany the
 results. The parser benchmark also fingerprints decoded values outside its
 timer and requires them to remain identical across samples.
@@ -337,6 +338,106 @@ in the SQLite NIF positive control without loading it. Removing an inventory
 BEAM from a disposable copy was rejected. Two private compiled mutations that
 made native calls or all decoded replies succeed were rejected by the six
 loader tests; restoring the original module passed all six again.
+
+
+## Asynchronous terminal startup
+
+Local interactive launches start daemon discovery before workspace discovery
+and model construction. The terminal prepares its own subjects, model and
+terminal identity while one Weft task resolves the daemon. Joining consumes
+both the result and final accounting before the existing control adoption and
+session-opening path. Demo, remote and one-shot launches retain their order.
+
+The original terminal remains the control owner. Normal terminal exit cancels
+the resolver and closes its control connection, including a completed handle
+that the terminal has not joined. Ordinary resolver refusals remain UI errors.
+An unexpected worker crash or lost accounting terminates the terminal, matching
+the former inline crash, so its guardian can close even an unpublished handle.
+The resolver retains its existing shared 90-second startup budget; there is no
+competing worker-killing timeout during handle publication.
+
+This comparison freezes the server release byte for byte at `f4d68de` and
+compares the unchanged earlier client artifact (launcher identity `9896b0b`)
+against the client built at `b5808a3`, whose production change is `32227fb`.
+Both use the same stock compiler, runtime and release settings. The earlier
+client source is unchanged through `e1460e1`; intervening server improvements
+are therefore present on both sides of this client-only comparison.
+
+The dedicated diagnostic seeds a real selected session over the daemon's
+control protocol. Warm attachment retains that resident daemon. Cold autostart
+normally stops the seed daemon, then times the real client automatically
+starting a replacement and reopening the saved session. Both end at the real
+attached composer, with first frame recorded separately. Native PID, birth,
+executable and state-directory checks prove which daemon served each run; cold
+runs require a replacement identity. After the timer, a PTY prompt must become
+a new durable user-message entry. Each daemon must log normal shutdown without
+an unconfirmed retirement. These are selected-session journeys, not the
+interactive picker-to-New path.
+
+The same private fixtures, unreachable providers, answered terminal probe,
+warm page cache and explicit best-effort enforcement apply. Client peak RSS
+includes the post-timing input check and is not a composer-only memory sample.
+The retained diagnostic and paired samples allow this series to be reproduced
+without adding another production benchmark mode.
+
+
+Seven alternating pairs per fixture/journey, after one warmup per artifact:
+
+| Fixture / journey | Baseline composer ms | Async composer ms | Paired median saving ms | Faster pairs |
+|---|---:|---:|---:|---:|
+| Smoke / warm attach | 785.2 | 600.0 | 213.3 | 6/7 |
+| Smoke / cold autostart | 2379.4 | 1870.6 | 534.1 | 6/7 |
+| 32 models / warm attach | 1150.9 | 698.7 | 237.1 | 5/7 |
+| 32 models / cold autostart | 1520.1 | 1399.3 | 21.9 | 4/7 |
+
+These results contain substantial scheduling variation. Smoke cold paired
+savings range from a 1273 ms regression to a 1218 ms improvement. The 32-model
+cold composer improved in only four pairs; its first frame improved in three,
+with a paired median regression of 15 ms. This does not establish a consistent
+cold-start improvement across configurations, and the large observed savings
+cannot all be attributed to overlap.
+
+A separate three-pair smoke repeat on the same frozen artifacts measured warm
+composer medians 591.7 → 550.0 ms, with a 50.2 ms paired median saving and two
+of three pairs faster (the remaining pair regressed 6.5 ms). Cold-autostart
+composer medians were 1335.5 → 1290.2 ms, with a 45.3 ms paired median saving
+and all three pairs faster. This supports a modest improvement in this local
+fixture while retaining the wider series' uncertainty. Whole-fixture client
+peak RSS medians in the seven-pair series stayed within about 1 MiB; no memory
+saving is claimed. The preceding daemon/session gains and these client results
+use different endpoints and series and must not be added together.
+
+All 80 main/repeat trials passed durable input and normal-shutdown checks;
+all 120 distinct seed/replacement native identities had retired afterward,
+with no remaining `/proc` entries. The release audit found only `tui.beam`
+changed among 827 common BEAM modules, plus the new `tui@startup` module and
+its opaque-type header. All other 826 BEAMs match byte for byte. The launcher
+changes only its embedded commit; application and boot terms differ only by
+the new module inventory. Before/after complete release fingerprints match,
+and the server release is identical between both artifacts.
+
+Validation passed the full TUI gate (1,450 tests), all 20 real-control TUI
+daemon tests, formatting, TUI lint and documentation checks. Private compiled
+mutations removing fatal ownership-loss cleanup or skipping final accounting
+were both rejected by their regression tests. Independent source and data
+reviews found no remaining correctness issue. Release smoke passed with the
+bundled runtime and metadata without host Erlang. Hosted CI for the final
+published head remains a separate gate; earlier-head successes do not validate
+this client change.
+
+[Raw samples, fingerprints and audit](../review/async-startup-2026-10-17.json)
+and the [retained diagnostic](../review/async-startup-2026-10-17.py) include the
+seven-pair series and independent repeat, with warmups retained and excluded
+from summaries. Freeze the prior releases at
+`build/bench-startup-memory/releases/startup-overlap-baseline`, rebuild only the
+client into `build/release/loom-client`, and leave the server unchanged. Prepare
+the 32-model fixture using the recipe below, then run:
+
+```sh
+env -u ERL_FLAGS -u ERL_AFLAGS -u ERL_ZFLAGS \
+  python3 -B docs/review/async-startup-2026-10-17.py \
+  --runs 7 --label client-overlap-final
+```
 
 ## Reproduce
 
