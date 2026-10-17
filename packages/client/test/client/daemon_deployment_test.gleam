@@ -10,7 +10,10 @@ import client/daemon/limits
 import client/daemon/root
 import client/daemon_server_test as wire
 import client/deployment
+import client/node_report.{type NodeReport}
 import client/orchestrators
+import client/remote/orchestrator_port
+import client/remote/protocol as remote_protocol
 import client/roster
 import client/session_directory
 import client/session_movers
@@ -18,7 +21,7 @@ import core/json
 import gleam/bit_array
 import gleam/erlang/process
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{None, Some}
 import gleam/string
 import host/bootstrap
 import storage/access
@@ -84,22 +87,75 @@ fn laptop() {
   orchestrators.plain("laptop", "laptop@10.0.0.7")
 }
 
+// What a node says of itself when it says nothing more than who it is. Every
+// node of these tests runs one build, so none differs from the daemon's own.
+fn bare(node: String) -> NodeReport {
+  node_report.bare(node, "0.3.0", "abc123", "e1", 1000, 61_000)
+}
+
+// A report of an executor with a scope that blocks a reopen, and the session it
+// names, among workspaces it has registered.
+fn unclean_executor(node: String, session: String) -> NodeReport {
+  node_report.NodeReport(
+    ..bare(node),
+    executor: Some(
+      node_report.ExecutorFacts(
+        protocol: remote_protocol.version,
+        scopes: node_report.ScopeCounts(
+          open: 2,
+          closing: 0,
+          closed_clean: 1,
+          closed_unknown: 1,
+        ),
+        scope_limit: 16,
+        unclean: [
+          node_report.UncleanScope(
+            session:,
+            state: node_report.UnknownCleanup(count: 2),
+          ),
+        ],
+        ledger_bytes: 4096,
+        ledger_limit: 536_870_912,
+        unacknowledged: 0,
+        platform: "linux/x86_64",
+        observed: None,
+        workspaces: ["proj", "docs"],
+      ),
+    ),
+  )
+}
+
 // A daemon whose executor `build-box` is on `executor@10.0.0.2` and whose
 // orchestrators are `desk` and `laptop`. The connections answer from `answers`,
-// by node, and refuse any other node as an unreachable host is refused.
+// by node, and refuse any other node as an unreachable host is refused. Every
+// connected node reports only who it is.
 fn deploying(
   answers: List(#(String, Result(Nil, deployment.Why))),
   run: fn(root.Ready(String), Int, String, process.Subject(Note)) -> Nil,
 ) {
+  reporting(answers, fn(node, _within_ms) { Ok(bare(node)) }, run)
+}
+
+// The same daemon with the answer to a report ask scripted by node.
+fn reporting(
+  answers: List(#(String, Result(Nil, deployment.Why))),
+  ask: fn(String, Int) -> Result(NodeReport, orchestrator_port.Silence),
+  run: fn(root.Ready(String), Int, String, process.Subject(Note)) -> Nil,
+) {
   let told = recorder()
   let reach =
-    deployment.Reach(self:, dial: fn(node, _within_ms) {
-      process.send(told, Dialled(node))
-      case list.key_find(answers, node) {
-        Ok(outcome) -> outcome
-        Error(Nil) -> Error(deployment.Unreachable)
-      }
-    })
+    deployment.Reach(
+      self:,
+      dial: fn(node, _within_ms) {
+        process.send(told, Dialled(node))
+        case list.key_find(answers, node) {
+          Ok(outcome) -> outcome
+          Error(Nil) -> Error(deployment.Unreachable)
+        }
+      },
+      ask:,
+      own: fn() { bare(self) },
+    )
   let movers =
     session_movers.Control(
       ..session_movers.idle(),
@@ -162,16 +218,16 @@ pub fn the_owner_reads_every_configured_node_as_the_daemon_found_it_test() {
       let assert [_, _, _, down] = nodes
       assert field(down, "reason") == json.String("timeout")
 
-      // Every node that is `ok` states no member beyond the four that a later
-      // report may extend.
-      let assert [asking, ..] = nodes
-      assert asking
-        == json.Object([
-          #("node", json.String(self)),
-          #("name", json.String(self)),
-          #("roles", json.Array([json.String("orchestrator")])),
-          #("state", json.String("ok")),
-        ])
+      // The asking daemon states itself from its own report, marked as the
+      // asker, and a node that is down states no report at all.
+      let assert [asking, desk, ..] = nodes
+      assert field(asking, "self") == json.Bool(True)
+      assert field(asking, "roles") == json.Array([json.String("orchestrator")])
+      assert field(asking, "state") == json.String("ok")
+      assert field(asking, "build_commit") == json.String("abc123")
+      assert field(asking, "uptime_ms") == json.Int(60_000)
+      assert field(desk, "build_version") == json.String("0.3.0")
+      assert !has(down, "build_commit")
 
       // The executor and its pool are described for a creation form, and the
       // unreachable executor leaves its pool with nobody eligible.
@@ -343,4 +399,124 @@ pub fn a_daemon_with_no_peers_answers_with_itself_alone_test() {
     let _ = ffi_ws.tcp_close(socket)
     Nil
   })
+}
+
+// A node that answers with a scope that blocks a reopen is `degraded` with the
+// reason word, counts as reachable, and leaves the deployment degraded without
+// it being down. The overview states the numbers and not the session ids.
+pub fn a_node_with_an_unclean_scope_is_degraded_not_down_test() {
+  reporting(
+    [
+      #("desk@10.0.0.8", Ok(Nil)),
+      #("laptop@10.0.0.7", Ok(Nil)),
+      #("executor@10.0.0.2", Ok(Nil)),
+    ],
+    fn(node, _within_ms) {
+      case node {
+        "executor@10.0.0.2" -> Ok(unclean_executor(node, "0198c0de-1"))
+        _ -> Ok(bare(node))
+      }
+    },
+    fn(_ready, port, credential, _told) {
+      let #(socket, _) = wire.connect(port, credential, "/v2/control")
+      let _hello = wire.frame(socket, within_ms: 1000)
+      let body = field(status(socket, 1, json.Object([])), "body")
+      assert field(body, "state") == json.String("degraded")
+      assert field(body, "reasons")
+        == json.Array([
+          json.Object([
+            #("node", json.String("executor@10.0.0.2")),
+            #("reason", json.String("unclean_scope")),
+          ]),
+        ])
+      let assert json.Array([_, _, _, executor]) = field(body, "nodes")
+      assert field(executor, "state") == json.String("degraded")
+      assert field(executor, "reasons")
+        == json.Array([json.String("unclean_scope")])
+      assert !has(field(executor, "executor"), "unclean")
+
+      // The executor card says the executor is degraded and has 13 scopes free
+      // (16 less 2 open and 1 that blocks a reopen).
+      let assert json.Array([card]) =
+        field(field(body, "placements"), "executors")
+      assert field(card, "state") == json.String("degraded")
+      assert field(card, "free_scopes") == json.Int(13)
+      let _ = ffi_ws.tcp_close(socket)
+      Nil
+    },
+  )
+}
+
+// The `node` filter returns the long lists the overview leaves out: the names of
+// the registered workspaces and each scope that blocks a reopen with its session.
+pub fn the_node_filter_returns_the_long_lists_test() {
+  reporting(
+    [#("executor@10.0.0.2", Ok(Nil))],
+    fn(node, _within_ms) { Ok(unclean_executor(node, "0198c0de-1")) },
+    fn(_ready, port, credential, _told) {
+      let #(socket, _) = wire.connect(port, credential, "/v2/control")
+      let _hello = wire.frame(socket, within_ms: 1000)
+      let body =
+        field(
+          status(socket, 1, json.Object([#("node", json.String("build-box"))])),
+          "body",
+        )
+      let assert json.Array([node]) = field(body, "nodes")
+      let executor = field(node, "executor")
+      assert field(executor, "workspaces")
+        == json.Array([json.String("proj"), json.String("docs")])
+      assert field(executor, "unclean")
+        == json.Array([
+          json.Object([
+            #("session", json.String("0198c0de-1")),
+            #("state", json.String("unknown_cleanup")),
+            #("count", json.Int(2)),
+          ]),
+        ])
+      assert field(node, "state") == json.String("degraded")
+      assert !has(body, "directory")
+      assert !has(body, "moves")
+      let _ = ffi_ws.tcp_close(socket)
+      Nil
+    },
+  )
+}
+
+// A node that connects and does not report within the deadline is down with the
+// reason `timeout`, the daemon's own facts and the other nodes' are still
+// returned, and the reply comes by the deadline and not when the ask would have
+// ended.
+pub fn a_node_that_connects_and_reports_late_is_down_test() {
+  reporting(
+    [
+      #("desk@10.0.0.8", Ok(Nil)),
+      #("laptop@10.0.0.7", Ok(Nil)),
+      #("executor@10.0.0.2", Ok(Nil)),
+    ],
+    fn(node, _within_ms) {
+      case node {
+        "laptop@10.0.0.7" -> {
+          process.sleep(60_000)
+          Error(orchestrator_port.AskTimedOut)
+        }
+        _ -> Ok(bare(node))
+      }
+    },
+    fn(_ready, port, credential, _told) {
+      let #(socket, _) = wire.connect(port, credential, "/v2/control")
+      let _hello = wire.frame(socket, within_ms: 1000)
+      let body = field(status(socket, 1, json.Object([])), "body")
+      assert field(body, "state") == json.String("degraded")
+      let assert json.Array([asking, desk, laptop, executor]) =
+        field(body, "nodes")
+      assert field(asking, "state") == json.String("ok")
+      assert field(desk, "state") == json.String("ok")
+      assert field(laptop, "state") == json.String("down")
+      assert field(laptop, "reason") == json.String("timeout")
+      assert !has(laptop, "build_commit")
+      assert field(executor, "state") == json.String("ok")
+      let _ = ffi_ws.tcp_close(socket)
+      Nil
+    },
+  )
 }

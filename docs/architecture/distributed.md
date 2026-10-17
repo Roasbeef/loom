@@ -787,44 +787,89 @@ pooled registration with none.
 
 Before this command an operator learned that an executor did not answer when a
 session placed on it failed to open. `deployment.status` (owner-only, protocol
-change 085) reads the nodes the daemon is configured with, and says which of
-them its own connection attempts reached, before any session exists.
+change 085) reads the nodes the daemon is configured with, asks each for its own
+account of itself, and says what it found, before any session exists.
 
 `client/deployment` makes the read. It lists the daemon's `[orchestrators]` rows
-and then its `[executors]` rows, connects to all of them at once in one weft run
-(each attempt bounded at one second, the run at three), and reports each node as
-`ok` when `distribution.connect` succeeded and `down` when it did not, with one
-of three reason words: `timeout`, `unreachable` or `unavailable`. Nothing is
-cached; the next read connects again. A first TLS handshake can outlast its
-second, in which case the node is `down` in that reply and `ok` in the next. The
-deployment as a whole is `ok` when every configured node is, `down` only when none
-is, and `degraded` between: one dead executor among several is a degraded
-deployment, not a dead one. The
-daemon asks about itself too, as the first node, and a daemon with no
-`[distribution]` table answers with itself and its executors `down`.
+and then its `[executors]` rows, and in one weft run, under a deadline of four
+seconds, it does three things at once. For each target it connects (bounded at one
+second) and then asks the node's orchestrator port for its `Report` (bounded at 2.6
+seconds, longer than the node's own bound of 2.5 on its sources). It also builds the asking daemon's own report through the closure
+`Reach.own`, which is the port's `Reads.report`, so the daemon is never connected
+to. Nothing is cached. A first TLS handshake can outlast its second, in which case
+the node is `down` in that reply and `ok` in the next.
 
-Every statement is "as seen from this daemon", so a link is only known for edges
-that touch it: the reply has one `peer` edge to each orchestrator and one `serves`
-edge to each executor, each with the asking daemon's own link (`connected` or
-`none`). It also holds the placements a session-creation form draws: each
-executor with the state `ready` or `down` and what its operator declared, and each
-pool with the executors `pools.candidates` admits, in its trial order, and which
-of them were reachable. The pool is not reordered by health; the first open still
-tries its order and moves on only for a failed connection or `CapacityExhausted`.
+A node is in one of three states, all as seen from this daemon:
 
-The request may carry `node`, a key of `[executors]` or `[orchestrators]`. The
-key is resolved against the daemon's own configuration before anything is
-connected to, so a name taken from the request body never reaches the connection
-layer; a key the configuration lacks is `not_found` and connects to nobody. A
-member principal is refused `forbidden`, as for `directory.status`.
+- `ok`: the connection was made, the report arrived, and no reason applies.
+- `degraded`: the same, with one or more fixed reason words (`classify`, a pure
+  function of the two reports and the `[executors]` row). `unclean_scope` is a scope
+  that blocks a reopen and is freed only by `loomd executor release`, `full` is an
+  executor whose open and unclean scopes are at its limit, and
+  `declaration_contradicted` is a census that disagrees with the row.
+  `build_differs` and `protocol_differs` compare the node with the asking daemon.
+  `directory_no_leader` and `directory_copy_unconfirmed` come from a directory
+  member's own report, and `directory_quorum_lost` is the asking daemon's count of
+  voters it reached against a majority.
+- `down`: no connection within a second, or a connection and no report within 2.6
+  seconds more. The reason is `timeout`, `unreachable`, `unavailable` or `silent`.
+  A node that connected and gave no report reads `silent` when the ask failed at
+  once (no orchestrator port is registered there, or it ended) and `timeout` when
+  it waited out its bound, because the daemon can say nothing else of it.
 
-This is health from reachability only. What a node says about itself (its
-capacity, its scopes that block a reopen, its build) needs a question the
-orchestrator port does not yet carry, and every node member beyond `node`, `name`,
-`roles` and `state` is optional so that it can be added later without replacing
-anything. `loom deployment status` and `loom deployment executors` print the
-reply (`--json` prints it as sent); `tui/deployment_view` decodes it with a total
-decoder of its own.
+The deployment as a whole is `ok` when every configured node is, `down` only when
+none answered, and `degraded` between. A node that answered with reasons counts as
+reachable and not `ok`, so one degraded executor makes the deployment degraded
+without being dead. The asking daemon is not counted: it is always reachable, and
+counting it would make a deployment whose every other node is gone read degraded
+instead of down.
+
+Every statement is "as seen from this daemon", so a link is known only for edges
+that touch it. The reply has a `peer` edge to each orchestrator and a `serves` edge
+to each executor, each with the asking daemon's own link (`connected` or `none`) and,
+for `serves`, how many sessions the daemon has placed there. It adds a `member` edge
+from itself to each directory member, with that member's vote and whether it
+leads. What another orchestrator serves is that orchestrator's `serves` list in
+`orchestrators` and not an edge, so the reply says it once. The reply also holds the placements a session-creation form draws: each
+executor with a state of `ready`, `degraded`, `full` or `down`, its free scope count
+and any contradiction between its census and its declaration, and each pool with the
+executors `pools.candidates` admits, in its trial order, and which of them can take
+a session (neither `down` nor `full`). The pool is not reordered by health; the
+first open still tries its order and moves on only for a failed connection or
+`CapacityExhausted`. The asking daemon's directory block (`directory.status` and
+whether its own copy is current) and the moves it has in flight, each with its stall
+time and reason, complete the picture.
+
+The request may carry `node`, a key of `[executors]` or `[orchestrators]`. The key
+is resolved against the daemon's own configuration before anything is connected to,
+so a name taken from the request body never reaches the connection layer; a key the
+configuration lacks is `not_found` and connects to nobody. The reply then holds that
+node alone, with the long lists the overview leaves out: an executor's registered
+workspace names and each scope that needs a release with its session, and an
+orchestrator's placements and moves. A member principal is refused `forbidden`, as
+for `directory.status`.
+
+`loom deployment status` prints the reply as a table of nodes with their build,
+scopes and a note, the links, the directory and the moves in flight; `--node <key>`
+reads one node and adds its long lists, including the `loomd executor release` line
+for each scope that needs one; `--json` prints the reply as sent. `loom deployment
+executors` prints the placements. `loom directory status` prints the cluster view
+of a directory member. `tui/deployment_view` and `tui/directory_view` decode the
+replies with total decoders of their own.
+
+A reply must fit the 64 KiB frame the terminal accepts. The long lists (64
+workspace names, 64 unclean scopes, 64 placements) appear only when one node is asked
+for, so the overview carries numbers, but a deployment of 64 nodes with long names,
+64 moves in flight and pools that admit every executor still encodes to about 90,000
+bytes. The daemon therefore measures what it renders and keeps it at or under 60,000
+bytes (`deployment.max_reply_bytes`): it drops the moves first, then the per-node
+facts, the declarations and the pools, then the edges, placements and `serves` lists,
+and names what it dropped in `omitted`. A reply for one node cuts its long lists to 16
+entries and then to none, and names them in `more`. The terminal says so and points at
+`--node` for the rest. A directory
+member that the daemon does not configure as an orchestrator or an executor is named
+in the directory block, and in the `member` role of the nodes that are members, and is
+not dialled.
 
 ## Two orchestrators
 

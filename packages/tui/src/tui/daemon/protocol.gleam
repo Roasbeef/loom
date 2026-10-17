@@ -350,10 +350,20 @@ pub type Command {
   )
 
   /// Asks which of the nodes the daemon is configured with answer its own
-  /// connection attempts, and which executors and pools a session may be placed
-  /// on (`protocol-change/085`). Owner-only. A daemon built before the command
-  /// existed refuses it `bad_request`.
-  DeploymentStatus
+  /// connection attempts and report, and which executors and pools a session
+  /// may be placed on (`protocol-change/085`). Owner-only. With a `node` it asks
+  /// about the one configured `[executors.<name>]` or `[orchestrators.<name>]`
+  /// that key names and returns its long lists. A daemon built before the
+  /// command existed refuses it `bad_request`.
+  DeploymentStatus(
+    /// The configuration key of the one node to read, or `None` for all.
+    node: Option(String),
+  )
+
+  /// Asks the session directory's cluster view of a daemon that is a member
+  /// (`protocol-change/083`). Owner-only. A daemon that is not a member answers
+  /// `not_found`.
+  DirectoryStatus
 }
 
 /// The most sessions one `SessionActivity` request may name.
@@ -642,6 +652,14 @@ pub type Reply {
     /// The daemon's reply body, unread.
     document: json.JsonValue,
   )
+
+  /// The cluster view of a directory member: its members, voters, leader and
+  /// applied index. The body is kept whole for the same reason as
+  /// `DeploymentReply`'s, and `tui/directory_view` reads it.
+  DirectoryReply(
+    /// The daemon's reply body, unread.
+    document: json.JsonValue,
+  )
 }
 
 /// One validated server envelope; uncorrelated hello is the only handshake.
@@ -735,7 +753,8 @@ pub fn name(command: Command) -> String {
     RevokeMembership(..) -> "sessions.revoke"
     RevokeCredentials(..) -> "credentials.revoke"
     SessionActivity(..) -> "sessions.activity"
-    DeploymentStatus -> "deployment.status"
+    DeploymentStatus(..) -> "deployment.status"
+    DirectoryStatus -> "directory.status"
     Shutdown -> "daemon.shutdown"
   }
 }
@@ -759,7 +778,8 @@ pub fn mutates(command: Command) -> Bool {
     | InspectPeers(..)
     | ListPrincipals(..)
     | PrincipalMemberships(..)
-    | DeploymentStatus
+    | DeploymentStatus(..)
+    | DirectoryStatus
     | SessionActivity(..) -> False
     SetDefault(..)
     | RenameSession(..)
@@ -814,7 +834,12 @@ pub fn encode(
 fn command_fields(command: Command, epoch: Epoch) {
   let Epoch(epoch_value) = epoch
   case command {
-    Status | DeploymentStatus -> Ok([])
+    Status | DeploymentStatus(None) | DirectoryStatus -> Ok([])
+    DeploymentStatus(Some(key)) ->
+      case placement.is_orchestrator_name(key) {
+        True -> Ok([#("node", json.String(key))])
+        False -> Error("node must be a configuration key")
+      }
     ListSessions(after, revision) | ListArchivedSessions(after, revision) -> {
       use Nil <- result.try(case after {
         "" -> Ok(Nil)
@@ -1247,6 +1272,7 @@ fn decode_reply(event: String, body: json.JsonValue) {
       Ok(AccessChangeReply(body))
     "sessions.activity" -> result.map(activity(body), ActivityReply)
     "deployment.status" -> Ok(DeploymentReply(body))
+    "directory.status" -> Ok(DirectoryReply(body))
     "daemon.shutdown" ->
       case field(body, "state") {
         Ok(json.String("draining")) -> Ok(ShutdownReply)

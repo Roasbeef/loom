@@ -8059,73 +8059,112 @@ VM-wide singleton); the `Recorded` cases of `session_mover_test`,
 ## Reading the deployment (protocol-change/085)
 
 `deployment.status` is an owner-only control command that says which of the
-nodes the daemon is configured with answer its own connection attempts, before
-any session is placed on one. `docs/architecture/distributed.md` ("Reading the
-deployment") is the account and `docs/client-protocol.md` §3.29 the wire.
+nodes the daemon is configured with answer its own connection attempts, what each
+says of itself, and what the deployment looks like from here, before any session
+is placed on one. `docs/architecture/distributed.md` ("Reading the deployment") is
+the account and `docs/client-protocol.md` §3.29 the wire. Slice 4 part b added the
+reports; the 2026-10-16 addendum of 085 records the spellings it chose.
 
 - `client/deployment` is the whole read. `targets` lists the daemon's
   `[orchestrators]` rows and then its `[executors]` rows (a `Target` with its
-  `Kind`), `only` narrows them to a configuration key, and `probe` connects to
-  every target at once in one weft run (`connect_ms` 1000 each, `deadline_ms`
-  3000 in all). `Reach(self, dial)` is how it connects: `over(membership, self)`
-  is `distribution.peer` then `distribution.connect`, and `alone(self)`, for a
-  daemon with no `[distribution]`, connects to nobody. A task that returns
-  `Error(why)` is a `Failed` outcome carrying `why`, a task the deadline cut off
-  is `Down(TimedOut)`, and a crash is `Down(Unavailable)`: a node nothing was
-  heard from is never assumed up.
+  `Kind` and, for an executor, its `declared` row), `only` narrows them to a
+  configuration key, and `fan_out` runs one weft run (`deadline_ms` 4000) holding
+  the asking daemon's own report (`Reach.own`, only for a whole-deployment or
+  one-node read) and, for each target, `dial` (`connect_ms` 1000) then `ask`
+  (`report_ms` 2600, over `node_facts.read_ms`), each task in a slot of its own
+  (`weft.limit`) so black-holed targets cannot starve the rest. `orchestrator_port.ask_report`
+  returns a typed `Silence`: `PortGone` (its monitor fired at once: nothing
+  registered there, or the port ended) is `Down(Silent)`, and `AskTimedOut` is
+  `Down(TimedOut)`. `Reach(self, dial, ask, own)` is how it reaches: `over(
+  membership, self)` is `distribution.peer`, `distribution.connect`, then
+  `orchestrator_port.ask_report` at the connected node's port, `alone(self)` (no
+  `[distribution]`) connects to nobody, and `reporting(reach, own)` gives either
+  the closure that reads the daemon itself, which `main.node_reads` builds once
+  and hands to both the port and `listen_moving`. A task that returns `Error(why)`
+  is a `Failed` outcome carrying `why`, a connected node whose report did not
+  arrive is `Down(TimedOut)`, a task the deadline cut off is `Down(TimedOut)`, and
+  a crash is `Down(Unavailable)`: a node nothing was heard from is never assumed
+  up.
 - The only names ever dialled are `Target.node` values from the daemon's own
   tables. The request's `node` is a key: `status` resolves it with `only` before
-  `probe` runs, so a key the configuration lacks returns `Error(Nil)` and nothing
+  `survey` runs, so a key the configuration lacks returns `Error(Nil)` and nothing
   was dialled. `protocol.node_field` holds it to the shape of a key first
   (`bad_request` otherwise). `daemon_deployment_test` and `deployment_test` assert
-  the dial record is empty in both cases.
-- `Health` is `Reachable | Down(Why)` with `Why` = `TimedOut | Unreachable |
-  Unavailable` (wire words `timeout`, `unreachable`, `unavailable`). A node is
-  `ok` or `down`; `degraded` is reserved on the wire and arrives with the node
-  reports, which need a `Report` constructor on the orchestrator port and are not
-  built. Every node member beyond `node`, `name`, `roles`, `state` and `reason`
-  (when `down`) is optional so that report adds members and replaces none. The
-  whole deployment's `state` is `deployment.verdict` (`Whole`, `Degraded`,
-  `Lost`) over the configured nodes, not counting the asking daemon, which is
-  always reachable: `ok` when all answered, `down` only when none did, `degraded`
-  between. One dead executor among several is a degraded deployment.
+  the dial record is empty in both cases. A directory member the daemon does not
+  configure as an orchestrator or an executor is named, never dialled.
+- `Health` is `Reachable | Impaired(reasons) | Down(why)`. `Why` = `TimedOut |
+  Unreachable | Unavailable` (wire `timeout`, `unreachable`, `unavailable`), and
+  `Reason` is the eight fixed words (`unclean_scope`, `full`,
+  `declaration_contradicted`, `build_differs`, `protocol_differs`,
+  `directory_no_leader`, `directory_copy_unconfirmed`, `directory_quorum_lost`).
+  `classify(asker, node)` is pure over the two reports and the executor row: it
+  filters the seven words that hold of one node (`applies`), and `quorum(asker,
+  nodes)` states the eighth of the asking daemon from its cluster view and the
+  health of the nodes it asked (the daemon counts itself, and a voter it did not
+  ask is counted as reached, so the reason is never stated on a guess). `judged`
+  gives each answering node its reasons. `free_scopes` is the limit less the open,
+  closing and closed-unknown scopes, never below zero, and `full` is zero free.
+- `verdict` counts a node by `Reachable`, `Impaired` and `Down` over the
+  configured nodes, not the asking daemon: `Whole` when none is impaired or down,
+  `Lost` only when nothing answered, and `Degraded` otherwise, so an impaired node
+  is reachable and not `ok`. `reasons` gives a `down` node's word and each reason
+  of an impaired one.
 - `Snapshot` is `Overview` (the asking daemon as a `Node`, `others`, `edges`,
   `placements`) or `Selected` (only the named nodes), so a reply with a `node`
-  filter cannot carry edges or placements. Edges are `Serves` (executors) and
-  `Peers` (orchestrators), each with the asking daemon's own `Link`. Placements
-  are `ready | down` for an executor in this slice, and a pool lists
-  `pools.candidates` in its trial order with `eligible` the reachable ones; the
-  pool is never reordered by health.
+  filter cannot carry edges or placements, and `to_json` renders the long lists
+  (`Detail` is `Brief | Long`) only for `Selected`. `to_json` measures what it
+  renders and keeps it at or under `max_reply_bytes` (60,000): it re-renders at
+  `Level` `Trimmed`, `Skeleton` and `Bare`, dropping the moves, then the per-node
+  facts, declarations and pools, then edges, placements and `serves`, and names
+  what it dropped in `omitted` (a `Selected` reply cuts its lists and names them in
+  `more`). The asking daemon's own impairment is folded into the verdict. Edges are `Serves(sessions)`
+  (executors, from the asking daemon's own placements, and from each answering
+  orchestrator's `executor_nodes` with no link), `Peers` (orchestrators) and
+  `Member(voter, leader)` (the asking daemon to each directory member it lists;
+  what another orchestrator serves is only its `serves` list),
+  each with the asking daemon's own `Option(Link)`. Placements are `ready`,
+  `degraded`, `full` or `down`; a pool lists `pools.candidates` in its trial order
+  with `eligible` the executors neither down nor full, and the pool is never
+  reordered by health. The `directory` block is `directory_json`
+  (`directory_status_json`, moved here from `server`, plus `copy`) and `moves`
+  names each destination as the asking daemon names it.
 - `server.Config.deployment` is the `Reach`; `main.deployment_reach` builds it
-  from `Config.membership` and the node's own name. `server.deployment_status`
-  adds `MemberRole` to the asking daemon when `directory.standing` is `Member`,
-  and the owner check comes before any connection, so a member cannot make the
-  daemon dial. The orchestrators come from `Control.orchestrators` (the movers'
-  list, which is the `[orchestrators]` table on a daemon with distribution).
+  from `Config.membership` and the node's own name and `listen_moving` gives it
+  `reads.report`. `server.deployment_status` adds `MemberRole` to the asking
+  daemon when `directory.standing` is `Member`, and the owner check comes before
+  any connection, so a member cannot make the daemon dial. The orchestrators come
+  from `Control.orchestrators` (the movers' list, which is the `[orchestrators]`
+  table on a daemon with distribution).
 
 - The home page's creation panel reads the same placements without the rest of
   the deployment (protocol-change/085, `docs/architecture/web-view.md`,
-  "Executors and pools"). `deployment.placed` connects to the executors alone,
-  and `deployment.for_page` reduces the result to `web_view/placements` (a state,
-  the operator's declaration, a pool's trial order and its reachable members; no
-  node name or address). `server.HomeAttachment` gains `pools` (the startup
-  capture of the `[pools]` names, like `executors`) and `placements`, the blocking
-  read, which `ui_socket.upgrade_home` hands the page as
-  `read_task(deliver, attachment.placements)` only where the page holds the
-  creation capability. `ui_socket.create_for` accepts `creations.Pooled`: the pool
-  and no executor reach `manager.Creation` (`pool_of`), the scope is session-only,
-  and the daemon's `pool_unknown` is `creations.UnknownPool`.
+  "Executors and pools"). `deployment.placed` connects to and asks the executors
+  alone (`WithoutSelf`, so a slow directory read never delays the cards), and
+  `deployment.for_page` reduces the result to `web_view/placements` (a state, the
+  free scope count, any contradiction, the operator's declaration, a pool's trial
+  order and the members that can take a session; no node name or address).
+  `server.HomeAttachment` gains `pools` (the startup capture of the `[pools]`
+  names, like `executors`) and `placements`, the blocking read, which
+  `ui_socket.upgrade_home` hands the page as `read_task(deliver,
+  attachment.placements)` only where the page holds the creation capability.
+  `ui_socket.create_for` accepts `creations.Pooled`: the pool and no executor reach
+  `manager.Creation` (`pool_of`), the scope is session-only, and the daemon's
+  `pool_unknown` is `creations.UnknownPool`.
 
 Tests: `deployment_test` (the pure read and the weft fan-out with a scripted
-`dial`, including a stuck connection cut by the deadline and a crash, and
-`placed` and `for_page`),
-`daemon_deployment_test` (the control socket: the owner's reply, a member's
-`forbidden`, a key narrowing the read, an unconfigured key and a malformed one
-dialling nobody), the `deployment.status` cases of `daemon_protocol_test`, and
-`daemon_shipped_deployment_test` (two real daemons; the executor's process ends
-and the next read says `down`). For the creation panel: `ui_route_test` (a pooled
-creation and `pool_unknown`) and `ui_socket_test` (a card needs no new event
-class).
+`dial`, `ask` and `own`, including a stuck connection or ask cut by the deadline,
+a crash, one pure case for each of the eight reason words, the three-way verdict
+with a degraded node, the edges, the reply's members and the long lists, `placed`
+and `for_page`), `daemon_deployment_test` (the control socket: the owner's reply, a
+member's `forbidden`, a key narrowing the read and returning the long lists, an
+unconfigured key and a malformed one dialling nobody, a degraded node, and a report
+that arrives late reading `down`), the `deployment.status` cases of
+`daemon_protocol_test`, and `daemon_shipped_deployment_test` (two real daemons:
+the executor's process ends and the next read says `down`; a session attaches, the
+executor is restarted under it, the next read says `degraded` with `unclean_scope`
+and the session id, and `loomd executor release` clears it). For the creation
+panel: `ui_route_test` (a pooled creation and `pool_unknown`) and `ui_socket_test`
+(a card needs no new event class).
 
 ## The membership ledger, pure part (protocol-change/086, slice 1a)
 
@@ -8725,9 +8764,10 @@ Anthropic live cache measurements remain pending operator credits.
 
 ## The node report (protocol-change/085, slice 4 part a)
 
-A daemon says what it knows about itself when a peer asks. Nothing client-visible
-reads it yet: `deployment.status` still reports reachability only, and the pages
-that draw degraded and full states come with the slice that produces them.
+A daemon says what it knows about itself when a peer asks. `deployment.status`
+asks it of every reachable node and builds the asking daemon's own through the same
+closure (`Reads.report`), and classifies the answers ("Reading the deployment"
+above).
 
 - `client/node_report` is the vocabulary and has no process: `NodeReport(node,
   build_version, build_commit, epoch, started_ms, now_ms, peers, orchestrator,

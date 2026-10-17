@@ -95,11 +95,11 @@ answers `←` with "daemon control is unavailable". What is wrong with it:
 ### Data
 
 Everything drawn is already in the control protocol. A row is
-`Session` at `tui/daemon/protocol.gleam:473`: identity, workspace, name,
+`Session` at `tui/daemon/protocol.gleam:483`: identity, workspace, name,
 `created_at` and lifecycle. The state words and counts come from
-`Activity` at `tui/daemon/protocol.gleam:362`: state, strands, working,
+`Activity` at `tui/daemon/protocol.gleam:373`: state, strands, working,
 approvals, last outcome, last message and model, with up to four
-`GlanceLine` at `tui/daemon/protocol.gleam:382` rows. The filter counts are
+`GlanceLine` at `tui/daemon/protocol.gleam:393` rows. The filter counts are
 `counts` at `tui/session_selector.gleam:736`. "Created" uses `created_at`. A
 "last active" column would need a new control field, which is a
 protocol-change; this concept does not ask for one (question 6).
