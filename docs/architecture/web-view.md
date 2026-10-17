@@ -240,12 +240,12 @@ sequenceDiagram
    `Origin`, the nonce, the cookie under the key, the credential and the
    membership, then resolves the resident session exactly as a terminal's
    socket does, with the role capped by the page's ceiling
-   (`web_socket` at `packages/client/src/client/daemon/server.gleam:434`).
+   (`web_socket` at `packages/client/src/client/daemon/server.gleam:447`).
    The parser permit it reserves counts the page against the daemon's
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:4716`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:4809`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -1189,6 +1189,45 @@ names an executor (`creations.Registered`) or a pool (`creations.Pooled`); the
 daemon makes either session-only, checks the executor or pool against its
 configuration again (`executor_unknown`, `pool_unknown`), and for a pool picks the
 executor when the session first opens, in the pool's order.
+
+#### Sessions on other orchestrators
+
+A deployment with more than one orchestrator adds a group, "On other orchestrators",
+after "Other folders" (`view/elsewhere`, protocol-change/085). A session is served by
+the orchestrator that created it, so this daemon lists only its own; the group lists,
+for each other orchestrator the daemon is configured to ask, the rows that orchestrator
+reports, drawn under its configuration key and address as text. It is given on the
+creation capability's condition (`Start.elsewhere`, from
+`ui_socket.home_elsewhere_capability`): the owner's operating page, and no other.
+
+Each list read starts one read of the first page of every other orchestrator
+(`client/elsewhere.heard`, which dials only the orchestrators of the daemon's own
+configuration, each connection bounded at one second and each ask at one second more,
+under a three second deadline). It runs in a weft task (`ui_socket.read_task`), so the
+page's runtime never waits on a connection, behind the same owner check as a creation
+(`elsewhere_for`). The answer is numbered by `Model.elsewhere_reads`, and an answer a
+newer read overtook is dropped, as a placement read's is. The page is given the key, the
+address and, for each row, a fixed state and text (`web_view/elsewhere`); it is given no
+node. An orchestrator that did not answer is one line, "No answer from this
+orchestrator.", and is never drawn as an empty group.
+
+A row is information and not a door: this daemon cannot open another daemon's session
+for a browser. Its "Where" button (`Locating`) opens a detail under the row with the
+launch line that reaches the session on the machine that has it, in a `<loom-copy>` box
+of the subject `launch` (`web_client/copy_rule` copies exactly `loom --addr`, an address,
+`--session`, an identity and the fixed `--token-file` ending), and the words are those the
+terminal prints for a `not_owner` answer (`session_view/launch_words`). A group that has
+more rows than the page holds has "Show more" (`ShowingMore`), which asks for the page after
+the last row the page holds for that group, and `MoreRead` joins it only if no newer
+first-page read has replaced the rows, up to `elsewhere.max_rows`.
+
+Both buttons are clicks beneath the sessions' region (`home.table_path`), where the home
+already admits clicks, so the socket admits no new event class, scope, route or content
+security policy change (`ui_socket_test` pins the admission and the near misses). A press
+names the orchestrator and the session the server drew into the tree, and the page honours it
+only for a group and a row it holds. Every name, address and path is a text node, no class,
+attribute or key is built from one, and the group reuses the page's existing tinted boxes and
+hairline borders.
 
 ### The admin page
 

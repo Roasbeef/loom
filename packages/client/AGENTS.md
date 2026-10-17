@@ -8844,3 +8844,57 @@ above).
   `session_mover_test` (a stalled reason kept and listed, a finished move gone),
   `ledger_holdings_test` (`placements`), `directory/store_test` (`confirm_current`),
   `daemon_executor_test` (the host's facts from a started daemon).
+
+## Other orchestrators' sessions (protocol-change/085, `sessions.elsewhere`)
+
+`sessions.elsewhere` is an owner-only control command that asks each other
+orchestrator the daemon is configured with for a page of its sessions.
+`docs/client-protocol.md` §3.31 is the wire and the 2026-10-16 addendum of 085
+(slice 5) records the spellings.
+
+- `client/listed_sessions` is the pure vocabulary: `Row` (the members of a
+  `sessions.list` record, plus the optional `executor_node`), `ListedStatus`,
+  `Page(rows, more)` with `More` (`Last | Further`), `clamp_limit` (1 to
+  `max_limit`, 100), `row_json`, and `Listing`, the closure type a daemon asks a
+  peer for a page with (`unlisted` is the one that is silent).
+- `remote/orchestrator_port` gains `Sessions(after, limit, reply)`, answered
+  through `detached` from `Reads.sessions`, and `ask_sessions`. The reply is
+  `Result(Page, Nil)`: a catalogue that cannot be read is `Error(Nil)`, which the
+  asker reads as silence and never as an empty page. `unreported()` answers an
+  empty page, since it has no catalogue. The module is past a thousand lines and
+  has a Flow spine.
+- `client/catalogue_page` is the daemon's side. `from_catalogue(registry,
+  executors)` walks `manager.page`, drops sessions whose custody is `moving` or
+  `moved`, and stops at one row more than asked, which decides `more`. The next
+  page begins after the last row returned. `ledger_holdings.max_pages` bounds the
+  walk, and a walk that holds no row at the bound is `Error(Nil)`.
+- `client/elsewhere` is the asking side. `heard` resolves the request's key with
+  `choose` against the configured orchestrators (so an unknown key dials nobody),
+  and `ask_all` runs one weft run (`deadline_ms` 3000): `Reach.dial`
+  (`deployment.connect_ms`), then `Reach.sessions` (`ask_ms` 1000), 20 rows per
+  group. A task the deadline cut off, one that crashed and one that never started
+  are `Silent`. `fit` removes the last row of the fullest group until the body is
+  within `max_body_bytes` (59,700) and marks the group `more`. `to_json` renders
+  the reply, and `for_page` the groups for the owner's home (`web_view/elsewhere`:
+  key, address, fixed state, no node).
+- `deployment.Reach` gains `sessions: Listing`, beside `dial` and `ask`; `over`
+  asks the port of the pinned peer, `alone` is silent. Every test that builds a
+  `Reach` names `listed_sessions.unlisted` or its own script.
+- `daemon/protocol.SessionsElsewhere(orchestrator, after)`: both optional, `after`
+  needs `orchestrator` (`elsewhere_request`), `after` is a canonical identity or
+  the empty text. `server.dispatch_class` serves it after `owner(principal)`, a
+  `ControlRead`, and answers `not_found` for an unknown key.
+- The owner's home: `server.HomeAttachment.elsewhere` is the read over the daemon's
+  own configuration, `ui_socket.home_elsewhere_capability` gives
+  `home.Start.elsewhere` to the owner's operating page, and
+  `ui_socket.elsewhere_for` repeats the owner check inside the weft task
+  (`read_task`) before the daemon dials. "Where" and "Show more" are clicks beneath
+  `home.table_path`, so `home_accepts` admits them and no admission was added.
+- Tests: `remote/orchestrator_port_test` (paging over a real registry, `moving` and
+  `moved` absent, a whole catalogue page of moved sessions skipped, the clamp, an
+  unreadable catalogue), `daemon_elsewhere_test` (the owner's read, the key and
+  cursor, `not_found` and `bad_request` dial nobody, a member `forbidden`, the byte
+  bound), `daemon_protocol_test`, `ui_socket_test` and `ui_route_test` (the
+  capability, admission, near misses, `elsewhere_for`), and the shipped
+  `daemon_shipped_directory_test` (two orchestrators, one stopped: `silent` with no
+  rows).

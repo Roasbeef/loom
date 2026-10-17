@@ -949,3 +949,12 @@ polls a running request at most once per second through the ready lane, and
 `btw_due` supplies the web host's timer deadline. Connection changes clear the
 old board. Refusals retire its pending correlation without closing the lane.
 Both hosts draw `btw.lines`, which sanitizes terminal control characters.
+
+## Launch words (protocol-change/085)
+
+`launch_words.launch_line(address, session)` is the command that reaches a session
+on another orchestrator: `loom --addr <address> --session <id> --token-file <owner
+token file on that host>`, with `unknown_address` when the configuration gives none.
+The terminal's `not_owner` words and the web home's "Where" detail both use it, so
+the two say one thing. It is pure and names the token file with a placeholder, since
+the file is on the other machine.

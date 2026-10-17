@@ -1709,3 +1709,31 @@ composer. Observer pages expose no side-query controls.
 leave a side answer unobserved. Closing the panel does not cancel inference, and
 a late board preserves its hidden visibility. The operator-page fixture verifies
 that an ask during a running turn sends `btw`, never a main prompt or steer.
+
+## Sessions on other orchestrators (protocol-change/085)
+
+The owner's operating home draws a group, "On other orchestrators", after "Other
+folders". `docs/architecture/web-view.md` ("Sessions on other orchestrators") is the
+account.
+
+- `web_view/elsewhere` is the page's vocabulary: `Group(name, address, hearing)` with
+  `Hearing` (`Answered(rows, more) | Silent`), `Row(session_id, workspace, name,
+  status, executor)` with the closed `Status` and its fixed `word`, `Read` (`Heard |
+  Unread`), `append` (joins a later page, up to `max_rows`) and `launch`
+  (`session_view/launch_words`). It carries no node and no credential.
+- `home.Start.elsewhere` is `Some(home.Elsewhere(groups, next))` exactly where `create`
+  is. The model keeps `elsewhere`, `elsewhere_reads` (the number of the latest
+  first-page read; `Refreshed` bumps it), `located` (the open detail) and `paging` (the
+  group whose page is out). `ElsewhereRead(serial, read)` and `MoreRead(group, serial,
+  read)` are the effect's own messages. `Locating(group, session)` is honoured only for
+  a row the page holds (`holds_row`), `ShowingMore(group)` asks after the last row held
+  (`next_cursor`) and only while no page is out, and `still_there` closes a detail whose
+  row a later read removed.
+- `view/elsewhere` draws the group: a name and address as quiet text, a row for each
+  session with a "Where" button, the detail in a `<loom-copy subject="launch">` box, "No
+  answer from this orchestrator." for a silent group, and "Show more". Every name and
+  path is a text node, the classes are fixed words from the existing stylesheet, and the
+  rows are keyed by position. `home_table.view` takes it after the folders section.
+- No event class, scope, route or content security policy changed: the buttons are
+  clicks beneath `home.table_path`. `home_test` pins the group, the silent line, the
+  detail, "Show more" and the dropped stale page.

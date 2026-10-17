@@ -585,3 +585,65 @@ reply treats every member named here as optional, as the decision states.
   needs a release is named only when the reply carries the node's long lists
   (`--node`), so an overview says how many. `loom directory status` draws the
   `directory.status` body and has no member of its own.
+
+## Addendum 2026-10-16: the spellings slice 5 chose
+
+Slice 5 builds `sessions.elsewhere`: the orchestrator port's `Sessions`, the
+control command, the terminal's section and `loom sessions elsewhere`, and the
+owner's home group. 085 is silent or ambiguous on the points below, and this is
+what the code does. A reader of a reply treats every member named here as
+optional.
+
+- **`Row.executor_node`.** A row gains the optional member `executor_node`. A
+  row's `executor` is a key of the answering orchestrator's own `[executors]`
+  table, and two orchestrators need not call one executor by one name, so a reader
+  that attributes a row to a machine needs the node. The answering orchestrator
+  fills it from its own table, and leaves it out when the table does not list the
+  executor. It is not in the page vocabulary of the web view, which draws the
+  executor's key as the row's placement.
+- **A failed read is not an empty page.** `Sessions` is answered with
+  `Result(Page, Nil)`, as `Holds` is. A catalogue that cannot be read sends
+  `Error(Nil)`, and the asking daemon reports the orchestrator `silent`. The
+  decision says "a daemon with no catalogue to describe answers `Sessions` with an
+  empty page", which is the port started without a catalogue (`unreported`), and
+  not a catalogue that failed.
+- **How a page is read.** The answering daemon reads catalogue pages from the
+  identity it is given, drops the sessions that are archived, `moving` or `moved`,
+  and stops when it holds one row more than it was asked for. The extra row
+  decides `more`, so a page that ends exactly at the end of the catalogue is last.
+  If it has read `ledger_holdings.max_pages` catalogue pages and holds no row, it
+  cannot say where the next one is and does not answer; if it holds some, it
+  answers them with `more`.
+- **The request.** `orchestrator` alone is that group's first page, and `after`
+  without `orchestrator` is `bad_request`: identities are not ordered across
+  orchestrators, so a cursor into every group means nothing. A value of
+  `orchestrator` that is not shaped like a configuration key is `bad_request`, and
+  one that is shaped like a key and absent from the configuration is `not_found`.
+  Both are decided before any connection.
+- **The size of a reply.** The daemon asks for 20 rows for each group, then keeps
+  the body at or under 59,700 bytes, which with its envelope is under 60,000. It
+  removes the last row of whichever group has the most rows, the later group on a
+  tie, until the body fits, and marks that group `more`. A silent group is one
+  line and is never cut.
+- **The terminal.** `loom sessions list` appends the section to both of its text
+  forms, the table and the plain lines, after a blank line, unless `--local` is
+  given. A script that parses the lines uses `--local`. A daemon that does not know
+  the command has no section, and a read that failed for another reason adds one
+  line saying the other orchestrators were not read, because the listing above it
+  is still true and a missing section would read as "none". `loom sessions
+  elsewhere` prints only the section, and takes `--orchestrator <key>` and `--after
+  <id>` for a group's next page and `--json` for the reply as it was sent.
+- **The web home.** The owner's operating home reads the first page of every other
+  orchestrator in a weft task after each list read, numbered so that an answer a
+  newer read overtook is dropped, and "Show more" asks for one group's next page
+  after the last row the page holds for it. A row's "Where" opens a detail with the
+  launch line, in a `<loom-copy>` box. The page is given the configuration key, the
+  address and each row's fixed state and text, and no node. It adds no event class,
+  scope, route or content security policy change, and no stylesheet rule: the group
+  reuses the existing boxes. The launch line is the words the terminal prints for a
+  `not_owner` answer, which now live in `session_view/launch_words`.
+- **`<loom-copy>` takes a seventh subject.** The launch line is not any shape the
+  element copied, so `launch` is added to `web_client/copy_rule`: `loom --addr`, an
+  address of the characters an address has or the placeholder for none, `--session`,
+  an identity of hexadecimal digits and hyphens, and the fixed `--token-file`
+  ending. The built bundle and stylesheet are regenerated in their own commit.
