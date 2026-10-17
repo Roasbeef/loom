@@ -9,3 +9,4 @@ machine = { path = "../machine" }
 
 [dev_dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"
+qcheck = ">= 1.0.5 and < 2.0.0"
