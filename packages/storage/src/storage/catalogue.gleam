@@ -36,8 +36,9 @@
 ////    `abort_move` and `import_session` are the compare-and-set transitions of
 ////    a session moving between orchestrators.
 //// 10. `claim_delegate` records the delegate session of a (spawner, parent
-////     session) pair under the spawner's cap, and `delegate_of` is the marker
-////     that says a session is one.
+////     session) pair under the spawner's cap, `delegate_of` is the marker
+////     that says a session is one, and `delegates` lists every one for the
+////     retention sweep.
 
 import core/ids
 import gleam/bit_array
@@ -1703,6 +1704,37 @@ pub fn delegate_of(
       }
     [_, _, ..] -> Error(Invalid("duplicate delegate session metadata"))
   }
+}
+
+/// Every delegate session, in session identity order, for the retention sweep
+/// that deletes the ones whose spawner has gone quiet.
+///
+/// A stored row whose spawner or parent is outside its grammar makes the whole
+/// read `Invalid`, as it does for `delegate_of`: a damaged row is reported and
+/// never skipped as if it were not a delegate session.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.delegates(store) == Ok([])
+/// ```
+pub fn delegates(catalogue: Catalogue) -> Result(List(Delegate), Error) {
+  use rows <- result.try(query(catalogue, sql.all_delegate_sessions()))
+  list.try_map(rows, fn(row) {
+    case
+      is_profile_name(row.spawner)
+      && result.is_ok(ids.parse_session_id(row.parent_session))
+    {
+      True ->
+        Ok(Delegate(
+          spawner: row.spawner,
+          parent_session: row.parent_session,
+          session_id: row.session_id,
+          last_contact_ms: row.last_contact_ms,
+        ))
+      False -> Error(Invalid("invalid delegate session metadata"))
+    }
+  })
 }
 
 /// The number of delegate sessions a spawner holds, which its `max_sessions`

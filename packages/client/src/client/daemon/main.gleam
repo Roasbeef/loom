@@ -1625,6 +1625,10 @@ pub fn prepare_startup(
           )
           |> diagnose_start(logger, identity, SettingsResolution),
         )
+        use tick <- result.try(
+          deadline_tick_of(directory, registration.id)
+          |> diagnose_start(logger, identity, SettingsResolution),
+        )
         let settings =
           serve.Settings(
             ..settings,
@@ -1639,6 +1643,7 @@ pub fn prepare_startup(
               }),
             ),
             remote_reach: reach_of(config, directory, registration.id),
+            deadline_tick_ms: tick,
           )
         let settings =
           serve.Settings(
@@ -1710,6 +1715,74 @@ pub fn prepare_startup(
     ),
   )
   |> result.map(fn(daemon) { #(config, daemon) })
+}
+
+/// How often a session's Agency reaps overdue children on its own, or `None`.
+///
+/// Only a delegate session has a tick: its children belong to a spawner that
+/// may never come back to wait on them, so the session enforces the deadline
+/// itself (protocol-change/084). A marker that cannot be read is an error and
+/// not "no tick", as it is for the catalogue and for moves: the session would
+/// otherwise open as an ordinary one and its children would outlive their
+/// deadlines. The caller refuses the open.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // main.deadline_tick_of(registry, delegate_session_id) == Ok(Some(15_000))
+/// ```
+@internal
+pub fn deadline_tick_of(
+  registry: manager.Manager(instance),
+  id: String,
+) -> Result(Option(Int), String) {
+  case manager.delegate_of(registry, id) {
+    Ok(Some(_delegate)) -> Ok(Some(agency.delegate_deadline_tick_ms))
+    Ok(None) -> Ok(None)
+    Error(_) -> Error("the session's delegate marker could not be read")
+  }
+}
+
+/// Deletes the delegate sessions whose spawner has been silent past its
+/// retention, once at boot (protocol-change/084).
+///
+/// This runs before the orchestrator port starts, so no message from a spawner
+/// can touch a session while it is being judged. Nothing is resident yet, and a
+/// delegate session is not reopened at boot, so every session older than its
+/// spawner's `retain_s` holds no child that can still run: the decoder keeps
+/// `retain_s` at or above `max_within_s`. A spawner whose table has since been
+/// removed is judged by `spawners.default_retain_s`. A sweep that fails is
+/// logged and does not stop the daemon, because the sessions it would have
+/// deleted are only idle and the next boot sweeps again.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // main.sweep_delegate_sessions(config, daemon, logger, ffi_os.system_time_ms())
+/// ```
+@internal
+pub fn sweep_delegate_sessions(
+  config: Config,
+  daemon: root.Root(instance),
+  logger: Logger,
+  now_ms: Int,
+) -> Result(Nil, String) {
+  use ready <- result.map(root.ready(daemon, within: 20_000))
+  let retain_ms = spawners.retention_ms(config.spawners, _)
+  case
+    manager.sweep_delegates(
+      ready.registry,
+      retain_ms,
+      now_ms,
+      ready.sessions_directory,
+    )
+  {
+    Ok(deleted) ->
+      log.info(logger, "daemon.delegate_sweep", [
+        field.count("deleted", deleted),
+      ])
+    Error(_) -> log.warn(logger, "daemon.delegate_sweep_failed", [])
+  }
 }
 
 // What a session's hub needs to read and switch its own model profile
@@ -2067,6 +2140,12 @@ fn run(
       use member <- result.try(start_directory(config, logger))
       let config = Config(..config, member:)
       use executor <- result.try(start_executor(config, logger))
+      use Nil <- result.try(sweep_delegate_sessions(
+        config,
+        daemon,
+        logger,
+        ffi_os.system_time_ms(),
+      ))
       use Nil <- result.try(
         start_orchestrator_port(
           config,

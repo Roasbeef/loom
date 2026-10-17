@@ -75,6 +75,7 @@ import client/daemon/domain as domain_service
 import client/directories
 import client/distill
 import client/distillpass
+import client/effect_abort
 import client/escalate
 import client/extension/dispatch as extension_dispatch
 import client/extension/hooks as extension_hooks
@@ -394,6 +395,11 @@ pub type Settings {
     /// daemon with no `[orchestrators]` table, and `agent_spawn` then offers no
     /// `on`.
     remote_reach: Option(remote_reach.Reach),
+    /// How often the Agency reaps children past their deadlines when nobody is
+    /// waiting on them, in milliseconds. `None` reaps only on observation, and
+    /// the daemon sets it for a delegate session alone, whose children belong
+    /// to a spawner that may never return (protocol-change/084).
+    deadline_tick_ms: Option(Int),
     /// Told the first human prompt the session accepts on its main strand,
     /// once, so the daemon can seed the catalogue's subtitle
     /// (`protocol-change/067`). `None` for a host with no catalogue.
@@ -1431,6 +1437,7 @@ fn resolve(flags: Flags, placement: Placement) -> Result(Settings, String) {
       peer_directory: None,
       peer_defaults: None,
       remote_reach: None,
+      deadline_tick_ms: None,
       first_prompt: None,
       profile_desk: None,
       codemode_sockets: None,
@@ -3522,6 +3529,12 @@ fn assemble_in(
   // indirection `hub.commit_forwarder` uses four lines above — and the
   // holder is started under that name once the open has returned.
   let agency_name = address.new_address(namespace)
+
+  // The reap's route to the broker, bound by name for the same reason: the
+  // broker is built inside the plane, after this config, and the plane
+  // consumes the config. `client/effect_abort` explains the join; the actor
+  // behind the name is added to the services tier beside the async service.
+  let effect_abort_name = address.new_address(namespace)
   let agency_config =
     agency.Config(
       ..agency.default_config(agency_name, clock),
@@ -3534,6 +3547,8 @@ fn assemble_in(
         remote_reach.none(settings.session_id)
       }),
       remote_queued: fn() { peer_outbox_drain.poke(remote_drain_name) },
+      deadline_tick_ms: settings.deadline_tick_ms,
+      abort_effects: effect_abort.abort(effect_abort_name),
       models: list.map(settings.catalog.models, fn(entry) {
         #(
           machine_strand.ModelIdentity(
@@ -4388,6 +4403,17 @@ fn assemble_in(
       }
   }
 
+  // Everything below the runtime that an operation's abort must also stop:
+  // the async service stops admitting launches under it, and the broker
+  // cancels its executions and signals their process groups. The operator's
+  // abort calls this through the gateway, and the Agency's reaps reach the
+  // same closure through `effect_abort`, so there is one definition of what
+  // aborting an operation cancels below the runtime.
+  let abort_op_effects = fn(op) {
+    let _fenced = async_runs.abort_operation(async_name, op)
+    broker.abort(broker_actor, op)
+  }
+
   // How the execution service stops a background program and what recovery
   // may still learn about one. A local program runs under this session's own
   // broker, so stopping it aborts its step, and its value died with the
@@ -4430,6 +4456,8 @@ fn assemble_in(
       intensity: service_restart_intensity,
       period: service_restart_period,
     )
+    // Before the Agency's holder, so a reap it runs at start finds the name bound.
+    |> sup.add(effect_abort.supervised(effect_abort_name, abort_op_effects))
     |> sup.add(
       supervision.worker(fn() { agency.start(agency_config, runtime) }),
     )
@@ -4444,6 +4472,7 @@ fn assemble_in(
             runtime:,
             clock:,
             abort: async_abort,
+            abort_children: effect_abort.abort(effect_abort_name),
             heartbeat_ms: async_heartbeat_ms,
             surviving_value: async_surviving,
           ),
@@ -4569,10 +4598,7 @@ fn assemble_in(
             // effect, and `runtime` may not depend on `broker` to go
             // looking for it. The host owns both halves, so the host
             // joins them.
-            |> hub.with_effect_abort(fn(op) {
-              let _fenced = async_runs.abort_operation(async_name, op)
-              broker.abort(broker_actor, op)
-            })
+            |> hub.with_effect_abort(abort_op_effects)
             // The operator's abort reaches the advisor's goal loop the
             // same way it reaches the effect plane: the gateway is the
             // one place an abort enters, and an aborted run never fires

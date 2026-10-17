@@ -163,6 +163,10 @@ WHERE spawner = ? AND parent_session = ?;
 SELECT spawner, parent_session, last_contact_ms FROM catalogue_delegate_sessions
 WHERE session_id = ?;
 
+-- name: AllDelegateSessions :many
+SELECT spawner, parent_session, session_id, last_contact_ms FROM catalogue_delegate_sessions
+ORDER BY session_id;
+
 -- name: CountDelegateSessions :one
 SELECT COUNT(*) FROM catalogue_delegate_sessions WHERE spawner = ?;
 

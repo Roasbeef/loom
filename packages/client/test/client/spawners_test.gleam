@@ -166,6 +166,26 @@ profile = \"cheap-review\"
   assert spawners.by_node(configured, "runner@100.64.0.7") == Error(Nil)
 }
 
+pub fn retention_follows_the_table_and_falls_back_to_the_default_test() {
+  let text =
+    with(
+      "[spawners.laptop]
+node = \"laptop@100.64.0.5\"
+executor = \"runner\"
+workspace = \"loom\"
+profile = \"cheap-review\"
+max_within_s = 3600
+retain_s = 7200
+",
+    )
+  let assert Ok(configured) = spawners.parse(text)
+  assert spawners.retention_ms(configured, "laptop") == 7_200_000
+
+  // A spawner whose table was removed is still swept, on the default.
+  assert spawners.retention_ms(configured, "gone")
+    == spawners.default_retain_s * 1000
+}
+
 pub fn a_node_that_is_not_a_pinned_peer_is_refused_by_name_test() {
   refused(
     with(

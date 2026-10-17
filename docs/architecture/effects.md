@@ -1070,6 +1070,17 @@ SIGKILLed VM takes the payload with it, the next boot's sweep commits
 act wrote stays gone after the fixture removes it, which only a second
 process could undo.
 
+**Every operation abort reaches a running job.** A job's execution is
+owned by the jobs actor, not by the tool call that started it, so the
+runtime's abort (which stops the strand's live effect processes) does not
+touch it; only `broker.abort(op)` does. The host joins the two halves in
+one closure, the async fence followed by `broker.abort`, and two callers
+use it: the operator's abort through `hub.with_effect_abort`, and the
+Agency's reaps (deadline, finished parent, drained execution) through
+`client/effect_abort`, a named actor bound before the broker exists. A
+reaped child's `bash` therefore stops with its run instead of running to
+the job's wall deadline.
+
 **A hook may not start a job.** Extensions reach the same capabilities
 through the same envelope whether a tool call or a hook event triggered
 them, but the jobs capabilities are served only to tool calls. A tool

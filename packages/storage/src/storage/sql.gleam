@@ -1242,6 +1242,35 @@ pub fn delegate_of_session_decoder() -> decode.Decoder(DelegateOfSession) {
   decode.success(DelegateOfSession(spawner:, parent_session:, last_contact_ms:))
 }
 
+pub type AllDelegateSessions {
+  AllDelegateSessions(
+    spawner: String,
+    parent_session: String,
+    session_id: String,
+    last_contact_ms: Int,
+  )
+}
+
+pub fn all_delegate_sessions() {
+  let sql =
+    "SELECT spawner, parent_session, session_id, last_contact_ms FROM catalogue_delegate_sessions
+ORDER BY session_id"
+  #(sql, [], all_delegate_sessions_decoder())
+}
+
+pub fn all_delegate_sessions_decoder() -> decode.Decoder(AllDelegateSessions) {
+  use spawner <- decode.field(0, decode.string)
+  use parent_session <- decode.field(1, decode.string)
+  use session_id <- decode.field(2, decode.string)
+  use last_contact_ms <- decode.field(3, decode.int)
+  decode.success(AllDelegateSessions(
+    spawner:,
+    parent_session:,
+    session_id:,
+    last_contact_ms:,
+  ))
+}
+
 pub type CountDelegateSessions {
   CountDelegateSessions(count: Int)
 }

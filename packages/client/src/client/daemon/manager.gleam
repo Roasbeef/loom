@@ -639,6 +639,13 @@ type Message(instance) {
     Subject(Result(View, Error)),
   )
   DelegateSession(DelegateRequest, Subject(Result(Delegated, DelegateError)))
+
+  /// The delegate record of a session, read without waking it.
+  DelegateOf(String, Subject(Result(Option(catalogue.Delegate), Error)))
+
+  /// Deletes the delegate sessions whose spawner has been silent past its
+  /// retention, and answers how many went.
+  SweepDelegates(fn(String) -> Int, Int, String, Subject(Result(Int, Error)))
   DomainForSession(String, Subject(Result(domain.Domain, Error)))
   Isolate(
     access.Digest,
@@ -1816,6 +1823,59 @@ pub fn delegate_session(
   ))
   |> result.replace_error(DelegateFailed(Unavailable))
   |> result.flatten
+}
+
+/// Reads the delegate record of a session without waking it: `Some` for the
+/// session of a (spawner, parent session) pair, `None` for an ordinary session.
+///
+/// A session's builder asks this to learn whether it is a delegate session,
+/// which decides whether its Agency reaps overdue children on a timer. The
+/// registry writes the record in the turn that creates the session, before
+/// it answers anything else, so a builder that asks sees it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.delegate_of(registry, session_id) == Ok(option.None)
+/// ```
+@internal
+pub fn delegate_of(
+  manager: Manager(instance),
+  id: String,
+) -> Result(Option(catalogue.Delegate), Error) {
+  call.try_call(manager.commands, waiting: 5000, sending: DelegateOf(id, _))
+  |> result.unwrap(Error(Unavailable))
+}
+
+/// Deletes every delegate session whose spawner has sent nothing for longer than
+/// that spawner's retention, and answers how many it deleted
+/// (protocol-change/084, the retention sweep).
+///
+/// `retain_ms` gives the retention of a spawner in milliseconds, and the caller
+/// answers it for a spawner whose table has since been removed as well. A
+/// session the registry holds a slot for is kept whatever its age, since
+/// something is using it. A session whose deletion fails is kept for the next
+/// sweep, and the others are still deleted.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.sweep_delegates(registry, fn(_spawner) { 604_800_000 }, now_ms, sessions)
+/// ```
+@internal
+pub fn sweep_delegates(
+  manager: Manager(instance),
+  retain_ms: fn(String) -> Int,
+  now_ms: Int,
+  sessions: String,
+) -> Result(Int, Error) {
+  call.try_call(manager.commands, waiting: 5000, sending: SweepDelegates(
+    retain_ms,
+    now_ms,
+    sessions,
+    _,
+  ))
+  |> result.unwrap(Error(Unavailable))
 }
 
 /// Reads domain metadata without admitting a runtime or opening derived stores.
@@ -3132,6 +3192,18 @@ fn handle(
       process.send(reply, outcome)
       step(phase, book)
     }
+    DelegateOf(id, reply) -> {
+      process.send(
+        reply,
+        catalogue.delegate_of(book.catalogue, id)
+          |> result.map_error(Catalogue),
+      )
+      sm.keep(book)
+    }
+    SweepDelegates(retain_ms, now_ms, sessions, reply) -> {
+      process.send(reply, sweep_now(book, retain_ms, now_ms, sessions))
+      sm.keep(book)
+    }
     WorkspaceDefault(workspace, reply) -> {
       process.send(
         reply,
@@ -3782,6 +3854,31 @@ fn delete_now(phase, book: Book(instance), caller, epoch, id, sessions) {
   })
   use Nil <- result.try(refuse_moved(book, id))
   remove_registration(book, id, sessions)
+}
+
+// The retention sweep, in the registry's own turn so that no session is opened
+// between reading the list and deleting from it. A delegate session is idle when
+// its spawner's last message is older than the spawner's retention; the
+// decoder keeps retention at or above the longest deadline, so such a session
+// holds no child that could still be running. A deletion that fails leaves its
+// session for the next sweep, since nothing can usefully retry it here.
+fn sweep_now(
+  book: Book(instance),
+  retain_ms: fn(String) -> Int,
+  now_ms: Int,
+  sessions: String,
+) -> Result(Int, Error) {
+  use rows <- result.map(
+    catalogue.delegates(book.catalogue) |> result.map_error(Catalogue),
+  )
+  rows
+  |> list.filter(fn(row) {
+    now_ms - row.last_contact_ms > retain_ms(row.spawner)
+    && !dict.has_key(book.slots, row.session_id)
+  })
+  |> list.count(fn(row) {
+    result.is_ok(remove_registration(book, row.session_id, sessions))
+  })
 }
 
 fn remove_registration(

@@ -1,0 +1,10 @@
+<!-- The remote subagents spawn protocol model. See README.md. -->
+<Project>
+<ProjectName>RemoteSubagents</ProjectName>
+<InputFiles>
+	<PFile>./PSrc/</PFile>
+	<PFile>./PSpec/</PFile>
+	<PFile>./PTst/</PFile>
+</InputFiles>
+<OutputDir>./PGenerated/</OutputDir>
+</Project>

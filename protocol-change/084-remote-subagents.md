@@ -451,8 +451,9 @@ Phase 1 has five slices, each of which lands on `origin/main` alone.
   settled stub; counting it against a goal and refusing `sessions.move` for a
   parent that holds a live stub are not built. The design note's section 15 lists
   the differences.
-- **S4. Deadline tick and retention.** The per-delegate-session
-  `weft/state_machine` calling `reap_overdue`, and the boot sweep.
+- **S4. Deadline tick and retention.** The per-delegate-session periodic timeout
+  calling `reap_overdue` (as built, on the Agency holder actor), and the boot
+  sweep that deletes delegate sessions idle past `retain_s`.
 - **S5. A shipped two-orchestrator test and the P model.** The test is modelled
   on `daemon_shipped_peer_mail_test`: three children spawned, joined, with
   structured results and usage; the laptop killed mid-spawn; the link cut
@@ -460,6 +461,14 @@ Phase 1 has five slices, each of which lands on `origin/main` alone.
   child outliving the turn. The P model holds `AtMostOneChildPerSite` and the
   drainer's settling liveness; the run-end specs wait for a sender in phase 2.
   This document moves to ACCEPTED when S5 is green.
+
+  As built, the P model is written and checked (`protocol/models/remote-subagents`,
+  eight mutants caught) and the shipped test
+  (`daemon_shipped_remote_subagents_test`) drives three remote children through a
+  ledger-provisioned pair of daemons: a join, a child that outlives the turn, and
+  a deadline stop by the box's tick. It does not drive a `RunEnded` stop, which
+  has no sender in phase 1, or the laptop-killed, link-cut and link-down cases.
+  The status stays PROPOSED until the owner decides whether those are required.
 
 Phase 2 adds `Release` and its daemon-level drainer, `SpawnerRemoved`, the
 boot-time reopen, the open-time `RunEnded` repair, metering on the remote

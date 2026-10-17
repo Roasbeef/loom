@@ -1164,6 +1164,33 @@ Five slices. Each lands on `origin/main` alone, and none needs #934.
   - For each open delegate session, a `weft/state_machine` whose periodic
     timeout calls `reap_overdue`.
   - A boot sweep that deletes delegate sessions idle past `retain_s`.
+
+  As built in S4, where the code differs from the sections above:
+
+  - **The tick is the holder's periodic timeout, not a separate state machine.**
+    The delegate session's Agency holder is a `weft/actor`, and
+    `actor.periodic(every: 15 s, sending: DeadlineTick)` is the fixed-delay shape
+    the tick needs, so no second process or state type was added. It is set only
+    for a delegate session (`agency.Config.deadline_tick_ms`, filled by
+    `main.deadline_tick_of` from the catalogue's delegate row). The cadence is
+    fixed and not recomputed from the earliest deadline, because a pass is one
+    read of the ledger and the bound a child runs under is its deadline plus at
+    most one interval.
+  - **The tick starts when the session opens, as section 8.3 says.** A delegate
+    session is not reopened at boot (section 7), so a restart arms no timer. The
+    next `Spawn` or `Join` for the pair opens the session, recovery resumes its
+    children, and the first pass, one interval later, stops the ones already
+    overdue. Nothing runs in a closed session, so there is nothing for the boot
+    sweep to reap.
+  - **The boot sweep only deletes.** `manager.sweep_delegates` removes every
+    delegate session whose last contact is older than the spawner's `retain_s`
+    (`spawners.default_retain_s` when the table is gone) and that holds no slot.
+    It runs once, before the orchestrator port starts, and a failed deletion is
+    left for the next boot. There is no periodic sweep.
+  - **A directory-member record is not removed.** With #934 landed, deleting a
+    remote session also deletes its directory record. The sweep uses the
+    registry's local delete only, as no member daemon holds delegate sessions
+    until #934 does.
 - **S5. A shipped two-orchestrator test and the P model.**
   - The test is modelled on `daemon_shipped_peer_mail_test`. It spawns three
     children, joins them and reads structured results and usage, then kills
@@ -1175,6 +1202,47 @@ Five slices. Each lands on `origin/main` alone, and none needs #934.
     (`NoSpawnUnderEndedRun`, `EndedRunChildrenStop`, `EveryEndedRunIsTold`) wait
     for a sender in phase 2 (section 14).
   - Protocol-change/084 moves to ACCEPTED when S5 is green.
+
+  As built in S5, where the code differs from the text above:
+
+  - **The test is `daemon_shipped_remote_subagents_test`.** It provisions two
+    orchestrators with `loom distribution provision` (a membership ledger),
+    installs each bundle, and adds only a model URL on both daemons and the
+    `[profiles.kid]` and `[spawners.laptop]` tables on the box. The laptop's row
+    for the box comes from the ledger. Both models are scripted HTTP peers.
+    One laptop session starts three children with `agent_spawn` `on` the box and
+    joins the first with `agent_wait`, which returns the report the child wrote.
+    The turn ends with the other two running. The second child's shell goes on
+    writing its heartbeat after the turn has ended, so a remote child outlives the
+    turn. The third child has a three second deadline and nobody waits on it:
+    the box logs `operation.aborted` for it from the tick, before the second turn
+    starts. The second turn joins both children with one `agent_wait`, which
+    reports the second as completed and the third as `wall-clock budget expired`.
+    The test runs only when `LOOM_BOOTSTRAP_E2E_SERVER` is set.
+  - **A run-end stop is not driven.** The laptop sends no `RunEnded` in phase 1,
+    so no daemon can send one to the box, and the shipped test does not exercise
+    it. The P model checks the fence and the reaping against a modelled sender.
+  - **The three failure cases are not driven.** The shipped test does not kill
+    the laptop mid-spawn, cut the link mid-join or end a turn with the link down,
+    and it does not enroll a laptop into a running deployment, so it provisions
+    both nodes at once. It does not assert structured results or usage. The P
+    model covers the first two failure shapes as message loss, an abort of the
+    parent's effect processes and a remote restart.
+  - **The P model is `protocol/models/remote-subagents`.** It has the machines of
+    section 14 except `Child` and the usage, with `Laptop` holding the stubs and
+    the drainer, and `SpawnCall`, `Port`, `Wire` and `Chaos` as described there.
+    It checks `AtMostOneChildPerSite`, `OwnChildOnly`, `AnswerIsStable`,
+    `JoinReportsOwnChild`, `TerminalOnce`, the two liveness specs
+    `EveryStubAnswered` and `EveryChildTerminal`, and, against the sender it
+    models, `NoSpawnUnderEndedRun` and `EndedRunChildrenStop`. Eight mutants are
+    caught. `EveryEndedRunIsTold` and the mutant for a spawn retried against a
+    second orchestrator are not modelled; the first needs a laptop that sends and
+    keeps a `RunEnded` row, and the second needs two ports.
+  - **Observed, not fixed here.** After the tick aborted the third child's run,
+    the `bash` process it had started kept writing its heartbeat for at least
+    45 seconds. The run was aborted and the tool's effect process exited, but the
+    executor never logged the execution as settled. The shipped test therefore
+    reads the abort from the daemon's log and not from the heartbeat stopping.
 
 Phase 1 exit: a laptop daemon starts three children on a Linux box daemon over
 pinned distribution, joins them and reads their structured results and usage,

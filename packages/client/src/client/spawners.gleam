@@ -249,6 +249,22 @@ pub fn find(configured: List(Spawner), name: String) -> Result(Spawner, Nil) {
   list.find(configured, fn(spawner) { spawner.name == name })
 }
 
+/// How long a delegate session of this spawner is kept with no message from it,
+/// in milliseconds. A spawner whose table has since been removed gets
+/// `default_retain_s`, so its sessions are still swept and not kept for good.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert spawners.retention_ms([], "gone") == 604_800_000
+/// ```
+pub fn retention_ms(configured: List(Spawner), name: String) -> Int {
+  find(configured, name)
+  |> result.map(fn(spawner) { spawner.retain_s })
+  |> result.unwrap(default_retain_s)
+  |> int.multiply(1000)
+}
+
 /// Finds the spawner that a node is the spawning orchestrator of. This is how
 /// the orchestrator port turns the node a message came from into the policy
 /// that judges it.
