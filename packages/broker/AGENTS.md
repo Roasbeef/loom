@@ -538,29 +538,38 @@ protocol (spec Part 1.4). WP-G.
   Worst-case blocking of `close_instance`: 8 s (`close` above), pinned in
   `executor_test`.
 - **Executor service: random interleavings hold the same invariants.**
-  `executor_property_test` draws plans from a qcheck generator on a fixed
-  seed (12 plans per test): a pool size and a list of steps
-  (starts of four kinds, broker and caller cancels, caller death, helper
-  crash, pause, a close mid-run), performed in order by a driver against a
-  real broker over fake helpers. Every plan keeps: each live caller hears
-  exactly one settlement and no trailing events; the inventory drains and every
-  relay dies; with the service open nothing is borrowed and held slots are
-  bounded by the faults; a quiet plan (no crash, no cancel-ignoring start)
-  closes `Ok`; a second `close` replays the stored verdict. A failure is
-  reported shrunk (pool toward three, fewer steps, each toward a quick start),
-  and the plan is printed in every failure message. What is reproducible is
-  the plan, not the schedule, so each shrink candidate runs twice
-  (`with_max_retries`) and counts as failing if either run fails.
-  Each case runs its plane inside `planes.isolated`, a child process the
-  caller stops however it ended, so a panicking case and its shrink
-  candidates leak nothing; `planes.shrink_budget` ends shrinking after a
-  wall-clock allowance, because gleeunit kills a test after fifty seconds
-  and a failure that waits out a poll deadline would otherwise lose the
-  report. `leak_census_test` is the same shape over a drawn mix of 20 to
-  100 endings (four mixes). There are no seed or replay environment
-  variables. Mutation checks: leaving a released row on the books fails all
-  three tests with a shrunk plan; re-sending the cancel while draining fails
-  `execution_test`'s at-most-once property.
+  `executor_property_test` is a `statem` spec on a fixed seed (6 plans for
+  each of two pool sizes, per test): a plan is a list of commands (starts of
+  four kinds, broker and caller cancels, caller death, helper crash, pause, a
+  close mid-run), performed by `execute` against a real broker over fake
+  helpers; `finish` reads the invariants. The `sut` is the plane plus the
+  driver's record of what it started (the oracle lives there); the model is
+  only how many starts the plan has made, so a command that names an
+  execution is not admitted before the first start. A pick is resolved modulo
+  the executions started. Every plan keeps, each under its own violation tag:
+  each live caller hears exactly one settlement and no trailing events
+  (`settlements`, `trailing`, `never_heard`); the inventory drains and every
+  relay dies (`row_kept`, `row_after_close`, `relay_outlived`); with the
+  service open nothing is borrowed and held slots are bounded by the faults
+  (`pool_borrowed`, `pool_slots`, `pool_quiet_slots`); a quiet plan (no crash,
+  no cancel-ignoring start) closes `Ok` (`quiet_close`); a second `close`
+  replays the stored verdict (`second_close`). A failure is reported shrunk by
+  deleting commands from anywhere in the plan, then pulling each toward a quick
+  start. What is reproducible is the plan, not the schedule, so each shrink
+  candidate runs twice (`with_shrink_retries`) and counts as failing if either
+  run fails with the original tag. `new_sut` builds a plane and `teardown`
+  (`planes.dismantle`) closes the service, stops the plane and reaps the pool
+  on every path, so a failed case and its shrink candidates leak nothing and
+  no case needs a process of its own; `max_shrinks` (8) bounds shrinking by
+  executions, because gleeunit kills a test after fifty seconds and a failure
+  that waits out a poll deadline costs four seconds a candidate. A third test
+  asserts the generators reach every kind of command (`statem.commands`).
+  `leak_census_test` is a `statem` spec over a drawn mix of up to 100 endings
+  (four mixes; the model counts faults against the cap, the census is
+  `finish`). There are no seed or replay environment variables. Mutation
+  checks: leaving a released row on the books fails the executor tests with a
+  one-command plan (`Start(Quick, NoDeadline)`); re-sending the cancel while
+  draining fails `execution_test`'s at-most-once property.
   `fake_helper.ByArgv` gained `flood` (two hundred chunks, then runs until
   cancelled) for it.
 - **Executor service: the failure matrix is pinned, case by case.**

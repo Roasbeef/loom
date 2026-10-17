@@ -1,71 +1,92 @@
-//// Property tests over the executor service: random interleavings of the
-//// things that happen to executions, with the invariants every interleaving
-//// must keep.
+//// Stateful property tests over the executor service: random interleavings
+//// of the things that happen to executions, with the invariants every
+//// interleaving must keep.
 ////
 //// The pure relay core has its own property tests (`execution_test`). This
 //// module covers the service around it, whose coverage was otherwise a set of
 //// chosen cases (`executor_test`, `failure_matrix_test`) and one fixed
-//// rotation (`leak_census_test`). A qcheck generator draws a plan: a pool size
-//// and a list of steps. A step starts an execution (one that ends at once, one
-//// that runs until cancelled, one that ignores cancel, one that floods output;
-//// with or without a wall deadline), cancels one by the broker or from the
-//// caller's own process, kills a caller, crashes a helper actor, pauses, or
-//// closes the service while work is in flight. The driver performs the steps
-//// in order, which is as much interleaving as one process can impose on the
-//// service, the broker, the relays and the helpers it is racing.
+//// rotation (`leak_census_test`). It is a `statem` spec: a plan is a list of
+//// commands, and a command is one thing that happens to the service. A
+//// command starts an execution (one that ends at once, one that runs until
+//// cancelled, one that ignores cancel, one that floods output; with or
+//// without a wall deadline), cancels one by the broker or from the caller's
+//// own process, kills a caller, crashes a helper actor, pauses, or closes the
+//// service while work is in flight. `execute` performs one command, which is
+//// as much interleaving as one process can impose on the service, the
+//// broker, the relays and the helpers it is racing.
 ////
-//// Each plan must leave the same things true:
+//// The system under test is the plane (pool, executor service, broker)
+//// together with the driver's own bookkeeping of what it has started, and
+//// the oracle lives there: the model is only how many executions the plan
+//// has started, which is all the generator needs to avoid commands that name
+//// an execution when none exists. `new_sut` builds a fresh plane in the
+//// test's own process and `teardown` closes the service and stops the plane
+//// on every path, a failed or crashed execution included, so a case that
+//// fails and the shrink candidates after it leave no service behind to
+//// disturb the next. Because `teardown` owns that, no case needs a process
+//// of its own, and no wall-clock budget is needed to cut shrinking short:
+//// `max_shrinks` bounds it by executions.
+////
+//// Each plan must leave the same things true, each reported under its own
+//// violation tag so that shrinking holds on to the invariant that broke
+//// and cannot slide to another one:
 ////
 //// - every caller that was not killed hears exactly one settlement, or was
-////   refused at clearance and hears none, and hears nothing after it;
+////   refused at clearance and hears none, and hears nothing after it
+////   (`never_heard`, `settlements`, `trailing`);
 //// - when everything has ended the executor holds no row and every relay is
-////   dead;
+////   dead (`row_kept`, `row_after_close`, `relay_outlived`);
 //// - with the service still open, the pool has nothing borrowed, and holds as
 ////   unconfirmed, draining or retiring only slots that a helper the run killed
-////   or an execution that ignored cancel could account for;
+////   or an execution that ignored cancel could account for
+////   (`pool_borrowed`, `pool_slots`, `pool_quiet_slots`);
 //// - a plan that did nothing a fake helper cannot attest to (no crash, no
-////   cancel-ignoring execution) closes with `Ok`; and
+////   cancel-ignoring execution) closes with `Ok` (`quiet_close`); and
 //// - a second `close` returns the stored verdict, or says the service is gone
-////   when the first answered `Ok`.
+////   when the first answered `Ok` (`second_close`).
 ////
-//// A failing plan is reported already shrunk. The pool shrinks toward three
-//// helpers, the plan toward fewer steps, and each step toward a plain start
-//// of a quick execution with no deadline, so what remains is the few steps
-//// the invariant needs. A step names its target by a raw pick resolved
-//// against the executions started so far, so removing an earlier step
-//// retargets the later ones rather than invalidating them.
+//// Two further tags report that the driver itself waited in vain: a call that
+//// never reported its clearance (`clearance_hang`), and a close that never
+//// answered (`close_hang`).
+////
+//// A failing plan is shrunk by deleting commands from anywhere in the list,
+//// not only from the end, and then by pulling each remaining command toward a
+//// plain start of a quick execution with no deadline, so what remains is the
+//// few commands the invariant needs. A command names its target by a raw
+//// pick, resolved by `execute` modulo the executions started so far, so
+//// removing an earlier command retargets the later ones rather than
+//// invalidating them.
 ////
 //// What a seed reproduces is the plan, not the schedule: the real processes
 //// still race, so a plan that fails once may need several runs to fail
-//// again. Two choices follow from that. Every case runs its own plane in a
-//// process of its own (`planes.isolated`), so a case that panics, and the
-//// shrink candidates after it, leave no service behind to disturb the next.
-//// The properties retry each shrink candidate (`shrink_retries`): a
-//// candidate counts as still failing if any of its runs fails, which keeps a
-//// scheduling-sensitive failure from being shrunk away by one lucky run. The
-//// retries cost nothing while the properties pass, because qcheck uses them
-//// only on candidates it is already shrinking. And shrinking is bounded in
-//// wall time (`shrink_budget_ms`), because a failure that waits out a poll
-//// deadline would otherwise shrink past gleeunit's per-test timeout and
-//// lose the report; a run that hits the bound reports the smallest plan
-//// found so far, which is not always the smallest there is. The run uses fixed qcheck
-//// seeds, so the plans the gate draws are the same on every machine.
+//// again. The check therefore retries each shrink candidate
+//// (`shrink_retries`): a candidate counts as still failing if any of its runs
+//// fails with the original tag, which keeps a scheduling-sensitive failure
+//// from being shrunk away by one lucky run. The retries cost nothing while
+//// the plans pass. The pool size is fixed per check, so each test runs its
+//// plans once for each of `pool_sizes`; a quiet plan and a faulty plan are
+//// two tests, with their own seeds, so the quiet plans are not the faulty
+//// ones with the faults filtered out. The fixed seeds make the plans the gate
+//// draws the same on every machine.
 
 import broker/broker
 import broker/exec
 import broker/executor
 import broker/support/fake_helper
 import broker/support/planes
+import gleam/bool
 import gleam/dict
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import qcheck
+import statem.{type Violation, Admit, Reject, Violation}
 import weft/poll
 
-// --- the plan ---------------------------------------------------------------
+// --- the commands -----------------------------------------------------------
 
 // What an execution does, by the argv word the fake helper reads.
 type Kind {
@@ -83,11 +104,11 @@ type Deadline {
   WallDeadline
 }
 
-// One thing the driver does. A `pick` is a raw draw, resolved against the
-// executions started so far when the step runs, so a plan is a plain list
-// that can be printed and replayed, and a step survives the removal of an
+// One thing `execute` does. A `pick` is a raw draw, resolved against the
+// executions started so far when the command runs, so a plan is a plain list
+// that can be printed and replayed, and a command survives the removal of an
 // earlier one.
-type Step {
+type Command {
   Start(kind: Kind, deadline: Deadline)
   BrokerCancel(pick: Int)
   CallerCancel(pick: Int)
@@ -97,80 +118,100 @@ type Step {
   CloseMidRun
 }
 
-type Plan {
-  Plan(pool_size: Int, quiet: Bool, steps: List(Step))
+// Whether a plan may crash a helper or start an execution that ignores
+// cancel. A quiet plan has neither, which makes a clean close the only right
+// answer.
+type Faults {
+  Quiet
+  Faulty
 }
 
-/// The number of plans each test checks, and the seed each draws them from.
-/// The two tests have their own seeds, so the quiet plans are not the faulty
-/// ones with the faults filtered out.
-const plan_count = 12
+// How many executions the plan has started, which is all the generator and
+// the precondition need: a command that names an execution is meaningless
+// before the first start. A start the broker refuses still counts here, and
+// a pick that then finds nothing running is a pause.
+type Model {
+  Model(starts: Int)
+}
+
+/// The plans each check draws for each pool size, and the seed a test draws
+/// them from. The two tests have their own seeds, so the quiet plans are not
+/// the faulty ones with the faults filtered out; the pool sizes add their own
+/// size to the seed so they draw different plans too.
+const plans_per_pool = 6
 
 const quiet_seed = 1000
 
 const faulty_seed = 2000
 
-/// How many times qcheck runs a shrink candidate before it calls it passing.
-/// The processes race, so a plan that failed once may pass on its next run,
-/// and one lucky run would otherwise end the shrink at a larger plan than
-/// the failure needs. Two runs make that unlikely, and the price is paid
-/// only while shrinking.
+/// The pools a plan is run against. Three is the smallest the plans are
+/// written for; five leaves room for every start of a long plan to be lent a
+/// helper at once.
+const pool_sizes = [3, 5]
+
+/// The most commands in one plan.
+const plan_length = 22
+
+/// How many times a shrink candidate is run before it is called passing. The
+/// processes race, so a plan that failed once may pass on its next run, and
+/// one lucky run would otherwise end the shrink at a larger plan than the
+/// failure needs. Two runs make that unlikely, and the price is paid only
+/// while shrinking.
 const shrink_retries = 2
 
-/// How long shrinking may go on after the first failure. A candidate that
-/// fails on a poll deadline takes several seconds to do it, and gleeunit
-/// kills a test after fifty, before qcheck reports anything; the budget ends
-/// the shrink early instead and reports the smallest plan found so far.
-const shrink_budget_ms = 25_000
+/// The most executions one shrink may spend, retries included. A candidate
+/// that fails on a poll deadline takes several seconds to do it, and gleeunit
+/// kills a test after fifty; the bound ends the shrink early and reports the
+/// smallest plan found so far, which is not always the smallest there is.
+const max_shrinks = 8
 
-fn plan_config(seed seed: Int) -> qcheck.Config {
-  qcheck.default_config()
-  |> qcheck.with_test_count(plan_count)
-  |> qcheck.with_seed(qcheck.seed(seed))
-  |> qcheck.with_max_retries(shrink_retries)
+fn plan_config(seed seed: Int) -> statem.Config {
+  statem.default_config(seed:)
+  |> statem.with_test_count(plans_per_pool)
+  |> statem.with_max_commands(plan_length)
+  |> statem.with_max_shrinks(max_shrinks)
+  |> statem.with_shrink_retries(shrink_retries)
 }
 
-// A plan of three to five helpers and one to twenty-two steps. A quiet plan
-// has no crash and no cancel-ignoring execution, which makes a clean close
-// the only right answer.
-fn plan_generator(quiet quiet: Bool) -> qcheck.Generator(Plan) {
-  let steps =
-    qcheck.generic_list(
-      elements_from: step_generator(),
-      length_from: qcheck.bounded_int(from: 1, to: 22),
-    )
-    |> qcheck.map(fn(steps) {
-      case quiet {
-        True -> list.map(steps, without_faults)
-        False -> steps
-      }
-    })
-  qcheck.map2(qcheck.bounded_int(from: 3, to: 5), steps, fn(pool_size, steps) {
-    Plan(pool_size:, quiet:, steps:)
-  })
-}
-
-// Every field of a step is drawn, whichever step it turns out to be, and
-// each shrinks toward zero: the first kind of step is a start, its first
-// kind is the quick one, and zero is no deadline.
-fn step_generator() -> qcheck.Generator(Step) {
-  qcheck.map5(
-    qcheck.bounded_int(from: 0, to: 19),
-    qcheck.bounded_int(from: 0, to: 1000),
-    qcheck.bounded_int(from: 0, to: 7),
-    qcheck.bounded_int(from: 0, to: 3),
-    qcheck.bounded_int(from: 0, to: 40),
-    step_of,
+fn spec(faults: Faults, pool_size: Int) -> statem.Spec(Model, Command, Sut) {
+  statem.Spec(
+    initial: Model(starts: 0),
+    command: fn(_model) { command_generator(faults) },
+    precondition:,
+    next_model:,
+    new_sut: fn() { new_sut(faults, pool_size) },
+    execute:,
+    finish:,
+    teardown:,
   )
 }
 
-fn step_of(
+// Every field of a command is drawn, whichever command it turns out to be,
+// and each shrinks toward zero: the first kind of command is a start, its
+// first kind is the quick one, and zero is no deadline.
+fn command_generator(faults: Faults) -> qcheck.Generator(Command) {
+  let drawn =
+    qcheck.map5(
+      qcheck.bounded_int(from: 0, to: 19),
+      qcheck.bounded_int(from: 0, to: 1000),
+      qcheck.bounded_int(from: 0, to: 7),
+      qcheck.bounded_int(from: 0, to: 3),
+      qcheck.bounded_int(from: 0, to: 40),
+      command_of,
+    )
+  case faults {
+    Quiet -> qcheck.map(drawn, without_faults)
+    Faulty -> drawn
+  }
+}
+
+fn command_of(
   which: Int,
   pick: Int,
   kind: Int,
   deadline: Int,
   pause: Int,
-) -> Step {
+) -> Command {
   case which {
     0 | 1 | 2 | 3 | 4 | 5 ->
       Start(kind: kind_of(kind), deadline: case deadline {
@@ -195,11 +236,42 @@ fn kind_of(draw: Int) -> Kind {
   }
 }
 
-fn without_faults(step: Step) -> Step {
-  case step {
+fn without_faults(command: Command) -> Command {
+  case command {
     Start(kind: Stubborn, deadline:) -> Start(kind: Sleeper, deadline:)
     CrashHelper(..) -> Pause(ms: 5)
-    other -> other
+    Start(..)
+    | BrokerCancel(..)
+    | CallerCancel(..)
+    | KillCaller(..)
+    | Pause(..)
+    | CloseMidRun -> command
+  }
+}
+
+// A command that names an execution is admitted only once the plan has
+// started one, so a generated or shrunk plan never spends its commands on
+// targets that cannot exist.
+fn precondition(model: Model, command: Command) -> statem.Admission {
+  case command {
+    Start(..) | Pause(..) | CloseMidRun -> Admit
+    BrokerCancel(..) | CallerCancel(..) | KillCaller(..) | CrashHelper(..) ->
+      case model.starts {
+        0 -> Reject
+        _ -> Admit
+      }
+  }
+}
+
+fn next_model(model: Model, command: Command) -> Model {
+  case command {
+    Start(..) -> Model(starts: model.starts + 1)
+    BrokerCancel(..)
+    | CallerCancel(..)
+    | KillCaller(..)
+    | CrashHelper(..)
+    | Pause(..)
+    | CloseMidRun -> model
   }
 }
 
@@ -328,10 +400,11 @@ fn count_trailing(events: Subject(broker.CallEvent), seen: Int) -> Int {
 
 // --- the driver -------------------------------------------------------------
 
-// Everything the driver carries between steps.
-type Run {
-  Run(
-    plan: Plan,
+// The system under test: the plane, and everything the driver carries between
+// commands, which is also the oracle's whole memory of the plan.
+type Sut {
+  Sut(
+    faults: Faults,
     plane: planes.Plane,
     heard: Subject(Heard),
     started: List(Running),
@@ -342,60 +415,106 @@ type Run {
   )
 }
 
-fn drive(run: Run, steps: List(Step)) -> Run {
-  case steps {
-    [] -> run
-    [step, ..rest] -> drive(perform(run, step), rest)
-  }
+// A plane of fake helpers made fresh for one execution of a plan. It is built
+// in the calling process, so the `borrowed` subject and every subject the
+// driver makes belong to the process that reads them.
+fn new_sut(faults: Faults, pool_size: Int) -> Sut {
+  let plane =
+    planes.start_scripted(size: pool_size, script: fn() {
+      fake_helper.start_helper_configured(
+        fake_helper.ByArgv,
+        cancel_grace_ms: 300,
+        heartbeat_interval_ms: 0,
+      )
+    })
+  Sut(
+    faults:,
+    plane:,
+    heard: process.new_subject(),
+    started: [],
+    refused: 0,
+    crashed: [],
+    stubborn_started: 0,
+    closer: None,
+  )
 }
 
-fn perform(run: Run, step: Step) -> Run {
-  case step {
-    Start(kind:, deadline:) -> start_one(run, kind, deadline)
+// Dismantles the plane, whichever way the plan ended. After
+// a plan that closed the service already, the close answers the stored verdict
+// at once; after one that failed with the service still serving, it is what
+// retires the executions the plan left behind.
+fn teardown(sut: Sut) -> Nil {
+  planes.dismantle(sut.plane)
+}
+
+fn violation(tag: String, detail: String) -> Result(a, Violation) {
+  Error(Violation(tag:, detail:))
+}
+
+fn execute(
+  sut: Sut,
+  _model: Model,
+  command: Command,
+) -> Result(Sut, Violation) {
+  case command {
+    Start(kind:, deadline:) -> start_one(sut, kind, deadline)
     Pause(ms:) -> {
       process.sleep(ms)
-      run
+      Ok(sut)
     }
     BrokerCancel(pick:) -> {
-      use target <- with_target(run, pick)
-      broker.cancel(run.plane.broker, target.handle)
+      use target <- with_target(sut, pick)
+      broker.cancel(sut.plane.broker, target.handle)
     }
     CallerCancel(pick:) -> {
-      use target <- with_target(run, pick)
+      use target <- with_target(sut, pick)
       process.send(target.control, CancelNow)
     }
-    KillCaller(pick:) -> kill_caller(run, pick)
-    CrashHelper(pick:) -> crash_helper(run, pick)
-    CloseMidRun -> close_mid_run(run)
+    KillCaller(pick:) -> Ok(kill_caller(sut, pick))
+    CrashHelper(pick:) -> Ok(crash_helper(sut, pick))
+    CloseMidRun -> Ok(close_mid_run(sut))
   }
 }
 
-// Applies `act` to the execution a pick names, if any has started. A step
+// Applies `act` to the execution a pick names, if any has started. A command
 // with nothing to act on is a pause, so a plan never fails for lack of a
 // target.
-fn with_target(run: Run, pick: Int, act: fn(Running) -> Nil) -> Run {
-  case list.length(run.started) {
-    0 -> Nil
-    count -> {
-      let assert Ok(target) = list.drop(run.started, pick % count) |> list.first
-        as "a pick resolves to a started execution"
-      act(target)
-    }
+fn with_target(
+  sut: Sut,
+  pick: Int,
+  act: fn(Running) -> Nil,
+) -> Result(Sut, Violation) {
+  case target_of(sut, pick) {
+    Ok(target) -> act(target)
+    Error(Nil) -> Nil
   }
-  run
+  Ok(sut)
 }
 
-fn start_one(run: Run, kind: Kind, deadline: Deadline) -> Run {
-  let index = list.length(run.started) + run.refused
+// The execution a pick names: the pick modulo the number started, so any
+// pick resolves once one has.
+fn target_of(sut: Sut, pick: Int) -> Result(Running, Nil) {
+  case list.length(sut.started) {
+    0 -> Error(Nil)
+    count -> list.drop(sut.started, pick % count) |> list.first
+  }
+}
+
+fn start_one(
+  sut: Sut,
+  kind: Kind,
+  deadline: Deadline,
+) -> Result(Sut, Violation) {
+  let index = list.length(sut.started) + sut.refused
   let first = process.new_subject()
-  let caller = spawn_caller(run.plane, index, kind, deadline, first, run.heard)
+  let caller = spawn_caller(sut.plane, index, kind, deadline, first, sut.heard)
   let stubborn_started = case kind {
-    Stubborn -> run.stubborn_started + 1
-    Quick | Sleeper | Flood -> run.stubborn_started
+    Stubborn -> sut.stubborn_started + 1
+    Quick | Sleeper | Flood -> sut.stubborn_started
   }
   case process.receive(first, 4000) {
     Ok(Started(handle:, control:, relay:)) -> {
-      let helper = latest_borrowed(run.plane)
+      let helper = latest_borrowed(sut.plane)
       let running =
         Running(
           index:,
@@ -407,68 +526,61 @@ fn start_one(run: Run, kind: Kind, deadline: Deadline) -> Run {
           helper:,
           caller_killed: Alive,
         )
-      Run(..run, started: [running, ..run.started], stubborn_started:)
+      Ok(Sut(..sut, started: [running, ..sut.started], stubborn_started:))
     }
-    Ok(Refused) -> Run(..run, refused: run.refused + 1, stubborn_started:)
-    Error(Nil) -> {
-      // A caller that reports nothing in four seconds is a hang in
-      // `clear_call`, which has its own bounds, so it is a failure here.
-      panic as {
-        describe(run.plan) <> ": a caller never reported its clearance"
-      }
-    }
+    Ok(Refused) -> Ok(Sut(..sut, refused: sut.refused + 1, stubborn_started:))
+
+    // A caller that reports nothing in four seconds is a hang in
+    // `clear_call`, which has its own bounds, so it is a failure here.
+    Error(Nil) ->
+      violation("clearance_hang", "a caller never reported its clearance")
   }
 }
 
-fn kill_caller(run: Run, pick: Int) -> Run {
-  case list.length(run.started) {
-    0 -> run
-    count -> {
-      let at = pick % count
+fn kill_caller(sut: Sut, pick: Int) -> Sut {
+  case target_of(sut, pick) {
+    Error(Nil) -> sut
+    Ok(target) -> {
+      process.kill(target.caller)
       let started =
-        list.index_map(run.started, fn(target, position) {
-          case position == at {
-            True -> {
-              process.kill(target.caller)
-              Running(..target, caller_killed: Dead)
-            }
-            False -> target
+        list.map(sut.started, fn(running) {
+          case running.index == target.index {
+            True -> Running(..running, caller_killed: Dead)
+            False -> running
           }
         })
-      Run(..run, started:)
+      Sut(..sut, started:)
     }
   }
 }
 
-fn crash_helper(run: Run, pick: Int) -> Run {
-  case list.length(run.started) {
-    0 -> run
-    count -> {
-      let assert Ok(target) = list.drop(run.started, pick % count) |> list.first
-        as "a pick resolves to a started execution"
+fn crash_helper(sut: Sut, pick: Int) -> Sut {
+  case target_of(sut, pick) {
+    Error(Nil) -> sut
+    Ok(target) -> {
       let pid = exec.pid(target.helper)
       process.kill(pid)
-      case list.contains(run.crashed, pid) {
-        True -> run
-        False -> Run(..run, crashed: [pid, ..run.crashed])
+      case list.contains(sut.crashed, pid) {
+        True -> sut
+        False -> Sut(..sut, crashed: [pid, ..sut.crashed])
       }
     }
   }
 }
 
-fn close_mid_run(run: Run) -> Run {
-  case run.closer {
-    Some(_) -> run
+fn close_mid_run(sut: Sut) -> Sut {
+  case sut.closer {
+    Some(_) -> sut
     None -> {
       let verdicts = process.new_subject()
-      let service = run.plane.service
+      let service = sut.plane.service
       process.spawn_unlinked(fn() {
         process.send(
           verdicts,
           executor.close(service, draining: 400, helpers: 800),
         )
       })
-      Run(..run, closer: Some(verdicts))
+      Sut(..sut, closer: Some(verdicts))
     }
   }
 }
@@ -491,86 +603,46 @@ fn newest(plane: planes.Plane, so_far: exec.Helper) -> exec.Helper {
 
 // --- the verdict ------------------------------------------------------------
 
-fn describe(plan: Plan) -> String {
-  "plan " <> string.inspect(plan)
-}
-
-fn run_plan(plan: Plan, budget: planes.Budget) -> Nil {
-  planes.isolated(
-    size: plan.pool_size,
-    script: fn() {
-      fake_helper.start_helper_configured(
-        fake_helper.ByArgv,
-        cancel_grace_ms: 300,
-        heartbeat_interval_ms: 0,
-      )
-    },
-    within: 120_000,
-    budget:,
-    body: fn(plane) { drive_plan(plan, plane) },
-  )
-}
-
-// One plan over one plane, which `run_plan` stops afterwards whether this
-// returns or panics.
-fn drive_plan(plan: Plan, plane: planes.Plane) -> Nil {
-  let heard = process.new_subject()
-  let run =
-    Run(
-      plan:,
-      plane:,
-      heard:,
-      started: [],
-      refused: 0,
-      crashed: [],
-      stubborn_started: 0,
-      closer: None,
-    )
-  let run = drive(run, plan.steps)
-
+// Ends the plan: everything still running is cancelled, and then each
+// invariant is read in the order it can first be seen.
+fn finish(sut: Sut, _model: Model) -> Result(Nil, Violation) {
   // End everything that is still running. The plan's own cancels may not
   // have reached it, and a stubborn one needs its grace to expire.
-  list.each(run.started, fn(target) {
-    broker.cancel(plane.broker, target.handle)
+  list.each(sut.started, fn(target) {
+    broker.cancel(sut.plane.broker, target.handle)
   })
-  assert_heard_exactly_once(run)
-
-  let verdict = settle_the_service(run)
-  assert_nothing_left(run)
-  assert_second_close(run, verdict)
+  use _ <- result.try(check_heard_exactly_once(sut))
+  use verdict <- result.try(settle_the_service(sut))
+  use _ <- result.try(check_nothing_left(sut))
+  check_second_close(sut, verdict)
 }
 
 // Every caller the plan did not kill heard one settlement and then nothing.
-fn assert_heard_exactly_once(run: Run) -> Nil {
+fn check_heard_exactly_once(sut: Sut) -> Result(Nil, Violation) {
   let expected =
-    list.filter(run.started, fn(target) { target.caller_killed == Alive })
+    list.filter(sut.started, fn(target) { target.caller_killed == Alive })
   let wanted = list.map(expected, fn(target) { target.index })
-  let heard = await_heard(run.heard, wanted, dict.new())
-  list.each(expected, fn(target) {
-    let assert Ok(Heard(settlements:, trailing:, ..)) =
-      dict.get(heard, target.index)
-      as {
-        describe(run.plan)
-        <> ": caller "
-        <> int.to_string(target.index)
-        <> " never heard its settlement"
+  let heard = await_heard(sut.heard, wanted, dict.new())
+  list.try_each(expected, fn(target) {
+    let caller = "caller " <> int.to_string(target.index)
+    case dict.get(heard, target.index) {
+      Error(Nil) ->
+        violation("never_heard", caller <> " never heard its settlement")
+      Ok(Heard(settlements:, trailing:, ..)) -> {
+        use <- bool.guard(
+          settlements != 1,
+          violation(
+            "settlements",
+            caller <> " heard " <> int.to_string(settlements) <> " settlements",
+          ),
+        )
+        use <- bool.guard(
+          trailing != 0,
+          violation("trailing", caller <> " heard events after its settlement"),
+        )
+        Ok(Nil)
       }
-    assert settlements == 1
-      as {
-        describe(run.plan)
-        <> ": caller "
-        <> int.to_string(target.index)
-        <> " heard "
-        <> int.to_string(settlements)
-        <> " settlements"
-      }
-    assert trailing == 0
-      as {
-        describe(run.plan)
-        <> ": caller "
-        <> int.to_string(target.index)
-        <> " heard events after its settlement"
-      }
+    }
   })
 }
 
@@ -596,41 +668,42 @@ fn await_heard(
 
 // Gets the service closed and answers the first verdict. With no close in the
 // plan the pool is read first, while the service is still open.
-fn settle_the_service(run: Run) -> Result(Nil, exec.RetirementFailure) {
-  let faults = list.length(run.crashed) + run.stubborn_started
-  case run.closer {
-    Some(verdicts) -> {
-      let assert Ok(verdict) = process.receive(verdicts, 8000)
-        as { describe(run.plan) <> ": the close never answered" }
-      assert_clean_when_quiet(run, verdict)
-      verdict
-    }
+fn settle_the_service(
+  sut: Sut,
+) -> Result(Result(Nil, exec.RetirementFailure), Violation) {
+  let faults = list.length(sut.crashed) + sut.stubborn_started
+  case sut.closer {
+    Some(verdicts) ->
+      case process.receive(verdicts, 8000) {
+        Ok(verdict) -> {
+          use _ <- result.try(check_clean_when_quiet(sut, verdict))
+          Ok(verdict)
+        }
+        Error(Nil) -> violation("close_hang", "the close never answered")
+      }
     None -> {
-      assert_inventory_drains(run)
-      assert_pool_baseline(run, faults)
+      use _ <- result.try(check_inventory_drains(sut))
+      use _ <- result.try(check_pool_baseline(sut, faults))
       let verdict =
-        executor.close(run.plane.service, draining: 400, helpers: 800)
-      assert_clean_when_quiet(run, verdict)
-      verdict
+        executor.close(sut.plane.service, draining: 400, helpers: 800)
+      use _ <- result.try(check_clean_when_quiet(sut, verdict))
+      Ok(verdict)
     }
   }
 }
 
 // A plan with no fault a fake cannot attest to closes with `Ok`.
-fn assert_clean_when_quiet(
-  run: Run,
+fn check_clean_when_quiet(
+  sut: Sut,
   verdict: Result(Nil, exec.RetirementFailure),
-) -> Nil {
-  case run.plan.quiet {
-    True -> {
-      assert verdict == Ok(Nil)
-        as {
-          describe(run.plan)
-          <> ": a plan with no faults closed with "
-          <> string.inspect(verdict)
-        }
-    }
-    False -> Nil
+) -> Result(Nil, Violation) {
+  case sut.faults, verdict {
+    Quiet, Error(_) ->
+      violation(
+        "quiet_close",
+        "a plan with no faults closed with " <> string.inspect(verdict),
+      )
+    Quiet, Ok(Nil) | Faulty, _ -> Ok(Nil)
   }
 }
 
@@ -638,10 +711,10 @@ fn assert_clean_when_quiet(
 // go: each is removed when the broker releases it, which is a cast, so the
 // check waits for the last one. This is the check that sees a row that a
 // release forgot, which a close would otherwise sweep up unseen.
-fn assert_inventory_drains(run: Run) -> Nil {
-  let assert poll.Answered(Nil) =
+fn check_inventory_drains(sut: Sut) -> Result(Nil, Violation) {
+  let drained =
     poll.until(within: 4000, every: 20, attempt: fn() {
-      case executor.snapshot(run.plane.service, waiting: 1000) {
+      case executor.snapshot(sut.plane.service, waiting: 1000) {
         Ok(books) ->
           case books.live {
             [] -> poll.Done(Nil)
@@ -650,20 +723,20 @@ fn assert_inventory_drains(run: Run) -> Nil {
         Error(unreachable) -> poll.Fail(unreachable)
       }
     })
-    as {
-      describe(run.plan)
-      <> ": the executor kept a row after its execution ended"
-    }
-  Nil
+  case drained {
+    poll.Answered(Nil) -> Ok(Nil)
+    poll.Failed(_) | poll.Expired ->
+      violation("row_kept", "the executor kept a row after its execution ended")
+  }
 }
 
 // Nothing borrowed once the executions ended, and the slots held beyond that
 // are the ones a killed helper or an execution that ignored cancel can
 // account for; a plan with neither holds none.
-fn assert_pool_baseline(run: Run, faults: Int) -> Nil {
-  let assert poll.Answered(census) =
-    poll.until(within: 6000, every: 20, attempt: fn() {
-      case exec.pool_census(run.plane.pool, waiting: 1000) {
+fn check_pool_baseline(sut: Sut, faults: Int) -> Result(Nil, Violation) {
+  let balanced =
+    poll.until(within: 4000, every: 20, attempt: fn() {
+      case exec.pool_census(sut.plane.pool, waiting: 1000) {
         Ok(census) ->
           case census.borrowed == 0 {
             True -> poll.Done(census)
@@ -672,88 +745,170 @@ fn assert_pool_baseline(run: Run, faults: Int) -> Nil {
         Error(refusal) -> poll.Fail(refusal)
       }
     })
-    as { describe(run.plan) <> ": the pool still had a helper borrowed" }
-  let held = census.draining + census.unconfirmed + census.retiring
-  assert held <= faults
-    as {
-      describe(run.plan)
-      <> ": the pool holds "
-      <> int.to_string(held)
-      <> " slots for "
-      <> int.to_string(faults)
-      <> " faults"
+  case balanced {
+    poll.Failed(_) | poll.Expired ->
+      violation("pool_borrowed", "the pool still had a helper borrowed")
+    poll.Answered(census) -> {
+      let held = census.draining + census.unconfirmed + census.retiring
+      use <- bool.guard(
+        held > faults,
+        violation(
+          "pool_slots",
+          "the pool holds "
+            <> int.to_string(held)
+            <> " slots for "
+            <> int.to_string(faults)
+            <> " faults",
+        ),
+      )
+      use <- bool.guard(
+        faults == 0 && held != 0,
+        violation("pool_quiet_slots", "a quiet plan left slots held"),
+      )
+      Ok(Nil)
     }
-  case faults {
-    0 -> {
-      assert held == 0
-        as { describe(run.plan) <> ": a quiet plan left slots held" }
-    }
-    _ -> Nil
   }
 }
 
 // The executor holds no row and no relay of this run is alive.
-fn assert_nothing_left(run: Run) -> Nil {
-  case executor.snapshot(run.plane.service, waiting: 1000) {
-    Ok(books) -> {
-      assert books.live == []
-        as { describe(run.plan) <> ": the executor still held a row" }
-    }
-    Error(executor.Unreachable) -> Nil
-  }
-  let relays = list.filter_map(run.started, fn(target) { target.relay })
-  let assert poll.Answered(Nil) =
+fn check_nothing_left(sut: Sut) -> Result(Nil, Violation) {
+  use _ <- result.try(case executor.snapshot(sut.plane.service, waiting: 1000) {
+    Ok(books) ->
+      case books.live {
+        [] -> Ok(Nil)
+        _rows -> violation("row_after_close", "the executor still held a row")
+      }
+    Error(executor.Unreachable) -> Ok(Nil)
+  })
+  let relays = list.filter_map(sut.started, fn(target) { target.relay })
+  let gone =
     poll.until(within: 4000, every: 20, attempt: fn() {
       case list.any(relays, process.is_alive) {
         True -> poll.Retry
         False -> poll.Done(Nil)
       }
     })
-    as { describe(run.plan) <> ": a relay outlived its execution" }
-  Nil
+  case gone {
+    poll.Answered(Nil) -> Ok(Nil)
+    poll.Failed(_) | poll.Expired ->
+      violation("relay_outlived", "a relay outlived its execution")
+  }
 }
 
 // A second close returns the stored verdict, and an `Ok` one ended the
 // service, so it finds no process.
-fn assert_second_close(
-  run: Run,
+fn check_second_close(
+  sut: Sut,
   first: Result(Nil, exec.RetirementFailure),
-) -> Nil {
-  let second = executor.close(run.plane.service, draining: 100, helpers: 100)
+) -> Result(Nil, Violation) {
+  let second = executor.close(sut.plane.service, draining: 100, helpers: 100)
   let expected = case first {
     Ok(Nil) -> Error(exec.RetirementOwnerGone)
     Error(_) -> first
   }
-  assert second == expected
-    as {
-      describe(run.plan)
-      <> ": a second close answered "
-      <> string.inspect(second)
-      <> " after "
-      <> string.inspect(first)
-    }
+  case second == expected {
+    True -> Ok(Nil)
+    False ->
+      violation(
+        "second_close",
+        "a second close answered "
+          <> string.inspect(second)
+          <> " after "
+          <> string.inspect(first),
+      )
+  }
 }
 
 // --- the tests --------------------------------------------------------------
 
+// Checks `plans_per_pool` plans against each pool size, and panics with the
+// shrunk plan of the first that fails.
+fn check_plans(faults: Faults, seed seed: Int) -> Nil {
+  list.each(pool_sizes, fn(size) {
+    case statem.check(spec(faults, size), plan_config(seed: seed + size)) {
+      Ok(Nil) -> Nil
+      Error(failure) ->
+        panic as {
+          "pool of "
+          <> int.to_string(size)
+          <> ": "
+          <> statem.report(failure, string.inspect)
+        }
+    }
+  })
+}
+
 /// Plans with no crash and no cancel-ignoring execution keep every invariant,
 /// and close cleanly.
 pub fn quiet_plans_keep_every_invariant_and_close_cleanly_test() {
-  let budget = planes.shrink_budget(ms: shrink_budget_ms)
-  qcheck.run(
-    plan_config(seed: quiet_seed),
-    plan_generator(quiet: True),
-    run_plan(_, budget),
-  )
+  check_plans(Quiet, seed: quiet_seed)
 }
 
 /// Plans that crash helpers and ignore cancel keep the invariants that hold
 /// whatever the faults.
 pub fn faulty_plans_keep_every_invariant_test() {
-  let budget = planes.shrink_budget(ms: shrink_budget_ms)
-  qcheck.run(
-    plan_config(seed: faulty_seed),
-    plan_generator(quiet: False),
-    run_plan(_, budget),
-  )
+  check_plans(Faulty, seed: faulty_seed)
+}
+
+/// The generator reaches every kind of command in the faulty plans, and the
+/// quiet plans never draw a fault. Without this a generator that quietly
+/// stopped producing crashes would leave the faulty test passing on plans no
+/// harder than the quiet ones.
+pub fn the_generators_reach_the_commands_each_test_needs_test() {
+  // The plans the tests themselves draw: every run of every pool size, under
+  // the seed the test gives that size.
+  let drawn = fn(faults, seed) {
+    list.flat_map(pool_sizes, fn(size) {
+      list.repeat(Nil, plans_per_pool)
+      |> list.index_map(fn(_, run) {
+        statem.commands(spec(faults, size), plan_config(seed: seed + size), run)
+      })
+      |> list.flatten
+    })
+  }
+  let faulty = drawn(Faulty, faulty_seed)
+  let quiet = drawn(Quiet, quiet_seed)
+
+  assert list.any(faulty, fn(command) {
+    command == Start(kind: Stubborn, deadline: NoDeadline)
+    || command == Start(kind: Stubborn, deadline: WallDeadline)
+  })
+  assert list.any(faulty, fn(command) {
+    case command {
+      CrashHelper(..) -> True
+      Start(..)
+      | BrokerCancel(..)
+      | CallerCancel(..)
+      | KillCaller(..)
+      | Pause(..)
+      | CloseMidRun -> False
+    }
+  })
+  assert list.any(faulty, fn(command) { command == CloseMidRun })
+  assert list.any(faulty, fn(command) {
+    command == Start(kind: Flood, deadline: WallDeadline)
+  })
+  assert list.any(faulty, fn(command) {
+    case command {
+      KillCaller(..) -> True
+      Start(..)
+      | BrokerCancel(..)
+      | CallerCancel(..)
+      | CrashHelper(..)
+      | Pause(..)
+      | CloseMidRun -> False
+    }
+  })
+
+  assert !list.any(quiet, fn(command) {
+    case command {
+      CrashHelper(..) | Start(kind: Stubborn, ..) -> True
+      Start(..)
+      | BrokerCancel(..)
+      | CallerCancel(..)
+      | KillCaller(..)
+      | Pause(..)
+      | CloseMidRun -> False
+    }
+  })
 }
