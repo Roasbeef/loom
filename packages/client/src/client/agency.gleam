@@ -4071,7 +4071,50 @@ pub fn delegate_release(
     )
     |> result.map_error(fn(_) { refused(config, agent.AgencyUnavailable) }),
   )
-  result.map_error(answer, refused(config, _))
+  use stopped <- result.map(result.map_error(answer, refused(config, _)))
+  settle_released(config)
+  stopped
+}
+
+// How long a release waits for the children it stopped to end their runs, in
+// milliseconds.
+const release_settle_ms = 3000
+
+// A stop is a request: the durable mark and the abort are written, and the
+// strand driver ends the run a moment later. The registry stops the whole
+// session right after the release returns, and a driver stopped first would
+// never record how its run ended. Waiting here, outside the holder and bounded,
+// lets the aborts land. A run that outlasts the bound is stopped with the
+// session all the same, and nothing depends on the wait having succeeded.
+fn settle_released(config: Config) -> Nil {
+  case borrow(config) {
+    Error(_refusal) -> Nil
+    Ok(runtime) -> {
+      let _waited =
+        poll.until(within: release_settle_ms, every: 25, attempt: fn() {
+          case runs_in_flight(runtime) {
+            True -> poll.Retry
+            False -> poll.Done(Nil)
+          }
+        })
+      Nil
+    }
+  }
+}
+
+// Whether any child of the session has a run that has not ended. A ledger that
+// cannot be read says no, since the wait is a courtesy to the drivers.
+fn runs_in_flight(runtime: api.Runtime) -> Bool {
+  case read_ledger(runtime) {
+    Error(_refusal) -> False
+    Ok(ledger) ->
+      list.any(dict.values(ledger), fn(cell) {
+        case current_run(runtime, cell) {
+          Ok(Some(_run)) -> True
+          Ok(None) | Error(_) -> False
+        }
+      })
+  }
 }
 
 /// The questions a spawning orchestrator asks of a delegate session's
