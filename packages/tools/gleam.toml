@@ -17,3 +17,4 @@ lsp = { path = "../lsp" }
 cap = { path = "../cap" }
 gleeunit = ">= 1.0.0 and < 2.0.0"
 gleam_otp = ">= 1.0.0 and < 2.0.0"
+qcheck = ">= 1.0.5 and < 2.0.0"
