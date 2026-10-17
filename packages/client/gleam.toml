@@ -46,3 +46,4 @@ tui = { path = "../tui" }
 etui = { git = "https://github.com/Roasbeef/etui.git", ref = "81fda7d9b96ca467c2e88c9d2d1788799bf77b4a" }
 gleeunit = ">= 1.0.0 and < 2.0.0"
 gleam_httpc = ">= 5.0.0 and < 6.0.0"
+qcheck = ">= 1.0.5 and < 2.0.0"

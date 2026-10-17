@@ -4,8 +4,8 @@
 //// Three kinds of test, and the split is deliberate. The **table** names
 //// every `(state, event)` pair the machine can be asked about and writes
 //// the answer down, so changing the relation shows up as a diff in a
-//// table rather than as a green run. The **properties** fold seeded
-//// random event scripts and assert the five things that must hold of
+//// table rather than as a green run. The **properties** fold generated
+//// event scripts and assert the five things that must hold of
 //// every run — identity is immutable, terminal is absorbing, an exit
 //// report always terminates, an `Exited` really did end of its own
 //// accord, the first stop's cause survives — because a table is only as
@@ -15,8 +15,11 @@
 //// each of which must come back as a corruption report rather than a
 //// crash or a half-read record.
 ////
-//// Randomness follows core's seeded-generator pattern (a SplitMix-style
-//// draw threaded explicitly), so a failing case reproduces from its seed.
+//// Randomness comes from qcheck generators on a fixed seed, so the gate is
+//// deterministic and a failing case arrives already shrunk. Every enum is
+//// drawn as an index with the plainest variant first, so a script shrinks
+//// toward fewer events and a record toward `Starting`, the first cause and
+//// zeroed numbers.
 
 import broker/exec.{type ExecResult, ExecResult}
 import client/jobstate.{
@@ -32,6 +35,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import qcheck
 
 // --- fixtures -------------------------------------------------------------
 
@@ -382,18 +386,17 @@ pub fn is_terminal_names_exactly_the_three_terminal_states_test() {
   assert jobstate.is_terminal(Lost(reason: VmRestart))
 }
 
-// --- properties over seeded event scripts ---------------------------------
+// --- properties over generated event scripts ------------------------------
 
-// Four properties over two hundred random event scripts each, folded
-// through `step`.
+// Four properties over two hundred generated event scripts, folded through
+// `step`.
 //
 // The fold keeps the record whenever a step is refused, which is exactly
 // what the actor does with an illegal transition, so the script continues
 // past a refusal instead of stopping at the first one — and that is what
 // reaches the orders a hand-written table does not.
 pub fn random_scripts_preserve_every_invariant_test() {
-  list.each(range(from: 1, to: 200), fn(n) {
-    let #(events, _seed) = gen_events(seed(n), 12)
+  qcheck.run(config(script_count), events_generator(12), fn(events) {
     check_script(record(Starting), events)
   })
 }
@@ -475,9 +478,10 @@ fn is_exit(event: JobEvent) -> Bool {
 // a session-stop sweep racing an owner's own `job_kill` cannot erase who
 // asked.
 pub fn a_stop_settles_under_the_first_cause_that_asked_test() {
-  list.each(range(from: 1, to: 100), fn(n) {
-    let #(first, seed) = gen_cause(seed(n))
-    let #(noise, _seed) = gen_events(seed, 6)
+  let generator = qcheck.tuple2(cause_generator(), events_generator(6))
+
+  qcheck.run(config(stop_count), generator, fn(drawn) {
+    let #(first, noise) = drawn
 
     let assert Ok(draining) =
       jobstate.step(record(Running), KillRequested(by: first))
@@ -510,26 +514,28 @@ fn is_stop_or_acceptance(event: JobEvent) -> Bool {
 // cause, every reason, and an `ExecResult` whose eleven fields are drawn
 // independently so a codec that dropped or transposed one is caught.
 pub fn every_generated_record_round_trips_test() {
-  let records =
-    list.map(range(from: 1, to: 200), fn(n) {
-      let #(record, _seed) = gen_record(seed(n))
-      record
-    })
-  list.each(records, fn(record) {
+  qcheck.run(config(script_count), record_generator(), fn(record) {
     assert jobstate.decode(jobstate.encode(record)) == Ok(record)
   })
+}
 
-  // The draw is asserted as well as used. A round trip over two hundred
-  // records that all happened to be `Starting` would pass while testing
-  // one sixth of the codec, and a degenerate generator is exactly the
-  // failure a property test cannot report about itself.
+// The draw is asserted as well as used. A round trip over two hundred
+// records that all happened to be `Starting` would pass while testing one
+// sixth of the codec, and a degenerate generator is exactly the failure a
+// property test cannot report about itself. The same generator and seed
+// are drawn again without shrink trees to count the phases they reach.
+pub fn the_record_generator_reaches_every_phase_test() {
+  let #(records, _seed) =
+    qcheck.generate(
+      record_generator(),
+      script_count,
+      qcheck.seed(generation_seed),
+    )
   let phases = list.unique(list.map(records, phase_of))
   assert list.sort(phases, string.compare)
     == ["draining", "exited", "killed", "lost", "running", "starting"]
 }
 
-// The phase tag of a record's stored form, which is what the coverage
-// assertion above counts.
 fn phase_of(record: JobRecord) -> String {
   let assert json.Object(fields) = jobstate.encode(record)
     as "a record encodes as an object"
@@ -797,212 +803,152 @@ fn phase(
   replace(fields, "state", json.Object(state))
 }
 
-// --- seeded generation ----------------------------------------------------
-//
-// core's `test/support/generate` is not a dependency of this package, so
-// the SplitMix64 draw is repeated here — the same arrangement
-// `machine/property_test` made for the same reason.
+// --- generation -----------------------------------------------------------
 
-type Seed {
-  Seed(state: Int)
+/// How many scripts and records the scripted properties draw, how many the
+/// stop property draws, and the seed they share. Fixed, so a red run is the
+/// same red run everywhere.
+const script_count = 200
+
+const stop_count = 100
+
+const generation_seed = 9
+
+fn config(count: Int) -> qcheck.Config {
+  qcheck.default_config()
+  |> qcheck.with_test_count(count)
+  |> qcheck.with_seed(qcheck.seed(generation_seed))
 }
 
-const mask_64 = 0xFFFFFFFFFFFFFFFF
-
-fn seed(n: Int) -> Seed {
-  Seed(state: int.bitwise_and(n, mask_64))
-}
-
-// An inclusive integer range as a list, which is how each property test
-// says how many scripts it draws.
-fn range(from start: Int, to stop: Int) -> List(Int) {
-  int.range(from: start, to: stop + 1, with: [], run: fn(acc, n) { [n, ..acc] })
-  |> list.reverse
-}
-
-fn next(seed: Seed) -> #(Int, Seed) {
-  let state = int.bitwise_and(seed.state + 0x9E3779B97F4A7C15, mask_64)
-  let z = state
-  let z =
-    int.bitwise_and(
-      int.bitwise_exclusive_or(z, int.bitwise_shift_right(z, 30))
-        * 0xBF58476D1CE4E5B9,
-      mask_64,
-    )
-  let z =
-    int.bitwise_and(
-      int.bitwise_exclusive_or(z, int.bitwise_shift_right(z, 27))
-        * 0x94D049BB133111EB,
-      mask_64,
-    )
-  let z = int.bitwise_exclusive_or(z, int.bitwise_shift_right(z, 31))
-  #(z, Seed(state:))
-}
-
-fn int_between(seed: Seed, min: Int, max: Int) -> #(Int, Seed) {
-  let #(raw, seed) = next(seed)
-  #(min + raw % { max - min + 1 }, seed)
-}
-
-fn bool(seed: Seed) -> #(Bool, Seed) {
-  let #(n, seed) = int_between(seed, 0, 1)
-  #(n == 1, seed)
-}
-
-// Draws one of a non-empty list. The fallback is the head, which is
-// unreachable because the index is drawn inside the list's own bounds.
-fn one_of(seed: Seed, options: List(a), fallback: a) -> #(a, Seed) {
-  let #(index, seed) = int_between(seed, 0, list.length(options) - 1)
-  case list.drop(options, index) {
-    [chosen, ..] -> #(chosen, seed)
-    [] -> #(fallback, seed)
-  }
-}
-
-fn gen_cause(seed: Seed) -> #(jobstate.KillCause, Seed) {
-  one_of(seed, causes(), ByOwner)
-}
-
-fn gen_reason(seed: Seed) -> #(jobstate.LossReason, Seed) {
-  one_of(seed, reasons(), VmRestart)
-}
-
-fn gen_event(seed: Seed) -> #(JobEvent, Seed) {
-  let #(pick, seed) = int_between(seed, 0, 3)
-  case pick {
-    0 -> #(HelperAccepted, seed)
-
-    1 -> {
-      let #(cause, seed) = gen_cause(seed)
-      #(KillRequested(by: cause), seed)
+// One of a non-empty list, drawn as an index so that shrinking moves
+// toward the head. The fallback is the head, unreachable because the
+// index is drawn inside the list's own bounds.
+fn one_of(options: List(a), fallback: a) -> qcheck.Generator(a) {
+  qcheck.bounded_int(from: 0, to: list.length(options) - 1)
+  |> qcheck.map(fn(index) {
+    case list.drop(options, index) {
+      [chosen, ..] -> chosen
+      [] -> fallback
     }
-
-    2 -> {
-      let #(result, seed) = gen_result(seed)
-      #(ExitReported(result:), seed)
-    }
-
-    _ -> {
-      let #(reason, seed) = gen_reason(seed)
-      #(RunnerLost(reason:), seed)
-    }
-  }
+  })
 }
 
-fn gen_events(seed: Seed, count: Int) -> #(List(JobEvent), Seed) {
-  gen_events_loop(seed, count, [])
+fn cause_generator() -> qcheck.Generator(jobstate.KillCause) {
+  one_of(causes(), ByOwner)
 }
 
-fn gen_events_loop(
-  seed: Seed,
-  count: Int,
-  acc: List(JobEvent),
-) -> #(List(JobEvent), Seed) {
-  case count <= 0 {
-    True -> #(list.reverse(acc), seed)
-    False -> {
-      let #(event, seed) = gen_event(seed)
-      gen_events_loop(seed, count - 1, [event, ..acc])
-    }
-  }
+fn reason_generator() -> qcheck.Generator(jobstate.LossReason) {
+  one_of(reasons(), VmRestart)
 }
 
-fn gen_result(seed: Seed) -> #(ExecResult, Seed) {
-  let #(code, seed) = int_between(seed, 0, 255)
-  let #(signal, seed) = int_between(seed, 0, 15)
-  let #(stdout_bytes, seed) = int_between(seed, 0, 1_000_000)
-  let #(stderr_bytes, seed) = int_between(seed, 0, 1_000_000)
-  let #(stdout_truncated, seed) = bool(seed)
-  let #(stderr_truncated, seed) = bool(seed)
-  let #(enforcement, seed) = gen_enforcement(seed)
-  let #(degraded, seed) = bool(seed)
-  let #(wall_ms, seed) = int_between(seed, 0, 3_600_000)
-  let #(timed_out, seed) = bool(seed)
-  let #(cancelled, seed) = bool(seed)
-  #(
-    ExecResult(
-      code:,
-      signal:,
-      stdout_bytes:,
-      stderr_bytes:,
-      stdout_truncated:,
-      stderr_truncated:,
-      enforcement:,
-      degraded:,
-      wall_ms:,
-      timed_out:,
-      cancelled:,
-    ),
-    seed,
+fn event_generator() -> qcheck.Generator(JobEvent) {
+  qcheck.from_generators(qcheck.return(HelperAccepted), [
+    qcheck.map(cause_generator(), fn(cause) { KillRequested(by: cause) }),
+    qcheck.map(result_generator(), fn(result) { ExitReported(result:) }),
+    qcheck.map(reason_generator(), fn(reason) { RunnerLost(reason:) }),
+  ])
+}
+
+fn events_generator(longest: Int) -> qcheck.Generator(List(JobEvent)) {
+  qcheck.generic_list(
+    elements_from: event_generator(),
+    length_from: qcheck.bounded_int(from: 0, to: longest),
   )
+}
+
+// The eleven fields are drawn independently, in two groups because qcheck
+// combines at most six, so a codec that dropped or transposed one is
+// caught.
+fn result_generator() -> qcheck.Generator(ExecResult) {
+  let numbers =
+    qcheck.tuple5(
+      qcheck.bounded_int(from: 0, to: 255),
+      qcheck.bounded_int(from: 0, to: 15),
+      qcheck.bounded_int(from: 0, to: 1_000_000),
+      qcheck.bounded_int(from: 0, to: 1_000_000),
+      qcheck.bounded_int(from: 0, to: 3_600_000),
+    )
+  let flags =
+    qcheck.tuple5(
+      qcheck.bool(),
+      qcheck.bool(),
+      qcheck.bool(),
+      qcheck.bool(),
+      qcheck.bool(),
+    )
+
+  qcheck.map3(numbers, flags, enforcement_generator(), fn(n, f, enforcement) {
+    ExecResult(
+      code: n.0,
+      signal: n.1,
+      stdout_bytes: n.2,
+      stderr_bytes: n.3,
+      stdout_truncated: f.0,
+      stderr_truncated: f.1,
+      enforcement:,
+      degraded: f.2,
+      wall_ms: n.4,
+      timed_out: f.3,
+      cancelled: f.4,
+    )
+  })
 }
 
 // The enforcement list is drawn including the empty case, because an
 // empty array and an absent field are different facts about a run and the
 // codec must not confuse them.
-fn gen_enforcement(seed: Seed) -> #(List(String), Seed) {
+fn enforcement_generator() -> qcheck.Generator(List(String)) {
   let layers = ["bwrap", "landlock", "seccomp", "skip:darwin-process-lifecycle"]
-  let #(take, seed) = int_between(seed, 0, list.length(layers))
-  #(list.take(layers, take), seed)
+  qcheck.bounded_int(from: 0, to: list.length(layers))
+  |> qcheck.map(fn(take) { list.take(layers, take) })
 }
 
-fn gen_state(seed: Seed) -> #(JobState, Seed) {
-  let #(pick, seed) = int_between(seed, 0, 5)
-  case pick {
-    0 -> #(Starting, seed)
-
-    1 -> #(Running, seed)
-
-    2 -> {
-      let #(cause, seed) = gen_cause(seed)
-      #(Draining(by: cause), seed)
-    }
-
-    3 -> {
-      let #(result, seed) = gen_result(seed)
-      #(Exited(result:), seed)
-    }
-
-    4 -> {
-      let #(cause, seed) = gen_cause(seed)
-      let #(result, seed) = gen_result(seed)
-      #(Killed(by: cause, result:), seed)
-    }
-
-    _ -> {
-      let #(reason, seed) = gen_reason(seed)
-      #(Lost(reason:), seed)
-    }
-  }
+fn state_generator() -> qcheck.Generator(JobState) {
+  qcheck.from_generators(qcheck.return(Starting), [
+    qcheck.return(Running),
+    qcheck.map(cause_generator(), fn(cause) { Draining(by: cause) }),
+    qcheck.map(result_generator(), fn(result) { Exited(result:) }),
+    qcheck.map2(cause_generator(), result_generator(), fn(cause, result) {
+      Killed(by: cause, result:)
+    }),
+    qcheck.map(reason_generator(), fn(reason) { Lost(reason:) }),
+  ])
 }
 
-fn gen_record(seed: Seed) -> #(JobRecord, Seed) {
-  let #(state, seed) = gen_state(seed)
-  let #(owner, seed) = one_of(seed, ["main", "sub:main/reviewer-1"], "main")
-  let #(argc, seed) = int_between(seed, 1, 4)
-  let #(started_at_ms, seed) = int_between(seed, 0, 2_000_000_000)
-  let #(wall, seed) = int_between(seed, 1000, 3_600_000)
-  let #(tail, seed) = int_between(seed, 0, 999_999)
-  let #(spill, seed) = gen_spill(seed)
+fn record_generator() -> qcheck.Generator(JobRecord) {
+  let identity =
+    qcheck.tuple4(
+      one_of(["main", "sub:main/reviewer-1"], "main"),
+      qcheck.bounded_int(from: 1, to: 4),
+      qcheck.bounded_int(from: 0, to: 2_000_000_000),
+      qcheck.bounded_int(from: 1000, to: 3_600_000),
+    )
+  let tail = qcheck.bounded_int(from: 0, to: 999_999)
 
-  let assert Ok(id) = jobstate.parse_job_id("01JQ" <> int.to_string(tail))
-    as "a generated id carries no separator"
-  #(
-    JobRecord(
-      id:,
-      owner:,
-      started_by: an_op(),
-      spec: JobSpec(
-        argv: list.take(["bash", "-lc", "make check", "--"], argc),
-        cwd: "/workspace",
-        requested_wall_ms: wall,
-      ),
-      started_at_ms:,
-      deadline_ms: started_at_ms + wall,
-      state:,
-      spill:,
-    ),
-    seed,
+  qcheck.map4(
+    identity,
+    tail,
+    spill_generator(),
+    state_generator(),
+    fn(identity, tail, spill, state) {
+      let #(owner, argc, started_at_ms, wall) = identity
+      let assert Ok(id) = jobstate.parse_job_id("01JQ" <> int.to_string(tail))
+        as "a generated id carries no separator"
+      JobRecord(
+        id:,
+        owner:,
+        started_by: an_op(),
+        spec: JobSpec(
+          argv: list.take(["bash", "-lc", "make check", "--"], argc),
+          cwd: "/workspace",
+          requested_wall_ms: wall,
+        ),
+        started_at_ms:,
+        deadline_ms: started_at_ms + wall,
+        state:,
+        spill:,
+      )
+    },
   )
 }
 
@@ -1010,14 +956,18 @@ fn gen_record(seed: Seed) -> #(JobRecord, Seed) {
 // stored, both. The refs are the codec's subject rather than real
 // content addresses; what the round trip has to preserve is which
 // streams are present, and a null told apart from a string.
-fn gen_spill(seed: Seed) -> #(jobstate.JobSpill, Seed) {
-  let #(shape, seed) = int_between(seed, 0, 2)
-  let #(nonce, seed) = int_between(seed, 0, 999_999)
-  let out = Some("sha256-o" <> int.to_string(nonce))
-  let err = Some("sha256-e" <> int.to_string(nonce))
-  case shape {
-    0 -> #(jobstate.no_spill(), seed)
-    1 -> #(jobstate.JobSpill(stdout_ref: out, stderr_ref: None), seed)
-    _both -> #(jobstate.JobSpill(stdout_ref: out, stderr_ref: err), seed)
-  }
+fn spill_generator() -> qcheck.Generator(jobstate.JobSpill) {
+  qcheck.map2(
+    qcheck.bounded_int(from: 0, to: 2),
+    qcheck.bounded_int(from: 0, to: 999_999),
+    fn(shape, nonce) {
+      let out = Some("sha256-o" <> int.to_string(nonce))
+      let err = Some("sha256-e" <> int.to_string(nonce))
+      case shape {
+        0 -> jobstate.no_spill()
+        1 -> jobstate.JobSpill(stdout_ref: out, stderr_ref: None)
+        _both -> jobstate.JobSpill(stdout_ref: out, stderr_ref: err)
+      }
+    },
+  )
 }
