@@ -66,10 +66,23 @@
 //// those reports. And `has_unsent` and `cancel_unsent` concern mutations
 //// only, so a waiting read or lookup is dropped silently on failure.
 ////
-//// Randomness follows core's seeded SplitMix64 generator
-//// (`packages/core/test/support/generate.gleam`), so a failure reproduces
-//// from its seed. The failure report prints the seed, the step, the
-//// shortest failing prefix and a schedule shrunk by deleting events.
+//// The schedules are driven by `statem`. An `Event` is a command, a plain
+//// value that prints readably. The system under test bundles the lane, the
+//// oracle and the stand-in socket, so the oracle observes the lane's
+//// outputs as it updates its account; the abstract model is empty, because
+//// every event is meaningful in every state. The final retirement is
+//// `statem`'s `finish` step. The authenticated role is fixed for a whole
+//// run, so there is one `statem.check` per role, an operator campaign and a
+//// smaller observer campaign, each from a fixed seed. Each invariant's tag
+//// (`I1`, `L3`, `N1`, ...) is the violation's tag, and a failure shrinks
+//// only to a schedule that breaks the same rule.
+////
+//// The failure report names the seed, run, step and the shortest schedule.
+//// A schedule shrinks by deleting runs of events and by shrinking inside
+//// events: a tick toward 20 ms, an answer toward its first choice, a
+//// notice toward no advance. Each passing run reports the states it reached
+//// to a mailbox the test drains, and the test fails if the campaigns never
+//// reached every state the rules talk about.
 
 import core/codec
 import core/json
@@ -86,46 +99,16 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/set.{type Set}
 import gleam/string
+import qcheck
 import session_view/connection_event
 import session_view/protocol
 import session_view/session_channel
 import session_view/session_wire
 import session_view/snapshot
+import statem
 import tui/connection
 import tui/terminal_lane.{type Lane as TerminalLane}
 import tui_test/pushed
-
-// --- seeded randomness (core's test/support/generate pattern) -------------
-
-type Seed {
-  Seed(state: Int)
-}
-
-const mask_64 = 0xFFFFFFFFFFFFFFFF
-
-fn next(seed: Seed) -> #(Int, Seed) {
-  let state = int.bitwise_and(seed.state + 0x9E3779B97F4A7C15, mask_64)
-  let z = state
-  let z =
-    int.bitwise_and(
-      int.bitwise_exclusive_or(z, int.bitwise_shift_right(z, 30))
-        * 0xBF58476D1CE4E5B9,
-      mask_64,
-    )
-  let z =
-    int.bitwise_and(
-      int.bitwise_exclusive_or(z, int.bitwise_shift_right(z, 27))
-        * 0x94D049BB133111EB,
-      mask_64,
-    )
-  let z = int.bitwise_exclusive_or(z, int.bitwise_shift_right(z, 31))
-  #(z, Seed(state:))
-}
-
-fn int_between(seed: Seed, min: Int, max: Int) -> #(Int, Seed) {
-  let #(raw, seed) = next(seed)
-  #(min + raw % { max - min + 1 }, seed)
-}
 
 // --- schedules --------------------------------------------------------------
 
@@ -206,80 +189,64 @@ type Role {
 // whenever the lane is capturing, which is often, so even it stays at one
 // percent. The tick sizes straddle the 250 ms refresh and the 10 s and
 // 30 s deadlines.
-fn event_for(roll: Int, detail: Int) -> Event {
-  case roll {
-    n if n < 130 -> SubmitPrompt
-    n if n < 190 -> SubmitRead(read_name(detail))
-    n if n < 220 -> Lookup
-    n if n < 250 -> History
-    n if n < 591 -> Answer(detail % 3)
-    n if n < 601 -> Refuse
-    n if n < 611 -> Stale(stale_offset(detail), stale_body(detail))
-    n if n < 614 -> Garbage
-    n if n < 617 -> Disconnect
-    n if n < 710 -> Notice(detail % 4)
-    n if n < 740 -> OldNotice
-    n if n < 780 -> Delta
-    n if n < 810 -> Usage
-    n if n < 964 -> Tick(tick_ms(detail))
-    n if n < 967 -> Retire
-    n if n < 970 -> Close
-    _ -> CancelUnsent
+//
+// Each event's own parameters are drawn by its generator, so a failing
+// schedule shrinks inside an event as well as by deleting events: a tick
+// moves toward 20 ms, an answer toward its first choice, a stale reply
+// toward the offset and body listed first.
+fn event() -> qcheck.Generator(Event) {
+  qcheck.from_weighted_generators(#(130, qcheck.constant(SubmitPrompt)), [
+    #(60, qcheck.bounded_int(0, 1) |> qcheck.map(read_event)),
+    #(30, qcheck.constant(Lookup)),
+    #(30, qcheck.constant(History)),
+    #(341, qcheck.bounded_int(0, 2) |> qcheck.map(Answer)),
+    #(10, qcheck.constant(Refuse)),
+    #(10, qcheck.map2(stale_offset(), stale_body(), Stale)),
+    #(3, qcheck.constant(Garbage)),
+    #(3, qcheck.constant(Disconnect)),
+    #(93, qcheck.bounded_int(0, 3) |> qcheck.map(Notice)),
+    #(30, qcheck.constant(OldNotice)),
+    #(40, qcheck.constant(Delta)),
+    #(30, qcheck.constant(Usage)),
+    #(154, qcheck.bounded_int(0, 99) |> qcheck.map(tick_event)),
+    #(3, qcheck.constant(Retire)),
+    #(3, qcheck.constant(Close)),
+    #(30, qcheck.constant(CancelUnsent)),
+  ])
+}
+
+fn read_event(index: Int) -> Event {
+  case index {
+    0 -> SubmitRead("models")
+    _ -> SubmitRead("schedules")
   }
 }
 
-fn read_name(detail: Int) -> String {
-  case detail % 2 {
-    0 -> "models"
-    _ -> "schedules"
-  }
+// The offsets name the neighbours of the outstanding request and one far
+// miss; the body is drawn independently, so every offset meets every body.
+fn stale_offset() -> qcheck.Generator(Int) {
+  qcheck.from_generators(qcheck.constant(-2), [
+    qcheck.constant(-1),
+    qcheck.constant(0),
+    qcheck.constant(1),
+    qcheck.constant(2),
+    qcheck.constant(5),
+  ])
 }
 
-fn stale_offset(detail: Int) -> Int {
-  case detail % 6 {
-    0 -> -2
-    1 -> -1
-    2 -> 0
-    3 -> 1
-    4 -> 2
-    _ -> 5
-  }
+fn stale_body() -> qcheck.Generator(StaleBody) {
+  qcheck.from_generators(qcheck.constant(StaleOutcome), [
+    qcheck.constant(StaleModels),
+    qcheck.constant(StaleEnd),
+  ])
 }
 
-// The body is drawn from the digits the offset does not use, so every
-// offset meets every body.
-fn stale_body(detail: Int) -> StaleBody {
-  case detail / 6 % 3 {
-    0 -> StaleOutcome
-    1 -> StaleModels
-    _ -> StaleEnd
-  }
-}
-
-fn tick_ms(detail: Int) -> Int {
-  case detail {
+fn tick_event(detail: Int) -> Event {
+  Tick(case detail {
     n if n < 78 -> 20 + n * 4
     n if n < 98 -> 1000 + { n - 78 } * 550
     n -> 30_000 + { n - 98 } * 500
-  }
-}
-
-fn schedule(seed_value: Int) -> #(Role, List(Event)) {
-  let seed = Seed(int.bitwise_and(seed_value * 0x2545F4914F6CDD1D, mask_64))
-  let #(role, seed) = int_between(seed, 0, 9)
-  let #(length, seed) = int_between(seed, 20, 80)
-  let #(events, _) =
-    list.fold(list.repeat(Nil, length), #([], seed), fn(acc, _) {
-      let #(events, seed) = acc
-      let #(roll, seed) = int_between(seed, 0, 999)
-      let #(detail, seed) = int_between(seed, 0, 99)
-      #([event_for(roll, detail), ..events], seed)
-    })
-  let role = case role {
-    0 -> Observer
-    _ -> Operator
-  }
-  #(role, list.reverse(events))
+  })
 }
 
 // --- the oracle -------------------------------------------------------------
@@ -403,10 +370,6 @@ type Admission {
   WritesNow
   WaitsBehind
   NotSent
-}
-
-type Failure {
-  Failure(step: Int, message: String)
 }
 
 fn reach(oracle: Oracle, what: String) -> Oracle {
@@ -1943,12 +1906,44 @@ fn string_list_field(
   }
 }
 
-// --- running and shrinking --------------------------------------------------
+// --- running ----------------------------------------------------------------
 
-// Runs one schedule from a fresh lane and ends it with a retirement, so that
-// every obligation a closing lane owes is checked on every run. The step
-// numbers count from one; the final retirement is step `length + 1`.
-fn run(role: Role, events: List(Event)) -> Result(Set(String), Failure) {
+/// The longest schedule one run draws. The lists are as long as the old
+/// generator's eighty at most, and the final retirement is `finish`, not a
+/// generated event.
+const max_events = 80
+
+/// One campaign: every schedule in it runs under one role, because an
+/// attachment's identity cannot change on an existing socket. The old
+/// generator drew an observer one run in ten, and the counts keep that
+/// split.
+type Campaign {
+  Campaign(role: Role, runs: Int, seed: Int)
+}
+
+const campaigns = [
+  Campaign(role: Operator, runs: 450, seed: 20_260_501),
+  Campaign(role: Observer, runs: 50, seed: 20_260_502),
+]
+
+/// What one execution drives: the lane, the oracle that accounts for it,
+/// and the mailbox the stand-in socket would have received a performed
+/// output in.
+type Sut {
+  Sut(
+    state: #(TerminalLane, Oracle),
+    owner: Subject(Dynamic),
+    /// The result of reading the subscription the lane writes at
+    /// construction. `new_sut` cannot fail with a violation, so the first
+    /// `execute` or `finish` reports a mismatch.
+    startup: Result(Nil, String),
+  )
+}
+
+// A fresh lane, oracle and socket for every execution, including each
+// shrink candidate: the oracle is rebuilt from the lane's frames, so
+// nothing may carry over from a previous schedule.
+fn new_sut(role: Role) -> Sut {
   let owner: Subject(Dynamic) = process.new_subject()
   let socket = socket_on(owner)
   let channel = session_channel.start(socket, expected(), now: 0)
@@ -1977,58 +1972,17 @@ fn run(role: Role, events: List(Event)) -> Result(Set(String), Failure) {
 
   // The subscription is written at construction, before any event.
   let #(channel, outputs) = session_channel.take_outputs(channel)
-  use oracle <- result.try(
-    list.try_fold(outputs, oracle, observe)
-    |> result.map_error(Failure(0, _)),
-  )
-  let steps = list.append(events, [Retire])
-  use #(_, oracle) <- result.try(
-    list.index_fold(steps, Ok(#(channel, oracle)), fn(state, event, index) {
-      use state <- result.try(state)
-      apply(state, event)
-      |> result.try(exact_due)
-      |> result.map_error(Failure(index + 1, _))
-    }),
-  )
-
-  // Nothing was performed: the stand-in socket's mailbox is still empty.
-  use <- bool.guard(
-    process.receive(owner, 0) != Error(Nil),
-    Error(Failure(list.length(steps), "I5 a transition performed an output")),
-  )
-  Ok(oracle.reached)
+  case list.try_fold(outputs, oracle, observe) {
+    Ok(oracle) -> Sut(state: #(channel, oracle), owner:, startup: Ok(Nil))
+    Error(message) ->
+      Sut(state: #(channel, oracle), owner:, startup: Error(message))
+  }
 }
 
-fn check(seed_value: Int) -> Result(Set(String), String) {
-  let #(role, events) = schedule(seed_value)
-  use failure <- result.map_error(run(role, events))
-  let prefix = list.take(events, failure.step)
-  let tag = invariant(failure.message)
-  let shrunk = shrink(role, prefix, tag, list.length(prefix) + 1)
-  let shrunk_failure = case run(role, shrunk) {
-    Error(found) -> found.message
-    Ok(_) -> "the shrunk schedule passed"
-  }
-  "seed "
-  <> int.to_string(seed_value)
-  <> " ("
-  <> role_name(role)
-  <> ", "
-  <> int.to_string(list.length(events))
-  <> " events) failed at step "
-  <> int.to_string(failure.step)
-  <> ": "
-  <> failure.message
-  <> "\n  shortest failing prefix: "
-  <> int.to_string(list.length(prefix))
-  <> " events: "
-  <> describe_all(prefix)
-  <> "\n  shrunk to "
-  <> int.to_string(list.length(shrunk))
-  <> " events (then retire): "
-  <> describe_all(shrunk)
-  <> "\n  which fails with: "
-  <> shrunk_failure
+// The tag is the invariant's name, the first word of its message, so a
+// shrink keeps the rule that was broken rather than slipping to another.
+fn violation(message: String) -> statem.Violation {
+  statem.Violation(tag: invariant(message), detail: message)
 }
 
 fn invariant(message: String) -> String {
@@ -2038,41 +1992,55 @@ fn invariant(message: String) -> String {
   }
 }
 
-// Deletes one event at a time, keeping each deletion after which the
-// schedule still breaks the same rule, and repeats until a pass deletes
-// nothing. The prefix it starts from already ends at the failing step.
-fn shrink(
-  role: Role,
-  events: List(Event),
-  tag: String,
-  previous: Int,
-) -> List(Event) {
-  let length = list.length(events)
-  use <- bool.guard(length >= previous, events)
-  shrink(role, shrink_pass(role, events, tag, 0), tag, length)
+// One event, then the exactness probe, against the oracle the system holds.
+fn execute(sut: Sut, event: Event) -> Result(Sut, statem.Violation) {
+  use Nil <- result.try(result.map_error(sut.startup, violation))
+  apply(sut.state, event)
+  |> result.try(exact_due)
+  |> result.map(fn(state) { Sut(..sut, state:) })
+  |> result.map_error(violation)
 }
 
-fn shrink_pass(
-  role: Role,
-  events: List(Event),
-  tag: String,
-  index: Int,
-) -> List(Event) {
-  use <- bool.guard(index >= list.length(events), events)
-  let candidate =
-    list.append(list.take(events, index), list.drop(events, index + 1))
-  let still_fails = case run(role, candidate) {
-    Error(failure) -> invariant(failure.message) == tag
-    Ok(_) -> False
-  }
-  case still_fails {
-    True -> shrink_pass(role, candidate, tag, index)
-    False -> shrink_pass(role, events, tag, index + 1)
-  }
+// Ends every schedule with a retirement, so that every obligation a closing
+// lane owes is checked on every run, then hands the states the run reached
+// to the coverage check. A failed run never reports: the check is about
+// the runs that passed.
+fn finish(
+  sut: Sut,
+  reached: Subject(Set(String)),
+) -> Result(Nil, statem.Violation) {
+  use Nil <- result.try(result.map_error(sut.startup, violation))
+  use #(_, oracle) <- result.try(
+    apply(sut.state, Retire)
+    |> result.try(exact_due)
+    |> result.map_error(violation),
+  )
+
+  // Nothing was performed: the stand-in socket's mailbox is still empty.
+  use <- bool.guard(
+    process.receive(sut.owner, 0) != Error(Nil),
+    Error(violation("I5 a transition performed an output")),
+  )
+  process.send(reached, oracle.reached)
+  Ok(Nil)
 }
 
-fn describe_all(events: List(Event)) -> String {
-  list.map(events, describe) |> string.join(", ")
+// Every schedule is valid in every state, so the model is empty and the
+// precondition always admits; the oracle that matters lives in the system.
+fn spec(
+  role: Role,
+  reached: Subject(Set(String)),
+) -> statem.Spec(Nil, Event, Sut) {
+  statem.Spec(
+    initial: Nil,
+    command: fn(_) { event() },
+    precondition: fn(_, _) { statem.Admit },
+    next_model: fn(_, _) { Nil },
+    new_sut: fn() { new_sut(role) },
+    execute: fn(sut, _, event) { execute(sut, event) },
+    finish: fn(sut, _) { finish(sut, reached) },
+    teardown: fn(_) { Nil },
+  )
 }
 
 fn describe(event: Event) -> String {
@@ -2126,20 +2094,35 @@ const required = [
 ]
 
 pub fn session_channel_keeps_its_invariants_over_generated_schedules_test() {
-  let reached =
-    int.range(from: 1, to: 501, with: set.new(), run: fn(reached, seed_value) {
-      case check(seed_value) {
-        Ok(found) -> set.union(reached, found)
-        // EUnit clips a long panic message, so the whole report also goes
-        // to standard error, which EUnit does not capture.
-        Error(report) -> {
-          io.println_error(report)
-          panic as report
-        }
+  let reached: Subject(Set(String)) = process.new_subject()
+  list.each(campaigns, fn(campaign) {
+    let config =
+      statem.default_config(seed: campaign.seed)
+      |> statem.with_test_count(campaign.runs)
+      |> statem.with_max_commands(max_events)
+    case statem.check(spec(campaign.role, reached), config) {
+      Ok(Nil) -> Nil
+      // EUnit clips a long panic message, so the whole report also goes
+      // to standard error, which EUnit does not capture.
+      Error(failure) -> {
+        let report = statem.report(failure, describe)
+        io.println_error(report)
+        panic as report
       }
-    })
-  let missing = list.filter(required, fn(what) { !set.contains(reached, what) })
+    }
+  })
+  let found = collect(reached, set.new())
+  let missing = list.filter(required, fn(what) { !set.contains(found, what) })
   assert missing == [] as "the generated schedules never reached every state"
+}
+
+// Each passing run sent its reached set when it finished, so the mailbox
+// holds one message per run, and nothing else sends to it.
+fn collect(reached: Subject(Set(String)), found: Set(String)) -> Set(String) {
+  case process.receive(reached, 0) {
+    Ok(states) -> collect(reached, set.union(found, states))
+    Error(Nil) -> found
+  }
 }
 
 @external(erlang, "effects_test_ffi", "socket_on")

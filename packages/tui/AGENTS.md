@@ -1206,8 +1206,10 @@ boundaries and the split's measurements under Invariants.
   from the existing `Closed` marker for the current lane, not a candidate.
   [ADR-010](../../docs/adr/010-retain-one-unsent-terminal-command.md) records
   the waiting-state and cancellation rules.
-- `test/session_channel_property_test.gleam` drives the real channel over 500
-  seeded schedules of submissions, well-formed and faulty replies, pushes,
+- `test/session_channel_property_test.gleam` drives the real channel through `statem` over 500
+  generated schedules (450 operator, 50 observer, one `statem.check` per role;
+  the lane, oracle and stand-in socket are the system under test, the model is
+  empty and the final retirement is `finish`) of submissions, well-formed and faulty replies, pushes,
   ticks, retirement and close, built on `start` and a stand-in socket, with
   time passed to every transition from the oracle's own `now`. After every step an oracle rebuilt from the written frames checks
   one request in flight, increasing identities, credits, no mutation resend,
@@ -1215,7 +1217,8 @@ boundaries and the split's measurements under Invariants.
   replies, inert pushes, deadlines, the idle refresh at the interval the
   lane's pushes select, and that `next_due` names exactly the first reading
   a tick acts at (N1). A failure prints
-  its seed and a shrunk event list. Its first run found that `close` and a
+  its seed, run and a shrunk event list; shrinking deletes events and shrinks
+  inside them, and keeps the broken invariant's tag. Its first run found that `close` and a
   transport `Closed` on an already closed lane each queued a second `Shut`
   (and the transport case a second `Failed`); both now leave a `Closed`
   lane untouched, and the property holds every event on a closed lane to
