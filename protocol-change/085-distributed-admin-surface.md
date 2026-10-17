@@ -681,5 +681,58 @@ click beneath `admin.body_path`.
   carries.
 - **The home strip.** The owner's operating home draws a one-line strip under the bar
   naming the peer orchestrators, as text.
-- **Abandon is not part of this slice.** It is on the Activity tab in slice 5.
+- **Abandon is not part of this slice.** It is on the Activity tab, built in slice 5 (the addendum below).
 
+
+## Addendum 2026-10-16: Move with candidates, Abandon, and where a session runs
+
+Slice 5 gives the owner's pages and the terminal the move the control socket already
+had (protocol-change/078, phase 5, and protocol-change/083), and adds no wire member.
+`sessions.move` already carries `abandon`; the terminal now sends it.
+
+- **One daemon function for each.** `server.move_session` and `server.abandon_move`
+  are the bodies of the control arms, and the home's Move and the Admin page's
+  Abandon call them, so the checks cannot differ between the terminal and a page.
+  A refusal is a typed `MoveRefusal`, which the control socket words as the codes it
+  always answered (`move_refusal_code`) and a page words in fixed sentences.
+- **The Move candidate rule.** A session on an executor can move to an orchestrator
+  the asking daemon lists when the daemon reached it, its report says
+  `imports: receiving`, and the executors it serves (`executor_nodes`) include the
+  session's executor node. The asking daemon is never a candidate. An orchestrator
+  that fails the rule is still listed, with the first reason that applies:
+  unreachable, no report, does not accept moved sessions, or does not serve the
+  executor. The rule is pure and lives in `session_view/move_candidates`, below both
+  hosts, with its words. `deployment.candidates` applies it to the judged nodes of a
+  `deployment.status` read, and the terminal applies it to the `orchestrators` member
+  of the same reply (`tui/deployment_view.candidates`). A session with no executor has
+  no destination.
+- **Web Move is the owner's fresh home only.** A saved row has a Move button; a row
+  with no executor has it disabled and its title says only a session on an executor
+  can move. The first press is an action of its own, `Destinations`, which changes
+  nothing: the daemon reads the deployment (up to its four-second bound, in a task)
+  and answers `Heard`, and the row's words are replaced by a button for each eligible
+  destination and a line for each ineligible one with its reason. A destination opens
+  the confirmation Delete uses, "Move this session to bravo?", and only its button
+  asks the daemon for `Move(to)`. Each step acts only for the stage the one before it
+  left, and `manage_for` decides every press again with its `fresh_home` and
+  `owner_operating` checks, so a resumed home, a member and a read-only page are
+  refused and reach nothing. The page then reads "moving to bravo" from the row's
+  residency. The destination is checked again by `move_session`.
+- **Where a session runs.** The session page's Session tab says `runs on box (pool
+  builders)` under the workspace, as text, from the registration's executor and pool.
+  Only the owner's page says it; a member's page carries neither.
+- **Web Abandon is on the Admin Activity tab only.** It is not on the home row. It is
+  `grants.Action.AbandonMove(session)`, not a parallel action, because it is an owner
+  change that the Admin page's request machinery already carries: one request at a
+  time, the `administering` re-check, the `Armed` two-step, and the notice beside the
+  control. It costs no allowance. The button is drawn beside each move the asking
+  daemon has in flight, and only when that daemon is a directory member, since only a
+  member can abandon (`NotAMember` otherwise, and `NotMoving` for a move that has
+  ended). It is two presses, and the question reads "If bravo has already taken the
+  session, the move finishes instead", which is what the compare-and-set does.
+- **Terminal.** `loom sessions move ID` without `--to` reads the session's executor and
+  the deployment, prints the candidates with reasons, and exits nonzero because it
+  moved nothing. `loom sessions move ID --abandon` sends `abandon: true`. The two
+  flags do not combine.
+- **No new scope, route, ticket, event class or content security policy change.** Every
+  name, reason and executor is a text node, and every class is a literal.

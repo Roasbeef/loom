@@ -1044,6 +1044,28 @@ it, after which the source's retry would import the session afresh. So
 until the origin answers `Moved` for the session. The web page's delete does
 not apply this hold yet.
 
+### Asking for a move
+
+The terminal, the owner's home and the Admin page ask for a move through the same two
+functions (`server.move_session`, `server.abandon_move`), which are the bodies of the
+control command's arms, so a page cannot be given a check the terminal lacks.
+
+Which orchestrators to offer is a read, not a rule the daemon enforces.
+`session_view/move_candidates` judges each orchestrator the asking daemon lists: it must
+have answered, say it accepts moved sessions (`imports`), and list the session's executor
+node among those it serves. The first reason that fails is given with the name. The
+terminal reads the `orchestrators` member of `deployment.status` (`loom sessions move ID`
+with no `--to` prints the answer and exits nonzero), and the home asks the daemon, which
+makes the same read (`deployment.candidates`). The daemon still refuses a destination it
+does not list, whatever was offered.
+
+The home offers Move on a saved row of the owner's fresh page, in two steps after the
+read: choose a destination, then confirm. Abandon is on the Admin page's Activity tab,
+beside a move the asking daemon has in flight, and only on a directory member, because
+the abandon is a compare-and-set that exists only there. If the receiver has already
+taken the session the compare-and-set fails and the move finishes instead, which the
+confirmation says. `loom sessions move ID --abandon` sends `abandon: true`.
+
 ### The executor fence
 
 The receiver attaches at the incarnation the copied cell implies, one above the

@@ -1445,6 +1445,35 @@ are handed the same capability by `home_manage_capability` (the session page's i
 page, a read-only link and a page of one session draw nothing. The session on screen
 has no button, with the reason in its `title`. `sidebar_archive_test` reads it.
 
+#### Moving a session, and giving a move up
+
+Move (protocol-change/085, the addendum on Move and Abandon) rides the same path and
+reads before it asks. A saved row on an executor has a `Move` beside `Archive` and
+`Delete` (a row with no executor has it disabled, and its `title` says why). The first
+press is `actions.Destinations`: it changes nothing, the daemon reads the deployment in a
+`manage_task` (up to its four-second bound) and answers `actions.Heard`, and the page's
+stage becomes `actions.Choosing`. The row's words are replaced by a button for each
+orchestrator that could take the session and a line for each that could not, with the
+reason in fixed words (`session_view/move_candidates`). A button is `MoveChosen`, which
+the page honours only for a destination it was offered; it opens the question Delete
+uses, `Move this session to bravo?`, and its button, `MoveConfirmed`, asks for
+`actions.Move(to)`. `ui_socket.manage_for` runs the daemon's own `server.move_session`
+under its usual `fresh_home` and `owner_operating` checks, so a resumed home, a member
+and a read-only page reach nothing, and the daemon checks the destination again. The
+row then reads `moving to bravo` from its residency. `home_test` and `ui_route_test`
+drive each step and each refusal.
+
+The session page's Session tab says where the session runs, under the workspace:
+`runs on box (pool builders)`, as text, from the registration. Only the owner's page
+says it.
+
+Abandon is on the Admin page, not on the home row. A machine's Activity tab lists the
+moves the asking daemon has in flight, and when that daemon is a directory member each
+has an `Abandon` (`grants.AbandonMove`, run by `ui_socket.admin_for` through the
+Admin page's `administering` re-check). It is two presses, and the question says that if
+the receiver has already taken the session the move finishes instead. A daemon that is
+not a member answers `NotMember`, and the page draws no button.
+
 ### The browser login and the home's sign-ins
 
 Protocol-change/065's eighth pull request lets a browser come back to its
