@@ -6,6 +6,7 @@ gleam = ">= 1.18.0"
 gleam_stdlib = ">= 1.0.0 and < 2.0.0"
 gleam_yielder = ">= 1.0.0 and < 2.0.0"
 qcheck = ">= 1.0.5 and < 2.0.0"
+exception = ">= 2.1.1 and < 3.0.0"
 
 [dev_dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"
