@@ -2032,7 +2032,12 @@ pub fn sweep_delegate_sessions(
   let sweep =
     manager.Sweep(
       standing: spawners.standing(config.spawners, _),
-      occupancy: fn(resident: serve.Resident) { resident.spawns.occupancy() },
+      activity: fn(resident: serve.Resident) {
+        case resident.spawns.occupancy() {
+          agency.Vacant -> manager.Quiet
+          agency.Occupied -> manager.Busy
+        }
+      },
     )
   case
     manager.sweep_delegates(

@@ -58,12 +58,11 @@
 ////    one that is not open. `release_now` begins a release by marking the row
 ////    and stopping the slot, `finish_drained_release` deletes the session when
 ////    the slot drains, and `sweep_now` deletes what a failed deletion left, what
-////    `due_for_deletion` finds due, and closes with `due_for_closing` the
-////    resident sessions that have been idle past the spawner's idle window.
+////    `due_for_deletion` finds due, and `close_idle` closes the resident
+////    sessions that have been idle past the spawner's idle window.
 
 import broker/internal/call
 import broker/internal/ffi_crypto
-import client/agency
 import client/daemon/domain as domain_service
 import client/distill
 import client/distillpass
@@ -687,10 +686,19 @@ type Message(instance) {
   /// spawner, the parent session and the sessions directory.
   ReleaseDelegate(String, String, String, Subject(Result(Nil, Error)))
 
-  /// Deletes the delegate sessions that are due, closes the idle resident ones,
-  /// and answers how many of each. The integer is the time, and the string the
-  /// sessions directory.
-  SweepDelegates(Sweep(instance), Int, String, Subject(Result(Swept, Error)))
+  /// Deletes the delegate sessions that are due and answers how many went, with
+  /// the resident ones that look idle. The function judges a spawner, the
+  /// integer is the time, and the string the sessions directory.
+  SweepDelegates(
+    fn(String) -> spawners.Standing,
+    Int,
+    String,
+    Subject(Result(Due(instance), Error)),
+  )
+
+  /// Closes the listed sessions that are still open, still resident, and whose
+  /// last contact is still the one listed. Answers how many it closed.
+  CloseIdle(List(#(String, Int)), Subject(Int))
   DomainForSession(String, Subject(Result(domain.Domain, Error)))
   Isolate(
     access.Digest,
@@ -2014,15 +2022,24 @@ pub fn release_delegate(
   |> result.unwrap(Error(Unavailable))
 }
 
-/// What the retention sweep asks about a delegate session (protocol-change/084).
+/// What the retention sweep asks about delegate sessions (protocol-change/084).
 pub type Sweep(instance) {
   Sweep(
-    /// What the session's spawner allows, or that its table was removed.
+    /// What a session's spawner allows, or that its table was removed.
     standing: fn(String) -> spawners.Standing,
     /// Whether any child of a resident session still has a run. It is asked
-    /// inside the registry's turn, so it must not call the registry.
-    occupancy: fn(instance) -> agency.Occupancy,
+    /// outside the registry's turn, so it may be slow and may call anything.
+    activity: fn(instance) -> Activity,
   )
+}
+
+/// What a resident delegate session is doing, as the sweep needs to know it.
+pub type Activity {
+  /// A child has a run, or the question could not be answered.
+  Busy
+
+  /// No child has a run.
+  Quiet
 }
 
 /// What one sweep did.
@@ -2032,6 +2049,33 @@ pub type Swept {
     deleted: Int,
     /// The resident delegate sessions closed and kept.
     closed: Int,
+  )
+}
+
+/// What the registry's turn of a sweep found: the sessions it deleted, and the
+/// resident ones that may be closed once somebody has asked them whether a child
+/// is running.
+pub type Due(instance) {
+  Due(
+    /// The delegate sessions deleted.
+    deleted: Int,
+    /// The resident open sessions whose spawner is removed or silent past its
+    /// idle window.
+    candidates: List(Candidate(instance)),
+  )
+}
+
+/// A resident, open delegate session whose spawner is removed or silent past
+/// its idle window, as the registry saw it.
+pub type Candidate(instance) {
+  Candidate(
+    /// The session's identity.
+    session_id: String,
+    /// The spawner's last contact as the registry read it, which `CloseIdle`
+    /// compares against.
+    last_contact_ms: Int,
+    /// The running instance, for the question about its children.
+    instance: instance,
   )
 }
 
@@ -2049,6 +2093,17 @@ pub type Swept {
 /// reopens the session. A session whose deletion fails is kept for the next
 /// sweep, and the others are still swept.
 ///
+/// This runs in the caller's process in three steps: `SweepDelegates` in the
+/// registry's turn, the question about children outside it, and `CloseIdle` in
+/// the registry's turn again. Asking a session about its children can be slow
+/// and can fail, so it must not hold the registry. What makes the close sound
+/// is the comparison in the last step. A `Spawn` or `Join` claims its pair in a
+/// registry turn, which moves the row's `last_contact_ms`, before it reaches
+/// the session's Agency. A claim that comes between the first step's read and
+/// the last step's close therefore changes the value `CloseIdle` compares, and
+/// the session is kept. A claim before the read leaves the session too recent
+/// to be a candidate.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -2061,13 +2116,31 @@ pub fn sweep_delegates(
   now_ms: Int,
   sessions: String,
 ) -> Result(Swept, Error) {
-  call.try_call(manager.commands, waiting: 5000, sending: SweepDelegates(
-    sweep,
-    now_ms,
-    sessions,
-    _,
-  ))
-  |> result.unwrap(Error(Unavailable))
+  use Due(deleted:, candidates:) <- result.try(
+    call.try_call(manager.commands, waiting: 5000, sending: SweepDelegates(
+      sweep.standing,
+      now_ms,
+      sessions,
+      _,
+    ))
+    |> result.unwrap(Error(Unavailable)),
+  )
+  let quiet =
+    candidates
+    |> list.filter(fn(candidate) { sweep.activity(candidate.instance) == Quiet })
+    |> list.map(fn(candidate) {
+      #(candidate.session_id, candidate.last_contact_ms)
+    })
+  use closed <- result.map(case quiet {
+    [] -> Ok(0)
+    [_, ..] ->
+      call.try_call(manager.commands, waiting: 5000, sending: CloseIdle(
+        quiet,
+        _,
+      ))
+      |> result.replace_error(Unavailable)
+  })
+  Swept(deleted:, closed:)
 }
 
 /// Reads domain metadata without admitting a runtime or opening derived stores.
@@ -3433,17 +3506,14 @@ fn handle(
       process.send(reply, outcome)
       step(phase, book)
     }
-    SweepDelegates(sweep, now_ms, sessions, reply) -> {
-      case sweep_now(book, sweep, now_ms, sessions) {
-        Ok(#(book, swept)) -> {
-          process.send(reply, Ok(swept))
-          step(phase, book)
-        }
-        Error(error) -> {
-          process.send(reply, Error(error))
-          sm.keep(book)
-        }
-      }
+    SweepDelegates(standing, now_ms, sessions, reply) -> {
+      process.send(reply, sweep_now(book, standing, now_ms, sessions))
+      sm.keep(book)
+    }
+    CloseIdle(seen, reply) -> {
+      let #(book, closed) = close_idle(book, seen)
+      process.send(reply, closed)
+      step(phase, book)
     }
     WorkspaceDefault(workspace, reply) -> {
       process.send(
@@ -4176,24 +4246,23 @@ fn holders_of(manager: Manager(instance), id: String) -> List(String) {
   }
 }
 
-// The retention sweep, in the registry's own turn so that no session is opened
-// between reading the list and acting on it. Deleting and closing are two
-// passes over one reading of the rows, and a slot decides which pass a row can
-// be in: a row with none can be deleted, a row with one can only be closed.
+// The first turn of the retention sweep, which reads the rows once and acts on
+// the ones with no slot. A row with no slot can be deleted and a row with one
+// can only be closed, so the held rows that look idle are handed back as
+// candidates with the contact time this turn read, and the second turn
+// (`close_idle`) closes the ones that are still as they were.
 //
 // The decoder keeps retention at or above the longest deadline, so a session
 // past it holds no child that could still be running. Closing has no such
-// bound, so it asks the session whether a child still has a run. A spawner's
-// message moves the row's contact time in this same turn, before the Agency is
-// asked, which is why a spawn admitted just before the sweep leaves its session
-// too recent to close. A deletion that fails leaves its session for the next
-// sweep, since nothing can usefully retry it here.
+// bound, so the caller asks each candidate whether a child still has a run. A
+// deletion that fails leaves its session for the next sweep, since nothing can
+// usefully retry it here.
 fn sweep_now(
   book: Book(instance),
-  sweep: Sweep(instance),
+  standing: fn(String) -> spawners.Standing,
   now_ms: Int,
   sessions: String,
-) -> Result(#(Book(instance), Swept), Error) {
+) -> Result(Due(instance), Error) {
   use rows <- result.map(
     catalogue.delegates(book.catalogue) |> result.map_error(Catalogue),
   )
@@ -4201,50 +4270,85 @@ fn sweep_now(
     list.partition(rows, fn(row) { dict.has_key(book.slots, row.session_id) })
   let deleted =
     free
-    |> list.filter(fn(row) { due_for_deletion(sweep, row, now_ms) })
+    |> list.filter(fn(row) { due_for_deletion(standing, row, now_ms) })
     |> list.count(fn(row) {
       result.is_ok(remove_registration(book, row.session_id, sessions))
     })
-  let idle =
-    list.filter(held, fn(row) { due_for_closing(book, sweep, row, now_ms) })
-  let closed =
-    list.fold(idle, book, fn(book, row) { stop_slot(book, row.session_id) })
-  #(closed, Swept(deleted:, closed: list.length(idle)))
+  let candidates =
+    list.filter_map(held, fn(row) {
+      case silent_past_idle(standing, row, now_ms), running_slot(book, row) {
+        True, Ok(instance) ->
+          Ok(Candidate(
+            session_id: row.session_id,
+            last_contact_ms: row.last_contact_ms,
+            instance:,
+          ))
+        _, _ -> Error(Nil)
+      }
+    })
+  Due(deleted:, candidates:)
+}
+
+// The second turn of the retention sweep. A session is stopped only if it is
+// still open, still resident and running, and its spawner's last contact is the
+// one the first turn saw. The stop is the ordinary one, and the row stays. A
+// session that failed any of the three is skipped, and the next sweep judges it
+// again.
+fn close_idle(
+  book: Book(instance),
+  seen: List(#(String, Int)),
+) -> #(Book(instance), Int) {
+  list.fold(seen, #(book, 0), fn(so_far, one) {
+    let #(book, closed) = so_far
+    let #(session_id, contact) = one
+    case catalogue.delegate_of(book.catalogue, session_id) {
+      Ok(Some(row)) ->
+        case row.last_contact_ms == contact, running_slot(book, row) {
+          True, Ok(_instance) -> #(stop_slot(book, session_id), closed + 1)
+          _, _ -> #(book, closed)
+        }
+      Ok(None) | Error(_) -> #(book, closed)
+    }
+  })
+}
+
+// The instance of the running slot that holds the row's session, if the row is
+// open and a slot is running. A session that is still opening or already
+// closing is left to finish.
+fn running_slot(
+  book: Book(instance),
+  row: catalogue.Delegate,
+) -> Result(instance, Nil) {
+  case row.state, dict.get(book.slots, row.session_id) {
+    catalogue.Open, Ok(Slot(phase: Running(instance), ..)) -> Ok(instance)
+    _, _ -> Error(Nil)
+  }
 }
 
 // Whether a session with no slot is deleted: its spawner was removed, its
 // release has begun, or its spawner has been silent past the retention.
 fn due_for_deletion(
-  sweep: Sweep(instance),
+  standing: fn(String) -> spawners.Standing,
   row: catalogue.Delegate,
   now_ms: Int,
 ) -> Bool {
-  case sweep.standing(row.spawner) {
+  case standing(row.spawner) {
     spawners.Removed -> True
     spawners.Configured(retain_ms:, ..) ->
       release_begun(row) || now_ms - row.last_contact_ms > retain_ms
   }
 }
 
-// Whether a resident session is closed: it is open, a running slot holds it,
-// nothing in it has a run, and its spawner is gone or has been silent for
-// `idle_close_s`. A session that is still opening, or already closing, is left
-// to finish.
-fn due_for_closing(
-  book: Book(instance),
-  sweep: Sweep(instance),
+// Whether the spawner is gone or has been silent for its `idle_close_s`.
+fn silent_past_idle(
+  standing: fn(String) -> spawners.Standing,
   row: catalogue.Delegate,
   now_ms: Int,
 ) -> Bool {
-  let silent = case sweep.standing(row.spawner) {
+  case standing(row.spawner) {
     spawners.Removed -> True
     spawners.Configured(idle_close_ms:, ..) ->
       now_ms - row.last_contact_ms > idle_close_ms
-  }
-  case row.state, dict.get(book.slots, row.session_id) {
-    catalogue.Open, Ok(Slot(phase: Running(instance), ..)) ->
-      silent && sweep.occupancy(instance) == agency.Vacant
-    catalogue.Open, _ | catalogue.Releasing, _ | catalogue.Released, _ -> False
   }
 }
 

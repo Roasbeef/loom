@@ -7779,19 +7779,25 @@ The box's deadline and retention (slice S4):
   is stopped at that first pass and the time spent down counts.
 - The retention sweep (slice S7 added the hourly run, idle close and spawner
   removal). `catalogue.delegates` lists the rows, and
-  `manager.sweep_delegates(Sweep(standing:, occupancy:), now_ms, sessions)` does
-  two things in one registry turn and answers `Swept(deleted:, closed:)`. A row
-  with no slot is deleted, through the same `remove_registration` a delete uses,
-  when `spawners.standing` says `Removed` (the table is gone, whatever the age),
-  when its release has begun, or when its last contact is older than `retain_ms`.
-  A row with a running slot is closed with `stop_slot`, the ordinary stop, when it
-  is `Open`, its spawner is `Removed` or silent past `idle_close_ms`, and
-  `agency.DelegateEndpoint.occupancy` answers `Vacant`. `agency.delegate_occupancy`
-  borrows the runtime, reads the lineage ledger, and answers `Occupied` for any
-  child with a run or any read that fails. The check runs in the registry's turn
-  after every `Spawn`/`Join` claim has moved `last_contact_ms`, so a spawn admitted
-  just before the sweep leaves its session too recent to close. The closure given
-  as `occupancy` runs inside that turn and must not call the registry. A failed
+  `manager.sweep_delegates(Sweep(standing:, activity:), now_ms, sessions)` does
+  three steps and answers `Swept(deleted:, closed:)`. In one registry turn
+  (`SweepDelegates`), a row with no slot is deleted, through the same
+  `remove_registration` a delete uses, when `spawners.standing` says `Removed`
+  (the table is gone, whatever the age), when its release has begun, or when its
+  last contact is older than `retain_ms`; and an `Open` row with a running slot
+  whose spawner is `Removed` or silent past `idle_close_ms` is returned as a
+  `Candidate(session_id, last_contact_ms, instance)`. Outside any registry turn,
+  the caller asks `activity` of each candidate; the daemon answers with
+  `agency.DelegateEndpoint.occupancy`, and `agency.delegate_occupancy` runs its
+  ledger reads in a deadline-bounded weft task and answers `Occupied` for any
+  child with a run or any fault. In a second turn, `CloseIdle` takes the `Quiet`
+  candidates as `(session_id, seen_contact)` and calls `stop_slot` (the ordinary
+  stop) only if the row is still `Open`, the slot is still running, and
+  `last_contact_ms` still equals `seen_contact`. A `Spawn` or `Join` claim moves
+  `last_contact_ms` in a registry turn before it reaches the Agency, so a claim
+  between the two turns changes the compared value and the session is kept. A
+  spawn that lands while a closed session is draining is refused with
+  `StoreFailure("the delegate session is stopping")`. A failed
   deletion is skipped for the next sweep. `daemon/main.sweep_delegate_sessions`
   runs it once at boot, before the orchestrator port starts, and
   `daemon/main.start_delegate_sweep` runs it every `delegate_sweep_every_ms`
@@ -7835,7 +7841,7 @@ The box's deadline and retention (slice S4):
   P model's `EveryReleaseIsTold` and `ReleasedSessionHasNoRunningChild`.
 
 Tests: `spawners_test` (a valid table, defaults, every refusal, the catalogue
-parser, `retention_ms`), `orchestrators_test` (the `@` and `#` refusal),
+parser, `standing`), `orchestrators_test` (the `@` and `#` refusal),
 `remote/orchestrator_port_test` (each message reaches the host with its origin,
 refusals, a slow answer not delaying `Owns`, a crashing host),
 `remote_spawn_test` (the pure half), `daemon_spawn_host_test` (the production

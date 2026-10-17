@@ -4123,8 +4123,9 @@ fn runs_in_flight(runtime: api.Runtime) -> Bool {
 /// Whether any child of the delegate session still has a run, for the
 /// retention sweep that closes an idle session (protocol-change/084).
 ///
-/// This reads the ledger from the caller's process through a borrowed runtime
-/// and writes nothing. It fails closed: a holder that is not up or a ledger or
+/// This reads the ledger through a borrowed runtime and writes nothing. It is
+/// total: the reads run in a deadline-bounded task, so no fault in the session
+/// reaches the caller. It fails closed: a holder that is not up or a ledger or
 /// strand that cannot be read answers `Occupied`, because the sweep's mistake
 /// in that direction keeps a session for another hour, while the other
 /// direction stops a child that is running.
@@ -4135,17 +4136,47 @@ fn runs_in_flight(runtime: api.Runtime) -> Bool {
 /// // agency.delegate_occupancy(config) == agency.Vacant
 /// ```
 pub fn delegate_occupancy(config: Config) -> Occupancy {
-  let vacant = {
-    use runtime <- result.try(borrow(config))
-    use ledger <- result.map(read_ledger(runtime))
+  let outcome =
+    [fn() { occupancy_in_task(config) }]
+    |> weft.new
+    |> weft.deadline(occupancy_budget_ms)
+    |> weft.start
+  case outcome {
+    [weft.Completed(value: Vacant, ..)] -> Vacant
+    _ -> Occupied
+  }
+}
+
+// How long the question may take in all, in milliseconds. A holder busy reaping
+// an overdue child is slow to lend the runtime, and the answer for a slow
+// session is the safe one.
+const occupancy_budget_ms = 8000
+
+// The question itself, run in a task so that a holder that exits mid-call, or a
+// writer that is gone, ends the task and not the caller. Every read here can
+// fault, and the caller is the sweep, which must outlive any one session. The
+// borrow is a `try_call`, which answers an error where `process.call` would
+// exit.
+fn occupancy_in_task(config: Config) -> Result(Occupancy, Refusal) {
+  use subject <- result.try(holder_subject(config))
+  use runtime <- result.try(
+    call.try_call(subject, waiting: config.holder_timeout_ms, sending: Borrow)
+    |> result.replace_error(agent.AgencyUnavailable),
+  )
+  use ledger <- result.map(read_ledger(runtime))
+  case
     list.all(dict.values(ledger), fn(cell) {
       current_run(runtime, cell) == Ok(None)
     })
+  {
+    True -> Vacant
+    False -> Occupied
   }
-  case vacant {
-    Ok(True) -> Vacant
-    Ok(False) | Error(_) -> Occupied
-  }
+}
+
+fn holder_subject(config: Config) -> Result(Subject(Message), Refusal) {
+  address.lookup(config.name)
+  |> result.replace_error(agent.AgencyUnavailable)
 }
 
 /// The questions a spawning orchestrator asks of a delegate session's

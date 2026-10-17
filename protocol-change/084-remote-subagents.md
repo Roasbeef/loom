@@ -674,3 +674,12 @@ delegate session never hibernates, so without the hourly pass an idle one holds
 an executor scope until the daemon restarts. The next `Spawn` or `Join` reopens
 a closed session. No `SpawnerRemoved` stop is added: nothing runs in a session
 that is not open, so there is no child to record a stop for.
+
+The close is a compare-and-close in two registry turns, with the question about
+the session's children asked between them, outside any turn. The second turn
+stops the session only if its row's `last_contact_ms` is still the value the
+first turn read, because a `Spawn` or `Join` moves it in a registry turn before it
+reaches the Agency. One window remains: a `Spawn` that arrives while a closed
+session is draining finds the slot stopping and is refused as
+`StoreFailure("the delegate session is stopping")`. The spawner's next attempt
+reopens the session. No further refusal is added for it.

@@ -98,18 +98,21 @@ fn sweeping(
 ) -> manager.Sweep(agency.DelegateEndpoint) {
   manager.Sweep(
     standing: fn(_) { spawners.Configured(retain_ms:, idle_close_ms:) },
-    occupancy: occupancy_of,
+    activity: activity_of,
   )
 }
 
 // A sweep for which the spawner's table has been removed.
 fn removed() -> manager.Sweep(agency.DelegateEndpoint) {
-  manager.Sweep(standing: fn(_) { spawners.Removed }, occupancy: occupancy_of)
+  manager.Sweep(standing: fn(_) { spawners.Removed }, activity: activity_of)
 }
 
 // The sweep's question, answered by the tagged endpoint.
-fn occupancy_of(endpoint: agency.DelegateEndpoint) -> agency.Occupancy {
-  endpoint.occupancy()
+fn activity_of(endpoint: agency.DelegateEndpoint) -> manager.Activity {
+  case endpoint.occupancy() {
+    agency.Vacant -> manager.Quiet
+    agency.Occupied -> manager.Busy
+  }
 }
 
 // Whether the registry holds the session open.
@@ -676,6 +679,32 @@ pub fn the_sweep_deletes_a_removed_spawners_session_at_once_test() {
   assert catalogue.delegate_of(store, row.session_id) == Ok(None)
   assert catalogue.get(store, row.session_id) == Error(catalogue.Missing)
   stop(second)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn a_removed_spawners_idle_resident_session_is_closed_then_deleted_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let laptop = spawner("executor = \"runner\"\nworkspace = \"loom\"\n")
+  let sessions = "/delegate-host/sessions"
+  let registry = started(store, fn(built) { Ok(tagged(built)) })
+  let assert Ok(_) =
+    delegate_host.resolver(context_at(registry, sessions, 1000))(
+      laptop,
+      parent(94),
+    )
+  let assert Ok(option.Some(row)) =
+    catalogue.delegate_for(store, "laptop", parent(94).session)
+
+  // A slot holds the session, so the first sweep can only close it.
+  assert manager.sweep_delegates(registry, removed(), 1001, sessions)
+    == Ok(manager.Swept(deleted: 0, closed: 1))
+  assert eventually(fn() { !is_resident(registry, row.session_id) })
+
+  // With the slot drained, the next sweep deletes it.
+  assert manager.sweep_delegates(registry, removed(), 1002, sessions)
+    == Ok(manager.Swept(deleted: 1, closed: 0))
+  assert catalogue.delegate_of(store, row.session_id) == Ok(None)
+  stop(registry)
   assert catalogue.close(store) == Ok(Nil)
 }
 

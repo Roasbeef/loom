@@ -5622,6 +5622,28 @@ pub fn an_agency_that_is_not_running_refuses_in_band_test() {
   assert result.is_error(agency.delegate_join(config, remote_parent(), [], 0))
 }
 
+pub fn occupancy_is_vacant_until_a_child_has_a_run_and_occupied_when_unreadable_test() {
+  let harness = start_harness(Hangs)
+  assert agency.delegate_occupancy(harness.config) == agency.Vacant
+
+  // A child that hangs has a run.
+  let _child = remote_spawned(harness, "turn-1:tools", "busy")
+  assert agency.delegate_occupancy(harness.config) == agency.Occupied
+
+  // Once the release has stopped it and its run has ended, nothing is left.
+  assert agency.delegate_release(harness.config) == Ok(1)
+  assert until(
+    fn() { agency.delegate_occupancy(harness.config) == agency.Vacant },
+    200,
+  )
+  close(harness)
+}
+
+pub fn occupancy_fails_closed_when_the_agency_is_not_running_test() {
+  let config = agency.default_config(addresses.new(), clock.fixed(at: 0))
+  assert agency.delegate_occupancy(config) == agency.Occupied
+}
+
 // --- the deadline tick -------------------------------------------------------
 //
 // A remote child is bounded by its deadline on this machine's clock, and the
