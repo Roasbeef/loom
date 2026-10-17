@@ -27,6 +27,8 @@
 //// directory it lists) with what the report holds, and an expected fact that
 //// is missing is the finding.
 
+import client/directory/member
+import client/directory/store
 import client/node_report.{
   type DirectoryFacts, type ExecutorFacts, type NodeReport,
   type OrchestratorFacts,
@@ -38,6 +40,11 @@ import gleam/list
 import gleam/option.{type Option}
 import storage/exec_ledger
 import weft
+
+// The deadline below is the real bound on a report. The waits inside each
+// source (the executor's two seconds, the directory's budgets) are secondary:
+// they let a source answer "I could not" in its own words before the deadline
+// would kill it and leave its facts out altogether.
 
 /// How long `report` waits for the three sources together. It is under the
 /// time a peer waits for a report, so the answer reaches the peer with whatever
@@ -133,6 +140,35 @@ pub fn report(sources: Sources) -> NodeReport {
       | weft.DrainProofLost(..)
       | weft.CancellationUnconfirmed(..) -> report
     }
+  })
+}
+
+/// How long the directory's cluster view may wait for Ra.
+pub const status_ms = 500
+
+/// How long the fence of the directory's copy check may wait. With the cluster
+/// view above, a member with no leader answers in under two seconds, inside
+/// `read_ms`.
+pub const confirm_ms = 800
+
+/// The directory facts, from the two reads a member makes: the cluster as it
+/// sees it and a check that its own copy is current. The check failing is
+/// `Unconfirmed` and not an absent fact, since a member that cannot reach a
+/// leader is exactly the one whose report must say so. Each read carries its own
+/// budget (`status_ms`, `confirm_ms`) so that both finish inside `read_ms`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // node_facts.directory_facts(fn() { member.status_within(handle, status_ms) }, fn() { store.confirm_current(local, confirm_ms) })
+/// ```
+pub fn directory_facts(
+  status: fn() -> member.Status,
+  confirm: fn() -> Result(Nil, store.Unavailable),
+) -> DirectoryFacts {
+  node_report.DirectoryFacts(status: status(), copy: case confirm() {
+    Ok(Nil) -> node_report.Current
+    Error(store.Unavailable(..)) -> node_report.Unconfirmed
   })
 }
 

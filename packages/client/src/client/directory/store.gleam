@@ -416,8 +416,21 @@ pub fn holds_data(directory: String) -> Bool {
 /// // -> Ok(Membership([#("a@h.x", Voter)], Some("a@h.x"), ["a@h.x"]))
 /// ```
 pub fn membership() -> Result(Membership, Unavailable) {
-  bounded(read_ms + 1000, Error(Unavailable("no answer in time")), fn() {
-    case ffi_khepri.membership(read_ms) {
+  membership_within(read_ms)
+}
+
+/// `membership`, waiting at most `within_ms` for Ra to answer, and cut off a
+/// little after that. A report asks within a deadline shorter than `read_ms`,
+/// and a member with no leader would otherwise hold the answer for all of it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // store.membership_within(500)
+/// ```
+pub fn membership_within(within_ms: Int) -> Result(Membership, Unavailable) {
+  bounded(within_ms + 300, Error(Unavailable("no answer in time")), fn() {
+    case ffi_khepri.membership(within_ms) {
       Ok(#(members, leader, up)) -> Ok(Membership(members:, leader:, up:))
       Error(failure) -> Error(Unavailable(describe(failure)))
     }
@@ -532,7 +545,9 @@ pub fn migrated(node: String) -> Result(Bool, Unavailable) {
 }
 
 /// Whether this member's copy is current: a fence, then a read of the node's own
-/// migration marker, completing within `read_ms`. The answer carries nothing
+/// migration marker. The fence waits at most `within_ms` and the read half of
+/// that, and the whole call is cut off at one and a half times `within_ms`, so a
+/// caller with a deadline of its own chooses a budget that fits under it. The answer carries nothing
 /// else. It is the check a report makes (protocol-change/085), where the
 /// question is whether this member can be trusted to read the cluster's state
 /// and no particular record is wanted. `Unavailable` says why it could not
@@ -542,11 +557,21 @@ pub fn migrated(node: String) -> Result(Bool, Unavailable) {
 /// ## Examples
 ///
 /// ```gleam
-/// // store.confirm_current("alpha@10.0.0.1") // -> Ok(Nil)
+/// // store.confirm_current("alpha@10.0.0.1", 800) // -> Ok(Nil)
 /// ```
-pub fn confirm_current(node: String) -> Result(Nil, Unavailable) {
-  bounded(2 * read_ms + 1000, Error(Unavailable("no quorum in time")), fn() {
-    case ffi_khepri.consistent(record.migrated_path(node), read_ms, read_ms) {
+pub fn confirm_current(
+  node: String,
+  within_ms: Int,
+) -> Result(Nil, Unavailable) {
+  let budget = within_ms + within_ms / 2
+  bounded(budget, Error(Unavailable("no quorum in time")), fn() {
+    case
+      ffi_khepri.consistent(
+        record.migrated_path(node),
+        within_ms,
+        within_ms / 2,
+      )
+    {
       Ok(_marker) -> Ok(Nil)
       Error(failure) -> Error(Unavailable(describe(failure)))
     }

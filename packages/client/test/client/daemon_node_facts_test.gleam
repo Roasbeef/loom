@@ -225,3 +225,44 @@ pub fn workspaces_are_cut_to_the_reports_bound_test() {
     )
   assert list.length(facts.workspaces) == node_report.max_workspaces
 }
+
+// --- the directory's facts -------------------------------------------------------
+
+fn lonely_status() -> member.Status {
+  member.Status(
+    members: ["alpha@10.0.0.1", "bravo@10.0.0.3"],
+    joining: member.Joined,
+    ra: Error(store.Unavailable("no answer in time")),
+    applied_index: 7,
+  )
+}
+
+pub fn a_member_that_cannot_confirm_its_copy_reports_it_unconfirmed_test() {
+  // With no leader neither read finishes: Ra gives no membership and the fence
+  // gives no answer. The member still reports, and says so.
+  let facts =
+    node_facts.directory_facts(lonely_status, fn() {
+      Error(store.Unavailable("no quorum in time"))
+    })
+  assert facts.copy == node_report.Unconfirmed
+  assert facts.status == lonely_status()
+}
+
+pub fn a_member_that_confirms_its_copy_reports_it_current_test() {
+  let facts = node_facts.directory_facts(lonely_status, fn() { Ok(Nil) })
+  assert facts.copy == node_report.Current
+}
+
+pub fn a_stopped_store_answers_both_reads_inside_the_reports_deadline_test() {
+  // The budgets the report gives the two reads add up to less than the
+  // deadline it runs them under, so a member with no quorum is reported
+  // `Unconfirmed` and not dropped when the deadline kills its task.
+  assert node_facts.status_ms + { node_facts.confirm_ms * 3 / 2 } + 300
+    < node_facts.read_ms
+  let started = bootstrap.monotonic_time_ms()
+  let assert Error(store.Unavailable(..)) =
+    store.confirm_current("alpha@10.0.0.1", node_facts.confirm_ms)
+  let assert Error(store.Unavailable(..)) =
+    store.membership_within(node_facts.status_ms)
+  assert bootstrap.monotonic_time_ms() - started < node_facts.read_ms
+}

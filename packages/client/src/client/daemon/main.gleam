@@ -1133,12 +1133,9 @@ fn directory_facts(
   case config.directory, config.member {
     Some(_), Some(handle) ->
       Some(
-        node_report.DirectoryFacts(
-          status: member.status(handle),
-          copy: case store.confirm_current(local) {
-            Ok(Nil) -> node_report.Current
-            Error(_) -> node_report.Unconfirmed
-          },
+        node_facts.directory_facts(
+          fn() { member.status_within(handle, node_facts.status_ms) },
+          fn() { store.confirm_current(local, node_facts.confirm_ms) },
         ),
       )
     Some(_), None | None, Some(_) | None, None -> None
