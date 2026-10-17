@@ -628,8 +628,7 @@ fn outcome_value(outcome: agent.Outcome) -> MsgPackValue {
     agent.Aborted
     | agent.BudgetExpired
     | agent.ParentFinished
-    | agent.Released ->
-      msgpack.MapValue([field("kind", text("aborted"))])
+    | agent.Released -> msgpack.MapValue([field("kind", text("aborted"))])
     agent.Failed(reason:) ->
       msgpack.MapValue([
         field("kind", text("failed")),

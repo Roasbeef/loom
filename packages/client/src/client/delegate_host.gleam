@@ -275,6 +275,8 @@ pub fn releaser(
   context: Context(instance),
 ) -> fn(Spawner, Parent) -> Result(Int, SpawnRefusal) {
   let find = resolve_existing(context)
+  let registry = context.registry
+  let sessions = context.sessions_directory
   fn(spawner: Spawner, parent: Parent) {
     use existing <- result.try(find(spawner, parent))
     case existing {
@@ -289,10 +291,10 @@ pub fn releaser(
         })
         use Nil <- result.map(
           manager.release_delegate(
-            context.registry,
+            registry,
             spawner.name,
             parent.session,
-            context.sessions_directory,
+            sessions,
           )
           |> result.map_error(fn(error) {
             remote_spawn.StoreFailure(reason: describe(error))

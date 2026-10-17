@@ -196,11 +196,9 @@ pub fn a_configured_spawner_is_served_by_its_delegate_agency_test() {
 pub fn a_refusal_to_find_the_session_is_the_answer_to_each_message_test() {
   let refusal = remote_spawn.CapReached(cap: remote_spawn.MaxSessions, limit: 4)
   let host =
-    main.spawn_host(
-      configured(),
-      fn(_, _) { Error(refusal) },
-      fn(_, _) { Error(refusal) },
-    )
+    main.spawn_host(configured(), fn(_, _) { Error(refusal) }, fn(_, _) {
+      Error(refusal)
+    })
   let laptop = origin("laptop@100.64.0.5")
   assert host.spawn(laptop, call_site(), 0, [], request()) == Error(refusal)
   assert host.join(laptop, [], 1000) == Error(refusal)

@@ -248,8 +248,7 @@ fn release(
   let state = State(..state, releases: [parent, ..state.releases])
   case state.mode {
     Down | DownFirst(..) -> process.send(reply, Error(peer_mail.Unreachable))
-    Refuses(reason:) ->
-      process.send(reply, Error(peer_mail.Refused(reason)))
+    Refuses(reason:) -> process.send(reply, Error(peer_mail.Refused(reason)))
     LosesReplies | LosesFirst(..) ->
       process.send(reply, Error(peer_mail.Unreachable))
     Up -> process.send(reply, Ok(dict.size(state.children)))
