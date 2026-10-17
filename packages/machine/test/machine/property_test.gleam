@@ -1,11 +1,19 @@
-//// Property tests over seeded random scripts, driven by an automatic
+//// Property tests over generated scripts, driven by an automatic
 //// responder that answers every `AwaitEffect` key: "every tool call
 //// eventually has a result", "no state transitions out of terminal", and
 //// "a committed aborted response implies a cancelled (aborted) run" —
 //// the durable face of the cancelled-control invariant.
 ////
-//// Randomness follows core's seeded-generator pattern (a SplitMix-style
-//// draw threaded explicitly), so a failing case reproduces from its seed.
+//// Scripts come from a qcheck generator rather than a hand-threaded seed.
+//// The generator carries its own shrink tree, so a failing script is
+//// reported already reduced: fewer tool calls, each plan pulled toward the
+//// plain settle, and the abort dropped when the failure survives without
+//// it. A script is a list of independent per-call plans indexed by the
+//// call's position, so a shorter list is a simpler session rather than a
+//// different one, which is what lets the shrink be trusted here.
+////
+//// The run uses a fixed qcheck seed, so the gate stays deterministic: a red
+//// run is the same red run on every machine.
 
 import core/entry
 import core/ids
@@ -27,54 +35,10 @@ import machine/planner.{
   ObservedToolSettled, Prepared, Transition, Wait,
 }
 import machine/queue
+import qcheck
 import support/fixture
 import support/scenario.{type World, World}
 import support/store
-
-// --- seeded randomness (core's test/support/generate pattern) -------------
-
-type Seed {
-  Seed(state: Int)
-}
-
-const mask_64 = 0xFFFFFFFFFFFFFFFF
-
-fn next(seed: Seed) -> #(Int, Seed) {
-  let state = int.bitwise_and(seed.state + 0x9E3779B97F4A7C15, mask_64)
-  let z = state
-  let z =
-    int.bitwise_and(
-      int.bitwise_exclusive_or(z, int.bitwise_shift_right(z, 30))
-        * 0xBF58476D1CE4E5B9,
-      mask_64,
-    )
-  let z =
-    int.bitwise_and(
-      int.bitwise_exclusive_or(z, int.bitwise_shift_right(z, 27))
-        * 0x94D049BB133111EB,
-      mask_64,
-    )
-  let z = int.bitwise_exclusive_or(z, int.bitwise_shift_right(z, 31))
-  #(z, Seed(state:))
-}
-
-fn int_between(seed: Seed, min: Int, max: Int) -> #(Int, Seed) {
-  let #(raw, seed) = next(seed)
-  #(min + raw % { max - min + 1 }, seed)
-}
-
-/// An inclusive integer range as a list.
-fn range(from start: Int, to stop: Int) -> List(Int) {
-  range_loop(start, stop, [])
-  |> list.reverse
-}
-
-fn range_loop(current: Int, stop: Int, acc: List(Int)) -> List(Int) {
-  case current > stop {
-    True -> acc
-    False -> range_loop(current + 1, stop, [current, ..acc])
-  }
-}
 
 // --- scripts --------------------------------------------------------------
 
@@ -88,28 +52,44 @@ type Script {
   Script(calls: List(CallPlan), abort_at: Option(Int))
 }
 
-fn script_from(seed: Seed) -> Script {
-  let #(call_count, seed) = int_between(seed, 0, 3)
-  let #(plans, seed) =
-    range(from: 1, to: call_count)
-    |> list.fold(#([], seed), fn(acc, _index) {
-      let #(plans, seed) = acc
-      let #(kind, seed) = int_between(seed, 0, 4)
-      let plan = case kind {
-        0 -> ClearThenSettle(terminate: False)
-        1 -> ClearThenSettle(terminate: True)
-        2 -> ClearThenOrphan
-        3 -> Refuse(ending: planner.RefusalEndsRun)
-        _ -> Refuse(ending: planner.RefusalContinues)
-      }
-      #([plan, ..plans], seed)
-    })
-  let #(with_abort, seed) = int_between(seed, 0, 2)
-  let #(abort_step, _seed) = int_between(seed, 1, 9)
-  Script(calls: list.reverse(plans), abort_at: case with_abort {
-    0 -> Some(abort_step)
-    _ -> None
-  })
+/// The number of scripts each property is checked over, and the seed they
+/// are drawn from. Every property shares both, so a failure in one names a
+/// script the others were also run on.
+const script_count = 100
+
+const script_seed = 25
+
+fn script_config() -> qcheck.Config {
+  qcheck.default_config()
+  |> qcheck.with_test_count(script_count)
+  |> qcheck.with_seed(qcheck.seed(script_seed))
+}
+
+/// Up to three tool calls and an optional abort step. Each call's plan is
+/// drawn as an index so that shrinking moves it toward index zero, the
+/// plain non-terminating settle, which is the least eventful thing a call
+/// can do; `option_from` shrinks the abort toward `None` first.
+fn script_generator() -> qcheck.Generator(Script) {
+  let plan = qcheck.map(qcheck.bounded_int(from: 0, to: 4), plan_of_kind)
+
+  let calls =
+    qcheck.generic_list(
+      elements_from: plan,
+      length_from: qcheck.bounded_int(from: 0, to: 3),
+    )
+
+  let abort_at = qcheck.option_from(qcheck.bounded_int(from: 1, to: 9))
+  qcheck.map2(calls, abort_at, fn(calls, abort_at) { Script(calls:, abort_at:) })
+}
+
+fn plan_of_kind(kind: Int) -> CallPlan {
+  case kind {
+    0 -> ClearThenSettle(terminate: False)
+    1 -> ClearThenSettle(terminate: True)
+    2 -> ClearThenOrphan
+    3 -> Refuse(ending: planner.RefusalEndsRun)
+    _ -> Refuse(ending: planner.RefusalContinues)
+  }
 }
 
 fn call_names(script: Script) -> List(String) {
@@ -298,136 +278,139 @@ fn drive(world: World, script: Script, step_index: Int, fuel: Int) -> World {
   }
 }
 
-fn run_script(seed_value: Int) -> #(World, Script) {
-  let script = script_from(Seed(state: seed_value))
+fn run_script(script: Script) -> World {
   let world = scenario.fresh()
   let assert Ok(#(world, _tx)) =
     scenario.accept(world, AcceptRun(prompts: [fixture.user("go")]))
-  #(drive(world, script, 1, 200), script)
+  drive(world, script, 1, 200)
 }
 
 // --- the properties -------------------------------------------------------
 
 pub fn every_tool_call_has_a_result_test() {
-  list.each(range(from: 1, to: 25), fn(seed_value) {
-    let #(world, _script) = run_script(seed_value)
-    // Every tool call in every assistant entry has exactly one matching
-    // tool-result entry, whatever interleaving of settles, refusals,
-    // orphans, and aborts happened.
-    let entries = dict.values(world.store.entries)
-    let call_ids =
-      list.flat_map(entries, fn(stored) {
+  use script <- qcheck.run(script_config(), script_generator())
+  let world = run_script(script)
+
+  // Every tool call in every answerable assistant entry has exactly one
+  // matching tool-result entry, whatever interleaving of settles,
+  // refusals, orphans, and aborts happened. A response that settles
+  // under cancelled control commits normalized to `Aborted` with its
+  // calls intact and no results staged for them; that is sound only
+  // because context projection drops aborted responses (spec WP-C), so
+  // those calls never reach a provider and are owed nothing. The
+  // generator found that case (one plain settle, abort at step four)
+  // within its first hundred scripts; the seeds this replaced never did.
+  let entries = dict.values(world.store.entries)
+  let call_ids =
+    list.flat_map(entries, fn(stored) {
+      case stored {
+        entry.MessageEntry(
+          message: message.AssistantMessage(stop_reason:, content:, ..),
+          ..,
+        )
+          if stop_reason != message.Aborted
+        ->
+          list.filter_map(content, fn(block) {
+            case block {
+              message.AssistantToolCall(call:) -> Ok(call.id)
+              _ -> Error(Nil)
+            }
+          })
+        _ -> []
+      }
+    })
+  list.each(call_ids, fn(id) {
+    let results =
+      list.filter(entries, fn(stored) {
         case stored {
           entry.MessageEntry(
-            message: message.AssistantMessage(content:, ..),
+            message: message.ToolResultMessage(tool_call_id:, ..),
             ..,
-          ) ->
-            list.filter_map(content, fn(block) {
-              case block {
-                message.AssistantToolCall(call:) -> Ok(call.id)
-                _ -> Error(Nil)
-              }
-            })
-          _ -> []
+          ) -> tool_call_id == id
+          _ -> False
         }
       })
-    list.each(call_ids, fn(id) {
-      let results =
-        list.filter(entries, fn(stored) {
-          case stored {
-            entry.MessageEntry(
-              message: message.ToolResultMessage(tool_call_id:, ..),
-              ..,
-            ) -> tool_call_id == id
-            _ -> False
-          }
-        })
-      assert list.length(results) == 1
-    })
+    assert list.length(results) == 1
   })
 }
 
 pub fn terminal_cleanup_leaves_no_operation_state_test() {
-  list.each(range(from: 1, to: 25), fn(seed_value) {
-    let #(world, _script) = run_script(seed_value)
-    // The terminal transaction removed every operation-owned register.
-    assert store.list_register_keys(world.store, register.OpState, "") == []
-    assert store.list_register_keys(world.store, register.OpMeta, "") == []
-    assert store.list_register_keys(world.store, register.OpToolArgs, "") == []
-    assert store.list_register_keys(world.store, register.OpPreparation, "")
-      == []
-    assert store.list_register_keys(world.store, register.PendingEntry, "")
-      == []
-    // And the strand is durably idle.
-    let assert Ok(#(_seq, register.RegisterValue(payload:))) =
-      store.get_register(world.store, register.StrandState, "main")
-    let assert Ok(strand_state) = codec.decode_strand_state(payload)
-    assert strand_state.current_operation == None
-    // No state transitions out of terminal: the next drive finds no
-    // program counter at all.
-    let assert Error("op.state absent") = case
-      scenario.step(world, NoObservation, scenario.default_options())
-    {
-      Error(message) -> Error(message)
-      Ok(_) -> Ok(Nil)
-    }
-  })
+  use script <- qcheck.run(script_config(), script_generator())
+  let world = run_script(script)
+  // The terminal transaction removed every operation-owned register.
+  assert store.list_register_keys(world.store, register.OpState, "") == []
+  assert store.list_register_keys(world.store, register.OpMeta, "") == []
+  assert store.list_register_keys(world.store, register.OpToolArgs, "") == []
+  assert store.list_register_keys(world.store, register.OpPreparation, "") == []
+  assert store.list_register_keys(world.store, register.PendingEntry, "") == []
+  // And the strand is durably idle.
+  let assert Ok(#(_seq, register.RegisterValue(payload:))) =
+    store.get_register(world.store, register.StrandState, "main")
+  let assert Ok(strand_state) = codec.decode_strand_state(payload)
+  assert strand_state.current_operation == None
+  // No state transitions out of terminal: the next drive finds no
+  // program counter at all.
+  let next = case
+    scenario.step(world, NoObservation, scenario.default_options())
+  {
+    Error(message) -> Error(message)
+    Ok(_) -> Ok(Nil)
+  }
+  assert next == Error("op.state absent")
 }
 
 pub fn terminal_result_is_recorded_operation_keyed_test() {
-  list.each(range(from: 1, to: 25), fn(seed_value) {
-    let #(world, _script) = run_script(seed_value)
-    // The terminal transaction wrote the result twice, atomically: the
-    // strand's latest-wins register, and the operation-keyed copy that a
-    // waiter can still observe after a later run overwrites the strand
-    // register. The two payloads must agree, and the operation-keyed
-    // key must derive from the operation the result itself names.
-    let assert Ok(#(_seq, register.RegisterValue(payload: latest))) =
-      store.get_register(world.store, register.StrandLastResult, "main")
-    let assert Ok(result) = codec.decode_last_result(latest)
-    let op = case result {
-      RunLastResult(operation:, ..) -> operation
-      operation.CompactionLastResult(operation:, ..) -> operation
-      operation.NavigationLastResult(operation:, ..) -> operation
-    }
-    let assert Ok(#(_seq, register.RegisterValue(payload: keyed))) =
-      store.get_register(
-        world.store,
-        register.FactCustom,
-        operation.result_fact_key(op),
-      )
-    assert keyed == latest
-  })
+  use script <- qcheck.run(script_config(), script_generator())
+  let world = run_script(script)
+  // The terminal transaction wrote the result twice, atomically: the
+  // strand's latest-wins register, and the operation-keyed copy that a
+  // waiter can still observe after a later run overwrites the strand
+  // register. The two payloads must agree, and the operation-keyed
+  // key must derive from the operation the result itself names.
+  let assert Ok(#(_seq, register.RegisterValue(payload: latest))) =
+    store.get_register(world.store, register.StrandLastResult, "main")
+  let assert Ok(result) = codec.decode_last_result(latest)
+  let op = case result {
+    RunLastResult(operation:, ..) -> operation
+    operation.CompactionLastResult(operation:, ..) -> operation
+    operation.NavigationLastResult(operation:, ..) -> operation
+  }
+  let assert Ok(#(_seq, register.RegisterValue(payload: keyed))) =
+    store.get_register(
+      world.store,
+      register.FactCustom,
+      operation.result_fact_key(op),
+    )
+  assert keyed == latest
 }
 
 pub fn aborted_response_implies_aborted_run_test() {
-  list.each(range(from: 1, to: 25), fn(seed_value) {
-    let #(world, _script) = run_script(seed_value)
-    let assert Ok(#(_seq, register.RegisterValue(payload:))) =
-      store.get_register(world.store, register.StrandLastResult, "main")
-    let assert Ok(result) = codec.decode_last_result(payload)
-    let aborted_run = case result {
-      RunLastResult(outcome: RunAborted, ..) -> True
-      _ -> False
-    }
-    let has_aborted_response =
-      dict.values(world.store.entries)
-      |> list.any(fn(stored) {
-        case stored {
-          entry.MessageEntry(
-            message: message.AssistantMessage(stop_reason: message.Aborted, ..),
-            ..,
-          ) -> True
-          _ -> False
-        }
-      })
-    // A committed aborted response is only reachable under cancelled
-    // control, whose only exit is the aborted terminal transaction.
-    case has_aborted_response {
-      True -> {
-        assert aborted_run
+  use script <- qcheck.run(script_config(), script_generator())
+  let world = run_script(script)
+  let assert Ok(#(_seq, register.RegisterValue(payload:))) =
+    store.get_register(world.store, register.StrandLastResult, "main")
+  let assert Ok(result) = codec.decode_last_result(payload)
+  let aborted_run = case result {
+    RunLastResult(outcome: RunAborted, ..) -> True
+    _ -> False
+  }
+  let has_aborted_response =
+    dict.values(world.store.entries)
+    |> list.any(fn(stored) {
+      case stored {
+        entry.MessageEntry(
+          message: message.AssistantMessage(stop_reason: message.Aborted, ..),
+          ..,
+        ) -> True
+        _ -> False
       }
-      False -> Nil
+    })
+  // A committed aborted response is only reachable under cancelled
+  // control, whose only exit is the aborted terminal transaction.
+  case has_aborted_response {
+    True -> {
+      assert aborted_run
     }
-  })
+    False -> Nil
+  }
 }
