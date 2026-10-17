@@ -273,6 +273,8 @@
   .ctx-button:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
   .ctx-headline{margin:0 0 4px 0;font:600 13px/1.4 var(--font-sans);font-variant-numeric:tabular-nums;}
   .ctx-note{margin:4px 0 8px 0;color:var(--color-fg-quiet);font:12px/1.45 var(--font-sans);}
+  .ctx-remote{margin:10px 0 0 0;padding:6px 10px;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg-sunk);}
+  .ctx-remote ul{list-style:none;margin:0;padding:0;font:12px/1.45 var(--font-sans);font-variant-numeric:tabular-nums;}
   .ctx-until{margin:8px 0 0 0;color:var(--color-fg);font:13px/1.45 var(--font-sans);}
   .ctx-bar{display:flex;height:10px;margin:8px 0 10px 0;overflow:hidden;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg-sunk);}
   .ctx-segment{flex:0 0 auto;display:block;height:100%;}
