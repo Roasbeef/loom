@@ -298,9 +298,9 @@ that adds it says what the narrowed holder may ask.
 Keying the row by the digest of the identifier is what makes a login fit
 the existing model: every check in the tree takes a credential digest
 <<<<<<< ours
-(`authenticate` (`client/daemon/manager.gleam:1720`), `session_authority`,
+(`authenticate` (`client/daemon/manager.gleam:1766`), `session_authority`,
 =======
-(`authenticate` (`client/daemon/manager.gleam:1720`), `session_authority`,
+(`authenticate` (`client/daemon/manager.gleam:1766`), `session_authority`,
 >>>>>>> theirs
 `frame_authority`, `administer`), and a page minted from a login carries
 that digest as its `Grant.credential`. The page's socket, its relay, the
@@ -646,9 +646,9 @@ login add these cases.
 (`client/daemon/server.gleam:1604`)): it canonicalizes a workspace path on the
 daemon's host, canonicalizes or inherits a configuration path, and runs
 <<<<<<< ours
-`create_scoped` (`client/daemon/manager.gleam:1826`) under an idempotency key.
+`create_scoped` (`client/daemon/manager.gleam:1872`) under an idempotency key.
 =======
-`create_scoped` (`client/daemon/manager.gleam:1826`) under an idempotency key.
+`create_scoped` (`client/daemon/manager.gleam:1872`) under an idempotency key.
 >>>>>>> theirs
 The terminal builds that key from its own identity, the wall clock and a
 counter (`CreateSession` (`tui/session_control.gleam:788`)), names the session
@@ -740,10 +740,10 @@ and the epoch the page was admitted in:
    observer member is refused with the words "ask an operator to resume
 <<<<<<< ours
    it", the check `OpenSession` (`client/daemon/server.gleam:2305`) makes;
-3. `open` (`client/daemon/manager.gleam:1793`) is called, which is the same
+3. `open` (`client/daemon/manager.gleam:1839`) is called, which is the same
 =======
    it", the check `OpenSession` (`client/daemon/server.gleam:2305`) makes;
-3. `open` (`client/daemon/manager.gleam:1793`) is called, which is the same
+3. `open` (`client/daemon/manager.gleam:1839`) is called, which is the same
 >>>>>>> theirs
    registry turn `sessions.open` runs: capacity, `Reserved`, archived, the
    domain slot;
@@ -784,13 +784,13 @@ membership is.
 2026-09-30 that it waits for use of the terminal's `/access` overlay
 (`tui/access_overlay.gleam`). The daemon serves the two owner-only reads it
 <<<<<<< ours
-needs, `principal_page` (`client/daemon/manager.gleam:1560`) and
-`membership_page` (`client/daemon/manager.gleam:1583`), and every mutation
-through one dispatch, `administer` (`client/daemon/manager.gleam:1040`): invite,
+needs, `principal_page` (`client/daemon/manager.gleam:1606`) and
+`membership_page` (`client/daemon/manager.gleam:1629`), and every mutation
+through one dispatch, `administer` (`client/daemon/manager.gleam:1086`): invite,
 =======
-needs, `principal_page` (`client/daemon/manager.gleam:1560`) and
-`membership_page` (`client/daemon/manager.gleam:1583`), and every mutation
-through one dispatch, `administer` (`client/daemon/manager.gleam:1040`): invite,
+needs, `principal_page` (`client/daemon/manager.gleam:1606`) and
+`membership_page` (`client/daemon/manager.gleam:1629`), and every mutation
+through one dispatch, `administer` (`client/daemon/manager.gleam:1086`): invite,
 >>>>>>> theirs
 set-role, revoke membership, rotate, revoke credentials, isolate. The owner's
 session page already starts one of those from a browser, `invite_for`
@@ -907,9 +907,9 @@ SESSION PRINCIPAL ROLE NAME`, and `Guest <digits>` from the page). The
 catalogue can rename one (`rename` (`storage/access.gleam:1195`)) and no control
 command exposes it (053, Open). A claim binds a credential to the principal
 <<<<<<< ours
-(`claim` (`client/daemon/manager.gleam:1058`)) and carried no name before this change. The name
+(`claim` (`client/daemon/manager.gleam:1104`)) and carried no name before this change. The name
 =======
-(`claim` (`client/daemon/manager.gleam:1058`)) and carried no name before this change. The name
+(`claim` (`client/daemon/manager.gleam:1104`)) and carried no name before this change. The name
 >>>>>>> theirs
 reaches everyone through the roster: the gateway stamps each connection and
 each admitted command with the principal's current name (`Origin`
