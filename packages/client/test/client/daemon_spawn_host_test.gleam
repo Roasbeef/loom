@@ -83,6 +83,7 @@ type Heard {
   Spawn(remote_spawn.Delegation)
   Join(remote_spawn.Parent, Int)
   Ended(ids.OpId)
+  Released
 }
 
 fn recording(heard: Subject(Heard)) -> agency.DelegateEndpoint {
@@ -99,41 +100,60 @@ fn recording(heard: Subject(Heard)) -> agency.DelegateEndpoint {
       process.send(heard, Ended(ended))
       Ok(3)
     },
+    release: fn() {
+      process.send(heard, Released)
+      Ok(4)
+    },
+    occupancy: fn() { agency.Vacant },
   )
 }
 
-pub fn a_node_no_spawner_names_is_an_unknown_spawner_for_all_three_test() {
+pub fn a_node_no_spawner_names_is_an_unknown_spawner_for_all_four_test() {
   let host =
-    main.spawn_host(configured(), fn(_, _) {
-      panic as "an unknown node must not reach a session"
-    })
+    main.spawn_host(
+      configured(),
+      fn(_, _) { panic as "an unknown node must not reach a session" },
+      fn(_, _) { panic as "an unknown node must not release a session" },
+    )
   let stranger = origin("stranger@10.0.0.9")
   let refusal = remote_spawn.UnknownSpawner(node: "stranger@10.0.0.9")
   assert host.spawn(stranger, call_site(), 0, [], request()) == Error(refusal)
   assert host.join(stranger, [], 1000) == Error(refusal)
   assert host.run_ended(stranger, operation()) == Error(refusal)
+  assert host.release(stranger) == Error(refusal)
 }
 
 pub fn a_daemon_with_no_spawners_refuses_every_node_test() {
   let host =
-    main.spawn_host([], fn(_, _) {
-      panic as "a daemon with no spawners must not reach a session"
-    })
+    main.spawn_host(
+      [],
+      fn(_, _) { panic as "a daemon with no spawners must not reach a session" },
+      fn(_, _) { panic as "a daemon with no spawners must not release one" },
+    )
   let laptop = origin("laptop@100.64.0.5")
   let refusal = remote_spawn.UnknownSpawner(node: "laptop@100.64.0.5")
   assert host.spawn(laptop, call_site(), 0, [], request()) == Error(refusal)
   assert host.join(laptop, [], 1000) == Error(refusal)
   assert host.run_ended(laptop, operation()) == Error(refusal)
+  assert host.release(laptop) == Error(refusal)
 }
 
 pub fn a_configured_spawner_is_served_by_its_delegate_agency_test() {
   let heard = process.new_subject()
   let asked = process.new_subject()
+  let released = process.new_subject()
   let host =
-    main.spawn_host(configured(), fn(spawner, parent) {
-      process.send(asked, #(spawner.name, parent))
-      Ok(recording(heard))
-    })
+    main.spawn_host(
+      configured(),
+      fn(spawner, parent) {
+        process.send(asked, #(spawner.name, parent))
+        Ok(recording(heard))
+      },
+      fn(spawner, parent) {
+        process.send(released, #(spawner.name, parent))
+        Ok(4)
+      },
+    )
   let laptop = origin("laptop@100.64.0.5")
 
   // The spawn carries the parent's depth and tools as the message gave them,
@@ -165,13 +185,24 @@ pub fn a_configured_spawner_is_served_by_its_delegate_agency_test() {
   assert process.receive(asked, 0) == Ok(#("laptop", laptop.parent))
   assert process.receive(asked, 0) == Ok(#("laptop", laptop.parent))
   assert process.receive(asked, 0) == Ok(#("laptop", laptop.parent))
+
+  // A release is not one of those: it asks the function that finds a session
+  // that already exists, with the same spawner and parent, and the function
+  // that finds or makes one is never asked, so a release cannot create a session.
+  assert host.release(laptop) == Ok(4)
+  assert process.receive(released, 0) == Ok(#("laptop", laptop.parent))
+  assert process.receive(asked, 0) == Error(Nil)
 }
 
 pub fn a_refusal_to_find_the_session_is_the_answer_to_each_message_test() {
   let refusal = remote_spawn.CapReached(cap: remote_spawn.MaxSessions, limit: 4)
-  let host = main.spawn_host(configured(), fn(_, _) { Error(refusal) })
+  let host =
+    main.spawn_host(configured(), fn(_, _) { Error(refusal) }, fn(_, _) {
+      Error(refusal)
+    })
   let laptop = origin("laptop@100.64.0.5")
   assert host.spawn(laptop, call_site(), 0, [], request()) == Error(refusal)
   assert host.join(laptop, [], 1000) == Error(refusal)
   assert host.run_ended(laptop, operation()) == Error(refusal)
+  assert host.release(laptop) == Error(refusal)
 }

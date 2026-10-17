@@ -62,9 +62,15 @@
 //// In phase 1 nothing on the parent's side sends `RunEnded`, because a child
 //// started from another orchestrator is always detached and outlives the run
 //// that asked for it. The message, its handler and the fence that makes a late
-//// `Spawn` for an ended run refuse stay as built, because the phase that lets a
-//// parent release its children reuses them. `ask_run_ended` is the call that
-//// phase will make.
+//// `Spawn` for an ended run refuse stay as built, and `ask_run_ended` is the
+//// call a phase that stops children by run would make.
+////
+//// Phase 2 adds `Release`, which says the parent session itself was deleted. It
+//// is not a `RunEnded` for every run: the receiver stops every child of the
+//// pair, whoever owns it, deletes the pair's session, and answers how many
+//// children it stopped. A pair the receiver has no session for answers zero and
+//// creates nothing, so the message is safe to send to an orchestrator that never
+//// held a child, and safe to send twice. `ask_release` is the call.
 ////
 //// Phase 2 of protocol-change/086 adds `Holds`, a read of how many sessions the
 //// catalogue owns and how many sit on each executor. An operator's `revoke`
@@ -95,6 +101,22 @@
 //// has every session's identity from `Owns`; the sender asks only about a
 //// session its own link or grant names, and the recipient's `Roster` answer is
 //// bounded by the grants the recipient made to the asking session.
+////
+//// ## Flow
+////
+//// `start_with` → `answer` → `detached` → `ask_release` → `exchange` →
+//// `exchange_why`
+////
+//// 1. `start_with` starts the port with the hosts a daemon supplies.
+//// 2. `answer` handles one message. A read it can answer from a function it
+////    holds is answered in place.
+//// 3. `detached` runs the slow ones (a spawn, a join, a run end, a release) in
+////    a task linked to the port, so a question about ownership never waits
+////    behind them.
+//// 4. The `ask_*` functions are the sending ends, `ask_release` among them,
+////    and each makes its one request through `exchange`, which wraps
+////    `exchange_why`. That function takes a monitor before it sends, and
+////    `ask_report` uses it directly to learn why there was no answer.
 
 import client/internal/ffi_remote
 import client/node_report.{type NodeReport}
@@ -240,6 +262,22 @@ pub type Message {
     parent: Parent,
     /// The parent's operation that ended.
     operation: OpId,
+    /// Where the count goes.
+    reply: Subject(Result(Int, SpawnRefusal)),
+  )
+
+  /// Tells the receiver that the parent session was deleted, so it stops every
+  /// child it holds for that parent and deletes the session that held them. The
+  /// answer is how many children it stopped. A parent the receiver holds nothing
+  /// for answers zero and creates nothing, and a repeat stops nothing more.
+  ///
+  /// It may reach the receiver before the `Spawn` it concerns, because the two
+  /// come from different processes. The receiver then has no session to delete,
+  /// and the `Spawn` that follows makes one, which the parent's own deletion
+  /// bounds by the child's deadline and the receiver's retention sweep.
+  Release(
+    /// The parent session and strand. Only the session names what is released.
+    parent: Parent,
     /// Where the count goes.
     reply: Subject(Result(Int, SpawnRefusal)),
   )
@@ -391,6 +429,10 @@ pub type SpawnHost {
     /// Stops the children a finished run owns, given the run's operation, and
     /// counts them.
     run_ended: fn(Origin, OpId) -> Result(Int, SpawnRefusal),
+    /// Stops every child of the parent and deletes the session that held them,
+    /// and counts the children it stopped. A parent with no session answers
+    /// zero.
+    release: fn(Origin) -> Result(Int, SpawnRefusal),
   )
 }
 
@@ -413,6 +455,9 @@ pub fn refusing_spawns() -> SpawnHost {
       Error(remote_spawn.UnknownSpawner(node: origin.node))
     },
     run_ended: fn(origin, _operation) {
+      Error(remote_spawn.UnknownSpawner(node: origin.node))
+    },
+    release: fn(origin) {
       Error(remote_spawn.UnknownSpawner(node: origin.node))
     },
   )
@@ -684,6 +729,10 @@ fn answer(
       detached(reply, fn(node) {
         spawns.run_ended(remote_spawn.Origin(node:, parent:), operation)
       })
+    Release(parent:, reply:) ->
+      detached(reply, fn(node) {
+        spawns.release(remote_spawn.Origin(node:, parent:))
+      })
   }
   actor.continue(state)
 }
@@ -948,6 +997,23 @@ pub fn ask_run_ended(
   within_ms: Int,
 ) -> Result(Result(Int, SpawnRefusal), Nil) {
   exchange(at, fn(reply) { RunEnded(parent:, operation:, reply:) }, within_ms)
+}
+
+/// Tells the port at `at` that a parent session was deleted, and waits at most
+/// `within_ms` for the count of children it stopped. Silence is `Error(Nil)`,
+/// and the same message can be sent again.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // orchestrator_port.ask_release(Address(node: peer, name: orchestrator_port.default()), parent, 7000)
+/// ```
+pub fn ask_release(
+  at: Address(Message),
+  parent: Parent,
+  within_ms: Int,
+) -> Result(Result(Int, SpawnRefusal), Nil) {
+  exchange(at, fn(reply) { Release(parent:, reply:) }, within_ms)
 }
 
 // One request and its reply. Silence is `Error(Nil)`.

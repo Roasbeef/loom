@@ -24,6 +24,18 @@
 // attached to that run, or the remote restarts and its run is lost. A restart
 // arms no tick, because a delegate session is only reopened by the next `Spawn`
 // or `Join`, and nothing is running in a closed one (design note, section 8.3).
+//
+// The parent session itself can be deleted, and then the laptop sends
+// `Release`. The session has three phases (`tSession`). A `Release` for a parent
+// with no session answers zero and makes nothing: it is the one message here
+// that must not create a session, because it exists to delete one. A `Release`
+// for an open session writes the released fence, stops every running child
+// whoever owns it, and answers how many it stopped. From then on the session
+// refuses every spawn. The registry deletes it when its slot drains, which the
+// model leaves to the environment (`eSlotDrained`), and deleting it removes the
+// children, the fences and everything else stored under it. The message that
+// makes the next session for the parent is a `Spawn` or a `RunEnded`, as in the
+// code. A repeat of `Release` stops nothing more and answers zero.
 machine Port {
   var wire: machine;
   var children: map[tChild, tChildRec];
@@ -31,6 +43,8 @@ machine Port {
   var fence: set[int];
   var next: int;
   var clockPast: bool;
+  var phase: tSession;
+  var gen: int;
 
   start state Up {
     entry (w: machine) {
@@ -44,6 +58,14 @@ machine Port {
         join(m);
       } else if (m.kind == K_RUN_ENDED) {
         runEnded(m.run);
+      } else if (m.kind == K_RELEASE) {
+        release(m);
+      }
+    }
+
+    on eSlotDrained do {
+      if (phase == SS_RELEASING) {
+        deleteSession();
       }
     }
 
@@ -70,6 +92,14 @@ machine Port {
   fun admit(m: tMsg) {
     var name: int;
     var c: tChild;
+    if (phase == SS_NONE) {
+      makeSession(K_SPAWN);
+    }
+    if (phase == SS_RELEASING) {
+      announce eRefused, (site = m.site, reason = 2);
+      answer(m, K_REFUSED, 0, CS_RUNNING);
+      return;
+    }
     name = nameOf(m.site);
     if (name in byName) {
       c = byName[name];
@@ -91,6 +121,7 @@ machine Port {
     next = next + 1;
     children[c] = (mintedBy = m.site, run = m.run, owner = m.owner, st = CS_RUNNING, overdue = clockPast);
     byName[name] = c;
+    announce eChildIn, (child = c, gen = gen);
     announce eCreated, (site = m.site, child = c, run = m.run, owner = m.owner);
     announce eAnswered, (site = m.site, child = c);
     answer(m, K_SPAWNED, c, CS_RUNNING);
@@ -112,6 +143,9 @@ machine Port {
     var c: tChild;
     var cs: seq[tChild];
     var running: int;
+    if (phase == SS_NONE) {
+      makeSession(K_RUN_ENDED);
+    }
     fence += (run);
     cs = keys(children);
     foreach (c in cs) {
@@ -125,6 +159,55 @@ machine Port {
       }
     }
     announce eRunEndedHandled, (run = run, stillRunning = running);
+  }
+
+  // A session for the parent is made by the message that first needs one.
+  fun makeSession(by: tKind) {
+    phase = SS_OPEN;
+    announce eSessionMade, by;
+  }
+
+  // `Release`: the holder writes the released fence first, and stops every
+  // running child second. A parent with no session has nothing to release, and
+  // nothing is made for it. The registry then deletes the session when its slot
+  // drains, which the environment decides (`eSlotDrained`).
+  fun release(m: tMsg) {
+    var c: tChild;
+    var cs: seq[tChild];
+    var stopped: int;
+    var running: int;
+    if (phase == SS_NONE) {
+      announce eReleaseNoSession;
+      answer(m, K_RELEASED, 0, CS_RUNNING);
+      return;
+    }
+    phase = SS_RELEASING;
+    cs = keys(children);
+    foreach (c in cs) {
+      if (children[c].st == CS_RUNNING) {
+        end(c, CS_STOPPED);
+        stopped = stopped + 1;
+      }
+    }
+    foreach (c in cs) {
+      if (children[c].st == CS_RUNNING) {
+        running = running + 1;
+      }
+    }
+    announce eReleaseHandled, (gen = gen, stopped = stopped, stillRunning = running);
+    answer(m, K_RELEASED, stopped, CS_RUNNING);
+  }
+
+  // The slot drained and the registry deletes the session. Whatever is still
+  // running dies with it, and everything stored under it goes.
+  fun deleteSession() {
+    loseRuns();
+    children = default(map[tChild, tChildRec]);
+    byName = default(map[int, tChild]);
+    fence = default(set[int]);
+    phase = SS_NONE;
+    gen = gen + 1;
+    announce eSessionDeleted;
   }
 
   // Marks every child running now as past its deadline.

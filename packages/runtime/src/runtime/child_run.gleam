@@ -31,6 +31,10 @@ pub type Stop {
   /// The parent operation that owns this run ended.
   ParentFinished
 
+  /// The session that holds this run was released: the parent session on
+  /// another orchestrator was deleted (protocol-change/084, `Release`).
+  Released
+
   /// An older lineage record says reaped but did not record its cause.
   LegacyReaped
 }
@@ -98,6 +102,7 @@ pub fn encode(run: Run) -> JsonValue {
         Unstopped -> "none"
         BudgetExpired -> "budget_expired"
         ParentFinished -> "parent_finished"
+        Released -> "released"
         LegacyReaped -> "legacy_reaped"
       }),
     ),
@@ -158,6 +163,7 @@ pub fn decode(value: JsonValue) -> Result(Run, CorruptionReport) {
     json.String("none") -> Ok(Unstopped)
     json.String("budget_expired") -> Ok(BudgetExpired)
     json.String("parent_finished") -> Ok(ParentFinished)
+    json.String("released") -> Ok(Released)
     json.String("legacy_reaped") -> Ok(LegacyReaped)
     other -> invalid("stop", "a known cancellation reason", other)
   })

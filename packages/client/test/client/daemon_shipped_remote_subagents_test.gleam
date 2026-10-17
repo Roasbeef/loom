@@ -18,7 +18,7 @@
 ////
 //// ## What it proves
 ////
-//// `daemon_shipped_remote_subagents_test_`, one laptop session in two turns.
+//// `daemon_shipped_remote_subagents_test_`, one laptop session in three turns.
 ////
 //// - A child started `on` the box with `agent_spawn` runs there, and
 ////   `agent_wait` joins it and returns the report the child wrote.
@@ -31,17 +31,21 @@
 //// - A second turn joins both children with one `agent_wait`. The first reports
 ////   what it finished with and the second reports that its wall-clock budget
 ////   expired.
+//// - A third turn starts a fourth child that runs until it is stopped. The
+////   laptop session is then stopped and deleted with that child running. The
+////   laptop's release drainer tells the box (`Release`), and the box stops the
+////   child (`operation.aborted` in its log, and its heartbeat goes quiet) and
+////   deletes the delegate session, whose row is gone from the box's list.
 ////
 //// ## What it does not prove
 ////
-//// The design asks of this slice that a child be stopped by a `RunEnded` and
-//// that the failure cases (the laptop killed mid-spawn, the link cut mid-join,
-//// the turn ended with the link down) leave every child reported once or still
-//// running toward its deadline. The laptop sends no `RunEnded` in phase 1, so
-//// the first has no sender to drive, and the P model
-//// (`protocol/models/remote-subagents`) checks the fence against a modelled
-//// sender. The failure cases are the model's `tcDrops`, `tcAbort` and
-//// `tcRestart`; this fixture does not cut a link.
+//// The failure cases the design lists (the laptop killed mid-spawn, the link
+//// cut mid-join, the turn ended with the link down) leave every child reported
+//// once or still running toward its deadline. They are covered by the P model
+//// (`protocol/models/remote-subagents`) as `tcDrops`, `tcAbort` and
+//// `tcRestart`, and not by this fixture, which does not cut a link. The same
+//// holds for a `Release` that is lost, sent twice or overtakes its `Spawn`: the
+//// model checks those, and the unit tests check the box's half.
 ////
 //// ## Running it
 ////
@@ -81,6 +85,10 @@ const join_prompt = "join the other two"
 
 const joined_answer = "both joined"
 
+const fourth_prompt = "start a fourth child that keeps running"
+
+const fourth_answer = "fourth child started"
+
 // What the first two children's models answer with.
 const first_report = "child one report"
 
@@ -93,6 +101,9 @@ const second_shell =
   "i=0; while [ $i -lt 15 ]; do echo x >> beat2; i=$((i+1)); sleep 1; done; echo child two shell done"
 
 const third_shell = "while true; do echo x >> beat3; sleep 1; done"
+
+// The fourth child runs until the release stops it.
+const fourth_shell = "while true; do echo x >> beat4; sleep 1; done"
 
 // The third child's deadline, in milliseconds. The box checks deadlines on a
 // fifteen second tick, so the child is stopped some seconds later.
@@ -275,6 +286,16 @@ fn laptop_script() -> List(provider.Exchange) {
     provider.ComputedExchange(provider.AwaitToolResult("wait-rest"), fn(_seen) {
       provider.ReplyText(joined_answer)
     }),
+    provider.ComputedExchange(provider.AwaitPrompt(fourth_prompt), fn(_seen) {
+      provider.ReplyToolUse(
+        "spawn-four",
+        "agent_spawn",
+        spawn("run the fourth child's shell", "fourth child", None),
+      )
+    }),
+    provider.ComputedExchange(provider.AwaitToolResult("spawn-four"), fn(_seen) {
+      provider.ReplyText(fourth_answer)
+    }),
   ]
 }
 
@@ -296,6 +317,9 @@ fn box_script() -> List(provider.Exchange) {
     }),
     provider.ComputedExchange(provider.AwaitToolResult("shell-two"), fn(_seen) {
       provider.ReplyText(second_report)
+    }),
+    provider.ComputedExchange(provider.AwaitPromptPrefix(brief_head), fn(_seen) {
+      provider.ReplyToolUse("shell-four", "bash", shell(fourth_shell))
     }),
   ]
 }
@@ -349,7 +373,7 @@ fn handle_of(seen: List(provider.ObservedRequest), call_id: String) -> String {
 fn session(duo: Duo, work: String, laptop_url: String, box_url: String) -> Nil {
   deploy(duo, work, laptop_url, box_url)
   let environment = [#("LOOM_TEST_PROVIDER_KEY", provider.dummy_key)]
-  let _box = remote_daemons.start_with_environment(duo.bravo, [], environment)
+  let box = remote_daemons.start_with_environment(duo.bravo, [], environment)
   let laptop = remote_daemons.start_with_environment(duo.alpha, [], environment)
   let control = remote_daemons.open_control(laptop)
   let #(session, settled) =
@@ -391,6 +415,86 @@ fn session(duo: Duo, work: String, laptop_url: String, box_url: String) -> Nil {
     [spawned_answer, joined_answer],
     settle_ms,
   )
+
+  // The third turn starts a child that has no end of its own. Its heartbeat
+  // grows on the box, and the box holds a delegate session for this parent.
+  remote_daemons.say(terminal, fourth_prompt)
+  remote_daemons.await_answers(
+    terminal,
+    [spawned_answer, joined_answer, fourth_answer],
+    settle_ms,
+  )
+  let _running = await_lines(work <> "/beat4", 2)
+  let box_control = remote_daemons.open_control(box)
+  assert delegate_sessions(box_control, 70, session) != []
+
+  // The owner deletes the laptop session with the child still running. The
+  // delete leaves a release row for the box, and the laptop's drainer sends it
+  // at its next pass. The box stops the child and deletes the session that held
+  // it: the abort is logged, the heartbeat goes quiet, and the delegate session
+  // leaves the box's list.
+  remote_daemons.stop_session(laptop, control, 60, session)
+  let deleted =
+    remote_daemons.command(
+      control,
+      61,
+      "sessions.delete",
+      json.Object([
+        #("session_id", json.String(session)),
+        #("epoch", json.String(control.epoch)),
+      ]),
+    )
+  assert remote_daemons.field(deleted, "event")
+    == json.String("sessions.delete")
+  await_log(duo.bravo, ["operation.aborted", "fourth-child"])
+  let _quiet = await_quiet(work <> "/beat4")
+  await_no_delegate_session(box_control, session)
+  Nil
+}
+
+// The names of the box's sessions that serve the laptop session `parent`. The
+// registry names a delegate session after its spawner and its parent.
+fn delegate_sessions(
+  control: remote_daemons.Control,
+  id: Int,
+  parent: String,
+) -> List(String) {
+  let listed =
+    remote_daemons.command(
+      control,
+      id,
+      "sessions.list",
+      json.Object([#("after", json.String(""))]),
+    )
+  let assert json.Array(sessions) =
+    remote_daemons.field(remote_daemons.field(listed, "body"), "sessions")
+    as "the box lists its sessions"
+  sessions
+  |> list.filter_map(fn(record) {
+    case remote_daemons.field(record, "name") {
+      json.String(name) ->
+        case string.contains(name, parent) {
+          True -> Ok(name)
+          False -> Error(Nil)
+        }
+      _ -> Error(Nil)
+    }
+  })
+}
+
+// Waits until the box no longer lists a delegate session for `parent`.
+fn await_no_delegate_session(
+  control: remote_daemons.Control,
+  parent: String,
+) -> Nil {
+  let assert poll.Answered(Nil) =
+    poll.until(within: settle_ms, every: 500, attempt: fn() {
+      case delegate_sessions(control, 71, parent) {
+        [] -> poll.Done(Nil)
+        [_, ..] -> poll.Retry
+      }
+    })
+    as "the box deleted the delegate session after the release"
   Nil
 }
 

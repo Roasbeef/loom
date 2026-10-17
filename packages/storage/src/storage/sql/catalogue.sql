@@ -156,15 +156,15 @@ DELETE FROM catalogue_session_deletions WHERE session_id = ?;
 SELECT session_id FROM catalogue_session_deletions ORDER BY session_id;
 
 -- name: DelegateSession :many
-SELECT session_id, last_contact_ms FROM catalogue_delegate_sessions
+SELECT session_id, last_contact_ms, state FROM catalogue_delegate_sessions
 WHERE spawner = ? AND parent_session = ?;
 
 -- name: DelegateOfSession :many
-SELECT spawner, parent_session, last_contact_ms FROM catalogue_delegate_sessions
+SELECT spawner, parent_session, last_contact_ms, state FROM catalogue_delegate_sessions
 WHERE session_id = ?;
 
 -- name: AllDelegateSessions :many
-SELECT spawner, parent_session, session_id, last_contact_ms FROM catalogue_delegate_sessions
+SELECT spawner, parent_session, session_id, last_contact_ms, state FROM catalogue_delegate_sessions
 ORDER BY session_id;
 
 -- name: CountDelegateSessions :one
@@ -180,3 +180,17 @@ WHERE spawner = ? AND parent_session = ?;
 
 -- name: DeleteDelegateSession :exec
 DELETE FROM catalogue_delegate_sessions WHERE session_id = ?;
+
+-- name: SetDelegateSessionState :exec
+UPDATE catalogue_delegate_sessions SET state = ? WHERE session_id = ?;
+
+-- name: InsertRemoteRelease :exec
+INSERT OR IGNORE INTO catalogue_remote_releases (parent_session, orchestrator, written_ms)
+VALUES (?, ?, ?);
+
+-- name: AllRemoteReleases :many
+SELECT parent_session, orchestrator, written_ms FROM catalogue_remote_releases
+ORDER BY parent_session, orchestrator;
+
+-- name: DeleteRemoteRelease :exec
+DELETE FROM catalogue_remote_releases WHERE parent_session = ? AND orchestrator = ?;

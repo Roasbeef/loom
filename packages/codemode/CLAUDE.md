@@ -872,7 +872,7 @@ release inputs; see `docs/adr/012-release-manifests-and-updates.md`.
 `orchestration` calls `Agency.send` with no explicit budget, so idle child
 continuations use their persisted default. The capability send/wait wire shape
 remains unchanged. The richer internal `Started` receipt and
-`BudgetExpired`/`ParentFinished` outcomes map to the existing operation and
+`BudgetExpired`/`ParentFinished`/`Released` outcomes map to the existing operation and
 aborted capability results; direct agent tools expose the additional deadline
 and cause metadata specified by proposal 042.
 

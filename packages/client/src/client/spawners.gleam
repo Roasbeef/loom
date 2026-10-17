@@ -35,9 +35,15 @@
 //// because each check protects a different thing. `default_within_s` is what a
 //// spawn gets when it names no deadline, so it cannot exceed the cap
 //// `max_within_s`. `retain_s` is how long a delegate session with no message
-//// from its spawner is kept before the boot sweep deletes it. A child stops at
+//// from its spawner is kept before the sweep deletes it. A child stops at
 //// its deadline at the latest, so with `retain_s` at or above `max_within_s` a
 //// session past retention holds no child that could still be running.
+////
+//// `idle_close_s` is separate and bounds nothing else: a resident delegate
+//// session never hibernates and so holds an executor scope, and the hourly
+//// sweep closes one whose children have all ended and whose spawner has been
+//// silent that long. Closing is not deleting, so it needs no relation to the
+//// other three.
 ////
 //// ## Flow
 ////
@@ -49,7 +55,8 @@
 ////    executors and pools this file configures.
 //// 4. `tools_of` reads the ceiling, or builds the default one.
 //// 5. `windows` checks the three durations against each other.
-//// 6. `find` and `by_node` resolve a configured spawner by name or by the node
+//// 6. `standing` tells the sweep what a session's spawner allows, or that it
+////    was removed. `find` and `by_node` resolve a configured spawner by name or by the node
 ////    a message came from.
 
 import client/distribution
@@ -86,6 +93,9 @@ pub const default_default_within_s = 1800
 
 /// `retain_s` when the table names none: seven days.
 pub const default_retain_s = 604_800
+
+/// `idle_close_s` when the table names none: one hour.
+pub const default_idle_close_s = 3600
 
 /// Where every delegate session of one spawner is put.
 pub type Placement {
@@ -143,6 +153,11 @@ pub type Spawner {
     /// How long a delegate session with no message from its spawner is kept, in
     /// seconds. At least `max_within_s`.
     retain_s: Int,
+    /// How long a resident delegate session with no live child and no message
+    /// from its spawner is kept open before the hourly sweep closes it, in
+    /// seconds. Closing frees the executor scope the session holds and deletes
+    /// nothing, so the next spawn or join reopens it.
+    idle_close_s: Int,
   )
 }
 
@@ -249,20 +264,41 @@ pub fn find(configured: List(Spawner), name: String) -> Result(Spawner, Nil) {
   list.find(configured, fn(spawner) { spawner.name == name })
 }
 
-/// How long a delegate session of this spawner is kept with no message from it,
-/// in milliseconds. A spawner whose table has since been removed gets
-/// `default_retain_s`, so its sessions are still swept and not kept for good.
+/// What the retention sweep needs to know about the spawner of one delegate
+/// session.
+pub type Standing {
+  /// The spawner is still configured, with its two windows.
+  Configured(
+    /// How long a session with no message from the spawner is kept before it
+    /// is deleted, in milliseconds.
+    retain_ms: Int,
+    /// How long a resident session with no live child and no message is kept
+    /// open before it is closed, in milliseconds.
+    idle_close_ms: Int,
+  )
+
+  /// The table has been removed since the session was made. Nothing can send
+  /// the session a message again, so it is deleted whatever its age.
+  Removed
+}
+
+/// The standing of a delegate session's spawner, for the retention sweep
+/// (protocol-change/084).
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert spawners.retention_ms([], "gone") == 604_800_000
+/// assert spawners.standing([], "gone") == spawners.Removed
 /// ```
-pub fn retention_ms(configured: List(Spawner), name: String) -> Int {
+pub fn standing(configured: List(Spawner), name: String) -> Standing {
   find(configured, name)
-  |> result.map(fn(spawner) { spawner.retain_s })
-  |> result.unwrap(default_retain_s)
-  |> int.multiply(1000)
+  |> result.map(fn(spawner) {
+    Configured(
+      retain_ms: spawner.retain_s * 1000,
+      idle_close_ms: spawner.idle_close_s * 1000,
+    )
+  })
+  |> result.unwrap(Removed)
 }
 
 /// Finds the spawner that a node is the spawning orchestrator of. This is how
@@ -344,7 +380,7 @@ fn row(name: String, value: tom.Toml, known: Known) -> Result(Spawner, String) {
         [
           "node", "executor", "pool", "directory", "workspace", "profile",
           "tools", "max_depth", "max_sessions", "max_within_s",
-          "default_within_s", "retain_s",
+          "default_within_s", "retain_s", "idle_close_s",
         ],
         "[spawners." <> name <> "]",
       ))
@@ -383,6 +419,12 @@ fn row(name: String, value: tom.Toml, known: Known) -> Result(Spawner, String) {
         "retain_s",
         default_retain_s,
       ))
+      use idle_close_s <- result.try(count_of(
+        fields,
+        place,
+        "idle_close_s",
+        default_idle_close_s,
+      ))
       use Nil <- result.map(windows(
         place,
         max_within_s,
@@ -400,6 +442,7 @@ fn row(name: String, value: tom.Toml, known: Known) -> Result(Spawner, String) {
         max_within_s:,
         default_within_s:,
         retain_s:,
+        idle_close_s:,
       )
     }
     _ -> Error(place <> " must be a table")

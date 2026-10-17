@@ -37,6 +37,8 @@ import client/remote/owner_port
 import client/remote/protocol
 import client/remote/scope
 import client/remote/workspace
+import client/remote_child
+import client/remote_spawn
 import client/roster
 import client/session_directory
 import client/session_importer
@@ -68,7 +70,9 @@ import storage/storage
 import support/record_book
 import support/remote_fixtures as fixtures
 import support/remote_orchestrator as host_rig
+import support/remote_stubs
 import telemetry/log
+import tools/agent
 import weft/poll
 
 const stage_ms = 2000
@@ -620,6 +624,107 @@ pub fn a_scope_the_session_never_closed_is_closed_by_the_mover_test() {
   let assert Ok(cell) =
     scope.read_at(target_file(rig), "inspector", clock.fixed(at: 9000))
   assert cell == Some(scope.Scope(1, Some(protocol.AllRetired), Some("box")))
+  finish(rig)
+}
+
+pub fn a_session_with_a_child_running_elsewhere_is_not_moved_test() {
+  let rig =
+    start(
+      "live-child",
+      40,
+      Recorded,
+      protocol.AllRetired,
+      receiver_knows_box(),
+      0,
+    )
+  let sent = process.new_subject()
+  let wire =
+    Wire(..rig.wire, send: fn(chunk: session_move.Chunk) {
+      process.send(sent, chunk.offset)
+      rig.wire.send(chunk)
+    })
+
+  // A child on another orchestrator reports to this one, so the session it
+  // belongs to cannot be handed to a third.
+  remote_stubs.write(source_file(rig), [
+    remote_stubs.stub(
+      "desk",
+      1,
+      remote_child.Spawned(remote_stubs.placed(1, 9_000_000)),
+    ),
+  ])
+  let move = begin(rig)
+  let assert Aborted(reason) =
+    session_mover.drive(environment(rig, wire, fn(_) { Nil }), move)
+  assert string.contains(reason, "not_movable")
+  assert string.contains(reason, "`desk`")
+
+  // Nothing was sent, and the session is the source's again.
+  assert process.receive(sent, 0) == Error(Nil)
+  assert custody(rig.source, rig.session) == catalogue.Resident
+  assert manager.get(rig.target.registry, rig.session)
+    == Error(manager.Catalogue(catalogue.Missing))
+  finish(rig)
+}
+
+pub fn a_stub_that_was_asked_but_not_answered_also_holds_the_session_test() {
+  let rig =
+    start(
+      "asked-child",
+      41,
+      Recorded,
+      protocol.AllRetired,
+      receiver_knows_box(),
+      0,
+    )
+  remote_stubs.write(source_file(rig), [
+    remote_stubs.stub("box", 2, remote_child.Requested),
+  ])
+  let move = begin(rig)
+  let assert Aborted(reason) = session_mover.drive(plain(rig), move)
+  assert string.contains(reason, "`box`")
+  finish(rig)
+}
+
+pub fn children_that_cannot_be_running_do_not_stop_a_move_test() {
+  let rig =
+    start(
+      "done-children",
+      42,
+      Recorded,
+      protocol.AllRetired,
+      receiver_knows_box(),
+      0,
+    )
+
+  // One child was refused and made nothing, one finished, and one's deadline
+  // passed before the session's clock now. None can still be running.
+  remote_stubs.write(source_file(rig), [
+    remote_stubs.stub("box", 3, remote_child.Refused("the cap is 4")),
+    remote_stubs.stub(
+      "box",
+      4,
+      remote_child.Settled(
+        remote_stubs.placed(4, 9_000_000),
+        agent.Completed,
+        remote_spawn.ChildUsage(
+          input: 1,
+          output: 1,
+          cache_read: 0,
+          cache_write: 0,
+          cost: 0.0,
+        ),
+      ),
+    ),
+    remote_stubs.stub(
+      "desk",
+      5,
+      remote_child.Spawned(remote_stubs.placed(5, 1000)),
+    ),
+  ])
+  let move = begin(rig)
+  assert session_mover.drive(plain(rig), move) == Finished
+  assert_moved(rig)
   finish(rig)
 }
 

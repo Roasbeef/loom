@@ -1197,7 +1197,7 @@ pub fn deleting_sessions_decoder() -> decode.Decoder(DeletingSessions) {
 }
 
 pub type DelegateSession {
-  DelegateSession(session_id: String, last_contact_ms: Int)
+  DelegateSession(session_id: String, last_contact_ms: Int, state: String)
 }
 
 pub fn delegate_session(
@@ -1205,7 +1205,7 @@ pub fn delegate_session(
   parent_session parent_session: String,
 ) {
   let sql =
-    "SELECT session_id, last_contact_ms FROM catalogue_delegate_sessions
+    "SELECT session_id, last_contact_ms, state FROM catalogue_delegate_sessions
 WHERE spawner = ? AND parent_session = ?"
   #(
     sql,
@@ -1217,7 +1217,8 @@ WHERE spawner = ? AND parent_session = ?"
 pub fn delegate_session_decoder() -> decode.Decoder(DelegateSession) {
   use session_id <- decode.field(0, decode.string)
   use last_contact_ms <- decode.field(1, decode.int)
-  decode.success(DelegateSession(session_id:, last_contact_ms:))
+  use state <- decode.field(2, decode.string)
+  decode.success(DelegateSession(session_id:, last_contact_ms:, state:))
 }
 
 pub type DelegateOfSession {
@@ -1225,12 +1226,13 @@ pub type DelegateOfSession {
     spawner: String,
     parent_session: String,
     last_contact_ms: Int,
+    state: String,
   )
 }
 
 pub fn delegate_of_session(session_id session_id: String) {
   let sql =
-    "SELECT spawner, parent_session, last_contact_ms FROM catalogue_delegate_sessions
+    "SELECT spawner, parent_session, last_contact_ms, state FROM catalogue_delegate_sessions
 WHERE session_id = ?"
   #(sql, [dev.ParamString(session_id)], delegate_of_session_decoder())
 }
@@ -1239,7 +1241,13 @@ pub fn delegate_of_session_decoder() -> decode.Decoder(DelegateOfSession) {
   use spawner <- decode.field(0, decode.string)
   use parent_session <- decode.field(1, decode.string)
   use last_contact_ms <- decode.field(2, decode.int)
-  decode.success(DelegateOfSession(spawner:, parent_session:, last_contact_ms:))
+  use state <- decode.field(3, decode.string)
+  decode.success(DelegateOfSession(
+    spawner:,
+    parent_session:,
+    last_contact_ms:,
+    state:,
+  ))
 }
 
 pub type AllDelegateSessions {
@@ -1248,12 +1256,13 @@ pub type AllDelegateSessions {
     parent_session: String,
     session_id: String,
     last_contact_ms: Int,
+    state: String,
   )
 }
 
 pub fn all_delegate_sessions() {
   let sql =
-    "SELECT spawner, parent_session, session_id, last_contact_ms FROM catalogue_delegate_sessions
+    "SELECT spawner, parent_session, session_id, last_contact_ms, state FROM catalogue_delegate_sessions
 ORDER BY session_id"
   #(sql, [], all_delegate_sessions_decoder())
 }
@@ -1263,11 +1272,13 @@ pub fn all_delegate_sessions_decoder() -> decode.Decoder(AllDelegateSessions) {
   use parent_session <- decode.field(1, decode.string)
   use session_id <- decode.field(2, decode.string)
   use last_contact_ms <- decode.field(3, decode.int)
+  use state <- decode.field(4, decode.string)
   decode.success(AllDelegateSessions(
     spawner:,
     parent_session:,
     session_id:,
     last_contact_ms:,
+    state:,
   ))
 }
 
@@ -1322,6 +1333,61 @@ WHERE spawner = ? AND parent_session = ?"
 pub fn delete_delegate_session(session_id session_id: String) {
   let sql = "DELETE FROM catalogue_delegate_sessions WHERE session_id = ?"
   #(sql, [dev.ParamString(session_id)])
+}
+
+pub fn set_delegate_session_state(
+  state state: String,
+  session_id session_id: String,
+) {
+  let sql =
+    "UPDATE catalogue_delegate_sessions SET state = ? WHERE session_id = ?"
+  #(sql, [dev.ParamString(state), dev.ParamString(session_id)])
+}
+
+pub fn insert_remote_release(
+  parent_session parent_session: String,
+  orchestrator orchestrator: String,
+  written_ms written_ms: Int,
+) {
+  let sql =
+    "INSERT OR IGNORE INTO catalogue_remote_releases (parent_session, orchestrator, written_ms)
+VALUES (?, ?, ?)"
+  #(sql, [
+    dev.ParamString(parent_session),
+    dev.ParamString(orchestrator),
+    dev.ParamInt(written_ms),
+  ])
+}
+
+pub type AllRemoteReleases {
+  AllRemoteReleases(
+    parent_session: String,
+    orchestrator: String,
+    written_ms: Int,
+  )
+}
+
+pub fn all_remote_releases() {
+  let sql =
+    "SELECT parent_session, orchestrator, written_ms FROM catalogue_remote_releases
+ORDER BY parent_session, orchestrator"
+  #(sql, [], all_remote_releases_decoder())
+}
+
+pub fn all_remote_releases_decoder() -> decode.Decoder(AllRemoteReleases) {
+  use parent_session <- decode.field(0, decode.string)
+  use orchestrator <- decode.field(1, decode.string)
+  use written_ms <- decode.field(2, decode.int)
+  decode.success(AllRemoteReleases(parent_session:, orchestrator:, written_ms:))
+}
+
+pub fn delete_remote_release(
+  parent_session parent_session: String,
+  orchestrator orchestrator: String,
+) {
+  let sql =
+    "DELETE FROM catalogue_remote_releases WHERE parent_session = ? AND orchestrator = ?"
+  #(sql, [dev.ParamString(parent_session), dev.ParamString(orchestrator)])
 }
 
 pub type DomainById {

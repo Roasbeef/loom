@@ -69,6 +69,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import runtime/api
 import runtime/lineage
 import tools/agent.{type Handle, type Outcome}
@@ -263,9 +264,69 @@ pub fn all(runtime: api.Runtime) -> Result(List(Kept), String) {
     api.reserved_facts(runtime, prefix: api.remote_child_fact_prefix)
     |> result.map_error(describe),
   )
+  kept_of(cells)
+}
+
+/// The stubs among a session's reserved cells, in the order given. A cell that
+/// does not decode is left out, for the reason `all` gives.
+///
+/// This is the half of `all` that needs no runtime, so a closed session file
+/// read directly (`client/remote_release`) is decoded by the same rule.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_child.kept_of([#(key, remote_child.encode(stub))]) == [remote_child.Kept(key, stub)]
+/// ```
+pub fn kept_of(cells: List(#(String, JsonValue))) -> List(Kept) {
   list.filter_map(cells, fn(pair) {
     decode(pair.1) |> result.map(Kept(pair.0, _)) |> result.replace_error(Nil)
   })
+}
+
+/// The orchestrators that may hold a child for the session: those of every stub
+/// that is not `Refused`, each once, in name order.
+///
+/// A `Requested` stub counts because its orchestrator may have started the child
+/// and lost the reply, and a `Settled` one because the orchestrator still holds
+/// the session the child ran in. A `Refused` stub made no child. Deleting the
+/// parent session owes each of these a `Release`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_child.holders([requested_on_box, refused_on_desk, settled_on_box]) == ["box"]
+/// ```
+pub fn holders(kept: List(Kept)) -> List(String) {
+  kept
+  |> list.filter_map(fn(entry) {
+    case entry.stub.state {
+      Requested | Spawned(..) | Settled(..) -> Ok(entry.stub.orchestrator)
+      Refused(..) -> Error(Nil)
+    }
+  })
+  |> list.unique
+  |> list.sort(string.compare)
+}
+
+/// The first orchestrator, in name order, that holds a child of the session which
+/// is or may be running at `now`, or `None` when no stub is live.
+///
+/// A session with a live child cannot be moved to another orchestrator, because
+/// the child reports to this one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_child.live_on([spawned_on_box], now) == Some("box")
+/// ```
+pub fn live_on(kept: List(Kept), now: Int) -> Option(String) {
+  kept
+  |> list.filter(fn(entry) { is_live(entry.stub, now) })
+  |> list.map(fn(entry) { entry.stub.orchestrator })
+  |> list.sort(string.compare)
+  |> list.first
+  |> option.from_result
 }
 
 /// Records the orchestrator's answer to a `Spawn`: the child exists.
@@ -583,6 +644,7 @@ fn encode_outcome(outcome: Outcome) -> JsonValue {
     agent.Aborted -> [#("kind", json.String("aborted"))]
     agent.BudgetExpired -> [#("kind", json.String("budget_expired"))]
     agent.ParentFinished -> [#("kind", json.String("parent_finished"))]
+    agent.Released -> [#("kind", json.String("released"))]
   })
 }
 
@@ -745,6 +807,7 @@ fn decode_outcome(value: JsonValue) -> Result(Outcome, String) {
     "aborted" -> Ok(agent.Aborted)
     "budget_expired" -> Ok(agent.BudgetExpired)
     "parent_finished" -> Ok(agent.ParentFinished)
+    "released" -> Ok(agent.Released)
     other -> Error("unknown outcome `" <> other <> "`")
   }
 }

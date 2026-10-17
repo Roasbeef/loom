@@ -62,8 +62,8 @@
 //// 2. `run` reads the registration and the row (`still_moving`), waits on a
 ////    member for `migrated`, asks the receiver's `receiver_stage`, and writes
 ////    the record's intent with `intended`.
-//// 3. `carried` takes the steps that remain: `stopped`, `closed`, `cut`,
-////    `send` and `activate`.
+//// 3. `carried` takes the steps that remain: `stopped`, `settled_children`,
+////    `closed`, `cut`, `send` and `activate`.
 //// 4. `retire` finishes the move: by the rows with `retire_by_rows`, or on a
 ////    member with `retire_recorded` after a consistent read.
 //// 5. A move given up goes through `abandon`, which on a member is
@@ -99,6 +99,8 @@ import client/orchestrators.{type Orchestrator}
 import client/remote/protocol
 import client/remote/scope
 import client/remote/workspace
+import client/remote_child
+import client/remote_release
 import client/roster.{type Roster}
 import client/session_directory.{type Courier, type Directory}
 import client/session_move.{type Step}
@@ -484,6 +486,7 @@ fn carried(
   registration: catalogue.Registration,
 ) -> Result(Nil, Halt) {
   use Nil <- result.try(stopped(environment, move))
+  use Nil <- result.try(settled_children(environment, move, registration))
   use cell <- result.try(closed(environment, move, registration))
   environment.after(session_move.Close)
   use copy <- result.try(cut(environment, move, registration))
@@ -609,6 +612,52 @@ fn stopped(
   })
 }
 
+// --- the children --------------------------------------------------------------
+
+// A child that runs on another orchestrator reports to this one: its stub is
+// here, and the orchestrator that holds it answers to this daemon by name
+// (protocol-change/084). A session handed to a third orchestrator would leave
+// that child with no one to report to, so a session with a stub whose child is
+// or may be running is not moved, and the refusal names the orchestrator. A
+// stub that is refused or settled, or whose deadline has passed, holds no
+// running child, and the session moves. The stubs are read from the closed file,
+// which is the first moment nothing else can hold it; a file that cannot be
+// read stalls the move, because moving a session whose children are unknown is
+// the one thing this step exists to prevent.
+fn settled_children(
+  environment: Environment(instance),
+  move: catalogue.Pending,
+  registration: catalogue.Registration,
+) -> Result(Nil, Halt) {
+  // A run that resumes after the cut finds the lease its own export left under
+  // this move's owner, and releases it as `closed` does before it reads.
+  let _released =
+    sqlite.release_export(
+      path: registration.path,
+      owner: session_move.lease_owner(move.op),
+    )
+  use kept <- result.try(
+    bounded(environment.budget.quick_ms, "reading the remote children", fn() {
+      remote_release.stubs_at(
+        registration.path,
+        session_move.reader_owner(move.op),
+        environment.clock,
+      )
+      |> result.map_error(fn(reason) { Stall(reason) })
+    }),
+  )
+  let #(now, _clock) = clock.read(environment.clock)
+  case remote_child.live_on(kept, now) {
+    None -> Ok(Nil)
+    Some(orchestrator) ->
+      Error(Abandon(
+        "not_movable: a child of this session may still be running on the orchestrator `"
+        <> orchestrator
+        <> "`, and it reports to this one",
+      ))
+  }
+}
+
 // --- step 2: the close -------------------------------------------------------
 
 // The scope cell that says how the last close ended, settled to a clean close
@@ -621,6 +670,9 @@ fn closed(
   registration: catalogue.Registration,
 ) -> Result(scope.Scope, Halt) {
   let path = registration.path
+
+  // `settled_children` released the same lease before it read, and this repeats
+  // it on purpose: each step must work when a run resumes at it.
   let _released =
     sqlite.release_export(path:, owner: session_move.lease_owner(move.op))
   let reader = session_move.reader_owner(move.op)

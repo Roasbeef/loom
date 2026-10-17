@@ -463,6 +463,14 @@ fn hosting(
       process.sleep(pause_ms)
       Ok(2)
     },
+    release: fn(origin) {
+      process.send(
+        seen,
+        "release " <> origin.node <> " " <> origin.parent.session,
+      )
+      process.sleep(pause_ms)
+      Ok(3)
+    },
   )
 }
 
@@ -554,6 +562,17 @@ pub fn a_run_end_reaches_the_host_and_answers_the_count_stopped_test() {
     )
 }
 
+pub fn a_release_reaches_the_host_and_answers_the_count_stopped_test() {
+  let seen = process.new_subject()
+  let port = spawning(hosting(seen, 0))
+  assert orchestrator_port.ask_release(port, parent(), 1000) == Ok(Ok(3))
+
+  // The host is told which node asked and which parent session is released, and
+  // the strand the message carried is not part of what it is told.
+  assert process.receive(seen, 0)
+    == Ok("release " <> own_node() <> " " <> parent().session)
+}
+
 pub fn a_refusal_from_the_host_is_the_answer_to_each_message_test() {
   let refusing =
     orchestrator_port.SpawnHost(
@@ -564,6 +583,9 @@ pub fn a_refusal_from_the_host_is_the_answer_to_each_message_test() {
         Error(remote_spawn.StoreFailure(reason: "the store failed"))
       },
       run_ended: fn(_origin, _ended) { Error(remote_spawn.ParentRunEnded) },
+      release: fn(_origin) {
+        Error(remote_spawn.StoreFailure(reason: "the store failed"))
+      },
     )
   let port = spawning(refusing)
   assert orchestrator_port.ask_spawn(
@@ -582,6 +604,8 @@ pub fn a_refusal_from_the_host_is_the_answer_to_each_message_test() {
     == Ok(Error(remote_spawn.StoreFailure(reason: "the store failed")))
   assert orchestrator_port.ask_run_ended(port, parent(), operation(), 1000)
     == Ok(Error(remote_spawn.ParentRunEnded))
+  assert orchestrator_port.ask_release(port, parent(), 1000)
+    == Ok(Error(remote_spawn.StoreFailure(reason: "the store failed")))
 }
 
 pub fn a_slow_answer_to_any_of_the_three_does_not_keep_a_lookup_waiting_test() {
@@ -646,6 +670,7 @@ pub fn a_crashing_host_is_silence_and_the_port_serves_on_test() {
       },
       join: fn(_origin, _handles, _within_ms) { panic as "the spawn host fails" },
       run_ended: fn(_origin, _ended) { panic as "the spawn host fails" },
+      release: fn(_origin) { panic as "the spawn host fails" },
     )
   let port = spawning(crashing)
 
@@ -666,6 +691,7 @@ pub fn a_crashing_host_is_silence_and_the_port_serves_on_test() {
     == Error(Nil)
   assert orchestrator_port.ask_run_ended(port, parent(), operation(), 200)
     == Error(Nil)
+  assert orchestrator_port.ask_release(port, parent(), 200) == Error(Nil)
 
   // The failed messages did not stop the port.
   assert orchestrator_port.ask(port, "owned-1", answers_within_ms) == Ok(Owned)

@@ -107,6 +107,7 @@ retain_s = 7200
         max_within_s: 3600,
         default_within_s: 600,
         retain_s: 7200,
+        idle_close_s: 3600,
       ),
     ])
 }
@@ -119,6 +120,7 @@ pub fn omitted_keys_take_the_documented_defaults_test() {
   assert spawner.max_within_s == 14_400
   assert spawner.default_within_s == 1800
   assert spawner.retain_s == 604_800
+  assert spawner.idle_close_s == 3600
 }
 
 pub fn the_default_ceiling_leaves_out_what_reaches_beyond_the_session_test() {
@@ -166,7 +168,7 @@ profile = \"cheap-review\"
   assert spawners.by_node(configured, "runner@100.64.0.7") == Error(Nil)
 }
 
-pub fn retention_follows_the_table_and_falls_back_to_the_default_test() {
+pub fn standing_follows_the_table_and_a_removed_table_is_removed_test() {
   let text =
     with(
       "[spawners.laptop]
@@ -176,14 +178,30 @@ workspace = \"loom\"
 profile = \"cheap-review\"
 max_within_s = 3600
 retain_s = 7200
+idle_close_s = 120
 ",
     )
   let assert Ok(configured) = spawners.parse(text)
-  assert spawners.retention_ms(configured, "laptop") == 7_200_000
+  assert spawners.standing(configured, "laptop")
+    == spawners.Configured(retain_ms: 7_200_000, idle_close_ms: 120_000)
 
-  // A spawner whose table was removed is still swept, on the default.
-  assert spawners.retention_ms(configured, "gone")
-    == spawners.default_retain_s * 1000
+  // A spawner whose table was removed can send nothing more.
+  assert spawners.standing(configured, "gone") == spawners.Removed
+}
+
+pub fn idle_close_must_be_a_positive_integer_test() {
+  refused(
+    with(
+      "[spawners.laptop]
+node = \"laptop@100.64.0.5\"
+executor = \"runner\"
+workspace = \"loom\"
+profile = \"cheap-review\"
+idle_close_s = 0
+",
+    ),
+    "spawners.laptop.idle_close_s must be positive",
+  )
 }
 
 pub fn a_node_that_is_not_a_pinned_peer_is_refused_by_name_test() {
@@ -394,7 +412,7 @@ pub fn a_malformed_table_is_refused_with_the_key_it_names_test() {
   )
   refused(
     minimal_with("host = \"x\""),
-    "unknown key `host` in [spawners.laptop] (allowed: node, executor, pool, directory, workspace, profile, tools, max_depth, max_sessions, max_within_s, default_within_s, retain_s)",
+    "unknown key `host` in [spawners.laptop] (allowed: node, executor, pool, directory, workspace, profile, tools, max_depth, max_sessions, max_within_s, default_within_s, retain_s, idle_close_s)",
   )
   refused(
     with("[spawners]\nlaptop = \"laptop@100.64.0.5\"\n"),

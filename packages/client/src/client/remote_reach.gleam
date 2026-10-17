@@ -11,9 +11,11 @@
 ////
 //// The port also takes a `RunEnded` message, which stops the children a finished
 //// run owns, and the sending end does not use it: a remote child is always
-//// detached in phase 1, so nothing on this side tells an orchestrator that a run
-//// ended. The record has no function for it until the phase that releases
-//// children needs one.
+//// detached, so nothing on this side tells an orchestrator that a run ended.
+//// The record has no function for it. It does have `release`, which tells an
+//// orchestrator that a parent session was deleted. The parent's session is gone
+//// by then, so the caller is not an Agency but the daemon's release drainer,
+//// which asks through a `Reach` built for the deleted session.
 ////
 //// The functions answer as a call to another orchestrator can end, and the same
 //// two ways peer mail's endpoints do (`client/peer_mail.Failure`).
@@ -69,6 +71,11 @@ pub type Reach {
     /// orchestrator, the parent, the handles and the window the orchestrator
     /// waits, in milliseconds.
     join: fn(String, Parent, List(Handle), Int) -> Result(List(Joined), Failure),
+    /// Tells the orchestrator that the parent session was deleted, so it stops
+    /// every child it holds for it and deletes the session that held them, and
+    /// answers how many children it stopped. The arguments are the orchestrator
+    /// and the parent. A parent the orchestrator holds nothing for answers zero.
+    release: fn(String, Parent) -> Result(Int, Failure),
   )
 }
 
@@ -92,6 +99,7 @@ pub fn none(session: String) -> Reach {
     join: fn(name, _parent, _handles, _window_ms) {
       Error(not_configured(name))
     },
+    release: fn(name, _parent) { Error(not_configured(name)) },
   )
 }
 

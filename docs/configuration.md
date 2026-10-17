@@ -808,7 +808,8 @@ still be running.
 | `max_sessions` | integer | 4 | 1 to 16 | The delegate sessions this spawner may hold. Sixteen is the number of scopes an executor admits. |
 | `max_within_s` | integer | 14400 (4 hours) | at least 1 | The longest deadline a spawn may ask for, in seconds. A longer request is refused, not shortened. |
 | `default_within_s` | integer | 1800 (30 minutes) | 1 to `max_within_s` | The deadline a spawn gets when it names none, in seconds. |
-| `retain_s` | integer | 604800 (7 days) | at least `max_within_s` | How long a delegate session with no message from its spawner is kept before the boot sweep deletes it, in seconds. |
+| `retain_s` | integer | 604800 (7 days) | at least `max_within_s` | How long a delegate session with no message from its spawner is kept before the sweep deletes it, in seconds. A spawner whose table is removed has its sessions deleted at the next sweep whatever their age. |
+| `idle_close_s` | integer | 3600 (1 hour) | at least 1 | How long a resident delegate session with no running child and no message from its spawner stays open before the hourly sweep closes it, in seconds. Closing frees the executor scope the session holds and deletes nothing: the next spawn or join reopens it, and pays the open again. |
 
 ## Provisioning a deployment
 

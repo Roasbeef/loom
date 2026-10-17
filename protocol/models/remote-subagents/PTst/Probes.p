@@ -61,3 +61,40 @@ spec ProbeJoinSettled observes eReported {
     }
   }
 }
+
+// A `Release` stopped a running child.
+spec ProbeReleaseStopped observes eReleaseHandled {
+  start state Watching {
+    on eReleaseHandled do (p: (gen: int, stopped: int, stillRunning: int)) {
+      assert p.stopped == 0, "witness: a release stopped a running child";
+    }
+  }
+}
+
+// A spawn that overtook the `Release` was refused by the released fence.
+spec ProbeReleaseRefusedSpawn observes eRefused {
+  start state Watching {
+    on eRefused do (p: (site: tSite, reason: int)) {
+      assert p.reason != 2, "witness: a spawn was refused by the released fence";
+    }
+  }
+}
+
+// A `Release` found no session and made none: it overtook the first spawn, or
+// repeated after the session was deleted.
+spec ProbeReleaseFoundNoSession observes eReleaseNoSession {
+  start state Watching {
+    on eReleaseNoSession do {
+      assert false, "witness: a release found no session";
+    }
+  }
+}
+
+// The registry deleted a released session after its slot drained.
+spec ProbeSessionDeleted observes eSessionDeleted {
+  start state Watching {
+    on eSessionDeleted do {
+      assert false, "witness: a released session was deleted";
+    }
+  }
+}
