@@ -1,5 +1,20 @@
 # Current handoff
 
+## Request compression experiment — October 17
+
+The [request compression note](design-notes/request-compression.md) records
+the shared provider path, a local gzip fixture, real terminal/browser checks,
+and native OTP compression elapsed-time and transport measurements. Both UIs produced the same
+586,331-byte synthetic conversation request; gzip-6 reduced it to 130,226
+bytes. The experiment changes no production transport default. Provider
+acceptance and real-network inference latency remain unmeasured because the
+environment had no model credentials. Generated captures are local under
+`build/compression`, outside Git. Follow the note before considering rollout;
+small/incompressible requests and ambiguous retry admission need explicit
+handling. This work neither installed nor restarted an operator daemon.
+
+## Previous handoff
+
 Baselined October 16, 2026 against main `1536934a4` and the rebased `/btw`
 branch for PR #981. The earlier instruction to merge `207c6571b` is obsolete:
 the owner requested a rebase and fresh UI screenshots after main advanced.
