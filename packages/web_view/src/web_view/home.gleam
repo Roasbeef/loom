@@ -103,7 +103,7 @@
 //// (`actions.Choosing`, `MoveChosen`). A destination opens the question Delete
 //// opens, and the daemon is asked to move only after that second press
 //// (`MoveConfirmed`). Each step acts only for the stage the one before it left,
-//// the daemon checks the destination again, and a moved row reads "moving to"
+//// the daemon checks only that the destination is a configured orchestrator, and a moved row reads "moving to"
 //// the destination at the next list.
 ////
 //// The page also lists the browsers signed in as its principal and lets the

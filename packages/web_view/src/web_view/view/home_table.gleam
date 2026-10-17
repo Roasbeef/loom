@@ -664,7 +664,13 @@ fn acts(
   let managing = case manage, entry.residency {
     Unmanaged, _ | Withheld, _ -> []
     Managed(stop:, ..), Live -> [
-      act("home-act", "Stop this session", "Stop", stop(entry.id), working),
+      act(
+        "home-act home-act-lead",
+        "Stop this session",
+        "Stop",
+        stop(entry.id),
+        working,
+      ),
     ]
 
     // A blocked row is on disk and nothing runs it, so it can be archived or
@@ -730,7 +736,7 @@ fn move_button(
   case entry.executor {
     Some(_) ->
       act(
-        "home-act",
+        "home-act home-act-lead",
         "Move this session to another orchestrator",
         "Move",
         move(entry.id),
@@ -738,7 +744,7 @@ fn move_button(
       )
     None ->
       act(
-        "home-act",
+        "home-act home-act-lead",
         move_candidates.no_executor_words(),
         "Move",
         move(entry.id),

@@ -973,9 +973,14 @@ fn abandoning(
         ],
         [html.text("Abandon the move")],
       ),
-      html.button([attribute.type_("button"), event.on_click(page.disarm)], [
-        html.text("Cancel"),
-      ]),
+      html.button(
+        [
+          attribute.type_("button"),
+          attribute.class("admin-abandon"),
+          event.on_click(page.disarm),
+        ],
+        [html.text("Cancel")],
+      ),
     ]
   }
 }
