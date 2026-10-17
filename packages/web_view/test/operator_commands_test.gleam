@@ -44,6 +44,11 @@ pub fn a_member_only_node_cannot_be_enrolled_test() {
 pub fn a_hostile_name_stays_one_word_test() {
   assert operator_commands.quote("it's") == Ok("'it'\\''s'")
   assert operator_commands.quote("a b") == Ok("'a b'")
+
+  // The same vectors as the browser rule's tests: a word that begins with an
+  // equals sign is expanded by zsh, and a comma splits a `--links` list.
+  assert operator_commands.renew("=ls") == Ok("loom distribution renew '=ls'")
+  assert operator_commands.renew("a,b") == Ok("loom distribution renew 'a,b'")
   assert operator_commands.quote("a;rm -rf ~") == Ok("'a;rm -rf ~'")
   assert operator_commands.quote("$(id)") == Ok("'$(id)'")
   assert operator_commands.quote("`id`") == Ok("'`id`'")

@@ -48,9 +48,11 @@ pub const word_limit = 256
 pub const command_limit = 1024
 
 // The characters a word may carry unquoted. They are the browser rule's, and
-// they exclude every character a shell treats as syntax.
+// they exclude every character a shell treats as syntax, and neither equals nor
+// comma: zsh expands a word that begins with an equals sign, and `--links` splits
+// on commas, so a name with either is quoted.
 const bare_characters =
-  "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@.:/_=,+-"
+  "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@.:/_+-"
 
 /// A name as one shell word, or an error for a name that cannot be one.
 ///

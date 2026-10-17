@@ -709,7 +709,8 @@ fn member(value: JsonValue) -> Result(#(String, Standing), String) {
 // A pin is sixty-four lower-case hexadecimal digits, and nothing else is kept.
 fn hex_pin(word: String) -> Option(String) {
   case
-    string.length(word) == 64
+    string.drop_start(word, 64) == ""
+    && string.drop_start(word, 63) != ""
     && list.all(string.to_graphemes(word), string.contains(
       "0123456789abcdef",
       _,
@@ -868,7 +869,8 @@ fn state_at(value: JsonValue, key: String) -> Result(State, String) {
 fn field(value: JsonValue, key: String) -> Result(JsonValue, String) {
   case value {
     json.Object(members) ->
-      list.key_find(members, key) |> result.replace_error("missing " <> key)
+      list.key_find(members, key)
+      |> result.map_error(fn(_) { "missing " <> key })
     json.Array(_)
     | json.String(_)
     | json.Int(_)
@@ -926,7 +928,7 @@ fn required_list(
   use found <- result.try(field(value, key))
   case found {
     json.Array(items) ->
-      case list.length(items) <= list_limit {
+      case list.drop(items, list_limit) == [] {
         True -> list.try_map(items, read)
         False -> Error(key <> " is longer than expected")
       }

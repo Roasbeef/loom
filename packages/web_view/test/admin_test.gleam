@@ -1947,6 +1947,34 @@ pub fn an_overtaken_deployment_read_is_dropped_test() {
   assert !string.contains(drawn(model), "aria-label=\"Machine\"")
 }
 
+// Each kind of read overtakes only its own kind: choosing the Sessions tab while
+// the machine's read is still out reads the other orchestrators and must not drop
+// the machine's answer when it arrives.
+pub fn the_sessions_tab_does_not_drop_the_machines_read_test() {
+  let held = process.new_subject()
+  let start =
+    admin.Start(
+      ..fleet_start(process.new_subject(), process.new_subject(), [], []),
+      deployment: fn(node, deliver) {
+        case node {
+          None -> deliver(fleet.reading(None))
+          Some(_) -> process.send(held, deliver)
+        }
+      },
+    )
+  let #(model, _) = opened(start)
+  let inbox = process.new_subject()
+  let model = start_into(model, admin.MachineChosen(fleet.box_node), inbox)
+  let assert Ok(answer) = process.receive(held, 0)
+  let model = start_into(model, admin.TabChosen(machines.SessionsTab), inbox)
+  let model = list.fold(waiting(inbox), model, run)
+  let model = run(model, admin.TabChosen(machines.OverviewTab))
+  assert string.contains(drawn(model), "Reading this machine.")
+  answer(detail_reading("arrived-workspace"))
+  let model = list.fold(waiting(inbox), model, run)
+  assert string.contains(drawn(model), "arrived-workspace")
+}
+
 // A name that is markup is text wherever the page draws it, in the table, the
 // header and the commands, and no attribute is built from it.
 pub fn a_machine_named_with_markup_is_drawn_as_text_test() {

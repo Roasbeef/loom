@@ -266,6 +266,11 @@ pub opaque type Model {
     /// starts the read it needs and the answers of the ones it overtook are
     /// dropped by their number.
     deployed: Int,
+    /// How many reads of the other orchestrators have been asked for. It numbers
+    /// apart from `deployed`, so a read of the other orchestrators and a read of a
+    /// machine each overtake only their own kind: choosing the Sessions tab while
+    /// the machine's read is out must not drop that read.
+    peered: Int,
     /// The node of the machine the owner chose, if one.
     machine: Option(String),
     /// The tab of the chosen machine's page.
@@ -382,6 +387,7 @@ pub fn new(start: Start) -> Model {
     editing: None,
     held: machines.NothingYet,
     deployed: 0,
+    peered: 0,
     machine: None,
     tab: machines.OverviewTab,
     detail: machines.Withheld,
@@ -542,6 +548,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         detail: machines.Withheld,
         listed: None,
         deployed: model.deployed + 1,
+        peered: model.peered + 1,
       ),
       effect.none(),
     )
@@ -553,7 +560,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       }
 
     Peered(serial:, read:) ->
-      case serial == model.deployed, read {
+      case serial == model.peered, read {
         True, peers.Heard(groups:) -> #(
           Model(..model, listed: Some(groups)),
           effect.none(),
@@ -586,8 +593,8 @@ fn deploying(model: Model, node: Option(String)) -> #(Model, Effect(Msg)) {
 
 // Asks the daemon what the other orchestrators list, under the next number.
 fn peering(model: Model) -> #(Model, Effect(Msg)) {
-  let serial = model.deployed + 1
-  #(Model(..model, deployed: serial), {
+  let serial = model.peered + 1
+  #(Model(..model, peered: serial), {
     use dispatch <- effect.from
     model.start.elsewhere(fn(read) { dispatch(Peered(serial, read)) })
   })
@@ -606,6 +613,7 @@ fn choosing(model: Model, node: String) -> #(Model, Effect(Msg)) {
           tab: machines.OverviewTab,
           detail: machines.Awaiting,
           listed: None,
+          peered: model.peered + 1,
         )
       case reads_long_lists(machine) {
         True -> deploying(opened, Some(machine.name))

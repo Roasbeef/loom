@@ -159,10 +159,11 @@ const operate_limit = 1024
 const word_limit = 256
 
 // The characters a shell word may have unquoted: letters, digits and the
-// punctuation of a node name, a plan name, a path and a list. No space, no
-// quote and no character a shell treats as syntax.
+// punctuation of a node name, a plan name and a path. No space, no quote, no
+// character a shell treats as syntax, and neither equals nor comma: zsh expands
+// a word that begins with an equals sign, and `--links` splits on commas.
 const bare_characters =
-  "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@.:/_=,+-"
+  "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@.:/_+-"
 
 // The characters a loopback host and port are made of: letters, digits and the
 // punctuation of a name, an address and a port. No slash, no space, no quote.

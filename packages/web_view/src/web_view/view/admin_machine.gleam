@@ -442,7 +442,7 @@ fn local(page: Page(message)) -> Element(message) {
             ])
           }),
         ),
-        case list.length(held) > rows_drawn {
+        case list.drop(held, rows_drawn) != [] {
           True ->
             line(
               "and "
@@ -703,7 +703,11 @@ fn not_listed(page: Page(message)) -> Element(message) {
           machine.name,
         )
       _, _ ->
-        line("The daemon did not state the names an enroll command needs.")
+        line(case role {
+          Error(Nil) ->
+            "This machine has no role an enroll command can give it."
+          Ok(_) -> "The daemon did not state the names an enroll command needs."
+        })
     },
   ])
 }

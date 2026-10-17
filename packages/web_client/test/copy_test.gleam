@@ -319,6 +319,11 @@ pub fn the_operate_subject_copies_only_the_operator_commands_test() {
       "loom distribution revoke laptop --reason 'RETIRED'",
       "loom distribution revoke 'it'\\''s' --reason 'RETIRED'",
 
+      // What `web_view/operator_commands` writes for a name with an equals sign
+      // or a comma: quoted, never bare.
+      "loom distribution renew '=ls'",
+      "loom distribution renew 'a,b'",
+
       // What `web_view/operator_commands` writes for a hostile name.
       "loom distribution renew 'x'\\''; rm -rf ~; echo '\\'''",
       "loomd executor release 'a\\'",
@@ -345,6 +350,8 @@ pub fn the_operate_subject_refuses_anything_else_test() {
       "loom distribution renew",
       "loom distribution renew a b",
       "loom distribution renew a;rm",
+      "loom distribution renew =ls",
+      "loom distribution renew a,b",
       "loom distribution renew a && echo hi",
       "loom distribution renew a | cat",
       "loom distribution renew $(id)",
