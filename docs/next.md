@@ -189,3 +189,13 @@ skip census in 1882 seconds (container driver 1887 seconds). Its client log
 shows both deployment scenarios and the remote-subagent fixture executed.
 Those results are prior-head evidence: this CI integration must receive
 fresh hosted CI and Linux signoff before merge.
+
+The next hosted client run and strict Linux signoff on `e962d3e21` failed
+one inherited delegate-retention assertion: the test accepted `Stopping`
+as drained because it waited only for non-residency. The manager correctly
+retains that slot until its normal custody witness exits, so an immediate
+second sweep can delete zero rows. The regression now waits for `Saved`,
+which proves that the slot has been removed, before demanding one deletion.
+The deletion-count and catalogue assertions and the existing two-second
+observation bound remain unchanged. All 23 delegate-host tests and five
+focused runs pass locally. Fresh validation is required on this test repair.

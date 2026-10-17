@@ -698,7 +698,15 @@ pub fn a_removed_spawners_idle_resident_session_is_closed_then_deleted_test() {
   // A slot holds the session, so the first sweep can only close it.
   assert manager.sweep_delegates(registry, removed(), 1001, sessions)
     == Ok(manager.Swept(deleted: 0, closed: 1))
-  assert eventually(fn() { !is_resident(registry, row.session_id) })
+
+  // Stopping is no longer resident but still holds the slot until the normal
+  // custody witness exits. Only Saved proves that the next sweep can delete.
+  assert eventually(fn() {
+    case manager.get(registry, row.session_id) {
+      Ok(manager.View(status: manager.Saved, ..)) -> True
+      _ -> False
+    }
+  })
 
   // With the slot drained, the next sweep deletes it.
   assert manager.sweep_delegates(registry, removed(), 1002, sessions)
