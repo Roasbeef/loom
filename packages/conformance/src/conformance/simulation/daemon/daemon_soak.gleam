@@ -176,7 +176,7 @@ fn attempt(one: Runner, seed: Int) -> Result(Nil, String) {
   case one.run(seed) {
     Ok(Nil) -> Ok(Nil)
     Error(Reported(check:, text:)) -> {
-      let corroboration = corroborate(one, seed)
+      let corroboration = corroborate(one, seed, check)
       Error(
         one.name
         <> " seed "
@@ -216,26 +216,13 @@ fn shrunk(
 // range is the signal and a single red is not. The session runner pays for
 // this inside itself; the daemon runner does not, so the soak pays for it
 // here, over the same three runs and against the same reading.
-fn corroborate(one: Runner, seed: Int) -> runner.Corroboration {
-  let reds = rerun(one, seed, runner.corroboration_runs, 1)
-
-  case reds == runner.corroboration_runs + 1 {
-    True -> runner.Reproducible(runs: reds)
-    False -> runner.Unstable(failed: reds, of: runner.corroboration_runs + 1)
-  }
-}
-
-// Runs a seed `remaining` more times, carrying the count of failures so far,
-// which starts at one for the run that brought us here.
-fn rerun(one: Runner, seed: Int, remaining: Int, reds: Int) -> Int {
-  case remaining <= 0 {
-    True -> reds
-    False ->
-      case one.run(seed) {
-        Ok(Nil) -> rerun(one, seed, remaining - 1, reds)
-        Error(_report) -> rerun(one, seed, remaining - 1, reds + 1)
-      }
-  }
+fn corroborate(one: Runner, seed: Int, check: String) -> runner.Corroboration {
+  runner.corroborate(check, fn() {
+    case one.run(seed) {
+      Ok(Nil) -> Ok(Nil)
+      Error(Reported(check:, text:)) -> Error(runner.Failure(check, text))
+    }
+  })
 }
 
 // The creation-key scenario, adapted to the runner surface. The verdict's

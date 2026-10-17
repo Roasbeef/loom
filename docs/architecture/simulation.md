@@ -396,9 +396,9 @@ runs, plus a fresh fault-free run for each confirming run in the session
 runner. The shrink budget (12) counts candidates tried, not runs, so a
 shrink that keeps finding reproducible failures spends about four times as
 many runs per step as it did before corroboration, and one that finds
-nothing costs what it always did. The original corroboration itself still
-accepts any failure of a re-run, not only the same check; the rules above
-govern shrinking.
+nothing costs what it always did. The original corroboration is held to the
+same-check rule too: a re-run that fails a different check, like one that
+passes, makes the seed unstable rather than reproducible.
 
 Two things are never shrunk:
 

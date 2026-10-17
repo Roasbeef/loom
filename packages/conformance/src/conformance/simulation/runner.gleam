@@ -42,7 +42,7 @@
 ////    `adjudicate` applies the invariant checks, then compares outcomes,
 ////    projection and ledger.
 //// 6. On a failure, `corroborate` re-plans the same seed to say whether it is
-////    stable, and only then does `shrink` search smaller schedules through
+////    stable (every re-run must fail the same check), and only then does `shrink` search smaller schedules through
 ////    `minimize`, accepting a candidate only if it fails the same check on
 ////    every one of the corroboration's runs.
 
@@ -214,7 +214,7 @@ pub fn examine(seed seed: Int) -> Examination {
         failure,
         script,
         schedule,
-        corroborate(seed, corroboration_runs, 1, 1),
+        corroborate_seed(seed, failure.check),
       )
   }
   Examination(verdict:, coverage:)
@@ -244,7 +244,7 @@ pub fn check(seed seed: Int, shrink_budget shrink_budget: Int) -> Verdict {
     // reported at full size, which is also the honest thing to hand
     // someone: the case as it was drawn.
     Error(failure) ->
-      case corroborate(seed, corroboration_runs, 1, 1) {
+      case corroborate_seed(seed, failure.check) {
         Unstable(..) as corroboration ->
           failed(seed, failure, script, schedule, corroboration)
         Reproducible(..) as corroboration -> {
@@ -727,22 +727,55 @@ pub fn describe_corroboration(corroboration: Corroboration) -> String {
   }
 }
 
-// Replans and re-runs the seed until one run passes or the budget is
-// spent. Replanning re-derives the same script and the same schedule —
-// `plan` draws only from the seed — so nothing here consults the
-// generator differently or reshuffles a corpus; the only thing that
-// varies between these runs is the machine.
-fn corroborate(
-  seed: Int,
+// Replans and re-runs the seed until one run stops reproducing the failure or
+// the budget is spent. Replanning re-derives the same script and the same
+// schedule — `plan` draws only from the seed — so nothing here consults the
+// generator differently or reshuffles a corpus; the only thing that varies
+// between these runs is the machine.
+fn corroborate_seed(seed: Int, check: String) -> Corroboration {
+  corroborate(check, fn() {
+    let #(script, schedule, base) = plan(seed)
+    verify(script, schedule, base)
+  })
+}
+
+/// Re-runs a failed case until a run stops failing `check`, or
+/// `corroboration_runs` further runs have all failed it.
+///
+/// A re-run that fails a *different* check does not corroborate: the case
+/// reached another verdict under the same script and schedule, which is
+/// exactly what `Unstable` says, and counting it as a repeat would label a
+/// seed `Reproducible` for a failure it did not reproduce. This is the same
+/// rule shrink candidates are held to (`minimize`), so "reproducible" means
+/// one thing in both places. `rerun` is one fresh run of the case; the
+/// daemon soak supplies its own, since its runners report through another
+/// type.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // runner.corroborate("convergence/ledger", fn() { run_again() })
+/// ```
+///
+pub fn corroborate(
+  check: String,
+  rerun: fn() -> Result(Nil, Failure),
+) -> Corroboration {
+  corroborate_loop(check, rerun, corroboration_runs, 1, 1)
+}
+
+fn corroborate_loop(
+  check: String,
+  rerun: fn() -> Result(Nil, Failure),
   remaining: Int,
   failed: Int,
   of: Int,
 ) -> Corroboration {
   use <- bool.guard(when: remaining <= 0, return: Reproducible(runs: of))
-  let #(script, schedule, base) = plan(seed)
-  case verify(script, schedule, base) {
-    Ok(Nil) -> Unstable(failed:, of: of + 1)
-    Error(_failure) -> corroborate(seed, remaining - 1, failed + 1, of + 1)
+  case same_check(rerun(), check) {
+    None -> Unstable(failed:, of: of + 1)
+    Some(_failure) ->
+      corroborate_loop(check, rerun, remaining - 1, failed + 1, of + 1)
   }
 }
 

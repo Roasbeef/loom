@@ -16,6 +16,10 @@
 ////   and one that does fail every time pays exactly the corroboration's runs
 ////   (`a_reproducible_candidate_pays_the_corroboration_runs_test`).
 ////
+//// The original failure's corroboration is held to the same check rule:
+//// a re-run that fails another check makes the seed unstable
+//// (`a_rerun_that_fails_another_check_is_unstable_test`).
+////
 //// The daemon half pins the candidates `daemon_fault.shrink` offers and the
 //// single candidate `lifecycle_faults.shrink` does, then runs the real
 //// shrinkers against seeds that pass, where nothing may be accepted.
@@ -150,6 +154,28 @@ pub fn a_zero_budget_keeps_the_case_as_drawn_test() {
     )
   assert smallest == schedule([crash])
   assert failure.detail == "original"
+}
+
+pub fn a_rerun_that_fails_another_check_is_unstable_test() {
+  // The original failed `x`. The first re-run repeats it; the second fails
+  // `other`, which is a different verdict from the same script and schedule
+  // and so no corroboration. Accepting any failure here would call this seed
+  // reproducible.
+  let counter = control.start()
+  let rerun = fn() {
+    case control.bump(counter, "reruns") {
+      1 -> fails("x")
+      _later -> fails("other")
+    }
+  }
+  assert runner.corroborate("x", rerun) == runner.Unstable(failed: 2, of: 3)
+  control.stop(counter)
+}
+
+pub fn reruns_that_all_fail_the_same_check_are_reproducible_test() {
+  let rerun = fn() { fails("x") }
+  assert runner.corroborate("x", rerun)
+    == runner.Reproducible(runs: 1 + runner.corroboration_runs)
 }
 
 // --- the daemon candidates -----------------------------------------------
