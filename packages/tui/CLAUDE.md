@@ -1206,6 +1206,13 @@ boundaries and the split's measurements under Invariants.
   from the existing `Closed` marker for the current lane, not a candidate.
   [ADR-010](../../docs/adr/010-retain-one-unsent-terminal-command.md) records
   the waiting-state and cancellation rules.
+- `test/queue_editor_property_test.gleam` drives `queue_request` and `queue_editor`
+  together through `statem` over host schedules (select, issue, receive, type,
+  save, refetch, acknowledge, refuse, lose, drop) and holds a draft's custody to
+  the rules in its module doc: a reply is admitted only for the exact outstanding
+  read, an admitted reply keeps the operator's text for its own input and
+  replaces it for another, uncertainty is only lifted by an authoritative read,
+  and no refusal or dropped read touches the text.
 - `test/session_channel_property_test.gleam` drives the real channel through `statem` over 500
   generated schedules (450 operator, 50 observer, one `statem.check` per role;
   the lane, oracle and stand-in socket are the system under test, the model is
@@ -1897,8 +1904,10 @@ untouched.
 - **The live tail draws what a full render draws.** `live_tail.rows` must
   return exactly `render.render_line` for the whole answer on every frame,
   since replay goldens compare frames byte for byte;
-  `test/live_tail_test.gleam` checks it over generated streams, resizes and
-  resets. It settles a block only at a blank line followed by a line
+  `test/live_tail_test.gleam` checks it with `statem` over 300 generated
+  streams (a stream is a command list of deltas, resizes, collapses and
+  restarts; deleting a middle command leaves a valid stream, so a failure
+  shrinks), from fixed seeds, reproduced by `statem.check_run`'s (seed, run). It settles a block only at a blank line followed by a line
   starting with a letter, and only after rendering the halves and the whole
   to confirm the cut; a paragraph checkpoint sits only after lines free of
   Markdown punctuation, `&`, hard breaks and blank lines, before a line
