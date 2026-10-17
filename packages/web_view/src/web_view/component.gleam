@@ -7380,7 +7380,11 @@ pub fn heading(
     status: status_text(model.view.status),
     tone: status_tone(model.view.status),
     context: context_figure(model),
-    breakdown: context_breakdown.panel(model.shared.context, context_actions),
+    breakdown: context_breakdown.panel_with_remote(
+      model.shared.context,
+      model.shared.remote_usage,
+      context_actions,
+    ),
     cost: transcript_lines.cost_words(model.shared.usage),
     rate: session_model.output_rate_tps(model.shared),
     notice: ended.view(ended_ending(model.view.status), model.shared.session),
