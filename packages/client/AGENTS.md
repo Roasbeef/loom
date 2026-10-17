@@ -8068,10 +8068,13 @@ reports; the 2026-10-16 addendum of 085 records the spellings it chose.
 - `client/deployment` is the whole read. `targets` lists the daemon's
   `[orchestrators]` rows and then its `[executors]` rows (a `Target` with its
   `Kind` and, for an executor, its `declared` row), `only` narrows them to a
-  configuration key, and `fan_out` runs one weft run (`deadline_ms` 3000) holding
+  configuration key, and `fan_out` runs one weft run (`deadline_ms` 4000) holding
   the asking daemon's own report (`Reach.own`, only for a whole-deployment or
   one-node read) and, for each target, `dial` (`connect_ms` 1000) then `ask`
-  (`report_ms` 1000). `Reach(self, dial, ask, own)` is how it reaches: `over(
+  (`report_ms` 2600, over `node_facts.read_ms`), each task in a slot of its own
+  (`weft.limit`) so black-holed targets cannot starve the rest. An ask that fails
+  in under half its bound is `Down(Silent)` (no port, or it ended), and one that
+  waits it out is `Down(TimedOut)`. `Reach(self, dial, ask, own)` is how it reaches: `over(
   membership, self)` is `distribution.peer`, `distribution.connect`, then
   `orchestrator_port.ask_report` at the connected node's port, `alone(self)` (no
   `[distribution]`) connects to nobody, and `reporting(reach, own)` gives either
@@ -8108,10 +8111,16 @@ reports; the 2026-10-16 addendum of 085 records the spellings it chose.
 - `Snapshot` is `Overview` (the asking daemon as a `Node`, `others`, `edges`,
   `placements`) or `Selected` (only the named nodes), so a reply with a `node`
   filter cannot carry edges or placements, and `to_json` renders the long lists
-  (`Detail` is `Brief | Long`) only for `Selected`. Edges are `Serves(sessions)`
+  (`Detail` is `Brief | Long`) only for `Selected`. `to_json` measures what it
+  renders and keeps it at or under `max_reply_bytes` (60,000): it re-renders at
+  `Level` `Trimmed`, `Skeleton` and `Bare`, dropping the moves, then the per-node
+  facts, declarations and pools, then edges, placements and `serves`, and names
+  what it dropped in `omitted` (a `Selected` reply cuts its lists and names them in
+  `more`). The asking daemon's own impairment is folded into the verdict. Edges are `Serves(sessions)`
   (executors, from the asking daemon's own placements, and from each answering
   orchestrator's `executor_nodes` with no link), `Peers` (orchestrators) and
-  `Member(voter, leader)` (the asking daemon to each directory member it lists),
+  `Member(voter, leader)` (the asking daemon to each directory member it lists;
+  what another orchestrator serves is only its `serves` list),
   each with the asking daemon's own `Option(Link)`. Placements are `ready`,
   `degraded`, `full` or `down`; a pool lists `pools.candidates` in its trial order
   with `eligible` the executors neither down nor full, and the pool is never

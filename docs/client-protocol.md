@@ -1558,13 +1558,14 @@ when asked, and the executors and pools a session may be placed on
 (protocol-change/085). Every statement is as seen from the daemon that answers;
 nothing is cached, and each read connects again. The daemon connects to all nodes
 at once, each connection bounded at one second and then each ask for the node's
-report at one second, and the read as a whole at three. The answering daemon reports
+report at 2.6 seconds (a node bounds its own sources at 2.5), and the read as a
+whole at four. The answering daemon reports
 on itself without a connection. The request body is `{}` or `{"node": <key>}`, and
 it needs no epoch.
 
 ```json
 {"v":2,"id":21,"cmd":"deployment.status","body":{}}
-{"v":2,"reply_to":21,"event":"deployment.status","body":{"as_of_ms":1760191331000,"self":"alpha@10.0.0.1","state":"degraded","reasons":[{"node":"exec2@10.0.0.9","reason":"timeout"},{"node":"box@10.0.0.2","reason":"unclean_scope"}],"nodes":[{"node":"alpha@10.0.0.1","name":"alpha@10.0.0.1","roles":["orchestrator","member"],"state":"ok","self":true,"build_version":"0.3.0","build_commit":"b4eeb50c9d1e","uptime_ms":86400000,"orchestrator":{"capacity":8,"occupied":2,"resident":2,"imports":"receiving","moves_in_flight":1}},{"node":"bravo@10.0.0.4","name":"bravo","roles":["orchestrator","member"],"state":"ok"},{"node":"box@10.0.0.2","name":"box","roles":["executor","member"],"state":"degraded","reasons":["unclean_scope"],"build_version":"0.3.0","build_commit":"b4eeb50c9d1e","uptime_ms":3600000,"protocol":3,"executor":{"scopes":{"open":3,"closing":0,"closed_clean":9,"closed_unknown":1},"scope_limit":16,"ledger_bytes":2097152,"ledger_limit":536870912,"unacknowledged":0,"platform":"linux/x86_64","contradiction":null}},{"node":"exec2@10.0.0.9","name":"exec2","roles":["executor"],"state":"down","reason":"timeout"}],"edges":[{"from":"alpha@10.0.0.1","to":"bravo@10.0.0.4","kind":"peer","link":"connected"},{"from":"alpha@10.0.0.1","to":"box@10.0.0.2","kind":"serves","sessions":3,"link":"connected"},{"from":"alpha@10.0.0.1","to":"exec2@10.0.0.9","kind":"serves","sessions":0,"link":"none"},{"from":"bravo@10.0.0.4","to":"box@10.0.0.2","kind":"serves","sessions":1},{"from":"alpha@10.0.0.1","to":"bravo@10.0.0.4","kind":"member","voter":true,"leader":true,"link":"connected"},{"from":"alpha@10.0.0.1","to":"box@10.0.0.2","kind":"member","voter":true,"leader":false,"link":"connected"}],"placements":{"executors":[{"name":"box","node":"box@10.0.0.2","state":"degraded","free_scopes":12,"declared":{"platform":"linux/x86_64","enforcement":"enforced","toolchains":["codemode"]}},{"name":"exec2","node":"exec2@10.0.0.9","state":"down","declared":{"toolchains":[]}}],"pools":[{"name":"builders","executors":["box","exec2"],"eligible":["box"]}]},"orchestrators":[{"name":"bravo","node":"bravo@10.0.0.4","state":"ok"}],"directory":{"members":["alpha@10.0.0.1","bravo@10.0.0.4","box@10.0.0.2"],"joined":true,"ra_members":[{"node":"alpha@10.0.0.1","voter":true},{"node":"bravo@10.0.0.4","voter":true},{"node":"box@10.0.0.2","voter":true}],"applied_index":412,"leader":"bravo@10.0.0.4","copy":"current"},"moves":[{"session_id":"0198c0de-0000-7000-8000-000000000001","op":"0198c0de-0000-7000-8000-000000000a01","to":"bravo","phase":"waiting","stalled_ms":240000,"reason":"the receiver did not answer"}]}}
+{"v":2,"reply_to":21,"event":"deployment.status","body":{"as_of_ms":1760191331000,"self":"alpha@10.0.0.1","state":"degraded","reasons":[{"node":"exec2@10.0.0.9","reason":"timeout"},{"node":"box@10.0.0.2","reason":"unclean_scope"}],"nodes":[{"node":"alpha@10.0.0.1","name":"alpha@10.0.0.1","roles":["orchestrator","member"],"state":"ok","self":true,"build_version":"0.3.0","build_commit":"b4eeb50c9d1e","uptime_ms":86400000,"orchestrator":{"capacity":8,"occupied":2,"resident":2,"imports":"receiving","moves_in_flight":1}},{"node":"bravo@10.0.0.4","name":"bravo","roles":["orchestrator","member"],"state":"ok"},{"node":"box@10.0.0.2","name":"box","roles":["executor","member"],"state":"degraded","reasons":["unclean_scope"],"build_version":"0.3.0","build_commit":"b4eeb50c9d1e","uptime_ms":3600000,"protocol":3,"executor":{"scopes":{"open":3,"closing":0,"closed_clean":9,"closed_unknown":1},"scope_limit":16,"ledger_bytes":2097152,"ledger_limit":536870912,"unacknowledged":0,"platform":"linux/x86_64","contradiction":null}},{"node":"exec2@10.0.0.9","name":"exec2","roles":["executor"],"state":"down","reason":"timeout"}],"edges":[{"from":"alpha@10.0.0.1","to":"bravo@10.0.0.4","kind":"peer","link":"connected"},{"from":"alpha@10.0.0.1","to":"box@10.0.0.2","kind":"serves","sessions":3,"link":"connected"},{"from":"alpha@10.0.0.1","to":"exec2@10.0.0.9","kind":"serves","sessions":0,"link":"none"},{"from":"alpha@10.0.0.1","to":"bravo@10.0.0.4","kind":"member","voter":true,"leader":true,"link":"connected"},{"from":"alpha@10.0.0.1","to":"box@10.0.0.2","kind":"member","voter":true,"leader":false,"link":"connected"}],"placements":{"executors":[{"name":"box","node":"box@10.0.0.2","state":"degraded","free_scopes":12,"declared":{"platform":"linux/x86_64","enforcement":"enforced","toolchains":["codemode"]}},{"name":"exec2","node":"exec2@10.0.0.9","state":"down","declared":{"toolchains":[]}}],"pools":[{"name":"builders","executors":["box","exec2"],"eligible":["box"]}]},"orchestrators":[{"name":"bravo","node":"bravo@10.0.0.4","state":"ok"}],"directory":{"members":["alpha@10.0.0.1","bravo@10.0.0.4","box@10.0.0.2"],"joined":true,"ra_members":[{"node":"alpha@10.0.0.1","voter":true},{"node":"bravo@10.0.0.4","voter":true},{"node":"box@10.0.0.2","voter":true}],"applied_index":412,"leader":"bravo@10.0.0.4","copy":"current"},"moves":[{"session_id":"0198c0de-0000-7000-8000-000000000001","op":"0198c0de-0000-7000-8000-000000000a01","to":"bravo","phase":"waiting","stalled_ms":240000,"reason":"the receiver did not answer"}]}}
 ```
 
 | Member | Type | Presence | Meaning |
@@ -1573,12 +1574,13 @@ it needs no epoch.
 | `self` | string | always | The answering daemon's node. |
 | `state` | string | always | The whole deployment, from the configured nodes (not counting the answering daemon): `ok` when every node is `ok`, `down` only when none answered, and `degraded` otherwise. A node that answered with reasons counts as reachable and not `ok`, so one `degraded` node among `ok` ones makes the deployment `degraded`, and one dead executor among several is a degraded deployment. |
 | `reasons` | array | always | One entry for a node that is `down`, with its reason word, and one for each reason of a node that is `degraded`. Each has `node` and a fixed `reason` word. |
-| `nodes` | array | always | At most 33 entries: the answering daemon first, then its orchestrators, then its executors, each in table order. |
-| `edges` | array | without `node` | Relations. `kind` is `peer` (an orchestrator), `serves` (an orchestrator places sessions on an executor, with `sessions`, the resident and the saved ones) or `member` (a directory member, with `voter` and `leader`, both booleans, describing the node at `to`). `link` is `connected` or `none` and is present only on an edge that touches the answering daemon, the only end whose connection it observes. A `serves` edge between two other nodes is what the orchestrator at `from` reported; the daemon states one for each executor the orchestrator configures that the answering daemon also lists. A `member` edge runs from the answering daemon to each directory member that appears in `nodes`. |
+| `nodes` | array | always | At most 64 entries: the answering daemon first, then its orchestrators, then its executors, each in table order. |
+| `edges` | array | without `node` | Relations. `kind` is `peer` (an orchestrator), `serves` (an orchestrator places sessions on an executor, with `sessions`, the resident and the saved ones) or `member` (a directory member, with `voter` and `leader`, both booleans, describing the node at `to`). `link` is `connected` or `none` and is present only on an edge that touches the answering daemon, the only end whose connection it observes. What another orchestrator serves is its `serves` list in `orchestrators`, which says it once, and not an edge. A `member` edge runs from the answering daemon to each directory member that appears in `nodes`. |
 | `placements` | object | without `node` | `executors`, each with `name`, `node`, a `state` (`ready`, `degraded`, `full` or `down`), `free_scopes` when the executor reported, `contradiction` when its census disagrees with what its operator declared, and `declared` (the operator's `platform` and `enforcement` when stated, and `toolchains`); and `pools`, each with `name`, `executors` (those the pool admits, in its trial order) and `eligible` (those neither `down` nor `full`, in the same order). |
 | `orchestrators` | array | without `node` | The configured orchestrators, each with `name`, `node`, `state`, and when it reported `imports` (`receiving` or `not_receiving`) and `serves`, the executors it configures, by the answering daemon's name for each, or the node when it has none. |
 | `directory` | object | without `node`, on a daemon that is a directory member | The body of `directory.status` (§3.28) and `copy`, `current` when the member's consistent read completed in time and `unconfirmed` when it did not. |
-| `moves` | array | without `node` | The moves in flight on the answering daemon: `session_id`, `op`, `to` (the destination's name), `phase` (`running` or `waiting`), and `stalled_ms` and `reason` when stalled. A reason is cut to 200 bytes. |
+| `omitted`, `more` | array | when the reply was cut | See Size, below. |
+| `moves` | array | without `node`, unless omitted | The moves in flight on the answering daemon: `session_id`, `op`, `to` (the destination's name), `phase` (`running` or `waiting`), and `stalled_ms` and `reason` when stalled. A reason is cut to 200 bytes. |
 | `ledger` | object | without `node`, on a daemon that runs from a membership ledger | The body of `ledger.status` (§3.30): the daemon's head, its standing, each active member with the head it last reported to this daemon and how long ago, and the last line it refused. At most 64 members. Absent when the ledger does not answer, and then a client treats it as unknown. |
 
 On a daemon that runs from a membership ledger, the configured orchestrators and
@@ -1599,7 +1601,10 @@ or the node's own report says). `state` is one of:
 
 The `down` words are `timeout` (the connection did not settle, or it did and the
 report did not arrive in time; a first TLS handshake may outlast the bound and
-settle in the background, so the node reads `ok` on the next read),
+settle in the background, so the node reads `ok` on the next read), `silent` (the
+node connected and no report came at once, because no orchestrator port is
+registered there or it ended; it is additive, and a client that does not know it
+shows the word),
 `unreachable` (refused, or the host could not be reached; a wrong pin and a wrong
 certificate read this way) and `unavailable` (the daemon has no distribution, or
 the node is not one it pinned). The `degraded` words are fixed:
@@ -1628,6 +1633,19 @@ from the node's own report, and a client treats an absent one as unknown.
 | `protocol` | An executor's wire protocol version. |
 | `orchestrator` | `capacity`, `occupied`, `resident`, `imports` and `moves_in_flight`. |
 | `executor` | `scopes` (`open`, `closing`, `closed_clean`, `closed_unknown`), `scope_limit`, `ledger_bytes`, `ledger_limit`, `unacknowledged`, `platform`, and from its latest attach census `enforcement` and `toolchains`, and `contradiction`, `null` or the words saying how the census disagrees with the declaration. |
+
+**Size.** The terminal refuses a frame over 64 KiB, so the daemon encodes the
+reply, measures it, and keeps it at or under 60,000 bytes. When the whole reply is
+over, it renders again with less. An overview first drops `moves`; then the facts of
+each node beyond its scope counts and build, the executors' `declared` and the
+`pools`; then `edges`, `placements` and each orchestrator's `serves`. It names what
+it dropped in `omitted` (`moves`, `node_facts`, `declared`, `pools`, `edges`,
+`placements`, `serves`), and a client that sees a non-empty `omitted` reads one node
+with `node` for the rest. A reply for one node cuts each long list to 16 entries,
+then to none, and names the lists it cut in `more` (`workspaces`, `unclean`,
+`placements`, `moves`). A reply that fits has neither member. A deployment of 64
+nodes with long names and 64 moves in flight encodes to under 40,000 bytes at the
+last level.
 
 `node` must be a key of the daemon's `[executors]` or `[orchestrators]` tables.
 It is looked up in the configuration and never itself connected to: a key the

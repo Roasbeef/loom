@@ -791,10 +791,10 @@ change 085) reads the nodes the daemon is configured with, asks each for its own
 account of itself, and says what it found, before any session exists.
 
 `client/deployment` makes the read. It lists the daemon's `[orchestrators]` rows
-and then its `[executors]` rows, and in one weft run, under a deadline of three
+and then its `[executors]` rows, and in one weft run, under a deadline of four
 seconds, it does three things at once. For each target it connects (bounded at one
-second) and then asks the node's orchestrator port for its `Report` (bounded at one
-second more). It also builds the asking daemon's own report through the closure
+second) and then asks the node's orchestrator port for its `Report` (bounded at 2.6
+seconds, longer than the node's own bound of 2.5 on its sources). It also builds the asking daemon's own report through the closure
 `Reach.own`, which is the port's `Reads.report`, so the daemon is never connected
 to. Nothing is cached. A first TLS handshake can outlast its second, in which case
 the node is `down` in that reply and `ok` in the next.
@@ -811,10 +811,11 @@ A node is in one of three states, all as seen from this daemon:
   `directory_no_leader` and `directory_copy_unconfirmed` come from a directory
   member's own report, and `directory_quorum_lost` is the asking daemon's count of
   voters it reached against a majority.
-- `down`: no connection within a second, or a connection and no report within a
-  second more. The reason is `timeout`, `unreachable` or `unavailable`. A node
-  that connected and was silent reads `timeout`, because the daemon can say
-  nothing else of it.
+- `down`: no connection within a second, or a connection and no report within 2.6
+  seconds more. The reason is `timeout`, `unreachable`, `unavailable` or `silent`.
+  A node that connected and gave no report reads `silent` when the ask failed at
+  once (no orchestrator port is registered there, or it ended) and `timeout` when
+  it waited out its bound, because the daemon can say nothing else of it.
 
 The deployment as a whole is `ok` when every configured node is, `down` only when
 none answered, and `degraded` between. A node that answered with reasons counts as
@@ -828,9 +829,8 @@ that touch it. The reply has a `peer` edge to each orchestrator and a `serves` e
 to each executor, each with the asking daemon's own link (`connected` or `none`) and,
 for `serves`, how many sessions the daemon has placed there. It adds a `member` edge
 from itself to each directory member, with that member's vote and whether it
-leads. What an orchestrator reports it serves is drawn as a `serves` edge with no
-link, because the asking daemon cannot observe a connection between two other
-nodes. The reply also holds the placements a session-creation form draws: each
+leads. What another orchestrator serves is that orchestrator's `serves` list in
+`orchestrators` and not an edge, so the reply says it once. The reply also holds the placements a session-creation form draws: each
 executor with a state of `ready`, `degraded`, `full` or `down`, its free scope count
 and any contradiction between its census and its declaration, and each pool with the
 executors `pools.candidates` admits, in its trial order, and which of them can take
@@ -857,11 +857,16 @@ executors` prints the placements. `loom directory status` prints the cluster vie
 of a directory member. `tui/deployment_view` and `tui/directory_view` decode the
 replies with total decoders of their own.
 
-A reply is bounded by the node cap of 33 and by what a report is bounded to: the
-long lists (64 workspace names, 64 unclean scopes, 64 placements) appear only when
-one node is asked for, so the overview carries numbers. The edges an orchestrator
-reports it serves grow with orchestrators times executors, which a deployment of the
-size the cap allows keeps well inside the 64 KiB control message limit. A directory
+A reply must fit the 64 KiB frame the terminal accepts. The long lists (64
+workspace names, 64 unclean scopes, 64 placements) appear only when one node is asked
+for, so the overview carries numbers, but a deployment of 64 nodes with long names,
+64 moves in flight and pools that admit every executor still encodes to about 90,000
+bytes. The daemon therefore measures what it renders and keeps it at or under 60,000
+bytes (`deployment.max_reply_bytes`): it drops the moves first, then the per-node
+facts, the declarations and the pools, then the edges, placements and `serves` lists,
+and names what it dropped in `omitted`. A reply for one node cuts its long lists to 16
+entries and then to none, and names them in `more`. The terminal says so and points at
+`--node` for the rest. A directory
 member that the daemon does not configure as an orchestrator or an executor is named
 in the directory block, and in the `member` role of the nodes that are members, and is
 not dialled.

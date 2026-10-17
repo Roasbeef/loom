@@ -497,10 +497,14 @@ ambiguous on the points below, and this is what the code does. A reader of a
 reply treats every member named here as optional, as the decision states.
 
 - **One run, two bounds.** For each configured node the daemon connects
-  (`connect_ms`, one second) and then asks for the report (`report_ms`, one
-  second), and the asking daemon builds its own report in the same run, under the
-  three second deadline. A node that connected and did not report in time reads
-  `down` with `timeout`, because the daemon can say nothing of it.
+  (`connect_ms`, one second) and then asks for the report (`report_ms`, 2.6
+  seconds, longer than the node's own 2.5 second bound on its sources, so a live
+  node with a slow directory still answers with the facts it read), and the asking
+  daemon builds its own report in the same run, under a four second deadline. Each
+  target holds a slot of its own, so a few black-holed hosts cannot starve the
+  others. A node that connected and gave no report reads `down`: `silent` when the
+  ask failed at once (no port is registered, or it ended), and `timeout` when it
+  waited out its bound. `silent` is a fourth `down` word and is additive.
 - **A node's members.** A node that reported carries `build_version`,
   `build_commit` and `uptime_ms` (its own clock at the answer less its clock at
   start). An executor adds `protocol` at the node level and an `executor` object
@@ -524,15 +528,35 @@ reply treats every member named here as optional, as the decision states.
   still take a session.
 - **Edges.** A `serves` edge has `sessions`, the resident and the saved sessions the
   orchestrator reports on the executor. The asking daemon has one to each
-  configured executor, with its link, and an answering orchestrator's `serves`
-  edges, with no link, run from it to each executor it configures that the asking
-  daemon also lists. A `peer` edge always touches the asking daemon: a report's
+  configured executor, with its link. A `peer` edge always touches the asking daemon: a report's
   `peers` are not drawn as edges between other nodes. A `member` edge runs from the
   asking daemon to each directory member that appears in `nodes`, with the asking
   daemon's link to it, and `voter` and `leader` (booleans) describe the node at
   `to`. The daemon does not state a `member` edge between two other nodes, so a
   deployment of n members has n minus one such edges and not a mesh. The terminal
   merges the edges between one pair of nodes into one row.
+- **What another orchestrator serves** is its `serves` list in `orchestrators`
+  only. The decision's third-party `serves` edges repeated it, so the daemon states
+  no `serves` edge between two other nodes, and a `serves` edge always touches the
+  asking daemon.
+- **Moves** have one spelling, `session_id`, `op`, `to` (the destination's name),
+  `phase`, `stalled_ms`, `reason`, at the top level and in an orchestrator's own
+  list for a read that names one node.
+- **The size of a reply.** The terminal refuses a frame over 64 KiB, so the daemon
+  encodes a reply, measures it, and keeps it at or under 60,000 bytes. An overview
+  that is over drops, in order, the `moves`; the per-node facts beyond scope counts
+  and build, the executors' `declared` and the `pools`; and the `edges`,
+  `placements` and `serves` lists, and names what it dropped in `omitted`. A reply
+  for one node cuts its long lists to 16 entries, then to none, and names them in
+  `more`. Both members are absent from a reply that fits. A client that sees
+  `omitted` reads one node for the rest.
+- **The verdict includes the asking daemon's own impairment.** An asking daemon
+  with a reason of its own makes an otherwise `ok` deployment `degraded`, so that
+  `state` and `reasons` agree.
+- **Two directory signals.** `directory_no_leader` is the authoritative signal,
+  from the member's own cluster view. `directory_quorum_lost` is a prediction from
+  the asking daemon's connect attempts, and it can be wrong in either direction for
+  a moment.
 - **`directory_quorum_lost`.** It is stated of the asking daemon's own entry only,
   from its cluster view and its connect attempts. The daemon counts itself as
   reached, and a voter it has no attempt for is counted as reached, so the reason
