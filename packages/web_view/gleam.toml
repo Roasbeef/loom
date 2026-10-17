@@ -15,3 +15,6 @@ gleeunit = ">= 1.0.0 and < 2.0.0"
 gleam_json = ">= 3.0.0 and < 4.0.0"
 gleam_otp = ">= 1.0.0 and < 2.0.0"
 simplifile = ">= 2.0.0 and < 3.0.0"
+qcheck = ">= 1.0.5 and < 2.0.0"
+# Model-based test of paging and turn sealing (`paging_model_test`).
+statem = { path = "../statem" }
