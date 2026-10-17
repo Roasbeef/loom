@@ -207,9 +207,8 @@ pub type Existing {
 /// The function the spawn host calls to find the session a pair already has,
 /// without creating one.
 ///
-/// A session that is opening is waited for, up to `open_budget_ms`, because its
-/// Agency is about to hold children. One that is closed, stopping or blocked has
-/// no Agency to ask, and the answer says so.
+/// Only a resident session has an Agency to ask. One that is opening, closed,
+/// stopping or blocked holds no running child, and the answer says so.
 ///
 /// ## Examples
 ///
@@ -238,17 +237,20 @@ pub fn resolve_existing(
 }
 
 // The Agency of a session if one is running, and nothing if the session is not
-// open. An opening session is waited for like a first message waits.
+// resident. A session that is still opening has no Agency yet, and the release
+// does not wait for it: the registry marks the row releasing and cancels the
+// build, so the session never serves a child. Waiting here would also outlast
+// the sender's own bound on a release.
 fn open_endpoint(
   context: Context(instance),
   session_id: String,
 ) -> Result(Option(agency.DelegateEndpoint), SpawnRefusal) {
   case manager.get(context.registry, session_id) {
     Error(error) -> Error(remote_spawn.StoreFailure(reason: describe(error)))
-    Ok(manager.View(status: manager.Opening(_), ..))
-    | Ok(manager.View(status: manager.Resident(_), ..)) ->
+    Ok(manager.View(status: manager.Resident(_), ..)) ->
       resident(context, session_id) |> result.map(Some)
-    Ok(manager.View(status: manager.Reserved, ..))
+    Ok(manager.View(status: manager.Opening(_), ..))
+    | Ok(manager.View(status: manager.Reserved, ..))
     | Ok(manager.View(status: manager.Saved, ..))
     | Ok(manager.View(status: manager.Stopping(_), ..))
     | Ok(manager.View(status: manager.RecoveryBlocked(_), ..)) -> Ok(None)

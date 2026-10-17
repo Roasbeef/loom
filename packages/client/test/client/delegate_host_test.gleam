@@ -25,6 +25,7 @@ import simplifile
 import sqlight
 import storage/catalogue
 import storage/domain
+import weft/poll
 
 fn configuration(placement: String) -> String {
   "[distribution]
@@ -602,16 +603,68 @@ pub fn the_sweep_deletes_a_released_session_whatever_its_age_test() {
 // Waits for something the registry does on its own turn, such as deleting a
 // session once its slot drains.
 fn eventually(done: fn() -> Bool) -> Bool {
-  eventually_within(done, 80)
+  let waited =
+    poll.until(within: 2000, every: 10, attempt: fn() {
+      case done() {
+        True -> poll.Done(Nil)
+        False -> poll.Retry
+      }
+    })
+  case waited {
+    poll.Answered(Nil) -> True
+    poll.Failed(_) | poll.Expired -> False
+  }
 }
 
-fn eventually_within(done: fn() -> Bool, attempts: Int) -> Bool {
-  case done(), attempts {
-    True, _ -> True
-    False, 0 -> False
-    False, _ -> {
-      process.sleep(25)
-      eventually_within(done, attempts - 1)
-    }
+pub fn a_release_of_a_session_that_is_still_opening_does_not_wait_for_it_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let laptop = spawner("executor = \"runner\"\nworkspace = \"loom\"\n")
+  let sessions = "/delegate-host/sessions"
+  let remote = parent(86)
+
+  // The build parks for a while, as an attach to a slow executor does.
+  let registry =
+    started(store, fn(_built) {
+      process.sleep(800)
+      Error("never reached")
+    })
+  let _opening =
+    process.spawn_unlinked(fn() {
+      let _ =
+        delegate_host.resolver(context(registry, sessions))(laptop, remote)
+      Nil
+    })
+  let assert Ok(recorded) = await_row(store, laptop, remote)
+
+  // The release answers at once with zero, marks the row, and cancels the build,
+  // so the session is deleted without ever serving a child.
+  let began = ffi_os.system_time_ms()
+  assert delegate_host.releaser(context(registry, sessions))(laptop, remote)
+    == Ok(0)
+  assert ffi_os.system_time_ms() - began < 3000
+  assert eventually(fn() {
+    catalogue.delegate_of(store, recorded.session_id) == Ok(None)
+  })
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+// Waits for the pair's row, which the registry writes in the turn that admits
+// the session.
+fn await_row(
+  store: catalogue.Catalogue,
+  laptop: spawners.Spawner,
+  remote: remote_spawn.Parent,
+) -> Result(catalogue.Delegate, Nil) {
+  let waited =
+    poll.until(within: 2000, every: 10, attempt: fn() {
+      case catalogue.delegate_for(store, laptop.name, remote.session) {
+        Ok(Some(found)) -> poll.Done(found)
+        Ok(None) | Error(_) -> poll.Retry
+      }
+    })
+  case waited {
+    poll.Answered(found) -> Ok(found)
+    poll.Failed(_) | poll.Expired -> Error(Nil)
   }
 }
