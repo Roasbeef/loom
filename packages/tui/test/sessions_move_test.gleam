@@ -105,9 +105,12 @@ fn orchestrator(name, state, imports, serves) {
 pub fn candidates_are_read_from_the_deployment_reply_test() {
   let document =
     json.Object([
+      #("self", json.String("alpha@10.0.0.4")),
       #(
         "orchestrators",
         json.Array([
+          // The asking daemon is never a candidate, even if a reply lists it.
+          orchestrator("alpha", "ok", Some("receiving"), ["box"]),
           orchestrator("bravo", "ok", Some("receiving"), ["box"]),
           orchestrator("charlie", "down", None, []),
           orchestrator("delta", "ok", Some("not_receiving"), ["box"]),

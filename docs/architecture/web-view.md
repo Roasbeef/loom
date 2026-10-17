@@ -1459,7 +1459,7 @@ the page honours only for a destination it was offered; it opens the question De
 uses, `Move this session to bravo?`, and its button, `MoveConfirmed`, asks for
 `actions.Move(to)`. `ui_socket.manage_for` runs the daemon's own `server.move_session`
 under its usual `fresh_home` and `owner_operating` checks, so a resumed home, a member
-and a read-only page reach nothing, and the daemon checks the destination again. The
+and a read-only page reach nothing, and the daemon checks only that the destination is one of its configured orchestrators, not that it is still eligible. The
 row then reads `moving to bravo` from its residency. `home_test` and `ui_route_test`
 drive each step and each refusal.
 

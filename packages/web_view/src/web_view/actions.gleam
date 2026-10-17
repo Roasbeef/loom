@@ -36,8 +36,9 @@
 //// row offers a button for each that could and names, with its reason, each
 //// that could not (`Choosing`). Choosing one opens the confirmation Delete has,
 //// for `Move(to)`, and only the second press asks the daemon to move. The
-//// daemon checks the destination again: the candidates are a convenience to
-//// the person choosing and decide nothing.
+//// daemon checks only that the destination is one of its configured
+//// orchestrators, and does not judge eligibility again: the candidates are a
+//// convenience to the person choosing and decide nothing.
 ////
 //// The words a page shows for a refusal are fixed here, so no text the daemon
 //// or the catalogue produced reaches a browser.

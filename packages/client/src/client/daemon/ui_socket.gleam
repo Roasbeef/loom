@@ -4074,6 +4074,7 @@ const stop_wait_ms = 5000
 ///    `moves.begin`, which is the control command `sessions.move`'s own
 ///    function (`server.move_session`): it refuses a destination the daemon
 ///    does not list and a session that cannot move, whatever the page offered.
+///    It does not judge eligibility again.
 ///
 /// The detail of every other refusal stays in the daemon.
 ///
@@ -4107,7 +4108,9 @@ pub fn manage_for(
       // Move reads before it asks. Which orchestrators could take the session
       // is a read of the deployment and changes nothing; the move itself is the
       // control command's own function, which refuses a destination the daemon
-      // does not list, whatever the page offered.
+      // does not list, whatever the page offered. It does not judge
+      // eligibility again: a destination that stopped qualifying since the
+      // read is accepted, and the move stalls and retries.
       actions.Destinations ->
         moves.candidates(target)
         |> result.map(actions.Heard)

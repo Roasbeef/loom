@@ -75,14 +75,25 @@ pub fn every_row_reserves_the_archive_column_test() {
   )
 }
 
-// F143: a home row's buttons sit in three fixed columns, Rename first, so
-// Rename is where it is on every row whichever buttons the row has.
+// F143: a home row's buttons sit in four fixed columns, Rename first, so
+// Rename is where it is on every row whichever buttons the row has. Stop and
+// Move share the second, Archive has the third and Delete the fourth.
 pub fn a_rows_buttons_keep_their_columns_test() {
   let css = stylesheet()
-  assert string.contains(css, "grid-template-columns:72px 72px 64px")
+  assert string.contains(css, "grid-template-columns:72px 72px 72px 64px")
   assert string.contains(css, ".home-rename{grid-column:1}")
-  assert string.contains(css, ".home-act{grid-column:2}")
-  assert string.contains(css, ".home-act-delete{grid-column:3}")
+  assert string.contains(css, ".home-act-lead{grid-column:2}")
+  assert string.contains(css, ".home-act{grid-column:3}")
+  assert string.contains(css, ".home-act-delete{grid-column:4}")
+}
+
+// The Abandon controls have a quiet-button rule: a hairline border, no fill.
+pub fn the_abandon_controls_are_quiet_buttons_test() {
+  let css = stylesheet()
+  assert string.contains(
+    css,
+    "button.admin-abandon{border:1px solid var(--color-divider);",
+  )
 }
 
 // F155: a row that is not a button (the page's own, a saved row while another
