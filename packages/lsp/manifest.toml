@@ -17,6 +17,7 @@ packages = [
   { name = "gleeunit", version = "1.11.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "gleeunit", source = "hex", outer_checksum = "EC31ABA74256AEA531EDF8169931D775BBB384FED0A8A1BDC4DD9354E3E21826" },
   { name = "prng", version = "6.0.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "prng", source = "hex", outer_checksum = "7FE3879E13150248BD370469205ED07B9404DD90670FEBB8CD0E7643707C420E" },
   { name = "qcheck", version = "1.0.5", build_tools = ["gleam"], requirements = ["exception", "gleam_regexp", "gleam_stdlib", "gleam_yielder", "prng"], otp_app = "qcheck", source = "hex", outer_checksum = "D27C12074776EC95F082EE56E0FC74685506B6EE26176F194D10F0322A39AC11" },
+  { name = "statem", version = "0.1.0", build_tools = ["gleam"], requirements = ["exception", "gleam_stdlib", "gleam_yielder", "qcheck"], source = "local", path = "../statem" },
   { name = "weft", version = "0.4.6", build_tools = ["gleam"], requirements = ["gleam_erlang", "gleam_otp", "gleam_stdlib"], otp_app = "weft", source = "hex", outer_checksum = "836E64B55CC6C0527F6AEC70AE1C412C5B60F641824919F38BA229FA3524552D" },
 ]
 
@@ -27,4 +28,5 @@ gleam_otp = { version = ">= 1.0.0 and < 2.0.0" }
 gleam_stdlib = { version = ">= 1.0.0 and < 2.0.0" }
 gleeunit = { version = ">= 1.0.0 and < 2.0.0" }
 qcheck = { version = ">= 1.0.5 and < 2.0.0" }
+statem = { path = "../statem" }
 weft = { version = "== 0.4.6" }
