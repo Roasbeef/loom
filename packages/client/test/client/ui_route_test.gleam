@@ -8293,6 +8293,10 @@ pub fn a_home_action_refuses_and_changes_nothing_test() {
 
 // A subject that is told each time the moves are reached, and answers as if
 // every session could go to `bravo`.
+fn missing() -> Result(a, server.MoveRefusal) {
+  Error(server.Unreadable(manager.Catalogue(catalogue.Missing)))
+}
+
 fn only_unheld_reached(asked: process.Subject(String)) -> Nil {
   case process.receive(asked, 0) {
     Ok(words) -> {
@@ -8307,21 +8311,20 @@ fn recording_moves(
   asked: process.Subject(String),
   held: String,
 ) -> server.Moves {
-  let missing = Error(server.Unreadable(manager.Catalogue(catalogue.Missing)))
   server.Moves(
     candidates: fn(session) {
       process.send(asked, "candidates " <> session)
       case session == held {
         True ->
           Ok([move_candidates.Candidate("bravo", move_candidates.Eligible)])
-        False -> missing
+        False -> missing()
       }
     },
     begin: fn(_epoch, session, to) {
       process.send(asked, "begin " <> session <> " " <> to)
       case session == held {
         True -> Ok(server.MoveBegun(op: "op-1", to:))
-        False -> missing
+        False -> missing()
       }
     },
   )
