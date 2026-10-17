@@ -717,7 +717,10 @@ had (protocol-change/078, phase 5, and protocol-change/083), and adds no wire me
   left, and `manage_for` decides every press again with its `fresh_home` and
   `owner_operating` checks, so a resumed home, a member and a read-only page are
   refused and reach nothing. The page then reads "moving to bravo" from the row's
-  residency. The destination is checked again by `move_session`.
+  residency. `move_session` checks that
+  the destination is one of the daemon's `[orchestrators.<name>]`. It does not judge
+  eligibility again, so a destination that stopped qualifying since the read is
+  accepted and the move stalls and retries like any move toward a silent receiver.
 - **Where a session runs.** The session page's Session tab says `runs on box (pool
   builders)` under the workspace, as text, from the registration's executor and pool.
   Only the owner's page says it; a member's page carries neither.

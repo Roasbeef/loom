@@ -1057,7 +1057,7 @@ node among those it serves. The first reason that fails is given with the name. 
 terminal reads the `orchestrators` member of `deployment.status` (`loom sessions move ID`
 with no `--to` prints the answer and exits nonzero), and the home asks the daemon, which
 makes the same read (`deployment.candidates`). The daemon still refuses a destination it
-does not list, whatever was offered.
+does not list, whatever was offered, but it does not judge eligibility again.
 
 The home offers Move on a saved row of the owner's fresh page, in two steps after the
 read: choose a destination, then confirm. Abandon is on the Admin page's Activity tab,
