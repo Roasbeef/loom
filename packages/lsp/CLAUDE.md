@@ -246,6 +246,23 @@ the shared decoding helpers close the file.
   `rust-analyzer` answers loading queries with empty results, not
   errors, which is why this exists.
 
+## Tests
+
+`test/lsp/sync_model_test.gleam` is a `statem` model-based test of document
+sync and the two bounded stores beside it, run against the in-process fake
+server of `test/support/fake_server`. The model holds the open documents
+oldest synced first, the shared version counter, the publications oldest
+first and the active progress tokens; one `advance` function gives both the
+model's next state and the wire events a command must cause. Each invariant
+above (64 open documents closed least recently synced first, one monotone
+version counter, `synced_text`, 512 URIs and 200 diagnostics per URI, 64
+progress tokens evicted earliest first) has its own violation tag. The
+bounds are literals in the test, not the `client` constants, so lowering a
+constant fails it. The fake's `test/emit` request is the ordering barrier:
+it sends the notifications it carries and only then answers, so the test
+never sleeps. The fake also answers `shutdown`, which keeps `teardown`'s
+stop graceful instead of waiting out its grace period.
+
 ## Deep Docs
 
 - [docs/adr/015-language-servers-as-jailed-leases.md](../../docs/adr/015-language-servers-as-jailed-leases.md)
