@@ -108,7 +108,6 @@ import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
-import gleam/string
 import simplifile
 import storage/catalogue
 import storage/sqlite
@@ -1119,7 +1118,11 @@ fn abandon_recorded(
         // as `intended` finding it gone.
         Error(store.Mismatch(found: None)) ->
           ended(environment, move, Error(Gone))
-        Error(store.NoQuorum(reason:)) -> Deferred(reason)
+
+        // The store's own text for a refused write can hold an inspected term,
+        // and a deferral's reason is carried in a report to another machine.
+        Error(store.NoQuorum(..)) ->
+          Deferred("the directory store could not commit")
       }
   }
 }
@@ -1217,8 +1220,24 @@ fn bounded(
   }
 }
 
+// Names the kind of registry error and nothing in it. The text becomes a move's
+// stall reason, which a report carries to another machine, and an inspected
+// error holds database messages that can name a path, and start failures that
+// can hold a process identifier.
 fn show(error: manager.Error) -> String {
-  string.inspect(error)
+  case error {
+    manager.Catalogue(..) -> "catalogue error"
+    manager.NotInitialized -> "not initialized"
+    manager.SessionArchived -> "session archived"
+    manager.Capacity -> "no capacity"
+    manager.Unavailable -> "unavailable"
+    manager.StaleOperation -> "stale operation"
+    manager.StartFailed(..) -> "start failed"
+    manager.Preparation(..) -> "preparation failed"
+    manager.SessionMoving(..) -> "session moving"
+    manager.SessionMoved(..) -> "session moved"
+    manager.SessionDeleting -> "session deleting"
+  }
 }
 
 fn note(

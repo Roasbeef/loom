@@ -145,6 +145,7 @@ fn moving_from(
       abandon: fn(_) { Nil },
       cover: fn() { Nil },
       forget: fn(_) { Nil },
+      moves: fn() { [] },
     )
   wire.fixture_moving(
     limits.defaults,

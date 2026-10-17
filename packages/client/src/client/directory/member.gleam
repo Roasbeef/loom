@@ -327,9 +327,23 @@ fn restart_refusal(config: Config, refusal: store.RestartRefusal) -> String {
 /// // member.status(member).joining // -> member.Joined
 /// ```
 pub fn status(member: Member) -> Status {
+  status_within(member, store.read_ms)
+}
+
+/// `status`, asking Ra for at most `within_ms`. A report is built under a
+/// deadline shorter than the store's read, and a member with no leader would
+/// spend the whole of that waiting for one; with a short wait the status says
+/// that Ra did not answer, which is the finding.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // member.status_within(member, 500).ra // -> Error(store.Unavailable("no answer in time"))
+/// ```
+pub fn status_within(member: Member, within_ms: Int) -> Status {
   let joining = process.call(member.inbox, waiting: 5000, sending: Asked)
   let ra = case joining {
-    Joined -> store.membership()
+    Joined -> store.membership_within(within_ms)
     NotJoined -> Error(store.Unavailable("this member has not joined"))
     Rejoining ->
       Error(store.Unavailable(

@@ -8722,3 +8722,85 @@ follow-ups across newer captures, explicit refresh, private history, independent
 usage, tool-call rejection, bounds, reset, cancellation and disconnect. The
 gateway regression refuses all five actions to an authenticated observer.
 Anthropic live cache measurements remain pending operator credits.
+
+## The node report (protocol-change/085, slice 4 part a)
+
+A daemon says what it knows about itself when a peer asks. Nothing client-visible
+reads it yet: `deployment.status` still reports reachability only, and the pages
+that draw degraded and full states come with the slice that produces them.
+
+- `client/node_report` is the vocabulary and has no process: `NodeReport(node,
+  build_version, build_commit, epoch, started_ms, now_ms, peers, orchestrator,
+  executor, directory)`, with `ExecutorFacts`, `ScopeCounts`, `UncleanScope`
+  (`Closing | UnknownCleanup(count)`), `OrchestratorFacts`, `Imports`
+  (`Receiving | NotReceiving`), `Placement`, `MoveFacts`, `MovePhase`
+  (`Running | Waiting`), `DirectoryFacts` and `Copy` (`Current | Unconfirmed`). It
+  is its own module because `session_movers` imports `orchestrator_port`, so the
+  port cannot import the movers' types. `to_json` leaves out the facts a node does
+  not have, and `decode` is a total decoder with bounds (`max_peers` 64,
+  `max_workspaces` 64, `max_placements` 64, `max_moves` 64, `max_unclean` 64,
+  `max_reason_bytes` 200, `max_text_bytes` 512); a missing field, a negative count, an
+  unknown word or an oversized list is an `Error` naming the field. `cut_reason`
+  cuts at a grapheme boundary. `bare` builds a report that says only who the node is.
+- `orchestrator_port.Message` gains `Report(reply: Subject(NodeReport))`.
+  `start_with` takes `Reads(report: fn() -> NodeReport)` as its last parameter and
+  `answer` serves it through `detached`; `unreported()` is the reads of a port with
+  nothing to report (`start`, `start_serving` and `start_importing` pass it). The
+  asking end is `ask_report(at, within_ms)`, where `Error(Nil)` is silence and never
+  a node with nothing to say. An older port has no clause for the new constructor and
+  stops, as for `Holds`.
+- `daemon/node_facts` assembles the answer. `report(Sources(..))` runs the three
+  fact sources (orchestrator, executor, directory) in one weft run under
+  `read_ms` (2.5 s); a source that crashes or runs late leaves its own facts out.
+  `executor_facts(snapshot, limits, platform, workspaces)` renames the host's ledger
+  counts into the report's words and cuts the workspace names to the bound.
+  `daemon/main.node_reads` supplies the sources: `orchestrator_facts` (present only
+  where `ownership_of` says the daemon is an orchestrator; `manager.summary` for
+  capacity, occupied and resident, `ledger_holdings.placements`, `Control.moves`),
+  `node_facts.directory_facts` (`member.status_within` with a 500 ms wait for Ra and
+  `store.confirm_current` of this node's own migration marker with an 800 ms fence,
+  `Current` on `Ok` and `Unconfirmed` otherwise, so a member with no leader still
+  reports inside `read_ms`) and the executor host's `facts`. The weft deadline is the
+  real bound on a report; the waits inside each source are secondary. `peers` are the nodes of the orchestrators and executors the daemon
+  lists, once each, which in ledger mode are the nodes the ledger links it to.
+- `remote/host` gains a private `Summarize(reply)` event and `start_reporting`,
+  which returns `Reporting(address, summarize)`. `summarize(within_ms)` sends on the
+  actor's own subject, which only that closure holds, so `HostMessage` and the wire
+  are unchanged. The answer is `Snapshot(ledger: exec_ledger.Summary, census:
+  Option(census))`: the census is the one the latest attach carried, and `None` until
+  a session attaches in this VM. `start` keeps its contract and returns the address.
+  `remote_census.observed` is the reduction of a census to the three facts a
+  declaration makes claims about, shared by the attach check and the report.
+- `daemon/main.start_executor` returns `Option(ExecutorHost)`: the monitor `wait`
+  watches and `facts`, the executor facts read within `executor_summary_ms` (2 s), or
+  `None` when the host did not answer. `run` starts the movers before the port,
+  because the report reads both the movers and the host.
+- `session_movers.Control` gains `moves: fn() -> List(MoveFacts)`, a `process.call`
+  to a new `Moves(reply)` message answered in the actor's turn from its entries. An
+  `Entry` keeps `reason` from `Stalled(reason)` and `Deferred(reason)`, cut to 200
+  bytes, through the retry; `stalled_ms` is `now - stalled_since` on the monotonic
+  clock, a duration and never a timestamp. A destination this daemon no longer lists is
+  named by its configured name.
+- `ledger_holdings.placements(registry, executors)` is the catalogue walk of
+  `from_catalogue` answering how many sessions on each executor node are resident and
+  how many are saved. More executors than `orchestrator_port.max_placed` (64) is `Error(Nil)`, and the
+  daemon then leaves the orchestrator facts out instead of listing a partial count.
+- `directory/store.confirm_current(node, within_ms)` is a fence (at most `within_ms`)
+  and a read of the node's own migration marker, cut off at one and a half times
+  `within_ms`; `Unavailable` says why it could not confirm. `member.status_within` and
+  `store.membership_within` are `status` and `membership` with the wait given. The
+  report's `unavailable` text comes from `store.describe_for_report`, which leaves out
+  the term of an unrecognised answer (the daemon's log keeps it through `describe`),
+  and the movers' `show` of a registry error is fixed words, so a stall reason names
+  no path or process identifier.
+- A fact missing from a report means either that the node has none of that kind or
+  that its source did not answer in time, and the report does not say which. The asking
+  daemon compares what it expected of the node with what the report holds.
+- Tests: `node_report_test` (round trip, every bound and word refused, the reason
+  cut), `daemon_node_facts_test` (the three sources at once, a crash, a late source,
+  the executor mapping), `remote/host_test` (an empty ledger, an attach and a result,
+  an unclean close, a host that is gone), `remote/orchestrator_port_test` (`Report`,
+  an executor-only node, a port with nothing to report, a report that fails),
+  `session_mover_test` (a stalled reason kept and listed, a finished move gone),
+  `ledger_holdings_test` (`placements`), `directory/store_test` (`confirm_current`),
+  `daemon_executor_test` (the host's facts from a started daemon).

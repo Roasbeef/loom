@@ -384,6 +384,7 @@ pub fn serve_holdings(
     orchestrator_port.declining(),
     orchestrator_port.refusing_spawns(),
     ledger_holdings.from_catalogue(registry, listed),
+    orchestrator_port.unreported(),
   )
   |> result.replace(Nil)
   |> result.map_error(string.inspect)

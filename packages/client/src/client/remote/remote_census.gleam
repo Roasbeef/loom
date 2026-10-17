@@ -13,8 +13,11 @@
 //// value it finds.
 
 import broker/broker
+import client/executors
+import client/system_prompt
 import client/workspace_plane
 import gleam/erlang/process.{type Subject}
+import gleam/list
 import tools/tool
 
 /// The census an attach reply carries for a real workspace.
@@ -50,4 +53,33 @@ pub type McpStatus {
 
   /// The server did not start, for the reason given, which names no secret.
   McpRefused(server: String, reason: String)
+}
+
+/// The three facts a declaration makes claims about, read from a census: the
+/// platform label, whether the helper enforces, and the toolchains the machine
+/// provides (`codemode`, then each language server). The orchestrator compares
+/// this with the executor's declaration at attach (`executors.contradiction`),
+/// and the executor reports it of itself (`client/node_report`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_census.observed(remote).enforcement // -> executors.Enforced
+/// ```
+pub fn observed(remote: RemoteCensus) -> executors.Observed {
+  let census = remote.census
+  executors.Observed(
+    platform: system_prompt.platform(census.platform),
+    enforcement: case remote.prompt.helper {
+      workspace_plane.Healthy -> executors.Enforced
+      workspace_plane.Degraded -> executors.Degraded
+    },
+    toolchains: list.append(
+      case census.toolchain {
+        Ok(_found) -> ["codemode"]
+        Error(_reason) -> []
+      },
+      list.map(census.lsp_servers, fn(server) { server.name }),
+    ),
+  )
 }

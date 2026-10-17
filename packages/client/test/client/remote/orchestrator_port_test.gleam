@@ -5,6 +5,7 @@
 //// subagent messages to a spawn host (protocol-change/084), each in a task of
 //// its own so that the question about ownership is never kept waiting.
 
+import client/node_report
 import client/remote/address.{type Address}
 import client/remote/orchestrator_port.{type Message, NotOwned, Owned}
 import client/remote_spawn.{
@@ -86,6 +87,7 @@ fn describing() -> Address(Message) {
       orchestrator_port.declining(),
       orchestrator_port.refusing_spawns(),
       orchestrator_port.unheld,
+      orchestrator_port.unreported(),
     )
     as "the port starts under its name"
   address.Address(node: node.self(), name:)
@@ -115,6 +117,7 @@ fn holding(holder: orchestrator_port.Holder) -> Address(Message) {
       orchestrator_port.declining(),
       orchestrator_port.refusing_spawns(),
       holder,
+      orchestrator_port.unreported(),
     )
     as "the port starts under its name"
   address.Address(node: node.self(), name:)
@@ -475,6 +478,7 @@ fn spawning(host: orchestrator_port.SpawnHost) -> Address(Message) {
       orchestrator_port.declining(),
       host,
       orchestrator_port.unheld,
+      orchestrator_port.unreported(),
     )
     as "the port starts under its name"
   address.Address(node: node.self(), name:)
@@ -664,5 +668,94 @@ pub fn a_crashing_host_is_silence_and_the_port_serves_on_test() {
     == Error(Nil)
 
   // The failed messages did not stop the port.
+  assert orchestrator_port.ask(port, "owned-1", answers_within_ms) == Ok(Owned)
+}
+
+// --- report ------------------------------------------------------------------
+
+// A port whose daemon reports what `reads` says.
+fn reporting(reads: orchestrator_port.Reads) -> Address(Message) {
+  let name = process.new_name("orchestrator_port")
+  let assert Ok(_) =
+    orchestrator_port.start_with(
+      name,
+      held,
+      fn(_session, _command) { Error(orchestrator_port.peer_unserved) },
+      fn(_session) { Error("not_found") },
+      orchestrator_port.declining(),
+      orchestrator_port.refusing_spawns(),
+      orchestrator_port.unheld,
+      reads,
+    )
+    as "the port starts under its name"
+  address.Address(node: node.self(), name:)
+}
+
+fn identity() -> node_report.NodeReport {
+  node_report.bare(
+    node: "box@10.0.0.2",
+    build_version: "0.3.0",
+    build_commit: "abc123",
+    epoch: "epoch-1",
+    started_ms: 1000,
+    now_ms: 9000,
+  )
+}
+
+pub fn a_report_is_what_the_daemon_supplies_test() {
+  let executor =
+    node_report.ExecutorFacts(
+      protocol: 3,
+      scopes: node_report.ScopeCounts(
+        open: 1,
+        closing: 0,
+        closed_clean: 0,
+        closed_unknown: 0,
+      ),
+      scope_limit: 16,
+      unclean: [],
+      ledger_bytes: 0,
+      ledger_limit: 1024,
+      unacknowledged: 0,
+      platform: "linux/x86_64",
+      observed: None,
+      workspaces: ["proj"],
+    )
+  let supplied = node_report.NodeReport(..identity(), executor: Some(executor))
+  let port = reporting(orchestrator_port.Reads(report: fn() { supplied }))
+  assert orchestrator_port.ask_report(port, answers_within_ms) == Ok(supplied)
+}
+
+pub fn an_executor_only_node_reports_no_orchestrator_facts_test() {
+  let supplied = identity()
+  let port = reporting(orchestrator_port.Reads(report: fn() { supplied }))
+  let assert Ok(report) = orchestrator_port.ask_report(port, answers_within_ms)
+  assert report.orchestrator == None
+  assert report.directory == None
+}
+
+pub fn a_port_with_nothing_to_report_says_only_who_it_is_test() {
+  let name = process.new_name("orchestrator_port")
+  let assert Ok(_) = orchestrator_port.start(name, held)
+    as "the port starts under its name"
+  let port = address.Address(node: node.self(), name:)
+  let assert Ok(report) = orchestrator_port.ask_report(port, answers_within_ms)
+  assert report.node == atom.to_string(node.name(node.self()))
+  assert report.orchestrator == None
+  assert report.executor == None
+  assert report.directory == None
+}
+
+pub fn a_report_that_fails_is_silence_and_the_port_serves_on_test() {
+  let port =
+    reporting(
+      orchestrator_port.Reads(report: fn() { panic as "the report fails" }),
+    )
+
+  // No reply at all, so the asker's wait ends at its own bound and is never
+  // read as a node with nothing to say.
+  assert orchestrator_port.ask_report(port, 200) == Error(Nil)
+
+  // The failed report did not stop the port.
   assert orchestrator_port.ask(port, "owned-1", answers_within_ms) == Ok(Owned)
 }

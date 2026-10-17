@@ -29,6 +29,7 @@ import client/directory/ownership.{type Ownership}
 import client/directory/record
 import client/executors
 import client/internal/ffi_os
+import client/node_report
 import client/orchestrators
 import client/remote/address.{type Address}
 import client/remote/orchestrator_port
@@ -1842,4 +1843,72 @@ pub fn the_movers_sweep_marked_deletions_test() {
   let assert Ok(Nil) = process.receive(swept, 5000)
     as "a tick runs the deletion pass"
   finish(rig)
+}
+
+// --- the moves a report lists (protocol-change/085) ---------------------------
+
+pub fn a_stalled_move_keeps_its_reason_and_is_listed_test() {
+  let rig =
+    start("listed", 71, Recorded, protocol.AllRetired, receiver_knows_box(), 0)
+  let silent = Wire(..rig.wire, stage: fn(_session, _op) { Error(Nil) })
+
+  // A long retry interval, so the entry stays waiting once it has stalled.
+  let assert Ok(control) =
+    session_movers.start(
+      environment(rig, silent, fn(_) { Nil }),
+      60_000,
+      no_holder,
+    )
+  assert control.moves() == []
+  control.begin(begin(rig))
+
+  let assert poll.Answered(listed) =
+    poll.until(within: 20_000, every: 50, attempt: fn() {
+      case control.moves() {
+        [facts] if facts.phase == node_report.Waiting && facts.reason != None ->
+          poll.Done(facts)
+        _ -> poll.Retry
+      }
+    })
+    as "the stalled move is listed with its reason"
+  assert listed.session == rig.session
+  assert listed.op == op
+  assert listed.to_node == node_name()
+
+  // The reason is what the mover said, kept within the report's bound, and the
+  // stall is a duration on the node's clock and not a timestamp.
+  let assert Some(reason) = listed.reason
+  assert reason != ""
+  assert string.byte_size(reason) <= node_report.max_reason_bytes
+  let assert Some(stalled_ms) = listed.stalled_ms
+  assert stalled_ms >= 0 && stalled_ms < 20_000
+  finish(rig)
+}
+
+pub fn a_finished_move_is_no_longer_listed_test() {
+  let rig =
+    start(
+      "listed-done",
+      72,
+      Recorded,
+      protocol.AllRetired,
+      receiver_knows_box(),
+      0,
+    )
+  let assert Ok(control) = session_movers.start(plain(rig), 100, no_holder)
+  control.begin(begin(rig))
+  await_retired(rig)
+  let assert poll.Answered(Nil) =
+    poll.until(within: 20_000, every: 50, attempt: fn() {
+      case control.moves() {
+        [] -> poll.Done(Nil)
+        [_, ..] -> poll.Retry
+      }
+    })
+    as "the finished move leaves the list"
+  finish(rig)
+}
+
+pub fn a_daemon_with_no_movers_lists_no_moves_test() {
+  assert session_movers.idle().moves() == []
 }

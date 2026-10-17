@@ -91,7 +91,6 @@ import client/remote/protocol.{type HostMessage, type Key}
 import client/remote/remote_census.{type RemoteCensus}
 import client/remote/scope.{type Scope}
 import client/remote/surface
-import client/system_prompt
 import client/tool_placement
 import client/wiring
 import client/workspace_plane.{type WorkspacePlane}
@@ -390,7 +389,12 @@ fn attach_to(
       Error(Failed(refused(refusal, incarnation, registered.session)))
     }
     Ok(surface.Attachment(surface: joined, attached: reply)) ->
-      case executors.contradiction(candidate.executor, observed(reply.census)) {
+      case
+        executors.contradiction(
+          candidate.executor,
+          remote_census.observed(reply.census),
+        )
+      {
         Error(contradiction) -> {
           // The scope exists and is idle. Closing it returns its slot to the
           // executor at once and records a clean close, so fixing the
@@ -455,25 +459,6 @@ fn learn_unrecorded_close(
         )),
       )
   }
-}
-
-// The three facts a declaration makes claims about, read from a census.
-fn observed(remote: RemoteCensus) -> executors.Observed {
-  let census = remote.census
-  executors.Observed(
-    platform: system_prompt.platform(census.platform),
-    enforcement: case remote.prompt.helper {
-      workspace_plane.Healthy -> executors.Enforced
-      workspace_plane.Degraded -> executors.Degraded
-    },
-    toolchains: list.append(
-      case census.toolchain {
-        Ok(_found) -> ["codemode"]
-        Error(_reason) -> []
-      },
-      list.map(census.lsp_servers, fn(server) { server.name }),
-    ),
-  )
 }
 
 fn build(

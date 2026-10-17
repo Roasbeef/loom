@@ -81,8 +81,9 @@
 ////
 //// ## Flow
 ////
-//// `start` → `initialise` → `handle_event` → `handle_peer` → `attach`,
-//// `admit_call`, `stop_execution`, `fenced_lookup`, `close`
+//// `start` → `start_reporting` → `initialise` → `handle_event` → `handle_peer` →
+//// `attach`, `admit_call`, `stop_execution`, `fenced_lookup`, `close`,
+//// `summarized`
 ////
 //// 1. `initialise` registers the name and opens the ledger, which turns every
 ////    row the previous VM left `Admitted` into `Unknown`.
@@ -104,6 +105,9 @@
 ////    stores "did not start" so a late `Run` for it never starts.
 //// 8. `close` fences the scope, cancels its calls, and `finish_closed` records
 ////    how the plane's cleanup ended.
+//// 9. `summarized` answers the daemon's question about the host itself, from
+////    the ledger's counts and the last attach's census (`start_reporting`
+////    returns the closure that asks it).
 
 import broker/internal/call
 import client/internal/ffi_os
@@ -126,6 +130,8 @@ import gleam/erlang/process.{
 }
 import gleam/int
 import gleam/list
+import gleam/option.{type Option, None, Some}
+import gleam/otp/actor as otp_actor
 import gleam/otp/static_supervisor as sup
 import gleam/result
 import gleam/string
@@ -227,6 +233,33 @@ pub type Config(census) {
   )
 }
 
+/// What the host can say about itself without being asked about a call: how
+/// full its ledger is, and what the machine reported at the last attach.
+pub type Snapshot(census) {
+  Snapshot(
+    /// The ledger's counts (`exec_ledger.summary`).
+    ledger: exec_ledger.Summary,
+    /// The census the most recent attach carried, or `None` until a session
+    /// has attached since this VM started. A census describes the machine, so
+    /// the latest one stands for all of them.
+    census: Option(census),
+  )
+}
+
+/// A started host: where peers reach it, and how the daemon reads its
+/// `Snapshot`.
+pub type Reporting(census) {
+  Reporting(
+    /// Where a peer reaches the host.
+    address: Address(HostMessage(census)),
+    /// Asks the host for a `Snapshot` and waits at most the given milliseconds.
+    /// `Error(Nil)` means no answer: the host is gone, it did not answer in
+    /// time, or its ledger could not be read. The question travels on a
+    /// subject only this closure holds, so it is not part of the wire.
+    summarize: fn(Int) -> Result(Snapshot(census), Nil),
+  )
+}
+
 /// The default reservation per call: sixteen mebibytes, twice the largest file
 /// `fs_read` returns. An image inflates by a third when it is base64 encoded and
 /// the result is wrapped in JSON, so the reservation needs the headroom for a
@@ -249,6 +282,7 @@ type Event(census) {
   FromPeer(message: HostMessage(census))
   JobFinished(job: Int, pulled: weft.Pulled(JobResult(census), Nil))
   CallerDown(down: Down)
+  Summarize(reply: Subject(Result(Snapshot(census), Nil)))
 }
 
 // What a job's task returns when it completes.
@@ -380,6 +414,8 @@ type State(census) {
     watches: Dict(Monitor, Key),
     jobs: Dict(Int, Tracked(census)),
     next_job: Int,
+    inbox: Subject(Event(census)),
+    census: Option(census),
   )
 }
 
@@ -398,6 +434,26 @@ type State(census) {
 pub fn start(
   config: Config(census),
 ) -> actor.StartResult(Address(HostMessage(census))) {
+  start_reporting(config)
+  |> result.map(fn(started) {
+    otp_actor.Started(pid: started.pid, data: started.data.address)
+  })
+}
+
+/// Starts the host as `start` does, and also returns the way to read what it
+/// says about itself (`Reporting`). The daemon uses this one, so that the
+/// report an executor gives of itself comes from the process that owns the
+/// ledger.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let assert Ok(started) = host.start_reporting(config)
+/// // started.data.summarize(2000)
+/// ```
+pub fn start_reporting(
+  config: Config(census),
+) -> actor.StartResult(Reporting(census)) {
   builder(config) |> actor.start
 }
 
@@ -437,7 +493,7 @@ pub fn cancels_run(reason: ExitReason) -> Bool {
 }
 
 fn builder(config: Config(census)) {
-  actor.new_with_initialiser(10_000, fn(_subject) { initialise(config) })
+  actor.new_with_initialiser(10_000, fn(inbox) { initialise(config, inbox) })
   |> actor.on_message(handle_event)
 }
 
@@ -446,8 +502,9 @@ fn builder(config: Config(census)) {
 // first host's live calls into unknown ones.
 fn initialise(
   config: Config(census),
+  inbox: Subject(Event(census)),
 ) -> Result(
-  actor.Initialised(State(census), Event(census), Address(HostMessage(census))),
+  actor.Initialised(State(census), Event(census), Reporting(census)),
   String,
 ) {
   use Nil <- result.try(
@@ -469,10 +526,15 @@ fn initialise(
       watches: dict.new(),
       jobs: dict.new(),
       next_job: 0,
+      inbox:,
+      census: None,
     )
   actor.initialised(state)
   |> actor.selecting(selector_for(state))
-  |> actor.returning(address.Address(node: node.self(), name: config.name))
+  |> actor.returning(Reporting(
+    address: address.Address(node: node.self(), name: config.name),
+    summarize: summarizer(inbox),
+  ))
   |> Ok
 }
 
@@ -485,6 +547,7 @@ fn handle_event(
     FromPeer(message) -> handle_peer(state, message)
     JobFinished(job:, pulled:) -> job_finished(state, job, pulled)
     CallerDown(down:) -> caller_down(state, down)
+    Summarize(reply:) -> summarized(state, reply)
   }
   actor.continue(state) |> actor.with_selector(selector_for(state))
 }
@@ -657,7 +720,7 @@ fn place(
         reply,
         Ok(attached_reply(state, placement.plane.census, unacked)),
       )
-      state
+      State(..state, census: Some(placement.plane.census))
     }
 
     // The ledger says this scope is new, or came back from a close, while this
@@ -764,6 +827,7 @@ fn plane_built(
           State(
             ..state,
             placements: dict.insert(state.placements, session, Ready(placement)),
+            census: Some(plane.census),
           )
         }
 
@@ -1683,6 +1747,38 @@ fn damaged(detail: String) -> Refusal {
   protocol.ExecutorFault("a stored outcome is damaged: expected " <> detail)
 }
 
+// --- the report -----------------------------------------------------------------
+
+// Answers a summary question in the host's own turn, because the ledger
+// connection belongs to this process and a second reader would have to open the
+// file again. The reads are four short statements, so the turn is brief; an
+// admission waits for them and no longer. A ledger that cannot be read sends
+// `Error(Nil)`, which the asker must not mistake for an empty ledger.
+fn summarized(
+  state: State(census),
+  reply: Subject(Result(Snapshot(census), Nil)),
+) -> State(census) {
+  let snapshot = case exec_ledger.summary(state.ledger) {
+    Ok(summary) -> Ok(Snapshot(ledger: summary, census: state.census))
+    Error(_) -> Error(Nil)
+  }
+  process.send(reply, snapshot)
+  state
+}
+
+// The closure `Reporting` carries. It sends on the host's own subject and
+// waits on a subject of its own, so a late answer after the deadline lands in
+// a mailbox nobody reads and the next question is not confused by it.
+fn summarizer(
+  inbox: Subject(Event(census)),
+) -> fn(Int) -> Result(Snapshot(census), Nil) {
+  fn(within_ms) {
+    let reply = process.new_subject()
+    process.send(inbox, Summarize(reply:))
+    process.receive(reply, within_ms) |> result.flatten
+  }
+}
+
 // --- the selector -------------------------------------------------------------
 
 // Everything the host listens to: its name, every monitor it holds, and the
@@ -1692,6 +1788,7 @@ fn selector_for(state: State(census)) -> Selector(Event(census)) {
     process.new_selector()
     |> process.select_map(process.named_subject(state.config.name), FromPeer)
     |> process.select_monitors(CallerDown)
+    |> process.select(state.inbox)
   dict.fold(state.jobs, base, fn(selector, id, tracked) {
     process.select_map(selector, tracked.sink, fn(pulled) {
       JobFinished(job: id, pulled:)

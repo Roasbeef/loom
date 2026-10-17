@@ -72,6 +72,14 @@
 //// unannounced. It runs apart from the port, as a spawn does, because it walks
 //// the catalogue.
 ////
+//// Protocol-change/085 adds `Report`, which answers what the daemon says about
+//// itself: its build, its uptime, and the executor, orchestrator and directory
+//// facts it has (`client/node_report`). The facts come from the daemon through
+//// `Reads`, as `Holds` comes through its `Holder`, and the port starts with
+//// `unreported` where a daemon has none to give. A report is built where the
+//// facts are, so it runs apart from the port, as `Holds` does. `Holds` is the
+//// subset of a report that `revoke` needed before the report existed.
+////
 //// The port reveals whether an identity is in this daemon's catalogue, and for
 //// `Holds` two counts of sessions, to a peer the operator pinned as a trusted
 //// Erlang node. It carries no credential, and a client is never redirected by
@@ -89,6 +97,7 @@
 //// bounded by the grants the recipient made to the asking session.
 
 import client/internal/ffi_remote
+import client/node_report.{type NodeReport}
 import client/peer_mail
 import client/remote/address.{type Address}
 import client/remote_spawn.{
@@ -100,7 +109,10 @@ import client/session_move.{
 }
 import core/ids.{type OpId}
 import core/json.{type JsonValue}
+import gleam/erlang/atom
+import gleam/erlang/node
 import gleam/erlang/process.{type Name, type Subject}
+import host/build_identity
 import runtime/residency
 import tools/agent.{type Handle}
 import weft
@@ -247,6 +259,53 @@ pub type Message {
     /// Where the answer goes.
     reply: Subject(Result(Held, Nil)),
   )
+
+  /// What this daemon says about itself (protocol-change/085): its build and
+  /// uptime, and the executor, orchestrator and directory facts it has. The
+  /// answer is always a report; a daemon with none of those facts says only who
+  /// it is. A port built before this constructor existed has no clause for it
+  /// and stops, as for `Holds`, so this port assumes peers of the same build.
+  Report(
+    /// Where the report goes.
+    reply: Subject(NodeReport),
+  )
+}
+
+/// What the daemon supplies for the questions the port cannot answer from its
+/// own state. The port neither reads a ledger nor walks a catalogue; the daemon
+/// does, and hands the port the function.
+pub type Reads {
+  Reads(
+    /// Builds this daemon's report. It runs in a task of its own, linked to the
+    /// port and cancelled with the requester (`detached`), so it may ask the
+    /// executor host, the movers and the catalogue, each of which has its own
+    /// deadline.
+    report: fn() -> NodeReport,
+  )
+}
+
+/// The reads of a daemon with nothing to report beyond who it is: its node, its
+/// build, and no orchestrator, executor or directory facts. The clocks are
+/// zero, since a daemon that reports nothing has no start to measure from.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let report = orchestrator_port.unreported().report()
+/// assert report.executor == option.None
+/// ```
+pub fn unreported() -> Reads {
+  Reads(report: fn() {
+    let identity = build_identity.current()
+    node_report.bare(
+      node: atom.to_string(node.name(node.self())),
+      build_version: identity.version,
+      build_commit: identity.commit,
+      epoch: "",
+      started_ms: 0,
+      now_ms: 0,
+    )
+  })
 }
 
 /// What a daemon's catalogue holds, as `Holds` answers it.
@@ -448,6 +507,7 @@ pub fn start(
     declining(),
     refusing_spawns(),
     unheld,
+    unreported(),
   )
 }
 
@@ -478,6 +538,7 @@ pub fn start_serving(
     declining(),
     refusing_spawns(),
     unheld,
+    unreported(),
   )
 }
 
@@ -503,6 +564,7 @@ pub fn start_importing(
     importer,
     refusing_spawns(),
     unheld,
+    unreported(),
   )
 }
 
@@ -514,7 +576,7 @@ pub fn start_importing(
 /// ## Examples
 ///
 /// ```gleam
-/// // let assert Ok(_) = orchestrator_port.start_with(orchestrator_port.default(), held, forward, describe, importer, spawns, holds)
+/// // let assert Ok(_) = orchestrator_port.start_with(orchestrator_port.default(), held, forward, describe, importer, spawns, holds, reads)
 /// ```
 pub fn start_with(
   name: Name(Message),
@@ -524,10 +586,11 @@ pub fn start_with(
   importer: Importer,
   spawns: SpawnHost,
   holds: Holder,
+  reads: Reads,
 ) -> actor.StartResult(Subject(Message)) {
   actor.new(Nil)
   |> actor.on_message(fn(state, message) {
-    answer(held, peer, describe, importer, spawns, holds, state, message)
+    answer(held, peer, describe, importer, spawns, holds, reads, state, message)
   })
   |> actor.named(name)
   |> actor.hibernate_after(residency.hibernate_after_ms)
@@ -554,6 +617,7 @@ fn answer(
   importer: Importer,
   spawns: SpawnHost,
   holds: Holder,
+  reads: Reads,
   state: Nil,
   message: Message,
 ) -> actor.Next(Nil, Message) {
@@ -577,6 +641,10 @@ fn answer(
     // the catalogue is large. It runs apart from the port, as an activation
     // does, so a question about ownership is not kept waiting behind it.
     Holds(reply:) -> detached(reply, fn(_node) { holds() })
+
+    // A report asks the executor host, the movers and the catalogue, each of
+    // which may be busy, so it runs apart from the port for the same reason.
+    Report(reply:) -> detached(reply, fn(_node) { reads.report() })
 
     // A piece is written in this turn, so the pieces of one copy land in the
     // order they were sent.
@@ -732,6 +800,24 @@ pub fn ask_holds(at: Address(Message), within_ms: Int) -> Result(Held, Nil) {
     Ok(Ok(held)) -> Ok(held)
     Ok(Error(Nil)) | Error(Nil) -> Error(Nil)
   }
+}
+
+/// Asks the port at `at` what the daemon says about itself, and waits at most
+/// `within_ms`. `Error(Nil)` means the daemon did not say: the node is
+/// unreachable, no port is registered there, or the report was late. A report
+/// that arrives is the daemon's own account, and its absence is never read as
+/// "nothing to report".
+///
+/// ## Examples
+///
+/// ```gleam
+/// // orchestrator_port.ask_report(Address(node: peer, name: orchestrator_port.default()), 2500)
+/// ```
+pub fn ask_report(
+  at: Address(Message),
+  within_ms: Int,
+) -> Result(NodeReport, Nil) {
+  exchange(at, fn(reply) { Report(reply:) }, within_ms)
 }
 
 /// Sends one piece of a copy to the port at `at` and waits at most `within_ms`

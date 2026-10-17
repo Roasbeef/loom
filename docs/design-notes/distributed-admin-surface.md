@@ -62,7 +62,7 @@ connection with `epmd -names`, `lsof` or `ss`.
 
 **The session list.** `sessions.list` reads this daemon's catalogue
 (`ListSessions`, `client/daemon/server.gleam:3227`). The orchestrator port answers
-`Owns` and the move messages (`Message`, `client/remote/orchestrator_port.gleam:113`).
+`Owns` and the move messages (`Message`, `client/remote/orchestrator_port.gleam:125`).
 Nothing answers "what sessions do you hold".
 
 **Health.** The pieces exist and none is readable from a client. The executor's
@@ -167,15 +167,15 @@ vocabulary can halt a node ("What the closed vocabularies limit",
 that rule and add no second mechanism. Mixed builds stay unsupported, as for every
 other constructor.
 
-`Message` (`client/remote/orchestrator_port.gleam:113`) gains `Report(reply)` and
-`Sessions(after, limit, reply)`. `answer` (`client/remote/orchestrator_port.gleam:530`)
-serves both through `detached` (`client/remote/orchestrator_port.gleam:579`), the
+`Message` (`client/remote/orchestrator_port.gleam:125`) gains `Report(reply)` and
+`Sessions(after, limit, reply)`. `answer` (`client/remote/orchestrator_port.gleam:593`)
+serves both through `detached` (`client/remote/orchestrator_port.gleam:643`), the
 path `Activate` uses: the computation runs in a run that dies with the requester and
 with the port, so a read never keeps an `Owns` question waiting. The port does not
 know the catalogue, the ledger or the movers. `start_with` takes one more closure
-record, and `start_orchestrator_port` (`client/daemon/main.gleam:910`) builds it
+record, and `start_orchestrator_port` (`client/daemon/main.gleam:949`) builds it
 from the registry, the movers and the executor host, the way it builds
-`catalogue_holds` (`client/daemon/main.gleam:943`) and `peer_command`
+`catalogue_holds` (`client/daemon/main.gleam:984`) and `peer_command`
 (`client/daemon/main.gleam:651`). The function runs on every daemon that has a
 `[distribution]` table, executors included, so a pure executor answers `Report`
 too. It answers with no orchestrator facts when it has no catalogue to describe.
@@ -198,7 +198,7 @@ orchestrator, an executor and a directory member at once.
   configured `[[distribution.peers]]`.
 - **Executor facts:** `protocol.version`, the scope counts by state (`ScopeState`,
   `storage/exec_ledger.gleam:211`), the limit on scopes that are not cleanly
-  closed (`Limits`, `storage/exec_ledger.gleam:191`), the scopes that block a
+  closed (`Limits`, `storage/exec_ledger.gleam:197`), the scopes that block a
   reopen (`closing`, or closed with unknown cleanup) with their session ids, bytes
   held against the ledger budget, the count of unacknowledged results, the platform
   label, the enforcement and toolchains from the most recent attach census
@@ -436,7 +436,7 @@ For each item in the owner's list: what exists, where it lives, and the proposal
 |---|---|---|
 | Orchestrator and executor reachable | Internal: `distribution.connect` results, and a link keeper for directory members only (`connect`, `client/distribution.gleam:506`) | `state` on each node in `deployment.status`, from the asker's own connect attempt |
 | Executor census (platform, enforcement, toolchains) | Returned at attach and kept in the live plane | Executor facts, from the last attach; absent before the first |
-| Capacity and live scopes | Ledger rows and the limit (`default_limits`, `storage/exec_ledger.gleam:459`; `LOOM_EXECUTOR_MAX_SCOPES`) | Executor facts: counts by state and the limit, as numbers |
+| Capacity and live scopes | Ledger rows and the limit (`default_limits`, `storage/exec_ledger.gleam:507`; `LOOM_EXECUTOR_MAX_SCOPES`) | Executor facts: counts by state and the limit, as numbers |
 | Helper pool | `pool_census` per plane, no node total | Deferred (section 10) |
 | Ledger bytes, unacknowledged results | Ledger only | Executor facts, as numbers |
 | Scopes that block a reopen | Ledger only; the operator learns of one from a refused open | Executor facts: session ids and state, with the `loom executor release` line in the page |
