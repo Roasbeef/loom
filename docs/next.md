@@ -113,7 +113,6 @@ proposals with `Alt+p` in the terminal or in the Session pane on the web page.
 
 **Left open on purpose.**
 
-- A Memory overview pane (notes, counters, the rules file) in either host.
 - A proposal kind that edits configuration, and one that targets the global
   `AGENTS.md`. Both stay out until there is an edit door for them.
 - Owner-only admission of the web proposals pane at the operator socket, by
@@ -141,3 +140,27 @@ cost. The recall test's figures (6 of 30 paraphrase wordings found by exact
 quoted words, 16 of 30 by prefix terms with `OR`) come from a synthetic corpus
 and say nothing about real use.
 
+## PR #955 rebase and focused review
+
+PR #955 was rebased onto main `877e05f56270fada0392ad7b1f252462230ebfa3`
+on October 16, 2026. The replay preserves remote-child drain and release,
+held-input withdrawal, Notes, completion and private side queries. Side-query
+accounting now calls `auxiliary.record_request`, and the lease-free register
+reader uses main's decode cache for the duration of its connection. The Memory
+overview is implemented in both hosts; the earlier open-item list incorrectly
+left it pending.
+
+The focused independent review found one P2 defect in
+`memory.rebuild_notes_index`: its lease-free read can publish an old snapshot
+after a concurrent `remember` has committed and published a newer index. The
+note remains durable and searchable, but its injected index entry is absent
+until a later rebuild or note write. Serialize rebuild publication with the
+existing memory-store lease. This defect remains open; this task rebased and
+reviewed the PR without changing that behavior.
+
+The rebased client builds with warnings treated as errors. Storage (299 tests),
+events (56), focused memory (71), proposals (53), side queries (6) and daemon
+manager (50) suites pass.
+Formatting, documentation, generated web assets, prelude and lint gates pass.
+The original PR's Linux signoff predates this rebase. Full hosted CI, fresh
+Linux signoff and live UI validation are still required before merge.

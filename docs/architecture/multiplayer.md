@@ -168,7 +168,7 @@ gateway also pushes four things:
   bound the snapshot preview uses (`broadcast_delta`,
   `client/gateway.gleam:3631`).
 - The presence roster when a peer subscribes and when one departs
-  (`publish_presence`, `client/gateway.gleam:3114`). Every subscribed
+  (`publish_presence`, `client/gateway.gleam:3189`). Every subscribed
   peer is pushed a copy, the newcomer included, and each copy costs one
   authority check for that peer.
   [Protocol-change/054](../../protocol-change/054-roster-push-on-subscribe.md)
@@ -177,10 +177,10 @@ gateway also pushes four things:
   refresh.
 
 Two pieces of wiring in `client/serve` make the pushes reach the shipped
-binary. It starts one `commit_forwarder` (`client/gateway.gleam:1511`) per
+binary. It starts one `commit_forwarder` (`client/gateway.gleam:1574`) per
 session and subscribes the writer to it, so the gateway learns of each
 commit. It also nests the two provider taps,
-`tap_provider_with(tap_preview_provider(...))` (`client/serve.gleam:4170`), so
+`tap_provider_with(tap_preview_provider(...))` (`client/serve.gleam:4109`), so
 every token reaches the gateway as a `ProviderDelta` while the bounded
 preview remains available to a terminal that attaches in the middle of an
 answer. The outer tap's second observer feeds the block summarizer's live
@@ -242,8 +242,8 @@ subscribes ([protocol-change/054](../../protocol-change/054-roster-push-on-subsc
 Delivery splits on the envelope, not on the connection (`send_to`,
 `client/gateway.gleam:3539`). A frame with a `reply_to` goes out on that
 command's single bounded reply capability. A frame without one goes out
-through `deliver` (`client/gateway.gleam:4167`). Both paths call
-`check_binding` (`client/gateway.gleam:2942`) immediately before the
+through `deliver` (`client/gateway.gleam:4251`). Both paths call
+`check_binding` (`client/gateway.gleam:3017`) immediately before the
 frame leaves, so every frame that reaches a socket has passed the same
 membership check, and there is no second authority path to keep
 consistent.
@@ -288,7 +288,7 @@ prompt opens the run. The gateway holds the second in a per-strand queue,
 answers it `mutation_outcome {status: "queued"}`, and submits it under its
 own submitter's origin when the run settles (`hold_prompt`,
 `client/gateway.gleam:5042`). The queue is gateway memory and holds four
-prompts per strand (`held_per_strand`, `client/gateway.gleam:1085`). A
+prompts per strand (`held_per_strand`, `client/gateway.gleam:1133`). A
 fifth prompt receives the `conflict` reply that every second prompt used
 to receive.
 
@@ -322,8 +322,8 @@ sequenceDiagram
 
 The drain runs inside the gateway's pull, because that pull is the one
 place where the gateway observes that a strand has gone idle.
-`drain_idle_strands` (`client/gateway.gleam:5877`) is called from
-`pull_and_broadcast` (`client/gateway.gleam:3272`) after `state.live` has
+`drain_idle_strands` (`client/gateway.gleam:5963`) is called from
+`pull_and_broadcast` (`client/gateway.gleam:3353`) after `state.live` has
 been refreshed from the registers and before any frame leaves.
 
 Ordinarily the drain submits only the head of the queue. Natural
@@ -403,9 +403,9 @@ stateDiagram-v2
 
 A notice arriving in `Ready` starts a catch-up at once. A notice arriving
 while a request is in flight sets a one-bit mark, `Refresh.Due`, and
-`send_queued` (`session_view/session_channel.gleam:1788`) starts the catch-up at the
+`send_queued` (`session_view/session_channel.gleam:1795`) starts the catch-up at the
 next transition to `Ready`. That is sooner than the idle refresh in
-`tick` (`session_view/session_channel.gleam:1391`) would have started it. The mark is a
+`tick` (`session_view/session_channel.gleam:1398`) would have started it. The mark is a
 bit rather than a count because a notice carries no state, so any number
 of them mean the same thing: capture when free.
 

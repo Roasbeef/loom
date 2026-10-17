@@ -45,8 +45,8 @@ The terminal's whole update is `runtime.settle(step(runtime.message(event,
 model), runtime.receive(model)))` (`packages/tui/src/tui.gleam:1764`
 (`update`)). `step` takes `msg.Msg` (`tui/msg.gleam:59` (`Msg`)): an
 `Input(at, event)` it reduces through `apply_input` and `settle_update`
-(`packages/tui/src/tui.gleam:2519` (`apply_input`),
-`packages/tui/src/tui.gleam:2520` (`settle_update`)), or an `Arrived`
+(`packages/tui/src/tui.gleam:2964` (`apply_input`),
+`packages/tui/src/tui.gleam:2965` (`settle_update`)), or an `Arrived`
 that `admission.admit` only files (`tui/admission.gleam:68` (`admit`)).
 Every reducer reads and writes one record, `State(view)`
 (`tui/model.gleam:399` (`Model`)), whose `view` field already holds the
@@ -196,7 +196,7 @@ terminal, 4 handles, 3 split.
 | `usage` | a | The captured usage. |
 | `generation_started_ms`, `output_rate_tps` | a | The generation clock and the rate it yields. |
 | `rail` | b | The operator's choice about the docked rail, none until made. |
-| `details_expanded` | a | The extent the shared line builders read through `presentation` (`session_view/model.gleam:1193`), and `advance_generation_clock` checks it (`session_view/step.gleam:135`); a page will toggle it too. |
+| `details_expanded` | a | The extent the shared line builders read through `presentation` (`session_view/model.gleam:1193`), and `advance_generation_clock` checks it (`session_view/step.gleam:143`); a page will toggle it too. |
 | `repaint_phase`, `activity_frame` | b | Frame-local paint state. |
 | `activity_started_ms`, `activity_elapsed_s`, `generation_elapsed_s` | a | Elapsed readings the tick advances from the stamp; a chip shows the same figures. |
 | `streams`, `tool_tails` | a | The live answer and tool tails. |
@@ -459,7 +459,7 @@ terminal halves of the splits. A terminal reducer that calls into the
 shared step stores the result through `hold_shared`, the same discipline
 as `hold_channel`: the shared outbox is moved into the terminal's at the
 point of the call, so a step that decides a lane close, then a terminal
-`Discard`, then a lane write (`tui/interaction.gleam:377` (`Discard`))
+`Discard`, then a lane write (`tui/interaction.gleam:383` (`Discard`))
 still performs them in that order. The terminal's effect type gains one
 variant, `Step(step.Effect(Connection, Recorder))`,
 and `perform_io` gains two arms (`tui/runtime.gleam:446`
@@ -583,7 +583,7 @@ The worst cases in the code, and the cut for each:
    and `active_strand` against `after`'s, so a switch from a strand key,
    the strip, a capture that renames the session or a replay's `Adopt`
    parks both halves. `restore_returned_draft`
-   (`session_view/event_fold.gleam:606` (`restore_returned_draft`)) is the one
+   (`session_view/event_fold.gleam:617` (`restore_returned_draft`)) is the one
    shared reducer that writes a parked editor: the returned text becomes a
    shared field, `returned_drafts: List(#(strand, text))`, and the shell
    appends it to the editor it owns.
@@ -611,7 +611,7 @@ The worst cases in the code, and the cut for each:
    remembers the text in the input history. The web's `drafts` counter is
    the same edge, so the two hosts empty their editors on the same fact.
 
-5. **`submit_text`** (now `commands.submit`, `session_view/commands.gleam:372` (`submit`)) parses
+5. **`submit_text`** (now `commands.submit`, `session_view/commands.gleam:379` (`submit`)) parses
    the draft and dispatches over `command.Command`, opening overlays for
    `Help`, `Models`, `Sessions` and the panels and sending frames for the
    rest. The shell parses first, as described under the message: surface
@@ -641,7 +641,7 @@ The worst cases in the code, and the cut for each:
    lookup's inspector (`LookupAnswered`) are facts the terminal applies
    after the update.
 
-7. **`settle_update`** (`packages/tui/src/tui.gleam:2520`
+7. **`settle_update`** (`packages/tui/src/tui.gleam:2965`
    (`settle_update`)) runs nine calls after every event. Three are
    shared and move into `step.update`'s own settle: `sync_context`,
    `sync_advisor_nudges`, `sync_goal`. Six are terminal and stay:
@@ -650,13 +650,13 @@ The worst cases in the code, and the cut for each:
    (`tui/inbound.gleam:1067` (`request_visible_worktree`) reads
    `layout.diff_shown`); `request_history_for_view`, which becomes
    `Acted(OlderHistory)` for the same reason
-   (`tui/interaction.gleam:2197` (`request_history_for_view`) reads the
+   (`tui/interaction.gleam:2234` (`request_history_for_view`) reads the
    viewport); `publish_herdr`; `refresh_render_cache`; the viewport snap;
    and `refresh_frame_cache`. The compile-time boundary the comment above
    `apply_input` describes keeps its shape: the shared `update` applies
    its settle to a parameter, and the terminal's `settle_update` applies
    its remaining steps to `updated` as it does now
-   (`packages/tui/src/tui.gleam:2519` (`apply_input`)).
+   (`packages/tui/src/tui.gleam:2964` (`apply_input`)).
 
 8. **The tick** (`tui/tick.gleam:139` (`update_tick`)) is a fixed
    order of drains: replay, strip, activity, control, candidate,
@@ -676,7 +676,7 @@ The worst cases in the code, and the cut for each:
    terminal function over `TuiModel`, and the calls it makes into shared
    reducers become `Acted` commands or direct calls through `hold_shared`.
    `update_ready_key`'s order, Escape before the drain
-   (`tui/interaction.gleam:1841` (`update_ready_key`)), is kept because
+   (`tui/interaction.gleam:1876` (`update_ready_key`)), is kept because
    the shell decides when to call the shared drain, as it does today.
 
 ## 4. What the web view deletes
@@ -2078,7 +2078,7 @@ them.
 
 4. **Compile time.** The step's settle chains are the two places the
    Erlang inliner has cost a minute before (the comment above
-   `packages/tui/src/tui.gleam:2519` (`apply_input`)). S3 creates a third
+   `packages/tui/src/tui.gleam:2964` (`apply_input`)). S3 creates a third
    chain, the shell's edges. *Recommendation:* every S3 landing measures
    `erlc +time` on the generated modules and keeps the parameter boundary
    in each of the three chains; the `beam-compile-review` skill has the

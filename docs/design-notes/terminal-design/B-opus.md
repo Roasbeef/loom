@@ -216,7 +216,7 @@ No protocol change is needed for the view as drawn.
 |---|---|---|
 | Header row: brand, session, model, `Ctrl+g details` | removed; session name on the input frame's top rule | one row back at every size |
 | `transcript / main` label | a breadcrumb row only when a strand other than `main` is focused | the frame already names the target |
-| Footer of one to three rows (`footer_rows`, `tui/layout.gleam:524`) | the input frame's bottom rule: model › workspace › branch › ctx › cost, needs-you count on the right | up to three rows back; omp and Codex show this is enough |
+| Footer of one to three rows (`footer_rows`, `tui/layout.gleam:563`) | the input frame's bottom rule: model › workspace › branch › ctx › cost, needs-you count on the right | up to three rows back; omp and Codex show this is enough |
 | Status band under the composer rule | an activity line above the input frame | the spinner sits next to the thing it describes |
 | Agent strip under the footer | kept, under the input frame, with the same keys | the owner's recordings show it is the part that works |
 | 34-cell rail toggled by `Shift+Tab` (`body_layout` at `tui/layout.gleam:138`) and the 72-cell changes pane | one drawer with tabs; `Shift+Tab` docks and hides it | one side region instead of two that take turns |
@@ -409,9 +409,9 @@ record would need a new control command.
 | Strands tab: cache | outlook per strand | `outlook` at `session_view/cache_watch.gleam:120` |
 | Changes tab | session edits | `fold` at `session_view/changes_view.gleam:210` |
 | Session tab: jobs, viewers | jobs board, presence | `jobs` at `session_view/session_summary.gleam:99`, `viewers` at `session_view/session_summary.gleam:122` |
-| Code mode block, Trace tab | program, status, result | `code_mode_program` at `session_view/transcript_lines.gleam:3610`, `code_mode_result_lines` at `session_view/transcript_lines.gleam:3873`; the call list has no data and needs a new wire record |
-| Peer messages | authenticated origin | `PeerOrigin` at `core/message.gleam:43`, `peer_message_lines` at `session_view/transcript_lines.gleam:2669` |
-| Strand messages | harness text frame | `frame_message` at `client/agency.gleam:1877`; not recognised by `session_view` today |
+| Code mode block, Trace tab | program, status, result | `code_mode_program` at `session_view/transcript_lines.gleam:3674`, `code_mode_result_lines` at `session_view/transcript_lines.gleam:3937`; the call list has no data and needs a new wire record |
+| Peer messages | authenticated origin | `PeerOrigin` at `core/message.gleam:43`, `peer_message_lines` at `session_view/transcript_lines.gleam:2733` |
+| Strand messages | harness text frame | `frame_message` at `client/agency.gleam:2265`; not recognised by `session_view` today |
 | Images | mime type and bytes | `Image` at `session_view/transcript_image.gleam:29` |
 
 Every row above is either drawn today or a change inside `session_view` or
@@ -451,10 +451,10 @@ receives.
   "needs protocol-change: call record".
 
 What the client receives: the program, from the call's `program` argument
-only (`code_mode_program` at `session_view/transcript_lines.gleam:3610`),
+only (`code_mode_program` at `session_view/transcript_lines.gleam:3674`),
 and the result's details, which carry the value or the error message and
 details, `status`, `manifest_hash` and `sandbox`
-(`code_mode_result_lines` at `session_view/transcript_lines.gleam:3873`
+(`code_mode_result_lines` at `session_view/transcript_lines.gleam:3937`
 draws them). There is no call data at all: no call list, no capability
 names, no per-call status. Capability calls are serviced inside the
 satellite and the broker, and no transcript entry is written per call. A

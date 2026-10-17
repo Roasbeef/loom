@@ -8711,7 +8711,7 @@ unconfirmed drain, including a lost run without an outcome, consumes a slot for
 the service lifetime. Clear, forget and reset retire history without reclaiming
 that uncertain capacity. Settled flights drop their relay so usage records once.
 Final usage commits once through
-`distill.record_request` with phase `btw`; lost terminals retain unknown usage
+`auxiliary.record_request` with phase `btw`; lost terminals retain unknown usage
 evidence. No transcript entry, operation, executor, Agency, advisor feed, or
 main context hook runs for a side question.
 
