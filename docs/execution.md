@@ -247,6 +247,20 @@ This is not ceremony. It has repeatedly produced the actual finding:
   false positive — which is what forced the rule's definition to become
   exact instead of broad.
 
+Property and model-based tests are held to the same standard, and to
+three rules of their own. These are stated in `docs/gleam-style.md` Part
+III, "Property and model-based tests". First, every randomized test runs
+on a fixed qcheck seed with a name, and no environment variable changes
+it, so a red property is the same red property on every machine. You can
+re-run it as it stands; there is no seed to find and pass back in.
+Second, the proof is one mutation for each invariant family. Each
+mutation must fail under its own violation tag, and the shrunk
+counterexample it prints should be a few commands long. Third, a
+property that fails on unmodified code is a finding. Do not weaken it to
+make the gate pass. The conformance simulation is the exception to the
+seed rule: it keeps its own seeds, and `make replay-simulation
+SIM_SEED=<n>` re-runs one of them (`docs/architecture/simulation.md`).
+
 ### Run the gates a change affects
 
 `make check-affected` runs the part of the full gate that a change can

@@ -410,6 +410,19 @@ Two things are never shrunk:
   turn produces a different session rather than a simpler one, so a
   "minimal script" found that way would not be a real minimal case either.
 
+That is why the runner does not draw from qcheck or run as a `statem`
+spec, although every other randomized test in the tree does
+(`docs/gleam-style.md` Part III, "Property and model-based tests"). A
+qcheck shrink tree would shrink the script along with the schedule.
+`statem` shrinks command lists against a model, but this runner has no
+model: its oracle compares a fault-free run with a faulted one. An
+accepted shrink must also fail on every one of several runs of real
+processes. `statem`'s retries go the other way: they accept a candidate
+if any one run fails. The split SplitMix64 seed in
+`conformance/simulation/random.gleam` keeps the script fixed while the
+schedule changes. The two acceptance rules above are the simulation's own
+equivalent of `statem`'s rule that a shrink must keep the same tag.
+
 ## Running it
 
 `make check-conformance` runs the fast sweep in about twenty seconds:

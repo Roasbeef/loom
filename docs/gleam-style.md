@@ -1248,6 +1248,191 @@ won't use any at all") and in Loom's security model:
 - Shared assertion helpers are plain local functions
   (`fn should_encode(data, expected)`); fixtures are local closures.
 
+### Property and model-based tests
+
+A property test cannot report two things about itself: whether the
+failure it prints can be run again, and whether the cases it draws ever
+reach the code it claims to test. Every ruling below answers one of those
+two questions. They were settled when the tree's hand-rolled generators
+moved to [qcheck](https://hexdocs.pm/qcheck/) and its stateful harnesses
+moved to `statem` (`packages/statem`, model-based testing over qcheck in
+the manner of PropEr and Hypothesis).
+
+**Randomness comes from qcheck, on a fixed seed with a name.** A copied
+SplitMix, a linear congruential generator or a `draw(seed, n)` can only
+print the seed of a failure. A qcheck generator carries a shrink tree, so
+the failure arrives already reduced. The seed is a module constant, and
+its doc comment says what it seeds. Never use `qcheck.given`: it draws a
+random seed, so a gate that is red on one machine is green on the next.
+No environment variable overrides a seed; to see another sample, change
+the constant in a commit. Each test makes one `qcheck.run` over one
+generator, combining with `map2` or `tuple2` when the property needs
+several values. `packages/core/test/core/codec_test.gleam` is the shape:
+
+```gleam
+/// How many values each roundtrip property is checked over, and the qcheck
+/// seed they are drawn from. The seed is fixed so the gate is deterministic.
+const roundtrip_count = 200
+
+const roundtrip_seed = 41
+
+fn property(generator: qcheck.Generator(a), check: fn(a) -> Nil) -> Nil {
+  qcheck.default_config()
+  |> qcheck.with_test_count(roundtrip_count)
+  |> qcheck.with_seed(qcheck.seed(roundtrip_seed))
+  |> qcheck.run(generator, check)
+}
+```
+
+**Shape the generator for the shrink.** qcheck shrinks an integer toward
+the low end of its range, so an enum is drawn as `bounded_int(0, k) |>
+map(of_kind)` with its simplest variant at 0. A failing case then shrinks
+toward the least eventful thing. From
+`packages/machine/test/machine/property_test.gleam`:
+
+```gleam
+// Each call's plan is drawn as an index so that shrinking moves it toward
+// index zero, the plain non-terminating settle.
+let plan = qcheck.map(qcheck.bounded_int(from: 0, to: 4), plan_of_kind)
+```
+
+Combine independent generators with `map2`, `map3` or `tuple2` rather
+than with `bind`. `bind` throws away and regenerates every value
+downstream of the one it shrank, so a shrink produces a different case
+instead of a smaller one. Use `bind` only when the shape of what follows
+depends on the draw, as in `core/test/support/gen.json_value`. There the
+kind is drawn first, so a document shrinks toward `Null` before any of its
+leaves are simplified. Do not filter cases with guards in the property:
+make the generator produce only the cases the property is about. The
+hashline properties skipped cases with `total >= N`, and the guard was
+hiding a mistake in the generator rather than expressing a rule (0416c9a).
+
+**A sequence of operations on a stateful thing is a `statem` spec.**
+`statem`'s module doc explains why `qcheck.list` is not enough. A list of
+independent elements cannot let one command depend on the state the
+earlier ones produced. `bind` regenerates downstream commands on a shrink.
+And `qcheck.run` shrinks to whatever still panics, which may be a
+different bug. The spec is a record of functions, and these are its
+rules:
+
+- **Commands are data**: a custom type, never closures, so a list prints,
+  replays and can be checked against a model without touching the system.
+- **A command names existing state by index, taken modulo the model's
+  size**, never by value. Shrinking deletes commands from anywhere in the
+  list. A command that named a key loses its meaning when the command
+  that created the key is deleted, but an index still names something.
+  `todos_model_test`'s `TaskAt(index:, spelling:)` resolves through `nth`,
+  and `executor_property_test` resolves a pick modulo the executions
+  started so far.
+- **The command generator reads only the model.** It never reads the
+  system under test. The exec-ledger test used to draw its next operation
+  by reading the live ledger, and it was rewritten when it moved to
+  `statem` (ce5860e).
+- **An oracle that must observe the system lives in the `sut`, and the
+  model stays coarse.** `executor_property_test`'s model is `Model(starts:
+  Int)`, which is all the precondition needs; what each caller heard is
+  recorded beside the real broker. `store_model_test` keeps the pure
+  `MemoryState` beside the SQLite store it checks.
+- **Each invariant has its own `Violation` tag.** Shrinking accepts a
+  candidate only if it fails with the original tag, so the tag is what a
+  shrink preserves. Two bugs under one tag can swap places while
+  shrinking. Check the specific rules before any general comparison with
+  a reference, so a failure carries the rule's name and not a generic
+  disagreement (`todos_model_test` checks `todos.valid` and the other
+  board rules before `todos.model`).
+- **Each execution gets a fresh system, and teardown always runs.**
+  `new_sut` returns a system that shares nothing with earlier ones, and
+  `teardown` releases it on every path, including crashes. That is why a
+  failing case and the shrink candidates after it cannot disturb each
+  other.
+- **A system that depends on the scheduler retries each shrink
+  candidate.** For such a system the seed reproduces the plan but not the
+  interleaving. `with_shrink_retries(2)` counts a candidate as failing if
+  any run fails with the original tag, so one lucky run cannot end the
+  shrink early.
+- **Bound shrinking with `with_max_shrinks`, never with a wall clock.**
+  The executor plans allow eight executions, retries included, because a
+  candidate that fails on a poll deadline takes seconds and gleeunit
+  kills a test after fifty. A bound on executions gives the same result on every machine; a wall
+  clock does not.
+- **Prove that the generator reaches what the rules are about.** A
+  generator that stops producing a case does not fail. Its property passes
+  without ever testing the case. Beside each spec there is a test that
+  walks `statem.commands(spec, config, run)` (the list that run `run`
+  draws, with nothing executed) and asserts that every command kind and
+  every interesting state is reached. For plain qcheck, a census over
+  `qcheck.generate` on the same seed does the same job
+  (`jobstate_test.the_record_generator_reaches_every_phase_test`).
+
+The test body is always the same. `statem.check` returns a `Result`, so
+the `statem` package itself never panics:
+
+```gleam
+pub fn the_board_keeps_its_rules_under_any_sequence_test() {
+  case statem.check(spec(), config()) {
+    Ok(Nil) -> Nil
+    Error(failure) -> panic as statem.report(failure, describe)
+  }
+}
+```
+
+**A property that fails on unmodified code is never weakened until it
+passes.** It may be narrowed only when the narrower statement is the
+invariant, and only with a citation, written beside the narrowing, to
+the doc or spec that says so. The precedent is in `machine` (eff0cbd). A
+response that settles under cancelled control is committed as `Aborted`
+with its tool calls intact and no results. That is sound only because
+context projection drops aborted responses (spec WP-C), so those calls
+never reach a provider. "Every tool call has a result" was therefore
+restated over answerable responses, with that argument in the comment.
+Without such a citation, the failure is a finding. Either the code
+changes, as `claim_delegate` did when it answered a raw foreign-key error
+where the doc promised `Missing` (ce405d5), or the doc changes because
+the code is right and the doc never said so (990d041). The
+block-summary pacing book is the third shape: a property stated straight
+from the package's own notes failed on unmodified code, shrank to four
+commands, and the code was wrong (448d016). A finding that cannot be
+fixed in the same change is recorded where the next reader will look,
+on its issue and in the package's `CLAUDE.md`.
+
+**Proof is a mutation for each invariant family, and a short
+counterexample.** `docs/execution.md` §4 applies here as it applies to
+every other test. Break the code once for each family of rules, and
+confirm that the failure carries that family's tag and only that tag.
+Then read the shrunk counterexample. Two to four commands is typical:
+dropping the exec ledger's token comparison shrinks to one attach and one
+admit, and an LSP change that keeps the old text shrinks to two commands.
+A long shrunk sequence means the spec is fighting the shrinker. The
+usual causes are references by value, a `bind`, or two rules sharing one
+tag. Fix the spec before trusting it.
+
+**When not to use `statem`.** It earns its place when a command's
+meaning depends on earlier commands. Plain qcheck is the right tool in
+three cases:
+
+- **A pure one-shot property**, such as a codec round trip, takes one
+  value and asserts one thing.
+- **A single-state walk** draws a state and an input independently and
+  checks one transition. `goalloop_test` draws a goal and an observation
+  with `qcheck.tuple2` and asks `next_action` about the pair. There is no
+  sequence, so there is nothing for a model to track.
+- **A fold over a whole sequence with no model.** `execution_test`
+  (broker) and `jobstate_test` (client) draw event lists that are
+  admissible in every state. Their invariants (at most one settlement,
+  terminal is absorbing) are statements about the whole fold. A
+  precondition would reject nothing, and a model would only restate the
+  property.
+
+The conformance simulation keeps its own SplitMix64 seeds and its own
+schedule shrinker, and that is deliberate.
+`docs/architecture/simulation.md` gives the reasons. A seed is split into
+a script and a fault schedule. Only the schedule is shrunk, because a
+script's meaning depends on its whole shape. Every candidate must fail
+the same named check and be corroborated over repeated runs of real
+processes. The oracle is a comparison between a fault-free run and a
+faulted run, not a model, and its pinned corpus is kept as hand-built
+cases because a seed's meaning changes whenever the generator does.
+
 ---
 
 ## Part IV — Loom-specific policy
