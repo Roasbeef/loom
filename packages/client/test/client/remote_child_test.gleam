@@ -92,6 +92,7 @@ pub fn a_stub_round_trips_in_every_state_test() {
       agent.BudgetExpired,
       agent.ParentFinished,
       agent.Released,
+      agent.TokenBudgetSpent,
     ],
     fn(outcome) {
       round_trips(a_stub(remote_child.Settled(a_placed(), outcome, a_usage())))
@@ -277,4 +278,60 @@ pub fn a_cell_that_does_not_decode_is_left_out_of_the_stubs_test() {
       #("remote-child/b", json.String("garbage")),
     ])
     == [remote_child.Kept("remote-child/a", a_stub(remote_child.Requested))]
+}
+
+pub fn settled_usage_is_summed_per_orchestrator_in_name_order_test() {
+  let settled = fn(orchestrator, input) {
+    a_stub_on(
+      orchestrator,
+      remote_child.Settled(
+        placed: a_placed(),
+        outcome: agent.Completed,
+        usage: remote_spawn.ChildUsage(
+          input:,
+          output: 10,
+          cache_read: 1,
+          cache_write: 2,
+          cost: 0.25,
+        ),
+      ),
+    )
+  }
+  let stubs =
+    kept([
+      settled("desk", 100),
+      settled("box", 200),
+      settled("box", 300),
+      a_stub_on("box", remote_child.Spawned(placed: a_placed())),
+      a_stub_on("box", remote_child.Requested),
+      a_stub_on("box", remote_child.Refused(reason: "no")),
+    ])
+
+  // Only a settled child has reported usage. A running, a pending and a refused
+  // one add nothing.
+  assert remote_child.usage_by_orchestrator(stubs)
+    == [
+      #(
+        "box",
+        remote_spawn.ChildUsage(
+          input: 500,
+          output: 20,
+          cache_read: 2,
+          cache_write: 4,
+          cost: 0.5,
+        ),
+      ),
+      #(
+        "desk",
+        remote_spawn.ChildUsage(
+          input: 100,
+          output: 10,
+          cache_read: 1,
+          cache_write: 2,
+          cost: 0.25,
+        ),
+      ),
+    ]
+  assert remote_child.settled_tokens(stubs) == 630
+  assert remote_child.settled_tokens([]) == 0
 }

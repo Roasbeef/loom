@@ -36,7 +36,13 @@
 ////    a strand here or a `Delegation`, `run_ended_in` writes the ended fence
 ////    before it reaps, and `released_in` writes the released fence before it
 ////    stops every child.
-//// 10. The other direction, a child that runs on another orchestrator, is
+//// 10. `metering_hooks` wraps a delegate session's usage slot: each settled
+////     request spawns one process, off the driver, that adds its tokens to the
+////     spawner's day through the metering report and, when the spawner sets a
+////     child token budget, has `stop_if_spent` read the child's total and ask
+////     the holder to stop it. The holder's `StopChild` runs the same `reap` as
+////     every other stop.
+//// 11. The other direction, a child that runs on another orchestrator, is
 ////     `spawn_elsewhere`: the holder's `admit_remote` writes the stub, then
 ////     `ask_until_answered` sends the `Spawn` and `record_answer` writes down
 ////     the reply. `wait_across` joins local and remote handles in one call,
@@ -112,6 +118,24 @@
 //// that repeats, or that runs after a restart has reopened the session, finds the
 //// children already stopped or stops the ones that became overdue while the
 //// daemon was down. Deadlines are absolute, so time spent down counts.
+////
+//// ## Metering a spawner's children
+////
+//// A spawner can bound what its children spend on this machine
+//// (`client/spawners`). The day's totals live in the registry's catalogue, and
+//// the Agency's part is the two things only it can do. It reports each settled
+//// request's tokens, and it stops a child that has used its own budget.
+////
+//// Both happen on a process the usage hook spawns unlinked, because the hook runs
+//// on the strand's driver and the driver must not wait on the registry or on the
+//// holder. The spawned process reads the child's total from the usage ledger
+//// (`child_usage.of_strands`, a scan outside the holder) and, if the budget is
+//// spent, sends the holder a `StopChild`. The holder then records the stop and
+//// aborts the run through `reap`, in the same turn as every other stop, so the
+//// durable mark still comes before the abort. The request that crossed the budget
+//// has already been paid for, so a child overshoots by at most one request. A
+//// stop that races the child's own finish is harmless: a run that completed keeps
+//// its outcome, and only an aborted one reads the reason.
 ////
 //// ## A child on another orchestrator
 ////
@@ -493,6 +517,12 @@ pub type Message {
   /// stops every child still running. Answers how many were stopped.
   DelegateRelease(reply: Subject(Result(Int, Refusal)))
 
+  /// Stops the child on `strand` if its current run has no stop yet, recording
+  /// `stop` before the abort. Sent by the usage hook's spawned process when a
+  /// child has spent its token budget, and fire-and-forget: the sender has
+  /// nothing to wait for, and a repeat finds the run already stopped.
+  StopChild(strand: String, stop: child_run.Stop)
+
   /// The periodic heartbeat of a session with `deadline_tick_ms`: stops every
   /// child whose deadline has passed, whether or not anything is waiting.
   DeadlineTick
@@ -586,6 +616,15 @@ pub fn start(
       }
       DelegateRelease(reply:) -> {
         process.send(reply, released_in(config, state))
+        actor.continue(state)
+      }
+      StopChild(strand:, stop:) -> {
+        // A ledger that cannot be read drops the stop. The child's next settled
+        // request is judged again by the same budget, so nothing is lost for good.
+        case read_ledger(state) {
+          Ok(ledger) -> stop_child_in(config, state, ledger, strand, stop)
+          Error(_refusal) -> Nil
+        }
         actor.continue(state)
       }
       DeadlineTick -> {
@@ -750,6 +789,114 @@ pub fn reaping_hooks(hooks: effects.Hooks, config: Config) -> effects.Hooks {
         ))
     }
   })
+}
+
+/// What a delegate session reports to the daemon about its children's spend,
+/// and the budget it enforces on one child (protocol-change/084, phase 2).
+pub type Metering {
+  Metering(
+    /// Adds tokens to the spawner's day. It may wait on the registry, so the hook
+    /// calls it only from a process of its own.
+    spend: fn(Int) -> Nil,
+    /// The tokens one child may use, input plus output, or `None` for no bound.
+    child_budget: Option(Int),
+  )
+}
+
+/// Wraps the usage slot of a delegate session so that every settled request
+/// reports its tokens and is judged against the child's budget.
+///
+/// The slot runs on the strand driver's own process, so the whole of the work
+/// there is one `process.spawn_unlinked`; the report, the ledger read and the
+/// stop all happen on the spawned process. A request that used no tokens spawns
+/// nothing, and an adjustment row that took tokens back is not reported as
+/// negative spend. The inner slot is called after the spawn, as the glance hook
+/// does.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // effects.Hooks(..built.hooks, usage: ..) == agency.metering_hooks(built.hooks, config, metering)
+/// ```
+pub fn metering_hooks(
+  hooks: effects.Hooks,
+  config: Config,
+  metering: Metering,
+) -> effects.Hooks {
+  let inner = hooks.usage
+  effects.Hooks(..hooks, usage: fn(operation, row: entry.UsageRow) {
+    let tokens = row.usage.input + row.usage.output
+    case tokens > 0 {
+      True -> {
+        let _meter =
+          process.spawn_unlinked(fn() {
+            metering.spend(tokens)
+            stop_if_spent(config, operation, metering.child_budget)
+          })
+        Nil
+      }
+      False -> Nil
+    }
+    inner(operation, row)
+  })
+}
+
+// Judges the child that ran `operation` against its budget and asks the holder
+// to stop it when the budget is spent. An operation that belongs to no child (the
+// delegate session's own strand) has no run record, and a ledger or a holder that
+// cannot be reached leaves the judgment to the child's next request.
+fn stop_if_spent(config: Config, operation: OpId, budget: Option(Int)) -> Nil {
+  case budget {
+    None -> Nil
+    Some(budget) -> {
+      let judged = {
+        use runtime <- result.try(borrow(config))
+        use strand <- result.try(run_strand(runtime, operation))
+        use total <- result.try(
+          child_usage.of_strands(runtime, [strand])
+          |> result.map_error(agent.PlaneFailed),
+        )
+        use usage <- result.try(
+          dict.get(total, strand)
+          |> result.replace_error(agent.NotAddressable(strand:)),
+        )
+        use holder <- result.map(
+          holder(config)
+          |> result.replace_error(agent.AgencyUnavailable),
+        )
+        case usage.input + usage.output >= budget {
+          True ->
+            process.send(
+              holder,
+              StopChild(strand:, stop: child_run.TokenBudgetSpent),
+            )
+          False -> Nil
+        }
+      }
+      result.unwrap(judged, Nil)
+    }
+  }
+}
+
+// The strand an operation ran on, from its run record. A child's every run has
+// one, and the delegate session's own strand has none.
+fn run_strand(
+  runtime: api.Runtime,
+  operation: OpId,
+) -> Result(String, Refusal) {
+  use cell <- result.try(
+    api.fact_cell(runtime, child_run.key(operation))
+    |> result.map_error(fn(error) { agent.PlaneFailed(describe_api(error)) }),
+  )
+  case cell {
+    Some(api.FactCell(value:, ..)) ->
+      child_run.decode(value)
+      |> result.map(fn(run) { run.strand })
+      |> result.replace_error(agent.PlaneFailed(
+        "the child run record is corrupt",
+      ))
+    None -> Error(agent.NotAddressable(strand: ""))
+  }
 }
 
 // The parent operation, rather than the original spawn, owns renewed work.
@@ -2087,7 +2234,8 @@ fn partial_report(
     | Aborted
     | agent.BudgetExpired
     | agent.ParentFinished
-    | agent.Released -> {
+    | agent.Released
+    | agent.TokenBudgetSpent -> {
       let heading = case outcome {
         Failed(_) -> "Partial reviewer output (failed)."
         Aborted -> "Partial reviewer output (stopped)."
@@ -2096,6 +2244,8 @@ fn partial_report(
         agent.ParentFinished ->
           "Partial reviewer output (owning parent run ended)."
         agent.Released -> "Partial reviewer output (parent session deleted)."
+        agent.TokenBudgetSpent ->
+          "Partial reviewer output (child token budget spent)."
         Completed -> "Reviewer output."
       }
       case final, notes {
@@ -2778,6 +2928,32 @@ fn released_in(config: Config, runtime: api.Runtime) -> Result(Int, Refusal) {
   })
 }
 
+// One child's current run is stopped for `stop`, if nobody has stopped it. A run
+// that already holds a stop is left alone, whatever its reason: the first cause
+// recorded is the cause, and `reap` would not overwrite it anyway. A strand with
+// no cell, or none running, is nothing to stop.
+fn stop_child_in(
+  config: Config,
+  runtime: api.Runtime,
+  ledger: Dict(String, Lineage),
+  strand: String,
+  stop: child_run.Stop,
+) -> Nil {
+  case dict.get(ledger, strand) {
+    Error(Nil) -> Nil
+    Ok(cell) ->
+      case current_run(runtime, cell) {
+        Ok(Some(run)) ->
+          case run.record.stop {
+            child_run.Unstopped ->
+              reap(config.abort_effects, runtime, run, stop)
+            _ -> Nil
+          }
+        Ok(None) | Error(_) -> Nil
+      }
+  }
+}
+
 // A cause is written once for this operation. Losing its CAS leaves the next
 // observation to read the winner; it never sends an unrecorded cancellation.
 fn reap(
@@ -3008,6 +3184,12 @@ fn run_outcome(
         ..,
       )))
     -> agent.Released
+    Aborted,
+      Ok(Some(ObservedRun(
+        record: child_run.Run(stop: child_run.TokenBudgetSpent, ..),
+        ..,
+      )))
+    -> agent.TokenBudgetSpent
     _, _ -> outcome
   }
 }

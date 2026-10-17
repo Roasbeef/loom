@@ -102,6 +102,8 @@ pub fn operation_reason(
         Ok("Stopped because the parent run ended.")
       json.String("released") ->
         Ok("Stopped because the parent session was deleted.")
+      json.String("token_budget_spent") ->
+        Ok("Stopped because the child's token budget was spent.")
       json.String("budget_expired") ->
         Ok("Stopped because the child run's wall-clock budget expired.")
       _ -> Error(Nil)

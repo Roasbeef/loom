@@ -1455,6 +1455,7 @@ pub fn wait_exposes_abort_causes_without_changing_the_wire_outcome_test() {
       #(agent.BudgetExpired, "budget_expired"),
       #(agent.ParentFinished, "parent_finished"),
       #(agent.Released, "released"),
+      #(agent.TokenBudgetSpent, "token_budget_spent"),
     ],
     fn(pair) {
       let seam =
