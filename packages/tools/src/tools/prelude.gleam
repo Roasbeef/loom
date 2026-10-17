@@ -10,7 +10,7 @@
 //// oracle, and the oracle was reachable only by being wrong first. This
 //// is that oracle, moved in front of the writing (issue #36).
 ////
-//// Rendered by `scripts/gen-prelude.py` from `gleam export
+//// Rendered by `packages/tools/dev/gen_prelude.gleam` from `gleam export
 //// package-interface` over `packages/cap` — the compiler's own account
 //// of what it will accept, so the description cannot describe a prelude
 //// the build would reject. `scripts/gen-prelude.sh --check` gates the
@@ -44,7 +44,9 @@
 ////   982b0d1630132ae6c19e3308d16a5cbe92917715a6fbc696954c858da4f845a3  packages/cap/src/cap/strand.gleam
 ////   3196badca88c32f90b568ca3e596b048f543ddb82cc31f591563bf4db938eb15  packages/cap/src/cap/task.gleam
 ////   dade50ada67f4ac667f0b92cb10d0da213cac327897524dbb006e02cf3c90963  packages/cap/src/cap/workflow.gleam
-////   13e21c346eea7292f312ec82b6fb42a6b86158b9211ec18f4d574186313f7f0d  scripts/gen-prelude.py
+////   3e0ae825edf97c7c0a481333b3d5e7ed7d4130431070141f2e4a3e82455a9304  packages/tools/dev/gen_prelude.gleam
+////   ea950e639b983ec34145565e194a51f32db158354b4399e9df0b1888d20c0205  packages/tools/dev/gen_prelude/interface.gleam
+////   eefe3ffc20ce42f1645ccb4058927df05445301f4fb31aee2831c679c0385d37  packages/tools/dev/gen_prelude/wrap.gleam
 ////
 //// Body digest (every line after the marker): 5b24f8bd2257427043f4050d4c1a1ed3710edd78f7389f5530865167d87ca7d7
 
