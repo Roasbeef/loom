@@ -1332,6 +1332,66 @@ words in its own zone with the UTC time in the element's `title`. Each session's
 row says its people and scope after its path, from `Snapshot.summaries`, one
 `session_member_page` call for each listed session.
 
+#### Deployment: the machines list and a page for each machine
+
+Below People and Sessions the admin page draws a Deployment section
+(protocol-change/085, the addendum of 2026-10-16). Its first line is the verdict
+(`machines.verdict_words`, for example "Deployment · 5 nodes · 1 degraded · 1 down"),
+then a line when this daemon's copy of the session directory is unconfirmed and one
+when the daemon left something out of the reply to fit a frame, then a table with a
+row for each machine: name, roles, state pill, platform, enforcement, toolchains,
+capacity, standing in the ledger and the age of its last report
+(`view/admin_machines`). The pill is one of the three tints the page already has
+(`machines.pill_class`).
+
+A machine is a node the daemon dials or a member of the membership ledger that it
+does not (`web_view/machines`). The second kind is listed because the ledger is the
+deployment's membership and an owner who revokes a member must see the ones this
+daemon cannot reach. It is marked "not linked from here", shows no state, and is never
+dialled: its row has no read, and choosing it opens a page whose Overview says so. The
+two kinds are merged by node name when the document is decoded.
+
+The read is `deployment.status` made by the daemon as the control command makes it,
+with the ledger's members (`server.admin_deployment`), decoded by the page's total
+decoder (`machines.decode_overview`, `machines.decode_detail`: only the members the
+protocol requires are required, every text and list is bounded, a state it does not
+know is refused). It runs in a weft task of its own (`ui_socket.admin_deployment_task`)
+behind the owner check (`admin_deployment_for`), apart from the people read, so a
+fan-out that waits seconds on a node never delays the catalogue. The page numbers its
+deployment reads (`Model.deployed`) and drops an answer a newer press overtook, rather
+than holding to one read at a time. Pressing a machine's name (`MachineChosen`) reads
+that one node, which returns its long lists, and opens its page under the table. The
+asking daemon is listed and is not read, because the daemon resolves a key against its
+configuration and it is no key of it.
+
+A machine's page has four tabs (`TabChosen`): Overview (health and the daemon's fixed
+reasons, build, protocol, uptime, the link from this daemon and the relations it
+reported), Sessions (the catalogue's rows on the machine, the counts the orchestrators
+report, and the rows other orchestrators list as placed on the machine, matched by the
+executor node a row names and grouped under the orchestrator; this tab reads the other
+orchestrators through `ui_socket.admin_elsewhere_task`), Access (the ledger row, the
+directory seat, the head the member reported and when, its links, the certificate pin
+and the commands) and Activity (scope counts, the scopes that block a reopen, and the
+moves with phase, stall time and reason).
+
+The page runs nothing. There is no terminal and no enroll, renew, revoke or release
+button: those sign ledger entries with a key that lives on the operator's machine or
+open an executor's ledger with its daemon stopped. The Access tab states the exact
+command in a `<loom-copy subject="operate">` box (`web_view/operator_commands`): `loom
+distribution renew NAME` and `loom distribution revoke NAME --reason 'REASON'` for a
+member, `loom distribution enroll NAME --node NODE --role ROLE --links THIS` for a node
+the ledger does not list, and `loomd executor release SESSION` for each stuck scope.
+Each name is one shell word, single-quoted with escaped quotes when it is not plain,
+and a name that cannot be made safe gets no command; the copy box checks the same
+grammar in the browser (`web_client/copy_rule`).
+
+Every control is a click beneath `admin.body_path`, which `admin_accepts` already
+admits, so there is no new scope, route, ticket, event class or content security policy
+change. Every name is a text node, no class, attribute or key is built from one, and the
+style is a tinted block with a hairline border and no accent bar or shadow. The owner's
+operating home draws a one-line strip under the bar naming the peer orchestrators
+(`view/elsewhere.strip`), as text with no handler.
+
 ### Stopping, archiving and deleting from the home
 
 The home offers the owner the three session operations the daemon already has

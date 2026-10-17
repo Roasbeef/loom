@@ -1718,9 +1718,10 @@ account.
 
 - `web_view/elsewhere` is the page's vocabulary: `Group(name, address, hearing)` with
   `Hearing` (`Answered(rows, more) | Silent`), `Row(session_id, workspace, name,
-  status, executor)` with the closed `Status` and its fixed `word`, `Read` (`Heard |
+  status, executor, executor_node)` with the closed `Status` and its fixed `word`, `Read` (`Heard |
   Unread`), `append` (joins a later page, up to `max_rows`) and `launch`
-  (`session_view/launch_words`). It carries no node and no credential.
+  (`session_view/launch_words`). It carries the executor node of a row, which the Admin page matches to a machine, and no
+  credential.
 - `home.Start.elsewhere` is `Some(home.Elsewhere(groups, next))` exactly where `create`
   is. The model keeps `elsewhere`, `elsewhere_reads` (the number of the latest
   first-page read; `Refreshed` bumps it), `located` (the open detail) and `paging` (the
@@ -1737,3 +1738,40 @@ account.
 - No event class, scope, route or content security policy changed: the buttons are
   clicks beneath `home.table_path`. `home_test` pins the group, the silent line, the
   detail, "Show more" and the dropped stale page.
+
+## The Admin page's machines (protocol-change/085, addendum 2026-10-16)
+
+The admin page draws a Deployment section below People and Sessions: the verdict, a
+table of machines, and a page for the machine the owner chose.
+`docs/architecture/web-view.md` ("Deployment: the machines list and a page for each
+machine") is the account.
+
+- `web_view/machines` is the vocabulary and the total decoder: `Machine(name, node,
+  roles, whose, here, link, ledgered)` with `Here` (`Dialled(findings) |
+  NotLinkedFromHere`) and `Ledgered` (`Enrolled(standing) | NotListed | Unledgered`),
+  `Findings`, `Snapshot`, `Detail` (the long lists of one node), `Reading` (`Heard |
+  HeardOne | Unread`), `Held`, `Detailed`, `Tab`, and the words (`verdict_words`,
+  `reason_words`, `age_words`, `pill_class`). `decode_overview` merges the document's
+  nodes with the ledger's members by node name; `decode_detail` reads a read for one
+  node. `text_limit` 256 and `list_limit` 128 bound it.
+- `web_view/operator_commands` writes `renew`, `revoke`, `enroll` and `release`. `quote`
+  makes a name one shell word, or an error (empty, over 256 bytes, not printable ASCII,
+  leading dash); the browser's `copy_rule` `operate` subject holds the same grammar.
+- `admin.Start` gains `deployment: fn(Option(String), fn(Reading) -> Nil)` and
+  `elsewhere`. The model keeps `held`, `deployed` (the number of the latest deployment
+  read; an older answer is dropped, and reads are not held to one at a time), `machine`
+  (the chosen node), `tab`, `detail` and `listed`. `MachineChosen(node)` reads the node
+  by its key unless it is the asking daemon or not dialled; `TabChosen` reads the other
+  orchestrators for the Sessions tab; `MachineClosed` overtakes any read out. The
+  deployment follows the timer, one read together with the people read.
+- `view/admin_machines` is the section and table, `view/admin_machine` the page and its
+  four tabs. Every name is a text node, the classes are fixed words and the only data
+  chosen ones are the pill tints, rows are keyed by position, and every handler is a
+  click beneath `admin.body_path`.
+- `view/elsewhere.strip` is the one-line strip the owner's operating home draws in the
+  first child of its centre, so `home.table_path` does not move.
+- Tests: `machines_test` (decoder, bounds, words), `operator_commands_test` (the fixed
+  text, hostile names), `admin_test` (the section, choosing a machine, each tab, an
+  overtaken read, markup as text, handler paths), `stylesheet_test` (no accent bar or
+  shadow) and `home_test` (the strip).
+

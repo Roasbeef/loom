@@ -647,3 +647,39 @@ optional.
   address of the characters an address has or the placeholder for none, `--session`,
   an identity of hexadecimal digits and hyphens, and the fixed `--token-file`
   ending. The built bundle and stylesheet are regenerated in their own commit.
+
+## Addendum 2026-10-16: the Admin page's machines list and read-only machine pages
+
+Slice 6 is built as a machines list and a read-only page for each machine, in place
+of a terminal and buttons on a page. The page's rules are Admin's: no new scope,
+route, ticket, event class or content security policy change, and every handler is a
+click beneath `admin.body_path`.
+
+- **The list shows every ledger member.** The Deployment section lists the nodes the
+  daemon dials and also the members of the membership ledger that it does not. A
+  member this daemon is not linked to is marked "not linked from here" and is never
+  dialled. The list is merged by node name.
+- **The page shows the certificate pin.** The Access tab states each member's pin, the
+  hex SHA-256 of the leaf certificate, a public value the pin table already holds.
+  `ledger.status` members gain optional `links` and `pin` for it (the 2026-10-16
+  addendum to protocol-change/086).
+- **Machine pages run nothing.** There is no terminal and no enroll, renew, revoke or
+  release button. A page states the exact command in a `<loom-copy>` box for the
+  operator to run on the right machine: `loom distribution renew NAME`, `loom
+  distribution revoke NAME --reason 'REASON'`, `loom distribution enroll NAME --node
+  NODE --role executor|orchestrator --links THIS` for a node the ledger does not list,
+  and `loomd executor release SESSION` for each scope that blocks a reopen. Each name
+  is written as one safely quoted shell word and a name that cannot be quoted gets no
+  command. `<loom-copy>` takes an eighth subject, `operate`, whose rule is that
+  grammar.
+- **Four tabs.** Overview, Sessions, Access and Activity, switched by a click
+  (`TabChosen`); choosing a machine (`MachineChosen`) reads that one node through
+  `deployment.status` with `node`. The asking daemon is listed and not read.
+- **The reads.** `server.AdminAttachment` gains `deployment` and `elsewhere`, each run
+  in a weft task of its own behind the owner check. The Sessions tab matches another
+  orchestrator's rows to a machine by `executor_node`, which the page's row now
+  carries.
+- **The home strip.** The owner's operating home draws a one-line strip under the bar
+  naming the peer orchestrators, as text.
+- **Abandon is not part of this slice.** It is on the Activity tab in slice 5.
+

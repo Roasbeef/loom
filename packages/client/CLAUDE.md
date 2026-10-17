@@ -8898,3 +8898,27 @@ orchestrator the daemon is configured with for a page of its sessions.
   capability, admission, near misses, `elsewhere_for`), and the shipped
   `daemon_shipped_directory_test` (two orchestrators, one stopped: `silent` with no
   rows).
+
+## The Admin page's deployment read (protocol-change/085, addendum 2026-10-16)
+
+- `server.AdminAttachment` gains `deployment: fn(Option(String)) -> machines.Reading`
+  and `elsewhere: fn() -> page_elsewhere.Read`. `admin_deployment` makes the control
+  command's own `deployment_status` read (so the ledger's members ride with the whole
+  deployment) and decodes it with `web_view/machines`; a key that names nothing, a
+  document the decoder refuses and a failed read are `Unread`. `heard_elsewhere` is the
+  read the home shares.
+- `ui_socket.admin_deployment_task` and `admin_elsewhere_task` run the reads in weft
+  tasks of their own (`read_task`), apart from `admin_read_task`, so a fan-out of up to
+  four seconds never delays the people read. `admin_deployment_for` and
+  `admin_elsewhere_for` repeat the owner check (`authorized_owner`) before the daemon
+  dials. `admin_accepts` is unchanged: the rows and tabs are clicks beneath
+  `admin.body_path`.
+- `ledger.status` members gain `links` and `pin` (hex SHA-256 of the leaf);
+  `ledger_control.MemberView` carries `links` and `pin: Option(String)`, and an older
+  daemon's missing members read as none.
+- `elsewhere.for_page` carries each row's `executor_node` to the page.
+- Tests: `ui_route_test` (the owner check for both reads, two reads in flight),
+  `ui_socket_test` (the admission of a row, a tab and Close and of nothing beyond),
+  `ledger_control_test`, and the shipped `daemon_shipped_directory_test` (the machines
+  list over three real daemons).
+

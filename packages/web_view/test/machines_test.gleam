@@ -148,7 +148,6 @@ fn with_field(document: JsonValue, key: String, value: JsonValue) -> JsonValue {
 }
 
 pub fn a_document_without_its_required_members_is_refused_test() {
-  assert machines.decode_overview(json.Object([])) != Ok(fleet.overview("box"))
   let assert Error(_) = machines.decode_overview(json.Object([]))
   let assert Error(_) = machines.decode_overview(json.Array([]))
   let assert Error(_) =
