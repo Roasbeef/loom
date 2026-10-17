@@ -251,6 +251,7 @@ fn open_selected(host: Host, selected: protocol.Session) {
     | protocol.AccessChangeReply(_)
     | protocol.ActivityReply(_)
     | protocol.DeploymentReply(_)
+    | protocol.DirectoryReply(_)
     | protocol.UiLinkReply(..) ->
       Error("open returned an unexpected control reply")
   })
@@ -324,6 +325,7 @@ pub fn create_named(
     | protocol.AccessChangeReply(_)
     | protocol.ActivityReply(_)
     | protocol.DeploymentReply(_)
+    | protocol.DirectoryReply(_)
     | protocol.UiLinkReply(..) ->
       Error("create returned an unexpected control reply")
   }
@@ -460,6 +462,7 @@ fn remove_using(
     | protocol.AccessChangeReply(_)
     | protocol.ActivityReply(_)
     | protocol.DeploymentReply(_)
+    | protocol.DirectoryReply(_)
     | protocol.UiLinkReply(..) ->
       Error("stop returned an unexpected control reply; session kept")
   })
@@ -541,6 +544,7 @@ fn await_retirement(session, operation, request) {
         | Ok(protocol.AccessChangeReply(_))
         | Ok(protocol.ActivityReply(_))
         | Ok(protocol.DeploymentReply(_))
+        | Ok(protocol.DirectoryReply(_))
         | Ok(protocol.UiLinkReply(..)) ->
           poll.Fail(
             "stop observation returned an unexpected reply; session kept",
@@ -583,27 +587,34 @@ pub fn list(host: Host, after: String) -> Result(protocol.Page, String) {
     | protocol.AccessChangeReply(_)
     | protocol.ActivityReply(_)
     | protocol.DeploymentReply(_)
+    | protocol.DirectoryReply(_)
     | protocol.UiLinkReply(..) ->
       Error("listing returned an unexpected control reply")
   }
 }
 
 /// Reads which of the nodes the daemon is configured with answer its own
-/// connection attempts (protocol-change/085), as the document the daemon sent.
+/// connection attempts and reports (protocol-change/085), as the document the
+/// daemon sent. With a `node` key the read is of that one node and returns its
+/// long lists.
 ///
 /// The daemon connects to each node at once and gives the whole read three
 /// seconds, so the request waits longer than that. A daemon built before the
 /// command existed refuses it as an unsupported control command, and that is
-/// worded as the absence of the view and not as a fault.
+/// worded as the absence of the view and not as a fault. A key the daemon's
+/// configuration lacks is refused `not_found`, which is worded as such.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // selection.deployment(host)
+/// // selection.deployment(host, Some("build-box"))
 /// ```
-pub fn deployment(host: Host) -> Result(json.JsonValue, String) {
+pub fn deployment(
+  host: Host,
+  node: Option(String),
+) -> Result(json.JsonValue, String) {
   use reply <- result.try(
-    daemon.request(host.control, protocol.DeploymentStatus, 10_000)
+    daemon.request(host.control, protocol.DeploymentStatus(node:), 10_000)
     |> result.map_error(deployment_failure),
   )
   case reply {
@@ -620,8 +631,65 @@ pub fn deployment(host: Host) -> Result(json.JsonValue, String) {
     | protocol.AccessListingReply(_)
     | protocol.AccessChangeReply(_)
     | protocol.ActivityReply(_)
+    | protocol.DirectoryReply(_)
     | protocol.UiLinkReply(..) ->
       Error("deployment returned an unexpected control reply")
+  }
+}
+
+/// Reads the session directory's cluster view from the daemon
+/// (protocol-change/083), as the document the daemon sent. A daemon that is not
+/// a member refuses it `not_found`, and one built before the command existed
+/// refuses it as an unsupported control command; each is worded as what it
+/// means and not as a fault.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // selection.directory(host)
+/// ```
+pub fn directory(host: Host) -> Result(json.JsonValue, String) {
+  use reply <- result.try(
+    daemon.request(host.control, protocol.DirectoryStatus, 10_000)
+    |> result.map_error(directory_failure),
+  )
+  case reply {
+    protocol.DirectoryReply(document) -> Ok(document)
+    protocol.StatusReply(_)
+    | protocol.SessionsReply(_)
+    | protocol.SessionReply(_)
+    | protocol.LifecycleReply(_)
+    | protocol.DeletedReply(_)
+    | protocol.MovedReply(..)
+    | protocol.ShutdownReply
+    | protocol.PeersInspectionReply(_)
+    | protocol.PeersMutationReply(_)
+    | protocol.AccessListingReply(_)
+    | protocol.AccessChangeReply(_)
+    | protocol.ActivityReply(_)
+    | protocol.DeploymentReply(_)
+    | protocol.UiLinkReply(..) ->
+      Error("directory returned an unexpected control reply")
+  }
+}
+
+/// The words for a failed directory read: `failure`'s, except that a daemon
+/// which does not know the command is said not to have the view, and one that
+/// is not a member is said not to be one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert selection.directory_failure(daemon.Refused("not_found", "not found"))
+///   == "this daemon is not a member of the session directory"
+/// ```
+pub fn directory_failure(reason: daemon.Failure) -> String {
+  case reason {
+    daemon.Refused("bad_request", "unsupported control command") ->
+      "this daemon does not have directory views"
+    daemon.Refused("not_found", _) ->
+      "this daemon is not a member of the session directory"
+    other -> failure(other)
   }
 }
 
@@ -638,6 +706,8 @@ pub fn deployment_failure(reason: daemon.Failure) -> String {
   case reason {
     daemon.Refused("bad_request", "unsupported control command") ->
       "this daemon does not have deployment views"
+    daemon.Refused("not_found", _) ->
+      "the daemon's configuration has no executor or orchestrator under that name"
     other -> failure(other)
   }
 }
@@ -702,6 +772,7 @@ fn selected_row(reply) {
     | protocol.AccessChangeReply(_)
     | protocol.ActivityReply(_)
     | protocol.DeploymentReply(_)
+    | protocol.DirectoryReply(_)
     | protocol.UiLinkReply(..) ->
       Error("selection returned an unexpected control reply")
   }
@@ -771,6 +842,7 @@ fn await(host: Host, session, operation) {
         | Ok(protocol.AccessChangeReply(_))
         | Ok(protocol.ActivityReply(_))
         | Ok(protocol.DeploymentReply(_))
+        | Ok(protocol.DirectoryReply(_))
         | Ok(protocol.UiLinkReply(..)) ->
           poll.Fail("operation returned an unexpected control reply")
       }

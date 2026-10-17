@@ -119,6 +119,7 @@ import tui/daemon/protocol as control_protocol
 import tui/daemon/selection as daemon_selection
 import tui/demo_image
 import tui/deployment_view
+import tui/directory_view
 import tui/effect
 import tui/frame
 import tui/image_plan
@@ -227,6 +228,12 @@ type Launch {
   // terminal state, one control connection as the owner, and one printed
   // answer or one failure with an exit status.
   Deployment(options: bootstrap.Options, command: DeploymentCommand)
+
+  // `loom directory status` reads the session directory's cluster view from the
+  // daemon (protocol-change/083). It is the same kind of command as `deployment`:
+  // no terminal state, one control connection as the owner, and one printed
+  // answer or one failure with an exit status.
+  Directory(options: bootstrap.Options, output: Output)
 }
 
 // The two catalogue verbs the launcher owns. `rm` carries its consent so the
@@ -247,8 +254,9 @@ pub type SessionsCommand {
 /// The two views of `deployment.status` the launcher prints.
 @internal
 pub type DeploymentCommand {
-  /// The verdict, the nodes and the links among them.
-  ShowDeployment(output: Output)
+  /// The verdict, the nodes and the links among them, or with a `node` the one
+  /// configured node that key names and its long lists.
+  ShowDeployment(node: Option(String), output: Output)
 
   /// The executors and pools a session may be created on, with their states.
   ShowExecutors(output: Output)
@@ -348,6 +356,7 @@ pub fn main() {
         | ["replay", ..]
         | ["sessions", ..]
         | ["deployment", ..]
+        | ["directory", ..]
         | ["claim", ..]
         | ["enroll", ..]
         | ["access", ..]
@@ -369,6 +378,7 @@ pub fn main() {
           replay(path, frames, size, colour)
         Sessions(options:, command:) -> run_sessions(options, command)
         Deployment(options:, command:) -> run_deployment(options, command)
+        Directory(options:, output:) -> run_directory(options, output)
         ClaimAccess(arguments:) -> claim.claim_main(arguments)
         Enroll(arguments:) -> claim.enroll_main(arguments)
         Access(arguments:) -> access_command.main(arguments)
@@ -468,6 +478,7 @@ fn help_topic(arguments: List(String)) -> Option(String) {
     Ok("replay") -> Some(replay_usage())
     Ok("sessions") -> Some(sessions_usage())
     Ok("deployment") -> Some(deployment_usage())
+    Ok("directory") -> Some(directory_usage())
     Ok("claim") | Ok("enroll") -> Some(claim.usage)
     Ok("ext") -> Some(extension_usage())
     Ok("distribution") | Ok("dist") -> Some(distribution_usage())
@@ -484,6 +495,7 @@ fn is_topic(word: String) -> Bool {
     "replay"
     | "sessions"
     | "deployment"
+    | "directory"
     | "ext"
     | "distribution"
     | "dist"
@@ -829,6 +841,7 @@ fn interactive(launch: Launch, record: String) -> Nil {
     | Replay(..)
     | Sessions(..)
     | Deployment(..)
+    | Directory(..)
     | ClaimAccess(..)
     | Enroll(..)
     | Access(..)
@@ -919,6 +932,7 @@ fn interactive(launch: Launch, record: String) -> Nil {
     | Replay(..)
     | Sessions(..)
     | Deployment(..)
+    | Directory(..)
     | ClaimAccess(..)
     | Enroll(..)
     | Access(..)
@@ -1067,6 +1081,7 @@ fn parse_launch(arguments: List(String)) -> Launch {
     ["ui", ..rest] -> view_launch(rest)
     ["sessions", ..rest] -> parse_sessions(rest)
     ["deployment", ..rest] -> parse_deployment(rest)
+    ["directory", ..rest] -> parse_directory(rest)
     ["claim", ..rest] -> ClaimAccess(arguments: rest)
     ["enroll", ..rest] -> Enroll(arguments: rest)
     ["access", ..rest] -> Access(arguments: rest)
@@ -1331,19 +1346,34 @@ fn sessions_usage() -> String {
   <> "  the other orchestrator"
 }
 
-// `loom deployment status|executors [--json]` and the shared local options.
-// `--json` is a switch and may stand anywhere after the verb, like `--yes`
-// for `sessions`, so it is taken before the shared options are parsed.
+// `loom deployment status [--node <key>]|executors [--json]` and the shared
+// local options. `--json` is a switch and may stand anywhere after the verb, like
+// `--yes` for `sessions`, so it is taken before the shared options are parsed.
+// `--node` takes the next word and is read before them for the same reason; the
+// key is checked against the grammar of a configuration key here, and whether it
+// names anything is the daemon's configuration to say.
 fn parse_deployment(arguments: List(String)) -> Launch {
   let #(as_json, rest) = take_switch(arguments, "--json")
   let output = case as_json {
     True -> AsJson
     False -> AsText
   }
-  case rest {
-    ["status", ..flags] -> deployment_launch(flags, ShowDeployment(output))
-    ["executors", ..flags] -> deployment_launch(flags, ShowExecutors(output))
-    _unknown -> Invalid(deployment_usage())
+  let named_one = list.contains(rest, "--node")
+  let #(key, rest) = take_flag(rest, "--node")
+  let node = case named_one, placement.is_orchestrator_name(key) {
+    False, _ -> Ok(None)
+    True, True -> Ok(Some(key))
+    True, False -> Error("--node takes a key of [executors] or [orchestrators]")
+  }
+  case rest, node {
+    _, Error(reason) -> Invalid(reason <> "\n" <> deployment_usage())
+    ["status", ..flags], Ok(node) ->
+      deployment_launch(flags, ShowDeployment(node:, output:))
+    ["executors", ..flags], Ok(None) ->
+      deployment_launch(flags, ShowExecutors(output))
+    ["executors", ..], Ok(Some(_)) ->
+      Invalid("--node applies to status only\n" <> deployment_usage())
+    _, Ok(_) -> Invalid(deployment_usage())
   }
 }
 
@@ -1358,16 +1388,46 @@ fn deployment_launch(
 }
 
 fn deployment_usage() -> String {
-  "usage: loom deployment status [--json] [--state-dir <path>] [--server <path>]\n"
+  "usage: loom deployment status [--node <key>] [--json] [--state-dir <path>] [--server <path>]\n"
   <> "       loom deployment executors [--json] [--state-dir <path>] [--server <path>]\n"
   <> "  status shows which of the machines in the daemon's [executors.<name>]\n"
-  <> "  and [orchestrators.<name>] tables it can reach, and the links between\n"
-  <> "  it and each. Every statement is from the daemon you are connected to:\n"
-  <> "  a node is ok when that daemon connected to it just now and down when\n"
-  <> "  it did not, with a one-word reason\n"
+  <> "  and [orchestrators.<name>] tables it can reach, what each says of itself,\n"
+  <> "  and the links between it and each. Every statement is from the daemon\n"
+  <> "  you are connected to: a node is ok when that daemon connected to it just\n"
+  <> "  now and received its report, degraded when the report names a reason, and\n"
+  <> "  down when it did not, with a one-word reason\n"
+  <> "  --node <key> reads one node, named by its [executors.<name>] or\n"
+  <> "  [orchestrators.<name>] key, and adds its workspaces, the scopes that need\n"
+  <> "  a release and its moves\n"
   <> "  executors shows the executors and pools a session may be created on,\n"
   <> "  with the state of each, so a choice can be made before the session is\n"
   <> "  created; it does not stop you from choosing one that is down\n"
+  <> "  --json prints the daemon's reply as it was sent"
+}
+
+// `loom directory status [--json]` and the shared local options.
+fn parse_directory(arguments: List(String)) -> Launch {
+  let #(as_json, rest) = take_switch(arguments, "--json")
+  let output = case as_json {
+    True -> AsJson
+    False -> AsText
+  }
+  case rest {
+    ["status", ..flags] ->
+      case parse_local_options(flags, default_bootstrap_options()) {
+        Ok(options) -> Directory(options:, output:)
+        Error(reason) -> Invalid(reason <> "\n" <> directory_usage())
+      }
+    _unknown -> Invalid(directory_usage())
+  }
+}
+
+fn directory_usage() -> String {
+  "usage: loom directory status [--json] [--state-dir <path>] [--server <path>]\n"
+  <> "  status shows the session directory's cluster as the daemon you are\n"
+  <> "  connected to sees it: its members, which of them vote, the leader and\n"
+  <> "  the last log index this member has applied. It is answered only by a\n"
+  <> "  daemon that is a directory member\n"
   <> "  --json prints the daemon's reply as it was sent"
 }
 
@@ -1379,7 +1439,7 @@ fn deployment_usage() -> String {
 /// ## Examples
 ///
 /// ```gleam
-/// let assert Ok(tui.ShowDeployment(tui.AsJson)) =
+/// let assert Ok(tui.ShowDeployment(None, tui.AsJson)) =
 ///   tui.launch_deployment(["status", "--json"])
 /// let assert Ok(tui.ShowExecutors(tui.AsText)) =
 ///   tui.launch_deployment(["executors"])
@@ -1402,7 +1462,39 @@ pub fn launch_deployment(
     | ClaimAccess(..)
     | Enroll(..)
     | Access(..)
+    | Directory(..)
     | Sessions(..) -> Error("not a deployment launch")
+  }
+}
+
+/// Classifies the words after `loom directory` the way the launcher does,
+/// answering how the reply is to be printed when they name `status` and the
+/// refusal otherwise. It is the test seam for the verb and `--json`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(tui.AsJson) = tui.launch_directory(["status", "--json"])
+/// let assert Error(_) = tui.launch_directory([])
+/// ```
+@internal
+pub fn launch_directory(arguments: List(String)) -> Result(Output, String) {
+  case parse_launch(["directory", ..arguments]) {
+    Directory(output:, ..) -> Ok(output)
+    Invalid(reason) -> Error(reason)
+    Version
+    | Demo
+    | Local(..)
+    | View(..)
+    | Remote(..)
+    | Forward(..)
+    | Update(..)
+    | Replay(..)
+    | ClaimAccess(..)
+    | Enroll(..)
+    | Access(..)
+    | Deployment(..)
+    | Sessions(..) -> Error("not a directory launch")
   }
 }
 
@@ -1415,12 +1507,58 @@ fn run_deployment(
   case sessions_host(options) {
     Error(reason) -> command_failed("deployment", reason)
     Ok(#(control, host)) -> {
+      let node = case command {
+        ShowDeployment(node:, ..) -> node
+        ShowExecutors(..) -> None
+      }
       let outcome =
-        daemon_selection.deployment(host)
+        daemon_selection.deployment(host, node)
         |> result.try(format_deployment(_, command))
       daemon.close(control)
       print_outcome("deployment", outcome)
     }
+  }
+}
+
+// One directory read over a control connection this process owns for the length
+// of the command.
+fn run_directory(options: bootstrap.Options, output: Output) -> Nil {
+  case sessions_host(options) {
+    Error(reason) -> command_failed("directory", reason)
+    Ok(#(control, host)) -> {
+      let outcome =
+        daemon_selection.directory(host)
+        |> result.try(format_directory(_, output))
+      daemon.close(control)
+      print_outcome("directory", outcome)
+    }
+  }
+}
+
+/// Renders a `directory.status` reply body: the daemon's own document for
+/// `--json`, and for text the table `tui/directory_view` draws. A body that is
+/// not shaped as the protocol says is an `Error` naming what was wrong, and is
+/// never drawn partly.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Error(_) = tui.format_directory(json.Object([]), tui.AsText)
+/// ```
+@internal
+pub fn format_directory(
+  document: json.JsonValue,
+  output: Output,
+) -> Result(String, String) {
+  case output {
+    AsJson -> Ok(json.to_string(document))
+    AsText ->
+      directory_view.decode(document)
+      |> result.map(directory_view.status_text)
+      |> result.map_error(fn(reason) {
+        "the daemon's directory reply was not understood: "
+        <> text_hygiene.single_line(reason)
+      })
   }
 }
 
@@ -1433,7 +1571,7 @@ fn run_deployment(
 ///
 /// ```gleam
 /// let assert Error(_) =
-///   tui.format_deployment(json.Object([]), tui.ShowDeployment(tui.AsText))
+///   tui.format_deployment(json.Object([]), tui.ShowDeployment(None, tui.AsText))
 /// ```
 @internal
 pub fn format_deployment(
@@ -1441,9 +1579,9 @@ pub fn format_deployment(
   command: DeploymentCommand,
 ) -> Result(String, String) {
   case command {
-    ShowDeployment(output: AsJson) | ShowExecutors(output: AsJson) ->
+    ShowDeployment(output: AsJson, ..) | ShowExecutors(output: AsJson) ->
       Ok(json.to_string(document))
-    ShowDeployment(output: AsText) ->
+    ShowDeployment(output: AsText, ..) ->
       deployment_view.decode(document)
       |> result.map(deployment_view.status_text)
       |> result.map_error(unreadable_deployment)
@@ -2082,6 +2220,7 @@ fn launch_usage() -> String {
   <> "  sessions list|rm    List or remove saved sessions.\n"
   <> "  deployment status|executors\n"
   <> "                      Show which configured machines the daemon reaches.\n"
+  <> "  directory status    Show the session directory's cluster.\n"
   <> "  ui [--session <id>] [--operate | --observe] [--open]\n"
   <> "                      Print a link to your home page (sessions by\n"
   <> "                      workspace), or with --session to one session,\n"
