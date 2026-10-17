@@ -1,14 +1,17 @@
 import gleam/int
 import gleam/list
+import gleam/option.{None, Some}
 import gleam/order
 import gleam/string
 import gleam/yielder
 import gleeunit
 import qcheck
+import qcheck/tree.{Tree}
 import statem.{
   type Failure, type Spec, type Violation, Admit, Config, Reject, ShrinkBoundHit,
   ShrinkConverged, Spec, StepFailure, Violation,
 }
+import statem/internal/retry
 
 pub fn main() -> Nil {
   gleeunit.main()
@@ -189,6 +192,10 @@ fn failure_of(
   }
 }
 
+fn runs(from: Int, to: Int) -> List(Int) {
+  yielder.range(from, to) |> yielder.to_list
+}
+
 fn seeds() -> List(Int) {
   yielder.range(1, 40) |> yielder.to_list
 }
@@ -335,8 +342,358 @@ pub fn config_builders_clamp_negative_values_test() {
     |> statem.with_test_count(-1)
     |> statem.with_max_commands(-1)
     |> statem.with_max_shrinks(-1)
+    |> statem.with_shrink_retries(0)
 
   assert clamped
-    == Config(test_count: 0, seed: 1, max_commands: 0, max_shrinks: 0)
+    == Config(
+      test_count: 0,
+      seed: 1,
+      max_commands: 0,
+      max_shrinks: 0,
+      shrink_retries: 1,
+    )
   assert int.compare(clamped.test_count, 0) == order.Eq
+}
+
+// --- crashes -----------------------------------------------------------------
+
+/// A queue spec whose `Pop` on exactly two items fails an `assert` inside
+/// `execute`, the way a consumer's step asserts instead of returning `Error`.
+fn asserting_spec() -> Spec(Model, Command, Queue) {
+  Spec(
+    ..queue_spec(NoBug),
+    execute: fn(queue: Queue, model: Model, command: Command) {
+      case command, model.items {
+        Pop, [_, _] -> {
+          assert model.executed < 0 as "pop at two"
+          Ok(queue)
+        }
+        _, _ -> execute(queue, model, command)
+      }
+    },
+  )
+}
+
+pub fn an_assert_inside_execute_is_a_shrunk_tagged_failure_test() {
+  let failure = failure_of(asserting_spec(), 2)
+
+  assert failure.violation.tag == "statem.crash"
+  assert string.contains(failure.violation.detail, "pop at two")
+  assert string.contains(failure.violation.detail, "execute crashed")
+  assert failure.shrunk == [Push(0), Push(0), Pop]
+  assert failure.step == 2
+  assert failure.shrink_end == ShrinkConverged
+
+  let text = statem.report(failure, describe)
+  assert string.contains(text, "seed 2, run " <> int.to_string(failure.run))
+  assert string.contains(text, "[statem.crash]")
+}
+
+pub fn a_crash_does_not_slip_to_another_failure_test() {
+  // Both a crash and a `fifo` violation are reachable; the shrunk list of
+  // each failure must keep the tag its own original list fails with.
+  let spec =
+    Spec(
+      ..queue_spec(PopWrongAtTwo),
+      execute: fn(queue: Queue, model: Model, command: Command) {
+        case command, model.items {
+          Clear, [_, _, _, ..] -> panic as "clear of three"
+          _, _ -> execute(queue, model, command)
+        }
+      },
+    )
+  let failures = list.map(seeds(), fn(seed) { failure_of(spec, seed) })
+
+  list.each(failures, fn(failure) {
+    let assert Error(StepFailure(violation: original, ..)) =
+      statem.replay(spec, failure.original)
+      as "the original list must still fail"
+    assert original.tag == failure.violation.tag
+  })
+
+  let tags = list.map(failures, fn(failure) { failure.violation.tag })
+  assert list.contains(tags, "statem.crash")
+  assert list.contains(tags, "fifo")
+}
+
+pub fn a_crash_in_finish_or_new_sut_is_a_violation_test() {
+  let finishing =
+    Spec(..queue_spec(NoBug), finish: fn(_, _) { panic as "finish blew up" })
+  let failure = failure_of(finishing, 3)
+  assert failure.violation.tag == "statem.crash"
+  assert string.contains(failure.violation.detail, "finish crashed")
+  assert failure.shrunk == []
+
+  let building =
+    Spec(..queue_spec(NoBug), new_sut: fn() { panic as "no system" })
+  let failure = failure_of(building, 3)
+  assert failure.violation.tag == "statem.crash"
+  assert string.contains(failure.violation.detail, "new_sut crashed")
+  assert failure.step == 0
+}
+
+pub fn a_crashing_teardown_never_escapes_test() {
+  let passing =
+    Spec(..queue_spec(NoBug), teardown: fn(_) { panic as "teardown blew up" })
+  assert statem.check(passing, config(1)) == Ok(Nil)
+
+  let failing =
+    Spec(..queue_spec(PopWrongAtTwo), teardown: fn(_) {
+      panic as "teardown blew up"
+    })
+  assert failure_of(failing, 2).shrunk == [Push(0), Push(1), Pop]
+}
+
+// --- the commands accessor ------------------------------------------------------
+
+pub fn commands_is_the_original_of_the_failing_run_test() {
+  let spec = queue_spec(PopWrongAtTwo)
+  let failure = failure_of(spec, 2)
+
+  assert statem.commands(spec, config(2), failure.run) == failure.original
+  assert statem.commands(spec, config(2), failure.run)
+    == statem.commands(spec, config(2), failure.run)
+}
+
+pub fn commands_vary_across_runs_and_stay_admissible_test() {
+  let spec = queue_spec(NoBug)
+  let lists =
+    list.map(runs(0, 30), fn(run) { statem.commands(spec, config(5), run) })
+
+  assert list.any(lists, fn(commands) { list.contains(commands, Clear) })
+  assert list.unique(lists) != [[]]
+  list.each(lists, fn(commands) {
+    assert statem.replay(spec, commands) == Ok(Nil)
+  })
+}
+
+// --- seeds ----------------------------------------------------------------------
+
+pub fn any_int_seed_reproduces_a_run_test() {
+  let spec = queue_spec(PopWrongAtTwo)
+
+  list.each(
+    [-7, 0, 9_000_000_000, 4_294_967_296, 123_456_789_012_345],
+    fn(seed) {
+      let cfg =
+        statem.default_config(seed: seed) |> statem.with_max_commands(20)
+      let lists = list.map(runs(0, 5), statem.commands(spec, cfg, _))
+
+      assert lists == list.map(runs(0, 5), statem.commands(spec, cfg, _))
+    },
+  )
+}
+
+// --- the shrink search ----------------------------------------------------------
+
+type Wide {
+  Real(Int)
+  Bogus(Int)
+}
+
+type Count {
+  Count(commands: Int)
+}
+
+/// A command whose shrink tree holds `children` children, every one
+/// inadmissible, or an infinite supply of them.
+fn wide_generator(
+  children: yielder.Yielder(tree.Tree(Wide)),
+) -> fn(Count) -> qcheck.Generator(Wide) {
+  fn(_model) {
+    qcheck.Generator(fn(seed) {
+      let #(drawn, seed) = qcheck.generate_tree(qcheck.bounded_int(0, 9), seed)
+      let Tree(value, _) = drawn
+
+      #(Tree(Real(value), children), seed)
+    })
+  }
+}
+
+/// A system that fails only in `finish`, once `fail_at` commands have run.
+fn wide_spec(
+  children: yielder.Yielder(tree.Tree(Wide)),
+  fail_at: Int,
+) -> Spec(Count, Wide, Int) {
+  Spec(
+    initial: Count(0),
+    command: wide_generator(children),
+    precondition: fn(_, command) {
+      case command {
+        Real(_) -> Admit
+        Bogus(_) -> Reject
+      }
+    },
+    next_model: fn(model, _) { Count(model.commands + 1) },
+    new_sut: fn() { 0 },
+    execute: fn(executed, _, _) { Ok(executed + 1) },
+    finish: fn(executed, _) {
+      case executed >= fail_at {
+        True ->
+          Error(Violation("long", "list reached " <> int.to_string(executed)))
+        False -> Ok(Nil)
+      }
+    },
+    teardown: fn(_) { Nil },
+  )
+}
+
+fn bogus_children(count: Int) -> yielder.Yielder(tree.Tree(Wide)) {
+  yielder.range(0, count - 1)
+  |> yielder.map(fn(index) { tree.return(Bogus(index)) })
+}
+
+pub fn thousands_of_inadmissible_candidates_do_not_overflow_the_stack_test() {
+  // Thirty commands with three thousand rejected replacements each: ninety
+  // thousand free candidates in a single search. A search that spent a stack
+  // frame per candidate overflowed on the JavaScript target.
+  let cfg =
+    statem.default_config(seed: 1)
+    |> statem.with_max_commands(30)
+    |> statem.with_test_count(200)
+  let assert Error(failure) =
+    statem.check(wide_spec(bogus_children(3000), 30), cfg)
+    as "a run of thirty commands must be drawn"
+
+  assert list.length(failure.shrunk) == 30
+  assert failure.shrink_end == ShrinkConverged
+  assert failure.candidates_run == 99
+}
+
+pub fn an_infinite_inadmissible_tree_still_terminates_test() {
+  let cfg =
+    statem.default_config(seed: 1)
+    |> statem.with_max_commands(3)
+    |> statem.with_test_count(50)
+  let infinite = yielder.repeat(tree.return(Bogus(0)))
+  let assert Error(failure) = statem.check(wide_spec(infinite, 1), cfg)
+    as "a non-empty run must be drawn"
+
+  assert list.length(failure.shrunk) == 1
+  assert failure.shrink_end == ShrinkBoundHit
+}
+
+pub fn the_whole_list_is_executed_once_not_every_round_test() {
+  // Failing in `finish` regardless of the commands, so the first candidate
+  // reproduces: the empty list is accepted and the shrink ends converged on
+  // one execution, whatever the (generous) budget.
+  let spec =
+    Spec(..queue_spec(NoBug), finish: fn(_, _) {
+      Error(Violation("end", "always"))
+    })
+  let cfg = config(9) |> statem.with_max_shrinks(1)
+  let assert Ok(run) =
+    list.find(runs(0, 50), fn(run) { statem.commands(spec, cfg, run) != [] })
+    as "some run must be non-empty"
+  let assert Error(failure) = statem.check_run(spec, cfg, run)
+    as "finish always fails"
+
+  assert failure.shrunk == []
+  assert failure.candidates_run == 1
+  assert failure.shrink_end == ShrinkConverged
+}
+
+pub fn a_round_never_re_executes_the_empty_list_test() {
+  // `Clear` after a nine needs two commands. With the whole list offered only
+  // once, shrinking to that pair costs far fewer executions than one empty
+  // list per descent round would add on top.
+  let failure = failure_of(queue_spec(ClearAfterNine), 3)
+
+  assert failure.shrunk == [Push(9), Clear]
+  assert failure.candidates_run
+    < failure.shrinks * list.length(failure.original) + 1
+}
+
+// --- shrink retries ---------------------------------------------------------------
+
+/// A `run` that fails with its attempt index on the listed attempts only.
+fn failing_on(attempts: List(Int)) -> fn(Int) -> Result(Nil, Int) {
+  fn(attempt) {
+    case list.contains(attempts, attempt) {
+      True -> Error(attempt)
+      False -> Ok(Nil)
+    }
+  }
+}
+
+fn any_failure(_failure: Int) -> Bool {
+  True
+}
+
+pub fn a_later_failing_attempt_accepts_the_candidate_test() {
+  assert retry.first_failure(4, 100, failing_on([2]), any_failure)
+    == retry.Attempted(accepted: Some(2), executions: 3)
+}
+
+pub fn the_first_failing_attempt_stops_the_retries_test() {
+  assert retry.first_failure(4, 100, failing_on([0, 1]), any_failure)
+    == retry.Attempted(accepted: Some(0), executions: 1)
+}
+
+pub fn no_failing_attempt_rejects_the_candidate_test() {
+  assert retry.first_failure(3, 100, failing_on([]), any_failure)
+    == retry.Attempted(accepted: None, executions: 3)
+
+  // A failure beyond the allowance is never seen.
+  assert retry.first_failure(3, 100, failing_on([3]), any_failure)
+    == retry.Attempted(accepted: None, executions: 3)
+}
+
+pub fn a_failure_under_another_tag_does_not_count_test() {
+  // Attempt 0 fails differently, attempt 2 fails as wanted.
+  let wanted = fn(failure) { failure == 2 }
+
+  assert retry.first_failure(4, 100, failing_on([0, 2]), wanted)
+    == retry.Attempted(accepted: Some(2), executions: 3)
+  assert retry.first_failure(2, 100, failing_on([0, 2]), wanted)
+    == retry.Attempted(accepted: None, executions: 2)
+}
+
+pub fn retries_stop_when_the_budget_does_test() {
+  assert retry.first_failure(5, 2, failing_on([3]), any_failure)
+    == retry.Attempted(accepted: None, executions: 2)
+  assert retry.first_failure(5, 1, failing_on([]), any_failure)
+    == retry.Attempted(accepted: None, executions: 1)
+}
+
+pub fn retried_executions_count_against_the_shrink_budget_test() {
+  let spec = queue_spec(PopWrongAtTwo)
+  let cfg =
+    config(2)
+    |> statem.with_max_shrinks(7)
+    |> statem.with_shrink_retries(3)
+  let assert Error(failure) = statem.check(spec, cfg) as "the bug must be found"
+
+  // A deterministic bug is refuted three times per rejected candidate, and
+  // the retries stop with the budget rather than overshooting it.
+  assert failure.candidates_run == 7
+  assert failure.shrink_end == ShrinkBoundHit
+}
+
+// --- the report -------------------------------------------------------------------
+
+pub fn the_report_lists_both_the_original_and_the_shrunk_list_test() {
+  let failure = failure_of(queue_spec(ClearAfterNine), 3)
+  let text = statem.report(failure, describe)
+
+  assert string.contains(text, "step 1")
+  assert string.contains(
+    text,
+    "original list: "
+      <> int.to_string(list.length(failure.original))
+      <> " commands",
+  )
+  assert string.contains(text, "shrunk list: 2 commands")
+  assert string.contains(text, "executions")
+  assert string.contains(text, "    0. Push(9)")
+  assert string.contains(text, "  > 1. Clear")
+
+  // Every original command is printed, not only counted.
+  let printed =
+    list.count(string.split(text, "\n"), fn(line) {
+      string.contains(line, ". Push(")
+      || string.contains(line, ". Pop")
+      || string.contains(line, ". Clear")
+    })
+  assert printed >= list.length(failure.original) + 2
 }

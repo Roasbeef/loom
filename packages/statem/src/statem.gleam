@@ -44,28 +44,47 @@
 //// ## Generation, shrinking and determinism
 ////
 //// Run `i` of a check draws its command list from a seed derived from
-//// `(config.seed, i)` alone, so any run reproduces without the runs before
-//// it, and the `Failure` names both numbers. There is deliberately no random
-//// default seed: a red gate must be the same red gate on every machine.
+//// `(config.seed, i)` alone, so any run reproduces without executing the
+//// runs before it, and the `Failure` names both numbers. The per-run seeds
+//// are successive draws of 32-bit values from one qcheck stream seeded with
+//// `config.seed`, so the derivation is integer-exact on both targets for
+//// any seed the target can represent; two seeds equal modulo 2^32 give the
+//// same stream, which is qcheck's own limitation. There is deliberately no
+//// random default seed: a red gate must be the same red gate on every
+//// machine.
 ////
-//// A failing list is shrunk greedily. Candidates come in two groups, in
-//// order: delete a contiguous chunk (the whole list, then halves, quarters,
-//// down to single commands, at every offset), then replace one command by
-//// each child of its own shrink tree. The first candidate that is admissible
-//// and fails with the SAME `Violation.tag` as the original is accepted and
-//// the search restarts from it. Deleting from the middle is what qcheck
-//// lists cannot do, and it is what lets a bug that needs two commands
-//// separated by noise shrink to just the two.
+//// A failing list is shrunk greedily. The whole-list deletion is offered
+//// once, first. After that, candidates come in two groups, in order: delete
+//// a contiguous chunk of `n/2`, `n/4`, ..., down to `1` commands for a list
+//// of `n`, at every offset (a halving schedule, so sizes such as 2 for a
+//// list of 3 are not offered), then replace one command by each child of
+//// its own shrink tree. The first candidate that is admissible and fails
+//// with the SAME `Violation.tag` as the original is accepted and the search
+//// restarts from it. Deleting from the middle is what qcheck lists cannot
+//// do, and it is what lets a bug that needs two commands separated by noise
+//// shrink to just the two.
+////
+//// Shrinking is bounded twice. `max_shrinks` bounds executions, and every
+//// execution, including each retry under `with_shrink_retries`, spends one.
+//// Candidates that fail a precondition are never executed and so are free
+//// against it, but they are bounded by a fixed cap, so a hand-built shrink
+//// tree that is infinite and inadmissible still terminates. Either bound
+//// ending the search is reported as `ShrinkBoundHit`.
 ////
 //// Commands that name state by value (a key, a handle) shrink badly,
 //// because deleting the command that created the value leaves its users
 //// inadmissible. Prefer commands that name state by index or by position in
 //// the model, so a shortened list is another valid list.
 ////
-//// The pieces, in the order a failure meets them: `run_seed` derives one
-//// run's seed from `(seed, run)`, `sequence_generator` builds the list,
-//// `candidates` offers shrinks, of which `chunk_sizes` fixes the deletion
-//// widths, and `search` and `descend` pick and repeat the first that holds.
+//// ## Crashes
+////
+//// A consumer's `execute` often asserts rather than returning a `Result`.
+//// `new_sut`, `execute` and `finish` run under `exception.rescue`, and a
+//// panic, throw or exit becomes a `Violation` tagged `statem.crash`. It
+//// shrinks and reports like any other failure, with the same-tag rule
+//// keeping a crash shrinking to a crash. `teardown` runs on every path
+//// where a system exists, including after a crash, and nothing it does can
+//// escape: a crash in `teardown` is discarded.
 ////
 //// ## Using it from a test
 ////
@@ -81,10 +100,28 @@
 //// }
 //// ```
 ////
-//// `execute` that panics, or a `new_sut` whose effects leak, is outside this
-//// module's reach: `teardown` runs after every execution that returns, pass
-//// or fail, but not after one that crashes.
+//// `commands` returns the list one run would generate without executing
+//// anything, for a test that asserts its generator reaches every kind of
+//// command.
+////
+//// ## Flow
+////
+//// `check` → `run_with` → `draw` → `execute_list` → `shrink` → `descend`
+////
+//// 1. `check` walks the runs with `check_from`, taking each run's seed from
+////    `next_run_seed`; `check_run` and `commands` reach the same seed through
+////    `run_seed` alone.
+//// 2. `run_with` calls `draw`, whose `sequence_generator` threads the model
+////    through `grow`, keeping each command's tree.
+//// 3. `execute_list` builds a system, `drive`s the list through `guarded`
+////    callbacks (a crash becomes `crashed`), and tears the system down.
+//// 4. A failure goes to `shrink`, which offers the whole list once and then
+////    `descend`s: each round `search`es the `candidates` (`deletions` sized
+////    by `chunk_sizes`, then `replacements`), `judge`s each against
+////    `first_rejection` and, when admissible, `attempt`s it.
+//// 5. `report` renders the resulting `Failure`.
 
+import exception.{type Exception}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -92,6 +129,7 @@ import gleam/string
 import gleam/yielder.{type Yielder}
 import qcheck
 import qcheck/tree.{type Tree, Tree}
+import statem/internal/retry
 
 // --- the specification ----------------------------------------------------
 
@@ -150,17 +188,23 @@ pub type Spec(model, cmd, sut) {
     /// system under test.
     next_model: fn(model, cmd) -> model,
     /// A fresh system under test. Called once per execution: once per run
-    /// and once per shrink candidate that is executed, so nothing may leak
-    /// between calls.
+    /// and once per shrink candidate that is executed (once per retry under
+    /// `with_shrink_retries`), so nothing may leak between calls. A crash is
+    /// a `statem.crash` violation.
     new_sut: fn() -> sut,
     /// Run one command on the system, given the model BEFORE the command,
-    /// check the postconditions, and return the advanced system.
+    /// check the postconditions, and return the advanced system. When it
+    /// returns `Error` or crashes, `teardown` receives the system as it was
+    /// BEFORE this command, so a value system that owns a resource and was
+    /// changed by a failing `execute` must keep that resource reachable from
+    /// the pre-command value, or be a reference type.
     execute: fn(sut, model, cmd) -> Result(sut, Violation),
     /// Run after the last command, with the model after it: a final retire,
     /// end-state checks. A consumer with nothing to check returns `Ok(Nil)`.
     finish: fn(sut, model) -> Result(Nil, Violation),
-    /// Release the system. Called after every execution that returns,
-    /// whether it passed or failed.
+    /// Release the system. Called after every execution that built one,
+    /// whether it passed, failed or crashed, with the last system that
+    /// existed. It must never escape: a crash here is discarded.
     teardown: fn(sut) -> Nil,
   )
 }
@@ -179,9 +223,15 @@ pub type Config {
     /// ends early when the precondition keeps rejecting what the generator
     /// offers.
     max_commands: Int,
-    /// The most shrink candidates to execute for one failure. Candidates
-    /// that fail their preconditions cost nothing against this budget.
+    /// The most shrink executions for one failure, retries included.
+    /// Candidates that fail their preconditions cost nothing against this
+    /// budget, but are bounded by a separate fixed cap.
     max_shrinks: Int,
+    /// How many executions one shrink candidate gets. It counts as still
+    /// failing if any of them fails with the original tag. For systems whose
+    /// failure is scheduling dependent; the initial failing run is not
+    /// retried.
+    shrink_retries: Int,
   )
 }
 
@@ -194,7 +244,13 @@ pub type Config {
 /// statem.default_config(seed: 7) |> statem.with_test_count(300)
 /// ```
 pub fn default_config(seed seed: Int) -> Config {
-  Config(test_count: 100, seed: seed, max_commands: 30, max_shrinks: 1000)
+  Config(
+    test_count: 100,
+    seed: seed,
+    max_commands: 30,
+    max_shrinks: 1000,
+    shrink_retries: 1,
+  )
 }
 
 /// Replace the number of runs. A negative count is treated as zero.
@@ -231,6 +287,20 @@ pub fn with_max_shrinks(config: Config, budget: Int) -> Config {
   Config(..config, max_shrinks: int.max(budget, 0))
 }
 
+/// Give each shrink candidate `attempts` executions instead of one; it
+/// counts as still failing if any of them fails with the original tag. Every
+/// execution, retries included, counts against `max_shrinks`. A value below
+/// one is treated as one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// statem.default_config(seed: 7) |> statem.with_shrink_retries(3)
+/// ```
+pub fn with_shrink_retries(config: Config, attempts: Int) -> Config {
+  Config(..config, shrink_retries: int.max(attempts, 1))
+}
+
 // --- results --------------------------------------------------------------
 
 /// A violation and the step it surfaced at.
@@ -250,7 +320,9 @@ pub type ShrinkEnd {
   /// under the deletions and replacements tried.
   ShrinkConverged
 
-  /// The budget ran out with candidates left, so a shorter list may exist.
+  /// A bound stopped the search with an admissible candidate still untried
+  /// (`max_shrinks` executions spent, or the cap on inadmissible
+  /// candidates reached), so a shorter list may exist.
   ShrinkBoundHit
 }
 
@@ -273,8 +345,8 @@ pub type Failure(cmd) {
     step: Int,
     /// How many shrink candidates were accepted.
     shrinks: Int,
-    /// How many shrink candidates were executed against the system, which is
-    /// the quantity `max_shrinks` bounds.
+    /// How many shrink executions ran against the system, retries included,
+    /// which is the quantity `max_shrinks` bounds.
     candidates_run: Int,
     /// Whether the shrink converged or stopped on the budget.
     shrink_end: ShrinkEnd,
@@ -287,6 +359,16 @@ pub type Failure(cmd) {
 /// A generator that is rarely admissible still terminates, and a list that
 /// ends early is a legitimate shorter list.
 const max_rejections = 8
+
+/// The most inadmissible shrink candidates one shrink may discard. They cost
+/// no execution, so `max_shrinks` cannot bound them; this does, and it is
+/// what lets a shrink tree that is infinite and never admissible terminate.
+/// It is generous because a wide but finite tree should be walked in full.
+const max_inadmissible = 250_000
+
+/// The largest value a per-run seed is drawn from: a full 32-bit seed, which
+/// is all qcheck's generator keeps of one.
+const seed_ceiling = 4_294_967_295
 
 /// Run `test_count` generated command lists against the spec and return the
 /// first failure, already shrunk.
@@ -303,7 +385,7 @@ pub fn check(
   spec: Spec(model, cmd, sut),
   config: Config,
 ) -> Result(Nil, Failure(cmd)) {
-  check_from(spec, config, 0)
+  check_from(spec, config, 0, qcheck.seed(config.seed))
 }
 
 /// Run one numbered run of a check on its own. The list is drawn from
@@ -320,9 +402,36 @@ pub fn check_run(
   config: Config,
   run: Int,
 ) -> Result(Nil, Failure(cmd)) {
-  let generator = sequence_generator(spec, config.max_commands)
-  let #(drawn, _) = qcheck.generate_tree(generator, run_seed(config.seed, run))
-  let Tree(trees, _) = drawn
+  run_with(spec, config, run, run_seed(config.seed, run))
+}
+
+/// The admissible command list run `run` of a check would generate, with
+/// nothing executed. It is the `original` of the `Failure` for that run, so
+/// a test can assert that its generator reaches every kind of command
+/// across the runs it checks.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let lists = list.map([0, 1, 2, 3], statem.commands(spec, config, _))
+/// assert list.any(list.flatten(lists), is_revoke)
+/// ```
+pub fn commands(
+  spec: Spec(model, cmd, sut),
+  config: Config,
+  run: Int,
+) -> List(cmd) {
+  roots(draw(spec, config, run_seed(config.seed, run)))
+}
+
+/// Execute one drawn run, shrinking it if it fails.
+fn run_with(
+  spec: Spec(model, cmd, sut),
+  config: Config,
+  run: Int,
+  seed: qcheck.Seed,
+) -> Result(Nil, Failure(cmd)) {
+  let trees = draw(spec, config, seed)
 
   case execute_list(spec, roots(trees)) {
     Ok(Nil) -> Ok(Nil)
@@ -332,19 +441,25 @@ pub fn check_run(
 
 /// The runs from `run` onward. A run that passes hands on to the next, so
 /// the recursion is the loop over `0..test_count`, and a failure is the
-/// only way out early.
+/// only way out early. The seed stream is threaded rather than recomputed,
+/// so a check costs one seed draw per run.
 fn check_from(
   spec: Spec(model, cmd, sut),
   config: Config,
   run: Int,
+  stream: qcheck.Seed,
 ) -> Result(Nil, Failure(cmd)) {
   case run >= config.test_count {
     True -> Ok(Nil)
-    False ->
-      case check_run(spec, config, run) {
-        Ok(Nil) -> check_from(spec, config, run + 1)
+
+    False -> {
+      let #(seed, stream) = next_run_seed(stream)
+
+      case run_with(spec, config, run, seed) {
+        Ok(Nil) -> check_from(spec, config, run + 1, stream)
         Error(failure) -> Error(failure)
       }
+    }
   }
 }
 
@@ -379,7 +494,8 @@ pub fn replay(
 }
 
 /// Render a failure as a readable multi-line message: where it came from,
-/// what broke, and the shrunk list with the failing step marked.
+/// what broke, the original list, and the shrunk list with the failing step
+/// marked.
 ///
 /// ## Examples
 ///
@@ -395,18 +511,19 @@ pub fn report(
     ShrinkBoundHit -> "shrink bound hit"
   }
 
-  let steps =
-    list.index_map(failure.shrunk, fn(command, index) {
-      let marker = case index == failure.step {
+  let numbered = fn(commands, failing) {
+    list.index_map(commands, fn(command, index) {
+      let marker = case index == failing {
         True -> "  > "
         False -> "    "
       }
       marker <> int.to_string(index) <> ". " <> describe(command)
     })
+  }
 
-  let finish_marker = case list.drop(failure.shrunk, failure.step) == [] {
-    True -> ["  > end of list (finish)"]
-    False -> []
+  let finish_marker = case list.drop(failure.shrunk, failure.step) {
+    [] -> ["  > end of list (finish)"]
+    [_, ..] -> []
   }
 
   string.join(
@@ -415,7 +532,9 @@ pub fn report(
         "stateful property failed: seed "
           <> int.to_string(failure.seed)
           <> ", run "
-          <> int.to_string(failure.run),
+          <> int.to_string(failure.run)
+          <> ", step "
+          <> int.to_string(failure.step),
         "violation ["
           <> failure.violation.tag
           <> "]: "
@@ -423,16 +542,19 @@ pub fn report(
         "original list: "
           <> int.to_string(list.length(failure.original))
           <> " commands",
-        "shrunk list: "
-          <> int.to_string(list.length(failure.shrunk))
-          <> " commands, "
-          <> int.to_string(failure.shrinks)
-          <> " shrinks accepted, "
-          <> int.to_string(failure.candidates_run)
-          <> " candidates run, "
-          <> ending,
       ],
-      steps,
+      numbered(failure.original, -1),
+      [
+        "shrunk list: "
+        <> int.to_string(list.length(failure.shrunk))
+        <> " commands, "
+        <> int.to_string(failure.shrinks)
+        <> " shrinks accepted, "
+        <> int.to_string(failure.candidates_run)
+        <> " executions, "
+        <> ending,
+      ],
+      numbered(failure.shrunk, failure.step),
       finish_marker,
     ]),
     "\n",
@@ -441,10 +563,45 @@ pub fn report(
 
 // --- generation -----------------------------------------------------------
 
-/// The seed for one run. Both numbers go in, so the run is independent of
-/// the others; the multiplier keeps neighbouring seeds' runs apart.
+/// The seed for run `run`: the `run`th draw of a stream seeded with `seed`.
+/// Walking the stream costs one draw per skipped run, which is cheap beside
+/// executing one, and it keeps every run's seed a function of `(seed, run)`
+/// alone.
 fn run_seed(seed: Int, run: Int) -> qcheck.Seed {
-  qcheck.seed(seed * 1_000_003 + run)
+  skip_seeds(qcheck.seed(seed), int.max(run, 0))
+}
+
+/// Advance the stream past `count` runs and return the next run's seed.
+fn skip_seeds(stream: qcheck.Seed, count: Int) -> qcheck.Seed {
+  let #(seed, stream) = next_run_seed(stream)
+
+  case count <= 0 {
+    True -> seed
+    False -> skip_seeds(stream, count - 1)
+  }
+}
+
+/// One run's seed and the stream that follows it. A full 32-bit draw is
+/// integer arithmetic below 2^53, so it is exact on both targets.
+fn next_run_seed(stream: qcheck.Seed) -> #(qcheck.Seed, qcheck.Seed) {
+  let #(drawn, stream) =
+    qcheck.generate_tree(qcheck.bounded_int(from: 0, to: seed_ceiling), stream)
+  let Tree(value, _) = drawn
+
+  #(qcheck.seed(value), stream)
+}
+
+/// The trees of the admissible list one seed generates.
+fn draw(
+  spec: Spec(model, cmd, sut),
+  config: Config,
+  seed: qcheck.Seed,
+) -> List(Tree(cmd)) {
+  let #(drawn, _) =
+    qcheck.generate_tree(sequence_generator(spec, config.max_commands), seed)
+  let Tree(trees, _) = drawn
+
+  trees
 }
 
 /// A generator of admissible command lists that keeps each command's own
@@ -511,20 +668,30 @@ fn roots(trees: List(Tree(cmd))) -> List(cmd) {
 // --- execution ------------------------------------------------------------
 
 /// Run a list on a fresh system, tear it down, and return the first
-/// violation. The list is assumed admissible.
+/// violation. The list is assumed admissible. A `new_sut` that crashes is
+/// a violation at step 0 with no system to tear down.
 fn execute_list(
   spec: Spec(model, cmd, sut),
   commands: List(cmd),
 ) -> Result(Nil, StepFailure) {
-  let #(sut, outcome) = drive(spec, spec.new_sut(), spec.initial, commands, 0)
-  spec.teardown(sut)
+  case exception.rescue(spec.new_sut) {
+    Error(crash) -> Error(StepFailure(0, crashed("new_sut", crash)))
 
-  outcome
+    Ok(fresh) -> {
+      let #(sut, outcome) = drive(spec, fresh, spec.initial, commands, 0)
+
+      // Teardown is the one callback whose failure is dropped: the verdict
+      // belongs to the commands, and a second crash must not mask it.
+      let _ = exception.rescue(fn() { spec.teardown(sut) })
+
+      outcome
+    }
+  }
 }
 
 /// Walk the list, threading the system and the model. The system returned
-/// is the last one that exists, so the caller can tear it down on a failure
-/// as well as on success.
+/// is the last one that exists (the pre-command one when a command fails or
+/// crashes), so the caller tears it down on every path.
 fn drive(
   spec: Spec(model, cmd, sut),
   sut: sut,
@@ -534,19 +701,40 @@ fn drive(
 ) -> #(sut, Result(Nil, StepFailure)) {
   case commands {
     [] ->
-      case spec.finish(sut, model) {
+      case guarded("finish", fn() { spec.finish(sut, model) }) {
         Ok(Nil) -> #(sut, Ok(Nil))
         Error(violation) -> #(sut, Error(StepFailure(step, violation)))
       }
 
     [command, ..rest] ->
-      case spec.execute(sut, model, command) {
+      case guarded("execute", fn() { spec.execute(sut, model, command) }) {
         Error(violation) -> #(sut, Error(StepFailure(step, violation)))
 
         Ok(advanced) ->
           drive(spec, advanced, spec.next_model(model, command), rest, step + 1)
       }
   }
+}
+
+/// Run a consumer callback, turning a crash into the `statem.crash`
+/// violation so it shrinks and reports like any other failure.
+fn guarded(
+  callback: String,
+  body: fn() -> Result(a, Violation),
+) -> Result(a, Violation) {
+  case exception.rescue(body) {
+    Ok(result) -> result
+    Error(crash) -> Error(crashed(callback, crash))
+  }
+}
+
+/// The violation for a crash. The tag is fixed so a crash shrinks to a crash
+/// whatever its message; the detail names the callback and what was raised.
+fn crashed(callback: String, crash: Exception) -> Violation {
+  Violation(
+    tag: "statem.crash",
+    detail: callback <> " crashed: " <> string.inspect(crash),
+  )
 }
 
 /// The index of the first command whose precondition rejects it, replaying
@@ -572,20 +760,69 @@ fn first_rejection(
 
 // --- shrinking ------------------------------------------------------------
 
+/// What one shrink has spent so far, against its two bounds.
+type Spent {
+  Spent(
+    /// Executions run, retries included; bounded by `max_shrinks`.
+    executed: Int,
+    /// Inadmissible candidates discarded; bounded by `max_inadmissible`.
+    discarded: Int,
+  )
+}
+
+/// What stays fixed while one failure shrinks.
+type Limits {
+  Limits(
+    /// The tag every accepted candidate must reproduce.
+    tag: String,
+    /// `Config.max_shrinks`.
+    budget: Int,
+    /// `Config.shrink_retries`.
+    retries: Int,
+  )
+}
+
 /// What the greedy search found for one round.
 type Search(cmd) {
   /// An admissible candidate that fails with the original tag.
-  Found(trees: List(Tree(cmd)), failure: StepFailure, run_count: Int)
+  Found(trees: List(Tree(cmd)), failure: StepFailure, spent: Spent)
 
   /// Every candidate was tried or discarded.
-  Exhausted(run_count: Int)
+  Exhausted(spent: Spent)
 
-  /// The execution budget ran out before the candidates did.
-  OutOfBudget(run_count: Int)
+  /// A bound stopped the search with an admissible candidate untried.
+  OutOfBudget(spent: Spent)
 }
 
-/// Shrink a failing list and package the result. The tag of the original
-/// failure is the one every accepted candidate must reproduce.
+/// What became of one candidate.
+type Verdict {
+  /// A precondition rejected it; nothing ran.
+  Dropped(spent: Spent)
+
+  /// It is admissible but a bound forbids running it.
+  Stopped(spent: Spent)
+
+  /// It failed with the original tag.
+  Accepted(failure: StepFailure, spent: Spent)
+
+  /// It ran and passed, or failed under another tag.
+  Refuted(spent: Spent)
+}
+
+/// The end state of a shrink.
+type Shrunk(cmd) {
+  Shrunk(
+    trees: List(Tree(cmd)),
+    failure: StepFailure,
+    accepted: Int,
+    spent: Spent,
+    ending: ShrinkEnd,
+  )
+}
+
+/// Shrink a failing list and package the result. The whole-list deletion is
+/// offered once here, so a descent round never begins by executing the empty
+/// list again; if it reproduces the failure there is nothing left to shrink.
 fn shrink(
   spec: Spec(model, cmd, sut),
   config: Config,
@@ -593,9 +830,29 @@ fn shrink(
   trees: List(Tree(cmd)),
   original_failure: StepFailure,
 ) -> Failure(cmd) {
-  let tag = original_failure.violation.tag
-  let #(final_trees, final_failure, accepted, run_count, ending) =
-    descend(spec, config.max_shrinks, tag, trees, original_failure, 0, 0)
+  let limits =
+    Limits(
+      tag: original_failure.violation.tag,
+      budget: config.max_shrinks,
+      retries: config.shrink_retries,
+    )
+  let none = Spent(executed: 0, discarded: 0)
+  let whole = case trees {
+    [] -> yielder.empty()
+    _ -> yielder.single([])
+  }
+
+  let Shrunk(final_trees, final_failure, accepted, spent, ending) = case
+    search(spec, limits, whole, none)
+  {
+    Found(emptied, failure, spent) ->
+      Shrunk(emptied, failure, 1, spent, ShrinkConverged)
+
+    Exhausted(spent) -> descend(spec, limits, trees, original_failure, 0, spent)
+
+    OutOfBudget(spent) ->
+      Shrunk(trees, original_failure, 0, spent, ShrinkBoundHit)
+  }
 
   Failure(
     seed: config.seed,
@@ -605,110 +862,105 @@ fn shrink(
     shrunk: roots(final_trees),
     step: final_failure.step,
     shrinks: accepted,
-    candidates_run: run_count,
+    candidates_run: spent.executed,
     shrink_end: ending,
   )
 }
 
 /// Take the first accepted candidate and restart from it. Greedy descent
 /// terminates because every accepted candidate is strictly smaller in
-/// command count or in its commands' shrink trees.
+/// command count or in its commands' shrink trees. The search itself reports
+/// whether a bound stopped it, so a list that converges on the last unit of
+/// budget is not reported as cut short.
 fn descend(
   spec: Spec(model, cmd, sut),
-  budget: Int,
-  tag: String,
+  limits: Limits,
   trees: List(Tree(cmd)),
   failure: StepFailure,
   accepted: Int,
-  run_count: Int,
-) -> #(List(Tree(cmd)), StepFailure, Int, Int, ShrinkEnd) {
-  case search(spec, budget, tag, candidates(trees), run_count) {
-    Found(next_trees, next_failure, next_count) ->
-      descend(
-        spec,
-        budget,
-        tag,
-        next_trees,
-        next_failure,
-        accepted + 1,
-        next_count,
-      )
+  spent: Spent,
+) -> Shrunk(cmd) {
+  case search(spec, limits, candidates(trees), spent) {
+    Found(next_trees, next_failure, next_spent) ->
+      descend(spec, limits, next_trees, next_failure, accepted + 1, next_spent)
 
-    Exhausted(count) -> #(trees, failure, accepted, count, ShrinkConverged)
+    Exhausted(next_spent) ->
+      Shrunk(trees, failure, accepted, next_spent, ShrinkConverged)
 
-    OutOfBudget(count) -> #(trees, failure, accepted, count, ShrinkBoundHit)
+    OutOfBudget(next_spent) ->
+      Shrunk(trees, failure, accepted, next_spent, ShrinkBoundHit)
   }
 }
 
-/// Walk the candidates lazily. An inadmissible candidate is dropped for
-/// free; an admissible one spends a unit of budget, and one that passes or
-/// fails with a different tag is dropped after being paid for.
+/// Walk the candidates lazily, one `judge` at a time. This is the only
+/// recursion in the search and it is a self tail call, which Gleam compiles
+/// to a loop on both targets, so a long run of inadmissible candidates
+/// cannot grow the stack.
 fn search(
   spec: Spec(model, cmd, sut),
-  budget: Int,
-  tag: String,
+  limits: Limits,
   pending: Yielder(List(Tree(cmd))),
-  run_count: Int,
+  spent: Spent,
 ) -> Search(cmd) {
   case yielder.step(pending) {
-    yielder.Done -> Exhausted(run_count)
+    yielder.Done -> Exhausted(spent)
 
     yielder.Next(candidate, rest) ->
-      consider(spec, budget, tag, candidate, rest, run_count)
+      case judge(spec, limits, candidate, spent) {
+        Dropped(next) -> search(spec, limits, rest, next)
+        Refuted(next) -> search(spec, limits, rest, next)
+        Stopped(next) -> OutOfBudget(next)
+        Accepted(failure, next) -> Found(candidate, failure, next)
+      }
   }
 }
 
 /// Decide one candidate: drop it unexecuted if a precondition rejects it,
-/// stop if the budget is spent, otherwise pay for an execution and either
-/// accept it or move on to `rest`.
-fn consider(
+/// stop if a bound is spent, otherwise pay for its executions.
+fn judge(
   spec: Spec(model, cmd, sut),
-  budget: Int,
-  tag: String,
+  limits: Limits,
   candidate: List(Tree(cmd)),
-  rest: Yielder(List(Tree(cmd))),
-  run_count: Int,
-) -> Search(cmd) {
-  case first_rejection(spec, spec.initial, roots(candidate), 0) {
-    Some(_) -> search(spec, budget, tag, rest, run_count)
+  spent: Spent,
+) -> Verdict {
+  let commands = roots(candidate)
+
+  case first_rejection(spec, spec.initial, commands, 0) {
+    Some(_) ->
+      case spent.discarded >= max_inadmissible {
+        True -> Stopped(spent)
+        False -> Dropped(Spent(..spent, discarded: spent.discarded + 1))
+      }
 
     None ->
-      case run_count >= budget {
-        True -> OutOfBudget(run_count)
-
-        False ->
-          case attempt(spec, tag, candidate) {
-            Ok(failure) -> Found(candidate, failure, run_count + 1)
-            Error(Nil) -> search(spec, budget, tag, rest, run_count + 1)
-          }
+      case spent.executed >= limits.budget {
+        True -> Stopped(spent)
+        False -> attempt(spec, limits, commands, spent)
       }
   }
 }
 
-/// Execute one admissible candidate and keep its failure only if it is the
-/// bug being shrunk.
+/// Execute one admissible candidate under the retry policy and accept it if
+/// any execution fails with the wanted tag. Each execution spends budget, so
+/// `max_shrinks` bounds the executions however many retries are asked for.
 fn attempt(
   spec: Spec(model, cmd, sut),
-  tag: String,
-  candidate: List(Tree(cmd)),
-) -> Result(StepFailure, Nil) {
-  same_failure(execute_list(spec, roots(candidate)), tag)
-}
+  limits: Limits,
+  commands: List(cmd),
+  spent: Spent,
+) -> Verdict {
+  let result =
+    retry.first_failure(
+      limits.retries,
+      limits.budget - spent.executed,
+      fn(_attempt) { execute_list(spec, commands) },
+      fn(failure) { failure.violation.tag == limits.tag },
+    )
+  let spent = Spent(..spent, executed: spent.executed + result.executions)
 
-/// A failure with the wanted tag, or nothing. A pass and a failure under a
-/// different tag are both `Error(Nil)`: neither is the bug being shrunk.
-fn same_failure(
-  outcome: Result(Nil, StepFailure),
-  tag: String,
-) -> Result(StepFailure, Nil) {
-  case outcome {
-    Ok(Nil) -> Error(Nil)
-
-    Error(failure) ->
-      case failure.violation.tag == tag {
-        True -> Ok(failure)
-        False -> Error(Nil)
-      }
+  case result.accepted {
+    Some(failure) -> Accepted(failure, spent)
+    None -> Refuted(spent)
   }
 }
 
@@ -718,8 +970,8 @@ fn candidates(trees: List(Tree(cmd))) -> Yielder(List(Tree(cmd))) {
   yielder.append(deletions(trees), replacements(trees))
 }
 
-/// Delete a contiguous chunk: the whole list, then halves, quarters, down to
-/// single commands, each at every offset.
+/// Delete a contiguous chunk of each size in `chunk_sizes`, at every
+/// offset. The whole list is not among them; `shrink` offers it once.
 fn deletions(trees: List(Tree(cmd))) -> Yielder(List(Tree(cmd))) {
   let length = list.length(trees)
 
@@ -733,12 +985,14 @@ fn deletions(trees: List(Tree(cmd))) -> Yielder(List(Tree(cmd))) {
   })
 }
 
-/// The chunk sizes for a list of this length: the length itself, then
-/// repeated halving down to one. Empty for an empty list.
+/// The chunk sizes for a list of this length: `length / 2`, then repeated
+/// halving (integer division) down to one. Empty for a list shorter than
+/// two, whose only deletion is the whole list. It is a halving schedule,
+/// not every size: for a length of 3 only single commands are offered.
 fn chunk_sizes(length: Int) -> List(Int) {
-  case length < 1 {
-    True -> []
-    False -> [length, ..chunk_sizes(length / 2)]
+  case length / 2 {
+    0 -> []
+    half -> [half, ..chunk_sizes(half)]
   }
 }
 
