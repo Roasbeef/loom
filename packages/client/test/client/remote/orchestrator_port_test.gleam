@@ -409,6 +409,7 @@ fn ready(handle: agent.Handle) -> remote_spawn.Joined {
       cache_write: 4,
       cost: 0.5,
     ),
+    owed: 0,
   )
 }
 

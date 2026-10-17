@@ -91,6 +91,7 @@ pub opaque type Call {
   Asked(Ask)
   Set(Mode)
   Settle(Handle)
+  Owing(Int)
   Look(reply: Subject(Report))
 }
 
@@ -127,6 +128,7 @@ type State {
     joins: Int,
     join_windows: List(Int),
     settled: List(Handle),
+    owed: Int,
     releases: List(remote_spawn.Parent),
     sends: List(#(String, String)),
     delivered: Dict(String, String),
@@ -150,6 +152,7 @@ pub fn start(name: String, mode: Mode) -> Box {
       joins: 0,
       join_windows: [],
       settled: [],
+      owed: 0,
       releases: [],
       sends: [],
       delivered: dict.new(),
@@ -168,6 +171,12 @@ pub fn set_mode(box: Box, mode: Mode) -> Nil {
 /// Makes the orchestrator report the child as finished from the next join on.
 pub fn settle(box: Box, handle: Handle) -> Nil {
   process.send(box.inbox, Settle(handle))
+}
+
+/// Makes the orchestrator report `count` undelivered messages from every child it
+/// reports as finished, from the next join on.
+pub fn set_owed(box: Box, count: Int) -> Nil {
+  process.send(box.inbox, Owing(count))
 }
 
 /// What the orchestrator has seen so far.
@@ -267,6 +276,7 @@ fn handle(state: State, call: Call) -> actor.Next(State, Call) {
     Set(mode) -> actor.continue(State(..state, mode:))
     Settle(handle) ->
       actor.continue(State(..state, settled: [handle, ..state.settled]))
+    Owing(count) -> actor.continue(State(..state, owed: count))
     Look(reply:) -> {
       process.send(
         reply,
@@ -510,6 +520,7 @@ fn join(
                   cache_write: 7,
                   cost: 0.5,
                 ),
+                owed: state.owed,
               )
             False -> remote_spawn.Pending(handle:, waited_ms: window_ms)
           }

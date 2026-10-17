@@ -51,6 +51,7 @@ fn a_stub(state: remote_child.State) -> remote_child.Stub {
     request: a_request(),
     name: "sub:^main/run-the-suite-0123456789abcdef",
     glance: None,
+    owed: 0,
     state:,
   )
 }

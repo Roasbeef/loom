@@ -364,11 +364,11 @@ fn box_script() -> List(provider.Exchange) {
       )
     }),
 
-    // The child stays alive long enough for the box to send the mail while the
-    // parent is still waiting. A row rings a drainer that is idle, and the first
-    // pass after the ring is one retry interval (five seconds) away.
+    // The child stays alive a moment after it sends. The row rings the box's
+    // drainer, which sends at once; and a child that finished before the mail left
+    // would still be asked about until the box reports nothing undelivered.
     provider.ComputedExchange(provider.AwaitToolResult("send-up"), fn(_seen) {
-      provider.ReplyToolUse("nap", "bash", shell("sleep 12"))
+      provider.ReplyToolUse("nap", "bash", shell("sleep 3"))
     }),
     provider.ComputedExchange(provider.AwaitToolResult("nap"), fn(_seen) {
       provider.ReplyText(upward_report)

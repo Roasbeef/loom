@@ -28,9 +28,10 @@
 //// The laptop answers a `ChildMail` with a `Receipt` or a `ChildRefusal`. A
 //// `Receipt` is final and says what became of the message: `Delivered` into the
 //// parent's open run, or `Declined` because the parent had no run open. A
-//// `ChildRefusal` says the laptop could not decide, and exactly one of the four
-//// is worth asking again: `ParentSessionNotOpen`, the parent session being saved
-//// and not resident, which its owner ends by opening it.
+//// `ChildRefusal` says the laptop could not decide, and two of the five are worth
+//// asking again: `ParentSessionNotOpen`, the parent session being saved and not
+//// resident, which its owner ends by opening it, and `Busy`, a laptop that could
+//// not reach its own holder or store this time.
 ////
 //// ## Flow
 ////
@@ -69,7 +70,7 @@ pub type Receipt {
 }
 
 /// Why the laptop could not decide about a message. Every variant is an answer,
-/// and only `ParentSessionNotOpen` leaves the sender's row pending.
+/// and only `ParentSessionNotOpen` and `Busy` leave the sender's row pending.
 pub type ChildRefusal {
   /// No stub of the parent session names this child. The box can only name a
   /// child the parent asked for, so this is a box that outlived the parent's
@@ -84,7 +85,16 @@ pub type ChildRefusal {
   /// orchestrator the child's stub names.
   OriginMismatch
 
-  /// The laptop's store could not record the decision.
+  /// The laptop could not reach its own Agency or store right now: the holder is
+  /// not up, did not answer in time, or a write failed. Nothing was decided, so
+  /// the sender asks again.
+  Busy(
+    /// What was unavailable.
+    reason: String,
+  )
+
+  /// The laptop looked and will never admit the message: an id reused for other
+  /// content, a message beyond its bounds, or a receipt that is corrupt.
   StoreFailure(
     /// What failed.
     reason: String,
@@ -93,11 +103,11 @@ pub type ChildRefusal {
 
 /// Whether a refusal leaves the sender's row pending, to be sent again.
 ///
-/// Only the parent session being closed does. The other three are the laptop
-/// saying the message will not be admitted however often it is sent, and a row
-/// that kept being sent would cost a round trip every pass for ever. A store
-/// failure is definitive for the same reason a `Declined` receipt is: the box
-/// settles on an answer, and a laptop whose store is failing has answered.
+/// The parent session being closed does, and so does a laptop that was `Busy`:
+/// neither decided anything. The other three are the laptop saying the message
+/// will not be admitted however often it is sent, and a row that kept being sent
+/// would cost a round trip every pass for ever. A `StoreFailure` is definitive
+/// for the same reason a `Declined` receipt is: the box settles on an answer.
 ///
 /// ## Examples
 ///
@@ -107,7 +117,7 @@ pub type ChildRefusal {
 /// ```
 pub fn retryable(refusal: ChildRefusal) -> Bool {
   case refusal {
-    ParentSessionNotOpen -> True
+    ParentSessionNotOpen | Busy(..) -> True
     UnknownChild | OriginMismatch | StoreFailure(..) -> False
   }
 }
@@ -126,6 +136,7 @@ pub fn describe_refusal(refusal: ChildRefusal) -> String {
     ParentSessionNotOpen -> "the parent session is not open"
     OriginMismatch ->
       "the message did not come from the orchestrator that runs this child"
+    Busy(reason:) -> "the parent's orchestrator was busy: " <> reason
     StoreFailure(reason:) -> "the parent's store failed: " <> reason
   }
 }

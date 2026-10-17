@@ -921,11 +921,17 @@ fn admitting_child_run(
             Some(Continuation(within_ms: None, ..)) | None ->
               lineage.default_within_ms
           }
+          use deadline <- result.try(run_deadline_for(
+            lineage,
+            continuation,
+            budget,
+            now,
+          ))
           let run =
             child_run.Run(
               strand: runtime.strand,
               owner:,
-              deadline: option.map(budget, fn(ms) { now + ms }),
+              deadline:,
               stop: child_run.Unstopped,
             )
           Ok(tx.Tx(
@@ -950,6 +956,29 @@ fn admitting_child_run(
         }
       }
     }
+  }
+}
+
+// The deadline a new run of a child gets. An ordinary run gets a fresh budget
+// from now. A run that a remote parent's message starts (no continuation, and a
+// parent that is a `^` reference) gets the child's own absolute deadline, the
+// one its spawn was given, and nothing later: a message must not lengthen what
+// the spawner allowed, however many are sent, and a child past its deadline
+// cannot be revived by one.
+fn run_deadline_for(
+  child: lineage.Lineage,
+  continuation: Option(Continuation),
+  budget: Option(Int),
+  now: Int,
+) -> Result(Option(Int), ApiError) {
+  case continuation, string.starts_with(child.parent, parent_reference_prefix) {
+    None, True ->
+      case child.deadline {
+        Some(at) if at <= now ->
+          Error(ReadFailed("the child's deadline has passed"))
+        Some(_) | None -> Ok(child.deadline)
+      }
+    Some(_), _ | None, False -> Ok(option.map(budget, fn(ms) { now + ms }))
   }
 }
 

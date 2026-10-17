@@ -3580,7 +3580,7 @@ fn assemble_in(
       abort_effects: effect_abort.abort(effect_abort_name),
       claim: option.then(settings.metering, fn(metering) { metering.claim }),
       spawner: settings.spawner,
-      upward_queued: fn() { peer_outbox_drain.poke(upward_drain_name) },
+      upward_queued: fn() { peer_outbox_drain.ring(upward_drain_name) },
       models: list.map(settings.catalog.models, fn(entry) {
         #(
           machine_strand.ModelIdentity(

@@ -6930,6 +6930,7 @@ fn a_stub_of(
       request: remote_spawn.Request(..remote_request("record"), detach:),
       name: "sub:^main/record-0123456789abcdef",
       glance: None,
+      owed: 0,
       state:,
     ),
   )
@@ -6991,7 +6992,7 @@ pub fn a_stub_only_moves_forward_test() {
 
   // A report of a finish cannot apply to a child nobody has said exists.
   let assert Ok(unmoved) =
-    remote_child.settled(harness.runtime, key, agent.Completed, usage)
+    remote_child.settled(harness.runtime, key, agent.Completed, usage, 0)
   assert unmoved.state == remote_child.Requested
 
   let assert Ok(spawned) =
@@ -7006,7 +7007,7 @@ pub fn a_stub_only_moves_forward_test() {
   assert again.state == spawned.state
 
   let assert Ok(finished) =
-    remote_child.settled(harness.runtime, key, agent.Completed, usage)
+    remote_child.settled(harness.runtime, key, agent.Completed, usage, 0)
   assert finished.state == remote_child.Settled(placed, agent.Completed, usage)
 
   // Nothing late moves a finished child, whether an answer or a refusal.
@@ -7840,7 +7841,10 @@ pub fn a_send_into_an_idle_child_starts_a_detached_run_within_its_budget_test() 
   let run =
     run_for(harness, agent.Handle(strand: spawned.handle.strand, operation:))
   assert run.owner == None
+
+  // The run ends where the spawn's deadline fell, and not a budget later.
   assert option.is_some(run.deadline)
+  assert run.deadline == run_for(harness, spawned.handle).deadline
 
   // A repeat is the receipt, and starts no second run.
   assert landing_of(agency.delegate_send(
@@ -7852,4 +7856,248 @@ pub fn a_send_into_an_idle_child_starts_a_detached_run_within_its_budget_test() 
     ))
     == remote_mail.Admitted
   close(harness)
+}
+
+pub fn repeated_sends_never_move_a_childs_deadline_test() {
+  let shared = counting_clock(1_756_000_000_000, 3)
+  let harness =
+    start_harness_on(
+      Settles("done"),
+      fn(config) { config },
+      shared,
+      shared,
+      fn(sess) { sess },
+    )
+  let spawned = remote_spawned(harness, "turn-1:tools", "review auth")
+  assert settled(harness, spawned.handle)
+  let original = run_for(harness, spawned.handle).deadline
+  let send = fn(id) {
+    landing_of(agency.delegate_send(
+      harness.config,
+      remote_parent(),
+      spawned.handle,
+      id,
+      "again " <> id,
+    ))
+  }
+  let assert remote_mail.Started(operation: first, ..) = send("s1")
+  let assert remote_mail.Started(operation: second, ..) = send("s2")
+  let strand = spawned.handle.strand
+  assert run_for(harness, agent.Handle(strand:, operation: first)).deadline
+    == original
+  assert run_for(harness, agent.Handle(strand:, operation: second)).deadline
+    == original
+  close(harness)
+}
+
+pub fn a_send_after_the_childs_deadline_is_refused_and_revives_nothing_test() {
+  let shared = counting_clock(1_756_000_000_000, 3)
+  let harness =
+    start_harness_on(
+      Settles("done"),
+      fn(config) { config },
+      shared,
+      shared,
+      fn(sess) { sess },
+    )
+  let assert Ok(spawned) =
+    agency.delegate_spawn(
+      harness.config,
+      remote_delegation(),
+      site_of("turn-1:tools", 0),
+      remote_spawn.Request(..remote_request("short"), within_ms: Some(1)),
+    )
+  assert settled(harness, spawned.handle)
+
+  // The clock has moved past the one millisecond the child was given.
+  let assert Error(remote_spawn.StoreFailure(reason:)) =
+    agency.delegate_send(
+      harness.config,
+      remote_parent(),
+      spawned.handle,
+      "late",
+      "too late",
+    )
+  assert string.contains(reason, "deadline has passed")
+  close(harness)
+}
+
+pub fn a_send_to_a_remote_child_past_its_deadline_is_refused_by_the_parent_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Up)
+  let #(harness, _queued) = start_remote(Hangs, [box], fn(config) { config })
+  let spawned = spawn_on_box(harness, "turn-1:tools")
+
+  // The stub records the deadline on this session's clock; make it the past.
+  let assert [kept] = list.map(stubs_of(harness), fn(stub) { stub })
+  let assert remote_child.Spawned(placed) = kept.state
+  let assert Ok(entries) = remote_child.all(harness.runtime)
+  let assert [entry] = entries
+  let expired =
+    remote_child.Stub(
+      ..entry.stub,
+      state: remote_child.Spawned(remote_child.Placed(..placed, deadline_ms: 1)),
+    )
+  let assert Ok(Nil) =
+    api.put_reserved_fact(
+      harness.runtime,
+      entry.key,
+      remote_child.encode(expired),
+    )
+  let assert Error(agent.InvalidArgument(reason:)) =
+    harness.seam.send(
+      caller_on("main", "turn-2:tools", 0),
+      spawned.strand,
+      "hello",
+      None,
+    )
+  assert string.contains(reason, "past its deadline")
+  assert fake_orchestrators.report(box).sends == []
+  close(harness)
+}
+
+pub fn a_send_to_a_child_still_starting_says_so_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Down)
+  let #(harness, _queued) = start_remote(Hangs, [box], fn(config) { config })
+  let assert Error(agent.RemoteSilent(..)) =
+    harness.seam.spawn(caller_on("main", "turn-1:tools", 0), on_box("build"))
+  let child = stub_child(harness)
+  let assert Error(agent.InvalidArgument(reason:)) =
+    harness.seam.send(
+      caller_on("main", "turn-2:tools", 0),
+      child.strand,
+      "hello",
+      None,
+    )
+  assert string.contains(reason, "still starting")
+  close(harness)
+}
+
+// --- mail a finished child still owes -----------------------------------------
+
+pub fn a_join_counts_the_mail_a_finished_child_has_not_delivered_test() {
+  let #(harness, _rung) = start_linked(Settles("done"))
+  let spawned = remote_spawned(harness, "turn-1:tools", "review auth")
+  assert settled(harness, spawned.handle)
+  let caller = child_caller(spawned, "child-turn:tools")
+  let assert Ok(agent.Queued) =
+    harness.seam.send(caller, "^main", "last words", None)
+
+  // The child is finished and its mail is still on the box: the join says so.
+  let owed = fn() {
+    let assert Ok([remote_spawn.Ready(owed:, ..)]) =
+      agency.delegate_join(harness.config, remote_parent(), [spawned.handle], 0)
+    owed
+  }
+  assert owed() == 1
+
+  // The laptop answers, the row settles, and the join says nothing is owed.
+  let assert Ok([#(key, row)]) = delegate_outbox.mail_rows(harness.runtime)
+  let assert Ok(Nil) =
+    delegate_outbox.settle_mail(
+      harness.runtime,
+      key,
+      delegate_outbox.Mail(
+        ..row,
+        state: delegate_outbox.Answered(remote_mail.Delivered),
+      ),
+    )
+  assert owed() == 0
+  close(harness)
+}
+
+pub fn the_drainer_holds_the_link_while_a_finished_child_owes_mail_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Up)
+  let votes = process.new_subject()
+  let harness =
+    start_harness_with(Hangs, fn(config) {
+      agency.Config(
+        ..config,
+        remote: fake_orchestrators.voting(
+          parent_session,
+          [box],
+          fn() { True },
+          votes,
+        ),
+      )
+    })
+  let spawned = spawn_on_box(harness, "turn-1:tools")
+  fake_orchestrators.settle(box, spawned.handle)
+  fake_orchestrators.set_owed(box, 2)
+
+  // The child finished, and the box says two messages are still undelivered, so
+  // the stub is settled and the connection is still wanted.
+  assert drain(harness) == peer_outbox_drain.Owed(peer_outbox_drain.Quick)
+  let assert [stub] = stubs_of(harness)
+  let assert remote_child.Settled(..) = stub.state
+  assert stub.owed == 2
+  let _ = drain(harness)
+  let assert Ok(#("box", remote_reach.Hold)) = last_vote(votes)
+
+  // The box delivers: a later join reads zero, the pass clears and the vote drops.
+  fake_orchestrators.set_owed(box, 0)
+  assert drain(harness) == peer_outbox_drain.Clear
+  let assert [after] = stubs_of(harness)
+  assert after.owed == 0
+  let _ = drain(harness)
+  assert last_vote(votes) == Ok(#("box", remote_reach.Drop))
+  close(harness)
+}
+
+fn last_vote(
+  votes: Subject(#(String, remote_reach.Vote)),
+) -> Result(#(String, remote_reach.Vote), Nil) {
+  case process.receive(votes, 0) {
+    Ok(vote) ->
+      case last_vote(votes) {
+        Ok(later) -> Ok(later)
+        Error(Nil) -> Ok(vote)
+      }
+    Error(Nil) -> Error(Nil)
+  }
+}
+
+pub fn a_glance_from_another_machine_is_cut_to_a_local_glances_bounds_test() {
+  let #(harness, box, child) = requested_parent()
+  let inbox = agency.child_inbox(harness.config)
+  let long = string.repeat("é", 300)
+  let seen =
+    glance.Glance(
+      operation: ids.op_id_to_string(child.operation),
+      title: long,
+      summary: long,
+      at: 5000,
+      tokens: 1,
+    )
+  assert inbox.progress(
+      parent_of_remote_child(),
+      child,
+      seen,
+      only_box(box.name),
+    )
+    == Ok(Nil)
+  let assert [stub] = stubs_of(harness)
+  let assert Some(kept) = stub.glance
+  assert string.byte_size(kept.title) <= glance.max_title_bytes
+  assert string.byte_size(kept.summary) <= glance.max_summary_bytes
+  assert string.starts_with(long, kept.title)
+  close(harness)
+}
+
+pub fn a_laptop_that_cannot_reach_its_holder_answers_busy_not_a_final_failure_test() {
+  let #(harness, box, child) = requested_parent()
+  let inbox = agency.child_inbox(harness.config)
+  close(harness)
+
+  // The holder is gone with the session: nothing was decided, so the box is told
+  // to ask again.
+  let assert Error(busy) =
+    fake_orchestrators.deliver_to_laptop(
+      box,
+      inbox,
+      parent_of_remote_child(),
+      child,
+      "m1",
+      "hello",
+    )
+  assert remote_mail.retryable(busy)
 }

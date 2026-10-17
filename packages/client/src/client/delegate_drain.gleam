@@ -163,9 +163,11 @@ fn mail_step(
           mail_step(runtime, link, laptop, logger, rest)
         }
 
-        // The parent session is closed: this row stays pending and the others
-        // are still tried, because they may be for a parent that is open.
-        Ok(Error(remote_mail.ParentSessionNotOpen)) -> {
+        // The parent session is closed, or the laptop could not reach its own
+        // store: this row stays pending and the others are still tried, because
+        // they may be for a parent that is open.
+        Ok(Error(remote_mail.ParentSessionNotOpen))
+        | Ok(Error(remote_mail.Busy(..))) -> {
           let #(_left, silent) = mail_step(runtime, link, laptop, logger, rest)
           #(True, silent)
         }
@@ -247,9 +249,10 @@ fn send_glances(
       case laptop.progress(parent, next.child, next.glance) {
         Error(Nil) -> True
 
-        // The parent session is closed: the glance stays unacknowledged and the
-        // next pass sends the newest one again.
-        Ok(Error(remote_mail.ParentSessionNotOpen)) -> {
+        // The parent session is closed or the laptop is busy: the glance stays
+        // unacknowledged and the next pass sends the newest one again.
+        Ok(Error(remote_mail.ParentSessionNotOpen))
+        | Ok(Error(remote_mail.Busy(..))) -> {
           let _left = send_glances(runtime, link, laptop, logger, rest)
           True
         }

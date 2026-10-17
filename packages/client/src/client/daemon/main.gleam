@@ -1299,7 +1299,7 @@ pub fn start_release_drain(
         }),
       )
       manager.on_releases_owed(ready.registry, fn() {
-        peer_outbox_drain.poke(name)
+        peer_outbox_drain.ring(name)
       })
       log.info(logger, "daemon.release_drain", [])
       Ok(Nil)

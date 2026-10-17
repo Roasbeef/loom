@@ -312,6 +312,36 @@ pub fn only_a_closed_parent_session_is_asked_again_test() {
   let assert Ok(Nil) = api.close(runtime)
 }
 
+pub fn a_busy_laptop_leaves_the_row_pending_but_a_store_failure_settles_it_test() {
+  let runtime = session("busy")
+  let assert Ok(Nil) =
+    delegate_outbox.queue_mail(runtime, a_row("m1", delegate_outbox.Pending))
+  let assert Ok(Nil) =
+    delegate_outbox.queue_mail(runtime, a_row("m2", delegate_outbox.Pending))
+  let heard = process.new_subject()
+  let up =
+    laptop(
+      connected: True,
+      mail: fn(id) {
+        case id {
+          "m1" -> Ok(Error(remote_mail.Busy(reason: "holder not up")))
+          _ ->
+            Ok(
+              Error(remote_mail.StoreFailure(
+                reason: "id reused with other text",
+              )),
+            )
+        }
+      },
+      progress: nothing_said(),
+      heard:,
+    )
+  assert pass(runtime, running: False, laptop: up) == owed()
+  let assert [delegate_outbox.Pending, delegate_outbox.Refused(..)] =
+    states(runtime)
+  let assert Ok(Nil) = api.close(runtime)
+}
+
 pub fn a_running_child_keeps_the_pass_owed_with_nothing_to_send_test() {
   let runtime = session("running")
   let heard = process.new_subject()

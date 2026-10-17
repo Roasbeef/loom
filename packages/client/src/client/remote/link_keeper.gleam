@@ -10,7 +10,8 @@
 //// over a connection the laptop made. This machine makes sure there is one
 //// whenever someone upstairs is waiting for a message: it reconnects every two
 //// seconds while it holds, and it holds only while a session says it has a child
-//// there.
+//// there. A node that stays down is tried less often, up to every thirty
+//// seconds, and a look that finds it up goes back to two.
 ////
 //// ## One keeper for each orchestrator, in the daemon
 ////
@@ -46,7 +47,7 @@
 //// | state | Hold | Drop | Beat | a voter dies |
 //// | --- | --- | --- | --- | --- |
 //// | `Idle` | `Holding`, the beat armed | ignored | ignored, a stale fire | ignored |
-//// | `Holding` | vote recorded | vote removed; `Idle` when none is left | connects if the node is not connected | its votes are removed; `Idle` when none is left |
+//// | `Holding` | vote recorded | vote removed; `Idle` when none is left | connects if the node is not connected, and waits longer if it still is not | its votes are removed; `Idle` when none is left |
 ////
 //// The votes live in the machine's data and not in the `Holding` state. A
 //// state value that changed with every vote would be a state change, and every
@@ -55,17 +56,26 @@
 
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Down, type Monitor, type Pid, type Subject}
+import gleam/int
 import gleam/otp/supervision.{type ChildSpecification}
 import weft/actor
 import weft/registry as address
 import weft/state_machine as sm
 import weft/timer
 
-/// How often a holding keeper looks at the connection, in milliseconds.
+/// How often a holding keeper looks at the connection, in milliseconds, while the
+/// connection is up or has just come back.
 pub const beat_ms = 2000
 
+/// The longest the keeper waits between looks while the node stays down, in
+/// milliseconds. Each look that finds the node still down after a connect doubles
+/// the wait up to this, so a box that is off costs a connect timeout every thirty
+/// seconds and not every two, and a look that finds the node up resets it.
+pub const max_beat_ms = 30_000
+
 // The one name the beat is armed under. Arming a name replaces whatever was
-// armed under it, so there is never more than one live chain.
+// armed under it, so there is never more than one live chain. The beat is a
+// one-shot that each look re-arms, because its delay changes.
 const beat_timer = "link-keeper-beat"
 
 /// What the keeper does about the connection, as functions so that a test
@@ -123,7 +133,7 @@ type Voter {
 
 // What the machine carries: the connection it keeps and the votes, by session.
 type State {
-  State(link: Link, voters: Dict(String, Voter))
+  State(link: Link, voters: Dict(String, Voter), delay_ms: Int)
 }
 
 /// Starts a keeper under `name`, linked to the caller.
@@ -195,7 +205,10 @@ fn builder(
       process.new_selector()
       |> process.select(subject)
       |> process.select_monitors(VoterDown)
-    sm.initialised(Idle, State(link: options.link, voters: dict.new()))
+    sm.initialised(
+      Idle,
+      State(link: options.link, voters: dict.new(), delay_ms: beat_ms),
+    )
     |> sm.selecting(selector)
     |> sm.returning(subject)
     |> Ok
@@ -216,12 +229,8 @@ fn entered(
 ) -> sm.Enter(Phase, State, Message) {
   case from, to {
     Idle, Holding ->
-      sm.keep(data)
-      |> sm.with_periodic_timeout(
-        name: beat_timer,
-        every: beat_ms,
-        sending: Beat,
-      )
+      sm.keep(State(..data, delay_ms: beat_ms))
+      |> sm.with_named_timeout(name: beat_timer, after: beat_ms, sending: Beat)
     Holding, Idle -> sm.keep(data) |> sm.cancel_timeout(name: beat_timer)
     Idle, Idle | Holding, Holding -> sm.keep(data)
   }
@@ -247,15 +256,29 @@ fn handle(
     // machine went idle is a stale one.
     Idle, Beat -> sm.keep(data)
     Holding, Beat -> {
-      case data.link.connected() {
-        True -> Nil
-        False -> data.link.connect()
-      }
-      sm.keep(data)
+      let delay_ms = next_delay(data)
+      sm.keep(State(..data, delay_ms:))
+      |> sm.with_named_timeout(name: beat_timer, after: delay_ms, sending: Beat)
     }
 
     Idle, VoterDown(down) | Holding, VoterDown(down) ->
       settled(data |> without_dead(down))
+  }
+}
+
+// Looks at the connection and connects if it is down, and answers the wait
+// before the next look: the base beat when the node is up or the connect brought
+// it back, and twice the last wait, to `max_beat_ms`, when it is still down.
+fn next_delay(data: State) -> Int {
+  case data.link.connected() {
+    True -> beat_ms
+    False -> {
+      data.link.connect()
+      case data.link.connected() {
+        True -> beat_ms
+        False -> int.min(max_beat_ms, data.delay_ms * 2)
+      }
+    }
   }
 }
 

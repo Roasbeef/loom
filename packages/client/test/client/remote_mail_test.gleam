@@ -28,6 +28,7 @@ fn an_entry() -> ids.EntryId {
 
 pub fn only_a_closed_parent_session_is_worth_asking_again_test() {
   assert remote_mail.retryable(remote_mail.ParentSessionNotOpen)
+  assert remote_mail.retryable(remote_mail.Busy(reason: "holder"))
   assert !remote_mail.retryable(remote_mail.UnknownChild)
   assert !remote_mail.retryable(remote_mail.OriginMismatch)
   assert !remote_mail.retryable(remote_mail.StoreFailure(reason: "busy"))
@@ -42,6 +43,8 @@ pub fn every_refusal_has_a_sentence_test() {
     == "the message did not come from the orchestrator that runs this child"
   assert remote_mail.describe_refusal(remote_mail.StoreFailure(reason: "busy"))
     == "the parent's store failed: busy"
+  assert remote_mail.describe_refusal(remote_mail.Busy(reason: "holder"))
+    == "the parent's orchestrator was busy: holder"
 }
 
 pub fn a_receipt_round_trips_test() {

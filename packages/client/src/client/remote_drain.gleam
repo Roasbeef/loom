@@ -171,7 +171,7 @@ fn vote(reach: Reach, kept: List(Kept), time: Clock) -> Nil {
   let #(now, _clock) = clock.read(time)
   let holding =
     kept
-    |> list.filter(fn(entry) { remote_child.is_live(entry.stub, now) })
+    |> list.filter(fn(entry) { remote_child.needs_link(entry.stub, now) })
     |> list.map(fn(entry) { entry.stub.orchestrator })
     |> list.unique
   list.append(reach.orchestrators, holding)
@@ -327,9 +327,15 @@ fn running(entry: Kept, now: Int) -> Result(#(Kept, Handle), Nil) {
         True -> Ok(#(entry, placed.handle))
         False -> Error(Nil)
       }
-    remote_child.Requested
-    | remote_child.Settled(..)
-    | remote_child.Refused(..) -> Error(Nil)
+
+    // A child that finished and whose orchestrator still holds mail it sent is
+    // asked about again, to learn when the mail has been delivered.
+    remote_child.Settled(placed:, ..) ->
+      case remote_child.owes_mail(entry.stub, now) {
+        True -> Ok(#(entry, placed.handle))
+        False -> Error(Nil)
+      }
+    remote_child.Requested | remote_child.Refused(..) -> Error(Nil)
   }
 }
 
@@ -402,15 +408,26 @@ fn settle_all(
   list.fold(children, Clear, fn(backlog, child) {
     let #(entry, handle) = child
     case finished(joined, handle) {
-      Ok(#(outcome, usage)) ->
+      // A finished child whose orchestrator still holds mail it sent keeps the
+      // pass owed, so the next pass asks again and the connection stays up.
+      Ok(#(outcome, usage, undelivered)) ->
         owed_if_either(
           backlog,
           recorded(
-            remote_child.settled(runtime, entry.key, outcome, usage),
+            remote_child.settled(
+              runtime,
+              entry.key,
+              outcome,
+              usage,
+              undelivered,
+            ),
             logger,
             "remote_drain.settled",
             entry,
-            Clear,
+            case undelivered > 0 {
+              True -> owed
+              False -> Clear
+            },
           ),
         )
       Error(Nil) -> owed
@@ -418,17 +435,17 @@ fn settle_all(
   })
 }
 
-// The outcome and cost a join reports for one handle, when it reports that child
-// finished.
+// The outcome, the cost and the count of undelivered messages a join reports for
+// one handle, when it reports that child finished.
 fn finished(
   joined: List(Joined),
   handle: Handle,
-) -> Result(#(Outcome, ChildUsage), Nil) {
+) -> Result(#(Outcome, ChildUsage, Int), Nil) {
   list.find_map(joined, fn(entry) {
     case entry {
-      remote_spawn.Ready(handle: found, outcome:, usage:, ..)
+      remote_spawn.Ready(handle: found, outcome:, usage:, owed:, ..)
         if found == handle
-      -> Ok(#(outcome, usage))
+      -> Ok(#(outcome, usage, owed))
       remote_spawn.Ready(..) | remote_spawn.Pending(..) -> Error(Nil)
     }
   })

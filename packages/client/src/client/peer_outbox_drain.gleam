@@ -266,6 +266,25 @@ pub fn poke(name: address.Address(Message)) -> Nil {
   Nil
 }
 
+/// Asks the drainer for a pass now, where `poke` arms one a retry interval away.
+///
+/// `poke` is for a message that was just attempted inline and failed, so the
+/// first retry is one interval off. A drainer whose first attempt is its pass,
+/// such as the delegate session's, has made no inline attempt, and waiting the
+/// interval would delay a message for nothing. A `Tick` runs a pass in either
+/// phase and the pass arms the next, so ringing a waiting drainer costs one
+/// extra pass.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // peer_outbox_drain.ring(name)
+/// ```
+pub fn ring(name: address.Address(Message)) -> Nil {
+  let _sent = address.send(name, Tick)
+  Nil
+}
+
 // The machine `start` and `supervised` both describe. It begins `Waiting`, so
 // that `entered`'s first call arms the pass that runs at session open.
 fn builder(

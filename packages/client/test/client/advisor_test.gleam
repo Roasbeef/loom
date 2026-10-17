@@ -3601,6 +3601,7 @@ fn settle_remote(
       ),
       name: "sub:^main/" <> digest,
       glance: None,
+      owed: 0,
       state: remote_child.Settled(
         placed:,
         outcome: agent.Completed,

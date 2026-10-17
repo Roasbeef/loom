@@ -192,6 +192,12 @@ pub type Joined {
     notes: List(#(String, JsonValue)),
     /// What the run cost.
     usage: ChildUsage,
+    /// How many messages the child sent its parent that the receiving
+    /// orchestrator still has not delivered, because the parent's orchestrator was
+    /// away or closed. A child that has finished can still owe mail, so the
+    /// parent keeps its connection to the orchestrator up and asks again until
+    /// this reaches zero.
+    owed: Int,
   )
 
   /// The window ended first. Not an error: the parent may ask again.

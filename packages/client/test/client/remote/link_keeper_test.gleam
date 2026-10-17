@@ -8,6 +8,7 @@
 import client/remote/link_keeper
 import gleam/erlang/process.{type Subject}
 import support/addresses
+import weft/actor
 import weft/poll
 import weft/registry as address
 
@@ -84,11 +85,12 @@ pub fn a_vote_arms_the_two_second_beat_and_a_beat_connects_a_dropped_node_test()
   assert beat.delay_ms == link_keeper.beat_ms
   assert_no_connect(keeping)
 
-  // Each beat that finds the node down connects, and arms the next.
+  // Each beat that finds the node down connects, and arms the next one later,
+  // because the node is still down after the connect.
   beat.wake()
   connected_once(keeping)
   let next = arming(keeping)
-  assert next.delay_ms == link_keeper.beat_ms
+  assert next.delay_ms == 2 * link_keeper.beat_ms
   next.wake()
   connected_once(keeping)
 }
@@ -167,4 +169,78 @@ pub fn a_second_vote_from_a_session_replaces_the_first_test() {
   link_keeper.drop(keeping.name, "s1")
   beat.wake()
   assert_no_connect(keeping)
+}
+
+pub fn a_node_that_stays_down_is_tried_less_often_and_a_return_resets_it_test() {
+  let armings = process.new_subject()
+  let connects = process.new_subject()
+  let name = addresses.new()
+  let assert Ok(state) =
+    actor.new(False)
+    |> actor.on_message(fn(up, message: Flip) {
+      case message {
+        Flip(now_up) -> actor.continue(now_up)
+        Ask(reply) -> {
+          process.send(reply, up)
+          actor.continue(up)
+        }
+      }
+    })
+    |> actor.start
+  let options =
+    link_keeper.Options(
+      link: link_keeper.Link(
+        connected: fn() {
+          process.call(state.data, 1000, fn(reply) { Ask(reply) })
+        },
+        connect: fn() { process.send(connects, Nil) },
+      ),
+      after: fn(delay_ms, wake) {
+        process.send(armings, Arming(delay_ms:, wake:))
+      },
+    )
+  let assert Ok(_) = link_keeper.start(options, name)
+  link_keeper.hold(name, "s1")
+
+  // Each look that finds the node still down doubles the wait, to the cap.
+  let first = arming_of(armings)
+  assert first.delay_ms == link_keeper.beat_ms
+  first.wake()
+  let second = arming_of(armings)
+  assert second.delay_ms == 2 * link_keeper.beat_ms
+  second.wake()
+  let third = arming_of(armings)
+  assert third.delay_ms == 4 * link_keeper.beat_ms
+  let last = wake_until_capped(armings, third)
+  assert last.delay_ms == link_keeper.max_beat_ms
+
+  // The node comes back: the next look finds it up and the wait is the base one.
+  process.send(state.data, Flip(True))
+  last.wake()
+  let back = arming_of(armings)
+  assert back.delay_ms == link_keeper.beat_ms
+}
+
+type Flip {
+  Flip(Bool)
+  Ask(process.Subject(Bool))
+}
+
+fn arming_of(armings: process.Subject(Arming)) -> Arming {
+  let assert Ok(found) = process.receive(armings, 2000)
+    as "the keeper armed its beat"
+  found
+}
+
+fn wake_until_capped(
+  armings: process.Subject(Arming),
+  current: Arming,
+) -> Arming {
+  case current.delay_ms >= link_keeper.max_beat_ms {
+    True -> current
+    False -> {
+      current.wake()
+      wake_until_capped(armings, arming_of(armings))
+    }
+  }
 }

@@ -108,6 +108,10 @@ pub type Stub {
     /// while the stub is still `Requested`, and the answer to the `Spawn` that
     /// follows must not lose it.
     glance: Option(Glance),
+    /// How many messages a settled child still had undelivered on its
+    /// orchestrator when a join last said, zero until then. See
+    /// `remote_spawn.Joined`.
+    owed: Int,
     /// How far the spawn has got.
     state: State,
   )
@@ -543,13 +547,56 @@ pub fn settled(
   key: String,
   outcome: Outcome,
   usage: ChildUsage,
+  owed: Int,
 ) -> Result(Stub, String) {
-  advance(runtime, key, fn(state) {
-    case state {
-      Spawned(placed) -> Some(Settled(placed:, outcome:, usage:))
+  advance_with(runtime, key, fn(stub) {
+    case stub.state {
+      Spawned(placed) ->
+        Some(Stub(..stub, owed:, state: Settled(placed:, outcome:, usage:)))
+
+      // A later join says how much mail is still undelivered. It only ever goes
+      // down in practice, and the stub keeps what the newest join said.
+      Settled(..) if stub.owed != owed -> Some(Stub(..stub, owed:))
       Requested | Settled(..) | Refused(..) -> None
     }
   })
+}
+
+/// How long after a child's deadline a settled child that still owes mail is
+/// asked about, in milliseconds. A box that cannot deliver for longer than this
+/// has lost its place; the mail is not worth a connection held for ever.
+pub const owing_grace_ms = 3_600_000
+
+/// Whether the connection to the stub's orchestrator is needed at `now`: the
+/// child may be running, or it has finished and the orchestrator still holds
+/// mail it sent, within `owing_grace_ms` of the child's deadline.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert remote_child.needs_link(stub_in_state(remote_child.Requested), 1000)
+/// ```
+pub fn needs_link(stub: Stub, now: Int) -> Bool {
+  case is_live(stub, now) {
+    True -> True
+    False -> owes_mail(stub, now)
+  }
+}
+
+/// Whether the stub is settled and its orchestrator reported undelivered mail
+/// from the child, inside the grace period.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert !remote_child.owes_mail(stub_in_state(remote_child.Requested), 1000)
+/// ```
+pub fn owes_mail(stub: Stub, now: Int) -> Bool {
+  case stub.state {
+    Settled(placed:, ..) ->
+      stub.owed > 0 && now < placed.deadline_ms + owing_grace_ms
+    Requested | Spawned(..) | Refused(..) -> False
+  }
 }
 
 // A step from one state, as a single compare-and-set. The stub is read with the
@@ -709,6 +756,7 @@ pub fn encode(stub: Stub) -> JsonValue {
       #("request", encode_request(stub.request)),
       #("name", json.String(stub.name)),
       #("glance", optional(stub.glance, glance.encode)),
+      #("owed", json.Int(stub.owed)),
     ],
     encode_state(stub.state),
   ))
@@ -837,6 +885,10 @@ pub fn decode(value: JsonValue) -> Result(Stub, String) {
       glance.decode(value) |> result.map_error(corruption.describe)
     }),
   )
+  use owed <- result.try(case list.key_find(fields, "owed") {
+    Error(Nil) -> Ok(0)
+    Ok(found) -> expect_number(found)
+  })
   use state <- result.try(decode_state(fields))
   Ok(Stub(
     orchestrator:,
@@ -847,6 +899,7 @@ pub fn decode(value: JsonValue) -> Result(Stub, String) {
     request:,
     name:,
     glance:,
+    owed:,
     state:,
   ))
 }
