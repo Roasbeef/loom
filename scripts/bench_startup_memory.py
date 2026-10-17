@@ -3,7 +3,7 @@
 
 This is the body of `make bench-startup-memory`. It drives the built
 self-contained releases (build/release/loom and build/release/loom-client)
-through six scenarios, each from a fresh private state root, and reports
+through seven scenarios, each from a fresh private state root, and reports
 wall-clock and peak resident memory per process:
 
   a  daemon cold boot     loomd until it prints its listening line
@@ -11,12 +11,17 @@ wall-clock and peak resident memory per process:
                           the client bootstraps the daemon itself
   c  client attach        loom against a running daemon, until its first frame
   d  one-shot command     `loom sessions list` against a running daemon
-  e  session growth       ten sessions admitted over the control socket; the
-                          time is one admission, the memory is the daemon's
+  e  session growth       ten sessions created over the control socket; the
+                          times separate create reply from residency, with
+                          the first domain distinguished from later sessions;
+                          memory is the daemon's
                           growth per session between the first and the tenth
   f  long session         loom reopening a copy of a real session database
                           (DB=...) whose search index is already built, until
                           its first frame and until the transcript is drawn
+  g  fresh session ready  cold daemon, control create, resident, then a real
+                          client attached composer; a programmatic pipeline,
+                          not the interactive picker-to-New journey
 
 Why each measurement is taken the way it is:
 
@@ -38,12 +43,21 @@ Profiling names the node and starts distribution, which costs startup time,
 so the timed runs never use it.
 
 Every scenario runs under its own HOME so the operator's ~/.claude and
-~/.loom are never read, with a minimal PATH, and with the smoke catalogue
-(scripts/release-smoke.toml) whose only model is an unreachable loopback
-port: nothing here can make a provider request.
+~/.loom are never read, with a minimal PATH. The default smoke catalogue
+(scripts/release-smoke.toml) names only an unreachable loopback provider.
+An explicit --config catalogue must likewise use unreachable loopback
+providers; the private HOME does not disable networking. Results record the
+chosen file's absolute path, SHA256 and byte count.
+
+--best-effort explicitly accepts degraded sandbox enforcement for environments
+that cannot provide the default platform demand. The TUI has no such launch
+flag, so this option selects a private --server launcher which execs the same
+release daemon with --best-effort and its original helper. Results disclose
+the demand and launcher mechanism; the default uses the release directly.
 
 Usage:
-  scripts/bench_startup_memory.py [--runs N] [--only abcdef] [--db PATH]
+  scripts/bench_startup_memory.py [--runs N] [--only abcdefg] [--db PATH]
+                                  [--config PATH] [--best-effort]
                                   [--label NAME] [--compare RESULTS.json]
                                   [--against SNAPSHOT] [--snapshot NAME]
 
@@ -54,15 +68,22 @@ minutes is only as good as the machine was quiet, so for a before-and-after
 build/bench-startup-memory/releases/NAME, and a later --against NAME times
 that snapshot and the new build alternately, run by run, and prints the
 change between them.
+
+--compare accepts saved results only with matching Linux/macOS platform,
+KiB RSS units, configuration bytes and enforcement demand. Older files lack
+that provenance; use --against to remeasure both releases with this harness.
 """
 
 import argparse
 import base64
+from contextlib import ExitStack
+import hashlib
 import json
 import os
 import pty
 import re
 import select
+import shlex
 import shutil
 import signal
 import socket
@@ -75,6 +96,7 @@ import termios
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG = os.path.join(REPO, "scripts", "release-smoke.toml")
+BEST_EFFORT = False
 OUT_DIR = os.path.join(REPO, "build", "bench-startup-memory")
 
 ROWS, COLS = 40, 120
@@ -96,6 +118,20 @@ LIVE = set()
 
 class BenchError(Exception):
     pass
+
+
+def configuration_provenance(path):
+    """Reads a regular catalogue file and identifies its exact input bytes."""
+    path = os.path.abspath(path)
+    if not os.path.isfile(path):
+        raise BenchError("benchmark configuration is not a readable regular file: " + path)
+    try:
+        with open(path, "rb") as handle:
+            contents = handle.read()
+    except OSError as error:
+        raise BenchError("benchmark configuration is unreadable: %s: %s" % (path, error)) from error
+    return {"path": path, "sha256": hashlib.sha256(contents).hexdigest(),
+            "size_bytes": len(contents)}
 
 
 class Build:
@@ -172,6 +208,8 @@ class Daemon:
         self.profile = profile
         self.log = os.path.join(profile.root, "loomd.log")
         args = [build.loomd, "--state-dir", profile.state, "--config", CONFIG] + list(extra)
+        if BEST_EFFORT:
+            args.append("--best-effort")
         if profiled:
             args.append("--profile")
         self.started = now_ms()
@@ -180,8 +218,17 @@ class Daemon:
                 args, cwd=profile.work, env=profile.env,
                 stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
         LIVE.add(self.proc.pid)
-        self.ready_ms = self._await_ready()
-        self.port = self._port()
+        try:
+            self.ready_ms = self._await_ready()
+            self.port = self._port()
+        except BaseException:
+            # poll() reaps an early exit while awaiting readiness. A live
+            # constructor failure still needs explicit native retirement.
+            if self.proc.returncode is None:
+                self.stop()
+            else:
+                LIVE.discard(self.proc.pid)
+            raise
 
     def _await_ready(self):
         deadline = self.started + 60_000
@@ -222,17 +269,27 @@ def terminate(pid, grace_s=20):
         reaped, _, usage = os.wait4(pid, os.WNOHANG)
         if reaped == pid:
             LIVE.discard(pid)
-            return usage.ru_maxrss / 1024.0
+            return maxrss_kib(usage.ru_maxrss)
         if time.monotonic() > deadline:
             os.kill(pid, signal.SIGKILL)
             _, _, usage = os.wait4(pid, 0)
             LIVE.discard(pid)
-            return usage.ru_maxrss / 1024.0
+            return maxrss_kib(usage.ru_maxrss)
         time.sleep(0.01)
 
 
+def maxrss_kib(maxrss):
+    """Normalizes wait4 peak RSS: macOS reports bytes, Linux reports KiB."""
+    return float(maxrss) / 1024.0 if sys.platform == "darwin" else float(maxrss)
+
+
 def stop_foreign(pid, grace_s=20):
-    """Stops a process the bench did not start and so cannot reap."""
+    """Stops a process the bench did not start and so cannot reap.
+
+    On Linux an orphaned daemon may remain a zombie under a PID 1 that does
+    not reap it. That proves native retirement, not a successful exit status;
+    child-process RSS and exit observations still come only from wait4.
+    """
     try:
         os.kill(pid, signal.SIGTERM)
     except ProcessLookupError:
@@ -243,8 +300,36 @@ def stop_foreign(pid, grace_s=20):
             os.kill(pid, 0)
         except ProcessLookupError:
             return
+        if linux_zombie(pid):
+            return
         time.sleep(0.02)
-    os.kill(pid, signal.SIGKILL)
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
+def linux_zombie(pid):
+    """Recognizes only an explicit Linux procfs zombie state.
+
+    The command name can contain spaces and parentheses, so the state follows
+    the last closing parenthesis. A zombie leader can still have live sibling
+    threads: field 20 must also report one thread. Missing, unreadable or
+    malformed data establishes nothing and retains the ordinary bounded wait.
+    """
+    if sys.platform != "linux":
+        return False
+    try:
+        with open("/proc/%d/stat" % pid, encoding="utf-8", errors="replace") as handle:
+            stat = handle.read(4096)
+    except OSError:
+        return False
+    if not stat.startswith("%d (" % pid):
+        return False
+    _, delimiter, suffix = stat.rpartition(")")
+    fields = suffix.split()
+    return bool(delimiter) and suffix.startswith(" ") and len(fields) >= 18 \
+        and fields[0] == "Z" and fields[17] == "1"
 
 
 def ps_rss_kib(pid):
@@ -287,10 +372,14 @@ class Client:
                 os._exit(127)
         LIVE.add(pid)
         self.pid, self.fd = pid, fd
-        fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
         self.output = b""
         self.first_frame_ms = None
         self.settled_ms = None
+        try:
+            fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
+        except BaseException:
+            self.stop()
+            raise
 
     def _read(self, timeout_s):
         ready, _, _ = select.select([self.fd], [], [], timeout_s)
@@ -388,7 +477,7 @@ class Client:
             self._read(0.01)
         LIVE.discard(self.pid)
         os.close(self.fd)
-        return usage.ru_maxrss / 1024.0
+        return maxrss_kib(usage.ru_maxrss)
 
 
 def one_shot(profile, build, args):
@@ -404,12 +493,32 @@ def one_shot(profile, build, args):
     LIVE.discard(proc.pid)
     if os.waitstatus_to_exitcode(status) != 0:
         raise BenchError("loom %s failed:\n%s" % (" ".join(args), output.decode(errors="replace")))
-    return elapsed, usage.ru_maxrss / 1024.0
+    return elapsed, maxrss_kib(usage.ru_maxrss)
 
 
 def client_args(profile, build, *extra):
-    return ["--state-dir", profile.state, "--server", build.loomd, "--config", CONFIG,
+    return ["--state-dir", profile.state, "--server", client_server(profile, build), "--config", CONFIG,
             "--workspace", profile.work] + list(extra)
+
+
+def client_server(profile, build):
+    """Selects an explicit best-effort launcher only for opted-in runs.
+
+    The local TUI accepts --server but no enforcement flag. Exec keeps the
+    release daemon's native identity, and the original adjacent helper remains
+    selected as it would be when the TUI launches that release directly.
+    """
+    if not BEST_EFFORT:
+        return build.loomd
+    path = os.path.join(profile.root, "loomd-best-effort")
+    arguments = [build.loomd, "--best-effort"]
+    helper = os.path.join(os.path.dirname(build.loomd), "loom-exec")
+    if os.access(helper, os.X_OK):
+        arguments.extend(["--helper", helper])
+    with open(path, "w") as handle:
+        handle.write("#!/bin/sh\nexec " + " ".join(shlex.quote(arg) for arg in arguments) + ' "$@"\n')
+    os.chmod(path, 0o700)
+    return path
 
 
 # --------------------------------------------------------- control socket
@@ -419,29 +528,48 @@ class Control:
     """The daemon's control websocket, as the release probe speaks it.
 
     Requests are strictly sequential, so a reply is the next frame whose
-    reply_to matches; anything else the daemon pushes is skipped.
+    reply_to matches; anything else the daemon pushes is skipped. One absolute
+    deadline bounds each whole request, including partial reads and pushes.
     """
 
     def __init__(self, profile, port):
         with open(os.path.join(profile.state, "owner.token")) as handle:
             token = handle.read().strip()
         self.sock = socket.create_connection(("127.0.0.1", port), timeout=30)
-        key = base64.b64encode(os.urandom(16)).decode()
-        self.sock.sendall((
-            "GET /v2/control HTTP/1.1\r\n"
-            "Host: 127.0.0.1:%d\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
-            "Sec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n"
-            "Authorization: Bearer %s\r\n\r\n" % (port, key, token)).encode())
-        head = b""
-        while b"\r\n\r\n" not in head:
-            head += self.sock.recv(1)
-        if b" 101 " not in head.split(b"\r\n")[0]:
-            raise BenchError("control upgrade refused: %r" % head[:200])
+        self.deadline = time.monotonic() + 30
+        try:
+            key = base64.b64encode(os.urandom(16)).decode()
+            self._send_bytes((
+                "GET /v2/control HTTP/1.1\r\n"
+                "Host: 127.0.0.1:%d\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                "Sec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n"
+                "Authorization: Bearer %s\r\n\r\n" % (port, key, token)).encode())
+            head = b""
+            while b"\r\n\r\n" not in head:
+                head += self._exact(1)
+                if len(head) > 65536:
+                    raise BenchError("control upgrade header exceeds 64 KiB")
+            if b" 101 " not in head.split(b"\r\n")[0]:
+                raise BenchError("control upgrade refused: %r" % head[:200])
+        except BaseException:
+            self.close()
+            raise
         self.next_id = 1
+
+    def _remaining(self):
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise BenchError("control request deadline exceeded")
+        self.sock.settimeout(remaining)
+
+    def _send_bytes(self, data):
+        self._remaining()
+        self.sock.sendall(data)
 
     def _exact(self, count):
         data = b""
         while len(data) < count:
+            self._remaining()
             chunk = self.sock.recv(count - len(data))
             if not chunk:
                 raise BenchError("control socket closed")
@@ -459,7 +587,7 @@ class Control:
         else:
             header += bytes([0x80 | 127]) + struct.pack(">Q", length)
         masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
-        self.sock.sendall(header + mask + masked)
+        self._send_bytes(header + mask + masked)
 
     def _frame(self):
         while True:
@@ -477,30 +605,49 @@ class Control:
             elif opcode == 0x1:
                 return json.loads(payload)
 
-    def request(self, command, body):
+    def request(self, command, body, within_s=30):
         ident = self.next_id
         self.next_id += 1
-        self._send(0x1, json.dumps(
-            {"v": 2, "id": ident, "cmd": command, "body": body}).encode())
-        while True:
-            frame = self._frame()
-            if frame.get("reply_to") != ident:
-                continue
-            if frame.get("event") == "error":
-                raise BenchError("%s refused: %s" % (command, json.dumps(frame)))
-            return frame.get("body", {})
+        self.deadline = time.monotonic() + within_s
+        try:
+            self._send(0x1, json.dumps(
+                {"v": 2, "id": ident, "cmd": command, "body": body}).encode())
+            while True:
+                frame = self._frame()
+                if frame.get("reply_to") != ident:
+                    continue
+                if frame.get("event") == "error":
+                    raise BenchError("%s refused: %s" % (command, json.dumps(frame)))
+                return frame.get("body", {})
+        except (OSError, BenchError) as error:
+            raise BenchError("%s: %s" % (command, error)) from error
 
     def create_session(self, profile, key):
+        """Compatibility helper: answers the identity only after residency."""
+        return self.create_session_timed(profile, key)["session_id"]
+
+    def create_session_timed(self, profile, key, within_s=60):
+        """Create reply and observed residency, both elapsed from create send.
+
+        The single deadline includes the create RPC and every status RPC. The
+        resident endpoint uses 10 ms status polling and includes RPC time; it does
+        not claim an attached client or a usable composer.
+        """
+        started = now_ms()
+        deadline = time.monotonic() + within_s
         created = self.request("sessions.create", {
             "request_key": key, "workspace": profile.work,
-            "name": key, "configuration": CONFIG})
+            "name": key, "configuration": CONFIG},
+            within_s=min(30, max(0, deadline - time.monotonic())))
+        reply_ms = now_ms() - started
         ident = created["session_id"]
-        deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
-            view = self.request("sessions.get", {"session_id": ident})
+            view = self.request("sessions.get", {"session_id": ident},
+                                within_s=min(30, max(0, deadline - time.monotonic())))
             if view.get("status", {}).get("state") == "resident":
-                return ident
-            time.sleep(0.01)
+                return {"session_id": ident, "create_reply_ms": reply_ms,
+                        "resident_ms": now_ms() - started}
+            time.sleep(min(0.01, max(0, deadline - time.monotonic())))
         raise BenchError("session %s never became resident" % ident)
 
     def close(self):
@@ -689,37 +836,45 @@ GROWTH_SESSIONS = 10
 
 
 def once_e(build, tag, _db):
-    """Daemon growth per admitted session, between the first and the tenth."""
+    """Create reply, residency and growth, distinguishing domain startup."""
     profile = Profile("e-" + tag)
-    d = Daemon(profile, build, extra=GROWTH_CAPACITY)
-    control = Control(profile, d.port)
-    admissions, rss = [], []
-    for k in range(GROWTH_SESSIONS):
-        started = now_ms()
-        control.create_session(profile, "bench-%d" % k)
-        admissions.append(now_ms() - started)
-        if k in (0, GROWTH_SESSIONS - 1):
-            time.sleep(0.2)
-            rss.append(d.rss_kib())
-    control.close()
-    peak = d.stop()
-    profile.remove()
+    rows, residents, rss, peaks = {}, [], [], []
+    with ExitStack() as cleanup:
+        cleanup.callback(profile.remove)
+        d = Daemon(profile, build, extra=GROWTH_CAPACITY)
+        cleanup.callback(lambda: peaks.append(d.stop()))
+        control = Control(profile, d.port)
+        cleanup.callback(control.close)
+        for k in range(GROWTH_SESSIONS):
+            timed = control.create_session_timed(profile, "bench-%d" % k)
+            residents.append(timed["resident_ms"])
+            group = "first" if k == 0 else "later"
+            for label, endpoint in (("create reply", "create_reply_ms"),
+                                    ("resident", "resident_ms")):
+                row = rows.setdefault(group + " " + label, ([], []))
+                row[0].append(timed[endpoint])
+            if k in (0, GROWTH_SESSIONS - 1):
+                time.sleep(0.2)
+                rss.append(d.rss_kib())
     growth = (rss[1] - rss[0]) / (GROWTH_SESSIONS - 1)
-    return {"daemon": (admissions, [peak]), "per_session": ([], [growth])}
+    # Keep the original row for existing snapshot comparisons. Its time has
+    # always included the resident wait, despite the former admission label.
+    return {"daemon": (residents, peaks), "per_session": ([], [growth]), **rows}
 
 
 def census_e(build, _db):
     profile = Profile("e-census-" + build.name)
-    d = Daemon(profile, build, profiled=True, extra=GROWTH_CAPACITY)
-    control = Control(profile, d.port)
-    control.create_session(profile, "bench-0")
-    one = census(d.attach_line(), "e one session")
-    for k in range(1, GROWTH_SESSIONS):
-        control.create_session(profile, "bench-%d" % k)
-    ten = census(d.attach_line(), "e ten sessions")
-    control.close()
-    d.stop()
-    profile.remove()
+    with ExitStack() as cleanup:
+        cleanup.callback(profile.remove)
+        d = Daemon(profile, build, profiled=True, extra=GROWTH_CAPACITY)
+        cleanup.callback(d.stop)
+        control = Control(profile, d.port)
+        cleanup.callback(control.close)
+        control.create_session(profile, "bench-0")
+        one = census(d.attach_line(), "e one session")
+        for k in range(1, GROWTH_SESSIONS):
+            control.create_session(profile, "bench-%d" % k)
+        ten = census(d.attach_line(), "e ten sessions")
     per = {key: (ten[key] - one[key]) / (GROWTH_SESSIONS - 1) for key in MEMORY_KEYS}
     return {"daemon@1": one, "daemon@10": ten, "per_session": per}
 
@@ -748,7 +903,7 @@ def install_session(profile, db, ident):
     sql = ("insert into catalogue_sessions(session_id, path, workspace, name, "
            "configuration, created_at, request_key, state) values "
            "('%s', '%s', '%s', 'bench long session', '%s', %d, 'bench-long', 'saved');"
-           % (ident, target, profile.work, CONFIG, created))
+           % (ident, target, profile.work, CONFIG.replace("'", "''"), created))
     sql += ("insert into catalogue_domain_sessions select '%s', domain_id "
             "from catalogue_domain_sessions limit 1;" % ident)
     subprocess.run(["sqlite3", os.path.join(profile.state, "catalogue.db"), sql], check=True)
@@ -861,6 +1016,55 @@ def census_f(build, db):
     return memory
 
 
+def fresh_session(build, tag, profiled=False):
+    """Cold daemon -> control create -> resident -> attached real client.
+
+    This explicitly programmatic pipeline does not drive the interactive
+    picker or its New action. Total begins at daemon process launch and ends
+    at the attached composer witness. Create endpoints start at create send;
+    client endpoints start at client launch. Connection and launch gaps are
+    included in total, so the endpoint rows must not be added together.
+    """
+    profile = Profile("g-" + tag)
+    peaks, memory = {}, {}
+    with ExitStack() as cleanup:
+        cleanup.callback(profile.remove)
+        d = Daemon(profile, build, profiled=profiled)
+        cleanup.callback(lambda: peaks.update(daemon=d.stop()))
+        control = Control(profile, d.port)
+        cleanup.callback(control.close)
+        timed = control.create_session_timed(profile, "bench-fresh")
+        extra = ["--session", timed["session_id"]]
+        if profiled:
+            extra.append("--profile")
+        c = Client(profile, build, client_args(profile, build, *extra))
+        cleanup.callback(lambda: peaks.update(client=c.stop()))
+        first = c.await_first_frame()
+        attached = c.await_text(ATTACHED)
+        total = c.started + attached - d.started
+        c.await_settled()
+        if profiled:
+            memory = {"client": census(client_attach(c), "g attached composer"),
+                      "daemon": census(d.attach_line(), "g fresh resident attached")}
+
+    return {
+        "daemon ready": ([d.ready_ms], [peaks["daemon"]]),
+        "create reply": ([timed["create_reply_ms"]], []),
+        "resident": ([timed["resident_ms"]], []),
+        "client first frame": ([first], [peaks["client"]]),
+        "attached composer": ([attached], []),
+        "total": ([total], []),
+    }, memory
+
+
+def once_g(build, tag, _db):
+    return fresh_session(build, tag)[0]
+
+
+def census_g(build, _db):
+    return fresh_session(build, "census-" + build.name, profiled=True)[1]
+
+
 SCENARIOS = {
     "a": ("daemon cold boot", once_a, census_a),
     "b": ("client cold start", once_b, census_b),
@@ -868,6 +1072,7 @@ SCENARIOS = {
     "d": ("one-shot command", once_d, census_d),
     "e": ("session growth", once_e, census_e),
     "f": ("long session", once_f, census_f),
+    "g": ("fresh session pipeline", once_g, census_g),
 }
 
 # Rows whose RSS is a ps sample rather than a wait4 peak.
@@ -987,8 +1192,15 @@ def print_report(results, rows, against_rows, baseline):
         print_rows(rows, baseline)
     print()
     print("Client time is to the first frame; 'f client drawn' is until the long")
-    print("transcript is drawn. 'e daemon' time is one admission and its RSS the peak")
+    print("transcript is drawn. 'e daemon' time is create through observed residency,")
+    print("observed with 10 ms status polling, and its RSS is the peak")
     print("with ten sessions; 'e per_session' is growth per session from 1 to 10.")
+    print("e first = first session/domain; later = sessions 2-10 in creation order")
+    print("within each run; both endpoint times start at that session's create send.")
+    print("g is cold daemon -> control create -> resident -> real client composer,")
+    print("a programmatic pipeline, not the interactive picker-to-New journey.")
+    print("g create reply/resident start at create send; client first frame/composer")
+    print("start at client launch; total spans daemon launch through composer.")
     print("* = RSS sampled by ps at the first frame, not a peak.")
     for name in ([AGAINST_NAME, CURRENT.name] if against_rows is not None else [CURRENT.name]):
         print()
@@ -997,6 +1209,35 @@ def print_report(results, rows, against_rows, baseline):
 
 
 AGAINST_NAME = "against"
+
+
+def comparison_rows(path, configuration, demand):
+    """Refuses ambiguous saved units or a different measured configuration."""
+    try:
+        with open(path) as handle:
+            saved = json.load(handle)
+    except (OSError, ValueError) as error:
+        raise BenchError("cannot read comparison baseline %s: %s" % (path, error)) from error
+    if not isinstance(saved, dict):
+        raise BenchError("comparison baseline must be a JSON object: " + path)
+    if sys.platform not in ("linux", "darwin") \
+            or saved.get("platform") != sys.platform or saved.get("rss_unit") != "KiB":
+        raise BenchError("comparison baseline has missing, unknown or incompatible RSS provenance "
+                         "(matching platform and rss_unit=KiB required); use --against to "
+                         "remeasure both releases with this harness: " + path)
+    previous = saved.get("configuration")
+    if not isinstance(previous, dict) \
+            or previous.get("sha256") != configuration["sha256"] \
+            or type(previous.get("size_bytes")) is not int \
+            or previous["size_bytes"] != configuration["size_bytes"]:
+        raise BenchError("comparison baseline has missing or different configuration provenance "
+                         "(identical SHA256 and byte size required): " + path)
+    if saved.get("enforcement_demand") not in ("platform", "best-effort") \
+            or saved["enforcement_demand"] != demand:
+        raise BenchError("comparison baseline has missing, unknown or different enforcement demand: " + path)
+    if not isinstance(saved.get("rows"), dict):
+        raise BenchError("comparison baseline has no valid result rows: " + path)
+    return saved["rows"]
 
 
 def warm_up(build):
@@ -1027,15 +1268,27 @@ def snapshot(name):
 
 
 def main():
+    global CONFIG, BEST_EFFORT
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--runs", type=int, default=10)
-    parser.add_argument("--only", default="abcdef")
+    parser.add_argument("--only", default="abcdefg")
+    parser.add_argument("--config", default=CONFIG,
+                        help="catalogue with unreachable loopback providers (default: smoke)")
+    parser.add_argument("--best-effort", action="store_true",
+                        help="explicitly accept degraded sandbox enforcement for this benchmark")
     parser.add_argument("--db", default=os.environ.get("DB", ""))
     parser.add_argument("--label", default="latest")
     parser.add_argument("--compare", default="")
     parser.add_argument("--against", default="")
     parser.add_argument("--snapshot", default="")
     options = parser.parse_args()
+    configuration = configuration_provenance(options.config)
+    CONFIG = configuration["path"]
+    BEST_EFFORT = options.best_effort
+    demand = "best-effort" if BEST_EFFORT else "platform"
+    client_launch = "private launcher execs release with --best-effort and original helper" \
+        if BEST_EFFORT else "release daemon directly"
+    baseline = comparison_rows(options.compare, configuration, demand) if options.compare else None
 
     builds = [CURRENT]
     if options.against:
@@ -1053,23 +1306,27 @@ def main():
     print("bench-startup-memory at %s, %d runs per scenario%s" % (
         commit, options.runs,
         ", alternating with " + builds[0].loomd.rsplit("/loom/bin", 1)[0] if options.against else ""))
+    print("configuration: %s (%d bytes, sha256 %s)" % (
+        CONFIG, configuration["size_bytes"], configuration["sha256"]))
+    print("enforcement demand: %s; client autostart: %s" % (demand, client_launch))
 
     for build in builds:
         warm_up(build)
     results = {}
-    for key in "abcdef":
+    for key in SCENARIOS:
         if key in options.only:
             started = time.monotonic()
             results[key] = measure(key, builds, options.runs, options.db)
             print("  %s %-18s %5.1f s" % (key, SCENARIOS[key][0], time.monotonic() - started),
                   file=sys.stderr)
 
+    # A changed file makes the recorded fingerprint ambiguous for this series.
+    # Refuse that result rather than silently labeling runs with earlier bytes.
+    if configuration_provenance(CONFIG) != configuration:
+        raise BenchError("benchmark configuration changed during measurement: " + CONFIG)
+
     rows = summarise(results, CURRENT.name)
     against_rows = summarise(results, AGAINST_NAME) if options.against else None
-    baseline = None
-    if options.compare:
-        with open(options.compare) as handle:
-            baseline = json.load(handle)["rows"]
     print()
     print_report(results, rows, against_rows, baseline)
 
@@ -1077,6 +1334,21 @@ def main():
     out = os.path.join(OUT_DIR, options.label + ".json")
     with open(out, "w") as handle:
         json.dump({"commit": commit, "runs": options.runs, "against": options.against,
+                   "configuration": configuration,
+                   "enforcement_demand": demand, "client_autostart": client_launch,
+                   "platform": sys.platform, "rss_unit": "KiB",
+                   "timing_notes": {
+                       "e": "Create reply and resident are elapsed from each create send; "
+                            "first is one first-domain sample per run; later is nine "
+                            "samples per run in creation order; daemon retains all ten "
+                            "resident samples. Residency uses 10 ms status polling.",
+                       "g": "Programmatic cold daemon -> control create -> resident -> "
+                            "client attached composer, not interactive picker-to-New. "
+                            "Daemon ready starts at daemon launch; create reply/resident "
+                            "start at create send; client first frame/attached composer "
+                            "start at client launch; total is daemon launch to composer. "
+                            "Overlapping endpoint rows must not be added together.",
+                   },
                    "rows": rows, "rows_against": against_rows,
                    "memory": {k: m for k, (_, m) in results.items()},
                    "raw": {k: r for k, (r, _) in results.items()}}, handle, indent=1)

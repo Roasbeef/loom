@@ -1,5 +1,71 @@
 # Current handoff
 
+## First-session startup — October 17
+
+Startup improvements must not buy lower latency with increased CPU or memory.
+The final source retains one TOML parse per configuration load, three narrow
+Settings callback captures, and OTP 29 dependency-aware concurrent application
+startup. File rereads, secret rotation, validation order, restart custody,
+native identity, rollback and UTF-8 diagnostics remain intact. No heap, cache
+or CPU allowance was increased. No operator daemon was installed or restarted.
+
+The TUI async overlap and 25-module domain-loading batch were removed after
+fixed-capacity resource measurements. Async warm-client peak RSS increased by
+328 KiB in smoke and 1,260 KiB with 32 models; cold smoke CPU increased 153 ms
+(paired medians). The batch-enabled release raised smoke daemon HWM by
+1,968 KiB in all seven pairs; a four-way factor comparison isolated consistent post-domain memory
+costs in both serial and concurrent application startup. The batch binding,
+checker and tests are gone. TUI source is restored, with all 827 released
+client BEAMs matching the original pre-optimization baseline.
+
+The real stock server rebuilt at `72c6263` was compared to that original
+baseline using seven alternating pairs per fixture, under the same one-CPU
+quota and affinity. Paired median cgroup CPU through the real composer fell
+280 ms in smoke and 89 ms with 32 models. Daemon HWM fell 1,748/2,664 KiB in
+all seven pairs in each fixture; combined sampled RSS fell 1,428/3,720 KiB.
+Cold launch to composer improved by paired medians 215/86 ms, but only four
+and five of seven pairs were faster respectively. These measurements include
+all retained changes and do not isolate an application-concurrency saving.
+
+Absolute resource neutrality is not established. CPU rose in three of seven
+pairs per fixture, smoke combined sampled RSS rose in one, and smoke client
+composer HWM/RSS rose by a paired median 16 KiB (five of seven higher).
+Sequential RSS samples and component HWMs are not simultaneous aggregate peak
+memory. No arbitrary tolerance is assumed. Fixtures use warm page cache,
+synthetic unreachable providers, saved-session reopening and explicit
+best-effort enforcement; they are not deployment/full-enforcement or
+interactive picker-to-New results.
+
+The [startup note](design-notes/first-session-startup.md) documents the final
+comparison and explicitly labels earlier batch/async latency results as
+historical. The [resource archive](review/startup-resources-2026-10-17.json)
+retains all 148 trials, warmups, driver hashes, summaries and artifact audits.
+All final trials proved durable input admission, normal shutdown and affinity;
+all 64 final seed/replacement native identities retired. Independent source,
+artifact and data review supports the reduced scope with those stated limits.
+
+Final local validation passed the full TUI gate (1,447 tests), 16 real-control
+client tests, 134 catalogue tests, six configuration-document tests, seven
+domain tests, format/build/lint, stock release build, two native launcher
+checks and release smoke. The bundled offline toolchain compile was not
+verified because this kernel refuses its unprivileged network namespace.
+Earlier broad local client runs hit the existing bwrap jailed-listing and
+satellite-readiness fixtures; there is no passing full local client claim.
+Reviewed head `32e881e` passed all 18 executed hosted checks, including Linux
+and macOS gates and the full client job (two release-image jobs were skipped).
+The owner requested removal of one-off experiment scripts and an administrator
+merge without waiting for a new hosted run of this cleanup. The three archived
+Python diagnostics, parser benchmark and disposable launcher probe are removed;
+results and hashes remain, with historical script locations documented in the
+note. Regression tests for the retained behavior remain. This cleanup changes
+no production code.
+
+The separate [request gzip experiment PR](https://github.com/Roasbeef/loom/pull/1000)
+contains real TUI/browser experiments and native transport measurements;
+it changes no production request-encoding default.
+
+## Previous handoff
+
 Baselined October 16, 2026 against main `1536934a4` and the rebased `/btw`
 branch for PR #981. The earlier instruction to merge `207c6571b` is obsolete:
 the owner requested a rebase and fresh UI screenshots after main advanced.

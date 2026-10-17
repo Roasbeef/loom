@@ -78,6 +78,22 @@ pub fn parse_policy(text: String) -> Result(NormalizedRetryPolicy, String) {
       "the configuration is not valid TOML: " <> string.inspect(error)
     }),
   )
+  policy_from_document(document)
+}
+
+/// Reads retry policy from the catalogue's already parsed document.
+/// The standalone `parse_policy` retains its TOML error wording; both doors use
+/// the same table validation and defaults.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert retryconf.policy_from_document(dict.new()) == Ok(retryconf.default_policy)
+/// ```
+@internal
+pub fn policy_from_document(
+  document: Dict(String, tom.Toml),
+) -> Result(NormalizedRetryPolicy, String) {
   case dict.get(document, "retry") {
     Error(Nil) -> Ok(default_policy)
     Ok(tom.Table(fields)) -> policy_table(fields)

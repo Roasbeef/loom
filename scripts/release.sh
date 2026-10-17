@@ -583,12 +583,18 @@ if [[ -n "\${LOOM_DISTRIBUTION_OPTFILE:-}" ]]; then
   dist_flags=(-proto_dist inet_tls -ssl_dist_optfile "\$LOOM_DISTRIBUTION_OPTFILE" -kernel connect_all false)
 fi
 
+# OTP starts independent applications concurrently and waits for each one's
+# declared dependencies before its callback. The generated entrypoint still
+# owns the main process and its error handling; its application start is now
+# an already-started check. Its IO setup precedes those callbacks too, so a
+# non-UTF-8 locale cannot change their output. Keeping this in the VM preserves
+# the native PID the daemon's endpoint authenticates.
 exec \${profile_exec[@]+"\${profile_exec[@]}"} "\$root/erts-$ERTS_VSN/bin/erl" +P 262144 +Q 65536 \\
   \${dist_flags[@]+"\${dist_flags[@]}"} \\
   -boot "\$root/releases/$VERSION/no_dot_erlang" \\
   -pa "\$root"/lib/*/ebin \\
   -noshell \\
-  -eval 'P = code:get_path(), true = code:set_path([D || D <- P, D =/= "."], cache), [code:add_pathz(".") || lists:member(".", P)], client@@main:run(client)' \\
+  -eval 'P = code:get_path(), true = code:set_path([D || D <- P, D =/= "."], cache), [code:add_pathz(".") || lists:member(".", P)], io:setopts(standard_io, [binary, {encoding, utf8}]), io:setopts(standard_error, [{encoding, utf8}]), case application:ensure_all_started(client, temporary, concurrent) of {ok, _} -> client@@main:run(client); {error, Reason} -> io:format(standard_error, "loomd: application startup failed: ~tp~n", [Reason]), erlang:halt(1, [{flush, true}]) end' \\
   "\$@"
 EOF
 chmod +x "$REL/bin/loomd"

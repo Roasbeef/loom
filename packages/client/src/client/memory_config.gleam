@@ -105,6 +105,22 @@ pub fn parse(text: String) -> Result(Options, String) {
       "the configuration is not valid TOML: " <> string.inspect(error)
     }),
   )
+  from_document(document)
+}
+
+/// Reads memory options from the catalogue's already parsed document.
+/// The standalone `parse` retains its TOML error wording; both doors use
+/// the same table validation and defaults.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert memory_config.from_document(dict.new()) == Ok(memory_config.default_options())
+/// ```
+@internal
+pub fn from_document(
+  document: Dict(String, tom.Toml),
+) -> Result(Options, String) {
   case dict.get(document, "memory") {
     Error(Nil) -> Ok(default_options())
     Ok(tom.Table(fields)) -> memory_table(fields)

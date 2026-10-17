@@ -1654,13 +1654,12 @@ fn adapter_api(dialect: catalog.Dialect) -> String {
 // defines no rules and no schedules — both are a deliberate act, and
 // there is no environment variable that could be one by accident.
 //
-// The three parsers divide the document rather than sharing it: `catalog`
-// owns the top-level key check and the model tables, `rules` owns
-// everything inside a `[[rule]]`, `schedule` owns everything inside a
-// `[[schedule]]`. Each is handed the text and does its own decode, which
-// costs two extra parses of a small file at boot and keeps each parser's
-// own worded TOML failure — the message an operator actually has to act
-// on.
+// Each load reads and parses the file once. The catalogue still owns the
+// top-level check and validates first, then the profile and model are chosen,
+// then each table owner decodes the same document in the original error order.
+// Standalone text parsers retain their own worded TOML errors. No document or
+// resolved secret survives into another load: domain validation and every
+// session open still read the file independently.
 fn load_config(
   flag: Option(String),
   profile: Option(String),
@@ -1730,7 +1729,9 @@ fn load_config(
         }),
       )
       let named = fn(reason) { path <> ": " <> reason }
-      use parsed <- result.try(catalog.parse(text) |> result.map_error(named))
+      use #(parsed, document) <- result.try(
+        catalog.parse_with_document(text) |> result.map_error(named),
+      )
 
       // The profile and the model are resolved on every load, never remembered
       // from an earlier one, so a resume reads the file as it stands. One the
@@ -1739,33 +1740,35 @@ fn load_config(
       use catalogue <- result.try(
         with_choice(parsed, profile, model) |> result.map_error(named),
       )
-      use rule_list <- result.try(rules.parse(text) |> result.map_error(named))
+      use rule_list <- result.try(
+        rules.from_document(document) |> result.map_error(named),
+      )
       use schedule_list <- result.try(
-        schedule.parse(text) |> result.map_error(named),
+        schedule.from_document(document) |> result.map_error(named),
       )
       use schedule_policy <- result.try(
-        schedule.parse_policy(text) |> result.map_error(named),
+        schedule.policy_from_document(document) |> result.map_error(named),
       )
       use jobs_policy <- result.try(
-        jobs.parse_policy(text) |> result.map_error(named),
+        jobs.policy_from_document(document) |> result.map_error(named),
       )
       use retry_policy <- result.try(
-        retryconf.parse_policy(text) |> result.map_error(named),
+        retryconf.policy_from_document(document) |> result.map_error(named),
       )
       use memory <- result.try(
-        memory_config.parse(text) |> result.map_error(named),
+        memory_config.from_document(document) |> result.map_error(named),
       )
       use tools <- result.try(
-        catalog.parse_tools(text) |> result.map_error(named),
+        catalog.tools_from_document(document) |> result.map_error(named),
       )
       use secret_entries <- result.try(
-        secrets.parse(text) |> result.map_error(named),
+        secrets.from_document(document) |> result.map_error(named),
       )
       use workspace_config <- result.try(
-        catalog.parse_workspace(text) |> result.map_error(named),
+        catalog.workspace_from_document(document) |> result.map_error(named),
       )
       use advisor_config <- result.try(
-        catalog.parse_advisor(text) |> result.map_error(named),
+        catalog.advisor_from_document(document) |> result.map_error(named),
       )
       Ok(#(
         catalogue,
@@ -3440,6 +3443,10 @@ fn assemble_in(
   // consumes the config. `client/effect_abort` explains the join; the actor
   // behind the name is added to the services tier beside the async service.
   let effect_abort_name = address.new_address(namespace)
+
+  // The role resolver outlives assembly and needs only the gateway, so its
+  // environment must not retain the remaining session settings.
+  let subagent_gateway = settings.gateway
   let agency_config =
     agency.Config(
       ..agency.default_config(agency_name, clock),
@@ -3469,7 +3476,7 @@ fn assemble_in(
       // at boot, so the answer is a function of durable configuration.
       subagent_model: fn() {
         use resolved <- result.map(
-          provider_gateway.resolve(settings.gateway, model.Subagent)
+          provider_gateway.resolve(subagent_gateway, model.Subagent)
           |> result.replace_error(Nil),
         )
         #(
@@ -3817,15 +3824,17 @@ fn assemble_in(
   // The model's own door onto the compaction arithmetic. It reads the
   // strand's window the way the threshold will — the strand's own
   // catalogue entry, else the configured fallback — so what the model is
-  // told and what it is compacted on are one number.
+  // told and what it is compacted on are one number. Project the fallback
+  // before retaining this callback so it does not keep all session settings.
   let facts = catalogue_facts(settings.catalog)
+  let fallback_context_window = settings.context_window
   let context_seam =
     checkpoint.remaining_seam(opened, settings.compaction, fn(strand) {
       wiring.strand_window(
         opened,
         facts,
         strand,
-        fallback: settings.context_window,
+        fallback: fallback_context_window,
       )
     })
 
@@ -4317,6 +4326,9 @@ fn assemble_in(
   let hub_session_id = settings.session_id
   let btw_gateway = settings.gateway
   let hub_catalog = settings.catalog
+  let first_prompt = settings.first_prompt
+  let profile_desk = settings.profile_desk
+  let memory_settings = settings.memory
 
   // The two things the hub asks the workspace for, projected before the
   // hub's child specification closes over them: the plane itself holds the
@@ -4507,8 +4519,8 @@ fn assemble_in(
             |> hub.with_btw(btw_name)
             |> hub.with_live_jobs(live_jobs)
             |> hub.with_catalog(hub_catalog)
-            |> with_first_prompt(settings.first_prompt)
-            |> with_profile_desk(settings.profile_desk)
+            |> with_first_prompt(first_prompt)
+            |> with_profile_desk(profile_desk)
             |> hub.with_registry(tool_registry)
             |> hub.with_extension_refusals(extension_refusals)
             |> hub.with_skills(skills)
@@ -4542,7 +4554,7 @@ fn assemble_in(
                   store_path: memory_store,
                   notes_path: memory_notes,
                   rules_path:,
-                  memory: settings.memory,
+                  memory: memory_settings,
                   pending: fn() {
                     proposals.listing(proposal_wiring)
                     |> result.map(fn(held) { held.pending })

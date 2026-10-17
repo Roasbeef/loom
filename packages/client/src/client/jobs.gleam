@@ -703,6 +703,22 @@ pub fn parse_policy(text: String) -> Result(JobsPolicy, String) {
       "the configuration is not valid TOML: " <> string.inspect(error)
     }),
   )
+  policy_from_document(document)
+}
+
+/// Reads job policy from the catalogue's already parsed document.
+/// The standalone `parse_policy` retains its TOML error wording; both doors use
+/// the same table validation and defaults.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert jobs.policy_from_document(dict.new()) == Ok(jobs.default_policy)
+/// ```
+@internal
+pub fn policy_from_document(
+  document: Dict(String, tom.Toml),
+) -> Result(JobsPolicy, String) {
   case dict.get(document, "jobs") {
     Error(Nil) -> Ok(default_policy)
     Ok(tom.Table(fields)) -> policy_table(fields)

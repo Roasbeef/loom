@@ -704,8 +704,8 @@ pub fn empty_document_refused_test() {
 }
 
 // The top-level allow-list is the whole config file's gate, not just this
-// module's: `serve.load_config` hands the same text to three parsers, but
-// only this one decides which tables may appear at all. A table whose own
+// module's: `serve.load_config` shares one parsed document, but only
+// the catalogue decides which tables may appear at all. A table whose own
 // parser understands it perfectly is still refused outright if it is
 // missing here — which is exactly how `[[schedule]]` shipped unreachable
 // once, every schedule parsing correctly behind a boot that never got

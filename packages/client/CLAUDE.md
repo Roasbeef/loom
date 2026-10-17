@@ -1,5 +1,21 @@
 # client
 
+## Configuration parsing on session open
+
+`catalog.parse_with_document` validates the catalogue and returns its TOML
+document for the remaining table readers. `serve.load_config` reads and parses
+the file once per invocation, retaining the original order: strict catalogue,
+profile then model selection, rules, schedules and their policy, jobs, retry,
+memory, tools, secret declarations, workspace, and advisor. Each table's
+`@internal` document reader shares its validation with the standalone text
+parser, whose TOML error wording is unchanged.
+
+This is reuse within one load, not a cache. Domain admission still validates
+its own configuration before constructing shared services; every session open
+rereads its file and reevaluates secret commands. The populated configuration,
+refusal-order, same-path rewrite, and secret-rotation regressions live in
+`client/config_document_test`.
+
 ## Responses service tier
 
 `client/catalog.CatalogModel.service_tier` is an optional typed

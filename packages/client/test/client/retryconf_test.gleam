@@ -105,8 +105,8 @@ pub fn a_document_that_is_not_toml_is_refused_test() {
   assert string.contains(reason, "TOML")
 }
 
-// `serve.load_config` runs `catalog.parse` over the whole file before it
-// hands the same text to `retryconf.parse_policy`, and the catalogue owns the
+// `serve.load_config` runs `catalog.parse_with_document` before it hands
+// the document to `retryconf.policy_from_document`, and the catalogue owns the
 // top-level table names. A `[retry]` table once decoded correctly behind a
 // boot that refused it, so this pins both halves on one document: the
 // catalogue admits the table, and the policy read from the same text is the
