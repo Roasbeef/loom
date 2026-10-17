@@ -9,6 +9,49 @@ The first October 16 rebase, `bbeb4b61c`, also passed all 18 executed CI jobs
 signoff in 1809 seconds (driver 1815 seconds). Those results do not validate
 the next rebase: #990 merged just as the first rebase became green.
 
+## Property and model-based testing
+
+Branch `test/qcheck-machine-pilot` (from main `8f66fc6`) moved every
+randomized test onto shared tooling. The rules are in `docs/gleam-style.md`,
+"Property and model-based tests"; read them before writing a test that draws
+anything at random.
+
+- **What landed.** Every hand-rolled generator (SplitMix copies, linear
+  congruential generators, `draw(seed, n)`) is gone; tests draw from qcheck on
+  fixed seeds. `packages/statem` is stateful model-based testing over qcheck:
+  generated command sequences, shrinking by deleting chunks from anywhere,
+  same-tag acceptance, crash rescue, shrink retries for scheduling-sensitive
+  systems. It is in the portable subset and tested on both targets. Model tests
+  now cover the TUI session channel, live tail and queue editor; the storage
+  exec ledger, session store (memory against SQLite) and catalogue; the broker
+  executor and leak census; the client membership ledger, pacing books, advisor
+  guard and peer outbox; the LSP client's sync; the todo board and output tail;
+  session_view's history window; session projection growth; and web_view
+  paging. Lint gained R19 and R20 over test sources, `affected.py` became
+  `lint/affected`, and the soak's chunking moved into the conformance suite.
+- **Defects found.** `blocksummarybook.landed` counted a slot its own request
+  had just freed (fixed, 448d016); `claim_delegate` answered a raw foreign-key
+  error instead of `Missing` (fixed, ce405d5); the conformance shrinker could
+  slide onto another check and accepted racy candidates (fixed). Two
+  properties were too broad and were narrowed with citations (an aborted
+  response's tool calls; the hashline empty-file rule).
+- **Deliberately not ported.** The conformance simulation keeps its own integer
+  seeds and schedule shrinker (`docs/architecture/simulation.md`). Pure
+  one-shot properties and whole-sequence folds (`execution_test`,
+  `goalloop_test`, `jobstate_test`) stay on plain qcheck.
+- **Scripts.** The survey that decided which test scripts could become Gleam
+  is summarized in the PR. `with_timeout.py`, `check.sh`, `test.sh`'s EUnit
+  runner and the signoff family stay: each would need new custom FFI to spawn
+  or signal OS processes.
+- **Open.** A parallel (linearizability) layer for statem over weft is the
+  natural next step for the broker and runtime actors; it needs processes, so
+  it would be a BEAM-only sibling package. statem has no coverage-label
+  feature; suites assert coverage with `statem.commands` census tests instead.
+  The session channel's schedules are now drawn 0 to 80 events long where they
+  were 20 to 80; the coverage census still holds, but a minimum length would
+  restore the old event volume. In this container the client gate fails only
+  jail and shipped-binary tests that also fail on the untouched base.
+
 ## Accepted side-query design
 
 Protocol-change/087 specifies frozen effective dispatched context, bounded
