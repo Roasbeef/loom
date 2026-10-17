@@ -39,6 +39,10 @@
 ////     session) pair under the spawner's cap, `delegate_of` is the marker
 ////     that says a session is one, and `delegates` lists every one for the
 ////     retention sweep.
+//// 11. `set_delegate_state` moves a delegate session through open, releasing
+////     and released, and `write_remote_releases`, `remote_releases` and
+////     `settle_remote_release` keep the releases a deleted parent session still
+////     owes the orchestrators that may hold its children.
 
 import core/ids
 import gleam/bit_array
@@ -63,6 +67,7 @@ import storage/catalogue_names_schema
 import storage/catalogue_pools_schema
 import storage/catalogue_profiles_schema
 import storage/catalogue_recent_folders_schema
+import storage/catalogue_releases_schema
 import storage/catalogue_subtitles_schema
 import storage/sql
 import storage/sql_schema
@@ -271,7 +276,7 @@ fn initialize_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
 /// raise this fails `migrations_end_at_the_current_version_test` rather than
 /// leaving a catalogue that claims a version whose migration never ran.
 @internal
-pub const current_version = 15
+pub const current_version = 16
 
 /// The migration schemas in version order, each applied to a catalogue that
 /// lacks its version.
@@ -292,6 +297,7 @@ pub fn migrations() -> List(#(Int, String)) {
     #(13, catalogue_moves_schema.schema),
     #(14, catalogue_deletions_schema.schema),
     #(15, catalogue_delegates_schema.schema),
+    #(16, catalogue_releases_schema.schema),
   ]
 }
 
@@ -1506,7 +1512,26 @@ pub type Delegate {
     session_id: String,
     /// The last message from the spawner, in Unix milliseconds.
     last_contact_ms: Int,
+    /// How far the session's release has got.
+    state: DelegateState,
   )
+}
+
+/// How far the release of a delegate session has got (catalogue version 16).
+/// A state only moves forward: a released session is never open again, and a
+/// parent that is deleted and later recreated under the same identity is not
+/// possible, because session identities are never reused.
+pub type DelegateState {
+  /// The spawner may still send the session children.
+  Open
+
+  /// The spawner sent `Release`. Every child is stopped, no spawn is admitted,
+  /// and the registry deletes the session once its slot drains.
+  Releasing
+
+  /// The slot has drained and the registry is deleting the session. A row that
+  /// stays here is a deletion that failed, and the retention sweep removes it.
+  Released
 }
 
 /// What `claim_delegate` decided.
@@ -1590,6 +1615,7 @@ pub fn claim_delegate(
               parent_session:,
               session_id:,
               last_contact_ms: now_ms,
+              state: Open,
             ))
           }
         }
@@ -1653,15 +1679,16 @@ pub fn delegate_for(
   ))
   case rows {
     [] -> Ok(None)
-    [row] ->
-      Ok(
-        Some(Delegate(
-          spawner:,
-          parent_session:,
-          session_id: row.session_id,
-          last_contact_ms: row.last_contact_ms,
-        )),
-      )
+    [row] -> {
+      use state <- result.map(delegate_state(row.state))
+      Some(Delegate(
+        spawner:,
+        parent_session:,
+        session_id: row.session_id,
+        last_contact_ms: row.last_contact_ms,
+        state:,
+      ))
+    }
     [_, _, ..] -> Error(Invalid("duplicate delegate session metadata"))
   }
 }
@@ -1691,15 +1718,16 @@ pub fn delegate_of(
         is_profile_name(row.spawner)
         && result.is_ok(ids.parse_session_id(row.parent_session))
       {
-        True ->
-          Ok(
-            Some(Delegate(
-              spawner: row.spawner,
-              parent_session: row.parent_session,
-              session_id:,
-              last_contact_ms: row.last_contact_ms,
-            )),
-          )
+        True -> {
+          use state <- result.map(delegate_state(row.state))
+          Some(Delegate(
+            spawner: row.spawner,
+            parent_session: row.parent_session,
+            session_id:,
+            last_contact_ms: row.last_contact_ms,
+            state:,
+          ))
+        }
         False -> Error(Invalid("invalid delegate session metadata"))
       }
     [_, _, ..] -> Error(Invalid("duplicate delegate session metadata"))
@@ -1725,16 +1753,182 @@ pub fn delegates(catalogue: Catalogue) -> Result(List(Delegate), Error) {
       is_profile_name(row.spawner)
       && result.is_ok(ids.parse_session_id(row.parent_session))
     {
-      True ->
-        Ok(Delegate(
+      True -> {
+        use state <- result.map(delegate_state(row.state))
+        Delegate(
           spawner: row.spawner,
           parent_session: row.parent_session,
           session_id: row.session_id,
           last_contact_ms: row.last_contact_ms,
-        ))
+          state:,
+        )
+      }
       False -> Error(Invalid("invalid delegate session metadata"))
     }
   })
+}
+
+// The stored text of a state, total: a word this build does not know is a
+// damaged row, never an open session.
+fn delegate_state(text: String) -> Result(DelegateState, Error) {
+  case text {
+    "open" -> Ok(Open)
+    "releasing" -> Ok(Releasing)
+    "released" -> Ok(Released)
+    _ -> Error(Invalid("invalid delegate session state"))
+  }
+}
+
+fn delegate_state_text(state: DelegateState) -> String {
+  case state {
+    Open -> "open"
+    Releasing -> "releasing"
+    Released -> "released"
+  }
+}
+
+fn delegate_state_rank(state: DelegateState) -> Int {
+  case state {
+    Open -> 0
+    Releasing -> 1
+    Released -> 2
+  }
+}
+
+/// Moves a delegate session to `state`, and only forward.
+///
+/// Setting the state a session already has succeeds, so a repeated release
+/// writes the same word. Moving back is `Conflict`: a released session is never
+/// open again. A session with no delegate row is `Missing`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.set_delegate_state(store, session_id, catalogue.Releasing) == Ok(Nil)
+/// ```
+pub fn set_delegate_state(
+  catalogue: Catalogue,
+  session_id: String,
+  state: DelegateState,
+) -> Result(Nil, Error) {
+  transaction(catalogue.connection, fn() {
+    use found <- result.try(delegate_of(catalogue, session_id))
+    case found {
+      None -> Error(Missing)
+      Some(current) ->
+        case delegate_state_rank(state) < delegate_state_rank(current.state) {
+          True -> Error(Conflict)
+          False ->
+            statement(
+              catalogue,
+              sql.set_delegate_session_state(
+                delegate_state_text(state),
+                session_id,
+              ),
+            )
+        }
+    }
+  })
+}
+
+/// A release a deleted parent session still owes an orchestrator
+/// (catalogue version 16): the parent session and the `[orchestrators.<name>]`
+/// that may hold children for it.
+pub type RemoteRelease {
+  RemoteRelease(
+    /// The deleted parent session's identity on this orchestrator.
+    parent_session: String,
+    /// The `[orchestrators.<name>]` to send `Release` to.
+    orchestrator: String,
+    /// When the row was written, in Unix milliseconds.
+    written_ms: Int,
+  )
+}
+
+/// Writes one release row for each orchestrator, in one immediate transaction,
+/// and leaves a row that is already there as it was.
+///
+/// The caller writes these before it deletes the parent session, so a crash
+/// between the two leaves rows for a session that still exists, which are
+/// harmless: a release for a pair with no children answers zero. A name outside
+/// the profile-name grammar, a parent that is not a session identity and a
+/// negative time are `Invalid`, and nothing is written.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.write_remote_releases(store, parent, ["box"], now_ms: 1_000) == Ok(Nil)
+/// ```
+pub fn write_remote_releases(
+  catalogue: Catalogue,
+  parent_session: String,
+  orchestrators: List(String),
+  now_ms now_ms: Int,
+) -> Result(Nil, Error) {
+  use Nil <- result.try(
+    case
+      result.is_ok(ids.parse_session_id(parent_session))
+      && now_ms >= 0
+      && list.all(orchestrators, is_profile_name)
+    {
+      True -> Ok(Nil)
+      False -> Error(Invalid("invalid remote release metadata"))
+    },
+  )
+  transaction(catalogue.connection, fn() {
+    list.try_each(orchestrators, fn(orchestrator) {
+      statement(
+        catalogue,
+        sql.insert_remote_release(parent_session, orchestrator, now_ms),
+      )
+    })
+  })
+}
+
+/// Every release still owed, in parent and orchestrator order.
+///
+/// A stored row outside the grammar makes the whole read `Invalid`, and is not
+/// skipped, so a damaged row is reported.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.remote_releases(store) == Ok([])
+/// ```
+pub fn remote_releases(
+  catalogue: Catalogue,
+) -> Result(List(RemoteRelease), Error) {
+  use rows <- result.try(query(catalogue, sql.all_remote_releases()))
+  list.try_map(rows, fn(row) {
+    case
+      result.is_ok(ids.parse_session_id(row.parent_session))
+      && is_profile_name(row.orchestrator)
+    {
+      True ->
+        Ok(RemoteRelease(
+          parent_session: row.parent_session,
+          orchestrator: row.orchestrator,
+          written_ms: row.written_ms,
+        ))
+      False -> Error(Invalid("invalid remote release metadata"))
+    }
+  })
+}
+
+/// Deletes the release row of one parent and orchestrator, once the
+/// orchestrator has answered. A row that is not there is not an error.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.settle_remote_release(store, parent, "box") == Ok(Nil)
+/// ```
+pub fn settle_remote_release(
+  catalogue: Catalogue,
+  parent_session: String,
+  orchestrator: String,
+) -> Result(Nil, Error) {
+  statement(catalogue, sql.delete_remote_release(parent_session, orchestrator))
 }
 
 /// The number of delegate sessions a spawner holds, which its `max_sessions`
