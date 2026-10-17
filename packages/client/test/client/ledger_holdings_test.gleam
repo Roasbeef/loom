@@ -280,7 +280,7 @@ pub fn a_session_handed_away_is_not_a_placement_test() {
     ])
 }
 
-pub fn more_executors_than_a_report_lists_are_unknown_not_truncated_test() {
+pub fn more_executors_than_the_port_carries_are_unknown_not_truncated_test() {
   let #(registry, store, directory) = held_catalogue.start()
   let names =
     list.repeat(Nil, node_report.max_placements + 1)
@@ -296,8 +296,8 @@ pub fn more_executors_than_a_report_lists_are_unknown_not_truncated_test() {
       }),
     )
 
-  // The full tally fits the port's `Holds` and does not fit a report, so the
-  // report is left without placements and nobody reads a short list as whole.
+  // More executors than the port carries are unknown, so the report is left
+  // without placements and nobody reads a short list as whole.
   assert ledger_holdings.placements(registry, listed) == Error(Nil)
 }
 

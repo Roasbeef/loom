@@ -1077,8 +1077,14 @@ fn listed_nodes(config: Config) -> List(String) {
     list.map(roster.rows(orchestrator_roster(config)), fn(row) { row.node }),
     list.map(roster.rows(executor_roster(config)), fn(row) { row.node }),
   )
-  |> list.unique
-  |> list.sort(string.compare)
+  |> nodes_of
+}
+
+// Each node once, in name order. A report lists at most `node_report.max_peers`
+// of them, the ledger's member cap, so a list built from a roster never needs
+// cutting.
+fn nodes_of(nodes: List(String)) -> List(String) {
+  nodes |> list.unique |> list.sort(string.compare)
 }
 
 // What this daemon says as an orchestrator. A daemon that is none (an executor
@@ -1107,12 +1113,12 @@ fn orchestrator_facts(
           capacity: counts.capacity,
           occupied: counts.occupied,
           resident: counts.resident,
+          // An importer is always built in `start_orchestrator_port`, so every
+          // daemon that reports as an orchestrator accepts moved sessions.
           imports: node_report.Receiving,
           executor_nodes: roster.rows(listed)
             |> list.map(fn(row) { row.node })
-            |> list.unique
-            |> list.sort(string.compare)
-            |> list.take(node_report.max_placements),
+            |> nodes_of,
           placements:,
           moves: movers.moves(),
         )

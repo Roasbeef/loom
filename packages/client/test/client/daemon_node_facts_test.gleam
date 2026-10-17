@@ -128,12 +128,6 @@ pub fn a_source_past_the_deadline_leaves_only_its_own_facts_out_test() {
   assert waited < node_facts.read_ms + 1500
 }
 
-pub fn a_node_lists_no_more_peers_than_a_report_holds_test() {
-  let many = list.repeat("n@10.0.0.1", node_report.max_peers + 5)
-  let report = node_facts.report(Sources(..sources(), peers: fn() { many }))
-  assert list.length(report.peers) == node_report.max_peers
-}
-
 // --- the executor's facts --------------------------------------------------------
 
 fn snapshot(

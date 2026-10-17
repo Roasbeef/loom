@@ -51,20 +51,23 @@ import client/directory/store
 import client/executors
 import client/internal/ffi_khepri
 import core/json.{type JsonValue}
-import gleam/bit_array
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 
-/// The most peers a report lists.
-pub const max_peers = 32
+/// The most nodes a report lists as peers, or as an orchestrator's executor
+/// nodes. It is the ledger's member cap, so a ledger-mode daemon's rosters
+/// always fit, and equals `orchestrator_port.max_placed`.
+pub const max_peers = 64
 
 /// The most workspace names an executor lists.
 pub const max_workspaces = 64
 
-/// The most placements an orchestrator lists.
-pub const max_placements = 32
+/// The most placements an orchestrator lists. It equals
+/// `orchestrator_port.max_placed`, which already refuses to count sessions on
+/// more executors than that, so nothing here is cut.
+pub const max_placements = 64
 
 /// The most moves an orchestrator lists.
 pub const max_moves = 64
@@ -99,8 +102,9 @@ pub type NodeReport {
     started_ms: Int,
     /// The node's own clock when it answered.
     now_ms: Int,
-    /// The nodes of its configured `[[distribution.peers]]`, at most
-    /// `max_peers`.
+    /// The nodes of the orchestrators and executors the daemon lists, once each
+    /// and in name order, at most `max_peers`. With a ledger these are the nodes
+    /// the ledger links it to.
     peers: List(String),
     /// What it says as an orchestrator, or `None` when it is not one or its
     /// catalogue did not answer in time.
@@ -189,7 +193,8 @@ pub type OrchestratorFacts {
     resident: Int,
     /// Whether it accepts sessions another orchestrator moves to it.
     imports: Imports,
-    /// The node of each `[executors.<name>]` row it configures.
+    /// The node of each `[executors.<name>]` row it configures, at most
+    /// `max_peers`.
     executor_nodes: List(String),
     /// Sessions by executor node and residency, from the catalogue's
     /// `executor` column, at most `max_placements` rows.
@@ -231,10 +236,12 @@ pub type MoveFacts {
     to_node: String,
     /// Whether the move is making progress.
     phase: MovePhase,
-    /// Milliseconds since the stall began, by this node's monotonic clock, when
-    /// the move is stalled. It is a duration and never a timestamp.
+    /// Milliseconds since the stall began, through retries, by this node's
+    /// monotonic clock, when the move is stalled. It is a duration and never a
+    /// timestamp.
     stalled_ms: Option(Int),
-    /// The last stall reason, cut to `max_reason_bytes` bytes.
+    /// Why the last run stopped, in fixed words, cut to `max_reason_bytes`
+    /// bytes.
     reason: Option(String),
   )
 }
@@ -281,7 +288,7 @@ pub fn cut_reason(reason: String) -> String {
 // Keeps whole graphemes while they fit, so a multi-byte character is kept
 // entire or dropped entire and the result is still valid text.
 fn cut(text: String, bytes: Int) -> String {
-  case byte_size(text) <= bytes {
+  case string.byte_size(text) <= bytes {
     True -> text
     False -> {
       let #(taken, _used) =
@@ -290,7 +297,7 @@ fn cut(text: String, bytes: Int) -> String {
           #([], 0),
           fn(state, grapheme) {
             let #(kept, used) = state
-            let size = byte_size(grapheme)
+            let size = string.byte_size(grapheme)
             case used + size > bytes {
               True -> list.Stop(state)
               False -> list.Continue(#([grapheme, ..kept], used + size))
@@ -300,10 +307,6 @@ fn cut(text: String, bytes: Int) -> String {
       list.reverse(taken) |> string.concat
     }
   }
-}
-
-fn byte_size(text: String) -> Int {
-  bit_array.byte_size(bit_array.from_string(text))
 }
 
 // --- rendering ----------------------------------------------------------------
@@ -861,7 +864,7 @@ fn object(
 fn text_of(fields: Fields, key: String) -> Result(String, String) {
   case list.key_find(fields, key) {
     Ok(json.String(text)) ->
-      case byte_size(text) <= max_text_bytes {
+      case string.byte_size(text) <= max_text_bytes {
         True -> Ok(text)
         False -> Error(key <> " is longer than the report allows")
       }
@@ -885,7 +888,7 @@ fn optional_reason(
 ) -> Result(Option(String), String) {
   case list.key_find(fields, key) {
     Ok(json.String(text)) ->
-      case byte_size(text) <= max_reason_bytes {
+      case string.byte_size(text) <= max_reason_bytes {
         True -> Ok(Some(text))
         False -> Error(key <> " is longer than the reason bound")
       }
@@ -917,7 +920,7 @@ fn texts_of(
   list_of(fields, key, most, fn(item) {
     case item {
       json.String(text) ->
-        case byte_size(text) <= max_text_bytes {
+        case string.byte_size(text) <= max_text_bytes {
           True -> Ok(text)
           False -> Error(key <> " holds text longer than the report allows")
         }

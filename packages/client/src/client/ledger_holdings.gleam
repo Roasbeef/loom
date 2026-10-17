@@ -293,9 +293,10 @@ pub fn from_pages(
 /// not counted, and a session placed on an executor no row lists names no node.
 ///
 /// `Error(Nil)` is not an empty list. A catalogue that cannot be read, one longer
-/// than `max_pages` pages, and sessions on more executors than a report lists
-/// (`node_report.max_placements`) are each unknown, and the caller leaves the
-/// facts out rather than state a partial count.
+/// than `max_pages` pages, and sessions on more executors than the port carries
+/// (`orchestrator_port.max_placed`, which equals `node_report.max_placements`)
+/// are each unknown, and the caller leaves the facts out rather than state a
+/// partial count.
 ///
 /// ## Examples
 ///
@@ -308,21 +309,15 @@ pub fn placements(
   listed: Roster(Executor),
 ) -> Result(List(Placement), Nil) {
   use tally <- result.try(count(registry, "", Tally(0, dict.new()), max_pages))
-  use nodes <- result.try(placed_on(tally.by_executor, roster.rows(listed)))
-  case list.drop(nodes, node_report.max_placements) {
-    [] ->
-      Ok(
-        list.map(nodes, fn(entry) {
-          let counts = entry.1
-          node_report.Placement(
-            executor_node: entry.0,
-            resident: counts.resident,
-            saved: counts.placed - counts.resident,
-          )
-        }),
-      )
-    [_, ..] -> Error(Nil)
-  }
+  use nodes <- result.map(placed_on(tally.by_executor, roster.rows(listed)))
+  list.map(nodes, fn(entry) {
+    let counts = entry.1
+    node_report.Placement(
+      executor_node: entry.0,
+      resident: counts.resident,
+      saved: counts.placed - counts.resident,
+    )
+  })
 }
 
 // Reads the catalogue's pages in identity order, a page at a time, until one is

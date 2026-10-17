@@ -120,7 +120,7 @@ pub fn report(sources: Sources) -> NodeReport {
         started_ms: sources.started_ms,
         now_ms: sources.now_ms(),
       ),
-      peers: list.take(sources.peers(), node_report.max_peers),
+      peers: sources.peers(),
     )
   list.fold(outcomes, base, fn(report, outcome) {
     case outcome {
