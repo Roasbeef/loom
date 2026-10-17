@@ -24,6 +24,7 @@ packages = [
   { name = "prng", version = "6.0.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "prng", source = "hex", outer_checksum = "7FE3879E13150248BD370469205ED07B9404DD90670FEBB8CD0E7643707C420E" },
   { name = "qcheck", version = "1.0.5", build_tools = ["gleam"], requirements = ["exception", "gleam_regexp", "gleam_stdlib", "gleam_yielder", "prng"], otp_app = "qcheck", source = "hex", outer_checksum = "D27C12074776EC95F082EE56E0FC74685506B6EE26176F194D10F0322A39AC11" },
   { name = "simplifile", version = "2.7.0", build_tools = ["gleam"], requirements = ["filepath", "gleam_stdlib"], otp_app = "simplifile", source = "hex", outer_checksum = "A2727627B063E87351934C7F7F008F2D1FDB16F6DE0B8C79F9E46459CFC9C164" },
+  { name = "statem", version = "0.1.0", build_tools = ["gleam"], requirements = ["exception", "gleam_stdlib", "gleam_yielder", "qcheck"], source = "local", path = "../statem" },
   { name = "telemetry", version = "0.2.0", build_tools = ["gleam"], requirements = ["core", "gleam_erlang", "gleam_stdlib"], source = "local", path = "../telemetry" },
   { name = "weft", version = "0.4.6", build_tools = ["gleam"], requirements = ["gleam_erlang", "gleam_otp", "gleam_stdlib"], otp_app = "weft", source = "hex", outer_checksum = "836E64B55CC6C0527F6AEC70AE1C412C5B60F641824919F38BA229FA3524552D" },
 ]
@@ -40,3 +41,4 @@ gleeunit = { version = ">= 1.0.0 and < 2.0.0" }
 lsp = { path = "../lsp" }
 qcheck = { version = ">= 1.0.5 and < 2.0.0" }
 simplifile = { version = ">= 2.0.0 and < 3.0.0" }
+statem = { path = "../statem" }
