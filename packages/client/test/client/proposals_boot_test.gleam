@@ -66,6 +66,8 @@ fn settings(root: String, file: String) -> serve.Settings {
   serve.Settings(
     peer_directory: None,
     peer_defaults: None,
+    remote_reach: None,
+    deadline_tick_ms: None,
     first_prompt: None,
     profile_desk: None,
     codemode_sockets: None,
@@ -126,6 +128,7 @@ fn scripted_catalog() -> catalog.Catalog {
         vision: catalog.TextOnly,
         max_images: 8,
         cyber_access: None,
+        service_tier: None,
       ),
     ],
     roles: [#(model.Main, ["acme"])],

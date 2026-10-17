@@ -387,6 +387,7 @@ pub const notes_path = "0\t3\t5"
 
 /// The search input’s exact path, admitted for input events only.
 pub const notes_search_path = "0\t3\t5\t2\t0"
+
 /// The Lustre event path of the owner's proposals review: the eighth and last
 /// child of the Session pane (`view/session_tab`), after the peer-link section
 /// (`peers_path`), so that placing it there moved no path the socket admits.

@@ -1078,7 +1078,11 @@ pub fn list_registers_at(
   prefix prefix: Option(String),
 ) -> Result(List(#(String, Register)), StorageError) {
   use conn <- with_identified_source(path, session)
-  do_list_registers(conn, ns, prefix)
+
+  // This connection owns no actor state, so its decode cache lasts only for
+  // this read and is discarded with the connection.
+  do_list_registers(conn, ns, prefix, register_cache.new())
+  |> result.map(fn(answer) { answer.0 })
 }
 
 /// The most neighbours `read_entries_around` returns on each side.

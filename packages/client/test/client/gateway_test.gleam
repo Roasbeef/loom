@@ -7401,6 +7401,7 @@ pub fn authenticated_observer_cannot_ask_or_read_private_side_queries_test() {
     },
   )
 }
+
 // --- proposed rules (protocol-change/086) ----------------------------------
 
 fn a_proposal(id: String, state: proposals.State) -> proposals.Proposal {

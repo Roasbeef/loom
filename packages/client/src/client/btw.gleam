@@ -5,7 +5,7 @@
 //// drain evidence reserves capacity for the remaining service lifetime.
 //// Captured instructions and tools are prefix material, never capabilities.
 
-import client/distill
+import client/auxiliary
 import core/accounting
 import core/codec
 import core/ids
@@ -747,7 +747,7 @@ fn finished(
     Ok(stream.Delta(_)) -> Error("side stream ended without a terminal")
     Error(reason) -> Error(reason)
   }
-  let answer = case distill.record_request(data.session, report, "btw") {
+  let answer = case auxiliary.record_request(data.session, report, "btw") {
     Ok(Nil) -> answer
     Error(reason) -> Error(reason)
   }
