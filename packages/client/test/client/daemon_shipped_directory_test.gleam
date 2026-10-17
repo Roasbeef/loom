@@ -384,7 +384,7 @@ pub fn a_session_is_listed_by_the_other_orchestrator_and_silence_is_not_empty_te
     let assert json.Array([row]) = remote_daemons.field(group, "sessions")
       as "alpha lists its one session"
     assert remote_daemons.field(row, "session_id") == json.String(session)
-    assert remote_daemons.field(row, "name") == json.String("e2e-alpha")
+    assert remote_daemons.field(row, "name") == json.String("local e2e-alpha")
 
     // The other direction lists `bravo`'s session, which has no address because
     // `alpha`'s configuration gives none for it.
