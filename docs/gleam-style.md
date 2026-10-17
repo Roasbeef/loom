@@ -1305,7 +1305,7 @@ kind is drawn first, so a document shrinks toward `Null` before any of its
 leaves are simplified. Do not filter cases with guards in the property:
 make the generator produce only the cases the property is about. The
 hashline properties skipped cases with `total >= N`, and the guard was
-hiding a mistake in the generator rather than expressing a rule (0416c9a).
+hiding a mistake in the generator rather than expressing a rule (81de86c).
 
 **A sequence of operations on a stateful thing is a `statem` spec.**
 `statem`'s module doc explains why `qcheck.list` is not enough. A list of
@@ -1327,7 +1327,7 @@ rules:
 - **The command generator reads only the model.** It never reads the
   system under test. The exec-ledger test used to draw its next operation
   by reading the live ledger, and it was rewritten when it moved to
-  `statem` (ce5860e).
+  `statem` (0f3ed2d).
 - **An oracle that must observe the system lives in the `sut`, and the
   model stays coarse.** `executor_property_test`'s model is `Model(starts:
   Int)`, which is all the precondition needs; what each caller heard is
@@ -1379,7 +1379,7 @@ pub fn the_board_keeps_its_rules_under_any_sequence_test() {
 **A property that fails on unmodified code is never weakened until it
 passes.** It may be narrowed only when the narrower statement is the
 invariant, and only with a citation, written beside the narrowing, to
-the doc or spec that says so. The precedent is in `machine` (eff0cbd). A
+the doc or spec that says so. The precedent is in `machine` (7627d01). A
 response that settles under cancelled control is committed as `Aborted`
 with its tool calls intact and no results. That is sound only because
 context projection drops aborted responses (spec WP-C), so those calls
@@ -1387,11 +1387,11 @@ never reach a provider. "Every tool call has a result" was therefore
 restated over answerable responses, with that argument in the comment.
 Without such a citation, the failure is a finding. Either the code
 changes, as `claim_delegate` did when it answered a raw foreign-key error
-where the doc promised `Missing` (ce405d5), or the doc changes because
-the code is right and the doc never said so (990d041). The
+where the doc promised `Missing` (9d70d19), or the doc changes because
+the code is right and the doc never said so (018cbce). The
 block-summary pacing book is the third shape: a property stated straight
 from the package's own notes failed on unmodified code, shrank to four
-commands, and the code was wrong (448d016). A finding that cannot be
+commands, and the code was wrong (38308d6). A finding that cannot be
 fixed in the same change is recorded where the next reader will look,
 on its issue and in the package's `CLAUDE.md`.
 

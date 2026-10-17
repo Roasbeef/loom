@@ -30,8 +30,8 @@ anything at random.
   paging. Lint gained R19 and R20 over test sources, `affected.py` became
   `lint/affected`, and the soak's chunking moved into the conformance suite.
 - **Defects found.** `blocksummarybook.landed` counted a slot its own request
-  had just freed (fixed, 448d016); `claim_delegate` answered a raw foreign-key
-  error instead of `Missing` (fixed, ce405d5); the conformance shrinker could
+  had just freed (fixed, 38308d6); `claim_delegate` answered a raw foreign-key
+  error instead of `Missing` (fixed, 9d70d19); the conformance shrinker could
   slide onto another check and accepted racy candidates (fixed). Two
   properties were too broad and were narrowed with citations (an aborted
   response's tool calls; the hashline empty-file rule).
