@@ -1688,13 +1688,16 @@ caller continues from the last line it received.
 `ledger.status` takes `{}` and replies
 
 ```json
-{"v":2,"reply_to":3,"event":"ledger.status","body":{"deployment":"3f9c...","state":"ok","head":{"seq":9,"id":"4c1e..."},"self":{"name":"hub","enrolled":true},"members":[{"name":"hub","node":"hub@10.0.0.1","role":"orchestrator","directory":"none","reported_seq":9,"ms_since_report":0},{"name":"laptop2","node":"loom@laptop2.example.net","role":"orchestrator","directory":"none"}],"last_refusal":null}}
+{"v":2,"reply_to":3,"event":"ledger.status","body":{"deployment":"3f9c...","state":"ok","head":{"seq":9,"id":"4c1e..."},"self":{"name":"hub","enrolled":true},"members":[{"name":"hub","node":"hub@10.0.0.1","role":"orchestrator","directory":"none","links":[],"pin":"1c7e...","reported_seq":9,"ms_since_report":0},{"name":"laptop2","node":"loom@laptop2.example.net","role":"orchestrator","directory":"none","links":["hub"],"pin":"9d2f..."}],"last_refusal":null}}
 ```
 
 `state` is `ok`, `revoked` or `not_enrolled`. `reported_seq` is the newest
 sequence number the member reported to the answering daemon and is absent for a
 member that has not reported; `ms_since_report` is the answering daemon's own
-elapsed time. The daemon reports itself at its own head. `last_refusal` is `null`
+elapsed time. The daemon reports itself at its own head. `links` is the plan
+names the member is linked to and `pin` is the lower-case hexadecimal SHA-256 of
+its leaf certificate (the 2026-10-16 addendum to protocol-change/086); a daemon
+that predates them omits both. `last_refusal` is `null`
 or `{"seq": 7, "step": "fork", "ours": "<hex>", "theirs": "<hex>"}`, where `seq`
 is `null` when the line had none and `ours` and `theirs` appear only for a fork.
 `loom distribution enroll`, `revoke`, `renew`, `log` and `import` are the clients.

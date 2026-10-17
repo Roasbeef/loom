@@ -757,3 +757,33 @@ retiring static mode, cookie rotation, a signed checkpoint that compacts the log
 threshold of signers, a signed heartbeat that bounds staleness, binding a
 connection to its pin, and a converter for deployments provisioned before the
 ledger.
+
+## Addendum, 2026-10-16: `links` and `pin` in a member of `ledger.status`
+
+The Admin page's machine pages (protocol-change/085, the addendum of the same
+date) show, for each member, who it is linked to and which certificate its peers
+pin, because those two facts decide whether a `renew` or a `revoke` is the right
+command and what it will change. The ledger already holds both. This addendum
+adds them to a member of the `ledger.status` reply and changes nothing else.
+
+Each member gains two optional members:
+
+```json
+{"name": "laptop2", "node": "loom@laptop2.example.net", "role": "executor",
+ "directory": "none", "links": ["hub"],
+ "pin": "9d2f...64 lower-case hex digits..."}
+```
+
+`links` is the plan names of the members it is linked to, as the enrolling entry
+recorded them, and is an empty list for a member with none. `pin` is the
+lower-case hexadecimal SHA-256 of the member's leaf certificate, which is the
+value the pin table holds for that member. It is the digest of a public
+certificate, so it is no secret, and it is the same digest any peer computes when
+it verifies the handshake.
+
+A reader that does not know the members ignores them, and a reader of a daemon
+that does not send them sees an empty `links` and no `pin`
+(`ledger_control.decode_status`), so a mixed deployment during an upgrade reads
+without error. Nothing here is a new command, a new entry kind or a change to what
+a node accepts. `deployment.status` carries the same body as its `ledger` member,
+so the page reads both from one reply.
