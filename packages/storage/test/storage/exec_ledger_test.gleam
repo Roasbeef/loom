@@ -3,15 +3,29 @@
 //// Each test opens a ledger in its own scratch directory and drives the public
 //// API. Raw SQL appears only to tamper with a stored row, which is the one way
 //// to reach a state the ledger itself refuses to write.
+////
+//// One test is a stateful property rather than a scenario. `statem` generates
+//// sequences of symbolic commands (session, key slot, incarnation skew and token
+//// choice, all small indices), runs each against a fresh in-memory ledger, and
+//// checks every answer against a model of the scopes and call rows that the
+//// test keeps beside the ledger. A failing sequence is shrunk by deleting
+//// commands and lowering their indices, so a stale-token bug reports as an
+//// attach followed by one admit. The seed and run count are fixed constants, so
+//// the gate is deterministic.
 
 import gleam/bit_array
+import gleam/dict
 import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
+import gleam/string
+import qcheck
 import simplifile
 import sqlight
+import statem
 import storage/exec_ledger.{
   type Key, type Ledger, Admitted, AllRetired, Closed, Closing, Created,
   Existing, Fenced, Found, Fresh, Key, Limits, Missing, Open, Rebound, Reopened,
@@ -730,219 +744,635 @@ fn collect(subject, remaining: Int, acc: List(a)) -> List(a) {
   }
 }
 
-// A seeded generator for the property test, so a failure names its seed.
-fn draw(seed: Int, bound: Int) -> #(Int, Int) {
-  let next = { seed * 1_103_515_245 + 12_345 } % 2_147_483_648
-  #({ next / 65_536 } % bound, next)
+// --- the stateful property: random operation sequences ---------------------
+//
+// The sequence test below is a `statem` specification. A command names a
+// session, a key slot, an incarnation skew and a token choice by small index,
+// never by value, so deleting any prefix of a failing sequence leaves another
+// meaningful sequence and shrinking can reach a short one. `execute` resolves
+// those choices against the model it is handed and then against the real
+// ledger, and the model, not the ledger, is what every answer is checked
+// against.
+
+/// The number of random sequences the property runs. Each is generated from
+/// its own position in the seeded stream, so a failure names the run that
+/// reproduces it alone.
+const sequence_count = 40
+
+/// The longest sequence one run may draw. Greedy shrinking re-executes
+/// candidates against a fresh database, so the bound stays moderate.
+const sequence_length = 200
+
+/// The seed every sequence derives from. Fixed, so the gate is the same gate
+/// on every machine.
+const sequence_seed = 7919
+
+/// How a command picks the attach token it presents.
+type TokenChoice {
+  /// The token the model says the scope holds now, which is the only token
+  /// admission accepts. A session with no scope has none, and the model then
+  /// stands in token zero.
+  Own
+
+  /// One of three tokens drawn from a shared pool, usually not the held one.
+  Pooled(n: Int)
 }
 
-fn key_for(session: String, n: Int) -> Key {
+/// One ledger operation, symbolic. `session` is an index into the two session
+/// names, `slot` an index into that session's four call keys, and `skew` how
+/// far above the scope's current incarnation the request claims to be.
+type Command {
+  Attach(session: Int, skew: Int, choice: TokenChoice)
+  Admit(session: Int, skew: Int, choice: TokenChoice, slot: Int)
+  Finish(session: Int, slot: Int)
+  MarkUnknown(session: Int, slot: Int)
+  Ack(session: Int, slot: Int)
+  BeginClose(session: Int, skew: Int)
+  FinishClose(session: Int, skew: Int, outcome: exec_ledger.CloseOutcome)
+}
+
+/// What the model expects a scope to hold: the incarnation, the identity of
+/// the attach token (an index into the pool, not its bytes) and the stage.
+type Held {
+  Held(incarnation: Int, token: Int, state: exec_ledger.ScopeState)
+}
+
+/// The expected ledger: each session's scope and every call row, including
+/// acknowledgement tombstones, which stay in the dictionary as `Acked`.
+type Model {
+  Model(
+    scopes: dict.Dict(Int, Held),
+    rows: dict.Dict(#(Int, Int), exec_ledger.CallState),
+  )
+}
+
+/// The part of an answer the properties compare, with the ledger's error
+/// variants folded into one `Refused`: the properties say which requests are
+/// refused, and the unit tests above say why.
+type Reply {
+  Attachment(how: exec_ledger.Attachment)
+  Decision(admission: exec_ledger.Admission)
+  Applied
+  Refused
+}
+
+fn session_name(session: Int) -> String {
+  case session % 2 {
+    0 -> "a"
+    _ -> "b"
+  }
+}
+
+fn key_for(session: Int, slot: Int) -> Key {
+  let n = slot % 4
   Key(
-    session:,
+    session: session_name(session),
     op: "op" <> int.to_string(n % 2),
     step: "step",
     source_index: n / 2,
   )
 }
 
-fn authorized(
-  current: option.Option(exec_ledger.Scope),
-  incarnation: Int,
-  attach_token: BitArray,
-) -> Bool {
-  case current {
-    Some(exec_ledger.Scope(state: Open, incarnation: stored, token: held, ..)) ->
-      stored == incarnation && held == attach_token
-    Some(_) | None -> False
+fn slots() -> List(Int) {
+  [0, 1, 2, 3]
+}
+
+fn stored_incarnation(model: Model, session: Int) -> Int {
+  case dict.get(model.scopes, session % 2) {
+    Ok(Held(incarnation:, ..)) -> incarnation
+    Error(Nil) -> 0
   }
 }
 
-fn present(keys: List(Key), key: Key) -> Bool {
-  list.contains(keys, key)
-}
-
-// Runs random sequences of every operation against a ledger and checks the two
-// properties the design rests on after each step: a key is `Fresh` only while
-// the ledger holds no row for it, and a request is admitted only under the
-// scope's current incarnation and token.
-fn exercise(
-  ledger: Ledger,
-  seed: Int,
-  held: List(Key),
-  acked: List(Key),
-  remaining: Int,
-) -> Nil {
-  case remaining {
-    0 -> Nil
-    _ -> {
-      let #(op, seed) = draw(seed, 20)
-      let #(which, seed) = draw(seed, 2)
-      let session = case which {
-        0 -> "a"
-        _ -> "b"
-      }
-      let assert Ok(current) = exec_ledger.scope(ledger, session)
-        as "the scope reads"
-      let #(skew, seed) = draw(seed, 4)
-      let stored = case current {
-        Some(scope) -> scope.incarnation
-        None -> 0
-      }
-      let incarnation =
-        stored
-        + case skew {
-          3 -> 2
-          2 -> 1
-          _ -> 0
-        }
-      let #(own, seed) = draw(seed, 2)
-      let #(pooled, seed) = draw(seed, 3)
-      let attach_token = case current, own {
-        Some(scope), 0 -> scope.token
-        _, _ -> token(pooled)
-      }
-      let #(slot, seed) = draw(seed, 4)
-      let key = key_for(session, slot)
-      let #(held, acked) = case op {
-        0 | 1 | 2 | 3 -> {
-          let attached =
-            exec_ledger.attach(
-              ledger,
-              session,
-              "/work",
-              incarnation,
-              attach_token,
-              limits(),
-            )
-
-          // A reopen is a new incarnation, and the scope's tombstones go.
-          case attached {
-            Ok(exec_ledger.Attached(how: Reopened, ..)) ->
-              forget(session, held, acked)
-            Ok(exec_ledger.Attached(..)) | Error(_) -> #(held, acked)
-          }
-        }
-        4 | 5 | 6 | 7 | 8 | 9 -> #(
-          admit_checked(ledger, current, key, incarnation, attach_token, held),
-          acked,
-        )
-        10 | 11 | 12 -> {
-          let _finished = exec_ledger.finish(ledger, key, bytes("ok"))
-          #(held, acked)
-        }
-        13 | 14 -> acknowledge(ledger, key, held, acked)
-        15 -> {
-          let _lost = exec_ledger.mark_unknown(ledger, key)
-          #(held, acked)
-        }
-        16 -> {
-          let _begun =
-            exec_ledger.begin_close(ledger, session, "/work", incarnation)
-          #(held, acked)
-        }
-        _ -> {
-          // The two clean closes for every unclean one keep scopes reopening.
-          let outcome = case op {
-            19 -> UnknownCleanup(1)
-            _ -> AllRetired
-          }
-          let ended =
-            exec_ledger.finish_close(
-              ledger,
-              session,
-              "/work",
-              incarnation,
-              outcome,
-            )
-
-          // A close with every child retired drops the scope's tombstones.
-          case ended, outcome {
-            Ok(Nil), AllRetired -> forget(session, held, acked)
-            _, _ -> #(held, acked)
-          }
-        }
-      }
-
-      // Presence in the model and in the ledger agree for the key just used.
-      let assert Ok(looked) = exec_ledger.query(ledger, key) as "the key reads"
-      assert { looked == Missing } == !present(held, key)
-      exercise(ledger, seed, held, acked, remaining - 1)
-    }
+fn token_index(model: Model, session: Int, choice: TokenChoice) -> Int {
+  case choice, dict.get(model.scopes, session % 2) {
+    Own, Ok(Held(token:, ..)) -> token
+    Own, Error(Nil) -> 0
+    Pooled(n:), _ -> n
   }
 }
 
-fn admit_checked(
-  ledger: Ledger,
-  before: option.Option(exec_ledger.Scope),
-  key: Key,
-  incarnation: Int,
-  attach_token: BitArray,
-  held: List(Key),
-) -> List(Key) {
-  let permitted = authorized(before, incarnation, attach_token)
-  case
-    exec_ledger.admit(
-      ledger,
-      key,
-      incarnation,
-      attach_token,
-      "bash",
-      8,
-      limits(),
+// The scope's tombstones go when its incarnation changes or a close retires
+// every child; the keys that only a tombstone held go with them.
+fn forget_acks(model: Model, session: Int) -> Model {
+  let rows =
+    dict.filter(model.rows, fn(key, state) {
+      key.0 != session % 2 || state != exec_ledger.Acked
+    })
+  Model(..model, rows:)
+}
+
+fn settle(
+  model: Model,
+  session: Int,
+  slot: Int,
+  from: fn(exec_ledger.CallState) -> option.Option(exec_ledger.CallState),
+) -> #(Reply, Model) {
+  let key = #(session % 2, slot % 4)
+  case dict.get(model.rows, key) |> option.from_result |> option.then(from) {
+    Some(next) -> #(
+      Applied,
+      Model(..model, rows: dict.insert(model.rows, key, next)),
     )
-  {
-    Ok(Fresh) -> {
-      assert permitted
-      assert !present(held, key)
-      [key, ..held]
+    None -> #(Refused, model)
+  }
+}
+
+// What the ledger must answer, and the model after it. This is the whole
+// state machine of the ledger's attach, admission and close rules, written
+// over small integers; the capacity limit is never reached with two sessions
+// and the byte budget never with eight-byte reservations, so neither appears.
+fn step(model: Model, command: Command) -> #(Reply, Model) {
+  case command {
+    Attach(session:, skew:, choice:) -> {
+      let incarnation = stored_incarnation(model, session) + skew
+      let held = Held(incarnation, token_index(model, session, choice), Open)
+      let joined = fn(how, model: Model) {
+        let scopes = dict.insert(model.scopes, session % 2, held)
+        #(Attachment(how), Model(..model, scopes:))
+      }
+      case dict.get(model.scopes, session % 2) {
+        Error(Nil) -> joined(Created, model)
+        Ok(Held(incarnation: stored, state:, ..)) ->
+          case state {
+            Open if incarnation == stored -> joined(Rebound, model)
+            Open -> #(Refused, model)
+            Closing | Closed(UnknownCleanup(_)) -> #(Refused, model)
+            Closed(AllRetired) if incarnation == stored + 1 ->
+              joined(Reopened, forget_acks(model, session))
+            Closed(AllRetired) -> #(Refused, model)
+          }
+      }
     }
-    Ok(Existing(_)) -> {
-      assert permitted
-      assert present(held, key)
-      held
+
+    Admit(session:, skew:, choice:, slot:) -> {
+      let incarnation = stored_incarnation(model, session) + skew
+      let presented = token_index(model, session, choice)
+      let key = #(session % 2, slot % 4)
+      case dict.get(model.scopes, session % 2) {
+        Ok(Held(incarnation: stored, token: held, state: Open))
+          if stored == incarnation && held == presented
+        ->
+          case dict.get(model.rows, key) {
+            Ok(state) -> #(Decision(Existing(state)), model)
+            Error(Nil) -> #(
+              Decision(Fresh),
+              Model(..model, rows: dict.insert(model.rows, key, Admitted)),
+            )
+          }
+        Ok(_) | Error(Nil) -> #(Refused, model)
+      }
     }
-    Error(_) -> {
-      assert !permitted
-      held
+
+    Finish(session:, slot:) ->
+      settle(model, session, slot, fn(state) {
+        case state {
+          Admitted -> Some(Terminal(bytes("ok")))
+          Terminal(_) | Unknown | exec_ledger.Acked -> None
+        }
+      })
+
+    MarkUnknown(session:, slot:) ->
+      settle(model, session, slot, fn(state) {
+        case state {
+          Admitted -> Some(Unknown)
+          Terminal(_) | Unknown | exec_ledger.Acked -> None
+        }
+      })
+
+    // An acknowledgement of a missing or unsettled key is accepted and
+    // changes nothing; only a settled row becomes a tombstone.
+    Ack(session:, slot:) -> {
+      let key = #(session % 2, slot % 4)
+      case dict.get(model.rows, key) {
+        Ok(Terminal(_)) | Ok(Unknown) -> #(
+          Applied,
+          Model(..model, rows: dict.insert(model.rows, key, exec_ledger.Acked)),
+        )
+        Ok(Admitted) | Ok(exec_ledger.Acked) | Error(Nil) -> #(Applied, model)
+      }
+    }
+
+    BeginClose(session:, skew:) -> {
+      let incarnation = stored_incarnation(model, session) + skew
+      case dict.get(model.scopes, session % 2) {
+        Ok(Held(incarnation: stored, state:, ..) as held)
+          if stored == incarnation
+        ->
+          case state {
+            Open -> #(
+              Applied,
+              Model(
+                ..model,
+                scopes: dict.insert(
+                  model.scopes,
+                  session % 2,
+                  Held(..held, state: Closing),
+                ),
+              ),
+            )
+            Closing -> #(Applied, model)
+            Closed(_) -> #(Refused, model)
+          }
+        Ok(_) | Error(Nil) -> #(Refused, model)
+      }
+    }
+
+    FinishClose(session:, skew:, outcome:) -> {
+      let incarnation = stored_incarnation(model, session) + skew
+      case dict.get(model.scopes, session % 2) {
+        Ok(Held(incarnation: stored, state: Closing, ..) as held)
+          if stored == incarnation
+        -> {
+          let closed =
+            Model(
+              ..model,
+              scopes: dict.insert(
+                model.scopes,
+                session % 2,
+                Held(..held, state: Closed(outcome)),
+              ),
+            )
+          case outcome {
+            AllRetired -> #(Applied, forget_acks(closed, session))
+            UnknownCleanup(_) -> #(Applied, closed)
+          }
+        }
+        Ok(_) | Error(Nil) -> #(Refused, model)
+      }
     }
   }
 }
 
-// An acknowledged key stays taken: its tombstone reads as `Acked` until the
-// scope's incarnation changes.
-fn acknowledge(
+// The command on the real ledger, with the request resolved the way `step`
+// resolved it, so that the two see the same incarnation, token and key.
+fn perform(ledger: Ledger, model: Model, command: Command) -> Reply {
+  let applied = fn(answer: Result(Nil, exec_ledger.Error)) {
+    case answer {
+      Ok(Nil) -> Applied
+      Error(_) -> Refused
+    }
+  }
+  case command {
+    Attach(session:, skew:, choice:) ->
+      case
+        exec_ledger.attach(
+          ledger,
+          session_name(session),
+          "/work",
+          stored_incarnation(model, session) + skew,
+          token(token_index(model, session, choice)),
+          limits(),
+        )
+      {
+        Ok(exec_ledger.Attached(how:, ..)) -> Attachment(how)
+        Error(_) -> Refused
+      }
+
+    Admit(session:, skew:, choice:, slot:) ->
+      case
+        exec_ledger.admit(
+          ledger,
+          key_for(session, slot),
+          stored_incarnation(model, session) + skew,
+          token(token_index(model, session, choice)),
+          "bash",
+          8,
+          limits(),
+        )
+      {
+        Ok(admission) -> Decision(admission)
+        Error(_) -> Refused
+      }
+
+    Finish(session:, slot:) ->
+      applied(exec_ledger.finish(ledger, key_for(session, slot), bytes("ok")))
+
+    MarkUnknown(session:, slot:) ->
+      applied(exec_ledger.mark_unknown(ledger, key_for(session, slot)))
+
+    Ack(session:, slot:) ->
+      applied(exec_ledger.ack(ledger, key_for(session, slot)))
+
+    BeginClose(session:, skew:) ->
+      applied(exec_ledger.begin_close(
+        ledger,
+        session_name(session),
+        "/work",
+        stored_incarnation(model, session) + skew,
+      ))
+
+    FinishClose(session:, skew:, outcome:) ->
+      applied(exec_ledger.finish_close(
+        ledger,
+        session_name(session),
+        "/work",
+        stored_incarnation(model, session) + skew,
+        outcome,
+      ))
+  }
+}
+
+fn violation(tag: String, detail: String) -> Result(Nil, statem.Violation) {
+  Error(statem.Violation(tag:, detail:))
+}
+
+// The two properties the design rests on, then plain agreement. A request
+// the model refuses but the ledger answered was admitted under a stale
+// incarnation or token; a `Fresh` for a key the model holds would start a
+// call twice. Both are named before the general comparison, so shrinking a
+// failure of one never slides into the other.
+fn check_reply(
+  command: Command,
+  expected: Reply,
+  observed: Reply,
+) -> Result(Nil, statem.Violation) {
+  case command, expected, observed {
+    Admit(..), Refused, Decision(_) ->
+      violation(
+        "stale-admitted",
+        "admitted under an incarnation or token the scope does not hold: "
+          <> string.inspect(observed),
+      )
+    Admit(..), Decision(Existing(_)), Decision(Fresh) ->
+      violation("fresh-while-held", "Fresh for a key the ledger already holds")
+    _, _, _ ->
+      case expected == observed {
+        True -> Ok(Nil)
+        False ->
+          violation(
+            "reply",
+            "expected "
+              <> string.inspect(expected)
+              <> ", the ledger answered "
+              <> string.inspect(observed),
+          )
+      }
+  }
+}
+
+// Every call key of the session the command touched, because a reopen or a
+// retiring close changes keys the command never named: presence first, then
+// the exact row.
+fn check_rows(
   ledger: Ledger,
-  key: Key,
-  held: List(Key),
-  acked: List(Key),
-) -> #(List(Key), List(Key)) {
-  let assert Ok(before) = exec_ledger.query(ledger, key) as "the key reads"
-  let assert Ok(Nil) = exec_ledger.ack(ledger, key) as "the ack succeeds"
-  case before {
-    Found(Terminal(_)) | Found(Unknown) -> #(held, [key, ..acked])
-    Found(Admitted) | Found(exec_ledger.Acked) | Missing -> #(held, acked)
+  model: Model,
+  session: Int,
+) -> Result(Nil, statem.Violation) {
+  list.try_each(slots(), fn(slot) {
+    case
+      exec_ledger.query(ledger, key_for(session, slot)),
+      dict.get(model.rows, #(session % 2, slot % 4))
+    {
+      Ok(Missing), Error(Nil) -> Ok(Nil)
+      Ok(Missing), Ok(_) ->
+        violation("row-missing", "slot " <> int.to_string(slot))
+      Ok(Found(found)), Error(Nil) ->
+        violation(
+          "row-extra",
+          "slot " <> int.to_string(slot) <> " holds " <> string.inspect(found),
+        )
+      Ok(Found(found)), Ok(state) ->
+        case found == state {
+          True -> Ok(Nil)
+          False ->
+            violation(
+              "row-state",
+              "slot "
+                <> int.to_string(slot)
+                <> " holds "
+                <> string.inspect(found)
+                <> ", expected "
+                <> string.inspect(state),
+            )
+        }
+      Error(error), _ -> violation("read", string.inspect(error))
+    }
+  })
+}
+
+// The scope the ledger stores matches the model's incarnation, token and
+// stage, which is what makes the model's admission verdicts meaningful.
+fn check_scope(
+  ledger: Ledger,
+  model: Model,
+  session: Int,
+) -> Result(Nil, statem.Violation) {
+  case
+    exec_ledger.scope(ledger, session_name(session)),
+    dict.get(model.scopes, session % 2)
+  {
+    Ok(None), Error(Nil) -> Ok(Nil)
+    Ok(Some(exec_ledger.Scope(incarnation:, state:, token: stored, ..))),
+      Ok(Held(incarnation: expected, token: index, state: expected_state))
+    ->
+      case
+        incarnation == expected
+        && state == expected_state
+        && stored == token(index)
+      {
+        True -> Ok(Nil)
+        False ->
+          violation(
+            "scope",
+            "ledger holds incarnation "
+              <> int.to_string(incarnation)
+              <> " "
+              <> string.inspect(state)
+              <> ", model expects incarnation "
+              <> int.to_string(expected)
+              <> " "
+              <> string.inspect(expected_state),
+          )
+      }
+    Ok(found), expected ->
+      violation(
+        "scope",
+        "ledger holds "
+          <> string.inspect(found)
+          <> ", model expects "
+          <> string.inspect(expected),
+      )
+    Error(error), _ -> violation("read", string.inspect(error))
   }
 }
 
-// The scope's tombstones are gone, and so are the keys that only they held.
-fn forget(
-  session: String,
-  held: List(Key),
-  acked: List(Key),
-) -> #(List(Key), List(Key)) {
-  let gone = list.filter(acked, fn(key) { key.session == session })
-  #(
-    list.filter(held, fn(key) { !list.contains(gone, key) }),
-    list.filter(acked, fn(key) { key.session != session }),
+fn session_of(command: Command) -> Int {
+  case command {
+    Attach(session:, ..)
+    | Admit(session:, ..)
+    | Finish(session:, ..)
+    | MarkUnknown(session:, ..)
+    | Ack(session:, ..)
+    | BeginClose(session:, ..)
+    | FinishClose(session:, ..) -> session
+  }
+}
+
+fn execute(
+  ledger: Ledger,
+  model: Model,
+  command: Command,
+) -> Result(Ledger, statem.Violation) {
+  let #(expected, after) = step(model, command)
+  let observed = perform(ledger, model, command)
+  use Nil <- result.try(check_reply(command, expected, observed))
+  use Nil <- result.try(check_rows(ledger, after, session_of(command)))
+  use Nil <- result.try(check_scope(ledger, after, session_of(command)))
+  Ok(ledger)
+}
+
+fn skew() -> qcheck.Generator(Int) {
+  qcheck.bounded_int(from: 0, to: 3)
+  |> qcheck.map(fn(n) {
+    case n {
+      3 -> 2
+      2 -> 1
+      _ -> 0
+    }
+  })
+}
+
+fn token_choice() -> qcheck.Generator(TokenChoice) {
+  qcheck.bounded_int(from: 0, to: 5)
+  |> qcheck.map(fn(n) {
+    case n {
+      0 | 1 | 2 -> Own
+      _ -> Pooled(n - 3)
+    }
+  })
+}
+
+// Commands never read the model: every choice is an index the model resolves,
+// so any subsequence of a generated list is admissible. The weights are the
+// old harness's, simplest first so shrinking prefers an attach.
+fn command() -> qcheck.Generator(Command) {
+  let session = qcheck.bounded_int(from: 0, to: 1)
+  let slot = qcheck.bounded_int(from: 0, to: 3)
+  let outcome =
+    qcheck.bounded_int(from: 0, to: 2)
+    |> qcheck.map(fn(n) {
+      case n {
+        2 -> UnknownCleanup(1)
+        _ -> AllRetired
+      }
+    })
+  qcheck.from_weighted_generators(
+    #(
+      4,
+      qcheck.map3(session, skew(), token_choice(), fn(session, skew, choice) {
+        Attach(session:, skew:, choice:)
+      }),
+    ),
+    [
+      #(
+        6,
+        qcheck.map4(
+          session,
+          skew(),
+          token_choice(),
+          slot,
+          fn(session, skew, choice, slot) {
+            Admit(session:, skew:, choice:, slot:)
+          },
+        ),
+      ),
+      #(
+        3,
+        qcheck.map2(session, slot, fn(session, slot) { Finish(session:, slot:) }),
+      ),
+      #(
+        2,
+        qcheck.map2(session, slot, fn(session, slot) { Ack(session:, slot:) }),
+      ),
+      #(
+        1,
+        qcheck.map2(session, slot, fn(session, slot) {
+          MarkUnknown(session:, slot:)
+        }),
+      ),
+      #(
+        1,
+        qcheck.map2(session, skew(), fn(session, skew) {
+          BeginClose(session:, skew:)
+        }),
+      ),
+      #(
+        3,
+        qcheck.map3(session, skew(), outcome, fn(session, skew, outcome) {
+          FinishClose(session:, skew:, outcome:)
+        }),
+      ),
+    ],
   )
 }
 
+fn ledger_spec() -> statem.Spec(Model, Command, Ledger) {
+  statem.Spec(
+    initial: Model(scopes: dict.new(), rows: dict.new()),
+    command: fn(_model) { command() },
+    precondition: fn(_model, _command) { statem.Admit },
+    // Each execution opens a ledger of its own in memory, so nothing a run
+    // or a shrink candidate wrote can reach the next.
+    next_model: fn(model, command) { step(model, command).1 },
+    new_sut: fn() { open_at(":memory:") },
+    execute:,
+    finish: fn(_ledger, _model) { Ok(Nil) },
+    teardown: fn(ledger) {
+      let _closed = exec_ledger.close(ledger)
+      Nil
+    },
+  )
+}
+
+fn ledger_config() -> statem.Config {
+  statem.default_config(seed: sequence_seed)
+  |> statem.with_test_count(sequence_count)
+  |> statem.with_max_commands(sequence_length)
+}
+
 pub fn random_sequences_never_admit_a_key_twice_or_under_a_stale_token_test() {
-  list.each(upto(1, 40), fn(seed) {
-    let ledger = open_at(":memory:")
-    exercise(ledger, seed * 7919, [], [], 200)
-    let assert Ok(Nil) = exec_ledger.close(ledger) as "the ledger closes"
-    Nil
+  case statem.check(ledger_spec(), ledger_config()) {
+    Ok(Nil) -> Nil
+    Error(failure) ->
+      panic as statem.report(failure, fn(command) { string.inspect(command) })
+  }
+}
+
+// A property that never reaches an outcome proves nothing about it, so the
+// model is replayed over the generated lists and must predict every kind of
+// answer the properties judge, refusals and tombstoned keys among them.
+pub fn the_generated_sequences_reach_every_outcome_test() {
+  let config = ledger_config()
+  let replies =
+    upto(0, config.test_count - 1)
+    |> list.flat_map(fn(run) {
+      let spec = ledger_spec()
+      let #(_, answered) =
+        list.map_fold(
+          statem.commands(spec, config, run),
+          spec.initial,
+          fn(model, command) {
+            let #(reply, next) = step(model, command)
+            #(next, #(command, reply))
+          },
+        )
+      answered
+    })
+  let reached = fn(want: Reply) {
+    list.any(replies, fn(pair) { pair.1 == want })
+  }
+  assert reached(Attachment(Created))
+  assert reached(Attachment(Rebound))
+  assert reached(Attachment(Reopened))
+  assert reached(Decision(Fresh))
+  assert reached(Decision(Existing(Admitted)))
+  assert reached(Decision(Existing(Terminal(bytes("ok")))))
+  assert reached(Decision(Existing(Unknown)))
+  assert reached(Decision(Existing(exec_ledger.Acked)))
+  assert reached(Applied)
+  assert list.any(replies, fn(pair) {
+    pair.1 == Refused && string.starts_with(string.inspect(pair.0), "Admit(")
   })
 }
 

@@ -742,7 +742,9 @@ or close; there is no transaction, lease or authorization cache.
   inside the transaction that inserts the call row. A stale runtime's `Run`
   is therefore refused by content whatever order the network delivered it
   in, and two connections racing one key produce exactly one `Fresh`. Remove
-  the token comparison and the stale-token test fails.
+  the token comparison and the stale-token test fails, as does the `statem`
+  sequence property in `exec_ledger_test` (tag `stale-admitted`), which checks
+  every random operation against a model of scopes, tokens and call rows.
 - **`query_or_fence` settles a missing row in the transaction that finds it.**
   The recovery of a call that must not run twice calls it instead of `query`:
   an existing row is returned as `Standing`, and no row becomes a `terminal`
