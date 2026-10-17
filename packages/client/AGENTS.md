@@ -8737,8 +8737,8 @@ that draw degraded and full states come with the slice that produces them.
   (`Running | Waiting`), `DirectoryFacts` and `Copy` (`Current | Unconfirmed`). It
   is its own module because `session_movers` imports `orchestrator_port`, so the
   port cannot import the movers' types. `to_json` leaves out the facts a node does
-  not have, and `decode` is a total decoder with bounds (`max_peers` 32,
-  `max_workspaces` 64, `max_placements` 32, `max_moves` 64, `max_unclean` 64,
+  not have, and `decode` is a total decoder with bounds (`max_peers` 64,
+  `max_workspaces` 64, `max_placements` 64, `max_moves` 64, `max_unclean` 64,
   `max_reason_bytes` 200, `max_text_bytes` 512); a missing field, a negative count, an
   unknown word or an oversized list is an `Error` naming the field. `cut_reason`
   cuts at a grapheme boundary. `bare` builds a report that says only who the node is.
@@ -8757,9 +8757,11 @@ that draw degraded and full states come with the slice that produces them.
   `daemon/main.node_reads` supplies the sources: `orchestrator_facts` (present only
   where `ownership_of` says the daemon is an orchestrator; `manager.summary` for
   capacity, occupied and resident, `ledger_holdings.placements`, `Control.moves`),
-  `directory_facts` (`member.status` and `store.confirm_current` of this node's own
-  migration marker, `Current` on `Ok` and `Unconfirmed` otherwise) and the executor
-  host's `facts`. `peers` are the nodes of the orchestrators and executors the daemon
+  `node_facts.directory_facts` (`member.status_within` with a 500 ms wait for Ra and
+  `store.confirm_current` of this node's own migration marker with an 800 ms fence,
+  `Current` on `Ok` and `Unconfirmed` otherwise, so a member with no leader still
+  reports inside `read_ms`) and the executor host's `facts`. The weft deadline is the
+  real bound on a report; the waits inside each source are secondary. `peers` are the nodes of the orchestrators and executors the daemon
   lists, once each, which in ledger mode are the nodes the ledger links it to.
 - `remote/host` gains a private `Summarize(reply)` event and `start_reporting`,
   which returns `Reporting(address, summarize)`. `summarize(within_ms)` sends on the
@@ -8781,10 +8783,14 @@ that draw degraded and full states come with the slice that produces them.
   named by its configured name.
 - `ledger_holdings.placements(registry, executors)` is the catalogue walk of
   `from_catalogue` answering how many sessions on each executor node are resident and
-  how many are saved. More executors than `max_placements` is `Error(Nil)`, and the
+  how many are saved. More executors than `orchestrator_port.max_placed` (64) is `Error(Nil)`, and the
   daemon then leaves the orchestrator facts out instead of listing a partial count.
-- `directory/store.confirm_current(node)` is a fence and a read of the node's own
-  migration marker within `read_ms`; `Unavailable` says why it could not confirm.
+- `directory/store.confirm_current(node, within_ms)` is a fence (at most `within_ms`)
+  and a read of the node's own migration marker, cut off at one and a half times
+  `within_ms`; `Unavailable` says why it could not confirm. `member.status_within` and
+  `store.membership_within` are `status` and `membership` with the wait given. The
+  store's text for an unrecognised answer and the movers' `show` of a registry error
+  are fixed words, so a stall reason carries no path or process identifier.
 - A fact missing from a report means either that the node has none of that kind or
   that its source did not answer in time, and the report does not say which. The asking
   daemon compares what it expected of the node with what the report holds.
