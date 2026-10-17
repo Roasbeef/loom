@@ -7777,16 +7777,28 @@ The box's deadline and retention (slice S4):
   interval after the session opens, and the session opens on the next `Spawn` or
   `Join` after a restart, so a child that went overdue while the daemon was down
   is stopped at that first pass and the time spent down counts.
-- The retention sweep. `catalogue.delegates` lists the rows, and
-  `manager.sweep_delegates(retain_ms, now_ms, sessions)` deletes, in one registry
-  turn, every delegate whose last contact is older than `retain_ms(spawner)` and
-  that holds no slot, through the same `remove_registration` a delete uses. A
-  failed deletion is skipped for the next sweep. `spawners.retention_ms` gives a
-  spawner's `retain_s` in milliseconds, and `default_retain_s` for a spawner whose
-  table is gone. `daemon/main.sweep_delegate_sessions` runs it once at boot, before
-  the orchestrator port starts, and logs `daemon.delegate_sweep`. There is no
-  periodic sweep: a daemon that stays up keeps an idle delegate session until its
-  next boot. The sweep does not remove a directory-member record (#934).
+- The retention sweep (slice S7 added the hourly run, idle close and spawner
+  removal). `catalogue.delegates` lists the rows, and
+  `manager.sweep_delegates(Sweep(standing:, occupancy:), now_ms, sessions)` does
+  two things in one registry turn and answers `Swept(deleted:, closed:)`. A row
+  with no slot is deleted, through the same `remove_registration` a delete uses,
+  when `spawners.standing` says `Removed` (the table is gone, whatever the age),
+  when its release has begun, or when its last contact is older than `retain_ms`.
+  A row with a running slot is closed with `stop_slot`, the ordinary stop, when it
+  is `Open`, its spawner is `Removed` or silent past `idle_close_ms`, and
+  `agency.DelegateEndpoint.occupancy` answers `Vacant`. `agency.delegate_occupancy`
+  borrows the runtime, reads the lineage ledger, and answers `Occupied` for any
+  child with a run or any read that fails. The check runs in the registry's turn
+  after every `Spawn`/`Join` claim has moved `last_contact_ms`, so a spawn admitted
+  just before the sweep leaves its session too recent to close. The closure given
+  as `occupancy` runs inside that turn and must not call the registry. A failed
+  deletion is skipped for the next sweep. `daemon/main.sweep_delegate_sessions`
+  runs it once at boot, before the orchestrator port starts, and
+  `daemon/main.start_delegate_sweep` runs it every `delegate_sweep_every_ms`
+  (one hour) from a weft periodic, logging `daemon.delegate_sweep` with the two
+  counts. `[spawners.<name>] idle_close_s` defaults to 3600. No `SpawnerRemoved`
+  stop exists: nothing runs in a closed session. The sweep does not remove a
+  directory-member record (#934).
 
 - Release (phase 2, slice S6; protocol-change/084 addendum of 2026-10-16). The
   parent session was deleted on the spawning orchestrator, and the box stops its

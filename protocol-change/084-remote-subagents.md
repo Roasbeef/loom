@@ -661,3 +661,16 @@ phases, `eRelease`, and the specs `ReleasedSessionHasNoRunningChild`,
 design called `EveryEndedRunIsTold`, with `Release` in place of `RunEnded`. Three
 mutants are caught: a release that reaps without the fence, a drainer that
 settles a row on an unreachable call, and a release that creates a session.
+
+## Addendum 2026-10-16: retention and spawner removal (phase 2, slice S7)
+
+`[spawners.<name>] idle_close_s` (default 3600, at least 1) is the one new key.
+The retention sweep now runs every hour as well as at boot
+(`daemon/main.start_delegate_sweep`, a weft periodic). It deletes a delegate
+session without a slot when its spawner's table was removed, whatever the
+session's age, and it closes, without deleting, a resident open session that
+has no child with a run and has had no message for `idle_close_s`. A resident
+delegate session never hibernates, so without the hourly pass an idle one holds
+an executor scope until the daemon restarts. The next `Spawn` or `Join` reopens
+a closed session. No `SpawnerRemoved` stop is added: nothing runs in a session
+that is not open, so there is no child to record a stop for.
