@@ -43,7 +43,8 @@
 ////    projection and ledger.
 //// 6. On a failure, `corroborate` re-plans the same seed to say whether it is
 ////    stable, and only then does `shrink` search smaller schedules through
-////    `first_failing`.
+////    `minimize`, accepting a candidate only if it fails the same check on
+////    every one of the corroboration's runs.
 
 import conformance/simulation/control.{type Control}
 import conformance/simulation/fault.{type Schedule}
@@ -255,6 +256,11 @@ pub fn check(seed seed: Int, shrink_budget shrink_budget: Int) -> Verdict {
   }
 }
 
+// The session runner's shrink: the schedule's own candidates, each held to
+// the two rules `minimize` states. The first run of a candidate reuses the
+// fault-free `base` the failing run was judged against; the confirming runs
+// replan it, exactly as `corroborate` does for the original, so a candidate
+// is not condemned or excused by one unlucky baseline.
 fn shrink(
   script: Script,
   base: Report,
@@ -262,33 +268,148 @@ fn shrink(
   failure: Failure,
   remaining: Int,
 ) -> #(Schedule, Failure) {
-  case remaining <= 0 {
-    True -> #(schedule, failure)
-    False ->
-      case first_failing(script, base, fault.shrink(schedule), remaining) {
-        #(None, _spent) -> #(schedule, failure)
-        #(Some(#(smaller, smaller_failure)), spent) ->
-          shrink(script, base, smaller, smaller_failure, remaining - spent)
+  minimize(
+    from: schedule,
+    failing: failure,
+    candidates: fault.shrink,
+    probe: fn(candidate) { verify(script, candidate, base) },
+    reprobe: fn(candidate) {
+      verify(script, candidate, execute(script, fault.none()))
+    },
+    budget: remaining,
+  )
+}
+
+/// Greedy shrinking of a failing case, shared by the session runner and the
+/// daemon runners so one pair of rules governs all of them.
+///
+/// A candidate replaces the current case only if both hold:
+///
+/// 1. **Same check.** It fails the check the original failed, by name. A
+///    smaller case that breaks a *different* check is another bug, and
+///    walking onto it would report a minimal case for a failure nobody
+///    asked about.
+/// 2. **Corroborated.** It fails that check on every one of
+///    `corroboration_runs` further runs as well as its first, the same
+///    number of runs the original failure had to survive. The first run
+///    alone is not enough: the runs drive real processes, so a racy
+///    candidate fails by chance, and accepting it would shrink toward the
+///    schedule that happened to lose a race.
+///
+/// `probe` is a candidate's first run; `reprobe` is each confirming run, and
+/// may differ from it when the confirming run should rebuild whatever the
+/// first run reused (the session runner replans its fault-free baseline).
+///
+/// `budget` counts candidates tried, whether accepted or not. The cost is
+/// asymmetric: a candidate that passes, or fails another check, costs one
+/// run, and one that fails the same check on its first run costs
+/// `1 + corroboration_runs` runs (plus a fresh baseline per confirming run
+/// where `reprobe` replans one). A shrink that finds nothing is therefore
+/// cheap, and a shrink that keeps finding reproducible failures spends four
+/// times as much per step as it did before corroboration. Nothing is
+/// inferred: the returned case was observed to fail the same check on every
+/// run, and the worst shrinking can do is return `from` unchanged.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // runner.minimize(from: schedule, failing: failure,
+/// //   candidates: fault.shrink, probe:, reprobe:, budget: 12)
+/// ```
+///
+pub fn minimize(
+  from current: a,
+  failing failure: Failure,
+  candidates candidates: fn(a) -> List(a),
+  probe probe: fn(a) -> Result(Nil, Failure),
+  reprobe reprobe: fn(a) -> Result(Nil, Failure),
+  budget remaining: Int,
+) -> #(a, Failure) {
+  use <- bool.guard(when: remaining <= 0, return: #(current, failure))
+  let #(found, tried) =
+    first_confirmed(
+      candidates(current),
+      failure.check,
+      probe,
+      reprobe,
+      remaining,
+    )
+  case found {
+    None -> #(current, failure)
+    Some(#(smaller, smaller_failure)) ->
+      minimize(
+        from: smaller,
+        failing: smaller_failure,
+        candidates:,
+        probe:,
+        reprobe:,
+        budget: remaining - tried,
+      )
+  }
+}
+
+// Walks the candidates in order and returns the first that fails `check` and
+// then keeps failing it, with how many were tried. Each candidate is one
+// event: it passes, it fails something else, it fails `check` once, or it
+// fails `check` every time. Only the last is accepted; the others fall
+// through to the next candidate at the price of one unit of budget.
+fn first_confirmed(
+  candidates: List(a),
+  check: String,
+  probe: fn(a) -> Result(Nil, Failure),
+  reprobe: fn(a) -> Result(Nil, Failure),
+  remaining: Int,
+) -> #(Option(#(a, Failure)), Int) {
+  case candidates, remaining <= 0 {
+    [], _ | _, True -> #(None, 0)
+    [candidate, ..rest], False -> {
+      let accepted = case same_check(probe(candidate), check) {
+        Some(failure) ->
+          case reproduces(candidate, check, reprobe, corroboration_runs) {
+            True -> Some(#(candidate, failure))
+            False -> None
+          }
+        None -> None
+      }
+      case accepted {
+        Some(_) -> #(accepted, 1)
+        None -> {
+          let #(found, tried) =
+            first_confirmed(rest, check, probe, reprobe, remaining - 1)
+          #(found, tried + 1)
+        }
+      }
+    }
+  }
+}
+
+// The failure a run reported, if it is the check we are shrinking. A pass
+// and a different check are the same answer here: this candidate does not
+// reproduce the failure being minimised.
+fn same_check(outcome: Result(Nil, Failure), check: String) -> Option(Failure) {
+  case outcome {
+    Ok(Nil) -> None
+    Error(failure) ->
+      case failure.check == check {
+        True -> Some(failure)
+        False -> None
       }
   }
 }
 
-fn first_failing(
-  script: Script,
-  base: Report,
-  candidates: List(Schedule),
+// Every one of `remaining` confirming runs fails the same check. The first
+// run that passes, or fails something else, ends the search at once, so a
+// racy candidate costs about one extra run rather than all of them.
+fn reproduces(
+  candidate: a,
+  check: String,
+  reprobe: fn(a) -> Result(Nil, Failure),
   remaining: Int,
-) -> #(Option(#(Schedule, Failure)), Int) {
-  case candidates, remaining <= 0 {
-    [], _ | _, True -> #(None, 1)
-    [candidate, ..rest], False ->
-      case verify(script, candidate, base) {
-        Error(failure) -> #(Some(#(candidate, failure)), 1)
-        Ok(Nil) -> {
-          let #(found, spent) = first_failing(script, base, rest, remaining - 1)
-          #(found, spent + 1)
-        }
-      }
+) -> Bool {
+  use <- bool.guard(when: remaining <= 0, return: True)
+  case same_check(reprobe(candidate), check) {
+    Some(_) -> reproduces(candidate, check, reprobe, remaining - 1)
+    None -> False
   }
 }
 
@@ -548,11 +669,15 @@ fn timing_line(
   }
 }
 
-// How many times a failing seed is replanned and re-run before its
-// failure is characterised. Only a failing seed ever pays this, and the
-// search stops at the first run that passes, so the common flake costs
-// one extra run and a genuinely broken seed costs three.
-const corroboration_runs = 3
+/// How many times a failing seed is replanned and re-run before its
+/// failure is characterised. Only a failing seed ever pays this, and the
+/// search stops at the first run that passes, so the common flake costs
+/// one extra run and a genuinely broken seed costs three.
+///
+/// A shrink candidate must survive the same number of confirming runs
+/// (`minimize`), and the daemon soak re-runs its seeds the same number of
+/// times, so "reproducible" reads the same everywhere.
+pub const corroboration_runs = 3
 
 /// Whether a failed check survived being run again. The runner drives
 /// real BEAM processes and does not control how they interleave (see

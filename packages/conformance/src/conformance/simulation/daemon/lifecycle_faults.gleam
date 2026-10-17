@@ -152,3 +152,33 @@ pub fn label(fault: Fault) -> String {
       string.replace(describe(fault), " ", "-")
   }
 }
+
+/// Candidate simpler faults, in the shape of `fault.shrink`: a faulted run
+/// can be dropped to the fault-free one, and nothing else.
+///
+/// There is no "pull earlier" here, and that is a finding about these faults
+/// rather than an omission. A lifecycle schedule is one fault drawn from a
+/// seed's parity, so there is no list to drop from and no ordinal to halve.
+/// The coordinates it does have are unordered alternatives: `PendingOpen` and
+/// `PendingStop` are different requests, and `BeforeAdmission` and
+/// `BetweenAdmissionAndDelivery` are the two schedules the module
+/// `lifecycle_runner` keeps apart because one of them fills the registry's
+/// grant memo and the other does not. Offering either as "simpler" than the
+/// other would swap one scenario for another, and a smaller case found that
+/// way would not be a smaller case of the failure.
+///
+/// The one candidate left is still informative. A fault-free run that fails
+/// the same check as the faulted one says the failure never depended on the
+/// fault.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert lifecycle_faults.shrink(FaultFree) == []
+/// ```
+pub fn shrink(fault: Fault) -> List(Fault) {
+  case fault {
+    FaultFree -> []
+    KillDaemonWithPending(..) | RevokeAt(..) -> [FaultFree]
+  }
+}

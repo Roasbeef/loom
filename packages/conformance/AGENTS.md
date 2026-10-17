@@ -86,7 +86,7 @@ storage suite over the backends.
   keys retried afterwards, with at least one reuse in every script. Drawn
   from its own split stream so adding a draw here does not shift the
   schedules.
-- `conformance/simulation/daemon/daemon_runner.{run, plan, observe, describe,
+- `conformance/simulation/daemon/daemon_runner.{run, plan, observe, shrink, describe,
   Verdict}` — the seed's script run fault-free and then run again under the
   seed's schedule, with the two compared. It carries its own `Verdict`
   rather than widening the session runner's, whose `Report` is shaped for
@@ -128,7 +128,8 @@ storage suite over the backends.
   corroborates a failing seed itself, over the session runner's three re-runs
   and its `describe_corroboration` wording, since `daemon_runner` does not.
   `runners` holds the creation-key, lifecycle and domain-retirement scenarios,
-  and every seed the soak draws runs each entry.
+  and every seed the soak draws runs each entry. After a reproducible failure
+  it also calls the scenario's `shrink` and prints the `[shrunk]` line.
 - `conformance/simulation/fault.{Fault, Schedule}` — the taxonomy of things
   a session must survive without anyone noticing.
 - `conformance/simulation/random.Rng` — a splittable SplitMix64; the only
@@ -345,6 +346,20 @@ storage suite over the backends.
   there. An unstable verdict is not an all-clear: a genuine race in the
   code under test is unreproducible too, so what it licenses is
   comparing *rates*, never dismissing the run.
+- **A shrink candidate must fail the same check, every time.**
+  `runner.minimize` (shared by the session runner, `daemon_runner.shrink`
+  and `lifecycle_runner.shrink`) accepts a smaller schedule only if it fails
+  the *same named check* as the original and fails it on its first run and
+  on each of `runner.corroboration_runs` further runs. Without the first
+  rule shrinking slips onto a different bug; without the second a racy
+  candidate is accepted by chance. A candidate that fails the same check
+  costs `1 + corroboration_runs` runs, a rejected one costs one, and the
+  budget counts candidates. `daemon_fault.shrink` pulls a kill to an earlier
+  step or creation (reachable steps only); `lifecycle_faults.shrink` offers
+  only the fault-free run, because its coordinates are alternatives and not
+  an order; the domain schedule has nothing to shrink. The soak prints a
+  `[shrunk]` line for a reproducible failure. `simulation_shrink_test` pins
+  the rules with staged probes.
 - **A daemon script's identities come from the logical clock and the
   seed, and from nothing else.** `manager.create` mints a session id from
   the generator its caller supplies, so a daemon harness reading the

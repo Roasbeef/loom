@@ -369,7 +369,36 @@ and keeps the smallest one that *still fails*. Nothing is inferred: a
 reported minimal schedule is one that was observed to fail, so the worst
 shrinking can do is fail to shrink. The shrinker has been exercised
 against the defect it was built for: with the orphaned-poll fix reverted,
-a three-fault schedule reduces to the one fault that still fails.
+a three-fault schedule reduces to the one fault that still fails. That
+check was run by hand against the reverted fix. What the suite pins is
+the same reduction over a staged probe, plus the two acceptance rules
+below (`simulation_shrink_test`).
+
+A candidate replaces the current case only if it meets two rules, both
+enforced in `runner.minimize`, which the session runner and the daemon
+runners share:
+
+- **Same check.** It fails the check the original failed, by name. A
+  smaller schedule that breaks a different check is another bug. Taking it
+  would let shrinking slip from one named check to another and report a
+  minimal case for a failure nobody asked about.
+- **Corroborated.** It fails that check on its first run and on every one of
+  `runner.corroboration_runs` further runs, the same three the original
+  failure had to survive. The runs drive real processes, so a racy
+  candidate fails by chance, and one run would accept it. The confirming
+  runs of a session candidate replan the fault-free baseline, as the
+  original's corroboration does; the first run reuses the baseline the
+  failing run was judged against.
+
+The cost is asymmetric. A candidate that passes, or fails another check,
+costs one run. One that fails the same check costs `1 + corroboration_runs`
+runs, plus a fresh fault-free run for each confirming run in the session
+runner. The shrink budget (12) counts candidates tried, not runs, so a
+shrink that keeps finding reproducible failures spends about four times as
+many runs per step as it did before corroboration, and one that finds
+nothing costs what it always did. The original corroboration itself still
+accepts any failure of a re-run, not only the same check; the rules above
+govern shrinking.
 
 Two things are never shrunk:
 
@@ -472,6 +501,34 @@ dropped rather than deferred: there is one gateway actor per resident
 session, and the property it would have checked is already
 `gateway_test`'s. The design note's amendments of 2026-09-08 carry the
 argument and the kill model in full.
+
+A failing daemon seed is shrunk the way a session seed is: the soak
+corroborates first, shrinks only a reproducible failure, and prints a
+`[shrunk]` line beneath the `[verdict]` line, under the same two rules
+(same check, corroborated). What a candidate is depends on the scenario:
+
+- **Creation key.** `daemon_fault.shrink` offers dropping the kill, moving
+  it to an earlier step of the same creation, and moving it to the creation
+  before it at the same step. It offers a step only where the generator
+  could have drawn it, because an unreachable step parks no builder and the
+  run would wait out its real arrival backstop before failing a different
+  check. A schedule holds at most one kill, so no candidate can break a
+  pairing another fault relied on. If the fault-free run itself fails the
+  check, the empty schedule is accepted, and the line says no fault was
+  needed.
+- **Lifecycle and revocation.** The schedule is one fault drawn from the
+  seed, and its coordinates are unordered alternatives: an interrupted open
+  against an interrupted stop, a revocation before admission against one
+  between admission and delivery. Neither is simpler than the other, and
+  treating one as earlier would swap one scenario for another. The only
+  candidate is the fault-free run, which answers whether the failure ever
+  needed the fault. A failure outside both scripts (the harness failing to
+  start a daemon) has no fault to simplify and prints no line.
+- **Domain retirement.** The schedule is the held open compared with the
+  baseline open. Neither is a simpler form of the other, so the line says it
+  was not shrunk.
+
+Scripts are not shrunk in the daemon simulation either.
 
 `make check-conformance` runs a small pinned corpus of daemon seeds.
 `make soak-daemon-sim` runs the long sweep, bounded by
@@ -653,15 +710,16 @@ rather than tested, and a clock that jumps backwards is not simulated.
 | `conformance/simulation/random.gleam` | The splittable SplitMix64 generator every choice is drawn from |
 | `conformance/simulation/vclock.gleam` | The logical clock and its timer wheel |
 | `conformance/simulation/script.gleam` | The operation DSL and its generator |
-| `conformance/simulation/fault.gleam` | The fault taxonomy, schedule generation, and shrinking |
+| `conformance/simulation/fault.gleam` | The fault taxonomy, schedule generation, and shrink candidates |
 | `conformance/simulation/control.gleam` | The counters, one-shot claims, and runtime handle that outlive the tree |
 | `conformance/simulation/store.gleam` | The instrumented session: commit counting, stale refusals, read faults, the stealable lease |
 | `conformance/simulation/surface.gleam` | The scripted provider, tools, and hooks; the tools open an execution through the plane |
 | `conformance/simulation/plane.gleam` | The effect plane: a broker over the executor over fake helpers, and the two `effects/` checks |
 | `conformance/simulation/fake_jail.gleam` | The fake helper the plane's pool runs |
 | `conformance/simulation/invariant.gleam` | The named per-run checks |
-| `conformance/simulation/runner.gleam` | Seed to verdict: execute, compare, shrink, report |
+| `conformance/simulation/runner.gleam` | Seed to verdict: execute, compare, report, and `minimize`, the shrink search every runner shares |
 | `conformance/simulation/wire.gleam` | The framing properties |
+| `conformance/test/conformance/simulation_shrink_test.gleam` | The two acceptance rules over staged probes, and the daemon shrink candidates |
 | `conformance/test/conformance/simulation_test.gleam` | The fast sweep, the coverage assertion, the pinned corpus, the soak gate |
 
 Each path is relative to its package's source root. The plane these tests
