@@ -10,6 +10,7 @@ import etui/geometry
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import session_view/remote_usage
 import session_view/shared_set
 import session_view/transcript_lines
 import tui
@@ -154,4 +155,37 @@ pub fn sessions_hint_tracks_the_left_binding_test() {
   assert render.sessions_hint("draft", [], Some(Nil)) == ""
   assert render.sessions_hint("", [Nil], Some(Nil)) == ""
   assert render.sessions_hint("", [], None) == ""
+}
+
+// The spend of children on other orchestrators joins the detailed row as its
+// own piece, labelled by orchestrator, and a session with none draws what it
+// drew before.
+pub fn remote_spend_shows_in_the_detailed_footer_test() {
+  let base = model()
+  let expanded = fn(entries) {
+    tui_model.Model(
+      view: view_set.cache_outlook(base.view, ""),
+      shared: base.shared
+        |> shared_set.details_expanded(True)
+        |> shared_set.remote_usage(entries),
+    )
+  }
+  let with_box =
+    footer_rows(
+      expanded([
+        remote_usage.RemoteUsage(
+          orchestrator: "box",
+          input: 12_300,
+          output: 678,
+          cache_read: 0,
+          cache_write: 0,
+          cost: 0.0,
+        ),
+      ]),
+      240,
+    )
+    |> string.join("\n")
+  assert string.contains(with_box, "remote box in 12.3k out 678")
+  let without = footer_rows(expanded([]), 240) |> string.join("\n")
+  assert !string.contains(without, "remote")
 }
