@@ -5858,7 +5858,6 @@ fn serving(harness: Harness) -> address.Address(orchestrator_port.Message) {
       daemon_main.spawn_host(
         configured,
         fn(_spawner, _parent) { Ok(agency.delegate_endpoint(harness.config)) },
-        fn(_spawner, _parent) { Ok(agency.delegate_endpoint(harness.config)) },
         fn(_spawner, _parent) {
           agency.delegate_endpoint(harness.config).release()
         },
@@ -7079,6 +7078,7 @@ fn start_metered(
         agency.Metering(
           spend: fn(tokens) { process.send(spent, tokens) },
           child_budget: budget,
+          claim: None,
         ),
       )
     },
@@ -7121,5 +7121,167 @@ pub fn a_session_with_no_child_budget_only_reports_its_spend_test() {
   assert process.receive(spent, 5000) == Ok(120)
   process.sleep(200)
   assert run_for(harness, child.handle).stop == child_run.Unstopped
+  close(harness)
+}
+
+// --- a spawner's day, claimed by the holder (protocol-change/084) ----------------
+
+// Refusals waiting for the claims to come, kept by a process of their own
+// because the holder, not the test, takes them off.
+type RefusalQueue {
+  Push(remote_spawn.SpawnRefusal)
+  Pop(Subject(Option(remote_spawn.SpawnRefusal)))
+}
+
+fn refusal_queue() -> Subject(RefusalQueue) {
+  let assert Ok(queue) =
+    actor.new([])
+    |> actor.on_message(fn(waiting, message) {
+      case message {
+        Push(refusal) -> actor.continue(list.append(waiting, [refusal]))
+        Pop(reply) ->
+          case waiting {
+            [next, ..rest] -> {
+              process.send(reply, Some(next))
+              actor.continue(rest)
+            }
+            [] -> {
+              process.send(reply, None)
+              actor.continue([])
+            }
+          }
+      }
+    })
+    |> actor.start
+    as "the refusal queue must start"
+  queue.data
+}
+
+// A harness whose Agency claims each new spawn through a closure that reports
+// the call to `claimed` and refuses with whatever a test has put on `refusals`,
+// one refusal for each claim, and admits otherwise.
+fn start_claiming(
+  claimed: Subject(Int),
+  refusals: Subject(RefusalQueue),
+) -> Harness {
+  start_harness_with(Hangs, fn(config) {
+    agency.Config(
+      ..config,
+      claim: Some(fn(within_ms) {
+        process.send(claimed, within_ms)
+        case process.call(refusals, 1000, Pop) {
+          Some(refusal) -> Error(refusal)
+          None -> Ok(Nil)
+        }
+      }),
+    )
+  })
+}
+
+pub fn a_new_spawn_is_claimed_once_and_a_resend_is_not_test() {
+  let claimed = process.new_subject()
+  let harness = start_claiming(claimed, refusal_queue())
+  let site = site_of("turn-1:tools", 0)
+  let request = remote_request("claimed")
+  let assert Ok(first) =
+    agency.delegate_spawn(harness.config, remote_delegation(), site, request)
+
+  // The claim was bounded by the holder's own timeout, and the resend of the
+  // same call site adopts the child and claims nothing.
+  assert process.receive(claimed, 0) == Ok(harness.config.holder_timeout_ms)
+  let assert Ok(again) =
+    agency.delegate_spawn(harness.config, remote_delegation(), site, request)
+  assert again.handle == first.handle
+  assert process.receive(claimed, 0) == Error(Nil)
+  close(harness)
+}
+
+pub fn a_resend_is_answered_even_when_a_new_spawn_would_be_refused_test() {
+  let claimed = process.new_subject()
+  let refusals = refusal_queue()
+  let harness = start_claiming(claimed, refusals)
+  let site = site_of("turn-1:tools", 0)
+  let assert Ok(first) =
+    agency.delegate_spawn(
+      harness.config,
+      remote_delegation(),
+      site,
+      remote_request("lands"),
+    )
+
+  // The day cap is now reached for any new spawn. The resend still gets its
+  // child, and a different call site is refused with the cap.
+  let full = remote_spawn.CapReached(cap: remote_spawn.SpawnsPerDay, limit: 1)
+  process.send(refusals, Push(full))
+  let assert Ok(again) =
+    agency.delegate_spawn(
+      harness.config,
+      remote_delegation(),
+      site,
+      remote_request("lands"),
+    )
+  assert again.handle == first.handle
+
+  // The refusal waiting was not used up by the resend, so it is the next new
+  // spawn that meets it.
+  assert agency.delegate_spawn(
+      harness.config,
+      remote_delegation(),
+      site_of("turn-2:tools", 0),
+      remote_request("another"),
+    )
+    == Error(full)
+  close(harness)
+}
+
+pub fn a_new_spawn_at_the_cap_is_refused_and_creates_nothing_test() {
+  let claimed = process.new_subject()
+  let refusals = refusal_queue()
+  let full = remote_spawn.CapReached(cap: remote_spawn.SpawnsPerDay, limit: 1)
+  let harness = start_claiming(claimed, refusals)
+  process.send(refusals, Push(full))
+  assert agency.delegate_spawn(
+      harness.config,
+      remote_delegation(),
+      site_of("turn-1:tools", 0),
+      remote_request("over"),
+    )
+    == Error(full)
+  assert sub_strands(harness) == []
+  close(harness)
+}
+
+pub fn an_unanswered_claim_is_a_store_failure_and_creates_nothing_test() {
+  let claimed = process.new_subject()
+  let failure =
+    remote_spawn.StoreFailure(
+      reason: "the registry did not answer the spawn claim",
+    )
+  let refusals = refusal_queue()
+  let harness = start_claiming(claimed, refusals)
+  process.send(refusals, Push(failure))
+  assert agency.delegate_spawn(
+      harness.config,
+      remote_delegation(),
+      site_of("turn-1:tools", 0),
+      remote_request("unanswered"),
+    )
+    == Error(failure)
+  assert sub_strands(harness) == []
+  close(harness)
+}
+
+pub fn a_fenced_spawn_is_not_claimed_test() {
+  let claimed = process.new_subject()
+  let harness = start_claiming(claimed, refusal_queue())
+  assert agency.delegate_release(harness.config) == Ok(0)
+  assert agency.delegate_spawn(
+      harness.config,
+      remote_delegation(),
+      site_of("turn-1:tools", 0),
+      remote_request("late"),
+    )
+    == Error(remote_spawn.ParentRunEnded)
+  assert process.receive(claimed, 0) == Error(Nil)
   close(harness)
 }

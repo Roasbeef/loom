@@ -268,10 +268,10 @@ pub type Goal {
     /// The newest usage row the total covers. The accounting's durable
     /// claim, because the usage hook is at-most-once and non-replayable.
     accounted_through_seq: Int,
-    /// The part of `tokens_used` that children on other orchestrators account
-    /// for (protocol-change/084, phase 2): the tokens, input plus output, of every
-    /// settled remote child, as the last evaluation read them. It is a total and
-    /// not a cursor, because a settled child's usage is reported once and never
+    /// A watermark of the settled remote usage already charged to
+    /// `tokens_used` (protocol-change/084, phase 2): the tokens, input plus
+    /// output, of every settled remote child, as the last evaluation read them.
+    /// It is a total and not a cursor, because a settled child's usage is reported once and never
     /// grows, so the evaluation replaces this figure with the current sum and
     /// adds only the difference to `tokens_used`. Recomputing with nothing
     /// settled since therefore adds nothing. A cell written before the field

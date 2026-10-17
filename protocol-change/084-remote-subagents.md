@@ -705,18 +705,26 @@ that sets `token_budget_per_day`.
 
 ### Admission
 
-`delegate_spawn` is refused when the day's tokens have reached
+A new spawn is refused when the day's tokens have reached
 `token_budget_per_day` or the day's spawns have reached `max_per_day`, as
-`SpawnRefusal.CapReached(cap: TokensPerDay | SpawnsPerDay, limit:)`. The check
-and the count of the spawn happen in the registry's `delegate_now` turn, on the
-catalogue connection the registry already owns, as one bounded read and one
-write, so two first spawns cannot both pass `max_per_day`. Only a spawn is
-judged: a join, a run end and a release use the resolver that never meters. Two
-costs are accepted. A spawn admitted and then refused by the Agency (a tool
-outside the ceiling) still counts, and a resent spawn counts again; both err
-toward the cap. A resent spawn whose child already exists is also refused at the
-cap, and the laptop records its stub refused while the child runs to its
-deadline.
+`SpawnRefusal.CapReached(cap: TokensPerDay | SpawnsPerDay, limit:)`. The Agency's
+holder makes the claim, because only the holder can tell a resent spawn from a
+new one. It calls the closure `Config.claim` (the daemon's
+`manager.claim_spawn`) only when the call site has no child yet, the ended and
+released fences have passed, and the child is about to be created. A resent
+spawn is adopted before any claim, so it is answered with its child, is not
+counted, and is not refused even at the cap.
+
+The claim is one registry message, `ClaimSpawn`. In one turn it reads the
+spawner's last 24 buckets, judges both caps and counts the spawn, touching only
+the catalogue connection the registry already owns. It calls no session, and the
+registry never waits on a holder, so the holder waiting on it cannot deadlock.
+Two claims see each other because the registry handles one message at a time.
+The holder bounds the wait by `holder_timeout_ms`. A claim that goes unanswered
+is a `StoreFailure`, which the laptop retries, and never a cap. Only a spawner
+that sets `token_budget_per_day` or `max_per_day` has a claim; one with only
+`child_token_budget` writes no spawn counts. A spawn that is claimed and then
+refused further in (a depth cap, say) still counts, which errs toward the cap.
 
 ### The child budget
 

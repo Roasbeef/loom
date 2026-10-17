@@ -2662,7 +2662,6 @@ fn delegate_request(
     configuration: "",
     limit:,
     now_ms: 1000 + parent,
-    metering: manager.Unmetered,
   )
 }
 

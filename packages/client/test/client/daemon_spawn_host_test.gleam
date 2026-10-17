@@ -113,7 +113,6 @@ pub fn a_node_no_spawner_names_is_an_unknown_spawner_for_all_four_test() {
     main.spawn_host(
       configured(),
       fn(_, _) { panic as "an unknown node must not reach a session" },
-      fn(_, _) { panic as "an unknown node must not reach a session" },
       fn(_, _) { panic as "an unknown node must not release a session" },
     )
   let stranger = origin("stranger@10.0.0.9")
@@ -129,7 +128,6 @@ pub fn a_daemon_with_no_spawners_refuses_every_node_test() {
     main.spawn_host(
       [],
       fn(_, _) { panic as "a daemon with no spawners must not reach a session" },
-      fn(_, _) { panic as "a daemon with no spawners must not reach a session" },
       fn(_, _) { panic as "a daemon with no spawners must not release one" },
     )
   let laptop = origin("laptop@100.64.0.5")
@@ -143,17 +141,12 @@ pub fn a_daemon_with_no_spawners_refuses_every_node_test() {
 pub fn a_configured_spawner_is_served_by_its_delegate_agency_test() {
   let heard = process.new_subject()
   let asked = process.new_subject()
-  let spawning = process.new_subject()
   let released = process.new_subject()
   let host =
     main.spawn_host(
       configured(),
       fn(spawner, parent) {
         process.send(asked, #(spawner.name, parent))
-        Ok(recording(heard))
-      },
-      fn(spawner, parent) {
-        process.send(spawning, #(spawner.name, parent))
         Ok(recording(heard))
       },
       fn(spawner, parent) {
@@ -188,14 +181,10 @@ pub fn a_configured_spawner_is_served_by_its_delegate_agency_test() {
   assert process.receive(heard, 0) == Ok(Ended(operation()))
 
   // Each message asked for the session of the spawner's name and the parent it
-  // named, and for no other. The spawn asked the function that also judges the
-  // spawner's day, and the join and the run end asked the one that does not, so
-  // a day cap can refuse a spawn and nothing else.
-  assert process.receive(spawning, 0) == Ok(#("laptop", laptop.parent))
-  assert process.receive(spawning, 0) == Error(Nil)
+  // named, and for no other.
   assert process.receive(asked, 0) == Ok(#("laptop", laptop.parent))
   assert process.receive(asked, 0) == Ok(#("laptop", laptop.parent))
-  assert process.receive(asked, 0) == Error(Nil)
+  assert process.receive(asked, 0) == Ok(#("laptop", laptop.parent))
 
   // A release is not one of those: it asks the function that finds a session
   // that already exists, with the same spawner and parent, and the function
@@ -208,12 +197,9 @@ pub fn a_configured_spawner_is_served_by_its_delegate_agency_test() {
 pub fn a_refusal_to_find_the_session_is_the_answer_to_each_message_test() {
   let refusal = remote_spawn.CapReached(cap: remote_spawn.MaxSessions, limit: 4)
   let host =
-    main.spawn_host(
-      configured(),
-      fn(_, _) { Error(refusal) },
-      fn(_, _) { Error(refusal) },
-      fn(_, _) { Error(refusal) },
-    )
+    main.spawn_host(configured(), fn(_, _) { Error(refusal) }, fn(_, _) {
+      Error(refusal)
+    })
   let laptop = origin("laptop@100.64.0.5")
   assert host.spawn(laptop, call_site(), 0, [], request()) == Error(refusal)
   assert host.join(laptop, [], 1000) == Error(refusal)

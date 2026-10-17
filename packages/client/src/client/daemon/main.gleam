@@ -1021,7 +1021,6 @@ pub fn start_orchestrator_port(
           spawn_host(
             config.spawners,
             delegate_host.resolver(delegates),
-            delegate_host.spawn_resolver(delegates),
             delegate_host.releaser(delegates),
           ),
           ledger_holdings.from_catalogue(
@@ -1280,10 +1279,6 @@ pub fn peer_command(
 /// deadlines. A join and a run end need no terms, because they concern children
 /// the Agency already holds.
 ///
-/// A spawn is served by `spawning`, which is `delegates` plus the judgment of
-/// the spawner's rolling day (`delegate_host.spawn_resolver`): a join or a run
-/// end creates no child, so a day cap never refuses it.
-///
 /// A release is served by `releasing` and not by `delegates`: it finds the
 /// session the pair already has and creates none, which `delegates` would do
 /// for a pair with no row (`delegate_host.releaser`). The sender is judged the
@@ -1292,7 +1287,7 @@ pub fn peer_command(
 /// ## Examples
 ///
 /// ```gleam
-/// // main.spawn_host([], delegates, spawning, releasing).run_ended(origin, operation)
+/// // main.spawn_host([], delegates, releasing).run_ended(origin, operation)
 /// // -> Error(remote_spawn.UnknownSpawner(origin.node))
 /// ```
 @internal
@@ -1300,23 +1295,20 @@ pub fn spawn_host(
   configured: List(spawners.Spawner),
   delegates: fn(spawners.Spawner, remote_spawn.Parent) ->
     Result(agency.DelegateEndpoint, remote_spawn.SpawnRefusal),
-  spawning: fn(spawners.Spawner, remote_spawn.Parent) ->
-    Result(agency.DelegateEndpoint, remote_spawn.SpawnRefusal),
   releasing: fn(spawners.Spawner, remote_spawn.Parent) ->
     Result(Int, remote_spawn.SpawnRefusal),
 ) -> orchestrator_port.SpawnHost {
-  let serving_by = fn(resolve, origin: remote_spawn.Origin) {
+  let serving = fn(origin: remote_spawn.Origin) {
     use spawner <- result.try(
       spawners.by_node(configured, origin.node)
       |> result.replace_error(remote_spawn.UnknownSpawner(node: origin.node)),
     )
-    use endpoint <- result.map(resolve(spawner, origin.parent))
+    use endpoint <- result.map(delegates(spawner, origin.parent))
     #(spawner, endpoint)
   }
-  let serving = serving_by(delegates, _)
   orchestrator_port.SpawnHost(
     spawn: fn(origin, call_site, depth, parent_tools, request) {
-      use #(spawner, endpoint) <- result.try(serving_by(spawning, origin))
+      use #(spawner, endpoint) <- result.try(serving(origin))
       endpoint.spawn(
         remote_spawn.Delegation(
           parent: origin.parent,
@@ -2049,6 +2041,7 @@ pub fn metering_of(
               Some(agency.Metering(
                 spend: spend_recorder(registry, spawner, logger),
                 child_budget: spawner.child_token_budget,
+                claim: spawn_claimer(registry, spawner),
               ))
             False -> None
           }
@@ -2056,6 +2049,32 @@ pub fn metering_of(
       }
     Ok(None) -> None
     Error(_) -> None
+  }
+}
+
+// The function the Agency's holder calls to claim one spawn against the
+// spawner's rolling day, or `None` for a spawner with neither day cap. The
+// registry's refusal is a spawner's refusal by `delegate_host.refused`, and a
+// registry that does not answer within the holder's bound is a `StoreFailure`,
+// which the laptop retries, and never a cap.
+fn spawn_claimer(
+  registry: manager.Manager(instance),
+  spawner: spawners.Spawner,
+) -> Option(fn(Int) -> Result(Nil, remote_spawn.SpawnRefusal)) {
+  case spawner.token_budget_per_day, spawner.max_per_day {
+    None, None -> None
+    _, _ ->
+      Some(fn(within_ms) {
+        manager.claim_spawn(
+          registry,
+          spawner.name,
+          spawner.token_budget_per_day,
+          spawner.max_per_day,
+          now_ms: ffi_os.system_time_ms(),
+          within_ms:,
+        )
+        |> result.map_error(delegate_host.refused)
+      })
   }
 }
 

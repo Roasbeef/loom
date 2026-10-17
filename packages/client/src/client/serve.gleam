@@ -3554,6 +3554,7 @@ fn assemble_in(
       remote_queued: fn() { peer_outbox_drain.poke(remote_drain_name) },
       deadline_tick_ms: settings.deadline_tick_ms,
       abort_effects: effect_abort.abort(effect_abort_name),
+      claim: option.then(settings.metering, fn(metering) { metering.claim }),
       models: list.map(settings.catalog.models, fn(entry) {
         #(
           machine_strand.ModelIdentity(

@@ -20,6 +20,7 @@ import core/ids
 import gleam/erlang/process
 import gleam/int
 import gleam/option.{None, Some}
+import gleam/result
 import host/bootstrap
 import simplifile
 import sqlight
@@ -867,62 +868,58 @@ fn await_row(
 }
 
 // --- a spawner's rolling day (catalogue version 17) --------------------------
+//
+// The Agency's holder claims a spawn here for a child it is about to create, so
+// these drive the registry's claim directly.
 
-fn metered_laptop(
+fn claim(
+  registry: manager.Manager(agency.DelegateEndpoint),
   tokens: option.Option(Int),
   spawns: option.Option(Int),
-) -> spawners.Spawner {
-  spawners.Spawner(
-    ..spawner("executor = \"runner\"\nworkspace = \"loom\"\n"),
-    token_budget_per_day: tokens,
-    max_per_day: spawns,
+  now_ms: Int,
+) -> Result(Nil, remote_spawn.SpawnRefusal) {
+  manager.claim_spawn(
+    registry,
+    "laptop",
+    tokens,
+    spawns,
+    now_ms:,
+    within_ms: 5000,
   )
+  |> result.map_error(delegate_host.refused)
 }
 
-pub fn a_spawn_past_max_per_day_is_refused_and_creates_nothing_test() {
+pub fn a_claim_past_max_per_day_is_refused_and_counts_nothing_test() {
   let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
   let registry = started(store, fn(built) { Ok(tagged(built)) })
-  let spawn =
-    delegate_host.spawn_resolver(context(registry, "/delegate-host/sessions"))
-  let laptop = metered_laptop(None, Some(2))
 
-  // Two spawns for different parents pass, and the third meets the cap. The
-  // refusal names the key and its value, and the refused parent has no session.
-  let assert Ok(_) = spawn(laptop, parent(30))
-  let assert Ok(_) = spawn(laptop, parent(31))
-  assert spawn(laptop, parent(32))
-    == Error(remote_spawn.CapReached(cap: remote_spawn.SpawnsPerDay, limit: 2))
-  assert manager.delegate_pair(registry, "laptop", parent(32).session)
-    == Ok(None)
-
-  // A message that creates no child is not a spawn: the same parents reach
-  // their sessions through the unmetered resolver, and a new parent can too.
-  let join =
-    delegate_host.resolver(context(registry, "/delegate-host/sessions"))
-  let assert Ok(_) = join(laptop, parent(30))
+  // Two claims pass and the third meets the cap, which the refusal names with
+  // its own value. A refused claim is not counted.
+  assert claim(registry, None, Some(2), 4242) == Ok(Nil)
+  assert claim(registry, None, Some(2), 4242) == Ok(Nil)
+  let refusal =
+    Error(remote_spawn.CapReached(cap: remote_spawn.SpawnsPerDay, limit: 2))
+  assert claim(registry, None, Some(2), 4242) == refusal
+  assert claim(registry, None, Some(2), 4242) == refusal
+  assert catalogue.spawner_spend(store, "laptop", now_ms: 4242)
+    == Ok(catalogue.Spend(tokens: 0, spawns: 2))
   stop(registry)
   assert catalogue.close(store) == Ok(Nil)
 }
 
-pub fn a_spawn_past_the_days_token_budget_is_refused_test() {
+pub fn a_claim_past_the_days_token_budget_is_refused_test() {
   let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
   let registry = started(store, fn(built) { Ok(tagged(built)) })
-  let spawn =
-    delegate_host.spawn_resolver(context(registry, "/delegate-host/sessions"))
-  let laptop = metered_laptop(Some(1000), None)
-  let assert Ok(_) = spawn(laptop, parent(33))
-
-  // Tokens below the budget leave the door open, and the spawn that finds the
-  // total at the budget is refused, whether or not its parent has a session.
   assert manager.add_spend(registry, "laptop", now_ms: 4242, tokens: 999)
     == Ok(Nil)
-  let assert Ok(_) = spawn(laptop, parent(33))
+  assert claim(registry, Some(1000), None, 4242) == Ok(Nil)
   assert manager.add_spend(registry, "laptop", now_ms: 4242, tokens: 1)
     == Ok(Nil)
-  let refusal =
-    Error(remote_spawn.CapReached(cap: remote_spawn.TokensPerDay, limit: 1000))
-  assert spawn(laptop, parent(33)) == refusal
-  assert spawn(laptop, parent(34)) == refusal
+  assert claim(registry, Some(1000), None, 4242)
+    == Error(remote_spawn.CapReached(
+      cap: remote_spawn.TokensPerDay,
+      limit: 1000,
+    ))
   stop(registry)
   assert catalogue.close(store) == Ok(Nil)
 }
@@ -930,36 +927,26 @@ pub fn a_spawn_past_the_days_token_budget_is_refused_test() {
 pub fn the_day_rolls_forward_with_the_clock_test() {
   let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
   let registry = started(store, fn(built) { Ok(tagged(built)) })
-  let laptop = metered_laptop(Some(1000), None)
-  let sessions = "/delegate-host/sessions"
   let hour = catalogue.spend_bucket_ms
   assert manager.add_spend(registry, "laptop", now_ms: 0, tokens: 1000)
     == Ok(Nil)
 
   // Twenty-three hours later the spend is still inside the day. At the
-  // twenty-fourth hour its bucket has left it and the spawn passes.
-  let at = fn(now_ms) {
-    delegate_host.spawn_resolver(context_at(registry, sessions, now_ms))(
-      laptop,
-      parent(35),
-    )
-  }
-  let assert Error(_) = at(23 * hour + 5)
-  let assert Ok(_) = at(24 * hour)
+  // twenty-fourth hour its bucket has left it and the claim passes.
+  let assert Error(_) = claim(registry, Some(1000), None, 23 * hour + 5)
+  assert claim(registry, Some(1000), None, 24 * hour) == Ok(Nil)
   stop(registry)
   assert catalogue.close(store) == Ok(Nil)
 }
 
-pub fn an_unmetered_spawner_is_never_judged_or_counted_test() {
+pub fn a_registry_that_does_not_answer_a_claim_is_a_store_failure_test() {
   let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
   let registry = started(store, fn(built) { Ok(tagged(built)) })
-  let spawn =
-    delegate_host.spawn_resolver(context(registry, "/delegate-host/sessions"))
-  let laptop = metered_laptop(None, None)
-  let assert Ok(_) = spawn(laptop, parent(36))
-  assert delegate_host.metering_of(laptop) == manager.Unmetered
-  assert catalogue.spawner_spend(store, "laptop", now_ms: 4242)
-    == Ok(catalogue.Spend(tokens: 0, spawns: 0))
   stop(registry)
+
+  // The claim is bounded and unanswered, and what it reports is a failure the
+  // spawner retries. It is never a cap.
+  let assert Error(remote_spawn.StoreFailure(_)) =
+    claim(registry, None, Some(1), 4242)
   assert catalogue.close(store) == Ok(Nil)
 }

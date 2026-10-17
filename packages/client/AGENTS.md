@@ -7842,15 +7842,15 @@ The box's deadline and retention (slice S4):
 - Metering (slice S8). `[spawners.<name>] token_budget_per_day`,
   `child_token_budget` and `max_per_day` are optional (`Spawner` fields of
   `Option(Int)`; `spawners.metered` says whether any is set). The day's spend is
-  `catalogue_spawner_spend`, hourly buckets read as the last 24. `delegate_host.spawn_resolver`
-  differs from `resolver` by `manager.Metered` on the request, and
-  `main.spawn_host` takes it as its own argument so a join, a run end and a
-  release are never refused by a cap. `manager.delegate_now` runs `metered`
-  around the existing admission: `spend_room` reads the spawner's day (one
-  bounded catalogue query on the registry's own connection) and refuses with
-  `DelegateDayCap`, which `delegate_host` maps to `CapReached(TokensPerDay |
-  SpawnsPerDay)`; `count_spawn` adds the spawn in the same turn. A resent spawn
-  counts again. `manager.add_spend` is how tokens arrive, from the process the
+  `catalogue_spawner_spend`, hourly buckets read as the last 24. A new spawn is claimed
+  by the Agency's holder (`agency.spawn_delegated`, `claim_if_new`): only when
+  the call site has no child yet and the fences have passed, it calls
+  `Config.claim`, which `main.spawn_claimer` makes from `manager.claim_spawn`. The
+  registry's `ClaimSpawn` turn (`claim_now`) reads the spawner's 24 buckets,
+  refuses with `DelegateDayCap` (mapped by `delegate_host.refused` to
+  `CapReached(TokensPerDay | SpawnsPerDay)`) and counts the spawn, touching only
+  the catalogue. A resend is adopted first and so is neither counted nor refused;
+  an unanswered claim is a `StoreFailure`. `manager.add_spend` is how tokens arrive, from the process the
   usage hook spawns. For a delegate session of a metered spawner `main.metering_of`
   fills `serve.Settings.metering`, and `serve.with_metering` wraps the usage slot
   with `agency.metering_hooks`: one `spawn_unlinked` on the driver, which reports

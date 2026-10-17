@@ -391,6 +391,15 @@ pub type Config {
     /// host owns the broker, so the host supplies this; the default is a no-op
     /// for embedded hosts with no effect plane. It must not wait.
     abort_effects: fn(OpId) -> Nil,
+    /// Claims one spawn against the spawner's rolling day (protocol-change/084,
+    /// phase 2), called with the longest the registry may take to answer, in
+    /// milliseconds. `None` when the spawner sets neither `token_budget_per_day`
+    /// nor `max_per_day`, and for every session but a delegate session. The
+    /// holder calls it for a child it is about to create, after the child's call
+    /// site is found to be new and the fences have passed, so a resent spawn
+    /// that is adopted is neither counted nor refused. It must answer
+    /// `StoreFailure` when the registry does not answer in time, never a cap.
+    claim: Option(fn(Int) -> Result(Nil, remote_spawn.SpawnRefusal)),
   )
 }
 
@@ -457,6 +466,7 @@ pub fn default_config(name: address.Address(Message), clock: Clock) -> Config {
     remote_queued: fn() { Nil },
     deadline_tick_ms: None,
     abort_effects: fn(_operation) { Nil },
+    claim: None,
   )
 }
 
@@ -506,7 +516,7 @@ pub type Message {
     delegation: remote_spawn.Delegation,
     site: remote_spawn.CallSite,
     request: agent.SpawnRequest,
-    reply: Subject(Result(Spawned, Refusal)),
+    reply: Subject(Result(Spawned, remote_spawn.SpawnRefusal)),
   )
 
   /// Records that a run of a parent on another orchestrator ended, then stops
@@ -606,7 +616,7 @@ pub fn start(
         let caller = delegated_caller(delegation.parent, site)
         process.send(
           reply,
-          spawn_on(config, state, caller, Delegated(delegation), request, None),
+          spawn_delegated(config, state, caller, delegation, request),
         )
         actor.continue(state)
       }
@@ -800,6 +810,9 @@ pub type Metering {
     spend: fn(Int) -> Nil,
     /// The tokens one child may use, input plus output, or `None` for no bound.
     child_budget: Option(Int),
+    /// Claims one spawn against the spawner's day, or `None` when the spawner
+    /// sets no day cap. The session's `Config.claim` is this field.
+    claim: Option(fn(Int) -> Result(Nil, remote_spawn.SpawnRefusal)),
   )
 }
 
@@ -830,8 +843,9 @@ pub fn metering_hooks(
       True -> {
         let _meter =
           process.spawn_unlinked(fn() {
-            metering.spend(tokens)
+            // The stop comes first, so it never waits behind the registry.
             stop_if_spent(config, operation, metering.child_budget)
+            metering.spend(tokens)
           })
         Nil
       }
@@ -1198,6 +1212,57 @@ fn spawn_on(
         custody,
       )
     }
+  }
+}
+
+// A spawn for a remote parent, as the holder serves it. A spawner's day cap is
+// claimed here, in the holder, and not in the registry's turn that admitted the
+// session: only the holder can tell a resent spawn, whose call site already has a
+// child that `spawn_on` adopts, from a new one, and a resend must be neither
+// counted nor refused at the cap. The claim comes after the fences, so a spawn
+// the ended or released fence refuses is not counted, and before the child is
+// created. The registry never waits on a holder, so the holder waiting on it
+// cannot deadlock.
+fn spawn_delegated(
+  config: Config,
+  runtime: api.Runtime,
+  caller: Caller,
+  delegation: remote_spawn.Delegation,
+  request: agent.SpawnRequest,
+) -> Result(Spawned, remote_spawn.SpawnRefusal) {
+  let source = Delegated(delegation)
+  use Nil <- result.try(claim_if_new(config, runtime, caller, source, request))
+  spawn_on(config, runtime, caller, source, request, None)
+  |> result.map_error(refused(config, _))
+}
+
+// Claims the spawn when the call site has no child yet. A name that cannot be
+// derived and a ledger that cannot be read are left for `spawn_on` to refuse in
+// its own words, and nothing is claimed for them.
+fn claim_if_new(
+  config: Config,
+  runtime: api.Runtime,
+  caller: Caller,
+  source: Source,
+  request: agent.SpawnRequest,
+) -> Result(Nil, remote_spawn.SpawnRefusal) {
+  case config.claim {
+    None -> Ok(Nil)
+    Some(claim) ->
+      case read_ledger(runtime), child_name(caller, request.purpose) {
+        Ok(ledger), Ok(name) ->
+          case cell_of(ledger, name) {
+            Some(_existing) -> Ok(Nil)
+            None -> {
+              use Nil <- result.try(
+                admit_run(runtime, caller, source)
+                |> result.map_error(refused(config, _)),
+              )
+              claim(config.holder_timeout_ms)
+            }
+          }
+        Error(_), _ | _, Error(_) -> Ok(Nil)
+      }
   }
 }
 
@@ -4113,9 +4178,7 @@ pub fn delegate_spawn(
     )
     |> result.map_error(fn(_) { refused(config, agent.AgencyUnavailable) }),
   )
-  answer
-  |> result.map(delegated_spawn(config, _))
-  |> result.map_error(refused(config, _))
+  answer |> result.map(delegated_spawn(config, _))
 }
 
 /// Waits, for at most `within_ms`, for the named children of a remote parent,
