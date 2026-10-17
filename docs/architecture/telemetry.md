@@ -172,7 +172,7 @@ The module doc states the policy every call site follows:
 | `error` | No automatic recovery remains; an operator must act. | `strand.halted`, `daemon.start_failed`, `daemon.session_start_failed` |
 | `warning` | Degraded but still progressing. | `retry.armed`, `effect.exited`, `projection.pull_failed`, `mcp.unavailable` |
 | `info` | At most one line per durable state change; the default threshold. | `strand.started`, `operation.settled`, `daemon.listening`, `codemode.ready` |
-| `debug` | Per-step effect dispatch and settlement. Off by default. | `effect.dispatched`, `effect.settled`, `distill.source_read` |
+| `debug` | Per-step effect dispatch and settlement. Off by default. | `effect.dispatched`, `effect.settled` |
 
 An effect that fails and reports the failure in-band is the system working,
 so it is not an `error`. `info` is sized so that a full run at that level
@@ -224,13 +224,11 @@ idempotent.
 Two entry points install it today, both as their first act so that no
 boot failure lands on OTP's default text formatter:
 
-- `client/daemon/main`, the `loomd` server;
-- `client/distill`, the standalone distillation command.
+- `client/daemon/main`, the `loomd` server.
 
-Each reads `LOOM_LOG_LEVEL`. The daemon hands the logger down through
+It reads `LOOM_LOG_LEVEL`. The daemon hands the logger down through
 session assembly (`client/serve`) into `runtime/api.Options.logger`, the
-advisor, the rule and schedule scanners, the memory distillation pass, and
-the extension hook bus.
+advisor, the rule and schedule scanners, and the extension hook bus.
 
 `install` configures only the formatter, so lines go where the `default`
 handler writes: the process's standard output. There is no log file, level
@@ -302,8 +300,8 @@ text by design.
 
 Each path is relative to `packages/telemetry/src/`. Callers that shape the
 correlation are in `runtime/strand_runtime` (strand and step scoping,
-`log.adopt` on the driver and each effect process); the installers are
-`client/daemon/main` and `client/distill`.
+`log.adopt` on the driver and each effect process); the installer is
+`client/daemon/main`.
 
 Related documents:
 

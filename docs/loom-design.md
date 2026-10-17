@@ -389,7 +389,7 @@ Payoff: the agent hits a workflow gap, writes the tool, proves it against tests 
 
 - **Tree + strands** (pi's lanes): branching, forking, parallel exploration over shared history; compaction as self-contained checkpoints (summary + retained tail; context never reads past a compaction); append-only context tail preserving provider KV caches; one-shot overflow compact-and-retry.
 - **Triggered rules** (omp's TTSR, adapted): project rules dormant at zero context cost; a per-strand stream-scanner process injects a rule when its trigger fires in model output. Cheap, killable, off the hot path.
-- **Hindsight memory**: session-end reflection distills per-workspace lessons (facts/entries in a memory session), surfaced by relevance; promoting a lesson to an L1 skill is one step.
+- **Memory as recall**: the append-only log is the record, `history_search` searches it, typed notes carry what a model chose to keep, and a standing rule takes effect only after a person approves it (`docs/architecture/memory.md`). An earlier plan to distill per-workspace lessons at session end was built and then removed.
 - **Subagent context discipline**: scoped context (branch + task brief) in, structured results out; full transcripts stay in the tree for audit without polluting the parent's context.
 
 ### 8.5 Thin clients and session mobility

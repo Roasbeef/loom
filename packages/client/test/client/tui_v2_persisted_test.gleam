@@ -88,7 +88,7 @@ fn start(settings: serve.Settings, arrivals: process.Subject(Arrival)) {
       root.Config(config.state_root, "Owner", 4, limits.defaults),
       manager.Assembly(
         fn(selected_domain, sources, owner) {
-          serve.build_domain(selected_domain, sources, log.discard(), owner)
+          serve.build_domain(selected_domain, sources, owner)
         },
         fn(record, selected_domain, services, owner, _directory) {
           let release = process.new_subject()
@@ -152,7 +152,7 @@ fn create(serving: daemon_main.Serving(serve.Instance), workspace, seed) {
   let assert Ok(Nil) =
     simplifile.write(
       configuration,
-      "[models.fixture]\ndialect = \"anthropic\"\napi_key_env = \"UNUSED\"\nmodel_id = \"fixture\"\ncontext_window = 1000\nmax_output_tokens = 100\n[roles]\nmain = [\"fixture\"]\n[memory]\ndistill = \"off\"\n",
+      "[models.fixture]\ndialect = \"anthropic\"\napi_key_env = \"UNUSED\"\nmodel_id = \"fixture\"\ncontext_window = 1000\nmax_output_tokens = 100\n[roles]\nmain = [\"fixture\"]\n",
     )
     as "the persisted domain explicitly disables external maintenance"
   let assert Ok(view) =

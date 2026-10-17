@@ -19,9 +19,24 @@
 //// Catalogue membership is resolved afresh before source reads and before FTS
 //// ranking. Index locators and rows are projections, never authorization. Close
 //// failure keeps the original actor blocked and its handles retained.
+////
+//// ## Flow
+////
+//// `seam` → `exchange` → `handle` → `admit` → `begin_job` → `work` →
+//// `finish_job`
+////
+//// 1. `seam` binds a session's recall closures; each sends one request to the
+////    owner through `exchange` and waits for the reply.
+//// 2. `handle` is the owner's one mailbox handler. A query or read goes to
+////    `admit`, which resolves catalogue membership and either holds the call,
+////    refuses it, or starts the job.
+//// 3. `begin_job` and `work` advance the job one source or fragment per
+////    mailbox message, publishing refreshed entries into the index.
+//// 4. `finish_job` answers a search from the refreshed index, or an exact
+////    read from the source, and returns the owner to `Ready`.
 
 import broker/internal/call
-import client/distill
+import client/internal/history_bridge
 import core/codec
 import core/ids
 import core/json
@@ -39,8 +54,21 @@ import host/bootstrap
 import runtime/residency
 import storage/internal/history_source as source
 import storage/snapshot
+import storage/sqlite
 import tools/history as tool
 import weft/actor
+
+/// A host-selected source session, whose identity is checked after opening
+/// its file.
+@internal
+pub type Source {
+  Source(
+    /// The catalogue's expected canonical conversation identity.
+    session: ids.SessionId,
+    /// The host-validated absolute conversation path.
+    path: String,
+  )
+}
 
 /// Configuration selected by the persisted domain owner, not its first guest.
 @internal
@@ -49,7 +77,7 @@ pub type Config {
     /// Canonical exclusive domain projection path.
     index_path: String,
     /// Fresh authorized catalogue sources; never a directory scan.
-    sources: fn() -> Result(List(distill.Source), String),
+    sources: fn() -> Result(List(Source), String),
     /// Foreground wait and connection busy bound, between one and 5000 ms.
     timeout_ms: Int,
     /// Descriptors per source refresh, between one and the existing page cap.
@@ -81,7 +109,7 @@ type Message {
   Stop(process.Subject(String))
   Notify(ids.SessionId)
   Query(ids.SessionId, Lookup, Int, process.Subject(Reply))
-  Read(ids.SessionId, ids.SessionId, ids.EntryId, process.Subject(Reply))
+  Read(ids.SessionId, ids.SessionId, ids.EntryId, Int, process.Subject(Reply))
   Step
 }
 
@@ -90,7 +118,7 @@ type Message {
 // model reads. `tools/history` renders every variant in one place.
 type Reply {
   Hits(Result(List(tool.Hit), tool.Refusal))
-  Entry(Result(json.JsonValue, tool.Refusal))
+  Entries(Result(List(json.JsonValue), tool.Refusal))
 }
 
 /// How many foreground calls may wait at once for the owner to reach `Ready`.
@@ -118,7 +146,7 @@ type Phase {
 // be asked for.
 type Lookup {
   // Ranked full-text hits for a trimmed, non-empty query.
-  Matching(String, tool.Scope)
+  Matching(tool.Query)
 
   // The calling session's newest rows, newest first.
   Newest
@@ -131,6 +159,7 @@ type Request {
     ids.SessionId,
     ids.SessionId,
     ids.EntryId,
+    Int,
     process.Subject(Reply),
   )
 }
@@ -142,8 +171,8 @@ type Completeness {
 
 type Stage {
   NextSource
-  InitializeSource(distill.Source)
-  InspectSource(distill.Source)
+  InitializeSource(Source)
+  InspectSource(Source)
   Describe(source.Cut)
   Fragment(
     source.Cut,
@@ -158,10 +187,13 @@ type Stage {
 type Job {
   Job(
     request: Request,
-    remaining: List(distill.Source),
+    remaining: List(Source),
     stage: Stage,
     deadline: Int,
     completeness: Completeness,
+    /// The entries an exact read has decoded so far, newest first. Empty
+    /// for every other request.
+    gathered: List(json.JsonValue),
   )
 }
 
@@ -241,17 +273,17 @@ pub fn notify(shared: Shared, session: ids.SessionId) -> Nil {
 @internal
 pub fn seam(shared: Shared, current: ids.SessionId) -> tool.History {
   tool.History(
-    search: fn(text, limit, scope) {
-      hits(shared, Query(current, Matching(text, scope), limit, _))
+    search: fn(query) {
+      hits(shared, Query(current, Matching(query), query.limit, _))
     },
     recent: fn(limit) { hits(shared, Query(current, Newest, limit, _)) },
-    read: fn(session, entry) {
+    read: fn(session, entry, around) {
       use reply <- result.try(
-        exchange(shared, Read(current, session, entry, _))
+        exchange(shared, Read(current, session, entry, around, _))
         |> result.map_error(tool.IndexUnavailable),
       )
       case reply {
-        Entry(answer) -> answer
+        Entries(answer) -> answer
         Hits(_) -> Error(tool.IndexUnavailable("history reply type mismatch"))
       }
     },
@@ -268,7 +300,7 @@ fn hits(
   )
   case reply {
     Hits(answer) -> answer
-    Entry(_) -> Error(tool.IndexUnavailable("history reply type mismatch"))
+    Entries(_) -> Error(tool.IndexUnavailable("history reply type mismatch"))
   }
 }
 
@@ -320,8 +352,8 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       }
     Query(current, lookup, limit, reply) ->
       admit(state, SearchRequest(current, lookup, limit, reply))
-    Read(current, session, entry, reply) ->
-      admit(state, EntryRequest(current, session, entry, reply))
+    Read(current, session, entry, around, reply) ->
+      admit(state, EntryRequest(current, session, entry, around, reply))
     Step -> step(state)
   }
 }
@@ -413,7 +445,7 @@ fn authorized(config: Config) {
 }
 
 fn member(sources, id) {
-  list.find(sources, fn(item: distill.Source) { item.session == id })
+  list.find(sources, fn(item: Source) { item.session == id })
   |> result.replace_error("session is outside the current history domain")
 }
 
@@ -467,11 +499,12 @@ fn admit(state: State, request: Request) {
           SearchRequest(current, lookup, _, _) -> {
             use item <- result.try(member(sources, current))
             case lookup {
-              Matching(_, tool.Repository) -> Ok(sources)
-              Matching(_, tool.ThisSession) | Newest -> Ok([item])
+              Matching(tool.Query(scope: tool.Repository, ..)) -> Ok(sources)
+              Matching(tool.Query(scope: tool.ThisSession, ..)) | Newest ->
+                Ok([item])
             }
           }
-          EntryRequest(current, target, _, _) -> {
+          EntryRequest(current, target, _, _, _) -> {
             use _current <- result.try(member(sources, current))
             result.map(member(sources, target), fn(item) { [item] })
           }
@@ -541,7 +574,7 @@ fn hold(state: State, request: Request) -> actor.Next(State, Message) {
   }
 }
 
-fn begin_job(state: State, request: Request, sources: List(distill.Source)) {
+fn begin_job(state: State, request: Request, sources: List(Source)) {
   let job =
     Job(
       request,
@@ -549,6 +582,7 @@ fn begin_job(state: State, request: Request, sources: List(distill.Source)) {
       NextSource,
       bootstrap.monotonic_time_ms() + state.config.timeout_ms,
       Complete,
+      [],
     )
   advance(State(..state, phase: Busy(job)))
 }
@@ -557,7 +591,8 @@ fn refuse(request: Request, refusal: tool.Refusal) {
   case request {
     Background -> Nil
     SearchRequest(_, _, _, reply) -> process.send(reply, Hits(Error(refusal)))
-    EntryRequest(_, _, _, reply) -> process.send(reply, Entry(Error(refusal)))
+    EntryRequest(_, _, _, _, reply) ->
+      process.send(reply, Entries(Error(refusal)))
   }
 }
 
@@ -635,10 +670,10 @@ fn with_source(state: State, job: Job, next) {
 fn describe_source(state: State, job: Job, cut: source.Cut) {
   with_source(state, job, fn(opened) {
     case job.request, state.index {
-      EntryRequest(_, _, id, _), _ ->
-        case source.entry(opened, cut, id) {
+      EntryRequest(_, _, id, around, _), _ ->
+        case entry_window(opened, cut, id, around) {
           Error(reason) -> fail_job(state, job, reason)
-          Ok(descriptor) -> read_next(state, job, cut, descriptor, [], None)
+          Ok(#(first, rest)) -> read_next(state, job, cut, first, rest, None)
         }
       _, None -> fail_job(state, job, "history index custody was lost")
       _, Some(index) -> {
@@ -690,6 +725,32 @@ fn describe_source(state: State, job: Job, cut: source.Cut) {
       }
     }
   })
+}
+
+// The requested entry with its log neighbours, oldest first and split into
+// the first descriptor and the rest, which is the shape `Fragment` walks. The
+// width is clamped the way the per-session holder's storage read clamps it, so
+// both paths answer the same window for the same request.
+fn entry_window(
+  opened: source.Source,
+  cut: source.Cut,
+  id: ids.EntryId,
+  around: Int,
+) -> Result(#(snapshot.Descriptor, List(snapshot.Descriptor)), String) {
+  let width = int.clamp(around, min: 0, max: sqlite.max_around)
+  use centre <- result.try(source.entry(opened, cut, id))
+  use #(before, after) <- result.map(case width {
+    0 -> Ok(#([], []))
+    _ -> {
+      use before <- result.try(source.before(opened, cut, centre.seq, width))
+      use after <- result.map(source.page(opened, cut, centre.seq, width))
+      #(before, after)
+    }
+  })
+  case before {
+    [] -> #(centre, after)
+    [first, ..rest] -> #(first, list.append(rest, [centre, ..after]))
+  }
 }
 
 fn read_next(state, job: Job, cut, descriptor, remaining, plan) {
@@ -793,7 +854,7 @@ fn publish_record(
   }
   use entry <- or_job(decoded, state, job)
   case job.request, plan, state.index {
-    EntryRequest(current, target, _, reply), _, _ -> {
+    EntryRequest(current, target, _, _, reply), _, _ -> {
       let permitted = {
         use sources <- result.try(authorized(state.config))
         use _ <- result.try(member(sources, current))
@@ -801,15 +862,24 @@ fn publish_record(
         Ok(Nil)
       }
       use Nil <- or_job(permitted, state, job)
-      case close_source(state) {
-        Error(reason) -> {
-          refuse_job(job.request, reason)
-          block(state, "history source retirement unconfirmed: " <> reason)
-        }
-        Ok(state) -> {
-          process.send(reply, Entry(Ok(codec.encode_entry(entry))))
-          advance(State(..state, phase: Ready))
-        }
+      let gathered = [codec.encode_entry(entry), ..job.gathered]
+      case remaining {
+        // Each neighbour is read, validated and authorized like the requested
+        // entry, one fragment at a time, so a window costs more mailbox turns
+        // and never a larger one.
+        [next, ..rest] ->
+          read_next(state, Job(..job, gathered:), cut, next, rest, None)
+        [] ->
+          case close_source(state) {
+            Error(reason) -> {
+              refuse_job(job.request, reason)
+              block(state, "history source retirement unconfirmed: " <> reason)
+            }
+            Ok(state) -> {
+              process.send(reply, Entries(Ok(list.reverse(gathered))))
+              advance(State(..state, phase: Ready))
+            }
+          }
       }
     }
     _, Some(plan), Some(index) -> {
@@ -923,7 +993,7 @@ fn fail_job(state: State, job: Job, reason: String) {
 fn finish_job(state: State, job: Job) {
   case job.request {
     Background -> advance(State(..state, phase: Ready))
-    EntryRequest(_, _, _, _) ->
+    EntryRequest(_, _, _, _, _) ->
       fail_job(state, job, "history entry was not found")
     SearchRequest(current, lookup, limit, reply) -> {
       let answer = {
@@ -940,18 +1010,27 @@ fn finish_job(state: State, job: Job) {
           None -> Error("history index custody was lost")
         })
         case lookup {
-          Matching(text, tool.ThisSession) ->
-            search.query_authorized(index, [current], text, limit)
-          Matching(text, tool.Repository) -> {
-            let ids = list.map(sources, fn(item) { item.session })
-            search.query_authorized(index, ids, text, limit)
-          }
+          Matching(query) ->
+            case query.scope {
+              tool.ThisSession ->
+                search.query_authorized(
+                  index,
+                  [current],
+                  history_bridge.index_query(query),
+                )
+              tool.Repository -> {
+                let ids = list.map(sources, fn(item) { item.session })
+                search.query_authorized(
+                  index,
+                  ids,
+                  history_bridge.index_query(query),
+                )
+              }
+            }
           Newest -> search.recent_in_session(index, session: current, limit:)
         }
         |> result.map_error(string.inspect)
-        |> result.map(
-          list.map(_, fn(hit) { tool.Hit(hit.session, hit.entry, hit.snippet) }),
-        )
+        |> result.map(list.map(_, history_bridge.tool_hit))
       }
       process.send(reply, Hits(answer |> result.map_error(tool.IndexRefused)))
       advance(State(..state, phase: Ready))

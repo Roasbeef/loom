@@ -1095,7 +1095,7 @@ fn prepare_workspace(directory: String, url: String) -> String {
 fn configuration(url: String) -> String {
   "[models.fixture]\ndialect = \"anthropic\"\napi_key_env = \"LOOM_TEST_PROVIDER_KEY\"\nbase_url = \""
   <> url
-  <> "\"\nmodel_id = \"fixture\"\ncontext_window = 100000\nmax_output_tokens = 4096\n[roles]\nmain = [\"fixture\"]\n[memory]\ndistill = \"off\"\n"
+  <> "\"\nmodel_id = \"fixture\"\ncontext_window = 100000\nmax_output_tokens = 4096\n[roles]\nmain = [\"fixture\"]\n"
 }
 
 // Ordinary bootstrap, which starts a VM or adopts the one already

@@ -110,13 +110,16 @@ import tui/markdown
 import tui/message_rows
 import tui/model.{
   type Model, AccessManager, AgentInspector, ApprovalInspector, DaemonSelector,
-  FrameCache, GoalInspector, Model, ModelSelector, NoOverlay, PeerLinkManager,
+  FrameCache, GoalInspector, MemoryOverview, Model, ModelSelector, NoOverlay,
+  PeerLinkManager, ProposalReview,
 } as tui_model
 
+import tui/memory_panel
 import tui/model_selector
 import tui/note_panel
 import tui/peer_links
 import tui/program_rows
+import tui/proposal_panel
 import tui/queue_editor
 import tui/queue_panel
 import tui/rail_view
@@ -273,6 +276,23 @@ pub fn render_frame(
       )
     PeerLinkManager(state) -> peer_links.render(base, screen, state)
     AccessManager(state) -> access_overlay.render(base, screen, state)
+    ProposalReview(state) ->
+      proposal_panel.render(
+        base,
+        layout.goal_inspector_area(body_area, editor_area),
+        state,
+        model.shared.proposals,
+        model.shared.proposals_notice,
+        model.view.wall_ms,
+      )
+    MemoryOverview(state) ->
+      memory_panel.render(
+        base,
+        layout.goal_inspector_area(body_area, editor_area),
+        state,
+        model.shared.memory,
+        model.shared.memory_notice,
+      )
     ApprovalInspector(panel) ->
       approval_panel.render(
         base,
@@ -340,6 +360,8 @@ pub fn render_frame(
     | DaemonSelector(_), _
     | PeerLinkManager(_), _
     | AccessManager(_), _
+    | ProposalReview(_), _
+    | MemoryOverview(_), _
     | ApprovalInspector(_), _
     -> Error(Nil)
   }
@@ -549,6 +571,7 @@ fn frame_status(
     context: context_view.footer(model.shared.context),
     cost: transcript_lines.cost_figure(model.shared.usage),
     needs: needs_you(model, strip),
+    proposals: proposal_panel.badge(model.shared.proposals),
     lock: case model.view.overlay {
       ApprovalInspector(_) -> input_frame.Deciding
       _ -> input_frame.Unlocked
@@ -1499,6 +1522,8 @@ fn note_context(model: Model, target: String) -> List(String) {
             | DaemonSelector(_)
             | PeerLinkManager(_)
             | AccessManager(_)
+            | ProposalReview(_)
+            | MemoryOverview(_)
             | ApprovalInspector(_) -> ["No observed notes for " <> target]
           }
       }
@@ -1516,6 +1541,8 @@ fn missing_note_context(model: Model, target: String) -> List(String) {
     | DaemonSelector(_)
     | PeerLinkManager(_)
     | AccessManager(_)
+    | ProposalReview(_)
+    | MemoryOverview(_)
     | ApprovalInspector(_) -> ["No observed notes for " <> target]
   }
 }
@@ -2100,6 +2127,8 @@ fn render_command_palette(
     | _, DaemonSelector(_)
     | _, PeerLinkManager(_)
     | _, AccessManager(_)
+    | _, ProposalReview(_)
+    | _, MemoryOverview(_)
     | _, ApprovalInspector(_)
     -> buf
     _, NoOverlay -> {

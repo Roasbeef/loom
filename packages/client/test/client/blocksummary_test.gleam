@@ -10,10 +10,10 @@
 //// not about a provider or a runtime.
 
 import client/advisorslice
+import client/auxiliary
 import client/blocksummary
 import client/blocksummarybook
 import client/catalog
-import client/distill
 import client/vision
 import core/accounting
 import core/clock
@@ -610,7 +610,7 @@ pub fn failed_block_summary_retains_one_fallback_report_test() {
   let final = accounting.unknown_usage(usage_evidence.Other)
   let first = message.Usage(..final, input: 12, total_tokens: 12)
   let report = accounting.from_usage(first) |> accounting.append(final)
-  let rig = a_rig(Accounted(Error(distill.Failure("failed", report))))
+  let rig = a_rig(Accounted(Error(auxiliary.Failure("failed", report))))
   commit_entries(rig, [
     an_entry(93, assistant("acme", [thinking(string.repeat("x", 600))])),
   ])
@@ -638,7 +638,7 @@ pub fn ledger_failure_prevents_block_summary_publication_test() {
       total_tokens: 12,
     )
   let answer =
-    distill.Answer("A usable summary.", usage, accounting.from_usage(usage))
+    auxiliary.Answer("A usable summary.", usage, accounting.from_usage(usage))
   let rig =
     a_rig_with_store(Accounted(Ok(answer)), fn(store) {
       storage.Storage(..store, commit: fn(_handle, _tx) {
@@ -671,7 +671,7 @@ type Rig {
 }
 
 type Script {
-  Accounted(outcome: Result(distill.Answer, distill.Failure))
+  Accounted(outcome: Result(auxiliary.Answer, auxiliary.Failure))
 
   Answering(answer: fn(String) -> Result(String, String))
 
@@ -704,7 +704,7 @@ fn a_rig_with_store(
   let commits = addresses.new()
 
   let summarizer =
-    distill.Distiller(ask: fn(request) {
+    auxiliary.Summarizer(ask: fn(request) {
       case script {
         Accounted(outcome:) -> {
           process.send(asked, request)
@@ -722,7 +722,7 @@ fn a_rig_with_store(
           let release = process.new_subject()
           process.send(held, #(request, release))
           let _released = process.receive(release, 5000)
-          Ok(distill.Answer(
+          Ok(auxiliary.Answer(
             text: label,
             usage: accounting.unknown_usage(usage_evidence.Other),
             accounting: accounting.from_usage(accounting.unknown_usage(
@@ -757,17 +757,17 @@ fn a_rig_with_store(
 
 fn option_answer(
   answer: Result(String, String),
-) -> Result(distill.Answer, distill.Failure) {
+) -> Result(auxiliary.Answer, auxiliary.Failure) {
   case answer {
     Ok(text) ->
-      Ok(distill.Answer(
+      Ok(auxiliary.Answer(
         text:,
         usage: accounting.unknown_usage(usage_evidence.Other),
         accounting: accounting.from_usage(accounting.unknown_usage(
           usage_evidence.Other,
         )),
       ))
-    Error(reason) -> Error(distill.Failure(reason, accounting.empty()))
+    Error(reason) -> Error(auxiliary.Failure(reason, accounting.empty()))
   }
 }
 

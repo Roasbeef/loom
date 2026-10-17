@@ -72,7 +72,7 @@ packages/client/src/client/rules.gleam|parse_rule|call|[[rule]]|
 packages/client/src/client/schedule.gleam|parse_schedule|call|[[schedule]]|
 packages/client/src/client/schedule.gleam|policy_table|call|[schedules]|
 packages/client/src/client/jobs.gleam|policy_table|call|[jobs]|
-packages/client/src/client/distillpass.gleam|known_keys|allowed|[memory]|
+packages/client/src/client/memory_config.gleam|known_keys|allowed|[memory]|
 packages/client/src/client/secrets.gleam|entry|call|[secrets]|
 packages/client/src/client/retryconf.gleam|policy_table|call|[retry]|
 packages/client/src/client/daemon/limits.gleam|from_fields|arms|[daemon]|
@@ -384,7 +384,7 @@ fn from_fields(fields) {
 }
 
 fn memory_keys(fields) {
-  let allowed = ["distill", "distill_wall_ms"]
+  let allowed = ["inject", "inject_limit"]
   allowed
 }
 
@@ -433,8 +433,8 @@ SPEC
 
 ## `[memory]`
 
-| `distill` | x |
-| `distill_wall_ms` | x |
+| `inject` | x |
+| `inject_limit` | x |
 
 ## `[lsp.<name>]`
 
@@ -490,8 +490,8 @@ DOC
 	run "an undocumented match-arm key" 'accepts `max_connections`'
 	write_doc
 
-	sed '/^| `distill_wall_ms` |/d' "$here/$doc" >"$here/doc.tmp" && mv "$here/doc.tmp" "$here/$doc"
-	run "an undocumented let-allowed key" 'accepts `distill_wall_ms`'
+	sed '/^| `inject_limit` |/d' "$here/$doc" >"$here/doc.tmp" && mv "$here/doc.tmp" "$here/$doc"
+	run "an undocumented let-allowed key" 'accepts `inject_limit`'
 	write_doc
 
 	sed '/^| `hint` |/d' "$here/$doc" >"$here/doc.tmp" && mv "$here/doc.tmp" "$here/$doc"

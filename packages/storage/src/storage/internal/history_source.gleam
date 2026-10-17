@@ -12,6 +12,7 @@ import core/json
 import gleam/bit_array
 import gleam/bool
 import gleam/dynamic/decode
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -178,6 +179,29 @@ pub fn page(
   limit: Int,
 ) -> Result(List(snapshot.Descriptor), String) {
   snapshot_sqlite.page(source.connection, after, cut.next_seq, limit)
+  |> result.map_error(string.inspect)
+}
+
+/// Reads at most `limit` descriptors committed just before `seq`, oldest
+/// first, bounded by the same cut as `entry` and `page`.
+///
+/// `seq` is the requested entry's own sequence, so this and `page` starting
+/// at `seq` are the two sides of a window around it. Descriptors only: the
+/// payloads still cross the boundary one fragment at a time.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // history_source.before(source, cut, seq: 12, limit: 3)
+/// ```
+@internal
+pub fn before(
+  source: Source,
+  cut: Cut,
+  seq: Int,
+  limit: Int,
+) -> Result(List(snapshot.Descriptor), String) {
+  snapshot_sqlite.before(source.connection, int.min(seq, cut.next_seq), limit)
   |> result.map_error(string.inspect)
 }
 

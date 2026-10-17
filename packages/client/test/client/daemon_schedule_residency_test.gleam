@@ -92,7 +92,7 @@ fn start(settings: serve.Settings) {
       root.Config(config.state_root, "Owner", 2, limits.defaults),
       manager.Assembly(
         fn(selected, sources, owner) {
-          serve.build_domain(selected, sources, log.discard(), owner)
+          serve.build_domain(selected, sources, owner)
         },
         fn(record, selected, services, owner, _directory) {
           let assert Ok(id) = ids.parse_session_id(record.id)
@@ -238,7 +238,7 @@ fn first_phase(
   let configuration = serving.ready.state_root <> "/maintenance-off.toml"
   assert simplifile.write(
       configuration,
-      "[models.fixture]\ndialect = \"anthropic\"\napi_key_env = \"UNUSED\"\nmodel_id = \"fixture\"\ncontext_window = 1000\nmax_output_tokens = 100\n[roles]\nmain = [\"fixture\"]\n[memory]\ndistill = \"off\"\n",
+      "[models.fixture]\ndialect = \"anthropic\"\napi_key_env = \"UNUSED\"\nmodel_id = \"fixture\"\ncontext_window = 1000\nmax_output_tokens = 100\n[roles]\nmain = [\"fixture\"]\n",
     )
     == Ok(Nil)
   assert bootstrap.ensure_private_directory(settings.workspace) == Ok(Nil)

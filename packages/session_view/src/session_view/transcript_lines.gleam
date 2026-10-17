@@ -68,6 +68,7 @@ import session_view/file_read_view
 import session_view/image_header
 import session_view/notes_view
 import session_view/protocol
+import session_view/recall_view
 import session_view/snapshot
 import session_view/snapshot_view
 import session_view/strand_framing
@@ -1659,6 +1660,12 @@ fn call_rows(
         },
       ),
     ]
+
+    // A settled search lists what it found under its heading, so the compact
+    // row says what came back and not only that the call finished.
+    Some(message.ToolResultMessage(is_error: False, details: Some(details), ..))
+      if invocation.name == recall_view.tool_name
+    -> recall_rows(summary, details)
     Some(message.ToolResultMessage(is_error: False, ..)) -> [
       Line(ToolCall, "✓ " <> summary),
     ]
@@ -1687,6 +1694,35 @@ fn call_rows(
     note_call_lines(invocation.name, invocation.arguments, notes_view.Excerpt),
     images,
   ])
+}
+
+// A settled `history_search` as its heading and its hits. Details that are not
+// the record the tool writes leave the heading alone, as any other tool's
+// settled call has it.
+fn recall_rows(summary: String, details: json.JsonValue) -> List(Line) {
+  case recall_view.hits(details) {
+    Some(found) -> [
+      Line(
+        ToolCall,
+        "✓ " <> summary <> " · " <> recall_view.count_text(list.length(found)),
+      ),
+      ..recall_hit_lines(found, notes_view.Excerpt)
+    ]
+    None -> [Line(ToolCall, "✓ " <> summary)]
+  }
+}
+
+// The hits as one literal row with a hit to a line. They are session text, so
+// they are never a Markdown row (`ToolDetail` is), and being one row they hang
+// under the heading together, as a plain result's lines do.
+fn recall_hit_lines(
+  found: List(recall_view.Hit),
+  extent: notes_view.Extent,
+) -> List(Line) {
+  case recall_view.hit_rows(found, extent) {
+    [] -> []
+    rows -> [Line(ToolResult, string.join(rows, "\n"))]
+  }
 }
 
 // The placeholder rows of a tool result's images, under the rows of the
@@ -3803,16 +3839,36 @@ pub fn tool_call_summary(
         True -> "\n" <> json.to_string(arguments)
         False -> ""
       }
-    "remember", json.Object(_) ->
+    "remember", json.Object(fields) ->
       case details_expanded {
         True -> "remember\n" <> json.to_string(arguments)
-        False -> "remember · durable note"
+        False -> "remember · " <> remembered_subject(fields)
+      }
+    "history_search", json.Object(_) ->
+      case recall_view.call_summary(arguments) {
+        Some(summary) -> summary
+        None ->
+          generic_tool_call(name, json.to_string(arguments), details_expanded)
       }
     "agent_notes", json.Object(fields) ->
       "agent_notes" <> option_text(string_field(fields, "prefix"), " · ")
     "context_remaining", json.Object(_) -> "context remaining"
     "todo", json.Object(_) -> todo_board.call_summary(arguments)
     _, _ -> generic_tool_call(name, json.to_string(arguments), details_expanded)
+  }
+}
+
+// What a `remember` call is about: `feedback: Prefer small diffs` for a note
+// that has a title and a kind, and `durable note` for a call recorded before
+// notes had either.
+fn remembered_subject(fields: List(#(String, json.JsonValue))) -> String {
+  case string_field(fields, "title") {
+    Some(title) ->
+      case string_field(fields, "kind") {
+        Some(kind) -> kind <> ": " <> compact(title, 80)
+        None -> compact(title, 80)
+      }
+    None -> "durable note"
   }
 }
 
@@ -3924,7 +3980,29 @@ fn tool_result_lines(
         True, _ | False, None ->
           plain_result_lines(tool_name, result, details_expanded)
       }
+
+    // A search lists its hits one to a row. A result whose details are not the
+    // record the tool writes, and a read, which records a blob rather than
+    // hits, keep the plain row.
+    "history_search", False, Some(value) ->
+      case recall_view.hits(value) {
+        Some(found) ->
+          recall_result_lines(found, details_extent(details_expanded))
+        None -> plain_result_lines(tool_name, result, details_expanded)
+      }
     _, False, _ -> plain_result_lines(tool_name, result, details_expanded)
+  }
+}
+
+fn recall_result_lines(
+  found: List(recall_view.Hit),
+  extent: notes_view.Extent,
+) -> List(Line) {
+  let heading =
+    recall_view.tool_name <> " · " <> recall_view.count_text(list.length(found))
+  case recall_view.hit_rows(found, extent) {
+    [] -> [Line(ToolResult, heading)]
+    rows -> [Line(ToolResult, heading <> "\n" <> string.join(rows, "\n"))]
   }
 }
 

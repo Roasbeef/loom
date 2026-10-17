@@ -705,6 +705,9 @@ sends the server nothing.
 - **The committed bundle is generated.** Change this package and run `make
   gen-client`; `make client-check` (part of `make check`) fails on drift,
   by digests, without Node, Bun or a network.
+- **The proposals count is one attribute.** `<loom-shell>`'s `proposals`
+  attribute decodes with `shell_rule.needing` and badges the Session tab, and
+  `proposals_rule.session_words` is the tab's label.
 
 ## Deep Docs
 

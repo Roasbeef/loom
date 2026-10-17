@@ -38,6 +38,7 @@ import tools/codemode as codemode_tool
 import tools/context as context_tool
 import tools/history as history_tool
 import tools/job as job_tool
+import tools/propose
 import tools/remember
 import tools/schedule as schedule_tool
 
@@ -69,10 +70,10 @@ const agent_names = agent.tool_names
 /// The tools which read or change the session's own state, other than the
 /// agent family.
 const session_names = [
-  history_tool.tool_name, remember.tool_name, schedule_tool.create_tool_name,
-  schedule_tool.list_tool_name, schedule_tool.cancel_tool_name,
-  context_tool.tool_name, "load_skill", "peer_describe", "peer_roster",
-  "peer_send", advise.name,
+  history_tool.tool_name, remember.tool_name, propose.tool_name,
+  schedule_tool.create_tool_name, schedule_tool.list_tool_name,
+  schedule_tool.cancel_tool_name, context_tool.tool_name, "load_skill",
+  "peer_describe", "peer_roster", "peer_send", advise.name,
 ]
 
 /// Every built-in tool that runs on the owner side.

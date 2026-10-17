@@ -2,8 +2,8 @@
 //// The mutable resolver models current catalogue authorization, not an index
 //// locator. All test exchanges have finite deadlines and retire their owners.
 
-import client/distill
 import client/history
+import client/internal/shared_history
 import core/clock
 import core/codec
 import core/entry
@@ -23,8 +23,8 @@ import weft/actor
 import weft/poll
 
 type Selection {
-  Get(process.Subject(List(distill.Source)))
-  Set(List(distill.Source), process.Subject(Nil))
+  Get(process.Subject(List(shared_history.Source)))
+  Set(List(shared_history.Source), process.Subject(Nil))
   Arm(Int, fn() -> Nil, process.Subject(Nil))
 
   /// Parks the resolver on its `after`-th remaining answer and publishes the
@@ -65,31 +65,34 @@ pub fn shared_history_fresh_membership_and_retirement_test() {
   let assert Ok(shared) = prepared.begin() as "published owner must initialize"
   let first = history.seam_for(shared, a.session)
   let second = history.seam_for(shared, b.session)
-  let assert Ok(hits) = first.search("nebula", 10, tool.Repository)
+  let assert Ok(hits) = first.search(tool.query("nebula", 10, tool.Repository))
     as "both live leased source databases must be readable"
   assert list.length(hits) == 2
   let assert Ok([mine]) = first.recent(10)
     as "a browse must list the seam's own session and no other"
   assert mine.session == ids.session_id_to_string(a.session)
   assert mine.entry == ids.entry_id_to_string(a_entry.id)
-  assert second.read(a.session, a_entry.id) == Ok(codec.encode_entry(a_entry))
-  assert first.read(b.session, b_entry.id) == Ok(codec.encode_entry(b_entry))
+  assert second.read(a.session, a_entry.id, 0)
+    == Ok([codec.encode_entry(a_entry)])
+  assert first.read(b.session, b_entry.id, 0)
+    == Ok([codec.encode_entry(b_entry)])
 
   assert process.call(selected, waiting: 1000, sending: Set([a], _)) == Nil
-  let assert Ok([only]) = first.search("nebula", 1, tool.Repository)
+  let assert Ok([only]) = first.search(tool.query("nebula", 1, tool.Repository))
     as "removed source must be filtered before LIMIT"
   assert only.session == ids.session_id_to_string(a.session)
-  let assert Error(tool.IndexRefused(_)) = first.read(b.session, b_entry.id)
+  let assert Error(tool.IndexRefused(_)) = first.read(b.session, b_entry.id, 0)
     as "retained index rows cannot authorize an exact read"
   let assert Error(tool.IndexRefused(_)) =
-    second.search("nebula", 1, tool.Repository)
+    second.search(tool.query("nebula", 1, tool.Repository))
     as "a seam's own session must still belong to the current domain"
   let assert Error(tool.IndexRefused(_)) = second.recent(1)
     as "a browse is admitted by the same membership as a search"
 
   assert prepared.retire() == Ok(Nil)
   assert !process.is_alive(prepared.pid)
-  let assert Error(tool.IndexUnavailable(_)) = first.read(a.session, a_entry.id)
+  let assert Error(tool.IndexUnavailable(_)) =
+    first.read(a.session, a_entry.id, 0)
     as "retired Shared must refuse without reusing a closed native handle"
   assert a_retire() == Ok(Nil)
   assert b_retire() == Ok(Nil)
@@ -113,16 +116,16 @@ pub fn shared_history_bounded_refresh_and_identity_refusal_test() {
   let assert Ok(shared) = prepared.begin() as "shared owner must initialize"
   let seam = history.seam_for(shared, a.session)
   let assert Error(tool.IndexRefused(_)) =
-    seam.search("orbit", 10, tool.Repository)
+    seam.search(tool.query("orbit", 10, tool.Repository))
     as "a full bounded page cannot claim the history is complete"
-  let assert Ok([hit]) = seam.search("orbit", 10, tool.Repository)
+  let assert Ok([hit]) = seam.search(tool.query("orbit", 10, tool.Repository))
     as "the next request must continue after committed progress"
   assert hit.entry == ids.entry_id_to_string(item.id)
   let #(wrong, _) = ids.mint_session(ids.generator(clock.fixed(0), 99))
-  let alias = distill.Source(session: wrong, path: a.path)
+  let alias = shared_history.Source(session: wrong, path: a.path)
   assert process.call(selected, waiting: 1000, sending: Set([alias], _)) == Nil
   let rejected = history.seam_for(shared, wrong)
-  let assert Error(tool.IndexRefused(_)) = rejected.read(wrong, item.id)
+  let assert Error(tool.IndexRefused(_)) = rejected.read(wrong, item.id, 0)
     as "catalogue identity mismatch must refuse the actual opened database"
   assert prepared.retire() == Ok(Nil)
   assert retire() == Ok(Nil)
@@ -149,7 +152,7 @@ pub fn shared_history_commit_hint_indexes_without_query_test() {
   let expected = ids.entry_id_to_string(item.id)
   let assert poll.Answered(Nil) =
     poll.until(within: 1000, every: 5, attempt: fn() {
-      case search.query(observation, "hintonly", 10) {
+      case search.query(observation, search.words("hintonly", 10)) {
         Ok([hit]) if hit.entry == expected -> poll.Done(Nil)
         Ok(_) -> poll.Retry
         Error(error) -> poll.Fail(error)
@@ -177,7 +180,7 @@ pub fn shared_history_empty_cut_rechecks_generation_test() {
     as "shared owner must prepare"
   let assert Ok(shared) = prepared.begin() as "shared owner must initialize"
   let seam = history.seam_for(shared, a.session)
-  let assert Ok([_]) = seam.search("retained", 10, tool.Repository)
+  let assert Ok([_]) = seam.search(tool.query("retained", 10, tool.Repository))
     as "the original indexed row must exist before the rewrite"
   let assert Ok(writer) = sqlight.open(a.path)
     as "test rewrite connection opens"
@@ -196,14 +199,14 @@ pub fn shared_history_empty_cut_rechecks_generation_test() {
   }
   assert process.call(selected, waiting: 1000, sending: Arm(2, mutate, _))
     == Nil
-  assert seam.search("retained", 10, tool.Repository)
+  assert seam.search(tool.query("retained", 10, tool.Repository))
     == Error(tool.IndexRefused(
       "history source changed generation or was truncated",
     ))
   assert prepared.retire() == Ok(Nil)
   let assert Ok(index) = search.open(root <> "/search.db")
     as "the closed projection must reopen for independent observation"
-  let assert Ok([_]) = search.query(index, "retained", 10)
+  let assert Ok([_]) = search.query(index, search.words("retained", 10))
     as "refused stale invalidation must not clear the previously indexed row"
   assert search.close(index) == Ok(Nil)
   assert sqlight.close(writer) == Ok(Nil)
@@ -242,7 +245,10 @@ pub fn shared_history_holds_a_search_during_a_refresh_test() {
 
   let answers = process.new_subject()
   process.spawn(fn() {
-    process.send(answers, seam.search("holding", 10, tool.Repository))
+    process.send(
+      answers,
+      seam.search(tool.query("holding", 10, tool.Repository)),
+    )
   })
 
   // Any answer arriving here is the immediate refusal this change removes.
@@ -288,14 +294,14 @@ pub fn shared_history_refuses_a_second_caller_as_busy_test() {
     == Nil
   let first = process.new_subject()
   process.spawn(fn() {
-    process.send(first, seam.search("busy", 10, tool.Repository))
+    process.send(first, seam.search(tool.query("busy", 10, tool.Repository)))
   })
   let assert Ok(release) = process.receive(announced, 5000)
     as "the first search must park inside its own job"
 
   let second = process.new_subject()
   process.spawn(fn() {
-    process.send(second, seam.search("busy", 10, tool.Repository))
+    process.send(second, seam.search(tool.query("busy", 10, tool.Repository)))
   })
   let assert poll.Expired =
     poll.until(within: 300, every: 25, attempt: fn() {
@@ -405,7 +411,7 @@ fn conversation(path, seed, text) {
   let assert Ok([stored]) =
     storage.scan_entries(opened.store, storage.entry_scan())
     as "fixture must read the stamped durable entry"
-  #(distill.Source(id, path), stored, retire)
+  #(shared_history.Source(id, path), stored, retire)
 }
 
 fn directory(lane) {

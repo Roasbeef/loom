@@ -47,7 +47,7 @@ pub fn daemon_start_diagnostic_classifies_missing_helper_without_raw_error_test(
   let assert Ok(Nil) =
     simplifile.write(
       configuration,
-      "[models.fixture]\ndialect = \"anthropic\"\napi_key_env = \"UNUSED_TEST_KEY\"\nmodel_id = \"fixture\"\ncontext_window = 100000\nmax_output_tokens = 4096\n[roles]\nmain = [\"fixture\"]\n[memory]\ndistill = \"off\"\n",
+      "[models.fixture]\ndialect = \"anthropic\"\napi_key_env = \"UNUSED_TEST_KEY\"\nmodel_id = \"fixture\"\ncontext_window = 100000\nmax_output_tokens = 4096\n[roles]\nmain = [\"fixture\"]\n",
     )
     as "domain maintenance cannot consume environment provider credentials"
   let private_detail = "diagnostic-private-path-detail"
@@ -189,7 +189,7 @@ fn rejected_configuration(defect: ConfigDefect) {
     MissingRoleModel ->
       "[models.fixture]\ndialect = \"anthropic\"\napi_key_env = \"UNUSED_TEST_KEY\"\nmodel_id = \"fixture\"\ncontext_window = 100000\nmax_output_tokens = 4096\n[roles]\nmain = [\"fixture\"]\nsummarize = [\""
       <> private_detail
-      <> "\"]\n[memory]\ndistill = \"off\"\n"
+      <> "\"]\n"
     MalformedToml -> "[roles\nmain = [\"fixture\"]\n"
   }
   let assert Ok(Nil) = simplifile.write(configuration, contents)

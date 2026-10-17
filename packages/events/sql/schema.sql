@@ -6,12 +6,19 @@
 -- in `events_test` pins the copy embedded in `events/search` to this
 -- file, so the two cannot drift.
 
--- The full-text index: one row per indexed entry. `session_id` and
--- `entry_id` are stored but not tokenized; `text` is the searchable
--- extracted entry text.
+-- The full-text index: one row per indexed entry. `session_id`, `entry_id`,
+-- `kind` and `ts` are stored but not tokenized; `text` is the searchable
+-- extracted entry text. `kind` is `user`, `assistant`, `tool` or `summary`
+-- (empty for a row migrated from an index that predates the column) and `ts`
+-- is the entry's commit time in milliseconds since the epoch (0 for the same
+-- migrated rows). The schema version lives in `PRAGMA user_version`, which
+-- `events/search` sets after migrating; a FTS5 table cannot be altered, so
+-- the migration copies the rows into a table of this shape.
 CREATE VIRTUAL TABLE IF NOT EXISTS entry_fts USING fts5(
   session_id UNINDEXED,
   entry_id UNINDEXED,
+  kind UNINDEXED,
+  ts UNINDEXED,
   text
 );
 

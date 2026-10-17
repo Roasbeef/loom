@@ -379,7 +379,7 @@ pub fn daemon_listener_production_opens_two_owned_sessions_test() {
   let file = workspace <> "/loom.toml"
   assert simplifile.write(
       file,
-      "[models.fixture]\ndialect = \"anthropic\"\nbase_url = \"https://unused.invalid\"\napi_key_env = \"LOOM_UNUSED_DAEMON_FIXTURE_KEY\"\nmodel_id = \"fixture\"\ncontext_window = 100000\nmax_output_tokens = 4096\n[roles]\nmain = [\"fixture\"]\n[memory]\ndistill = \"off\"\n",
+      "[models.fixture]\ndialect = \"anthropic\"\nbase_url = \"https://unused.invalid\"\napi_key_env = \"LOOM_UNUSED_DAEMON_FIXTURE_KEY\"\nmodel_id = \"fixture\"\ncontext_window = 100000\nmax_output_tokens = 4096\n[roles]\nmain = [\"fixture\"]\n",
     )
     == Ok(Nil)
   let config =

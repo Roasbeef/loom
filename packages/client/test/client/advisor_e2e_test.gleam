@@ -61,9 +61,9 @@ import client/advisorguard
 import client/advisorslice
 import client/catalog
 import client/codemode
-import client/distillpass
 import client/internal/ffi_os
 import client/jobs
+import client/memory_config
 import client/retryconf
 import client/schedule
 import client/serve
@@ -798,7 +798,7 @@ fn settings(root: String, script: Subject(ScriptMessage)) -> serve.Settings {
     jobs_policy: jobs.default_policy,
     retry_policy: retryconf.default_policy,
     deactivated_tools: [],
-    memory: distillpass.no_pass(),
+    memory: memory_config.default_options(),
     tools: catalog.default_tools(),
     // The whole point of the fixture. `open_instance` takes these as given:
     // it registers `advise`, seeds the strand, wires the three hooks and

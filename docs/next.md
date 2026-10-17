@@ -89,3 +89,113 @@ Run affected package and static gates, hosted CI, and exact-head strict Linux
 signoff through the confirmed `gilgamesh-signoff` alias. Its `obelisk` hostname
 and separate account are intentional. The owner authorizes merge once all these
 gates are green on the published head; prior-head green results never substitute.
+
+## Memory as recall
+
+[The memory page](architecture/memory.md) is the account of how it works and
+[the decision record](design-notes/memory-recall.md) is the reason.
+
+**What landed.** Memory is now recall, not a digest. `history_search` is the
+memory tool: it takes `syntax` (`words` with prefix terms and `OR`, or `raw`),
+`kind`, `before` and, for `read`, `around`, and every hit carries its kind and
+date. `remember` writes typed notes (`title`, `description`, `kind`, `note`),
+indexes them under kind `note`, and rebuilds the 1 KiB `loom-memory.notes`
+index that each run carries by default (`[memory] inject = "notes"`), and a
+session open rebuilds that index from the store without taking the lease. The
+digest and the distillation pass that produced it were removed; `distill =
+"off"` still parses and does nothing, and an old store's leftover rows and
+digest file are not read or deleted. `propose` queues a standing rule and
+`loom-rules.md` changes only when the daemon's owner approves it
+(protocol-change/086); the prompt carries the file last, in an
+`origin=approved-proposal` fence, and only new sessions read it. The
+transcript draws a search as a step with its hits, and the owner reviews
+proposals with `Alt+p` in the terminal or in the Session pane on the web page.
+
+**Left open on purpose.**
+
+- A proposal kind that edits configuration, and one that targets the global
+  `AGENTS.md`. Both stay out until there is an edit door for them.
+- Owner-only admission of the web proposals pane at the operator socket, by
+  teaching `ui_socket.owner_accepts` the path. Today the socket admits it like
+  remembered permissions, and the daemon is the gate.
+- Notes search on the standalone host. Only the daemon adds the memory store
+  to the history owner's sources.
+- A logger with session context for `memory.search_called`. `serve` calls
+  `history.seam` and `history.seam_for`, which log through the Erlang logger,
+  where `seam_with_logger` and `seam_for_with_logger` already take one.
+- A guard for the 512-source bound. The memory store is one source in the
+  list, so a domain with 512 saved sessions and a store refuses shared history.
+
+The proposal queue is the domain's, in `loom-memory.db`, and every write
+holds the store's writer lease, so a review in any session shows every
+proposal and two approvals cannot erase each other. A `propose` or a decision
+that finds the lease held is answered busy and is not retried. The notes index
+is rebuilt from the store when a session opens. The usage counter for notes is `note_hits` on
+`memory.search_called`; `memory.proposal` records each proposal transition.
+
+**The first number to watch.** Whether any of the owner's eight existing notes
+is ever returned by a search. Read `note_hits` on `memory.search_called` over
+the first two weeks; zero means the index and the search are not earning their
+cost. The recall test's figures (6 of 30 paraphrase wordings found by exact
+quoted words, 16 of 30 by prefix terms with `OR`) come from a synthetic corpus
+and say nothing about real use.
+
+## PR #955 rebase and focused review
+
+PR #955 was rebased onto main `877e05f56270fada0392ad7b1f252462230ebfa3`
+on October 16, 2026. The replay preserves remote-child drain and release,
+held-input withdrawal, Notes, completion and private side queries. Side-query
+accounting now calls `auxiliary.record_request`, and the lease-free register
+reader uses main's decode cache for the duration of its connection. The Memory
+overview is implemented in both hosts; the earlier open-item list incorrectly
+left it pending.
+
+The focused independent review found one P2 defect in
+`memory.rebuild_notes_index`: its lease-free read could publish an old snapshot
+after a concurrent `remember` had committed and published a newer index. The
+fix takes the existing memory-store writer lease before reading and retains
+it through sidecar publication. A held lease leaves the index alone and logs
+an in-band refusal without failing session startup. Overview reads remain
+lease-free. Regressions cover writer exclusion, preservation of newer notes,
+absent-store behavior and cleanup after a publication failure.
+
+The rebased client builds with warnings treated as errors. Storage (299 tests),
+events (56), focused memory (71), proposals (53), side queries (6) and daemon
+manager (50) suites pass.
+Formatting, documentation, generated web assets, prelude and lint gates pass.
+The original PR's Linux signoff predates this rebase. Full hosted CI, fresh
+Linux signoff and live UI validation are still required before merge.
+
+The follow-up fix passes 73 focused memory tests, including real server
+startup while another memory writer holds the lease. The exclusion regression
+fails against the original implementation and passes with the fix. A fresh
+Astra review of `36a465c9e` against base `877e05f56` found no actionable
+findings in the fix or the broader targeted recall/proposal review. Proposal
+(53 tests) and daemon-manager (50 tests) regressions also pass on that source.
+The review inspected the test evidence without independently rerunning it;
+full hosted CI, Linux signoff and live UI validation remain pending.
+
+Hosted run `39003421131` passed every Linux test job but its fan-in rejected
+inherited enforcement skips for deployment-status scope and remote subagents.
+The ordinary-runner census now declares those exact prerequisites. The
+existing strict delegated deployment step covers both scope and up/down;
+a new strict delegated subagent step executes the child lifecycle fixture
+with an empty skip allowance and retains its log. No fixture assertion or
+skip condition changed. The recorded Linux bucket logs pass the repaired
+census, and a delegated subagent skip is still rejected.
+
+Strict signoff on `9810ad1db` passed all six lanes, release/update and the
+skip census in 1882 seconds (container driver 1887 seconds). Its client log
+shows both deployment scenarios and the remote-subagent fixture executed.
+Those results are prior-head evidence: this CI integration must receive
+fresh hosted CI and Linux signoff before merge.
+
+The next hosted client run and strict Linux signoff on `e962d3e21` failed
+one inherited delegate-retention assertion: the test accepted `Stopping`
+as drained because it waited only for non-residency. The manager correctly
+retains that slot until its normal custody witness exits, so an immediate
+second sweep can delete zero rows. The regression now waits for `Saved`,
+which proves that the slot has been removed, before demanding one deletion.
+The deletion-count and catalogue assertions and the existing two-second
+observation bound remain unchanged. All 23 delegate-host tests and five
+focused runs pass locally. Fresh validation is required on this test repair.

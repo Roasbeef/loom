@@ -1955,7 +1955,7 @@ pub fn delegates_held(
 /// The registration, its memberships, its display name and subtitle, a workspace default
 /// naming it, its domain mapping and the provenance of an import are removed in one immediate transaction, so no reader can
 /// observe a catalogue whose foreign keys point at a session that is half
-/// gone. The domain record itself survives: a domain owns distilled memory
+/// gone. The domain record itself survives: a domain owns remembered notes
 /// for a workspace and outlives any one conversation that fed it.
 ///
 /// A session that is moving or has moved is `Conflict`: its move row is the only

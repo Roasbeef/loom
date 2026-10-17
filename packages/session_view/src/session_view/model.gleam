@@ -82,8 +82,10 @@ import session_view/goal_view
 import session_view/history_view
 import session_view/inbox
 import session_view/live_jobs
+import session_view/memory_overview
 import session_view/msg
 import session_view/notes_view
+import session_view/proposals
 import session_view/protocol
 import session_view/queue_request
 import session_view/remembered
@@ -235,6 +237,33 @@ pub type Shared(socket, recorder, source, replay_source) {
     remembered: Option(remembered.Board),
     /// One remembered-permissions read waiting for a free command lane.
     remembered_refresh: worktree_view.Refresh,
+    /// The standing-rule proposals the daemon last listed
+    /// (protocol-change/086). `None` is "not read", never "no proposals";
+    /// only a daemon's board says that.
+    proposals: Option(proposals.Board),
+    /// One proposals read waiting for a free command lane.
+    proposals_refresh: worktree_view.Refresh,
+    /// The words for the last refused proposals command, or empty. A refused
+    /// read or decision is the proposals surface's own news, so it is kept
+    /// here and not written to the transcript.
+    proposals_notice: String,
+    /// The memory overview the daemon last reported (protocol-change/087).
+    /// `None` is "not read", never "empty memory"; only a daemon's board says
+    /// that.
+    memory: Option(memory_overview.Board),
+    /// One memory-overview read waiting for a free command lane.
+    memory_refresh: worktree_view.Refresh,
+    /// The words for the last refused memory read, or empty. It is the
+    /// overview's own news and is kept here, not written to the transcript.
+    memory_notice: String,
+    /// When the board was last asked for, on the presentation clock. A host
+    /// that is showing the overview reads it again once
+    /// `memory_overview.backstop_ms` have passed, because nothing pushes a
+    /// change to memory.
+    memory_read_ms: Option(Int),
+    /// Whether a host is showing the overview, which is when the backstop
+    /// runs. A closed overview is not read.
+    memory_watch: MemoryWatch,
     /// The advisor's undelivered nudge queue, observed while the primary is
     /// idle. `None` is "nothing observed", never "the queue is empty".
     nudges: Option(advisor_pending.Board),
@@ -561,6 +590,15 @@ pub type ConnectionBacklog {
 
 /// Which operator report is owed by a goal command's own reply.
 ///
+/// Whether a host is showing the memory overview.
+pub type MemoryWatch {
+  /// The overview is open, so the board is read again once it is stale.
+  WatchingMemory
+
+  /// Nothing shows the overview, so nothing reads it.
+  NotWatchingMemory
+}
+
 /// A named set rather than a boolean field, because the cases are
 /// different events: the operator asked `/goal` and is owed a block in the
 /// transcript, the operator asked for a change and is owed one line once it

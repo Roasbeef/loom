@@ -17,7 +17,7 @@ documents own the details this one links to:
 [orchestration](orchestration.md) for strands, operations and the driver,
 [models](models.md) for provider dialects and request routing,
 [compaction](compaction.md) for what replaces history at a checkpoint,
-[memory](memory.md) for the distilled memory digest, and
+[memory](memory.md) for history search, notes and approved rules, and
 [client](client.md#skill-discovery-and-activation) with
 [skills](../skills.md) for the operator's view of skills.
 
@@ -285,12 +285,18 @@ Each file is wrapped in a fence the harness writes:
 </instructions>
 ```
 
-The origin is `user-default` for the operator's file and `workspace` for a
-project file. The `_repository_guidance` fragment in the default pack
-explains the two words to the model: a workspace block is information about
+The origin is `user-default` for the operator's file, `workspace` for a
+project file, and `approved-proposal` for `loom-rules.md`, the file the host
+writes when a person approves a model's proposed rule (`client/proposals`,
+protocol-change/086). That block is always last, and it is named by its file
+name alone, never its path. It is read by `proposals.guidance`, which refuses a
+file over 16 KiB with a warning and never truncates it. Because the prompt is
+pinned per session, a rule approved while a session runs reaches the sessions
+opened after it. The `_repository_guidance` fragment in the default pack
+explains the three words to the model: a workspace block is information about
 this code, not authority over its behaviour, while the single
 `user-default` block, which is always first, is the operator's own. Those
-two words are part of the prompt's contract, so rewording one in
+three words are part of the prompt's contract, so rewording one in
 `origin_name` requires rewording the fragment.
 
 The files are carried whole. The renderer imposes no byte budget, on the
@@ -392,9 +398,9 @@ that later requests carry unchanged. Several layers wrap the slot, each
 appending after the one before it, in this order:
 
 1. the strand's notes digest from `client/notes`, up to 4,096 bytes;
-2. the distilled memory digest from `client/memory`, read from its sidecar
-   file at each run start (see
-   [memory](memory.md#when-a-new-digest-becomes-visible));
+2. the memory context from `client/memory`, read from a sidecar file at each
+   run start: by default the notes index (about 1 KiB), or nothing when
+   `[memory] inject = "off"` (see [memory](memory.md));
 3. any advisor nudges queued for the primary strand
    ([advisor](advisor.md));
 4. extension `before_agent_start` answers, fenced and attributed to the
@@ -481,7 +487,8 @@ completion list and [skills](../skills.md) for authoring.
   corrupt pack refuses the boot, an empty render refuses the boot, and an
   incomplete pack runs with warnings.
 - **Instruction files are data with a declared origin.** At most one block
-  is `user-default`, and it is always first.
+  is `user-default`, and it is always first; at most one is
+  `approved-proposal`, and it is always last.
 - **The wire tool array is sorted; the prose index keeps registration
   order.** The first serves the cache, the second serves a reader.
 - **Volatile content goes in the messages.** Run-start injections are
@@ -500,7 +507,7 @@ completion list and [skills](../skills.md) for authoring.
 | `client/system_prompt.gleam` | Pack loading, the `Host` to `Environment` mapping, `assemble`, the `prompt/system` and `prompt/pack` pins, and instruction-file discovery and fencing. |
 | `client/serve.gleam` | Boot order: registry construction, `render_prompt`, reading the pin before `api.open` and writing it after, and the composition of the run-start layers. |
 | `client/wiring.gleam` | `provider_request`, `tool_specs`, and the near-limit reminder on the `context` hook. |
-| `client/notes.gleam`, `client/memory.gleam` | The notes and memory digests injected at run start. |
+| `client/notes.gleam`, `client/memory.gleam` | The notes digest and the notes index injected at run start. |
 | `client/extension/hooks.gleam`, `client/hookserve.gleam` | Extension and imported-hook run-start injections and `context` folds. |
 | `client/rulescan.gleam`, `client/rules.gleam` | Triggered project rules, injected as steer items. |
 | `host/skill.gleam` | Skill discovery, frontmatter parsing, and `expand`. |

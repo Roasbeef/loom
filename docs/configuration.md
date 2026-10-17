@@ -98,7 +98,7 @@ is not in this list is refused.
 | `secrets` | table | Host commands that supply named credentials. | [`[secrets]`](#secrets) |
 | `daemon` | table | Connection limits and the web view. | [`[daemon]`](#daemon) |
 | `advisor` | table | What the advisor strand may read and how often it is fed. | [`[advisor]`](#advisor) |
-| `memory` | table | Memory distillation cadence and wall time. | [`[memory]`](#memory) |
+| `memory` | table | What memory each run starts with. | [`[memory]`](#memory) |
 | `jobs` | table | Background job wall ceiling and idle heartbeat. | [`[jobs]`](#jobs) |
 | `retry` | table | Provider retry ladder. | [`[retry]`](#retry) |
 | `peers` | table | Default peer links (from protocol-change 077). | [`[peers]`](#peers) |
@@ -170,7 +170,7 @@ name is always tried first. Every name must be defined in `[models]`.
 | `main` | array of strings | required | model names | The model a session runs on. The first name is the identity new strands start with. |
 | `subagent` | array of strings | unrouted | model names | Strands an agent spawns. A spawned child with no route inherits its parent's model. |
 | `plan` | array of strings | unrouted | model names | Reserved. It is parsed and validated and has no caller yet. |
-| `summarize` | array of strings | unrouted | model names | Structural summaries, memory distillation and the glance loop. Unrouted, distillation uses `main`, and the glance tries `subagent` and then `main`. A cheap entry here controls what those cost. |
+| `summarize` | array of strings | unrouted | model names | Structural summaries and the glance loop. Unrouted, summaries use `main`, and the glance tries `subagent` and then `main`. A cheap entry here controls what those cost. |
 | `vision` | array of strings | unrouted | model names, each reading images | Image-bearing requests whose strand model is text-only. An entry that declares `vision = false` is refused. |
 | `advisor` | array of strings | unrouted | model names | The advisor strand. With no `advisor` route there is no advisor. See [advisor](architecture/advisor.md). |
 
@@ -436,14 +436,22 @@ routes an `advisor`. See [advisor](architecture/advisor.md) and
 
 ## `[memory]`
 
-Optional. Whether and how long the memory distillation pass runs. The table is
-independent of a session's runtime configuration: it belongs to the memory domain
-the daemon maintains. See [memory](architecture/memory.md).
+Optional. What memory is injected into runs. The notes index is injected by
+default. The table is independent of a session's runtime configuration: it
+belongs to the memory domain the daemon keeps. See
+[memory](architecture/memory.md).
+
+The distillation pass that once consolidated sessions into a digest was
+removed. `distill` and `distill_wall_ms` are still accepted with any value,
+and `inject = "digest"` is read as `notes`, so that an existing file loads.
+They do nothing, and the daemon logs a `memory.config_retired_key` warning for
+each; delete the key. A key that never existed is still refused.
 
 | Key | Type | Required, default | Allowed values | Meaning |
 | --- | --- | --- | --- | --- |
-| `distill` | string | `on-boot` | `on-boot`, `off` | `on-boot` runs a pass at domain admission and after successful session closes. `off` runs none and leaves remembered notes for a hand-run `loom-distill`. |
-| `distill_wall_ms` | integer | `600000` | 1 to 600000 | How many milliseconds one whole pass may take before it is cut off. The ceiling is the memory session's writer lease, and a larger value is refused rather than clamped. |
+| `inject` | string | `notes` | `off`, `notes` | `notes` attaches an index of the notes `remember` wrote, one line per note, newest first, about a kilobyte, to each run's opening messages; a repository with no notes gets no message. The daemon rebuilds the index from the store when a session opens, so notes written before the index existed reach the first run. `off` attaches nothing and leaves the index file alone. See `docs/design-notes/memory-recall.md`. |
+| `distill` | any | none | any | Removed. Accepted and ignored, with a warning, so a file written while the pass existed still loads. |
+| `distill_wall_ms` | any | none | any | Removed with the pass it bounded. Accepted and ignored, with a warning. |
 
 ## `[jobs]`
 

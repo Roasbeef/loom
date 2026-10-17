@@ -130,7 +130,8 @@ pub fn a_fresh_session_finds_a_compacted_away_decision_test() {
 
   // The excerpt leads to a complete entry in a different session file.
   let seam = history.seam(second.holder, timeout_ms: 2000)
-  let assert Ok([hit, ..]) = seam.search("msgpack", 5, history_tool.Repository)
+  let assert Ok([hit, ..]) =
+    seam.search(history_tool.query("msgpack", 5, history_tool.Repository))
     as "the indexed decision must provide an exact address"
   let complete =
     tool.dispatch(
@@ -388,7 +389,7 @@ fn await_indexed(
   left_ms: Int,
 ) -> Bool {
   let seam = history.seam(holder, timeout_ms: 2000)
-  case seam.search(term, 5, history_tool.Repository) {
+  case seam.search(history_tool.query(term, 5, history_tool.Repository)) {
     Ok([_hit, ..]) -> True
     Ok([]) | Error(_refused) ->
       case left_ms <= 0 {

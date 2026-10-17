@@ -38,7 +38,7 @@
 ////    instance's address namespace and registers it with the custodian.
 //// 2. `assemble_in` is the whole construction, in order. It resolves the
 ////    memory and index paths, then `open_session_file` takes the session's
-////    write lease, waiting out a short distillation harvest.
+////    write lease.
 //// 3. It names and builds the services: `memory_seam`, `summary_route` and the
 ////    other per-session actors, then the tool registry.
 //// 4. `system_prompt.pinned_for` reads the pinned prompt before the open, and
@@ -73,8 +73,6 @@ import client/context_view
 import client/contributions
 import client/daemon/domain as domain_service
 import client/directories
-import client/distill
-import client/distillpass
 import client/effect_abort
 import client/escalate
 import client/extension/dispatch as extension_dispatch
@@ -102,9 +100,12 @@ import client/install
 import client/internal/ffi_os
 import client/internal/instance_owner as custody
 import client/internal/session_owner
+import client/internal/shared_history
 import client/jobs
 import client/mcp as mcp_wiring
 import client/memory
+import client/memory_config
+import client/memory_overview
 import client/notes
 import client/owner_codemode
 import client/owner_services
@@ -112,6 +113,7 @@ import client/peer_mail
 import client/peer_outbox_drain
 import client/peers
 import client/profile_switch
+import client/proposals
 import client/remote/owner_port
 import client/remote/protocol
 import client/remote/remote_census
@@ -532,12 +534,10 @@ pub type Settings {
     /// a collision. `client/contributions` has the ruling. Naming a tool
     /// this host does not build is not an error.
     deactivated_tools: List(String),
-    /// The `[memory]` table: whether this host distils on boot, and how
-    /// long one pass may take. Defaults to
-    /// `client/distillpass.default_options`, which is one pass per boot
-    /// — the shipped producer #149 asked for, and the reason a release
-    /// needs no cron job to fill its memory.
-    memory: distillpass.Options,
+    /// The `[memory]` table: what each run starts with. Defaults to
+    /// `client/memory_config.default_options`, which attaches the notes
+    /// index.
+    memory: memory_config.Options,
     /// The `[tools]` table: whether jailed tool shells reach the network,
     /// and what else their environment carries. Defaults to
     /// `catalog.default_tools()` — full network and no extra environment
@@ -657,12 +657,6 @@ pub type Instance {
     /// command; a host with its own abort door holds the same notice so
     /// its runtime-level aborts reach the goal loop the same way.
     goal_abort: Option(fn(OpId) -> Nil),
-    /// The distillation worker's name, or `None` on a boot that runs no
-    /// pass — `memory.distill = "off"`, or a catalogue that routes
-    /// nothing the pipeline could ask. A name for the reason
-    /// `rulescan`'s is one, and the door `client/distillpass.settled`
-    /// waits on.
-    memory_pass: Option(address.Address(distillpass.Message)),
     /// The session's language-server plane, or `None` on a boot whose
     /// catalogue configures no `[lsp.<name>]` server, or whose every
     /// server was refused at load. Held so `close_instance` can stop the
@@ -1123,47 +1117,30 @@ pub fn codemode_socket_root(
   }
 }
 
-/// Builds domain services from their stored maintenance configuration only.
-/// Session provider/tool settings never choose this shared owner's credentials.
+/// Builds the services a domain's sessions share: the recall index over the
+/// domain's own sources. Session provider and tool settings never choose this
+/// shared owner's configuration.
+///
+/// The stored configuration is still loaded and discarded, so a file no
+/// session could open under refuses the domain at admission, in the file's own
+/// words, rather than failing each session after the domain is built.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // serve.build_domain(selected, sources, logger, owner)
+/// // serve.build_domain(selected, sources, owner)
 /// ```
 @internal
 pub fn build_domain(
   selected: domain.Domain,
-  sources: fn() -> Result(List(distill.Source), String),
-  logger: Logger,
+  sources: fn() -> Result(List(shared_history.Source), String),
   owner: custody.Owner,
 ) -> Result(domain_service.Services, String) {
   let configuration = case selected.configuration {
     "" -> None
     path -> Some(path)
   }
-  use
-    #(
-      catalogue,
-      _rules,
-      _schedules,
-      _policy,
-      _jobs,
-      _retry,
-      options,
-      _tools,
-      entries,
-      _workspace,
-      _advisor,
-    )
-  <- result.try(load_config(configuration, None, None))
-
-  // The `[secrets]` table resolved before the gateway that will spend
-  // what it holds, once per domain assembly rather than once per daemon.
-  // A failed entry is a warned line rather than a refused assembly, for
-  // the reason `client/secrets` gives: a credential this domain's work
-  // may never need must not stop it starting.
-  let secret_store = resolved_secrets(entries, logger)
+  use _loaded <- result.try(load_config(configuration, None, None))
   use Nil <- result.try(
     bootstrap.ensure_private_directory(filepath.directory_name(
       selected.memory_path,
@@ -1174,57 +1151,55 @@ pub fn build_domain(
       selected.index_path,
     )),
   )
-  let clock = clock.from_function(ffi_os.system_time_ms)
-  let gateway =
-    catalog.gateway(
-      catalogue,
-      transport: http.httpc_transport(),
-      secrets: secret_store,
-      clock:,
-    )
-    |> provider_gateway.with_codex_transport(codex_transport.transport())
   domain_service.build(
-    domain_service.Config(
-      history: history.SharedConfig(
-        index_path: selected.index_path,
-        sources:,
-        timeout_ms: history.default_timeout_ms,
-        batch_entries: 100,
-      ),
-      maintenance: fn(name) {
-        case options.cadence {
-          distillpass.DistillsOff -> Ok(None)
-          distillpass.DistillsOnBoot -> {
-            use target <- result.try(distill.target(gateway))
-            let pipeline =
-              distill.config_for(
-                filepath.directory_name(selected.memory_path),
-                distill.no_distiller(),
-                clock:,
-                entropy: workspace_plane.mixed_entropy(),
-              )
-            Ok(
-              Some(distillpass.DomainConfig(
-                name:,
-                pipeline: distill.Config(
-                  ..pipeline,
-                  memory_path: selected.memory_path,
-                  digest_path: domain.digest_beside(selected.memory_path),
-                  logger:,
-                ),
-                sources:,
-                gateway:,
-                target:,
-                request_timeout_ms: distill.default_timeout_ms,
-                options:,
-              )),
-            )
-          }
-        }
-      },
-    ),
+    domain_service.Config(history: history.SharedConfig(
+      index_path: selected.index_path,
+      sources: with_memory_source(sources, selected.memory_path),
+      timeout_ms: history.default_timeout_ms,
+      batch_entries: 100,
+    )),
     owner,
   )
+}
+
+/// Adds the domain's memory store to the sources its history owner refreshes.
+///
+/// The store is a session file like the conversations beside it, and its
+/// `memory/note` entries are what `history_search kind=note` returns, so the
+/// owner indexes it by the route every other source takes. A store that does
+/// not exist yet, or has no identity yet, contributes nothing and the next
+/// refresh asks again, because the resolver runs afresh for every job.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.with_memory_source(sources, "/d/loom-memory.db")()
+/// ```
+@internal
+pub fn with_memory_source(
+  sources: fn() -> Result(List(shared_history.Source), String),
+  memory_path: String,
+) -> fn() -> Result(List(shared_history.Source), String) {
+  fn() {
+    use found <- result.map(sources())
+    case memory_source(memory_path) {
+      Ok(source) -> list.append(found, [source])
+      Error(Nil) -> found
+    }
+  }
+}
+
+// The memory store's identity is read without its writer lease, so a
+// `remember` call holding it never delays a search.
+fn memory_source(path: String) -> Result(shared_history.Source, Nil) {
+  use #(identity, _parent) <- result.try(
+    sqlite.identity(path:) |> result.replace_error(Nil),
+  )
+  use text <- result.try(option.to_result(identity, Nil))
+  use session <- result.map(
+    ids.parse_session_id(text) |> result.replace_error(Nil),
+  )
+  shared_history.Source(session:, path:)
 }
 
 /// Derives one stable workspace domain, independent of session filename and cwd.
@@ -1698,7 +1673,7 @@ fn load_config(
     schedule.Policy,
     jobs.JobsPolicy,
     operation.NormalizedRetryPolicy,
-    distillpass.Options,
+    memory_config.Options,
     catalog.ToolsConfig,
     List(secrets.Entry),
     catalog.WorkspaceConfig,
@@ -1737,7 +1712,7 @@ fn load_config(
         schedule.default_policy,
         jobs.default_policy,
         retryconf.default_policy,
-        distillpass.default_options(),
+        memory_config.default_options(),
         catalog.default_tools(),
         [],
         catalog.default_workspace(),
@@ -1778,7 +1753,7 @@ fn load_config(
         retryconf.parse_policy(text) |> result.map_error(named),
       )
       use memory <- result.try(
-        distillpass.parse(text) |> result.map_error(named),
+        memory_config.parse(text) |> result.map_error(named),
       )
       use tools <- result.try(
         catalog.parse_tools(text) |> result.map_error(named),
@@ -1952,25 +1927,6 @@ fn session_id_of(path: String) -> String {
 
 /// The default model identity when `LOOM_MODEL` is unset.
 pub const default_model = "claude-opus-5"
-
-// The `[secrets]` table run and layered over the process environment, in
-// the one place a domain assembly has a logger to warn with. `resolve`
-// keeps its failures in `Settings` instead, because it has none. Like
-// `resolve`, this runs per assembly rather than per daemon, so the
-// commands are re-run and a rotated credential is picked up.
-fn resolved_secrets(
-  entries: List(secrets.Entry),
-  logger: Logger,
-) -> secret.SecretStore {
-  let #(resolved, failures) =
-    secrets.resolve(
-      entries,
-      running: secrets.host_runner(),
-      within: secrets.default_timeout_ms,
-    )
-  log_secret_failures(failures, logger)
-  secrets.store(resolved, beneath: secret.env())
-}
 
 // One warned line per entry that did not resolve, naming the variable
 // and why. The reason is built from an exit status or the deadline and
@@ -2960,7 +2916,7 @@ pub fn assemble_owned(
 }
 
 /// Assembles one session using already-published shared domain capabilities.
-/// The session owns forwarding only; it cannot close shared stores or cadence.
+/// The session owns forwarding only; it cannot close shared stores.
 ///
 /// ## Examples
 ///
@@ -3039,37 +2995,13 @@ fn assemble_owned_with(
   )
 }
 
-/// The event logged when a session open finds a distillation harvest holding
-/// the session file's lease and waits for the harvest to let go.
-@internal
-pub const harvest_wait_event = "session.harvest_wait"
-
-// How often a waiting open asks again. A harvest reads one file and closes
-// it, so the lease is normally free within a few of these.
-const harvest_poll_ms = 10
-
-// Opens the session file under this incarnation's lease.
-//
-// A distillation harvest (`client/distill.harvest_one`) opens every source
-// session under the ordinary writer lease, owner `distill.distill_owner`, to
-// read it, and the daemon starts one beside session admission by design: a
-// domain's first pass begins as the domain is built, and its sources are the
-// sessions the domain is about to open. The harvest skips a file whose lease
-// a session holds, but a session opening while the harvest holds the lease
-// used to fail its start outright. That lease is a reader's, short and
-// bounded by `memory.lease_ttl_ms`, so the open waits it out instead: until
-// the harvest closes, or at the latest until its lease expires and the claim
-// takes it over. Every other holder is refused at once, as before, because
-// a writer that is still alive renews its lease and waiting for the expiry
-// would only delay the same refusal.
-//
-// Single-writer safety does not rest on the wait. Each attempt is the
-// ordinary atomic claim, and the harvest never commits to a source.
+// Opens the session file under this incarnation's lease. A holder that is
+// still alive renews its lease, so a refusal is final and the caller says who
+// holds it.
 fn open_session_file(
   path: String,
   owner: String,
   clock: Clock,
-  logger: Logger,
 ) -> Result(
   #(
     session.Session,
@@ -3078,43 +3010,7 @@ fn open_session_file(
   ),
   session.OpenError,
 ) {
-  let open = fn() {
-    session.open_sqlite_custody(path:, owner:, lease_ttl_ms: 60_000, clock:)
-  }
-  case open() {
-    Error(session.SqliteOpenFailed(sqlite.LeaseHeld(
-      owner: holder,
-      expires_at_ms:,
-    ))) as refused
-      if holder == distill.distill_owner
-    -> {
-      let #(now, _clock) = clock.read(clock)
-      let remaining = int.clamp(expires_at_ms - now, 0, memory.lease_ttl_ms)
-      log.info(logger, harvest_wait_event, [
-        field.count(key: "lease_expires_at_ms", value: expires_at_ms),
-      ])
-      let waited =
-        poll.until(
-          within: remaining + harvest_poll_ms,
-          every: harvest_poll_ms,
-          attempt: fn() {
-            case open() {
-              Ok(opened) -> poll.Done(opened)
-              Error(session.SqliteOpenFailed(sqlite.LeaseHeld(owner: holder, ..)))
-                if holder == distill.distill_owner
-              -> poll.Retry
-              Error(error) -> poll.Fail(error)
-            }
-          },
-        )
-      case waited {
-        poll.Answered(opened) -> Ok(opened)
-        poll.Failed(error) -> Error(error)
-        poll.Expired -> refused
-      }
-    }
-    opened -> opened
-  }
+  session.open_sqlite_custody(path:, owner:, lease_ttl_ms: 60_000, clock:)
 }
 
 /// Renders a storage open refusal as the message the daemon classifier reads.
@@ -3350,12 +3246,18 @@ fn assemble_in(
   // security property rather than a tidiness one.
   use index_path <- result.try(index_path(settings))
 
-  // Memory is protected on the same argument one step along: the digest
-  // sidecar is text this server injects into every run's context, and
-  // the store behind it is what the digest is rendered from. See
+  // Memory is protected on the same argument one step along: the notes
+  // index sidecar is text this server injects into every run's context, and
+  // the store behind it is what the index is rendered from. See
   // `protecting_memory`.
   use memory_store <- result.try(beside_session(settings, memory.memory_file))
-  use memory_digest <- result.try(beside_session(settings, memory.digest_file))
+  use memory_notes <- result.try(beside_session(settings, memory.notes_file))
+
+  // The approved-rules file is protected on the same argument, one step
+  // further: the prompt carries it whole at the start of every new session,
+  // so a file a jailed process could write would be a standing instruction
+  // channel. Only `client/proposals` writes it, one approval at a time.
+  use rules_path <- result.try(beside_session(settings, proposals.rules_file))
 
   // The workspace half is prepared here, before anything of the owner's is
   // opened and before any lease is taken: the toolchain is located and
@@ -3384,7 +3286,8 @@ fn assemble_in(
             Some(workspace_policy.OwnerFiles(
               index: index_path,
               memory_store:,
-              memory_digest:,
+              rules: rules_path,
+              memory_notes:,
             )),
             blob_root,
           ),
@@ -3425,7 +3328,7 @@ fn assemble_in(
   let random_bytes = token.production_entropy()
   let lease_owner = "loomd-" <> bit_array.base16_encode(random_bytes(32))
   use #(opened, retire, transfer) <- result.try(
-    open_session_file(settings.session_path, lease_owner, clock, logger)
+    open_session_file(settings.session_path, lease_owner, clock)
     |> result.map_error(storage_open_refusal),
   )
   use Nil <- result.try(
@@ -3475,7 +3378,15 @@ fn assemble_in(
   // `remember` definition renders into the provider's cached byte prefix
   // and is paid for on every request, so a host whose memory plane will
   // not open registers no tool and says so once.
-  let memory_seam = memory_seam(memory_store, clock, entropy, logger)
+  let memory_seam =
+    memory_seam(
+      memory_store,
+      memory_notes,
+      settings.memory.inject,
+      clock,
+      entropy,
+      logger,
+    )
 
   // Durable *records* stay credit-driven: a client asks for a cut and the
   // bounded reader answers it. What the hub now also does is push a notice
@@ -3515,12 +3426,6 @@ fn assemble_in(
   // on other orchestrators, is reached by name for the same reason: the Agency
   // rings it when it leaves a record pending, before any drainer exists.
   let remote_drain_name = address.new_address(namespace)
-
-  // The distillation pass, on the same arrangement and for the same
-  // reason: it is a supervised child, and `client/distillpass.settled`
-  // asks it by name rather than holding a pid that a restart would
-  // stale.
-  let distill_name = address.new_address(namespace)
 
   // The Agency's holder cannot exist yet: `api.open` takes the effects
   // and returns the runtime, and the runtime contains the effects, so a
@@ -3635,6 +3540,21 @@ fn assemble_in(
   // published by the observer below and relayed by the hub as pushed
   // `tool_output` frames (`protocol-change/031`).
   let event_bus = bus.start()
+
+  // The proposal queue: the `propose` tool and the operator's two commands
+  // are doors over this one wiring. The queue lives in the domain's memory
+  // store beside the rules file it edits, so it needs no runtime and every
+  // session of the domain reaches the same one.
+  let proposal_wiring =
+    proposals.Wiring(
+      store_path: memory_store,
+      rules_path:,
+      session: settings.session_id,
+      clock:,
+      entropy:,
+      bus: event_bus,
+      logger:,
+    )
 
   // Code mode, and the MCP servers it reaches, are one decision made on
   // the census: the second is unreachable without the first. The owner
@@ -3792,6 +3712,15 @@ fn assemble_in(
   // reported the same way and at the same moment: the name and why, and
   // never the command's output.
   log_secret_failures(settings.secret_failures, logger)
+
+  // A retired `[memory]` key is accepted so a file that loaded before the
+  // distillation pass was removed still loads; the warning is how the
+  // operator learns the line does nothing.
+  list.each(settings.memory.retired, fn(key) {
+    log.warn(logger, "memory.config_retired_key", [
+      field.ident(key: "key", value: key),
+    ])
+  })
 
   // Logged once per session, after storage has accepted the identity, so a
   // refused assembly stays silent.
@@ -3985,6 +3914,12 @@ fn assemble_in(
         // `advisor.ensure_strand` grants it to the advisor alone. The
         // seam refuses a call from any other strand in any case, by the
         // caller's durable name.
+        // `propose` files a suggestion in the queue above and never blocks,
+        // so it is registered unconditionally, like the skill and peer tools.
+        contributions.Contribution(
+          contributions.BuiltIn,
+          contributions.proposal_tools(proposals.seam(proposal_wiring)),
+        ),
         contributions.Contribution(contributions.BuiltIn, case advisor_wiring {
           None -> []
           Some(wiring) -> [advise.tool(advisor.seam(wiring))]
@@ -4051,6 +3986,7 @@ fn assemble_in(
       render_prompt(
         settings,
         plane,
+        rules_path,
         // The prompt is one string for every strand, so the advisor's
         // own tool is left out of the index the primary reads; the
         // advisor is told about it by its brief instead.
@@ -4199,20 +4135,19 @@ fn assemble_in(
         // no hook at all.
         |> schedule_reaping(schedule_wiring)
         |> notes.digest_hooks(opened, clock)
-        // The memory digest is read at every run start rather than once
-        // here, because this server runs the producer as well: the pass
-        // `client/distillpass` starts writes the sidecar under this same
-        // boot, and a digest captured here would hold every session one
-        // pass behind its own pipeline. It is still a read of bytes and
-        // never an open — this server takes no memory lease outside that
-        // pass — so a consolidation landing mid-session costs the next
-        // run one file read and nothing else. The reader carries the
-        // logger because a sidecar too large to be a digest is refused,
-        // and a silent refusal looks exactly like a repository that has
-        // never distilled. Absent file, nothing injected, no tokens
-        // spent.
-        |> memory.digest_hooks(
-          memory.digest_reader(memory_digest, logger),
+        // The notes index is read at every run start rather than once here,
+        // because a `remember` call in any session rewrites it, and an index
+        // captured at assembly would hold every session one note behind.
+        // It is a read of bytes and never an open, so a note landing
+        // mid-session costs the next run one file read and nothing else. The
+        // reader carries the logger because a sidecar too large to be an
+        // index is refused, and a silent refusal looks exactly like a
+        // repository with no notes. `[memory] inject = "off"` installs no
+        // reader at all, and a repository with no notes has no file to read
+        // and costs no tokens.
+        |> with_memory_context(
+          settings.memory.inject,
+          memory.notes_reader(memory_notes, logger),
           clock,
         )
         // The advisor's three slots go on after the harness's own
@@ -4546,19 +4481,6 @@ fn assemble_in(
     // run-end rows it resends are facts in the session's own store, so a
     // replacement begins with a pass that reads them again.
     |> with_remote_drain(agency_config, runtime, remote_drain_name, logger)
-    // Started here rather than inside the boot: the pass dispatches
-    // model turns, and this tier starts after the session's own writer
-    // lease is held — which is what makes the live session the one file
-    // the pass is guaranteed to skip.
-    |> with_instance_distill_pass(
-      services,
-      settings,
-      distill_name,
-      memory_store,
-      clock,
-      entropy,
-      logger,
-    )
     // The commit forwarder is in this tier for the reason everything else
     // here is: it is reached by name and holds nothing. It carries no
     // state at all, in fact — one writer publication in, one hub hint out
@@ -4612,7 +4534,22 @@ fn assemble_in(
             // a session with a routed advisor telling its operator it
             // has no reviewer.
             |> with_goal_control(advisor_wiring)
-            |> with_schedule_admin(schedule_admin),
+            |> with_schedule_admin(schedule_admin)
+            |> hub.with_proposals(proposals.admin(proposal_wiring))
+            |> hub.with_memory_overview(
+              memory_overview.admin(
+                memory_overview.Wiring(
+                  store_path: memory_store,
+                  notes_path: memory_notes,
+                  rules_path:,
+                  memory: settings.memory,
+                  pending: fn() {
+                    proposals.listing(proposal_wiring)
+                    |> result.map(fn(held) { held.pending })
+                  },
+                ),
+              ),
+            ),
           name,
         )
       }),
@@ -4686,15 +4623,6 @@ fn assemble_in(
     {
       [], False -> None
       _configured, _door -> Some(schedulescan_name)
-    },
-    // The same question `with_distill_pass` starts one on, asked in the
-    // same order and of the same two facts, so the field cannot say
-    // `None` while a worker runs under that name.
-    memory_pass: case services, settings.memory.cadence, distiller(settings) {
-      Some(_), _, _ -> None
-      None, distillpass.DistillsOff, _routed -> None
-      None, distillpass.DistillsOnBoot, Error(_unroutable) -> None
-      None, distillpass.DistillsOnBoot, Ok(_distiller) -> Some(distill_name)
     },
   ))
 }
@@ -5085,105 +5013,6 @@ fn with_schedule_scanner(
 // question rather than a second one. Asking the policy here rather than
 // threading the answer down as a flag keeps that decision and the
 // decision to start the scanner at all reading off one source.
-// The distillation pass, and the two decisions not to start one.
-//
-// The same posture `with_rule_scanner` takes, over a plane that is on by
-// default rather than off: a host that opted out logs one line and
-// starts nothing, and a host whose catalogue routes neither a summarize
-// nor a main model cannot ask the pipeline's two questions, so it says
-// that instead of standing up a worker that could only fail. Both lines
-// exist because memory that silently never fills is the failure #149 was
-// filed about.
-fn with_instance_distill_pass(
-  tree,
-  services,
-  settings,
-  name,
-  memory_store,
-  clock,
-  entropy,
-  logger,
-) {
-  case services {
-    Some(_) -> tree
-    None ->
-      with_distill_pass(
-        tree,
-        settings,
-        name,
-        memory_store,
-        clock,
-        entropy,
-        logger,
-      )
-  }
-}
-
-fn with_distill_pass(
-  builder: sup.Builder,
-  settings: Settings,
-  name: address.Address(distillpass.Message),
-  memory_store: String,
-  clock: Clock,
-  entropy: fn() -> Int,
-  logger: Logger,
-) -> sup.Builder {
-  case settings.memory.cadence, distiller(settings) {
-    distillpass.DistillsOff, _routed -> {
-      log.info(logger, distillpass.off_event, [
-        field.text(
-          key: "effect",
-          value: "no distillation pass runs; remembered notes accumulate "
-            <> "until `loom-distill` is run by hand",
-        ),
-      ])
-      builder
-    }
-
-    distillpass.DistillsOnBoot, Error(reason) -> {
-      log.warn(logger, distillpass.failed_event, [
-        field.text(key: "reason", value: reason),
-        field.text(
-          key: "effect",
-          value: "no distillation pass runs on this boot; route a summarize "
-            <> "or main model in the catalogue",
-        ),
-      ])
-      builder
-    }
-
-    distillpass.DistillsOnBoot, Ok(distiller) ->
-      sup.add(
-        builder,
-        distillpass.supervised(distillpass.Config(
-          name:,
-          // Derived from the store this boot protected rather than from
-          // the session path again, so the pass writes the very sidecar
-          // the run-start hook reads.
-          directory: memory.directory_of(memory_store),
-          distiller:,
-          clock:,
-          entropy:,
-          wall_ms: settings.memory.wall_ms,
-          logger:,
-        )),
-      )
-  }
-}
-
-// The pipeline's provider surface, over the gateway this boot already
-// routed. The same resolution `client/distill`'s own command performs
-// from `--config`, reached through the catalogue rather than by parsing
-// the file a second time.
-fn distiller(settings: Settings) -> Result(distill.Distiller, String) {
-  use dispatch <- result.map(distill.target(settings.gateway))
-  distill.gateway_distiller(
-    settings.gateway,
-    dispatch,
-    timeout_ms: distill.default_timeout_ms,
-  )
-}
-
 fn with_model_door(
   options: schedulescan.Options,
   policy: schedule.Policy,
@@ -5490,11 +5319,15 @@ fn history_seam(
 // cached byte prefix and is paid for on every request for the life of
 // the session, so a door that could only ever refuse must not be
 // registered. The probe takes no lease and creates nothing (see
-// `memory.probe`): a boot that opened the store would be the very theft
-// `memory.run_lease_ttl_ms` exists to prevent, arriving mid-run and
-// stealing a distillation's expired lease.
+// `memory.probe`), so a boot never contends with a `remember` write.
+//
+// A reachable store also has its notes index brought up to date here, so the
+// first run of a session already carries notes written before the index
+// existed.
 fn memory_seam(
   store_path: String,
+  notes_path: String,
+  inject: memory_config.Injection,
   clock: Clock,
   entropy: fn() -> Int,
   logger: Logger,
@@ -5504,7 +5337,15 @@ fn memory_seam(
       log.info(logger, "memory.ready", [
         field.text(key: "store", value: store_path),
       ])
-      Some(memory.remember_seam(store_path, clock:, entropy:))
+      refresh_notes_index(
+        inject,
+        store_path,
+        notes_path,
+        clock,
+        entropy,
+        logger,
+      )
+      Some(memory.remember_seam(store_path, clock:, entropy:, logger:))
     }
     Error(reason) -> {
       log.warn(logger, "memory.unavailable", [
@@ -5587,16 +5428,26 @@ fn with_history(
 fn render_prompt(
   settings: Settings,
   plane: workspace_plane.WorkspacePlane,
+  rules_path: String,
   tools: List(String),
   available_tools: List(String),
 ) -> Result(system_prompt.Rendered, String) {
   use facts <- result.try(plane.prompt_facts())
   let census = plane.census
   let #(standing, standing_notes) = system_prompt.discover_user(settings.home)
+
+  // The approved-rules file is read here, on the owner, because it is the
+  // owner's file, and it goes last: it follows the operator's and the
+  // project's files so that nothing a person approved can displace them.
+  let #(approved, approved_notes) = proposals.guidance(rules_path)
   let #(guidance, notes) =
     system_prompt.render_guidance(
-      list.append(option.values([standing]), facts.guidance),
-      list.append(standing_notes, facts.guidance_notes),
+      list.flatten([
+        option.values([standing]),
+        facts.guidance,
+        option.values([approved]),
+      ]),
+      list.flatten([standing_notes, facts.guidance_notes, approved_notes]),
     )
   use #(origin, source) <- result.try(
     system_prompt.pack_source(
@@ -5716,6 +5567,61 @@ fn with_schedule_admin(
   case admin {
     None -> options
     Some(admin) -> hub.with_schedules(options, admin)
+  }
+}
+
+// Installs the memory hook the operator chose: the notes index by default,
+// or nothing. The sidecar and store stay protected from jailed writes either
+// way, because that protection does not depend on anything reading them.
+// The notes index is a projection of the store that a `remember` call
+// rewrites, so a note written before the index existed, or by a release that
+// did not maintain it, would stay out of every prompt until the next note. A
+// session open rebuilds it while holding the same writer lease through its
+// publication. A held lease or failure leaves the previous sidecar in place
+// and costs a warning, never the open.
+fn refresh_notes_index(
+  inject: memory_config.Injection,
+  store_path: String,
+  notes_path: String,
+  clock: Clock,
+  entropy: fn() -> Int,
+  logger: Logger,
+) -> Nil {
+  case inject {
+    memory_config.InjectsNothing -> Nil
+    memory_config.InjectsNotes ->
+      case
+        memory.rebuild_notes_index(
+          store_path,
+          notes_path,
+          clock:,
+          generator: ids.generator(clock, seed: entropy()),
+        )
+      {
+        Ok(Nil) -> Nil
+        Error(reason) ->
+          log.warn(logger, "memory.notes_index_unrefreshed", [
+            field.text(key: "index", value: notes_path),
+            field.text(key: "reason", value: reason),
+            field.text(
+              key: "effect",
+              value: "runs keep the previous notes index until the next note "
+                <> "rebuilds it",
+            ),
+          ])
+      }
+  }
+}
+
+fn with_memory_context(
+  hooks: effects.Hooks,
+  inject: memory_config.Injection,
+  read_notes: fn() -> Option(String),
+  clock: Clock,
+) -> effects.Hooks {
+  case inject {
+    memory_config.InjectsNothing -> hooks
+    memory_config.InjectsNotes -> memory.notes_hooks(hooks, read_notes, clock)
   }
 }
 

@@ -84,7 +84,9 @@ import web_view/view/archiving
 import web_view/view/context_breakdown
 import web_view/view/controls
 import web_view/view/lane
+import web_view/view/memory as memory_view
 import web_view/view/peer_links as peer_links_view
+import web_view/view/proposals as proposals_view
 import web_view/view/remembered as remembered_view
 import web_view/view/resume
 import web_view/view/share
@@ -190,6 +192,23 @@ pub type Msg(socket) {
   /// The question's Keep: the page closes it and sends nothing.
   CancellingForget
 
+  /// An Approve button of the owner's proposals review, with the identity of
+  /// the proposal it was drawn on. The page opens the question and sends
+  /// nothing (protocol-change/086).
+  AskingApproval(id: String)
+
+  /// The question's confirm: the page sends the approval that question armed,
+  /// and nothing else, through the shared step like any other command.
+  ConfirmingApproval
+
+  /// The question's way out: the page closes it and sends nothing.
+  CancellingApproval
+
+  /// A Reject button of the owner's proposals review, with the identity of the
+  /// proposal it was drawn on. A rejection writes nothing, so it asks no
+  /// question and is sent through the shared step at once.
+  Rejecting(id: String)
+
   /// A button of the owner's peer-link section (protocol-change/077). It
   /// carries what the server drew on the button, and the component checks it
   /// against its own board and sidebar list again before it acts. The section
@@ -262,6 +281,10 @@ pub fn update(
     AskingForget(armed:) -> #(component.ask_forget(model, armed), effect.none())
     ConfirmingForget -> component.confirm_forget(model)
     CancellingForget -> #(component.cancel_forget(model), effect.none())
+    AskingApproval(id:) -> #(component.ask_approval(model, id), effect.none())
+    ConfirmingApproval -> component.confirm_approval(model)
+    CancellingApproval -> #(component.cancel_approval(model), effect.none())
+    Rejecting(id:) -> component.reject_proposal(model, id)
     Peering(press:) -> component.peering(model, press)
     Linking(strand:) -> component.linking(model, strand)
   }
@@ -270,7 +293,13 @@ pub fn update(
   // read is owed on the page's own cadence. When a read has changed it, the
   // daemon is asked which of the sign-ins it names have since ended.
   let #(model, judged) =
-    component.judge_logins(held, component.want_permissions(model))
+    component.judge_logins(
+      held,
+      model
+        |> component.want_permissions
+        |> component.want_proposals
+        |> component.want_memory,
+    )
   let effects = effect.batch([effects, judged])
 
   // A notice that changed is a new element, which fades from the start. One
@@ -421,8 +450,32 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
           submit: form_submit_text(Linking),
         ),
       ),
+      case component.may_review_proposals(model) {
+        True ->
+          proposals_view.view(
+            component.proposals_kept(model),
+            component.proposals_state(model),
+            component.proposals_notice(model),
+            proposals_view.Presses(
+              ask: AskingApproval,
+              approve: ConfirmingApproval,
+              keep: CancellingApproval,
+              reject: Rejecting,
+            ),
+          )
+        False -> element.none()
+      },
+      case component.may_review_proposals(model) {
+        True ->
+          memory_view.view(
+            component.memory_kept(model),
+            component.memory_notice(model),
+          )
+        False -> element.none()
+      },
     ),
     component.needing(model),
+    component.proposals_pending(model),
     component.workspace_digest(model),
   )
 }

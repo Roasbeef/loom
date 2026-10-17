@@ -1266,6 +1266,106 @@ pub fn programmed(program: String, output: String) -> session_channel.Update {
   )
 }
 
+/// A capture of a turn that searches history for `deploy` and gets back
+/// `details` (the record the `history_search` tool writes, or whatever a
+/// damaged record held), then the answer: the rows a recall step draws.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.recalled(Some(json.Object([#("hits", json.Array([]))])))
+/// ```
+pub fn recalled(details: Option(json.JsonValue)) -> session_channel.Update {
+  let outcome =
+    message.ToolResultMessage(
+      "r1",
+      "history_search",
+      [
+        message.ToolResultText(
+          "3 hits from the repository history index.",
+          None,
+        ),
+      ],
+      details,
+      None,
+      None,
+      False,
+      12_000,
+    )
+  capture_of(
+    [
+      item(1, 10_000, said("what did we decide about deploys", None)),
+      item(
+        2,
+        11_000,
+        assistant([
+          call(
+            "r1",
+            "history_search",
+            json.Object([#("query", json.String("deploy"))]),
+          ),
+        ]),
+      ),
+      item(3, 12_000, outcome),
+      item(4, 13_000, assistant([message.AssistantText("Found it.", None)])),
+    ],
+    None,
+    [],
+    [],
+  )
+}
+
+/// The details of a `history_search` that found the three hits the recall
+/// tests read: two from one session and one from another, the last holding
+/// markup.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.three_hits()
+/// ```
+pub fn three_hits() -> json.JsonValue {
+  let hit = fn(session, entry, kind, snippet) {
+    json.Object([
+      #("session", json.String(session)),
+      #("entry", json.String(entry)),
+      #("kind", json.String(kind)),
+      #("ts", json.Int(1_760_140_800_000)),
+      #("snippet", json.String(snippet)),
+    ])
+  }
+  let one = "019a3c1e-5b7d-7c3e-9a10-2f4b6c8d0e1f"
+  let other = "019b44aa-0000-7000-8000-00000000000a"
+  json.Object([
+    #(
+      "hits",
+      json.Array([
+        hit(
+          one,
+          "019a3c1e-aaaa-7bbb-8ccc-0123456789a1",
+          "assistant",
+          "we deploy with make release",
+        ),
+        hit(
+          one,
+          "019a3c1e-aaaa-7bbb-8ccc-0123456789b2",
+          "user",
+          "how do I deploy this",
+        ),
+        hit(
+          other,
+          "019b44aa-0000-7000-8000-0000000000c3",
+          "note",
+          "never <b>deploy</b> on a friday",
+        ),
+      ]),
+    ),
+    #("hit_count", json.Int(3)),
+    #("scope", json.String("repository")),
+    #("limit", json.Int(10)),
+  ])
+}
+
 fn int_cost(tokens: Int, rate: Float) -> Float {
   case tokens {
     0 -> 0.0
@@ -1278,9 +1378,9 @@ fn int_cost(tokens: Int, rate: Float) -> Float {
 pub const memory_digest =
   "- (fact) the gate is make check\n- (decision) keep <b>R6</b> portable"
 
-/// The message the daemon attaches to a run as distilled memory, in the
-/// shape `client/memory.wrapped` writes: the attribution, then the digest
-/// in a `loom-memory` fence.
+/// The message an older release attached to a run as distilled memory: the
+/// attribution, then the digest in a `loom-memory` fence. Nothing writes it
+/// any more, but sessions saved by that release still hold it.
 ///
 /// ## Examples
 ///
@@ -1297,8 +1397,8 @@ pub fn memory_context() -> String {
 }
 
 /// A capture of `main` holding the memory context and then the owner's
-/// prompt and an answer, which is how a run's records read when the
-/// daemon has distilled memory to attach.
+/// prompt and an answer, which is how a run's records read in a session saved
+/// while the digest existed.
 ///
 /// ## Examples
 ///

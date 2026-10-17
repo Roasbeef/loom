@@ -95,6 +95,7 @@ import tools/grep
 import tools/history as history_tool
 import tools/job as job_tool
 import tools/lsp as lsp_tool
+import tools/propose
 import tools/remember
 import tools/schedule as schedule_tool
 import tools/tool.{type Registry, type Tool}
@@ -477,6 +478,21 @@ pub fn owner_tools(
       },
     ]),
   )
+}
+
+/// The proposal tool, which acts on the session's own queue and so belongs to
+/// the owner. It is its own contribution rather than a parameter of
+/// `owner_tools`: it needs no plane that may be absent, and the registry's
+/// order, which is the prompt's tool index, is unchanged for every other tool.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // contributions.proposal_tools(proposals.seam(wiring))
+/// ```
+///
+pub fn proposal_tools(seam: propose.Proposals) -> List(Tool) {
+  [propose.tool(seam)]
 }
 
 /// Interleaves the workspace's tools with the owner's in the one order the

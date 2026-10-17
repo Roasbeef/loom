@@ -75,10 +75,10 @@ The runtime passes accounting separately into the machine's settlement
 observation. Settlement inserts one usage row under the request's existing
 reserved usage ID. The row's `usage` is the aggregate; its existing `details`
 field carries a versioned, typed final-attempt observation and attempt count
-in its own namespace, preserving existing details such as distillation phase.
+in its own namespace, preserving existing details such as an auxiliary request's phase.
 The assistant entry, usage row, and next operation state still commit in one
 transaction. A machine-level retry creates its own row as it does today.
-Summary and distillation requests preserve failure usage through their own
+Summary and glance requests preserve failure usage through their own
 existing ledger owner.
 
 ## Evidence and presentation

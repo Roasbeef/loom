@@ -209,12 +209,35 @@ these forks because they define the same modules.
   the `.db` file with no check, and no cleanup of `-wal`/`-shm`/
   `-journal` siblings, once let a stale file from an interrupted run
   make a fresh open see the database as locked.
+- **`entry_fts` rows carry `kind` and `ts`, and the schema is versioned.** The
+  `kind` (`user`, `assistant`, `tool`, `summary`, `note`) and the `ts` (in
+  milliseconds) are read from the `Entry` at index time. The version is
+  `PRAGMA user_version` (now 1), and `initialize` migrates an older file in
+  place: it renames the table, copies the rows with an empty `kind` and a `ts`
+  of 0, drops the old table and sets every cursor to generation -1. It never
+  deletes the file. A FTS5 table cannot be altered, so any new column needs
+  another version bump and a copy migration in `migrate`.
+- **`search.Query` is the one query shape.** It holds the text, a `Words` or
+  `Raw` syntax, an optional `kind`, an optional `before` entry id and the
+  limit, and `query`, `query_in_session` and `query_authorized` all take it.
+  `Words` quotes each token as an FTS5 prefix term, ANDs them and keeps a bare
+  `OR` as the operator, so no user text is a syntax error. `before` filters
+  `entry_id < before` and switches the order from rank to newest first; UUIDv7
+  text order is commit-time order.
+- **Exactly one custom entry type is indexed.** `events/search` indexes
+  `memory/note` under kind `note`, with the note's title, description and text
+  as its words. `note_entry_type` mirrors `tools/remember.note_type`, which this
+  package cannot import.
 
 `GoalChanged` is a targeted invalidation on `Outputs` (protocol-change/056).
 Its publisher is the advisor after a successful durable goal write or deletion;
 the gateway relays it to subscribed peers, whose session lane re-reads the
 reserved cell with `goal_get`. It carries neither durable state nor a transcript
 frontier and does not wake projection subscribers on the six hint topics.
+`ProposalsChanged` is a data-free invalidation on `Outputs`, like `GoalChanged`
+(protocol-change/086). Unlike it, it is published under an unidentified key
+derived from the domain's memory store path, which every gateway of the domain
+subscribes to, because the queue belongs to the domain and not to one session.
 
 ## Goal invalidation on the live feed
 

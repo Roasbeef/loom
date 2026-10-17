@@ -810,6 +810,12 @@ pub type GuidanceOrigin {
   /// `--config` is trusted: it is the operator's file, not the
   /// workspace's.
   UserDefaultFile
+
+  /// The rules file the host owns (`client/proposals`), whose text a person
+  /// approved one proposal at a time. It is carried after every other file,
+  /// and framed as rules a reviewer accepted, not as the operator's own words
+  /// and not as project text.
+  ApprovedRule
 }
 
 /// One instruction file that will reach the prompt.
@@ -991,7 +997,7 @@ pub fn render_file(file: GuidanceFile) -> String {
 }
 
 /// How an origin reads in the fence the model sees. The pack's framing
-/// prose is written against exactly these two words, so they are part of
+/// prose is written against exactly these three words, so they are part of
 /// the prompt's contract rather than a label anyone may reword.
 ///
 /// ## Examples
@@ -999,12 +1005,15 @@ pub fn render_file(file: GuidanceFile) -> String {
 /// ```gleam
 /// assert system_prompt.origin_name(system_prompt.UserDefaultFile)
 ///   == "user-default"
+/// assert system_prompt.origin_name(system_prompt.ApprovedRule)
+///   == "approved-proposal"
 /// ```
 ///
 pub fn origin_name(origin: GuidanceOrigin) -> String {
   case origin {
     WorkspaceFile -> "workspace"
     UserDefaultFile -> "user-default"
+    ApprovedRule -> "approved-proposal"
   }
 }
 

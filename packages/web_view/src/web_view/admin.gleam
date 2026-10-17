@@ -829,6 +829,7 @@ pub fn view(model: Model) -> Element(Msg) {
     [element.none(), body(model)],
     element.none(),
     0,
+    0,
     "",
   )
 }

@@ -249,7 +249,7 @@ pub fn unknown_usage(billing: usage_evidence.Billing) -> Usage {
 }
 
 /// Builds the ledger-details object for one request report: the caller's
-/// own fields, such as the distillation phase, followed by the versioned
+/// own fields, such as the auxiliary request's phase, followed by the versioned
 /// accounting namespace carrying the attempt count and final observation.
 /// A row written without the namespace reads back as one historical
 /// observation, so a caller with nothing else to record passes `[]`.

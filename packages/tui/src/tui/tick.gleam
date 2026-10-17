@@ -161,16 +161,17 @@ pub fn update_tick(model: Model) -> Model {
 // Preserve the original model for the quiet-time comparison after all
 // reads settle.
 //
-// The first eight reads (`session_step.service_reads`) take the shared
+// The first eleven reads (`session_step.service_reads`) take the shared
 // record alone and read nothing of the terminal, so they run as one chain
 // over `Shared` and are held once, before
 // the terminal's activity poll. One hold moves their effects into the outbox
 // in the order the chain decided them and applies their editor notices after
-// the last, and since none of the eight reads what a notice changes, the
+// the last, and since none of the ten reads what a notice changes, the
 // model is the same as if each had been held on its own.
 fn settle_tick(model: Model, drained: Model) -> Model {
   let drained =
     drained
+    |> watch_memory
     |> tui_model.run_shared(session_step.service_reads)
     |> session_control.service_activity
     |> tui_model.run_shared(surfaces.service_block_summaries)
@@ -189,6 +190,32 @@ fn settle_tick(model: Model, drained: Model) -> Model {
     ),
     view: View(..drained.view, quiet_for_ms:),
   )
+}
+
+/// Marks the memory overview as watched exactly while its overlay is open.
+///
+/// The shared step reads the board again once it is a minute old, but only
+/// for a host that is showing it (`Shared.memory_watch`), because a change to
+/// memory pushes nothing and a closed overview should cost nothing. The
+/// overlay is the terminal's own fact, so the tick derives the watch from it
+/// and any way of leaving the overlay stops the read.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // tick.watch_memory(model).shared.memory_watch
+/// ```
+@internal
+pub fn watch_memory(model: Model) -> Model {
+  let watch = case model.view.overlay {
+    tui_model.MemoryOverview(_) -> session_model.WatchingMemory
+    _ -> session_model.NotWatchingMemory
+  }
+  case model.shared.memory_watch == watch {
+    True -> model
+    False ->
+      Model(..model, shared: shared_set.memory_watch(model.shared, watch))
+  }
 }
 
 /// What a tick leaves `Model.connection_backlog` as, given the model before

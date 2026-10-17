@@ -109,12 +109,12 @@
 
 import client/advisor
 import client/advisorslice
+import client/auxiliary.{type Summarizer}
 import client/blocksummarybook.{
   type Job, type Launch, type Pace, type Source, AdvisorMessage, Job, LiveAsk,
   Reasoning, SettledAsk,
 }
 import client/catalog
-import client/distill.{type Distiller}
 import client/notes
 import core/entry.{type Entry}
 import core/ids.{type EntryId, type OpId, type Seq}
@@ -200,7 +200,7 @@ pub const scan_limit = 64
 /// reach another service. The confidentiality check compares other
 /// entries' endpoints with this entry's (`endpoint`).
 pub type Route {
-  Route(provider: String, summarizer: Distiller)
+  Route(provider: String, summarizer: Summarizer)
 }
 
 // --- the machine's state space ---------------------------------------------
@@ -334,7 +334,7 @@ pub fn route(gateway: provider_gateway.Gateway) -> Result(Route, String) {
   let pinned = model.ResolvedModel(..resolved, thinking: model.ThinkingOff)
   Route(
     provider: resolved.provider,
-    summarizer: distill.capped_gateway_distiller(
+    summarizer: auxiliary.capped_gateway_summarizer(
       gateway,
       model.ForResolved(resolved: pinned),
       timeout_ms: request_timeout_ms,
@@ -1419,7 +1419,7 @@ fn ask(wiring: Wiring, source: Source, text: String) -> Result(String, String) {
   use answer <- result.try(
     case wiring.route.summarizer.ask(request(source, text)) {
       Ok(answer) -> {
-        use Nil <- result.try(distill.record_request(
+        use Nil <- result.try(auxiliary.record_request(
           wiring.session,
           answer.accounting,
           "block-summary",
@@ -1427,7 +1427,7 @@ fn ask(wiring: Wiring, source: Source, text: String) -> Result(String, String) {
         Ok(answer)
       }
       Error(failure) -> {
-        use Nil <- result.try(distill.record_request(
+        use Nil <- result.try(auxiliary.record_request(
           wiring.session,
           failure.accounting,
           "block-summary",
