@@ -5752,9 +5752,13 @@ fn serving(harness: Harness) -> address.Address(orchestrator_port.Message) {
       fn(_session, _command) { Error(orchestrator_port.peer_unserved) },
       fn(_session) { Error("not_found") },
       orchestrator_port.declining(),
-      daemon_main.spawn_host(configured, fn(_spawner, _parent) {
-        Ok(agency.delegate_endpoint(harness.config))
-      }),
+      daemon_main.spawn_host(
+        configured,
+        fn(_spawner, _parent) { Ok(agency.delegate_endpoint(harness.config)) },
+        fn(_spawner, _parent) {
+          agency.delegate_endpoint(harness.config).release()
+        },
+      ),
       orchestrator_port.unheld,
       orchestrator_port.unreported(),
     )
@@ -5816,6 +5820,47 @@ pub fn a_spawner_drives_the_delegate_agency_through_the_port_test() {
       port,
       parent,
       remote_spawn.CallSite(..site, source_index: 1),
+      0,
+      tools,
+      remote_request("late"),
+      5000,
+    )
+    == Ok(Error(remote_spawn.ParentRunEnded))
+  close(harness)
+}
+
+pub fn a_spawner_releases_a_parent_through_the_port_and_its_children_stop_test() {
+  let harness = start_harness(Hangs)
+  let port = serving(harness)
+  let parent = remote_parent()
+  let tools = remote_delegation().parent_tools
+  let assert Ok(Ok(spawned)) =
+    orchestrator_port.ask_spawn(
+      port,
+      parent,
+      site_of("turn-1:tools", 0),
+      0,
+      tools,
+      remote_request("hang around"),
+      5000,
+    )
+    as "the spawn must be answered"
+
+  // The release is answered with the number of children it stopped, and the
+  // child's run records why it stopped.
+  assert orchestrator_port.ask_release(port, parent, 5000) == Ok(Ok(1))
+  assert until(
+    fn() { run_for(harness, spawned.handle).stop == child_run.Released },
+    200,
+  )
+
+  // Asking again, as a drainer does after a lost reply, stops nothing more, and
+  // a spawn that comes after is refused over the same port.
+  assert orchestrator_port.ask_release(port, parent, 5000) == Ok(Ok(0))
+  assert orchestrator_port.ask_spawn(
+      port,
+      parent,
+      site_of("turn-2:tools", 0),
       0,
       tools,
       remote_request("late"),

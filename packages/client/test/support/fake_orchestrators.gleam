@@ -71,6 +71,9 @@ pub type Report {
     /// The window each of those `Join`s asked it to wait, in milliseconds, in
     /// the same order.
     join_windows: List(Int),
+    /// The parent of every `Release` sent to it, in order, including resends
+    /// and the ones the network lost.
+    releases: List(remote_spawn.Parent),
   )
 }
 
@@ -95,6 +98,10 @@ type Ask {
     window_ms: Int,
     reply: Subject(Result(List(Joined), peer_mail.Failure)),
   )
+  AskRelease(
+    parent: remote_spawn.Parent,
+    reply: Subject(Result(Int, peer_mail.Failure)),
+  )
 }
 
 type State {
@@ -106,6 +113,7 @@ type State {
     joins: Int,
     join_windows: List(Int),
     settled: List(Handle),
+    releases: List(remote_spawn.Parent),
   )
 }
 
@@ -127,6 +135,7 @@ pub fn start(name: String, mode: Mode) -> Box {
         joins: 0,
         join_windows: [],
         settled: [],
+        releases: [],
       ),
     )
     |> actor.on_message(handle)
@@ -176,6 +185,9 @@ pub fn reach(
     join: fn(name, _parent, handles, window_ms) {
       ask(boxes, name, fn(reply) { AskJoin(handles:, window_ms:, reply:) })
     },
+    release: fn(name, parent) {
+      ask(boxes, name, fn(reply) { AskRelease(parent:, reply:) })
+    },
   )
 }
 
@@ -206,6 +218,7 @@ fn handle(state: State, call: Call) -> actor.Next(State, Call) {
           children: dict.values(state.children),
           joins: state.joins,
           join_windows: list.reverse(state.join_windows),
+          releases: list.reverse(state.releases),
         ),
       )
       actor.continue(state)
@@ -220,7 +233,28 @@ fn handle(state: State, call: Call) -> actor.Next(State, Call) {
       )
     Asked(AskJoin(handles:, window_ms:, reply:)) ->
       join(state, handles, window_ms, reply)
+    Asked(AskRelease(parent:, reply:)) -> release(state, parent, reply)
   }
+}
+
+// A release is recorded whatever the network does to its answer, as a real
+// orchestrator acts before it replies. Its answer is the number of children the
+// orchestrator holds, which a test reads as how many it stopped.
+fn release(
+  state: State,
+  parent: remote_spawn.Parent,
+  reply: Subject(Result(Int, peer_mail.Failure)),
+) -> actor.Next(State, Call) {
+  let state = State(..state, releases: [parent, ..state.releases])
+  case state.mode {
+    Down | DownFirst(..) -> process.send(reply, Error(peer_mail.Unreachable))
+    Refuses(reason:) ->
+      process.send(reply, Error(peer_mail.Refused(reason)))
+    LosesReplies | LosesFirst(..) ->
+      process.send(reply, Error(peer_mail.Unreachable))
+    Up -> process.send(reply, Ok(dict.size(state.children)))
+  }
+  actor.continue(state)
 }
 
 // A spawn is adopted by call site: the first one makes a child and every later

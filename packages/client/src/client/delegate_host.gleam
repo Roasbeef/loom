@@ -29,22 +29,38 @@
 //// 30 second window the sender gives a spawn. A session that fails to open ends
 //// the wait with the registry's own account of the failure.
 ////
+//// ## Releasing
+////
+//// A `Release` says the parent session was deleted, so the pair's session is to
+//// be stopped and deleted. It must not go through `resolver`: that creates the
+//// session of a pair that has none, which is right for a `Spawn` and would make
+//// a session only to delete it for a `Release` that arrived first or twice.
+//// `resolve_existing` reads the pair's row and finds the Agency only when a
+//// session is open and resident, and `releaser` stops its children, then hands
+//// the session to the registry to delete when its slot drains. A pair with no
+//// row answers zero and creates nothing, so a `Spawn` that arrives after its
+//// `Release` is the only thing that can make the session, and it is then
+//// refused when the row says released.
+////
 //// ## Flow
 ////
-//// `resolver` → `creation` → `terms_of`
+//// `resolver` → `creation` → `terms_of` → `resolve_existing` → `releaser`
 ////
 //// 1. `resolver` returns the function the spawn host calls for every message.
 //// 2. `creation` builds the registration a first spawn makes, from the
 ////    spawner's placement and profile.
 //// 3. `terms_of` turns the spawner's table into the plain figures the Agency
 ////    judges a spawn by.
+//// 4. `resolve_existing` finds the Agency of a pair that already has a session,
+////    and creates nothing.
+//// 5. `releaser` returns the function the spawn host calls for a `Release`.
 
 import client/agency
 import client/daemon/manager
 import client/remote_spawn.{type Parent, type SpawnRefusal}
 import client/spawners.{type Spawner, InDirectory, InPool, OnExecutor}
 import core/ids
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import host/bootstrap
 import storage/catalogue
@@ -171,6 +187,123 @@ pub fn resolver(
   }
 }
 
+/// What a pair already has, as `resolve_existing` finds it.
+pub type Existing {
+  /// The pair has no delegate session, and none was made.
+  NoSession
+
+  /// The pair has a session.
+  Existing(
+    /// This daemon's identity for the session.
+    session_id: String,
+    /// How far its release has got.
+    state: catalogue.DelegateState,
+    /// Its Agency when the session is open and resident, or `None` when it is
+    /// closed: nothing runs in a closed session, so there is nothing to stop.
+    endpoint: Option(agency.DelegateEndpoint),
+  )
+}
+
+/// The function the spawn host calls to find the session a pair already has,
+/// without creating one.
+///
+/// A session that is opening is waited for, up to `open_budget_ms`, because its
+/// Agency is about to hold children. One that is closed, stopping or blocked has
+/// no Agency to ask, and the answer says so.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let find = delegate_host.resolve_existing(context)
+/// // find(spawner, parent) == Ok(delegate_host.NoSession)
+/// ```
+pub fn resolve_existing(
+  context: Context(instance),
+) -> fn(Spawner, Parent) -> Result(Existing, SpawnRefusal) {
+  fn(spawner: Spawner, parent: Parent) {
+    use found <- result.try(
+      manager.delegate_pair(context.registry, spawner.name, parent.session)
+      |> result.map_error(fn(error) {
+        remote_spawn.StoreFailure(reason: describe(error))
+      }),
+    )
+    case found {
+      None -> Ok(NoSession)
+      Some(row) -> {
+        use endpoint <- result.map(open_endpoint(context, row.session_id))
+        Existing(session_id: row.session_id, state: row.state, endpoint:)
+      }
+    }
+  }
+}
+
+// The Agency of a session if one is running, and nothing if the session is not
+// open. An opening session is waited for like a first message waits.
+fn open_endpoint(
+  context: Context(instance),
+  session_id: String,
+) -> Result(Option(agency.DelegateEndpoint), SpawnRefusal) {
+  case manager.get(context.registry, session_id) {
+    Error(error) -> Error(remote_spawn.StoreFailure(reason: describe(error)))
+    Ok(manager.View(status: manager.Opening(_), ..))
+    | Ok(manager.View(status: manager.Resident(_), ..)) ->
+      resident(context, session_id) |> result.map(Some)
+    Ok(manager.View(status: manager.Reserved, ..))
+    | Ok(manager.View(status: manager.Saved, ..))
+    | Ok(manager.View(status: manager.Stopping(_), ..))
+    | Ok(manager.View(status: manager.RecoveryBlocked(_), ..)) -> Ok(None)
+  }
+}
+
+/// The function the spawn host calls for a `Release`: stops the pair's children
+/// and has the registry delete its session, answering how many children it
+/// stopped.
+///
+/// A pair with no row answers `Ok(0)` and nothing is created. A pair whose row
+/// is already releasing or released also answers zero without asking the Agency
+/// again, and still hands the session to the registry, which finishes a deletion
+/// that failed. The stop comes before the hand-over, so every child is recorded
+/// stopped with its reason before the session can go.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let release = delegate_host.releaser(context)
+/// // release(spawner, parent) == Ok(0)
+/// ```
+pub fn releaser(
+  context: Context(instance),
+) -> fn(Spawner, Parent) -> Result(Int, SpawnRefusal) {
+  let find = resolve_existing(context)
+  fn(spawner: Spawner, parent: Parent) {
+    use existing <- result.try(find(spawner, parent))
+    case existing {
+      NoSession -> Ok(0)
+      Existing(state:, endpoint:, ..) -> {
+        use stopped <- result.try(case state, endpoint {
+          catalogue.Open, Some(endpoint) -> endpoint.release()
+          catalogue.Open, None
+          | catalogue.Releasing, _
+          | catalogue.Released, _
+          -> Ok(0)
+        })
+        use Nil <- result.map(
+          manager.release_delegate(
+            context.registry,
+            spawner.name,
+            parent.session,
+            context.sessions_directory,
+          )
+          |> result.map_error(fn(error) {
+            remote_spawn.StoreFailure(reason: describe(error))
+          }),
+        )
+        stopped
+      }
+    }
+  }
+}
+
 // The Agency of a session once it is resident. The registry's view is read each
 // time and not the slot alone, so a session whose builder failed ends the wait
 // at once with the registry's account instead of running out the budget.
@@ -210,6 +343,9 @@ fn resident(
 
 fn refused(error: manager.DelegateError) -> SpawnRefusal {
   case error {
+    // The parent session was deleted, so there is no one for a child to report
+    // to: the refusal a spawn under an ended run gets.
+    manager.DelegateReleased -> remote_spawn.ParentRunEnded
     manager.DelegateAtLimit(held:) ->
       remote_spawn.CapReached(cap: remote_spawn.MaxSessions, limit: held)
     manager.DelegateFailed(manager.Catalogue(catalogue.Invalid(_))) ->

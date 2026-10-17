@@ -49,14 +49,26 @@
 ////    the domain itself.
 //// 8. `step` rebuilds the `selector` and stops once `ShuttingDown` has no slots
 ////    or domains left.
+//// 9. `delete_registration` writes the releases a deleted parent owes
+////    (`owe_releases`) before it removes the registration, and
+////    `remote_releases` and `settle_remote_release` are how the release
+////    drainer reads and settles them.
+//// 10. `delegate_now` admits the delegate session of a spawner's pair and refuses
+////    one that is not open. `release_now` begins a release by marking the row
+////    and stopping the slot, `finish_drained_release` deletes the session when
+////    the slot drains, and `sweep_now` deletes what a failed deletion left.
 
 import broker/internal/call
 import broker/internal/ffi_crypto
 import client/daemon/domain as domain_service
 import client/distill
 import client/distillpass
+import client/internal/ffi_os
 import client/internal/instance_host as host
 import client/internal/instance_owner as custody
+import client/remote_child
+import client/remote_release
+import core/clock
 import core/glance
 import core/ids
 import filepath
@@ -232,6 +244,11 @@ pub type DelegateError {
     /// How many the spawner holds.
     held: Int,
   )
+
+  /// The pair's session was released: its spawner reported that the parent
+  /// session was deleted, so the session accepts no more children and is being
+  /// deleted.
+  DelegateReleased
 
   /// The registry refused or failed.
   DelegateFailed(
@@ -643,6 +660,28 @@ type Message(instance) {
   /// The delegate record of a session, read without waking it.
   DelegateOf(String, Subject(Result(Option(catalogue.Delegate), Error)))
 
+  /// Installs the bell a deletion rings after it writes the releases it owes.
+  SetReleaseBell(fn() -> Nil)
+
+  /// Every release a deleted parent session still owes an orchestrator.
+  RemoteReleases(Subject(Result(List(catalogue.RemoteRelease), Error)))
+
+  /// Deletes one release row, once the orchestrator has answered.
+  SettleRemoteRelease(catalogue.RemoteRelease, Subject(Result(Nil, Error)))
+
+  /// The delegate record of a (spawner, parent session) pair, read without
+  /// creating or waking anything.
+  DelegatePair(
+    String,
+    String,
+    Subject(Result(Option(catalogue.Delegate), Error)),
+  )
+
+  /// Releases the delegate session of a pair: marks it releasing, stops its
+  /// slot, and deletes it once the slot has drained. The strings are the
+  /// spawner, the parent session and the sessions directory.
+  ReleaseDelegate(String, String, String, Subject(Result(Nil, Error)))
+
   /// Deletes the delegate sessions whose spawner has been silent past its
   /// retention, and answers how many went.
   SweepDelegates(fn(String) -> Int, Int, String, Subject(Result(Int, Error)))
@@ -827,6 +866,16 @@ type Book(instance) {
       #(access.Digest, String),
       #(access.Principal, access.Authority),
     ),
+    // The delegate sessions whose release has stopped their slot, keyed by
+    // session and holding the sessions directory the deletion is checked
+    // against. The slot's drain is what deletes the session (`retired`), and a
+    // restart forgets the map, which the retention sweep covers: it deletes
+    // every delegate session that is not open and has no slot.
+    releasing: Dict(String, String),
+    // Rung after a deletion writes the releases it owes, so the daemon's release
+    // drainer, which sleeps when nothing is owed, wakes for them. A registry
+    // that has no drainer rings nothing.
+    release_bell: fn() -> Nil,
   )
 }
 
@@ -1614,6 +1663,8 @@ pub fn start(
             commands:,
             parent:,
             authority: dict.new(),
+            releasing: dict.new(),
+            release_bell: fn() { Nil },
           )
         sm.initialised(Ready, book)
         |> sm.selecting(selector(book))
@@ -1844,6 +1895,114 @@ pub fn delegate_of(
   id: String,
 ) -> Result(Option(catalogue.Delegate), Error) {
   call.try_call(manager.commands, waiting: 5000, sending: DelegateOf(id, _))
+  |> result.unwrap(Error(Unavailable))
+}
+
+/// Installs the bell a deletion rings after it writes the releases it owes
+/// (protocol-change/084, phase 2). The daemon's release drainer sleeps when
+/// nothing is owed, and the bell is what wakes it for a row written later. The
+/// registry starts with a bell that rings nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.on_releases_owed(registry, fn() { peer_outbox_drain.poke(name) })
+/// ```
+@internal
+pub fn on_releases_owed(manager: Manager(instance), bell: fn() -> Nil) -> Nil {
+  process.send(manager.commands, SetReleaseBell(bell))
+}
+
+/// Every release a deleted parent session still owes an orchestrator
+/// (protocol-change/084, phase 2). The daemon's release drainer reads it once per
+/// pass; the rows are written by the deletion itself (`delete_session`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.remote_releases(registry) == Ok([])
+/// ```
+@internal
+pub fn remote_releases(
+  manager: Manager(instance),
+) -> Result(List(catalogue.RemoteRelease), Error) {
+  call.try_call(manager.commands, waiting: 5000, sending: RemoteReleases)
+  |> result.unwrap(Error(Unavailable))
+}
+
+/// Deletes a release row once the orchestrator has answered it. A row that is
+/// already gone is not an error.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.settle_remote_release(registry, release) == Ok(Nil)
+/// ```
+@internal
+pub fn settle_remote_release(
+  manager: Manager(instance),
+  release: catalogue.RemoteRelease,
+) -> Result(Nil, Error) {
+  call.try_call(manager.commands, waiting: 5000, sending: SettleRemoteRelease(
+    release,
+    _,
+  ))
+  |> result.unwrap(Error(Unavailable))
+}
+
+/// Reads the delegate record of a (spawner, parent session) pair without
+/// creating, opening or touching anything: `None` when the pair has no session.
+///
+/// A release asks this first, because a release for a pair that was never seen
+/// must not make a session only to delete it (`delegate_session` does).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.delegate_pair(registry, "laptop", parent) == Ok(option.None)
+/// ```
+@internal
+pub fn delegate_pair(
+  manager: Manager(instance),
+  spawner: String,
+  parent_session: String,
+) -> Result(Option(catalogue.Delegate), Error) {
+  call.try_call(manager.commands, waiting: 5000, sending: DelegatePair(
+    spawner,
+    parent_session,
+    _,
+  ))
+  |> result.unwrap(Error(Unavailable))
+}
+
+/// Releases the delegate session of a pair, because its spawner reported the
+/// parent session deleted (protocol-change/084, phase 2).
+///
+/// The row moves to releasing, so no spawn is admitted for the pair from then
+/// on (`delegate_session` answers `DelegateReleased`), and the session's slot,
+/// if it has one, is stopped. The session and its row are deleted when the slot
+/// has drained, or at once when it has none. Deleting the session deletes
+/// everything stored under it. A pair with no row is `Ok` and nothing happens,
+/// and a repeat tries the deletion again if the first failed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.release_delegate(registry, "laptop", parent, sessions) == Ok(Nil)
+/// ```
+@internal
+pub fn release_delegate(
+  manager: Manager(instance),
+  spawner: String,
+  parent_session: String,
+  sessions: String,
+) -> Result(Nil, Error) {
+  call.try_call(manager.commands, waiting: 5000, sending: ReleaseDelegate(
+    spawner,
+    parent_session,
+    sessions,
+    _,
+  ))
   |> result.unwrap(Error(Unavailable))
 }
 
@@ -3200,6 +3359,40 @@ fn handle(
       )
       sm.keep(book)
     }
+    SetReleaseBell(bell) -> sm.keep(Book(..book, release_bell: bell))
+    RemoteReleases(reply) -> {
+      process.send(
+        reply,
+        catalogue.remote_releases(book.catalogue) |> result.map_error(Catalogue),
+      )
+      sm.keep(book)
+    }
+    SettleRemoteRelease(release, reply) -> {
+      process.send(
+        reply,
+        catalogue.settle_remote_release(
+          book.catalogue,
+          release.parent_session,
+          release.orchestrator,
+        )
+          |> result.map_error(Catalogue),
+      )
+      sm.keep(book)
+    }
+    DelegatePair(spawner, parent_session, reply) -> {
+      process.send(
+        reply,
+        catalogue.delegate_for(book.catalogue, spawner, parent_session)
+          |> result.map_error(Catalogue),
+      )
+      sm.keep(book)
+    }
+    ReleaseDelegate(spawner, parent_session, sessions, reply) -> {
+      let #(book, outcome) =
+        release_now(book, spawner, parent_session, sessions)
+      process.send(reply, outcome)
+      step(phase, book)
+    }
     SweepDelegates(retain_ms, now_ms, sessions, reply) -> {
       process.send(reply, sweep_now(book, retain_ms, now_ms, sessions))
       sm.keep(book)
@@ -3843,7 +4036,7 @@ fn finish_delete_now(
     True -> Error(AdminBusy)
     False -> Ok(Nil)
   })
-  remove_registration(book, id, sessions)
+  delete_registration(book, id, sessions)
 }
 
 fn delete_now(phase, book: Book(instance), caller, epoch, id, sessions) {
@@ -3853,7 +4046,53 @@ fn delete_now(phase, book: Book(instance), caller, epoch, id, sessions) {
     False -> Ok(Nil)
   })
   use Nil <- result.try(refuse_moved(book, id))
+  delete_registration(book, id, sessions)
+}
+
+// An owner's deletion of a session: the releases it owes come first, and the
+// registration second. The order is what makes a crash between them safe (see
+// `client/remote_release`). The rows are written here, in the registry's turn
+// and before the registration leaves, because the stubs that name the
+// orchestrators are in the session's own file and are gone with it.
+//
+// A file that cannot be read owes nothing: a session whose file is unreadable
+// could not have been waited on, and its children run to their deadlines as they
+// did before releases existed. A catalogue that cannot take the rows refuses
+// the deletion, since the same catalogue would be taking the deletion next.
+fn delete_registration(
+  book: Book(instance),
+  id: String,
+  sessions: String,
+) -> Result(catalogue.Registration, AdminError) {
+  use Nil <- result.try(owe_releases(book, id))
   remove_registration(book, id, sessions)
+}
+
+fn owe_releases(book: Book(instance), id: String) -> Result(Nil, AdminError) {
+  use record <- result.try(
+    catalogue.get(book.catalogue, id) |> result.map_error(AdminMetadata),
+  )
+  let read =
+    remote_release.stubs_at(
+      record.path,
+      "delete-read:" <> id,
+      clock.from_function(ffi_os.system_time_ms),
+    )
+  case read |> result.map(remote_child.holders) {
+    Ok([_, ..] as holders) -> {
+      use Nil <- result.map(
+        catalogue.write_remote_releases(
+          book.catalogue,
+          id,
+          holders,
+          now_ms: ffi_os.system_time_ms(),
+        )
+        |> result.map_error(AdminMetadata),
+      )
+      book.release_bell()
+    }
+    Ok([]) | Error(_) -> Ok(Nil)
+  }
 }
 
 // The retention sweep, in the registry's own turn so that no session is opened
@@ -3873,12 +4112,90 @@ fn sweep_now(
   )
   rows
   |> list.filter(fn(row) {
-    now_ms - row.last_contact_ms > retain_ms(row.spawner)
+    {
+      release_begun(row)
+      || now_ms - row.last_contact_ms > retain_ms(row.spawner)
+    }
     && !dict.has_key(book.slots, row.session_id)
   })
   |> list.count(fn(row) {
     result.is_ok(remove_registration(book, row.session_id, sessions))
   })
+}
+
+// A session whose spawner reported the parent deleted is deleted whatever its
+// age, once nothing holds its slot: the retention only bounds a spawner that
+// went quiet, and this one said what it meant.
+fn release_begun(row: catalogue.Delegate) -> Bool {
+  case row.state {
+    catalogue.Open -> False
+    catalogue.Releasing | catalogue.Released -> True
+  }
+}
+
+// The release of one pair, in the registry's own turn so that no spawn is
+// admitted between marking the session and stopping its slot. A pair with no
+// row has nothing to release, and nothing is created for it. The state moves
+// forward only, so a repeat leaves it where it is and tries the deletion again,
+// which is how a deletion that failed is healed.
+fn release_now(
+  book: Book(instance),
+  spawner: String,
+  parent_session: String,
+  sessions: String,
+) -> #(Book(instance), Result(Nil, Error)) {
+  case catalogue.delegate_for(book.catalogue, spawner, parent_session) {
+    Error(error) -> #(book, Error(Catalogue(error)))
+    Ok(None) -> #(book, Ok(Nil))
+    Ok(Some(found)) -> {
+      let marked = case found.state {
+        catalogue.Open ->
+          catalogue.set_delegate_state(
+            book.catalogue,
+            found.session_id,
+            catalogue.Releasing,
+          )
+        catalogue.Releasing | catalogue.Released -> Ok(Nil)
+      }
+      case marked {
+        Error(error) -> #(book, Error(Catalogue(error)))
+        Ok(Nil) ->
+          case dict.has_key(book.slots, found.session_id) {
+            // Something holds the slot: stop it, and let the drain delete the
+            // session.
+            True -> #(
+              Book(
+                ..stop_slot(book, found.session_id),
+                releasing: dict.insert(
+                  book.releasing,
+                  found.session_id,
+                  sessions,
+                ),
+              ),
+              Ok(Nil),
+            )
+            False -> #(book, finish_release(book, found.session_id, sessions))
+          }
+      }
+    }
+  }
+}
+
+// The last step of a release, once no slot holds the session: the row says the
+// slot has drained, and then the session and its row go together. A deletion
+// that fails leaves the row released, and the next release or sweep tries again.
+fn finish_release(
+  book: Book(instance),
+  session_id: String,
+  sessions: String,
+) -> Result(Nil, Error) {
+  use Nil <- result.try(
+    catalogue.set_delegate_state(book.catalogue, session_id, catalogue.Released)
+    |> result.map_error(Catalogue),
+  )
+  remove_registration(book, session_id, sessions)
+  |> result.replace(Nil)
+  |> result.map_error(fn(_) { Unavailable })
 }
 
 fn remove_registration(
@@ -4067,7 +4384,14 @@ fn delegate_now(
       {
         Error(error) -> #(book, Error(DelegateFailed(Catalogue(error))))
         Ok(Some(found)) ->
-          returning_delegate(phase, book, request, found.session_id)
+          case found.state {
+            catalogue.Open ->
+              returning_delegate(phase, book, request, found.session_id)
+            catalogue.Releasing | catalogue.Released -> #(
+              book,
+              Error(DelegateReleased),
+            )
+          }
         Ok(None) -> first_delegate(phase, book, request)
       }
   }
@@ -4790,6 +5114,18 @@ fn replace_drained_domain(book: Book(instance), id: String, slot: DomainSlot) {
   }
 }
 
+// A slot that drained because its session was released is the moment the
+// session can be deleted. A failure leaves the row released for the sweep.
+fn finish_drained_release(book: Book(instance), id: String) -> Book(instance) {
+  case dict.get(book.releasing, id) {
+    Error(Nil) -> book
+    Ok(sessions) -> {
+      let _deleted = finish_release(book, id, sessions)
+      Book(..book, releasing: dict.delete(book.releasing, id))
+    }
+  }
+}
+
 fn clean_session_retired(book: Book(instance), id, session_id) {
   case dict.get(book.domains, id), catalogue.get(book.catalogue, session_id) {
     Ok(DomainSlot(phase: DomainRunning(services), operation:, ..)),
@@ -5227,6 +5563,7 @@ fn retired(
             )
             |> forget_authority(id)
           clean_session_retired(book, slot.domain_id, id)
+          |> finish_drained_release(id)
         }
         _ -> failed(book, id, operation, string.inspect(reason))
       }

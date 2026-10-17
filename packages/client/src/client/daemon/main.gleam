@@ -8,8 +8,8 @@
 //// ## Flow
 ////
 //// `main` → `claim_endpoint` → `prepare_startup` → `run` → `start_executor` →
-//// `start_movers` → `node_reads` → `start_orchestrator_port` → `listen_moving` →
-//// `publish_endpoint` → `wait`
+//// `start_movers` → `node_reads` → `start_orchestrator_port` →
+//// `start_release_drain` → `listen_moving` → `publish_endpoint` → `wait`
 ////
 //// 1. `main` parses the flags, `claim_endpoint` reserves this VM, and
 ////    `prepare_startup` reads the configuration once and prepares the root.
@@ -26,6 +26,9 @@
 ////    ledger. `node_reads` builds that report once, and both the port, which
 ////    answers a peer with it, and `listen_moving`, whose `deployment.status`
 ////    reads the daemon's own facts through it, are given the same closure.
+////    `start_release_drain` follows the port and keeps telling other
+////    orchestrators that a deleted parent session no longer needs the
+////    subagents they run for it.
 //// 3. `listen_moving` binds the listener, and `publish_endpoint` records the
 ////    bound port for the reservation this VM holds.
 //// 4. `wait` blocks on the signal relay, the root and the executor host, and a
@@ -73,6 +76,7 @@ import client/node_report
 import client/orchestrators
 import client/peer_defaults
 import client/peer_mail
+import client/peer_outbox_drain
 import client/peers
 import client/pools
 import client/profile_switch
@@ -83,6 +87,7 @@ import client/remote/remote_peer
 import client/remote/remote_spawner
 import client/remote/workspace
 import client/remote_reach
+import client/remote_release
 import client/remote_spawn
 import client/roster.{type Roster}
 import client/serve
@@ -114,6 +119,7 @@ import host/bootstrap
 import host/build_identity
 import host/endpoint
 import mist
+import runtime/effects
 import simplifile
 import storage/catalogue
 import telemetry/field
@@ -121,6 +127,7 @@ import telemetry/handler
 import telemetry/log.{type Logger}
 import tom
 import weft/poll
+import weft/registry as names
 
 /// Daemon-wide choices; session defaults are resolved only on explicit open.
 pub type Config {
@@ -981,6 +988,20 @@ pub fn start_orchestrator_port(
           executors: executor_roster(config),
           logger:,
         ))
+      let delegates =
+        delegate_host.Context(
+          registry: ready.registry,
+          sessions_directory: ready.sessions_directory,
+          domain_configuration:,
+          generator: fn() {
+            ids.generator(
+              clock.from_function(ffi_os.system_time_ms),
+              ffi_os.unique_positive_integer(),
+            )
+          },
+          now_ms: ffi_os.system_time_ms,
+          endpoint: delegate_endpoint,
+        )
       use _started <- result.try(
         orchestrator_port.start_with(
           orchestrator_port.default(),
@@ -990,19 +1011,8 @@ pub fn start_orchestrator_port(
           importer,
           spawn_host(
             config.spawners,
-            delegate_host.resolver(delegate_host.Context(
-              registry: ready.registry,
-              sessions_directory: ready.sessions_directory,
-              domain_configuration:,
-              generator: fn() {
-                ids.generator(
-                  clock.from_function(ffi_os.system_time_ms),
-                  ffi_os.unique_positive_integer(),
-                )
-              },
-              now_ms: ffi_os.system_time_ms,
-              endpoint: delegate_endpoint,
-            )),
+            delegate_host.resolver(delegates),
+            delegate_host.releaser(delegates),
           ),
           ledger_holdings.from_catalogue(
             ready.registry,
@@ -1131,6 +1141,66 @@ fn orchestrator_facts(
   }
 }
 
+/// Starts the release drainer when the configuration has a `[distribution]`
+/// table, and starts nothing otherwise (protocol-change/084, phase 2).
+///
+/// Deleting a parent session that started subagents on another orchestrator
+/// leaves one row for each orchestrator that may hold a child
+/// (`client/remote_release`). The rows belong to no session, so their drainer is
+/// the daemon's: a third instance of the outbox drainer, started beside the
+/// orchestrator port and linked to the process that starts the daemon's
+/// services. It reads the rows through the registry, tells each orchestrator,
+/// and settles a row when the orchestrator answers. The registry rings it
+/// when a deletion writes a row, because it sleeps while nothing is owed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // assert main.start_release_drain(Config(..config, membership: None), daemon, logger) == Ok(Nil)
+/// ```
+@internal
+pub fn start_release_drain(
+  config: Config,
+  daemon: root.Root(instance),
+  logger: Logger,
+) -> Result(Nil, String) {
+  case config.membership {
+    None -> Ok(Nil)
+    Some(membership) -> {
+      use ready <- result.try(root.ready(daemon, within: 20_000))
+      use namespace <- result.try(names.start())
+      let name = names.new_address(namespace)
+      let options =
+        peer_outbox_drain.over(
+          remote_release.pass(
+            fn() {
+              manager.remote_releases(ready.registry)
+              |> result.map_error(string.inspect)
+            },
+            fn(release) {
+              manager.settle_remote_release(ready.registry, release)
+              |> result.map_error(string.inspect)
+            },
+            remote_spawner.release_over(membership, orchestrator_roster(config)),
+            logger,
+          ),
+          effects.real_timers().after,
+        )
+      use _started <- result.try(
+        peer_outbox_drain.start(options, name)
+        |> result.map_error(fn(error) {
+          "the release drainer did not start: " <> string.inspect(error)
+        }),
+      )
+      manager.on_releases_owed(ready.registry, fn() {
+        peer_outbox_drain.poke(name)
+      })
+      log.info(logger, "daemon.release_drain", [])
+      Ok(Nil)
+    }
+  }
+}
+
 // What a directory member says: the cluster as it sees it, and whether its own
 // copy is current. The copy is confirmed by a fence and a read of this node's
 // own migration marker, so a member that has lost its quorum says `Unconfirmed`
@@ -1186,7 +1256,7 @@ pub fn peer_command(
   }
 }
 
-/// The functions the orchestrator port calls for the three subagent messages
+/// The functions the orchestrator port calls for the four subagent messages
 /// (protocol-change/084). Each one judges the sender first: the node the message
 /// came from must be the node of a configured `[spawners.<name>]`, or the
 /// answer is `UnknownSpawner`, which is also what a daemon with no spawners
@@ -1200,10 +1270,15 @@ pub fn peer_command(
 /// deadlines. A join and a run end need no terms, because they concern children
 /// the Agency already holds.
 ///
+/// A release is served by `releasing` and not by `delegates`: it finds the
+/// session the pair already has and creates none, which `delegates` would do
+/// for a pair with no row (`delegate_host.releaser`). The sender is judged the
+/// same way, so a node no spawner names is refused first.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// // main.spawn_host([], delegates).run_ended(origin, operation)
+/// // main.spawn_host([], delegates, releasing).run_ended(origin, operation)
 /// // -> Error(remote_spawn.UnknownSpawner(origin.node))
 /// ```
 @internal
@@ -1211,6 +1286,8 @@ pub fn spawn_host(
   configured: List(spawners.Spawner),
   delegates: fn(spawners.Spawner, remote_spawn.Parent) ->
     Result(agency.DelegateEndpoint, remote_spawn.SpawnRefusal),
+  releasing: fn(spawners.Spawner, remote_spawn.Parent) ->
+    Result(Int, remote_spawn.SpawnRefusal),
 ) -> orchestrator_port.SpawnHost {
   let serving = fn(origin: remote_spawn.Origin) {
     use spawner <- result.try(
@@ -1241,6 +1318,13 @@ pub fn spawn_host(
     run_ended: fn(origin, operation) {
       use #(_spawner, endpoint) <- result.try(serving(origin))
       endpoint.run_ended(operation)
+    },
+    release: fn(origin) {
+      use spawner <- result.try(
+        spawners.by_node(configured, origin.node)
+        |> result.replace_error(remote_spawn.UnknownSpawner(node: origin.node)),
+      )
+      releasing(spawner, origin.parent)
     },
   )
 }
@@ -2328,6 +2412,7 @@ fn run(
         fn(resident: serve.Resident) { resident.spawns },
         reads,
       ))
+      use Nil <- result.try(start_release_drain(config, daemon, logger))
       use ui <- result.try(web_view(config, daemon))
       use serving <- result.try(listen_moving(
         config,

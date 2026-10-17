@@ -9,6 +9,8 @@ import client/daemon/server
 import client/distill
 import client/internal/ffi_os
 import client/internal/instance_owner as custody
+import client/remote_child
+import client/remote_spawn
 import core/clock
 import core/ids
 import core/json
@@ -23,6 +25,8 @@ import storage/access
 import storage/catalogue
 import storage/domain
 import support/internal/ffi_memory
+import support/remote_stubs
+import tools/agent
 import tui/daemon/protocol as terminal_protocol
 import weft/poll
 
@@ -1774,6 +1778,129 @@ pub fn delete_refuses_a_registration_outside_the_sessions_directory_test() {
   assert catalogue.close(store) == Ok(Nil)
   let _ = simplifile.delete(root)
   Nil
+}
+
+// A parent session's file in a sessions directory of its own, registered as an
+// ordinary saved session, with the owner who may delete it.
+fn parent_in(
+  store: catalogue.Catalogue,
+  label: String,
+  seed: Int,
+) -> #(catalogue.Registration, String, access.Digest) {
+  let assert Ok(cwd) = simplifile.current_directory()
+    as "the catalogue accepts only absolute paths"
+  let sessions =
+    cwd
+    <> "/build/test_db/release-"
+    <> label
+    <> "-"
+    <> int.to_string(ffi_os.unique_positive_integer())
+    <> "/sessions"
+  let _removed = simplifile.delete_all([sessions])
+  let assert Ok(Nil) = simplifile.create_directory_all(sessions)
+    as "the sessions directory exists"
+  let fresh = registration(seed)
+  let record =
+    catalogue.Registration(..fresh, path: sessions <> "/" <> fresh.id <> ".db")
+  assert catalogue.reserve(store, record) == Ok(record)
+  let assert Ok(record) = catalogue.confirm(store, record.id)
+    as "the parent is an ordinary saved registration"
+  let assert Ok(owner) = access.credential_digest(string.repeat("a", 64))
+    as "owner digest"
+  let assert Ok(_) = access.bootstrap_owner(store, "owner", "Owner", owner)
+    as "owner exists"
+  #(record, sessions, owner)
+}
+
+pub fn deleting_a_parent_owes_each_orchestrator_that_made_a_child_a_release_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let #(record, sessions, owner) = parent_in(store, "owed", 5101)
+  let registry = start(store, 1, fn(record, _) { Ok(record.id) })
+  let rung = process.new_subject()
+  manager.on_releases_owed(registry, fn() { process.send(rung, Nil) })
+
+  // The parent started children on three orchestrators. One was refused and
+  // made nothing, one may have started a child whose reply was lost, one is
+  // running, and one finished.
+  remote_stubs.write(record.path, [
+    remote_stubs.stub("desk", 1, remote_child.Refused("the cap is 4")),
+    remote_stubs.stub("box", 2, remote_child.Requested),
+    remote_stubs.stub(
+      "box",
+      3,
+      remote_child.Spawned(remote_stubs.placed(3, 9_000_000_000_000)),
+    ),
+    remote_stubs.stub(
+      "zed",
+      4,
+      remote_child.Settled(
+        remote_stubs.placed(4, 9_000_000_000_000),
+        agent.Completed,
+        remote_spawn.ChildUsage(
+          input: 1,
+          output: 1,
+          cache_read: 0,
+          cache_write: 0,
+          cost: 0.0,
+        ),
+      ),
+    ),
+  ])
+  let assert Ok(_) =
+    manager.delete_session(registry, owner, "daemon-test", record.id, sessions)
+    as "the owner deletes the parent"
+  assert catalogue.get(store, record.id) == Error(catalogue.Missing)
+
+  // One row for each orchestrator that may hold a child, each once, naming the
+  // deleted session, and the drainer was rung for them.
+  let assert Ok(rows) = manager.remote_releases(registry)
+  assert list.map(rows, fn(row) { #(row.parent_session, row.orchestrator) })
+    == [#(record.id, "box"), #(record.id, "zed")]
+  assert process.receive(rung, 0) == Ok(Nil)
+
+  // A row goes when its orchestrator answers, and settling it twice is harmless.
+  let assert [first, second] = rows
+  assert manager.settle_remote_release(registry, first) == Ok(Nil)
+  assert manager.settle_remote_release(registry, first) == Ok(Nil)
+  assert manager.remote_releases(registry) == Ok([second])
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn deleting_a_parent_that_started_nothing_elsewhere_owes_nothing_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let #(record, sessions, owner) = parent_in(store, "none", 5102)
+  let registry = start(store, 1, fn(record, _) { Ok(record.id) })
+  let rung = process.new_subject()
+  manager.on_releases_owed(registry, fn() { process.send(rung, Nil) })
+
+  // Only a refused child: no orchestrator holds anything for this parent.
+  remote_stubs.write(record.path, [
+    remote_stubs.stub("desk", 1, remote_child.Refused("the cap is 4")),
+  ])
+  let assert Ok(_) =
+    manager.delete_session(registry, owner, "daemon-test", record.id, sessions)
+  assert manager.remote_releases(registry) == Ok([])
+  assert process.receive(rung, 0) == Error(Nil)
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn a_parent_whose_file_cannot_be_read_is_still_deleted_with_no_rows_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let #(record, sessions, owner) = parent_in(store, "damaged", 5103)
+  let registry = start(store, 1, fn(record, _) { Ok(record.id) })
+
+  // A session whose file is not a session could not have been waited on, so
+  // its children run to their deadlines as they did before releases existed.
+  assert simplifile.write(to: record.path, contents: "not a session file")
+    == Ok(Nil)
+  let assert Ok(_) =
+    manager.delete_session(registry, owner, "daemon-test", record.id, sessions)
+  assert catalogue.get(store, record.id) == Error(catalogue.Missing)
+  assert manager.remote_releases(registry) == Ok([])
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
 }
 
 pub fn failed_opening_reason_precedes_closing_and_clears_on_admission_test() {

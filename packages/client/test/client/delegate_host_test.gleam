@@ -441,3 +441,177 @@ pub fn a_session_whose_delegate_marker_is_unreadable_has_no_answer_test() {
   stop(registry)
   assert catalogue.close(store) == Ok(Nil)
 }
+
+// --- releasing a pair (protocol-change/084, phase 2) --------------------------
+//
+// A release says the parent session was deleted. Deleting the delegate session
+// removes everything stored under it: its conversation, and with it the facts,
+// the outbox rows and the remembered permissions kept there. These tests check
+// the registry's half of that, and that a release never creates a session.
+
+pub fn a_release_for_a_pair_with_no_row_answers_zero_and_creates_nothing_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let registry = started(store, fn(built) { Ok(tagged(built)) })
+  let release =
+    delegate_host.releaser(context(registry, "/delegate-host/sessions"))
+  let laptop = spawner("executor = \"runner\"\nworkspace = \"loom\"\n")
+  let remote = parent(80)
+
+  // The release overtakes the spawn it concerns, or is simply sent twice: there
+  // is no session, so nothing is stopped and nothing is made. The key a
+  // creation would have used finds no registration.
+  assert release(laptop, remote) == Ok(0)
+  assert release(laptop, remote) == Ok(0)
+  assert catalogue.delegates_held(store, "laptop") == Ok(0)
+  assert catalogue.by_request_key(store, "delegate:laptop:" <> remote.session)
+    == Error(catalogue.Missing)
+  assert catalogue.delegate_for(store, "laptop", remote.session) == Ok(None)
+
+  // The spawn that comes after is the first message for its pair and makes a
+  // session of its own, which is the acceptable end of the ordering: the parent
+  // still exists, as far as this orchestrator can know.
+  let resolve =
+    delegate_host.resolver(context(registry, "/delegate-host/sessions"))
+  let assert Ok(_) = resolve(laptop, remote)
+  assert catalogue.delegates_held(store, "laptop") == Ok(1)
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn a_release_stops_the_resident_session_and_deletes_it_and_its_row_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let registry = started(store, fn(built) { Ok(tagged(built)) })
+  let here = context(registry, "/delegate-host/sessions")
+  let laptop = spawner("executor = \"runner\"\nworkspace = \"loom\"\n")
+  let remote = parent(81)
+  let assert Ok(first) = delegate_host.resolver(here)(laptop, remote)
+  let assert Ok(option.Some(recorded)) =
+    catalogue.delegate_for(store, "laptop", remote.session)
+
+  // The answer is the Agency's own count, here the session's tag, which shows
+  // the release reached the resident session's endpoint.
+  assert delegate_host.releaser(here)(laptop, remote) == Ok(tag_of(first))
+
+  // The slot drains, and the session and its row go together. A repeat finds no
+  // row and answers zero, without making a session.
+  assert eventually(fn() {
+    catalogue.delegate_of(store, recorded.session_id) == Ok(None)
+  })
+  assert catalogue.get(store, recorded.session_id) == Error(catalogue.Missing)
+  assert catalogue.delegates_held(store, "laptop") == Ok(0)
+  assert delegate_host.releaser(here)(laptop, remote) == Ok(0)
+  assert catalogue.delegates_held(store, "laptop") == Ok(0)
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn a_release_of_a_closed_session_deletes_it_without_opening_it_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let laptop = spawner("executor = \"runner\"\nworkspace = \"loom\"\n")
+  let sessions = "/delegate-host/sessions"
+  let remote = parent(82)
+  let first = started(store, fn(built) { Ok(tagged(built)) })
+  let assert Ok(_) =
+    delegate_host.resolver(context(first, sessions))(laptop, remote)
+  let assert Ok(option.Some(recorded)) =
+    catalogue.delegate_for(store, "laptop", remote.session)
+  stop(first)
+
+  // A new registry has no session resident. Nothing runs in a closed session, so
+  // there is no child to stop, and the build is never asked to open it.
+  let second = started(store, fn(_built) { Error("must not open") })
+  assert delegate_host.releaser(context(second, sessions))(laptop, remote)
+    == Ok(0)
+  assert catalogue.delegate_of(store, recorded.session_id) == Ok(None)
+  assert catalogue.get(store, recorded.session_id) == Error(catalogue.Missing)
+  stop(second)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn a_spawn_for_a_released_pair_is_refused_and_opens_nothing_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let laptop = spawner("executor = \"runner\"\nworkspace = \"loom\"\n")
+  let sessions = "/delegate-host/sessions"
+  let remote = parent(83)
+  let first = started(store, fn(built) { Ok(tagged(built)) })
+  let assert Ok(_) =
+    delegate_host.resolver(context(first, sessions))(laptop, remote)
+  let assert Ok(option.Some(recorded)) =
+    catalogue.delegate_for(store, "laptop", remote.session)
+  stop(first)
+
+  // The row says the release began and the deletion has not finished.
+  let assert Ok(Nil) =
+    catalogue.set_delegate_state(
+      store,
+      recorded.session_id,
+      catalogue.Releasing,
+    )
+  let second = started(store, fn(_built) { Error("must not open") })
+  assert delegate_host.resolver(context(second, sessions))(laptop, remote)
+    == Error(remote_spawn.ParentRunEnded)
+
+  // The refusal touched nothing: the row is as it was, and its contact time is
+  // not moved by a message the session will not serve.
+  assert catalogue.delegate_of(store, recorded.session_id)
+    == Ok(Some(catalogue.Delegate(..recorded, state: catalogue.Releasing)))
+
+  // A repeated release finishes the deletion the first began.
+  assert delegate_host.releaser(context(second, sessions))(laptop, remote)
+    == Ok(0)
+  assert catalogue.delegate_of(store, recorded.session_id) == Ok(None)
+  stop(second)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn the_sweep_deletes_a_released_session_whatever_its_age_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let laptop = spawner("executor = \"runner\"\nworkspace = \"loom\"\n")
+  let sessions = "/delegate-host/sessions"
+  let first = started(store, fn(built) { Ok(tagged(built)) })
+  let assert Ok(_) =
+    delegate_host.resolver(context_at(first, sessions, 1000))(
+      laptop,
+      parent(84),
+    )
+  let assert Ok(_) =
+    delegate_host.resolver(context_at(first, sessions, 1000))(
+      laptop,
+      parent(85),
+    )
+  let assert Ok(option.Some(failed)) =
+    catalogue.delegate_for(store, "laptop", parent(84).session)
+  let assert Ok(option.Some(open)) =
+    catalogue.delegate_for(store, "laptop", parent(85).session)
+  stop(first)
+
+  // A deletion that failed after the slot drained left its row released. The
+  // sweep removes it though it is far inside the retention, and leaves the open
+  // session that is equally recent.
+  let assert Ok(Nil) =
+    catalogue.set_delegate_state(store, failed.session_id, catalogue.Released)
+  let second = started(store, fn(built) { Ok(tagged(built)) })
+  assert manager.sweep_delegates(second, fn(_) { 1_000_000 }, 2000, sessions)
+    == Ok(1)
+  assert catalogue.delegate_of(store, failed.session_id) == Ok(None)
+  assert catalogue.delegate_of(store, open.session_id) == Ok(Some(open))
+  stop(second)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+// Waits for something the registry does on its own turn, such as deleting a
+// session once its slot drains.
+fn eventually(done: fn() -> Bool) -> Bool {
+  eventually_within(done, 80)
+}
+
+fn eventually_within(done: fn() -> Bool, attempts: Int) -> Bool {
+  case done(), attempts {
+    True, _ -> True
+    False, 0 -> False
+    False, _ -> {
+      process.sleep(25)
+      eventually_within(done, attempts - 1)
+    }
+  }
+}

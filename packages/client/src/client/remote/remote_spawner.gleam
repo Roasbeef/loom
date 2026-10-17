@@ -1,13 +1,15 @@
 //// The sending end of a subagent that runs on another orchestrator
 //// (protocol-change/084, slice S3).
 ////
-//// The receiving end is the orchestrator port's `Spawn`, `Join` and `RunEnded`
-//// (`client/remote/orchestrator_port`); this module is how a parent's Agency
-//// sends the first two. It does not send `RunEnded`, because a remote child is
-//// always detached in phase 1. It is modelled on `client/remote/remote_peer`, which does the same
-//// for peer mail, and it fills the record the Agency asks through
-//// (`client/remote_reach`), which also says how a call ends: answered, refused
-//// or unreachable.
+//// The receiving end is the orchestrator port's `Spawn`, `Join`, `RunEnded` and
+//// `Release` (`client/remote/orchestrator_port`); this module is how a parent's
+//// Agency sends the first two. It does not send `RunEnded`, because a remote
+//// child is always detached. `Release` is sent for a parent session that was
+//// deleted, so its caller is the daemon's release drainer and not an Agency:
+//// `release_over` is the same connect-and-ask for that one question. It is
+//// modelled on `client/remote/remote_peer`, which does the same for peer mail,
+//// and it fills the record the Agency asks through (`client/remote_reach`),
+//// which also says how a call ends: answered, refused or unreachable.
 ////
 //// Each call connects to the orchestrator's pinned peer if it is not connected
 //// and asks that peer's port, so nothing keeps a connection between calls and a
@@ -22,7 +24,8 @@
 //// `over_distribution` → `reached` → `answer`
 ////
 //// 1. `over_distribution` builds the `Reach` of one session over the daemon's
-////    membership and its configured orchestrators.
+////    membership and its configured orchestrators, and `release_over` builds
+////    the one call of it that a deleted session's drainer makes.
 //// 2. `reached` resolves an orchestrator's name to its pinned peer and connects,
 ////    or says why not.
 //// 3. `answer` turns the port's reply, a refusal or silence, into the two
@@ -34,7 +37,7 @@ import client/peer_mail.{type Failure}
 import client/remote/address
 import client/remote/orchestrator_port
 import client/remote_reach.{type Reach}
-import client/remote_spawn.{type SpawnRefusal}
+import client/remote_spawn.{type Parent, type SpawnRefusal}
 import client/roster.{type Roster}
 import gleam/list
 import gleam/result
@@ -43,6 +46,11 @@ import gleam/result
 // deadline is, so the receiver's answer for a window that ran out is not itself
 // cut off by the round trip.
 const join_slack_ms = 2000
+
+// How long a release waits for its answer, in milliseconds. The receiver stops
+// the children and hands the session to its registry, which answers without
+// waiting for the session to drain, so the bound is short.
+const release_ms = 15_000
 
 // The bound on connecting to a peer that is not connected yet. It is shorter
 // than a call so that an unreachable host costs the sender little.
@@ -104,7 +112,33 @@ pub fn over_distribution(
       )
       |> answer
     },
+    release: release_over(membership, configured),
   )
+}
+
+/// The one question of `over_distribution` that outlives the session asking it:
+/// tells an orchestrator that a parent session was deleted, so it stops the
+/// children it holds for it and deletes the session that held them. The answer
+/// is how many children it stopped.
+///
+/// The daemon's release drainer calls it for a session that no longer exists, so
+/// it takes the membership and the configured orchestrators and nothing of a
+/// session. A name the daemon does not list is a definitive refusal, and every
+/// way of not reaching the node is silence, as for the other calls.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_spawner.release_over(membership, orchestrators)("box", parent) == Ok(2)
+/// ```
+pub fn release_over(
+  membership: Membership,
+  configured: Roster(Orchestrator),
+) -> fn(String, Parent) -> Result(Int, Failure) {
+  fn(name, parent) {
+    use at <- result.try(reached(membership, configured, name))
+    orchestrator_port.ask_release(at, parent, release_ms) |> answer
+  }
 }
 
 // Connects to the pinned peer of a configured orchestrator, so that the port is
