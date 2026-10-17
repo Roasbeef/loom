@@ -8185,13 +8185,19 @@ are unchanged.
   itself, follow the head and satisfy the fold.
 - Tests: `membership_entry_test` (golden body strings, every malformed shape),
   `membership_ledger_test` (each refusal, the bounds, the pin table),
-  `membership_ledger_property_test` (replay equals stepwise apply, prefixes,
-  flipped bits, swapped and removed entries, forks, equal tables, the pin table
-  against a model, symmetric links, no pin of a revoked name, totality over
-  arbitrary bytes) over `support/membership_fixture` (an HMAC stand-in for the
-  signature, so the laws need no key) and `support/membership_log` (a log builder
-  and a seeded generator that keeps the random operations the real fold accepts),
-  and `membership_signing_test` (the real ECDSA pair).
+  `membership_ledger_property_test` (a `statem` test: commands enroll, amend,
+  renew and revoke members by index into the model's active or inactive names,
+  offer entries the fold must refuse by a named rule, and probe it with
+  duplicates, gaps, forks, flipped bits, swapped, removed and truncated lines and
+  mutated bodies; after every command the ledger is held to the model, to a model
+  that reads only the entries, to the pin table against a model, to symmetric
+  links and to no pin of a revoked name, and a history ends with replay equal to
+  stepwise apply, every prefix, a split anywhere, three routes to one state and
+  the encoding round trip; totality over arbitrary bytes stays plain `qcheck`)
+  over `support/membership_fixture` (an HMAC stand-in for the signature, so the
+  laws need no key) and `support/membership_log` (a log builder, the name pool
+  and the model of the fold), and `membership_signing_test` (the real ECDSA
+  pair).
 
 ## The membership ledger, file and process (protocol-change/086, slice 1b)
 
@@ -8810,6 +8816,40 @@ above).
   `session_mover_test` (a stalled reason kept and listed, a finished move gone),
   `ledger_holdings_test` (`placements`), `directory/store_test` (`confirm_current`),
   `daemon_executor_test` (the host's facts from a started daemon).
+
+## Stateful property tests (statem)
+
+`statem` is a dev dependency of this package. Five test modules drive a pure
+state machine over generated command lists and shrink a failure to the shortest
+list that breaks the same rule; each campaign has a fixed seed, and a
+coverage test replays `statem.commands` to fail if a case the rules name is
+never reached.
+
+- `blocksummarybook_property_test` and `glancepace_property_test` run the two
+  pacing books under the shipped pace and a tight one. The oracle sits in the
+  system under test, beside the book, because it must see the launches; the
+  model is empty, since every event is admissible. A request that ends is named
+  by position among those the oracle holds out. Each rule of the two
+  `client/CLAUDE.md` entries above is a violation tag.
+- `advisorguard_test` keeps the scripted bounds run and adds generated sessions
+  against a reference of the four `decide` rules, under three policies, with a
+  codec round trip after every step.
+- `peer_outbox_property_test` composes `claim`, `room`, `settle` and `expire`
+  over a dictionary of encoded rows the way `peer_outbox_store` does, against a
+  reference of the module's Flow, in three campaigns (a few ids claimed again
+  and again, the 64-row bound with eviction, a strand that only fills).
+- `membership_ledger_property_test` is described with the ledger above.
+
+`blocksummarybook_property_test` found one defect, now fixed. `landed` passed
+the book as it stood before the landing stream was marked idle to `consider`,
+whose `asking_live` therefore still counted the ended request's slot: while
+`live_concurrency` live requests were out, the stream whose request had just
+ended never relaunched for the growth that arrived meanwhile and waited for its
+next fragment. The bound held; the coalescing rule did not. The shortest
+sequence was four commands: a stream grows to its first request, a second
+stream grows to its first request, the first grows by `every_bytes`, and the
+first request ends. `landed` now writes the idle stream into the book before
+`consider` weighs the relaunch, and the `coalesce` tag holds it there.
 
 ## Memory overview (protocol 087)
 
