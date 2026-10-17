@@ -1118,7 +1118,11 @@ fn abandon_recorded(
         // as `intended` finding it gone.
         Error(store.Mismatch(found: None)) ->
           ended(environment, move, Error(Gone))
-        Error(store.NoQuorum(reason:)) -> Deferred(reason)
+
+        // The store's own text for a refused write can hold an inspected term,
+        // and a deferral's reason is carried in a report to another machine.
+        Error(store.NoQuorum(..)) ->
+          Deferred("the directory store could not commit")
       }
   }
 }
