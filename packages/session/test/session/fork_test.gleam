@@ -1,5 +1,5 @@
 //// Forks (pi §2.7): branch and tree scopes, fresh strand state, ledger
-//// zeroed, semantic-fact copying, refusal cases, and the seeded property
+//// zeroed, semantic-fact copying, refusal cases, and the generated property
 //// that a branch fork's projected context equals the source's projection
 //// at the fork point.
 
@@ -14,13 +14,14 @@ import gleam/option.{None, Some}
 import machine/strand.{
   ModelIdentity, StrandConfiguration, StrandState, ThinkingOff,
 }
+import qcheck
 import session/repo
 import session/session
 import simplifile
 import storage/sqlite
 import storage/storage
 import support/drive
-import support/generate
+import support/messages
 
 // Every fork mints the destination's canonical id, so every fork call
 // needs a generator. Tests that assert something about the minted id
@@ -52,12 +53,12 @@ pub fn branch_fork_copies_the_ancestor_chain_test() {
   let assert Ok(source) = session.open_memory(clock.fixed(at: 1000))
   let assert Ok(Nil) = session.ensure_strand(source, "main", configuration())
   let ctx = drive.new_ctx(source, 1)
-  let #(ctx, _) = drive.append_message(ctx, generate.user_msg(1))
+  let #(ctx, _) = drive.append_message(ctx, messages.user_msg(1))
   let #(ctx, at) =
-    drive.append_message(ctx, generate.assistant_msg(2, message.Stop, []))
+    drive.append_message(ctx, messages.assistant_msg(2, message.Stop, []))
   // A descendant past the fork point must not be copied.
-  let #(ctx, _) = drive.append_message(ctx, generate.user_msg(3))
-  let ctx = drive.append_usage(ctx, ctx.leaf, generate.some_usage(50))
+  let #(ctx, _) = drive.append_message(ctx, messages.user_msg(3))
+  let ctx = drive.append_usage(ctx, ctx.leaf, messages.some_usage(50))
   let assert Ok(forked) =
     repo.fork(
       source: ctx.session,
@@ -96,7 +97,7 @@ pub fn branch_fork_copies_the_ancestor_chain_test() {
 pub fn branch_fork_of_unconfigured_strand_copies_no_configuration_test() {
   let assert Ok(source) = session.open_memory(clock.fixed(at: 1000))
   let ctx = drive.new_ctx(source, 2)
-  let #(_ctx, at) = drive.append_message(ctx, generate.user_msg(1))
+  let #(_ctx, at) = drive.append_message(ctx, messages.user_msg(1))
   let assert Ok(forked) =
     repo.fork(
       source:,
@@ -114,8 +115,8 @@ pub fn branch_fork_of_unconfigured_strand_copies_no_configuration_test() {
 pub fn branch_fork_copies_labels_only_for_copied_entries_test() {
   let assert Ok(source) = session.open_memory(clock.fixed(at: 1000))
   let ctx = drive.new_ctx(source, 3)
-  let #(ctx, at) = drive.append_message(ctx, generate.user_msg(1))
-  let #(ctx, behind) = drive.append_message(ctx, generate.user_msg(2))
+  let #(ctx, at) = drive.append_message(ctx, messages.user_msg(1))
+  let #(ctx, behind) = drive.append_message(ctx, messages.user_msg(2))
   let assert Ok(_) =
     storage.commit(
       ctx.session.store,
@@ -191,15 +192,15 @@ pub fn fork_point_must_exist_test() {
 // --- orphan-call healing at the fork boundary ------------------------------
 
 pub fn fork_at_assistant_with_calls_heals_at_projection_test() {
-  let call_a = generate.tool_call(1, json.Object([]))
-  let call_b = generate.tool_call(2, json.Object([]))
-  let assistant = generate.assistant_msg(3, message.ToolUse, [call_a, call_b])
+  let call_a = messages.tool_call(1, json.Object([]))
+  let call_b = messages.tool_call(2, json.Object([]))
+  let assistant = messages.assistant_msg(3, message.ToolUse, [call_a, call_b])
   let assert Ok(source) = session.open_memory(clock.fixed(at: 1000))
   let ctx = drive.new_ctx(source, 4)
-  let #(ctx, _) = drive.append_message(ctx, generate.user_msg(1))
+  let #(ctx, _) = drive.append_message(ctx, messages.user_msg(1))
   let #(ctx, at) = drive.append_message(ctx, assistant)
-  let #(ctx, _) = drive.append_message(ctx, generate.tool_result(call_a, 4))
-  let #(ctx, _) = drive.append_message(ctx, generate.tool_result(call_b, 5))
+  let #(ctx, _) = drive.append_message(ctx, messages.tool_result(call_a, 4))
+  let #(ctx, _) = drive.append_message(ctx, messages.tool_result(call_b, 5))
   let assert Ok(forked) =
     repo.fork(
       source: ctx.session,
@@ -215,7 +216,7 @@ pub fn fork_at_assistant_with_calls_heals_at_projection_test() {
   let assert Ok(projected) = session.project_context(forked, leaf)
   let assert [projected_user, projected_assistant, healed_a, healed_b] =
     projected
-  assert projected_user == generate.user_msg(1)
+  assert projected_user == messages.user_msg(1)
   assert projected_assistant == assistant
   let assert message.ToolResultMessage(
     tool_call_id: "call-1",
@@ -232,7 +233,7 @@ pub fn fork_at_assistant_with_calls_heals_at_projection_test() {
   let assert Ok(source_projected) = session.project_context(source, ctx.leaf)
   assert list.length(source_projected) == 4
   let assert [_, _, real_a, _] = source_projected
-  assert real_a == generate.tool_result(call_a, 4)
+  assert real_a == messages.tool_result(call_a, 4)
 }
 
 // --- tree scope ------------------------------------------------------------
@@ -242,11 +243,11 @@ pub fn tree_fork_copies_every_strand_and_all_labels_test() {
   let assert Ok(Nil) = session.ensure_strand(source, "main", configuration())
   let assert Ok(Nil) = session.ensure_strand(source, "side", configuration())
   let ctx = drive.new_ctx(source, 5)
-  let #(ctx, main_leaf) = drive.append_message(ctx, generate.user_msg(1))
+  let #(ctx, main_leaf) = drive.append_message(ctx, messages.user_msg(1))
   // A second root chain: the side strand's history.
   let #(ctx, side_leaf) =
-    drive.append_message_under(ctx, None, generate.user_msg(2))
-  let ctx = drive.append_usage(ctx, Some(main_leaf), generate.some_usage(70))
+    drive.append_message_under(ctx, None, messages.user_msg(2))
+  let ctx = drive.append_usage(ctx, Some(main_leaf), messages.some_usage(70))
   let assert Ok(_) =
     storage.commit(
       ctx.session.store,
@@ -328,9 +329,9 @@ pub fn fork_into_sqlite_and_back_test() {
   let assert Ok(source) = session.open_memory(clock.fixed(at: 1000))
   let assert Ok(Nil) = session.ensure_strand(source, "main", configuration())
   let ctx = drive.new_ctx(source, 6)
-  let #(ctx, _) = drive.append_message(ctx, generate.user_msg(1))
+  let #(ctx, _) = drive.append_message(ctx, messages.user_msg(1))
   let #(ctx, at) =
-    drive.append_message(ctx, generate.assistant_msg(2, message.Stop, []))
+    drive.append_message(ctx, messages.assistant_msg(2, message.Stop, []))
   let assert Ok(forked) =
     repo.fork(
       source: ctx.session,
@@ -364,7 +365,7 @@ pub fn a_fork_mints_its_own_id_and_records_its_parent_test() {
     session.ensure_id(source, ids.generator(clock.fixed(at: 900), seed: 1))
   let ctx = drive.new_ctx(source, 21)
   let #(ctx, at) =
-    drive.append_message(ctx, generate.assistant_msg(1, message.Stop, []))
+    drive.append_message(ctx, messages.assistant_msg(1, message.Stop, []))
   let assert Ok(forked) =
     repo.fork(
       source: ctx.session,
@@ -390,7 +391,7 @@ pub fn a_fork_of_an_unidentified_source_records_no_parent_test() {
   let assert Ok(Nil) = session.ensure_strand(source, "main", configuration())
   let ctx = drive.new_ctx(source, 22)
   let #(ctx, at) =
-    drive.append_message(ctx, generate.assistant_msg(1, message.Stop, []))
+    drive.append_message(ctx, messages.assistant_msg(1, message.Stop, []))
   let assert Ok(forked) =
     repo.fork(
       source: ctx.session,
@@ -413,7 +414,7 @@ pub fn a_sqlite_fork_writes_parent_session_id_test() {
     session.ensure_id(source, ids.generator(clock.fixed(at: 900), seed: 2))
   let ctx = drive.new_ctx(source, 23)
   let #(ctx, at) =
-    drive.append_message(ctx, generate.assistant_msg(1, message.Stop, []))
+    drive.append_message(ctx, messages.assistant_msg(1, message.Stop, []))
   let assert Ok(forked) =
     repo.fork(
       source: ctx.session,
@@ -454,7 +455,7 @@ pub fn a_fork_into_an_already_identified_destination_is_refused_test() {
   let assert Ok(Nil) = session.ensure_strand(source, "main", configuration())
   let ctx = drive.new_ctx(source, 24)
   let #(ctx, at) =
-    drive.append_message(ctx, generate.assistant_msg(1, message.Stop, []))
+    drive.append_message(ctx, messages.assistant_msg(1, message.Stop, []))
   let assert Error(repo.ForkCopyFailed(error: tx.StaleExpectation(..))) =
     repo.fork(
       source: ctx.session,
@@ -478,34 +479,79 @@ pub fn a_fork_into_an_already_identified_destination_is_refused_test() {
   let assert Ok(Nil) = session.close(reopened)
 }
 
-// --- projection equivalence (seeded property) ------------------------------
+// --- projection equivalence (generated property) ---------------------------
+
+/// How many generated trees the fork property is checked over (the
+/// hand-seeded sweep it replaced drew 20), and the qcheck seed they are
+/// drawn from. The seed is fixed so the gate is deterministic.
+const fork_tree_count = 100
+
+const fork_tree_seed = 61
+
+/// Whether a grown entry also gets a usage row. A named pair rather than a
+/// `Bool` field, so a generated step reads as a domain choice.
+type Billing {
+  Billed
+  Unbilled
+}
+
+/// One growth step of a generated tree. `parent_pick` indexes the entries
+/// grown so far, newest first, wrapping at the count, so the step stays
+/// valid whatever the tree looks like when it is replayed.
+type Growth {
+  Growth(parent_pick: Int, kind: Int, billing: Billing)
+}
+
+/// A tree of one to twelve growth steps and a pick for the fork point.
+/// Every number shrinks toward zero: a failing tree is reported with fewer
+/// steps, each hanging off the newest entry (a plain chain), each a user
+/// message with no usage row, forked at the newest entry.
+fn tree_generator() -> qcheck.Generator(#(List(Growth), Int)) {
+  let growth =
+    qcheck.map3(
+      qcheck.bounded_int(from: 0, to: 1000),
+      qcheck.bounded_int(from: 0, to: 3),
+      qcheck.bounded_int(from: 0, to: 1),
+      fn(parent_pick, kind, billed) {
+        let billing = case billed {
+          0 -> Unbilled
+          _ -> Billed
+        }
+        Growth(parent_pick:, kind:, billing:)
+      },
+    )
+  let steps =
+    qcheck.generic_list(
+      elements_from: growth,
+      length_from: qcheck.bounded_int(from: 1, to: 12),
+    )
+  qcheck.tuple2(steps, qcheck.bounded_int(from: 0, to: 1000))
+}
 
 pub fn branch_fork_projection_equals_source_property_test() {
-  list.each(generate.range(from: 1, to: 20), fn(seed_n) {
-    run_fork_scenario(generate.seed(seed_n))
+  qcheck.default_config()
+  |> qcheck.with_test_count(fork_tree_count)
+  |> qcheck.with_seed(qcheck.seed(fork_tree_seed))
+  |> qcheck.run(tree_generator(), fn(tree) {
+    let #(steps, at_pick) = tree
+    run_fork_scenario(steps, at_pick)
   })
 }
 
-// Builds a random branching tree with interleaved usage rows, forks at a
-// random entry, and asserts the fork's projected context at its leaf is
+// Builds a generated branching tree with interleaved usage rows, forks at
+// a picked entry, and asserts the fork's projected context at its leaf is
 // exactly the source's at the fork point — and that the fork carries no
 // cost history.
-fn run_fork_scenario(seed: generate.Seed) -> Nil {
+fn run_fork_scenario(steps: List(Growth), at_pick: Int) -> Nil {
   let assert Ok(source) = session.open_memory(clock.fixed(at: 1000))
   let assert Ok(Nil) = session.ensure_strand(source, "main", configuration())
   let ctx = drive.new_ctx(source, 777)
-  let #(steps, seed) = generate.int_between(seed, 4, 12)
-  let #(ctx, all_ids, seed) =
-    list.fold(
-      over: generate.range(from: 1, to: steps),
-      from: #(ctx, [], seed),
-      with: fn(step, _n) {
-        let #(ctx, all_ids, seed) = step
-        grow_tree(ctx, all_ids, seed)
-      },
-    )
-  let assert [fallback, ..] = list.reverse(all_ids)
-  let #(at, _seed) = generate.one_of(seed, all_ids, fallback)
+  let #(ctx, all_ids) =
+    list.fold(over: steps, from: #(ctx, []), with: fn(grown, step) {
+      let #(ctx, all_ids) = grown
+      grow_tree(ctx, all_ids, step)
+    })
+  let assert Ok(at) = pick(all_ids, at_pick)
   let assert Ok(forked) =
     repo.fork(
       source: ctx.session,
@@ -529,46 +575,51 @@ fn run_fork_scenario(seed: generate.Seed) -> Nil {
 fn grow_tree(
   ctx: drive.Ctx,
   all_ids: List(ids.EntryId),
-  seed: generate.Seed,
-) -> #(drive.Ctx, List(ids.EntryId), generate.Seed) {
-  let #(parent, seed) = case all_ids {
-    [] -> #(None, seed)
-    [fallback, ..] -> {
-      let #(chosen, seed) = generate.one_of(seed, all_ids, fallback)
-      #(Some(chosen), seed)
-    }
-  }
+  step: Growth,
+) -> #(drive.Ctx, List(ids.EntryId)) {
+  let parent = option.from_result(pick(all_ids, step.parent_pick))
   let #(ctx, n) = drive.tick(ctx)
-  let #(kind, seed) = generate.int_between(seed, 0, 3)
-  let #(ctx, id) = case kind {
-    0 -> drive.append_message_under(ctx, parent, generate.user_msg(n))
+  let #(ctx, id) = case step.kind {
+    0 -> drive.append_message_under(ctx, parent, messages.user_msg(n))
     1 ->
       drive.append_message_under(
         ctx,
         parent,
-        generate.assistant_msg(n, message.Stop, []),
+        messages.assistant_msg(n, message.Stop, []),
       )
     2 ->
       drive.append_message_under(
         ctx,
         parent,
-        generate.assistant_msg(n, message.Errored, []),
+        messages.assistant_msg(n, message.Errored, []),
       )
     _ -> {
-      let call = generate.tool_call(n, json.Object([]))
+      let call = messages.tool_call(n, json.Object([]))
       let #(ctx, _) =
         drive.append_message_under(
           ctx,
           parent,
-          generate.assistant_msg(n, message.ToolUse, [call]),
+          messages.assistant_msg(n, message.ToolUse, [call]),
         )
-      drive.append_message(ctx, generate.tool_result(call, n))
+      drive.append_message(ctx, messages.tool_result(call, n))
     }
   }
-  let #(bill, seed) = generate.bool(seed)
-  let ctx = case bill {
-    True -> drive.append_usage(ctx, Some(id), generate.some_usage(n))
-    False -> ctx
+  let ctx = case step.billing {
+    Billed -> drive.append_usage(ctx, Some(id), messages.some_usage(n))
+    Unbilled -> ctx
   }
-  #(ctx, [id, ..all_ids], seed)
+  #(ctx, [id, ..all_ids])
+}
+
+// The entry a generated pick names: an index into the newest-first list,
+// wrapping at its length. An empty list names nothing, which is how the
+// first step gets no parent.
+fn pick(all_ids: List(ids.EntryId), index: Int) -> Result(ids.EntryId, Nil) {
+  case list.length(all_ids) {
+    0 -> Error(Nil)
+    count ->
+      all_ids
+      |> list.drop(index % count)
+      |> list.first
+  }
 }
