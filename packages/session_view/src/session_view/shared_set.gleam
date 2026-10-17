@@ -743,6 +743,21 @@ pub fn usage(shared: Shared(a, b, c, d), usage) -> Shared(a, b, c, d) {
   Shared(..shared, usage:)
 }
 
+/// Replaces `Shared.remote_usage`; the record documents the field.
+///
+/// ## Examples
+///
+/// ```gleam
+/// shared_set.remote_usage(model.shared, entries)
+/// ```
+@internal
+pub fn remote_usage(
+  shared: Shared(a, b, c, d),
+  remote_usage,
+) -> Shared(a, b, c, d) {
+  Shared(..shared, remote_usage:)
+}
+
 /// Replaces `Shared.todo_seed`; the record documents the field.
 ///
 /// ## Examples

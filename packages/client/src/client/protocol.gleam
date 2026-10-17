@@ -87,6 +87,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import session_view/btw
+import session_view/remote_usage.{type RemoteUsage}
 import storage/catalogue
 
 /// The one protocol version this gateway speaks. A different `v` on the
@@ -396,6 +397,11 @@ pub type Snapshot {
     entries: List(EntryRecord),
     escalations: List(EscalationRecord),
     usage: Usage,
+    /// What the settled children on other orchestrators used, one entry for
+    /// each orchestrator, and none for a session that has no such child
+    /// (protocol-change/084, phase 2). The wire omits the field when the list is
+    /// empty, and a client that does not know it ignores it.
+    remote_usage: List(RemoteUsage),
   )
 
   /// A resume marker: replay of `from_seq <= seq < next_seq` follows.
@@ -1759,7 +1765,15 @@ fn usage_body(
 
 fn encode_snapshot(snapshot: Snapshot) -> JsonValue {
   case snapshot {
-    FullSnapshot(session:, next_seq:, strands:, entries:, escalations:, usage:) ->
+    FullSnapshot(
+      session:,
+      next_seq:,
+      strands:,
+      entries:,
+      escalations:,
+      usage:,
+      remote_usage:,
+    ) ->
       object_of([
         #("mode", Some(json.String("full"))),
         #("session", Some(json.String(session))),
@@ -1771,6 +1785,10 @@ fn encode_snapshot(snapshot: Snapshot) -> JsonValue {
           records -> Some(json.Array(list.map(records, encode_escalation)))
         }),
         #("usage", Some(codec.encode_usage(usage))),
+        #("remote_usage", case remote_usage {
+          [] -> None
+          entries -> Some(json.Array(list.map(entries, remote_usage.encode)))
+        }),
       ])
     ResumeSnapshot(next_seq:) ->
       json.Object([
@@ -2377,6 +2395,7 @@ fn decode_snapshot(body: JsonValue) -> Result(Event, String) {
         codec.decode_usage(usage_value)
         |> result.map_error(fn(report) { report.expected }),
       )
+      use remote_usage <- result.try(remote_usage.decode_all(fields))
       Ok(
         SnapshotEvent(FullSnapshot(
           session:,
@@ -2385,6 +2404,7 @@ fn decode_snapshot(body: JsonValue) -> Result(Event, String) {
           entries:,
           escalations:,
           usage:,
+          remote_usage:,
         )),
       )
     }

@@ -116,7 +116,7 @@ pub fn apply_event(
   event: protocol.Event,
 ) -> Shared(socket, recorder, source, replay_source) {
   let updated = case event {
-    protocol.FullSnapshot(session:, strands:, entries:, usage:) -> {
+    protocol.FullSnapshot(session:, strands:, entries:, usage:, remote_usage:) -> {
       let target = case shared.session == session {
         True -> shared.active_strand
         False -> "main"
@@ -132,6 +132,7 @@ pub fn apply_event(
         active_strand: target,
         strands:,
         usage:,
+        remote_usage:,
         records: list.reverse(entries),
         streams: [],
         // A new session or strand has its own generations; the previous
