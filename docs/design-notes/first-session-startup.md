@@ -438,19 +438,10 @@ published head remains a separate gate; earlier-head successes do not validate
 this client change.
 
 [Raw samples, fingerprints and audit](../review/async-startup-2026-10-17.json)
-and the [retained diagnostic](../review/async-startup-2026-10-17.py) include the
-seven-pair series and independent repeat, with warmups retained and excluded
-from summaries. Freeze the prior releases at
-`build/bench-startup-memory/releases/startup-overlap-baseline`, rebuild only the
-client into `build/release/loom-client`, and leave the server unchanged. Prepare
-the 32-model fixture using the recipe below, then run:
-
-```sh
-env -u ERL_FLAGS -u ERL_AFLAGS -u ERL_ZFLAGS \
-  python3 -B docs/review/async-startup-2026-10-17.py \
-  --runs 7 --label client-overlap-final
-```
-
+include the seven-pair series and independent repeat, with warmups retained and
+excluded from summaries. The one-off diagnostic was removed at the owner's
+request after measurement; its exact source remains in commit `32e881e` at
+`docs/review/async-startup-2026-10-17.py`.
 
 ## Resource budget and retained changes
 
@@ -566,42 +557,30 @@ launcher checks and release smoke passed, including authenticated transport,
 session admission and clean shutdown. The offline bundled-toolchain compile
 was not verified: this kernel refuses its unprivileged network namespace.
 The earlier full-client failures described above remain limits on local
-coverage. Hosted checks and full enforcement/code-mode signoff for the
-published head remain merge gates. No operator daemon was installed or restarted.
+coverage. Reviewed head `32e881e` subsequently passed all 18 executed hosted
+checks, including Linux/macOS gates and the full client job; two release-image
+jobs were skipped. The owner requested an administrator merge of the subsequent
+script cleanup without waiting for another hosted run. No operator daemon was
+installed or restarted.
 
-To repeat the final resource experiment, freeze the original baseline and
-build the candidate with stock `make release release-client`. Prepare the
-32-model configuration below, then run in a quiet dedicated Linux container
-with `--cpus=1 --cpuset-cpus=0`. Copy the
-[resource diagnostic](../review/client-resource-compare-2026-10-17.py) to its
-original scratch location so the separate
-[factor diagnostic](../review/client-resource-factors-2026-10-17.py) can import
-it unchanged. Both retained files are byte-identical to their recorded driver
-hashes. The later `--candidate` CLI selector preserves earlier trial logic.
-
-```sh
-mkdir -p build/startup
-cp docs/review/client-resource-compare-2026-10-17.py build/startup/client_resource_compare.py
-cp docs/review/client-resource-factors-2026-10-17.py build/startup/client_resource_factors.py
-env -u ERL_FLAGS -u ERL_AFLAGS -u ERL_ZFLAGS \
-  python3 -B build/startup/client_resource_compare.py --runs 7 --cores 1 \
-  --workloads cold-autostart --configs smoke,models32 \
-  --baseline build/bench-startup-memory/releases/first-session-baseline \
-  --candidate build/release --allow-server-difference \
-  --label startup-resource-repeat-1core
-```
-
-The factor driver additionally requires the disposable controls and variant
-manifest described in the archive. It is not an installable release or a
-production configuration switch. Rebuilding an older rejected candidate
-requires its corresponding historical source, not the final source.
+The owner requested removal of the one-off experiment and launcher-probe
+scripts after review. Recorded results, driver hashes and production regression
+tests remain. The resource diagnostics are available in commit `32e881e` at
+`docs/review/client-resource-compare-2026-10-17.py` and
+`docs/review/client-resource-factors-2026-10-17.py`. Their hashes in the archive
+identify those historical files; the archive is not a current-file manifest.
+Reproduction requires those historical diagnostics, frozen release artifacts,
+the recorded configuration, and a quiet dedicated Linux container with
+`--cpus=1 --cpuset-cpus=0`. The factor experiment additionally requires its
+disposable controls and variant manifest. No production behavior changed in
+this cleanup.
 
 ## Reproduce earlier measurements
 
 The commands below record earlier iterations. The inventory checker belongs
 to `2fc8e04` and its corresponding batch-enabled release; it is intentionally
-absent from the final source. Use the resource procedure and retained drivers
-for the final CPU/memory comparison.
+absent from the final source. The removed parser diagnostic and launcher probe
+are available at `32e881e`; resource diagnostics are described above.
 
 
 Build and retain the baseline before applying changes, then compare the rebuilt
@@ -616,7 +595,6 @@ python3 -B scripts/bench_startup_memory.py --only abcdeg --runs 9 \
 make release release-client
 python3 -B scripts/bench_startup_memory.py --only abcdeg --runs 9 \
   --against before --label after
-python3 -B scripts/check_daemon_startup_launcher.py build/release/loom
 escript scripts/check_startup_module_inventory.escript build/release/loom
 ```
 
@@ -653,19 +631,11 @@ Path('build/startup/models32.toml').write_text(''.join(models) + '[roles]\nmain 
 PY
 ```
 
-The parser-only comparison runs the eleven old decoders versus the shared
-document readers, excluding file IO, profile selection and secret execution.
-Use each release's `lib` directory and its OTP runtime on PATH; clear emulator
-flag overrides so the script's single-scheduler assertion holds:
-
-```sh
-env -u ERL_FLAGS -u ERL_AFLAGS -u ERL_ZFLAGS \
-  ERL_LIBS="$PWD/build/bench-startup-memory/releases/before/loom/lib" \
-  escript scripts/bench_config_decode.escript legacy build/startup/models32.toml 51
-env -u ERL_FLAGS -u ERL_AFLAGS -u ERL_ZFLAGS \
-  ERL_LIBS="$PWD/build/release/loom/lib" \
-  escript scripts/bench_config_decode.escript shared build/startup/models32.toml 51
-```
+The historical parser-only diagnostic at `32e881e`,
+`scripts/bench_config_decode.escript`, compares the eleven old decoders with the
+shared document readers, excluding file IO, profile selection and secret
+execution. Its recorded results remain above. The disposable launcher probe,
+`scripts/check_daemon_startup_launcher.py`, is available in the same commit.
 
 Results, raw samples and profiling scratch remain under ignored
 `build/`; no operator daemon is installed or restarted.

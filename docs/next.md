@@ -51,9 +51,14 @@ checks and release smoke. The bundled offline toolchain compile was not
 verified because this kernel refuses its unprivileged network namespace.
 Earlier broad local client runs hit the existing bwrap jailed-listing and
 satellite-readiness fixtures; there is no passing full local client claim.
-The initial startup revision passed hosted Linux/macOS checks; the final
-published head still needs its own hosted gates and full enforcement/code-mode
-signoff before merge.
+Reviewed head `32e881e` passed all 18 executed hosted checks, including Linux
+and macOS gates and the full client job (two release-image jobs were skipped).
+The owner requested removal of one-off experiment scripts and an administrator
+merge without waiting for a new hosted run of this cleanup. The three archived
+Python diagnostics, parser benchmark and disposable launcher probe are removed;
+results and hashes remain, with historical script locations documented in the
+note. Regression tests for the retained behavior remain. This cleanup changes
+no production code.
 
 The separate [request gzip experiment PR](https://github.com/Roasbeef/loom/pull/1000)
 contains real TUI/browser experiments and native transport measurements;
