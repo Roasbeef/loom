@@ -140,7 +140,10 @@ fn rule_of(css: String, selector: String) -> String {
 // hairline border, and none of them has a coloured edge or a shadow.
 pub fn the_machines_have_no_accent_bar_and_no_shadow_test() {
   let css = stylesheet()
-  assert string.contains(css, ".admin-machines-wrap{overflow-x:auto")
+  assert string.contains(
+    rule_of(css, ".admin-machines-wrap"),
+    "overflow-x:auto",
+  )
   assert string.contains(css, "table.admin-machines{")
   list.each(
     [
@@ -148,7 +151,7 @@ pub fn the_machines_have_no_accent_bar_and_no_shadow_test() {
       ".admin-machines-wrap",
       "tr.admin-machine-row[aria-current]",
       ".admin-tabs",
-      "button.admin-tab[aria-selected=\"true\"]",
+      "button.admin-tab[aria-selected=true]",
       ".admin-command",
       ".home-peers",
     ],
