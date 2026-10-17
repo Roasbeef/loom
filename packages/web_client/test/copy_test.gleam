@@ -271,3 +271,38 @@ pub fn the_bookmark_subject_copies_only_a_login_address_test() {
   assert copy_rule.words(copy_rule.Bookmark, copy_rule.Failed)
     == "Copy failed. Select the text and copy it."
 }
+
+// The launch box on the owner's home copies the command that reaches a session
+// on another orchestrator, and only that shape: `loom --addr`, an address or the
+// placeholder for none, `--session`, an identity and the fixed ending.
+pub fn the_launch_subject_copies_only_the_command_for_a_session_test() {
+  assert copy_rule.subject("launch") == Ok(copy_rule.Launch)
+  let ending = " --token-file <owner token file on that host>"
+  let id = "0198c1aa-0000-7000-8000-000000000002"
+  let line =
+    "loom --addr ws://10.0.0.4:7000/v2/control --session " <> id <> ending
+  assert copy_rule.text(copy_rule.Launch, line) == Ok(line)
+  let unknown = "loom --addr <its control address> --session " <> id <> ending
+  assert copy_rule.text(copy_rule.Launch, unknown) == Ok(unknown)
+  list.each(
+    [
+      "",
+      "loom --addr  --session " <> id <> ending,
+      "loom --addr ws://h:1 --session " <> ending,
+      "loom --addr ws://h:1 --session " <> id,
+      "loom --addr ws://h:1 --session " <> id <> ending <> "; rm -rf ~",
+      "loom --addr ws://h:1 --session " <> id <> ending <> "\nrm -rf ~",
+      "loom --addr ws://h:1;rm --session " <> id <> ending,
+      "loom --addr ws://h:1 --session " <> id <> "x" <> ending,
+      "loom --addr ws://h:1 --session " <> id <> " --token-file /etc/passwd",
+      "loom --addr <something else> --session " <> id <> ending,
+      "loom --addr ws://h:1 --session " <> string.repeat("a", 65) <> ending,
+      " loom --addr ws://h:1 --session " <> id <> ending,
+      "sudo loom --addr ws://h:1 --session " <> id <> ending,
+    ],
+    fn(value) {
+      assert copy_rule.text(copy_rule.Launch, value) == Error(Nil)
+    },
+  )
+  assert copy_rule.words(copy_rule.Launch, copy_rule.Idle) == "Copy command"
+}

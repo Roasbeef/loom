@@ -41,6 +41,15 @@
 //// holds it can resume the login while it lasts, so the element copies exactly
 //// that shape and nothing else.
 ////
+//// A seventh is the launch line the owner's home draws beside a session that
+//// another orchestrator lists (protocol-change/085): `loom --addr`, that
+//// orchestrator's control address (or the placeholder for an orchestrator whose
+//// configuration gives none), `--session`, the session's identity, and
+//// `--token-file` with the placeholder for the owner's token file on that
+//// machine. It is a command a person pastes into a terminal, so the element
+//// copies exactly that shape: an address of the characters an address has, an
+//// identity of hexadecimal digits and hyphens, and the fixed ending.
+////
 //// The module imports neither Lustre nor the DOM binding, so the tests load
 //// it under Node.
 
@@ -73,6 +82,12 @@ pub type Subject {
   /// loopback host and port, `/ui/l/`, the login key's 32 lowercase
   /// hexadecimal digits and `/home`.
   Bookmark
+
+  /// The command that reaches a session on another orchestrator:
+  /// `loom --addr <address> --session <id> --token-file <owner token file on
+  /// that host>`, with the placeholder in place of an address the
+  /// configuration does not give.
+  Launch
 }
 
 /// What the button has done so far.
@@ -112,6 +127,14 @@ const bookmark_tail = "/home"
 
 const key_digits = 32
 
+const launch_prefix = "loom --addr "
+
+const launch_session = " --session "
+
+const launch_ending = " --token-file <owner token file on that host>"
+
+const launch_unknown_address = "<its control address>"
+
 // The characters a loopback host and port are made of: letters, digits and the
 // punctuation of a name, an address and a port. No slash, no space, no quote.
 const host_characters =
@@ -145,6 +168,7 @@ pub fn subject(value: String) -> Result(Subject, Nil) {
     "device" -> Ok(Device)
     "claim-address" -> Ok(ClaimPage)
     "bookmark" -> Ok(Bookmark)
+    "launch" -> Ok(Launch)
     _ -> Error(Nil)
   }
 }
@@ -166,6 +190,7 @@ pub fn text(subject: Subject, value: String) -> Result(String, Nil) {
     Device -> device(value)
     ClaimPage -> claim_page(value)
     Bookmark -> bookmark(value)
+    Launch -> launch(value)
   }
   case shaped {
     True -> Ok(value)
@@ -265,6 +290,33 @@ fn bookmark(value: String) -> Bool {
   }
 }
 
+// `loom --addr `, an address or the placeholder for none, ` --session `, an
+// identity of hexadecimal digits and hyphens, and the fixed ending.
+fn launch(value: String) -> Bool {
+  case string.split_once(value, launch_prefix) {
+    Ok(#("", rest)) ->
+      case string.split_once(rest, launch_session) {
+        Ok(#(address, tail)) ->
+          { address == launch_unknown_address || launch_address(address) }
+          && case string.split_once(tail, launch_ending) {
+            Ok(#(identity, "")) ->
+              identity != ""
+              && !longer_than(identity, identity_limit)
+              && list.all(string.to_graphemes(identity), fn(character) {
+                string.contains("0123456789abcdefABCDEF-", character)
+              })
+            Ok(#(_, _)) | Error(Nil) -> False
+          }
+        Error(Nil) -> False
+      }
+    Ok(_) | Error(Nil) -> False
+  }
+}
+
+fn launch_address(address: String) -> Bool {
+  address != "" && !longer_than(address, address_limit) && made_of(address)
+}
+
 // `loomclaim_` and exactly 64 hexadecimal digits.
 fn token(value: String) -> Bool {
   case string.split_once(value, token_prefix) {
@@ -323,17 +375,20 @@ pub fn words(subject: Subject, copying: Copying) -> String {
     Idle, Device -> "Copy link"
     Idle, ClaimPage -> "Copy address"
     Idle, Bookmark -> "Copy bookmark"
+    Idle, Launch -> "Copy command"
     Copied, Command | Copied, Link -> "Command copied"
     Copied, Token -> "Token copied"
     Copied, Device -> "Link copied"
     Copied, ClaimPage -> "Address copied"
     Copied, Bookmark -> "Bookmark copied"
+    Copied, Launch -> "Command copied"
     Failed, Command
     | Failed, Token
     | Failed, Link
     | Failed, Device
     | Failed, ClaimPage
     | Failed, Bookmark
+    | Failed, Launch
     -> "Copy failed. Select the text and copy it."
   }
 }
