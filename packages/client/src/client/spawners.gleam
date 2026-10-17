@@ -72,6 +72,7 @@
 ////    was removed. `find` and `by_node` resolve a configured spawner by name or by the node
 ////    a message came from.
 
+import client/approval_ceiling.{type Ceiling}
 import client/distribution
 import client/executors.{type Executor}
 import client/ledger_reference
@@ -183,6 +184,13 @@ pub type Spawner {
     /// The spawns admitted for this spawner over a rolling day. `None` bounds
     /// nothing.
     max_per_day: Option(Int),
+    /// What the spawning orchestrator's operator may approve for a child that
+    /// asks for more than its sandbox allows (protocol-change/089). `None` means
+    /// the table has no ceiling: the delegate session counts as unattended and
+    /// no decision from the spawner is accepted. `Some` makes a refused call park
+    /// while the spawner's node is connected, and bounds what a decision may
+    /// grant.
+    approval_ceiling: Option(Ceiling),
   )
 }
 
@@ -422,7 +430,7 @@ fn row(name: String, value: tom.Toml, known: Known) -> Result(Spawner, String) {
           "node", "executor", "pool", "directory", "workspace", "profile",
           "tools", "max_depth", "max_sessions", "max_within_s",
           "default_within_s", "retain_s", "idle_close_s", "token_budget_per_day",
-          "child_token_budget", "max_per_day",
+          "child_token_budget", "max_per_day", "approval_ceiling",
         ],
         "[spawners." <> name <> "]",
       ))
@@ -478,6 +486,7 @@ fn row(name: String, value: tom.Toml, known: Known) -> Result(Spawner, String) {
         "child_token_budget",
       ))
       use max_per_day <- result.try(budget_of(fields, place, "max_per_day"))
+      use approval_ceiling <- result.try(ceiling_of(fields, place))
       use Nil <- result.map(windows(
         place,
         max_within_s,
@@ -499,9 +508,26 @@ fn row(name: String, value: tom.Toml, known: Known) -> Result(Spawner, String) {
         token_budget_per_day:,
         child_token_budget:,
         max_per_day:,
+        approval_ceiling:,
       )
     }
     _ -> Error(place <> " must be a table")
+  }
+}
+
+// The optional ceiling on what the spawner's operator may approve. A table that
+// is absent is no ceiling, which is different from a table that is present and
+// admits nothing: the second asks the operator and can only be told no.
+fn ceiling_of(
+  fields: Dict(String, tom.Toml),
+  place: String,
+) -> Result(Option(Ceiling), String) {
+  let key = place <> ".approval_ceiling"
+  case dict.get(fields, "approval_ceiling") {
+    Error(Nil) -> Ok(None)
+    Ok(tom.Table(table)) | Ok(tom.InlineTable(table)) ->
+      approval_ceiling.from_table(table, key) |> result.map(Some)
+    Ok(_) -> Error(key <> " must be a table")
   }
 }
 

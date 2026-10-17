@@ -813,6 +813,42 @@ still be running.
 | `token_budget_per_day` | integer | none (unmetered) | at least 1 | The tokens, input plus output, that every child of this spawner may use over a rolling day of 24 hours. A spawn is refused with `token_budget_per_day` named once the day's total has reached it. Children already running are not stopped by it. |
 | `child_token_budget` | integer | none (unmetered) | at least 1 | The tokens one child may use. A child is stopped, with its outcome recorded as spent, after the request that takes it to the budget, so it can overshoot by one request. |
 | `max_per_day` | integer | none (unmetered) | at least 1 | The spawns admitted for this spawner over a rolling day. A new spawn is refused with `max_per_day` named once the day's count has reached it. A resent spawn that finds its child already started is answered with that child and is not counted. |
+| `approval_ceiling` | table | none (no ceiling) | a [`[spawners.<name>.approval_ceiling]`](#spawnersnameapproval_ceiling) table | What the spawning orchestrator's operator may approve for a child that asks for more than its sandbox allows (protocol-change 089). With no table, a delegate session counts as unattended and a refused call settles in band, as it always has, and no decision from the spawner is accepted. With a table, a refused call is held open while the spawner's node is connected, the spawner's operator is asked, and a decision is accepted only if every grant it carries is inside the table. |
+
+## `[spawners.<name>.approval_ceiling]`
+
+(From protocol-change 089.) Optional, written on the box inside a
+`[spawners.<name>]` table, and read with it when the daemon starts. A child that
+runs here can ask for more than its sandbox allows: write access to a directory, a
+host on the network, an environment variable. Nobody is attached to a delegate
+session, so without this table the child's call settles on the refusal. With it,
+the refused call is held open for as long as the spawner's node is connected, the
+operator on the spawning orchestrator is shown the request, and the box accepts
+their decision only if every grant in it is inside the ceiling. A decision that
+names anything wider is refused (`outside the spawner's approval ceiling`) and the
+request stays pending for the owner of this machine, who can still attach to the
+delegate session and answer it.
+
+There is one key for each kind of grant. A key that is absent admits nothing of its
+kind, and a table with no keys asks the operator and admits nothing. The ceiling
+binds an honest spawner, like the rest of the spawn policy: it stops a mistaken
+approval, and a compromised peer does not have to send the message it judges.
+
+An operator on the spawning side may approve a grant for one call (once) or for the
+rest of the delegate session (session). A session approval is remembered in the
+delegate session and is honoured by every later call of that parent's children on
+this machine, and by no other session. It is checked against the ceiling again each
+time the delegate session opens, so narrowing the ceiling and restarting the daemon
+revokes what the old ceiling let through.
+
+| Key | Type | Required, default | Allowed values | Meaning |
+| --- | --- | --- | --- | --- |
+| `writable_roots` | array of strings | none | absolute paths with no `..` or `.` segment | A writable root may be granted if it is one of these paths or under one, compared on a path segment (`/srv/work` admits `/srv/work/a` and not `/srv/workshop`). |
+| `readable_roots` | array of strings | none | absolute paths with no `..` or `.` segment | A readable root may be granted under one of these paths. A path that is writable under `writable_roots` may be read as well. |
+| `network` | string or array of strings | none | `"any"`, or `host:port` entries | `"any"` admits unrestricted network. A list admits a proxy grant whose every allowlist entry is in it. |
+| `env` | array of strings | none | environment variable names | These variables may be added to the allowlist. |
+| `limits` | table | none | any of `cpu_s`, `wall_s`, `mem_bytes`, `pids`, `fsize_bytes`, `output_bytes`, each a positive integer | A limit may be raised up to the value listed. A request for unlimited (`0`) is never admitted. |
+| `scratch` | array of strings | none | `"tmpfs"`, or absolute paths | The scratch choices that may be granted: a fresh tmpfs, or a host path at or under one of the listed paths. |
 
 ## Provisioning a deployment
 
