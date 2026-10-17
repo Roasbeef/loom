@@ -30,6 +30,15 @@ The diagnostic event allowlist includes the fixed literal without reflecting
 arbitrary remote strings. Both public and subscription Responses machines share
 this fold.
 
+## Responses metadata control
+
+Subscription inference now sends `response.metadata` between content events.
+The observed payload contains `response_id` and moderation metadata, but no
+content, item closure or terminal witness. The adapter requires its response ID
+to match the established stream identity, then advances the checked sequence
+without changing items, usage or settlement. The provider's terminal remains
+the authority for the outcome; metadata alone cannot finish a response.
+
 ## Responses service tier
 
 `client/catalog.CatalogModel.service_tier` is an optional typed

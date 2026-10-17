@@ -364,6 +364,46 @@ pub fn responses_sequence_and_unknown_semantics_fail_test() {
   malformed(run([created(), "data: {broken}\n\n"]))
 }
 
+pub fn responses_metadata_preserves_text_and_terminal_witnesses_test() {
+  let body = text_events("Hello", "output_text")
+  let metadata =
+    event("response.metadata", [
+      #("sequence_number", json.Int(5)),
+      #("response_id", json.String("resp_fixture")),
+      #(
+        "metadata",
+        json.Object([#("openai_chatgpt_moderation_metadata", json.Object([]))]),
+      ),
+    ])
+  let body = list.take(body, 4) |> list.append([metadata, ..list.drop(body, 4)])
+  let events =
+    fixture.drive_ok(
+      responses.subscription_response_machine(resolved(), now: 123),
+      string.concat(body),
+    )
+  let assert [stream.Delta(stream.TextDelta(0, "Hello")), stream.Settled(_, _)] =
+    events
+    as "metadata produces no content event"
+  let assert message.AssistantMessage(
+    content: [message.AssistantText("Hello", None)],
+    api: "codex-subscription",
+    stop_reason: message.Stop,
+    ..,
+  ) = settled(events)
+    as "metadata does not change text or the terminal witness"
+}
+
+pub fn responses_metadata_rejects_other_response_test() {
+  let report =
+    failure_report(
+      run([
+        created(),
+        event("response.metadata", [#("response_id", json.String("resp_other"))]),
+      ]),
+    )
+  assert string.contains(report.context, "reason=metadata_identity;")
+}
+
 pub fn responses_eof_never_settles_partial_test() {
   let events = run(list.take(text_events("partial", "output_text"), 7))
   let assert Ok(stream.Failed(stream.StreamDisconnected(_), accounting: _)) =
