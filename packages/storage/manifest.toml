@@ -30,6 +30,7 @@ packages = [
 ]
 
 [requirements]
+argv = { version = ">= 1.1.0 and < 2.0.0" }
 core = { path = "../core" }
 gleam_crypto = { version = ">= 1.0.0 and < 2.0.0" }
 gleam_erlang = { version = ">= 1.0.0 and < 2.0.0" }

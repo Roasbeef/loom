@@ -249,7 +249,8 @@ const header_prefix: Int = 400
 ///
 /// Every rule here advises an edit, and the literate rules bind whoever
 /// writes the source. For these files that is `scripts/gen-sql.sh`,
-/// `scripts/embed-sql-schema.py` and `scripts/gen-prelude.py`, so a finding
+/// `packages/storage/dev/embed_schema.gleam` and
+/// `packages/tools/dev/gen_prelude.gleam`, so a finding
 /// in one asks for a change the next `make gen-sql` would discard — and
 /// `make check` re-derives and compares them precisely so that nobody makes
 /// it. That is noise which never clears, and R1's and R5's promotion cases

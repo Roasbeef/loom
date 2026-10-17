@@ -9,47 +9,34 @@
 # pinned in parrot's source; `sqlc version` must match) and the download
 # step becomes a no-op.
 #
-# Requirements: gleam, python3, sqlite3 (parrot shells out to `sqlite3 <db>
-# .schema` to pull the schema).
+# Requirements: gleam, sqlite3 (parrot shells out to `sqlite3 <db> .schema`
+# to pull the schema).
 #
 # Currently generated surfaces:
-#   packages/events — sql/schema.sql (DDL, hand-written)
-#                     src/events/sql/search.sql (named queries)
-#                     -> src/events/sql.gleam   (generated, committed)
-#   packages/storage — separate sql/schema.sql and sql/session.sql schemas,
-#                     and src/storage/sql/*.sql named queries
-#                     -> src/storage/sql.gleam, sql_schema.gleam and
-#                        session_schema.gleam, catalogue_names_schema.gleam,
-#                        catalogue_archives_schema.gleam,
-#                        catalogue_claims_schema.gleam and
-#                        catalogue_subtitles_schema.gleam and
-#                        catalogue_credential_kinds_schema.gleam and
-#                        catalogue_logins_schema.gleam and
-#                        catalogue_recent_folders_schema.gleam and
-#                        catalogue_profiles_schema.gleam and
-#                        catalogue_models_schema.gleam and
-#                        catalogue_executors_schema.gleam and
-#                        catalogue_pools_schema.gleam and
-#                        catalogue_moves_schema.gleam and
-#                        catalogue_deletions_schema.gleam and
-#                        catalogue_delegates_schema.gleam. Each catalogue version
-#                        after the first has its own migration schema;
-#                        runtime catalogue creation never embeds session tables.
-#                        sql/exec_ledger.sql is the executor ledger's own
-#                        database schema (protocol-change/078); its queries
-#                        share sql.gleam and it embeds as
-#                        exec_ledger_schema.gleam. sql/exec_ledger_releases.sql
-#                        is its second version, the operator release record,
-#                        embedded as exec_ledger_releases_schema.gleam, and
-#                        sql/exec_ledger_acks.sql is its third, the
-#                        acknowledgement tombstones, embedded as
-#                        exec_ledger_acks_schema.gleam.
+#   packages/events  — sql/schema.sql (DDL, hand-written)
+#                      src/events/sql/search.sql (named queries)
+#                      -> src/events/sql.gleam   (generated, committed)
+#   packages/storage — every sql/*.sql file is a schema, and
+#                      src/storage/sql/*.sql holds the named queries
+#                      -> src/storage/sql.gleam (parrot) and one
+#                         src/storage/<name>_schema.gleam per schema file
+#                         (packages/storage/dev/embed_schema.gleam).
+#
+# This script lists no storage schema. The embedder finds the files and
+# prints the order a scratch database must load them in: the base schema,
+# the catalogue migrations in version order (read from
+# `storage/catalogue.migrations`, because a later version ALTERs tables an
+# earlier one created), the session schema, then the rest by name. Runtime
+# catalogue creation never embeds session tables. The executor ledger's
+# tables live in their own database (protocol-change/078) but share
+# sql.gleam's queries, so its schemas load here too.
 #
 # Known parrot 2.3.0 constraints (discovered by the WP-K pilot; keep in
 # mind when editing the .sql files):
 #   * Queries must be ASCII. A multi-byte character anywhere in a query
 #     file shifts parrot's byte-offset slicing and silently corrupts
-#     every later query's generated SQL text.
+#     every later query's generated SQL text. The embedder refuses
+#     non-ASCII schemas for the same reason.
 #   * FTS5: `CREATE VIRTUAL TABLE ... USING fts5` parses, but sqlc
 #     rejects the table-valued `tbl MATCH ?` form ("column does not
 #     exist"); use the column-qualified `tbl.col MATCH ?` instead.
@@ -61,93 +48,35 @@ command -v sqlite3 >/dev/null || {
   exit 1
 }
 
+# The DDL files a package loads, one path per line, relative to the package.
+# Storage asks its embedder; the capture is a separate step so that a failing
+# `gleam run` stops the script instead of vanishing into a pipeline.
+ddl_files() {
+  local pkg="$1"
+  if [[ "$pkg" == storage ]]; then
+    (cd packages/storage && gleam run -m embed_schema load-order)
+  else
+    echo "sql/schema.sql"
+  fi
+}
+
 gen_package() {
   local pkg="$1"
   echo "==> $pkg"
   local tmpdb
   tmpdb="$(mktemp -t loom-gen-sql-XXXXXX.db)"
   trap 'rm -f "$tmpdb"' RETURN
-  sqlite3 "$tmpdb" < "packages/$pkg/sql/schema.sql"
-  if [[ "$pkg" == storage ]]; then
-    sqlite3 "$tmpdb" < packages/storage/sql/catalogue_names.sql
-    sqlite3 "$tmpdb" < packages/storage/sql/catalogue_archives.sql
-    sqlite3 "$tmpdb" < packages/storage/sql/catalogue_claims.sql
-    sqlite3 "$tmpdb" < packages/storage/sql/catalogue_subtitles.sql
-    sqlite3 "$tmpdb" < packages/storage/sql/catalogue_credential_kinds.sql
-    sqlite3 "$tmpdb" < packages/storage/sql/catalogue_logins.sql
-    sqlite3 "$tmpdb" < packages/storage/sql/catalogue_recent_folders.sql
-    sqlite3 "$tmpdb" < packages/storage/sql/catalogue_profiles.sql
-    sqlite3 "$tmpdb" < packages/storage/sql/catalogue_models.sql
-    sqlite3 "$tmpdb" < packages/storage/sql/catalogue_executors.sql
-    sqlite3 "$tmpdb" < packages/storage/sql/catalogue_pools.sql
-    sqlite3 "$tmpdb" < packages/storage/sql/catalogue_moves.sql
-    sqlite3 "$tmpdb" < packages/storage/sql/catalogue_deletions.sql
-    sqlite3 "$tmpdb" < packages/storage/sql/catalogue_delegates.sql
-    sqlite3 "$tmpdb" < packages/storage/sql/session.sql
-    sqlite3 "$tmpdb" < packages/storage/sql/exec_ledger.sql
-    sqlite3 "$tmpdb" < packages/storage/sql/exec_ledger_releases.sql
-    sqlite3 "$tmpdb" < packages/storage/sql/exec_ledger_acks.sql
-  fi
+
+  local files file
+  files="$(ddl_files "$pkg")"
+  while IFS= read -r file; do
+    sqlite3 "$tmpdb" < "packages/$pkg/$file"
+  done <<< "$files"
+
   (cd "packages/$pkg" && gleam run --module parrot -- --sqlite "$tmpdb")
 }
 
 gen_package events
 gen_package storage
-python3 scripts/embed-sql-schema.py packages/storage/sql/schema.sql \
-  packages/storage/src/storage/sql_schema.gleam
-python3 scripts/embed-sql-schema.py packages/storage/sql/session.sql \
-  packages/storage/src/storage/session_schema.gleam
-gleam format packages/storage/src/storage/sql_schema.gleam
-gleam format packages/storage/src/storage/session_schema.gleam
-python3 scripts/embed-sql-schema.py packages/storage/sql/catalogue_names.sql \
-  packages/storage/src/storage/catalogue_names_schema.gleam
-gleam format packages/storage/src/storage/catalogue_names_schema.gleam
-python3 scripts/embed-sql-schema.py packages/storage/sql/catalogue_archives.sql \
-  packages/storage/src/storage/catalogue_archives_schema.gleam
-gleam format packages/storage/src/storage/catalogue_archives_schema.gleam
-python3 scripts/embed-sql-schema.py packages/storage/sql/catalogue_claims.sql \
-  packages/storage/src/storage/catalogue_claims_schema.gleam
-gleam format packages/storage/src/storage/catalogue_claims_schema.gleam
-python3 scripts/embed-sql-schema.py packages/storage/sql/catalogue_subtitles.sql \
-  packages/storage/src/storage/catalogue_subtitles_schema.gleam
-gleam format packages/storage/src/storage/catalogue_subtitles_schema.gleam
-python3 scripts/embed-sql-schema.py packages/storage/sql/catalogue_credential_kinds.sql \
-  packages/storage/src/storage/catalogue_credential_kinds_schema.gleam
-gleam format packages/storage/src/storage/catalogue_credential_kinds_schema.gleam
-python3 scripts/embed-sql-schema.py packages/storage/sql/catalogue_logins.sql \
-  packages/storage/src/storage/catalogue_logins_schema.gleam
-gleam format packages/storage/src/storage/catalogue_logins_schema.gleam
-python3 scripts/embed-sql-schema.py packages/storage/sql/catalogue_recent_folders.sql \
-  packages/storage/src/storage/catalogue_recent_folders_schema.gleam
-gleam format packages/storage/src/storage/catalogue_recent_folders_schema.gleam
-python3 scripts/embed-sql-schema.py packages/storage/sql/catalogue_profiles.sql \
-  packages/storage/src/storage/catalogue_profiles_schema.gleam
-gleam format packages/storage/src/storage/catalogue_profiles_schema.gleam
-python3 scripts/embed-sql-schema.py packages/storage/sql/catalogue_models.sql \
-  packages/storage/src/storage/catalogue_models_schema.gleam
-gleam format packages/storage/src/storage/catalogue_models_schema.gleam
-python3 scripts/embed-sql-schema.py packages/storage/sql/catalogue_executors.sql \
-  packages/storage/src/storage/catalogue_executors_schema.gleam
-gleam format packages/storage/src/storage/catalogue_executors_schema.gleam
-python3 scripts/embed-sql-schema.py packages/storage/sql/catalogue_pools.sql \
-  packages/storage/src/storage/catalogue_pools_schema.gleam
-gleam format packages/storage/src/storage/catalogue_pools_schema.gleam
-python3 scripts/embed-sql-schema.py packages/storage/sql/catalogue_moves.sql \
-  packages/storage/src/storage/catalogue_moves_schema.gleam
-gleam format packages/storage/src/storage/catalogue_moves_schema.gleam
-python3 scripts/embed-sql-schema.py packages/storage/sql/catalogue_deletions.sql \
-  packages/storage/src/storage/catalogue_deletions_schema.gleam
-gleam format packages/storage/src/storage/catalogue_deletions_schema.gleam
-python3 scripts/embed-sql-schema.py packages/storage/sql/catalogue_delegates.sql \
-  packages/storage/src/storage/catalogue_delegates_schema.gleam
-gleam format packages/storage/src/storage/catalogue_delegates_schema.gleam
-python3 scripts/embed-sql-schema.py packages/storage/sql/exec_ledger.sql \
-  packages/storage/src/storage/exec_ledger_schema.gleam
-gleam format packages/storage/src/storage/exec_ledger_schema.gleam
-python3 scripts/embed-sql-schema.py packages/storage/sql/exec_ledger_releases.sql \
-  packages/storage/src/storage/exec_ledger_releases_schema.gleam
-gleam format packages/storage/src/storage/exec_ledger_releases_schema.gleam
-python3 scripts/embed-sql-schema.py packages/storage/sql/exec_ledger_acks.sql \
-  packages/storage/src/storage/exec_ledger_acks_schema.gleam
-gleam format packages/storage/src/storage/exec_ledger_acks_schema.gleam
+(cd packages/storage && gleam run -m embed_schema)
 echo "generated SQL modules are up to date; review and commit the diff"
