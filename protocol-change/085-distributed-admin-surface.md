@@ -485,3 +485,79 @@ rest:
   that changes another `web_view` source and regenerates it conflicts in
   `packages/web_view/priv/static/web_client.css`'s header. The conflict is
   resolved by running `make gen-client` once after the merge.
+
+
+## Addendum 2026-10-16: the spellings slice 4 part b chose
+
+Slice 4 part b builds what the implementation notes above left for it: the
+orchestrator port's `Report` is asked of every reachable node, the asking daemon
+reports on itself, `classify` states the eight reasons, and `deployment.status`,
+the creation cards and the terminal carry the result. 085 is silent or
+ambiguous on the points below, and this is what the code does. A reader of a
+reply treats every member named here as optional, as the decision states.
+
+- **One run, two bounds.** For each configured node the daemon connects
+  (`connect_ms`, one second) and then asks for the report (`report_ms`, one
+  second), and the asking daemon builds its own report in the same run, under the
+  three second deadline. A node that connected and did not report in time reads
+  `down` with `timeout`, because the daemon can say nothing of it.
+- **A node's members.** A node that reported carries `build_version`,
+  `build_commit` and `uptime_ms` (its own clock at the answer less its clock at
+  start). An executor adds `protocol` at the node level and an `executor` object
+  with `scopes`, `scope_limit`, `ledger_bytes`, `ledger_limit`, `unacknowledged`,
+  `platform`, `enforcement` and `toolchains` (the last two from its latest attach
+  census, absent before one), and `contradiction` (`null` or the words). An
+  orchestrator adds an `orchestrator` object with `capacity`, `occupied`,
+  `resident`, `imports` (`receiving` or `not_receiving`) and `moves_in_flight`, a
+  count, because `moves` is the long list. The asking daemon's own entry carries
+  `self: true`. A `degraded` node carries `reasons`, an array of the words, and
+  a `down` node carries `reason`.
+- **The top-level `reasons`.** One entry for a `down` node and one for each reason
+  of a `degraded` node, not one for each node. The example above shows one entry
+  for a node with one reason.
+- **Free scopes and `full`.** The scopes that count against `scope_limit` are the
+  open ones, the closing ones and the ones closed with unknown cleanup, because an
+  open scope holds a slot as the others do. `free_scopes` is the limit less that
+  count, never below zero, and `full` holds when it is zero. `unclean_scope` holds
+  when any scope is closing or closed with unknown cleanup. A pool's `eligible`
+  lists the executors that are neither `down` nor `full`; a `degraded` executor can
+  still take a session.
+- **Edges.** A `serves` edge has `sessions`, the resident and the saved sessions the
+  orchestrator reports on the executor. The asking daemon has one to each
+  configured executor, with its link, and an answering orchestrator's `serves`
+  edges, with no link, run from it to each executor it configures that the asking
+  daemon also lists. A `peer` edge always touches the asking daemon: a report's
+  `peers` are not drawn as edges between other nodes. A `member` edge runs from the
+  asking daemon to each directory member that appears in `nodes`, with the asking
+  daemon's link to it, and `voter` and `leader` (booleans) describe the node at
+  `to`. The daemon does not state a `member` edge between two other nodes, so a
+  deployment of n members has n minus one such edges and not a mesh. The terminal
+  merges the edges between one pair of nodes into one row.
+- **`directory_quorum_lost`.** It is stated of the asking daemon's own entry only,
+  from its cluster view and its connect attempts. The daemon counts itself as
+  reached, and a voter it has no attempt for is counted as reached, so the reason
+  is stated only when a majority is out of reach even if every unasked voter is up.
+- **Directory members that are not configured.** The daemon dials the nodes of its
+  `[orchestrators]` and `[executors]` tables, as the decision says of its
+  configuration, and no other node. A directory member it does not configure is
+  named in the `directory` block and gives the `member` role to the nodes that
+  are members, and is not dialled.
+- **The `directory` and `moves` members.** `directory` is the body of
+  `directory.status` and `copy`, on a daemon that is a member. `moves` names each
+  destination by the asking daemon's key for it, or by node when it has none. Both
+  are absent from a reply that names a node.
+- **A node filter.** The reply holds the node, classified as in an overview, with
+  an executor's `workspaces` and `unclean` (each scope with its `session`, its
+  `state` of `closing` or `unknown_cleanup`, and `count` for the latter) and an
+  orchestrator's `placements` and `moves`. It has no `edges`, `placements`,
+  `orchestrators`, `directory` or `moves`.
+- **The page.** `web_view/placements` regains the states `Degraded` and `Full`, and
+  its report gains `free_scopes` and `contradiction`. A card draws "N scopes free"
+  and the contradiction as text, and the pill tints are `online`, `pending` and
+  `ended`.
+- **The terminal.** `loom deployment status` draws the example of the design note
+  (section 8) from the reply: the time is the reply's `as_of_ms` in UTC, a node's
+  `SCOPES` is the scopes held against the limit, and the session of a scope that
+  needs a release is named only when the reply carries the node's long lists
+  (`--node`), so an overview says how many. `loom directory status` draws the
+  `directory.status` body and has no member of its own.

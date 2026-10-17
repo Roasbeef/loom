@@ -3310,44 +3310,70 @@ the daemon is still stopping it is spent with the pointer to `/sessions`.
 `tui/profile_command_test` pins the parse, palette, help text, frames, lane
 acceptance and transcript lines.
 
-## `loom deployment` (protocol-change/085)
+## `loom deployment` and `loom directory` (protocol-change/085)
 
-`loom deployment status [--json]` and `loom deployment executors [--json]` read
-`deployment.status` over one owner control connection, the way `loom sessions`
-reaches the daemon: `tui.run_deployment` takes `sessions_host`'s ladder, sends
-`protocol.DeploymentStatus` through `selection.deployment`, and prints through
-`print_outcome` (one report to standard output, or one `loom deployment: <reason>`
-line to standard error and exit status 1), the path `run_sessions` now shares.
-`--json` is a switch taken anywhere after the verb; `launch_deployment` is the
-test seam for the parse.
+`loom deployment status [--node <key>] [--json]` and `loom deployment executors
+[--json]` read `deployment.status` over one owner control connection, the way `loom
+sessions` reaches the daemon: `tui.run_deployment` takes `sessions_host`'s ladder,
+sends `protocol.DeploymentStatus(node)` through `selection.deployment`, and prints
+through `print_outcome` (one report to standard output, or one `loom deployment:
+<reason>` line to standard error and exit status 1), the path `run_sessions` now
+shares. `loom directory status [--json]` is the same shape over `directory.status`
+(`tui.run_directory`, `selection.directory`, `protocol.DirectoryStatus` and
+`DirectoryReply`, `tui/directory_view`). `--json` is a switch taken anywhere after
+the verb; `--node` takes the next word, which must be a configuration key
+(`placement.is_orchestrator_name`) and belongs to `status` alone; `launch_deployment`
+and `launch_directory` are the test seams for the parse.
 
-- `protocol.DeploymentStatus` is a read with an empty body, and `DeploymentReply`
-  keeps the daemon's document whole, so `--json` prints what the daemon sent
-  (`tui.format_deployment`) even when the view could not read it.
+- `protocol.DeploymentStatus(node)` is a read whose body is empty or `{"node":
+  <key>}`, and `DeploymentReply` and `DirectoryReply` keep the daemon's document
+  whole, so `--json` prints what the daemon sent (`tui.format_deployment`,
+  `tui.format_directory`) even when the view could not read it.
 - `tui/deployment_view` is the terminal's reading of the document, with a
   decoder of its own because the launcher cannot import the daemon's types.
   `decode` is total: `self`, `state` and `nodes` are required, a node needs
   `node`, `name`, `roles` and `state`, a state word outside the protocol's
   (`ok|degraded|down`, `ready|degraded|full|down`) is an `Error` and never a
-  guess, text and lists are bounded, and an optional member that is absent,
-  malformed or unknown is left out. `status_text` draws the verdict, a node
-  table and the links (`==` connected, `..` not connected, `--` not observable
-  from the asking daemon), then, for a daemon that runs from a membership ledger,
-  a `LEDGER` section (protocol-change/086, phase 2): the head, how many members
-  hold it, each member's reported entry (`current`, `behind by N` or `not
-  reported`) with the age of that report on the daemon's clock, a standing line
-  when the daemon is not `ok`, and the last refusal. The `ledger` member is
-  optional: one that is absent or does not decode leaves the rest drawn, and a
-  malformed member entry is skipped. `executors_text` draws the executors with their state,
-  declaration, pools and the reason a down one gave, then the pools in trial
-  order with the reachable ones. Every drawn string goes through
-  `text_hygiene.single_line`.
+  guess, text (256 bytes) and lists (128 entries) are bounded, and an optional
+  member that is absent, malformed or unknown is left out: a node's build,
+  uptime, `orchestrator` and `executor` facts, the `directory` block, `moves`,
+  `ledger`. `extent` is `OneNode` when the reply has no `edges`.
+  `status_text` draws the example of the design note: the head (who asked, how
+  many nodes answered, the time of `as_of_ms` in UTC), the state with a sentence
+  for each reason (`reason_sentence`), a `NODE ROLE STATE BUILD SCOPES NOTE` table
+  (`SCOPES` is the scopes held against the limit, and the note is a down node's
+  word, an orchestrator's slots and moves in flight, `directory leader`, and a
+  sentence for each reason, naming the session of a scope that needs a release
+  only when the reply carries it), the `LINKS` section (`==` connected, `..` not
+  connected, `--` not observable from the asking daemon, one row for each pair of
+  nodes with the relations merged), the `DIRECTORY` line (members, voters, leader,
+  `this copy current|unconfirmed`), the `MOVES` lines, and for a daemon that runs
+  from a membership ledger a `LEDGER` section (protocol-change/086, phase 2): the
+  head, how many members hold it, each member's reported entry (`current`, `behind
+  by N` or `not reported`) with the age of that report on the daemon's clock, a
+  standing line when the daemon is not `ok`, and the last refusal. A reply for one
+  node (`OneNode`) is followed by that node's scopes, ledger, workspaces and each
+  scope that needs a release with the `loomd executor release` line that frees it.
+  `executors_text` draws the executors with their state, declaration, pools and the
+  reason a down one gave (and the free scope count of a degraded or full one),
+  then the pools in trial order with the members that can take a session. Every
+  drawn string goes through `text_hygiene.single_line`.
+- `tui/directory_view` reads the `directory.status` body with the same bounds:
+  `members`, `joined` and `applied_index` are required, Ra's members, the leader
+  and the reason Ra cannot say are optional. `status_text` draws a summary line
+  (members, voters, leader or the reason, applied index), whether this node has
+  joined, and a table of the members with their vote and the leader, plus one row
+  for each Ra member the configured list lacks.
 - `selection.deployment_failure` words a daemon that does not know the command
   (`bad_request`, `unsupported control command`) as "this daemon does not have
-  deployment views" and leaves every other failure to `failure`.
+  deployment views", a key its configuration lacks (`not_found`) as such, and
+  leaves every other failure to `failure`. `selection.directory_failure` does the
+  same for "directory views" and a daemon that is not a directory member.
 
-Tests: `deployment_command_test` (the parse, the frame, the decoder's total
-cases, goldens for both views, a hostile reply, and `--json`).
+Tests: `deployment_command_test` (the parse, the frames, the decoder's total
+cases and bounds, goldens for the design example, a daemon that only knows itself,
+a reply for one node and a reply without reports, a hostile reply, and `--json`) and
+`directory_status_test`.
 
 Generation throughput and elapsed observation clocks live in the shared
 `generation_rate` ledger per strand. The terminal reads the selected strand

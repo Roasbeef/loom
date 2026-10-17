@@ -546,7 +546,7 @@ Source: (`client/daemon/server.gleam:839-860`).
 A page stops on an authorized record boundary once its encoded size
 would exceed 60000 bytes. The next request resumes after the last
 emitted id. A single record too large for that budget is refused with
-`metadata_too_large`. Source: (`client/daemon/server.gleam:3261`).
+`metadata_too_large`. Source: (`client/daemon/server.gleam:3216`).
 
 Errors: `revision_changed` when `revision` was supplied and differs from
 the catalogue's current one; `metadata_too_large`; `unavailable`.
@@ -1553,28 +1553,32 @@ whom to join and whom to keep connected.
 
 Owner-only (a member is refused `forbidden`). Reports which of the nodes the
 daemon is configured with (its `[orchestrators.<name>]` and `[executors.<name>]`
-tables) its own connection attempts reach, and the executors and pools a session
-may be placed on (protocol-change/085). Every statement is as seen from the
-daemon that answers; nothing is cached, and each read connects again. The daemon
-connects to all nodes at once, each attempt bounded at one second, and the read
-as a whole at three. The request body is `{}` or `{"node": <key>}`, and it needs
-no epoch.
+tables) its own connection attempts reach, what each reachable node says of itself
+when asked, and the executors and pools a session may be placed on
+(protocol-change/085). Every statement is as seen from the daemon that answers;
+nothing is cached, and each read connects again. The daemon connects to all nodes
+at once, each connection bounded at one second and then each ask for the node's
+report at one second, and the read as a whole at three. The answering daemon reports
+on itself without a connection. The request body is `{}` or `{"node": <key>}`, and
+it needs no epoch.
 
 ```json
 {"v":2,"id":21,"cmd":"deployment.status","body":{}}
-{"v":2,"reply_to":21,"event":"deployment.status","body":{"as_of_ms":1760190131000,"self":"alpha@10.0.0.1","state":"degraded","reasons":[{"node":"exec2@10.0.0.9","reason":"timeout"}],"nodes":[{"node":"alpha@10.0.0.1","name":"alpha@10.0.0.1","roles":["orchestrator"],"state":"ok"},{"node":"bravo@10.0.0.4","name":"bravo","roles":["orchestrator"],"state":"ok"},{"node":"box@10.0.0.2","name":"box","roles":["executor"],"state":"ok"},{"node":"exec2@10.0.0.9","name":"exec2","roles":["executor"],"state":"down","reason":"timeout"}],"edges":[{"from":"alpha@10.0.0.1","to":"bravo@10.0.0.4","kind":"peer","link":"connected"},{"from":"alpha@10.0.0.1","to":"box@10.0.0.2","kind":"serves","link":"connected"},{"from":"alpha@10.0.0.1","to":"exec2@10.0.0.9","kind":"serves","link":"none"}],"placements":{"executors":[{"name":"box","node":"box@10.0.0.2","state":"ready","declared":{"toolchains":[]}},{"name":"exec2","node":"exec2@10.0.0.9","state":"down","declared":{"platform":"linux/x86_64","enforcement":"enforced","toolchains":["codemode"]}}],"pools":[{"name":"builders","executors":["exec2","box"],"eligible":["box"]}]},"orchestrators":[{"name":"bravo","node":"bravo@10.0.0.4","state":"ok"}]}}
+{"v":2,"reply_to":21,"event":"deployment.status","body":{"as_of_ms":1760191331000,"self":"alpha@10.0.0.1","state":"degraded","reasons":[{"node":"exec2@10.0.0.9","reason":"timeout"},{"node":"box@10.0.0.2","reason":"unclean_scope"}],"nodes":[{"node":"alpha@10.0.0.1","name":"alpha@10.0.0.1","roles":["orchestrator","member"],"state":"ok","self":true,"build_version":"0.3.0","build_commit":"b4eeb50c9d1e","uptime_ms":86400000,"orchestrator":{"capacity":8,"occupied":2,"resident":2,"imports":"receiving","moves_in_flight":1}},{"node":"bravo@10.0.0.4","name":"bravo","roles":["orchestrator","member"],"state":"ok"},{"node":"box@10.0.0.2","name":"box","roles":["executor","member"],"state":"degraded","reasons":["unclean_scope"],"build_version":"0.3.0","build_commit":"b4eeb50c9d1e","uptime_ms":3600000,"protocol":3,"executor":{"scopes":{"open":3,"closing":0,"closed_clean":9,"closed_unknown":1},"scope_limit":16,"ledger_bytes":2097152,"ledger_limit":536870912,"unacknowledged":0,"platform":"linux/x86_64","contradiction":null}},{"node":"exec2@10.0.0.9","name":"exec2","roles":["executor"],"state":"down","reason":"timeout"}],"edges":[{"from":"alpha@10.0.0.1","to":"bravo@10.0.0.4","kind":"peer","link":"connected"},{"from":"alpha@10.0.0.1","to":"box@10.0.0.2","kind":"serves","sessions":3,"link":"connected"},{"from":"alpha@10.0.0.1","to":"exec2@10.0.0.9","kind":"serves","sessions":0,"link":"none"},{"from":"bravo@10.0.0.4","to":"box@10.0.0.2","kind":"serves","sessions":1},{"from":"alpha@10.0.0.1","to":"bravo@10.0.0.4","kind":"member","voter":true,"leader":true,"link":"connected"},{"from":"alpha@10.0.0.1","to":"box@10.0.0.2","kind":"member","voter":true,"leader":false,"link":"connected"}],"placements":{"executors":[{"name":"box","node":"box@10.0.0.2","state":"degraded","free_scopes":12,"declared":{"platform":"linux/x86_64","enforcement":"enforced","toolchains":["codemode"]}},{"name":"exec2","node":"exec2@10.0.0.9","state":"down","declared":{"toolchains":[]}}],"pools":[{"name":"builders","executors":["box","exec2"],"eligible":["box"]}]},"orchestrators":[{"name":"bravo","node":"bravo@10.0.0.4","state":"ok"}],"directory":{"members":["alpha@10.0.0.1","bravo@10.0.0.4","box@10.0.0.2"],"joined":true,"ra_members":[{"node":"alpha@10.0.0.1","voter":true},{"node":"bravo@10.0.0.4","voter":true},{"node":"box@10.0.0.2","voter":true}],"applied_index":412,"leader":"bravo@10.0.0.4","copy":"current"},"moves":[{"session_id":"0198c0de-0000-7000-8000-000000000001","op":"0198c0de-0000-7000-8000-000000000a01","to":"bravo","phase":"waiting","stalled_ms":240000,"reason":"the receiver did not answer"}]}}
 ```
 
 | Member | Type | Presence | Meaning |
 |---|---|---|---|
 | `as_of_ms` | integer | always | The answering daemon's wall clock when the reply was built. |
 | `self` | string | always | The answering daemon's node. |
-| `state` | string | always | The whole deployment, from the configured nodes (not counting the answering daemon, which is always reachable): `ok` when every node is `ok`, `down` only when none is reachable, and `degraded` otherwise. One dead executor among several is a degraded deployment. |
-| `reasons` | array | always | One entry per node that is not `ok`: `node` and a fixed `reason` word. |
-| `nodes` | array | always | The answering daemon first, then its orchestrators, then its executors, each in table order. |
-| `edges` | array | without `node` | Relations, each touching the answering daemon: `kind` is `peer` (an orchestrator) or `serves` (an executor), and `link` is `connected` or `none`, the daemon's own connection. |
-| `placements` | object | without `node` | `executors`, each with `name`, `node`, a `state` of `ready` or `down` (`degraded` and `full` are reserved), and `declared` (the operator's `platform` and `enforcement` when stated, and `toolchains`); and `pools`, each with `name`, `executors` (those the pool admits, in its trial order) and `eligible` (those reachable, in the same order). |
-| `orchestrators` | array | without `node` | The configured orchestrators, each with `name`, `node` and `state`. |
+| `state` | string | always | The whole deployment, from the configured nodes (not counting the answering daemon): `ok` when every node is `ok`, `down` only when none answered, and `degraded` otherwise. A node that answered with reasons counts as reachable and not `ok`, so one `degraded` node among `ok` ones makes the deployment `degraded`, and one dead executor among several is a degraded deployment. |
+| `reasons` | array | always | One entry for a node that is `down`, with its reason word, and one for each reason of a node that is `degraded`. Each has `node` and a fixed `reason` word. |
+| `nodes` | array | always | At most 33 entries: the answering daemon first, then its orchestrators, then its executors, each in table order. |
+| `edges` | array | without `node` | Relations. `kind` is `peer` (an orchestrator), `serves` (an orchestrator places sessions on an executor, with `sessions`, the resident and the saved ones) or `member` (a directory member, with `voter` and `leader`, both booleans, describing the node at `to`). `link` is `connected` or `none` and is present only on an edge that touches the answering daemon, the only end whose connection it observes. A `serves` edge between two other nodes is what the orchestrator at `from` reported; the daemon states one for each executor the orchestrator configures that the answering daemon also lists. A `member` edge runs from the answering daemon to each directory member that appears in `nodes`. |
+| `placements` | object | without `node` | `executors`, each with `name`, `node`, a `state` (`ready`, `degraded`, `full` or `down`), `free_scopes` when the executor reported, `contradiction` when its census disagrees with what its operator declared, and `declared` (the operator's `platform` and `enforcement` when stated, and `toolchains`); and `pools`, each with `name`, `executors` (those the pool admits, in its trial order) and `eligible` (those neither `down` nor `full`, in the same order). |
+| `orchestrators` | array | without `node` | The configured orchestrators, each with `name`, `node`, `state`, and when it reported `imports` (`receiving` or `not_receiving`) and `serves`, the executors it configures, by the answering daemon's name for each, or the node when it has none. |
+| `directory` | object | without `node`, on a daemon that is a directory member | The body of `directory.status` (§3.28) and `copy`, `current` when the member's consistent read completed in time and `unconfirmed` when it did not. |
+| `moves` | array | without `node` | The moves in flight on the answering daemon: `session_id`, `op`, `to` (the destination's name), `phase` (`running` or `waiting`), and `stalled_ms` and `reason` when stalled. A reason is cut to 200 bytes. |
 | `ledger` | object | without `node`, on a daemon that runs from a membership ledger | The body of `ledger.status` (§3.30): the daemon's head, its standing, each active member with the head it last reported to this daemon and how long ago, and the last line it refused. At most 64 members. Absent when the ledger does not answer, and then a client treats it as unknown. |
 
 On a daemon that runs from a membership ledger, the configured orchestrators and
@@ -1583,22 +1587,59 @@ a member enrolled while the daemon runs appears in `nodes` and `placements` on t
 next read.
 
 A node carries `node`, `name` (the daemon's key for it, or the node name when it
-has none, as for itself), `roles` and `state`, and `reason` when it is `down`.
-`state` is `ok` when the daemon connected to the node within the bound and `down`
-when it did not. The reason words are `timeout` (the connection did not settle in
-time; a first TLS handshake may outlast the bound and settle in the background,
-so the node reads `ok` on the next read), `unreachable` (refused, or the host
-could not be reached; a wrong pin and a wrong certificate read this way) and
-`unavailable` (the daemon has no distribution, or the node is not one it pinned).
-A node may carry further members in a later release, and a client treats a
-member it does not know, and an optional one that is absent, as unknown.
+has none, as for itself), `roles` and `state`. `roles` holds `orchestrator`,
+`executor` and `member` (a directory member, as the answering daemon's cluster view
+or the node's own report says). `state` is one of:
+
+| State | Meaning | Further members |
+|---|---|---|
+| `ok` | The daemon connected to the node and received its report, and no reason applies. | The report's members, below. |
+| `degraded` | It did, and one or more reasons apply. | `reasons`, an array of the words below, and the report's members. |
+| `down` | It did not connect, or connected and received no report, within the bounds. | `reason`, one of `timeout`, `unreachable` and `unavailable`. |
+
+The `down` words are `timeout` (the connection did not settle, or it did and the
+report did not arrive in time; a first TLS handshake may outlast the bound and
+settle in the background, so the node reads `ok` on the next read),
+`unreachable` (refused, or the host could not be reached; a wrong pin and a wrong
+certificate read this way) and `unavailable` (the daemon has no distribution, or
+the node is not one it pinned). The `degraded` words are fixed:
+
+| Reason | It holds when |
+|---|---|
+| `unclean_scope` | The executor has a scope that blocks a reopen: closing, or closed with unknown cleanup. Only `loomd executor release` frees its slot. |
+| `full` | The executor's open scopes and the scopes that block a reopen are at its limit, so the next attach is refused. |
+| `declaration_contradicted` | The executor's census disagrees with its `[executors.<name>]` row. |
+| `build_differs` | The node's build version or commit is not the answering daemon's. |
+| `protocol_differs` | The executor's wire protocol version is not the answering daemon's. |
+| `directory_no_leader` | A directory member cannot name the cluster's leader. |
+| `directory_copy_unconfirmed` | A directory member could not confirm that its own copy is current. |
+| `directory_quorum_lost` | Fewer of the directory's voters answered the answering daemon than a majority, counting the daemon itself. A voter the daemon did not ask is not counted against it. It is stated of the answering daemon only. |
+
+There are no thresholds below a limit: scope counts and ledger bytes are numbers.
+
+A node that reported adds these members, each optional for a client. They come
+from the node's own report, and a client treats an absent one as unknown.
+
+| Member | Meaning |
+|---|---|
+| `self` | `true` on the answering daemon's own entry. |
+| `build_version`, `build_commit` | The node's build. |
+| `uptime_ms` | The node's own clock at the answer less its clock at start, never compared with the answering daemon's. |
+| `protocol` | An executor's wire protocol version. |
+| `orchestrator` | `capacity`, `occupied`, `resident`, `imports` and `moves_in_flight`. |
+| `executor` | `scopes` (`open`, `closing`, `closed_clean`, `closed_unknown`), `scope_limit`, `ledger_bytes`, `ledger_limit`, `unacknowledged`, `platform`, and from its latest attach census `enforcement` and `toolchains`, and `contradiction`, `null` or the words saying how the census disagrees with the declaration. |
 
 `node` must be a key of the daemon's `[executors]` or `[orchestrators]` tables.
 It is looked up in the configuration and never itself connected to: a key the
 configuration lacks is `not_found`, and the daemon connects to nobody. A value
 that is not shaped like a key is `bad_request`. With `node`, `nodes` holds only
-the nodes the key names, and `edges`, `placements` and `orchestrators` are
-absent. A daemon built before this command refuses it `bad_request` with the
+the nodes the key names, and `edges`, `placements`, `orchestrators`, `directory`
+and `moves` are absent. The node then carries its long lists: an executor's
+`workspaces` (the names of the registered workspaces, never their paths) and
+`unclean` (each scope that blocks a reopen, with `session`, `state` of `closing`
+or `unknown_cleanup`, and `count`, the children not proven gone, for the latter),
+and an orchestrator's `placements` (`executor_node`, `resident`, `saved`) and
+`moves`. A daemon built before this command refuses it `bad_request` with the
 message `unsupported control command`.
 
 ### 3.30 `ledger.append`, `ledger.entries`, `ledger.status` and `ledger.holdings`

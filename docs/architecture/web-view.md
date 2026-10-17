@@ -1165,9 +1165,14 @@ button. The state is what the daemon found a moment before the panel opened, by
 connecting to each executor under the same bounds `deployment.status` uses
 (`client/deployment.placed`), and it is advice. A `down` executor is drawn with
 that word and can still be chosen, because the daemon decides again when the
-session opens and a person may know a machine is coming back. The pill uses the
-three tints the page already has, `online`, `pending` and `ended`, so no colour is
-added.
+session opens and a person may know a machine is coming back. An executor that
+answered adds how many scopes it has free and, when its census disagrees with what
+its operator declared, the words saying how, each as a paragraph of text. The state
+is `ready`, `degraded` (the executor's report names a reason), `full` (every scope
+it admits is held) or `down`, and the pill uses the three tints the page already has,
+`online` for `ready`, `pending` for `degraded` and `ended` for `full` and `down`
+(`placements.pill_class`; a card that has not been checked yet also reads `pending`),
+so no colour is added.
 
 The panel opens at once, with cards drawn from the names the page was told when
 it opened (`Start.executors`, `Start.pools`, the daemon's startup capture), and
