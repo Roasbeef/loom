@@ -553,6 +553,20 @@ pub fn duplicate_shift_defeats_anchors_alone_test() {
   assert hashline.apply(once, plan(once, [Delete(ref, ref)])) == Ok("\n")
 }
 
+pub fn deleting_every_line_of_a_terminated_file_leaves_its_newline_test() {
+  // The documented consequence of the line model, not a lost edit: `apply`
+  // keeps the file's final-newline state, so a terminated file with every
+  // line removed is `"\n"` (`Unplannable`'s doc). For `"\n"`, whose one
+  // line is blank, that is the identity; `"x\n"` lands on the same text. The
+  // empty file is not a result of deleting, only of never having had lines.
+  let blank = Ref(line: 1, anchor: hashline.anchor(""))
+  let x = Ref(line: 1, anchor: hashline.anchor("x"))
+  assert hashline.apply("\n", plan("\n", [Delete(blank, blank)])) == Ok("\n")
+  assert hashline.apply("x\n", plan("x\n", [Delete(x, x)])) == Ok("\n")
+  assert hashline.plan_between(base: "x\n", edited: "")
+    == Error(hashline.UnreachableEnding)
+}
+
 pub fn mid_range_concurrent_modification_rejected_test() {
   // M1: a range hunk carries anchors only for its endpoints; a
   // concurrent edit strictly inside the range must still reject, and
