@@ -286,6 +286,13 @@ A successor request or exact operation result also retires it. Legacy and
 summary observations retain their old completion behavior. See
 `protocol-change/036-stream-response-handoff.md`.
 
+## Remote spend
+
+`shared.remote_usage` (from the full snapshot) shows as `remote box in 12k out
+678` in the detailed footer row and the compact footer, and as a `Remote` row in
+the session tab, through `remote_usage_words`. A session with no remote child
+draws neither.
+
 ## Build identity and daemon updates
 
 `loom version` (also `loom --version`) reports the invoked client's launcher

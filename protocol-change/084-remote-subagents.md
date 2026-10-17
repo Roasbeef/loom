@@ -683,3 +683,66 @@ reaches the Agency. One window remains: a `Spawn` that arrives while a closed
 session is draining finds the slot stopping and is refused as
 `StoreFailure("the delegate session is stopping")`. The spawner's next attempt
 reopens the session. No further refusal is added for it.
+
+## Addendum 2026-10-16: metering (phase 2, slice S8)
+
+Three optional keys on `[spawners.<name>]` bound what a spawner's children spend
+on this machine: `token_budget_per_day` (tokens, input plus output, over a
+rolling day), `max_per_day` (spawns admitted over the same day) and
+`child_token_budget` (tokens of one child). An absent key bounds nothing, which
+is phase 1 behaviour, and a present one is a positive integer. A spawner that
+sets none is unmetered: nothing is recorded or judged for it.
+
+### The spend table
+
+Catalogue version 17 adds `catalogue_spawner_spend(spawner, hour_bucket, tokens,
+spawns)`, one row per spawner and hour, the hour being Unix milliseconds divided
+by 3,600,000. A rolling day is the 24 newest buckets. A write adds to the
+current bucket and prunes the spawner's expired ones in the same transaction, so
+the table stays bounded without a sweep. The rows name no session and outlive
+the delegate sessions they were made in. Tokens are recorded only for a spawner
+that sets `token_budget_per_day`.
+
+### Admission
+
+`delegate_spawn` is refused when the day's tokens have reached
+`token_budget_per_day` or the day's spawns have reached `max_per_day`, as
+`SpawnRefusal.CapReached(cap: TokensPerDay | SpawnsPerDay, limit:)`. The check
+and the count of the spawn happen in the registry's `delegate_now` turn, on the
+catalogue connection the registry already owns, as one bounded read and one
+write, so two first spawns cannot both pass `max_per_day`. Only a spawn is
+judged: a join, a run end and a release use the resolver that never meters. Two
+costs are accepted. A spawn admitted and then refused by the Agency (a tool
+outside the ceiling) still counts, and a resent spawn counts again; both err
+toward the cap. A resent spawn whose child already exists is also refused at the
+cap, and the laptop records its stub refused while the child runs to its
+deadline.
+
+### The child budget
+
+A delegate session of a metered spawner wraps its usage slot
+(`agency.metering_hooks`). The slot's only work on the strand driver is one
+`process.spawn_unlinked`. That process reports the request's tokens to the
+registry and, when `child_token_budget` is set, reads the child's total from the
+usage ledger (`child_usage.of_strands`) and sends the holder
+`StopChild(strand, TokenBudgetSpent)`. The holder records the stop and aborts the
+run through `reap`, as for every other stop. The child overshoots by at most the
+request that crossed the budget. `child_run.Stop` and `tools/agent.Outcome` gain
+`TokenBudgetSpent`, written `token_budget_spent`; every decoder keeps accepting
+older rows, and a model reading a wait sees an aborted outcome with that reason.
+
+### The laptop
+
+A goal's token budget counts the settled remote children. The goal cell gains
+`remote_tokens`, the part of `tokens_used` that remote children account for. It
+is a total beside the ledger cursor: an evaluation adds the growth of the sum
+over the settled stubs, so recomputing adds nothing, and a goal that is pinned,
+replaced or resumed starts the figure where it stands. A cell without the field
+reads as zero.
+
+The full snapshot gains an optional `remote_usage`, a list with one entry for
+each orchestrator (`orchestrator`, `input`, `output`, `cache_read`,
+`cache_write`, `cost`). It is omitted when empty, an old client ignores it, and
+an absent field decodes to no entries. The terminal shows it in the footer and
+the session tab, and the web view lists it after the context breakdown, each
+labelled by orchestrator.

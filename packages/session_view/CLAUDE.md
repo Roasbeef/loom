@@ -880,6 +880,16 @@ states that this consent permits only the captured action on its strand; the
 wire still echoes the exact action, grant subset, and displayed sequence.
 The client gateway owns persistence and matching; this pure UI grants nothing.
 
+## Remote spend (protocol-change/084)
+
+`remote_usage.RemoteUsage` is the spend of the settled children of one other
+orchestrator, as the full snapshot's optional `remote_usage` list carries it.
+`decode_all` reads an absent field as no entries and refuses a malformed one;
+`protocol.FullSnapshot` and `model.Shared` keep the list beside `usage`, and
+`event_fold` replaces it with each full snapshot. `remote_usage_words` words an
+entry for a status bar and sits apart from `remote_usage` because it needs
+`agent_roster.count_label`, which is above the protocol in the import graph.
+
 ## Usage projection (protocol 081)
 
 `protocol.UsageChanged` separates aggregate usage from `last_usage`. The

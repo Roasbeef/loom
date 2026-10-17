@@ -1019,8 +1019,9 @@ was asked.
 contains the new operation and optional absolute deadline; the tool receipt
 also renders a waitable handle. Spawn and roster expose `deadline_ms`, and
 wait/roster keep wire outcome `aborted` while reporting a recorded
-`abort_reason` separately. `BudgetExpired`, `ParentFinished` and `Released` (the
-parent session on another orchestrator was deleted, protocol-change/084) are
+`abort_reason` separately. `BudgetExpired`, `ParentFinished`, `Released` (the
+parent session on another orchestrator was deleted, protocol-change/084) and
+`TokenBudgetSpent` (the child used its spawner's `child_token_budget`) are
 internal outcome variants; unknown aborts remain `Aborted`. Tool guidance distinguishes
 continuing a strand with `agent_send` from observing one operation with
 `agent_wait`, and makes clear that the old handle remains historical.

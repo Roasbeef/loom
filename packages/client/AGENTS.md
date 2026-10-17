@@ -7839,6 +7839,30 @@ The box's deadline and retention (slice S4):
   `session_mover_test`, `agency_test` (the holder and the port), the shipped
   `daemon_shipped_remote_subagents_test` (delete with a child running), and the
   P model's `EveryReleaseIsTold` and `ReleasedSessionHasNoRunningChild`.
+- Metering (slice S8). `[spawners.<name>] token_budget_per_day`,
+  `child_token_budget` and `max_per_day` are optional (`Spawner` fields of
+  `Option(Int)`; `spawners.metered` says whether any is set). The day's spend is
+  `catalogue_spawner_spend`, hourly buckets read as the last 24. `delegate_host.spawn_resolver`
+  differs from `resolver` by `manager.Metered` on the request, and
+  `main.spawn_host` takes it as its own argument so a join, a run end and a
+  release are never refused by a cap. `manager.delegate_now` runs `metered`
+  around the existing admission: `spend_room` reads the spawner's day (one
+  bounded catalogue query on the registry's own connection) and refuses with
+  `DelegateDayCap`, which `delegate_host` maps to `CapReached(TokensPerDay |
+  SpawnsPerDay)`; `count_spawn` adds the spawn in the same turn. A resent spawn
+  counts again. `manager.add_spend` is how tokens arrive, from the process the
+  usage hook spawns. For a delegate session of a metered spawner `main.metering_of`
+  fills `serve.Settings.metering`, and `serve.with_metering` wraps the usage slot
+  with `agency.metering_hooks`: one `spawn_unlinked` on the driver, which reports
+  the request's tokens and, with a `child_token_budget`, reads
+  `child_usage.of_strands` and sends the holder `StopChild(strand,
+  TokenBudgetSpent)`; the holder reaps through the usual path. The goal cell has
+  `remote_tokens` (a total beside the ledger cursor; `advisor.summed` adds only
+  its growth over `remote_child.settled_tokens`), and the gateway fills the full
+  snapshot's optional `remote_usage` from `remote_child.usage_by_orchestrator`.
+  Tests: `spawners_test`, `delegate_host_test` (the caps, the day rolling),
+  `agency_test` (the hand-off stop), `advisor_test` (counted once),
+  `goalstate_test`, `protocol_test`, `remote_child_test`.
 
 Tests: `spawners_test` (a valid table, defaults, every refusal, the catalogue
 parser, `standing`), `orchestrators_test` (the `@` and `#` refusal),
