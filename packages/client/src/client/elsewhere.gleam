@@ -177,6 +177,7 @@ fn page_row(row: listed_sessions.Row) -> page.Row {
       listed_sessions.RecoveryBlocked -> page.Blocked
     },
     executor: row.executor,
+    executor_node: row.executor_node,
   )
 }
 

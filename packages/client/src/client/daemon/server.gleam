@@ -39,7 +39,11 @@
 ////    `web_document` for the page, the ticket exchange and images, each
 ////    re-checking cookie, grant and credential through `page_grant`. The
 ////    home's socket and page take `home_socket` and `home_grant` instead, and
-////    the admin page's take `admin_socket` and `admin_grant`.
+////    the admin page's take `admin_socket` and `admin_grant`. The admin page's
+////    machines are read by `admin_deployment`, which makes the control
+////    command's own `deployment_status` read and decodes it with the page's
+////    decoder, and the other orchestrators' sessions by `heard_elsewhere`,
+////    which the home shares.
 
 import broker/token
 import client/daemon/manager
@@ -92,6 +96,7 @@ import storage/snapshot as storage_snapshot
 import web_view/elsewhere as page_elsewhere
 import web_view/ending.{type Ending}
 import web_view/image
+import web_view/machines
 import web_view/page
 import web_view/placements
 import web_view/sessions as listed_sessions
@@ -225,6 +230,18 @@ pub type AdminAttachment(instance) {
     /// marks in the owner's own sign-ins. A page a `loom ui` exchange opened
     /// has none.
     login: Option(ui_sessions.Issuer),
+    /// The deployment as the page's machines list draws it: the same
+    /// `deployment.status` read the control command runs, with the ledger's
+    /// members, for the whole deployment or for the one node a configuration key
+    /// names (protocol-change/085, the addendum of 2026-10-16). It dials the
+    /// nodes the daemon is configured with and nothing the page names, and waits
+    /// up to the read's own deadline, so the page never calls it from its runtime
+    /// (`ui_socket.admin_deployment_task`).
+    deployment: fn(Option(String)) -> machines.Reading,
+    /// What the other orchestrators list, for the Sessions tab of a machine's
+    /// page: the first page of every configured orchestrator, as the home reads
+    /// it. It blocks for up to the fan-out's deadline.
+    elsewhere: fn() -> page_elsewhere.Read,
   )
 }
 
@@ -658,14 +675,7 @@ fn home_upgrade(
               |> placements.Reported
             },
             elsewhere: fn(orchestrator, after) {
-              elsewhere.heard(
-                config.deployment,
-                roster.rows(config.movers.orchestrators),
-                orchestrator,
-                after,
-              )
-              |> result.map(elsewhere.for_page)
-              |> result.unwrap(page_elsewhere.Unread)
+              heard_elsewhere(config, orchestrator, after)
             },
           ),
           open,
@@ -759,6 +769,8 @@ fn admin_upgrade(
             registry: state.registry,
             state_root: state.state_root,
             login:,
+            deployment: fn(node) { admin_deployment(config, node) },
+            elsewhere: fn() { heard_elsewhere(config, None, None) },
           ),
           open,
           grant.ceiling,
@@ -767,6 +779,51 @@ fn admin_upgrade(
       response
     }
   }
+}
+
+// What the other orchestrators list, for a page that draws it: the first page of
+// each, or the page after `after` of the one `orchestrator` names. A read that
+// could not be made is `Unread`.
+fn heard_elsewhere(
+  config: Config(instance),
+  orchestrator: Option(String),
+  after: Option(String),
+) -> page_elsewhere.Read {
+  elsewhere.heard(
+    config.deployment,
+    roster.rows(config.movers.orchestrators),
+    orchestrator,
+    after,
+  )
+  |> result.map(elsewhere.for_page)
+  |> result.unwrap(page_elsewhere.Unread)
+}
+
+// The deployment read the Admin page's machines list draws, made as the
+// `deployment.status` control command makes it (`deployment_status`) and read
+// back through the page's own total decoder. A key that names nothing, a reply
+// the decoder refuses and a read that failed are all `Unread`, and the page
+// keeps what it has.
+fn admin_deployment(
+  config: Config(instance),
+  node: Option(String),
+) -> machines.Reading {
+  let read = {
+    use #(_, body) <- result.try(
+      deployment_status(config, node) |> result.replace_error(Nil),
+    )
+    case node {
+      None ->
+        machines.decode_overview(body)
+        |> result.map(machines.Heard)
+        |> result.replace_error(Nil)
+      Some(_) ->
+        machines.decode_detail(body)
+        |> result.map(machines.HeardOne)
+        |> result.replace_error(Nil)
+    }
+  }
+  result.unwrap(read, machines.Unread)
 }
 
 fn web_document(

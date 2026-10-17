@@ -1404,6 +1404,47 @@ pub fn the_admin_socket_admits_only_events_beneath_the_pages_body_test() {
   )
 }
 
+// The machines section adds a row's button, a tab's button and Close, which are
+// clicks beneath the body, and the socket admits them as it admits the rest and
+// nothing beyond: not a submit-less sibling of the body, not the bar, and not
+// another event on a row.
+pub fn the_admin_socket_admits_the_machine_rows_and_tabs_and_nothing_more_test() {
+  // A row in the table (the section is the body's fourth child, the table its
+  // third) and a tab and Close in the machine's page under it.
+  let row = admin.body_path <> "\t3\t2\t0\t1\t2\t0\t0"
+  let tab = admin.body_path <> "\t3\t3\t1\t2"
+  let close = admin.body_path <> "\t3\t3\t0\t0\t2"
+  assert ui_socket.admin_accepts(click_on(row))
+  assert ui_socket.admin_accepts(click_on(tab))
+  assert ui_socket.admin_accepts(click_on(close))
+  assert ui_socket.admin_accepts(
+    "{\"kind\":3,\"messages\":["
+    <> click_on(row)
+    <> ","
+    <> click_on(tab)
+    <> "]}",
+  )
+  list.each(
+    [
+      "{\"kind\":1,\"path\":\""
+        <> "0\\t2\\t1\\t3\\t2"
+        <> "\",\"name\":\"keydown\"}",
+      "{\"kind\":1,\"path\":\"0\\t2\\t1\\t3\\t2\\t0\\t0\",\"name\":\"mouseover\"}",
+      "{\"kind\":1,\"path\":\"0\\t2\\t1\\t3\\t3\\t1\\t2\",\"name\":\"input\"}",
+      click_on("0\t2\t10\t3\t2"),
+      click_on("0\t0\t3\t2\t0"),
+      "{\"kind\":3,\"messages\":["
+        <> click_on(row)
+        <> ","
+        <> click_on("0\t0\t5")
+        <> "]}",
+    ],
+    fn(frame) {
+      assert !ui_socket.admin_accepts(frame)
+    },
+  )
+}
+
 // The paths the admin page adds are pinned beside the others: the button is the
 // bar's last child and the body is the centre's second, and none of the paths
 // pinned before moved.

@@ -153,7 +153,13 @@
 ////    reads run in `read_task` through `elsewhere_for`, which repeats the owner
 ////    check before the daemon dials any other orchestrator. The page's "Where"
 ////    and "Show more" are clicks beneath `home.table_path`, so `home_accepts`
-////    already admits them.
+////    already admits them. The admin page's machines are read in tasks of their
+////    own, apart from the people read, so a fan-out that waits seconds for a
+////    machine never holds up the catalogue: `admin_deployment_task` runs
+////    `admin_deployment_for` and `admin_elsewhere_task` runs
+////    `admin_elsewhere_for`, each repeating the owner check before the daemon
+////    dials anything. The page's rows and tabs are clicks beneath
+////    `admin.body_path`, so `admin_accepts` already admits them.
 //// 4. Afterwards the handler forwards browser frames, writes the component's
 ////    frames to the browser, and on the relay's `Ended` schedules `Stop`.
 //// 5. `closing` turns an ending's close code into mist's clean stop (1000) or
@@ -223,6 +229,7 @@ import web_view/ending
 import web_view/grants
 import web_view/home
 import web_view/invites
+import web_view/machines
 import web_view/names
 import web_view/operator_page
 import web_view/page
@@ -4795,6 +4802,18 @@ fn admit_admin(
       now: bootstrap.system_time_ms,
       login: option.map(attachment.login, fn(issuer) { issuer.fingerprint }),
       ends_at:,
+      deployment: fn(node, deliver) {
+        admin_deployment_task(
+          standing,
+          open,
+          attachment.deployment,
+          node,
+          deliver,
+        )
+      },
+      elsewhere: fn(deliver) {
+        admin_elsewhere_task(standing, open, attachment.elsewhere, deliver)
+      },
     )
   let started = case transferred {
     Error(reason) -> {
@@ -5135,6 +5154,94 @@ pub fn admin_read_task(
     ])
     |> weft.start_witnessed
   Nil
+}
+
+/// The deployment as the admin page's machines list may draw it. The same owner
+/// check as a change runs first (`authorized_owner`), so a page that may not
+/// operate is told of nothing and the daemon dials nobody for it, and so is a
+/// page whose registry did not answer. `read` is the daemon's own
+/// `deployment.status` read, which resolves a key against its configuration
+/// before it connects.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.admin_deployment_for(standing, open, attachment.deployment, None)
+/// ```
+@internal
+pub fn admin_deployment_for(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+  read: fn(Option(String)) -> machines.Reading,
+  node: Option(String),
+) -> machines.Reading {
+  case authorized_owner(standing, open) {
+    Ok(_) -> read(node)
+    Error(_) -> machines.Unread
+  }
+}
+
+/// Starts `admin_deployment_for` in a run of its own and returns at once;
+/// `deliver` is called, from that run, with the reading, whatever it is.
+///
+/// The run is separate from the people read (`admin_read_task`), which the page
+/// runs one at a time and which can wait on the registry, so a fan-out to the
+/// machines, bounded at about four seconds, never delays the catalogue and the
+/// catalogue never delays it. The run is a weft run linked to the calling
+/// process, the page's runtime, so a page that goes away cancels it, and its
+/// last act is `deliver`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.admin_deployment_task(standing, open, attachment.deployment, None, deliver)
+/// ```
+@internal
+pub fn admin_deployment_task(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+  read: fn(Option(String)) -> machines.Reading,
+  node: Option(String),
+  deliver: fn(machines.Reading) -> Nil,
+) -> Nil {
+  read_task(deliver, fn() { admin_deployment_for(standing, open, read, node) })
+}
+
+/// The other orchestrators' sessions as the admin page's Sessions tab may draw
+/// them, after the same owner check as `admin_deployment_for`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.admin_elsewhere_for(standing, open, attachment.elsewhere)
+/// ```
+@internal
+pub fn admin_elsewhere_for(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+  read: fn() -> page_elsewhere.Read,
+) -> page_elsewhere.Read {
+  case authorized_owner(standing, open) {
+    Ok(_) -> read()
+    Error(_) -> page_elsewhere.Unread
+  }
+}
+
+/// Starts `admin_elsewhere_for` in a run of its own and returns at once.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.admin_elsewhere_task(standing, open, attachment.elsewhere, deliver)
+/// ```
+@internal
+pub fn admin_elsewhere_task(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+  read: fn() -> page_elsewhere.Read,
+  deliver: fn(page_elsewhere.Read) -> Nil,
+) -> Nil {
+  read_task(deliver, fn() { admin_elsewhere_for(standing, open, read) })
 }
 
 /// Makes one change the admin page asked for, or gives the reason it did not

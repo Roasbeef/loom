@@ -70,6 +70,7 @@ import web_view/ending
 import web_view/grants
 import web_view/home
 import web_view/invites
+import web_view/machines
 import web_view/names
 import web_view/page
 import web_view/peer_links
@@ -5121,6 +5122,94 @@ pub fn the_other_orchestrators_are_read_for_the_owners_operating_page_only_test(
     assert ui_socket.elsewhere_for(members, page_open, read, None, None)
       == page_elsewhere.Unread
     assert process.receive(asked, 0) == Error(Nil)
+  })
+}
+
+// The admin page's machines are read for the owner's operating page alone, as
+// the other orchestrators are: a page that has ended, one minted to read and a
+// member's page are told of nothing, and the daemon's read, which dials the
+// configured nodes, is never made for them. A key goes through as the page named
+// it, for the daemon to resolve against its configuration.
+pub fn the_deployment_is_read_for_the_owners_operating_page_only_test() {
+  fixture(fn(ready, _, credential) {
+    let asked = process.new_subject()
+    let read = fn(node) {
+      process.send(asked, node)
+      machines.Unread
+    }
+    let #(standing, _) = creator_standing(ready, credential, access.Operator)
+    assert ui_socket.admin_deployment_for(standing, page_open, read, None)
+      == machines.Unread
+    assert process.receive(asked, 0) == Ok(None)
+    let _ =
+      ui_socket.admin_deployment_for(standing, page_open, read, Some("box"))
+    assert process.receive(asked, 0) == Ok(Some("box"))
+
+    let #(readonly, _) = creator_standing(ready, credential, access.Observer)
+    let _ = ui_socket.admin_deployment_for(readonly, page_open, read, None)
+    let _ =
+      ui_socket.admin_deployment_for(standing, fn() { Error(Nil) }, read, None)
+    let existing = create_session(ready, "deployment-known", 1125)
+    let grant = member(ready, "ui-deployment", existing, access.Operator)
+    let #(members, _) = creator_standing(ready, grant, access.Operator)
+    let members = ui_socket.Standing(..members, principal: "ui-deployment")
+    let _ = ui_socket.admin_deployment_for(members, page_open, read, None)
+    assert process.receive(asked, 0) == Error(Nil)
+
+    // The other orchestrators follow the same rule.
+    let peers = fn() {
+      process.send(asked, Some("peers"))
+      page_elsewhere.Heard([])
+    }
+    assert ui_socket.admin_elsewhere_for(standing, page_open, peers)
+      == page_elsewhere.Heard([])
+    assert process.receive(asked, 0) == Ok(Some("peers"))
+    assert ui_socket.admin_elsewhere_for(readonly, page_open, peers)
+      == page_elsewhere.Unread
+    assert ui_socket.admin_elsewhere_for(members, page_open, peers)
+      == page_elsewhere.Unread
+    assert process.receive(asked, 0) == Error(Nil)
+  })
+}
+
+// Two reads in flight at once do not collide: a deployment read that is still
+// waiting on a slow node does not hold up the people read or a second deployment
+// read, each answers its own subject, and the slow one answers when it is done.
+pub fn a_slow_deployment_read_does_not_hold_up_the_people_read_test() {
+  fixture(fn(ready, _, credential) {
+    let #(standing, _) = creator_standing(ready, credential, access.Operator)
+    let deployment = process.new_subject()
+    ui_socket.admin_deployment_task(
+      standing,
+      page_open,
+      fn(_) {
+        process.sleep(600)
+        machines.Unread
+      },
+      None,
+      fn(reading) { process.send(deployment, reading) },
+    )
+
+    // The people read answers while the deployment read is still out.
+    let people = process.new_subject()
+    ui_socket.read_task(fn(found) { process.send(people, found) }, fn() {
+      "people"
+    })
+    assert process.receive(people, 300) == Ok("people")
+    assert process.receive(deployment, 0) == Error(Nil)
+
+    // A second deployment read is its own run and is not queued behind the first.
+    let second = process.new_subject()
+    ui_socket.admin_deployment_task(
+      standing,
+      page_open,
+      fn(_) { machines.Unread },
+      Some("box"),
+      fn(reading) { process.send(second, reading) },
+    )
+    assert process.receive(second, 300) == Ok(machines.Unread)
+    assert process.receive(deployment, 0) == Error(Nil)
+    assert process.receive(deployment, 3000) == Ok(machines.Unread)
   })
 }
 
