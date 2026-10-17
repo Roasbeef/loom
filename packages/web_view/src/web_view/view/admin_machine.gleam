@@ -7,8 +7,12 @@
 //// ledger entries with a key that is on the operator's machine, or open an
 //// executor's ledger with its daemon stopped, so the Access tab states the exact
 //// command in a box that copies it (`web_view/operator_commands`) and the operator
-//// runs it in a terminal on the right machine. The only controls are the tab
-//// buttons and Close, and each is a click beneath the admin body.
+//// runs it in a terminal on the right machine. The controls are the tab
+//// buttons, Close, and on the Activity tab an Abandon beside each move the
+//// asking daemon has in flight, drawn only when that daemon is a directory
+//// member. Abandon is two presses, and the question says that if the receiver
+//// has already taken the session the move finishes instead. Each is a click
+//// beneath the admin body.
 ////
 //// ## The four tabs
 ////
@@ -58,6 +62,7 @@ import lustre/element.{type Element}
 import lustre/element/html
 import lustre/event
 import web_view/elsewhere.{type Group}
+import web_view/grants.{type Action}
 import web_view/machines.{
   type Detailed, type Findings, type Machine, type Snapshot, type Tab,
   type Unclean, Awaiting, Detailed, Dialled, Enrolled, NotLinkedFromHere,
@@ -66,6 +71,7 @@ import web_view/machines.{
 import web_view/operator_commands
 import web_view/sessions.{type Entry}
 import web_view/view/heading
+import web_view/view/notice.{type Spoken, Spoken}
 
 /// The most local sessions a tab lists before it counts the rest.
 pub const rows_drawn = 50
@@ -89,6 +95,18 @@ pub type Page(message) {
     pick: fn(Tab) -> message,
     /// The message Close sends.
     close: message,
+    /// The first press of Abandon, which arms the question and asks nothing.
+    arm: fn(Action) -> message,
+    /// The question's own button, which asks the daemon.
+    ask: fn(Action) -> message,
+    /// The question's Cancel.
+    disarm: message,
+    /// The action the owner armed, if one.
+    armed: Option(Action),
+    /// Whether an ask is out, which disables every Abandon button.
+    waiting: Option(Action),
+    /// What the page last said about an ask.
+    notice: Option(Spoken),
   )
 }
 
@@ -886,12 +904,79 @@ fn moves(page: Page(message)) -> Element(message) {
         html.ul(
           [attribute.class("admin-reasons")],
           list.map(listed, fn(move) {
-            html.li([attribute.class("admin-sub")], [
-              html.text(move_words(move)),
-            ])
+            html.li(
+              [attribute.class("admin-sub")],
+              list.append([html.text(move_words(move))], abandoning(page, move)),
+            )
           }),
         ),
       ])
+  }
+}
+
+// What a move offers beside its words: Abandon, on the asking daemon's own
+// moves and only when that daemon is a directory member, since only a member
+// can give a move up (`server.abandon_move` refuses it elsewhere). The first
+// press arms a question that says what an abandon does when the receiver has
+// already taken the session, and its button is the one that asks. Every name is
+// a text node, and the daemon checks everything again.
+fn abandoning(
+  page: Page(message),
+  move: machines.Move,
+) -> List(Element(message)) {
+  let action = grants.AbandonMove(move.session)
+  let said = case page.notice {
+    Some(Spoken(action: spoken, notice: words)) if spoken == action -> [
+      notice.line(words),
+    ]
+    Some(_) | None -> []
+  }
+  let occupied = case page.waiting {
+    Some(_) -> [attribute.disabled(True)]
+    None -> []
+  }
+  let offered = case page.machine.whose, page.snapshot.directory {
+    machines.This, Some(_) -> True
+    machines.This, None | machines.Other, _ -> False
+  }
+  case offered, page.armed == Some(action) {
+    False, _ -> []
+    True, False ->
+      list.append(
+        [
+          html.button(
+            [
+              attribute.type_("button"),
+              attribute.class("admin-abandon"),
+              event.on_click(page.arm(action)),
+              ..occupied
+            ],
+            [html.text("Abandon")],
+          ),
+        ],
+        said,
+      )
+    True, True -> [
+      html.p([attribute.class("admin-sub")], [
+        html.text(
+          "If "
+          <> move.to
+          <> " has already taken the session, the move finishes instead.",
+        ),
+      ]),
+      html.button(
+        [
+          attribute.type_("button"),
+          attribute.class("admin-abandon"),
+          event.on_click(page.ask(action)),
+          ..occupied
+        ],
+        [html.text("Abandon the move")],
+      ),
+      html.button([attribute.type_("button"), event.on_click(page.disarm)], [
+        html.text("Cancel"),
+      ]),
+    ]
   }
 }
 

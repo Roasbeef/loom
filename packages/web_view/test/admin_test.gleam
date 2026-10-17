@@ -2022,3 +2022,88 @@ pub fn a_failed_deployment_read_keeps_the_earlier_one_test() {
   let #(never, _) = opened(start())
   assert string.contains(drawn(never), "could not be read just now")
 }
+
+// --- Abandon (protocol-change/085, the addendum on Move and Abandon) ----------
+
+const moving_session = "0198c1aa-0000-7000-8000-0000000000bb"
+
+fn abandoning_page(
+  acts: Subject(grants.Action),
+  answer: grants.Answer,
+  directory: Bool,
+) -> admin.Model {
+  let base = fleet_start(process.new_subject(), process.new_subject(), [], [])
+  let overview = case directory {
+    True -> fleet.overview("box")
+    False -> machines.Snapshot(..fleet.overview("box"), directory: None)
+  }
+  let start =
+    admin.Start(
+      ..base,
+      act: fn(action, deliver) {
+        process.send(acts, action)
+        deliver(answer)
+      },
+      deployment: fn(node, deliver) {
+        case node {
+          None -> deliver(machines.Heard(overview))
+          Some(_) -> deliver(machines.Unread)
+        }
+      },
+    )
+  let #(model, _) = opened(start)
+  let model = choose(model, "alpha@10.0.0.1")
+  run(model, admin.TabChosen(machines.ActivityTab))
+}
+
+// A move in flight has an Abandon on the asking daemon's own Activity tab when
+// that daemon is a directory member. The first press asks nothing and says what
+// happens if the receiver already took the session; only the question's button
+// reaches the daemon.
+pub fn abandon_asks_before_the_daemon_is_asked_test() {
+  let acts = process.new_subject()
+  let model = abandoning_page(acts, grants.Changed, True)
+  assert string.contains(drawn(model), ">Abandon<")
+  let model = run(model, admin.Arming(grants.AbandonMove(moving_session)))
+  assert string.contains(
+    drawn(model),
+    "If bravo has already taken the session, the move finishes instead.",
+  )
+  assert process.receive(acts, 0) == Error(Nil)
+
+  let cancelled = run(model, admin.Disarming)
+  assert !string.contains(drawn(cancelled), "has already taken the session")
+
+  let model = run(model, admin.Asking(grants.AbandonMove(moving_session)))
+  assert process.receive(acts, 0) == Ok(grants.AbandonMove(moving_session))
+  assert process.receive(acts, 0) == Error(Nil)
+  assert string.contains(drawn(model), "Asked to give the move up.")
+}
+
+// An ask that names the abandon without the question having been armed is not
+// sent, whatever frame reached the page.
+pub fn an_unarmed_abandon_asks_nothing_test() {
+  let acts = process.new_subject()
+  let model = abandoning_page(acts, grants.Changed, True)
+  let _ = run(model, admin.Asking(grants.AbandonMove(moving_session)))
+  assert process.receive(acts, 0) == Error(Nil)
+}
+
+// A daemon that is not a directory member cannot give a move up, so the page
+// draws no Abandon, and a refusal from the daemon is worded in fixed words.
+pub fn a_page_off_a_member_draws_no_abandon_test() {
+  let model = abandoning_page(process.new_subject(), grants.Changed, False)
+  assert string.contains(drawn(model), "bravo")
+  assert !string.contains(drawn(model), "Abandon")
+}
+
+pub fn a_refused_abandon_says_the_fixed_words_test() {
+  let acts = process.new_subject()
+  let model = abandoning_page(acts, grants.Declined(grants.NotMember), True)
+  let model = run(model, admin.Arming(grants.AbandonMove(moving_session)))
+  let model = run(model, admin.Asking(grants.AbandonMove(moving_session)))
+  assert string.contains(
+    drawn(model),
+    "Only a directory member can give a move up.",
+  )
+}

@@ -730,7 +730,7 @@ fn still_listed(
 // does.
 fn confirmed(action: Action, armed: Option(Action)) -> Bool {
   case action {
-    grants.MakeShareable(..) -> armed == Some(action)
+    grants.MakeShareable(..) | grants.AbandonMove(..) -> armed == Some(action)
     grants.Invite(..)
     | grants.SetRole(..)
     | grants.RevokeMembership(..)
@@ -803,6 +803,8 @@ fn refusal(reason: grants.Reason) -> notice.Notice {
     | grants.NotMoved
     | grants.Stranded
     | grants.NotResumed
+    | grants.NotMember
+    | grants.NotMoving
     | grants.InvalidName
     | grants.Unavailable -> notice.Refused(grants.reason_words(reason))
   }
@@ -825,6 +827,8 @@ fn spent_by(
     | grants.NotMoved
     | grants.Stranded
     | grants.NotResumed
+    | grants.NotMember
+    | grants.NotMoving
     | grants.InvalidName
     | grants.Unavailable -> before
   }
@@ -992,6 +996,9 @@ fn still_armed(
           }
         None -> None
       }
+    // A move to give up is listed by the deployment read, not by this one, so
+    // this read has nothing to say about it; the daemon decides again.
+    Some(grants.AbandonMove(..)) -> armed
     Some(grants.Invite(..))
     | Some(grants.SetRole(..))
     | Some(grants.Rename(..))
@@ -1189,6 +1196,12 @@ fn machine_page(model: Model, snapshot: grants.Snapshot) -> Element(Msg) {
         peers: model.listed,
         pick: TabChosen,
         close: MachineClosed,
+        arm: Arming,
+        ask: Asking,
+        disarm: Disarming,
+        armed: model.armed,
+        waiting: model.waiting,
+        notice: model.notice,
       ))
     None -> element.none()
   }

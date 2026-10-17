@@ -1775,3 +1775,28 @@ machine") is the account.
   overtaken read, markup as text, handler paths), `stylesheet_test` (no accent bar or
   shadow) and `home_test` (the strip).
 
+
+## Move and Abandon (protocol-change/085)
+
+- **Move** is `actions.Destinations` then `actions.Move(to)`. `Destinations` reads
+  and changes nothing: the daemon answers `Heard(candidates)` (the type is
+  `session_view/move_candidates.Candidate`), `home.update` sets the stage to
+  `Choosing(session, candidates)`, and `home_table.choosing` replaces the row's words
+  with a button for each eligible destination and a line for each ineligible one.
+  `MoveChosen(session, to)` opens `Confirming(session, Move(to))` only for a
+  destination that stage was offered; `MoveConfirmed(session)` asks only for a row
+  confirming a move. `Managed` gained `move`, `choose` and `confirm_move`, and a saved
+  row with no executor draws Move disabled with `move_candidates.no_executor_words()`
+  in its title. `Reason.NotMovable` has fixed words, and `Answer.Heard` is dropped by
+  the session page's sidebar, which never asks for it.
+- **Where it runs.** `component.Label` gained `executor` and `pool`;
+  `session_tab.runs_on` words them (`runs on box (pool builders)`) under the workspace
+  inside the Session group's rows, so the pane's children and their paths are
+  unchanged. `ui_socket` fills them for an owner's page only.
+- **Abandon** is `grants.AbandonMove(session)`, with `Reason.NotMember | NotMoving`.
+  `admin_machine.Page` gained `arm`, `ask`, `disarm`, `armed`, `waiting` and `notice`;
+  `abandoning` draws the button beside each move of the asking daemon when
+  `snapshot.directory` is `Some` (it is a directory member), and the armed question
+  reads "If bravo has already taken the session, the move finishes instead." It reuses
+  the Admin page's `Arming`, `Asking` and `confirmed`, which treat it as an armed action
+  like making a session shareable.

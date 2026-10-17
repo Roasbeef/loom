@@ -16,6 +16,7 @@ import gleam/option.{None, Some}
 import gleam/string
 import lustre/effect
 import lustre/element.{type Element}
+import session_view/move_candidates
 import web_view/actions
 import web_view/creations
 import web_view/elsewhere
@@ -1759,7 +1760,7 @@ pub fn the_owners_fresh_home_draws_the_actions_that_fit_each_row_test() {
   let #(plain, _) = opened(start())
   let with = handlers(home.view(owner))
   let without = handlers(home.view(plain))
-  assert list.length(with) == list.length(without) + 10
+  assert list.length(with) == list.length(without) + 12
   assert list.all(with, beneath_the_two_regions)
   assert list.all(without, fn(key) { list.contains(with, key) })
 
@@ -3113,4 +3114,129 @@ pub fn a_page_taken_from_replaced_rows_is_not_joined_test() {
   let model = run(model, home.ElsewhereRead(serial, two_groups()))
   let model = run(model, home.MoreRead("desk", serial, late))
   assert !string.contains(drawn(model), "stale tail")
+}
+
+// --- Move (protocol-change/085, the addendum on Move and Abandon) -------------
+
+fn movable() -> List(Entry) {
+  [
+    Entry(
+      ..entry("E", "box job", "/work", 100_000, Saved),
+      executor: Some("box"),
+    ),
+    entry("D", "", "/src/notes", 500_000, Saved),
+  ]
+}
+
+fn move_candidates_heard() -> List(move_candidates.Candidate) {
+  [
+    move_candidates.Candidate("bravo", move_candidates.Eligible),
+    move_candidates.Candidate(
+      "charlie",
+      move_candidates.Ineligible(move_candidates.Unreachable),
+    ),
+  ]
+}
+
+fn moving_home(asked: Subject(#(actions.Action, String))) {
+  let ask = fn(action, session, deliver) {
+    process.send(asked, #(action, session))
+    case action {
+      actions.Destinations -> deliver(actions.Heard(move_candidates_heard()))
+      actions.Move(..)
+      | actions.Stop
+      | actions.Archive
+      | actions.Delete
+      | actions.StopArchive -> deliver(actions.Done(action))
+    }
+  }
+  let #(owner, _) =
+    opened(
+      home.Start(..start(), manage: Some(ask), sessions: fn(deliver) {
+        deliver(home.Listed(movable()))
+      }),
+    )
+  owner
+}
+
+// A saved row on an executor has Move; one with no executor has it disabled,
+// and its title says why.
+pub fn a_saved_row_offers_move_and_one_without_an_executor_says_why_test() {
+  let owner = moving_home(process.new_subject())
+  let html = drawn(owner)
+  assert list.length(string.split(html, ">Move<")) == 3
+  assert string.contains(html, "Only a session on an executor can move.")
+  assert string.contains(html, "disabled")
+}
+
+// Move reads, then asks twice. The first press asks only which orchestrators
+// could take the session and replaces the row's words with the answer; a
+// destination opens the confirmation; only the confirmation moves.
+pub fn a_move_reads_chooses_confirms_and_then_asks_test() {
+  let asked = process.new_subject()
+  let model = run(moving_home(asked), home.MoveRequested("E"))
+  assert process.receive(asked, 0) == Ok(#(actions.Destinations, "E"))
+  let html = drawn(model)
+  assert string.contains(html, "Move this session to:")
+  assert string.contains(html, ">bravo<")
+  assert string.contains(html, "charlie is not reachable")
+
+  // A destination the row was not offered opens nothing, and a confirmation
+  // with none open asks nothing.
+  let forged = run(model, home.MoveChosen("E", "charlie"))
+  let forged = run(forged, home.MoveConfirmed("E"))
+  let forged = run(forged, home.MoveChosen("E", "elsewhere"))
+  let forged = run(forged, home.MoveConfirmed("E"))
+  assert process.receive(asked, 0) == Error(Nil)
+  assert string.contains(drawn(forged), "Move this session to:")
+
+  let model = run(model, home.MoveChosen("E", "bravo"))
+  assert string.contains(drawn(model), "Move this session to bravo?")
+  assert process.receive(asked, 0) == Error(Nil)
+
+  // A confirmation for another row asks nothing; Cancel puts the row back.
+  let other = run(model, home.MoveConfirmed("D"))
+  assert process.receive(asked, 0) == Error(Nil)
+  let cancelled = run(other, home.ConfirmCancelled)
+  assert !string.contains(drawn(cancelled), "Move this session to bravo?")
+
+  let model = run(model, home.MoveConfirmed("E"))
+  assert process.receive(asked, 0) == Ok(#(actions.Move("bravo"), "E"))
+  assert string.contains(drawn(model), "Moving to bravo.")
+}
+
+// A page the daemon handed no capability ignores every message of the move.
+pub fn a_page_without_the_capability_ignores_move_test() {
+  let #(member, _) = opened(start())
+  let model = run(member, home.MoveRequested("C"))
+  let model = run(model, home.MoveChosen("C", "bravo"))
+  let model = run(model, home.MoveConfirmed("C"))
+  let model =
+    run(model, home.ActionAnswered(actions.Heard(move_candidates_heard())))
+  assert drawn(model) == drawn(member)
+}
+
+// When no orchestrator could take the session, the row says so and offers only
+// Cancel.
+pub fn a_move_with_no_destination_says_so_test() {
+  let ask = fn(_action, _session, deliver) {
+    deliver(
+      actions.Heard([
+        move_candidates.Candidate(
+          "charlie",
+          move_candidates.Ineligible(move_candidates.NotAccepting),
+        ),
+      ]),
+    )
+  }
+  let #(owner, _) =
+    opened(
+      home.Start(..start(), manage: Some(ask), sessions: fn(deliver) {
+        deliver(home.Listed(movable()))
+      }),
+    )
+  let model = run(owner, home.MoveRequested("E"))
+  let html = drawn(model)
+  assert string.contains(html, "No orchestrator can take this session now.")
+  assert string.contains(html, "charlie does not accept moved sessions")
 }

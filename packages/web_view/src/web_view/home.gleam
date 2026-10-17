@@ -95,6 +95,17 @@
 //// fading for a completed action, in the danger colour and staying for a
 //// refusal, and the list never moves.
 ////
+//// A saved row on an executor can also be moved to another orchestrator
+//// (protocol-change/085, the addendum on Move and Abandon). Move is the one
+//// action that reads first: its press asks the daemon which orchestrators could
+//// take the session (`actions.Destinations`), and the answer replaces the row's
+//// words with a button for each that could and a line for each that could not
+//// (`actions.Choosing`, `MoveChosen`). A destination opens the question Delete
+//// opens, and the daemon is asked to move only after that second press
+//// (`MoveConfirmed`). Each step acts only for the stage the one before it left,
+//// the daemon checks the destination again, and a moved row reads "moving to"
+//// the destination at the next list.
+////
 //// The page also lists the browsers signed in as its principal and lets the
 //// person end them (protocol-change/065, the eighth pull request). Each list
 //// that is read starts a read of the principal's sign-ins (`Start.signins`), an
@@ -172,7 +183,8 @@
 ////    for the running sessions it listed.
 //// 4. A press is a message `update` handles, one of `Opening`, `Resuming`,
 ////    `Choosing`, `Creating`, `Renaming`, `StopRequested`, `ArchiveRequested`,
-////    `StopConfirmed`, `DeleteConfirmed`, `AdminRequested`, `SigningOut`, `SigningOutAll`,
+////    `StopConfirmed`, `DeleteConfirmed`, `MoveRequested`, `MoveChosen`,
+////    `MoveConfirmed`, `AdminRequested`, `SigningOut`, `SigningOutAll`,
 ////    `AddingDevice` or `NameSubmitted`, each of which asks the daemon through
 ////    its own `Start` field and leaves the answer to the effect's message.
 //// 5. `view` draws the groups through `shell_sidebar`, the offers
@@ -237,6 +249,7 @@ import lustre/effect.{type Effect}
 import lustre/element.{type Element}
 import lustre/event
 import lustre/server_component
+import session_view/move_candidates
 import web_view/actions
 import web_view/creations.{type Sharing}
 import web_view/elsewhere
@@ -874,6 +887,19 @@ pub type Msg {
   /// The confirmation's Delete was pressed. It acts only for the row that is
   /// confirming a delete.
   DeleteConfirmed(session: String)
+
+  /// A saved row's Move was pressed: the page asks the daemon which
+  /// orchestrators could take the session, which changes nothing.
+  MoveRequested(session: String)
+
+  /// One of the row's destinations was pressed. It opens the confirmation, and
+  /// only for a row that is choosing and a destination that row was offered,
+  /// so a forged press names nothing the daemon did not say.
+  MoveChosen(session: String, to: String)
+
+  /// The confirmation's Move was pressed. It acts only for the row that is
+  /// confirming a move, and for the destination that confirmation names.
+  MoveConfirmed(session: String)
 
   /// A sidebar row's archive button was pressed (`view/archiving`): the page
   /// opens that row's question and sends nothing. Which action the question is
@@ -1535,6 +1561,16 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     StopConfirmed(session:) -> confirmed(model, actions.Stop, session)
     DeleteConfirmed(session:) -> confirmed(model, actions.Delete, session)
 
+    // Move reads before it asks. The first press only asks the daemon which
+    // orchestrators could take the session, and the answer opens the row's
+    // chooser. A destination opens the confirmation, and the confirmation's
+    // press is the one that asks the daemon to move. Each step acts only for
+    // the stage the one before it left, so a forged press changes nothing.
+    MoveRequested(session:) ->
+      start_action(model, actions.Destinations, session)
+    MoveChosen(session:, to:) -> chosen(model, session, to)
+    MoveConfirmed(session:) -> move_confirmed(model, session)
+
     // The sidebar's archive button opens its question for the action the row's
     // residency gives, a stop first for a running one. A row the page does not
     // list asks nothing.
@@ -1550,7 +1586,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
 
     ConfirmCancelled ->
       case model.acting {
-        actions.Confirming(..) -> #(
+        actions.Confirming(..) | actions.Choosing(..) -> #(
           Model(..model, acting: actions.Calm),
           effect.none(),
         )
@@ -1563,6 +1599,22 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     // is dropped.
     ActionAnswered(answer:) ->
       case model.acting, answer {
+        // The read of destinations opens the row's chooser and changes nothing
+        // on disk, so the list is not read again.
+        actions.Working(session:, action: actions.Destinations),
+          actions.Heard(candidates:)
+        -> #(
+          Model(
+            ..model,
+            acting: actions.Choosing(session, candidates),
+            note: None,
+          ),
+          effect.none(),
+        )
+        actions.Working(..), actions.Heard(..) -> #(
+          Model(..model, acting: actions.Calm),
+          effect.none(),
+        )
         actions.Working(session:, ..), actions.Done(action:) ->
           reading(
             Model(
@@ -1587,7 +1639,10 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
               )),
             ),
           )
-        actions.Calm, _ | actions.Confirming(..), _ -> #(model, effect.none())
+        actions.Calm, _ | actions.Confirming(..), _ | actions.Choosing(..), _ -> #(
+          model,
+          effect.none(),
+        )
       }
 
     // The answer: a stored name replaces the row's in the page's own state at
@@ -1839,6 +1894,7 @@ fn start_action(
       case model.start.manage, model.status, model.acting {
         Some(ask), Connected, actions.Calm
         | Some(ask), Connected, actions.Confirming(..)
+        | Some(ask), Connected, actions.Choosing(..)
         -> #(
           Model(..model, acting: actions.Working(session, action), note: None),
           managing(ask, action, session),
@@ -1906,6 +1962,7 @@ fn confirm_first(
   case model.start.manage, model.status, model.acting {
     Some(_), Connected, actions.Calm
     | Some(_), Connected, actions.Confirming(..)
+    | Some(_), Connected, actions.Choosing(..)
     -> #(
       Model(..model, acting: actions.Confirming(session, action), note: None),
       effect.none(),
@@ -1932,6 +1989,50 @@ fn confirmed(
     -> #(
       Model(..model, acting: actions.Working(session, action), note: None),
       managing(ask, action, session),
+    )
+    Some(_), _, _ | None, _, _ -> #(model, effect.none())
+  }
+}
+
+// A destination of the row's chooser was pressed: it opens that row's
+// confirmation for a move to it, and sends nothing. It acts only for the row
+// that is choosing and a destination that row was offered as eligible, which is
+// what makes a forged press harmless.
+fn chosen(model: Model, session: String, to: String) -> #(Model, Effect(Msg)) {
+  case model.start.manage, model.status, model.acting {
+    Some(_), Connected, actions.Choosing(session: open, candidates:)
+      if open == session
+    ->
+      case list.contains(move_candidates.eligible(candidates), to) {
+        True -> #(
+          Model(
+            ..model,
+            acting: actions.Confirming(session, actions.Move(to)),
+            note: None,
+          ),
+          effect.none(),
+        )
+        False -> #(model, effect.none())
+      }
+    Some(_), _, _ | None, _, _ -> #(model, effect.none())
+  }
+}
+
+// The move confirmation's press: it asks the daemon to move, and only for the
+// row that is confirming a move, to the destination that confirmation names.
+fn move_confirmed(model: Model, session: String) -> #(Model, Effect(Msg)) {
+  case model.start.manage, model.status, model.acting {
+    Some(ask),
+      Connected,
+      actions.Confirming(session: open, action: actions.Move(to:))
+      if open == session
+    -> #(
+      Model(
+        ..model,
+        acting: actions.Working(session, actions.Move(to)),
+        note: None,
+      ),
+      managing(ask, actions.Move(to), session),
     )
     Some(_), _, _ | None, _, _ -> #(model, effect.none())
   }
@@ -2434,6 +2535,9 @@ fn manage_offer(model: Model) -> home_table.Manage(Msg) {
         confirm_delete: DeleteConfirmed,
         cancel: ConfirmCancelled,
         stage: model.acting,
+        move: MoveRequested,
+        choose: MoveChosen,
+        confirm_move: MoveConfirmed,
       )
   }
 }
