@@ -11,6 +11,7 @@
 import client/internal/ffi_os
 import client/peer_mail
 import client/peer_outbox_drain.{Clear, Owed, Quick}
+import client/remote/remote_spawner
 import client/remote_child
 import client/remote_release
 import client/remote_spawn
@@ -260,4 +261,33 @@ pub fn the_release_names_only_the_parent_session_test() {
   assert pass() == Clear
   let assert Ok(parent) = process.receive(seen, 0)
   assert parent.session == session(5)
+}
+
+pub fn a_store_failure_on_the_box_leaves_the_row_owed_test() {
+  let rig = serve([row(1, "box")])
+  let pass =
+    pass_over(rig, fn(_orchestrator, _parent) {
+      remote_spawner.release_answer(
+        Ok(Error(remote_spawn.StoreFailure(reason: "the registry timed out"))),
+      )
+    })
+
+  // The box could not do it now. That is not an answer, so the row stays and
+  // the pass is owed again.
+  assert pass() == Owed(Quick)
+  assert owed(rig) == [row(1, "box")]
+}
+
+pub fn a_definitive_refusal_and_a_count_are_answers_test() {
+  assert remote_spawner.release_answer(Ok(Ok(2))) == Ok(2)
+  assert remote_spawner.release_answer(
+      Ok(Error(remote_spawn.UnknownSpawner(node: "x@y"))),
+    )
+    == Error(
+      peer_mail.Refused(
+        remote_spawn.describe_refusal(remote_spawn.UnknownSpawner(node: "x@y")),
+      ),
+    )
+  assert remote_spawner.release_answer(Error(Nil))
+    == Error(peer_mail.Unreachable)
 }

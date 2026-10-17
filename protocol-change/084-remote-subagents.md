@@ -635,7 +635,7 @@ The rows are drained by a third instance of `peer_outbox_drain`, one for the
 daemon and not for a session, which `daemon/main` starts beside the port
 (`start_release_drain`). The registry rings it when a deletion writes a row, as
 it sleeps while nothing is owed. A pass sends each orchestrator `Release` for its
-rows and settles a row on `Ok` or on `Refused`. An orchestrator that is removed
+rows and settles a row on `Ok` or on a definitive `Refused`. A `StoreFailure` from the box (a registry timeout, a session still opening, a failed deletion) is not definitive: `release_over` reports it as `Unreachable`, so the row stays and the next pass sends again. An orchestrator that is removed
 from the configuration is a refusal and so settles its rows. `Unreachable` leaves
 the row and the orchestrator is not asked again in the same pass. The retry is
 the drainer's fixed five seconds, and the first attempt comes one interval after

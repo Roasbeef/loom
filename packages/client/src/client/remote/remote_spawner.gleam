@@ -137,7 +137,31 @@ pub fn release_over(
 ) -> fn(String, Parent) -> Result(Int, Failure) {
   fn(name, parent) {
     use at <- result.try(reached(membership, configured, name))
-    orchestrator_port.ask_release(at, parent, release_ms) |> answer
+    orchestrator_port.ask_release(at, parent, release_ms) |> release_answer
+  }
+}
+
+/// The port's reply to a `Release` as the two failures.
+///
+/// It differs from the other calls in one rule: a `StoreFailure` is
+/// `Unreachable`, not `Refused`. A release row is settled by an answer, and a
+/// store failure on the box (a registry that timed out, a session that is
+/// opening, a deletion that failed) says the box could not do it now, not that
+/// it never will. Settling the row would leave the child running to its
+/// deadline, so the drainer must send again. Every other refusal is definitive.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert remote_spawner.release_answer(Ok(Error(remote_spawn.StoreFailure("busy"))))
+///   == Error(peer_mail.Unreachable)
+/// ```
+pub fn release_answer(
+  heard: Result(Result(Int, SpawnRefusal), Nil),
+) -> Result(Int, Failure) {
+  case heard {
+    Ok(Error(remote_spawn.StoreFailure(..))) -> Error(peer_mail.Unreachable)
+    other -> answer(other)
   }
 }
 
