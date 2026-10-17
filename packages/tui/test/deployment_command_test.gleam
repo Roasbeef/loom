@@ -1241,3 +1241,62 @@ pub fn text_and_lists_beyond_their_bounds_are_refused_or_dropped_test() {
     )
   assert status.directory == None
 }
+
+// --- a reply cut to fit one frame --------------------------------------------
+
+fn with_members(
+  document: json.JsonValue,
+  extra: List(#(String, json.JsonValue)),
+) -> json.JsonValue {
+  let assert json.Object(members) = document
+  json.Object(list.append(members, extra))
+}
+
+// An overview that left things out says so and points at the one-node read, and
+// it is still an overview when it left out the edges.
+pub fn an_overview_that_was_cut_says_what_is_left_out_test() {
+  let cut =
+    with_members(without_unclean(example()), [
+      member("orchestrators", json.Array([])),
+      member("omitted", json.Array([text("moves"), text("edges")])),
+    ])
+  let assert Ok(status) = deployment_view.decode(cut)
+  assert status.extent == deployment_view.Everything
+  assert status.omitted == ["moves", "edges"]
+  let assert Ok(drawn) =
+    tui.format_deployment(cut, tui.ShowDeployment(None, tui.AsText))
+  assert string.contains(
+    drawn,
+    "left out to fit one frame: moves, edges\nrun with --node <key> for the rest",
+  )
+}
+
+pub fn a_node_reply_that_was_cut_names_the_lists_test() {
+  let one =
+    json.Object([
+      member("self", text(alpha)),
+      member("state", text("ok")),
+      member("nodes", json.Array([])),
+      member("more", json.Array([text("moves"), text("workspaces")])),
+    ])
+  let assert Ok(drawn) =
+    tui.format_deployment(one, tui.ShowDeployment(Some("box"), tui.AsText))
+  assert string.contains(drawn, "lists cut to fit one frame: moves, workspaces")
+}
+
+pub fn a_node_that_connected_and_gave_no_report_says_so_test() {
+  let silent =
+    json.Object([
+      member("self", text(alpha)),
+      member("state", text("down")),
+      member(
+        "nodes",
+        json.Array([
+          node(box, "box", "executor", "down", Some("silent")),
+        ]),
+      ),
+    ])
+  let assert Ok(drawn) =
+    tui.format_deployment(silent, tui.ShowDeployment(None, tui.AsText))
+  assert string.contains(drawn, "connected, no report")
+}

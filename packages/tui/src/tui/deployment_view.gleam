@@ -370,6 +370,11 @@ pub type Status {
     /// The asking daemon's membership ledger, when it runs from one and the
     /// request named no node.
     ledger: Option(Ledger),
+    /// What an overview left out to fit one frame (`moves`, `node_facts`,
+    /// `edges` and the like). Empty when it left nothing out.
+    omitted: List(String),
+    /// The long lists of a reply for one node that were cut to fit one frame.
+    more: List(String),
   )
 }
 
@@ -394,31 +399,31 @@ pub fn decode(document: JsonValue) -> Result(Status, String) {
   let reasons = optional_list(document, "reasons", reason)
   let placements =
     field(document, "placements") |> result.unwrap(json.Object([]))
-  Ok(
-    Status(
-      self:,
-      as_of_ms: optional_count(document, "as_of_ms"),
-      state:,
-      reasons:,
-      nodes:,
-      extent: case field(document, "edges") {
-        Ok(_) -> Everything
-        Error(_) -> OneNode
-      },
-      edges: optional_list(document, "edges", edge),
-      executors: optional_list(placements, "executors", executor),
-      pools: optional_list(placements, "pools", pool),
-      directory: case field(document, "directory") |> result.try(directory) {
-        Ok(found) -> Some(found)
-        Error(_) -> None
-      },
-      moves: optional_list(document, "moves", move),
-      ledger: case field(document, "ledger") |> result.try(ledger) {
-        Ok(found) -> Some(found)
-        Error(_) -> None
-      },
-    ),
-  )
+  Ok(Status(
+    self:,
+    as_of_ms: optional_count(document, "as_of_ms"),
+    state:,
+    reasons:,
+    nodes:,
+    extent: case field(document, "orchestrators"), field(document, "edges") {
+      Error(_), Error(_) -> OneNode
+      Ok(_), _ | _, Ok(_) -> Everything
+    },
+    edges: optional_list(document, "edges", edge),
+    executors: optional_list(placements, "executors", executor),
+    pools: optional_list(placements, "pools", pool),
+    directory: case field(document, "directory") |> result.try(directory) {
+      Ok(found) -> Some(found)
+      Error(_) -> None
+    },
+    moves: optional_list(document, "moves", move),
+    ledger: case field(document, "ledger") |> result.try(ledger) {
+      Ok(found) -> Some(found)
+      Error(_) -> None
+    },
+    omitted: optional_list(document, "omitted", text),
+    more: optional_list(document, "more", text),
+  ))
 }
 
 // The directory block is optional like the rest of what a later daemon adds, so
@@ -456,8 +461,8 @@ fn voter(value: JsonValue) -> Result(Bool, String) {
 }
 
 fn move(value: JsonValue) -> Result(Move, String) {
-  use session <- result.try(first_text(value, ["session_id", "session"]))
-  use to <- result.try(first_text(value, ["to", "to_node"]))
+  use session <- result.try(text_at(value, "session_id"))
+  use to <- result.try(text_at(value, "to"))
   use phase <- result.map(text_at(value, "phase"))
   Move(
     session:,
@@ -466,17 +471,6 @@ fn move(value: JsonValue) -> Result(Move, String) {
     stalled_ms: optional_count(value, "stalled_ms"),
     reason: optional_text(value, "reason"),
   )
-}
-
-fn first_text(value: JsonValue, keys: List(String)) -> Result(String, String) {
-  case keys {
-    [] -> Error("missing text")
-    [key, ..rest] ->
-      case text_at(value, key) {
-        Ok(found) -> Ok(found)
-        Error(_) -> first_text(value, rest)
-      }
-  }
 }
 
 // The ledger member is optional like the rest of what a later daemon adds, so a
@@ -778,8 +772,26 @@ pub fn status_text(status: Status) -> String {
         Some(found) -> [ledger_text(found)]
         None -> []
       },
+      cut_text(status),
     ])
   string.join(sections, "\n\n")
+}
+
+// A line saying the daemon cut the reply to fit one frame, and how to see the
+// rest. An overview that left things out points at the one-node read, which
+// carries them; a one-node reply that was cut says which lists.
+fn cut_text(status: Status) -> List(String) {
+  case status.omitted, status.more {
+    [], [] -> []
+    omitted, [] -> [
+      "left out to fit one frame: "
+      <> string.join(list.map(omitted, clean), ", ")
+      <> "\nrun with --node <key> for the rest",
+    ]
+    _, more -> [
+      "lists cut to fit one frame: " <> string.join(list.map(more, clean), ", "),
+    ]
+  }
 }
 
 // The verdict: who asked, how many nodes answered, when, and the state with each
@@ -864,6 +876,7 @@ fn note_text(status: Status, node: Node) -> String {
   let facts =
     list.flatten([
       case node.state, node.reason {
+        NodeDown, Some("silent") -> ["connected, no report"]
         NodeDown, Some(word) -> [clean(word)]
         NodeDown, None -> ["down"]
         NodeOk, _ | NodeDegraded, _ -> []

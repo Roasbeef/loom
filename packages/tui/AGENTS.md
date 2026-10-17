@@ -3337,7 +3337,10 @@ and `launch_directory` are the test seams for the parse.
   guess, text (256 bytes) and lists (128 entries) are bounded, and an optional
   member that is absent, malformed or unknown is left out: a node's build,
   uptime, `orchestrator` and `executor` facts, the `directory` block, `moves`,
-  `ledger`. `extent` is `OneNode` when the reply has no `edges`.
+  `ledger`. `extent` is `OneNode` when the reply has neither `edges` nor `orchestrators`.
+  `omitted` and `more` are what the daemon cut to fit one frame; `status_text`
+  prints a line saying so and, for an overview, "run with --node <key> for the
+  rest". A move is read as `session_id` and `to` and nothing else.
   `status_text` draws the example of the design note: the head (who asked, how
   many nodes answered, the time of `as_of_ms` in UTC), the state with a sentence
   for each reason (`reason_sentence`), a `NODE ROLE STATE BUILD SCOPES NOTE` table
