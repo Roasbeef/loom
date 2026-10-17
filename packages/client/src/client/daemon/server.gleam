@@ -55,10 +55,8 @@ import client/daemon/ui_sessions
 import client/daemon/upgrade_log
 import client/deployment
 import client/directory/deletion
-import client/directory/member
 import client/directory/store
 import client/executors
-import client/internal/ffi_khepri
 import client/ledger_control
 import client/orchestrators
 import client/peer_mail
@@ -2649,53 +2647,6 @@ fn not_owner(owner: orchestrators.Orchestrator) -> Refused {
 /// be read or could not commit in time (protocol-change/083).
 pub const no_quorum_code = "no_quorum"
 
-fn directory_status_json(status: member.Status) -> JsonValue {
-  let #(ra_members, leader, ra_error) = case status.ra {
-    Ok(store.Membership(members:, leader:, ..)) -> #(members, leader, None)
-    Error(store.Unavailable(reason:)) -> #([], None, Some(reason))
-  }
-  json.Object(
-    list.flatten([
-      [
-        #("members", json.Array(list.map(status.members, json.String))),
-        #(
-          "joined",
-          json.Bool(case status.joining {
-            member.Joined -> True
-            member.NotJoined | member.Rejoining -> False
-          }),
-        ),
-        #(
-          "ra_members",
-          json.Array(
-            list.map(ra_members, fn(entry) {
-              json.Object([
-                #("node", json.String(entry.0)),
-                #(
-                  "voter",
-                  json.Bool(case entry.1 {
-                    ffi_khepri.Voter -> True
-                    ffi_khepri.Promoting | ffi_khepri.NonVoter -> False
-                  }),
-                ),
-              ])
-            }),
-          ),
-        ),
-        #("applied_index", json.Int(status.applied_index)),
-      ],
-      case leader {
-        Some(node) -> [#("leader", json.String(node))]
-        None -> []
-      },
-      case ra_error {
-        Some(reason) -> [#("unavailable", json.String(reason))]
-        None -> []
-      },
-    ]),
-  )
-}
-
 // The `deployment.status` read. The daemon connects only to the nodes of its own
 // configuration: the request's `node` key is resolved against that configuration
 // before anything is dialled, so an unknown key is `not_found` and connects to
@@ -3470,7 +3421,7 @@ fn dispatch_class(
       case config.directory.standing {
         session_directory.NotMember -> Error("not_found")
         session_directory.Member(status:) ->
-          Ok(#("directory.status", directory_status_json(status())))
+          Ok(#("directory.status", deployment.directory_status_json(status())))
       }
     }
     protocol.DeploymentStatus(node) -> {

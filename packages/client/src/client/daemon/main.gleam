@@ -8,7 +8,7 @@
 //// ## Flow
 ////
 //// `main` → `claim_endpoint` → `prepare_startup` → `run` → `start_executor` →
-//// `start_movers` → `start_orchestrator_port` → `listen_moving` →
+//// `start_movers` → `node_reads` → `start_orchestrator_port` → `listen_moving` →
 //// `publish_endpoint` → `wait`
 ////
 //// 1. `main` parses the flags, `claim_endpoint` reserves this VM, and
@@ -23,7 +23,9 @@
 ////    it holds, takes the sessions a peer moves to it, and reports itself
 ////    (protocol-change/085). The port comes after the movers and the executor
 ////    host because a report reads both: the moves in flight and the host's
-////    ledger.
+////    ledger. `node_reads` builds that report once, and both the port, which
+////    answers a peer with it, and `listen_moving`, whose `deployment.status`
+////    reads the daemon's own facts through it, are given the same closure.
 //// 3. `listen_moving` binds the listener, and `publish_endpoint` records the
 ////    bound port for the reservation this VM holds.
 //// 4. `wait` blocks on the signal relay, the root and the executor host, and a
@@ -948,7 +950,7 @@ pub fn directory_path(state_root: String) -> String {
 /// ## Examples
 ///
 /// ```gleam
-/// // assert main.start_orchestrator_port(Config(..config, membership: None), daemon, logger, peer, delegate, None, session_movers.idle()) == Ok(Nil)
+/// // assert main.start_orchestrator_port(Config(..config, membership: None), daemon, logger, peer, delegate, orchestrator_port.unreported()) == Ok(Nil)
 /// ```
 @internal
 pub fn start_orchestrator_port(
@@ -957,8 +959,7 @@ pub fn start_orchestrator_port(
   logger: Logger,
   peer_endpoint: fn(instance) -> Option(peer_mail.Endpoint),
   delegate_endpoint: fn(instance) -> agency.DelegateEndpoint,
-  executor: Option(ExecutorHost),
-  movers: session_movers.Control,
+  reads: orchestrator_port.Reads,
 ) -> Result(Nil, String) {
   case config.membership {
     None -> Ok(Nil)
@@ -1007,7 +1008,7 @@ pub fn start_orchestrator_port(
             ready.registry,
             executor_roster(config),
           ),
-          node_reads(config, ready, executor, movers),
+          reads,
         )
         |> result.map_error(fn(error) {
           "the orchestrator port did not start: " <> string.inspect(error)
@@ -1025,18 +1026,20 @@ pub fn start_orchestrator_port(
   }
 }
 
-// The report this daemon gives of itself when a peer asks. Each source is a
-// function the daemon holds and `node_facts.report` calls under one deadline:
-// the executor host's own account, the registry and the movers for the
-// orchestrator facts, and the directory member for the cluster view. The start
-// time is taken when the port starts, which is when the daemon begins to
-// answer, and uptime is the difference of two readings of this node's clock.
+// The report this daemon gives of itself, to a peer that asks and to its own
+// `deployment.status`. Each source is a function the daemon holds and
+// `node_facts.report` calls under one deadline: the executor host's own account,
+// the registry and the movers for the orchestrator facts, and the directory
+// member for the cluster view. The start time is taken here, which is when the
+// daemon begins to answer, and uptime is the difference of two readings of this
+// node's clock.
 fn node_reads(
   config: Config,
-  ready: root.Ready(instance),
+  daemon: root.Root(instance),
   executor: Option(ExecutorHost),
   movers: session_movers.Control,
-) -> orchestrator_port.Reads {
+) -> Result(orchestrator_port.Reads, String) {
+  use ready <- result.map(root.ready(daemon, within: 20_000))
   let local = atom.to_string(node.name(node.self()))
   let identity = build_identity.current()
   let version = identity.version
@@ -2210,17 +2213,20 @@ pub fn listen_serving(
     peer_endpoint,
     ui,
     session_movers.idle(),
+    orchestrator_port.unreported(),
   )
 }
 
 /// Starts the daemon listener as `listen_serving` does, with the control its
-/// owner commands use to hand sessions to other orchestrators. `start_movers`
-/// builds it.
+/// owner commands use to hand sessions to other orchestrators, which
+/// `start_movers` builds, and the reads that report on the daemon itself, which
+/// `node_reads` builds. `deployment.status` states the daemon's own facts through
+/// the same closure the orchestrator port answers a peer with.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // main.listen_moving(config, daemon, upgrade, peers, Some(ui), movers)
+/// // main.listen_moving(config, daemon, upgrade, peers, Some(ui), movers, reads)
 /// ```
 @internal
 pub fn listen_moving(
@@ -2231,6 +2237,7 @@ pub fn listen_moving(
   peer_endpoint: fn(instance) -> Option(peer_mail.Endpoint),
   ui: Option(server.Ui(instance)),
   movers: session_movers.Control,
+  reads: orchestrator_port.Reads,
 ) -> Result(Serving(instance), String) {
   use ready <- result.try(root.ready(daemon, within: 20_000))
   use domain_configuration <- result.try(captured_domain_configuration(
@@ -2246,7 +2253,7 @@ pub fn listen_moving(
       pools: config.pools,
       directory: session_directory_of(config, ready.registry),
       movers:,
-      deployment: deployment_reach(config),
+      deployment: deployment.reporting(deployment_reach(config), reads.report),
       ledger: config.ledger,
       generator: fn() {
         ids.generator(
@@ -2312,14 +2319,14 @@ fn run(
         ffi_os.system_time_ms(),
       ))
       use movers <- result.try(start_movers(config, daemon, logger))
+      use reads <- result.try(node_reads(config, daemon, executor, movers))
       use Nil <- result.try(start_orchestrator_port(
         config,
         daemon,
         logger,
         fn(resident: serve.Resident) { Some(resident.peer) },
         fn(resident: serve.Resident) { resident.spawns },
-        executor,
-        movers,
+        reads,
       ))
       use ui <- result.try(web_view(config, daemon))
       use serving <- result.try(listen_moving(
@@ -2336,6 +2343,7 @@ fn run(
         fn(resident: serve.Resident) { Some(resident.peer) },
         ui,
         movers,
+        reads,
       ))
       publish_endpoint(config, serving, paths, fence)
       |> result.replace(#(serving, executor))

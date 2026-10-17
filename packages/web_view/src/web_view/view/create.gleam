@@ -77,7 +77,9 @@
 //// fixed words, and nothing here is a class, a key or an identifier taken from
 //// the catalogue. The same holds on a card: an executor's or a pool's name, a
 //// declared platform are text nodes, and the only strings that become classes
-//// are the pill tints `placements.pill_class` returns.
+//// are the pill tints `placements.pill_class` returns. The free scope count and
+//// the contradiction an executor's report can add to its card are words in a
+//// paragraph, drawn the same way.
 ////
 //// ## Flow
 ////
@@ -583,9 +585,28 @@ fn executor_card(
 
 // What an executor's card says beyond its name and state: what its operator
 // declared about the machine, which is the operator's claim and is worded as
-// one.
+// one, then how many scopes the executor says are free and any way its census
+// contradicts the claim. The last two are the executor's own report, drawn as
+// text like the rest.
 fn executor_facts(report: placements.Report) -> List(Element(message)) {
-  [fact(declared_words(report))]
+  list.flatten([
+    [fact(declared_words(report))],
+    case report.free_scopes {
+      Some(free) -> [fact(scopes_free_words(free))]
+      None -> []
+    },
+    case report.contradiction {
+      Some(words) -> [fact(words <> ".")]
+      None -> []
+    },
+  ])
+}
+
+fn scopes_free_words(free: Int) -> String {
+  case free {
+    1 -> "1 scope free."
+    _ -> int.to_string(free) <> " scopes free."
+  }
 }
 
 fn declared_words(report: placements.Report) -> String {

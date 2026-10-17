@@ -126,7 +126,14 @@ fn hearing(
 
 // What the daemon reports for one executor.
 fn report(state: placements.State) -> placements.Report {
-  placements.Report(state:, platform: None, enforcement: None, toolchains: [])
+  placements.Report(
+    state:,
+    platform: None,
+    enforcement: None,
+    toolchains: [],
+    free_scopes: None,
+    contradiction: None,
+  )
 }
 
 // A daemon's answer: `box` is ready and declares a platform, `gpu` is down, and

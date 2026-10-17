@@ -7,7 +7,9 @@
 //// was told when it opened, what the daemon reported about each when the form
 //// opened, and the choice a person makes among them. The daemon and the page
 //// agree on this vocabulary here, and the page learns nothing else about the
-//// deployment: no node name, address, key or path.
+//// deployment: no node name, address, key or path. An executor that answered
+//// also states how many scopes are free and whether its census contradicts its
+//// declaration, which the card draws as words.
 ////
 //// ## What the state means
 ////
@@ -33,7 +35,16 @@ pub type State {
   /// A session can be placed on it.
   Ready
 
-  /// The daemon's own connection attempt to it failed.
+  /// It answered, and its report states a reason a person should know before
+  /// choosing it. A session can still be placed on it.
+  Degraded
+
+  /// It answered, and every scope it admits is held, so the next attach is
+  /// refused for lack of room until an operator releases one.
+  Full
+
+  /// The daemon's own connection attempt to it failed, or it did not give its
+  /// report in time.
   Down
 }
 
@@ -48,6 +59,12 @@ pub type Report {
     enforcement: Option(String),
     /// The toolchains its operator declared, possibly none.
     toolchains: List(String),
+    /// How many more scopes it admits, when it reported.
+    free_scopes: Option(Int),
+    /// The words saying its census contradicts what its operator declared, when
+    /// it does. They are the operator's own configuration values and the
+    /// machine's report, drawn as text.
+    contradiction: Option(String),
   )
 }
 
@@ -199,21 +216,26 @@ pub fn any(cards: Cards) -> Bool {
 pub fn state_words(state: State) -> String {
   case state {
     Ready -> "ready"
+    Degraded -> "degraded"
+    Full -> "full"
     Down -> "down"
   }
 }
 
-/// The pill tint for a state: the ones the page already has for a connection,
-/// so no colour is added.
+/// The pill tint for a state, from the three the page already has for a
+/// connection, so no colour is added: `online` for a ready executor, `pending`
+/// for one that answered with a reason, and `ended` for one that is full or
+/// down.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert placements.pill_class(placements.Ready) == "online"
+/// assert placements.pill_class(placements.Degraded) == "pending"
 /// ```
 pub fn pill_class(state: State) -> String {
   case state {
     Ready -> "online"
-    Down -> "ended"
+    Degraded -> "pending"
+    Full | Down -> "ended"
   }
 }
