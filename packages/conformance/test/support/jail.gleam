@@ -10,12 +10,12 @@ import broker/exec.{type Pool}
 import broker/policy.{type SandboxPolicy}
 import broker/token
 import core/clock.{type Clock}
+import envoy
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import simplifile
-import support/internal/ffi_shell
 
 /// One live rig: the broker and pool plus the paths a wiring config
 /// needs.
@@ -71,7 +71,7 @@ fn prebuilt_helper_here() -> Result(String, String) {
 
 /// The first regular file named `name` in a directory on `PATH`, which
 /// is all the suites' feature detection needs. It is written in Gleam
-/// over `get_env` and `simplifile` because the lookup has a pure
+/// over `envoy` and `simplifile` because the lookup has a pure
 /// alternative, and a directory named `name` is not a match.
 ///
 /// ## Examples
@@ -83,7 +83,7 @@ fn prebuilt_helper_here() -> Result(String, String) {
 /// }
 /// ```
 pub fn find_executable(name: String) -> Result(String, Nil) {
-  ffi_shell.get_env("PATH")
+  envoy.get("PATH")
   |> result.unwrap("")
   |> string.split(":")
   |> list.map(fn(directory) { directory <> "/" <> name })

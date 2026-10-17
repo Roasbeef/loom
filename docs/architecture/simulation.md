@@ -399,18 +399,21 @@ outside the seed's control.
 `SOAK_FROM` (default 1), with shrinking. Budget roughly a second per seed.
 The soak is enabled through the environment rather than through a
 separate target, so `LOOM_SOAK_SEEDS=500 gleam test` inside
-`packages/conformance` does the same thing, with one caveat that the
-target handles for you.
+`packages/conformance` does the same thing; the target adds the outer
+watchdog deadline and the `conformance@simulation_test:soak_test`
+selection.
 
-The caveat is the test framework's per-test timeout of about a minute. A
-run that exceeds it is reported as a timeout rather than as a result.
-Because per-seed cost varies, a single invocation of more than a few dozen
-seeds can trip the timeout and look like a hang in whatever the runner
-happened to be doing. `make soak` therefore runs in chunks of `SOAK_CHUNK`
-seeds (default 50). It advances the starting seed and stops at the first
-chunk that fails, which is why it echoes the seed range before each chunk.
-Driving the environment variables directly means choosing a count that
-fits inside the timeout yourself.
+The test framework's per-test timeout is about a minute, and a run that
+exceeds it is reported as a timeout rather than as a result. The soak
+therefore does not run as one test. `simulation_test:soak_test_` is an
+eunit generator that yields one test per chunk of `LOOM_SOAK_CHUNK` seeds
+(`SOAK_CHUNK`, default 50), each wrapped in its own deadline of twenty
+seconds a seed and titled with its range, for example `soak seeds
+1851..1900`. A failing chunk panics with that range in its text, ahead of
+the shrunk report and the reproduction line. Chunks run in order within one
+invocation; a failing chunk does not stop the ones after it, so the output
+may name several ranges. An unset or zero `LOOM_SOAK_SEEDS` yields no
+tests.
 
 A soak failure prints the same reproduction line as any other. Re-run
 that seed alone with `make replay-simulation SIM_SEED=<seed>`; the failing

@@ -15,11 +15,11 @@
 //// log alone says which seed failed and whether re-running it agreed.
 
 import conformance/simulation/daemon/daemon_soak
+import envoy
 import gleam/int
 import gleam/io
 import gleam/option.{None, Some}
 import gleam/result
-import support/internal/ffi_shell
 import weft/poll
 
 /// What the run may spend after its budget is exhausted, in seconds.
@@ -77,7 +77,7 @@ pub fn daemon_soak_test_() -> EunitTest {
 
 fn run(seconds: Int) -> Nil {
   let from =
-    ffi_shell.get_env("LOOM_DAEMON_SOAK_FROM")
+    envoy.get("LOOM_DAEMON_SOAK_FROM")
     |> result.try(int.parse)
     |> result.unwrap(1)
 
@@ -116,7 +116,7 @@ type PositiveEnvironment {
 }
 
 fn positive_environment(name: String) -> PositiveEnvironment {
-  case ffi_shell.get_env(name) {
+  case envoy.get(name) {
     Error(Nil) -> EnvironmentUnset
     Ok(value) ->
       case int.parse(value) {

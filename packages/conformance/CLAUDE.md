@@ -165,7 +165,8 @@ storage suite over the backends.
   copies the simulation's effect-surface shape rather than importing it,
   because this package's surface is test support, not a library.
 - **FFI**: `conformance/test/support/internal/ffi_time` and `ffi_shell` —
-  test-side only, for the jailed e2e harness.
+  test-side only, for the jailed e2e harness. `ffi_shell` holds only
+  `unique_integer`; environment reads use `envoy` (a dev dependency).
 - **Note**: the wiring adapter used to live in this package's `src`
   because only the test leaf could depend on every layer; when the client
   package became a real host it was promoted to `client/wiring`
@@ -566,7 +567,10 @@ refuse the server before any question. The jailed Linux lane installs
 - [Root CLAUDE.md](../../CLAUDE.md) — repo ground rules and the doc graph.
   `make conformance` runs the suites; `make e2e` the jailed acceptance;
   `make soak` the long session simulation run, and `make soak-daemon-sim`
-  the daemon one.
+  the daemon one. The session soak is the generator
+  `simulation_test:soak_test_`: one timeout-bounded eunit test per
+  `LOOM_SOAK_CHUNK` seeds (default 50), each titled and failing with its
+  seed range, so `make soak` is a single runner invocation.
 
 ## Code-mode LSP monorepo acceptance
 
