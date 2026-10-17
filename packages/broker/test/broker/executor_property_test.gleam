@@ -1,18 +1,18 @@
-//// Property tests over the executor service: seeded random interleavings of
-//// the things that happen to executions, with the invariants every
-//// interleaving must keep.
+//// Property tests over the executor service: random interleavings of the
+//// things that happen to executions, with the invariants every interleaving
+//// must keep.
 ////
 //// The pure relay core has its own property tests (`execution_test`). This
 //// module covers the service around it, whose coverage was otherwise a set of
 //// chosen cases (`executor_test`, `failure_matrix_test`) and one fixed
-//// rotation (`leak_census_test`). A seed draws a plan: a pool size and a list
-//// of steps. A step starts an execution (one that ends at once, one that runs
-//// until cancelled, one that ignores cancel, one that floods output; with or
-//// without a wall deadline), cancels one by the broker or from the caller's
-//// own process, kills a caller, crashes a helper actor, pauses, or closes the
-//// service while work is in flight. The driver performs the steps in order,
-//// which is as much interleaving as one process can impose on the service, the
-//// broker, the relays and the helpers it is racing.
+//// rotation (`leak_census_test`). A qcheck generator draws a plan: a pool size
+//// and a list of steps. A step starts an execution (one that ends at once, one
+//// that runs until cancelled, one that ignores cancel, one that floods output;
+//// with or without a wall deadline), cancels one by the broker or from the
+//// caller's own process, kills a caller, crashes a helper actor, pauses, or
+//// closes the service while work is in flight. The driver performs the steps
+//// in order, which is as much interleaving as one process can impose on the
+//// service, the broker, the relays and the helpers it is racing.
 ////
 //// Each plan must leave the same things true:
 ////
@@ -28,26 +28,41 @@
 //// - a second `close` returns the stored verdict, or says the service is gone
 ////   when the first answered `Ok`.
 ////
-//// A seed reproduces the plan, which is printed in every failure message, and
-//// not the schedule: the real processes still race, so a failing plan may need
-//// a few runs. `LOOM_EXECUTOR_PROPERTY_SEEDS` sets how many seeds each test
-//// draws (default 12), and the failing seed names the run to repeat.
+//// A failing plan is reported already shrunk. The pool shrinks toward three
+//// helpers, the plan toward fewer steps, and each step toward a plain start
+//// of a quick execution with no deadline, so what remains is the few steps
+//// the invariant needs. A step names its target by a raw pick resolved
+//// against the executions started so far, so removing an earlier step
+//// retargets the later ones rather than invalidating them.
+////
+//// What a seed reproduces is the plan, not the schedule: the real processes
+//// still race, so a plan that fails once may need several runs to fail
+//// again. Two choices follow from that. Every case runs its own plane in a
+//// process of its own (`planes.isolated`), so a case that panics, and the
+//// shrink candidates after it, leave no service behind to disturb the next.
+//// The properties retry each shrink candidate (`shrink_retries`): a
+//// candidate counts as still failing if any of its runs fails, which keeps a
+//// scheduling-sensitive failure from being shrunk away by one lucky run. The
+//// retries cost nothing while the properties pass, because qcheck uses them
+//// only on candidates it is already shrinking. And shrinking is bounded in
+//// wall time (`shrink_budget_ms`), because a failure that waits out a poll
+//// deadline would otherwise shrink past gleeunit's per-test timeout and
+//// lose the report; a run that hits the bound reports the smallest plan
+//// found so far, which is not always the smallest there is. The run uses fixed qcheck
+//// seeds, so the plans the gate draws are the same on every machine.
 
 import broker/broker
 import broker/exec
 import broker/executor
-import broker/support/bench_host as host
 import broker/support/fake_helper
 import broker/support/planes
-import broker/support/seeded
 import gleam/dict
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/int
-import gleam/io
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/result
 import gleam/string
+import qcheck
 import weft/poll
 
 // --- the plan ---------------------------------------------------------------
@@ -70,7 +85,8 @@ type Deadline {
 
 // One thing the driver does. A `pick` is a raw draw, resolved against the
 // executions started so far when the step runs, so a plan is a plain list
-// that can be printed and replayed.
+// that can be printed and replayed, and a step survives the removal of an
+// earlier one.
 type Step {
   Start(kind: Kind, deadline: Deadline)
   BrokerCancel(pick: Int)
@@ -82,33 +98,83 @@ type Step {
 }
 
 type Plan {
-  Plan(seed: Int, pool_size: Int, quiet: Bool, steps: List(Step))
+  Plan(pool_size: Int, quiet: Bool, steps: List(Step))
 }
 
-// A plan for a seed. A quiet plan has no crash and no cancel-ignoring
-// execution, which makes a clean close the only right answer.
-fn plan_for(seed_value: Int, quiet quiet: Bool) -> Plan {
-  let seed = seeded.new(seed_value)
-  let #(pool_size, seed) = seeded.between(seed, 3, 5)
-  let #(length, seed) = seeded.between(seed, 10, 22)
-  let #(steps, _seed) = seeded.repeat(seed, length, step_from)
-  let steps = case quiet {
-    True -> list.map(steps, without_faults)
-    False -> steps
-  }
-  Plan(seed: seed_value, pool_size:, quiet:, steps:)
+/// The number of plans each test checks, and the seed each draws them from.
+/// The two tests have their own seeds, so the quiet plans are not the faulty
+/// ones with the faults filtered out.
+const plan_count = 12
+
+const quiet_seed = 1000
+
+const faulty_seed = 2000
+
+/// How many times qcheck runs a shrink candidate before it calls it passing.
+/// The processes race, so a plan that failed once may pass on its next run,
+/// and one lucky run would otherwise end the shrink at a larger plan than
+/// the failure needs. Two runs make that unlikely, and the price is paid
+/// only while shrinking.
+const shrink_retries = 2
+
+/// How long shrinking may go on after the first failure. A candidate that
+/// fails on a poll deadline takes several seconds to do it, and gleeunit
+/// kills a test after fifty, before qcheck reports anything; the budget ends
+/// the shrink early instead and reports the smallest plan found so far.
+const shrink_budget_ms = 25_000
+
+fn plan_config(seed seed: Int) -> qcheck.Config {
+  qcheck.default_config()
+  |> qcheck.with_test_count(plan_count)
+  |> qcheck.with_seed(qcheck.seed(seed))
+  |> qcheck.with_max_retries(shrink_retries)
 }
 
-fn step_from(seed: seeded.Seed) -> #(Step, seeded.Seed) {
-  let #(which, seed) = seeded.between(seed, 0, 19)
-  let #(pick, seed) = seeded.between(seed, 0, 1000)
-  let #(kind, seed) = seeded.between(seed, 0, 7)
-  let #(deadline, seed) = seeded.between(seed, 0, 3)
-  let #(pause, seed) = seeded.between(seed, 0, 40)
-  let step = case which {
+// A plan of three to five helpers and one to twenty-two steps. A quiet plan
+// has no crash and no cancel-ignoring execution, which makes a clean close
+// the only right answer.
+fn plan_generator(quiet quiet: Bool) -> qcheck.Generator(Plan) {
+  let steps =
+    qcheck.generic_list(
+      elements_from: step_generator(),
+      length_from: qcheck.bounded_int(from: 1, to: 22),
+    )
+    |> qcheck.map(fn(steps) {
+      case quiet {
+        True -> list.map(steps, without_faults)
+        False -> steps
+      }
+    })
+  qcheck.map2(qcheck.bounded_int(from: 3, to: 5), steps, fn(pool_size, steps) {
+    Plan(pool_size:, quiet:, steps:)
+  })
+}
+
+// Every field of a step is drawn, whichever step it turns out to be, and
+// each shrinks toward zero: the first kind of step is a start, its first
+// kind is the quick one, and zero is no deadline.
+fn step_generator() -> qcheck.Generator(Step) {
+  qcheck.map5(
+    qcheck.bounded_int(from: 0, to: 19),
+    qcheck.bounded_int(from: 0, to: 1000),
+    qcheck.bounded_int(from: 0, to: 7),
+    qcheck.bounded_int(from: 0, to: 3),
+    qcheck.bounded_int(from: 0, to: 40),
+    step_of,
+  )
+}
+
+fn step_of(
+  which: Int,
+  pick: Int,
+  kind: Int,
+  deadline: Int,
+  pause: Int,
+) -> Step {
+  case which {
     0 | 1 | 2 | 3 | 4 | 5 ->
       Start(kind: kind_of(kind), deadline: case deadline {
-        0 -> WallDeadline
+        3 -> WallDeadline
         _ -> NoDeadline
       })
     6 | 7 -> BrokerCancel(pick:)
@@ -118,7 +184,6 @@ fn step_from(seed: seeded.Seed) -> #(Step, seeded.Seed) {
     12 | 13 | 14 | 15 | 16 | 17 | 18 -> Pause(ms: pause)
     _ -> CloseMidRun
   }
-  #(step, seed)
 }
 
 fn kind_of(draw: Int) -> Kind {
@@ -427,21 +492,28 @@ fn newest(plane: planes.Plane, so_far: exec.Helper) -> exec.Helper {
 // --- the verdict ------------------------------------------------------------
 
 fn describe(plan: Plan) -> String {
-  "seed "
-  <> int.to_string(plan.seed)
-  <> " (replay with the plan below)\n"
-  <> string.inspect(plan)
+  "plan " <> string.inspect(plan)
 }
 
-fn run_plan(plan: Plan) -> Nil {
-  let plane =
-    planes.start_scripted(size: plan.pool_size, script: fn() {
+fn run_plan(plan: Plan, budget: planes.Budget) -> Nil {
+  planes.isolated(
+    size: plan.pool_size,
+    script: fn() {
       fake_helper.start_helper_configured(
         fake_helper.ByArgv,
         cancel_grace_ms: 300,
         heartbeat_interval_ms: 0,
       )
-    })
+    },
+    within: 120_000,
+    budget:,
+    body: fn(plane) { drive_plan(plan, plane) },
+  )
+}
+
+// One plan over one plane, which `run_plan` stops afterwards whether this
+// returns or panics.
+fn drive_plan(plan: Plan, plane: planes.Plane) -> Nil {
   let heard = process.new_subject()
   let run =
     Run(
@@ -466,7 +538,6 @@ fn run_plan(plan: Plan) -> Nil {
   let verdict = settle_the_service(run)
   assert_nothing_left(run)
   assert_second_close(run, verdict)
-  planes.stop(plane)
 }
 
 // Every caller the plan did not kill heard one settlement and then nothing.
@@ -665,51 +736,24 @@ fn assert_second_close(
 
 // --- the tests --------------------------------------------------------------
 
-fn seed_count() -> Int {
-  host.getenv("LOOM_EXECUTOR_PROPERTY_SEEDS")
-  |> result.try(int.parse)
-  |> result.unwrap(12)
-}
-
-// The seeds a test draws: `seed_count` consecutive ones from `first`, or the
-// single seed named by `LOOM_EXECUTOR_PROPERTY_ONLY` when it falls in this
-// test's range, which is how a failing seed is replayed on its own.
-fn seeds_from(first: Int) -> List(Int) {
-  let only = host.getenv("LOOM_EXECUTOR_PROPERTY_ONLY") |> result.try(int.parse)
-  case only {
-    Ok(seed_value) if seed_value >= first && seed_value < first + 1000 -> [
-      seed_value,
-    ]
-    Ok(_) -> []
-    Error(Nil) ->
-      list.index_map(list.repeat(Nil, seed_count()), fn(_, offset) {
-        first + offset
-      })
-  }
-}
-
-fn each_seed(first first: Int, quiet quiet: Bool) -> Nil {
-  list.each(seeds_from(first), fn(seed_value) {
-    let plan = plan_for(seed_value, quiet:)
-
-    // A replay of one seed prints its plan whole, because the failure
-    // message is cut short by the test runner.
-    case host.getenv("LOOM_EXECUTOR_PROPERTY_ONLY") {
-      Ok(_) -> io.println_error(describe(plan))
-      Error(Nil) -> Nil
-    }
-    run_plan(plan)
-  })
-}
-
 /// Plans with no crash and no cancel-ignoring execution keep every invariant,
 /// and close cleanly.
 pub fn quiet_plans_keep_every_invariant_and_close_cleanly_test() {
-  each_seed(first: 1000, quiet: True)
+  let budget = planes.shrink_budget(ms: shrink_budget_ms)
+  qcheck.run(
+    plan_config(seed: quiet_seed),
+    plan_generator(quiet: True),
+    run_plan(_, budget),
+  )
 }
 
 /// Plans that crash helpers and ignore cancel keep the invariants that hold
 /// whatever the faults.
 pub fn faulty_plans_keep_every_invariant_test() {
-  each_seed(first: 2000, quiet: False)
+  let budget = planes.shrink_budget(ms: shrink_budget_ms)
+  qcheck.run(
+    plan_config(seed: faulty_seed),
+    plan_generator(quiet: False),
+    run_plan(_, budget),
+  )
 }

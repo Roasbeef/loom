@@ -6,17 +6,36 @@
 //// service, and a clock. This module builds them, and the small amount of
 //// scaffolding every such test wants: a call spec, a collector for a call's
 //// events, and a record of every helper the service borrowed.
+////
+//// A plane is also what a property test must not leak. `qcheck` runs a
+//// property once per generated value and again per shrink candidate, and a
+//// failing run panics partway through, so a test that builds a plane inline
+//// and stops it on the last line leaves one running for every failure. The
+//// `isolated` function is the shape that cannot: the plane is built and
+//// driven in a process of its own, and the caller stops it however that
+//// process ended.
+////
+//// Shrinking has a second cost. These properties drive real processes and
+//// wait on real deadlines, so a failing candidate can take seconds to fail,
+//// and gleeunit gives a whole test fifty. A shrink that outruns that is
+//// killed by the runner before `qcheck` prints what it found. A `Budget`
+//// is the answer: it starts counting at the first failure, and once it has
+//// run out `isolated` returns at once, which `qcheck` reads as a passing
+//// candidate and so stops shrinking at the smallest failing value so far.
 
 import broker/broker.{type CallEvent}
 import broker/budget
 import broker/exec.{type Helper}
 import broker/executor
 import broker/policy
+import broker/support/bench_host as host
 import broker/token
 import core/clock.{type Clock}
 import core/ids
 import gleam/erlang/process.{type Subject}
 import gleam/list
+import gleam/option.{type Option, None, Some}
+import gleam/string
 import telemetry/log.{type Logger}
 
 /// One plane's parts.
@@ -184,6 +203,156 @@ pub fn start_scripted(size size: Int, script script: fn() -> Helper) -> Plane {
 pub fn stop(plane: Plane) -> Nil {
   broker.stop(plane.broker)
   exec.stop_pool(plane.pool)
+}
+
+// How an isolated run ended, as the caller that waits on it sees it.
+type Ending {
+  Finished
+  Crashed(reason: process.ExitReason)
+}
+
+/// A wall-clock allowance for shrinking, shared by every run of one test.
+pub opaque type Budget {
+  Budget(cell: Subject(BudgetMsg))
+}
+
+type BudgetMsg {
+  FirstFailure
+  AskSpent(reply: Subject(Bool))
+}
+
+/// A budget that is spent `ms` milliseconds after the first run fails. It
+/// lives in a process linked to the test, so it goes when the test does.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let budget = planes.shrink_budget(ms: 25_000)
+/// ```
+pub fn shrink_budget(ms ms: Int) -> Budget {
+  let started = process.new_subject()
+  process.spawn(fn() {
+    let cell = process.new_subject()
+    process.send(started, cell)
+    budget_loop(cell, ms, None)
+  })
+  let assert Ok(cell) = process.receive(started, 1000)
+    as "the budget process reports its subject"
+  Budget(cell:)
+}
+
+// Waits for the first failure, then answers whether `ms` has passed since.
+// The first failure is the one that counts: the failures after it are the
+// shrink candidates the budget exists to bound.
+fn budget_loop(cell: Subject(BudgetMsg), ms: Int, first: Option(Int)) -> Nil {
+  case process.receive_forever(cell) {
+    FirstFailure ->
+      case first {
+        None -> budget_loop(cell, ms, Some(host.now_us()))
+        Some(_) -> budget_loop(cell, ms, first)
+      }
+    AskSpent(reply:) -> {
+      process.send(reply, case first {
+        None -> False
+        Some(at) -> host.now_us() - at > ms * 1000
+      })
+      budget_loop(cell, ms, first)
+    }
+  }
+}
+
+fn spent(budget: Budget) -> Bool {
+  process.call(budget.cell, 1000, AskSpent)
+}
+
+/// Runs `body` over a fresh plane in a process of its own and always stops
+/// the plane afterwards, so a run that panics, which is how a failed
+/// property reports itself, leaves nothing behind for the next shrink
+/// candidate to trip over.
+///
+/// The plane is built inside the child because the `borrowed` subject, and
+/// every subject the body makes, belongs to the process that made it. The
+/// child hands the plane back as soon as it exists, and stays alive after
+/// `body` returns until the caller has stopped the plane, so the pool is
+/// never left to see its owner exit before it is asked to retire. A panic in
+/// `body` is re-raised here with the child's exit reason, which carries the
+/// assertion message, and a run that neither finishes nor crashes within
+/// `within` milliseconds is a hang and also panics. Either failure starts the
+/// `budget`; once it is spent the call does nothing, so the shrink that
+/// follows a failure ends before the test runner's own timeout.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let budget = planes.shrink_budget(ms: 25_000)
+/// planes.isolated(size: 3, script:, within: 30_000, budget:, body: fn(plane) {
+///   assert exec.pool_census(plane.pool, waiting: 1000) |> result.is_ok
+/// })
+/// ```
+pub fn isolated(
+  size size: Int,
+  script script: fn() -> Helper,
+  within within: Int,
+  budget budget: Budget,
+  body body: fn(Plane) -> Nil,
+) -> Nil {
+  case spent(budget) {
+    True -> Nil
+    False -> run_isolated(size, script, within, budget, body)
+  }
+}
+
+fn run_isolated(
+  size: Int,
+  script: fn() -> Helper,
+  within: Int,
+  budget: Budget,
+  body: fn(Plane) -> Nil,
+) -> Nil {
+  let ready = process.new_subject()
+  let finished = process.new_subject()
+  let child =
+    process.spawn_unlinked(fn() {
+      let plane = start_scripted(size:, script:)
+      process.send(ready, plane)
+      body(plane)
+      process.send(finished, Finished)
+      process.sleep_forever()
+    })
+  let monitor = process.monitor(child)
+  let ending =
+    process.new_selector()
+    |> process.select(finished)
+    |> process.select_specific_monitor(monitor, fn(down) {
+      case down {
+        process.ProcessDown(reason:, ..) -> Crashed(reason:)
+        process.PortDown(reason:, ..) -> Crashed(reason:)
+      }
+    })
+    |> process.selector_receive(within:)
+
+  // The child sent the plane before it ran anything, so a plane that
+  // exists is already waiting here whichever way the run ended.
+  case process.receive(ready, 0) {
+    Ok(plane) -> stop(plane)
+    Error(Nil) -> Nil
+  }
+  process.kill(child)
+  case ending {
+    Ok(Finished) -> Nil
+    Ok(Crashed(reason:)) -> {
+      process.send(budget.cell, FirstFailure)
+      panic as { "the isolated run crashed: " <> string.inspect(reason) }
+    }
+    Error(Nil) -> {
+      process.send(budget.cell, FirstFailure)
+      panic as {
+        "the isolated run neither finished nor crashed within "
+        <> string.inspect(within)
+        <> " ms"
+      }
+    }
+  }
 }
 
 /// Reads a call's events up to and including its settlement, waiting up to

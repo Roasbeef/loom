@@ -1,10 +1,17 @@
-//// A leak census for the executor service: a hundred mixed executions through
-//// one broker, and afterwards nothing is left that the executions made.
+//// A leak census for the executor service: a mix of up to a hundred
+//// executions through one broker, and afterwards nothing is left that the
+//// executions made.
 ////
-//// The mix is drawn from a seed (`support/seeded`), so a failure prints the
-//// seed that made it and the same hundred endings come back from it.
-//// `LOOM_LEAK_CENSUS_SEEDS` sets how many seeds a run draws (default 2), and
-//// `LOOM_LEAK_CENSUS_ONLY` replays one.
+//// The mix is drawn by a qcheck generator on a fixed seed, so the gate draws
+//// the same endings on every machine. A failing mix is reported already
+//// shrunk: fewer executions, each pulled toward the one that simply
+//// succeeds, so what remains is the endings the leak needs. What the seed
+//// reproduces is the mix and not the schedule, because the executions run on
+//// real processes; the census retries each shrink candidate
+//// (`shrink_retries`) so that a leak which shows on only some schedules is
+//// not shrunk away by one clean run. Every case runs its own plane in a
+//// process of its own (`planes.isolated`), which is what lets a case that
+//// panics, and the shrink candidates after it, leave nothing behind.
 ////
 //// One test, because the property is a sum. Each execution ends in one of
 //// five ways (it succeeds, it is cancelled, its caller dies, its helper
@@ -28,11 +35,10 @@ import broker/executor
 import broker/support/bench_host as host
 import broker/support/fake_helper
 import broker/support/planes
-import broker/support/seeded
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/int
 import gleam/list
-import gleam/result
+import qcheck
 import weft/poll
 
 // How an execution is made to end.
@@ -50,14 +56,44 @@ type Ending {
 // them once it has made `fault_cap`.
 const fault_cap = 8
 
-// A hundred endings drawn from a seed: half succeed, a fifth are cancelled, a
-// fifth have their caller die, and one in twenty each crashes its helper or
-// ignores cancel until it is escalated, up to `fault_cap` of the last two.
-fn endings(seed_value: Int) -> List(Ending) {
-  let #(drawn, _seed) =
-    seeded.repeat(seeded.new(seed_value), 100, fn(seed) {
-      seeded.between(seed, 0, 19)
-    })
+// The census draws four mixes of twenty to a hundred endings. Half of a
+// mix's endings succeed, a fifth are cancelled, a fifth have their caller
+// die, and one in twenty each crashes its helper or ignores cancel until it
+// is escalated, up to `fault_cap` of the last two. The length is drawn
+// rather than fixed so that a failure can shrink to the few endings it
+// needs; the floor of twenty keeps the process-count comparison below
+// meaningful.
+const mix_count = 4
+
+const mix_seed = 3
+
+const shrink_retries = 2
+
+// Shrinking is bounded in wall time for the reason `planes.isolated` gives:
+// the runner kills a test after fifty seconds, and a mix of a hundred
+// executions is slow enough to shrink past that.
+const shrink_budget_ms = 20_000
+
+fn mix_config() -> qcheck.Config {
+  qcheck.default_config()
+  |> qcheck.with_test_count(mix_count)
+  |> qcheck.with_seed(qcheck.seed(mix_seed))
+  |> qcheck.with_max_retries(shrink_retries)
+}
+
+// Each ending is drawn as an index that shrinks toward zero, the execution
+// that succeeds, and the faults are capped afterwards, in order, so that
+// removing an earlier ending can only make a later fault more likely to
+// survive, never less.
+fn mix_generator() -> qcheck.Generator(List(Ending)) {
+  qcheck.generic_list(
+    elements_from: qcheck.bounded_int(from: 0, to: 19),
+    length_from: qcheck.bounded_int(from: 20, to: 100),
+  )
+  |> qcheck.map(cap_faults)
+}
+
+fn cap_faults(drawn: List(Int)) -> List(Ending) {
   let #(endings, _faults) =
     list.fold(drawn, #([], 0), fn(state, draw) {
       let #(endings, faults) = state
@@ -91,37 +127,29 @@ fn argv_of(ending: Ending) -> List(String) {
   }
 }
 
-/// A hundred mixed executions, drawn from each seed, leave the pool, the
-/// executor, the relays and the VM as they were.
-pub fn a_hundred_mixed_executions_leak_nothing_test() {
-  list.each(seeds(), census_for)
+/// Mixed executions, drawn four times over, leave the pool, the executor,
+/// the relays and the VM as they were.
+pub fn mixed_executions_leak_nothing_test() {
+  let budget = planes.shrink_budget(ms: shrink_budget_ms)
+  qcheck.run(mix_config(), mix_generator(), fn(endings) {
+    planes.isolated(
+      size: 12,
+      script: fn() {
+        fake_helper.start_helper_configured(
+          fake_helper.ByArgv,
+          cancel_grace_ms: 300,
+          heartbeat_interval_ms: 0,
+        )
+      },
+      within: 240_000,
+      budget:,
+      body: fn(plane) { census_for(plane, endings) },
+    )
+  })
 }
 
-// The seeds a run draws: `LOOM_LEAK_CENSUS_SEEDS` consecutive ones from 1, or
-// the one `LOOM_LEAK_CENSUS_ONLY` names.
-fn seeds() -> List(Int) {
-  case host.getenv("LOOM_LEAK_CENSUS_ONLY") |> result.try(int.parse) {
-    Ok(only) -> [only]
-    Error(Nil) -> {
-      let count =
-        host.getenv("LOOM_LEAK_CENSUS_SEEDS")
-        |> result.try(int.parse)
-        |> result.unwrap(2)
-      list.index_map(list.repeat(Nil, count), fn(_, offset) { offset + 1 })
-    }
-  }
-}
-
-fn census_for(seed_value: Int) -> Nil {
-  let at = "seed " <> int.to_string(seed_value) <> ": "
-  let plane =
-    planes.start_scripted(size: 12, script: fn() {
-      fake_helper.start_helper_configured(
-        fake_helper.ByArgv,
-        cancel_grace_ms: 300,
-        heartbeat_interval_ms: 0,
-      )
-    })
+fn census_for(plane: planes.Plane, endings: List(Ending)) -> Nil {
+  let at = int.to_string(list.length(endings)) <> " endings: "
   let service = plane.service
 
   // One execution first, so the helper and its fake exist before the
@@ -129,9 +157,9 @@ fn census_for(seed_value: Int) -> Nil {
   let _ = run_one(plane, Succeeds)
   let #(_ports, processes_before, _bytes) = host.vm_counts()
 
-  let results =
-    list.map(endings(seed_value), fn(ending) { run_one(plane, ending) })
-  assert list.length(results) == 100 as { at <> "a hundred executions ran" }
+  let results = list.map(endings, fn(ending) { run_one(plane, ending) })
+  assert list.length(results) == list.length(endings)
+    as { at <> "every execution ran" }
 
   // Every caller that could hear did, and heard once.
   assert list.all(results, fn(result) { result.settlements <= 1 })
@@ -140,7 +168,7 @@ fn census_for(seed_value: Int) -> Nil {
   let mute = list.filter(results, fn(result) { result.settlements == 0 })
   assert list.all(mute, fn(result) { result.ending == CallerDies })
     as { at <> "a caller that was alive heard no settlement" }
-  assert list.length(heard) + list.length(mute) == 100
+  assert list.length(heard) + list.length(mute) == list.length(endings)
 
   // The pool holds only what the crashes and escalations meant it to.
   let crashes =
@@ -184,7 +212,6 @@ fn census_for(seed_value: Int) -> Nil {
       <> " to "
       <> int.to_string(processes_after)
     }
-  planes.stop(plane)
 }
 
 // What one execution left behind for the census.
