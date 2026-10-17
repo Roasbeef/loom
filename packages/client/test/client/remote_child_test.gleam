@@ -13,6 +13,7 @@ import client/remote_spawn
 import core/clock
 import core/ids
 import core/json
+import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import tools/agent
@@ -199,4 +200,81 @@ fn without(
   name: String,
 ) -> List(#(String, json.JsonValue)) {
   list.filter(fields, fn(field) { field.0 != name })
+}
+
+fn a_stub_on(
+  orchestrator: String,
+  state: remote_child.State,
+) -> remote_child.Stub {
+  Stub(..a_stub(state), orchestrator:)
+}
+
+fn kept(stubs: List(remote_child.Stub)) -> List(remote_child.Kept) {
+  list.index_map(stubs, fn(stub, index) {
+    remote_child.Kept(key: "remote-child/" <> int.to_string(index), stub:)
+  })
+}
+
+pub fn the_orchestrators_owed_a_release_are_those_of_stubs_that_made_a_child_test() {
+  let stubs =
+    kept([
+      a_stub_on("desk", remote_child.Refused("the cap is 4")),
+      a_stub_on("box", remote_child.Requested),
+      a_stub_on("box", remote_child.Spawned(a_placed())),
+      a_stub_on(
+        "zed",
+        remote_child.Settled(a_placed(), agent.Completed, a_usage()),
+      ),
+    ])
+
+  // A refused stub made no child, so `desk` holds nothing. A requested stub may
+  // have made one whose reply was lost, and a settled stub's orchestrator still
+  // holds the session the child ran in. Each name is listed once, in order.
+  assert remote_child.holders(stubs) == ["box", "zed"]
+  assert remote_child.holders([]) == []
+}
+
+pub fn a_stub_holds_a_move_only_while_its_child_may_be_running_test() {
+  let deadline = a_placed().deadline_ms
+
+  // A requested stub counts always, and a spawned one until its deadline.
+  assert remote_child.live_on(
+      kept([a_stub_on("box", remote_child.Requested)]),
+      deadline + 1,
+    )
+    == Some("box")
+  let spawned = kept([a_stub_on("box", remote_child.Spawned(a_placed()))])
+  assert remote_child.live_on(spawned, deadline - 1) == Some("box")
+  assert remote_child.live_on(spawned, deadline) == None
+
+  // Neither a refused nor a settled stub does, and with several the first name
+  // in order is reported.
+  assert remote_child.live_on(
+      kept([
+        a_stub_on("box", remote_child.Refused("no")),
+        a_stub_on(
+          "box",
+          remote_child.Settled(a_placed(), agent.Completed, a_usage()),
+        ),
+      ]),
+      0,
+    )
+    == None
+  assert remote_child.live_on(
+      kept([
+        a_stub_on("zed", remote_child.Requested),
+        a_stub_on("box", remote_child.Requested),
+      ]),
+      0,
+    )
+    == Some("box")
+}
+
+pub fn a_cell_that_does_not_decode_is_left_out_of_the_stubs_test() {
+  let good = remote_child.encode(a_stub(remote_child.Requested))
+  assert remote_child.kept_of([
+      #("remote-child/a", good),
+      #("remote-child/b", json.String("garbage")),
+    ])
+    == [remote_child.Kept("remote-child/a", a_stub(remote_child.Requested))]
 }
