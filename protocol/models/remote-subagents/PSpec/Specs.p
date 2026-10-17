@@ -6,13 +6,22 @@
 // A call site creates at most one child, however spawns, resends and run ends
 // interleave. This is the adoption check of section 8.2: a resent `Spawn`
 // derives the same name, finds its own cell and answers the same handle.
-spec AtMostOneChildPerSite observes eCreated {
+//
+// A delegate session is what holds the child, so the rule is per session. The
+// session's deletion starts a new one, and a stale `Spawn` that reaches the
+// remote after the release made a session for it is a new session's first
+// spawn.
+spec AtMostOneChildPerSite observes eCreated, eSessionDeleted {
   var created: set[tSite];
 
   start state Watching {
     on eCreated do (p: (site: tSite, child: tChild, run: int, owner: int)) {
       assert !(p.site in created), format("call site {0} created a second child", p.site);
       created += (p.site);
+    }
+
+    on eSessionDeleted do {
+      created = default(set[tSite]);
     }
   }
 }
@@ -88,12 +97,16 @@ spec TerminalOnce observes eChildTerminal {
 // Once the remote has handled a `RunEnded`, no spawn for that run creates a
 // child (the ended fence, section 8.3). A resend that adopts a child created
 // before the run ended is not a creation.
-spec NoSpawnUnderEndedRun observes eRunEndedHandled, eCreated {
+spec NoSpawnUnderEndedRun observes eRunEndedHandled, eCreated, eSessionDeleted {
   var ended: set[int];
 
   start state Watching {
     on eRunEndedHandled do (p: (run: int, stillRunning: int)) {
       ended += (p.run);
+    }
+
+    on eSessionDeleted do {
+      ended = default(set[int]);
     }
 
     on eCreated do (p: (site: tSite, child: tChild, run: int, owner: int)) {
@@ -163,6 +176,55 @@ spec EveryChildTerminal observes eCreated, eChildTerminal {
       if (sizeof(live) == 0) {
         goto Quiet;
       }
+    }
+  }
+}
+
+// A `Release` leaves no running child in the session it releases, and no child
+// is made in that session afterwards. The fence is the released phase the holder
+// writes before it stops the children (`delegate/released`), and `admit_run`
+// reads it on the create path: a `Spawn` that overtakes the `Release` is refused
+// when the session is already releasing, and one that came first is a child the
+// release stops.
+spec ReleasedSessionHasNoRunningChild observes eReleaseHandled, eChildIn {
+  var released: set[int];
+
+  start state Watching {
+    on eReleaseHandled do (p: (gen: int, stopped: int, stillRunning: int)) {
+      assert p.stillRunning == 0, format("{0} children were still running after the release of session {1}", p.stillRunning, p.gen);
+      released += (p.gen);
+    }
+
+    on eChildIn do (p: (child: tChild, gen: int)) {
+      assert !(p.gen in released), format("child {0} was made in session {1}, which had been released", p.child, p.gen);
+    }
+  }
+}
+
+// A `Release` makes no session. It is sent to an orchestrator that may hold
+// nothing for the parent, and a session made only to be deleted would cost an
+// executor scope and count against the spawner's `max_sessions`.
+spec ReleaseMakesNoSession observes eSessionMade {
+  start state Watching {
+    on eSessionMade do (by: tKind) {
+      assert by != K_RELEASE, "a release made a delegate session";
+    }
+  }
+}
+
+// Every release row the laptop writes is eventually answered. Only an answer
+// settles the row: an unreachable call leaves it, and the next pass sends it
+// again, so bounded faults delay the answer and cannot lose it.
+spec EveryReleaseIsTold observes eReleaseWritten, eReleaseTold {
+  start cold state Quiet {
+    on eReleaseWritten do {
+      goto Waiting;
+    }
+  }
+
+  hot state Waiting {
+    on eReleaseTold do {
+      goto Quiet;
     }
   }
 }

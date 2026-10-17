@@ -46,7 +46,7 @@ fun noRuns(): seq[int] {
 machine TestQuiet {
   start state Init {
     entry {
-      new Harness((sites = detached(), breaks = 0, crashes = 0, aborts = 0, ends = noRuns(), finishes = 0, pokes = 0));
+      new Harness((sites = detached(), breaks = 0, crashes = 0, aborts = 0, ends = noRuns(), finishes = 0, pokes = 0, deletes = 0, drains = 0));
     }
   }
 }
@@ -55,7 +55,7 @@ machine TestQuiet {
 machine TestDrops {
   start state Init {
     entry {
-      new Harness((sites = detached(), breaks = 3, crashes = 0, aborts = 0, ends = noRuns(), finishes = 0, pokes = 2));
+      new Harness((sites = detached(), breaks = 3, crashes = 0, aborts = 0, ends = noRuns(), finishes = 0, pokes = 2, deletes = 0, drains = 0));
     }
   }
 }
@@ -65,7 +65,7 @@ machine TestDrops {
 machine TestAbort {
   start state Init {
     entry {
-      new Harness((sites = detached(), breaks = 0, crashes = 0, aborts = 1, ends = noRuns(), finishes = 0, pokes = 2));
+      new Harness((sites = detached(), breaks = 0, crashes = 0, aborts = 1, ends = noRuns(), finishes = 0, pokes = 2, deletes = 0, drains = 0));
     }
   }
 }
@@ -74,7 +74,7 @@ machine TestAbort {
 machine TestRestart {
   start state Init {
     entry {
-      new Harness((sites = detached(), breaks = 1, crashes = 2, aborts = 0, ends = noRuns(), finishes = 1, pokes = 2));
+      new Harness((sites = detached(), breaks = 1, crashes = 2, aborts = 0, ends = noRuns(), finishes = 1, pokes = 2, deletes = 0, drains = 0));
     }
   }
 }
@@ -83,7 +83,7 @@ machine TestRestart {
 machine TestAll {
   start state Init {
     entry {
-      new Harness((sites = detached(), breaks = 2, crashes = 1, aborts = 1, ends = noRuns(), finishes = 1, pokes = 2));
+      new Harness((sites = detached(), breaks = 2, crashes = 1, aborts = 1, ends = noRuns(), finishes = 1, pokes = 2, deletes = 0, drains = 0));
     }
   }
 }
@@ -93,7 +93,19 @@ machine TestAll {
 machine TestRunEnd {
   start state Init {
     entry {
-      new Harness((sites = attached(), breaks = 1, crashes = 0, aborts = 1, ends = bothRuns(), finishes = 0, pokes = 2));
+      new Harness((sites = attached(), breaks = 1, crashes = 0, aborts = 1, ends = bothRuns(), finishes = 0, pokes = 2, deletes = 0, drains = 0));
+    }
+  }
+}
+
+// The parent session is deleted while its children may be running, so the
+// laptop owes the remote a `Release`. The `Release` is lost to dropped
+// connections, overtakes the spawns it concerns, repeats, and follows the
+// remote's restart, with the slot draining at any point.
+machine TestRelease {
+  start state Init {
+    entry {
+      new Harness((sites = detached(), breaks = 2, crashes = 1, aborts = 1, ends = noRuns(), finishes = 1, pokes = 2, deletes = 1, drains = 1));
     }
   }
 }
@@ -122,6 +134,10 @@ test tcRunEnd [main = TestRunEnd]:
   assert AtMostOneChildPerSite, OwnChildOnly, AnswerIsStable, JoinReportsOwnChild, TerminalOnce, NoSpawnUnderEndedRun, EndedRunChildrenStop, EveryStubAnswered, EveryChildTerminal in
   (union System, { TestRunEnd });
 
+test tcRelease [main = TestRelease]:
+  assert AtMostOneChildPerSite, OwnChildOnly, AnswerIsStable, JoinReportsOwnChild, TerminalOnce, ReleasedSessionHasNoRunningChild, ReleaseMakesNoSession, EveryReleaseIsTold, EveryStubAnswered, EveryChildTerminal in
+  (union System, { TestRelease });
+
 // One spec each, for mutate.py.
 test tcOnlyOwnChild [main = TestQuiet]:
   assert OwnChildOnly in (union System, { TestQuiet });
@@ -144,6 +160,15 @@ test tcOnlyEveryChildTerminal [main = TestQuiet]:
 test tcOnlyEveryStubAnswered [main = TestAbort]:
   assert EveryStubAnswered in (union System, { TestAbort });
 
+test tcOnlyReleasedSession [main = TestRelease]:
+  assert ReleasedSessionHasNoRunningChild in (union System, { TestRelease });
+
+test tcOnlyReleaseMakesNoSession [main = TestRelease]:
+  assert ReleaseMakesNoSession in (union System, { TestRelease });
+
+test tcOnlyReleaseIsTold [main = TestRelease]:
+  assert EveryReleaseIsTold in (union System, { TestRelease });
+
 // Each of these must report a bug.
 test tcProbeAdoption [main = TestAbort]:
   assert ProbeAdoption in (union System, { TestAbort });
@@ -162,3 +187,15 @@ test tcProbeChildStopped [main = TestQuiet]:
 
 test tcProbeJoinSettled [main = TestAll]:
   assert ProbeJoinSettled in (union System, { TestAll });
+
+test tcProbeReleaseStopped [main = TestRelease]:
+  assert ProbeReleaseStopped in (union System, { TestRelease });
+
+test tcProbeReleaseRefusedSpawn [main = TestRelease]:
+  assert ProbeReleaseRefusedSpawn in (union System, { TestRelease });
+
+test tcProbeReleaseFoundNoSession [main = TestRelease]:
+  assert ProbeReleaseFoundNoSession in (union System, { TestRelease });
+
+test tcProbeSessionDeleted [main = TestRelease]:
+  assert ProbeSessionDeleted in (union System, { TestRelease });

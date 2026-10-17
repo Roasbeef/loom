@@ -18,11 +18,23 @@
 // kept, and a later `Spawned` moves it to `ST_SPAWNED` (design note, section
 // 8.2). A `Joined` answer that reports a terminal state settles the stub; the
 // drainer does not store the report.
+//
+// Deleting the parent session (`eDelete`) writes one release row for the remote
+// when some stub is not refused, and then removes the stubs and kills the effect
+// processes with the session. The row is the catalogue's
+// `catalogue_remote_releases`, written before the session goes and kept until
+// the remote answers. A drainer pass sends `Release` for it. The pass watches the
+// connection while it waits, and a break tells it the call was unreachable,
+// which is not an answer: the row stays and the next pass sends again. Only
+// `Released` settles the row. A message that arrives for a stub the deletion
+// removed is dropped.
 machine Laptop {
   var wire: machine;
   var port: machine;
   var stubs: map[tSite, tStub];
   var calls: map[tSite, machine];
+  var releaseOwed: bool;
+  var watchingRelease: bool;
 
   start state Up {
     entry (p: (wire: machine, port: machine)) {
@@ -51,11 +63,23 @@ machine Laptop {
         refused(m.site);
       } else if (m.kind == K_JOINED) {
         joined(m);
+      } else if (m.kind == K_RELEASED) {
+        released();
       }
+    }
+
+    on eNoConn do {
+      // The call was unreachable. The Release may or may not have arrived, so
+      // the row stays owed and the next pass sends it again.
+      watchingRelease = false;
     }
 
     on eDrain do {
       pass();
+    }
+
+    on eDelete do {
+      deleteSession();
     }
 
     on eAbort do {
@@ -64,6 +88,9 @@ machine Laptop {
   }
 
   fun spawned(site: tSite, child: tChild) {
+    if (!(site in stubs)) {
+      return;
+    }
     announce eStubSpawnedAs, (site = site, child = child);
     if (stubs[site].st == ST_REQUESTED || stubs[site].st == ST_REFUSED) {
       stubs[site].st = ST_SPAWNED;
@@ -73,6 +100,9 @@ machine Laptop {
   }
 
   fun refused(site: tSite) {
+    if (!(site in stubs)) {
+      return;
+    }
     if (stubs[site].st == ST_REQUESTED) {
       stubs[site].st = ST_REFUSED;
       announce eStubDone, site;
@@ -88,10 +118,51 @@ machine Laptop {
     }
   }
 
+  // The remote answered a release. Only an answer settles the row.
+  fun released() {
+    if (releaseOwed) {
+      releaseOwed = false;
+      announce eReleaseTold;
+    }
+    if (watchingRelease) {
+      send wire, eUnwatch, this;
+      watchingRelease = false;
+    }
+  }
+
+  // The parent session is deleted: one release row for the remote if some stub
+  // may have made a child there, then the stubs and the effect processes go.
+  // A stub that was still owed is not owed any more.
+  fun deleteSession() {
+    var s: tSite;
+    var ss: seq[tSite];
+    var owe: bool;
+    ss = keys(stubs);
+    foreach (s in ss) {
+      if (stubs[s].st != ST_REFUSED) {
+        owe = true;
+      }
+      if (stubs[s].st == ST_REQUESTED) {
+        announce eStubDone, s;
+      }
+    }
+    abortCalls();
+    stubs = default(map[tSite, tStub]);
+    if (owe && !releaseOwed) {
+      releaseOwed = true;
+      announce eReleaseWritten;
+    }
+  }
+
   // One drainer pass.
   fun pass() {
     var s: tSite;
     var ss: seq[tSite];
+    if (releaseOwed) {
+      send wire, eWatch, this;
+      watchingRelease = true;
+      send wire, eSend, (sender = this, msg = (kind = K_RELEASE, src = this, dest = port, site = 0, child = 0, st = CS_RUNNING, run = 0, owner = -1));
+    }
     ss = keys(stubs);
     foreach (s in ss) {
       if (stubs[s].st == ST_REQUESTED) {

@@ -20,7 +20,15 @@ type tChild = int;
 // What the Port's message handler is told. `K_RUN_ENDED` is built on the remote
 // and has no sender on the laptop in phase 1 (design note, section 8.3), so only
 // the cases that name a run end send it, with Chaos as the modelled sender.
-enum tKind { K_SPAWN, K_SPAWNED, K_REFUSED, K_JOIN, K_JOINED, K_RUN_ENDED }
+enum tKind { K_SPAWN, K_SPAWNED, K_REFUSED, K_JOIN, K_JOINED, K_RUN_ENDED, K_RELEASE, K_RELEASED }
+
+// Whether the remote holds a delegate session for the parent. `SS_NONE` is no
+// row at all, `SS_OPEN` is a session that serves spawns, and `SS_RELEASING` is a
+// session whose `Release` was handled: the released fence is written, every
+// child is stopped, and the registry deletes the session once its slot drains.
+// Deleting the session removes its children, its fences and everything else
+// stored under it, and the next `Spawn` for the parent makes a new session.
+enum tSession { SS_NONE, SS_OPEN, SS_RELEASING }
 
 // A child's state in the delegate session. CS_SETTLED is the child's run
 // ending on its own, CS_STOPPED is a stop the remote decided (the deadline, or
@@ -61,6 +69,7 @@ event eNoConn;
 event eWirePort: machine;
 
 // Laptop.
+event eDelete;
 event eBegin: tPlanSite;
 event eStubAnswer: (site: tSite, child: tChild);
 event eStubRefusal: tSite;
@@ -68,6 +77,7 @@ event eDrain;
 event eAbort;
 
 // Port.
+event eSlotDrained;
 event eRestart;
 event eDeadlineAll;
 event eTick;
@@ -87,6 +97,17 @@ event eChildTerminal: (child: tChild, st: tChildState);
 event eReported: (site: tSite, child: tChild, st: tChildState);
 event eRefused: (site: tSite, reason: int);
 event eRunEndedHandled: (run: int, stillRunning: int);
+
+// A `Release` was handled in the session of generation `gen`: `stopped` children
+// were stopped by it and `stillRunning` were left running. A generation is one
+// delegate session, from the message that made it to its deletion.
+event eReleaseHandled: (gen: int, stopped: int, stillRunning: int);
+event eSessionMade: tKind;
+event eChildIn: (child: tChild, gen: int);
+event eSessionDeleted;
+event eReleaseWritten;
+event eReleaseTold;
+event eReleaseNoSession;
 
 event eWatch: machine;
 event eUnwatch: machine;
