@@ -1826,6 +1826,80 @@ pub fn an_owner_gives_a_move_up_through_the_movers_test() {
   finish(rig)
 }
 
+// The request arrives while the mover is running, here held inside the
+// receiver's activation. The retry interval is a minute, so nothing but the
+// kept request can give the move up when that run ends.
+pub fn an_abandon_during_a_run_is_honoured_when_the_run_ends_test() {
+  let #(rig, book) = recorded("movers-abandon-running", 73)
+  record_book.set(book, rig.session, serving(record_book.alpha))
+  let slow =
+    Wire(..rig.wire, activate: fn(_activation) {
+      process.sleep(1500)
+      Error(Nil)
+    })
+  let assert Ok(control) =
+    session_movers.start_with(
+      by_record(rig, book, slow),
+      60_000,
+      fn(_, _) { Error(Nil) },
+      session_movers.give_up_after_ms,
+      session_movers.no_upkeep(),
+    )
+    as "the movers start"
+  control.begin(begin(rig))
+  let assert poll.Answered(Nil) =
+    poll.until(within: 20_000, every: 25, attempt: fn() {
+      case record_book.read(book, rig.session) {
+        Some(record.Record(state: record.Moving(..), ..)) -> poll.Done(Nil)
+        _ -> poll.Retry
+      }
+    })
+    as "the intent is written"
+  control.abandon(rig.session)
+  await_custody(rig, catalogue.Resident)
+  assert record_book.read(book, rig.session) == serving(record_book.alpha)
+  finish(rig)
+}
+
+// The same request, but the receiver activated during the run and only its
+// reply was lost. The give-up expects the moving record and finds the receiver
+// owning the session, so the move finishes instead of being taken back.
+pub fn an_abandon_after_the_receiver_activated_lets_the_move_finish_test() {
+  let #(rig, book) = recorded("movers-abandon-activated", 74)
+  record_book.set(book, rig.session, serving(record_book.alpha))
+  let lossy =
+    Wire(..rig.wire, activate: fn(activation) {
+      let _answer = rig.wire.activate(activation)
+      process.sleep(1500)
+      Error(Nil)
+    })
+  let assert Ok(control) =
+    session_movers.start_with(
+      by_record(rig, book, lossy),
+      200,
+      fn(_, _) { Error(Nil) },
+      session_movers.give_up_after_ms,
+      session_movers.no_upkeep(),
+    )
+    as "the movers start"
+  control.begin(begin(rig))
+
+  // The record names the receiver once it activated, while the run is still
+  // held in the lost reply.
+  let assert poll.Answered(Nil) =
+    poll.until(within: 20_000, every: 25, attempt: fn() {
+      case record_book.read(book, rig.session) == serving(record_book.bravo) {
+        True -> poll.Done(Nil)
+        False -> poll.Retry
+      }
+    })
+    as "the receiver activated"
+  control.abandon(rig.session)
+  await_retired(rig)
+  assert record_book.read(book, rig.session) == serving(record_book.bravo)
+  finish(rig)
+}
+
 pub fn the_movers_sweep_marked_deletions_test() {
   let #(rig, book) = recorded("movers-sweep", 68)
   let swept = process.new_subject()

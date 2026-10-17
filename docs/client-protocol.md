@@ -1512,7 +1512,9 @@ owner record decides the move. Three things differ for a client:
   in the daemon's mover: when it commits, `sessions.get` drops the `moving`
   member; when the destination took the session first, the daemon keeps the
   move, asks the destination again, and finishes the move on its answer, after
-  which `sessions.get` reports `moved`. A session with no move in flight
+  which `sessions.get` reports `moved`. A mover that is running when the request
+  arrives is not interrupted: the daemon keeps the request and gives the move up
+  as that run ends, by the same rule. A session with no move in flight
   is refused `conflict`, and a daemon that is not a member refuses `not_movable`,
   because without the record a move cannot be abandoned safely.
 
