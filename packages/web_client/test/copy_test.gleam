@@ -318,6 +318,10 @@ pub fn the_operate_subject_copies_only_the_operator_commands_test() {
       "loom distribution renew laptop --bundle-dir /opt/loom/bundle",
       "loom distribution revoke laptop --reason 'RETIRED'",
       "loom distribution revoke 'it'\\''s' --reason 'RETIRED'",
+
+      // What `web_view/operator_commands` writes for a hostile name.
+      "loom distribution renew 'x'\\''; rm -rf ~; echo '\\'''",
+      "loomd executor release 'a\\'",
       "loom distribution enroll box --node loom@box.example.net --role executor --links hub",
       "loom distribution enroll hub2 --node loom@hub2.example.net --role orchestrator --links hub",
       "loomd executor release 0198c1aa-0000-7000-8000-000000000002",

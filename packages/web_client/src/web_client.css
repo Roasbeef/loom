@@ -1406,6 +1406,37 @@
   button.share-copy{flex:0 0 auto;}
   .admin-body loom-copy{display:flex;align-items:center;gap:8px;}
   .admin-body loom-reveal{display:none;}
+  /* The Deployment section and the machines' pages (protocol-change/085, the
+     addendum of 2026-10-16). The table scrolls sideways inside its box so its
+     columns keep their widths on a narrow screen. A machine's page is a tinted
+     block with a hairline border, and the chosen tab and row are tinted: no
+     coloured edge and no shadow anywhere. */
+  .admin-notes{display:flex;flex-direction:column;gap:2px;}
+  .admin-machines-wrap{overflow-x:auto;border:1px solid var(--color-divider);border-radius:8px;}
+  table.admin-machines{width:100%;border-collapse:collapse;font:13px/1.4 var(--font-sans);}
+  table.admin-machines th{padding:6px 10px;text-align:left;font-weight:500;color:var(--color-fg-quiet);border-bottom:1px solid var(--color-divider);white-space:nowrap;}
+  table.admin-machines td{padding:2px 10px;border-bottom:1px solid var(--color-divider);vertical-align:middle;overflow-wrap:anywhere;}
+  table.admin-machines tr:last-child td{border-bottom:0;}
+  tr.admin-machine-row[aria-current]{background:color-mix(in srgb,var(--color-current) 10%,var(--color-bg-raised));}
+  table.admin-machines .admin-pick{width:auto;min-height:36px;padding:4px 0;}
+  section.admin-machine{margin:12px 0 0 0;padding:12px;border:1px solid var(--color-divider);border-radius:8px;background:var(--color-bg-raised);}
+  .admin-machine-head{display:flex;flex-direction:column;gap:2px;margin:0 0 8px 0;}
+  .admin-machine-title{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;}
+  .admin-machine-title .admin-subheading{margin:0;}
+  .admin-machine-title button.admin-act{margin-left:auto;}
+  .admin-tabs{display:flex;flex-wrap:wrap;gap:4px;margin:0 0 10px 0;border-bottom:1px solid var(--color-divider);}
+  button.admin-tab{margin:0;padding:4px 12px;border:0;border-radius:6px 6px 0 0;background:transparent;color:var(--color-fg-quiet);font:13px/1.4 var(--font-sans);cursor:pointer;}
+  button.admin-tab:hover{background:color-mix(in srgb,var(--color-fg) 6%,transparent);}
+  button.admin-tab[aria-selected="true"]{color:var(--color-fg);background:color-mix(in srgb,var(--color-current) 12%,transparent);}
+  button.admin-tab:focus-visible{outline:2px solid var(--color-current);outline-offset:-2px;}
+  .admin-tabpanel{display:flex;flex-direction:column;gap:8px;}
+  dl.admin-facts{display:grid;grid-template-columns:max-content 1fr;gap:4px 16px;margin:0;}
+  dt.admin-fact-label{color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
+  dd.admin-fact{margin:0;min-width:0;overflow-wrap:anywhere;}
+  ul.admin-reasons{list-style:none;margin:2px 0 0 0;padding:0;}
+  .admin-command{display:flex;flex-direction:column;gap:2px;margin:4px 0;}
+  code.admin-id{font:12px/1.4 var(--font-mono);overflow-wrap:anywhere;}
+  .home-peers{margin:0 0 8px 0;padding:6px 10px;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg-raised);color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);overflow-wrap:anywhere;}
   .todo-total{margin-left:auto;color:var(--color-fg-quiet);font-variant-numeric:tabular-nums;}
   ul.todo-tasks{list-style:none;margin:0;padding:0;}
   li.todo-task{position:relative;padding-left:8px;}

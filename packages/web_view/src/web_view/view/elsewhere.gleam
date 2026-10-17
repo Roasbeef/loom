@@ -44,6 +44,7 @@
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/string
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
@@ -94,6 +95,38 @@ pub fn keyed(
   case offer {
     Hidden -> None
     Shown(groups:, open:, asking:, ..) -> Some(#(groups, open, asking))
+  }
+}
+
+/// The one-line strip under the bar that says the daemon lists a peer: the
+/// orchestrators' keys, those that did not answer marked, and where the machines
+/// are. It is text only and carries no handler, so it adds no event path. It is
+/// nothing on a page with no such group, and before any orchestrator is known.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // elsewhere.strip(elsewhere.Hidden)
+/// ```
+pub fn strip(offer: Elsewhere(message)) -> Element(message) {
+  case offer {
+    Hidden | Shown(groups: [], ..) -> element.none()
+    Shown(groups:, ..) ->
+      html.p([attribute.class("home-peers")], [
+        html.text(
+          "Other orchestrators: "
+          <> string.join(
+            list.map(groups, fn(each) {
+              case each.hearing {
+                Silent -> each.name <> " (no answer)"
+                Answered(..) -> each.name
+              }
+            }),
+            ", ",
+          )
+          <> ". Their machines are on the Admin page.",
+        ),
+      ])
   }
 }
 

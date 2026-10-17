@@ -12,9 +12,10 @@
 //// ## What the page is never given
 ////
 //// A group carries the configuration key of the orchestrator, its control
-//// address if the configuration has one, and rows. It carries no node name, no
-//// executor node, no credential and no pin: a node is what the daemon dials,
-//// and nothing the page needs to draw or to ask. Every text here is a
+//// address if the configuration has one, and rows. A row names the node of the
+//// executor its session is placed on, which the Admin page matches against its
+//// machines and the home never draws. A group carries no credential and no pin,
+//// and the daemon dials nothing the page names. Every text here is a
 //// configuration key, an address or a catalogue field of another daemon, so a
 //// page draws it as a text node and builds no class, attribute or key from it.
 //// The row's state is a closed type, drawn from its fixed word.
@@ -80,6 +81,10 @@ pub type Row {
     /// The key of the executor that orchestrator placed the session on, when it
     /// is placed on one.
     executor: Option(String),
+    /// The node of that executor, as the orchestrator names it. The Admin page
+    /// attributes a row to a machine by it, because two orchestrators may key
+    /// the same executor differently.
+    executor_node: Option(String),
   )
 }
 

@@ -2338,8 +2338,9 @@ pub fn view(model: Model) -> Element(Msg) {
     ),
     shell_sidebar(model),
     [
-      // The empty node keeps the table at `table_path`.
-      element.none(),
+      // The first child keeps the table at `table_path`. It is the strip that
+      // says the daemon lists a peer orchestrator, or an empty node.
+      elsewhere_view.strip(elsewhere_offer(model)),
       home_table.view(
         model.groups,
         model.activity,

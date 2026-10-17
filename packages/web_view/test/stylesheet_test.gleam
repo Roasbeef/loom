@@ -7,6 +7,7 @@
 //// gen-client` writes and `make web_assets --check` keeps current, so a
 //// change to the source rules reaches this file only through a rebuild.
 
+import gleam/list
 import gleam/string
 import simplifile
 import web_view/page
@@ -120,6 +121,53 @@ pub fn the_jump_button_has_a_strip_no_row_reaches_test() {
   )
   assert string.contains(css, ".jump-latest{")
   assert string.contains(css, "width:32px;height:32px;")
+}
+
+// The body of the first rule that begins with `selector{`, or empty.
+fn rule_of(css: String, selector: String) -> String {
+  case string.split_once(css, selector <> "{") {
+    Ok(#(_, after)) ->
+      case string.split_once(after, "}") {
+        Ok(#(body, _)) -> body
+        Error(Nil) -> ""
+      }
+    Error(Nil) -> ""
+  }
+}
+
+// The Admin page's machines (protocol-change/085): the table scrolls sideways in
+// its own box, the machine's page and the peers' strip are a tinted block with a
+// hairline border, and none of them has a coloured edge or a shadow.
+pub fn the_machines_have_no_accent_bar_and_no_shadow_test() {
+  let css = stylesheet()
+  assert string.contains(css, ".admin-machines-wrap{overflow-x:auto")
+  assert string.contains(css, "table.admin-machines{")
+  list.each(
+    [
+      "section.admin-machine",
+      ".admin-machines-wrap",
+      "tr.admin-machine-row[aria-current]",
+      ".admin-tabs",
+      "button.admin-tab[aria-selected=\"true\"]",
+      ".admin-command",
+      ".home-peers",
+    ],
+    fn(selector) {
+      let body = rule_of(css, selector)
+      assert body != "" as selector
+      assert !string.contains(body, "shadow") as selector
+      assert !string.contains(body, "border-left") as selector
+      assert !string.contains(body, "border-inline-start") as selector
+    },
+  )
+  assert string.contains(
+    rule_of(css, "section.admin-machine"),
+    "border:1px solid var(--color-divider)",
+  )
+  assert string.contains(
+    rule_of(css, ".home-peers"),
+    "border:1px solid var(--color-divider)",
+  )
 }
 
 // A pulsing mark is a motion, so the stylesheet stops every animation under

@@ -10,6 +10,7 @@
 //// until it is hidden, that a read that was overtaken is dropped, and how a page
 //// that can no longer be served ends.
 
+import fleet_fixture as fleet
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -18,10 +19,12 @@ import lustre/effect
 import lustre/element.{type Element}
 import web_view/admin
 import web_view/creations
+import web_view/elsewhere as peers
 import web_view/ending
 import web_view/grants
 import web_view/home
 import web_view/invites
+import web_view/machines
 import web_view/sessions.{type Entry, Entry, Live, Saved}
 import web_view/signins
 import web_view/view/admin_sessions
@@ -147,6 +150,8 @@ fn start_with(
     now: fn() { 7_400_000 },
     login: None,
     ends_at: 7_400_000 + 14 * 60 * 1000,
+    deployment: fn(_, deliver) { deliver(machines.Unread) },
+    elsewhere: fn(deliver) { deliver(peers.Heard([])) },
   )
 }
 
@@ -173,10 +178,17 @@ fn run(model: admin.Model, message: admin.Msg) -> admin.Model {
   settle(model, dispatched)
 }
 
+// Every message the effects dispatched is applied, in the order it arrived. An
+// update can start two effects, the people read and the deployment read, so all
+// that are waiting are taken before any is applied.
 fn settle(model: admin.Model, dispatched: Subject(admin.Msg)) -> admin.Model {
+  list.fold(waiting(dispatched), model, run)
+}
+
+fn waiting(dispatched: Subject(admin.Msg)) -> List(admin.Msg) {
   case process.receive(dispatched, 0) {
-    Ok(next) -> run(model, next)
-    Error(Nil) -> model
+    Ok(next) -> [next, ..waiting(dispatched)]
+    Error(Nil) -> []
   }
 }
 
@@ -1611,4 +1623,374 @@ pub fn a_refresh_during_the_task_does_not_drop_a_failed_resume_test() {
     drawn(model),
     "The session is shareable now but did not start again.",
   )
+}
+
+// ---------------------------------------------------------------------------
+// The Deployment section and the machines' pages (protocol-change/085, the
+// addendum of 2026-10-16).
+// ---------------------------------------------------------------------------
+
+// A page whose deployment reads answer with the fleet fixture, and which tells
+// `asks` which key each read was for (none for the whole deployment) and
+// `peers_asked` each time the other orchestrators were read.
+fn fleet_start(
+  asks: Subject(Option(String)),
+  peers_asked: Subject(Nil),
+  heard: List(peers.Group),
+  entries: List(Entry),
+) -> admin.Start {
+  admin.Start(
+    ..start(),
+    read: fn(chosen, deliver) {
+      deliver(grants.Read(
+        grants.Snapshot(..snapshot(chosen), sessions: entries),
+      ))
+    },
+    deployment: fn(node, deliver) {
+      process.send(asks, node)
+      deliver(fleet.reading(node))
+    },
+    elsewhere: fn(deliver) {
+      process.send(peers_asked, Nil)
+      deliver(peers.Heard(heard))
+    },
+  )
+}
+
+fn fleet_page() -> #(admin.Model, Subject(Option(String))) {
+  let asks = process.new_subject()
+  let #(model, _) =
+    opened(fleet_start(asks, process.new_subject(), [], [entry_on("box")]))
+  #(model, asks)
+}
+
+fn entry_on(executor: String) -> Entry {
+  Entry(..entry(session, "review auth", Live), executor: Some(executor))
+}
+
+fn choose(model: admin.Model, node: String) -> admin.Model {
+  run(model, admin.MachineChosen(node))
+}
+
+fn unlinked_node() -> String {
+  "laptop@10.0.0.7"
+}
+
+// The section follows People and Sessions, and its first line is the verdict
+// with what needs a look. A directory copy that is unconfirmed is said once.
+pub fn the_deployment_section_leads_with_the_verdict_test() {
+  let #(model, _) = fleet_page()
+  let html = drawn(model)
+  let assert [_, after_sessions] = string.split(html, ">Sessions<")
+  let assert [_, deployment] =
+    string.split(after_sessions, "aria-label=\"Deployment\"")
+  assert string.contains(
+    deployment,
+    "Deployment · 5 nodes · 1 degraded · 1 down · 1 not linked from here",
+  )
+  assert count(html, "could not confirm that its copy of the session directory")
+    == 1
+  assert !string.contains(html, "The daemon left out")
+  assert !string.contains(html, "Reading the deployment.")
+}
+
+// One row for each machine, with the columns the owner scans, and a machine the
+// ledger lists and this daemon does not dial is marked and shows no state.
+pub fn the_table_has_a_row_for_each_machine_test() {
+  let #(model, _) = fleet_page()
+  let html = drawn(model)
+  list.each(
+    [
+      "Name", "Roles", "State", "Platform", "Enforcement", "Toolchains",
+      "Capacity", "Ledger", "Last report",
+    ],
+    fn(column) {
+      assert string.contains(html, ">" <> column <> "<")
+    },
+  )
+  assert count(html, "class=\"admin-machine-row\"") == 5
+  assert string.contains(html, "linux/x86_64")
+  assert string.contains(html, ">enforced<")
+  assert string.contains(html, "go, gleam")
+  assert string.contains(html, "3 of 16")
+  assert string.contains(html, "2 of 8")
+  assert string.contains(html, "enrolled · voter")
+  assert string.contains(html, "not listed")
+  assert string.contains(html, "6 min ago")
+  assert count(html, "not linked from here") == 2
+  assert count(html, "class=\"pill pending\"") == 1
+  assert count(html, "class=\"pill ended\"") == 1
+  assert count(html, "class=\"pill online\"") == 2
+}
+
+// Pressing a machine reads that machine, by its key, and opens its page on the
+// Overview with the long lists the read returned.
+pub fn choosing_a_machine_reads_it_and_opens_its_page_test() {
+  let #(model, asks) = fleet_page()
+  let assert Ok(None) = process.receive(asks, 0)
+  let model = choose(model, fleet.box_node)
+  let assert Ok(Some("box")) = process.receive(asks, 0)
+  let html = drawn(model)
+  assert string.contains(html, "aria-label=\"Machine\"")
+  assert string.contains(html, "unclean_scope")
+  assert string.contains(html, "a scope is stuck closing")
+  assert string.contains(html, "0.2.0 (b4eeb50c)")
+  assert string.contains(html, "app, docs")
+  assert string.contains(html, "places 3 sessions here")
+  assert string.contains(html, "connected")
+  assert count(html, "role=\"tab\"") == 4
+  assert string.contains(html, "aria-selected=\"true\"")
+}
+
+// A machine this daemon does not dial is never read, and its page says so.
+pub fn a_machine_not_linked_from_here_is_never_read_test() {
+  let #(model, asks) = fleet_page()
+  let assert Ok(None) = process.receive(asks, 0)
+  let model = choose(model, unlinked_node())
+  assert process.receive(asks, 0) == Error(Nil)
+  let html = drawn(model)
+  assert string.contains(html, "does not connect to it")
+  let model = run(model, admin.TabChosen(machines.ActivityTab))
+  assert string.contains(drawn(model), "does not connect to this machine")
+  assert process.receive(asks, 0) == Error(Nil)
+}
+
+// The asking daemon is a machine too, and its long lists are not read: the
+// daemon resolves a key against its configuration and it is no key of it.
+pub fn the_asking_daemon_is_listed_and_not_read_test() {
+  let #(model, asks) = fleet_page()
+  let assert Ok(None) = process.receive(asks, 0)
+  let model = choose(model, "alpha@10.0.0.1")
+  assert process.receive(asks, 0) == Error(Nil)
+  let model = run(model, admin.TabChosen(machines.ActivityTab))
+  let html = drawn(model)
+  assert string.contains(html, "bravo")
+  assert string.contains(html, "stalled 2 min")
+  assert string.contains(html, "the destination is busy")
+  assert string.contains(html, "Runtimes reserved")
+}
+
+// A press names a node the page has not drawn: nothing is read and nothing
+// opens.
+pub fn a_node_the_deployment_does_not_list_is_not_honoured_test() {
+  let #(model, asks) = fleet_page()
+  let assert Ok(None) = process.receive(asks, 0)
+  let model = choose(model, "ghost@nowhere")
+  assert process.receive(asks, 0) == Error(Nil)
+  assert !string.contains(drawn(model), "aria-label=\"Machine\"")
+}
+
+// The Access tab states the ledger row, the pin and the links, and offers the
+// two commands in boxes that copy exactly their text. Each unclean scope has its
+// release line.
+pub fn the_access_tab_shows_the_pin_and_the_commands_test() {
+  let #(model, _) = fleet_page()
+  let model = choose(model, fleet.box_node)
+  let model = run(model, admin.TabChosen(machines.AccessTab))
+  let html = drawn(model)
+  assert string.contains(html, fleet.box_pin)
+  assert string.contains(html, "entry 8 of 9, 6 min ago")
+  assert string.contains(html, ">alpha<") || string.contains(html, "alpha")
+  assert count(html, "subject=\"operate\"") == 4
+  assert string.contains(html, "text=\"loom distribution renew box\"")
+  assert string.contains(
+    html,
+    "text=\"loom distribution revoke box --reason &#39;REASON&#39;\"",
+  )
+  assert string.contains(
+    html,
+    "text=\"loomd executor release " <> fleet.stuck_session <> "\"",
+  )
+  assert string.contains(
+    html,
+    "text=\"loomd executor release 0198c1aa-0000-7000-8000-0000000000ab\"",
+  )
+  assert !string.contains(html, "loom distribution enroll")
+}
+
+// A node the daemon is configured with that the ledger does not list is offered
+// the enroll command, linked to this orchestrator, and neither renew nor revoke.
+pub fn an_unlisted_node_is_offered_enroll_test() {
+  let #(model, _) = fleet_page()
+  let model = choose(model, "exec2@10.0.0.9")
+  let model = run(model, admin.TabChosen(machines.AccessTab))
+  let html = drawn(model)
+  assert string.contains(
+    html,
+    "text=\"loom distribution enroll exec2 --node exec2@10.0.0.9 --role executor --links alpha\"",
+  )
+  assert !string.contains(html, "loom distribution renew")
+  assert !string.contains(html, "loom distribution revoke")
+}
+
+// The Activity tab states the scope counts, the scopes that block a reopen and,
+// for an orchestrator, its moves.
+pub fn the_activity_tab_states_scopes_and_unclean_scopes_test() {
+  let #(model, _) = fleet_page()
+  let model = choose(model, fleet.box_node)
+  let model = run(model, admin.TabChosen(machines.ActivityTab))
+  let html = drawn(model)
+  assert string.contains(html, "Open scopes")
+  assert string.contains(html, "Closed, cleanup unknown")
+  assert string.contains(html, fleet.stuck_session <> " · closing")
+  assert string.contains(html, "closed with 2 children not proven gone")
+}
+
+// The Sessions tab lists the catalogue's rows that sit on the machine and, from
+// the other orchestrators, the rows whose executor node is the machine's.
+pub fn the_sessions_tab_groups_the_other_orchestrators_rows_by_node_test() {
+  let row =
+    peers.Row(
+      session_id: "0198c1aa-0000-7000-8000-000000000001",
+      workspace: "app",
+      name: "from bravo",
+      status: peers.Saved,
+      executor: Some("elsewhere-key"),
+      executor_node: Some(fleet.box_node),
+    )
+  let other = peers.Row(..row, name: "elsewhere", executor_node: Some("x@y"))
+  let groups = [
+    peers.Group(
+      "bravo",
+      None,
+      peers.Answered(rows: [row, other], more: peers.Last),
+    ),
+    peers.Group("charlie", None, peers.Silent),
+  ]
+  let asks = process.new_subject()
+  let peers_asked = process.new_subject()
+  let #(model, _) =
+    opened(fleet_start(asks, peers_asked, groups, [entry_on("box")]))
+  let model = choose(model, fleet.box_node)
+  assert process.receive(peers_asked, 0) == Error(Nil)
+  let model = run(model, admin.TabChosen(machines.SessionsTab))
+  assert process.receive(peers_asked, 0) == Ok(Nil)
+  let html = drawn(model)
+  assert string.contains(html, "review auth")
+  assert string.contains(html, "bravo lists 1 session:")
+  assert string.contains(html, "from bravo")
+  assert !string.contains(html, ">elsewhere<")
+  assert string.contains(html, "charlie did not answer.")
+}
+
+// Runs one message and performs its effects, with what they dispatch going to
+// `inbox` and not applied yet, so a test can hold a late answer back.
+fn start_into(
+  model: admin.Model,
+  message: admin.Msg,
+  inbox: Subject(admin.Msg),
+) -> admin.Model {
+  let #(model, effects) = admin.update(model, message)
+  effect.perform(
+    effects,
+    fn(next) { process.send(inbox, next) },
+    fn(_, _) { Nil },
+    fn(_) { Nil },
+    fn() { panic as "no dynamic value" },
+    fn(_, _) { Nil },
+    fn(_, _) { Nil },
+    fn(_) { Nil },
+  )
+  model
+}
+
+fn detail_reading(workspace: String) -> machines.Reading {
+  machines.HeardOne(
+    machines.Detail(
+      node: fleet.box_node,
+      workspaces: [workspace],
+      unclean: [],
+      placements: [],
+      moves: [],
+      more: [],
+    ),
+  )
+}
+
+// A late answer to a read that a newer press overtook is dropped, and so is one
+// for a machine the owner has since closed.
+pub fn an_overtaken_deployment_read_is_dropped_test() {
+  let held = process.new_subject()
+  let start =
+    admin.Start(
+      ..fleet_start(process.new_subject(), process.new_subject(), [], []),
+      deployment: fn(node, deliver) {
+        case node {
+          None -> deliver(fleet.reading(None))
+          Some(_) -> process.send(held, deliver)
+        }
+      },
+    )
+  let #(model, _) = opened(start)
+  let inbox = process.new_subject()
+
+  // Two presses on the same machine: the first read is overtaken by the second.
+  let model = start_into(model, admin.MachineChosen(fleet.box_node), inbox)
+  let assert Ok(first) = process.receive(held, 0)
+  let model = start_into(model, admin.MachineChosen(fleet.box_node), inbox)
+  let assert Ok(second) = process.receive(held, 0)
+  first(detail_reading("stale-workspace"))
+  let model = list.fold(waiting(inbox), model, run)
+  assert !string.contains(drawn(model), "stale-workspace")
+  assert string.contains(drawn(model), "Reading this machine.")
+  second(detail_reading("fresh-workspace"))
+  let model = list.fold(waiting(inbox), model, run)
+  assert string.contains(drawn(model), "fresh-workspace")
+
+  // Closing overtakes the read that is still out.
+  let model = start_into(model, admin.MachineChosen(fleet.box_node), inbox)
+  let assert Ok(third) = process.receive(held, 0)
+  let model = start_into(model, admin.MachineClosed, inbox)
+  third(detail_reading("late-workspace"))
+  let model = list.fold(waiting(inbox), model, run)
+  assert !string.contains(drawn(model), "late-workspace")
+  assert !string.contains(drawn(model), "aria-label=\"Machine\"")
+}
+
+// A name that is markup is text wherever the page draws it, in the table, the
+// header and the commands, and no attribute is built from it.
+pub fn a_machine_named_with_markup_is_drawn_as_text_test() {
+  let hostile = "<img src=x onerror=alert(1)>"
+  let start =
+    admin.Start(..start(), deployment: fn(node, deliver) {
+      case node {
+        None -> deliver(machines.Heard(fleet.overview(hostile)))
+        Some(_) -> deliver(machines.Unread)
+      }
+    })
+  let #(model, _) = opened(start)
+  let model = choose(model, fleet.box_node)
+  let model = run(model, admin.TabChosen(machines.AccessTab))
+  let html = drawn(model)
+  assert string.contains(html, "&lt;img src=x onerror=alert(1)&gt;")
+  assert !string.contains(html, "<img src")
+  list.each(handlers(admin.view(model)), fn(key) {
+    assert string.starts_with(key, admin.body_path <> "\t")
+  })
+}
+
+// Every handler of the machines section is a click beneath the admin body, which
+// is all the daemon's socket admits.
+pub fn every_machine_handler_is_beneath_the_body_test() {
+  let #(model, _) = fleet_page()
+  let before = list.length(handlers(admin.view(model)))
+  let model = choose(model, fleet.box_node)
+  let keys = handlers(admin.view(model))
+  assert list.all(keys, fn(key) {
+    string.starts_with(key, admin.body_path <> "\t")
+    && string.ends_with(key, "\nclick")
+  })
+
+  // The page adds four tabs and Close to the rows it already drew.
+  assert list.length(keys) - before == 5
+}
+
+// A whole-deployment read that fails keeps the earlier one, and a page that has
+// never had one says it is reading.
+pub fn a_failed_deployment_read_keeps_the_earlier_one_test() {
+  let #(model, _) = fleet_page()
+  let model = run(model, admin.Ticked)
+  assert string.contains(drawn(model), "Deployment · 5 nodes")
+  let #(never, _) = opened(start())
+  assert string.contains(drawn(never), "could not be read just now")
 }

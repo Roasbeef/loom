@@ -2828,6 +2828,7 @@ fn elsewhere_row(id: String, name: String, workspace: String) -> elsewhere.Row {
     name:,
     status: elsewhere.Saved,
     executor: Some("box"),
+    executor_node: Some("loom@box.example.net"),
   )
 }
 
@@ -2907,6 +2908,24 @@ pub fn the_group_lists_what_each_orchestrator_said_test() {
   let assert Ok(#(before, _)) =
     string.split_once(html, "On other orchestrators")
   assert string.contains(before, "Other folders")
+}
+
+// A one-line strip says the daemon lists a peer, names each, marks the silent
+// one, and carries no handler, so the table keeps its path.
+pub fn a_strip_under_the_bar_names_the_peer_orchestrators_test() {
+  let asked = process.new_subject()
+  let #(model, _) =
+    opened(elsewhere_reader(two_groups(), asked, elsewhere.Unread))
+  let html = drawn(model)
+  assert string.contains(
+    html,
+    "Other orchestrators: desk, laptop (no answer). Their machines are on the Admin page.",
+  )
+  assert list.length(string.split(html, "home-peers")) == 2
+
+  // A page with no other orchestrator draws no strip.
+  let #(plain, _) = opened(start())
+  assert !string.contains(drawn(plain), "home-peers")
 }
 
 pub fn an_orchestrator_with_no_sessions_says_so_and_is_not_silent_test() {
