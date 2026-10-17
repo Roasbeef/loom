@@ -47,8 +47,9 @@ import weft
 // would kill it and leave its facts out altogether.
 
 /// How long `report` waits for the three sources together. It is under the
-/// time a peer waits for a report, so the answer reaches the peer with whatever
-/// was read, and not after the peer has stopped listening.
+/// time a peer waits for a report (`deployment.report_ms`, 2600), so the answer
+/// reaches the peer with whatever was read, and not after the peer has stopped
+/// listening. The margin is the transit and the assembly of the answer.
 pub const read_ms = 2500
 
 /// Where each fact comes from, supplied by the daemon.

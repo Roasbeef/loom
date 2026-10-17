@@ -64,8 +64,8 @@
 ////    hands them to `survey`.
 //// 2. `survey` runs `fan_out`: one weft run in which the asking daemon reports
 ////    itself and every target is connected to and then asked for its report.
-////    Each connection is bounded at one second, each ask at one second after it,
-////    and the whole run at three. Outcomes come back in the order of the
+////    Each connection is bounded at one second, each ask at 2.6 seconds after it,
+////    and the whole run at four. Outcomes come back in the order of the
 ////    targets.
 //// 3. `judged` gives each answering node the reasons `classify` finds and the
 ////    asking daemon the directory reason `quorum` finds.
@@ -89,23 +89,28 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import host/build_identity
 import web_view/placements as page
 import weft
+import weft/poll
 
 /// How long one connection attempt may take. A first TLS handshake to a loaded
 /// machine can outlast it; the handshake goes on in the background, so the node
 /// reads `down` in this reply and `ok` in the next.
 pub const connect_ms = 1000
 
-/// How long a node may take to give its report once connected. A node that
-/// connected and did not report in time reads `down` with the reason `timeout`.
-pub const report_ms = 1000
+/// How long a node may take to give its report once connected. It is longer than
+/// the node's own bound on its sources (`node_facts.read_ms`, 2500), so a live
+/// node with a slow directory still answers, with the facts that were read in
+/// time. A node that connected and did not answer in this long reads `down` with
+/// the reason `timeout`.
+pub const report_ms = 2600
 
-/// The bound on the whole fan-out. The two inner bounds sum to two seconds, so
+/// The bound on the whole fan-out. The two inner bounds sum to 3.6 seconds, so
 /// this is slack for scheduling and for the tasks the deadline abandons rather
 /// than a sum.
-pub const deadline_ms = 3000
+pub const deadline_ms = 4000
 
 /// Why a configured node is down. The words are fixed so a client can show
 /// them without interpreting a diagnostic.
@@ -113,6 +118,10 @@ pub type Why {
   /// The connection did not settle within `connect_ms`, or the node connected
   /// and its report did not arrive within `report_ms`.
   TimedOut
+
+  /// The node connected, and no report came: no orchestrator port is registered
+  /// there, or the port ended, so the ask failed at once and not by the clock.
+  Silent
 
   /// The connection was refused or the host could not be reached. A refused
   /// certificate, a wrong pin and a wrong node name all read this way.
@@ -133,6 +142,7 @@ pub type Why {
 pub fn why_word(why: Why) -> String {
   case why {
     TimedOut -> "timeout"
+    Silent -> "silent"
     Unreachable -> "unreachable"
     Unavailable -> "unavailable"
   }
@@ -539,6 +549,7 @@ fn fan_out(
       let outcomes =
         tasks
         |> weft.new
+        |> weft.limit(list.length(tasks))
         |> weft.deadline(deadline_ms)
         |> weft.start
       let #(own, rest) = case reading, outcomes {
@@ -555,12 +566,23 @@ fn fan_out(
   }
 }
 
-// A node is connected to, and only then asked. A node that connected and did
-// not report in time is as good as down for the asking daemon, which can say
-// nothing of it, so the silence reads as a timeout.
+// A node is connected to, and only then asked. A node that connected and gave no
+// report is as good as down for the asking daemon, which can say nothing of it.
+// The ask answers `Error(Nil)` both when the wait ran out and when the port is
+// gone, so the clock tells them apart: an ask that failed in under half its wait
+// did not wait, and the node is `silent`, not `timeout`.
 fn learn(reach: Reach, node: String) -> Result(NodeReport, Why) {
   use Nil <- result.try(reach.dial(node, connect_ms))
-  reach.ask(node, report_ms) |> result.replace_error(TimedOut)
+  let clock = poll.monotonic()
+  let began = clock.now()
+  case reach.ask(node, report_ms) {
+    Ok(report) -> Ok(report)
+    Error(Nil) ->
+      case clock.now() - began < report_ms / 2 {
+        True -> Error(Silent)
+        False -> Error(TimedOut)
+      }
+  }
 }
 
 fn report_of(outcome: weft.Outcome(NodeReport, Why)) -> Option(NodeReport) {
@@ -1027,13 +1049,12 @@ pub fn selected(self: String, nodes: List(Node)) -> Snapshot {
 
 // The relations of the overview. The asking daemon's own come first, each with
 // its link, in the order of the nodes: serves for an executor, peer for an
-// orchestrator. Then what each answering orchestrator reports it serves, which
-// has no link because the asking daemon cannot observe it, and the asking
-// daemon's directory members.
+// orchestrator. Then the asking daemon's directory members. What another
+// orchestrator serves is not an edge: it is that orchestrator's `serves` list in
+// `orchestrators`, which says it once.
 fn edges_of(asker: Node, nodes: List(Node)) -> List(Edge) {
   list.flatten([
     list.map(nodes, fn(node) { own_edge(asker, node) }),
-    list.flat_map(nodes, fn(node) { reported_serves(node, nodes) }),
     member_edges(asker, nodes),
   ])
 }
@@ -1062,28 +1083,6 @@ fn placed_on(report: Option(NodeReport), executor: String) -> Int {
       |> result.map(fn(each) { each.resident + each.saved })
       |> result.unwrap(0)
     None -> 0
-  }
-}
-
-// What a reachable orchestrator says it serves, for the executors the asking
-// daemon also knows. An executor the asking daemon has no node for is not drawn,
-// so the picture holds the nodes the reply lists and no others.
-fn reported_serves(node: Node, nodes: List(Node)) -> List(Edge) {
-  case node.report |> option.then(fn(report) { report.orchestrator }) {
-    None -> []
-    Some(facts) ->
-      list.filter_map(facts.executor_nodes, fn(executor) {
-        case list.any(nodes, fn(each) { each.node == executor }) {
-          True ->
-            Ok(Edge(
-              from: node.node,
-              to: executor,
-              relation: Serves(sessions: placed_on(node.report, executor)),
-              link: None,
-            ))
-          False -> Error(Nil)
-        }
-      })
   }
 }
 
@@ -1352,13 +1351,49 @@ pub type Detail {
   Long
 }
 
+/// How much of a reply is kept so that it fits a frame. A reply is first
+/// rendered `Complete`, and each level after it drops more.
+pub type Level {
+  /// Everything the reply defines.
+  Complete
+
+  /// An overview without its `moves`, or a one-node reply with each long list
+  /// cut to `trimmed_entries` entries.
+  Trimmed
+
+  /// An overview without its `moves`, the per-node facts beyond the scope counts
+  /// and build, the executors' declarations and the pools, or a one-node reply
+  /// with its long lists empty.
+  Skeleton
+
+  /// An overview that is the nodes, their reasons, the orchestrators and the
+  /// directory alone: no edges, placements or lists of what an orchestrator
+  /// serves. A one-node reply is the same as at `Skeleton`.
+  Bare
+}
+
+/// The most encoded bytes a reply may take. The terminal refuses a control frame
+/// over 64 KiB, so the daemon renders the reply, measures it and drops detail
+/// until it is under this, which leaves room for the envelope.
+pub const max_reply_bytes = 60_000
+
+/// The entries of each long list a `Trimmed` one-node reply keeps.
+pub const trimmed_entries = 16
+
 /// Renders a snapshot as the body of the `deployment.status` reply.
 ///
 /// `as_of_ms` is the asking daemon's wall clock when the reply was built. The
 /// whole deployment's `state` is the `verdict` on its configured nodes: `ok` when
-/// all answered with no reason, `down` when none did and `degraded` otherwise. A
-/// request that named a key gets the node with its long lists and no `edges`,
-/// `placements`, `orchestrators`, `directory` or `moves`.
+/// all answered with no reason, `down` when none did and `degraded` otherwise,
+/// and an asking daemon that is itself degraded makes an `ok` deployment
+/// `degraded`. A request that named a key gets the node with its long lists and
+/// no `edges`, `placements`, `orchestrators`, `directory` or `moves`.
+///
+/// The reply is measured. When it takes more than `max_reply_bytes` encoded, it is
+/// rendered again at a lower `Level`: an overview drops its `moves`, then the
+/// facts of each node beyond its scope counts and build, the declarations and the
+/// pools, then the edges, placements and `serves` lists, and says what it dropped
+/// in `omitted`; a one-node reply cuts its long lists and names them in `more`.
 ///
 /// ## Examples
 ///
@@ -1366,19 +1401,46 @@ pub type Detail {
 /// // deployment.to_json(snapshot, 1_760_190_131_000)
 /// ```
 pub fn to_json(snapshot: Snapshot, as_of_ms: Int) -> JsonValue {
-  let #(self, nodes, asked, detail) = case snapshot {
-    Overview(self:, others:, ..) -> #(
-      self.node,
-      [self, ..others],
-      others,
-      Brief,
-    )
-    Selected(self:, nodes:) -> #(self, nodes, nodes, Long)
+  fit([Complete, Trimmed, Skeleton, Bare], snapshot, as_of_ms)
+}
+
+// The first level whose rendering fits, or the last when none does.
+fn fit(levels: List(Level), snapshot: Snapshot, as_of_ms: Int) -> JsonValue {
+  case levels {
+    [] -> render(snapshot, as_of_ms, Bare)
+    [last] -> render(snapshot, as_of_ms, last)
+    [level, ..lower] -> {
+      let body = render(snapshot, as_of_ms, level)
+      case string.byte_size(json.to_string(body)) <= max_reply_bytes {
+        True -> body
+        False -> fit(lower, snapshot, as_of_ms)
+      }
+    }
+  }
+}
+
+// The verdict on the configured nodes, with the asking daemon's own impairment
+// folded in so that `state` and `reasons` cannot disagree.
+fn overall(snapshot: Snapshot) -> Verdict {
+  case snapshot {
+    Overview(self:, others:, ..) ->
+      case verdict(others), self.health {
+        Whole, Impaired(_) -> Degraded
+        found, _ -> found
+      }
+    Selected(nodes:, ..) -> verdict(nodes)
+  }
+}
+
+fn render(snapshot: Snapshot, as_of_ms: Int, level: Level) -> JsonValue {
+  let #(self, nodes, detail) = case snapshot {
+    Overview(self:, others:, ..) -> #(self.node, [self, ..others], Brief)
+    Selected(self:, nodes:) -> #(self, nodes, Long)
   }
   let head = [
     #("as_of_ms", json.Int(as_of_ms)),
     #("self", json.String(self)),
-    #("state", json.String(verdict_word(verdict(asked)))),
+    #("state", json.String(verdict_word(overall(snapshot)))),
     #(
       "reasons",
       json.Array(
@@ -1392,28 +1454,124 @@ pub fn to_json(snapshot: Snapshot, as_of_ms: Int) -> JsonValue {
     ),
     #(
       "nodes",
-      json.Array(list.map(nodes, fn(node) { node_json(node, self, detail) })),
+      json.Array(
+        list.map(nodes, fn(node) { node_json(node, self, detail, level, nodes) }),
+      ),
     ),
   ]
   case snapshot {
-    Selected(..) -> json.Object(head)
+    Selected(..) -> json.Object(list.append(head, more(nodes, level)))
     Overview(self: asker, others:, edges:, placements:) ->
       json.Object(
         list.flatten([
           head,
-          [
-            #("edges", json.Array(list.map(edges, edge_json))),
-            #("placements", placements_json(placements)),
-            #("orchestrators", orchestrators_json(others)),
-          ],
+          case level {
+            Bare -> []
+            Complete | Trimmed | Skeleton -> [
+              #("edges", json.Array(list.map(edges, edge_json))),
+              #("placements", placements_json(placements, level)),
+            ]
+          },
+          [#("orchestrators", orchestrators_json(others, level))],
           directory_member(asker),
-          [#("moves", moves_json(asker, others))],
+          moves_member(asker, others, level),
+          omitted(asker, level),
         ]),
       )
   }
 }
 
-fn node_json(node: Node, asker: String, detail: Detail) -> JsonValue {
+// The long lists of the nodes that a lower level cut short, by name.
+fn more(nodes: List(Node), level: Level) -> List(#(String, JsonValue)) {
+  let lengths =
+    list.flat_map(nodes, fn(node) {
+      case node.report {
+        None -> []
+        Some(report) ->
+          list.flatten([
+            case report.executor {
+              Some(facts) -> [
+                #("workspaces", list.length(facts.workspaces)),
+                #("unclean", list.length(facts.unclean)),
+              ]
+              None -> []
+            },
+            case report.orchestrator {
+              Some(facts) -> [
+                #("placements", list.length(facts.placements)),
+                #("moves", list.length(facts.moves)),
+              ]
+              None -> []
+            },
+          ])
+      }
+    })
+  let cut =
+    lengths
+    |> list.filter(fn(found) { found.1 > entries(level) })
+    |> list.map(fn(found) { found.0 })
+    |> list.unique
+  case cut {
+    [] -> []
+    names -> [#("more", json.Array(list.map(names, json.String)))]
+  }
+}
+
+// How many entries of a long list the level keeps.
+fn entries(level: Level) -> Int {
+  case level {
+    Complete -> 1_000_000
+    Trimmed -> trimmed_entries
+    Skeleton | Bare -> 0
+  }
+}
+
+// What an overview dropped to fit, so that a client knows to ask for one node.
+fn omitted(asker: Node, level: Level) -> List(#(String, JsonValue)) {
+  let moves = case asker_moves(asker) {
+    [] -> []
+    [_, ..] -> ["moves"]
+  }
+  let words = case level {
+    Complete -> []
+    Trimmed -> moves
+    Skeleton -> list.append(moves, ["node_facts", "declared", "pools"])
+    Bare -> list.append(moves, ["node_facts", "edges", "placements", "serves"])
+  }
+  case words {
+    [] -> []
+    _ -> [#("omitted", json.Array(list.map(words, json.String)))]
+  }
+}
+
+fn asker_moves(asker: Node) -> List(node_report.MoveFacts) {
+  case asker.report |> option.then(fn(report) { report.orchestrator }) {
+    Some(facts) -> facts.moves
+    None -> []
+  }
+}
+
+fn moves_member(
+  asker: Node,
+  others: List(Node),
+  level: Level,
+) -> List(#(String, JsonValue)) {
+  let moves = asker_moves(asker)
+  case level, moves {
+    Complete, _ | Trimmed, [] | Skeleton, [] | Bare, [] -> [
+      #("moves", json.Array(list.map(moves, move_json(_, others)))),
+    ]
+    Trimmed, [_, ..] | Skeleton, [_, ..] | Bare, [_, ..] -> []
+  }
+}
+
+fn node_json(
+  node: Node,
+  asker: String,
+  detail: Detail,
+  level: Level,
+  nodes: List(Node),
+) -> JsonValue {
   json.Object(
     list.flatten([
       [
@@ -1444,7 +1602,7 @@ fn node_json(node: Node, asker: String, detail: Detail) -> JsonValue {
         False -> []
       },
       case node.report {
-        Some(report) -> report_fields(node, report, detail)
+        Some(report) -> report_fields(node, report, detail, level, nodes)
         None -> []
       },
     ]),
@@ -1458,6 +1616,8 @@ fn report_fields(
   node: Node,
   report: NodeReport,
   detail: Detail,
+  level: Level,
+  nodes: List(Node),
 ) -> List(#(String, JsonValue)) {
   list.flatten([
     [
@@ -1470,11 +1630,13 @@ fn report_fields(
       None -> []
     },
     case report.orchestrator {
-      Some(facts) -> [#("orchestrator", orchestrator_json(facts, detail))]
+      Some(facts) -> [
+        #("orchestrator", orchestrator_json(facts, detail, level, nodes)),
+      ]
       None -> []
     },
     case report.executor {
-      Some(facts) -> [#("executor", executor_json(node, facts, detail))]
+      Some(facts) -> [#("executor", executor_json(node, facts, detail, level))]
       None -> []
     },
   ])
@@ -1483,6 +1645,8 @@ fn report_fields(
 fn orchestrator_json(
   facts: node_report.OrchestratorFacts,
   detail: Detail,
+  level: Level,
+  nodes: List(Node),
 ) -> JsonValue {
   json.Object(
     list.flatten([
@@ -1499,16 +1663,27 @@ fn orchestrator_json(
           #(
             "placements",
             json.Array(
-              list.map(facts.placements, fn(placement) {
-                json.Object([
-                  #("executor_node", json.String(placement.executor_node)),
-                  #("resident", json.Int(placement.resident)),
-                  #("saved", json.Int(placement.saved)),
-                ])
-              }),
+              list.map(
+                list.take(facts.placements, entries(level)),
+                fn(placement) {
+                  json.Object([
+                    #("executor_node", json.String(placement.executor_node)),
+                    #("resident", json.Int(placement.resident)),
+                    #("saved", json.Int(placement.saved)),
+                  ])
+                },
+              ),
             ),
           ),
-          #("moves", json.Array(list.map(facts.moves, node_report.move_json))),
+          #(
+            "moves",
+            json.Array(
+              list.map(list.take(facts.moves, entries(level)), move_json(
+                _,
+                nodes,
+              )),
+            ),
+          ),
         ]
       },
     ]),
@@ -1526,52 +1701,41 @@ fn executor_json(
   node: Node,
   facts: node_report.ExecutorFacts,
   detail: Detail,
+  level: Level,
 ) -> JsonValue {
+  let scopes = [
+    #(
+      "scopes",
+      json.Object([
+        #("open", json.Int(facts.scopes.open)),
+        #("closing", json.Int(facts.scopes.closing)),
+        #("closed_clean", json.Int(facts.scopes.closed_clean)),
+        #("closed_unknown", json.Int(facts.scopes.closed_unknown)),
+      ]),
+    ),
+    #("scope_limit", json.Int(facts.scope_limit)),
+  ]
   json.Object(
     list.flatten([
-      [
-        #(
-          "scopes",
-          json.Object([
-            #("open", json.Int(facts.scopes.open)),
-            #("closing", json.Int(facts.scopes.closing)),
-            #("closed_clean", json.Int(facts.scopes.closed_clean)),
-            #("closed_unknown", json.Int(facts.scopes.closed_unknown)),
-          ]),
-        ),
-        #("scope_limit", json.Int(facts.scope_limit)),
-        #("ledger_bytes", json.Int(facts.ledger_bytes)),
-        #("ledger_limit", json.Int(facts.ledger_limit)),
-        #("unacknowledged", json.Int(facts.unacknowledged)),
-        #("platform", json.String(facts.platform)),
-      ],
-      case facts.observed {
-        Some(observed) -> [
-          #(
-            "enforcement",
-            json.String(executors.enforcement_word(observed.enforcement)),
-          ),
-          #(
-            "toolchains",
-            json.Array(list.map(observed.toolchains, json.String)),
-          ),
-        ]
-        None -> []
+      scopes,
+      case detail, level {
+        Brief, Skeleton | Brief, Bare -> []
+        Brief, Complete | Brief, Trimmed | Long, _ -> machine_facts(node, facts)
       },
-      [
-        #("contradiction", case contradiction_of(node.declared, facts) {
-          Some(words) -> json.String(words)
-          None -> json.Null
-        }),
-      ],
       case detail {
         Brief -> []
         Long -> [
-          #("workspaces", json.Array(list.map(facts.workspaces, json.String))),
+          #(
+            "workspaces",
+            json.Array(list.map(
+              list.take(facts.workspaces, entries(level)),
+              json.String,
+            )),
+          ),
           #(
             "unclean",
             json.Array(
-              list.map(facts.unclean, fn(scope) {
+              list.map(list.take(facts.unclean, entries(level)), fn(scope) {
                 json.Object(
                   list.flatten([
                     [#("session", json.String(scope.session))],
@@ -1593,6 +1757,38 @@ fn executor_json(
       },
     ]),
   )
+}
+
+// The executor's ledger figures, platform and census, which an overview that
+// must be small does without.
+fn machine_facts(
+  node: Node,
+  facts: node_report.ExecutorFacts,
+) -> List(#(String, JsonValue)) {
+  list.flatten([
+    [
+      #("ledger_bytes", json.Int(facts.ledger_bytes)),
+      #("ledger_limit", json.Int(facts.ledger_limit)),
+      #("unacknowledged", json.Int(facts.unacknowledged)),
+      #("platform", json.String(facts.platform)),
+    ],
+    case facts.observed {
+      Some(observed) -> [
+        #(
+          "enforcement",
+          json.String(executors.enforcement_word(observed.enforcement)),
+        ),
+        #("toolchains", json.Array(list.map(observed.toolchains, json.String))),
+      ]
+      None -> []
+    },
+    [
+      #("contradiction", case contradiction_of(node.declared, facts) {
+        Some(words) -> json.String(words)
+        None -> json.Null
+      }),
+    ],
+  ])
 }
 
 fn edge_json(edge: Edge) -> JsonValue {
@@ -1634,7 +1830,7 @@ fn name_of(nodes: List(Node), node: String) -> String {
 // The configured orchestrators, in the shape the Admin page lists them: what
 // the asking daemon found of each, whether it accepts sessions moved to it, and
 // the executors it configures, named as the asking daemon names them.
-fn orchestrators_json(others: List(Node)) -> JsonValue {
+fn orchestrators_json(others: List(Node), level: Level) -> JsonValue {
   json.Array(
     list.filter_map(others, fn(node) {
       case list.contains(node.roles, OrchestratorRole) {
@@ -1651,14 +1847,19 @@ fn orchestrators_json(others: List(Node)) -> JsonValue {
                 case node.report |> option.then(fn(r) { r.orchestrator }) {
                   Some(facts) -> [
                     #("imports", json.String(imports_word(facts.imports))),
-                    #(
-                      "serves",
-                      json.Array(
-                        list.map(facts.executor_nodes, fn(executor) {
-                          json.String(name_of(others, executor))
-                        }),
-                      ),
-                    ),
+                    ..case level {
+                      Bare -> []
+                      Complete | Trimmed | Skeleton -> [
+                        #(
+                          "serves",
+                          json.Array(
+                            list.map(facts.executor_nodes, fn(executor) {
+                              json.String(name_of(others, executor))
+                            }),
+                          ),
+                        ),
+                      ]
+                    }
                   ]
                   None -> []
                 },
@@ -1670,17 +1871,25 @@ fn orchestrators_json(others: List(Node)) -> JsonValue {
   )
 }
 
-fn placements_json(placements: Placements) -> JsonValue {
+fn placements_json(placements: Placements, level: Level) -> JsonValue {
   json.Object([
-    #("executors", json.Array(list.map(placements.executors, executor_entry))),
-    #("pools", json.Array(list.map(placements.pools, pool_json))),
+    #(
+      "executors",
+      json.Array(list.map(placements.executors, executor_entry(_, level))),
+    ),
+    ..case level {
+      Skeleton | Bare -> []
+      Complete | Trimmed -> [
+        #("pools", json.Array(list.map(placements.pools, pool_json))),
+      ]
+    }
   ])
 }
 
 // The state an executor's card shows: `ready`, `degraded`, `full` or `down`. An
 // executor that answered states its free scope count, and one whose census
 // disagrees with its declaration says how.
-fn executor_entry(entry: ExecutorEntry) -> JsonValue {
+fn executor_entry(entry: ExecutorEntry, level: Level) -> JsonValue {
   let executor = entry.executor
   let facts = entry.report |> option.then(fn(report) { report.executor })
   json.Object(
@@ -1700,7 +1909,10 @@ fn executor_entry(entry: ExecutorEntry) -> JsonValue {
         Some(words) -> [#("contradiction", json.String(words))]
         None -> []
       },
-      [#("declared", declared_json(executor))],
+      case level {
+        Skeleton | Bare -> []
+        Complete | Trimmed -> [#("declared", declared_json(executor))]
+      },
     ]),
   )
 }
@@ -1829,37 +2041,27 @@ fn directory_status_fields(
   ])
 }
 
-// The moves in flight on the asking daemon, with the destination named as the
-// asking daemon names it. The reason was cut to a fixed length where the move
-// recorded it.
-fn moves_json(asker: Node, others: List(Node)) -> JsonValue {
-  let moves = case
-    asker.report |> option.then(fn(report) { report.orchestrator })
-  {
-    Some(facts) -> facts.moves
-    None -> []
-  }
-  json.Array(
-    list.map(moves, fn(move) {
-      json.Object(
-        list.flatten([
-          [
-            #("session_id", json.String(move.session)),
-            #("op", json.String(move.op)),
-            #("to", json.String(name_of(others, move.to_node))),
-            #("phase", json.String(phase_word(move.phase))),
-          ],
-          case move.stalled_ms {
-            Some(ms) -> [#("stalled_ms", json.Int(ms))]
-            None -> []
-          },
-          case move.reason {
-            Some(words) -> [#("reason", json.String(words))]
-            None -> []
-          },
-        ]),
-      )
-    }),
+// One move, with the destination named as the asking daemon names it. The reason
+// was cut to a fixed length where the move recorded it. The top-level `moves` and
+// an orchestrator's own list spell a move this one way.
+fn move_json(move: node_report.MoveFacts, nodes: List(Node)) -> JsonValue {
+  json.Object(
+    list.flatten([
+      [
+        #("session_id", json.String(move.session)),
+        #("op", json.String(move.op)),
+        #("to", json.String(name_of(nodes, move.to_node))),
+        #("phase", json.String(phase_word(move.phase))),
+      ],
+      case move.stalled_ms {
+        Some(ms) -> [#("stalled_ms", json.Int(ms))]
+        None -> []
+      },
+      case move.reason {
+        Some(words) -> [#("reason", json.String(words))]
+        None -> []
+      },
+    ]),
   )
 }
 

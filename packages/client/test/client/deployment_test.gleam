@@ -20,6 +20,7 @@ import client/pools
 import client/remote/protocol
 import core/json
 import gleam/erlang/process
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
@@ -292,17 +293,80 @@ pub fn a_node_that_answers_is_reachable_and_one_that_does_not_is_down_test() {
     == [True, True, False]
 }
 
-// A node that connected and gave no report in time is one the daemon can say
-// nothing of, so it reads as a timeout rather than as an `ok` with no facts.
-pub fn a_connected_node_whose_report_is_late_reads_as_down_test() {
+// A node that connected and gave no report is one the daemon can say nothing of,
+// so it reads as down rather than as an `ok` with no facts. An ask that failed at
+// once (no port is registered, or it ended) is `silent`, and one that waited out
+// its bound is a `timeout`.
+pub fn a_connected_node_that_gives_no_report_reads_as_silent_test() {
   let asked = process.new_subject()
   let probed =
     deployment.probe(
       reach([#("box@10.0.0.2", Ok(Nil))], [], bare(self), asked),
       deployment.targets([], [box()]),
     )
-  assert list.map(probed, fn(found) { found.health }) == [Down(TimedOut)]
+  assert list.map(probed, fn(found) { found.health })
+    == [Down(deployment.Silent)]
   assert dialled(asked) == ["box@10.0.0.2"]
+}
+
+pub fn a_connected_node_that_waits_out_its_bound_reads_as_a_timeout_test() {
+  let waiting =
+    deployment.Reach(
+      self:,
+      dial: fn(_node, _within_ms) { Ok(Nil) },
+      ask: fn(_node, within_ms) {
+        process.sleep(within_ms)
+        Error(Nil)
+      },
+      own: fn() { bare(self) },
+    )
+  let probed = deployment.probe(waiting, deployment.targets([], [box()]))
+  assert list.map(probed, fn(found) { found.health }) == [Down(TimedOut)]
+}
+
+// Targets that never settle must not starve the ones that would answer: every
+// task holds a slot of its own, so none waits behind another. There are more slow
+// targets here than any machine has schedulers.
+pub fn slow_targets_do_not_starve_the_fast_ones_test() {
+  let slow = upto(1, 40)
+  let slow_rows =
+    list.map(slow, fn(each) {
+      executors.plain(
+        "slow" <> int.to_string(each),
+        "slow" <> int.to_string(each) <> "@10.0.1.1",
+      )
+    })
+  let world =
+    deployment.Reach(
+      self:,
+      dial: fn(node, _within_ms) {
+        case string.starts_with(node, "slow") {
+          True -> {
+            process.sleep(60_000)
+            Ok(Nil)
+          }
+          False -> Ok(Nil)
+        }
+      },
+      ask: fn(node, _within_ms) { Ok(bare(node)) },
+      own: fn() { bare(self) },
+    )
+  let probed =
+    deployment.probe(
+      world,
+      deployment.targets([], list.append(slow_rows, [box(), exec2()])),
+    )
+  let fast =
+    list.filter(probed, fn(found) {
+      !string.starts_with(found.target.name, "slow")
+    })
+  assert list.map(fast, fn(found) { found.health }) == [Reachable, Reachable]
+  assert list.all(
+    list.filter(probed, fn(found) {
+      string.starts_with(found.target.name, "slow")
+    }),
+    fn(found) { found.health == Down(TimedOut) },
+  )
 }
 
 pub fn a_node_that_is_not_connected_is_not_asked_test() {
@@ -725,6 +789,7 @@ pub fn every_reason_has_its_own_word_test() {
       "directory_quorum_lost",
     ]
   assert deployment.why_word(TimedOut) == "timeout"
+  assert deployment.why_word(deployment.Silent) == "silent"
   assert deployment.why_word(Unreachable) == "unreachable"
   assert deployment.why_word(Unavailable) == "unavailable"
 }
@@ -915,10 +980,10 @@ pub fn the_edges_touch_the_asking_daemon_and_carry_its_own_link_test() {
     ]
 }
 
-// What an orchestrator reports it serves is drawn without a link, because the
-// asking daemon cannot observe a connection between two other nodes, and the
-// sessions of a serves edge are the resident and the saved ones.
-pub fn what_an_orchestrator_reports_it_serves_has_no_link_state_test() {
+// What another orchestrator serves is its `serves` list in `orchestrators` and
+// not an edge, so the reply says it once. The sessions of the asking daemon's own
+// serves edge are the resident and the saved ones.
+pub fn what_an_orchestrator_reports_it_serves_is_said_once_test() {
   let asked = process.new_subject()
   let own =
     orchestrating(
@@ -960,15 +1025,6 @@ pub fn what_an_orchestrator_reports_it_serves_has_no_link_state_test() {
         "box@10.0.0.2",
         deployment.Serves(3),
         Some(Connected),
-      ),
-
-      // Bravo's serves edge comes with its own count, and an executor the
-      // asking daemon has no node for is not drawn.
-      deployment.Edge(
-        "bravo@10.0.0.4",
-        "box@10.0.0.2",
-        deployment.Serves(1),
-        None,
       ),
     ]
 
@@ -1605,4 +1661,331 @@ pub fn the_replys_state_follows_the_verdict_on_the_configured_nodes_test() {
       #("exec2@10.0.0.9", bare("exec2@10.0.0.9")),
     ])
     == json.String("degraded")
+}
+
+// --- the asking daemon in the verdict ------------------------------------------------
+
+// The asking daemon is not one of the nodes the verdict counts, but a reason of
+// its own is in `reasons`, so an impaired asker must not read `ok`.
+pub fn an_impaired_asking_daemon_makes_an_ok_deployment_degraded_test() {
+  let headless =
+    node_report.NodeReport(
+      ..bare(self),
+      directory: Some(directory_of(
+        [#(self, ffi_khepri.Voter)],
+        None,
+        node_report.Current,
+      )),
+    )
+  let asked = process.new_subject()
+  let assert Ok(snapshot) =
+    deployment.status(
+      reach(
+        [#("box@10.0.0.2", Ok(Nil))],
+        [#("box@10.0.0.2", bare("box@10.0.0.2"))],
+        headless,
+        asked,
+      ),
+      [OrchestratorRole, deployment.MemberRole],
+      [],
+      [box()],
+      [],
+      None,
+    )
+  let body = deployment.to_json(snapshot, 1)
+  assert field(body, "state") == json.String("degraded")
+  assert field(body, "reasons")
+    == json.Array([
+      json.Object([
+        #("node", json.String(self)),
+        #("reason", json.String("directory_no_leader")),
+      ]),
+    ])
+}
+
+// --- the size of a reply -----------------------------------------------------------------
+
+// The integers from `first` to `last`, both included.
+fn upto(first: Int, last: Int) -> List(Int) {
+  case first > last {
+    True -> []
+    False -> [first, ..upto(first + 1, last)]
+  }
+}
+
+fn padded(prefix: String, number: Int) -> String {
+  prefix <> string.pad_start(int.to_string(number), to: 2, with: "0")
+}
+
+fn long_host(prefix: String, number: Int) -> String {
+  padded(prefix, number) <> "@" <> padded(prefix, number) <> ".prod.example.com"
+}
+
+// A deployment at the node cap: four orchestrators and sixty executors with
+// names a real fleet would give them, a directory of all of them, sixty-four
+// moves in flight, workspaces and unclean scopes on each executor, and pools that
+// admit every executor.
+fn fleet() -> deployment.Snapshot {
+  let executor_rows =
+    list.map(upto(1, 60), fn(each) {
+      executors.Executor(
+        name: padded("executor-build-farm-", each),
+        node: long_host("executor-build-farm-", each),
+        platform: Some("linux/x86_64"),
+        enforcement: Some(executors.Enforced),
+        toolchains: ["codemode", "gleam", "rust-analyzer"],
+      )
+    })
+  let executor_nodes = list.map(executor_rows, fn(row) { row.node })
+  let moves =
+    list.map(upto(1, 64), fn(each) {
+      node_report.MoveFacts(
+        session: "0198c0de-0000-7000-8000-0000000000" <> padded("", each),
+        op: "0198c0de-0000-7000-8000-000000000a" <> padded("", each),
+        to_node: long_host("orchestrator-prod-", 2),
+        phase: node_report.Waiting,
+        stalled_ms: Some(240_000),
+        reason: Some("the receiver did not answer after the last four retries"),
+      )
+    })
+  let placements =
+    list.map(executor_nodes, fn(node) {
+      node_report.Placement(node, resident: 3, saved: 12)
+    })
+  let orchestrator_report = fn(node) {
+    node_report.NodeReport(
+      ..orchestrating(node, executor_nodes, placements, moves),
+      directory: Some(directory_of(
+        list.map(
+          list.append(
+            list.map(upto(1, 4), long_host("orchestrator-prod-", _)),
+            executor_nodes,
+          ),
+          fn(each) { #(each, ffi_khepri.Voter) },
+        ),
+        Some(long_host("orchestrator-prod-", 2)),
+        node_report.Current,
+      )),
+    )
+  }
+  let executor_report = fn(node) {
+    node_report.NodeReport(
+      ..bare(node),
+      executor: Some(
+        node_report.ExecutorFacts(
+          ..executor_facts(scopes(open: 3, closing: 0, unknown: 1)),
+          observed: Some(
+            executors.Observed(
+              platform: "linux/x86_64",
+              enforcement: executors.Enforced,
+              toolchains: ["codemode", "gleam", "rust-analyzer"],
+            ),
+          ),
+          workspaces: list.map(upto(1, 64), padded("workspace-", _)),
+        ),
+      ),
+    )
+  }
+  let node_of = fn(row: executors.Executor) {
+    deployment.Node(
+      node: row.node,
+      name: row.name,
+      roles: [ExecutorRole, deployment.MemberRole],
+      health: Impaired([deployment.UncleanScope]),
+      report: Some(executor_report(row.node)),
+      declared: Some(row),
+    )
+  }
+  let orchestrator = fn(number) {
+    let node = long_host("orchestrator-prod-", number)
+    deployment.Node(
+      node:,
+      name: padded("orchestrator-prod-", number),
+      roles: [OrchestratorRole, deployment.MemberRole],
+      health: Reachable,
+      report: Some(orchestrator_report(node)),
+      declared: None,
+    )
+  }
+  let pool_rows =
+    list.map(upto(1, 4), fn(each) {
+      pools.Pool(
+        name: padded("pool-for-builds-", each),
+        executors: list.map(executor_rows, fn(row) { row.name }),
+        platform: None,
+        enforcement: None,
+        toolchains: [],
+      )
+    })
+  deployment.overview(
+    deployment.Node(..orchestrator(1), roles: [
+      OrchestratorRole,
+      deployment.MemberRole,
+    ]),
+    list.append(
+      list.map(upto(2, 4), orchestrator),
+      list.map(executor_rows, node_of),
+    ),
+    executor_rows,
+    pool_rows,
+  )
+}
+
+fn encoded_size(body: json.JsonValue) -> Int {
+  string.byte_size(json.to_string(body))
+}
+
+// The terminal refuses a frame over 64 KiB, so the daemon measures the reply and
+// drops detail until it fits: first the moves, then the per-node facts and the
+// declarations. It says what it dropped, so a client knows to ask for one node.
+pub fn an_overview_at_the_node_cap_fits_a_frame_and_says_what_it_dropped_test() {
+  let body = deployment.to_json(fleet(), 1_760_191_331_000)
+  assert encoded_size(body) <= deployment.max_reply_bytes
+  let assert json.Array(omitted) = field(body, "omitted")
+  assert list.contains(omitted, json.String("moves"))
+  assert !has(body, "moves")
+
+  // What is kept: every node with its name, role, health, reasons, scope counts
+  // and build, and the directory.
+  let assert json.Array(nodes) = field(body, "nodes")
+  assert list.length(nodes) == 64
+  let assert [_, _, _, _, executor, ..] = nodes
+  assert field(executor, "state") == json.String("degraded")
+  assert field(executor, "reasons")
+    == json.Array([json.String("unclean_scope")])
+  assert has(executor, "build_commit")
+  assert has(field(executor, "executor"), "scopes")
+  assert has(body, "directory")
+  assert has(body, "orchestrators")
+
+  // The fleet is too large for any lower level to keep its edges.
+  assert list.contains(omitted, json.String("edges"))
+  assert !has(body, "edges")
+}
+
+// A deployment that fits says nothing was dropped.
+pub fn an_overview_that_fits_drops_nothing_test() {
+  let asked = process.new_subject()
+  let assert Ok(snapshot) =
+    deployment.status(
+      everyone(["box@10.0.0.2"], asked),
+      [OrchestratorRole],
+      [],
+      [box()],
+      [],
+      None,
+    )
+  let body = deployment.to_json(snapshot, 1)
+  assert !has(body, "omitted")
+  assert has(body, "moves")
+}
+
+// A reply for one node with long names and full lists cuts its lists, and names
+// them in `more`, to fit.
+pub fn a_node_reply_with_long_lists_is_cut_to_fit_and_says_so_test() {
+  let long = fn(prefix, number) {
+    string.repeat(prefix, 20) <> string.pad_start(int.to_string(number), 3, "0")
+  }
+  let node = "box@10.0.0.2"
+  let report =
+    node_report.NodeReport(
+      ..bare(node),
+      orchestrator: Some(node_report.OrchestratorFacts(
+        capacity: 8,
+        occupied: 2,
+        resident: 2,
+        imports: node_report.Receiving,
+        executor_nodes: [],
+        placements: list.map(upto(1, 64), fn(each) {
+          node_report.Placement(long("executor.node.", each), 1, 1)
+        }),
+        moves: list.map(upto(1, 64), fn(each) {
+          node_report.MoveFacts(
+            session: "0198c0de-0000-7000-8000-000000000001",
+            op: "0198c0de-0000-7000-8000-000000000a01",
+            to_node: long("orchestrator.", each),
+            phase: node_report.Waiting,
+            stalled_ms: Some(1),
+            reason: Some(string.repeat("r", 200)),
+          )
+        }),
+      )),
+      executor: Some(
+        node_report.ExecutorFacts(
+          ..executor_facts(scopes(open: 1, closing: 0, unknown: 0)),
+          workspaces: list.map(upto(1, 64), fn(each) {
+            long("workspace.name.", each)
+          }),
+        ),
+      ),
+    )
+  let snapshot =
+    deployment.selected(self, [
+      deployment.Node(
+        node:,
+        name: "box",
+        roles: [ExecutorRole, OrchestratorRole],
+        health: Reachable,
+        report: Some(report),
+        declared: None,
+      ),
+    ])
+  let body = deployment.to_json(snapshot, 1)
+  assert encoded_size(body) <= deployment.max_reply_bytes
+  let assert json.Array(more) = field(body, "more")
+  assert list.contains(more, json.String("moves"))
+  assert list.contains(more, json.String("workspaces"))
+  let assert json.Array([found]) = field(body, "nodes")
+  let assert json.Array(kept) = field(field(found, "orchestrator"), "moves")
+  assert list.length(kept) == deployment.trimmed_entries
+
+  // The same node with short lists is complete and says nothing is more.
+  let small =
+    deployment.selected(self, [
+      deployment.Node(
+        node:,
+        name: "box",
+        roles: [ExecutorRole],
+        health: Reachable,
+        report: Some(serving(node, scopes(open: 1, closing: 0, unknown: 0))),
+        declared: None,
+      ),
+    ])
+  assert !has(deployment.to_json(small, 1), "more")
+}
+
+// A move is spelled one way, whether the overview or the orchestrator's own list
+// states it.
+pub fn a_move_is_spelled_one_way_test() {
+  let move =
+    node_report.MoveFacts(
+      session: "s",
+      op: "o",
+      to_node: "bravo@10.0.0.4",
+      phase: node_report.Running,
+      stalled_ms: None,
+      reason: None,
+    )
+  let own = orchestrating(self, [], [], [move])
+  let asker =
+    deployment.Node(
+      node: self,
+      name: self,
+      roles: [OrchestratorRole],
+      health: Reachable,
+      report: Some(own),
+      declared: None,
+    )
+  let expected =
+    json.Object([
+      #("session_id", json.String("s")),
+      #("op", json.String("o")),
+      #("to", json.String("bravo@10.0.0.4")),
+      #("phase", json.String("running")),
+    ])
+  let overview = deployment.to_json(deployment.overview(asker, [], [], []), 1)
+  assert field(overview, "moves") == json.Array([expected])
+  let one = deployment.to_json(deployment.selected(self, [asker]), 1)
+  let assert json.Array([node]) = field(one, "nodes")
+  assert field(field(node, "orchestrator"), "moves") == json.Array([expected])
 }
