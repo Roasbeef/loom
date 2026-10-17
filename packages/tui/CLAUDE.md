@@ -1,25 +1,5 @@
 # tui
 
-## Local startup overlap
-
-`interactive` starts one `startup` weft resolver before discovering the workspace
-and constructing the model in the original terminal process. Joining consumes
-both the resolver outcome and final accounting before the unchanged control
-adoption and session-opening path. Other launch modes keep their existing order.
-
-The resolver retains its single 90-second startup budget and passes the original
-terminal PID to control ownership. There is no competing worker-killing deadline:
-killing between control creation and handle publication could lose a still-live
-terminal's connection. Normal terminal exit explicitly cancels the weft run and
-retires its terminal-owned control. A living caller must join, then close any
-successful connection it cannot use. Unexpected worker crash or lost accounting
-remains fatal to the original terminal, as it was for inline bootstrap: terminal
-death closes even an unpublished control handle. Ordinary resolver refusals remain
-visible UI errors;
-configuration errors, endpoint fencing and native daemon independence remain in
-the existing resolver. `startup_test` uses barriers to prove actual overlap,
-original-process model identity, accounting and terminal-exit cancellation.
-
 ## Local profiling at launch
 
 The developer shipment and bundled client carry `tom` for their launch-time
