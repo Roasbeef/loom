@@ -131,6 +131,7 @@ import client/secrets
 import client/server
 import client/session_git
 import client/skill_tool
+import client/startup
 import client/system_prompt
 import client/tool_holder
 import client/wiring
@@ -1141,6 +1142,10 @@ pub fn build_domain(
     path -> Some(path)
   }
   use _loaded <- result.try(load_config(configuration, None, None))
+
+  // Warm only a validated domain's ordinary session modules. This optional
+  // code-server hint owns no resources and cannot replace admission errors.
+  startup.prepare()
   use Nil <- result.try(
     bootstrap.ensure_private_directory(filepath.directory_name(
       selected.memory_path,
