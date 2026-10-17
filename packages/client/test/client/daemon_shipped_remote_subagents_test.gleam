@@ -31,7 +31,12 @@
 //// - A second turn joins both children with one `agent_wait`. The first reports
 ////   what it finished with and the second reports that its wall-clock budget
 ////   expired.
-//// - A third turn starts a fourth child that runs until it is stopped. The
+//// - A turn starts a child that mails its parent with `agent_send` to `^main`
+////   while the parent's turn is open in an `agent_wait`. The mail is a row in the
+////   box's delegate session, the box sends it over the connection the laptop
+////   keeps up, and the text arrives in the parent's run as a message from the
+////   child (protocol-change/084, slice S9).
+//// - A last turn starts a fourth child that runs until it is stopped. The
 ////   laptop session is then stopped and deleted with that child running. The
 ////   laptop's release drainer tells the box (`Release`), and the box stops the
 ////   child (`operation.aborted` in its log, and its heartbeat goes quiet) and
@@ -84,6 +89,15 @@ const spawned_answer = "three children started"
 const join_prompt = "join the other two"
 
 const joined_answer = "both joined"
+
+const upward_prompt = "start a child that mails you"
+
+const upward_answer = "the child's mail arrived"
+
+// What the mailing child sends its parent, and what it reports afterwards.
+const upward_text = "ping from the box child"
+
+const upward_report = "upward child report"
 
 const fourth_prompt = "start a fourth child that keeps running"
 
@@ -286,6 +300,27 @@ fn laptop_script() -> List(provider.Exchange) {
     provider.ComputedExchange(provider.AwaitToolResult("wait-rest"), fn(_seen) {
       provider.ReplyText(joined_answer)
     }),
+    provider.ComputedExchange(provider.AwaitPrompt(upward_prompt), fn(_seen) {
+      provider.ReplyToolUse(
+        "spawn-up",
+        "agent_spawn",
+        spawn("send your parent a note, then finish", "upward child", None),
+      )
+    }),
+    provider.ComputedExchange(provider.AwaitToolResult("spawn-up"), fn(seen) {
+      provider.ReplyToolUse(
+        "wait-up",
+        "agent_wait",
+        wait([handle_of(seen, "spawn-up")]),
+      )
+    }),
+
+    // The mail was steered into the open run while the wait was in flight, so it
+    // rides in the user turn that carries the wait's result; `check_results`
+    // looks for it in that request.
+    provider.ComputedExchange(provider.AwaitToolResult("wait-up"), fn(_seen) {
+      provider.ReplyText(upward_answer)
+    }),
     provider.ComputedExchange(provider.AwaitPrompt(fourth_prompt), fn(_seen) {
       provider.ReplyToolUse(
         "spawn-four",
@@ -317,6 +352,26 @@ fn box_script() -> List(provider.Exchange) {
     }),
     provider.ComputedExchange(provider.AwaitToolResult("shell-two"), fn(_seen) {
       provider.ReplyText(second_report)
+    }),
+    provider.ComputedExchange(provider.AwaitPromptPrefix(brief_head), fn(_seen) {
+      provider.ReplyToolUse(
+        "send-up",
+        "agent_send",
+        json.Object([
+          #("to", json.String("^main")),
+          #("message", json.String(upward_text)),
+        ]),
+      )
+    }),
+
+    // The child stays alive long enough for the box to send the mail while the
+    // parent is still waiting. A row rings a drainer that is idle, and the first
+    // pass after the ring is one retry interval (five seconds) away.
+    provider.ComputedExchange(provider.AwaitToolResult("send-up"), fn(_seen) {
+      provider.ReplyToolUse("nap", "bash", shell("sleep 12"))
+    }),
+    provider.ComputedExchange(provider.AwaitToolResult("nap"), fn(_seen) {
+      provider.ReplyText(upward_report)
     }),
     provider.ComputedExchange(provider.AwaitPromptPrefix(brief_head), fn(_seen) {
       provider.ReplyToolUse("shell-four", "bash", shell(fourth_shell))
@@ -416,12 +471,21 @@ fn session(duo: Duo, work: String, laptop_url: String, box_url: String) -> Nil {
     settle_ms,
   )
 
-  // The third turn starts a child that has no end of its own. Its heartbeat
+  // The mailing turn: the child sends `^main` a note while the parent waits for
+  // it, and the note arrives in the parent's run.
+  remote_daemons.say(terminal, upward_prompt)
+  remote_daemons.await_answers(
+    terminal,
+    [spawned_answer, joined_answer, upward_answer],
+    settle_ms,
+  )
+
+  // The last turn starts a child that has no end of its own. Its heartbeat
   // grows on the box, and the box holds a delegate session for this parent.
   remote_daemons.say(terminal, fourth_prompt)
   remote_daemons.await_answers(
     terminal,
-    [spawned_answer, joined_answer, fourth_answer],
+    [spawned_answer, joined_answer, upward_answer, fourth_answer],
     settle_ms,
   )
   let _running = await_lines(work <> "/beat4", 2)
@@ -569,5 +633,19 @@ fn check_results(seen: List(provider.ObservedRequest)) -> Nil {
   let rest = remote_daemons.result_text(seen, "wait-rest")
   assert string.contains(rest, second_report)
   assert string.contains(rest, "wall-clock budget expired")
+
+  // The child's mail reached the parent's run, in the request that carried the
+  // wait's result, framed as a message from the child.
+  let carrying =
+    list.filter(seen, fn(request) {
+      request.latest
+      == provider.SuccessfulToolResult(
+        "wait-up",
+        remote_daemons.result_text(seen, "wait-up"),
+      )
+    })
+  assert list.any(carrying, fn(request) {
+    string.contains(json.to_string(request.body), upward_text)
+  })
   Nil
 }

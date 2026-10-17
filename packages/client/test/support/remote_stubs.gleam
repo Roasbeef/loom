@@ -57,6 +57,7 @@ pub fn stub(orchestrator: String, seed: Int, state: State) -> Stub {
       detach: remote_spawn.Detached,
     ),
     name: "sub:^main/run-the-suite-" <> string.inspect(seed),
+    glance: None,
     state:,
   )
 }

@@ -3600,6 +3600,7 @@ fn settle_remote(
         detach: remote_spawn.Attached,
       ),
       name: "sub:^main/" <> digest,
+      glance: None,
       state: remote_child.Settled(
         placed:,
         outcome: agent.Completed,

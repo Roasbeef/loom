@@ -1,10 +1,10 @@
 //// The sending end of a subagent that runs on another orchestrator
-//// (protocol-change/084, slice S3).
+//// (protocol-change/084, slices S3 and S9).
 ////
-//// The receiving end is the orchestrator port's `Spawn`, `Join`, `RunEnded` and
-//// `Release` (`client/remote/orchestrator_port`); this module is how a parent's
-//// Agency sends the first two. It does not send `RunEnded`, because a remote
-//// child is always detached. `Release` is sent for a parent session that was
+//// The receiving end is the orchestrator port's `Spawn`, `Join`, `RunEnded`,
+//// `Release` and `ChildSend` (`client/remote/orchestrator_port`); this module is
+//// how a parent's Agency sends the first two and the last. It does not send
+//// `RunEnded`, because a remote child is always detached. `Release` is sent for a parent session that was
 //// deleted, so its caller is the daemon's release drainer and not an Agency:
 //// `release_over` is the same connect-and-ask for that one question. It is
 //// modelled on `client/remote/remote_peer`, which does the same for peer mail,
@@ -19,9 +19,22 @@
 //// configured orchestrators, so nothing a peer sends is turned into an atom, and
 //// a name that is not configured is a definitive refusal.
 ////
+//// ## The other direction, which never dials
+////
+//// A child on the remote also sends its parent mail and progress
+//// (`ChildMail`, `ChildProgress`), and `laptop_over` is how the remote's
+//// delegate session sends them. It is the one place a connection is not made on
+//// demand. The laptop may sit behind a NAT, so the remote has no address it
+//// could reach, and a dial from the remote could only fail. The laptop's link
+//// keeper (`client/remote/link_keeper`) holds the connection up while a parent
+//// has a child there, and `laptop_over` sends only while the node is connected:
+//// a message to a node that is not connected is dropped and not dialed
+//// (`client/distribution`), and `connected` lets a pass skip the attempt and
+//// cost nothing.
+////
 //// ## Flow
 ////
-//// `over_distribution` → `reached` → `answer`
+//// `over_distribution` → `reached` → `answer` → `laptop_over`
 ////
 //// 1. `over_distribution` builds the `Reach` of one session over the daemon's
 ////    membership and its configured orchestrators, and `release_over` builds
@@ -30,15 +43,21 @@
 ////    or says why not.
 //// 3. `answer` turns the port's reply, a refusal or silence, into the two
 ////    failures.
+//// 4. `laptop_over` builds the sender of the remote's delegate session, which
+////    resolves the laptop's pinned node and sends over a connection that exists.
 
+import client/delegate_outbox.{type Laptop}
 import client/distribution.{type Membership}
 import client/orchestrators.{type Orchestrator}
 import client/peer_mail.{type Failure}
 import client/remote/address
+import client/remote/link_keeper.{type Keepers}
 import client/remote/orchestrator_port
+import client/remote_mail
 import client/remote_reach.{type Reach}
 import client/remote_spawn.{type Parent, type SpawnRefusal}
 import client/roster.{type Roster}
+import gleam/dict
 import gleam/list
 import gleam/result
 
@@ -46,6 +65,16 @@ import gleam/result
 // deadline is, so the receiver's answer for a window that ran out is not itself
 // cut off by the round trip.
 const join_slack_ms = 2000
+
+// How long a send into a child waits for its answer, in milliseconds. The
+// receiver delivers through the delegate session's Agency, which answers when its
+// holder does, so the bound is a call's and not a spawn's.
+const send_ms = 15_000
+
+// How long the remote's mail or progress waits for the laptop's answer, in
+// milliseconds. The laptop's host finds the parent's Agency and commits one
+// transaction.
+const child_ms = 15_000
 
 // How long a release waits for its answer, in milliseconds. The receiver stops
 // the children and hands the session to its registry, which answers without
@@ -62,6 +91,9 @@ const connect_ms = 1500
 /// unreachable host, a missing port and a late answer each end as the outcome
 /// they are in `client/remote_reach`.
 ///
+/// `keepers` is the daemon's link keepers by orchestrator name. The reach votes
+/// to them through `keep`, and an orchestrator with no keeper takes no vote.
+///
 /// `offered` is asked at each spawn. The daemon passes the test that the session
 /// is one its owner holds alone (`manager.unshared_sessions`).
 ///
@@ -74,11 +106,12 @@ const connect_ms = 1500
 /// ## Examples
 ///
 /// ```gleam
-/// // remote_spawner.over_distribution(membership, orchestrators, session_id, fn() { True })
+/// // remote_spawner.over_distribution(membership, orchestrators, keepers, session_id, fn() { True })
 /// ```
 pub fn over_distribution(
   membership: Membership,
   configured: Roster(Orchestrator),
+  keepers: Keepers,
   session: String,
   offered: fn() -> Bool,
 ) -> Reach {
@@ -113,6 +146,84 @@ pub fn over_distribution(
       |> answer
     },
     release: release_over(membership, configured),
+    send: fn(name, parent, child, message_id, text) {
+      use at <- result.try(reached(membership, configured, name))
+      use landing <- result.try(
+        orchestrator_port.ask_send(at, parent, child, message_id, text, send_ms)
+        |> answer,
+      )
+      remote_mail.decode_landing(landing)
+      |> result.map_error(fn(reason) {
+        peer_mail.Refused("its answer could not be read: " <> reason)
+      })
+    },
+    keep: fn(name, vote) {
+      case dict.get(keepers, name) {
+        Ok(keeper) ->
+          case vote {
+            remote_reach.Hold -> link_keeper.hold(keeper, session)
+            remote_reach.Drop -> link_keeper.drop(keeper, session)
+          }
+        Error(Nil) -> Nil
+      }
+    },
+  )
+}
+
+/// The sender of a delegate session: how a child's mail and progress reach the
+/// parent's orchestrator, which this daemon's `[spawners.<name>]` row names by
+/// its node.
+///
+/// Nothing here dials. `connected` reads the connection set, and `mail` and
+/// `progress` send to the pinned node only, so with no connection they are
+/// silence and not a connect attempt (the module doc says why). A node the
+/// membership does not know is silence as well, and `connected` is false for it.
+/// The caller asks `connected` first, so a daemon whose laptop is away costs one
+/// read of the connection set per pass.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_spawner.laptop_over(membership, "laptop@100.64.0.5").connected()
+/// ```
+pub fn laptop_over(membership: Membership, node: String) -> Laptop {
+  let at = fn() {
+    distribution.peer(membership, node)
+    |> result.map(fn(peer) {
+      address.Address(
+        node: distribution.node(peer),
+        name: orchestrator_port.default(),
+      )
+    })
+  }
+  delegate_outbox.Laptop(
+    connected: fn() {
+      case distribution.peer(membership, node) {
+        Ok(peer) -> distribution.is_connected(peer)
+        Error(_) -> False
+      }
+    },
+    mail: fn(parent, child, message_id, text) {
+      case at() {
+        Ok(port) ->
+          orchestrator_port.ask_mail(
+            port,
+            parent,
+            child,
+            message_id,
+            text,
+            child_ms,
+          )
+        Error(_) -> Error(Nil)
+      }
+    },
+    progress: fn(parent, child, glance) {
+      case at() {
+        Ok(port) ->
+          orchestrator_port.ask_progress(port, parent, child, glance, child_ms)
+        Error(_) -> Error(Nil)
+      }
+    },
   )
 }
 

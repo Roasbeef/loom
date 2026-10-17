@@ -14,6 +14,7 @@ import client/remote_spawn.{Attached, CallSite, Origin, Parent, Request}
 import client/spawners.{type Spawner}
 import core/clock
 import core/ids
+import core/json
 import gleam/erlang/process.{type Subject}
 import gleam/option.{None}
 import tools/agent
@@ -83,6 +84,7 @@ type Heard {
   Spawn(remote_spawn.Delegation)
   Join(remote_spawn.Parent, Int)
   Ended(ids.OpId)
+  Sent(remote_spawn.Parent, agent.Handle, String, String)
   Released
 }
 
@@ -104,11 +106,15 @@ fn recording(heard: Subject(Heard)) -> agency.DelegateEndpoint {
       process.send(heard, Released)
       Ok(4)
     },
+    send: fn(parent, child, message_id, text) {
+      process.send(heard, Sent(parent, child, message_id, text))
+      Ok(json.Null)
+    },
     occupancy: fn() { agency.Vacant },
   )
 }
 
-pub fn a_node_no_spawner_names_is_an_unknown_spawner_for_all_four_test() {
+pub fn a_node_no_spawner_names_is_an_unknown_spawner_for_all_five_test() {
   let host =
     main.spawn_host(
       configured(),
@@ -121,6 +127,7 @@ pub fn a_node_no_spawner_names_is_an_unknown_spawner_for_all_four_test() {
   assert host.join(stranger, [], 1000) == Error(refusal)
   assert host.run_ended(stranger, operation()) == Error(refusal)
   assert host.release(stranger) == Error(refusal)
+  assert host.send(stranger, a_child(), "m1", "hello") == Error(refusal)
 }
 
 pub fn a_daemon_with_no_spawners_refuses_every_node_test() {
@@ -136,6 +143,11 @@ pub fn a_daemon_with_no_spawners_refuses_every_node_test() {
   assert host.join(laptop, [], 1000) == Error(refusal)
   assert host.run_ended(laptop, operation()) == Error(refusal)
   assert host.release(laptop) == Error(refusal)
+  assert host.send(laptop, a_child(), "m1", "hello") == Error(refusal)
+}
+
+fn a_child() -> agent.Handle {
+  agent.Handle(strand: "sub:^main/run-the-suite-1", operation: operation())
 }
 
 pub fn a_configured_spawner_is_served_by_its_delegate_agency_test() {
@@ -180,8 +192,15 @@ pub fn a_configured_spawner_is_served_by_its_delegate_agency_test() {
   assert host.run_ended(laptop, operation()) == Ok(3)
   assert process.receive(heard, 0) == Ok(Ended(operation()))
 
+  // A send reaches the same session with the parent, the child, the message's
+  // identity and its text, and nothing else of the origin.
+  assert host.send(laptop, a_child(), "m1", "also the tests") == Ok(json.Null)
+  assert process.receive(heard, 0)
+    == Ok(Sent(laptop.parent, a_child(), "m1", "also the tests"))
+
   // Each message asked for the session of the spawner's name and the parent it
   // named, and for no other.
+  assert process.receive(asked, 0) == Ok(#("laptop", laptop.parent))
   assert process.receive(asked, 0) == Ok(#("laptop", laptop.parent))
   assert process.receive(asked, 0) == Ok(#("laptop", laptop.parent))
   assert process.receive(asked, 0) == Ok(#("laptop", laptop.parent))

@@ -17,6 +17,7 @@ import client/remote_spawn.{Parent}
 import client/spawners
 import core/clock
 import core/ids
+import core/json
 import gleam/erlang/process
 import gleam/int
 import gleam/option.{None, Some}
@@ -87,6 +88,7 @@ fn tagged_with(
     join: fn(_parent, _handles, _within_ms) { Ok([]) },
     run_ended: fn(_operation) { Ok(tag) },
     release: fn() { Ok(tag) },
+    send: fn(_parent, _child, _message_id, _text) { Ok(json.Null) },
     occupancy: fn() { occupancy },
   )
 }

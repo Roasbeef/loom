@@ -383,6 +383,7 @@ pub fn serve_holdings(
     fn(_session) { Error(orchestrator_port.peer_unserved) },
     orchestrator_port.declining(),
     orchestrator_port.refusing_spawns(),
+    orchestrator_port.refusing_children(),
     ledger_holdings.from_catalogue(registry, listed),
     orchestrator_port.unreported(),
   )

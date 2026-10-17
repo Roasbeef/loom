@@ -14,14 +14,20 @@
 //// | `Down` | Nobody answers, and the orchestrator does nothing. |
 //// | `LosesReplies` | The orchestrator acts, and its answer is lost. |
 //// | `Refuses` | The orchestrator looks and says no. |
-//// | `DownFirst`, `LosesFirst` | `Down` or `LosesReplies` for a number of spawns, then `Up`. |
+//// | `DownFirst`, `LosesFirst` | `Down` or `LosesReplies` for a number of calls, then `Up`. |
 ////
 //// A `Reach` is built over several of these by name, as the daemon's is over its
 //// configured orchestrators, and every call is recorded so a test can say how
 //// many attempts it took and what each orchestrator was told.
+////
+//// The other direction, a child's mail to its parent, is not a call into the fake:
+//// a real orchestrator originates it. `deliver_to_laptop` plays that: it hands a
+//// message to a parent session's inbox the way the port would, as if it came from
+//// the named box, so a test drives the parent from the box side.
 
 import client/agency
 import client/peer_mail
+import client/remote_mail
 import client/remote_reach.{type Reach}
 import client/remote_spawn.{
   type CallSite, type Joined, type Request, type Spawned,
@@ -74,6 +80,9 @@ pub type Report {
     /// The parent of every `Release` sent to it, in order, including resends
     /// and the ones the network lost.
     releases: List(remote_spawn.Parent),
+    /// Every send into a child, as the message id and the text, in order,
+    /// including resends and the ones the network lost.
+    sends: List(#(String, String)),
   )
 }
 
@@ -102,6 +111,11 @@ type Ask {
     parent: remote_spawn.Parent,
     reply: Subject(Result(Int, peer_mail.Failure)),
   )
+  AskSend(
+    message_id: String,
+    text: String,
+    reply: Subject(Result(remote_mail.Landing, peer_mail.Failure)),
+  )
 }
 
 type State {
@@ -114,6 +128,8 @@ type State {
     join_windows: List(Int),
     settled: List(Handle),
     releases: List(remote_spawn.Parent),
+    sends: List(#(String, String)),
+    delivered: Dict(String, String),
   )
 }
 
@@ -126,18 +142,18 @@ type State {
 /// ```
 pub fn start(name: String, mode: Mode) -> Box {
   let assert Ok(started) =
-    actor.new(
-      State(
-        mode:,
-        spawns: [],
-        windows: [],
-        children: dict.new(),
-        joins: 0,
-        join_windows: [],
-        settled: [],
-        releases: [],
-      ),
-    )
+    actor.new(State(
+      mode:,
+      spawns: [],
+      windows: [],
+      children: dict.new(),
+      joins: 0,
+      join_windows: [],
+      settled: [],
+      releases: [],
+      sends: [],
+      delivered: dict.new(),
+    ))
     |> actor.on_message(handle)
     |> actor.start
     as "the fake orchestrator starts"
@@ -173,6 +189,24 @@ pub fn reach(
   boxes: List(Box),
   offered: fn() -> Bool,
 ) -> Reach {
+  voting(session, boxes, offered, process.new_subject())
+}
+
+/// A reach that also reports each vote the session casts to a link keeper, as the
+/// orchestrator's name and the vote, in order.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let votes = process.new_subject()
+/// let reach = fake_orchestrators.voting(session, [box], fn() { True }, votes)
+/// ```
+pub fn voting(
+  session: String,
+  boxes: List(Box),
+  offered: fn() -> Bool,
+  votes: Subject(#(String, remote_reach.Vote)),
+) -> Reach {
   remote_reach.Reach(
     session:,
     orchestrators: list.map(boxes, fn(box) { box.name }),
@@ -188,7 +222,31 @@ pub fn reach(
     release: fn(name, parent) {
       ask(boxes, name, fn(reply) { AskRelease(parent:, reply:) })
     },
+    send: fn(name, _parent, _child, message_id, text) {
+      ask(boxes, name, fn(reply) { AskSend(message_id:, text:, reply:) })
+    },
+    keep: fn(name, vote) { process.send(votes, #(name, vote)) },
   )
+}
+
+/// Hands a child's mail to the parent session's inbox as the box `box` would,
+/// and answers what the inbox does. The inbox admits the message only if the box
+/// is the orchestrator the child's stub names, as the daemon's host does.
+///
+/// ## Examples
+///
+/// ```gleam
+/// fake_orchestrators.deliver_to_laptop(box, inbox, parent, child, "7b1c", "done")
+/// ```
+pub fn deliver_to_laptop(
+  box: Box,
+  inbox: agency.ChildInbox,
+  parent: remote_spawn.Parent,
+  child: Handle,
+  message_id: String,
+  text: String,
+) -> Result(remote_mail.Receipt, remote_mail.ChildRefusal) {
+  inbox.mail(parent, child, message_id, text, fn(name) { name == box.name })
 }
 
 // One call to the orchestrator that answers to `name`, or the definitive refusal
@@ -219,6 +277,7 @@ fn handle(state: State, call: Call) -> actor.Next(State, Call) {
           joins: state.joins,
           join_windows: list.reverse(state.join_windows),
           releases: list.reverse(state.releases),
+          sends: list.reverse(state.sends),
         ),
       )
       actor.continue(state)
@@ -234,6 +293,64 @@ fn handle(state: State, call: Call) -> actor.Next(State, Call) {
     Asked(AskJoin(handles:, window_ms:, reply:)) ->
       join(state, handles, window_ms, reply)
     Asked(AskRelease(parent:, reply:)) -> release(state, parent, reply)
+    Asked(AskSend(message_id:, text:, reply:)) ->
+      send(state, message_id, text, reply)
+  }
+}
+
+// A send is recorded whatever the network does to its answer, as a real
+// orchestrator acts before it replies. The first delivery of an id answers that
+// it steered the child, and a repeat answers `Admitted`, which is the receipt a
+// real orchestrator stores.
+fn send(
+  state: State,
+  message_id: String,
+  text: String,
+  reply: Subject(Result(remote_mail.Landing, peer_mail.Failure)),
+) -> actor.Next(State, Call) {
+  let state = State(..state, sends: [#(message_id, text), ..state.sends])
+  let #(mode, state) = consume(state)
+  case mode {
+    Down | DownFirst(..) -> {
+      process.send(reply, Error(peer_mail.Unreachable))
+      actor.continue(state)
+    }
+    Refuses(reason:) -> {
+      process.send(reply, Error(peer_mail.Refused(reason)))
+      actor.continue(state)
+    }
+    Up | LosesReplies | LosesFirst(..) -> {
+      let #(landing, state) = deliver(state, message_id, text)
+      process.send(reply, case mode {
+        LosesReplies | LosesFirst(..) -> Error(peer_mail.Unreachable)
+        Up | Down | Refuses(..) | DownFirst(..) -> Ok(landing)
+      })
+      actor.continue(state)
+    }
+  }
+}
+
+fn deliver(
+  state: State,
+  message_id: String,
+  text: String,
+) -> #(remote_mail.Landing, State) {
+  case dict.has_key(state.delivered, message_id) {
+    True -> #(remote_mail.Admitted, state)
+    False -> {
+      let #(entry, _generator) =
+        ids.mint_entry(ids.generator(
+          clock.fixed(at: 1000),
+          seed: seed_of(message_id),
+        ))
+      #(
+        remote_mail.Steered(entry:),
+        State(
+          ..state,
+          delivered: dict.insert(state.delivered, message_id, text),
+        ),
+      )
+    }
   }
 }
 

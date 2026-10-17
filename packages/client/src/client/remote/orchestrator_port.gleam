@@ -86,6 +86,19 @@
 //// facts are, so it runs apart from the port, as `Holds` does. `Holds` is the
 //// subset of a report that `revoke` needed before the report existed.
 ////
+//// Phase 2 of protocol-change/084 adds `ChildSend`, a message from the parent
+//// into a child on this orchestrator, served through the same `SpawnHost`, and
+//// the first messages that run in the other direction. A child on this
+//// orchestrator can mail its parent (`ChildMail`) and report what it is doing
+//// (`ChildProgress`) to the parent's orchestrator, and the receiving port serves
+//// them through a `ChildHost`, which a daemon with no `[orchestrators]` starts as
+//// `refusing_children`. The three run apart from the port, and each is judged
+//// by the node it came from: the host refuses a message whose node is not the
+//// configured node of the orchestrator the parent's stub names. They are
+//// idempotent by the keys their constructors document, so the box can resend
+//// them until it is answered. `client/remote_mail` is their vocabulary, and the
+//// sending ends are `ask_mail` and `ask_progress` below.
+////
 //// The port reveals whether an identity is in this daemon's catalogue, and for
 //// `Holds` two counts of sessions, to a peer the operator pinned as a trusted
 //// Erlang node. It carries no credential, and a client is never redirected by
@@ -104,17 +117,18 @@
 ////
 //// ## Flow
 ////
-//// `start_with` → `answer` → `detached` → `ask_release` → `exchange` →
-//// `exchange_why`
+//// `start_with` → `answer` → `detached` → `ask_release` → `ask_send` →
+//// `ask_mail` → `exchange` → `exchange_why`
 ////
 //// 1. `start_with` starts the port with the hosts a daemon supplies.
 //// 2. `answer` handles one message. A read it can answer from a function it
 ////    holds is answered in place.
-//// 3. `detached` runs the slow ones (a spawn, a join, a run end, a release) in
-////    a task linked to the port, so a question about ownership never waits
-////    behind them.
-//// 4. The `ask_*` functions are the sending ends, `ask_release` among them,
-////    and each makes its one request through `exchange`, which wraps
+//// 3. `detached` runs the slow ones (a spawn, a join, a run end, a release, a
+////    send, a child's mail or progress) in a task linked to the port, so a
+////    question about ownership never waits behind them.
+//// 4. The `ask_*` functions are the sending ends, `ask_release` and `ask_send`
+////    among those the laptop calls and `ask_mail` among those the box calls, and
+////    each makes its one request through `exchange`, which wraps
 ////    `exchange_why`. That function takes a monitor before it sends, and
 ////    `ask_report` uses it directly to learn why there was no answer.
 
@@ -122,6 +136,7 @@ import client/internal/ffi_remote
 import client/node_report.{type NodeReport}
 import client/peer_mail
 import client/remote/address.{type Address}
+import client/remote_mail.{type ChildRefusal, type Receipt}
 import client/remote_spawn.{
   type CallSite, type Joined, type Origin, type Parent, type Request,
   type SpawnRefusal, type Spawned,
@@ -129,6 +144,7 @@ import client/remote_spawn.{
 import client/session_move.{
   type Activation, type Chunk, type Stage, type Verdict,
 }
+import core/glance.{type Glance}
 import core/ids.{type OpId}
 import core/json.{type JsonValue}
 import gleam/erlang/atom
@@ -282,6 +298,71 @@ pub type Message {
     reply: Subject(Result(Int, SpawnRefusal)),
   )
 
+  /// Delivers a message from the parent into a child that runs on this
+  /// orchestrator (protocol-change/084, phase 2). The answer is how the message
+  /// landed (`remote_mail.encode_landing`), or the reason the host refused it.
+  /// The message id is the sending call site's digest, and the host stores a
+  /// receipt under it, so a repeat is answered from the receipt and delivers
+  /// nothing twice. A child with no run open starts a detached run, bounded by
+  /// the deadline the child already has.
+  ///
+  /// Like every message of the parent it may arrive before the `Spawn` it
+  /// concerns, because the two come from different processes. A child that does
+  /// not exist yet is a refusal, never a message the host holds.
+  ChildSend(
+    /// The parent session and strand, on the sending orchestrator.
+    parent: Parent,
+    /// The child, as `Spawned` returned it.
+    child: Handle,
+    /// The message's identity, which keys the receipt.
+    message_id: String,
+    /// What the parent says.
+    text: String,
+    /// Where the landing goes.
+    reply: Subject(Result(JsonValue, SpawnRefusal)),
+  )
+
+  /// Mail from a child that runs on the sending orchestrator to its parent on
+  /// this one (protocol-change/084, phase 2). The answer is a final `Receipt`,
+  /// or a `ChildRefusal` of which only `ParentSessionNotOpen` is worth asking
+  /// again. The message id is the child's call-site digest on the sender, and the
+  /// receiver stores a receipt under it, so a resend is answered from the
+  /// receipt and steers the parent once.
+  ///
+  /// The child is named by the strand name the sender gave it, and the receiver
+  /// finds the parent's stub by that name, never by the handle: the mail may
+  /// arrive before the answer to the `Spawn` that made the child, when the stub
+  /// is still `Requested` and has no handle.
+  ChildMail(
+    /// The parent session and strand, on this orchestrator.
+    parent: Parent,
+    /// The child that sent it. Only its strand is read.
+    child: Handle,
+    /// The message's identity, which keys the receipt.
+    message_id: String,
+    /// What the child says.
+    text: String,
+    /// Where the receipt goes.
+    reply: Subject(Result(Receipt, ChildRefusal)),
+  )
+
+  /// A glance at what a child that runs on the sending orchestrator is doing
+  /// (protocol-change/084, phase 2). The receiver keeps the newest on the
+  /// parent's stub for that child and ignores one that is not newer, so a resend
+  /// is harmless and the order messages arrive in does not matter. It is
+  /// answered like mail, with `Ok(Nil)` once the stub holds the glance or a newer
+  /// one.
+  ChildProgress(
+    /// The parent session and strand, on this orchestrator.
+    parent: Parent,
+    /// The child the glance describes. Only its strand is read.
+    child: Handle,
+    /// What it is doing.
+    glance: Glance,
+    /// Where the answer goes.
+    reply: Subject(Result(Nil, ChildRefusal)),
+  )
+
   /// What this daemon holds that a revoke of it, or of an executor it places
   /// sessions on, would strand (protocol-change/086, phase 2): how many
   /// sessions its catalogue owns, and how many of them are placed on each
@@ -433,6 +514,10 @@ pub type SpawnHost {
     /// and counts the children it stopped. A parent with no session answers
     /// zero.
     release: fn(Origin) -> Result(Int, SpawnRefusal),
+    /// Delivers a message into a child, given the child, the message's identity
+    /// and its text, and answers how it landed. A repeat of an identity answers
+    /// from the receipt.
+    send: fn(Origin, Handle, String, String) -> Result(JsonValue, SpawnRefusal),
   )
 }
 
@@ -460,6 +545,47 @@ pub fn refusing_spawns() -> SpawnHost {
     release: fn(origin) {
       Error(remote_spawn.UnknownSpawner(node: origin.node))
     },
+    send: fn(origin, _child, _message_id, _text) {
+      Error(remote_spawn.UnknownSpawner(node: origin.node))
+    },
+  )
+}
+
+/// What a daemon does with what a child on another orchestrator sends its
+/// parent here (protocol-change/084, phase 2): find the parent session, check
+/// that the message came from the orchestrator that runs the child, and admit it.
+/// The daemon supplies the functions, so the port neither reads the roster nor
+/// opens a session.
+///
+/// Each function runs in a task of its own, linked to the port and cancelled
+/// with the requester (`detached`). Each answers `Error` with the refusal when it
+/// declines, and a function that crashes sends nothing.
+pub type ChildHost {
+  ChildHost(
+    /// Admits a child's mail into the parent, given the child and the message's
+    /// identity and text, and answers the receipt.
+    mail: fn(Origin, Handle, String, String) -> Result(Receipt, ChildRefusal),
+    /// Keeps a child's glance on the parent's stub for it.
+    progress: fn(Origin, Handle, Glance) -> Result(Nil, ChildRefusal),
+  )
+}
+
+/// The host of a daemon that lists no `[orchestrators]`: no orchestrator runs
+/// children for it, so every message is refused as coming from the wrong place,
+/// `OriginMismatch`, which is definitive.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // orchestrator_port.refusing_children().mail(origin, child, "id", "hello")
+/// // -> Error(remote_mail.OriginMismatch)
+/// ```
+pub fn refusing_children() -> ChildHost {
+  ChildHost(
+    mail: fn(_origin, _child, _message_id, _text) {
+      Error(remote_mail.OriginMismatch)
+    },
+    progress: fn(_origin, _child, _glance) { Error(remote_mail.OriginMismatch) },
   )
 }
 
@@ -552,6 +678,7 @@ pub fn start(
     unserved_description,
     declining(),
     refusing_spawns(),
+    refusing_children(),
     unheld,
     unreported(),
   )
@@ -583,6 +710,7 @@ pub fn start_serving(
     unserved_description,
     declining(),
     refusing_spawns(),
+    refusing_children(),
     unheld,
     unreported(),
   )
@@ -609,20 +737,22 @@ pub fn start_importing(
     unserved_description,
     importer,
     refusing_spawns(),
+    refusing_children(),
     unheld,
     unreported(),
   )
 }
 
 /// Starts the port serving peer commands (phase 4), descriptions of the
-/// sessions it holds, session moves (phase 5) and subagent spawns (phase 6),
-/// which is what the production daemon runs. `start`, `start_serving` and
+/// sessions it holds, session moves (phase 5), subagent spawns (phase 6) and
+/// the mail and progress of children that run elsewhere, which is what the
+/// production daemon runs. `start`, `start_serving` and
 /// `start_importing` are this with the other parts refused.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // let assert Ok(_) = orchestrator_port.start_with(orchestrator_port.default(), held, forward, describe, importer, spawns, holds, reads)
+/// // let assert Ok(_) = orchestrator_port.start_with(orchestrator_port.default(), held, forward, describe, importer, spawns, children, holds, reads)
 /// ```
 pub fn start_with(
   name: Name(Message),
@@ -631,12 +761,24 @@ pub fn start_with(
   describe: Describer,
   importer: Importer,
   spawns: SpawnHost,
+  children: ChildHost,
   holds: Holder,
   reads: Reads,
 ) -> actor.StartResult(Subject(Message)) {
   actor.new(Nil)
   |> actor.on_message(fn(state, message) {
-    answer(held, peer, describe, importer, spawns, holds, reads, state, message)
+    answer(
+      held,
+      peer,
+      describe,
+      importer,
+      spawns,
+      children,
+      holds,
+      reads,
+      state,
+      message,
+    )
   })
   |> actor.named(name)
   |> actor.hibernate_after(residency.hibernate_after_ms)
@@ -662,6 +804,7 @@ fn answer(
   describe: Describer,
   importer: Importer,
   spawns: SpawnHost,
+  children: ChildHost,
   holds: Holder,
   reads: Reads,
   state: Nil,
@@ -732,6 +875,38 @@ fn answer(
     Release(parent:, reply:) ->
       detached(reply, fn(node) {
         spawns.release(remote_spawn.Origin(node:, parent:))
+      })
+
+    // A send into a child reaches into the delegate session's Agency, which
+    // answers when its holder does, so it runs apart from the port like the
+    // other subagent messages. The sender's node is judged against the spawn
+    // policy by the host.
+    ChildSend(parent:, child:, message_id:, text:, reply:) ->
+      detached(reply, fn(node) {
+        spawns.send(
+          remote_spawn.Origin(node:, parent:),
+          child,
+          message_id,
+          text,
+        )
+      })
+
+    // A child's mail and progress reach into a parent session's Agency, which
+    // may be opening or busy, so they run apart from the port as well. The host
+    // checks that the sender's node is the node of the orchestrator the parent's
+    // stub names, and answers `OriginMismatch` if it is not.
+    ChildMail(parent:, child:, message_id:, text:, reply:) ->
+      detached(reply, fn(node) {
+        children.mail(
+          remote_spawn.Origin(node:, parent:),
+          child,
+          message_id,
+          text,
+        )
+      })
+    ChildProgress(parent:, child:, glance:, reply:) ->
+      detached(reply, fn(node) {
+        children.progress(remote_spawn.Origin(node:, parent:), child, glance)
       })
   }
   actor.continue(state)
@@ -1014,6 +1189,77 @@ pub fn ask_release(
   within_ms: Int,
 ) -> Result(Result(Int, SpawnRefusal), Nil) {
   exchange(at, fn(reply) { Release(parent:, reply:) }, within_ms)
+}
+
+/// Delivers a message into a child on the port at `at`, and waits at most
+/// `within_ms` for how it landed. Silence is `Error(Nil)`, and the same message
+/// can be sent again: the receiver stores a receipt under the message id.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // orchestrator_port.ask_send(Address(node: peer, name: orchestrator_port.default()), parent, child, id, "hello", 15_000)
+/// ```
+pub fn ask_send(
+  at: Address(Message),
+  parent: Parent,
+  child: Handle,
+  message_id: String,
+  text: String,
+  within_ms: Int,
+) -> Result(Result(JsonValue, SpawnRefusal), Nil) {
+  exchange(
+    at,
+    fn(reply) { ChildSend(parent:, child:, message_id:, text:, reply:) },
+    within_ms,
+  )
+}
+
+/// Mails a parent on the port at `at` from a child on this orchestrator, and
+/// waits at most `within_ms` for the receipt. Silence is `Error(Nil)`, and the
+/// same mail can be sent again: the receiver stores a receipt under the message
+/// id.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // orchestrator_port.ask_mail(Address(node: laptop, name: orchestrator_port.default()), parent, child, id, "done", 15_000)
+/// ```
+pub fn ask_mail(
+  at: Address(Message),
+  parent: Parent,
+  child: Handle,
+  message_id: String,
+  text: String,
+  within_ms: Int,
+) -> Result(Result(Receipt, ChildRefusal), Nil) {
+  exchange(
+    at,
+    fn(reply) { ChildMail(parent:, child:, message_id:, text:, reply:) },
+    within_ms,
+  )
+}
+
+/// Pushes a child's glance to the port at `at`, and waits at most `within_ms`
+/// for the answer. Silence is `Error(Nil)`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // orchestrator_port.ask_progress(Address(node: laptop, name: orchestrator_port.default()), parent, child, glance, 15_000)
+/// ```
+pub fn ask_progress(
+  at: Address(Message),
+  parent: Parent,
+  child: Handle,
+  glance: Glance,
+  within_ms: Int,
+) -> Result(Result(Nil, ChildRefusal), Nil) {
+  exchange(
+    at,
+    fn(reply) { ChildProgress(parent:, child:, glance:, reply:) },
+    within_ms,
+  )
 }
 
 // One request and its reply. Silence is `Error(Nil)`.

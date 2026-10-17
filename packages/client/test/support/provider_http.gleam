@@ -742,8 +742,24 @@ fn latest_content(
         json.String("tool_result") -> tool_result(block, admission)
         _ -> text_content(blocks)
       }
-    _ -> text_content(blocks)
+
+    // A result that is followed by text only: input steered into the run while
+    // the tool was in flight rides in the same user turn as the result (a
+    // provider turn alternates roles). The result still selects the reply, and
+    // the steered text stays in the retained request body for the caller to
+    // assert on.
+    [first, ..rest] ->
+      case field(first, "type"), list.all(rest, is_text_block) {
+        json.String("tool_result"), True -> tool_result(first, admission)
+        _, _ -> text_content(blocks)
+      }
+
+    [] -> text_content(blocks)
   }
+}
+
+fn is_text_block(block: json.JsonValue) -> Bool {
+  field(block, "type") == json.String("text")
 }
 
 fn text_content(blocks: List(json.JsonValue)) -> Result(Latest, String) {

@@ -65,6 +65,7 @@
 
 import client/remote_spawn.{type ChildUsage, type Parent}
 import core/corruption
+import core/glance.{type Glance}
 import core/ids.{type OpId}
 import core/json.{type JsonValue}
 import gleam/dict
@@ -102,6 +103,11 @@ pub type Stub {
     /// The strand name the child has on the other orchestrator, derived from the
     /// call site. It is what the roster calls a child that has no handle yet.
     name: String,
+    /// The newest glance the remote pushed for this child, or `None` before the
+    /// first one. It belongs to the stub and not to a state: a glance can arrive
+    /// while the stub is still `Requested`, and the answer to the `Spawn` that
+    /// follows must not lose it.
+    glance: Option(Glance),
     /// How far the spawn has got.
     state: State,
   )
@@ -400,6 +406,58 @@ pub fn live_on(kept: List(Kept), now: Int) -> Option(String) {
   |> option.from_result
 }
 
+/// Finds the stub of the child a remote orchestrator names, by the strand name
+/// it gave the child and the parent strand it reports to.
+///
+/// A message from the remote concerns a child it may have started a moment ago,
+/// and the answer to the `Spawn` that started it may not have reached this side
+/// yet. The name is derived from the call site and written on the stub before
+/// the first `Spawn` leaves, so the lookup finds the stub in any state. Nothing
+/// here reads the lineage cell, which is written only with `Spawned`, or the
+/// handle, which exists only after it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_child.find_named(kept, "main", "sub:^main/build-turn-1-0")
+/// ```
+pub fn find_named(
+  kept: List(Kept),
+  strand: String,
+  name: String,
+) -> Result(Kept, Nil) {
+  list.find(kept, fn(entry) {
+    entry.stub.name == name && entry.stub.strand == strand
+  })
+}
+
+/// Records a glance the remote pushed for a child, unless the stub already holds
+/// a newer one.
+///
+/// A glance is a view and not a fact the parent acts on, so the rule is the
+/// simplest that cannot go backwards: the glance with the larger `at` wins, an
+/// equal or older one is ignored, and the stub's state is left as it is. The
+/// write is a compare-and-set like every other step, so a glance and an answer
+/// to a `Spawn` that race both land.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_child.progressed(runtime, key, glance)
+/// ```
+pub fn progressed(
+  runtime: api.Runtime,
+  key: String,
+  glance: Glance,
+) -> Result(Stub, String) {
+  advance_with(runtime, key, fn(stub) {
+    case stub.glance {
+      Some(held) if held.at >= glance.at -> None
+      Some(_) | None -> Some(Stub(..stub, glance: Some(glance)))
+    }
+  })
+}
+
 /// Records the orchestrator's answer to a `Spawn`: the child exists.
 ///
 /// The lineage cell is written first, so that no one is shown the handle before
@@ -505,23 +563,35 @@ fn advance(
   key: String,
   next: fn(State) -> Option(State),
 ) -> Result(Stub, String) {
+  advance_with(runtime, key, fn(stub) {
+    option.map(next(stub.state), fn(state) { Stub(..stub, state:) })
+  })
+}
+
+// A step that may change any part of the stub, as a single compare-and-set. The
+// step is given the stub as read and returns the stub to write, or `None` when
+// it does not apply to where the stub stands.
+fn advance_with(
+  runtime: api.Runtime,
+  key: String,
+  next: fn(Stub) -> Option(Stub),
+) -> Result(Stub, String) {
   advance_attempts(runtime, key, next, step_attempts)
 }
 
 fn advance_attempts(
   runtime: api.Runtime,
   key: String,
-  next: fn(State) -> Option(State),
+  next: fn(Stub) -> Option(Stub),
   attempts: Int,
 ) -> Result(Stub, String) {
   use found <- result.try(read(runtime, key))
   case found {
     None -> Error("the remote child stub is missing")
     Some(#(stub, seq)) ->
-      case next(stub.state) {
+      case next(stub) {
         None -> Ok(stub)
-        Some(state) ->
-          store(runtime, key, Stub(..stub, state:), seq, next, attempts)
+        Some(moved) -> store(runtime, key, moved, seq, next, attempts)
       }
   }
 }
@@ -533,7 +603,7 @@ fn store(
   key: String,
   moved: Stub,
   seq: Int,
-  next: fn(State) -> Option(State),
+  next: fn(Stub) -> Option(Stub),
   attempts: Int,
 ) -> Result(Stub, String) {
   case
@@ -638,6 +708,7 @@ pub fn encode(stub: Stub) -> JsonValue {
       #("parentTools", strings(stub.parent_tools)),
       #("request", encode_request(stub.request)),
       #("name", json.String(stub.name)),
+      #("glance", optional(stub.glance, glance.encode)),
     ],
     encode_state(stub.state),
   ))
@@ -761,6 +832,11 @@ pub fn decode(value: JsonValue) -> Result(Stub, String) {
     member(fields, "request") |> result.try(decode_request),
   )
   use name <- result.try(text(fields, "name"))
+  use glance <- result.try(
+    maybe(fields, "glance", fn(value) {
+      glance.decode(value) |> result.map_error(corruption.describe)
+    }),
+  )
   use state <- result.try(decode_state(fields))
   Ok(Stub(
     orchestrator:,
@@ -770,6 +846,7 @@ pub fn decode(value: JsonValue) -> Result(Stub, String) {
     parent_tools:,
     request:,
     name:,
+    glance:,
     state:,
   ))
 }

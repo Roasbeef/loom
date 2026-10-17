@@ -1132,6 +1132,8 @@ fn settings(root: String, script: Subject(ScriptMessage)) -> serve.Settings {
     remote_reach: None,
     deadline_tick_ms: None,
     metering: None,
+    spawner: None,
+    laptop: None,
     first_prompt: None,
     profile_desk: None,
     codemode_sockets: None,
