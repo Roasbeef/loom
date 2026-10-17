@@ -83,6 +83,7 @@ type Heard {
   Spawn(remote_spawn.Delegation)
   Join(remote_spawn.Parent, Int)
   Ended(ids.OpId)
+  Released
 }
 
 fn recording(heard: Subject(Heard)) -> agency.DelegateEndpoint {
@@ -98,6 +99,10 @@ fn recording(heard: Subject(Heard)) -> agency.DelegateEndpoint {
     run_ended: fn(ended) {
       process.send(heard, Ended(ended))
       Ok(3)
+    },
+    release: fn() {
+      process.send(heard, Released)
+      Ok(4)
     },
   )
 }

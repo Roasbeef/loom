@@ -29,10 +29,12 @@
 //// 7. `send` and `roster` read the ledger to decide whom a strand may reach;
 ////    `note` and `notes` keep a child's notes under its own prefix.
 //// 8. `reaping_hooks` spawns `reap_run` unlinked, off the driver, at a run end.
-//// 9. `delegate_spawn`, `delegate_join` and `delegate_run_ended` are the same
-////    machinery for a parent on another orchestrator: `spawn_on` takes a
-////    `Source` that says whether the caller is a strand here or a `Delegation`,
-////    and `run_ended_in` writes the ended fence before it reaps.
+//// 9. `delegate_spawn`, `delegate_join`, `delegate_run_ended` and
+////    `delegate_release` are the same machinery for a parent on another
+////    orchestrator: `spawn_on` takes a `Source` that says whether the caller is
+////    a strand here or a `Delegation`, `run_ended_in` writes the ended fence
+////    before it reaps, and `released_in` writes the released fence before it
+////    stops every child.
 //// 10. The other direction, a child that runs on another orchestrator, is
 ////     `spawn_elsewhere`: the holder's `admit_remote` writes the stub, then
 ////     `ask_until_answered` sends the `Spawn` and `record_answer` writes down
@@ -88,6 +90,16 @@
 //// first decides and the other agrees with it. A child that already exists is
 //// adopted whatever the fence says, since adopting creates nothing that the run
 //// end would have to reap.
+////
+//// The parent session itself can be deleted. The orchestrator that deleted it
+//// sends `Release`, and the holder's `released_in` writes
+//// `delegate/released`, a fence on the whole session and not on one operation,
+//// then stops every child that is running with `child_run.Released`. The
+//// admission of a new child reads this fence beside the ended one, on the same
+//// create path and after adoption, so a `Spawn` that overtakes the `Release`
+//// is refused and one that came first is a child this stop reaches. The
+//// registry deletes the session once its slot drains (`manager.release_delegate`),
+//// and that deletion removes everything stored under the session.
 ////
 //// The spawner may also never come back. A child there is bounded by its
 //// deadline on this machine's clock, and ordinarily a deadline is enforced when
@@ -476,6 +488,10 @@ pub type Message {
   /// the children it owns. Answers how many were stopped.
   DelegateEnded(operation: OpId, reply: Subject(Result(Int, Refusal)))
 
+  /// Records that the parent session on another orchestrator was deleted, then
+  /// stops every child still running. Answers how many were stopped.
+  DelegateRelease(reply: Subject(Result(Int, Refusal)))
+
   /// The periodic heartbeat of a session with `deadline_tick_ms`: stops every
   /// child whose deadline has passed, whether or not anything is waiting.
   DeadlineTick
@@ -565,6 +581,10 @@ pub fn start(
       }
       DelegateEnded(operation:, reply:) -> {
         process.send(reply, run_ended_in(config, state, operation))
+        actor.continue(state)
+      }
+      DelegateRelease(reply:) -> {
+        process.send(reply, released_in(config, state))
         actor.continue(state)
       }
       DeadlineTick -> {
@@ -1044,13 +1064,34 @@ fn admit_run(
 ) -> Result(Nil, Refusal) {
   case source {
     Local -> Ok(Nil)
-    Delegated(..) ->
-      case api.fact(runtime, ended_key(caller.operation)) {
-        Ok(None) -> Ok(Nil)
-        Ok(Some(_)) -> Error(agent.ParentRunEnded(strand: caller.strand))
-        Error(error) -> Error(plane_failed(error))
-      }
+    Delegated(..) -> {
+      use Nil <- result.try(refuse_if_fenced(
+        runtime,
+        ended_key(caller.operation),
+        caller,
+      ))
+      refuse_if_fenced(runtime, released_key(), caller)
+    }
   }
+}
+
+// A fence that is written refuses the spawn; one that is absent admits it.
+fn refuse_if_fenced(
+  runtime: api.Runtime,
+  key: String,
+  caller: Caller,
+) -> Result(Nil, Refusal) {
+  case api.fact(runtime, key) {
+    Ok(None) -> Ok(Nil)
+    Ok(Some(_)) -> Error(agent.ParentRunEnded(strand: caller.strand))
+    Error(error) -> Error(plane_failed(error))
+  }
+}
+
+// The key of the fence for the whole session of a remote parent, written when
+// the parent session is deleted.
+fn released_key() -> String {
+  api.delegate_fact_prefix <> "released"
 }
 
 // The key of the fence for one run of a remote parent.
@@ -2039,7 +2080,11 @@ fn partial_report(
 ) -> String {
   case outcome {
     Completed -> final
-    Failed(_) | Aborted | agent.BudgetExpired | agent.ParentFinished -> {
+    Failed(_)
+    | Aborted
+    | agent.BudgetExpired
+    | agent.ParentFinished
+    | agent.Released -> {
       let heading = case outcome {
         Failed(_) -> "Partial reviewer output (failed)."
         Aborted -> "Partial reviewer output (stopped)."
@@ -2047,6 +2092,7 @@ fn partial_report(
           "Partial reviewer output (wall-clock budget expired)."
         agent.ParentFinished ->
           "Partial reviewer output (owning parent run ended)."
+        agent.Released -> "Partial reviewer output (parent session deleted)."
         Completed -> "Reviewer output."
       }
       case final, notes {
@@ -2696,6 +2742,39 @@ fn run_ended_in(
   stopping
 }
 
+// The parent session of a remote parent was deleted. The fence is written
+// first, and every child is stopped second, for the reason `run_ended_in`
+// gives: a spawn that reaches the holder next finds the fence, and one that
+// reached it before is a child this stop reaches. A child that is running owns
+// no lifetime but its own deadline, so every one is stopped whatever started
+// it. The count is of runs nobody had stopped yet, so a repeat counts nothing.
+fn released_in(config: Config, runtime: api.Runtime) -> Result(Int, Refusal) {
+  use Nil <- result.try(
+    api.put_reserved_fact(runtime, released_key(), json.Null)
+    |> result.map_error(plane_failed),
+  )
+  use ledger <- result.map(read_ledger(runtime))
+  list.fold(dict.values(ledger), 0, fn(stopped, cell) {
+    case current_run(runtime, cell) {
+      Ok(Some(run)) ->
+        case run.record.stop {
+          child_run.Unstopped -> {
+            reap(config.abort_effects, runtime, run, child_run.Released)
+            stopped + 1
+          }
+
+          // Stopped already, possibly before its abort was sent: the stop is
+          // durable, so sending the abort again is the whole repair.
+          _ -> {
+            reap(config.abort_effects, runtime, run, run.record.stop)
+            stopped
+          }
+        }
+      Ok(None) | Error(_) -> stopped
+    }
+  })
+}
+
 // A cause is written once for this operation. Losing its CAS leaves the next
 // observation to read the winner; it never sends an unrecorded cancellation.
 fn reap(
@@ -2920,6 +2999,12 @@ fn run_outcome(
         ..,
       )))
     -> agent.ParentFinished
+    Aborted,
+      Ok(Some(ObservedRun(
+        record: child_run.Run(stop: child_run.Released, ..),
+        ..,
+      )))
+    -> agent.Released
     _, _ -> outcome
   }
 }
@@ -3962,7 +4047,34 @@ pub fn delegate_run_ended(
   result.map_error(answer, refused(config, _))
 }
 
-/// The three questions a spawning orchestrator asks of a delegate session's
+/// Records that the parent session of a remote parent was deleted and stops
+/// every child still running, answering how many it stopped.
+///
+/// The holder writes the released fence before it stops anything, so a spawn
+/// that arrives afterwards is refused and one that arrived before is a child
+/// this stop reaches. A repeat writes the same fence and stops nothing more.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // agency.delegate_release(config) == Ok(2)
+/// ```
+pub fn delegate_release(
+  config: Config,
+) -> Result(Int, remote_spawn.SpawnRefusal) {
+  use subject <- result.try(holder(config))
+  use answer <- result.try(
+    call.try_call(
+      subject,
+      waiting: config.holder_timeout_ms,
+      sending: fn(reply) { DelegateRelease(reply:) },
+    )
+    |> result.map_error(fn(_) { refused(config, agent.AgencyUnavailable) }),
+  )
+  result.map_error(answer, refused(config, _))
+}
+
+/// The questions a spawning orchestrator asks of a delegate session's
 /// Agency, closed over the holder's name and the few settings a wait needs.
 ///
 /// The daemon's registry keeps one of these per resident session, in the
@@ -3970,7 +4082,7 @@ pub fn delegate_run_ended(
 /// message from another orchestrator reaches the right session's Agency without
 /// the registry holding the runtime. The registry's lookup copies the
 /// projection to the process that asks, so the closures must stay small: they
-/// hold a trimmed `Config`, which keeps what the three functions read and
+/// hold a trimmed `Config`, which keeps what the four functions read and
 /// drops the model routing and the peer outbox bell that only the holder uses.
 pub type DelegateEndpoint {
   DelegateEndpoint(
@@ -3985,6 +4097,8 @@ pub type DelegateEndpoint {
       Result(List(remote_spawn.Joined), remote_spawn.SpawnRefusal),
     /// Records a run end and stops the children the run owned.
     run_ended: fn(OpId) -> Result(Int, remote_spawn.SpawnRefusal),
+    /// Records that the parent session was deleted and stops every child.
+    release: fn() -> Result(Int, remote_spawn.SpawnRefusal),
   )
 }
 
@@ -4014,6 +4128,7 @@ pub fn delegate_endpoint(config: Config) -> DelegateEndpoint {
       delegate_join(trimmed, parent, handles, within_ms)
     },
     run_ended: fn(operation) { delegate_run_ended(trimmed, operation) },
+    release: fn() { delegate_release(trimmed) },
   )
 }
 

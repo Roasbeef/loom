@@ -4901,7 +4901,8 @@ pub fn a_remote_call_for_an_unknown_or_foreign_execution_is_refused_test() {
 // --- a parent on another orchestrator (protocol-change/084) -----------------
 //
 // These drive the holder with the questions the orchestrator port relays:
-// `delegate_spawn`, `delegate_join` and `delegate_run_ended`. The session is an
+// `delegate_spawn`, `delegate_join`, `delegate_run_ended` and
+// `delegate_release`. The session is an
 // ordinary harness session whose `main` strand stands for the strand the
 // spawner's profile seeded, and the parent is a strand of some other
 // orchestrator, which this session has never seen.
@@ -5257,6 +5258,85 @@ pub fn a_run_end_stops_what_that_run_owns_and_nothing_else_test() {
   close(harness)
 }
 
+pub fn a_release_stops_every_running_child_whoever_owns_it_test() {
+  let harness = start_harness(Hangs)
+  let owned = remote_spawned(harness, "turn-1:tools", "owned")
+  let other_run = remote_spawned(harness, "turn-2:tools", "other run")
+  let assert Ok(detached) =
+    agency.delegate_spawn(
+      harness.config,
+      remote_delegation(),
+      site_of("turn-3:tools", 0),
+      remote_spawn.Request(
+        ..remote_request("detached"),
+        detach: remote_spawn.Detached,
+      ),
+    )
+
+  // The parent session was deleted: every child stops, with the reason that
+  // says why, and the answer counts them. A run end stops only what its run
+  // owns, and a release has no run to ask about.
+  assert agency.delegate_release(harness.config) == Ok(3)
+  assert until(
+    fn() {
+      run_for(harness, owned.handle).stop == child_run.Released
+      && run_for(harness, other_run.handle).stop == child_run.Released
+      && run_for(harness, detached.handle).stop == child_run.Released
+    },
+    200,
+  )
+
+  // Telling it again writes the same fence and stops nothing more.
+  assert agency.delegate_release(harness.config) == Ok(0)
+  assert run_for(harness, owned.handle).stop == child_run.Released
+  close(harness)
+}
+
+pub fn a_spawn_after_a_release_is_refused_and_creates_nothing_test() {
+  let harness = start_harness(Settles("done"))
+
+  // The release overtakes the spawn, as it can when the two come from
+  // different processes. Nothing is running, so nothing is stopped, and the
+  // fence for the whole session is the only trace.
+  assert agency.delegate_release(harness.config) == Ok(0)
+  let assert Ok(Some(_fence)) =
+    api.fact(harness.runtime, api.delegate_fact_prefix <> "released")
+    as "the release leaves a fence"
+  assert agency.delegate_spawn(
+      harness.config,
+      remote_delegation(),
+      site_of("turn-1:tools", 0),
+      remote_request("late"),
+    )
+    == Error(remote_spawn.ParentRunEnded)
+  assert sub_strands(harness) == []
+  close(harness)
+}
+
+pub fn a_resent_spawn_adopts_even_after_a_release_test() {
+  let harness = start_harness(Hangs)
+  let site = site_of("turn-1:tools", 0)
+  let request =
+    remote_spawn.Request(
+      ..remote_request("outlive"),
+      detach: remote_spawn.Detached,
+    )
+  let assert Ok(first) =
+    agency.delegate_spawn(harness.config, remote_delegation(), site, request)
+  assert agency.delegate_release(harness.config) == Ok(1)
+
+  // A resend of a spawn that already landed creates nothing for the release to
+  // have missed, so it is answered with the child it made, which is stopped.
+  let assert Ok(again) =
+    agency.delegate_spawn(harness.config, remote_delegation(), site, request)
+  assert again.handle == first.handle
+  assert until(
+    fn() { run_for(harness, first.handle).stop == child_run.Released },
+    200,
+  )
+  close(harness)
+}
+
 pub fn a_join_reports_a_settled_child_with_its_result_and_its_cost_test() {
   let harness = start_harness(Meters("the report", Some("hold this one")))
   let settled_child = remote_spawned(harness, "turn-1:tools", "finishes")
@@ -5500,6 +5580,7 @@ pub fn the_delegate_endpoint_answers_for_the_same_holder_test() {
     endpoint.join(remote_parent(), [spawned.handle], 200)
   assert handle == spawned.handle
   assert endpoint.run_ended(site.operation) == Ok(0)
+  assert endpoint.release() == Ok(0)
   close(harness)
 }
 
@@ -5537,6 +5618,7 @@ pub fn an_agency_that_is_not_running_refuses_in_band_test() {
     )
     == Error(unavailable)
   assert agency.delegate_run_ended(config, site.operation) == Error(unavailable)
+  assert agency.delegate_release(config) == Error(unavailable)
   assert result.is_error(agency.delegate_join(config, remote_parent(), [], 0))
 }
 

@@ -583,6 +583,7 @@ fn encode_outcome(outcome: Outcome) -> JsonValue {
     agent.Aborted -> [#("kind", json.String("aborted"))]
     agent.BudgetExpired -> [#("kind", json.String("budget_expired"))]
     agent.ParentFinished -> [#("kind", json.String("parent_finished"))]
+    agent.Released -> [#("kind", json.String("released"))]
   })
 }
 
@@ -745,6 +746,7 @@ fn decode_outcome(value: JsonValue) -> Result(Outcome, String) {
     "aborted" -> Ok(agent.Aborted)
     "budget_expired" -> Ok(agent.BudgetExpired)
     "parent_finished" -> Ok(agent.ParentFinished)
+    "released" -> Ok(agent.Released)
     other -> Error("unknown outcome `" <> other <> "`")
   }
 }

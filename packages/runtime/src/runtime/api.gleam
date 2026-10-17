@@ -2560,6 +2560,8 @@ pub const summary_fact_prefix = "summary/"
 /// (protocol-change/084). The Agency writes `delegate/ended/{operation}` here
 /// when the orchestrator whose child this session serves reports that a run
 /// of its parent has ended, and a spawn for that run is refused from then on.
+/// It writes `delegate/released` when the parent session itself was deleted,
+/// and every spawn is refused from then on.
 ///
 /// Reserved because a model that could write one would end a run it does not
 /// own, which refuses every later spawn for it, or could remove one, which

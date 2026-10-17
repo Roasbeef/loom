@@ -76,6 +76,7 @@ fn tagged(tag: Int) -> agency.DelegateEndpoint {
     },
     join: fn(_parent, _handles, _within_ms) { Ok([]) },
     run_ended: fn(_operation) { Ok(tag) },
+    release: fn() { Ok(tag) },
   )
 }
 

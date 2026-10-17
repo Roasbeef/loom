@@ -90,6 +90,7 @@ pub fn a_stub_round_trips_in_every_state_test() {
       agent.Aborted,
       agent.BudgetExpired,
       agent.ParentFinished,
+      agent.Released,
     ],
     fn(outcome) {
       round_trips(a_stub(remote_child.Settled(a_placed(), outcome, a_usage())))

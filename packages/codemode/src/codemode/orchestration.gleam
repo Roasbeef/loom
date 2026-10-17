@@ -625,7 +625,10 @@ fn waited_value(waited: agent.Waited) -> MsgPackValue {
 fn outcome_value(outcome: agent.Outcome) -> MsgPackValue {
   case outcome {
     agent.Completed -> msgpack.MapValue([field("kind", text("completed"))])
-    agent.Aborted | agent.BudgetExpired | agent.ParentFinished ->
+    agent.Aborted
+    | agent.BudgetExpired
+    | agent.ParentFinished
+    | agent.Released ->
       msgpack.MapValue([field("kind", text("aborted"))])
     agent.Failed(reason:) ->
       msgpack.MapValue([
