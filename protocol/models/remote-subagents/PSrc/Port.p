@@ -36,6 +36,15 @@
 // children, the fences and everything else stored under it. The message that
 // makes the next session for the parent is a `Spawn` or a `RunEnded`, as in the
 // code. A repeat of `Release` stops nothing more and answers zero.
+//
+// A running child can mail its parent (`eUpward`). The mail is a row in the
+// session's outbox, written before anything is sent and rung to the drainer. A
+// pass sends every row that is not answered, and the wire sends it only while
+// the connection is up, so a laptop that is away costs nothing. The remote never
+// settles a row on its own account: only the laptop's answer does, whether it is
+// a receipt or a refusal that will not change. `MAIL_NOT_OPEN` is the one answer
+// that leaves the row, and the next pass asks again. The outbox is stored in the
+// session, so it survives a restart of the VM and is deleted with the session.
 machine Port {
   var wire: machine;
   var children: map[tChild, tChildRec];
@@ -45,6 +54,9 @@ machine Port {
   var clockPast: bool;
   var phase: tSession;
   var gen: int;
+  var laptop: machine;
+  var outbox: map[int, tRow];
+  var nextMail: int;
 
   start state Up {
     entry (w: machine) {
@@ -60,7 +72,21 @@ machine Port {
         runEnded(m.run);
       } else if (m.kind == K_RELEASE) {
         release(m);
+      } else if (m.kind == K_MAILED) {
+        mailed(m);
       }
+    }
+
+    on eLaptop do (l: machine) {
+      laptop = l;
+    }
+
+    on eUpward do {
+      upward();
+    }
+
+    on eMailPass do {
+      mailPass();
     }
 
     on eSlotDrained do {
@@ -128,6 +154,54 @@ machine Port {
     if (clockPast) {
       send this, eTick;
     }
+  }
+
+  // A running child sends its parent a message: the row is written and the
+  // drainer is rung. With no child running there is no one to send it.
+  fun upward() {
+    var c: tChild;
+    var cs: seq[tChild];
+    var running: seq[tChild];
+    var id: int;
+    cs = keys(children);
+    foreach (c in cs) {
+      if (children[c].st == CS_RUNNING) {
+        running += (sizeof(running), c);
+      }
+    }
+    if (sizeof(running) == 0) {
+      return;
+    }
+    c = choose(running);
+    id = nextMail;
+    nextMail = nextMail + 1;
+    outbox[id] = (site = children[c].mintedBy, child = c, answered = false);
+    announce eMailQueued, id;
+    send this, eMailPass;
+  }
+
+  // One drainer pass: every row that has no answer is sent.
+  fun mailPass() {
+    var id: int;
+    var ids: seq[int];
+    ids = keys(outbox);
+    foreach (id in ids) {
+      if (!outbox[id].answered) {
+        send wire, eSendUp, (sender = this, msg = (kind = K_MAIL, src = this, dest = laptop, site = outbox[id].site, child = outbox[id].child, st = CS_RUNNING, run = 0, owner = -1, id = id, code = MAIL_DELIVERED));
+      }
+    }
+  }
+
+  // The laptop's answer to a mail. Every answer settles the row but one.
+  fun mailed(m: tMsg) {
+    if (!(m.id in outbox) || outbox[m.id].answered) {
+      return;
+    }
+    if (m.code == MAIL_NOT_OPEN) {
+      return;
+    }
+    outbox[m.id].answered = true;
+    announce eMailSettled, m.id;
   }
 
   // A zero-window `Join`: where the named child stands.
@@ -201,7 +275,16 @@ machine Port {
   // The slot drained and the registry deletes the session. Whatever is still
   // running dies with it, and everything stored under it goes.
   fun deleteSession() {
+    var id: int;
+    var ids: seq[int];
     loseRuns();
+    ids = keys(outbox);
+    foreach (id in ids) {
+      if (!outbox[id].answered) {
+        announce eMailSettled, id;
+      }
+    }
+    outbox = default(map[int, tRow]);
     children = default(map[tChild, tChildRec]);
     byName = default(map[int, tChild]);
     fence = default(set[int]);
@@ -267,6 +350,6 @@ machine Port {
   }
 
   fun answer(m: tMsg, kind: tKind, c: tChild, s: tChildState) {
-    send wire, eSend, (sender = this, msg = (kind = kind, src = this, dest = m.src, site = m.site, child = c, st = s, run = m.run, owner = m.owner));
+    send wire, eSend, (sender = this, msg = (kind = kind, src = this, dest = m.src, site = m.site, child = c, st = s, run = m.run, owner = m.owner, id = 0, code = MAIL_DELIVERED));
   }
 }

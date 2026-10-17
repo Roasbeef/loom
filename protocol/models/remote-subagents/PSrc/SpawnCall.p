@@ -52,6 +52,6 @@ machine SpawnCall {
   }
 
   fun sendSpawn() {
-    send wire, eSend, (sender = this, msg = (kind = K_SPAWN, src = this, dest = port, site = site, child = 0, st = CS_RUNNING, run = run, owner = owner));
+    send wire, eSend, (sender = this, msg = (kind = K_SPAWN, src = this, dest = port, site = site, child = 0, st = CS_RUNNING, run = run, owner = owner, id = 0, code = MAIL_DELIVERED));
   }
 }

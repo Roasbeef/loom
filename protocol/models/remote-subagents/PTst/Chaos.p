@@ -8,7 +8,14 @@
 // When the budgets are spent it does what the real clocks do eventually. The
 // drainer makes two passes on a quiet network, and every deadline passes. A
 // spawn answered after that finds the deadline already past, and the tick stops
-// it.
+// it. The laptop's parent session opens again and the connection comes back, each
+// ringing the remote's drainer: the fair reconnection the link keeper assumes,
+// and a parent session that its owner opens.
+//
+// The mail faults are a child sending its parent a message (`upwards`), the
+// remote's drainer taking a pass (`mailPasses`), the parent session closing
+// (`closes`), the parent's run ending (`runEnds`) and the connection being
+// brought back early (`reconnects`).
 machine Chaos {
   var wire: machine;
   var laptop: machine;
@@ -21,6 +28,11 @@ machine Chaos {
   var pokes: int;
   var deletes: int;
   var drains: int;
+  var upwards: int;
+  var mailPasses: int;
+  var closes: int;
+  var runEnds: int;
+  var reconnects: int;
 
   start state Init {
     entry (p: (wire: machine, laptop: machine, port: machine, plan: tPlan)) {
@@ -35,6 +47,11 @@ machine Chaos {
       pokes = p.plan.pokes;
       deletes = p.plan.deletes;
       drains = p.plan.drains;
+      upwards = p.plan.upwards;
+      mailPasses = p.plan.mailPasses;
+      closes = p.plan.closes;
+      runEnds = p.plan.runEnds;
+      reconnects = p.plan.reconnects;
       send this, eChaosStep;
       goto Acting;
     }
@@ -42,7 +59,7 @@ machine Chaos {
 
   state Acting {
     on eChaosStep do {
-      if (breaks + crashes + aborts + sizeof(ends) + finishes + pokes + deletes + drains == 0) {
+      if (breaks + crashes + aborts + sizeof(ends) + finishes + pokes + deletes + drains + upwards + mailPasses + closes + runEnds + reconnects == 0) {
         finish();
         goto Finished;
       }
@@ -62,6 +79,8 @@ machine Chaos {
   fun finish() {
     send laptop, eDrain;
     send laptop, eDrain;
+    send laptop, eParentOpen;
+    send wire, eReconnect;
     send port, eSlotDrained;
     send port, eDeadlineAll;
   }
@@ -69,7 +88,7 @@ machine Chaos {
   fun act() {
     var a: int;
     var run: int;
-    a = choose(8);
+    a = choose(13);
     if (a == 0 && breaks > 0) {
       breaks = breaks - 1;
       send wire, eBreak;
@@ -82,7 +101,7 @@ machine Chaos {
     } else if (a == 3 && sizeof(ends) > 0) {
       run = ends[0];
       ends -= (0);
-      send wire, eSend, (sender = this, msg = (kind = K_RUN_ENDED, src = this, dest = port, site = 0, child = 0, st = CS_RUNNING, run = run, owner = run));
+      send wire, eSend, (sender = this, msg = (kind = K_RUN_ENDED, src = this, dest = port, site = 0, child = 0, st = CS_RUNNING, run = run, owner = run, id = 0, code = MAIL_DELIVERED));
     } else if (a == 4 && finishes > 0) {
       finishes = finishes - 1;
       send port, eFinishOne;
@@ -95,6 +114,21 @@ machine Chaos {
     } else if (a == 7 && drains > 0) {
       drains = drains - 1;
       send port, eSlotDrained;
+    } else if (a == 8 && upwards > 0) {
+      upwards = upwards - 1;
+      send port, eUpward;
+    } else if (a == 9 && mailPasses > 0) {
+      mailPasses = mailPasses - 1;
+      send port, eMailPass;
+    } else if (a == 10 && closes > 0) {
+      closes = closes - 1;
+      send laptop, eParentClose;
+    } else if (a == 11 && runEnds > 0) {
+      runEnds = runEnds - 1;
+      send laptop, eParentRunEnds;
+    } else if (a == 12 && reconnects > 0) {
+      reconnects = reconnects - 1;
+      send wire, eReconnect;
     }
   }
 }
@@ -102,8 +136,8 @@ machine Chaos {
 // What a test case does: the call sites the parent starts and the faults the
 // environment may inflict. `deletes` is how often the parent session is deleted
 // and `drains` how often the remote's slot for a released session drains before
-// the run ends.
-type tPlan = (sites: seq[tPlanSite], breaks: int, crashes: int, aborts: int, ends: seq[int], finishes: int, pokes: int, deletes: int, drains: int);
+// the run ends. The last five are the mail faults the module comment lists.
+type tPlan = (sites: seq[tPlanSite], breaks: int, crashes: int, aborts: int, ends: seq[int], finishes: int, pokes: int, deletes: int, drains: int, upwards: int, mailPasses: int, closes: int, runEnds: int, reconnects: int);
 
 // Builds the system for one plan.
 machine Harness {
@@ -117,6 +151,7 @@ machine Harness {
       port = new Port(wire);
       send wire, eWirePort, port;
       laptop = new Laptop((wire = wire, port = port));
+      send port, eLaptop, laptop;
       foreach (s in plan.sites) {
         send laptop, eBegin, s;
       }
