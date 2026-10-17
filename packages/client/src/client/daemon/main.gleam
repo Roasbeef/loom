@@ -9,7 +9,8 @@
 ////
 //// `main` → `claim_endpoint` → `prepare_startup` → `run` → `start_executor` →
 //// `start_movers` → `node_reads` → `start_orchestrator_port` →
-//// `start_release_drain` → `listen_moving` → `publish_endpoint` → `wait`
+//// `start_release_drain` → `start_delegate_sweep` → `listen_moving` →
+//// `publish_endpoint` → `wait`
 ////
 //// 1. `main` parses the flags, `claim_endpoint` reserves this VM, and
 ////    `prepare_startup` reads the configuration once and prepares the root.
@@ -28,7 +29,10 @@
 ////    reads the daemon's own facts through it, are given the same closure.
 ////    `start_release_drain` follows the port and keeps telling other
 ////    orchestrators that a deleted parent session no longer needs the
-////    subagents they run for it.
+////    subagents they run for it. `start_delegate_sweep` follows the drain and
+////    starts the hourly pass that deletes delegate sessions whose spawner was
+////    removed and closes idle resident ones, using the same
+////    `sweep_delegate_sessions` the boot ran once.
 //// 3. `listen_moving` binds the listener, and `publish_endpoint` records the
 ////    bound port for the reservation this VM holds.
 //// 4. `wait` blocks on the signal relay, the root and the executor host, and a
@@ -126,6 +130,7 @@ import telemetry/field
 import telemetry/handler
 import telemetry/log.{type Logger}
 import tom
+import weft/actor
 import weft/poll
 import weft/registry as names
 
@@ -1995,17 +2000,21 @@ pub fn deadline_tick_of(
   }
 }
 
-/// Deletes the delegate sessions whose spawner has been silent past its
-/// retention, once at boot (protocol-change/084).
+/// Sweeps the delegate sessions once (protocol-change/084): deletes those that
+/// are due and closes the resident ones that are idle.
 ///
-/// This runs before the orchestrator port starts, so no message from a spawner
-/// can touch a session while it is being judged. Nothing is resident yet, and a
-/// delegate session is not reopened at boot, so every session older than its
-/// spawner's `retain_s` holds no child that can still run: the decoder keeps
-/// `retain_s` at or above `max_within_s`. A spawner whose table has since been
-/// removed is judged by `spawners.default_retain_s`. A sweep that fails is
-/// logged and does not stop the daemon, because the sessions it would have
-/// deleted are only idle and the next boot sweeps again.
+/// At boot this runs before the orchestrator port starts, so no message from a
+/// spawner can touch a session while it is being judged. Nothing is resident
+/// yet, and a delegate session is not reopened at boot, so every session older
+/// than its spawner's `retain_s` holds no child that can still run: the decoder
+/// keeps `retain_s` at or above `max_within_s`. A session whose spawner's table
+/// has since been removed is deleted whatever its age, because nothing can send
+/// it a message again. Later, the hourly sweep (`start_delegate_sweep`) runs the
+/// same pass over a registry with sessions resident, and closes a resident
+/// session with no child that has a run and no message for `idle_close_s`, so
+/// that it gives its executor scope back. A sweep that fails is logged and does
+/// not stop the daemon, because the sessions it would have swept are only idle
+/// and the next sweep tries again.
 ///
 /// ## Examples
 ///
@@ -2015,26 +2024,78 @@ pub fn deadline_tick_of(
 @internal
 pub fn sweep_delegate_sessions(
   config: Config,
-  daemon: root.Root(instance),
+  daemon: root.Root(serve.Resident),
   logger: Logger,
   now_ms: Int,
 ) -> Result(Nil, String) {
   use ready <- result.map(root.ready(daemon, within: 20_000))
-  let retain_ms = spawners.retention_ms(config.spawners, _)
+  let sweep =
+    manager.Sweep(
+      standing: spawners.standing(config.spawners, _),
+      occupancy: fn(resident: serve.Resident) { resident.spawns.occupancy() },
+    )
   case
     manager.sweep_delegates(
       ready.registry,
-      retain_ms,
+      sweep,
       now_ms,
       ready.sessions_directory,
     )
   {
-    Ok(deleted) ->
+    Ok(manager.Swept(deleted:, closed:)) ->
       log.info(logger, "daemon.delegate_sweep", [
         field.count("deleted", deleted),
+        field.count("closed", closed),
       ])
     Error(_) -> log.warn(logger, "daemon.delegate_sweep_failed", [])
   }
+}
+
+/// How often the daemon sweeps its delegate sessions, in milliseconds: one hour.
+/// The sweep frees an executor scope an hour after a session went idle, so a
+/// finer period would only read the catalogue more often.
+pub const delegate_sweep_every_ms = 3_600_000
+
+/// Starts the actor that sweeps the delegate sessions every
+/// `delegate_sweep_every_ms` (protocol-change/084).
+///
+/// A resident delegate session never hibernates, because its 15 s deadline tick
+/// is shorter than the hibernation delay, so without this sweep an idle one
+/// holds one of its executor's sixteen scopes until the daemon next restarts.
+/// The actor is linked to the process that starts the daemon's services and
+/// carries nothing but the configuration: each fire reads the registry and the
+/// clock afresh through `sweep_delegate_sessions`. The period is a weft
+/// periodic, which arms the next fire after the handler returns, so a slow
+/// sweep delays the next one and never queues a backlog.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let assert Ok(Nil) = main.start_delegate_sweep(config, daemon, logger)
+/// ```
+@internal
+pub fn start_delegate_sweep(
+  config: Config,
+  daemon: root.Root(serve.Resident),
+  logger: Logger,
+) -> Result(Nil, String) {
+  actor.new_with_initialiser(1000, fn(inbox) {
+    actor.initialised(Nil) |> actor.returning(inbox) |> Ok
+  })
+  |> actor.on_message(fn(state, _tick: SweepTick) {
+    let _swept =
+      sweep_delegate_sessions(config, daemon, logger, ffi_os.system_time_ms())
+    actor.continue(state)
+  })
+  |> actor.periodic(every: delegate_sweep_every_ms, sending: SweepTick)
+  |> actor.start
+  |> result.replace(Nil)
+  |> result.replace_error("the delegate sweep did not start")
+}
+
+/// The one message of the delegate sweep's actor: the hour has passed.
+pub type SweepTick {
+  SweepTick
 }
 
 // What a session's hub needs to read and switch its own model profile
@@ -2413,6 +2474,7 @@ fn run(
         reads,
       ))
       use Nil <- result.try(start_release_drain(config, daemon, logger))
+      use Nil <- result.try(start_delegate_sweep(config, daemon, logger))
       use ui <- result.try(web_view(config, daemon))
       use serving <- result.try(listen_moving(
         config,

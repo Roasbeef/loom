@@ -57,10 +57,13 @@
 //// 10. `delegate_now` admits the delegate session of a spawner's pair and refuses
 ////    one that is not open. `release_now` begins a release by marking the row
 ////    and stopping the slot, `finish_drained_release` deletes the session when
-////    the slot drains, and `sweep_now` deletes what a failed deletion left.
+////    the slot drains, and `sweep_now` deletes what a failed deletion left, what
+////    `due_for_deletion` finds due, and closes with `due_for_closing` the
+////    resident sessions that have been idle past the spawner's idle window.
 
 import broker/internal/call
 import broker/internal/ffi_crypto
+import client/agency
 import client/daemon/domain as domain_service
 import client/distill
 import client/distillpass
@@ -69,6 +72,7 @@ import client/internal/instance_host as host
 import client/internal/instance_owner as custody
 import client/remote_child
 import client/remote_release
+import client/spawners
 import core/clock
 import core/glance
 import core/ids
@@ -683,9 +687,10 @@ type Message(instance) {
   /// spawner, the parent session and the sessions directory.
   ReleaseDelegate(String, String, String, Subject(Result(Nil, Error)))
 
-  /// Deletes the delegate sessions whose spawner has been silent past its
-  /// retention, and answers how many went.
-  SweepDelegates(fn(String) -> Int, Int, String, Subject(Result(Int, Error)))
+  /// Deletes the delegate sessions that are due, closes the idle resident ones,
+  /// and answers how many of each. The integer is the time, and the string the
+  /// sessions directory.
+  SweepDelegates(Sweep(instance), Int, String, Subject(Result(Swept, Error)))
   DomainForSession(String, Subject(Result(domain.Domain, Error)))
   Isolate(
     access.Digest,
@@ -2009,30 +2014,55 @@ pub fn release_delegate(
   |> result.unwrap(Error(Unavailable))
 }
 
-/// Deletes every delegate session whose spawner has sent nothing for longer than
-/// that spawner's retention, and answers how many it deleted
-/// (protocol-change/084, the retention sweep).
+/// What the retention sweep asks about a delegate session (protocol-change/084).
+pub type Sweep(instance) {
+  Sweep(
+    /// What the session's spawner allows, or that its table was removed.
+    standing: fn(String) -> spawners.Standing,
+    /// Whether any child of a resident session still has a run. It is asked
+    /// inside the registry's turn, so it must not call the registry.
+    occupancy: fn(instance) -> agency.Occupancy,
+  )
+}
+
+/// What one sweep did.
+pub type Swept {
+  Swept(
+    /// The delegate sessions deleted.
+    deleted: Int,
+    /// The resident delegate sessions closed and kept.
+    closed: Int,
+  )
+}
+
+/// Deletes the delegate sessions that are due and closes the resident ones that
+/// are idle, and answers how many of each (protocol-change/084, the retention
+/// sweep).
 ///
-/// `retain_ms` gives the retention of a spawner in milliseconds, and the caller
-/// answers it for a spawner whose table has since been removed as well. A
-/// session the registry holds a slot for is kept whatever its age, since
-/// something is using it. A session whose deletion fails is kept for the next
-/// sweep, and the others are still deleted.
+/// A session with no slot is deleted when its spawner's table was removed,
+/// when its release has begun, or when its spawner has sent nothing for longer
+/// than the spawner's retention. A session the registry holds a slot for is
+/// never deleted, since something is using it. Such a session is closed when it
+/// is open, has no child with a run, and its spawner has been silent for the
+/// spawner's `idle_close_s`, or at once when the spawner was removed. Closing
+/// uses the ordinary stop and deletes nothing, so the next spawn or join
+/// reopens the session. A session whose deletion fails is kept for the next
+/// sweep, and the others are still swept.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // manager.sweep_delegates(registry, fn(_spawner) { 604_800_000 }, now_ms, sessions)
+/// // manager.sweep_delegates(registry, sweep, now_ms, sessions) == Ok(manager.Swept(deleted: 1, closed: 0))
 /// ```
 @internal
 pub fn sweep_delegates(
   manager: Manager(instance),
-  retain_ms: fn(String) -> Int,
+  sweep: Sweep(instance),
   now_ms: Int,
   sessions: String,
-) -> Result(Int, Error) {
+) -> Result(Swept, Error) {
   call.try_call(manager.commands, waiting: 5000, sending: SweepDelegates(
-    retain_ms,
+    sweep,
     now_ms,
     sessions,
     _,
@@ -3403,9 +3433,17 @@ fn handle(
       process.send(reply, outcome)
       step(phase, book)
     }
-    SweepDelegates(retain_ms, now_ms, sessions, reply) -> {
-      process.send(reply, sweep_now(book, retain_ms, now_ms, sessions))
-      sm.keep(book)
+    SweepDelegates(sweep, now_ms, sessions, reply) -> {
+      case sweep_now(book, sweep, now_ms, sessions) {
+        Ok(#(book, swept)) -> {
+          process.send(reply, Ok(swept))
+          step(phase, book)
+        }
+        Error(error) -> {
+          process.send(reply, Error(error))
+          sm.keep(book)
+        }
+      }
     }
     WorkspaceDefault(workspace, reply) -> {
       process.send(
@@ -4139,31 +4177,75 @@ fn holders_of(manager: Manager(instance), id: String) -> List(String) {
 }
 
 // The retention sweep, in the registry's own turn so that no session is opened
-// between reading the list and deleting from it. A delegate session is idle when
-// its spawner's last message is older than the spawner's retention; the
-// decoder keeps retention at or above the longest deadline, so such a session
-// holds no child that could still be running. A deletion that fails leaves its
-// session for the next sweep, since nothing can usefully retry it here.
+// between reading the list and acting on it. Deleting and closing are two
+// passes over one reading of the rows, and a slot decides which pass a row can
+// be in: a row with none can be deleted, a row with one can only be closed.
+//
+// The decoder keeps retention at or above the longest deadline, so a session
+// past it holds no child that could still be running. Closing has no such
+// bound, so it asks the session whether a child still has a run. A spawner's
+// message moves the row's contact time in this same turn, before the Agency is
+// asked, which is why a spawn admitted just before the sweep leaves its session
+// too recent to close. A deletion that fails leaves its session for the next
+// sweep, since nothing can usefully retry it here.
 fn sweep_now(
   book: Book(instance),
-  retain_ms: fn(String) -> Int,
+  sweep: Sweep(instance),
   now_ms: Int,
   sessions: String,
-) -> Result(Int, Error) {
+) -> Result(#(Book(instance), Swept), Error) {
   use rows <- result.map(
     catalogue.delegates(book.catalogue) |> result.map_error(Catalogue),
   )
-  rows
-  |> list.filter(fn(row) {
-    {
-      release_begun(row)
-      || now_ms - row.last_contact_ms > retain_ms(row.spawner)
-    }
-    && !dict.has_key(book.slots, row.session_id)
-  })
-  |> list.count(fn(row) {
-    result.is_ok(remove_registration(book, row.session_id, sessions))
-  })
+  let #(held, free) =
+    list.partition(rows, fn(row) { dict.has_key(book.slots, row.session_id) })
+  let deleted =
+    free
+    |> list.filter(fn(row) { due_for_deletion(sweep, row, now_ms) })
+    |> list.count(fn(row) {
+      result.is_ok(remove_registration(book, row.session_id, sessions))
+    })
+  let idle =
+    list.filter(held, fn(row) { due_for_closing(book, sweep, row, now_ms) })
+  let closed =
+    list.fold(idle, book, fn(book, row) { stop_slot(book, row.session_id) })
+  #(closed, Swept(deleted:, closed: list.length(idle)))
+}
+
+// Whether a session with no slot is deleted: its spawner was removed, its
+// release has begun, or its spawner has been silent past the retention.
+fn due_for_deletion(
+  sweep: Sweep(instance),
+  row: catalogue.Delegate,
+  now_ms: Int,
+) -> Bool {
+  case sweep.standing(row.spawner) {
+    spawners.Removed -> True
+    spawners.Configured(retain_ms:, ..) ->
+      release_begun(row) || now_ms - row.last_contact_ms > retain_ms
+  }
+}
+
+// Whether a resident session is closed: it is open, a running slot holds it,
+// nothing in it has a run, and its spawner is gone or has been silent for
+// `idle_close_s`. A session that is still opening, or already closing, is left
+// to finish.
+fn due_for_closing(
+  book: Book(instance),
+  sweep: Sweep(instance),
+  row: catalogue.Delegate,
+  now_ms: Int,
+) -> Bool {
+  let silent = case sweep.standing(row.spawner) {
+    spawners.Removed -> True
+    spawners.Configured(idle_close_ms:, ..) ->
+      now_ms - row.last_contact_ms > idle_close_ms
+  }
+  case row.state, dict.get(book.slots, row.session_id) {
+    catalogue.Open, Ok(Slot(phase: Running(instance), ..)) ->
+      silent && sweep.occupancy(instance) == agency.Vacant
+    catalogue.Open, _ | catalogue.Releasing, _ | catalogue.Released, _ -> False
+  }
 }
 
 // A session whose spawner reported the parent deleted is deleted whatever its

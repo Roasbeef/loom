@@ -104,6 +104,7 @@ fn recording(heard: Subject(Heard)) -> agency.DelegateEndpoint {
       process.send(heard, Released)
       Ok(4)
     },
+    occupancy: fn() { agency.Vacant },
   )
 }
 

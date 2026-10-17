@@ -30,7 +30,8 @@
 ////    `note` and `notes` keep a child's notes under its own prefix.
 //// 8. `reaping_hooks` spawns `reap_run` unlinked, off the driver, at a run end.
 //// 9. `delegate_spawn`, `delegate_join`, `delegate_run_ended` and
-////    `delegate_release` are the same machinery for a parent on another
+////    `delegate_release` (and `delegate_occupancy`, which only reads) are the
+////    same machinery for a parent on another
 ////    orchestrator: `spawn_on` takes a `Source` that says whether the caller is
 ////    a strand here or a `Delegation`, `run_ended_in` writes the ended fence
 ////    before it reaps, and `released_in` writes the released fence before it
@@ -4119,6 +4120,34 @@ fn runs_in_flight(runtime: api.Runtime) -> Bool {
   }
 }
 
+/// Whether any child of the delegate session still has a run, for the
+/// retention sweep that closes an idle session (protocol-change/084).
+///
+/// This reads the ledger from the caller's process through a borrowed runtime
+/// and writes nothing. It fails closed: a holder that is not up or a ledger or
+/// strand that cannot be read answers `Occupied`, because the sweep's mistake
+/// in that direction keeps a session for another hour, while the other
+/// direction stops a child that is running.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // agency.delegate_occupancy(config) == agency.Vacant
+/// ```
+pub fn delegate_occupancy(config: Config) -> Occupancy {
+  let vacant = {
+    use runtime <- result.try(borrow(config))
+    use ledger <- result.map(read_ledger(runtime))
+    list.all(dict.values(ledger), fn(cell) {
+      current_run(runtime, cell) == Ok(None)
+    })
+  }
+  case vacant {
+    Ok(True) -> Vacant
+    Ok(False) | Error(_) -> Occupied
+  }
+}
+
 /// The questions a spawning orchestrator asks of a delegate session's
 /// Agency, closed over the holder's name and the few settings a wait needs.
 ///
@@ -4144,7 +4173,20 @@ pub type DelegateEndpoint {
     run_ended: fn(OpId) -> Result(Int, remote_spawn.SpawnRefusal),
     /// Records that the parent session was deleted and stops every child.
     release: fn() -> Result(Int, remote_spawn.SpawnRefusal),
+    /// Whether any child of the session still has a run, which the retention
+    /// sweep asks before it closes an idle session.
+    occupancy: fn() -> Occupancy,
   )
+}
+
+/// Whether a delegate session has a child with a run that has not ended.
+pub type Occupancy {
+  /// At least one child has a run, or the ledger could not be read. The sweep
+  /// keeps the session, since closing it would stop a child.
+  Occupied
+
+  /// Every child's run has ended, or the session has no child.
+  Vacant
 }
 
 /// Projects the delegate questions of one session.
@@ -4174,6 +4216,7 @@ pub fn delegate_endpoint(config: Config) -> DelegateEndpoint {
     },
     run_ended: fn(operation) { delegate_run_ended(trimmed, operation) },
     release: fn() { delegate_release(trimmed) },
+    occupancy: fn() { delegate_occupancy(trimmed) },
   )
 }
 
