@@ -97,6 +97,7 @@ import session_view/history_view
 import session_view/model.{
   Disconnected, HoldGoalReport, Preview, Replaying, Shared,
 } as session_model
+import session_view/move_candidates
 import session_view/msg as session_msg
 import session_view/queue_request
 import session_view/session_channel
@@ -252,6 +253,16 @@ pub type SessionsCommand {
   // Hands a session to the orchestrator the daemon's `[orchestrators.<name>]`
   // table calls `to` (protocol-change/078, phase 5).
   MoveRegistration(session_id: String, to: String)
+
+  // Says which orchestrators could take a session, for `move` given no
+  // destination (protocol-change/085, the addendum on Move and Abandon). It
+  // moves nothing and exits nonzero, since the command the person meant has not
+  // run.
+  ListDestinations(session_id: String)
+
+  // Gives up the move of a session now, with `--abandon`. Only a directory
+  // member accepts it.
+  AbandonRegistration(session_id: String)
 
   // Reads the sessions the daemon's other orchestrators list, a page of each,
   // or with a key and a cursor the next page of one (protocol-change/085).
@@ -1355,11 +1366,19 @@ fn elsewhere_names(
 // is a name from the daemon's configuration, not an address, so it is refused here
 // if it is not the shape of one, before any daemon is started or asked.
 fn parse_move(id: String, flags: List(String)) -> Launch {
-  case take_value(flags, "--to") {
-    Error(reason) -> Invalid(reason <> "\n" <> sessions_usage())
-    Ok(#(None, _)) ->
-      Invalid("sessions move needs --to <orchestrator>\n" <> sessions_usage())
-    Ok(#(Some(to), rest)) ->
+  let #(abandoning, flags) = take_switch(flags, "--abandon")
+  case abandoning, take_value(flags, "--to") {
+    _, Error(reason) -> Invalid(reason <> "\n" <> sessions_usage())
+    True, Ok(#(Some(_), _)) ->
+      Invalid(
+        "--abandon and --to cannot be used together\n" <> sessions_usage(),
+      )
+    True, Ok(#(None, rest)) -> sessions_launch(rest, AbandonRegistration(id))
+
+    // With no destination the command moves nothing: it says which
+    // orchestrators could take the session.
+    False, Ok(#(None, rest)) -> sessions_launch(rest, ListDestinations(id))
+    False, Ok(#(Some(to), rest)) ->
       case placement.is_orchestrator_name(to) {
         True -> sessions_launch(rest, MoveRegistration(id, to))
         False ->
@@ -1401,7 +1420,7 @@ fn sessions_usage() -> String {
   "usage: loom sessions list [--all] [--local] [--state-dir <path>] [--server <path>]\n"
   <> "       loom sessions elsewhere [--orchestrator <key> [--after <session-id>]] [--json]\n"
   <> "       loom sessions rm <session-id> [--yes] [--state-dir <path>]\n"
-  <> "       loom sessions move <session-id> --to <orchestrator> [--state-dir <path>]\n"
+  <> "       loom sessions move <session-id> [--to <orchestrator> | --abandon] [--state-dir <path>]\n"
   <> "  list shows the resident track by default; --all adds every saved\n"
   <> "  registration and reservation. When the daemon has other orchestrators it\n"
   <> "  ends with the sessions they list, one section for each, and says so when\n"
@@ -1419,7 +1438,10 @@ fn sessions_usage() -> String {
   <> "  [orchestrators.<name>] table calls <orchestrator>. It returns once the\n"
   <> "  daemon has accepted the move, which it then carries out; the session\n"
   <> "  cannot be opened here until the move ends, and afterward it is opened on\n"
-  <> "  the other orchestrator"
+  <> "  the other orchestrator. Without --to it moves nothing and lists which\n"
+  <> "  orchestrators could take the session and why the others cannot, and exits\n"
+  <> "  nonzero. --abandon gives up a move in flight, on a directory member only;\n"
+  <> "  if the receiver has already taken the session the move finishes instead"
 }
 
 // `loom deployment status [--node <key>]|executors [--json]` and the shared
@@ -1937,6 +1959,9 @@ fn run_sessions(options: bootstrap.Options, command: SessionsCommand) -> Nil {
           remove_registration(host, session_id, consent)
         MoveRegistration(session_id:, to:) ->
           move_registration(host, session_id, to)
+        ListDestinations(session_id:) -> list_destinations(host, session_id)
+        AbandonRegistration(session_id:) ->
+          abandon_registration(host, session_id)
       }
       daemon.close(control)
       print_outcome("sessions", outcome)
@@ -2248,6 +2273,39 @@ fn move_registration(
   <> " (operation "
   <> op
   <> ")"
+}
+
+// `move` given no destination. It reads the session's executor and the
+// deployment, judges each configured orchestrator by the rule the web home
+// uses, and fails with the list, since the move the person meant has not run.
+// A session with no executor has nowhere to go, and says so.
+fn list_destinations(
+  host: daemon_selection.Host,
+  session_id: String,
+) -> Result(String, String) {
+  use executor <- result.try(daemon_selection.executor_of(host, session_id))
+  use document <- result.try(daemon_selection.deployment(host, None))
+  use found <- result.try(deployment_view.candidates(document, executor))
+  case executor {
+    None -> Error(session_id <> ": " <> move_candidates.no_executor_words())
+    Some(_) ->
+      Error(
+        "choose a destination with --to\n"
+        <> deployment_view.candidates_text(session_id, found),
+      )
+  }
+}
+
+fn abandon_registration(
+  host: daemon_selection.Host,
+  session_id: String,
+) -> Result(String, String) {
+  use op <- result.map(daemon_selection.abandon(host, session_id))
+  "giving up the move of "
+  <> session_id
+  <> " (operation "
+  <> op
+  <> "); if the receiver has taken the session, the move finishes instead"
 }
 
 // Anything but an explicit yes cancels, including an empty line, so the

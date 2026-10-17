@@ -3434,3 +3434,14 @@ orchestrators list, and `loom sessions elsewhere` prints that section alone.
 - Tests: `elsewhere_command_test` (the parse, the wire, the failure words, the text for
   an answered, silent and empty group, the hostile text, the malformed documents) and
   `sessions_list_test`.
+
+## Move candidates and abandon (protocol-change/085)
+
+`loom sessions move ID` with no `--to` is `ListDestinations`: it reads the session's
+executor (`selection.executor_of`), the deployment (`selection.deployment`), and prints
+`deployment_view.candidates_text`, then exits nonzero because nothing moved.
+`deployment_view.candidates` reads the reply's `orchestrators` member (`name`, `state`,
+`imports`, `serves`) into `session_view/move_candidates` offers; a reply without the
+member is an `Error`. `--abandon` is `AbandonRegistration`, which sends `sessions.move`
+with `abandon: true` (`protocol.AbandonMove`) and reads `AbandonedReply`; it does not
+combine with `--to`.

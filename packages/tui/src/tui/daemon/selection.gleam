@@ -265,6 +265,7 @@ fn open_selected(host: Host, selected: protocol.Session) {
     | protocol.SessionReply(_)
     | protocol.DeletedReply(_)
     | protocol.MovedReply(..)
+    | protocol.AbandonedReply(..)
     | protocol.ShutdownReply
     | protocol.PeersInspectionReply(_)
     | protocol.PeersMutationReply(_)
@@ -340,6 +341,7 @@ pub fn create_named(
     | protocol.LifecycleReply(_)
     | protocol.DeletedReply(_)
     | protocol.MovedReply(..)
+    | protocol.AbandonedReply(..)
     | protocol.ShutdownReply
     | protocol.PeersInspectionReply(_)
     | protocol.PeersMutationReply(_)
@@ -447,6 +449,45 @@ pub fn move(
   }
 }
 
+/// Gives up the move of a session now and answers the move's identity once the
+/// daemon has begun (protocol-change/083 and 085). Only a directory member
+/// accepts it, and the daemon says so otherwise. If the receiver has already
+/// taken the session the move finishes instead of being given up.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // selection.abandon(host, selected_id)
+/// ```
+pub fn abandon(host: Host, session: String) -> Result(String, String) {
+  use reply <- result.try(
+    daemon.request(host.control, protocol.AbandonMove(session), 10_000)
+    |> result.map_error(failure_for(session, _)),
+  )
+  case reply {
+    protocol.AbandonedReply(session_id, op) if session_id == session -> Ok(op)
+    _ -> Error("abandon returned an unexpected control reply")
+  }
+}
+
+/// The executor a session's workspace is registered on, by its key, or `None`
+/// for a session that runs on the daemon's own host.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // selection.executor_of(host, selected_id)
+/// ```
+pub fn executor_of(
+  host: Host,
+  session: String,
+) -> Result(Option(String), String) {
+  daemon.request(host.control, protocol.GetSession(session), 5000)
+  |> result.map_error(failure_for(session, _))
+  |> result.try(selected_row)
+  |> result.map(fn(row) { row.executor })
+}
+
 /// Restores metadata without opening or selecting the session as a default.
 ///
 /// ## Examples
@@ -478,6 +519,7 @@ fn remove_using(
     | protocol.SessionReply(_)
     | protocol.DeletedReply(_)
     | protocol.MovedReply(..)
+    | protocol.AbandonedReply(..)
     | protocol.ShutdownReply
     | protocol.PeersInspectionReply(_)
     | protocol.PeersMutationReply(_)
@@ -561,6 +603,7 @@ fn await_retirement(session, operation, request) {
         | Ok(protocol.LifecycleReply(_))
         | Ok(protocol.DeletedReply(_))
         | Ok(protocol.MovedReply(..))
+        | Ok(protocol.AbandonedReply(..))
         | Ok(protocol.ShutdownReply)
         | Ok(protocol.PeersInspectionReply(_))
         | Ok(protocol.PeersMutationReply(_))
@@ -605,6 +648,7 @@ pub fn list(host: Host, after: String) -> Result(protocol.Page, String) {
     | protocol.LifecycleReply(_)
     | protocol.DeletedReply(_)
     | protocol.MovedReply(..)
+    | protocol.AbandonedReply(..)
     | protocol.ShutdownReply
     | protocol.PeersInspectionReply(_)
     | protocol.PeersMutationReply(_)
@@ -651,6 +695,7 @@ pub fn deployment(
     | protocol.LifecycleReply(_)
     | protocol.DeletedReply(_)
     | protocol.MovedReply(..)
+    | protocol.AbandonedReply(..)
     | protocol.ShutdownReply
     | protocol.PeersInspectionReply(_)
     | protocol.PeersMutationReply(_)
@@ -688,6 +733,7 @@ pub fn directory(host: Host) -> Result(json.JsonValue, String) {
     | protocol.LifecycleReply(_)
     | protocol.DeletedReply(_)
     | protocol.MovedReply(..)
+    | protocol.AbandonedReply(..)
     | protocol.ShutdownReply
     | protocol.PeersInspectionReply(_)
     | protocol.PeersMutationReply(_)
@@ -747,6 +793,7 @@ pub fn elsewhere(
     | protocol.LifecycleReply(_)
     | protocol.DeletedReply(_)
     | protocol.MovedReply(..)
+    | protocol.AbandonedReply(..)
     | protocol.ShutdownReply
     | protocol.PeersInspectionReply(_)
     | protocol.PeersMutationReply(_)
@@ -876,6 +923,7 @@ fn selected_row(reply) {
     | protocol.LifecycleReply(_)
     | protocol.DeletedReply(_)
     | protocol.MovedReply(..)
+    | protocol.AbandonedReply(..)
     | protocol.ShutdownReply
     | protocol.PeersInspectionReply(_)
     | protocol.PeersMutationReply(_)
@@ -947,6 +995,7 @@ fn await(host: Host, session, operation) {
         | Ok(protocol.LifecycleReply(_))
         | Ok(protocol.DeletedReply(_))
         | Ok(protocol.MovedReply(..))
+        | Ok(protocol.AbandonedReply(..))
         | Ok(protocol.ShutdownReply)
         | Ok(protocol.PeersInspectionReply(_))
         | Ok(protocol.PeersMutationReply(_))

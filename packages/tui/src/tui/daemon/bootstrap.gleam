@@ -146,6 +146,7 @@ fn reconnect_probe(paths, record, owner, deadline) {
         | Ok(protocol.LifecycleReply(_))
         | Ok(protocol.DeletedReply(_))
         | Ok(protocol.MovedReply(..))
+        | Ok(protocol.AbandonedReply(..))
         | Ok(protocol.ShutdownReply)
         | Ok(protocol.PeersInspectionReply(_))
         | Ok(protocol.PeersMutationReply(_))
