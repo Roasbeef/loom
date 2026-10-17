@@ -58,14 +58,16 @@
 //// # The writer lease serializes every write
 ////
 //// One SQLite writer lease per file, taken at open for `lease_ttl_ms`, which
-//// covers one commit. `remember`, `proposals.submit` and `proposals.decide`
-//// all take it, so there is no second writer between them; an approval
+//// covers one commit. `remember`, `proposals.submit`, `proposals.decide` and
+//// `rebuild_notes_index` all take it, including sidecar publication, so no
+//// rebuild can overwrite an index from a newer note; an approval
 //// holds it a little longer, across reading the rules file, writing it and
 //// the commit. No heartbeat: a caller that arrives while another holds the
 //// lease is refused in band and told which owner holds it. The boot's own
 //// probe opens nothing; it reads the file's header without taking a lease.
-//// Either door may create the store: the first `remember` or the first
-//// `propose` in a repository with no store is what creates one.
+//// Either model door may create the store: the first `remember` or the first
+//// `propose` in a repository with no store is what creates one. A rebuild
+//// leaves an absent store alone and never waits for a held lease.
 ////
 //// # The notes index crosses to the server as bytes, not as a read
 ////
@@ -745,41 +747,69 @@ pub fn read_note_entries(path: String) -> Result(List(Entry), String) {
 }
 
 /// Renders the notes index from the store at `store_path` and makes the
-/// sidecar at `index_path` match it, without taking the writer lease.
+/// sidecar at `index_path` match it under the memory store's writer lease.
 ///
-/// A committed note rewrites the index (`write_notes_index`), so an index
-/// goes stale only when notes were written before the index existed or by a
-/// release that did not maintain it. A session open calls this so those notes
-/// reach the first run rather than waiting for the next note. A store that
-/// does not exist yet is left alone, and an index that already matches is not
-/// rewritten, so opening many sessions in one repository writes nothing.
+/// The lease covers both the read and publication: otherwise a rebuild could
+/// read old notes, lose a race to a `remember` publication, and replace that
+/// newer index with its old snapshot. A held lease returns an error at once;
+/// session startup logs it and keeps the previous index. The overview's
+/// `read_note_entries` stays lease-free because it never publishes anything.
+///
+/// A store that does not exist yet is left alone. An index that already
+/// matches is not rewritten. Every successful open is retired on either
+/// result, so a failed publication cannot hold up later notes.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // memory.rebuild_notes_index("/data/loom-memory.db", "/data/loom-memory.notes")
+/// // memory.rebuild_notes_index(store, index, clock:, generator:)
 /// ```
 ///
+@internal
 pub fn rebuild_notes_index(
   store_path: String,
   index_path: String,
+  clock clock: Clock,
+  generator generator: Generator,
 ) -> Result(Nil, String) {
-  use found <- result.try(read_note_entries(store_path))
-  let body = render_notes_index(list.filter_map(found, note_of))
-  case simplifile.read(index_path) {
+  use present <- result.try(
+    simplifile.is_file(store_path) |> result.map_error(string.inspect),
+  )
+  use <- bool.guard(when: !present, return: Ok(Nil))
+  use opened <- result.try(
+    open(
+      path: store_path,
+      owner: "loom-notes-index",
+      lease_ttl_ms:,
+      clock:,
+      generator:,
+    )
+    |> result.map_error(fn(fault) { string.inspect(fault) }),
+  )
+  let rebuilt = rebuild_opened_index(opened, index_path)
+  close(opened)
+  rebuilt
+}
+
+// The caller retains the lease until this result returns, including the
+// rename. Reading through its opened store keeps publication inside the same
+// ownership interval as the snapshot that produced it.
+fn rebuild_opened_index(opened: Opened, path: String) -> Result(Nil, String) {
+  use found <- result.try(
+    newest_notes(opened) |> result.map_error(string.inspect),
+  )
+  let body = render_notes_index(found)
+  case simplifile.read(path) {
     Ok(current) if current == body -> Ok(Nil)
 
     // No index and no notes: nothing to write, and no empty file to leave.
     Error(_absent) if body == "" -> Ok(Nil)
-    Ok(_stale) | Error(_absent) -> write_atomically(index_path, body)
+    Ok(_stale) | Error(_absent) -> write_atomically(path, body)
   }
 }
 
-// The temp file has a name of its own, in the destination's directory so the
-// rename stays on one filesystem and atomic. The open-time rebuild holds no
-// lease and a `remember` publish holds one, so two writers can be here at
-// once, and a shared temp name would let one truncate the other's half-written
-// body before either renames it.
+// A temporary file beside the destination keeps the rename on one filesystem
+// and leaves readers with either the old or the new complete index.
 fn write_atomically(path: String, body: String) -> Result(Nil, String) {
   let temp = path <> "." <> int.to_string(int.random(1_000_000_000)) <> ".tmp"
   let written =

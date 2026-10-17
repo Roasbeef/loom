@@ -1893,11 +1893,11 @@ catalogue without opening runtimes. Explicit admission invokes
   installs, the one that carries a logger, so a refusal says
   `memory.notes_oversize` instead of looking like a repository with no
   notes; `read_notes_index` stays the silent door. **`read_note_entries`
-  reads the notes without the lease**, through `sqlite.scan_entries_at`, and
-  is shared by the memory overview and `rebuild_notes_index`, which makes the
-  sidecar match the store and rewrites it only when its text differs, so a
-  session open can call it on every open and write nothing in the steady
-  state. A store written while a distillation pipeline existed can hold
+  reads the notes without the lease**, through `sqlite.scan_entries_at`, for
+  the memory overview. `rebuild_notes_index` instead takes the writer lease
+  before reading and holds it through sidecar publication, refusing a held
+  lease without waiting. It rewrites the sidecar only when its text differs,
+  and retires the storage actor on success or failure. A store written while a distillation pipeline existed can hold
   distillate rows and `distill/*` cells; nothing reads them and nothing
   deletes them.
 - `client/proposals.{rules_file, key_prefix, lease_owner, max_rules_bytes,
@@ -4060,9 +4060,10 @@ these forks because they define the same modules.
   therefore lands on *run* boundaries rather than session boundaries, which
   costs the same rolling tail write it always did — the injection rides
   messages, never the pinned head — and nothing can touch a run already
-  open. A session open also rebuilds the sidecar from the store without a
-  lease (`serve.refresh_notes_index`, `memory.rebuild_notes_index`), so notes
-  written before the index existed reach the first run; a failure logs
+  open. A session open also rebuilds the sidecar under the same writer lease
+  (`serve.refresh_notes_index`, `memory.rebuild_notes_index`), so an old
+  snapshot cannot overwrite a concurrent note's index. A held lease leaves
+  the previous index in place; a refusal or failure logs
   `memory.notes_index_unrefreshed` and never fails the open, and
   `inject = "off"` skips it.
 - **Wire**: JSON text frames over websocket. The envelope `seq` **is the

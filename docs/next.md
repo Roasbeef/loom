@@ -151,12 +151,13 @@ overview is implemented in both hosts; the earlier open-item list incorrectly
 left it pending.
 
 The focused independent review found one P2 defect in
-`memory.rebuild_notes_index`: its lease-free read can publish an old snapshot
-after a concurrent `remember` has committed and published a newer index. The
-note remains durable and searchable, but its injected index entry is absent
-until a later rebuild or note write. Serialize rebuild publication with the
-existing memory-store lease. This defect remains open; this task rebased and
-reviewed the PR without changing that behavior.
+`memory.rebuild_notes_index`: its lease-free read could publish an old snapshot
+after a concurrent `remember` had committed and published a newer index. The
+fix takes the existing memory-store writer lease before reading and retains
+it through sidecar publication. A held lease leaves the index alone and logs
+an in-band refusal without failing session startup. Overview reads remain
+lease-free. Regressions cover writer exclusion, preservation of newer notes,
+absent-store behavior and cleanup after a publication failure.
 
 The rebased client builds with warnings treated as errors. Storage (299 tests),
 events (56), focused memory (71), proposals (53), side queries (6) and daemon
@@ -164,3 +165,8 @@ manager (50) suites pass.
 Formatting, documentation, generated web assets, prelude and lint gates pass.
 The original PR's Linux signoff predates this rebase. Full hosted CI, fresh
 Linux signoff and live UI validation are still required before merge.
+
+The follow-up fix passes 73 focused memory tests, including real server
+startup while another memory writer holds the lease. The exclusion regression
+fails against the original implementation and passes with the fix. A fresh
+Astra review is the remaining publication gate for this follow-up.

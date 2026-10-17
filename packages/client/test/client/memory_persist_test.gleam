@@ -18,6 +18,7 @@ import broker/exec
 import broker/policy
 import client/catalog
 import client/codemode
+import client/internal/ffi_os
 import client/jobs
 import client/memory
 import client/memory_config
@@ -207,6 +208,41 @@ pub fn a_session_open_indexes_notes_written_before_the_index_test() {
   assert simplifile.is_file(index) == Ok(True)
   assert occurrences(sent, "Notes saved in this repository by earlier") == 1
   assert string.contains(sent, "a note: for the tests")
+}
+
+/// A busy memory writer does not prevent startup or replace its published
+/// index. The first run still receives the last complete sidecar.
+pub fn a_session_open_keeps_the_index_while_memory_is_busy_test() {
+  let root = fresh_root("notes-busy")
+  remember_preference(root)
+  let store = root <> "/loom-memory.db"
+  let index = root <> "/loom-memory.notes"
+  let assert Ok(current) = simplifile.read(index)
+    as "the note has a published index"
+  let clock = clock.from_function(ffi_os.system_time_ms)
+  let assert Ok(holder) =
+    memory.open(
+      path: store,
+      owner: "busy-memory-writer",
+      lease_ttl_ms: memory.lease_ttl_ms,
+      clock:,
+      generator: core_ids.generator(clock, seed: 31),
+    )
+    as "the concurrent writer holds the memory lease"
+
+  let sent = request_bytes(root, "b.db", memory_config.default_options())
+  assert simplifile.read(index) == Ok(current)
+  assert string.contains(sent, "a note: for the tests")
+  let assert Error(memory.MemoryHeld(owner: "busy-memory-writer")) =
+    memory.open(
+      path: store,
+      owner: "competing-writer",
+      lease_ttl_ms: memory.lease_ttl_ms,
+      clock:,
+      generator: core_ids.generator(clock, seed: 37),
+    )
+    as "startup leaves the concurrent writer's lease intact"
+  memory.close(holder)
 }
 
 /// With `inject = "off"` the open leaves the sidecar alone: nothing reads it,

@@ -5337,7 +5337,14 @@ fn memory_seam(
       log.info(logger, "memory.ready", [
         field.text(key: "store", value: store_path),
       ])
-      refresh_notes_index(inject, store_path, notes_path, logger)
+      refresh_notes_index(
+        inject,
+        store_path,
+        notes_path,
+        clock,
+        entropy,
+        logger,
+      )
       Some(memory.remember_seam(store_path, clock:, entropy:, logger:))
     }
     Error(reason) -> {
@@ -5569,19 +5576,28 @@ fn with_schedule_admin(
 // The notes index is a projection of the store that a `remember` call
 // rewrites, so a note written before the index existed, or by a release that
 // did not maintain it, would stay out of every prompt until the next note. A
-// session open rebuilds it from the store without taking the writer lease. A
-// failure leaves the previous sidecar in place and costs a warning, never the
-// open.
+// session open rebuilds it while holding the same writer lease through its
+// publication. A held lease or failure leaves the previous sidecar in place
+// and costs a warning, never the open.
 fn refresh_notes_index(
   inject: memory_config.Injection,
   store_path: String,
   notes_path: String,
+  clock: Clock,
+  entropy: fn() -> Int,
   logger: Logger,
 ) -> Nil {
   case inject {
     memory_config.InjectsNothing -> Nil
     memory_config.InjectsNotes ->
-      case memory.rebuild_notes_index(store_path, notes_path) {
+      case
+        memory.rebuild_notes_index(
+          store_path,
+          notes_path,
+          clock:,
+          generator: ids.generator(clock, seed: entropy()),
+        )
+      {
         Ok(Nil) -> Nil
         Error(reason) ->
           log.warn(logger, "memory.notes_index_unrefreshed", [

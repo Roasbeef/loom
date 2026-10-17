@@ -156,27 +156,39 @@ pub fn an_absent_store_holds_no_notes_and_gets_no_index_test() {
   let store = root <> "/loom-memory.db"
   let index = memory.notes_beside(store)
   assert memory.read_note_entries(store) == Ok([])
-  assert memory.rebuild_notes_index(store, index) == Ok(Nil)
+  assert rebuild_index(store, index) == Ok(Nil)
   assert simplifile.is_file(index) == Ok(False)
+  assert simplifile.is_file(store) == Ok(False)
 }
 
-/// The notes are read while another writer holds the lease, which is the
-/// point of the path: a session open must neither wait for a `remember` call
-/// nor fail because one is in flight.
-pub fn the_notes_are_read_and_indexed_while_the_lease_is_held_test() {
+/// Overview reads stay available under a held writer lease, but rebuilding
+/// cannot publish a snapshot while that writer may publish a newer one.
+pub fn a_held_writer_allows_reads_but_refuses_index_publication_test() {
   let root = fresh_root("leased")
   let store = root <> "/loom-memory.db"
   let index = memory.notes_beside(store)
   assert !dispatch(root, "a note").is_error
-  assert simplifile.delete(index) == Ok(Nil)
+  let assert Ok(current) = simplifile.read(index) as "the writer published"
 
   let assert Ok(holder) = open_memory(root) as "the holder must open"
   assert list.length(notes_in(root)) == 1
-  assert memory.rebuild_notes_index(store, index) == Ok(Nil)
+  let assert Error(reason) = rebuild_index(store, index)
+    as "a held writer excludes rebuild publication"
+  assert string.contains(reason, "memory-test")
+  assert simplifile.read(index) == Ok(current)
   memory.close(holder)
 
-  let assert Ok(body) = simplifile.read(index) as "the index must be rebuilt"
-  assert string.contains(body, "a note: for the tests")
+  let assert Ok(Nil) =
+    a_seam(store).remember(remember.Note(
+      remember.Fact,
+      "Newer note",
+      "Published after the held lease",
+      "The latest note remains in the index.",
+    ))
+    as "the writer can publish after release"
+  assert rebuild_index(store, index) == Ok(Nil)
+  let assert Ok(body) = simplifile.read(index) as "the index stays current"
+  assert string.contains(body, "Newer note: Published after the held lease")
 }
 
 /// A stale index is replaced by the one the store renders, and a current one
@@ -189,12 +201,30 @@ pub fn rebuilding_replaces_a_stale_index_and_keeps_a_current_one_test() {
   let assert Ok(current) = simplifile.read(index) as "the door writes an index"
 
   let assert Ok(Nil) = simplifile.write(to: index, contents: "- stale")
-  assert memory.rebuild_notes_index(store, index) == Ok(Nil)
+  assert rebuild_index(store, index) == Ok(Nil)
   assert simplifile.read(index) == Ok(current)
 
-  assert memory.rebuild_notes_index(store, index) == Ok(Nil)
+  assert rebuild_index(store, index) == Ok(Nil)
   assert simplifile.read(index) == Ok(current)
   assert no_temp_files(root)
+}
+
+/// A publication error releases both the lease and the linked storage actor,
+/// so the next note can still be committed and published.
+pub fn a_failed_index_publication_releases_its_writer_test() {
+  let root = fresh_root("rebuild-failure")
+  let store = root <> "/loom-memory.db"
+  assert !dispatch(root, "a note").is_error
+  let blocked_index = root <> "/blocked-index"
+  let assert Ok(Nil) = simplifile.create_directory_all(blocked_index)
+    as "a directory refuses replacement by an index file"
+  let before = set.from_list(links())
+
+  let assert Error(_reason) = rebuild_index(store, blocked_index)
+    as "the index cannot replace a directory"
+  assert set.from_list(links()) == before
+  assert !dispatch(root, "a note after the failure").is_error
+  assert list.length(notes_in(root)) == 2
 }
 
 /// A store that is not a readable session is an error, never an empty list,
@@ -208,7 +238,7 @@ pub fn a_damaged_store_is_an_error_and_leaves_the_index_alone_test() {
 
   let assert Error(_reason) = memory.read_note_entries(store)
     as "a damaged store must not read as empty"
-  let assert Error(_reason) = memory.rebuild_notes_index(store, index)
+  let assert Error(_reason) = rebuild_index(store, index)
     as "a damaged store must not rebuild"
   assert simplifile.read(index) == Ok("- kept")
 }
@@ -249,6 +279,15 @@ fn open_memory(root: String) -> Result(memory.Opened, memory.MemoryFault) {
     lease_ttl_ms: memory.lease_ttl_ms,
     clock: a_clock(),
     generator: ids.generator(a_clock(), seed: 7),
+  )
+}
+
+fn rebuild_index(store: String, index: String) -> Result(Nil, String) {
+  memory.rebuild_notes_index(
+    store,
+    index,
+    clock: a_clock(),
+    generator: ids.generator(a_clock(), seed: 17),
   )
 }
 

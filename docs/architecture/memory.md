@@ -273,16 +273,16 @@ history_search kind=note finds them`. The write goes to a temporary name and is
 renamed over the index, so a run never reads half of it. The index is
 derivable from the store, so deleting it loses nothing. It is rebuilt by the
 next `remember`, and also whenever a session opens (`serve.gleam`,
-`refresh_notes_index`). The open reads the store without taking the lease
-(`client/memory.gleam`, `rebuild_notes_index`) and rewrites the file only when
-its text differs, so notes written before the index existed reach the first
-run, opening many sessions writes nothing, and a `remember` call in flight is
-never waited on. A failure of that rebuild is logged as
+`refresh_notes_index`). The rebuild holds the store's writer lease from its
+read through publication (`client/memory.gleam`, `rebuild_notes_index`), so it
+cannot overwrite a newer index from a concurrent `remember`. It rewrites the
+sidecar only when its text differs. A held lease refuses the rebuild without
+waiting, preserving the previous index; startup continues. A failure is logged as
 `memory.notes_index_unrefreshed` and leaves the previous file in place; it
 never fails the open. With `inject = "off"` the open does not rebuild it.
 
 **What `[memory] inject` does.** The key decides what a run carries. The
-default, `notes`, installs `notes_hooks` (`client/memory.gleam:1034`) on the
+default, `notes`, installs `notes_hooks` (`client/memory.gleam:1069`) on the
 `run_start` hook. At each accepted run the hook reads the index file and
 appends it as a user message ahead of the prompt, wrapped at that moment under
 its own `loom-notes` fence and an attribution sentence
