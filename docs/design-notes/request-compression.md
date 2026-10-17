@@ -256,6 +256,13 @@ failure, and dropping run identity. These focused tests do not rerun the real
 UI or native transport measurements above; those numbers remain evidence from
 the original experiment.
 
+A fresh end-to-end smoke of the repaired head also passed one identity/gzip
+pair through each real UI and 56 native transport attempts using a small
+synthetic request. Both UIs settled, saved and closed their sessions; all
+native attempts verified payload identity, terminal events and handler drain.
+These runs overlapped release compilation, so their elapsed times are cleanup
+and correctness evidence only and do not replace the timing tables above.
+
 ## What this supports next
 
 Measure a few real, consented conversation bodies and verify each intended
