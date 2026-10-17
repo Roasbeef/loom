@@ -78,6 +78,7 @@ import client/directory/store
 import client/distribution
 import client/executors.{type Executor}
 import client/internal/ffi_khepri
+import client/listed_sessions.{type Listing}
 import client/node_report.{type NodeReport}
 import client/orchestrators.{type Orchestrator}
 import client/pools.{type Pool}
@@ -170,6 +171,10 @@ pub type Reach {
     dial: Dial,
     /// Asks a connected node for its report.
     ask: Ask,
+    /// Asks a connected orchestrator for a page of its sessions, for
+    /// `sessions.elsewhere` (`client/elsewhere`). It connects as `dial` does and
+    /// then asks the orchestrator port.
+    sessions: Listing,
     /// Builds the asking daemon's own report. It is not a connection: the
     /// daemon reads its own executor host, movers, catalogue and directory
     /// member through the closure `Reads.report` of the orchestrator port.
@@ -208,6 +213,7 @@ pub fn alone(self: String) -> Reach {
     self:,
     dial: fn(_node, _within_ms) { Error(Unavailable) },
     ask: fn(_node, _within_ms) { Error(orchestrator_port.PortGone) },
+    sessions: listed_sessions.unlisted,
     own: unreported(self),
   )
 }
@@ -244,6 +250,20 @@ pub fn over(membership: distribution.Membership, self: String) -> Reach {
           node: distribution.node(peer),
           name: orchestrator_port.default(),
         ),
+        within_ms,
+      )
+    },
+    sessions: fn(node, after, limit, within_ms) {
+      use peer <- result.try(
+        distribution.peer(membership, node) |> result.replace_error(Nil),
+      )
+      orchestrator_port.ask_sessions(
+        address.Address(
+          node: distribution.node(peer),
+          name: orchestrator_port.default(),
+        ),
+        after,
+        limit,
         within_ms,
       )
     },

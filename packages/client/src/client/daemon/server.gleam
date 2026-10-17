@@ -56,6 +56,7 @@ import client/daemon/upgrade_log
 import client/deployment
 import client/directory/deletion
 import client/directory/store
+import client/elsewhere
 import client/executors
 import client/ledger_control
 import client/orchestrators
@@ -2267,6 +2268,7 @@ fn control(
             protocol.Shutdown(_) -> DrainDaemon
             protocol.DirectoryStatus -> KeepServing
             protocol.DeploymentStatus(_) -> KeepServing
+            protocol.SessionsElsewhere(..) -> KeepServing
             protocol.LedgerAppend(..)
             | protocol.LedgerEntries(..)
             | protocol.LedgerStatus
@@ -2335,6 +2337,7 @@ fn control_use(command: protocol.Command) {
     | protocol.WorkspaceDefault(_)
     | protocol.DirectoryStatus
     | protocol.DeploymentStatus(_)
+    | protocol.SessionsElsewhere(..)
     | protocol.LedgerEntries(..)
     | protocol.LedgerStatus
     | protocol.LedgerHoldings
@@ -3427,6 +3430,21 @@ fn dispatch_class(
     protocol.DeploymentStatus(node) -> {
       use Nil <- result.try(owner(principal))
       deployment_status(config, node)
+    }
+
+    // The other orchestrators' sessions, asked at the connection layer of the
+    // daemon's own configuration. The key is resolved against the configured
+    // orchestrators inside `elsewhere.read`, before anything is dialled.
+    protocol.SessionsElsewhere(orchestrator, after) -> {
+      use Nil <- result.try(owner(principal))
+      elsewhere.read(
+        config.deployment,
+        roster.rows(config.movers.orchestrators),
+        orchestrator,
+        after,
+      )
+      |> result.replace_error("not_found")
+      |> result.map(fn(body) { #("sessions.elsewhere", body) })
     }
 
     // Served by `ledger_command` in `dispatch`, because a refusal there names

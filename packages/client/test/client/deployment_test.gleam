@@ -14,6 +14,7 @@ import client/directory/member
 import client/directory/store
 import client/executors
 import client/internal/ffi_khepri
+import client/listed_sessions
 import client/node_report.{type NodeReport}
 import client/orchestrators
 import client/pools
@@ -185,6 +186,7 @@ fn reach(
       list.key_find(reports, node)
       |> result.replace_error(orchestrator_port.PortGone)
     },
+    sessions: listed_sessions.unlisted,
     own: fn() { own },
   )
 }
@@ -323,6 +325,7 @@ pub fn a_connected_node_that_waits_out_its_bound_reads_as_a_timeout_test() {
         process.sleep(within_ms)
         Error(orchestrator_port.AskTimedOut)
       },
+      sessions: listed_sessions.unlisted,
       own: fn() { bare(self) },
     )
   let probed = deployment.probe(waiting, deployment.targets([], [box()]))
@@ -354,6 +357,7 @@ pub fn slow_targets_do_not_starve_the_fast_ones_test() {
         }
       },
       ask: fn(node, _within_ms) { Ok(bare(node)) },
+      sessions: listed_sessions.unlisted,
       own: fn() { bare(self) },
     )
   let probed =
@@ -385,6 +389,7 @@ pub fn a_node_that_is_not_connected_is_not_asked_test() {
           process.send(told, node)
           Ok(bare(node))
         },
+        sessions: listed_sessions.unlisted,
         own: fn() { bare(self) },
       ),
       deployment.targets([], [box()]),
@@ -404,6 +409,7 @@ pub fn a_connection_that_never_settles_reads_as_down_by_the_deadline_test() {
         Ok(Nil)
       },
       ask: fn(_node, _within_ms) { Error(orchestrator_port.PortGone) },
+      sessions: listed_sessions.unlisted,
       own: fn() { bare(self) },
     )
   let probed = deployment.probe(stuck, deployment.targets([], [box()]))
@@ -419,6 +425,7 @@ pub fn a_report_that_never_arrives_reads_as_down_by_the_deadline_test() {
         process.sleep(60_000)
         Error(orchestrator_port.AskTimedOut)
       },
+      sessions: listed_sessions.unlisted,
       own: fn() { bare(self) },
     )
   let probed = deployment.probe(stuck, deployment.targets([], [box()]))
@@ -431,6 +438,7 @@ pub fn a_connection_that_crashes_reads_as_down_test() {
       self:,
       dial: fn(_node, _within_ms) { panic as "boom" },
       ask: fn(_node, _within_ms) { Error(orchestrator_port.PortGone) },
+      sessions: listed_sessions.unlisted,
       own: fn() { bare(self) },
     )
   let probed = deployment.probe(crashing, deployment.targets([], [box()]))

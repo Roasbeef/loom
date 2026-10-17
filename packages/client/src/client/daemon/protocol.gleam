@@ -13,7 +13,9 @@
 ////    correlation id, and hands the command name and body to `decode_fields`,
 ////    which turns every failure into one `Fault` addressed to the request.
 //// 2. `decode_fields` maps each command name to its typed command through the
-////    small field readers below it. A creation reads `executor_field` first,
+////    small field readers below it. `elsewhere_request` reads the optional pair
+////    of `sessions.elsewhere` together, because `after` means nothing without
+////    the orchestrator whose page it follows. A creation reads `executor_field` first,
 ////    because whether the workspace is a path (`text_field`) or a registered
 ////    name (`created_workspace`), and which scope is the default
 ////    (`domain_scope`), both depend on it.
@@ -279,6 +281,14 @@ pub type Command {
   /// reply to the nodes it names; it is looked up in the configuration and is
   /// never itself connected to.
   DeploymentStatus(node: Option(String))
+
+  /// Lists the sessions the daemon's other orchestrators hold, a page of each
+  /// (protocol-change/085). Owner-only. With neither member, every configured
+  /// orchestrator is asked for its first page. `orchestrator` is a key of the
+  /// daemon's `[orchestrators]` table, looked up in the configuration before
+  /// anything is dialled, and `after` is the identity of the last row of that
+  /// group's previous page.
+  SessionsElsewhere(orchestrator: Option(String), after: Option(String))
 
   /// Offers lines to the daemon's membership ledger, in order, through the
   /// acceptance procedure a peer's line goes through (protocol-change/086).
@@ -668,6 +678,7 @@ fn decode_fields(
     "daemon.shutdown" -> result.map(text_field(fields, "epoch", 256), Shutdown)
     "directory.status" -> Ok(DirectoryStatus)
     "deployment.status" -> result.map(node_field(fields), DeploymentStatus)
+    "sessions.elsewhere" -> elsewhere_request(fields)
     "ledger.append" -> result.map(ledger_lines(fields), LedgerAppend)
     "ledger.entries" -> ledger_entries(fields)
     "ledger.status" -> Ok(LedgerStatus)
@@ -1027,6 +1038,36 @@ fn created_workspace(
 
 const node_words =
   "node must be an executor or orchestrator name of lowercase letters, numbers, _ and -, starting with a letter"
+
+// The request of `sessions.elsewhere`. The `orchestrator` that is present must
+// have the shape of a configuration key, and `after` must be a canonical session
+// identity or the empty text. A page that follows a row names the group it
+// belongs to, because identities are not ordered across orchestrators, so `after`
+// without `orchestrator` is refused and not read as a cursor into every group.
+fn elsewhere_request(
+  fields: List(#(String, JsonValue)),
+) -> Result(Command, String) {
+  use orchestrator <- result.try(case list.key_find(fields, "orchestrator") {
+    Error(Nil) -> Ok(None)
+    Ok(json.String(key)) ->
+      case catalogue.is_orchestrator_name(key) {
+        True -> Ok(Some(key))
+        False -> Error(orchestrator_words)
+      }
+    Ok(_) -> Error(orchestrator_words)
+  })
+  use after <- result.try(case list.key_find(fields, "after") {
+    Error(Nil) -> Ok(None)
+    Ok(_) -> cursor(fields) |> result.map(Some)
+  })
+  case orchestrator, after {
+    None, Some(_) -> Error("after needs the orchestrator it follows")
+    _, _ -> Ok(SessionsElsewhere(orchestrator, after))
+  }
+}
+
+const orchestrator_words =
+  "orchestrator must be an orchestrator key of 1 to 64 bytes"
 
 // The optional node of a deployment read. An absent field is every configured
 // node; a field that is present must have the shape of a configuration key, so
