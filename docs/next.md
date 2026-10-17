@@ -3,29 +3,39 @@
 ## First-session startup — October 17
 
 The [first-session startup note](design-notes/first-session-startup.md) records
-the release benchmark, parser work and validation limits. Session configuration
-now shares one TOML document within each load; file rereads, secret rotation,
-strict validation and error precedence remain intact. The released daemon
-starts independent OTP applications concurrently, retaining dependency order,
-rollback, native identity and UTF-8 diagnostics. A matched nine-pair release
-comparison reduced daemon readiness from 465 to 438 ms. The client launcher is
-unchanged because its application-start measurements were noisy.
+the release benchmarks, raw measurement data and validation limits. The latest
+wave batches 25 measured Gleam modules after domain configuration validation
+and before resource acquisition. OTP owns its existing code cache; a rejected
+hint keeps ordinary demand loading. There is no eager daemon warmup, native
+shim, custom once flag or new configuration switch. Three retained callbacks
+also capture only their required Settings fields, preserving restart custody.
 
-With a 32-model synthetic configuration, the combined nine-pair comparison
-reduced first residency 418 → 388 ms, later residency 120 → 102 ms, and the
-complete cold-daemon-to-composer median 1505 → 1438 ms. Cold-client results
-were mixed; ten-session peak RSS grew 2% and sampled growth per session 9%.
-The note retains these results and their enforcement limits. The decoder-only
-reduction is about 91%, not an
-end-to-end startup claim.
+Against the frozen initial startup wave, nine alternating production pairs
+with a 32-model synthetic configuration reduced first residency 378 → 342 ms
+(all nine faster), later residency 100 → 91 ms, and cold daemon through the
+real TUI composer 1414 → 1357 ms (seven of nine faster). Ten-session peak RSS
+fell 284 → 237 MiB and sampled growth 18.44 → 14.37 MiB in that same series.
+These measurements select explicit best-effort enforcement; they do not
+establish full-enforcement deployment latency or exact reachable memory.
+The unchanged TUI artifact provides no separate client-startup improvement.
+
+The earlier wave shares one TOML document within each load, preserving file
+rereads, secret rotation, strict validation and error precedence. Its concurrent
+OTP application startup retains dependency order, rollback, native identity and
+UTF-8 diagnostics; an isolated matched comparison reduced daemon readiness
+465 → 438 ms. The decoder-only reduction is about 91%. Wider daemon and TUI
+module inventories were rejected after mixed latency and higher RSS.
 
 The benchmark distinguishes create reply, residency, first-domain startup and
 the real attached composer. Use alternating `--against` release comparisons;
 old JSON without compatible RSS/workload/enforcement provenance is refused.
-The local full client gate hit the existing satellite endpoint-readiness
-fixture and was stopped; focused configuration/domain tests, Python tests and
-actual release launcher checks passed. Read the note before claiming a full
-gate or deployment speedup. No operator daemon was installed or restarted.
+The initial revision passed all hosted Linux/macOS checks. Local follow-up
+validation passed 159 tests and failed one existing jailed-listing fixture
+because this container cannot create its bwrap namespace. Formatting, lint,
+documentation, actual release inventory/native-initialization checks and
+deliberate loader mutations passed. The earlier local full-client run also hit
+the satellite endpoint-readiness fixture. Read the note before claiming a full
+local gate or deployment speedup. No operator daemon was installed or restarted.
 
 The separate [request gzip experiment PR](https://github.com/Roasbeef/loom/pull/1000)
 contains both real TUI/browser experiments and native transport measurements;

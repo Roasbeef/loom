@@ -23,6 +23,19 @@ setup, profiling flags and distribution flags. A refused application prints
 its named reason and exits nonzero before daemon readiness. The terminal
 client's launcher is unchanged: its application-only measurements were noisy.
 
+The first validated workspace domain also offers OTP a fixed batch of 25
+ordinary Gleam modules before acquiring resources. This avoids serial loading
+on the session path without moving that work into daemon readiness. The list
+is a measured hint, not a dependency declaration: other modules and extensions
+still load on demand. Native rejection or an unexpected reply retains that
+ordinary path. OTP owns the code cache; there is no new actor, once flag or
+configuration setting. The direct binding lives in `client/internal/ffi_code`
+because the installed Gleam libraries do not expose batch code loading.
+
+Three retained session callbacks now capture their required settings fields
+before constructing the closure. Role resolution, context-window lookup and
+hub restart keep their previous values and ownership.
+
 The benchmark now separates create replies from residency and the first
 workspace domain from later sessions. Scenario g adds the complete fresh
 session pipeline. It also corrects Linux `wait4` RSS units, bounds control RPCs,
@@ -134,10 +147,15 @@ ranges also prevent treating these percentages as deployment guarantees.
 Memory did not improve uniformly. The median ten-session peak RSS was
 274.2 → 279.0 MiB, and sampled growth per session was 17.0 → 18.4 MiB. The
 separate profiled ten-session `erlang:memory/0` census was 259.3 → 260.9 MiB.
-The sampled growth ranges did not overlap in this series. Heap/GC timing is a
-plausible explanation, but it has not been established. No retained-memory
-saving is claimed; the observed increase remains a tradeoff to check on a
-deployment host.
+The sampled growth ranges did not overlap in this series. In three separate
+matched ten-session diagnostic pairs, a second explicit major GC reduced
+allocated process bytes to 131.20–131.21 MiB for the baseline and 131.03 MiB for
+the candidate. All ten sessions remained resident. The largest copied
+supervisor state was effectively unchanged, 895,777 versus 895,713 flat words.
+This supports allocation history and collectable garbage rather than a new
+retained configuration graph. Post-GC allocated capacity is not exact reachable
+memory, and these diagnostic collections do not erase the ordinary RSS result.
+No production GC was added; the increase remains a deployment-host tradeoff.
 
 Finally, the parser-only benchmark used five warmups and 51 timed samples per
 fixture/mode. Input and decoded-result SHA256 values matched between modes:
@@ -152,6 +170,121 @@ file reads, secret execution, profile selection, VM startup and runtime
 assembly. The small smoke-file saving is roughly half a millisecond per load;
 the larger fixture saves roughly 13 ms. Raw parser samples and fingerprints
 are in `build/startup/decode-final.jsonl`.
+
+## Further cold-session work
+
+A separate bounded trace attributed roughly 349 ms of the first builder to
+104 synchronous module loads. SQLite schema execution itself took about
+0.5 ms; locks, custody and schema ownership were not changed. Absolute traced
+timings are attribution evidence, not comparable endpoint benchmarks.
+
+Several wider loading experiments were rejected. Eagerly loading 137 observed
+Gleam modules initially improved complete cold-to-resident timing, but a second
+series did not reproduce that gain. Taking the full union of the relevant
+application inventories loaded 459 additional modules and raised resident RSS
+from about 99 to 158 MiB without a reliable total-latency improvement. A TUI
+batch also produced mixed timing and approximately 15% higher RSS. None of
+those strategies changed production defaults.
+
+The bounded domain hint instead uses the 25 most expensive observed Gleam
+modules. At its placement after successful configuration validation, 22 were
+still unloaded. Seven rotating smoke trials compared control, 25-module and
+137-module variants, with one warmup each. All variants used the same disposable
+compiled module and differed only in the requested loading set. Loading cost
+was included in residency and cold totals; the asynchronous create reply was
+measured separately.
+
+The narrow batch cost 32 ms median. First residency fell 383 → 319 ms and
+cold-to-resident total 890 → 797 ms; all seven paired comparisons improved on
+both endpoints. Resident RSS medians were effectively equal, but the paired
+median difference was +1.375 MiB, so this establishes no memory saving.
+
+A second scratch comparison followed the actual TUI through its attached
+composer, using seven alternating pairs per fixture:
+
+| Fixture | Control residency ms | Hint residency ms | Control cold → composer ms | Hint cold → composer ms |
+|---|---:|---:|---:|---:|
+| Smoke | 377.8 | 345.0 | 1507.8 | 1495.3 |
+| 32 models | 418.6 | 349.6 | 1565.3 | 1408.0 |
+
+The smoke composer result was small and noisy, with five of seven pairs faster.
+The larger fixture improved residency in all seven pairs and composer time in
+six; the remaining composer pair regressed 0.9 ms. This supports a first-domain
+optimization, not a separate client-startup claim. These scratch results use
+an instrumented frozen release; final production measurements are reported
+separately below. Raw evidence is in `build/startup/lazy-batch-results.json`
+and `build/startup/lazy-composer-results.json`.
+
+The closure changes have a separate copy-cost proof. In matched private
+32-model sessions, built callback environments no longer held the complete
+Settings record. Subagent closure flat size fell 3015 → 1191 words; context
+lookup 4740 → 1728; the hub restart closure, including smaller nested captures,
+152791 → 121432. Copied supervisor-state flat size fell 895889 → 796691 words.
+This is one controlled shape observation, not an RSS or exact retained-memory
+measurement. Runtime, registry, restart and cleanup capabilities remain present.
+
+## Rebuilt production comparison
+
+The final server was built from `f4d68de` using the same compiler/runtime and
+explicit best-effort posture. The control is the frozen initial startup wave
+at `beb8117`; this comparison therefore measures the bounded domain hint and
+three closure projections on top of the shared parser and concurrent launcher.
+The TUI artifact is unchanged: all 2057 file fingerprints match. Nine paired
+runs alternate order, with the same 32-model configuration and warm page cache.
+No diagnostic GC runs inside these timed or ordinary RSS observations.
+
+| Endpoint | Initial wave median ms | Final median ms | Initial p95 ms | Final p95 ms |
+|---|---:|---:|---:|---:|
+| Daemon listening, a | 449.5 | 432.0 | 476.8 | 742.2 |
+| First create reply, e | 20.8 | 22.3 | 26.3 | 28.9 |
+| First resident, e | 378.0 | 341.5 | 385.4 | 357.8 |
+| Later resident, e | 99.5 | 90.9 | 106.6 | 101.8 |
+| First resident, g | 373.7 | 338.0 | 383.3 | 352.4 |
+| Client first frame, g | 466.4 | 462.5 | 491.9 | 512.8 |
+| Attached composer, g | 566.6 | 561.6 | 595.0 | 610.3 |
+| Cold daemon through composer | 1414.2 | 1357.3 | 1453.7 | 1430.3 |
+
+First residency improved in all nine pairs in both scenarios. Complete
+cold-to-composer time improved in seven of nine, with a paired median saving
+of 56.4 ms. Later-session residency has 81 correlated samples in creation order,
+not 81 independent cold trials; 62 improved. Create replies remain asynchronous
+admission acknowledgements, not proof of readiness. Client timing remains
+effectively unchanged. The domain hint runs after daemon readiness; the
+readiness variation and 742 ms outlier establish no additional daemon speedup.
+As above, p95 with nine observations is the maximum rather than a stable tail.
+
+Ten-session peak RSS medians fell 283.7 → 236.8 MiB; every paired run improved,
+with nonoverlapping ranges of 277.7–287.3 and 233.2–242.1 MiB. Sampled growth
+per session fell 18.44 → 14.37 MiB, also improving in all nine pairs. Separate
+profiled ten-session VM allocation was 292.8 → 232.6 MiB. These OS/VM allocation
+measurements apply to this workload and its recorded observation cuts, not exact
+reachable state or a universal per-session memory requirement. They accompany the
+independent closure-copy proof rather than assigning every RSS byte to it.
+Code allocation at the separate one-session g census was 17.958 → 17.968 MiB.
+
+A second seven-pair comparison isolates the loader. Its control is a disposable
+copy of the final production release with exactly one `startup.prepare()` call
+removed from the validated `build_domain` continuation. The unmodified abstract
+code recompilation matched executable chunks; the transformed copy retains the
+same chunk set and every other file's hash and mode. All 8456 production and
+control manifest entries remained unchanged after timing. This is an attribution
+control, not another shipped build or a production disable switch.
+
+Against that control, first residency improved 373.2 → 349.1 ms in all seven
+pairs; the paired median saving was 23.5 ms, ranging 10.5–42.3 ms. Complete
+composer totals were 1442.1 → 1391.2 ms, faster in six of seven, with a paired
+median saving of 30.0 ms. Daemon readiness varied despite the hint running
+later, so the whole total difference cannot be assigned to module loading.
+Client timing was mixed. For the already-loaded production hint, 51 batches
+of 100 calls measured 148 µs per call at the median batch mean and 707 µs at
+the p95 batch mean. This is operation cost, not an individual-call tail or
+domain lifetime. Sessions sharing an existing domain bypass the hint entirely.
+
+The complete paired endpoint/RSS samples and artifact provenance are retained
+in [the measurement data](../review/first-session-startup-2026-10-17.json).
+The original benchmark output remains under
+`build/bench-startup-memory/domain-loading-wave2.json` and
+`build/bench-startup-memory/domain-loading-attribution.json`.
 
 ## Validation
 
@@ -184,6 +317,27 @@ A broad secrets filter additionally selected an unrelated enforcement test;
 the subsequent exact secrets-module run passed. Hosted gates and deployment
 signoff remain required before merge.
 
+The initial startup revision `beb8117` subsequently passed hosted Linux and
+macOS gates, including the full client job and both advisory client shards.
+The domain-loading follow-up received independent source review of admission,
+custody, cancellation, native reply decoding and the bounded inventory.
+Independent local checks passed 159 tests across loader, configuration,
+resolution, diagnostics, domain custody, owned assembly, checkpoint and serve
+coverage. One additional serve test failed because this container cannot
+create the `bwrap` namespace needed for its jailed listing; the aggregate run
+exited 1. No enforcement requirement or test was weakened. Formatting and
+client lint passed with zero errors and 734 warnings; refreshed source
+citations restored documentation checks to zero errors and 196 warnings.
+
+The actual rebuilt release passed
+`scripts/check_startup_module_inventory.escript`: all 25 unique modules exist,
+have no `on_load` or `erlang:load_nif/2`, and load from the supplied artifact on
+both cold and repeated calls. The checker detects both initialization forms
+in the SQLite NIF positive control without loading it. Removing an inventory
+BEAM from a disposable copy was rejected. Two private compiled mutations that
+made native calls or all decoded replies succeed were rejected by the six
+loader tests; restoring the original module passed all six again.
+
 ## Reproduce
 
 Build and retain the baseline before applying changes, then compare the rebuilt
@@ -199,6 +353,17 @@ make release release-client
 python3 -B scripts/bench_startup_memory.py --only abcdeg --runs 9 \
   --against before --label after
 python3 -B scripts/check_daemon_startup_launcher.py build/release/loom
+escript scripts/check_startup_module_inventory.escript build/release/loom
+```
+
+For the bounded-domain follow-up, retain the initial startup wave's release as
+`startup-wave1`, rebuild the final server, and use the unchanged client:
+
+```sh
+env -u ERL_FLAGS -u ERL_AFLAGS -u ERL_ZFLAGS \
+  python3 -B scripts/bench_startup_memory.py --against startup-wave1 \
+  --only aeg --runs 9 --best-effort --config build/startup/models32.toml \
+  --label domain-loading-wave2
 ```
 
 Use `--best-effort` on both benchmark commands only when explicitly selecting
