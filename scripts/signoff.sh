@@ -188,7 +188,7 @@ lane_conformance() {
 			SOAK_DAEMON_BUDGET_SECONDS="${SIGNOFF_DAEMON_SOAK_SECONDS:-60}"
 }
 lane_fast() {
-	$retry bash scripts/check.sh host core machine prompt session_view web_view web_client \
+	$retry bash scripts/check.sh host core machine prompt statem session_view web_view web_client \
 		telemetry provider broker executor mcp lsp tools cap ext codemode lint sandbox
 }
 lane_static() {

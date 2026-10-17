@@ -111,7 +111,9 @@ literate register", gives the complete conventions and examples.
   `session_view` is held to the same rule for a different reason: it is
   the client's session lane and transcript projection, which the terminal
   and the daemon's web view both drive, and R6 is what keeps either host
-  out of it (`lint/portable`).
+  out of it (`lint/portable`). `statem`, the stateful model-based testing
+  layer over qcheck, is held to it because the portable packages' tests are
+  written with it and must keep running on both targets.
 - **No naked `Bool`** in a function parameter or a record field. `Bool`
   carries no domain meaning, so `render(document, True)` names nothing at
   the call site and a field typed `Bool` makes every reader carry the
@@ -177,8 +179,8 @@ replaces `/tmp` with the scratch tmpfs. `docs/execution.md` §4 has the rest.
 runs at the end of `make check`. Nineteen rules: R0 unparseable source, R1
 eager fallbacks, R2 `case` nesting depth, R3 catch-all patterns, R4
 `panic` and `let assert` in `src`, R5 O(n) answers to bounded questions,
-R6 the portable subset `core`, `machine`, `prompt` and `session_view` are held to, R7 a
-`let assert` carrying no `as "message"`, R8 a one-caller function wide
+R6 the portable subset `core`, `machine`, `prompt`, `statem` and
+`session_view` are held to, R7 a `let assert` carrying no `as "message"`, R8 a one-caller function wide
 enough to be a moved pyramid, R9 a naked `Bool` in a parameter or field,
 R10 a comment with no blank line above it, R11 a body written as one
 undivided block, R12 a closure that captures a whole outer value only to

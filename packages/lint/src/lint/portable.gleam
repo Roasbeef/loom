@@ -1,4 +1,4 @@
-//// R6: the four packages held to the portable subset, and what that
+//// R6: the five packages held to the portable subset, and what that
 //// membership protects.
 ////
 //// `core`, `machine` and `prompt` contain no `@external` and reach for no
@@ -30,6 +30,12 @@
 //// first three portable is also the rule that keeps the lane free of
 //// whichever host happens to be driving it. The JavaScript build is not
 //// built or tested for it; the dependency boundary is the point.
+////
+//// `statem`, the stateful model-based testing layer, joined for the first
+//// reason turned around. It is what the pure packages' tests are written
+//// with, so it has to run wherever they do, JavaScript included, and a
+//// BEAM-only dependency there would quietly make every portable package's
+//// test suite BEAM-only. Its tests run on both targets.
 ////
 //// The second property is the one nothing recorded, and it is the one a
 //// contributor cannot be expected to infer. Reaching for a fast hash, a

@@ -255,7 +255,7 @@ fn is_harness(package: Option(String)) -> Bool {
 /// than trusting that it covers anything. `lint/portable` argues what the
 /// membership protects, and why `session_view` is on the list.
 pub fn portable_packages() -> List(String) {
-  ["core", "machine", "prompt", "session_view"]
+  ["core", "machine", "prompt", "session_view", "statem"]
 }
 
 /// A dependency that exists only on the BEAM, named from both sides.

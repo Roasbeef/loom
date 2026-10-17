@@ -533,7 +533,7 @@ def lanes(selection):
 # The package order scripts/check.sh uses, so a lane runs its packages in
 # the order the full check does. Packages missing from it (a new one not
 # yet added there) run last, in name order.
-CHECK_ORDER = ("host core storage session machine prompt session_view web_view "
+CHECK_ORDER = ("host core storage session machine prompt statem session_view web_view "
                "web_client telemetry runtime provider broker executor mcp lsp tools cap ext "
                "codemode events client tui conformance lint sandbox").split()
 
