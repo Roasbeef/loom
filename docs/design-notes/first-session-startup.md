@@ -4,6 +4,8 @@ This investigation measures daemon readiness, session creation, and client
 startup separately, then follows a cold daemon through a resident session to a
 real terminal client's attached composer. It builds on the historical
 [startup and memory investigation](startup-and-memory.md).
+The [resource-budget results](#resource-budget-and-retained-changes) describe
+the final source; the earlier sections retain the investigation history.
 
 ## Changes
 
@@ -23,14 +25,10 @@ setup, profiling flags and distribution flags. A refused application prints
 its named reason and exits nonzero before daemon readiness. The terminal
 client's launcher is unchanged: its application-only measurements were noisy.
 
-The first validated workspace domain also offers OTP a fixed batch of 25
-ordinary Gleam modules before acquiring resources. This avoids serial loading
-on the session path without moving that work into daemon readiness. The list
-is a measured hint, not a dependency declaration: other modules and extensions
-still load on demand. Native rejection or an unexpected reply retains that
-ordinary path. OTP owns the code cache; there is no new actor, once flag or
-configuration setting. The direct binding lives in `client/internal/ffi_code`
-because the installed Gleam libraries do not expose batch code loading.
+An earlier candidate offered OTP a fixed 25-module batch after successful
+domain configuration validation. The resource-budget comparison below found
+higher post-domain memory, so the hint and its direct OTP binding were removed.
+The final source retains ordinary demand loading.
 
 Three retained session callbacks now capture their required settings fields
 before constructing the closure. Role resolution, context-window lookup and
@@ -65,10 +63,12 @@ not cold-disk measurements.
 
 ## Environment and controls
 
-Measurements use Linux x86-64, stock Gleam 1.19.0, OTP 29 / ERTS 17.0.5, a
-four-CPU container quota and five available logical processors. The daemon's
+Earlier latency measurements use Linux x86-64, stock Gleam 1.19.0,
+OTP 29 / ERTS 17.0.5, a four-CPU container quota and five available logical processors. The daemon's
 default is five schedulers; the released client uses four. Parser-only timings
 use one scheduler and report the runtime and loaded catalogue BEAM path.
+The resource-budget comparisons below instead fix both CPU affinity and quota
+at one CPU, with the same compiler/runtime and unchanged release flags.
 
 Every run has a private HOME, state directory and nested Git workspace. Models
 point at an unreachable loopback port; no operator credentials are available.
@@ -90,11 +90,11 @@ host.
 The frozen baseline's production source is main `8f66fc6`; its launchers carry
 the compression-experiment commit identities present during compilation,
 whose changes were confined to experiments and documentation. Both baseline
-and candidate use the same stock compiler/runtime. After the candidate build,
-the daemon launcher was regenerated from its builder's actual heredoc to
+and candidate use the same stock compiler/runtime. After the initial-wave build,
+that daemon launcher was regenerated from its builder's actual heredoc to
 include the reviewed IO fix; compiled BEAMs were unchanged.
 
-## Results
+## Initial-wave results
 
 First, isolate application startup using two copies of the candidate release.
 All 2,544 BEAM files match byte for byte; the only launcher difference is the
@@ -224,9 +224,14 @@ lookup 4740 → 1728; the hub restart closure, including smaller nested captures
 This is one controlled shape observation, not an RSS or exact retained-memory
 measurement. Runtime, registry, restart and cleanup capabilities remain present.
 
-## Rebuilt production comparison
+## Earlier batch-loading production comparison
 
-The final server was built from `f4d68de` using the same compiler/runtime and
+This section records the earlier `f4d68de` release, which included the loading
+hint. The resource-budget results below supersede its selection; these timings
+are not final-code claims after removing that hint.
+
+
+That server was built from `f4d68de` using the same compiler/runtime and
 explicit best-effort posture. The control is the frozen initial startup wave
 at `beb8117`; this comparison therefore measures the bounded domain hint and
 three closure projections on top of the shared parser and concurrent launcher.
@@ -287,7 +292,7 @@ The original benchmark output remains under
 `build/bench-startup-memory/domain-loading-wave2.json` and
 `build/bench-startup-memory/domain-loading-attribution.json`.
 
-## Validation
+## Validation of the earlier iterations
 
 Independent validation passed the six new populated-configuration, refusal-order,
 rewrite and secret-rotation tests, the 21 secrets-module tests, and all 145
@@ -340,11 +345,18 @@ made native calls or all decoded replies succeed were rejected by the six
 loader tests; restoring the original module passed all six again.
 
 
-## Asynchronous terminal startup
+## Deferred asynchronous terminal startup
 
-Local interactive launches start daemon discovery before workspace discovery
-and model construction. The terminal prepares its own subjects, model and
-terminal identity while one Weft task resolves the daemon. Joining consumes
+This candidate was removed after the resource-budget review. Startup latency
+must improve without increased CPU or memory. A fixed one-CPU comparison found
+higher cold-smoke CPU time and higher warm-client peak RSS; the resource
+measurements below supersede the latency-only recommendation. The following
+records the rejected candidate and its original evidence, not the shipped TUI.
+
+
+The candidate started daemon discovery before workspace discovery and model
+construction. The terminal prepared its own subjects, model and terminal
+identity while one Weft task resolved the daemon. Joining consumed
 both the result and final accounting before the existing control adoption and
 session-opening path. Demo, remote and one-shot launches retain their order.
 
@@ -439,7 +451,158 @@ env -u ERL_FLAGS -u ERL_AFLAGS -u ERL_ZFLAGS \
   --runs 7 --label client-overlap-final
 ```
 
-## Reproduce
+
+## Resource budget and retained changes
+
+Startup improvements must not trade higher CPU or memory for lower wall time.
+The follow-up therefore used the same single-CPU affinity and quota for both
+artifacts: all runtime threads stayed on CPU 0 and `cpu.max` was
+`100000 100000`. Release flags were unchanged. The dedicated container ran no
+other workloads during measurement. There was no production GC, larger heap,
+extra CPU allowance or new cache.
+
+The timer ends at the actual selected-session composer. A cgroup `cpu.stat`
+delta covers the interval from just before client launch through that endpoint,
+including the daemon, client, short-lived helpers and small observer work.
+Separate `/proc` counters retain user/system and waited-child CPU, quantized
+at 10 ms. Per-process `VmRSS` and `VmHWM` are read immediately after the
+composer and before the durable input check. Whole-fixture client `wait4`
+CPU/peak RSS additionally include that post-timing input and possible provider
+refusal. Linux `wait4` peak RSS is not summed process-tree RSS. Warm-daemon HWM
+includes its seed session. Combined RSS is a sum of sequential samples, not
+an atomic snapshot or a simultaneous peak. Component HWMs are not
+added together as a simultaneous peak, and the container's cumulative
+`memory.peak` is not a per-trial memory result.
+
+The 64-trial async resource comparison rejected the earlier latency-only
+selection. Warm-client whole-fixture peak RSS increased by a paired median
+328 KiB in smoke (six of seven pairs) and 1,260 KiB with 32 models (all seven).
+The larger fixture's composer-time client HWM also increased in all seven
+pairs, by a paired median 376 KiB. Cold-smoke cgroup CPU increased by a paired
+median 153 ms (four of seven pairs). CPU results in the other cases were mixed.
+The complete async slice was removed; the TUI source returned exactly to its
+pre-experiment state.
+
+A subsequent 32-trial original-baseline comparison of the remaining batch-enabled
+release still failed the budget. Smoke daemon HWM rose 1,968 KiB and combined
+composer RSS rose 2,012 KiB in all seven pairs, despite paired median CPU
+savings of 84 ms. The 32-model case saved 55 ms of CPU and 4,760 KiB of daemon
+HWM, but a larger-fixture saving does not erase a smoke regression.
+
+A bounded factor experiment held the shared parser, projections, client,
+compiler/runtime and inputs fixed. It changed only application startup mode
+and the domain loading hint, using four warmups and four rotated blocks of
+four variants. All 827 client BEAMs matched. Serial launchers changed only the
+OTP startup API call, retaining IO setup, error handling and native identity.
+The no-hint control changed one call in `client@serve`, using the original
+compiler options and an executable-chunk roundtrip check. All other runtime
+files matched; non-runtime smoke-support differences were recorded separately.
+
+| Hint enabled minus disabled | Concurrent apps | Serial apps |
+|---|---:|---:|
+| Seed first-resident daemon HWM, paired median KiB | +1,906 | +2,246 |
+| Cold composer daemon HWM, paired median KiB | +1,594 | +2,132 |
+| Blocks with higher post-domain HWM | 4/4 | 4/4 |
+
+Before the first domain, hint variants actually had lower ready HWM in this
+experiment. The finding is the post-domain increase, not an increase already
+present at readiness or a proven reachable-state leak. The factor results
+support removing the batch. App concurrency alone was mixed in the factor
+memory results; the final combined baseline comparison follows.
+
+The final source removes the batch, its direct OTP binding, associated tests
+and obsolete inventory checker. It keeps the shared document and three narrow
+Settings projections. The unchanged client has all 827 BEAM modules identical
+to the original pre-optimization baseline. The production server is rebuilt
+from `72c6263` before the final confirmation, rather than shipping a transformed
+control. The retained resource archive contains both rejected series, factor
+controls, fingerprints, native ownership checks and the final confirmation.
+
+Seven alternating cold-autostart pairs per fixture, plus one warmup per
+artifact, compare that actual rebuilt release against the original
+pre-optimization baseline. Baseline server launcher identity is `90c9de4`
+(compression-experiment metadata, production code from main `8f66fc6`);
+candidate server identity is `72c6263`. The unchanged candidate client reports
+`9896b0b`; its 827 BEAMs match baseline client `b1f6f06`. This measures the
+remaining changes together, rather than assigning each saving to concurrency.
+
+| Candidate minus baseline, paired median | Smoke | 32 models |
+|---|---:|---:|
+| Cold launch to attached composer, ms | −214.6 (4/7 lower) | −86.1 (5/7 lower) |
+| Cgroup CPU through composer, ms | −280.0 (4/7 lower) | −89.3 (4/7 lower) |
+| Daemon composer HWM, KiB | −1,748 (7/7 lower) | −2,664 (7/7 lower) |
+| Combined sampled composer RSS, KiB | −1,428 (6/7 lower) | −3,720 (7/7 lower) |
+| Whole-fixture client wait4 peak RSS, KiB | −488 (6/7 lower) | −1,348 (7/7 lower) |
+| Client composer HWM/RSS, KiB | +16 (5/7 higher) | −964 (7/7 lower) |
+
+These results support lower measured workload medians under unchanged capacity,
+not absolute resource neutrality. CPU increased in three of seven pairs for
+each fixture; smoke combined sampled RSS increased in one pair. The smoke
+client's composer HWM/RSS increased by a paired median 16 KiB despite unchanged
+client BEAMs. No tolerance is assumed and that increase is not waived. Neither
+component snapshots nor whole-fixture `wait4` prove simultaneous aggregate
+peak memory or exact reachable state. Composer wall-time ranges overlap;
+there is no all-run or all-platform speedup guarantee. These are warm-page-cache,
+selected-session journeys with explicit best-effort enforcement, not a
+full-enforcement deployment result or an interactive New-session measurement.
+Final resource sampling gaps ranged from 0.56 to 16.42 ms; all observations
+remain in the data.
+
+All 32 final trials proved durable post-timing input admission, normal daemon
+shutdown and CPU affinity. All 64 seed/replacement native identities retired.
+Before/after release fingerprints match. The actual rebuilt server changes
+only `client@serve` among 1,717 common server BEAMs relative to the earlier
+batch-enabled build, and removes the two batch modules; the other 1,716 match.
+The [resource archive](../review/startup-resources-2026-10-17.json) retains all
+148 trials across the four series, warmups, paired summaries, original input
+hashes, factor controls, source identities and independent artifact audits.
+Historical artifact paths describe their contents at measurement time.
+
+Final validation passed the full TUI gate (1,447 tests), 16 real-control client
+tests, 134 catalogue tests, six configuration-document tests and seven domain
+tests. Client format/build and lint passed, with zero lint errors; package
+documentation mirrors match. The stock server release build, two native
+launcher checks and release smoke passed, including authenticated transport,
+session admission and clean shutdown. The offline bundled-toolchain compile
+was not verified: this kernel refuses its unprivileged network namespace.
+The earlier full-client failures described above remain limits on local
+coverage. Hosted checks and full enforcement/code-mode signoff for the
+published head remain merge gates. No operator daemon was installed or restarted.
+
+To repeat the final resource experiment, freeze the original baseline and
+build the candidate with stock `make release release-client`. Prepare the
+32-model configuration below, then run in a quiet dedicated Linux container
+with `--cpus=1 --cpuset-cpus=0`. Copy the
+[resource diagnostic](../review/client-resource-compare-2026-10-17.py) to its
+original scratch location so the separate
+[factor diagnostic](../review/client-resource-factors-2026-10-17.py) can import
+it unchanged. Both retained files are byte-identical to their recorded driver
+hashes. The later `--candidate` CLI selector preserves earlier trial logic.
+
+```sh
+mkdir -p build/startup
+cp docs/review/client-resource-compare-2026-10-17.py build/startup/client_resource_compare.py
+cp docs/review/client-resource-factors-2026-10-17.py build/startup/client_resource_factors.py
+env -u ERL_FLAGS -u ERL_AFLAGS -u ERL_ZFLAGS \
+  python3 -B build/startup/client_resource_compare.py --runs 7 --cores 1 \
+  --workloads cold-autostart --configs smoke,models32 \
+  --baseline build/bench-startup-memory/releases/first-session-baseline \
+  --candidate build/release --allow-server-difference \
+  --label startup-resource-repeat-1core
+```
+
+The factor driver additionally requires the disposable controls and variant
+manifest described in the archive. It is not an installable release or a
+production configuration switch. Rebuilding an older rejected candidate
+requires its corresponding historical source, not the final source.
+
+## Reproduce earlier measurements
+
+The commands below record earlier iterations. The inventory checker belongs
+to `2fc8e04` and its corresponding batch-enabled release; it is intentionally
+absent from the final source. Use the resource procedure and retained drivers
+for the final CPU/memory comparison.
+
 
 Build and retain the baseline before applying changes, then compare the rebuilt
 candidate. Run timing commands sequentially on a quiet host. Scenario f needs

@@ -2,64 +2,61 @@
 
 ## First-session startup — October 17
 
-Local TUI launches now resolve the daemon while the original terminal discovers
-its workspace and constructs its model. Weft owns the worker; joining consumes
-final accounting before control adoption. Terminal death cancels discovery and
-retires even an unclaimed control handle. Worker/account loss remains fatal so
-an unpublished handle cannot leak. Other launch modes keep their order.
+Startup improvements must not buy lower latency with increased CPU or memory.
+The final source retains one TOML parse per configuration load, three narrow
+Settings callback captures, and OTP 29 dependency-aware concurrent application
+startup. File rereads, secret rotation, validation order, restart custody,
+native identity, rollback and UTF-8 diagnostics remain intact. No heap, cache
+or CPU allowance was increased. No operator daemon was installed or restarted.
 
-The independent three-pair smoke repeat measured roughly 50 ms faster warm
-attachment and 45 ms faster cold autostart in paired medians. The wider
-seven-pair/two-configuration series was noisy; 32-model cold startup remains
-inconclusive. These are selected saved-session journeys with explicit
-best-effort enforcement, not picker-to-New or deployment guarantees. All 80
-trials accepted a durable PTY user turn and shut down normally; all 120 native
-identities retired. The [raw async measurements and artifact audit](review/async-startup-2026-10-17.json)
-retain both series. The server is identical on both sides; 826 other common
-client BEAM modules match byte for byte.
+The TUI async overlap and 25-module domain-loading batch were removed after
+fixed-capacity resource measurements. Async warm-client peak RSS increased by
+328 KiB in smoke and 1,260 KiB with 32 models; cold smoke CPU increased 153 ms
+(paired medians). The batch-enabled release raised smoke daemon HWM by
+1,968 KiB in all seven pairs; a four-way factor comparison isolated consistent post-domain memory
+costs in both serial and concurrent application startup. The batch binding,
+checker and tests are gone. TUI source is restored, with all 827 released
+client BEAMs matching the original pre-optimization baseline.
 
-The full TUI gate passed 1,450 tests and the real-control TUI fixture passed all
-20 tests. Formatting, lint, docs, release smoke and deliberate fatal/accounting
-mutations passed. Final-head hosted CI remains required before merge.
+The real stock server rebuilt at `72c6263` was compared to that original
+baseline using seven alternating pairs per fixture, under the same one-CPU
+quota and affinity. Paired median cgroup CPU through the real composer fell
+280 ms in smoke and 89 ms with 32 models. Daemon HWM fell 1,748/2,664 KiB in
+all seven pairs in each fixture; combined sampled RSS fell 1,428/3,720 KiB.
+Cold launch to composer improved by paired medians 215/86 ms, but only four
+and five of seven pairs were faster respectively. These measurements include
+all retained changes and do not isolate an application-concurrency saving.
 
-The [first-session startup note](design-notes/first-session-startup.md) records
-the release benchmarks, raw measurement data and validation limits. The preceding
-wave batches 25 measured Gleam modules after domain configuration validation
-and before resource acquisition. OTP owns its existing code cache; a rejected
-hint keeps ordinary demand loading. There is no eager daemon warmup, native
-shim, custom once flag or new configuration switch. Three retained callbacks
-also capture only their required Settings fields, preserving restart custody.
+Absolute resource neutrality is not established. CPU rose in three of seven
+pairs per fixture, smoke combined sampled RSS rose in one, and smoke client
+composer HWM/RSS rose by a paired median 16 KiB (five of seven higher).
+Sequential RSS samples and component HWMs are not simultaneous aggregate peak
+memory. No arbitrary tolerance is assumed. Fixtures use warm page cache,
+synthetic unreachable providers, saved-session reopening and explicit
+best-effort enforcement; they are not deployment/full-enforcement or
+interactive picker-to-New results.
 
-Against the frozen initial startup wave, nine alternating production pairs
-with a 32-model synthetic configuration reduced first residency 378 → 342 ms
-(all nine faster), later residency 100 → 91 ms, and cold daemon through the
-real TUI composer 1414 → 1357 ms (seven of nine faster). Ten-session peak RSS
-fell 284 → 237 MiB and sampled growth 18.44 → 14.37 MiB in that same series.
-These measurements select explicit best-effort enforcement; they do not
-establish full-enforcement deployment latency or exact reachable memory.
-That earlier comparison used an unchanged TUI artifact and measures no separate
-client-startup improvement. The async client comparison above is separate.
+The [startup note](design-notes/first-session-startup.md) documents the final
+comparison and explicitly labels earlier batch/async latency results as
+historical. The [resource archive](review/startup-resources-2026-10-17.json)
+retains all 148 trials, warmups, driver hashes, summaries and artifact audits.
+All final trials proved durable input admission, normal shutdown and affinity;
+all 64 final seed/replacement native identities retired. Independent source,
+artifact and data review supports the reduced scope with those stated limits.
 
-The earlier wave shares one TOML document within each load, preserving file
-rereads, secret rotation, strict validation and error precedence. Its concurrent
-OTP application startup retains dependency order, rollback, native identity and
-UTF-8 diagnostics; an isolated matched comparison reduced daemon readiness
-465 → 438 ms. The decoder-only reduction is about 91%. Wider daemon and TUI
-module inventories were rejected after mixed latency and higher RSS.
-
-The benchmark distinguishes create reply, residency, first-domain startup and
-the real attached composer. Use alternating `--against` release comparisons;
-old JSON without compatible RSS/workload/enforcement provenance is refused.
-The initial revision passed all hosted Linux/macOS checks. Local follow-up
-validation passed 159 tests and failed one existing jailed-listing fixture
-because this container cannot create its bwrap namespace. Formatting, lint,
-documentation, actual release inventory/native-initialization checks and
-deliberate loader mutations passed. The earlier local full-client run also hit
-the satellite endpoint-readiness fixture. Read the note before claiming a full
-local gate or deployment speedup. No operator daemon was installed or restarted.
+Final local validation passed the full TUI gate (1,447 tests), 16 real-control
+client tests, 134 catalogue tests, six configuration-document tests, seven
+domain tests, format/build/lint, stock release build, two native launcher
+checks and release smoke. The bundled offline toolchain compile was not
+verified because this kernel refuses its unprivileged network namespace.
+Earlier broad local client runs hit the existing bwrap jailed-listing and
+satellite-readiness fixtures; there is no passing full local client claim.
+The initial startup revision passed hosted Linux/macOS checks; the final
+published head still needs its own hosted gates and full enforcement/code-mode
+signoff before merge.
 
 The separate [request gzip experiment PR](https://github.com/Roasbeef/loom/pull/1000)
-contains both real TUI/browser experiments and native transport measurements;
+contains real TUI/browser experiments and native transport measurements;
 it changes no production request-encoding default.
 
 ## Previous handoff
