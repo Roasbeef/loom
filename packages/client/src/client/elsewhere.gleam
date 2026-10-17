@@ -37,10 +37,10 @@
 ////
 //// ## Flow
 ////
-//// `read` → `choose` → `ask_all` → `fit` → `to_json`
+//// `read` → `heard` → `choose` → `ask_all` → `fit` → `to_json`
 ////
-//// 1. `read` is the whole command: it chooses the groups, asks them, and renders
-////    what it heard.
+//// 1. `read` is the whole command: it takes what `heard` gathered and renders
+////    it. The owner's home calls `heard` itself and hands `for_page` the groups.
 //// 2. `choose` resolves the request against the configured orchestrators.
 //// 3. `ask_all` runs one weft run in which each chosen orchestrator is connected
 ////    to, for at most one second, and then asked, for at most one more, under a
@@ -57,6 +57,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import web_view/elsewhere as page
 import weft
 
 /// The most rows one group shows in one reply.
@@ -109,10 +110,74 @@ pub fn read(
   orchestrator: Option(String),
   after: Option(String),
 ) -> Result(JsonValue, Nil) {
+  heard(reach, configured, orchestrator, after)
+  |> result.map(fit(_, max_body_bytes))
+  |> result.map(to_json)
+}
+
+/// The groups a request is about and what each said, before they are fitted to
+/// a reply. The owner's home reads them this way, since a page keeps its own
+/// bound on rows.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert elsewhere.heard(reach, [], Some("ghost"), None) == Error(Nil)
+/// ```
+pub fn heard(
+  reach: Reach,
+  configured: List(Orchestrator),
+  orchestrator: Option(String),
+  after: Option(String),
+) -> Result(List(Group), Nil) {
   use chosen <- result.map(choose(configured, orchestrator))
   ask_all(reach, chosen, option.unwrap(after, ""))
-  |> fit(max_body_bytes)
-  |> to_json
+}
+
+/// The groups as the owner's home may know them (`web_view/elsewhere`): the
+/// configuration key, the address, and for each row the fixed state and the
+/// text the home draws. The node of an orchestrator, and the node of an
+/// executor, stay with the daemon, since nothing on the page uses them.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert elsewhere.for_page([]) == page.Heard([])
+/// ```
+pub fn for_page(groups: List(Group)) -> page.Read {
+  page.Heard(
+    list.map(groups, fn(group) {
+      page.Group(
+        name: group.orchestrator.name,
+        address: group.orchestrator.address,
+        hearing: case group.heard {
+          Silent -> page.Silent
+          Answered(Page(rows:, more:)) ->
+            page.Answered(rows: list.map(rows, page_row), more: case more {
+              Further -> page.Further
+              Last -> page.Last
+            })
+        },
+      )
+    }),
+  )
+}
+
+fn page_row(row: listed_sessions.Row) -> page.Row {
+  page.Row(
+    session_id: row.session_id,
+    workspace: row.workspace,
+    name: row.name,
+    status: case row.status {
+      listed_sessions.Reserved -> page.Reserved
+      listed_sessions.Saved -> page.Saved
+      listed_sessions.Opening(..) -> page.Opening
+      listed_sessions.Resident(..) -> page.Resident
+      listed_sessions.Stopping(..) -> page.Stopping
+      listed_sessions.RecoveryBlocked -> page.Blocked
+    },
+    executor: row.executor,
+  )
 }
 
 /// The orchestrators a request is about: all of them, or the one whose key it
@@ -173,11 +238,11 @@ pub fn ask_all(
   |> weft.deadline(deadline_ms)
   |> weft.start
   |> list.map2(chosen, fn(outcome, each) {
-    Group(orchestrator: each, heard: heard(outcome))
+    Group(orchestrator: each, heard: hearing(outcome))
   })
 }
 
-fn heard(outcome: weft.Outcome(Page, Nil)) -> Heard {
+fn hearing(outcome: weft.Outcome(Page, Nil)) -> Heard {
   case outcome {
     weft.Completed(value:, ..) -> Answered(value)
     weft.Failed(..)

@@ -89,6 +89,7 @@ import storage/access
 import storage/catalogue
 import storage/domain
 import storage/snapshot as storage_snapshot
+import web_view/elsewhere as page_elsewhere
 import web_view/ending.{type Ending}
 import web_view/image
 import web_view/page
@@ -317,6 +318,14 @@ pub type HomeAttachment(instance) {
     /// calls it from its runtime (`ui_socket.read_task`), and it is asked each
     /// time the panel opens and not cached.
     placements: fn() -> placements.Read,
+    /// Reads the sessions the daemon's other orchestrators list
+    /// (protocol-change/085), for the owner's home: the first page of every
+    /// configured orchestrator, or with a key and the identity a page ended with
+    /// the next page of that one. It asks over the connections of the daemon's own
+    /// configuration, which takes up to three seconds, so the page never calls it
+    /// from its runtime (`ui_socket.read_task`). A key outside the configuration
+    /// is `Unread`, and nothing is dialled for it.
+    elsewhere: fn(Option(String), Option(String)) -> page_elsewhere.Read,
   )
 }
 
@@ -647,6 +656,16 @@ fn home_upgrade(
               )
               |> deployment.for_page
               |> placements.Reported
+            },
+            elsewhere: fn(orchestrator, after) {
+              elsewhere.heard(
+                config.deployment,
+                roster.rows(config.movers.orchestrators),
+                orchestrator,
+                after,
+              )
+              |> result.map(elsewhere.for_page)
+              |> result.unwrap(page_elsewhere.Unread)
             },
           ),
           open,

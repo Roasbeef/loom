@@ -148,6 +148,12 @@
 ////    it, returning the `Page` the socket holds for its life: forward a
 ////    browser frame (after `observer_accepts`, `operator_accepts` or
 ////    `owner_accepts`), shut down, read an image.
+////    `upgrade_home` also builds the home's capabilities. The owner's operating
+////    page is handed `home_elsewhere_capability` (protocol-change/085), whose
+////    reads run in `read_task` through `elsewhere_for`, which repeats the owner
+////    check before the daemon dials any other orchestrator. The page's "Where"
+////    and "Show more" are clicks beneath `home.table_path`, so `home_accepts`
+////    already admits them.
 //// 4. Afterwards the handler forwards browser frames, writes the component's
 ////    frames to the browser, and on the relay's `Ended` schedules `Stop`.
 //// 5. `closing` turns an ending's close code into mist's clean stop (1000) or
@@ -212,6 +218,7 @@ import web_view/actions
 import web_view/admin
 import web_view/component
 import web_view/creations
+import web_view/elsewhere as page_elsewhere
 import web_view/ending
 import web_view/grants
 import web_view/home
@@ -891,6 +898,36 @@ pub fn upgrade_home(
       ),
     )
 
+  // The owner's other orchestrators (protocol-change/085) are read in tasks of
+  // their own, because the daemon dials them, and delivered by the page's
+  // numbered read. The "Where" and "Show more" presses are clicks beneath
+  // `home.table_path`, which every home's socket admits, so no admission is
+  // added: the capability is what makes the group exist, and the page honours a
+  // press only for a row it holds.
+  let elsewhere =
+    home_elsewhere_capability(
+      attachment.principal,
+      ceiling,
+      home.Elsewhere(
+        groups: fn(deliver) {
+          read_task(deliver, fn() {
+            elsewhere_for(standing, open, attachment.elsewhere, None, None)
+          })
+        },
+        next: fn(group, after, deliver) {
+          read_task(deliver, fn() {
+            elsewhere_for(
+              standing,
+              open,
+              attachment.elsewhere,
+              Some(group),
+              Some(after),
+            )
+          })
+        },
+      ),
+    )
+
   // The same fresh home may stop, archive and delete the sessions it lists
   // (protocol-change/065, the addendum on session actions). The click on a row's
   // button is beneath `home.table_path`, which every home's socket admits, so no
@@ -972,6 +1009,7 @@ pub fn upgrade_home(
       pools,
       placing,
       folders,
+      elsewhere,
       signing,
       administering,
       admits,
@@ -1119,6 +1157,33 @@ pub fn home_folders_capability(
 ) -> Option(home.Folders) {
   case principal.kind, ceiling {
     access.OwnerPrincipal, access.Operator -> Some(folders)
+    access.OwnerPrincipal, access.Observer
+    | access.MemberPrincipal, access.Operator
+    | access.MemberPrincipal, access.Observer
+    -> None
+  }
+}
+
+/// The capability to read the owner's other orchestrators that a home page
+/// minted for `principal` with `ceiling` is handed (protocol-change/085): `ask`
+/// for the daemon's owner on a page minted to operate, and none for any other,
+/// which is the creation capability's own rule. The group it draws is
+/// information about the owner's own deployment. The daemon checks both facts
+/// again when a read runs (`elsewhere_for`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ui_socket.home_elsewhere_capability(member, access.Operator, reads) == None
+/// ```
+@internal
+pub fn home_elsewhere_capability(
+  principal: access.Principal,
+  ceiling: access.Role,
+  reads: home.Elsewhere,
+) -> Option(home.Elsewhere) {
+  case principal.kind, ceiling {
+    access.OwnerPrincipal, access.Operator -> Some(reads)
     access.OwnerPrincipal, access.Observer
     | access.MemberPrincipal, access.Operator
     | access.MemberPrincipal, access.Observer
@@ -1279,6 +1344,7 @@ fn admit_home(
   pools: List(String),
   placing: fn(fn(placements.Read) -> Nil) -> Nil,
   folders: Option(home.Folders),
+  elsewhere: Option(home.Elsewhere),
   signing: Signing,
   administering: Option(fn(fn(sessions.Answer) -> Nil) -> Nil),
   admits: fn(String) -> Bool,
@@ -1324,6 +1390,7 @@ fn admit_home(
       pools:,
       placements: placing,
       folders:,
+      elsewhere:,
       signins: fn(deliver) { read_task(deliver, signing.read) },
       login: signing.login,
       bookmark: signing.bookmark,
@@ -3023,6 +3090,32 @@ pub fn recent_for(
   case authorized_owner(standing, open) {
     Ok(_) -> listed_recent(standing, home)
     Error(_) -> []
+  }
+}
+
+/// The other orchestrators' sessions as the owner's home may draw them
+/// (protocol-change/085). The same owner check as a creation runs first
+/// (`authorized_owner`), so a page that may not create is told of nothing and the
+/// daemon dials nobody for it, and so is a page whose registry did not answer.
+/// `read` is the daemon's read over its own configuration, which resolves a key
+/// before it connects.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.elsewhere_for(standing, open, attachment.elsewhere, None, None)
+/// ```
+@internal
+pub fn elsewhere_for(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+  read: fn(Option(String), Option(String)) -> page_elsewhere.Read,
+  orchestrator: Option(String),
+  after: Option(String),
+) -> page_elsewhere.Read {
+  case authorized_owner(standing, open) {
+    Ok(_) -> read(orchestrator, after)
+    Error(_) -> page_elsewhere.Unread
   }
 }
 

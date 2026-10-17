@@ -18,6 +18,7 @@ import lustre/effect
 import lustre/element.{type Element}
 import web_view/actions
 import web_view/creations
+import web_view/elsewhere
 import web_view/ending
 import web_view/home
 import web_view/page
@@ -78,6 +79,7 @@ fn start_with(ceiling: home.Ceiling, read: fn() -> home.Listing) -> home.Start {
     manage: None,
     create: None,
     folders: None,
+    elsewhere: None,
     profiles: [],
     models: [],
     signins: fn(deliver) { deliver(signins.Listed([])) },
@@ -2813,4 +2815,213 @@ pub fn a_moving_row_offers_no_rename_test() {
   let html = drawn(owner)
   assert string.contains(html, "moving to bravo")
   assert list.length(string.split(html, "class=\"home-rename\"")) == 2
+}
+
+// ---------------------------------------------------------------------------
+// Sessions on the owner's other orchestrators (protocol-change/085).
+// ---------------------------------------------------------------------------
+
+fn elsewhere_row(id: String, name: String, workspace: String) -> elsewhere.Row {
+  elsewhere.Row(
+    session_id: id,
+    workspace:,
+    name:,
+    status: elsewhere.Saved,
+    executor: Some("box"),
+  )
+}
+
+fn desk(rows: List(elsewhere.Row), more: elsewhere.More) -> elsewhere.Group {
+  elsewhere.Group(
+    name: "desk",
+    address: Some("ws://10.0.0.8:7000"),
+    hearing: elsewhere.Answered(rows:, more:),
+  )
+}
+
+fn laptop() -> elsewhere.Group {
+  elsewhere.Group(name: "laptop", address: None, hearing: elsewhere.Silent)
+}
+
+// A page that may create and reads `first` as the other orchestrators' first
+// pages. `next` hears each request for a page and answers with `later`.
+fn elsewhere_reader(
+  first: elsewhere.Read,
+  asked: Subject(#(String, String)),
+  later: elsewhere.Read,
+) -> home.Start {
+  home.Start(
+    ..start(),
+    create: Some(fn(_, _, _, _, _) { Nil }),
+    elsewhere: Some(
+      home.Elsewhere(
+        groups: fn(deliver) { deliver(first) },
+        next: fn(group, after, deliver) {
+          process.send(asked, #(group, after))
+          deliver(later)
+        },
+      ),
+    ),
+  )
+}
+
+fn two_groups() -> elsewhere.Read {
+  elsewhere.Heard([
+    desk(
+      [
+        elsewhere_row("0198-a", "docs pass", "/src/loom"),
+        elsewhere_row("0198-b", "ui", "/src/web"),
+      ],
+      elsewhere.Further,
+    ),
+    laptop(),
+  ])
+}
+
+// The group exists only on a page the daemon handed the capability. Any other
+// page draws nothing, and the messages change nothing and ask nothing.
+pub fn only_a_page_with_the_capability_draws_the_other_orchestrators_test() {
+  let #(plain, _) = opened(start())
+  let html = drawn(plain)
+  assert !string.contains(html, "On other orchestrators")
+  let model = run(plain, home.ElsewhereRead(home.reads(plain), two_groups()))
+  let model = run(model, home.Locating("desk", "0198-a"))
+  let model = run(model, home.ShowingMore("desk"))
+  assert drawn(model) == html
+}
+
+// The group follows "Other folders", lists each orchestrator by its key with
+// its rows, and says in one line that a silent one did not answer, which is not
+// the same as having no sessions.
+pub fn the_group_lists_what_each_orchestrator_said_test() {
+  let asked = process.new_subject()
+  let #(model, _) =
+    opened(elsewhere_reader(two_groups(), asked, elsewhere.Unread))
+  let html = drawn(model)
+  assert string.contains(html, "On other orchestrators")
+  assert string.contains(html, "docs pass")
+  assert string.contains(html, "/src/web")
+  assert string.contains(html, "ws://10.0.0.8:7000")
+  assert string.contains(html, "No answer from this orchestrator.")
+  assert !string.contains(html, "No sessions on this orchestrator.")
+  let assert Ok(#(before, _)) =
+    string.split_once(html, "On other orchestrators")
+  assert string.contains(before, "Other folders")
+}
+
+pub fn an_orchestrator_with_no_sessions_says_so_and_is_not_silent_test() {
+  let asked = process.new_subject()
+  let #(model, _) =
+    opened(elsewhere_reader(
+      elsewhere.Heard([desk([], elsewhere.Last)]),
+      asked,
+      elsewhere.Unread,
+    ))
+  let html = drawn(model)
+  assert string.contains(html, "No sessions on this orchestrator.")
+  assert !string.contains(html, "No answer from this orchestrator.")
+}
+
+// "Where" opens the launch under its row in a copy box of the one subject that
+// takes it. A press for a row the page does not hold opens nothing, "Close"
+// closes it, and a read that no longer lists the row closes it too.
+pub fn where_opens_the_launch_line_for_a_row_the_page_holds_test() {
+  let asked = process.new_subject()
+  let #(model, _) =
+    opened(elsewhere_reader(two_groups(), asked, elsewhere.Unread))
+  assert !string.contains(drawn(model), "loom-copy")
+
+  let held = run(model, home.Locating("desk", "0198-a"))
+  let html = drawn(held)
+  assert string.contains(html, "subject=\"launch\"")
+  assert string.contains(
+    html,
+    "text=\"loom --addr ws://10.0.0.8:7000 --session 0198-a --token-file &lt;owner token file on that host&gt;\"",
+  )
+  assert string.contains(html, "on the orchestrator desk")
+
+  // Pressing a row the page does not hold changes nothing.
+  assert drawn(run(held, home.Locating("desk", "ghost"))) == html
+  assert drawn(run(held, home.Locating("ghost", "0198-a"))) == html
+  assert drawn(run(held, home.Locating("laptop", "0198-a"))) == html
+  assert !string.contains(drawn(run(held, home.Located)), "loom-copy")
+
+  // A read that no longer lists the row closes its detail.
+  let serial = home.reads(held)
+  let gone =
+    run(
+      held,
+      home.ElsewhereRead(serial, elsewhere.Heard([desk([], elsewhere.Last)])),
+    )
+  assert !string.contains(drawn(gone), "loom-copy")
+}
+
+// "Show more" asks for the page after the last row the page holds, names the
+// group it was drawn for, and joins what arrives. A group with no more has no
+// button.
+pub fn show_more_asks_after_the_last_row_and_joins_the_page_test() {
+  let asked = process.new_subject()
+  let later =
+    elsewhere.Heard([
+      desk([elsewhere_row("0198-c", "third", "/src/c")], elsewhere.Last),
+    ])
+  let #(model, _) = opened(elsewhere_reader(two_groups(), asked, later))
+  assert string.contains(drawn(model), "Show more")
+  let model = run(model, home.ShowingMore("desk"))
+  assert process.receive(asked, 0) == Ok(#("desk", "0198-b"))
+  assert process.receive(asked, 0) == Error(Nil)
+  let html = drawn(model)
+  assert string.contains(html, "third")
+  assert string.contains(html, "docs pass")
+  assert !string.contains(html, "Show more")
+
+  // Nothing more is asked for a group that has none, or that is not held.
+  let _ = run(model, home.ShowingMore("desk"))
+  let _ = run(model, home.ShowingMore("laptop"))
+  let _ = run(model, home.ShowingMore("ghost"))
+  assert process.receive(asked, 0) == Error(Nil)
+}
+
+// A page that arrives after a newer first-page read replaced the rows is dropped
+// rather than joined to rows it did not follow.
+pub fn a_page_that_a_newer_read_overtook_is_dropped_test() {
+  let asked = process.new_subject()
+  let #(model, _) =
+    opened(elsewhere_reader(two_groups(), asked, elsewhere.Unread))
+  let stale =
+    elsewhere.Heard([
+      desk([elsewhere_row("0198-z", "stale row", "/src/z")], elsewhere.Last),
+    ])
+  let model = run(model, home.MoreRead("desk", 0, stale))
+  assert !string.contains(drawn(model), "stale row")
+}
+
+// Another daemon's text is drawn as escaped text, and no class, attribute or key
+// is built from it: the handlers all lie beneath the table the socket admits.
+pub fn another_orchestrators_text_is_escaped_and_builds_nothing_test() {
+  let asked = process.new_subject()
+  let hostile = "<img src=x>"
+  let #(model, _) =
+    opened(elsewhere_reader(
+      elsewhere.Heard([
+        elsewhere.Group(
+          name: "desk",
+          address: Some("ws://x\" y=\"z"),
+          hearing: elsewhere.Answered(
+            rows: [elsewhere_row("0198-a", hostile, hostile)],
+            more: elsewhere.Last,
+          ),
+        ),
+      ]),
+      asked,
+      elsewhere.Unread,
+    ))
+  let html = drawn(model)
+  assert !string.contains(html, hostile)
+  assert string.contains(html, "&lt;img src=x&gt;")
+  assert !string.contains(html, "y=\"z")
+  let keys = handlers(home.view(run(model, home.Locating("desk", "0198-a"))))
+  assert list.all(keys, fn(key) {
+    string.starts_with(key, "0\t1\t") || string.starts_with(key, "0\t2\t1\t")
+  })
 }

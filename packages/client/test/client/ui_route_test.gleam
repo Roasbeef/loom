@@ -65,6 +65,7 @@ import support/internal/ffi_daemon_socket
 import support/internal/ffi_ws
 import web_view/actions
 import web_view/creations
+import web_view/elsewhere as page_elsewhere
 import web_view/ending
 import web_view/grants
 import web_view/home
@@ -5073,6 +5074,53 @@ pub fn the_owners_recent_folders_are_listed_and_forgotten_test() {
         entry.path
       })
       == [home <> "/proj"]
+  })
+}
+
+// The other orchestrators are read for the owner's operating page alone. A page
+// that has ended, one minted to read and a member's page are told of nothing, and
+// the daemon's read, which dials the other orchestrators, is never made for them.
+pub fn the_other_orchestrators_are_read_for_the_owners_operating_page_only_test() {
+  fixture(fn(ready, _, credential) {
+    let asked = process.new_subject()
+    let read = fn(orchestrator, after) {
+      process.send(asked, #(orchestrator, after))
+      page_elsewhere.Heard([])
+    }
+    let #(standing, _) = creator_standing(ready, credential, access.Operator)
+    assert ui_socket.elsewhere_for(standing, page_open, read, None, None)
+      == page_elsewhere.Heard([])
+    assert process.receive(asked, 0) == Ok(#(None, None))
+
+    // A key and a cursor go through as the page named them.
+    let _ =
+      ui_socket.elsewhere_for(
+        standing,
+        page_open,
+        read,
+        Some("desk"),
+        Some("x"),
+      )
+    assert process.receive(asked, 0) == Ok(#(Some("desk"), Some("x")))
+
+    let #(readonly, _) = creator_standing(ready, credential, access.Observer)
+    assert ui_socket.elsewhere_for(readonly, page_open, read, None, None)
+      == page_elsewhere.Unread
+    assert ui_socket.elsewhere_for(
+        standing,
+        fn() { Error(Nil) },
+        read,
+        None,
+        None,
+      )
+      == page_elsewhere.Unread
+    let existing = create_session(ready, "elsewhere-known", 1124)
+    let grant = member(ready, "ui-elsewhere", existing, access.Operator)
+    let #(members, _) = creator_standing(ready, grant, access.Operator)
+    let members = ui_socket.Standing(..members, principal: "ui-elsewhere")
+    assert ui_socket.elsewhere_for(members, page_open, read, None, None)
+      == page_elsewhere.Unread
+    assert process.receive(asked, 0) == Error(Nil)
   })
 }
 

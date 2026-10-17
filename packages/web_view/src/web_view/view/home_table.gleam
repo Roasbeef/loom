@@ -68,7 +68,8 @@
 ////
 //// 1. `view` is the memoized section: the heading, the page's note, a
 ////    `group` for each workspace, the section for folders that hold no session
-////    (`view/folders`), and `withheld_line` after them.
+////    (`view/folders`), the group for the other orchestrators' sessions
+////    (`view/elsewhere`), and `withheld_line` after them.
 //// 2. `landing` decides where the page's last note is drawn, so it never moves
 ////    the list.
 //// 3. `group` draws a workspace's heading and its rows, and `row` draws one
@@ -97,6 +98,7 @@ import web_view/sessions.{
 }
 import web_view/view/archiving
 import web_view/view/create.{type Create}
+import web_view/view/elsewhere.{type Elsewhere} as elsewhere_view
 import web_view/view/folders.{type Folders} as folders_view
 import web_view/view/heading
 import web_view/view/notice.{type Notice}
@@ -219,7 +221,7 @@ type Landing {
 /// ## Examples
 ///
 /// ```gleam
-/// // home_table.view(home.groups(model), dict.new(), now, Opening, resume.Never, Never, Unmanaged, create.Never, folders.Hidden, None, None)
+/// // home_table.view(home.groups(model), dict.new(), now, Opening, resume.Never, Never, Unmanaged, create.Never, folders.Hidden, elsewhere.Hidden, None, None)
 /// ```
 pub fn view(
   groups: List(Group),
@@ -231,6 +233,7 @@ pub fn view(
   manage: Manage(message),
   offer: Create(message),
   folders: Folders(message),
+  elsewhere: Elsewhere(message),
   opening: Option(String),
   note: Option(Note),
 ) -> Element(message) {
@@ -244,6 +247,7 @@ pub fn view(
     element.ref(explains(manage)),
     element.ref(create.state(offer)),
     element.ref(folders_view.listed(folders)),
+    element.ref(elsewhere_view.keyed(elsewhere)),
     element.ref(opening),
     element.ref(note),
   ])
@@ -284,6 +288,7 @@ pub fn view(
           Some(InFolders(notice:)) -> Some(notice)
           Some(InRow(..)) | Some(InHeading(..)) | Some(Under(..)) | None -> None
         }),
+        elsewhere_view.view(elsewhere),
         ..withheld_line(manage)
       ],
     )

@@ -99,6 +99,7 @@ fn home_start(manage: Option(Ask)) -> home.Start {
     manage:,
     create: None,
     folders: None,
+    elsewhere: None,
     profiles: [],
     models: [],
     signins: fn(deliver) { deliver(signins.Listed([])) },
