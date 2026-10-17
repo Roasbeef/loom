@@ -298,9 +298,9 @@ that adds it says what the narrowed holder may ask.
 Keying the row by the digest of the identifier is what makes a login fit
 the existing model: every check in the tree takes a credential digest
 <<<<<<< ours
-(`authenticate` (`client/daemon/manager.gleam:1766`), `session_authority`,
+(`authenticate` (`client/daemon/manager.gleam:1756`), `session_authority`,
 =======
-(`authenticate` (`client/daemon/manager.gleam:1766`), `session_authority`,
+(`authenticate` (`client/daemon/manager.gleam:1756`), `session_authority`,
 >>>>>>> theirs
 `frame_authority`, `administer`), and a page minted from a login carries
 that digest as its `Grant.credential`. The page's socket, its relay, the
@@ -784,13 +784,13 @@ membership is.
 2026-09-30 that it waits for use of the terminal's `/access` overlay
 (`tui/access_overlay.gleam`). The daemon serves the two owner-only reads it
 <<<<<<< ours
-needs, `principal_page` (`client/daemon/manager.gleam:1606`) and
-`membership_page` (`client/daemon/manager.gleam:1629`), and every mutation
-through one dispatch, `administer` (`client/daemon/manager.gleam:1086`): invite,
+needs, `principal_page` (`client/daemon/manager.gleam:1596`) and
+`membership_page` (`client/daemon/manager.gleam:1619`), and every mutation
+through one dispatch, `administer` (`client/daemon/manager.gleam:1076`): invite,
 =======
-needs, `principal_page` (`client/daemon/manager.gleam:1606`) and
-`membership_page` (`client/daemon/manager.gleam:1629`), and every mutation
-through one dispatch, `administer` (`client/daemon/manager.gleam:1086`): invite,
+needs, `principal_page` (`client/daemon/manager.gleam:1596`) and
+`membership_page` (`client/daemon/manager.gleam:1619`), and every mutation
+through one dispatch, `administer` (`client/daemon/manager.gleam:1076`): invite,
 >>>>>>> theirs
 set-role, revoke membership, rotate, revoke credentials, isolate. The owner's
 session page already starts one of those from a browser, `invite_for`
