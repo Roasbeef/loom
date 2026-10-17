@@ -121,6 +121,11 @@ extended by the M3 runtime wave.
   sixteenth is `remote-child/`, the stub a parent session writes before it asks
   another orchestrator for a child, and `runtime/lineage.Lineage` gains an
   optional `orchestrator`, absent for a local cell and not written for one.
+  Phase 2 reserves two more, `remote-mail/{id}` (the receipt of a child's mail)
+  and `remote-send/{id}` (a send nobody answered), and adds the outbox and
+  receipt corners under `delegate/`. `child_owner` leaves a run unowned when the
+  child's parent is a `^` reference, so a message can start a run on a remote
+  parent's idle child.
 - `runtime/api.ApiError` — why an operation failed. `RuntimeUnavailable`
   means the writer address had no live binding before a request was sent;
   a caller can retry later. This differs from `CommitFailed(error:)` and

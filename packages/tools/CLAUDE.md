@@ -255,7 +255,9 @@ was asked.
   Waited, Outcome, Peer, Relation, Delivery, Refusal}` — the vocabulary
   crossing that seam. `Delivery` mirrors `runtime/api.Delivery` (which
   `tools` cannot import) the way `effects.ToolOutcome` mirrors the
-  broker's `CallOutcome`.
+  broker's `CallOutcome`. `Delivery.Queued` is a send recorded for an
+  orchestrator that is away (protocol-change/084, phase 2): the tool renders it
+  without promising a landing.
 - **Spawn selection is a catalogue name.** `SpawnRequest.model` is optional;
   the Agency resolves an explicit name before creating the child. Omission
   retains host routing. `Spawned.model` and `model_id` report the child's
