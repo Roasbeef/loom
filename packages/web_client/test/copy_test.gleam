@@ -306,3 +306,89 @@ pub fn the_launch_subject_copies_only_the_command_for_a_session_test() {
   )
   assert copy_rule.words(copy_rule.Launch, copy_rule.Idle) == "Copy command"
 }
+
+// The Admin page's machine pages show the commands an operator runs, and the box
+// copies exactly those shapes: the fixed words and flags, with each name one
+// shell word that is bare or single-quoted.
+pub fn the_operate_subject_copies_only_the_operator_commands_test() {
+  assert copy_rule.subject("operate") == Ok(copy_rule.Operate)
+  list.each(
+    [
+      "loom distribution renew laptop",
+      "loom distribution renew laptop --bundle-dir /opt/loom/bundle",
+      "loom distribution revoke laptop --reason 'RETIRED'",
+      "loom distribution revoke 'it'\\''s' --reason 'RETIRED'",
+      "loom distribution enroll box --node loom@box.example.net --role executor --links hub",
+      "loom distribution enroll hub2 --node loom@hub2.example.net --role orchestrator --links hub",
+      "loomd executor release 0198c1aa-0000-7000-8000-000000000002",
+    ],
+    fn(value) {
+      assert copy_rule.text(copy_rule.Operate, value) == Ok(value)
+    },
+  )
+  assert copy_rule.words(copy_rule.Operate, copy_rule.Idle) == "Copy command"
+  assert copy_rule.words(copy_rule.Operate, copy_rule.Copied)
+    == "Command copied"
+}
+
+// A name that is not one word, a second command, a substitution, a redirection,
+// an unquoted quote, a control character, a non-ASCII character, an option of the
+// program, or any other command is no command.
+pub fn the_operate_subject_refuses_anything_else_test() {
+  list.each(
+    [
+      "",
+      "loom distribution renew",
+      "loom distribution renew a b",
+      "loom distribution renew a;rm",
+      "loom distribution renew a && echo hi",
+      "loom distribution renew a | cat",
+      "loom distribution renew $(id)",
+      "loom distribution renew `id`",
+      "loom distribution renew a>b",
+      "loom distribution renew a'b",
+      "loom distribution renew 'a",
+      "loom distribution renew 'a'b'",
+      "loom distribution renew a\\b",
+      "loom distribution renew a\\ b",
+      "loom distribution renew --force",
+      "loom distribution renew '--force'",
+      "loom distribution renew a\nrm -rf ~",
+      "loom distribution renew a\r",
+      "loom distribution renew 'a\nb'",
+      "loom distribution renew 'a\u{7}b'",
+      "loom distribution renew caf\u{e9}",
+      "loom distribution renew 'a\u{202e}b'",
+      "loom distribution renew  a",
+      "loom distribution renew a ",
+      " loom distribution renew a",
+      "loom distribution renew a --force",
+      "loom distribution renew a --bundle-dir",
+      "loom distribution revoke a",
+      "loom distribution revoke a --reason",
+      "loom distribution revoke a --reason x --force",
+      "loom distribution enroll a --node n --role root --links h",
+      "loom distribution enroll a --role executor --node n --links h",
+      "loom distribution enroll a --node n --role executor",
+      "loomd executor release",
+      "loomd executor release a b",
+      "loomd executor release --state-dir /",
+      "loom distribution install a",
+      "sudo loom distribution renew a",
+      "rm -rf ~",
+    ],
+    fn(value) {
+      assert copy_rule.text(copy_rule.Operate, value) == Error(Nil)
+    },
+  )
+  assert copy_rule.text(
+      copy_rule.Operate,
+      "loom distribution renew " <> string.repeat("a", 257),
+    )
+    == Error(Nil)
+  assert copy_rule.text(
+      copy_rule.Operate,
+      "loom distribution renew 'a'" <> string.repeat("'\\''", 300),
+    )
+    == Error(Nil)
+}
