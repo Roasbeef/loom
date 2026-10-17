@@ -1,11 +1,15 @@
 //// Tests for `lsp/text`: line splitting, the UTF-16 ↔ codepoint
 //// conversion, identifier-boundary lookup, and edit application.
 ////
-//// The generated-text properties at the bottom walk a small deterministic
+//// The generated-text properties at the bottom draw texts from a qcheck
 //// generator over the characters that make the arithmetic interesting —
 //// every terminator, a two-byte and a three-byte BMP character, and two
 //// astral characters — so a regression in any one conversion shows up as
-//// a named seed rather than as a lucky pass.
+//// a counterexample rather than as a lucky pass. A text is a list of
+//// pieces joined, so a failing text shrinks by dropping pieces and by
+//// moving each remaining piece toward `a`, which leaves the one astral
+//// character or the one terminator the conversion got wrong. The run uses
+//// a fixed qcheck seed, so the gate draws the same texts on every machine.
 
 import gleam/int
 import gleam/list
@@ -17,6 +21,7 @@ import lsp/text.{
   NegativeCoordinate, OverlappingEdits, PositionOutOfRange, RangeSelects,
   SplitsSurrogatePair, SymbolAbsent,
 }
+import qcheck
 
 fn edit(line: Int, from: Int, to: Int, new_text: String) -> range.TextEdit {
   TextEdit(Range(Position(line, from), Position(line, to)), new_text)
@@ -419,34 +424,47 @@ const alphabet = [
   "a", "b", "_", " ", "(", "é", "中", "😀", "𝒳", "\n", "\r\n", "\r", "foo",
 ]
 
-/// A linear congruential step; deterministic, so a failure names its seed.
-fn next(seed: Int) -> Int {
-  { seed * 1_103_515_245 + 12_345 } % 2_147_483_648
+/// The number of texts each property is checked over, and the seed they are
+/// drawn from. Every property shares both, so a failure in one names a text
+/// the others were also run on.
+const text_count = 300
+
+const text_seed = 7919
+
+fn text_config() -> qcheck.Config {
+  qcheck.default_config()
+  |> qcheck.with_test_count(text_count)
+  |> qcheck.with_seed(qcheck.seed(text_seed))
 }
 
-fn generate(seed: Int, length: Int, acc: List(String)) -> #(String, Int) {
-  case length {
-    0 -> #(string.concat(acc), seed)
-    _ -> {
-      let seed = next(seed)
-      let index = { seed / 65_536 } % list.length(alphabet)
-      let piece = list.drop(alphabet, index) |> list.first
-      let assert Ok(piece) = piece as "index is within the alphabet"
-      generate(seed, length - 1, [piece, ..acc])
-    }
-  }
+/// Up to twenty-three pieces of the alphabet, as a list so that shrinking
+/// removes pieces rather than characters, which would split a surrogate
+/// pair or a `\r\n` into a different text. A piece is drawn as an index
+/// into the alphabet, so it shrinks toward `a`, the plainest piece.
+fn pieces_generator() -> qcheck.Generator(List(String)) {
+  let piece =
+    qcheck.bounded_int(from: 0, to: list.length(alphabet) - 1)
+    |> qcheck.map(piece_at)
+  qcheck.generic_list(
+    elements_from: piece,
+    length_from: qcheck.bounded_int(from: 0, to: 23),
+  )
 }
 
-fn each_generated(count: Int, check: fn(String) -> Nil) -> Nil {
-  upto(1, count)
-  |> list.each(fn(seed) {
-    let #(sample, _) = generate(seed * 7919, seed % 24, [])
-    check(sample)
+fn piece_at(index: Int) -> String {
+  let assert Ok(piece) = list.drop(alphabet, index) |> list.first
+    as "index is within the alphabet"
+  piece
+}
+
+fn each_generated(check: fn(String) -> Nil) -> Nil {
+  qcheck.run(text_config(), pieces_generator(), fn(pieces) {
+    check(string.concat(pieces))
   })
 }
 
 pub fn generated_lines_round_trip_test() {
-  use sample <- each_generated(300)
+  use sample <- each_generated
   let split = text.lines(sample)
   assert text.join(split) == sample
 
@@ -457,7 +475,7 @@ pub fn generated_lines_round_trip_test() {
 }
 
 pub fn generated_column_conversion_round_trips_test() {
-  use sample <- each_generated(300)
+  use sample <- each_generated
   use Line(text: line, ..) <- list.each(text.lines(sample))
   let width = list.length(string.to_utf_codepoints(line))
   use column <- list.each(upto(1, width + 1))
@@ -470,7 +488,7 @@ pub fn generated_identity_edits_preserve_text_test() {
   // Replacing any whole line with its own text, addressed through the
   // conversion, leaves the text byte-identical, and the range selects
   // exactly that text.
-  use sample <- each_generated(300)
+  use sample <- each_generated
   let split = text.lines(sample)
   use #(line, index) <- list.each(list.index_map(split, fn(l, i) { #(l, i) }))
   let width = list.length(string.to_utf_codepoints(line.text))
@@ -483,7 +501,7 @@ pub fn generated_identity_edits_preserve_text_test() {
 
 pub fn generated_symbol_positions_select_the_symbol_test() {
   // Wherever `foo` is found, the position handed back selects `foo`.
-  use sample <- each_generated(300)
+  use sample <- each_generated
   let numbered = list.index_map(text.lines(sample), fn(l, i) { #(l, i + 1) })
   use #(line, number) <- list.each(numbered)
   case text.symbol_position(sample, number, "foo") {
@@ -501,10 +519,9 @@ pub fn generated_symbol_positions_select_the_symbol_test() {
 pub fn generator_covers_the_hard_characters_test() {
   // A sanity check on the generator itself: it does produce astral text
   // and every terminator, or the properties above prove less than claimed.
-  let samples =
-    upto(1, 300)
-    |> list.map(fn(seed) { generate(seed * 7919, seed % 24, []).0 })
-    |> string.concat
+  let #(drawn, _seed) =
+    qcheck.generate(pieces_generator(), text_count, qcheck.seed(text_seed))
+  let samples = list.map(drawn, string.concat) |> string.concat
   ["😀", "𝒳", "\r\n", "\n", "\r", "中", "é"]
   |> list.each(fn(piece) {
     assert string.contains(samples, piece)
