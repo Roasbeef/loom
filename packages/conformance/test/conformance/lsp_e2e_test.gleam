@@ -1061,6 +1061,7 @@ fn settings(
     peer_defaults: None,
     remote_reach: None,
     deadline_tick_ms: None,
+    metering: None,
     first_prompt: None,
     profile_desk: None,
     secrets: secret.env(),
