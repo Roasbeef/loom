@@ -1,5 +1,38 @@
 # Current handoff
 
+## First-session startup — October 17
+
+The [first-session startup note](design-notes/first-session-startup.md) records
+the release benchmark, parser work and validation limits. Session configuration
+now shares one TOML document within each load; file rereads, secret rotation,
+strict validation and error precedence remain intact. The released daemon
+starts independent OTP applications concurrently, retaining dependency order,
+rollback, native identity and UTF-8 diagnostics. A matched nine-pair release
+comparison reduced daemon readiness from 465 to 438 ms. The client launcher is
+unchanged because its application-start measurements were noisy.
+
+With a 32-model synthetic configuration, the combined nine-pair comparison
+reduced first residency 418 → 388 ms, later residency 120 → 102 ms, and the
+complete cold-daemon-to-composer median 1505 → 1438 ms. Cold-client results
+were mixed; ten-session peak RSS grew 2% and sampled growth per session 9%.
+The note retains these results and their enforcement limits. The decoder-only
+reduction is about 91%, not an
+end-to-end startup claim.
+
+The benchmark distinguishes create reply, residency, first-domain startup and
+the real attached composer. Use alternating `--against` release comparisons;
+old JSON without compatible RSS/workload/enforcement provenance is refused.
+The local full client gate hit the existing satellite endpoint-readiness
+fixture and was stopped; focused configuration/domain tests, Python tests and
+actual release launcher checks passed. Read the note before claiming a full
+gate or deployment speedup. No operator daemon was installed or restarted.
+
+The separate [request gzip experiment PR](https://github.com/Roasbeef/loom/pull/1000)
+contains both real TUI/browser experiments and native transport measurements;
+it changes no production request-encoding default.
+
+## Previous handoff
+
 Baselined October 16, 2026 against main `1536934a4` and the rebased `/btw`
 branch for PR #981. The earlier instruction to merge `207c6571b` is obsolete:
 the owner requested a rebase and fresh UI screenshots after main advanced.
