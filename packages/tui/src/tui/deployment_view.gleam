@@ -32,7 +32,7 @@
 ////    pools of them.
 //// 3. Both end in `table`, which pads each column to its widest cell, so two
 ////    runs against one deployment print identical rows.
-//// 4. `candidates` reads the same document's `orchestrators` member for
+//// 4. `candidates` reads the same document's orchestrators member for
 ////    `loom sessions move <id>` with no destination, and `candidates_text`
 ////    prints which of them could take the session and why the others cannot.
 

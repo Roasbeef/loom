@@ -996,6 +996,7 @@ fn still_armed(
           }
         None -> None
       }
+
     // A move to give up is listed by the deployment read, not by this one, so
     // this read has nothing to say about it; the daemon decides again.
     Some(grants.AbandonMove(..)) -> armed

@@ -45,9 +45,9 @@
 ////    decoder, and the other orchestrators' sessions by `heard_elsewhere`,
 ////    which the home shares.
 //// 7. Moving a session is one function for the terminal and the pages.
-////    `move_session` and `abandon_move` are what the control commands
-////    `sessions.move` and `sessions.move` with `abandon` run, and the home's
-////    Move (`moves_for`, which also reads `move_candidates_for`) and the Admin
+////    `move_session` and `abandon_move` are what the control command for a
+////    move runs with and without its abandon member, and the home's Move
+////    (`moves_for`, which also reads `move_candidates_for`) and the Admin
 ////    page's Abandon call the same two, so the checks cannot differ.
 ////    `move_refusal_code` words a refusal for the control socket.
 

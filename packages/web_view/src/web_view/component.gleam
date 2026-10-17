@@ -5278,6 +5278,7 @@ fn archive_answered(
       ),
       relist,
     )
+
     // A session page asks only for what the sidebar offers, so a read of
     // destinations is never its answer. If one arrived, the request is over and
     // the sidebar is calm again.
