@@ -290,6 +290,40 @@ pub fn the_shrink_bound_is_honoured_test() {
   assert unshrunk.shrink_end == ShrinkBoundHit
 }
 
+fn keep_going() -> statem.ShrinkStop {
+  statem.KeepShrinking
+}
+
+fn stop_now() -> statem.ShrinkStop {
+  statem.StopShrinking
+}
+
+pub fn a_stop_that_answers_stop_ends_shrinking_before_any_candidate_test() {
+  let spec = queue_spec(PopWrongAtTwo)
+  let assert Error(full) = statem.check(spec, config(2))
+    as "the bug must be found"
+  let assert Error(stopped) =
+    statem.check(spec, statem.with_shrink_stop(config(2), stop_now))
+    as "the failing run is never gated"
+
+  // The same run fails either way, and it is reported unshrunk, as a bound
+  // hit with nothing executed, even though the full search would shrink it.
+  assert stopped.run == full.run
+  assert stopped.original == full.original
+  assert full.shrunk != full.original
+  assert stopped.shrunk == stopped.original
+  assert stopped.shrinks == 0
+  assert stopped.candidates_run == 0
+  assert stopped.shrink_end == ShrinkBoundHit
+}
+
+pub fn a_stop_that_keeps_shrinking_changes_nothing_test() {
+  let spec = queue_spec(PopWrongAtTwo)
+  let kept = statem.with_shrink_stop(config(2), keep_going)
+
+  assert statem.check(spec, kept) == statem.check(spec, config(2))
+}
+
 pub fn a_rejecting_generator_ends_the_list_early_test() {
   let spec = Spec(..queue_spec(NoBug), precondition: fn(_, _) { Reject })
 
@@ -344,14 +378,18 @@ pub fn config_builders_clamp_negative_values_test() {
     |> statem.with_max_shrinks(-1)
     |> statem.with_shrink_retries(0)
 
-  assert clamped
+  // The stop predicate is a function, so it is read through its answer
+  // rather than compared with `==`.
+  assert Config(..clamped, shrink_stop: keep_going)
     == Config(
       test_count: 0,
       seed: 1,
       max_commands: 0,
       max_shrinks: 0,
       shrink_retries: 1,
+      shrink_stop: keep_going,
     )
+  assert clamped.shrink_stop() == statem.KeepShrinking
   assert int.compare(clamped.test_count, 0) == order.Eq
 }
 

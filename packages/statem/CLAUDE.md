@@ -31,10 +31,13 @@ One module, `statem`.
   `statem.crash`, which shrinks like any other (same-tag rule).
 - `Violation(tag, detail)`. Shrinking accepts a candidate only if it fails
   with the original tag, so two bugs need two tags.
-- `Config(test_count, seed, max_commands, max_shrinks, shrink_retries)` via
+- `Config(test_count, seed, max_commands, max_shrinks, shrink_retries,
+  shrink_stop)` via
   `default_config(seed:)` and `with_*` (`with_shrink_retries(n)`, default 1:
   a candidate still fails if any of n executions fails with the original
-  tag; retries spend `max_shrinks`). There is no random default seed.
+  tag; retries spend `max_shrinks`; `with_shrink_stop(fn() -> ShrinkStop)`,
+  `KeepShrinking | StopShrinking`, default always keep). There is no random
+  default seed.
 - `Failure(cmd)` carries seed, run index, violation, original and shrunk
   lists, failing step, shrinks accepted, candidates run, and `ShrinkEnd`
   (`ShrinkConverged | ShrinkBoundHit`).
@@ -63,7 +66,12 @@ the preconditions from `initial` and dropped unexecuted if any rejects. Only
 executions spend `max_shrinks` (each retry too); inadmissible candidates are
 free against it but capped at a fixed 250000 per shrink so an infinite
 hand-built tree terminates. Either bound ending the search with an
-admissible candidate untried is `ShrinkBoundHit`. The search is one
+admissible candidate untried is `ShrinkBoundHit`. The caller's `shrink_stop`
+predicate is a third bound: R6 keeps a clock out of this package, so a test
+whose candidates cost wall time closes over a monotonic deadline and answers
+`StopShrinking`; it is asked just before each execution (the whole-list
+candidate included, never the initial failing run, never a dropped
+candidate), and the best list so far is reported as `ShrinkBoundHit`. The search is one
 self-tail-recursive function (`search`): a mutual recursion costs a stack
 frame per candidate on JavaScript and overflowed on wide trees.
 

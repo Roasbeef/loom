@@ -71,6 +71,18 @@
 //// tree that is infinite and inadmissible still terminates. Either bound
 //// ending the search is reported as `ShrinkBoundHit`.
 ////
+//// A third bound is the caller's, for what this package cannot measure.
+//// R6 keeps a clock out of `statem`, so a test whose candidates cost real
+//// time (a poll deadline, a process that must be waited out) cannot ask for
+//// "stop after thirty seconds" by a number. `with_shrink_stop` takes a
+//// `fn() -> ShrinkStop` the driver calls before it executes each candidate,
+//// the first execution after the failing run included; the failing run
+//// itself is never gated, because the failure must be reported. When it
+//// answers `StopShrinking` the search ends there and the `Failure` carries
+//// the best list found so far, with `ShrinkBoundHit`. The caller closes over
+//// a monotonic deadline it read when its test began. The default,
+//// `keep_shrinking`, always keeps shrinking.
+////
 //// Commands that name state by value (a key, a handle) shrink badly,
 //// because deleting the command that created the value leaves its users
 //// inadmissible. Prefer commands that name state by index or by position in
@@ -232,6 +244,10 @@ pub type Config {
     /// failure is scheduling dependent; the initial failing run is not
     /// retried.
     shrink_retries: Int,
+    /// Asked before each shrink execution whether to go on. It is how a
+    /// caller with a clock bounds shrinking by elapsed time, which this
+    /// package may not read. `keep_shrinking` by default.
+    shrink_stop: fn() -> ShrinkStop,
   )
 }
 
@@ -250,7 +266,12 @@ pub fn default_config(seed seed: Int) -> Config {
     max_commands: 30,
     max_shrinks: 1000,
     shrink_retries: 1,
+    shrink_stop: keep_shrinking,
   )
+}
+
+fn keep_shrinking() -> ShrinkStop {
+  KeepShrinking
 }
 
 /// Replace the number of runs. A negative count is treated as zero.
@@ -301,7 +322,39 @@ pub fn with_shrink_retries(config: Config, attempts: Int) -> Config {
   Config(..config, shrink_retries: int.max(attempts, 1))
 }
 
+/// Stop shrinking once `stop` answers `StopShrinking`. The driver calls it
+/// before each candidate it is about to execute, never before the initial
+/// failing run and never for a candidate a precondition drops. The failure
+/// reported is the best list found before the stop, ending `ShrinkBoundHit`.
+/// The predicate is how a test bounds shrinking by wall time without this
+/// package reading a clock: close over a monotonic deadline.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let deadline = now_ms() + 30_000
+/// statem.default_config(seed: 7)
+/// |> statem.with_shrink_stop(fn() {
+///   case now_ms() > deadline {
+///     True -> statem.StopShrinking
+///     False -> statem.KeepShrinking
+///   }
+/// })
+/// ```
+pub fn with_shrink_stop(config: Config, stop: fn() -> ShrinkStop) -> Config {
+  Config(..config, shrink_stop: stop)
+}
+
 // --- results --------------------------------------------------------------
+
+/// The caller's answer to whether shrinking should go on.
+pub type ShrinkStop {
+  /// Run the next candidate.
+  KeepShrinking
+
+  /// End the search now and report the best list so far.
+  StopShrinking
+}
 
 /// A violation and the step it surfaced at.
 pub type StepFailure {
@@ -321,8 +374,9 @@ pub type ShrinkEnd {
   ShrinkConverged
 
   /// A bound stopped the search with an admissible candidate still untried
-  /// (`max_shrinks` executions spent, or the cap on inadmissible
-  /// candidates reached), so a shorter list may exist.
+  /// (`max_shrinks` executions spent, the cap on inadmissible candidates
+  /// reached, or the caller's `with_shrink_stop` predicate said stop), so a
+  /// shorter list may exist.
   ShrinkBoundHit
 }
 
@@ -779,6 +833,8 @@ type Limits {
     budget: Int,
     /// `Config.shrink_retries`.
     retries: Int,
+    /// `Config.shrink_stop`.
+    stop: fn() -> ShrinkStop,
   )
 }
 
@@ -835,6 +891,7 @@ fn shrink(
       tag: original_failure.violation.tag,
       budget: config.max_shrinks,
       retries: config.shrink_retries,
+      stop: config.shrink_stop,
     )
   let none = Spent(executed: 0, discarded: 0)
   let whole = case trees {
@@ -935,7 +992,16 @@ fn judge(
     None ->
       case spent.executed >= limits.budget {
         True -> Stopped(spent)
-        False -> attempt(spec, limits, commands, spent)
+
+        // The caller's predicate is asked only here, where an execution is
+        // about to be paid for: a dropped candidate costs nothing worth
+        // stopping for, and asking per candidate keeps a slow poll deadline
+        // from running past the caller's own limit.
+        False ->
+          case limits.stop() {
+            StopShrinking -> Stopped(spent)
+            KeepShrinking -> attempt(spec, limits, commands, spent)
+          }
       }
   }
 }
