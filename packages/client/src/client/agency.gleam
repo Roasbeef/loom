@@ -1063,7 +1063,9 @@ fn admit_run(
   source: Source,
 ) -> Result(Nil, Refusal) {
   case source {
-    Local -> Ok(Nil)
+    // The released fence is session-wide, and only a delegate session ever holds
+    // it, so reading it here costs a local spawn one fact and refuses nothing.
+    Local -> refuse_if_fenced(runtime, released_key(), caller)
     Delegated(..) -> {
       use Nil <- result.try(refuse_if_fenced(
         runtime,
@@ -4080,12 +4082,12 @@ pub fn delegate_release(
 // milliseconds.
 const release_settle_ms = 3000
 
-// A stop is a request: the durable mark and the abort are written, and the
-// strand driver ends the run a moment later. The registry stops the whole
-// session right after the release returns, and a driver stopped first would
-// never record how its run ended. Waiting here, outside the holder and bounded,
-// lets the aborts land. A run that outlasts the bound is stopped with the
-// session all the same, and nothing depends on the wait having succeeded.
+// The durable stop reason is written by `reap` before this wait, so nothing here
+// orders it. The wait is for the strand driver, which logs `operation.aborted`
+// and ends the run when it handles the abort, and for a clean `Normal` drain of
+// the slot the registry stops right after this returns. A run that outlasts the
+// bound is stopped with the session all the same, and nothing depends on the
+// wait having succeeded.
 fn settle_released(config: Config) -> Nil {
   case borrow(config) {
     Error(_refusal) -> Nil

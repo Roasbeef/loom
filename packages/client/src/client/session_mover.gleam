@@ -670,6 +670,9 @@ fn closed(
   registration: catalogue.Registration,
 ) -> Result(scope.Scope, Halt) {
   let path = registration.path
+
+  // `settled_children` released the same lease before it read, and this repeats
+  // it on purpose: each step must work when a run resumes at it.
   let _released =
     sqlite.release_export(path:, owner: session_move.lease_owner(move.op))
   let reader = session_move.reader_owner(move.op)

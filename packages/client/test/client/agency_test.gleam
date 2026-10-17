@@ -6938,3 +6938,17 @@ pub fn a_refusal_ends_a_stub_that_was_never_answered_until_a_child_outranks_it_t
   assert remote_child.find(harness.runtime, key) == Ok(Some(moved))
   close(harness)
 }
+
+pub fn a_released_fence_refuses_a_local_spawn_too_test() {
+  let harness = start_harness(Settles("done"))
+  assert agency.delegate_release(harness.config) == Ok(0)
+
+  // The fence belongs to the session and not to one kind of caller, and only a
+  // delegate session ever holds it.
+  assert harness.seam.spawn(
+      caller_on("main", "turn-1:tools", 0),
+      a_spawn("late"),
+    )
+    == Error(agent.ParentRunEnded(strand: "main"))
+  close(harness)
+}
