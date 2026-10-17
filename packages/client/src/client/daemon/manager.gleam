@@ -50,7 +50,8 @@
 //// 8. `step` rebuilds the `selector` and stops once `ShuttingDown` has no slots
 ////    or domains left.
 //// 9. `delete_registration` writes the releases a deleted parent owes
-////    (`owe_releases`) before it removes the registration, and
+////    (`owe_releases`, from the holders `holders_of` read in the caller's
+////    process) before it removes the registration, and
 ////    `remote_releases` and `settle_remote_release` are how the release
 ////    drainer reads and settles them.
 //// 10. `delegate_now` admits the delegate session of a spawner's pair and refuses
@@ -728,6 +729,7 @@ type Message(instance) {
     String,
     String,
     String,
+    List(String),
     Subject(Result(catalogue.Registration, AdminError)),
   )
 
@@ -801,6 +803,7 @@ type Message(instance) {
   FinishDelete(
     String,
     String,
+    List(String),
     Subject(Result(catalogue.Registration, AdminError)),
   )
 
@@ -2112,11 +2115,13 @@ pub fn delete_session(
   id: String,
   sessions: String,
 ) -> Result(catalogue.Registration, AdminError) {
+  let holders = holders_of(manager, id)
   call.try_call(manager.commands, waiting: 5000, sending: Delete(
     caller,
     epoch,
     id,
     sessions,
+    holders,
     _,
   ))
   |> result.unwrap(Error(AdminUnavailable))
@@ -2204,9 +2209,11 @@ pub fn finish_delete(
   id: String,
   sessions: String,
 ) -> Result(catalogue.Registration, AdminError) {
+  let holders = holders_of(manager, id)
   call.try_call(manager.commands, waiting: 5000, sending: FinishDelete(
     id,
     sessions,
+    holders,
     _,
   ))
   |> result.unwrap(Error(AdminUnavailable))
@@ -2994,8 +3001,11 @@ fn handle(
       process.send(reply, outcome)
       sm.keep(book)
     }
-    Delete(caller, epoch, id, sessions, reply) -> {
-      process.send(reply, delete_now(phase, book, caller, epoch, id, sessions))
+    Delete(caller, epoch, id, sessions, holders, reply) -> {
+      process.send(
+        reply,
+        delete_now(phase, book, caller, epoch, id, sessions, holders),
+      )
       sm.keep(book)
     }
     Custody(id, reply) -> {
@@ -3089,8 +3099,8 @@ fn handle(
       )
       sm.keep(book)
     }
-    FinishDelete(id, sessions, reply) -> {
-      process.send(reply, finish_delete_now(phase, book, id, sessions))
+    FinishDelete(id, sessions, holders, reply) -> {
+      process.send(reply, finish_delete_now(phase, book, id, sessions, holders))
       sm.keep(book)
     }
     RemoteRegistrations(reply) -> {
@@ -4019,6 +4029,7 @@ fn finish_delete_now(
   book: Book(instance),
   id,
   sessions,
+  holders,
 ) -> Result(catalogue.Registration, AdminError) {
   use Nil <- result.try(case phase {
     Ready -> Ok(Nil)
@@ -4036,50 +4047,63 @@ fn finish_delete_now(
     True -> Error(AdminBusy)
     False -> Ok(Nil)
   })
-  delete_registration(book, id, sessions)
+  delete_registration(book, id, sessions, holders)
 }
 
-fn delete_now(phase, book: Book(instance), caller, epoch, id, sessions) {
+fn delete_now(
+  phase,
+  book: Book(instance),
+  caller,
+  epoch,
+  id,
+  sessions,
+  holders,
+) {
   use Nil <- result.try(authorize_admin(phase, book, caller, epoch))
   use Nil <- result.try(case dict.has_key(book.slots, id) {
     True -> Error(AdminBusy)
     False -> Ok(Nil)
   })
   use Nil <- result.try(refuse_moved(book, id))
-  delete_registration(book, id, sessions)
+  delete_registration(book, id, sessions, holders)
 }
 
 // An owner's deletion of a session: the releases it owes come first, and the
 // registration second. The order is what makes a crash between them safe (see
 // `client/remote_release`). The rows are written here, in the registry's turn
-// and before the registration leaves, because the stubs that name the
-// orchestrators are in the session's own file and are gone with it.
+// and before the registration leaves.
+//
+// The orchestrators that hold a child arrive in the message. The stubs that name
+// them are in the session's own file, which `holders_of` reads in the caller's
+// process before it sends: opening a store runs its migrations and links its
+// actor to the process that opens it, and neither belongs in the registry's
+// turn. That leaves one window, between the read and the turn, in which the
+// session could be reopened, start a child and close again. The deletion would
+// then miss that child's orchestrator, and the child would run to its deadline
+// as it did before releases existed. Nothing is built for it: the deletion
+// needs the session closed, and the caller has just seen it so.
 //
 // A file that cannot be read owes nothing: a session whose file is unreadable
-// could not have been waited on, and its children run to their deadlines as they
-// did before releases existed. A catalogue that cannot take the rows refuses
+// could not have been waited on. A catalogue that cannot take the rows refuses
 // the deletion, since the same catalogue would be taking the deletion next.
 fn delete_registration(
   book: Book(instance),
   id: String,
   sessions: String,
+  holders: List(String),
 ) -> Result(catalogue.Registration, AdminError) {
-  use Nil <- result.try(owe_releases(book, id))
+  use Nil <- result.try(owe_releases(book, id, holders))
   remove_registration(book, id, sessions)
 }
 
-fn owe_releases(book: Book(instance), id: String) -> Result(Nil, AdminError) {
-  use record <- result.try(
-    catalogue.get(book.catalogue, id) |> result.map_error(AdminMetadata),
-  )
-  let read =
-    remote_release.stubs_at(
-      record.path,
-      "delete-read:" <> id,
-      clock.from_function(ffi_os.system_time_ms),
-    )
-  case read |> result.map(remote_child.holders) {
-    Ok([_, ..] as holders) -> {
+fn owe_releases(
+  book: Book(instance),
+  id: String,
+  holders: List(String),
+) -> Result(Nil, AdminError) {
+  case holders {
+    [] -> Ok(Nil)
+    [_, ..] -> {
       use Nil <- result.map(
         catalogue.write_remote_releases(
           book.catalogue,
@@ -4091,7 +4115,26 @@ fn owe_releases(book: Book(instance), id: String) -> Result(Nil, AdminError) {
       )
       book.release_bell()
     }
-    Ok([]) | Error(_) -> Ok(Nil)
+  }
+}
+
+// The orchestrators that may hold a child of a session about to be deleted,
+// read from its closed file in the caller's process. A session the registry
+// cannot name, or a file that cannot be read, owes nothing.
+fn holders_of(manager: Manager(instance), id: String) -> List(String) {
+  case get(manager, id) {
+    Error(_) -> []
+    Ok(View(registration:, ..)) ->
+      case
+        remote_release.stubs_at(
+          registration.path,
+          "delete-read:" <> id,
+          clock.from_function(ffi_os.system_time_ms),
+        )
+      {
+        Ok(kept) -> remote_child.holders(kept)
+        Error(_) -> []
+      }
   }
 }
 
