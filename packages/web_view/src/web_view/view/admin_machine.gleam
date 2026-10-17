@@ -42,7 +42,7 @@
 ////
 //// ## Flow
 ////
-//// `view` → `header` → `tabs` → `overview` | `sessions` | `access` | `activity`
+//// `view` → `header` → `tab_button` → `overview` | `sessions_tab` | `access` | `activity`
 ////
 //// 1. `view` draws the header and the tab bar, and the body of the chosen tab.
 //// 2. Each body is its own function and reads only what the page holds: the

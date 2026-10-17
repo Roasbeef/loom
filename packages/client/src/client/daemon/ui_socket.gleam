@@ -4763,6 +4763,11 @@ fn admit_admin(
   // credential it asks with are the standing's, so its closure keeps that.
   let epoch = attachment.epoch
 
+  // The two machine reads are the daemon's own closures, projected here so the
+  // page's closures keep only them and not the whole attachment.
+  let read_deployment = attachment.deployment
+  let read_elsewhere = attachment.elsewhere
+
   // The page's end, read once as the page opens: the live UI session's deadline,
   // which already is the earlier of the home's end and fifteen minutes from the
   // exchange (`ui_sessions.mint_before`). The table answers it on its own
@@ -4803,16 +4808,10 @@ fn admit_admin(
       login: option.map(attachment.login, fn(issuer) { issuer.fingerprint }),
       ends_at:,
       deployment: fn(node, deliver) {
-        admin_deployment_task(
-          standing,
-          open,
-          attachment.deployment,
-          node,
-          deliver,
-        )
+        admin_deployment_task(standing, open, read_deployment, node, deliver)
       },
       elsewhere: fn(deliver) {
-        admin_elsewhere_task(standing, open, attachment.elsewhere, deliver)
+        admin_elsewhere_task(standing, open, read_elsewhere, deliver)
       },
     )
   let started = case transferred {
