@@ -101,6 +101,20 @@
 //// has every session's identity from `Owns`; the sender asks only about a
 //// session its own link or grant names, and the recipient's `Roster` answer is
 //// bounded by the grants the recipient made to the asking session.
+////
+//// ## Flow
+////
+//// `start_with` → `answer` → `detached` → `ask_release` → `exchange`
+////
+//// 1. `start_with` starts the port with the hosts a daemon supplies.
+//// 2. `answer` handles one message. A read it can answer from a function it
+////    holds is answered in place.
+//// 3. `detached` runs the slow ones (a spawn, a join, a run end, a release) in
+////    a task linked to the port, so a question about ownership never waits
+////    behind them.
+//// 4. The `ask_*` functions are the sending ends, `ask_release` among them,
+////    and each makes its one request through `exchange`, which takes a monitor
+////    before it sends.
 
 import client/internal/ffi_remote
 import client/node_report.{type NodeReport}
