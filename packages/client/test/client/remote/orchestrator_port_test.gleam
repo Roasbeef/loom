@@ -5,12 +5,17 @@
 //// subagent messages to a spawn host (protocol-change/084), each in a task of
 //// its own so that the question about ownership is never kept waiting.
 
+import client/catalogue_page
+import client/daemon/manager
+import client/executors
+import client/listed_sessions.{Further, Last}
 import client/node_report
 import client/remote/address.{type Address}
 import client/remote/orchestrator_port.{type Message, NotOwned, Owned}
 import client/remote_spawn.{
   Attached, CallSite, ChildUsage, Parent, Ready, Request, Spawned,
 }
+import client/roster
 import client/session_move
 import core/clock
 import core/ids
@@ -23,6 +28,8 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import host/bootstrap
+import storage/catalogue
+import support/held_catalogue
 import tools/agent
 
 const answers_within_ms = 1000
@@ -722,13 +729,23 @@ pub fn a_report_is_what_the_daemon_supplies_test() {
       workspaces: ["proj"],
     )
   let supplied = node_report.NodeReport(..identity(), executor: Some(executor))
-  let port = reporting(orchestrator_port.Reads(report: fn() { supplied }))
+  let port =
+    reporting(
+      orchestrator_port.Reads(..orchestrator_port.unreported(), report: fn() {
+        supplied
+      }),
+    )
   assert orchestrator_port.ask_report(port, answers_within_ms) == Ok(supplied)
 }
 
 pub fn an_executor_only_node_reports_no_orchestrator_facts_test() {
   let supplied = identity()
-  let port = reporting(orchestrator_port.Reads(report: fn() { supplied }))
+  let port =
+    reporting(
+      orchestrator_port.Reads(..orchestrator_port.unreported(), report: fn() {
+        supplied
+      }),
+    )
   let assert Ok(report) = orchestrator_port.ask_report(port, answers_within_ms)
   assert report.orchestrator == None
   assert report.directory == None
@@ -749,7 +766,9 @@ pub fn a_port_with_nothing_to_report_says_only_who_it_is_test() {
 pub fn a_report_that_fails_is_silence_and_the_port_serves_on_test() {
   let port =
     reporting(
-      orchestrator_port.Reads(report: fn() { panic as "the report fails" }),
+      orchestrator_port.Reads(..orchestrator_port.unreported(), report: fn() {
+        panic as "the report fails"
+      }),
     )
 
   // No reply at all, so the asker's wait ends at its own bound and is never
@@ -758,5 +777,164 @@ pub fn a_report_that_fails_is_silence_and_the_port_serves_on_test() {
     == Error(orchestrator_port.AskTimedOut)
 
   // The failed report did not stop the port.
+  assert orchestrator_port.ask(port, "owned-1", answers_within_ms) == Ok(Owned)
+}
+
+// --- sessions ----------------------------------------------------------------
+
+// A port over a real registry, listing what `catalogue_page` reads from it. The
+// executor `box` is listed on a node, so a row placed on it names that node.
+fn listing() -> #(
+  Address(Message),
+  manager.Manager(String),
+  catalogue.Catalogue,
+  String,
+) {
+  let #(registry, store, directory) = held_catalogue.start()
+  let listed = roster.fixed([executors.plain("box", "loom@box.example.net")])
+  let port =
+    reporting(
+      orchestrator_port.Reads(
+        ..orchestrator_port.unreported(),
+        sessions: catalogue_page.from_catalogue(registry, listed),
+      ),
+    )
+  #(port, registry, store, directory)
+}
+
+fn ids_of(page: listed_sessions.Page) -> List(String) {
+  list.map(page.rows, fn(row) { row.session_id })
+}
+
+pub fn a_port_with_no_catalogue_lists_an_empty_page_test() {
+  let name = process.new_name("orchestrator_port")
+  let assert Ok(_) = orchestrator_port.start(name, held)
+    as "the port starts under its name"
+  let port = address.Address(node: node.self(), name:)
+  assert orchestrator_port.ask_sessions(port, "", 20, answers_within_ms)
+    == Ok(listed_sessions.empty())
+}
+
+pub fn a_page_names_the_session_and_its_executor_node_test() {
+  let #(port, _registry, store, directory) = listing()
+  let _ = held_catalogue.registered_n(store, directory, "box", 1)
+  let _ = held_catalogue.registered_n(store, directory, "gone", 1)
+  let assert Ok(page) =
+    orchestrator_port.ask_sessions(port, "", 20, answers_within_ms)
+  assert page.more == Last
+
+  // The row on `box` carries the node the table lists. The row on an executor
+  // no row lists keeps its key and has no node to attribute it to.
+  let nodes =
+    list.map(page.rows, fn(row) { #(row.executor, row.executor_node) })
+    |> list.sort(fn(a, b) {
+      string.compare(string.inspect(a), string.inspect(b))
+    })
+  assert nodes
+    == [
+      #(Some("box"), Some("loom@box.example.net")),
+      #(Some("gone"), None),
+    ]
+  let assert [row, ..] = page.rows
+  assert row.status == listed_sessions.Saved
+  assert row.pool == None
+}
+
+pub fn pages_follow_one_another_in_identity_order_test() {
+  let #(port, _registry, store, directory) = listing()
+  let all =
+    held_catalogue.registered_n(store, directory, "box", 5)
+    |> list.sort(string.compare)
+  let assert Ok(first) = orchestrator_port.ask_sessions(port, "", 2, 1000)
+  assert ids_of(first) == list.take(all, 2)
+  assert first.more == Further
+
+  let assert Ok(second) =
+    orchestrator_port.ask_sessions(port, last_of(first), 2, 1000)
+  assert ids_of(second) == list.take(list.drop(all, 2), 2)
+  assert second.more == Further
+
+  // The last page holds the one row left, and the page that ends exactly at the
+  // end of the catalogue is `Last`, not one more `Further`.
+  let assert Ok(third) =
+    orchestrator_port.ask_sessions(port, last_of(second), 2, 1000)
+  assert ids_of(third) == list.drop(all, 4)
+  assert third.more == Last
+}
+
+fn last_of(page: listed_sessions.Page) -> String {
+  let assert Ok(row) = list.last(page.rows) as "the page has rows"
+  row.session_id
+}
+
+pub fn a_page_that_fills_exactly_is_last_test() {
+  let #(port, _registry, store, directory) = listing()
+  let _ = held_catalogue.registered_n(store, directory, "box", 3)
+  let assert Ok(page) = orchestrator_port.ask_sessions(port, "", 3, 1000)
+  assert list.length(page.rows) == 3
+  assert page.more == Last
+}
+
+pub fn moving_and_moved_sessions_are_not_listed_test() {
+  let #(port, _registry, store, directory) = listing()
+  let all =
+    held_catalogue.registered_n(store, directory, "box", 4)
+    |> list.sort(string.compare)
+  let assert [moving, moved, ..kept] = all
+  let assert Ok(_) =
+    catalogue.begin_move(store, moving, op: "op-1", to: "bravo")
+  let assert Ok(_) = catalogue.begin_move(store, moved, op: "op-2", to: "bravo")
+  let assert Ok(_) = catalogue.finish_move(store, moved, op: "op-2")
+
+  // Another orchestrator lists both, so this one lists neither: no identity
+  // appears on two.
+  let assert Ok(page) = orchestrator_port.ask_sessions(port, "", 20, 1000)
+  assert ids_of(page) == kept
+  assert page.more == Last
+}
+
+pub fn a_page_skips_across_a_whole_catalogue_page_of_moved_sessions_test() {
+  let #(port, _registry, store, directory) = listing()
+  let count = catalogue.page_limit + 5
+  let all =
+    held_catalogue.registered_n(store, directory, "box", count)
+    |> list.sort(string.compare)
+  let #(away, kept) = list.split(all, catalogue.page_limit)
+  list.each(away, fn(id) {
+    let assert Ok(_) = catalogue.begin_move(store, id, op: "op", to: "bravo")
+    let assert Ok(_) = catalogue.finish_move(store, id, op: "op")
+    Nil
+  })
+
+  // The first catalogue page holds only handed-away sessions, so the walk reads
+  // on to the second for the rows it is asked for.
+  let assert Ok(first) = orchestrator_port.ask_sessions(port, "", 2, 1000)
+  assert ids_of(first) == list.take(kept, 2)
+  assert first.more == Further
+
+  let assert Ok(rest) =
+    orchestrator_port.ask_sessions(port, last_of(first), 100, 1000)
+  assert ids_of(rest) == list.drop(kept, 2)
+  assert rest.more == Last
+}
+
+pub fn the_page_size_is_clamped_to_one_through_the_most_test() {
+  let #(port, _registry, store, directory) = listing()
+  let _ = held_catalogue.registered_n(store, directory, "", 3)
+  let assert Ok(least) = orchestrator_port.ask_sessions(port, "", 0, 1000)
+  assert list.length(least.rows) == 1
+  assert least.more == Further
+
+  let assert Ok(most) = orchestrator_port.ask_sessions(port, "", 5000, 1000)
+  assert list.length(most.rows) == 3
+  assert most.more == Last
+}
+
+pub fn a_catalogue_that_cannot_be_read_is_silence_and_not_an_empty_page_test() {
+  let #(port, registry, _store, _directory) = listing()
+  manager.shutdown(registry)
+  assert orchestrator_port.ask_sessions(port, "", 20, 1000) == Error(Nil)
+
+  // The failed read did not stop the port.
   assert orchestrator_port.ask(port, "owned-1", answers_within_ms) == Ok(Owned)
 }

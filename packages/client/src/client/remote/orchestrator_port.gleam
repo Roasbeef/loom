@@ -80,6 +80,14 @@
 //// facts are, so it runs apart from the port, as `Holds` does. `Holds` is the
 //// subset of a report that `revoke` needed before the report existed.
 ////
+//// Protocol-change/085 also adds `Sessions`, one page of the sessions the
+//// catalogue would list to its own owner (`client/listed_sessions`). The owner's
+//// `sessions.elsewhere` asks it of every other orchestrator. It reads the
+//// catalogue a page at a time, so it runs apart from the port as `Holds` does,
+//// and a catalogue that cannot be read sends nothing: the asker's deadline turns
+//// that into silence, which is what it is, and an empty page is never sent for
+//// a failed read.
+////
 //// The port reveals whether an identity is in this daemon's catalogue, and for
 //// `Holds` two counts of sessions, to a peer the operator pinned as a trusted
 //// Erlang node. It carries no credential, and a client is never redirected by
@@ -95,8 +103,25 @@
 //// has every session's identity from `Owns`; the sender asks only about a
 //// session its own link or grant names, and the recipient's `Roster` answer is
 //// bounded by the grants the recipient made to the asking session.
+////
+//// ## Flow
+////
+//// `start_with` → `answer` → `detached` → `exchange_why`
+////
+//// 1. `start_with` registers the port under its name, with the closures the
+////    daemon supplies for the questions it cannot answer from its own state.
+//// 2. `answer` takes one message at a time. A question that is one read is
+////    answered in the port's turn; one that walks a catalogue, opens a session
+////    or waits (`Holds`, `Report`, `Sessions`, `Activate` and the three
+////    subagent messages) goes to `detached`.
+//// 3. `detached` computes the reply in a run that dies with the requester and
+////    with the port, so a slow answer never delays the next question.
+//// 4. The `ask_*` functions are the sending end. Each is one `exchange_why`:
+////    a monitor on the port, the request, and a wait that ends at the answer,
+////    at the port's death, or at the deadline.
 
 import client/internal/ffi_remote
+import client/listed_sessions.{type Page}
 import client/node_report.{type NodeReport}
 import client/peer_mail
 import client/remote/address.{type Address}
@@ -270,6 +295,24 @@ pub type Message {
     /// Where the report goes.
     reply: Subject(NodeReport),
   )
+
+  /// One page of the sessions this daemon's catalogue would list to its own
+  /// owner (protocol-change/085): the rows after the identity `after`, in
+  /// identity order, at most `limit` of them. Archived sessions and sessions
+  /// that are `moving` or `moved` are left out, so no identity is listed by two
+  /// orchestrators. The answer is `Error(Nil)` when the catalogue could not be
+  /// read, which the asker must not mistake for an empty page. A port built
+  /// before this constructor existed has no clause for it and stops, as for
+  /// `Holds`, so this port assumes peers of the same build.
+  Sessions(
+    /// The identity the page follows, or the empty text for the first page.
+    after: String,
+    /// The most rows wanted. The daemon clamps it to one through
+    /// `listed_sessions.max_limit`.
+    limit: Int,
+    /// Where the page goes.
+    reply: Subject(Result(Page, Nil)),
+  )
 }
 
 /// What the daemon supplies for the questions the port cannot answer from its
@@ -282,12 +325,17 @@ pub type Reads {
     /// executor host, the movers and the catalogue, each of which has its own
     /// deadline.
     report: fn() -> NodeReport,
+    /// Reads one page of the catalogue's listing, given the identity it follows
+    /// and the most rows wanted. It runs in a task of its own, as `report`
+    /// does. `Error(Nil)` is a catalogue that could not be read.
+    sessions: fn(String, Int) -> Result(Page, Nil),
   )
 }
 
 /// The reads of a daemon with nothing to report beyond who it is: its node, its
-/// build, and no orchestrator, executor or directory facts. The clocks are
-/// zero, since a daemon that reports nothing has no start to measure from.
+/// build, and no orchestrator, executor or directory facts, and an empty page of
+/// sessions, since it has no catalogue to list. The clocks are zero, since a
+/// daemon that reports nothing has no start to measure from.
 ///
 /// ## Examples
 ///
@@ -296,17 +344,20 @@ pub type Reads {
 /// assert report.executor == option.None
 /// ```
 pub fn unreported() -> Reads {
-  Reads(report: fn() {
-    let identity = build_identity.current()
-    node_report.bare(
-      node: atom.to_string(node.name(node.self())),
-      build_version: identity.version,
-      build_commit: identity.commit,
-      epoch: "",
-      started_ms: 0,
-      now_ms: 0,
-    )
-  })
+  Reads(
+    report: fn() {
+      let identity = build_identity.current()
+      node_report.bare(
+        node: atom.to_string(node.name(node.self())),
+        build_version: identity.version,
+        build_commit: identity.commit,
+        epoch: "",
+        started_ms: 0,
+        now_ms: 0,
+      )
+    },
+    sessions: fn(_after, _limit) { Ok(listed_sessions.empty()) },
+  )
 }
 
 /// What a daemon's catalogue holds, as `Holds` answers it.
@@ -647,6 +698,15 @@ fn answer(
     // which may be busy, so it runs apart from the port for the same reason.
     Report(reply:) -> detached(reply, fn(_node) { reads.report() })
 
+    // A page walks the catalogue until it has the rows it wants, which skips
+    // moved sessions however many there are, so it runs apart from the port for
+    // the same reason. The limit is clamped here, where the asker cannot choose
+    // it past the bound.
+    Sessions(after:, limit:, reply:) ->
+      detached(reply, fn(_node) {
+        reads.sessions(after, listed_sessions.clamp_limit(limit))
+      })
+
     // A piece is written in this turn, so the pieces of one copy land in the
     // order they were sent.
     Import(chunk:, reply:) -> process.send(reply, importer.chunk(chunk))
@@ -828,6 +888,29 @@ pub fn ask_report(
   within_ms: Int,
 ) -> Result(NodeReport, Silence) {
   exchange_why(at, fn(reply) { Report(reply:) }, within_ms)
+}
+
+/// Asks the port at `at` for one page of the sessions its catalogue lists to its
+/// own owner, after the identity `after`, and waits at most `within_ms`.
+/// `Error(Nil)` means the daemon did not say: the node is unreachable, no port is
+/// registered there, the answer was late, or the catalogue could not be read. It
+/// is never an empty page.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // orchestrator_port.ask_sessions(Address(node: peer, name: orchestrator_port.default()), "", 20, 1000)
+/// ```
+pub fn ask_sessions(
+  at: Address(Message),
+  after: String,
+  limit: Int,
+  within_ms: Int,
+) -> Result(Page, Nil) {
+  case exchange(at, fn(reply) { Sessions(after:, limit:, reply:) }, within_ms) {
+    Ok(Ok(page)) -> Ok(page)
+    Ok(Error(Nil)) | Error(Nil) -> Error(Nil)
+  }
 }
 
 /// Sends one piece of a copy to the port at `at` and waits at most `within_ms`

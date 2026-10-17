@@ -34,6 +34,7 @@
 import argv
 import client/agency
 import client/catalog
+import client/catalogue_page
 import client/daemon/limits
 import client/daemon/listener
 import client/daemon/manager
@@ -1047,29 +1048,32 @@ fn node_reads(
   let epoch = ready.epoch
   let registry = ready.registry
   let started_ms = ffi_os.system_time_ms()
-  orchestrator_port.Reads(report: fn() {
-    node_facts.report(
-      node_facts.Sources(
-        node: local,
-        build_version: version,
-        build_commit: commit,
-        epoch:,
-        started_ms:,
-        now_ms: ffi_os.system_time_ms,
-        peers: fn() { listed_nodes(config) },
-        orchestrator: fn() {
-          orchestrator_facts(config, registry, local, movers)
-        },
-        executor: fn() {
-          case executor {
-            Some(hosted) -> hosted.facts()
-            None -> None
-          }
-        },
-        directory: fn() { directory_facts(config, local) },
-      ),
-    )
-  })
+  orchestrator_port.Reads(
+    report: fn() {
+      node_facts.report(
+        node_facts.Sources(
+          node: local,
+          build_version: version,
+          build_commit: commit,
+          epoch:,
+          started_ms:,
+          now_ms: ffi_os.system_time_ms,
+          peers: fn() { listed_nodes(config) },
+          orchestrator: fn() {
+            orchestrator_facts(config, registry, local, movers)
+          },
+          executor: fn() {
+            case executor {
+              Some(hosted) -> hosted.facts()
+              None -> None
+            }
+          },
+          directory: fn() { directory_facts(config, local) },
+        ),
+      )
+    },
+    sessions: catalogue_page.from_catalogue(registry, executor_roster(config)),
+  )
 }
 
 // The nodes of the orchestrators and executors this daemon lists, once each and
