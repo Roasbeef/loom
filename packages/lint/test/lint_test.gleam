@@ -1826,8 +1826,8 @@ pub fn r6_names_what_it_protects_test() {
 // asks for the count of *errors* rather than for the rule firing: the rule
 // fired before the promotion too, into a report nothing reads.
 
-/// The staging decision, pinned: R0, R2, R4, R6, R10, R13, R14, R15 and R16
-/// gate; R1, R3, R5, R7, R8, R9, R11, R12, R17 and R18 warn. R3, R8, R17 and
+/// The staging decision, pinned: R0, R2, R4, R6, R10, R13, R14, R15, R16, R19
+/// and R20 gate; R1, R3, R5, R7, R8, R9, R11, R12, R17 and R18 warn. R3, R8, R17 and
 /// R18 can never join them, and R1, R5 and R9 have a census to clear first,
 /// so a change here is a change of policy and not of implementation.
 pub fn the_gating_rules_are_pinned_test() {
@@ -1841,6 +1841,8 @@ pub fn the_gating_rules_are_pinned_test() {
     finding.TransitionTable,
     finding.StateFirst,
     finding.QualifiedDomainCall,
+    finding.StdoutSkip,
+    finding.TestImportWall,
   ])
 }
 

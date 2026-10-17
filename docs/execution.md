@@ -188,9 +188,10 @@ their own ten-minute timeout and run under the outer process deadline too.
 EUnit captures a passing test's stdout, even with verbose progress. Emit
 prerequisite `SKIP` diagnostics through `io.println_error`, as the native TUI
 fixture does. Otherwise the skip census cannot distinguish an executed test
-from a skipped one. `scripts/test_skip_reporting.py` checks those emitters and
-runs a real passing EUnit fixture through the census: undeclared skips fail,
-declared skips pass, and unused declarations fail. A stale-declaration error
+from a skipped one. Lint rule R19 refuses a `SKIP` printed to stdout from a
+test source, and `scripts/test_skip_reporting.py` runs a real passing EUnit
+fixture through the census: undeclared skips fail, declared skips pass, and
+unused declarations fail. A stale-declaration error
 does not justify deleting its waiver until the actual prerequisite and output
 path have been checked.
 

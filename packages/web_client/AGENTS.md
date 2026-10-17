@@ -562,9 +562,9 @@ keyboard reach), `composer_rule` (the table, `matching`, `intent`, `hear`, `take
 the elements over them. The split is enforced, not just conventional: Lustre's
 client runtime declares `class LustreEvent extends CustomEvent` at load, Node
 18 (the signoff container's) has no global `CustomEvent`, and a test that
-imports an element throws before any test runs. `scripts/web_client_test.sh`
-walks the imports reachable from `test/` and fails if one reaches `lustre` or
-`web_client/internal/`.
+imports an element throws before any test runs. Lint rule R20 walks the
+imports reachable from `test/` and fails the build if one reaches `lustre`
+or `web_client/internal/` (`make lint-web_client`).
 
 `test/` holds gleeunit tests for what the components decide: `follow`'s
 scroll rules and the sequences of messages the page sends, `composer`'s

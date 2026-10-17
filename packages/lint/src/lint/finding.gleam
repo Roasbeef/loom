@@ -132,6 +132,18 @@ pub type Rule {
   /// rather than naming a domain operation (issue #593, 4). Whether a name
   /// is a domain operation is judgement, so this warns forever.
   UnnamedHelper
+
+  /// R19. A prerequisite skip printed to stdout from a test source. EUnit
+  /// discards a passing test's stdout, so the `SKIP` line never reaches the
+  /// log `skip_census.sh` reads; `io.println_error` is the emitter that does.
+  /// Scoped to `test/` sources, as R20 is.
+  StdoutSkip
+
+  /// R20. A test of a walled package (`web_client`) whose import graph reaches
+  /// `lustre` or the package's `internal/` modules. The browser runtime throws
+  /// at load on a Node without `CustomEvent`, so the tests may import only the
+  /// decision modules that never touch it. The walk is transitive.
+  TestImportWall
 }
 
 /// Every rule, in report order.
@@ -156,6 +168,8 @@ pub fn rules() -> List(Rule) {
     QualifiedDomainCall,
     FlowOrder,
     UnnamedHelper,
+    StdoutSkip,
+    TestImportWall,
   ]
 }
 
@@ -311,6 +325,17 @@ pub fn rules() -> List(Rule) {
 /// by definition; its 859 findings are a reading list for a reviewer, not a
 /// backlog, and a module doc padded with helper names to silence it would
 /// destroy what it measures.
+///
+/// **R19 and R20 gate, and they are the two rules that read `test/`.** Both
+/// replaced a script guard that already failed the build (a regular
+/// expression in `scripts/test_skip_reporting.py`, an import walk in
+/// `scripts/web_client_test.sh`), so each census was zero on the day the rule
+/// was written, and both are decidable on the AST: a call names `gleam/io`'s
+/// writer and its first argument begins `SKIP`, or an import names a
+/// forbidden module. They guard properties nothing else sees. A SKIP on
+/// stdout is invisible exactly when the suite is green, which is when the
+/// census must see it; a Lustre import in a rule module typechecks and passes
+/// on a newer Node, and fails only in the signoff container.
 pub fn error_by_default() -> List(Rule) {
   [
     Unparseable,
@@ -322,6 +347,8 @@ pub fn error_by_default() -> List(Rule) {
     TransitionTable,
     StateFirst,
     QualifiedDomainCall,
+    StdoutSkip,
+    TestImportWall,
   ]
 }
 
@@ -371,6 +398,8 @@ pub fn id(rule: Rule) -> String {
     QualifiedDomainCall -> "R16"
     FlowOrder -> "R17"
     UnnamedHelper -> "R18"
+    StdoutSkip -> "R19"
+    TestImportWall -> "R20"
   }
 }
 
@@ -396,6 +425,8 @@ pub fn name(rule: Rule) -> String {
     QualifiedDomainCall -> "qualified-domain-call"
     FlowOrder -> "flow-order"
     UnnamedHelper -> "unnamed-helper"
+    StdoutSkip -> "stdout-skip"
+    TestImportWall -> "test-import-wall"
   }
 }
 

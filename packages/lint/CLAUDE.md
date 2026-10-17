@@ -13,16 +13,23 @@ quadratic JSON parser whose every unit test passed (`08cdbce`).
 A pure analysis over `glance`'s AST, plus four `glexer` token scans for
 the questions where a parser miss would be a policy hole rather than a
 missed suggestion, plus one line scan of a `gleam.toml` and one line
-classification of every source. Nine of the nineteen rules gate — R0, R2,
-R4, R6, R10, R13, R14, R15 and R16 — and each of their censuses must stay
-zero; the other ten report. See **Staging** below before wiring anything else to the exit
+classification of every source. Eleven of the twenty-one rules gate — R0, R2,
+R4, R6, R10, R13, R14, R15, R16, R19 and R20 — and each of their censuses must
+stay zero; the other ten report. See **Staging** below before wiring anything else to the exit
 code.
 
-Three of the nineteen are not questions about the AST at all. R10 and R11
+Three of the twenty-one are not questions about the AST at all. R10 and R11
 ask how the source was *laid out* — where the blank lines and comments
 are — which `glance` throws away entirely, so `lint/layout` reads the tree
 for where each sibling begins and the file's own line table for what was
 written between them.
+
+R19 and R20 are the only rules that read `test/`. Every other rule is about a
+package's `src/`, and `lint/cli` still lints a test source with them only under
+`--tests`; by default a test source gets R19 alone (`lint.check_tests`) and its
+package gets R20's import walk. `scripts/lint.sh` brings each `src` directory's
+sibling `test` directory into every run, so `make lint` and `make lint-<pkg>`
+cover both.
 
 A run is two passes over the sources, not one: R1's structural half needs
 every `use`-compatible combinator the run can see before it can judge any
@@ -48,6 +55,9 @@ wrote ourselves. Nothing here is a security control.
   single-file caller — a test, a doctest — should keep using.
 - `lint.check_manifest(path, code) -> List(Finding)` — the same for a
   `gleam.toml`. Only R6 has anything to say about one.
+- `lint.check_tests(path, code) -> List(Finding)` — the test-scoped per-file
+  rules (R19), for a `test/` source. A source without the text `SKIP` is not
+  parsed; one that has it and will not parse is an R0.
 - `lint.package_of(path) -> Option(String)` — which package a path
   belongs to, which is the judgement R6 rests on and the census prints
   rows by.
@@ -67,11 +77,12 @@ wrote ourselves. Nothing here is a security control.
   BoundedLength | PortablePurity | AssertWithoutMessage |
   LoneCallerArity | NakedBool | CommentStanza | DenseStanza |
   BroadClosureCapture | FlowSpine | TransitionTable | StateFirst |
-  QualifiedDomainCall | FlowOrder | UnnamedHelper`, printed as
-  `R0`..`R18`.
+  QualifiedDomainCall | FlowOrder | UnnamedHelper | StdoutSkip |
+  TestImportWall`, printed as `R0`..`R20`.
   `error_by_default` is the staging decision as data — `[Unparseable,
   NestingDepth, PanicInSource, PortablePurity, CommentStanza, FlowSpine,
-  TransitionTable, StateFirst, QualifiedDomainCall]` — and its doc comment
+  TransitionTable, StateFirst, QualifiedDomainCall, StdoutSkip,
+  TestImportWall]` — and its doc comment
   carries one census and one argument per rule, which is what a reader
   who has just been failed by one of them needs. `gate(findings, errors)`
   is the `#(errors, warnings)` split `lint/cli` prints as its last line
@@ -149,6 +160,15 @@ wrote ourselves. Nothing here is a security control.
   with the same `findings(module, code, lines, policy, own_path)` shape,
   wired side by side in `lint.check_with`. `state_first.step_names`,
   `qualified.loom_roots` and `qualified.allowed` are their tables as data.
+- `lint/skip_stdout.findings(module)` — R19, the test-scoped per-file rule: a
+  call to `gleam/io`'s `println` or `print` (through any alias or unqualified
+  import, or `"SKIP …" |> io.println`) whose first argument is a string
+  literal, or the leftmost operand of a `<>` chain, beginning `SKIP`.
+- `lint/test_imports.findings(wall, tests, modules)` — R20, a pure
+  breadth-first walk of a walled package's import graph from its tests, over a
+  dictionary of the package's modules that `lint/cli` reads from `src/`.
+  `policy.import_walls` (`Wall(package, forbidden)`) is its table as data:
+  `web_client` forbids `lustre` and `web_client/internal`.
 - `lint/cli.main` — argument parsing, file discovery, the generated-source
   skip, the report and the census. The only module here that does I/O.
 
@@ -490,14 +510,34 @@ The last line of a run is `# <errors> <warnings>`, which is the contract
   not count. It over-reports by construction (a short helper is often
   right), so it warns forever; the census is 884, more than half of it at
   exactly six lines, which is where the formatter lands a short `case`.
+- **R19 `stdout-skip`** (`lint/skip_stdout`, test sources only) — a
+  prerequisite skip printed to stdout. A suite that cannot run prints
+  `SKIP <name>: <reason>` and `.github/scripts/skip_census.sh` greps the log
+  for it, but EUnit discards a passing test's stdout, so a skip written with
+  `io.println` is invisible exactly when the suite is green. The sanctioned
+  emitter is `io.println_error`, and the finding names it. It matches calls
+  on the AST, so a call written in a comment or a string, another module's
+  `println`, `SKIPPED`, and a SKIP in the middle of a message are all
+  silent. It replaced the regular expression in
+  `scripts/test_skip_reporting.py`; what remains there is the real-EUnit
+  proof that stdout is discarded. Census zero.
+- **R20 `test-import-wall`** (`lint/test_imports`, `web_client` tests only) —
+  a test whose import graph reaches `lustre` or `web_client/internal`.
+  `lustre/runtime/client/runtime.ffi.mjs` declares `class LustreEvent extends
+  CustomEvent` at load and Node 18 has no `CustomEvent`, so one such import
+  throws before any test runs; it typechecks and passes on a newer Node, which
+  is why a rule rather than a test holds it. The walk is transitive, reports
+  at the importing line in the file that wrote it with the chain from the
+  test, never enters a forbidden module, and reads each module once. It
+  replaced `check_imports` in `scripts/web_client_test.sh`. Census zero.
 - **R0 `unparseable`** — not a house rule. A file `glance` could not
   parse is reported, so a parse failure is never silence.
 
 ## Staging
 
-**R0, R2, R4, R6, R10, R13, R14, R15 and R16 gate; R1, R3, R5, R7, R8, R9,
-R11, R12, R17 and R18 warn.** `make lint` and `make check` fail on any of the
-nine. The warning default is deliberate
+**R0, R2, R4, R6, R10, R13, R14, R15, R16, R19 and R20 gate; R1, R3, R5,
+R7, R8, R9, R11, R12, R17 and R18 warn.** `make lint` and `make check` fail on
+any of the eleven. The warning default is deliberate
 and it is the `scripts/doc_check.sh` precedent (D2,
 `docs/design-notes/four-decisions.md`): a check earns the error tier by
 producing a census that is zero, decidable, and argued — not by being
@@ -573,6 +613,8 @@ for the censuses this superseded):
 | R16 qualified-domain-call | 0, swept from 2 | **error level**; decidable from the import alone |
 | R17 flow-order | 0 at 50% | **stays a warning**; a shared helper has no single right place |
 | R18 unnamed-helper | 859 | **stays a warning**; whether a name is a domain operation is judgement |
+| R19 stdout-skip | 0 | **error level**; replaced a guard that already failed the build, decidable from the call |
+| R20 test-import-wall | 0 | **error level**; same, decidable from the import graph |
 
 R13 to R18 arrived together for issue #593, and the argument for each tier
 is in `finding.error_by_default`. The four that gate were driven to zero in
@@ -700,8 +742,8 @@ that a rule *fires* is not a test that it gates.
 - **The tool passes its own R10 and R11.** `make lint-lint` reports zero
   of each. Its R9 census is 13 and is part of the tree-wide sweep the rule
   schedules, which is a different change from the one that counts them.
-- **Every gating rule's census is zero and stays zero.** R0, R2, R4 and
-  R6 are wired to the exit code by default. If a finding appears the
+- **Every gating rule's census is zero and stays zero.** R0, R2, R4,
+  R6, R10, R13 to R16, R19 and R20 are wired to the exit code by default. If a finding appears the
   answer is to fix the source, not to demote the rule: an exception needs
   the argument in `finding.error_by_default` — and, for R6, in
   `lint/portable` — answered rather than sidestepped. The one legitimate
@@ -779,5 +821,8 @@ that a rule *fires* is not a test that it gates.
   narrowing is argued.
 - `lint/source` module doc — why the R4 backstop scans tokens rather
   than text, and why the line classification lives beside the offsets.
+- `lint/skip_stdout` and `lint/test_imports` module docs — R19 and R20 in
+  full: why a skip on stdout is lost, and why Lustre must stay out of the
+  tests' import graph.
 - `scripts/lint.sh` — the wrapper, the `# <errors> <warnings>` contract,
   and how to promote a rule.
