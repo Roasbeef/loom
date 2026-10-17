@@ -9,18 +9,34 @@ import core/register
 import core/usage_evidence
 import gleam/list
 import gleam/option.{None, Some}
-import support/generate
+import qcheck
+import support/gen
 
 // --- roundtrip properties -----------------------------------------------
 
+/// How many values each roundtrip property is checked over, and the qcheck
+/// seed they are drawn from. The seed is fixed so the gate is deterministic.
+/// A failure arrives shrunk: optional fields toward `None`, strings toward
+/// empty, numbers toward zero, and a variant toward the first constructor.
+const roundtrip_count = 200
+
+const roundtrip_seed = 41
+
+fn property(generator: qcheck.Generator(a), check: fn(a) -> Nil) -> Nil {
+  qcheck.default_config()
+  |> qcheck.with_test_count(roundtrip_count)
+  |> qcheck.with_seed(qcheck.seed(roundtrip_seed))
+  |> qcheck.run(generator, check)
+}
+
 pub fn usage_roundtrip_property_test() {
-  property(generate.seed(41), 200, generate.usage, fn(usage) {
+  property(gen.usage(), fn(usage) {
     assert codec.decode_usage(codec.encode_usage(usage)) == Ok(usage)
   })
 }
 
 pub fn message_roundtrip_property_test() {
-  property(generate.seed(42), 200, generate.agent_message, fn(message) {
+  property(gen.agent_message(), fn(message) {
     assert codec.decode_message(codec.encode_message(message)) == Ok(message)
   })
 }
@@ -36,32 +52,27 @@ pub fn user_block_roundtrip_test() {
 }
 
 pub fn entry_roundtrip_property_test() {
-  property(generate.seed(43), 200, generate.entry, fn(entry) {
+  property(gen.entry(), fn(entry) {
     assert codec.decode_entry(codec.encode_entry(entry)) == Ok(entry)
   })
 }
 
 pub fn usage_row_roundtrip_property_test() {
-  property(generate.seed(44), 200, generate.usage_row, fn(row) {
+  property(gen.usage_row(), fn(row) {
     assert codec.decode_usage_row(codec.encode_usage_row(row)) == Ok(row)
   })
 }
 
 pub fn register_value_roundtrip_property_test() {
-  property(
-    generate.seed(45),
-    200,
-    fn(seed) { generate.json_value(seed, 3) },
-    fn(payload) {
-      let value = register.value(payload)
-      assert codec.decode_register_value(codec.encode_register_value(value))
-        == Ok(value)
-    },
-  )
+  property(gen.json_value(3), fn(payload) {
+    let value = register.value(payload)
+    assert codec.decode_register_value(codec.encode_register_value(value))
+      == Ok(value)
+  })
 }
 
 pub fn corruption_report_roundtrip_test() {
-  property(generate.seed(46), 50, generate.small_string, fn(text) {
+  property(gen.small_string(), fn(text) {
     let report =
       corruption.report(
         at: "boundary/" <> text,
@@ -77,27 +88,11 @@ pub fn corruption_report_roundtrip_test() {
 // Entries survive the full durability pipeline: value -> Json -> text ->
 // Json -> value.
 pub fn entry_text_pipeline_property_test() {
-  property(generate.seed(47), 200, generate.entry, fn(entry) {
+  property(gen.entry(), fn(entry) {
     let text = json.to_string(codec.encode_entry(entry))
     let assert Ok(parsed) = json.parse(text)
     assert codec.decode_entry(parsed) == Ok(entry)
   })
-}
-
-fn property(
-  seed: generate.Seed,
-  remaining: Int,
-  generator: fn(generate.Seed) -> #(a, generate.Seed),
-  check: fn(a) -> b,
-) -> Nil {
-  case remaining <= 0 {
-    True -> Nil
-    False -> {
-      let #(value, seed) = generator(seed)
-      check(value)
-      property(seed, remaining - 1, generator, check)
-    }
-  }
 }
 
 // --- wire-shape pins ----------------------------------------------------
