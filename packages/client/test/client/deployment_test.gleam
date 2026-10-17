@@ -27,6 +27,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import session_view/move_candidates.{Eligible, Ineligible}
 import web_view/placements as page
 
 const self = "alpha@10.0.0.1"
@@ -2002,4 +2003,118 @@ pub fn a_move_is_spelled_one_way_test() {
   let one = deployment.to_json(deployment.selected(self, [asker]), 1)
   let assert json.Array([node]) = field(one, "nodes")
   assert field(field(node, "orchestrator"), "moves") == json.Array([expected])
+}
+
+// --- move candidates -----------------------------------------------------------------
+
+fn orchestrator_node(
+  name: String,
+  node: String,
+  health: deployment.Health,
+  report: Option(NodeReport),
+) -> deployment.Node {
+  deployment.Node(
+    node:,
+    name:,
+    roles: [OrchestratorRole],
+    health:,
+    report:,
+    declared: None,
+  )
+}
+
+fn accepting(
+  node: String,
+  imports: node_report.Imports,
+  serves: List(String),
+) -> NodeReport {
+  let base = orchestrating(node, serves, [], [])
+  case base.orchestrator {
+    Some(facts) ->
+      node_report.NodeReport(
+        ..base,
+        orchestrator: Some(node_report.OrchestratorFacts(..facts, imports:)),
+      )
+    None -> base
+  }
+}
+
+fn move_candidate(name: String, eligibility: move_candidates.Eligibility) {
+  move_candidates.Candidate(name, eligibility)
+}
+
+pub fn a_receiving_orchestrator_that_serves_the_executor_is_a_candidate_test() {
+  let nodes = [
+    orchestrator_node(
+      "bravo",
+      "bravo@10.0.0.4",
+      Reachable,
+      Some(
+        accepting("bravo@10.0.0.4", node_report.Receiving, [
+          "box@10.0.0.2",
+        ]),
+      ),
+    ),
+  ]
+  assert deployment.candidates(nodes, self, Some("box@10.0.0.2"))
+    == [move_candidate("bravo", Eligible)]
+}
+
+pub fn an_unreachable_closed_or_unserving_orchestrator_is_listed_with_its_reason_test() {
+  let nodes = [
+    orchestrator_node("down", "down@10.0.0.5", Down(Unreachable), None),
+    orchestrator_node(
+      "closed",
+      "closed@10.0.0.6",
+      Reachable,
+      Some(
+        accepting("closed@10.0.0.6", node_report.NotReceiving, [
+          "box@10.0.0.2",
+        ]),
+      ),
+    ),
+    orchestrator_node(
+      "elsewhere",
+      "elsewhere@10.0.0.7",
+      Impaired([deployment.BuildDiffers]),
+      Some(
+        accepting("elsewhere@10.0.0.7", node_report.Receiving, [
+          "exec2@10.0.0.9",
+        ]),
+      ),
+    ),
+    orchestrator_node(
+      "old",
+      "old@10.0.0.8",
+      Reachable,
+      Some(bare("old@10.0.0.8")),
+    ),
+  ]
+  assert deployment.candidates(nodes, self, Some("box@10.0.0.2"))
+    == [
+      move_candidate("down", Ineligible(move_candidates.Unreachable)),
+      move_candidate("closed", Ineligible(move_candidates.NotAccepting)),
+      move_candidate("elsewhere", Ineligible(move_candidates.NotServing)),
+      move_candidate("old", Ineligible(move_candidates.NoReport)),
+    ]
+}
+
+pub fn the_asking_daemon_and_executors_are_never_candidates_test() {
+  let nodes = [
+    orchestrator_node(
+      "alpha",
+      self,
+      Reachable,
+      Some(accepting(self, node_report.Receiving, ["box@10.0.0.2"])),
+    ),
+    deployment.Node(
+      node: "box@10.0.0.2",
+      name: "box",
+      roles: [ExecutorRole],
+      health: Reachable,
+      report: None,
+      declared: Some(box()),
+    ),
+  ]
+  assert deployment.candidates(nodes, self, Some("box@10.0.0.2")) == []
 }

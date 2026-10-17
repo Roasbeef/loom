@@ -53,6 +53,7 @@ import host/bootstrap
 import host/claim
 import host/login
 import mist
+import session_view/move_candidates
 import session_view/transcript_image
 import simplifile
 import sqlight
@@ -867,6 +868,7 @@ fn administered(
         attachment.epoch,
         attachment.state_root,
         ui_socket.claim_address(request),
+        attachment.abandon,
         action,
         fn(answer) { process.send(answers, answer) },
       )
@@ -7336,6 +7338,7 @@ pub fn the_daemon_refuses_a_standing_that_is_not_the_owners_operating_one_test()
         ready.epoch,
         ready.state_root,
         address,
+        no_abandon,
         action,
       )
     }
@@ -7350,6 +7353,7 @@ pub fn the_daemon_refuses_a_standing_that_is_not_the_owners_operating_one_test()
       grants.Rotate(held),
       grants.Rename(held, "Renamed"),
       grants.MakeShareable(session),
+      grants.AbandonMove(session),
     ]
     let refused = grants.Declined(grants.NotOwner)
     list.each(every_action, fn(action) {
@@ -7364,6 +7368,7 @@ pub fn the_daemon_refuses_a_standing_that_is_not_the_owners_operating_one_test()
           ready.epoch,
           ready.state_root,
           address,
+          no_abandon,
           action,
         )
         == refused
@@ -7411,6 +7416,7 @@ pub fn a_stale_epoch_changes_nothing_test() {
           "an-earlier-daemon",
           ready.state_root,
           Ok("ws://127.0.0.1:1/v2/control"),
+          no_abandon,
           invite,
         )
         == grants.Declined(grants.Unavailable)
@@ -7434,6 +7440,7 @@ pub fn the_admin_change_runs_off_the_callers_process_test() {
       ready.epoch,
       ready.state_root,
       Ok("ws://127.0.0.1:1/v2/control"),
+      no_abandon,
       grants.Invite(session, invites.Observer, ""),
       fn(answer) { process.send(answers, #(answer, process.self())) },
     )
@@ -8105,6 +8112,7 @@ fn manage(
     page_open,
     ready.epoch,
     ready.sessions_directory,
+    server.no_moves(),
     action,
     target,
   )
@@ -8196,19 +8204,29 @@ pub fn a_home_action_refuses_and_changes_nothing_test() {
     let #(member_standing, _) =
       standing_of(ready, "ui-manager", access.Operator)
     let refused = actions.Declined(actions.NotOwner)
+    let asked = process.new_subject()
+    let moves = recording_moves(asked, session)
     let ask = fn(standing, open, epoch, action, target) {
       ui_socket.manage_for(
         standing,
         open,
         epoch,
         ready.sessions_directory,
+        moves,
         action,
         target,
       )
     }
 
     list.each(
-      [actions.Stop, actions.Archive, actions.Delete, actions.StopArchive],
+      [
+        actions.Stop,
+        actions.Archive,
+        actions.Delete,
+        actions.StopArchive,
+        actions.Destinations,
+        actions.Move("bravo"),
+      ],
       fn(action) {
         assert ask(member_standing, page_open, ready.epoch, action, session)
           == refused
@@ -8264,6 +8282,134 @@ pub fn a_home_action_refuses_and_changes_nothing_test() {
       == refused
     assert is_saved(ready, session)
     assert session_count(ready, credential) >= 1
+
+    // Only the owner's presses for a canonical identity reach the daemon's
+    // moves: the member's, the resumed home's, the read-only page's and the
+    // other principal's did not, and the one identity no session holds was
+    // answered by the daemon as not the owner's.
+    only_unheld_reached(asked)
+  })
+}
+
+// A subject that is told each time the moves are reached, and answers as if
+// every session could go to `bravo`.
+fn only_unheld_reached(asked: process.Subject(String)) -> Nil {
+  case process.receive(asked, 0) {
+    Ok(words) -> {
+      assert string.contains(words, "01900000-0000-7000-8000-000000000000")
+      only_unheld_reached(asked)
+    }
+    Error(Nil) -> Nil
+  }
+}
+
+fn recording_moves(
+  asked: process.Subject(String),
+  held: String,
+) -> server.Moves {
+  let missing = Error(server.Unreadable(manager.Catalogue(catalogue.Missing)))
+  server.Moves(
+    candidates: fn(session) {
+      process.send(asked, "candidates " <> session)
+      case session == held {
+        True ->
+          Ok([move_candidates.Candidate("bravo", move_candidates.Eligible)])
+        False -> missing
+      }
+    },
+    begin: fn(_epoch, session, to) {
+      process.send(asked, "begin " <> session <> " " <> to)
+      case session == held {
+        True -> Ok(server.MoveBegun(op: "op-1", to:))
+        False -> missing
+      }
+    },
+  )
+}
+
+fn no_abandon(_session: String) -> Result(String, server.MoveRefusal) {
+  Error(server.NotAMember)
+}
+
+// Move on a fresh owner's home reads the candidates and then asks the daemon's
+// own move, each as the page's standing, and a move the daemon refuses is the
+// page's fixed words for it. Nothing here needs a second orchestrator: the
+// daemon's moves are the ones the test supplies.
+pub fn an_owners_home_reads_candidates_and_moves_a_session_test() {
+  fixture(fn(ready, _, credential) {
+    let session = create_session(ready, "manage-move", 1207)
+    let owner = owner_standing(ready, credential, access.Operator)
+    let asked = process.new_subject()
+    let moves = recording_moves(asked, session)
+    let move = fn(action) {
+      ui_socket.manage_for(
+        owner,
+        page_open,
+        ready.epoch,
+        ready.sessions_directory,
+        moves,
+        action,
+        session,
+      )
+    }
+    assert move(actions.Destinations)
+      == actions.Heard([
+        move_candidates.Candidate("bravo", move_candidates.Eligible),
+      ])
+    assert move(actions.Move("bravo")) == actions.Done(actions.Move("bravo"))
+    assert process.receive(asked, 0) == Ok("candidates " <> session)
+    assert process.receive(asked, 0) == Ok("begin " <> session <> " bravo")
+
+    let refusing =
+      server.Moves(
+        candidates: fn(_) {
+          Error(server.Declined(manager.AdminNotMovable("no executor")))
+        },
+        begin: fn(_, _, _) { Error(server.UnknownDestination) },
+      )
+    let refused = fn(action) {
+      ui_socket.manage_for(
+        owner,
+        page_open,
+        ready.epoch,
+        ready.sessions_directory,
+        refusing,
+        action,
+        session,
+      )
+    }
+    assert refused(actions.Destinations) == actions.Declined(actions.NotMovable)
+    assert refused(actions.Move("ghost"))
+      == actions.Declined(actions.NotMovable)
+  })
+}
+
+// Abandon is the admin page's change: the owner's standing reaches the daemon's
+// abandon, a daemon that is not a directory member says so in its own reason,
+// a move that ended says that, and a forged identity is not a session.
+pub fn an_owners_admin_page_abandons_a_move_only_on_a_member_test() {
+  fixture_with(Granting, fn(ready, _, credential) {
+    let owner = owner_standing(ready, credential, access.Operator)
+    let #(_, tickets) = standing_of(ready, "unused", access.Operator)
+    let session = create_session(ready, "abandon-move", 1208)
+    let abandon = fn(abandoned, target) {
+      ui_socket.admin_for(
+        owner,
+        tickets,
+        page_open,
+        ready.epoch,
+        ready.state_root,
+        Ok("ws://127.0.0.1:1/v2/control"),
+        abandoned,
+        grants.AbandonMove(target),
+      )
+    }
+    assert abandon(fn(_) { Ok("op-1") }, session) == grants.Changed
+    assert abandon(no_abandon, session) == grants.Declined(grants.NotMember)
+    assert abandon(fn(_) { Error(server.NotMoving) }, session)
+      == grants.Declined(grants.NotMoving)
+    assert abandon(fn(_) { Ok("op-1") }, "not a session")
+      == grants.Declined(grants.NotFound)
   })
 }
 
@@ -8279,6 +8425,7 @@ pub fn the_home_action_runs_in_a_task_and_delivers_its_answer_test() {
       page_open,
       ready.epoch,
       ready.sessions_directory,
+      server.no_moves(),
       actions.Stop,
       session,
       fn(answer) { process.send(answered, #(process.self(), answer)) },
@@ -8294,6 +8441,7 @@ pub fn the_home_action_runs_in_a_task_and_delivers_its_answer_test() {
       page_open,
       ready.epoch,
       ready.sessions_directory,
+      server.no_moves(),
       actions.Delete,
       "not a session",
       fn(answer) { process.send(answered, #(process.self(), answer)) },
@@ -8604,6 +8752,7 @@ pub fn the_admin_page_renames_people_without_spending_the_allowance_test() {
         ready.epoch,
         ready.state_root,
         Ok("ws://127.0.0.1:1/v2/control"),
+        no_abandon,
         action,
       )
     }

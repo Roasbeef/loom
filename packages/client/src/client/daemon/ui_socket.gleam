@@ -600,6 +600,7 @@ pub fn upgrade(
           open,
           attachment.epoch,
           attachment.sessions_directory,
+          server.no_moves(),
           action,
           target,
           deliver,
@@ -952,6 +953,7 @@ pub fn upgrade_home(
           open,
           attachment.epoch,
           attachment.sessions_directory,
+          attachment.moves,
           action,
           target,
           deliver,
@@ -1670,6 +1672,17 @@ fn admit(
       label: Some(component.Label(
         name: attachment.registration.name,
         workspace: attachment.registration.workspace,
+        // Where the session runs is the owner's configuration, so only the
+        // owner's page says it. A member or an observer is told the workspace
+        // and nothing about the machines behind it.
+        executor: case role {
+          Owning -> attachment.registration.executor
+          Observing | Operating -> ""
+        },
+        pool: case role {
+          Owning -> attachment.registration.pool
+          Observing | Operating -> ""
+        },
       )),
       // The digest, not the path, is what the page's storage is keyed by.
       workspace_digest: digest(attachment.registration.workspace),
@@ -4056,12 +4069,18 @@ const stop_wait_ms = 5000
 ///    (`Running`). The page offers neither on a running row, and the registry
 ///    does not rely on that.
 ///
+/// 3. Move reads first. `Destinations` is `moves.candidates`, the deployment
+///    read judged by `deployment.candidates`, and changes nothing. `Move` is
+///    `moves.begin`, which is the control command `sessions.move`'s own
+///    function (`server.move_session`): it refuses a destination the daemon
+///    does not list and a session that cannot move, whatever the page offered.
+///
 /// The detail of every other refusal stays in the daemon.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // ui_socket.manage_for(standing, open, epoch, sessions, actions.Archive, session_id)
+/// // ui_socket.manage_for(standing, open, epoch, sessions, server.no_moves(), actions.Archive, session_id)
 /// ```
 @internal
 pub fn manage_for(
@@ -4069,6 +4088,7 @@ pub fn manage_for(
   open: fn() -> Result(Int, Nil),
   epoch: String,
   sessions_directory: String,
+  moves: server.Moves,
   action: actions.Action,
   target: String,
 ) -> actions.Answer {
@@ -4084,8 +4104,24 @@ pub fn manage_for(
       ids.parse_session_id(target) |> result.replace_error(actions.NotOwner),
     )
     case action {
-      actions.Stop -> stop_for(standing.registry, target)
-      actions.Archive -> archive_for(standing, epoch, target)
+      // Move reads before it asks. Which orchestrators could take the session
+      // is a read of the deployment and changes nothing; the move itself is the
+      // control command's own function, which refuses a destination the daemon
+      // does not list, whatever the page offered.
+      actions.Destinations ->
+        moves.candidates(target)
+        |> result.map(actions.Heard)
+        |> result.map_error(move_refusal)
+      actions.Move(to:) ->
+        moves.begin(epoch, target, to)
+        |> result.replace(actions.Done(action))
+        |> result.map_error(move_refusal)
+      actions.Stop ->
+        stop_for(standing.registry, target)
+        |> result.replace(actions.Done(action))
+      actions.Archive ->
+        archive_for(standing, epoch, target)
+        |> result.replace(actions.Done(action))
 
       // The sidebar's one action on a running row. The stop returns once the
       // registry reports the session saved, or when its wait ends, and the
@@ -4096,6 +4132,7 @@ pub fn manage_for(
       actions.StopArchive -> {
         use _ <- result.try(stop_for(standing.registry, target))
         archive_for(standing, epoch, target)
+        |> result.replace(actions.Done(action))
       }
       actions.Delete ->
         manager.delete_session(
@@ -4105,13 +4142,40 @@ pub fn manage_for(
           target,
           sessions_directory,
         )
-        |> result.replace(Nil)
+        |> result.replace(actions.Done(action))
         |> result.map_error(action_refusal)
     }
   }
   case outcome {
-    Ok(Nil) -> actions.Done(action)
+    Ok(answer) -> answer
     Error(reason) -> actions.Declined(reason)
+  }
+}
+
+// The fixed reason for a refused move. An owner check the registry repeated is
+// the page's `NotOwner`; a registry that did not answer is `Unavailable`; every
+// other refusal says the session cannot move now, since the page's one
+// sentence for it is all the owner can act on.
+fn move_refusal(refusal: server.MoveRefusal) -> actions.Reason {
+  case refusal {
+    server.Declined(manager.AdminForbidden)
+    | server.Declined(manager.AdminStaleEpoch)
+    | server.Unreadable(manager.Catalogue(catalogue.Missing)) ->
+      actions.NotOwner
+    server.Unanswered
+    | server.Declined(manager.AdminUnavailable)
+    | server.Declined(manager.AdminFailed(..)) -> actions.Unavailable
+    server.UnknownDestination
+    | server.Declined(manager.IsolationRequired)
+    | server.Declined(manager.AdminForeignPath)
+    | server.Declined(manager.AdminBusy)
+    | server.Declined(manager.AdminMoving(..))
+    | server.Declined(manager.AdminMoved(..))
+    | server.Declined(manager.AdminNotMovable(..))
+    | server.Declined(manager.AdminMetadata(..))
+    | server.NotAMember
+    | server.NotMoving
+    | server.Unreadable(..) -> actions.NotMovable
   }
 }
 
@@ -4244,6 +4308,7 @@ pub fn manage_task(
   open: fn() -> Result(Int, Nil),
   epoch: String,
   sessions_directory: String,
+  moves: server.Moves,
   action: actions.Action,
   target: String,
   deliver: fn(actions.Answer) -> Nil,
@@ -4256,6 +4321,7 @@ pub fn manage_task(
           open,
           epoch,
           sessions_directory,
+          moves,
           action,
           target,
         ))
@@ -4800,6 +4866,7 @@ fn admit_admin(
           epoch,
           attachment.state_root,
           address,
+          attachment.abandon,
           action,
           deliver,
         )
@@ -5298,11 +5365,13 @@ pub fn admin_for(
   epoch: String,
   state_root: String,
   address: Result(String, Nil),
+  abandon: fn(String) -> Result(String, server.MoveRefusal),
   action: grants.Action,
 ) -> grants.Answer {
   let outcome = {
     use _ <- result.try(administering(standing, open))
     case action {
+      grants.AbandonMove(session:) -> abandon_for_admin(abandon, session)
       grants.Invite(session:, role:, name:) ->
         invite_for_admin(standing, tickets, epoch, address, session, role, name)
       grants.SetRole(session:, principal:, role: invites.Operator) ->
@@ -5347,6 +5416,34 @@ fn administering(
   owner_operating(standing, open)
   |> result.replace(Nil)
   |> result.replace_error(grants.NotOwner)
+}
+
+// A move given up, which is `server.abandon_move`, the control command's own
+// function. It is refused unless this daemon is a directory member, and it only
+// begins the abandon: the movers carry it out, and the receiver having taken the
+// session first makes the move finish instead. The session is the page's pick
+// from a machine's moves and must still be a canonical identity. It grants no
+// one anything, so it costs no allowance.
+fn abandon_for_admin(
+  abandon: fn(String) -> Result(String, server.MoveRefusal),
+  session: String,
+) -> Result(grants.Answer, grants.Reason) {
+  use _ <- result.try(
+    ids.parse_session_id(session) |> result.replace_error(grants.NotFound),
+  )
+  abandon(session)
+  |> result.replace(grants.Changed)
+  |> result.map_error(fn(refusal) {
+    case refusal {
+      server.NotAMember -> grants.NotMember
+      server.NotMoving -> grants.NotMoving
+      server.Unreadable(manager.Catalogue(catalogue.Missing)) -> grants.NotFound
+      server.UnknownDestination
+      | server.Declined(_)
+      | server.Unanswered
+      | server.Unreadable(_) -> grants.Unavailable
+    }
+  })
 }
 
 // A private session made shareable: stopped, isolated and resumed by
@@ -5650,15 +5747,26 @@ pub fn admin_task(
   epoch: String,
   state_root: String,
   address: Result(String, Nil),
+  abandon: fn(String) -> Result(String, server.MoveRefusal),
   action: grants.Action,
   deliver: fn(grants.Answer) -> Nil,
 ) -> Nil {
   let answer = fn() {
-    admin_for(standing, tickets, open, epoch, state_root, address, action)
+    admin_for(
+      standing,
+      tickets,
+      open,
+      epoch,
+      state_root,
+      address,
+      abandon,
+      action,
+    )
   }
   case action {
     grants.MakeShareable(..) -> detached(answer, deliver)
-    grants.Invite(..)
+    grants.AbandonMove(..)
+    | grants.Invite(..)
     | grants.SetRole(..)
     | grants.RevokeMembership(..)
     | grants.RevokeCredentials(..)

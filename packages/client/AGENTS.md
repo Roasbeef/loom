@@ -8922,3 +8922,22 @@ orchestrator the daemon is configured with for a page of its sessions.
   `ledger_control_test`, and the shipped `daemon_shipped_directory_test` (the machines
   list over three real daemons).
 
+
+## Moving from a page and from the terminal (protocol-change/085)
+
+- `server.move_session(config, registry, digest, epoch, id, to)` and
+  `server.abandon_move(config, registry, id)` are the bodies of the `sessions.move`
+  arms; the caller has already checked the owner and the epoch. They return
+  `MoveBegun(op, to)` or a `MoveRefusal` (`UnknownDestination | Declined(AdminError) |
+  Unanswered | NotAMember | NotMoving | Unreadable(Error)`), which `move_refusal_code`
+  words as the control codes always were.
+- `server.Moves` is what the home is handed (`HomeAttachment.moves`): `candidates(id)`
+  reads the deployment and applies `deployment.candidates` to the session's executor
+  node, and `begin(epoch, id, to)` is `move_session`. `server.no_moves()` refuses
+  everything, for the session page's sidebar. `AdminAttachment.abandon` is
+  `abandon_move`.
+- `deployment.candidates(others, asker, executor_node)` is pure and uses
+  `session_view/move_candidates`. `ui_socket.manage_for` gained a `moves` argument and
+  runs `Destinations` and `Move(to)` under its `fresh_home` and `owner_operating`
+  checks; `admin_for` gained an `abandon` argument for `grants.AbandonMove`, refused with
+  `NotMember` off a directory member.

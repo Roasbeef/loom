@@ -72,6 +72,11 @@
 //// 4. `overview` and `selected` are pure: they turn the judged nodes and the
 ////    configuration into a `Snapshot`, with the edges `edges_of` derives and the
 ////    placements a session-creation form draws from, and `to_json` renders it.
+//// 5. `candidates` is also pure. Given the judged nodes of an `overview`, it
+////    says which orchestrators a session on one executor can move to and why
+////    the others cannot, by the rule in `session_view/move_candidates`. The
+////    Move controls of the home page and `loom sessions move` both offer its
+////    answer.
 
 import client/directory/member
 import client/directory/store
@@ -92,6 +97,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import host/build_identity
+import session_view/move_candidates
 import web_view/placements as page
 import weft
 
@@ -1062,6 +1068,53 @@ pub fn overview(
 /// ```
 pub fn selected(self: String, nodes: List(Node)) -> Snapshot {
   Selected(self:, nodes:)
+}
+
+/// The orchestrators a session placed on `executor_node` could move to, as the
+/// move command and the Move controls offer them (protocol-change/085, the
+/// addendum on Move and Abandon). An orchestrator is eligible when this daemon
+/// reached it, its report says it accepts moved sessions, and the executors the
+/// report lists include `executor_node`; any other is listed with the first
+/// reason that applies (`session_view/move_candidates`). The asking daemon is
+/// never a candidate. `None` is a session with no executor, which has no
+/// destination.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert deployment.candidates([], "alpha@10.0.0.1", Some("box@10.0.0.2")) == []
+/// ```
+pub fn candidates(
+  others: List(Node),
+  asker: String,
+  executor_node: Option(String),
+) -> List(move_candidates.Candidate) {
+  list.filter_map(others, fn(node) {
+    case list.contains(node.roles, OrchestratorRole), node.node == asker {
+      True, False -> Ok(move_candidates.Offer(node.name, offered(node)))
+      False, _ | _, True -> Error(Nil)
+    }
+  })
+  |> move_candidates.choose(executor_node)
+}
+
+// What the asking daemon found of an orchestrator, in the rule's terms: a node
+// that did not answer is silent, one that answered without an orchestrator
+// report cannot be judged, and one that reported states what it accepts and the
+// executors it serves.
+fn offered(node: Node) -> move_candidates.Facts {
+  case node.health, node.report |> option.then(fn(r) { r.orchestrator }) {
+    Down(_), _ -> move_candidates.Silent
+    Reachable, None | Impaired(_), None -> move_candidates.Unreported
+    Reachable, Some(facts) | Impaired(_), Some(facts) ->
+      move_candidates.Reported(
+        receives: case facts.imports {
+          node_report.Receiving -> move_candidates.Receiving
+          node_report.NotReceiving -> move_candidates.NotReceiving
+        },
+        serves: facts.executor_nodes,
+      )
+  }
 }
 
 // The relations of the overview. The asking daemon's own come first, each with
