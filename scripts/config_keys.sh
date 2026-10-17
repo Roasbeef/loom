@@ -57,7 +57,7 @@ spec_file=${CONFIG_KEYS_SPEC:-}
 # file|function|mode|heading|optional-top-level-key
 default_spec() {
 	cat <<'SPEC'
-packages/client/src/client/catalog.gleam|parse|call|Top-level tables|
+packages/client/src/client/catalog.gleam|parse_with_document|call|Top-level tables|
 packages/client/src/client/catalog.gleam|parse_model|call|[models.<name>]|
 packages/client/src/client/catalog.gleam|parse_pricing|call|[models.<name>.pricing]|
 packages/client/src/client/catalog.gleam|parse_role|arms|[roles]|
