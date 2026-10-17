@@ -61,6 +61,15 @@
 //// - `alpha` is started again, rejoins with three voters, and serves its own
 ////   session from its catalogue.
 ////
+//// `the_admin_page_lists_each_machine_of_the_deployment_test_`
+////
+//// The Admin page's machines list (protocol-change/085, the addendum of
+//// 2026-10-16) over the same three members. `alpha` answers `deployment.status`
+//// over its control socket, the page's decoder reads the document, and the
+//// Deployment section draws a row for the asking daemon, its peer orchestrator
+//// and the executor. The browser's socket chain is not driven: no shipped
+//// fixture has a WebSocket client for the page's ticket exchange.
+////
 //// ## Prerequisites and skips
 ////
 //// Sessions here are local, so the daemons run a helper pool and the host has to
@@ -87,9 +96,13 @@ import client/tui_e2e_test.{type EunitTest}
 import core/json.{type JsonValue}
 import gleam/list
 import gleam/option.{Some}
+import gleam/string
 import host/bootstrap as native
+import lustre/element
 import support/remote_daemons
 import support/remote_duo
+import web_view/machines
+import web_view/view/admin_machines
 import weft/poll
 
 const skip_label = "shipped remote directory"
@@ -604,4 +617,46 @@ fn remote(
     remote_duo.executor_name,
     remote_duo.workspace_name,
   )
+}
+
+// The Admin page's machines list (protocol-change/085, the addendum of
+// 2026-10-16) against the three real daemons: `alpha` is asked for the
+// deployment over its control socket, the page's own decoder reads the reply the
+// way the page's read does (`server.admin_deployment` makes this very read), and
+// the Deployment section draws a row for each of the three nodes, the asking
+// daemon, its peer orchestrator and the executor.
+//
+// No shipped fixture drives the browser's WebSocket and the page's ticket chain,
+// so the page is not reached through them; the daemon's half of the read is the
+// real one and the page's half is its real view over the real document.
+pub fn the_admin_page_lists_each_machine_of_the_deployment_test_() -> EunitTest {
+  remote_duo.shipped(member_label, fn(duo) {
+    let keys = remote_duo.provision(duo)
+    remote_duo.configure_members(duo, keys, Some(alphas_address))
+    let members = remote_duo.start_members(duo)
+    let on_alpha = remote_daemons.open_control(members.alpha)
+    let reply =
+      remote_daemons.command(on_alpha, 1, "deployment.status", json.Object([]))
+    assert remote_daemons.field(reply, "event")
+      == json.String("deployment.status")
+    let assert Ok(snapshot) = machines.decode_overview(body_of(reply))
+      as "the page's decoder reads the daemon's own document"
+    let names = list.map(snapshot.machines, fn(machine) { machine.name })
+    assert list.length(names) == 3
+    assert list.contains(names, "bravo")
+    assert list.contains(names, remote_duo.executor_name)
+    let html =
+      admin_machines.view(admin_machines.Section(
+        held: machines.Known(snapshot),
+        chosen: option.None,
+        choose: fn(_) { Nil },
+        page: element.none(),
+      ))
+      |> element.to_string
+    list.each(names, fn(name) {
+      assert string.contains(html, ">" <> name <> "<")
+    })
+    assert string.contains(html, "Deployment · 3 nodes")
+    Nil
+  })
 }
