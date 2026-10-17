@@ -16,23 +16,6 @@ rereads its file and reevaluates secret commands. The populated configuration,
 refusal-order, same-path rewrite, and secret-rotation regressions live in
 `client/config_document_test`.
 
-## Optional first-domain code loading
-
-After the domain's normal configuration validation and before resource owners
-start, `serve.build_domain` calls `startup.prepare`. Its fixed 25-module batch
-comes from measured cold-session loading; it is a hint, not a dependency
-declaration. Ordinary demand loading and runtime extensions remain available.
-OTP owns the code cache, so later domains need no custom once flag. Neither a
-native load error nor a malformed native reply changes domain admission.
-
-`internal/ffi_code` binds directly to stock OTP `code:ensure_modules_loaded/1`,
-which the Gleam libraries do not expose, and decodes its atom-or-tuple reply
-totally. Only trusted literal names become atoms. The inventory deliberately
-excludes native initialization; release verification checks each selected
-BEAM exists and has neither `on_load` nor `erlang:load_nif/2`. Decoder and native
-missing-module regressions live in `client/startup_test`; existing configuration
-and custody tests retain the admission and cleanup contracts.
-
 ## Responses service tier
 
 `client/catalog.CatalogModel.service_tier` is an optional typed
