@@ -41,12 +41,12 @@
 ////   909bbbc014278c57bb888b3e4c834ba52e405855bd52156a2ff35345283a1274  packages/cap/src/cap/runtime.gleam
 ////   3156b1ffaca196b1fec58975df71e52158b8ee298b2f1b36a4cbe9df72de3f64  packages/cap/src/cap/schedule.gleam
 ////   508521d05b5a63799e90cee1a2f0e4bd9f24ed8b89aa497a75f7171fc3ba402b  packages/cap/src/cap/search.gleam
-////   982b0d1630132ae6c19e3308d16a5cbe92917715a6fbc696954c858da4f845a3  packages/cap/src/cap/strand.gleam
+////   b6bfc99aeccd5e96d1560238f4ed0c0e653551365329b6126c08f465a74dfeff  packages/cap/src/cap/strand.gleam
 ////   3196badca88c32f90b568ca3e596b048f543ddb82cc31f591563bf4db938eb15  packages/cap/src/cap/task.gleam
 ////   dade50ada67f4ac667f0b92cb10d0da213cac327897524dbb006e02cf3c90963  packages/cap/src/cap/workflow.gleam
 ////   13e21c346eea7292f312ec82b6fb42a6b86158b9211ec18f4d574186313f7f0d  scripts/gen-prelude.py
 ////
-//// Body digest (every line after the marker): 5b24f8bd2257427043f4050d4c1a1ed3710edd78f7389f5530865167d87ca7d7
+//// Body digest (every line after the marker): f4125810a5a91ee2f09c246b5258e4aac7feda69f7e5040bedd2aec22bcf3046
 
 // --- generated body: the digests above cover every line below this one ---
 /// Every module of the capability prelude, in the order the
@@ -3279,6 +3279,10 @@ pub type Delivery {
   Steered(entry: EntryId)
   /// The target was idle: the message was accepted as a fresh run.
   Started(operation: OpId)
+  /// The message was recorded and will be delivered when the other
+  /// orchestrator can be reached. Nothing says yet whether it reached an
+  /// open run.
+  Queued
 }
 /// One field of the result shape a spawn demands of its child.
 pub type Field {
@@ -3707,6 +3711,22 @@ pub fn waited_text(Waited) -> String
 ///  ```
 ///
 pub fn with_model(Assignment, String) -> Assignment
+/// Starts the child on the configured orchestrator `name` instead of in
+/// this session. A child there runs detached, in a session that exists to
+/// serve it, and bounded by its own deadline. It is offered only in a
+/// session that its owner holds alone, and only from a program that waits
+/// for it: a program that runs in the background cannot place a child
+/// elsewhere, and the host refuses the spawn in words that say why.
+///
+///  ## Examples
+///
+///  ```gleam
+///  // strand.assignment(purpose: \"build\", brief: \"run the suite\")
+///  // |> strand.with_on(\"box\")
+///  // |> strand.spawn
+///  ```
+///
+pub fn with_on(Assignment, String) -> Assignment
 /// Narrows the child's tool set. It may only ever narrow the calling
 /// strand's own set; naming a tool the caller does not hold is
 /// `UnknownTool`.
@@ -4948,6 +4968,10 @@ pub type Delivery {
   Steered(entry: EntryId)
   /// The target was idle: the message was accepted as a fresh run.
   Started(operation: OpId)
+  /// The message was recorded and will be delivered when the other
+  /// orchestrator can be reached. Nothing says yet whether it reached an
+  /// open run.
+  Queued
 }
 /// One field of the result shape a spawn demands of its child.
 pub type Field {

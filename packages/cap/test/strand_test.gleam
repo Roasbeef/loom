@@ -83,6 +83,27 @@ pub fn a_spawn_carries_its_whole_assignment_test() {
     ))
 }
 
+pub fn a_placement_crosses_as_the_orchestrators_name_test() {
+  install_fake(with: fn(cap, args, _deadline) {
+    assert cap == "strand.spawn"
+    assert wire.string_field(args, "on") == Ok("box")
+    Ok(
+      map([
+        #("strand", msgpack.StringValue("sub:main/build-turn-1-0")),
+        #(
+          "operation",
+          msgpack.StringValue("00000000-0000-7000-8000-000000000001"),
+        ),
+      ]),
+    )
+  })
+  let assert Ok(_handle) =
+    strand.assignment(purpose: "build", brief: "run the suite")
+    |> strand.with_on("box")
+    |> strand.spawn
+    as "a placed assignment must spawn"
+}
+
 pub fn an_unset_assignment_sends_nothing_rather_than_a_default_test() {
   // The harness decides the default budget, the default provenance and
   // the default tool set; a program that named none must not be read as
@@ -92,6 +113,7 @@ pub fn an_unset_assignment_sends_nothing_rather_than_a_default_test() {
     assert wire.optional_field(args, "model") == None
     assert wire.optional_field(args, "tools") == None
     assert wire.optional_field(args, "result_schema") == None
+    assert wire.optional_field(args, "on") == None
     assert wire.bool_field(args, "detach") == Ok(False)
     assert wire.string_field(args, "context") == Ok("fresh")
     Ok(
@@ -505,6 +527,13 @@ pub fn a_send_reports_how_it_landed_test() {
   })
   assert strand.send(to: "main", text: "found it")
     == Ok(strand.Steered(entry: entry("00000000-0000-7000-8000-000000000001")))
+}
+
+pub fn a_queued_send_decodes_without_a_landing_test() {
+  install_fake(with: fn(_cap, _args, _deadline) {
+    Ok(map([#("kind", msgpack.StringValue("queued"))]))
+  })
+  assert strand.send(to: "^main", text: "done") == Ok(strand.Queued)
 }
 
 pub fn a_note_and_a_notes_read_round_trip_test() {
