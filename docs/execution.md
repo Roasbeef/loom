@@ -254,8 +254,14 @@ affect; `make affected` prints that selection and the reason for each
 gate without running anything. Both take `BASE=<rev>` (default
 `origin/main`). The change is everything between the merge base of
 `BASE` and HEAD, together with the working tree's uncommitted and
-untracked files. `scripts/affected.py` makes the selection and
-`scripts/check_affected.sh` runs it.
+untracked files. `lint/affected` (in `packages/lint`, run as `gleam run -m
+lint/affected_cli`) makes the selection and `scripts/check_affected.sh` runs
+it. Git stays in the script: it runs `git ls-files` and the merge-base diff
+and hands both to the selector as files, so the selector is a pure function
+of them and `bash scripts/check_affected.sh --changed [BASE]` prints exactly
+the paths it will be given. The first `make affected` after a change to
+`packages/lint` compiles it, which is a few seconds; warm, the selection takes
+about a second.
 
 The selection:
 

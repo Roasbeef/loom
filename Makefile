@@ -45,7 +45,7 @@ BASE ?= origin/main
 # a package named "affected".
 .PHONY: affected
 affected: ## Print the gates a change against BASE can affect (BASE=origin/main)
-	@python3 scripts/affected.py --base "$(BASE)"
+	@bash scripts/check_affected.sh --select "$(BASE)"
 
 .PHONY: check-affected
 check-affected: ## Run only the gates a change against BASE can affect (BASE=origin/main)
