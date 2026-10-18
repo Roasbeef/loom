@@ -37,6 +37,7 @@
 ////    prints which of them could take the session and why the others cannot.
 
 import core/json.{type JsonValue}
+import core/json_wire
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -513,15 +514,11 @@ fn ledger_refusal(value: JsonValue) -> Result(LedgerRefusal, String) {
 }
 
 fn count_at(value: JsonValue, key: String) -> Result(Int, String) {
-  use found <- result.try(field(value, key))
-  case found {
-    json.Int(count) if count >= 0 -> Ok(count)
-    _ -> Error(key <> " is not a count")
-  }
+  json_wire.count_at(value, key)
 }
 
 fn optional_count(value: JsonValue, key: String) -> Option(Int) {
-  count_at(value, key) |> option.from_result
+  json_wire.optional_count_at(value, key)
 }
 
 fn node(value: JsonValue) -> Result(Node, String) {
@@ -676,42 +673,19 @@ fn placement_state(word: String) -> Result(PlacementState, String) {
 }
 
 fn field(value: JsonValue, key: String) -> Result(JsonValue, String) {
-  case value {
-    json.Object(members) ->
-      list.key_find(members, key)
-      |> result.map_error(fn(_) { "missing " <> key })
-    json.Array(_)
-    | json.String(_)
-    | json.Int(_)
-    | json.Float(_)
-    | json.Bool(_)
-    | json.Null -> Error("expected an object")
-  }
+  json_wire.field(value, key)
 }
 
 fn text(value: JsonValue) -> Result(String, String) {
-  case value {
-    json.String(word) ->
-      case word != "" && string.byte_size(word) <= text_limit {
-        True -> Ok(word)
-        False -> Error("expected nonempty bounded text")
-      }
-    json.Object(_)
-    | json.Array(_)
-    | json.Int(_)
-    | json.Float(_)
-    | json.Bool(_)
-    | json.Null -> Error("expected text")
-  }
+  json_wire.bounded_text(value, text_limit)
 }
 
 fn text_at(value: JsonValue, key: String) -> Result(String, String) {
-  use found <- result.try(field(value, key))
-  text(found) |> result.map_error(fn(reason) { key <> ": " <> reason })
+  json_wire.text_at(value, key, text_limit)
 }
 
 fn optional_text(value: JsonValue, key: String) -> Option(String) {
-  text_at(value, key) |> option.from_result
+  json_wire.optional_text_at(value, key, text_limit)
 }
 
 // A list the reply must have. Its entries must each decode, and it may not
@@ -725,7 +699,7 @@ fn required_list(
   use found <- result.try(field(value, key))
   case found {
     json.Array(items) ->
-      case list.length(items) <= list_limit {
+      case list.drop(items, list_limit) == [] {
         True -> list.try_map(items, read)
         False -> Error(key <> " is longer than expected")
       }
