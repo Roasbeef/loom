@@ -5489,9 +5489,11 @@ fn close_unused_domain(book: Book(instance), id, slot: DomainSlot) {
 // halves of a page therefore cost one bounded handler turn each.
 const source_page = 100
 
-// The bounded total a domain may contribute to recall. An oversized domain is
-// refused rather than silently truncated to an authorized-looking prefix.
-const source_limit = 512
+// The bounded total of conversation sessions a domain may contribute to
+// recall: 511, leaving one slot in `shared_history`'s 512-source ceiling for
+// the domain's `loom-memory.db` store (`serve.with_memory_source`). An
+// oversized domain is refused rather than silently truncated.
+const source_limit = 511
 
 // The page walk runs on the caller's process, one registry call per half-page,
 // so the cap is enforced here rather than inside a handler turn. SQL filters

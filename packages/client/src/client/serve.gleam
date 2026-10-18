@@ -3439,7 +3439,7 @@ fn assemble_in(
     Some(shared), Some(#(_, identity)) ->
       Ok(
         option.map(domain_service.history(shared), fn(shared) {
-          history.seam_for(shared, identity)
+          history.seam_for_with_logger(shared, identity, logger:)
         }),
       )
     Some(_), None ->
@@ -5528,7 +5528,11 @@ fn history_seam(
       log.info(logger, "history.ready", [
         field.text(key: "index", value: index_path),
       ])
-      Some(history.seam(name, timeout_ms: history.default_timeout_ms))
+      Some(history.seam_with_logger(
+        name,
+        timeout_ms: history.default_timeout_ms,
+        logger:,
+      ))
     }
     Error(reason) -> {
       log.warn(logger, "history.unavailable", [

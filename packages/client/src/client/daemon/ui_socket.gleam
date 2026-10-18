@@ -475,6 +475,7 @@ fn reaches(reach: Reach, path: String) -> Bool {
       !beneath(path, component.invite_path)
       && !beneath(path, component.rename_path)
       && !beneath(path, component.peers_path)
+      && !beneath(path, component.proposals_path)
   }
 }
 

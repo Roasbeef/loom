@@ -2340,11 +2340,13 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       continue(state)
     }
 
-    // A remote child's stub changed. The stubs are read again and pushed
-    // whole, so a lost hint costs a stale strip until the next change, and
-    // no pull runs: a stub is a reserved fact, which no emit carries.
+    // A remote child's stub changed. The stubs are read again in a weft run
+    // and pushed whole to every subscribed peer, so the hub's turn never
+    // waits on the store, a lost hint costs a stale strip until the next
+    // change, and no pull runs: a stub is a reserved fact, which no emit
+    // carries.
     BusHint(published: bus.Published(event: bus.RemoteChildrenChanged, ..)) -> {
-      push_to_subscribed(state, remote_children_event(state))
+      broadcast_remote_children(state)
       continue(state)
     }
     BusHint(published: _) -> continue(pull_and_broadcast(revalidate_all(state)))
@@ -4885,14 +4887,41 @@ fn begin_history(
   begin_observation(state, connection, id, HistoryObservation, capture)
 }
 
-// The session's remote children as one snapshot event, read from the stubs in
-// its store at this moment. Stubs that cannot be read give an empty list, which
-// a client draws as no remote child: the list is a display, and nothing that
-// decides reads it.
-fn remote_children_event(state: State) -> WireEvent {
-  protocol.SnapshotEvent(
-    protocol.RemoteChildrenSnapshot(children: remote_agents(state.runtime)),
-  )
+// Pushes the session's remote children to every subscribed connection when a
+// stub changes, reading the stubs in a weft run so a slow store cannot stall
+// the hub's turn.
+fn broadcast_remote_children(state: State) -> Nil {
+  let subscribed =
+    dict.values(state.connections)
+    |> list.filter(fn(link) { link.subscription == Subscribed })
+  case subscribed {
+    [] -> Nil
+    links -> {
+      let runtime = state.runtime
+      let hub = process.self()
+      let _witnessed: weft.Witnessed =
+        weft.new([
+          fn() {
+            let event =
+              protocol.SnapshotEvent(
+                protocol.RemoteChildrenSnapshot(children: remote_agents(runtime)),
+              )
+            let frame =
+              protocol.encode_event(EventEnvelope(
+                reply_to: None,
+                seq: None,
+                event:,
+              ))
+            list.each(links, deliver(_, frame))
+            Ok(Nil)
+          },
+        ])
+        |> weft.deadline(remote_children_push_ms)
+        |> weft.cancel_when_exits(hub)
+        |> weft.start_witnessed
+      Nil
+    }
+  }
 }
 
 // The session's clock, the one the Agency stamps a glance's arrival and a
