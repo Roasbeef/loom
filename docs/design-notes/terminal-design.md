@@ -288,7 +288,7 @@ tight; the same facts fit on the frame.
 
 Data: context is `context_view.footer`
 (`packages/session_view/src/session_view/context_view.gleam:358`) (`footer`),
-cost is the session's `usage` (`packages/session_view/src/session_view/model.gleam:394`)
+cost is the session's `usage` (`packages/session_view/src/session_view/model.gleam:404`)
 (`usage`), the needs-you count is `strand_card.needing`
 (`packages/session_view/src/session_view/strand_card.gleam:69`) (`needing`),
 and the activity label is `layout.active_status_label`
@@ -558,7 +558,7 @@ main ▸ sub:tests`) and the identity line names it. Focus from the timeline wit
 |---|---|---|
 | `←`, empty composer, no attachment | Open the session picker | Unchanged (`packages/tui/src/tui/interaction.gleam:1376`) (`open_session_selector`) |
 | `↓`, idle composer | Enter the agent strip. While the rail shows Strands, focus the rail's list | Unchanged (`packages/tui/src/tui/interaction.gleam:1236`) (`down_from_composer`) |
-| `Shift+Tab` | Dock or hide the rail; open or close the sheet below 120 columns | Replaces "toggle the rail" (`packages/tui/src/tui/interaction.gleam:1548`) (`toggle_agent_rail`) |
+| `Shift+Tab` | Dock or hide the rail; open or close the sheet below 120 columns | Replaces "toggle the rail" (`packages/tui/src/tui/interaction.gleam:1560`) (`toggle_agent_rail`) |
 | Escape | Interrupt; closes the surface on top first | Unchanged (`packages/tui/src/tui/interaction.gleam:1337`) (`interrupt_active`) |
 | `Ctrl+O`, `F2`, `/agents` | Open the agent workspace | Unchanged |
 | `/diff`, `/trace` | Open the rail on Changes, Trace | `/diff` exists; `/trace` is new; `/summary` stays the full-screen summary and Session is the digit `4` |
