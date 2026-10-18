@@ -987,50 +987,69 @@ the smaller of what it asked for and what its parent's deadline leaves, and a
 parent past its deadline may start no child. A spawn on a third orchestrator that
 names no budget is sent the remainder, since the box does not know the third's
 default; a third orchestrator whose `max_within_s` is below that remainder
-refuses it, and the model passes a smaller `within_ms`. A grandchild in the
+refuses it. The wire does not change for this: the refusal names both figures,
+the `within_ms` it was sent and its own limit in milliseconds
+(`remote_spawn.over_cap`), so the model can ask again with a budget that fits
+in one step. A grandchild in the
 delegate session is also capped at the parent's absolute deadline when its
 lineage cell is written. The same rule holds for any strand with a deadline that
 spawns, and a strand a human talks to has none.
+
+Metering is per hop. Each orchestrator meters the children that run on it
+against its own spawner's budgets, and counts what it can see: the box counts
+the child's tokens, the third orchestrator counts the grandchild's, and neither
+adds the other's.
 
 ### The release cascades
 
 `Release` of a delegate session now reaches its children's children:
 
 1. The holder writes the released fence and stops the children, as before.
-2. `delegate_host.releaser` reads the orchestrators the session's stubs name
-   (`DelegateEndpoint.holders`, which is `agency.delegate_holders`, for a resident
-   session; `manager.closed_holders`, from the file, for a closed one).
-   `admit_remote` now reads the released fence before it writes a stub, so the
-   list holds every stub the session will have.
-3. `manager.release_delegate` takes the list and, in the registry's turn that
-   marks the row releasing, writes one `catalogue_remote_releases` row for each,
-   with the delegate session as the parent session, and rings the release
-   drainer. These are the rows a laptop's deletion writes, and they outlive the
-   session they name. A repeat writes rows that already exist, which the
-   catalogue keeps once.
-4. The daemon's release drainer, which every daemon with distribution starts, so
+   `admit_remote` now reads the released fence before it writes a stub, so a
+   stopped child starts nothing elsewhere.
+2. The registry deletes the session once its slot has drained, as before. In
+   that turn, before it removes the registration, `manager.delete_delegate`
+   reads the stubs from the closed file (`remote_release.stubs_at`, in a task
+   with a deadline so a faulty file costs the turn a bound), and writes one
+   `catalogue_remote_releases` row for each orchestrator a stub that is not
+   refused names, with the delegate session as the parent session, then rings
+   the release drainer. These are the rows a laptop's deletion writes, and they
+   outlive the session they name. The retention sweep's deletion of a delegate
+   session does the same.
+3. The daemon's release drainer, which every daemon with distribution starts, so
    also one that is both a spawner's target and a spawner, sends the third
    orchestrator `Release`, and it stops the grandchildren and deletes its
    delegate session.
 
-A store failure while reading the list fails the release with `StoreFailure`,
-which the sender retries; the row stays `open` and the session is not deleted,
-because the stubs are the only record of the orchestrators below it.
+The rows are written at the deletion and not when the release is handled. A
+first version wrote them in the turn that marked the row releasing. Until the
+slot has drained, though, the session's remote drainer and a spawn still being
+asked keep resending the `Spawn` of a stub that is `Requested`, so the third
+orchestrator could handle the `Release`, delete its session, and then make a
+child for the late `Spawn` whose parent was gone. After the drain nothing of the
+session runs to send it. A `Spawn` already in flight from the effect process
+that was asking can still arrive after the `Release`, from another process; that
+child is bounded by its deadline, as at depth 1.
 
 ### Tests and the model
 
 `agency_test` drives a delegate session two levels deep over two fake
 orchestrators: a spawn on the allowed one with the cell's depth, a refusal of
 the one `spawn_on` leaves out, the depth refusal on both sides, the deadline
-clamp, and a release that admits no new stub and lists the old. `delegate_host_test`
-checks the rows the release writes and that the drainer's pass releases the third
-orchestrator's session. `daemon_shipped_remote_depth_test` runs three shipped
-daemons from a three-orchestrator ledger: the laptop's parent starts a child on
-the box, which starts a grandchild on the third, and deleting the laptop session
-stops both and deletes both delegate sessions.
+clamp, and a release after which a child starts nothing elsewhere.
+`delegate_host_test` checks that a closed session's deletion owes the third
+orchestrator a release from its file and that the drainer's pass releases the
+third orchestrator's session, and that for a resident session the row appears
+only together with the session's deletion. `daemon_shipped_remote_depth_test`
+runs three shipped daemons from a three-orchestrator ledger: the laptop's parent
+starts a child on the box, which starts a grandchild on the third, and deleting
+the laptop session stops both and deletes both delegate sessions.
 
 `protocol/models/remote-subagents` gains a relay (the box's delegate session as a
-spawner) and two `Port` machines at depth 2, the specs `OneOrchestratorPerSite`
-and `ReleasedDescendantsEnd`, and the case `tcDepth`. The mutant the model could
-not state with one port, a spawn retried against a second orchestrator, is now
-caught, and so is a release that does not cascade.
+spawner) and two `Port` machines at depth 2, the specs `OneOrchestratorPerSite`,
+`ReleasedDescendantsEnd` and `NoSpawnAfterOwnRelease`, and the case `tcDepth`.
+The relay goes on resending until the box deletes the session, and the cascade
+is written then. Three mutants are caught: a spawn retried against a second
+orchestrator, which the model could not state with one port; a deletion that
+does not cascade; and a cascade written when the release is handled, before the
+slot drains.

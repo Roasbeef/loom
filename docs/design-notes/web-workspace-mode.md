@@ -646,9 +646,9 @@ login add these cases.
 (`client/daemon/server.gleam:1604`)): it canonicalizes a workspace path on the
 daemon's host, canonicalizes or inherits a configuration path, and runs
 <<<<<<< ours
-`create_scoped` (`client/daemon/manager.gleam:1872`) under an idempotency key.
+`create_scoped` (`client/daemon/manager.gleam:1864`) under an idempotency key.
 =======
-`create_scoped` (`client/daemon/manager.gleam:1872`) under an idempotency key.
+`create_scoped` (`client/daemon/manager.gleam:1864`) under an idempotency key.
 >>>>>>> theirs
 The terminal builds that key from its own identity, the wall clock and a
 counter (`CreateSession` (`tui/session_control.gleam:788`)), names the session

@@ -1017,9 +1017,9 @@ Described, not implemented, and none of it justified by this measurement alone.
 The narrowest change is to stop storing the value in the registry.
 `Occupancy.Running` could carry the instance's owning pid or a `Subject` rather
 <<<<<<< ours
-than the `serve.Instance`, and `Resolve` (`daemon/manager.gleam:889`) would ask that
+than the `serve.Instance`, and `Resolve` (`daemon/manager.gleam:882`) would ask that
 =======
-than the `serve.Instance`, and `Resolve` (`daemon/manager.gleam:889`) would ask that
+than the `serve.Instance`, and `Resolve` (`daemon/manager.gleam:882`) would ask that
 >>>>>>> theirs
 owner instead of reading a map. The reference already exists: the slot holds
 `host` and a monitor on the builder. The costs are real and on a hot path.

@@ -7915,14 +7915,19 @@ The box's deadline and retention (slice S4):
   delegate session as the parent session; `admit_remote` reads the released
   fence before it writes a stub, and `agency.within_parent` and
   `no_later_than_parent` keep any child's deadline inside its parent's.
-  The release cascades: `DelegateEndpoint.holders` (`agency.delegate_holders`)
-  or `manager.closed_holders` lists the orchestrators the session's stubs name,
-  and `manager.release_delegate(.., holders)` writes their
-  `catalogue_remote_releases` rows (parent session = the delegate session) in the
-  turn that marks the row releasing, so the daemon's release drainer tells them.
+  The release cascades at the deletion, not at the release: `manager.delete_delegate`
+  (the drained release's `finish_release` and the sweep) reads the closed file's
+  stubs in that registry turn (`descendant_holders`, `remote_release.stubs_at`
+  in a deadline-bounded task) and writes their `catalogue_remote_releases` rows
+  (parent session = the delegate session) before the registration goes, so the
+  daemon's release drainer tells them. Writing them when the release begins
+  would let the still-running session resend a `Requested` spawn past the third
+  orchestrator's `Release`. A deadline over a spawner's cap is refused with both
+  figures (`remote_spawn.over_cap`). Metering is per hop.
   Tests: `spawners_test`, `agency_test` (two fake orchestrators: allowed and
   refused placement, depth on both sides, the deadline clamp, the fence before a
-  stub), `delegate_host_test` (the rows and the drainer's release of the third
+  stub), `delegate_host_test` (a closed session's rows from its file, a resident
+  session's row only with its deletion, and the drainer's release of the third
   orchestrator), `support/fake_orchestrators` (`Report.asked`), the shipped
   `daemon_shipped_remote_depth_test` (three ledger orchestrators; deleting the
   laptop session stops the grandchild), and the P model's `tcDepth`.
