@@ -5210,7 +5210,8 @@ fn prepare_shared_domain(book: Book(instance), selected: domain.Domain) {
       // near the source cap costs a few short turns instead of one turn that
       // parks every queued authorization behind five hundred catalogue reads.
       let commands = book.commands
-      let sources = fn() { collect_sources(commands, selected.id, "", [], 0) }
+      let domain_id = selected.id
+      let sources = fn() { collect_sources(commands, domain_id, "", [], 0) }
 
       // Domain hosts also keep their builder after publication. Retain the
       // callback alone, not the registry and its resident instances.
