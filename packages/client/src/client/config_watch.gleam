@@ -11,19 +11,19 @@
 ////
 //// ## Flow
 ////
-//// `start` → `tick`
+//// `start` → `observe` → `read` → `settle`
 ////
-//// The watcher is one weft actor per session, in the session's restartable
-//// service tier, that reads the file once a `poll_ms` tick. A read is bounded:
-//// a file that is not a regular file, is larger than `max_file_bytes`, or does
-//// not read as text is unreadable, and an unreadable file changes nothing, so a
-//// save that is half written or a file moved away keeps the session as it is.
-////
-//// A changed text is acted on only when two reads in a row agree, which lets an
-//// editor's save settle; then it is checked with the same loader a session open
-//// uses (`Source.check`), and only a text that passes notifies the hub. A text
-//// that fails is logged once, with the path and never the reason: the reason
-//// can quote the file, and the file can hold a `[tools.set]` literal.
+//// 1. `start` runs one weft actor per session, in the session's restartable
+////    service tier, which observes the file once a tick.
+//// 2. `observe` reads it with `read`, which is bounded: a file that is not a
+////    regular file, is too large, or does not read as text is unreadable, and an
+////    unreadable file changes nothing, so a save that is half written or a file
+////    moved away keeps the session as it is.
+//// 3. `settle` takes a changed text only once two reads in a row agree, which
+////    lets an editor's save settle, and checks it with the same loader a session
+////    open uses (`Source.check`); only a text that passes notifies the hub. A
+////    text that fails is logged once, with the path and never the reason: the
+////    reason can quote the file, and the file can hold a `[tools.set]` literal.
 ////
 //// ## The start race
 ////

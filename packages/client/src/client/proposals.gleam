@@ -988,7 +988,7 @@ fn read_file(
           Error(noun <> " is larger than " <> int.to_string(bound) <> " bytes")
         False ->
           bit_array.to_string(bytes)
-          |> result.replace_error(noun <> " is not text")
+          |> result.map_error(fn(_) { noun <> " is not text" })
           |> result.map(rules)
       }
   }
@@ -1022,13 +1022,15 @@ fn write_target(kind: Kind, path: String, text: String) -> Result(Nil, String) {
     "the configuration could not be written: " <> string.inspect(error)
   }
   use info <- result.try(simplifile.link_info(path) |> result.map_error(failed))
-  use <- bool.guard(
+  use <- bool.lazy_guard(
     when: simplifile.file_info_type(info) == simplifile.Symlink,
-    return: Error(
-      "the configuration "
-      <> path
-      <> " is a symbolic link; edit the file it names by hand",
-    ),
+    return: fn() {
+      Error(
+        "the configuration "
+        <> path
+        <> " is a symbolic link; edit the file it names by hand",
+      )
+    },
   )
   write_file(path, text, Some(simplifile.file_info_permissions_octal(info)))
   |> result.map_error(failed)

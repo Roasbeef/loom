@@ -2154,6 +2154,7 @@ pub fn prepare_startup(
           bootstrap.canonical_directory(config.state_root)
           |> diagnose_start(logger, identity, SettingsResolution),
         )
+
         // The file's fingerprint is read before the open loads it, so a save
         // that lands in between reopens the session once more than it needed
         // rather than never (`client/config_watch`).
@@ -2591,17 +2592,15 @@ fn profile_desk(
     },
     watch: case configuration {
       "" -> None
-      path ->
+      path -> {
+        let profile = registration.profile
+        let model = registration.model
         Some(
           config_watch.Source(path:, baseline:, check: fn(text) {
-            serve.check_config(
-              path,
-              text,
-              registration.profile,
-              registration.model,
-            )
+            serve.check_config(path, text, profile, model)
           }),
         )
+      }
     },
   )
 }
