@@ -326,12 +326,24 @@ fn reached(
   ))
 }
 
-// The port's reply as the two failures. Silence from the asking functions is
-// `Error(Nil)`, a refusal rides inside an answer, and only the second is
-// definitive.
-fn answer(heard: Result(Result(a, SpawnRefusal), Nil)) -> Result(a, Failure) {
+/// The port's reply as the two failures. Silence from the asking functions is
+/// `Error(Nil)`, a refusal rides inside an answer, and only the second is
+/// definitive, with one exception: `NotYetOpen` says the receiver's session may
+/// open on a later attempt, so it is silence too and the caller asks again.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert remote_spawner.answer(Ok(Error(remote_spawn.NotYetOpen("slow"))))
+///   == Error(peer_mail.Unreachable)
+/// ```
+@internal
+pub fn answer(
+  heard: Result(Result(a, SpawnRefusal), Nil),
+) -> Result(a, Failure) {
   case heard {
     Ok(Ok(value)) -> Ok(value)
+    Ok(Error(remote_spawn.NotYetOpen(..))) -> Error(peer_mail.Unreachable)
     Ok(Error(refusal)) ->
       Error(peer_mail.Refused(remote_spawn.describe_refusal(refusal)))
     Error(Nil) -> Error(peer_mail.Unreachable)

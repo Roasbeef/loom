@@ -7899,6 +7899,14 @@ The box's deadline and retention (slice S4):
   the resend row, the vote, `delegate_send`), `daemon_spawn_host_test`,
   `support/fake_orchestrators` (`deliver_to_laptop`, `voting`), and the P model.
 
+- A delegate session that does not open in `delegate_host.open_budget_ms`, or
+  goes back to saved while the host waits, answers
+  `remote_spawn.NotYetOpen`, and `remote_spawner.answer` reads it as
+  `Unreachable`, so the laptop resends and the stub stays `Requested`. After a
+  box is killed, the dead writer's lease on the session file refuses every open
+  until it expires (up to `lease_ttl_ms`, 60 s), and before this a spawn in that
+  minute left its stub `Refused` for good. `remote_release_test` and the shipped
+  remote subagents test, which kills and restarts the box, cover it.
 - Observation (phase 4, slice S12, protocol-change/090). `Stub.glance_seen_ms`
   (`glanceSeenMs`, absent reads 0) is the parent's clock when
   `remote_child.progressed` kept the glance; every stub write publishes

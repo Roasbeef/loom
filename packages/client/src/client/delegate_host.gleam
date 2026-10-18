@@ -346,35 +346,46 @@ pub fn resolve_open(
 // The Agency of a session once it is resident. The registry's view is read each
 // time and not the slot alone, so a session whose builder failed ends the wait
 // at once with the registry's account instead of running out the budget.
+//
+// A session that went back to saved, or did not open within the budget, may
+// open on a later attempt: after the daemon was killed, the file carries the
+// dead writer's lease until it expires, and each open before then fails. Both
+// answer `NotYetOpen`, which the sender treats as silence and asks again, so
+// a spawn resent by the parent's drainer opens the session once the lease is
+// gone. A session that cannot recover, or was never created, is a store
+// failure as before.
 fn resident(
   context: Context(instance),
   session_id: String,
 ) -> Result(agency.DelegateEndpoint, SpawnRefusal) {
+  let failed = fn(reason) { poll.Fail(remote_spawn.StoreFailure(reason:)) }
   let waited =
     poll.until(within: open_budget_ms, every: open_poll_ms, attempt: fn() {
       case manager.get(context.registry, session_id) {
-        Error(error) -> poll.Fail(describe(error))
+        Error(error) -> failed(describe(error))
         Ok(manager.View(status: manager.Opening(_), ..)) -> poll.Retry
         Ok(manager.View(status: manager.Resident(_), ..)) ->
           case manager.resolve(context.registry, session_id) {
             Ok(instance) -> poll.Done(context.endpoint(instance))
-            Error(error) -> poll.Fail(describe(error))
+            Error(error) -> failed(describe(error))
           }
         Ok(manager.View(status: manager.Reserved, ..)) ->
-          poll.Fail("the delegate session was reserved and never created")
+          failed("the delegate session was reserved and never created")
         Ok(manager.View(status: manager.Saved, ..)) ->
-          poll.Fail("the delegate session did not open")
+          poll.Fail(remote_spawn.NotYetOpen(
+            reason: "the delegate session did not open",
+          ))
         Ok(manager.View(status: manager.Stopping(_), ..)) ->
-          poll.Fail("the delegate session is stopping")
+          failed("the delegate session is stopping")
         Ok(manager.View(status: manager.RecoveryBlocked(reason:), ..)) ->
-          poll.Fail("the delegate session cannot recover: " <> reason)
+          failed("the delegate session cannot recover: " <> reason)
       }
     })
   case waited {
     poll.Answered(endpoint) -> Ok(endpoint)
-    poll.Failed(reason) -> Error(remote_spawn.StoreFailure(reason:))
+    poll.Failed(refusal) -> Error(refusal)
     poll.Expired ->
-      Error(remote_spawn.StoreFailure(
+      Error(remote_spawn.NotYetOpen(
         reason: "the delegate session did not open in time",
       ))
   }
