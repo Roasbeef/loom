@@ -118,9 +118,20 @@ pub fn every_owned_asset_is_in_this_packages_priv_test() {
 }
 
 pub fn the_policy_is_the_one_051_specifies_test() {
-  assert page.content_security_policy("127.0.0.1:4000")
+  assert page.content_security_policy("ws://127.0.0.1:4000")
     == "default-src 'none'; script-src 'self'; style-src 'self'; "
     <> "style-src-attr 'unsafe-inline'; connect-src 'self' ws://127.0.0.1:4000; "
+    <> "img-src 'self'; base-uri 'none'; form-action 'none'; "
+    <> "frame-ancestors 'none'"
+}
+
+// A page served at a listed `https` origin (protocol-change/052) names its
+// `wss://` socket origin in the same place, and nothing else in the policy
+// changes.
+pub fn a_listed_origins_policy_names_its_secure_socket_test() {
+  assert page.content_security_policy("wss://box.example:8443")
+    == "default-src 'none'; script-src 'self'; style-src 'self'; "
+    <> "style-src-attr 'unsafe-inline'; connect-src 'self' wss://box.example:8443; "
     <> "img-src 'self'; base-uri 'none'; form-action 'none'; "
     <> "frame-ancestors 'none'"
 }
@@ -263,9 +274,11 @@ pub fn the_enter_page_carries_the_login_only_when_one_was_set_test() {
 // A form may submit to this origin only on the resume page's policy, and the
 // two policies differ in that one directive.
 pub fn only_the_resume_pages_policy_lets_a_form_submit_test() {
-  let none = page.content_security_policy_for("127.0.0.1:4000", page.NoForms)
-  let own = page.content_security_policy_for("127.0.0.1:4000", page.OwnForms)
-  assert none == page.content_security_policy("127.0.0.1:4000")
+  let none =
+    page.content_security_policy_for("ws://127.0.0.1:4000", page.NoForms)
+  let own =
+    page.content_security_policy_for("ws://127.0.0.1:4000", page.OwnForms)
+  assert none == page.content_security_policy("ws://127.0.0.1:4000")
   assert string.contains(none, "form-action 'none'")
   assert string.contains(own, "form-action 'self'")
   assert string.replace(own, "form-action 'self'", "form-action 'none'") == none
@@ -363,12 +376,13 @@ pub fn each_refusal_of_a_claim_has_its_own_words_over_the_form_test() {
 // this origin, and the policy it is served under is the resume page's: the only
 // difference from every other document's is that one directive.
 pub fn the_claim_forms_policy_is_the_resume_pages_test() {
-  let own = page.content_security_policy_for("127.0.0.1:4000", page.OwnForms)
+  let own =
+    page.content_security_policy_for("ws://127.0.0.1:4000", page.OwnForms)
   assert string.contains(own, "form-action 'self'")
   assert string.contains(own, "script-src 'self'")
   assert string.contains(own, "default-src 'none'")
   assert string.replace(own, "form-action 'self'", "form-action 'none'")
-    == page.content_security_policy("127.0.0.1:4000")
+    == page.content_security_policy("ws://127.0.0.1:4000")
 }
 
 // --- navigation (protocol-change/051, the addendum on navigation) -----------

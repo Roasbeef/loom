@@ -12,6 +12,10 @@ import gleam/option.{None, Some}
 import gleam/string
 import web_view/page
 
+// The origin every loopback check in this file is made under: a browser on
+// the daemon's own machine, exactly as protocol-change/051 admits it.
+const loopback = ui_http.Loopback("127.0.0.1:4000")
+
 fn get(path: String, headers: List(#(String, String))) {
   let base =
     request.new()
@@ -74,14 +78,14 @@ pub fn the_socket_needs_this_origin_test() {
   let from = fn(origin) {
     ui_http.origin_matches(
       get("/ui/sessions/s/ws", [#("origin", origin)]),
-      "127.0.0.1:4000",
+      loopback,
     )
   }
   assert from("http://127.0.0.1:4000")
   assert !from("http://127.0.0.1:4001")
   assert !from("http://evil.example")
   assert !from("https://127.0.0.1:4000")
-  assert !ui_http.origin_matches(get("/ui/sessions/s/ws", []), "127.0.0.1:4000")
+  assert !ui_http.origin_matches(get("/ui/sessions/s/ws", []), loopback)
 }
 
 // Only the exchange lives at the unkeyed session path; the page and its
@@ -125,9 +129,10 @@ pub fn routes_are_gets_under_ui_test() {
 pub fn the_cookie_is_read_and_set_with_its_attributes_test() {
   assert ui_http.session_cookies(
       get("/ui/sessions/s", [#("cookie", "other=1; loom_ui=abc")]),
+      loopback,
     )
     == ["abc"]
-  assert ui_http.session_cookies(get("/ui/sessions/s", [])) == []
+  assert ui_http.session_cookies(get("/ui/sessions/s", []), loopback) == []
 
   // Every value is kept, in the order the browser sent them, so a value
   // planted under a longer path cannot shadow the real one; the count is
@@ -136,15 +141,17 @@ pub fn the_cookie_is_read_and_set_with_its_attributes_test() {
       get("/ui/p/k/sessions/s", [
         #("cookie", "loom_ui=planted; loom_ui=real; other=2"),
       ]),
+      loopback,
     )
     == ["planted", "real"]
   assert ui_http.session_cookies(
       get("/ui/p/k/sessions/s", [
         #("cookie", "loom_ui=a; loom_ui=b; loom_ui=c; loom_ui=d; loom_ui=e"),
       ]),
+      loopback,
     )
     == ["a", "b", "c", "d"]
-  let set = ui_http.set_cookie("abc", "k1")
+  let set = ui_http.set_cookie("abc", "k1", loopback)
   assert string.starts_with(set, "loom_ui=abc;")
   assert string.contains(set, "HttpOnly")
   assert string.contains(set, "SameSite=Strict")
@@ -152,7 +159,7 @@ pub fn the_cookie_is_read_and_set_with_its_attributes_test() {
 }
 
 pub fn every_ui_response_carries_the_policy_test() {
-  let secured = ui_http.secured(response.new(200), "127.0.0.1:4000")
+  let secured = ui_http.secured(response.new(200), loopback)
   let assert Ok(policy) =
     response.get_header(secured, "content-security-policy")
     as "the policy is present"
@@ -230,13 +237,15 @@ pub fn the_bookmark_is_a_get_and_the_resume_a_post_test() {
 // planted under a longer path cannot shadow the real one and a request stuffed
 // with cookies costs four chain checks at most.
 pub fn the_login_cookie_is_read_in_order_and_bounded_test() {
-  assert ui_http.login_cookies(get("/ui/l/k/home", [])) == []
+  assert ui_http.login_cookies(get("/ui/l/k/home", []), loopback) == []
   assert ui_http.login_cookies(
       get("/ui/l/k/home", [#("cookie", "loom_ui=x; loom_login=a; other=1")]),
+      loopback,
     )
     == ["a"]
   assert ui_http.login_cookies(
       get("/ui/l/k/home", [#("cookie", "loom_login=planted; loom_login=real")]),
+      loopback,
     )
     == ["planted", "real"]
   assert ui_http.login_cookies(
@@ -246,26 +255,31 @@ pub fn the_login_cookie_is_read_in_order_and_bounded_test() {
           "loom_login=a; loom_login=b; loom_login=c; loom_login=d; loom_login=e",
         ),
       ]),
+      loopback,
     )
     == ["a", "b", "c", "d"]
 
   // The page cookie is not a login and a login is not a page cookie.
   assert ui_http.session_cookies(
       get("/ui/l/k/home", [#("cookie", "loom_login=a")]),
+      loopback,
     )
     == []
-  assert ui_http.login_cookies(get("/ui/p/k/home", [#("cookie", "loom_ui=a")]))
+  assert ui_http.login_cookies(
+      get("/ui/p/k/home", [#("cookie", "loom_ui=a")]),
+      loopback,
+    )
     == []
 }
 
 // The login cookie has the page cookie's attributes and one more: it outlives
 // the browser, so it names its lifetime, which is the token's.
 pub fn the_login_cookie_is_set_with_its_attributes_and_a_lifetime_test() {
-  assert ui_http.set_login_cookie("loomb1:token", "k1", 2_592_000)
+  assert ui_http.set_login_cookie("loomb1:token", "k1", 2_592_000, loopback)
     == "loom_login=loomb1:token; HttpOnly; SameSite=Strict; Path=/ui/l/k1; Max-Age=2592000"
 
   // The page's own cookie keeps no lifetime.
-  assert !string.contains(ui_http.set_cookie("abc", "k1"), "Max-Age")
+  assert !string.contains(ui_http.set_cookie("abc", "k1", loopback), "Max-Age")
 }
 
 // The resume is a post from this origin's own page: `same-origin` and nothing
@@ -347,8 +361,7 @@ pub fn the_posted_nonce_is_one_field_of_sixty_four_hex_digits_test() {
 // to this origin; everything else in the policy is the same.
 pub fn only_the_resume_page_may_submit_a_form_test() {
   let policy = fn(forms) {
-    let secured =
-      ui_http.secured_for(response.new(200), "127.0.0.1:4000", forms)
+    let secured = ui_http.secured_for(response.new(200), loopback, forms)
     let assert Ok(text) =
       response.get_header(secured, "content-security-policy")
       as "the policy is present"
@@ -359,7 +372,7 @@ pub fn only_the_resume_page_may_submit_a_form_test() {
   assert string.contains(own, "form-action 'self'")
   assert string.contains(none, "form-action 'none'")
   assert string.replace(own, "form-action 'self'", "form-action 'none'") == none
-  let ordinary = ui_http.secured(response.new(200), "127.0.0.1:4000")
+  let ordinary = ui_http.secured(response.new(200), loopback)
   assert response.get_header(ordinary, "content-security-policy") == Ok(none)
 }
 

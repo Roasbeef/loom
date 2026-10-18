@@ -5,6 +5,7 @@ import client/catalog
 import client/daemon/limits
 import client/daemon/main as entrypoint
 import client/daemon/root
+import client/daemon/ui_origin
 import gleam/bit_array
 import gleam/list
 import gleam/result
@@ -101,12 +102,17 @@ pub fn ui_setting_is_boolean_in_startup_and_catalogue_parsers_test() {
 }
 
 pub fn startup_captures_ui_and_cli_opt_in_wins_test() {
+  let assert Ok(listed) = ui_origin.parse("https://box.example:8443")
+    as "the fixture origin parses"
+  let origins = "ui_origins = [\"https://Box.example:8443/\"]\n"
   list.each(
     [
       #("", [], entrypoint.ViewOff),
       #("ui = false\n", [], entrypoint.ViewOff),
-      #("ui = true\n", [], entrypoint.ViewOn),
-      #("ui = false\n", ["--ui"], entrypoint.ViewOn),
+      #("ui = true\n", [], entrypoint.ViewOn([])),
+      #("ui = false\n", ["--ui"], entrypoint.ViewOn([])),
+      #("ui = true\n" <> origins, [], entrypoint.ViewOn([listed])),
+      #(origins, ["--ui"], entrypoint.ViewOn([listed])),
     ],
     fn(fixture) {
       let #(setting, flags, expected) = fixture
@@ -155,6 +161,38 @@ pub fn invalid_ui_setting_refuses_startup_before_state_is_created_test() {
     as "invalid UI configuration refuses startup"
   assert string.contains(reason, "daemon.ui must be true or false")
   assert simplifile.is_directory(path <> "/state") == Ok(False)
+}
+
+// A listed origin belongs to the web view, so a list on a daemon that does not
+// serve the view refuses startup, and a bad entry refuses it naming the entry,
+// in the startup parser and the catalogue's alike (protocol-change/052).
+pub fn listed_origins_refuse_startup_without_the_view_or_when_malformed_test() {
+  let refused = fn(setting) {
+    let path =
+      "build/test_db/daemon-ui-origins-"
+      <> bit_array.base16_encode(token.production_entropy()(8))
+    let assert Ok(Nil) = bootstrap.ensure_private_directory(path)
+      as "fixture directory exists"
+    let selected = path <> "/origins.toml"
+    assert simplifile.write(selected, "[daemon]\n" <> setting) == Ok(Nil)
+    let assert Ok(config) =
+      entrypoint.parse(["--state-dir", path <> "/state", "--config", selected])
+      as "flag parsing does not acquire resources"
+    let assert Error(reason) = entrypoint.prepare_startup(config, log.discard())
+      as "the origins refuse startup"
+    assert simplifile.is_directory(path <> "/state") == Ok(False)
+    reason
+  }
+  assert string.contains(
+    refused("ui_origins = [\"https://box.example:8443\"]\n"),
+    "daemon.ui_origins needs the web view",
+  )
+  assert string.contains(
+    refused("ui = true\nui_origins = [\"http://box.example:8443\"]\n"),
+    "\"http://box.example:8443\" must use https",
+  )
+  assert catalog.parse("[daemon]\nui_origins = [\"https://box.example/ui\"]\n")
+    |> result.is_error
 }
 
 pub fn executors_without_distribution_refuse_startup_before_state_is_created_test() {

@@ -780,21 +780,28 @@ pub const login_nonce_item = "loom.login."
 /// daemon's route tests check that the served scripts carry it.
 pub const nonce_item = "loom-page-nonce."
 
-/// The content security policy for every `/ui` response, for a request
-/// whose `Host` header is `host`.
+/// The content security policy for every `/ui` response, for a page whose
+/// socket connects to `socket`: `ws://` and the loopback `Host` for a page on
+/// loopback (protocol-change/051), or `wss://` and the listed host for a page
+/// on a listed `https` origin (protocol-change/052). The daemon derives it
+/// from the origin the request was admitted under, never from the request
+/// alone.
 ///
 /// `style-src-attr 'unsafe-inline'` allows only `style` attributes, which
 /// Lustre's client runtime sets directly; stylesheets and scripts must come
 /// from this origin. The WebSocket origin is named as well as `'self'` for
-/// browsers that do not map `'self'` onto `ws:`.
+/// browsers that do not map `'self'` onto `ws:` or `wss:`.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // page.content_security_policy("127.0.0.1:4000")
+/// assert string.contains(
+///   page.content_security_policy("ws://127.0.0.1:4000"),
+///   "connect-src 'self' ws://127.0.0.1:4000;",
+/// )
 /// ```
-pub fn content_security_policy(host: String) -> String {
-  content_security_policy_for(host, NoForms)
+pub fn content_security_policy(socket: String) -> String {
+  content_security_policy_for(socket, NoForms)
 }
 
 /// Whether a document may submit a form.
@@ -815,18 +822,18 @@ pub type Forms {
 ///
 /// ```gleam
 /// assert string.contains(
-///   page.content_security_policy_for("127.0.0.1:4000", page.OwnForms),
+///   page.content_security_policy_for("ws://127.0.0.1:4000", page.OwnForms),
 ///   "form-action 'self'",
 /// )
 /// ```
-pub fn content_security_policy_for(host: String, forms: Forms) -> String {
+pub fn content_security_policy_for(socket: String, forms: Forms) -> String {
   let action = case forms {
     NoForms -> "'none'"
     OwnForms -> "'self'"
   }
   "default-src 'none'; script-src 'self'; style-src 'self'; "
-  <> "style-src-attr 'unsafe-inline'; connect-src 'self' ws://"
-  <> host
+  <> "style-src-attr 'unsafe-inline'; connect-src 'self' "
+  <> socket
   <> "; img-src 'self'; base-uri 'none'; form-action "
   <> action
   <> "; frame-ancestors 'none'"
