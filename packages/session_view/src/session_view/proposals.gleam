@@ -1,6 +1,6 @@
-//// The standing rules a model has proposed and a person has yet to decide:
-//// the daemon's board, decoded totally, and the words both hosts use for a
-//// row (protocol-change/086).
+//// The standing rules, and configuration edits, a model has proposed and a
+//// person has yet to decide: the daemon's board, decoded totally, and the words
+//// both hosts use for a row (protocol-change/086 and 089).
 ////
 //// A model calls its `propose` tool when it notices a correction worth
 //// keeping. The daemon queues the suggestion and writes nothing; a person
@@ -38,7 +38,7 @@ pub const row_limit = 164
 
 /// The sentence a reviewer is told about what an approval reaches.
 pub const applies_words =
-  "Applies to new sessions only. A running session keeps the rules it started with."
+  "A rule applies to new sessions only. A configuration edit reopens each session that loads the file once it is idle."
 
 /// The words a host shows when the board holds no rows.
 pub const empty_words =
@@ -47,9 +47,23 @@ pub const empty_words =
 /// The words a host shows while the board has not been read.
 pub const loading_words = "Reading proposals..."
 
-/// The words under an approval, which say where the rule lands.
-pub const approve_words =
-  "Approving writes this rule to loom-rules.md, which sessions opened afterwards read. The workspace's AGENTS.md is never edited."
+/// The words under an approval, which say where the edit lands.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.starts_with(proposals.approve_words(rule_row), "Approving writes this rule")
+/// ```
+pub fn approve_words(row: Proposal) -> String {
+  case row.kind {
+    Config ->
+      "Approving writes this edit to "
+      <> row.target
+      <> " if the result still loads; each session that loads it reopens once idle."
+    Rule | Unrecognized(_) ->
+      "Approving writes this rule to loom-rules.md, which sessions opened afterwards read. The workspace's AGENTS.md is never edited."
+  }
+}
 
 /// The proposals the daemon holds.
 pub type Board {
@@ -75,9 +89,10 @@ pub type Proposal {
     id: String,
     /// What the proposal edits.
     kind: Kind,
-    /// The rules file's name. It is a name and never a path.
+    /// The rules file's name for a rule, or the configuration's absolute path
+    /// for a configuration edit.
     target: String,
-    /// The digest of the rules file when the proposal was judged.
+    /// The digest of the target file when the proposal was judged.
     base_digest: String,
     /// Existing rule text to replace. Empty means the proposal appends.
     old: String,
@@ -98,6 +113,9 @@ pub type Proposal {
 pub type Kind {
   /// One standing rule in the harness-owned rules file.
   Rule
+
+  /// An edit to the `loom.toml` the proposing session loaded.
+  Config
 
   /// A kind this client does not know, as the daemon named it.
   Unrecognized(kind: String)
@@ -186,6 +204,7 @@ fn decode_row(value: json.JsonValue) -> Result(Proposal, String) {
       id: text_hygiene.single_line(id),
       kind: case kind {
         "rule" -> Rule
+        "config" -> Config
         other -> Unrecognized(text_hygiene.single_line(other))
       },
       target: text_hygiene.single_line(target),
@@ -222,7 +241,9 @@ fn decode_source(
   Ok(Source(session: text_hygiene.single_line(session), entry:))
 }
 
-/// Whether a person can still decide the proposal: only a pending row can.
+/// Whether a person can still decide the proposal: only a pending row of a
+/// kind this client knows can. A row of an unknown kind is shown and never
+/// offered an action, because this client cannot say what approving it writes.
 ///
 /// ## Examples
 ///
@@ -231,9 +252,10 @@ fn decode_source(
 /// assert !proposals.decidable(stale_row)
 /// ```
 pub fn decidable(proposal: Proposal) -> Bool {
-  case proposal.state {
-    Pending -> True
-    Approved | Rejected | Stale | Other(_) -> False
+  case proposal.kind, proposal.state {
+    Unrecognized(_), _ -> False
+    Rule, Pending | Config, Pending -> True
+    _, Approved | _, Rejected | _, Stale | _, Other(_) -> False
   }
 }
 
@@ -265,22 +287,27 @@ pub fn state_words(state: State) -> String {
   }
 }
 
-/// The sentence that says what a state means for the rule, for a row a person
-/// can no longer act on.
+/// The sentence that says what a row's state means for the file it edits,
+/// for a row a person can no longer act on.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert proposals.settled_words(proposals.Approved) == "Approved and written to loom-rules.md."
+/// assert proposals.settled_words(approved_rule) == "Approved and written to loom-rules.md."
 /// ```
-pub fn settled_words(state: State) -> String {
-  case state {
-    Pending -> "Waiting for a decision."
-    Approved -> "Approved and written to loom-rules.md."
-    Rejected -> "Rejected. Nothing was written."
-    Stale ->
-      "Stale: loom-rules.md changed after this was proposed, so nothing was written."
-    Other(_) -> "This client does not know this state, so it offers no action."
+pub fn settled_words(row: Proposal) -> String {
+  case row.kind, row.state {
+    Unrecognized(_), _ ->
+      "This client does not know this kind, so it offers no action."
+    _, Pending -> "Waiting for a decision."
+    _, Approved -> "Approved and written to " <> row.target <> "."
+    _, Rejected -> "Rejected. Nothing was written."
+    _, Stale ->
+      "Stale: "
+      <> row.target
+      <> " changed after this was proposed, so nothing was written."
+    _, Other(_) ->
+      "This client does not know this state, so it offers no action."
   }
 }
 
@@ -294,6 +321,7 @@ pub fn settled_words(state: State) -> String {
 pub fn kind_words(kind: Kind) -> String {
   case kind {
     Rule -> "rule"
+    Config -> "setting"
     Unrecognized(kind:) -> "unknown (" <> kind <> ")"
   }
 }

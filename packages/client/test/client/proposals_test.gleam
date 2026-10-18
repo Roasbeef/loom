@@ -96,11 +96,13 @@ fn wiring_logging(
     entropy:,
     bus: bus.start(),
     logger:,
+    config: None,
   )
 }
 
 fn submission(old: String, new: String) -> propose.Submission {
   propose.Submission(
+    target: propose.Rules,
     old:,
     new:,
     rationale: "it came up twice",

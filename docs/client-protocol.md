@@ -3038,9 +3038,9 @@ a full queue never prevents an attach. A row is:
 | Field | Type | Presence | Meaning |
 |---|---|---|---|
 | `id` | string | required | `prop-` and ten lower-case hexadecimal digits. |
-| `kind` | string | required | `rule`. A client MUST show a kind it does not know as unknown rather than refuse the board. |
-| `target` | string | required | The rules file's name, `loom-rules.md`. It is a name and never a path; the host owns where the file is. |
-| `base_digest` | string | required | The digest of the rules file's exact text when the proposal was judged. An approval is applied only to a file that still has it. |
+| `kind` | string | required | `rule`, or `config` for an edit to the `loom.toml` the proposing session loaded ([protocol-change/089](../protocol-change/089-config-proposals.md)). A client MUST show a kind it does not know as unknown rather than refuse the board, and MUST NOT offer a decision on it. |
+| `target` | string | required | For `rule`, the rules file's name, `loom-rules.md`, a name and never a path. For `config`, the configuration's absolute path; only a session that loads that file approves it. |
+| `base_digest` | string | required | The digest of the target file's exact text when the proposal was judged. An approval is applied only to a file that still has it. |
 | `old` | string | required | Existing rule text to replace, which matched the file exactly once when proposed. Empty means the proposal appends `new` as a new rule. |
 | `new` | string | required | The rule text, at most 2048 bytes. |
 | `rationale` | string | required | Why, in the model's words, for the reviewer. |

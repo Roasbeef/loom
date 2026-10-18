@@ -3663,6 +3663,13 @@ fn assemble_in(
       entropy:,
       bus: event_bus,
       logger:,
+      // The file this session loaded, from the daemon's desk: a session with
+      // no daemon, or no file, refuses configuration proposals.
+      config: settings.profile_desk
+        |> option.then(fn(desk) { desk.watch })
+        |> option.map(fn(source) {
+          proposals.ConfigFile(path: source.path, check: source.check)
+        }),
     )
 
   // Code mode, and the MCP servers it reaches, are one decision made on

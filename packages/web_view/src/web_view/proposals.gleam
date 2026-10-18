@@ -110,13 +110,6 @@ pub fn asking(state: State, id: String) -> Bool {
   state.approving == Some(id)
 }
 
-/// The words of the question an approval asks.
-pub const approval_question =
-  "Approve this rule? It is written to loom-rules.md, which sessions opened afterwards read. A session that is running keeps the rules it started with, and the workspace's AGENTS.md is never edited."
-
-/// The label of the confirm button.
-pub const approve_label = "Approve rule"
-
 /// The label of the button that opens the question.
 pub const ask_label = "Approve"
 

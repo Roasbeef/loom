@@ -588,19 +588,20 @@ fn ending(
   case proposals.decidable(row), reader {
     True, Asking ->
       list.append(
-        [heading("Approve this rule?", width)],
-        wrapped(proposals.approve_words, theme.overlay_signal(), width),
+        [
+          heading(
+            "Approve this " <> proposals.kind_words(row.kind) <> "?",
+            width,
+          ),
+        ],
+        wrapped(proposals.approve_words(row), theme.overlay_signal(), width),
       )
     True, Browsing ->
-      wrapped(proposals.approve_words, theme.overlay_quiet(), width)
+      wrapped(proposals.approve_words(row), theme.overlay_quiet(), width)
     False, _ ->
       list.append(
         [heading("Decided", width)],
-        wrapped(
-          proposals.settled_words(row.state),
-          theme.overlay_plain(),
-          width,
-        ),
+        wrapped(proposals.settled_words(row), theme.overlay_plain(), width),
       )
   }
 }

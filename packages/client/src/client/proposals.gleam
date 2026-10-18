@@ -70,9 +70,10 @@
 //// ## What a proposal is, and what it cannot be
 ////
 //// `State` is closed: `Pending`, `Approved`, `Rejected` or `Stale`, and only
-//// `Pending` can change. `Kind` has one constructor, and the target is derived
-//// from the kind, so a stored row naming another file is refused by the
-//// decoder rather than followed. The base digest is the digest of the rules
+//// `Pending` can change. The target is derived from the kind: a `Rule` names
+//// the rules file and nothing else, and a `Config` names the absolute path of
+//// the configuration a session loaded, which only a session loading that very
+//// file may write. The base digest is the digest of the rules
 //// file's exact text (`tools/hashline.digest`), computed only by `rules`, so
 //// no `Rules` value carries a digest that disagrees with its text.
 ////
@@ -110,12 +111,37 @@
 //// that one key (`Admin.channel`), so an owner page open in any session
 //// re-reads the queue when a proposal is filed or decided in another.
 ////
+//// ## Configuration edits (protocol-change/089)
+////
+//// A proposal of kind `Config` edits the `loom.toml` the proposing session
+//// loaded, with the same queue, lease, digest and exactly-once checks as a rule.
+//// Three things differ. The target is the configuration's absolute path, which
+//// the host takes from the session's own `Wiring.config` and the decoder holds
+//// to an absolute path; an approval writes it only from a session whose own
+//// configuration is that file, so a stored row can never point the host at a
+//// file it does not already load. The edited text must load: `ConfigFile.check`
+//// is `serve.check_config`, asked when the proposal is filed and again before
+//// it is written, so a person is never shown an edit that would stop the
+//// session. And nothing is framed for the prompt: the text is configuration,
+//// never carried into a model's context, so an append adds the new text as it
+//// is, with no header. The write keeps the file's permission bits and refuses a
+//// symbolic link, so an edit never replaces an operator's link with a copy.
+//// Once written, each session that loads the file reopens to read it
+//// (`client/config_watch`).
+////
+//// Configuration is not one per domain the way the rules file is: sessions of
+//// different domains can load one daemon-wide file. Their decisions hold
+//// different memory leases, so two approvals in two domains against one file
+//// are serialized only by the digest check, which is optimistic, exactly as it
+//// is against an operator's editor.
+////
 //// ## Logging
 ////
 //// Each transition that commits logs `memory.proposal` at info level with the
 //// `decision` (`submitted`, `approved`, `rejected` or `stale`), the `kind` and
 //// the `id`, and never any proposal text.
 
+import client/config_watch
 import client/memory.{type MemoryFault, type Opened}
 import client/system_prompt.{type GuidanceFile, GuidanceFile}
 import core/clock.{type Clock}
@@ -169,11 +195,13 @@ pub const max_listed = 100
 /// stay within it and says how many.
 pub const max_board_bytes = 48_000
 
-/// What a proposal changes. One constructor, so far: a rule in the rules
-/// file. A kind that targets configuration is left for the work that carries
-/// a configuration edit door.
+/// What a proposal changes.
 pub type Kind {
+  /// A rule in the rules file, which the prompt carries.
   Rule
+
+  /// The `loom.toml` the proposing session loaded (protocol-change/089).
+  Config
 }
 
 /// Where a proposal stands.
@@ -259,8 +287,11 @@ pub type EditRefusal {
   /// `old` is in the file this many times, and must be in it once.
   Ambiguous(count: Int)
 
-  /// The edited file would be this many bytes, over `max_rules_bytes`.
+  /// The edited file would be this many bytes, over its kind's limit.
   TooLarge(bytes: Int)
+
+  /// The edited configuration would not open the session, for this reason.
+  Unloadable(reason: String)
 }
 
 /// Why a decision did not settle a proposal.
@@ -291,7 +322,8 @@ pub type DecideRefusal {
 /// by a client or a model; `session` is the id of the session that holds this
 /// wiring, as text, and is what a proposal records as its source; `entropy` is
 /// any source of integers; `logger` receives `memory.proposal` lines and never
-/// any proposal text.
+/// any proposal text; `config` is the configuration this session loaded, or
+/// `None` for a session with no file, which then refuses `Config` proposals.
 pub type Wiring {
   Wiring(
     store_path: String,
@@ -301,7 +333,18 @@ pub type Wiring {
     entropy: fn() -> Int,
     bus: Bus,
     logger: Logger,
+    config: Option(ConfigFile),
   )
+}
+
+/// The configuration file a session loaded, and how an edited text of it is
+/// judged.
+///
+/// Constructor invariants: `path` is absolute and chosen by the host;
+/// `check` is total and answers whether a text would open this session
+/// (`serve.check_config` with its profile and model).
+pub type ConfigFile {
+  ConfigFile(path: String, check: fn(String) -> Result(Nil, String))
 }
 
 /// The operator's half of the queue, for the gateway.
@@ -424,8 +467,11 @@ fn filed(
   submission: propose.Submission,
 ) -> Result(Proposal, propose.Refusal) {
   use opened <- holding(wiring, submit_refusal)
+  use #(kind, target, path) <- result.try(
+    targeted(wiring, submission.target) |> result.map_error(propose.Invalid),
+  )
   use current <- result.try(
-    read_rules(wiring.rules_path) |> result.map_error(unavailable),
+    read_target(kind, path) |> result.map_error(unavailable),
   )
   use held <- result.try(queue_in(opened) |> result.map_error(unavailable))
   use <- bool.guard(
@@ -433,13 +479,15 @@ fn filed(
     return: Error(propose.QueueFull(limit: propose.max_pending)),
   )
   let #(now, _clock) = clock.read(wiring.clock)
-  let proposal = proposal_from(wiring, submission, current, now)
+  let proposal = proposal_from(wiring, submission, kind, target, current, now)
 
   // The proposal must be able to apply to the file as it stands now, or the
   // reviewer is shown a suggestion that could never be approved.
   use _text <- result.try(
-    edited(current, proposal, now)
-    |> result.map_error(fn(refusal) { propose.Invalid(describe(refusal)) }),
+    loadable(wiring, current, proposal, now)
+    |> result.map_error(fn(refusal) {
+      propose.Invalid(described(proposal.kind, refusal))
+    }),
   )
   use Nil <- result.try(claim(opened, proposal))
   Ok(proposal)
@@ -452,16 +500,34 @@ fn submit_refusal(fault: MemoryFault) -> propose.Refusal {
   }
 }
 
+// The kind, the stored target and the path to read for what a submission names:
+// the rules file, or the configuration this session loaded. The model chooses
+// between the two and never names a path.
+fn targeted(
+  wiring: Wiring,
+  target: propose.Target,
+) -> Result(#(Kind, String, String), String) {
+  case target, wiring.config {
+    propose.Rules, _ -> Ok(#(Rule, rules_file, wiring.rules_path))
+    propose.Configuration, Some(config) ->
+      Ok(#(Config, config.path, config.path))
+    propose.Configuration, None ->
+      Error("this session loads no configuration file, so it has none to edit")
+  }
+}
+
 fn proposal_from(
   wiring: Wiring,
   submission: propose.Submission,
+  kind: Kind,
+  target: String,
   current: Rules,
   now: Int,
 ) -> Proposal {
   Proposal(
     id: mint_id(wiring.entropy()),
-    kind: Rule,
-    target: rules_file,
+    kind:,
+    target:,
     base_digest: current.digest,
     old: submission.old,
     new: submission.new,
@@ -705,21 +771,64 @@ fn approve(
   wiring: Wiring,
   proposal: Proposal,
 ) -> Result(Proposal, DecideRefusal) {
+  use path <- result.try(
+    writable(wiring, proposal) |> result.map_error(CannotApply),
+  )
   use current <- result.try(
-    read_rules(wiring.rules_path) |> result.map_error(CannotApply),
+    read_target(proposal.kind, path) |> result.map_error(CannotApply),
   )
   let #(now, _clock) = clock.read(wiring.clock)
-  case current.digest == proposal.base_digest, edited(current, proposal, now) {
+  case
+    current.digest == proposal.base_digest,
+    loadable(wiring, current, proposal, now)
+  {
     True, Ok(text) -> {
       use Nil <- result.try(
-        write_rules(wiring.rules_path, text) |> result.map_error(CannotApply),
+        write_target(proposal.kind, path, text) |> result.map_error(CannotApply),
       )
       settle(opened, proposal, Approved)
     }
-    True, Error(TooLarge(..) as refusal) | True, Error(Fenced as refusal) ->
-      Error(CannotApply(describe(refusal)))
+    True, Error(TooLarge(..) as refusal)
+    | True, Error(Fenced as refusal)
+    | True, Error(Unloadable(..) as refusal)
+    -> Error(CannotApply(described(proposal.kind, refusal)))
     True, Error(NotFound) | True, Error(Ambiguous(..)) | False, _ ->
       settle(opened, proposal, Stale)
+  }
+}
+
+// The file an approval may write: the rules file for a rule, and for a
+// configuration edit the deciding session's own configuration, which must be
+// the file the proposal names. A row naming any other file is refused here, so
+// the host only ever writes a file it already loads.
+fn writable(wiring: Wiring, proposal: Proposal) -> Result(String, String) {
+  case proposal.kind, wiring.config {
+    Rule, _ -> Ok(wiring.rules_path)
+    Config, Some(config) if config.path == proposal.target -> Ok(config.path)
+    Config, _ ->
+      Error(
+        "this proposal edits "
+        <> proposal.target
+        <> "; decide it from a session that loads that configuration",
+      )
+  }
+}
+
+// `edited`, and then, for a configuration, the session's own loader over the
+// result: the text a person approves must open the session it reloads.
+fn loadable(
+  wiring: Wiring,
+  current: Rules,
+  proposal: Proposal,
+  now: Int,
+) -> Result(String, EditRefusal) {
+  use text <- result.try(edited(current, proposal, now))
+  case proposal.kind, wiring.config {
+    Rule, _ -> Ok(text)
+    Config, Some(config) ->
+      config.check(text) |> result.replace(text) |> result.map_error(Unloadable)
+    Config, None ->
+      Error(Unloadable("this session loads no configuration file"))
   }
 }
 
@@ -846,21 +955,40 @@ pub fn rules_digest(rules: Rules) -> String {
 /// ```
 ///
 pub fn read_rules(path: String) -> Result(Rules, String) {
+  read_file(path, max_rules_bytes, "the rules file", Ok(rules("")))
+}
+
+// The file a proposal edits, read under its kind's bound. A configuration must
+// exist: the session loaded it, and an edit of a file that has gone is stale.
+fn read_target(kind: Kind, path: String) -> Result(Rules, String) {
+  case kind {
+    Rule -> read_rules(path)
+    Config ->
+      read_file(
+        path,
+        config_watch.max_file_bytes,
+        "the configuration",
+        Error("the configuration " <> path <> " does not exist"),
+      )
+  }
+}
+
+fn read_file(
+  path: String,
+  bound: Int,
+  noun: String,
+  missing: Result(Rules, String),
+) -> Result(Rules, String) {
   case simplifile.read_bits(path) {
-    Error(simplifile.Enoent) -> Ok(rules(""))
-    Error(error) ->
-      Error("the rules file is unreadable: " <> string.inspect(error))
+    Error(simplifile.Enoent) -> missing
+    Error(error) -> Error(noun <> " is unreadable: " <> string.inspect(error))
     Ok(bytes) ->
-      case bit_array.byte_size(bytes) > max_rules_bytes {
+      case bit_array.byte_size(bytes) > bound {
         True ->
-          Error(
-            "the rules file is larger than "
-            <> int.to_string(max_rules_bytes)
-            <> " bytes",
-          )
+          Error(noun <> " is larger than " <> int.to_string(bound) <> " bytes")
         False ->
           bit_array.to_string(bytes)
-          |> result.replace_error("the rules file is not text")
+          |> result.replace_error(noun <> " is not text")
           |> result.map(rules)
       }
   }
@@ -877,18 +1005,50 @@ pub fn read_rules(path: String) -> Result(Rules, String) {
 /// ```
 ///
 pub fn write_rules(path: String, text: String) -> Result(Nil, String) {
-  let staged = path <> ".staged"
-  let written = {
-    use Nil <- result.try(
-      simplifile.create_directory_all(filepath.directory_name(path)),
-    )
-    use Nil <- result.try(simplifile.write(staged, text))
-    simplifile.rename(at: staged, to: path)
-  }
-  written
+  write_file(path, text, None)
   |> result.map_error(fn(error) {
     "the rules file could not be written: " <> string.inspect(error)
   })
+}
+
+// A configuration is replaced the same way, keeping the permission bits it had.
+// A symbolic link is refused rather than replaced: the rename would put a copy
+// where the operator's link was, and the link's target would not change.
+fn write_target(kind: Kind, path: String, text: String) -> Result(Nil, String) {
+  use <- bool.lazy_guard(when: kind == Rule, return: fn() {
+    write_rules(path, text)
+  })
+  let failed = fn(error) {
+    "the configuration could not be written: " <> string.inspect(error)
+  }
+  use info <- result.try(simplifile.link_info(path) |> result.map_error(failed))
+  use <- bool.guard(
+    when: simplifile.file_info_type(info) == simplifile.Symlink,
+    return: Error(
+      "the configuration "
+      <> path
+      <> " is a symbolic link; edit the file it names by hand",
+    ),
+  )
+  write_file(path, text, Some(simplifile.file_info_permissions_octal(info)))
+  |> result.map_error(failed)
+}
+
+fn write_file(
+  path: String,
+  text: String,
+  mode: Option(Int),
+) -> Result(Nil, simplifile.FileError) {
+  let staged = path <> ".staged"
+  use Nil <- result.try(
+    simplifile.create_directory_all(filepath.directory_name(path)),
+  )
+  use Nil <- result.try(simplifile.write(staged, text))
+  use Nil <- result.try(case mode {
+    Some(bits) -> simplifile.set_permissions_octal(staged, bits)
+    None -> Ok(Nil)
+  })
+  simplifile.rename(at: staged, to: path)
 }
 
 /// The rules text after applying a proposal, or why it cannot apply.
@@ -917,9 +1077,10 @@ pub fn edited(
   proposal: Proposal,
   approved_ms: Int,
 ) -> Result(String, EditRefusal) {
+  // Only a rule reaches the prompt, so only a rule is held to its fence.
+  let fenced = fn(text) { proposal.kind == Rule && propose.closes_fence(text) }
   use <- bool.guard(
-    when: propose.closes_fence(proposal.new)
-      || propose.closes_fence(proposal.old),
+    when: fenced(proposal.new) || fenced(proposal.old),
     return: Error(Fenced),
   )
   use text <- result.try(case proposal.old {
@@ -932,17 +1093,35 @@ pub fn edited(
       }
   })
   use <- bool.guard(
-    when: propose.closes_fence(text) && !propose.closes_fence(current.text),
+    when: fenced(text) && !fenced(current.text),
     return: Error(Fenced),
   )
   let size = bit_array.byte_size(<<text:utf8>>)
-  case size > max_rules_bytes {
+  case size > limit(proposal.kind) {
     True -> Error(TooLarge(bytes: size))
     False -> Ok(text)
   }
 }
 
+// The most bytes each kind's file may hold: the prompt's bound for the rules,
+// and for a configuration the bound its watcher reads.
+fn limit(kind: Kind) -> Int {
+  case kind {
+    Rule -> max_rules_bytes
+    Config -> config_watch.max_file_bytes
+  }
+}
+
+// A rule is appended under a header naming where it came from, which the prompt
+// shows. A configuration edit is TOML the prompt never carries, so it is
+// appended as written.
 fn appended(text: String, proposal: Proposal, approved_ms: Int) -> String {
+  use <- bool.lazy_guard(when: proposal.kind == Config, return: fn() {
+    case string.trim_end(text) {
+      "" -> string.trim(proposal.new) <> "\n"
+      kept -> kept <> "\n\n" <> string.trim(proposal.new) <> "\n"
+    }
+  })
   let rule =
     "### Rule "
     <> proposal.id
@@ -993,11 +1172,30 @@ pub fn describe(refusal: EditRefusal) -> String {
       "`old` is in the rules file "
       <> int.to_string(count)
       <> " times and must match exactly once"
+    Unloadable(reason:) -> "the edited configuration would not load: " <> reason
     TooLarge(bytes:) ->
       "the rules file would be "
       <> int.to_string(bytes)
       <> " bytes and the limit is "
       <> int.to_string(max_rules_bytes)
+  }
+}
+
+// `describe`, worded for the file a proposal of this kind edits.
+fn described(kind: Kind, refusal: EditRefusal) -> String {
+  case kind, refusal {
+    Config, NotFound ->
+      "`old` is not in the configuration; leave `old` out to append to it"
+    Config, Ambiguous(count:) ->
+      "`old` is in the configuration "
+      <> int.to_string(count)
+      <> " times and must match exactly once"
+    Config, TooLarge(bytes:) ->
+      "the configuration would be "
+      <> int.to_string(bytes)
+      <> " bytes and the limit is "
+      <> int.to_string(config_watch.max_file_bytes)
+    _, _ -> describe(refusal)
   }
 }
 
@@ -1111,8 +1309,12 @@ fn decode_fields(
   use kind <- result.try(text_field(fields, "kind") |> result.try(kind_of))
   use target <- result.try(text_field(fields, "target"))
   use <- bool.guard(
-    target != rules_file,
+    kind == Rule && target != rules_file,
     Error("`target` is not the rules file"),
+  )
+  use <- bool.guard(
+    kind == Config && !string.starts_with(target, "/"),
+    Error("`target` is not an absolute configuration path"),
   )
   use base_digest <- result.try(text_field(fields, "base_digest"))
   use old <- result.try(text_field(fields, "old"))
@@ -1170,12 +1372,14 @@ fn text_field(
 fn kind_name(kind: Kind) -> String {
   case kind {
     Rule -> "rule"
+    Config -> "config"
   }
 }
 
 fn kind_of(name: String) -> Result(Kind, String) {
   case name {
     "rule" -> Ok(Rule)
+    "config" -> Ok(Config)
     other -> Error("unknown proposal kind `" <> other <> "`")
   }
 }
