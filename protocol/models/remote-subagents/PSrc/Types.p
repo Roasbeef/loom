@@ -168,14 +168,24 @@ event eReleaseTold: (who: machine, port: machine);
 event eReleaseNoSession;
 
 // Depth 2 (phase 4). A running child on the box starts a child of its own on a
-// third orchestrator (`eGrandSpawn`, which the environment sends the box). A
-// release of the box's session tells its delegate session to owe the third
-// orchestrators a release in turn (`eCascade`), and the delegate session says
-// which ones it now owes (`eCascadeWritten`).
+// third orchestrator (`eGrandSpawn`, which the environment sends the box). The
+// deletion of a released session of the box, once its slot has drained
+// (`eCascadeDue`), tells its delegate session to owe the third orchestrators a
+// release in turn (`eCascade`), and the delegate session says which ones it now
+// owes (`eCascadeWritten`). `eOweReleases` writes the rows alone, which only a
+// mutant sends.
 event eGrandSpawn;
 event eRelay: machine;
 event eCascade;
+event eOweReleases;
+event eCascadeDue;
 event eCascadeWritten: set[machine];
+
+// A Port handled a `Release` sent by `src`, and admitted a spawn sent by `src`
+// that made a child. Seen by the spec that a spawner sends no spawn after its
+// own release.
+event eReleaseFrom: (at: machine, src: machine);
+event eAdmittedFrom: (at: machine, src: machine);
 
 // A row is written in the outbox, and settled by an answer or by the deletion
 // of the session that held it.

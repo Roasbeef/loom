@@ -42,7 +42,8 @@ the three Ports, so no two children share one.
 | Event | What it stands for |
 |---|---|
 | `eGrandSpawn` | A running child on the box calls `agent_spawn` with `on`. The box asks the relay to write the stub and send the `Spawn`, once per child. A child that is not running starts nothing, which stands for the released fence that `admit_remote` reads before it writes a stub. |
-| `eCascade` | The box handled a `Release`, stopped its children, and now owes each third orchestrator that a stub that is not refused names a release row (`delegate_holders` and `manager.release_delegate`). The relay writes the rows, says which it owes (`eCascadeWritten`) and rings its own drainer. |
+| `eCascade` | The box deletes a released session after its slot drained (`eCascadeDue`), and owes each third orchestrator that a stub that is not refused names a release row (`manager.delete_delegate`, which reads the closed file). The relay writes the rows, drops its stubs and effect processes with the session, says which it owes (`eCascadeWritten`) and rings its own drainer. Until then the relay is a live session and goes on resending the `Spawn` of a stub that is `Requested`. |
+| `eOweReleases` | The rows alone, with the session left running. Nothing sends it in the model as built; mutant M18 sends it when the `Release` is handled. |
 | a box restart | Also kills the relay's effect processes, as it kills the children's runs. The stubs stay. |
 
 A stub records the orchestrator it names when it is written (`dest`), and every
@@ -168,7 +169,8 @@ bound the child.
 | `ReleaseMakesNoSession` | A `Release` never makes a delegate session. |
 | `EveryStubAnswered` | Liveness: every stub written is eventually answered by a handle or a refusal. |
 | `EveryReleaseIsTold` | Liveness: every release row a spawner writes, the laptop's or the box's, is eventually answered. |
-| `ReleasedDescendantsEnd` | Liveness: once the box handles a `Release`, the rows for every third orchestrator its children started children on are written and answered, and a third orchestrator's release leaves no grandchild running. |
+| `ReleasedDescendantsEnd` | Liveness: once the box deletes a released session, the rows for every third orchestrator its children started children on are written and answered, and a third orchestrator's release leaves no grandchild running. |
+| `NoSpawnAfterOwnRelease` | A spawner's drainer sends no `Spawn` that makes a child after its own `Release` reached that orchestrator. |
 | `UpwardAtMostOnce` | A mail steers the parent at most once, however often it is sent. |
 | `UpwardOnlyIntoOpenRun` | A mail steers only a parent whose run is open. |
 | `MailFindsItsStub` | Mail about a child the parent holds a stub for is never answered unknown. |
@@ -212,7 +214,8 @@ model-check` runs it.
 | The remote settles a mail row when it sends, without an answer | `EveryMailAnswered` |
 | The laptop finds the stub by the handle, which a `Requested` stub lacks | `MailFindsItsStub` |
 | A spawn whose connection broke is retried against a second orchestrator | `OneOrchestratorPerSite` |
-| The box's release stops its children and writes no release rows for the third orchestrators | `ReleasedDescendantsEnd` |
+| The box's deletion of a released session writes no release rows for the third orchestrators | `ReleasedDescendantsEnd` |
+| The cascade's rows are written when the `Release` is handled, before the slot drains, so the still-running session resends a spawn after the third orchestrator's release | `NoSpawnAfterOwnRelease` |
 
 ## What is not modelled
 
@@ -237,10 +240,14 @@ model-check` runs it.
 - A grandchild's deadline. The model has one deadline event per Port, and the
   clamp that keeps a grandchild's deadline inside its parent's is checked by
   `agency_test`.
-- A stale grandchild spawn that overtakes the cascaded release, across senders
-  on the second wire, and makes a new session on the third orchestrator. As at
-  depth 1, its child is bounded by its deadline, and `ReleasedDescendantsEnd`
-  says nothing about it.
+- A grandchild spawn already in flight from an effect process, another sender
+  on the second wire, that overtakes the cascaded release and makes a new
+  session on the third orchestrator. As at depth 1, its child is bounded by its
+  deadline, and neither `ReleasedDescendantsEnd` nor `NoSpawnAfterOwnRelease`
+  counts it.
+- A later delegate session of the box, made by a stale spawn after the first
+  was deleted. The relay stands for the first session only, so a later one
+  starts no grandchild.
 - The result a join carries. A join reports a state, and the specs check that
   it is the child's own.
 - Usage and the token budget.

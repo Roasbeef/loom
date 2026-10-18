@@ -263,26 +263,28 @@ spec EveryReleaseIsTold observes eReleaseWritten, eReleaseTold {
 }
 
 // A released session's descendants on every box end (phase 4). When the box
-// handles a `Release`, its delegate session's children's children are on third
-// orchestrators that only its stubs name. The release must leave a row for each
-// of them (the cascade, `eCascadeWritten`), and each row must be answered by the
-// third orchestrator, whose own release stops every running child there. So the
-// monitor is hot from the box's release until the cascade has been written and
-// every orchestrator it names has answered, and a third orchestrator's release
-// that left a child running fails at once. A grandchild that a stale spawn
-// makes after the third orchestrator's release is bounded by its deadline, as at
-// depth 1, and is not a descendant this release could reach.
-spec ReleasedDescendantsEnd observes eReleaseHandled, eCascadeWritten, eReleaseTold {
+// deletes a released session, once its slot has drained (`eCascadeDue`), its
+// children's children are on third orchestrators that only its stubs name. The
+// deletion must leave a row for each of them (the cascade, `eCascadeWritten`),
+// and each row must be answered by the third orchestrator, whose own release
+// stops every running child there. So the monitor is hot from the box's deletion
+// until the cascade has been written and every orchestrator it names has
+// answered, and a third orchestrator's release that left a child running fails
+// at once. A grandchild that a spawn already in flight makes after the third
+// orchestrator's release is bounded by its deadline, as at depth 1, and is not a
+// descendant this release could reach.
+spec ReleasedDescendantsEnd observes eCascadeDue, eReleaseHandled, eCascadeWritten, eReleaseTold {
   var awaiting: int;
   var pending: set[machine];
 
   start cold state Quiet {
+    on eCascadeDue do {
+      awaiting = awaiting + 1;
+      goto Waiting;
+    }
+
     on eReleaseHandled do (p: (gen: int, stopped: int, stillRunning: int, at: machine, depth: int)) {
       noneLeft(p.stillRunning, p.depth);
-      if (p.depth == 1) {
-        awaiting = awaiting + 1;
-        goto Waiting;
-      }
     }
 
     on eCascadeWritten do (owed: set[machine]) {
@@ -295,11 +297,12 @@ spec ReleasedDescendantsEnd observes eReleaseHandled, eCascadeWritten, eReleaseT
   }
 
   hot state Waiting {
+    on eCascadeDue do {
+      awaiting = awaiting + 1;
+    }
+
     on eReleaseHandled do (p: (gen: int, stopped: int, stillRunning: int, at: machine, depth: int)) {
       noneLeft(p.stillRunning, p.depth);
-      if (p.depth == 1) {
-        awaiting = awaiting + 1;
-      }
     }
 
     on eCascadeWritten do (owed: set[machine]) {
@@ -325,6 +328,30 @@ spec ReleasedDescendantsEnd observes eReleaseHandled, eCascadeWritten, eReleaseT
     assert depth == 1 || stillRunning == 0, format("{0} grandchildren were still running after their orchestrator's release", stillRunning);
   }
 }
+
+// A spawner sends no spawn that makes a child after its own `Release` reached
+// that orchestrator (phase 4). Its drainer, which sends both, writes the release
+// row only when nothing of the session is left to resend a spawn: the laptop's
+// stubs go with the deleted parent session, and the box's delegate session's
+// rows are written in the turn that deletes it after its slot drained. Both
+// come from the same process, which delivers in order. A spawn from the effect
+// process that was still asking when the session went is another sender, may
+// arrive after the release, and is bounded by its deadline; this spec does not
+// count it.
+spec NoSpawnAfterOwnRelease observes eReleaseFrom, eAdmittedFrom {
+  var released: set[(machine, machine)];
+
+  start state Watching {
+    on eReleaseFrom do (p: (at: machine, src: machine)) {
+      released += ((p.at, p.src));
+    }
+
+    on eAdmittedFrom do (p: (at: machine, src: machine)) {
+      assert !((p.at, p.src) in released), "a spawner's spawn made a child after its own release reached the orchestrator";
+    }
+  }
+}
+
 
 // A mail steers the parent at most once, however often the remote sends it. The
 // laptop stores the receipt in the commit that steers (`remote-mail/{id}`), so a

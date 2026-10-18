@@ -155,11 +155,14 @@ machine TestDepthOnly {
 }
 
 test tcDepth [main = TestDepth]:
-  assert AtMostOneChildPerSite, OneOrchestratorPerSite, OwnChildOnly, AnswerIsStable, JoinReportsOwnChild, TerminalOnce, ReleasedSessionHasNoRunningChild, ReleaseMakesNoSession, EveryReleaseIsTold, ReleasedDescendantsEnd, EveryStubAnswered, EveryChildTerminal in
+  assert AtMostOneChildPerSite, OneOrchestratorPerSite, OwnChildOnly, AnswerIsStable, JoinReportsOwnChild, TerminalOnce, ReleasedSessionHasNoRunningChild, ReleaseMakesNoSession, EveryReleaseIsTold, ReleasedDescendantsEnd, NoSpawnAfterOwnRelease, EveryStubAnswered, EveryChildTerminal in
   (union System, { TestDepth });
 
 test tcOnlyOneOrchestratorPerSite [main = TestDepthOnly]:
   assert OneOrchestratorPerSite in (union System, { TestDepthOnly });
+
+test tcOnlyNoSpawnAfterOwnRelease [main = TestDepth]:
+  assert NoSpawnAfterOwnRelease in (union System, { TestDepth });
 
 test tcOnlyReleasedDescendantsEnd [main = TestDepth]:
   assert ReleasedDescendantsEnd in (union System, { TestDepth });
@@ -198,7 +201,7 @@ test tcRunEnd [main = TestRunEnd]:
   (union System, { TestRunEnd });
 
 test tcRelease [main = TestRelease]:
-  assert AtMostOneChildPerSite, OwnChildOnly, AnswerIsStable, JoinReportsOwnChild, TerminalOnce, ReleasedSessionHasNoRunningChild, ReleaseMakesNoSession, EveryReleaseIsTold, EveryStubAnswered, EveryChildTerminal in
+  assert AtMostOneChildPerSite, OwnChildOnly, AnswerIsStable, JoinReportsOwnChild, TerminalOnce, ReleasedSessionHasNoRunningChild, ReleaseMakesNoSession, EveryReleaseIsTold, NoSpawnAfterOwnRelease, EveryStubAnswered, EveryChildTerminal in
   (union System, { TestRelease });
 
 // One spec each, for mutate.py.

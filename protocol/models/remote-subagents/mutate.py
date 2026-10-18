@@ -152,14 +152,24 @@ MUTATIONS = {
      "    on eNoConn do {\n      send wire, eWatch, this;",
      "    on eNoConn do {\n      port = spare;\n      send wire, eWatch, this;")]),
 
-  # A release of the box's delegate session writes a release row for each third
-  # orchestrator its children started children on, before the session goes.
-  # Here it stops the children and writes none, so the grandchildren run to their
-  # deadlines with nobody left to read them.
+  # Deleting a released delegate session of the box writes a release row for
+  # each third orchestrator its children started children on. Here it writes
+  # none, so the grandchildren run to their deadlines with nobody left to read
+  # them.
   "M17-release-does-not-cascade": ("tcOnlyReleasedDescendantsEnd", 20000, r"hot state", [
     ("PSrc/Port.p",
-     "    if (hasRelay) {\n      send relay, eCascade;\n    }\n",
-     "")]),
+     "      announce eCascadeDue;\n      send relay, eCascade;\n",
+     "      announce eCascadeDue;\n")]),
+
+  # The cascade's rows are written when the drained session is deleted, because
+  # until then the session's drainer resends a spawn that is still owed. Here the
+  # rows are written when the `Release` is handled, while the session still
+  # runs, and the drainer's next pass sends the third orchestrator a `Release`
+  # and then a `Spawn` that makes a child whose parent is gone.
+  "M18-cascade-written-before-the-slot-drains": ("tcOnlyNoSpawnAfterOwnRelease", 20000, r"after its own release", [
+    ("PSrc/Port.p",
+     "    announce eReleaseHandled, (gen = gen, stopped = stopped, stillRunning = running, at = this, depth = depth);\n    answer(m, K_RELEASED, stopped, CS_RUNNING);",
+     "    announce eReleaseHandled, (gen = gen, stopped = stopped, stillRunning = running, at = this, depth = depth);\n    if (hasRelay) {\n      send relay, eOweReleases;\n    }\n    answer(m, K_RELEASED, stopped, CS_RUNNING);")]),
 }
 
 

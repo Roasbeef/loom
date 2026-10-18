@@ -47,11 +47,18 @@
 //
 // The same machine plays the box's delegate session as a spawner (phase 4, the
 // relay). Its `ports` are the third orchestrators, and a stub names the one it
-// was placed on. Its release rows are written when the box's Port is released
-// and tells it so (`eCascade`): one row for each third orchestrator that a stub
-// that is not refused names, which is `holders` in the code, and the relay rings
-// its own drainer, as the registry rings the daemon's release drainer. The rows
+// was placed on. Its release rows are written when the box's Port deletes the
+// released session, after its slot has drained, and tells it so (`eCascade`):
+// one row for each third orchestrator that a stub that is not refused names,
+// which the registry reads from the closed file in the code. In the same step
+// the stubs and the effect processes go with the session, and the relay rings
+// its own drainer, as the registry rings the daemon's release drainer. Until
+// then the relay is a live session and goes on resending what it owes. The rows
 // are a set of orchestrators, one row each, as the catalogue keeps them.
+//
+// `eOweReleases` writes the rows and leaves the session as it is. Nothing sends
+// it in the model as built; it is what a release that wrote the rows before the
+// slot drained would do, and `mutate.py` sends it to show that is caught.
 machine Laptop {
   var wire: machine;
   var ports: seq[machine];
@@ -85,6 +92,14 @@ machine Laptop {
       var owed: set[machine];
       owed = deleteSession();
       announce eCascadeWritten, owed;
+      if (sizeof(owed) > 0) {
+        send this, eDrain;
+      }
+    }
+
+    on eOweReleases do {
+      var owed: set[machine];
+      owed = oweReleases();
       if (sizeof(owed) > 0) {
         send this, eDrain;
       }
@@ -234,18 +249,32 @@ machine Laptop {
     var s: tSite;
     var ss: seq[tSite];
     var owe: set[machine];
-    var p: machine;
+    owe = oweReleases();
     ss = keys(stubs);
     foreach (s in ss) {
-      if (stubs[s].st != ST_REFUSED) {
-        owe += (stubs[s].dest);
-      }
       if (stubs[s].st == ST_REQUESTED) {
         announce eStubDone, s;
       }
     }
     abortCalls();
     stubs = default(map[tSite, tStub]);
+    return owe;
+  }
+
+  // One release row for each orchestrator that a stub that is not refused
+  // names, kept once each. Answers the orchestrators owed now, rows already
+  // owed included.
+  fun oweReleases(): set[machine] {
+    var s: tSite;
+    var ss: seq[tSite];
+    var owe: set[machine];
+    var p: machine;
+    ss = keys(stubs);
+    foreach (s in ss) {
+      if (stubs[s].st != ST_REFUSED) {
+        owe += (stubs[s].dest);
+      }
+    }
     foreach (p in owe) {
       if (!(p in releaseOwed)) {
         releaseOwed += (p);
