@@ -1,0 +1,201 @@
+{
+  "baseline": [
+    {
+      "ceilings": 0,
+      "startup_bytes": 8760,
+      "bytes": 5744,
+      "repetitions": 50,
+      "elapsed_us": 171541,
+      "vm_cpu_ms": 68,
+      "reductions": 514623
+    },
+    {
+      "ceilings": 5000,
+      "startup_bytes": 372240,
+      "bytes": 372240,
+      "repetitions": 50,
+      "elapsed_us": 181075,
+      "vm_cpu_ms": 77,
+      "reductions": 1759649
+    },
+    {
+      "ceilings": 0,
+      "startup_bytes": 8760,
+      "bytes": 5744,
+      "repetitions": 50,
+      "elapsed_us": 176206,
+      "vm_cpu_ms": 69,
+      "reductions": 514630
+    },
+    {
+      "ceilings": 5000,
+      "startup_bytes": 372240,
+      "bytes": 372240,
+      "repetitions": 50,
+      "elapsed_us": 182072,
+      "vm_cpu_ms": 77,
+      "reductions": 1759649
+    },
+    {
+      "ceilings": 0,
+      "startup_bytes": 8760,
+      "bytes": 5744,
+      "repetitions": 50,
+      "elapsed_us": 172817,
+      "vm_cpu_ms": 68,
+      "reductions": 514623
+    },
+    {
+      "ceilings": 5000,
+      "startup_bytes": 372240,
+      "bytes": 372240,
+      "repetitions": 50,
+      "elapsed_us": 177835,
+      "vm_cpu_ms": 76,
+      "reductions": 1759649
+    },
+    {
+      "ceilings": 0,
+      "startup_bytes": 8760,
+      "bytes": 5744,
+      "repetitions": 50,
+      "elapsed_us": 165990,
+      "vm_cpu_ms": 65,
+      "reductions": 514630
+    },
+    {
+      "ceilings": 5000,
+      "startup_bytes": 372240,
+      "bytes": 372240,
+      "repetitions": 50,
+      "elapsed_us": 179650,
+      "vm_cpu_ms": 76,
+      "reductions": 1759649
+    },
+    {
+      "ceilings": 0,
+      "startup_bytes": 8760,
+      "bytes": 5744,
+      "repetitions": 50,
+      "elapsed_us": 166792,
+      "vm_cpu_ms": 66,
+      "reductions": 514623
+    },
+    {
+      "ceilings": 5000,
+      "startup_bytes": 372240,
+      "bytes": 372240,
+      "repetitions": 50,
+      "elapsed_us": 177988,
+      "vm_cpu_ms": 75,
+      "reductions": 1759649
+    }
+  ],
+  "candidate": [
+    {
+      "ceilings": 0,
+      "startup_bytes": 3872,
+      "bytes": 2728,
+      "repetitions": 50,
+      "elapsed_us": 171477,
+      "vm_cpu_ms": 68,
+      "reductions": 514164
+    },
+    {
+      "ceilings": 5000,
+      "startup_bytes": 2728,
+      "bytes": 2728,
+      "repetitions": 50,
+      "elapsed_us": 175740,
+      "vm_cpu_ms": 73,
+      "reductions": 1659099
+    },
+    {
+      "ceilings": 0,
+      "startup_bytes": 3872,
+      "bytes": 2728,
+      "repetitions": 50,
+      "elapsed_us": 171701,
+      "vm_cpu_ms": 68,
+      "reductions": 514164
+    },
+    {
+      "ceilings": 5000,
+      "startup_bytes": 2728,
+      "bytes": 2728,
+      "repetitions": 50,
+      "elapsed_us": 184929,
+      "vm_cpu_ms": 74,
+      "reductions": 1659099
+    },
+    {
+      "ceilings": 0,
+      "startup_bytes": 3872,
+      "bytes": 2728,
+      "repetitions": 50,
+      "elapsed_us": 169567,
+      "vm_cpu_ms": 67,
+      "reductions": 514164
+    },
+    {
+      "ceilings": 5000,
+      "startup_bytes": 2728,
+      "bytes": 2728,
+      "repetitions": 50,
+      "elapsed_us": 174159,
+      "vm_cpu_ms": 70,
+      "reductions": 1659099
+    },
+    {
+      "ceilings": 0,
+      "startup_bytes": 3872,
+      "bytes": 2728,
+      "repetitions": 50,
+      "elapsed_us": 175674,
+      "vm_cpu_ms": 68,
+      "reductions": 514164
+    },
+    {
+      "ceilings": 5000,
+      "startup_bytes": 2728,
+      "bytes": 2728,
+      "repetitions": 50,
+      "elapsed_us": 174660,
+      "vm_cpu_ms": 70,
+      "reductions": 1659099
+    },
+    {
+      "ceilings": 0,
+      "startup_bytes": 3872,
+      "bytes": 2728,
+      "repetitions": 50,
+      "elapsed_us": 172745,
+      "vm_cpu_ms": 66,
+      "reductions": 514164
+    },
+    {
+      "ceilings": 5000,
+      "startup_bytes": 2728,
+      "bytes": 2728,
+      "repetitions": 50,
+      "elapsed_us": 172189,
+      "vm_cpu_ms": 70,
+      "reductions": 1659099
+    }
+  ],
+  "baseline_revision": "928d0ae50dfe70277512a4c05116626c7c28d942",
+  "candidate_revision": "2a99a8b44",
+  "method": {
+    "vm": "OTP 29 / ERTS 17.0.5",
+    "schedulers": 1,
+    "pairs": 5,
+    "order": "baseline then candidate",
+    "calls_per_run": 50,
+    "worker_probe": "process_info(memory) before and after full GC in the synthetic worker only",
+    "timing_scope": "whole fixture including setup, two capability calls, collection, and cleanup"
+  },
+  "driver_sha256": {
+    "satellite_worker_perf.erl": "22d9087c379753d4a92b047164f14fa47e36326023887c718f729d1bbb537742",
+    "provider_guard_perf.erl": "4a9af8dfdc4f460365dacdbe9e78a42e05ef1e206ad64b1c0c01d8c003ffaf94"
+  }
+}

@@ -41,3 +41,15 @@ pub fn now_ms() -> Int
 /// select a short scratch directory outside `/tmp`.
 @external(erlang, "codemode_test_ffi", "get_env")
 pub fn get_env(name: String) -> Result(String, Nil)
+
+/// Measures this disposable worker before and after collecting its own heap.
+/// Gleam's process API exposes neither collection nor process heap bytes.
+/// Uses `erlang:garbage_collect/0` and `process_info/2`, never a live daemon.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ffi_peer.worker_memory() -> #(before_bytes, collected_bytes)
+/// ```
+@external(erlang, "codemode_test_ffi", "worker_memory")
+pub fn worker_memory() -> #(Int, Int)

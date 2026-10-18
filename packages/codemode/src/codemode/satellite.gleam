@@ -1171,6 +1171,10 @@ fn route_cap_call(
       cwd: state.cwd,
       ordinal: admitted_count(state, cap),
     )
+
+  // The worker needs this gate and its request, not the host's router,
+  // ledger or other in-flight calls. Project it before building the closure.
+  let precheck = state.precheck
   case state.router(request) {
     Error(denial) ->
       refuse_cap_call(
@@ -1184,7 +1188,7 @@ fn route_cap_call(
       )
     Ok(plan) ->
       admit_cap_call(state, now, id, cap, args, plan, fn() {
-        state.precheck(request)
+        precheck(request)
         |> result.map_error(fn(denial) {
           framing.CapErr(code: denial.code, message: denial.message)
         })
@@ -1261,15 +1265,15 @@ fn dispatch_cap_call(
 ) -> State {
   let #(ledger, seq) = call_record.admit(state.ledger, cap, args, now)
   let admitted = dict.insert(state.admitted, cap, already + 1)
+
+  // Settlement sends only an identity and a result back to the host. Keeping
+  // the subject here prevents both callbacks from copying the whole state.
+  let commands = state.commands
   let service =
     spawn_worker(
       Settling(
-        started: fn(handle) {
-          process.send(state.commands, CapStarted(id:, handle:))
-        },
-        done: fn(outcome) {
-          process.send(state.commands, CapDone(id:, outcome:))
-        },
+        started: fn(handle) { process.send(commands, CapStarted(id:, handle:)) },
+        done: fn(outcome) { process.send(commands, CapDone(id:, outcome:)) },
       ),
       state.broker,
       plan,
