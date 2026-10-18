@@ -17,8 +17,10 @@
 //// creation-key, lifecycle and domain-retirement runners, so every seed the
 //// soak draws covers all three scenario families within the same budget.
 
+import conformance/simulation/daemon/daemon_fault
 import conformance/simulation/daemon/daemon_runner
 import conformance/simulation/daemon/domain_runner
+import conformance/simulation/daemon/lifecycle_faults
 import conformance/simulation/daemon/lifecycle_runner
 import conformance/simulation/runner
 import gleam/int
@@ -26,10 +28,21 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 
-/// How many times a failed seed is re-run before the report calls it
-/// reproducible. Three, matching the session runner, so the two soaks'
-/// verdict lines mean the same thing.
-const corroboration_runs = 3
+/// How many candidates a shrink may try. The same twelve the session soak
+/// spends (`runner.soak`); a daemon schedule is one fault, so it is rarely
+/// reached.
+const shrink_budget = 12
+
+/// A failing seed as the runner reported it: the named check, which a shrink
+/// must keep failing, and the text a reader sees.
+pub type Reported {
+  Reported(
+    /// The check that failed, by name.
+    check: String,
+    /// The failure line, with the reproduction command.
+    text: String,
+  )
+}
 
 /// One scenario the soak drives per seed.
 ///
@@ -40,8 +53,15 @@ pub type Runner {
   Runner(
     /// The scenario's name, as it appears in a failure line.
     name: String,
-    /// Runs one seed, reporting the failure text on a red verdict.
-    run: fn(Int) -> Result(Nil, String),
+    /// Runs one seed, reporting the failure on a red verdict.
+    run: fn(Int) -> Result(Nil, Reported),
+    /// Given a seed whose failure was just corroborated and the check it
+    /// failed, searches for a simpler fault that still fails that check, and
+    /// says what it found. `None` where the scenario has no fault to
+    /// simplify. Only a reproducible failure is shrunk, for the reason the
+    /// session runner gives: whether a smaller case still fails is a coin
+    /// toss for a seed whose own verdict is one.
+    shrink: fn(Int, String) -> Option(String),
   )
 }
 
@@ -72,9 +92,13 @@ pub type Outcome {
 /// ```
 pub fn runners() -> List(Runner) {
   [
-    Runner(name: "creation", run: creation),
-    Runner(name: "lifecycle", run: lifecycle),
-    Runner(name: "domain-retirement", run: domain_retirement),
+    Runner(name: "creation", run: creation, shrink: shrink_creation),
+    Runner(name: "lifecycle", run: lifecycle, shrink: shrink_lifecycle),
+    Runner(
+      name: "domain-retirement",
+      run: domain_retirement,
+      shrink: shrink_domain,
+    ),
   ]
 }
 
@@ -145,20 +169,43 @@ fn draw(seed: Int, from: Int, deadline: Int, now: fn() -> Int) -> Outcome {
 
 // Runs one scenario against one seed, rendering a failure the way the
 // session soak renders one: the check and its detail, then the reproduction
-// line on its own, then what re-running the seed said about it.
+// line on its own, then what re-running the seed said about it, and, for a
+// reproducible failure, the simplest fault found that still fails the same
+// check.
 fn attempt(one: Runner, seed: Int) -> Result(Nil, String) {
   case one.run(seed) {
     Ok(Nil) -> Ok(Nil)
-    Error(report) ->
+    Error(Reported(check:, text:)) -> {
+      let corroboration = corroborate(one, seed, check)
       Error(
         one.name
         <> " seed "
         <> int.to_string(seed)
         <> ": "
-        <> report
+        <> text
         <> "\n    "
-        <> runner.describe_corroboration(corroborate(one, seed)),
+        <> runner.describe_corroboration(corroboration)
+        <> shrunk(one, seed, check, corroboration),
       )
+    }
+  }
+}
+
+// Corroborate first, shrink second, and only shrink what corroborated. An
+// unstable seed would answer "does this smaller fault still fail?" by chance.
+fn shrunk(
+  one: Runner,
+  seed: Int,
+  check: String,
+  corroboration: runner.Corroboration,
+) -> String {
+  case corroboration {
+    runner.Unstable(..) -> ""
+    runner.Reproducible(..) ->
+      case one.shrink(seed, check) {
+        Some(line) -> "\n    " <> line
+        None -> ""
+      }
   }
 }
 
@@ -169,68 +216,127 @@ fn attempt(one: Runner, seed: Int) -> Result(Nil, String) {
 // range is the signal and a single red is not. The session runner pays for
 // this inside itself; the daemon runner does not, so the soak pays for it
 // here, over the same three runs and against the same reading.
-fn corroborate(one: Runner, seed: Int) -> runner.Corroboration {
-  let reds = rerun(one, seed, corroboration_runs, 1)
-
-  case reds == corroboration_runs + 1 {
-    True -> runner.Reproducible(runs: reds)
-    False -> runner.Unstable(failed: reds, of: corroboration_runs + 1)
-  }
-}
-
-// Runs a seed `remaining` more times, carrying the count of failures so far,
-// which starts at one for the run that brought us here.
-fn rerun(one: Runner, seed: Int, remaining: Int, reds: Int) -> Int {
-  case remaining <= 0 {
-    True -> reds
-    False ->
-      case one.run(seed) {
-        Ok(Nil) -> rerun(one, seed, remaining - 1, reds)
-        Error(_report) -> rerun(one, seed, remaining - 1, reds + 1)
-      }
-  }
+fn corroborate(one: Runner, seed: Int, check: String) -> runner.Corroboration {
+  runner.corroborate(check, fn() {
+    case one.run(seed) {
+      Ok(Nil) -> Ok(Nil)
+      Error(Reported(check:, text:)) -> Error(runner.Failure(check, text))
+    }
+  })
 }
 
 // The creation-key scenario, adapted to the runner surface. The verdict's
 // detail names the script and the schedule the seed was drawn with, neither
 // of which is recoverable from the seed by eye, so the line carries both.
-fn creation(seed: Int) -> Result(Nil, String) {
+fn creation(seed: Int) -> Result(Nil, Reported) {
   case daemon_runner.run(seed:) {
     daemon_runner.Passed -> Ok(Nil)
     daemon_runner.Failed(failure:, reproduce:, detail:, ..) ->
-      Error(
-        failure.check
-        <> " — "
-        <> failure.detail
-        <> "\n    "
-        <> detail
-        <> "\n    "
-        <> reproduce,
-      )
+      Error(Reported(
+        check: failure.check,
+        text: failure.check
+          <> " — "
+          <> failure.detail
+          <> "\n    "
+          <> detail
+          <> "\n    "
+          <> reproduce,
+      ))
   }
+}
+
+// Shrinks the creation schedule: drop the kill, or move it to an earlier step
+// or creation, under the same-check and corroboration rules of
+// `runner.minimize`.
+fn shrink_creation(seed: Int, check: String) -> Option(String) {
+  let #(_script, drawn) = daemon_runner.plan(seed)
+  let #(smallest, _failure) = daemon_runner.shrink(seed, check, shrink_budget)
+  Some(describe_shrunk(
+    daemon_fault.describe(drawn),
+    daemon_fault.describe(smallest),
+    check,
+  ))
 }
 
 // The lifecycle runner owns the two lifecycle scripts and reports its own
 // verdict. This adapter preserves the soak's common report and corroboration
 // path without widening either runner's verdict type.
-fn lifecycle(seed: Int) -> Result(Nil, String) {
+fn lifecycle(seed: Int) -> Result(Nil, Reported) {
   case lifecycle_runner.run(seed:) {
     lifecycle_runner.Passed -> Ok(Nil)
     lifecycle_runner.Failed(failure:, reproduce:, ..) ->
-      Error(failure.check <> ": " <> failure.detail <> "\n    " <> reproduce)
+      Error(Reported(
+        check: failure.check,
+        text: failure.check <> ": " <> failure.detail <> "\n    " <> reproduce,
+      ))
   }
+}
+
+// A lifecycle schedule is one fault with no simpler sibling, so the only
+// candidate is the fault-free run (`lifecycle_faults.shrink`). A failure
+// outside both scripts has no fault to simplify and says nothing.
+fn shrink_lifecycle(seed: Int, check: String) -> Option(String) {
+  use #(smallest, _failure) <- option.map(lifecycle_runner.shrink(
+    seed,
+    check,
+    budget: shrink_budget,
+  ))
+  let drawn = case lifecycle_runner.script_of(check) {
+    Some(script) -> lifecycle_runner.drawn_fault(seed, script)
+    None -> smallest
+  }
+  describe_shrunk(
+    lifecycle_faults.describe(drawn),
+    lifecycle_faults.describe(smallest),
+    check,
+  )
 }
 
 // Keep the domain scenario on the same budget, failure and corroboration path
 // as creation and lifecycle; a passing corpus alone would not exercise it in CI.
-fn domain_retirement(seed: Int) -> Result(Nil, String) {
+fn domain_retirement(seed: Int) -> Result(Nil, Reported) {
   domain_runner.run(seed:)
   |> result.map_error(fn(failure) {
-    failure.check
-    <> ": "
-    <> failure.detail
-    <> "\n    domain_runner.run(seed: "
-    <> int.to_string(seed)
-    <> ")"
+    Reported(
+      check: failure.check,
+      text: failure.check
+        <> ": "
+        <> failure.detail
+        <> "\n    domain_runner.run(seed: "
+        <> int.to_string(seed)
+        <> ")",
+    )
   })
+}
+
+// The domain schedule is a two-way choice between an open after retirement
+// and an open during it, and the first is the baseline the second is
+// compared with. Neither is a simpler form of the other, so there is nothing
+// to shrink; saying so keeps the report from reading as an omission.
+fn shrink_domain(_seed: Int, _check: String) -> Option(String) {
+  Some(
+    "[shrunk] not shrunk: the domain schedule is one hold with no simpler "
+    <> "form, and its only alternative is the baseline it is compared with.",
+  )
+}
+
+// How a shrink reads in a failure report. A schedule that did not shrink says
+// so, because "no smaller schedule reproduced it" is a result and silence
+// would look like the shrinker never ran.
+fn describe_shrunk(drawn: String, smallest: String, check: String) -> String {
+  case drawn == smallest {
+    True ->
+      "[shrunk] no simpler schedule fails "
+      <> check
+      <> " on every run; kept the drawn one: "
+      <> drawn
+    False ->
+      "[shrunk] "
+      <> smallest
+      <> " still fails "
+      <> check
+      <> " on every run (drawn: "
+      <> drawn
+      <> ")"
+  }
 }

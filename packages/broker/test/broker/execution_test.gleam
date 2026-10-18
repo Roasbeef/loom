@@ -1,9 +1,18 @@
 //// Tests for the pure relay core: one unit test per row of the semantics
-//// the direct relay defined, and property tests over seeded random event
+//// the direct relay defined, and property tests over random event
 //// sequences for the invariants that hold in every order.
 ////
-//// The generator follows `machine`'s property tests: a SplitMix-style draw
-//// threaded explicitly, so a failing sequence reproduces from its seed.
+//// Sequences come from a qcheck generator, as in `machine`'s property tests.
+//// A failing sequence is reported already shrunk: fewer events, and each
+//// event pulled toward the commonest one, a plain stdout chunk. An event is
+//// drawn without its position, and the position is attached afterwards, so
+//// that dropping an event renumbers the ones after it rather than changing
+//// them; the chunk text still names its index, which keeps a reordering
+//// visible.
+////
+//// The run uses a fixed qcheck seed, so the gate stays deterministic. This
+//// is a pure core, so unlike the service tests nothing here races a
+//// scheduler and a counterexample replays exactly.
 
 import broker/dispatch
 import broker/exec
@@ -13,10 +22,10 @@ import broker/execution.{
   ExecOutput, GraceExpired, HelperDown, SendCancel, Settle, Streaming,
 }
 import broker/framing
-import broker/support/seeded
 import gleam/bit_array
 import gleam/int
 import gleam/list
+import qcheck
 
 // --- fixtures -------------------------------------------------------------
 
@@ -194,14 +203,41 @@ pub fn helper_death_after_a_terminal_event_changes_nothing_test() {
 
 // --- properties -----------------------------------------------------------
 
-// One random event. Output is the commonest so that sequences have chunks
-// to order, and chunk text is its index so a reordering is visible.
-fn event_from(seed: seeded.Seed, index: Int) -> #(Event, seeded.Seed) {
-  let #(kind, seed) = seeded.between(seed, 0, 11)
-  let #(truncated, seed) = seeded.between(seed, 0, 3)
-  let #(width, seed) = seeded.between(seed, 0, 6)
+/// The number of sequences each property is checked over, and the seed they
+/// are drawn from. Every property shares both, so a failure in one names a
+/// sequence the others were also run on.
+const sequence_count = 600
+
+const sequence_seed = 17
+
+fn sequence_config() -> qcheck.Config {
+  qcheck.default_config()
+  |> qcheck.with_test_count(sequence_count)
+  |> qcheck.with_seed(qcheck.seed(sequence_seed))
+}
+
+// What is drawn for one event before its position is known: which kind it
+// is, whether a chunk reports truncation, and how wide its text is. Output
+// is the commonest kind so that sequences have chunks to order, and kind
+// zero, the one every draw shrinks toward, is a plain stdout chunk.
+type Draw {
+  Draw(kind: Int, truncated: Int, width: Int)
+}
+
+fn draw_generator() -> qcheck.Generator(Draw) {
+  qcheck.map3(
+    qcheck.bounded_int(from: 0, to: 11),
+    qcheck.bounded_int(from: 0, to: 3),
+    qcheck.bounded_int(from: 0, to: 6),
+    Draw,
+  )
+}
+
+// Chunk text is its index so a reordering is visible.
+fn event_from(draw: Draw, index: Int) -> Event {
+  let Draw(kind:, truncated:, width:) = draw
   let text = int.to_string(index) <> string_of(width)
-  let event = case kind {
+  case kind {
     0 | 1 | 2 ->
       ExecOutput(chunk(framing.Stdout, text, truncated: truncated == 0))
     3 | 4 -> ExecOutput(chunk(framing.Stderr, text, truncated: truncated == 0))
@@ -213,19 +249,6 @@ fn event_from(seed: seeded.Seed, index: Int) -> #(Event, seeded.Seed) {
     10 -> DeadlineReached
     _ -> GraceExpired
   }
-  #(event, seed)
-}
-
-// 1 through `last`, inclusive.
-fn count_to(last: Int) -> List(Int) {
-  count_loop(last, [])
-}
-
-fn count_loop(current: Int, collected: List(Int)) -> List(Int) {
-  case current < 1 {
-    True -> collected
-    False -> count_loop(current - 1, [current, ..collected])
-  }
 }
 
 fn string_of(width: Int) -> String {
@@ -235,17 +258,15 @@ fn string_of(width: Int) -> String {
   }
 }
 
-fn sequence_from(seed_value: Int) -> List(Event) {
-  let seed = seeded.new(seed_value)
-  let #(length, seed) = seeded.between(seed, 1, 14)
-  let #(events, _seed) =
-    count_to(length)
-    |> list.fold(#([], seed), fn(state, index) {
-      let #(events, seed) = state
-      let #(event, seed) = event_from(seed, index)
-      #([event, ..events], seed)
-    })
-  list.reverse(events)
+/// One to fourteen events, numbered from one.
+fn sequence_generator() -> qcheck.Generator(List(Event)) {
+  qcheck.generic_list(
+    elements_from: draw_generator(),
+    length_from: qcheck.bounded_int(from: 1, to: 14),
+  )
+  |> qcheck.map(fn(draws) {
+    list.index_map(draws, fn(draw, offset) { event_from(draw, offset + 1) })
+  })
 }
 
 // One step's record: the event, the core before it, and what it produced.
@@ -273,8 +294,7 @@ fn settles(effects: List(Effect)) -> List(dispatch.Terminal) {
 }
 
 fn for_each_sequence(check: fn(List(Event), List(Trace)) -> Nil) -> Nil {
-  list.each(count_to(600), fn(seed_value) {
-    let events = sequence_from(seed_value)
+  qcheck.run(sequence_config(), sequence_generator(), fn(events) {
     check(events, trace(events))
   })
 }

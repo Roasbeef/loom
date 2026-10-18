@@ -10,6 +10,7 @@ import core/json.{type JsonValue}
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import qcheck
 import session_view/call_tree.{CallLog}
 
 // The same literal `tools/call_record_test` asserts the encoder writes, so
@@ -106,29 +107,28 @@ pub fn an_empty_but_honest_record_decodes_test() {
   assert log.items == []
 }
 
+/// A thousand arbitrary values, each placed under the `calls` key and also
+/// offered as the whole of `details`, from a fixed seed so the gate is
+/// deterministic.
+const sweep_count = 1000
+
+const sweep_seed = 3
+
 pub fn reading_is_total_over_arbitrary_json_test() {
-  // A seeded sweep: a thousand arbitrary values, each placed under the
-  // `calls` key and also offered as the whole of `details`. The assertion
-  // is that reading returns, not what it returns; whether a value decodes
-  // is pinned by the cases above.
-  sweep(1, 1000)
-}
+  // The assertion is that reading returns, not what it returns; whether a
+  // value decodes is pinned by the cases above. A failure would be a panic
+  // inside the decoder, and qcheck then shrinks the value toward a smaller
+  // tree of plainer leaves.
+  let config =
+    qcheck.default_config()
+    |> qcheck.with_test_count(sweep_count)
+    |> qcheck.with_seed(qcheck.seed(sweep_seed))
 
-fn sweep(seed: Int, remaining: Int) -> Nil {
-  case remaining {
-    0 -> Nil
-    _ -> {
-      let #(value, next) = arbitrary(seed, 3)
-      let _ = call_tree.read(json.Object([#("calls", value)]))
-      let _ = call_tree.read(value)
-      sweep(next, remaining - 1)
-    }
-  }
-}
-
-// A small linear congruential step, enough to vary shapes reproducibly.
-fn step(seed: Int) -> Int {
-  { seed * 1_103_515_245 + 12_345 } % 2_147_483_648
+  qcheck.run(config, arbitrary(3), fn(value) {
+    let _ = call_tree.read(json.Object([#("calls", value)]))
+    let _ = call_tree.read(value)
+    Nil
+  })
 }
 
 // The keys the real record uses, so the sweep reaches the decoder's
@@ -140,64 +140,58 @@ const keys = [
 
 const words = ["ok", "failed", "cancelled", "unsettled", "fs.read", "", "x"]
 
-fn arbitrary(seed: Int, depth: Int) -> #(JsonValue, Int) {
-  let seed = step(seed)
-  case seed / 65_536 % 7, depth {
-    0, _ -> #(json.Null, seed)
-    1, _ -> #(json.Bool(seed % 2 == 0), seed)
-    2, _ -> #(json.Int(seed % 9 - 3), seed)
-    3, _ -> #(json.Float(1.5), seed)
-    4, _ -> #(json.String(pick(words, seed)), seed)
-    5, 0 -> #(json.Int(seed % 5), seed)
-    5, _ -> {
-      let #(items, seed) = many(seed, depth - 1, seed % 4, [])
-      #(json.Array(items), seed)
-    }
-    _, 0 -> #(json.Null, seed)
-    _, _ -> {
-      let #(fields, seed) = fields(seed, depth - 1, seed % 8, [])
-      #(json.Object(fields), seed)
-    }
-  }
-}
+/// A JSON value of at most `depth` levels of nesting. Leaves are drawn as
+/// indexes or small ranges so they shrink toward `null`, zero and the first
+/// word; containers hold up to three items or seven fields, and shrink by
+/// dropping them. Depth zero is leaves only.
+fn arbitrary(depth: Int) -> qcheck.Generator(JsonValue) {
+  let leaves = [
+    qcheck.return(json.Null),
+    qcheck.map(qcheck.bool(), json.Bool),
+    qcheck.map(qcheck.bounded_int(from: -3, to: 5), json.Int),
+    qcheck.return(json.Float(1.5)),
+    qcheck.map(pick(words), json.String),
+  ]
 
-fn many(
-  seed: Int,
-  depth: Int,
-  remaining: Int,
-  acc: List(JsonValue),
-) -> #(List(JsonValue), Int) {
-  case remaining <= 0 {
-    True -> #(acc, seed)
+  case depth <= 0 {
+    True -> qcheck.from_generators(qcheck.return(json.Null), leaves)
     False -> {
-      let #(value, seed) = arbitrary(seed, depth)
-      many(seed, depth, remaining - 1, [value, ..acc])
+      let inner = arbitrary(depth - 1)
+      let array =
+        qcheck.generic_list(
+          elements_from: inner,
+          length_from: qcheck.bounded_int(from: 0, to: 3),
+        )
+        |> qcheck.map(json.Array)
+      let object =
+        qcheck.generic_list(
+          elements_from: qcheck.tuple2(key(), inner),
+          length_from: qcheck.bounded_int(from: 0, to: 7),
+        )
+        |> qcheck.map(json.Object)
+
+      qcheck.from_generators(qcheck.return(json.Null), [array, object, ..leaves])
     }
   }
 }
 
-fn fields(
-  seed: Int,
-  depth: Int,
-  remaining: Int,
-  acc: List(#(String, JsonValue)),
-) -> #(List(#(String, JsonValue)), Int) {
-  case remaining <= 0 {
-    True -> #(acc, seed)
-    False -> {
-      let #(value, seed) = arbitrary(seed, depth)
-      let key = case seed % 3 {
-        0 -> pick(keys, seed) <> "_"
-        _ -> pick(keys, seed)
-      }
-      fields(seed, depth, remaining - 1, [#(key, value), ..acc])
+/// A key of the real record, or one with a stray underscore that the decoder
+/// must treat as unknown.
+fn key() -> qcheck.Generator(String) {
+  qcheck.map2(pick(keys), qcheck.bounded_int(from: 0, to: 2), fn(name, stray) {
+    case stray {
+      0 -> name <> "_"
+      _ -> name
     }
-  }
+  })
 }
 
-fn pick(choices: List(String), seed: Int) -> String {
-  case list.drop(choices, seed % list.length(choices)) {
-    [chosen, ..] -> chosen
-    [] -> ""
-  }
+fn pick(choices: List(String)) -> qcheck.Generator(String) {
+  qcheck.bounded_int(from: 0, to: list.length(choices) - 1)
+  |> qcheck.map(fn(index) {
+    case list.drop(choices, index) {
+      [chosen, ..] -> chosen
+      [] -> ""
+    }
+  })
 }

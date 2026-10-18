@@ -2,7 +2,9 @@ import core/clock
 import core/ids
 import gleam/list
 import gleam/string
-import support/generate
+import qcheck
+import support/gen
+import support/sequence
 
 fn fresh(at ts: Int, seed seed: Int) -> ids.Generator {
   ids.generator(clock.fixed(at: ts), seed:)
@@ -51,17 +53,41 @@ pub fn session_ids_mint_test() {
   assert session_id != second
 }
 
+/// How many ids each generated property is checked over, and the qcheck seed
+/// they are drawn from. The seed is fixed so the gate is deterministic.
+const id_count = 200
+
+const id_seed = 11
+
+fn id_config() -> qcheck.Config {
+  qcheck.default_config()
+  |> qcheck.with_test_count(id_count)
+  |> qcheck.with_seed(qcheck.seed(id_seed))
+}
+
+// Uniqueness is a property of a whole batch, not of one id, so each case is
+// a list of up to 200 minted ids and fewer cases are drawn. The length is
+// drawn rather than fixed so that a failing batch shrinks its length first,
+// quickly, toward the colliding pair.
+const unique_batches = 10
+
 pub fn session_ids_are_unique_across_the_generator_test() {
-  let #(minted, _seed) =
-    generate.list_of(generate.seed(4242), 200, generate.session_id)
-  let texts = list.map(minted, ids.session_id_to_string)
-  assert list.length(list.unique(texts)) == 200
+  let batch =
+    qcheck.generic_list(
+      elements_from: gen.session_id(),
+      length_from: qcheck.bounded_int(from: 2, to: 200),
+    )
+  qcheck.default_config()
+  |> qcheck.with_test_count(unique_batches)
+  |> qcheck.with_seed(qcheck.seed(id_seed))
+  |> qcheck.run(batch, fn(minted) {
+    let texts = list.map(minted, ids.session_id_to_string)
+    assert list.length(list.unique(texts)) == list.length(minted)
+  })
 }
 
 pub fn session_id_roundtrip_test() {
-  let #(session_ids, _seed) =
-    generate.list_of(generate.seed(31), 50, generate.session_id)
-  list.each(session_ids, fn(id) {
+  qcheck.run(id_config(), gen.session_id(), fn(id) {
     assert ids.parse_session_id(ids.session_id_to_string(id)) == Ok(id)
   })
 }
@@ -84,7 +110,7 @@ pub fn lexicographic_order_follows_time_order_test() {
   // previous one.
   let generator = ids.generator(clock.stepping(from: 1000, by: 1), seed: 5)
   let #(texts, _generator) =
-    list.fold(generate.range(1, 100), from: #([], generator), with: fn(acc, _) {
+    list.fold(sequence.range(1, 100), from: #([], generator), with: fn(acc, _) {
       let #(texts, generator) = acc
       let #(id, generator) = ids.mint_entry(generator)
       #([ids.entry_id_to_string(id), ..texts], generator)
@@ -139,22 +165,16 @@ pub fn follower_has_fresh_random_tail_test() {
 // --- text roundtrips ----------------------------------------------------
 
 pub fn parse_roundtrip_property_test() {
-  let seed = generate.seed(11)
-  let #(ids_list, _seed) = generate.list_of(seed, 200, generate.entry_id)
-  list.each(ids_list, fn(id) {
+  qcheck.run(id_config(), gen.entry_id(), fn(id) {
     assert ids.parse_entry_id(ids.entry_id_to_string(id)) == Ok(id)
   })
 }
 
 pub fn usage_and_op_roundtrip_test() {
-  let seed = generate.seed(12)
-  let #(usage_ids, seed) = generate.list_of(seed, 50, generate.usage_id)
-  let #(op_ids, _seed) = generate.list_of(seed, 50, generate.op_id)
-  list.each(usage_ids, fn(id) {
-    assert ids.parse_usage_id(ids.usage_id_to_string(id)) == Ok(id)
-  })
-  list.each(op_ids, fn(id) {
-    assert ids.parse_op_id(ids.op_id_to_string(id)) == Ok(id)
+  qcheck.run(id_config(), qcheck.tuple2(gen.usage_id(), gen.op_id()), fn(drawn) {
+    let #(usage_id, op_id) = drawn
+    assert ids.parse_usage_id(ids.usage_id_to_string(usage_id)) == Ok(usage_id)
+    assert ids.parse_op_id(ids.op_id_to_string(op_id)) == Ok(op_id)
   })
 }
 

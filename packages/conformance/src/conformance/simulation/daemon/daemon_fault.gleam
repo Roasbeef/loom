@@ -26,7 +26,7 @@
 
 import conformance/simulation/random.{type Rng}
 import gleam/list
-import gleam/option.{type Option}
+import gleam/option.{type Option, None, Some}
 import gleam/string
 
 /// One durable step of a single creation, named by what is already committed
@@ -187,4 +187,115 @@ fn first_in_workspace(
       ])
     }
   }
+}
+
+/// Candidate simpler schedules, simplest first, in the shape of
+/// `fault.shrink`: drop a fault, or pull one earlier.
+///
+/// "Earlier" has two readings here, because a daemon fault has two
+/// coordinates. The kill can move to an earlier **step** of the same
+/// creation (`AfterConfirm` toward `AfterReservation`), or to the **creation
+/// before it** in script order at the same step. Both only move toward the
+/// start of the run, so every candidate has less of the run in front of its
+/// kill than the case it came from.
+///
+/// A candidate is offered only where its step is reachable, using the rule
+/// `generate` draws by. This matters for more than economy. An unreachable
+/// step (`AfterReservation` for a creation whose workspace an earlier one
+/// already opened) parks no builder, and the run waits out its real arrival
+/// backstop before reporting `schedule/unreachable`, which is a different
+/// check and would be rejected anyway, after twenty seconds.
+///
+/// The faults are not interdependent, which is why this is sound: a schedule
+/// holds at most one kill, so no candidate can break a pairing another fault
+/// relied on. Dropping the only fault yields the fault-free schedule. That
+/// candidate cannot reproduce a failure that needs the kill, and one that
+/// does reproduce it says the failure never depended on the kill at all.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // daemon_fault.shrink(schedule, daemon_script.coordinates(script))
+/// ```
+pub fn shrink(
+  schedule: Schedule,
+  creations: List(#(String, String)),
+) -> List(Schedule) {
+  let reachable = first_in_workspace(creations, [], [])
+  let drops =
+    list.index_map(schedule.faults, fn(_fault, index) {
+      Schedule(faults: drop_at(schedule.faults, index))
+    })
+  let pulls =
+    list.index_map(schedule.faults, fn(fault, index) {
+      earlier(fault, reachable)
+      |> list.map(fn(pulled) {
+        Schedule(faults: replace_at(schedule.faults, index, pulled))
+      })
+    })
+    |> list.flatten
+  list.append(drops, pulls)
+}
+
+// The faults one step or one creation earlier than `fault`, each only if its
+// step is reachable at the creation it names. The earlier step is tried
+// first, because it keeps the same creation and so changes one thing.
+fn earlier(
+  fault: Fault,
+  reachable: List(#(String, String, List(Step))),
+) -> List(Fault) {
+  let KillDaemonAt(key:, workspace: _, step:) = fault
+  let steps_of = fn(key) { list.find(reachable, fn(entry) { entry.0 == key }) }
+  let earlier_step = case steps_of(key), previous_step(step) {
+    Ok(#(_key, workspace, steps)), Some(before) ->
+      case list.contains(steps, before) {
+        True -> [KillDaemonAt(key:, workspace:, step: before)]
+        False -> []
+      }
+    _unknown, _none -> []
+  }
+  let earlier_key = case previous_creation(reachable, key) {
+    Some(#(before, workspace, steps)) ->
+      case list.contains(steps, step) {
+        True -> [KillDaemonAt(key: before, workspace:, step:)]
+        False -> []
+      }
+    None -> []
+  }
+  list.append(earlier_step, earlier_key)
+}
+
+fn previous_step(step: Step) -> Option(Step) {
+  case step {
+    AfterConfirm -> Some(AfterCustodyPublish)
+    AfterCustodyPublish -> Some(AfterDomainBind)
+    AfterDomainBind -> Some(AfterReservation)
+    AfterReservation -> None
+  }
+}
+
+// The creation immediately before `key` in script order.
+fn previous_creation(
+  creations: List(#(String, String, List(Step))),
+  key: String,
+) -> Option(#(String, String, List(Step))) {
+  case creations {
+    [before, next, ..rest] ->
+      case next.0 == key {
+        True -> Some(before)
+        False -> previous_creation([next, ..rest], key)
+      }
+    [_only] | [] -> None
+  }
+}
+
+fn drop_at(faults: List(Fault), index: Int) -> List(Fault) {
+  list.append(list.take(faults, index), list.drop(faults, index + 1))
+}
+
+fn replace_at(faults: List(Fault), index: Int, fault: Fault) -> List(Fault) {
+  list.append(list.take(faults, index), case list.drop(faults, index) {
+    [_, ..rest] -> [fault, ..rest]
+    [] -> []
+  })
 }

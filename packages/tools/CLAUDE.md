@@ -564,7 +564,8 @@ was asked.
 
 ## Relationships
 
-- **Depends on**: `core` (json, messages, ids, clock), `broker` (policy
+- **Depends on** (tests also use `qcheck` and `statem`; `test/support/gen` holds the
+  hashline line and file-content generators): `core` (json, messages, ids, clock), `broker` (policy
   vocabulary, `clear_call`, `exec` failure shapes, framing output streams —
   the spec DAG's `I → G`), `simplifile` (the production `FileSystem`),
   `gleam_erlang` (subjects for streamed call events), `lsp` (only
@@ -1007,6 +1008,22 @@ was asked.
   mints a fresh entry id per admission, so a replay would deliver twice;
   a spawn's name derives from persisted coordinates, so a replay
   reconciles onto the same child.
+
+## Model-based tests
+
+`test/tools/todos_model_test.gleam` and `test/tools/tail_model_test.gleam` run
+`statem` sequences beside the example tests. The todo test drives
+`todos.apply` with commands that name tasks and phases by index modulo the
+model's size (or by a loose spelling of the text), checks each answered board
+(`todos.valid`, `single_active`, `promotion`, `distinct`, `replay`, `step`,
+`codec`, `view`) and then compares it with an independent reference
+(`todos.model`). The tail test keeps the whole stream as the model and the
+cursors earlier answers returned inside the system, and checks `received`,
+`cursor`, `span` (dropped plus returned bytes equal the stream suffix),
+`bounded`, `boundary` (exactly an incomplete final character is held back),
+`front` and `decodes` at capacities 8, 11 and 24. Each file also asserts that
+its generator reaches the states the rules are about. Seeds and counts are
+named constants; a failure prints the shrunk command list.
 
 ## Deep Docs
 

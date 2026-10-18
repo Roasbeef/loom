@@ -1091,6 +1091,93 @@ pub fn sqlite_key_pages_use_an_indexed_bounded_window_test() {
   assert sqlight.close(conn) == Ok(Nil)
 }
 
+/// How many keys the seek fixture holds. It is the Python test's 20,000, large
+/// enough that a page which walked the history before its cursor would be
+/// visibly the wrong plan, though no assertion here measures time.
+const seek_history = 20_000
+
+// A late key page must seek past the history before its cursor and not walk
+// it. The former statement carried two lower bounds, and SQLite used roughly
+// 100,000 VM steps to answer the last page of 20,000 keys. The retired Python
+// check bounded that cost with a progress handler counting VM steps, which
+// sqlight cannot install. This test keeps what that bound was a symptom of:
+// on a populated table, both statements still plan as one index search whose
+// range carries the cursor and the prefix successor, with no table scan and no
+// sort, so the work is the page and not the history. It gives up the number
+// itself: a plan that stays an index range could in principle still step more
+// than needed, which a step budget would notice and this does not. The row
+// assertions are what a seek that skipped or repeated a key would break.
+pub fn late_key_pages_seek_past_prior_history_test() {
+  let assert Ok(conn) = sqlight.open(path("key-page-seek"))
+    as "seek fixture opens"
+  assert sqlight.exec(session_schema.schema, on: conn) == Ok(Nil)
+  assert sqlight.exec(
+      "INSERT INTO registers(ns, key, seq, value) "
+        <> "WITH RECURSIVE n(i) AS "
+        <> "(SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < "
+        <> int.to_string(seek_history - 1)
+        <> ") SELECT 'fact.custom', printf('mail/%05d', i), i + 1, x'7b7d' "
+        <> "FROM n",
+      on: conn,
+    )
+    == Ok(Nil)
+  let params = fn(cursor: String) {
+    [
+      sqlight.text("fact.custom"),
+      sqlight.text("mail/"),
+      sqlight.text(cursor),
+      sqlight.text("mail0"),
+      sqlight.int(1),
+    ]
+  }
+
+  list.each(["", "mail/19990"], fn(cursor) {
+    // The page is a window of one key, whatever precedes the cursor.
+    let #(headers, _, _) = sql.snapshot_register_page_headers("", "", "", "", 1)
+    let assert Ok(plan) =
+      sqlight.query(
+        "EXPLAIN QUERY PLAN " <> headers,
+        on: conn,
+        with: params(cursor),
+        expecting: decode.at([3], decode.string),
+      )
+      as "SQLite explains the header window"
+    assert list.any(plan, string.contains(_, "SEARCH registers"))
+    assert list.any(plan, string.contains(_, "key>? AND key<?"))
+    assert !list.any(plan, string.contains(_, "SCAN registers"))
+    assert !list.any(plan, string.contains(_, "TEMP B-TREE"))
+
+    // The first page starts at the prefix. A late page starts just after its
+    // cursor, so the key after mail/19990 is mail/19991.
+    let expected = case cursor {
+      "" -> "mail/00000"
+      _ -> "mail/19991"
+    }
+    let assert Ok(rows) =
+      sqlight.query(
+        headers,
+        on: conn,
+        with: params(cursor),
+        expecting: decode.at([0], decode.string),
+      )
+      as "the header window runs"
+    assert rows == [expected]
+
+    // The budget query counts the same one-key window.
+    let #(budget, _, _) = sql.snapshot_register_page_budget("", "", "", "", 1)
+    let assert Ok(counts) =
+      sqlight.query(
+        budget,
+        on: conn,
+        with: params(cursor),
+        expecting: decode.at([0], decode.int),
+      )
+      as "the budget window runs"
+    assert counts == [1]
+  })
+  assert sqlight.close(conn) == Ok(Nil)
+}
+
 // A capture reads its statistics from the maintained session row and its
 // recent window from one index search, so its cost does not grow with the
 // length of the history. Measured on a real 28 MB session of 4,727 messages

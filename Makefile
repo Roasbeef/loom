@@ -3,7 +3,7 @@
 # Every target is a thin wrapper over the scripts and package tooling, so
 # what CI runs and what you run locally are the same commands.
 
-PACKAGES := host core storage session machine prompt session_view web_view telemetry runtime provider \
+PACKAGES := host core storage session machine prompt statem session_view web_view telemetry runtime provider \
 	broker executor mcp lsp tools cap ext codemode events client conformance tui lint
 # Packages that target JavaScript. They are formatted, built and documented
 # with the rest but have no test run (scripts/check.sh says why).
@@ -45,7 +45,7 @@ BASE ?= origin/main
 # a package named "affected".
 .PHONY: affected
 affected: ## Print the gates a change against BASE can affect (BASE=origin/main)
-	@python3 scripts/affected.py --base "$(BASE)"
+	@bash scripts/check_affected.sh --select "$(BASE)"
 
 .PHONY: check-affected
 check-affected: ## Run only the gates a change against BASE can affect (BASE=origin/main)
@@ -516,11 +516,9 @@ signoff-remote: ## Run the gate for HEAD in a fresh container on LOOM_SIGNOFF_HO
 
 SOAK_SEEDS ?= 2000
 SOAK_FROM  ?= 1
-# Seeds per test-runner invocation. The test framework imposes a per-test
-# timeout (about a minute), and per-seed cost varies enough that a single
-# invocation of more than a few dozen seeds can trip it and report a
-# timeout rather than a result. The soak therefore runs in chunks; raise
-# this only if you have measured that your seeds are cheap.
+# Seeds per chunk. The soak is one test-runner invocation: the suite yields
+# one timeout-bounded test per chunk (simulation_test:soak_test_), so no chunk
+# trips eunit's per-test timeout and a failure names its seed range.
 SOAK_CHUNK ?= 50
 
 # Replay just one generated case, without running unrelated conformance tests.
@@ -531,27 +529,19 @@ replay-simulation: ## Replay one session simulation seed (SIM_SEED=n)
 	@LOOM_SOAK_FROM=$(SIM_SEED) LOOM_SOAK_SEEDS=1 \
 		bash scripts/test.sh conformance --match conformance@simulation_test:soak_test
 
-# Every chunk names the soak test, for the same reason `replay-simulation`
-# does. `LOOM_SOAK_SEEDS` is read by exactly one test, so an unmatched
-# invocation ran the whole conformance package once per chunk — forty times
-# a night across the nightly's four shards — and charged whatever any of
-# those eighty-odd seed-independent tests did to the seed window the chunk
-# was on. A `soak FAILED in seeds 1851..1900` that was really an `e2e_test`
-# timeout is the failure mode: the report names a seed range that had
-# nothing to do with it, and the same tests already run in `make check`.
+# The soak names its test for the same reason `replay-simulation` does:
+# `LOOM_SOAK_SEEDS` is read by exactly one test, and an unmatched invocation
+# would run the whole conformance package and charge its seed-independent
+# tests to the seed window. The outer watchdog is set above the per-chunk
+# allowance (20 seconds a seed, as in simulation_test) plus a margin, since a
+# run killed there reports nothing at all.
 .PHONY: soak
 soak: ## Long deterministic-simulation run (SOAK_SEEDS=n SOAK_FROM=n SOAK_CHUNK=n)
-	@from=$(SOAK_FROM); left=$(SOAK_SEEDS); \
-	while [ $$left -gt 0 ]; do \
-		n=$$( [ $$left -lt $(SOAK_CHUNK) ] && echo $$left || echo $(SOAK_CHUNK) ); \
-		echo "==> seeds $$from..$$(( from + n - 1 ))"; \
-		( LOOM_SOAK_SEEDS=$$n LOOM_SOAK_FROM=$$from \
-			bash scripts/test.sh conformance \
-				--match conformance@simulation_test:soak_test ) || \
-			{ echo "soak FAILED in seeds $$from..$$(( from + n - 1 ))"; exit 1; }; \
-		from=$$(( from + n )); left=$$(( left - n )); \
-	done; \
-	echo "soak clean: $(SOAK_SEEDS) seeds from $(SOAK_FROM)"
+	@LOOM_SOAK_SEEDS=$(SOAK_SEEDS) LOOM_SOAK_FROM=$(SOAK_FROM) \
+		LOOM_SOAK_CHUNK=$(SOAK_CHUNK) \
+		LOOM_TEST_TIMEOUT_SECONDS="$${LOOM_TEST_TIMEOUT_SECONDS:-$$(( $(SOAK_SEEDS) * 20 + 600 ))}" \
+		bash scripts/test.sh conformance \
+		--match conformance@simulation_test:soak_test
 
 # The daemon simulation is bounded by wall clock instead of by a seed count.
 # A daemon seed opens a real SQLite catalogue on a real directory and starts

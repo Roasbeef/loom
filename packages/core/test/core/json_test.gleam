@@ -2,7 +2,9 @@ import core/json
 import gleam/list
 import gleam/string
 import gleam/string_tree
-import support/generate
+import qcheck
+import support/gen
+import support/sequence
 
 // --- parsing basics -----------------------------------------------------
 
@@ -200,25 +202,28 @@ pub fn serialized_floats_stay_floats_test() {
 
 // --- roundtrip properties -----------------------------------------------
 
-pub fn roundtrip_property_test() {
-  roundtrip_loop(generate.seed(21), 200)
+/// How many values each generated property is checked over, and the qcheck
+/// seed they are drawn from. The seed is fixed so the gate is deterministic.
+const generated_count = 200
+
+const generated_seed = 21
+
+fn generated_config() -> qcheck.Config {
+  qcheck.default_config()
+  |> qcheck.with_test_count(generated_count)
+  |> qcheck.with_seed(qcheck.seed(generated_seed))
 }
 
-fn roundtrip_loop(seed: generate.Seed, remaining: Int) -> Nil {
-  case remaining <= 0 {
-    True -> Nil
-    False -> {
-      let #(value, seed) = generate.json_value(seed, 4)
-      assert json.parse(json.to_string(value)) == Ok(value)
-      roundtrip_loop(seed, remaining - 1)
-    }
-  }
+// A value shrinks toward `Null` and then toward empty containers, so a
+// failing roundtrip is reported as the smallest document that still fails.
+pub fn roundtrip_property_test() {
+  qcheck.run(generated_config(), gen.json_value(4), fn(value) {
+    assert json.parse(json.to_string(value)) == Ok(value)
+  })
 }
 
 pub fn roundtrip_unicode_heavy_strings_test() {
-  let seed = generate.seed(22)
-  let #(texts, _seed) = generate.list_of(seed, 200, generate.small_string)
-  list.each(texts, fn(text) {
+  qcheck.run(generated_config(), gen.small_string(), fn(text) {
     assert json.parse(json.to_string(json.String(text)))
       == Ok(json.String(text))
   })
@@ -226,7 +231,7 @@ pub fn roundtrip_unicode_heavy_strings_test() {
 
 pub fn roundtrip_deeply_nested_test() {
   let deep =
-    list.fold(generate.range(1, 100), from: json.Int(0), with: fn(inner, _) {
+    list.fold(sequence.range(1, 100), from: json.Int(0), with: fn(inner, _) {
       json.Object([#("k", json.Array([inner]))])
     })
   assert json.parse(json.to_string(deep)) == Ok(deep)
@@ -319,12 +324,18 @@ pub fn run_encoder_matches_the_codepoint_oracle_test() {
     "\"\"\"\\\\\\",
     "ends with a backslash\\",
   ]
-  let #(generated, _seed) =
-    generate.list_of(generate.seed(23), 300, generate.small_string)
-  list.each(list.append(crafted, generated), fn(text) {
-    assert json.to_string(json.String(text))
-      == string_tree.to_string(json.build_string_by_codepoint(text))
-  })
+  list.each(crafted, assert_encoders_agree)
+
+  // The generated half draws more strings than the roundtrips do, since
+  // this is the comparison a regression in the byte scan would show up in.
+  generated_config()
+  |> qcheck.with_test_count(300)
+  |> qcheck.run(gen.small_string(), assert_encoders_agree)
+}
+
+fn assert_encoders_agree(text: String) -> Nil {
+  assert json.to_string(json.String(text))
+    == string_tree.to_string(json.build_string_by_codepoint(text))
 }
 
 // A parse must cut runs at the same places the encoder did and rebuild

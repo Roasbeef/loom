@@ -13,14 +13,17 @@
 //// changes when the generator does.
 ////
 //// The soak suite is opt-in: set `LOOM_SOAK_SEEDS` to the number of
-//// seeds to run (and optionally `LOOM_SOAK_FROM` to start elsewhere).
-//// `make soak` does both.
+//// seeds to run, and optionally `LOOM_SOAK_FROM` to start elsewhere and
+//// `LOOM_SOAK_CHUNK` to size the chunks it is split into. `make soak` sets
+//// all three.
 
 import conformance/simulation/fault
 import conformance/simulation/random
 import conformance/simulation/runner
 import conformance/simulation/script
 import conformance/simulation/wire
+import conformance/simulation_daemon_soak_test.{type EunitTest, Timeout}
+import envoy
 import gleam/int
 import gleam/io
 import gleam/list
@@ -28,7 +31,6 @@ import gleam/option.{None}
 import gleam/result
 import gleam/string
 import machine/operation.{ReplayNever, ReplaySafe}
-import support/internal/ffi_shell
 
 // Three chunks so no single eunit test carries the whole sweep.
 const sweep_from = 1
@@ -508,22 +510,86 @@ pub fn wire_faults_test() {
 
 // --- the soak ------------------------------------------------------------
 
-pub fn soak_test() {
-  case soak_size() {
-    0 -> Nil
-    count -> {
-      let from = env_int("LOOM_SOAK_FROM", 1)
-      report("soak failures", runner.soak(from:, count:))
+/// Seeds per chunk when `LOOM_SOAK_CHUNK` is unset.
+const default_chunk = 50
+
+/// What one seed may cost before its chunk is called hung, in seconds.
+///
+/// Per-seed cost varies with the schedule the seed drew, and a chunk that
+/// outlives its deadline is reported as a timeout, which names no seed. The
+/// allowance is generous on purpose: it separates a hung chunk from a slow
+/// one, and the soak's usual cost is about a second a seed.
+const seconds_per_seed = 20
+
+/// gleeunit runs eunit with `ScaleTimeouts(10)`, which multiplies the
+/// deadline a generator asks for. The number handed to eunit is therefore
+/// the number wanted divided by ten; see `simulation_daemon_soak_test`.
+const gleeunit_timeout_scale = 10
+
+/// The opt-in soak, yielded as one timeout-bounded test per chunk of seeds.
+///
+/// `LOOM_SOAK_SEEDS` is the number of seeds (unset or zero runs nothing),
+/// `LOOM_SOAK_FROM` the first seed (default 1) and `LOOM_SOAK_CHUNK` the
+/// seeds per chunk (default 50). A single test over thousands of seeds
+/// would trip eunit's per-test timeout, which reports a hang rather than a
+/// seed, so each chunk is its own test with its own deadline, titled and
+/// panicking with the seed range it covers: a failure says `seeds 1851..1900`
+/// and carries the same shrunk report and reproduction line as any other.
+/// Chunks run in order, and one that fails does not stop the ones after it.
+///
+/// ## Examples
+///
+/// `make soak SOAK_SEEDS=500 SOAK_FROM=1 SOAK_CHUNK=50`, or
+/// `make replay-simulation SIM_SEED=33` for a single seed.
+pub fn soak_test_() -> List(#(String, EunitTest)) {
+  let chunk = env_int("LOOM_SOAK_CHUNK", default_chunk)
+  case chunk < 1 {
+    True -> [
+      #(
+        "soak configuration",
+        Timeout(1, fn() {
+          panic as {
+            "LOOM_SOAK_CHUNK must be positive, got " <> int.to_string(chunk)
+          }
+        }),
+      ),
+    ]
+    False ->
+      chunks(env_int("LOOM_SOAK_FROM", 1), env_int("LOOM_SOAK_SEEDS", 0), chunk)
+      |> list.map(soak_chunk)
+  }
+}
+
+// The seed windows `[from, from + count)` split into runs of `chunk`, the
+// last one short. Each is a `#(first, size)` pair.
+fn chunks(from: Int, count: Int, chunk: Int) -> List(#(Int, Int)) {
+  case count <= 0 {
+    True -> []
+    False -> {
+      let size = int.min(count, chunk)
+      [#(from, size), ..chunks(from + size, count - size, chunk)]
     }
   }
 }
 
-fn soak_size() -> Int {
-  env_int("LOOM_SOAK_SEEDS", 0)
+// One chunk as an eunit test. Its title and its failure text both carry the
+// range, because eunit prints one or the other depending on how the run is
+// read, and a range is the only thing a failing soak needs to be resumed.
+fn soak_chunk(window: #(Int, Int)) -> #(String, EunitTest) {
+  let #(from, size) = window
+  let range =
+    "seeds " <> int.to_string(from) <> ".." <> int.to_string(from + size - 1)
+  let deadline = int.max(1, size * seconds_per_seed / gleeunit_timeout_scale)
+  #(
+    "soak " <> range,
+    Timeout(deadline, fn() {
+      report("soak failures in " <> range, runner.soak(from:, count: size))
+    }),
+  )
 }
 
 fn env_int(name: String, fallback: Int) -> Int {
-  ffi_shell.get_env(name)
+  envoy.get(name)
   |> result.try(int.parse)
   |> result.unwrap(fallback)
 }

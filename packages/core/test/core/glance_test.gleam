@@ -6,7 +6,7 @@ import core/glance.{Glance}
 import core/json
 import gleam/list
 import gleam/string
-import support/generate
+import support/sequence
 
 fn sample() -> glance.Glance {
   Glance(
@@ -98,7 +98,7 @@ pub fn clip_marks_a_cut_with_an_ellipsis_test() {
 // length of a string mixing one-, two-, three- and four-byte characters.
 pub fn clip_never_exceeds_its_bound_or_splits_a_character_test() {
   let text = "aé中🦀 bé中🦀 cé中🦀 dé中🦀 eé中🦀"
-  list.each(generate.range(from: 4, to: string.byte_size(text) + 2), fn(bound) {
+  list.each(sequence.range(from: 4, to: string.byte_size(text) + 2), fn(bound) {
     let clipped = glance.clip(text, bound)
     assert string.byte_size(clipped) <= bound
     assert string.starts_with(text, string.drop_end(clipped, 1))

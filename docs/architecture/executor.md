@@ -762,30 +762,32 @@ because the shell arms each as the state timeout of its own mode, but the core
 answers them with no effect so that a stale fire the timer book failed to drop
 could not settle an execution early.
 
-`execution_test` runs 600 seeded random event sequences through `step`.
+`execution_test` runs 600 qcheck-generated event sequences through `step`.
 `at_most_one_settle_per_sequence_test` checks that none produces two
 settlements, `nothing_is_produced_after_settle_test` that none delivers after
 settling, `terminal_events_always_settle_test` that every terminal event settles,
 and `cancel_is_sent_at_most_once_test` that a cancel is not repeated.
 
-The service around the core has its own seeded property test,
-`executor_property_test`, on the same `support/seeded` generator. A seed draws a
-pool size and ten to twenty-two steps: starts (an execution that ends at once,
-one that sleeps, one that ignores cancel, one that floods output, with or without
-a wall deadline), cancels from the broker and from the caller's own process,
-caller death, helper crashes, a pause, and one `executor.close` while work is in
-flight. A driver performs them in order against a real broker over fake helpers.
-Every plan must keep five things: each caller that was not killed hears exactly
-one settlement (or was refused at clearance) and nothing after it; the inventory
-drains once the executions end, and every relay is dead; with the service still
-open nothing is borrowed and the slots held beyond that are bounded by the
-helpers the run killed plus its cancel-ignoring executions; a plan with neither
-closes `Ok`; and a second `close` returns the stored verdict, or says the service
-is gone after an `Ok` one. A seed reproduces the plan, which every failure prints
-whole, not the schedule, and `LOOM_EXECUTOR_PROPERTY_SEEDS` and
-`LOOM_EXECUTOR_PROPERTY_ONLY` set how many seeds a run draws and replay one.
-`leak_census_test` draws its hundred endings the same way from
-`LOOM_LEAK_CENSUS_SEEDS` seeds (default two), so its failure names a seed. The
+The service around the core has its own stateful property test,
+`executor_property_test`, a `statem` spec on fixed seeds. Each of six plans
+per pool size (three and five) is up to twenty-two commands: starts (an
+execution that ends at once, one that sleeps, one that ignores cancel, one that
+floods output, with or without a wall deadline), cancels from the broker and
+from the caller's own process, caller death, helper crashes, a pause, and one
+`executor.close` while work is in flight. A driver performs them in order
+against a real broker over fake helpers. Every plan must keep five things: each
+caller that was not killed hears exactly one settlement (or was refused at
+clearance) and nothing after it; the inventory drains once the executions end,
+and every relay is dead; with the service still open nothing is borrowed and
+the slots held beyond that are bounded by the helpers the run killed plus its
+cancel-ignoring executions; a plan with neither closes `Ok`; and a second
+`close` returns the stored verdict, or says the service is gone after an `Ok`
+one. Each rule is its own violation tag, so a failing plan shrinks by deleting
+commands from anywhere while the same rule still breaks, and each shrink
+candidate is run twice, since a seed reproduces the plan but not the schedule.
+`leak_census_test` is a statem spec in the same way: its commands are up to a
+hundred endings, a precondition caps the faults, and the census runs in the
+spec's finish. The
 simulation runner runs tool calls through this service too; see
 `docs/architecture/simulation.md`, "The effect plane".
 

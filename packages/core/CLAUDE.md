@@ -84,7 +84,10 @@ wire boundary. WP-A, and the root of the dependency DAG — `core` depends on
 
 - **Depends on**: `gleam_stdlib` only. No `gleam_erlang`, no `gleam_otp`,
   no `simplifile` — the purity of this package is structural, not a
-  convention.
+  convention. `qcheck` is a dev-dependency (pure Gleam, builds for both
+  targets): the roundtrip properties draw from `test/support/gen`, a set of
+  qcheck generators for the json and msgpack trees, ids, messages, entries
+  and usage rows, run on fixed seeds so the gate stays deterministic.
 - **Depended on by**: every other Gleam package (`storage`, `session`,
   `machine`, `runtime`, `provider`, `broker`, `tools`, `conformance`).
 - **FFI**: none. There is no `internal/ffi_*` module here and there must

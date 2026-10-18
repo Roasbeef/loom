@@ -25,7 +25,7 @@ import simplifile
 import storage/sqlite
 import storage/storage
 import support/drive
-import support/generate
+import support/messages
 
 const needle = "XYZZY_SECRET_7"
 
@@ -107,7 +107,7 @@ fn seed_register_secrets(sess: session.Session) -> Nil {
             seq: 0,
             entry_id: None,
             adjustment: False,
-            usage: generate.some_usage(10),
+            usage: messages.some_usage(10),
             details: Some(
               json.Object([#("echo", json.String("details " <> needle))]),
             ),
@@ -125,28 +125,28 @@ fn seed_register_secrets(sess: session.Session) -> Nil {
 fn seed_secrets(sess: session.Session) -> drive.Ctx {
   let ctx = drive.new_ctx(sess, 42)
   let #(ctx, _) =
-    drive.append_message(ctx, generate.user_text("please handle " <> needle))
+    drive.append_message(ctx, messages.user_text("please handle " <> needle))
   let call =
-    generate.tool_call(
+    messages.tool_call(
       1,
       json.Object([#("query", json.String("find " <> needle))]),
     )
   let #(ctx, _) =
     drive.append_message(
       ctx,
-      generate.assistant_msg(2, message.ToolUse, [call]),
+      messages.assistant_msg(2, message.ToolUse, [call]),
     )
-  let #(ctx, _) = drive.append_message(ctx, generate.tool_result(call, 3))
+  let #(ctx, _) = drive.append_message(ctx, messages.tool_result(call, 3))
   let #(ctx, _) =
     drive.append_compaction(ctx, "earlier we discussed " <> needle, [
       // The retained tail carries its own copy of the secret — the audit
       // must reach inside it.
-      generate.user_text("tail copy of " <> needle),
+      messages.user_text("tail copy of " <> needle),
     ])
   let #(ctx, _) =
     drive.append_custom(ctx, "note", Some(json.String("noted " <> needle)))
   let #(ctx, _) =
-    drive.append_message(ctx, generate.assistant_msg(4, message.Stop, []))
+    drive.append_message(ctx, messages.assistant_msg(4, message.Stop, []))
   ctx
 }
 
@@ -160,7 +160,7 @@ pub fn erase_text_keeps_clean_entries_test() {
       parent: None,
       seq: 1,
       ts: 1,
-      message: generate.user_text("nothing to hide"),
+      message: messages.user_text("nothing to hide"),
       terminate: False,
     )
   assert erase(clean) == Ok(None)
@@ -175,7 +175,7 @@ pub fn erase_text_rewrites_retained_tail_test() {
       seq: 1,
       ts: 1,
       summary: "summary with " <> needle,
-      retained_tail: [generate.user_text("tail with " <> needle)],
+      retained_tail: [messages.user_text("tail with " <> needle)],
       tokens_before: 10,
       from_hook: False,
       usage: None,
@@ -208,7 +208,7 @@ pub fn rewrite_memory_erases_and_retains_everything_else_test() {
   let assert Ok(source) = session.open_memory(clock.fixed(at: 1000))
   let assert Ok(Nil) = session.ensure_strand(source, "main", configuration())
   let ctx = seed_secrets(source)
-  let ctx = drive.append_usage(ctx, ctx.leaf, generate.some_usage(90))
+  let ctx = drive.append_usage(ctx, ctx.leaf, messages.some_usage(90))
   seed_register_secrets(ctx.session)
   let assert Ok(repo.MemoryRewrite(session: rebuilt, entries_rewritten:)) =
     repo.rewrite_memory(
@@ -234,7 +234,7 @@ pub fn rewrite_memory_erases_and_retains_everything_else_test() {
   // survive — erased where the needle reached them, verbatim elsewhere.
   let assert Ok(rows) = storage.scan_usage(rebuilt.store, storage.usage_scan())
   let assert [clean_row, details_row] = rows
-  assert clean_row.usage == generate.some_usage(90)
+  assert clean_row.usage == messages.some_usage(90)
   let flattened_details = string.inspect(details_row.details)
   assert !string.contains(does: flattened_details, contain: needle)
   assert string.contains(does: flattened_details, contain: replacement)
@@ -261,7 +261,7 @@ pub fn rewrite_memory_erases_and_retains_everything_else_test() {
 pub fn rewrite_memory_refuses_placement_changes_test() {
   let assert Ok(source) = session.open_memory(clock.fixed(at: 1000))
   let ctx = drive.new_ctx(source, 7)
-  let #(ctx, _) = drive.append_message(ctx, generate.user_msg(1))
+  let #(ctx, _) = drive.append_message(ctx, messages.user_msg(1))
   let hijack = fn(rewritten: entry.Entry) {
     // Return a different id: the driver must refuse to move entries.
     let moved = case rewritten {
@@ -364,7 +364,7 @@ pub fn sqlite_rewrite_erases_registers_and_usage_details_test() {
   // needle below lives in a register payload or a usage-details blob.
   let ctx = drive.new_ctx(source, 42)
   let #(ctx, _) =
-    drive.append_message(ctx, generate.user_text("nothing to hide"))
+    drive.append_message(ctx, messages.user_text("nothing to hide"))
   seed_register_secrets(ctx.session)
   let assert Ok(Nil) = session.close(source)
 
@@ -498,7 +498,7 @@ pub fn sqlite_rewrite_holds_the_lease_for_its_whole_duration_test() {
     )
   let ctx = drive.new_ctx(source, 42)
   let #(_ctx, _) =
-    drive.append_message(ctx, generate.user_text("please handle " <> needle))
+    drive.append_message(ctx, messages.user_text("please handle " <> needle))
   let assert Ok(Nil) = session.close(source)
 
   // M3-02's interleaving, made deterministic by using the transform as
@@ -527,7 +527,7 @@ pub fn sqlite_rewrite_holds_the_lease_for_its_whole_duration_test() {
             let #(_, _) =
               drive.append_message(
                 intruder_ctx,
-                generate.user_text("about to be lost"),
+                messages.user_text("about to be lost"),
               )
             let _ = session.close(intruder)
             Error("a concurrent writer was granted the lease")

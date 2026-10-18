@@ -1721,3 +1721,23 @@ that an ask during a running turn sends `btw`, never a main prompt or steer.
 `view/memory` is the Session pane's ninth child, drawn on the owner's page only.
 It has no handler, so no path is admitted beneath it. `component.want_memory`
 owes the first read.
+
+## Model test of paging and turn sealing
+
+`test/paging_model_test.gleam` is a `statem` model-based test (dev
+dependencies `statem` and `qcheck`) that drives `component.update` through
+`page_fixture`/`lane_fixture` with a generated sequence of events: appended,
+running, settled and resumed turns, "Load older" (alone, or with the gateway's
+answers), "Jump to latest", a divider press, a tick, and the gateway answering
+or refusing the page's reads. It checks, under one `Violation` tag each, the
+drawn-row bound (`paging.rows`), one request out at a time
+(`paging.one_read`), the lane saying it is loading while a press is owed its
+rows (`paging.loading`), a press on a `Full` or `Crowded` page entering
+`Browsing` (`paging.full`), the direction of the paging state
+(`paging.moves`), and, in `finish`, that a second page opened on the settled
+history draws the same dividers as the page that watched it
+(`paging.divider`). A second test replays the generator and fails if it stops
+reaching every paging state, an open fold, or a divider after a resumed turn.
+It needs no Lustre runtime: the frames the page writes go to a subject the
+test owns. The fixture's conversation continues only once, so a resume ends the
+history.

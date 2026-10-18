@@ -109,18 +109,81 @@ type Identity =
 /// ```
 pub fn run(seed seed: Int) -> Verdict {
   let #(script, schedule) = plan(seed)
-  case execute(seed, script, daemon_fault.none()) {
+  case judged(seed, script, schedule) {
+    Ok(Nil) -> Passed
     Error(failure) -> failed(seed, script, schedule, failure)
-    Ok(base) ->
-      case execute(seed, script, schedule) {
-        Error(failure) -> failed(seed, script, schedule, failure)
-        Ok(faulted) ->
-          case compare(base, faulted) {
-            Ok(Nil) -> Passed
-            Error(failure) -> failed(seed, script, schedule, failure)
-          }
-      }
   }
+}
+
+// Both runs of one seed, from scratch, compared. This is what `run` reports
+// and what a confirming run of a shrink candidate repeats.
+fn judged(
+  seed: Int,
+  script: Script,
+  schedule: Schedule,
+) -> Result(Nil, Failure) {
+  use base <- result.try(execute(seed, script, daemon_fault.none()))
+  against(base, seed, script, schedule)
+}
+
+// The faulted run of one seed, compared with a fault-free report already in
+// hand.
+fn against(
+  base: Report,
+  seed: Int,
+  script: Script,
+  schedule: Schedule,
+) -> Result(Nil, Failure) {
+  use faulted <- result.try(execute(seed, script, schedule))
+  compare(base, faulted)
+}
+
+/// Searches for a simpler schedule that still fails `check`, and returns the
+/// smallest it found with the failure it produced.
+///
+/// The search is `runner.minimize`, with the candidates
+/// `daemon_fault.shrink` offers (drop the kill, move it to an earlier step,
+/// move it to the creation before it) and its two rules: a candidate counts
+/// only if it fails the same check, and fails it on its first run and on
+/// every one of `runner.corroboration_runs` further runs. The first run of a
+/// candidate reuses one fault-free run of the seed; each confirming run
+/// repeats both runs from scratch, as `run` does. The script is never
+/// shrunk, for the reason the session runner gives: a script's meaning
+/// depends on its whole shape.
+///
+/// A seed whose fault-free run itself fails `check` fails it under every
+/// candidate, so the first candidate, the empty schedule, is accepted and
+/// the answer is that no fault was needed.
+///
+/// Cost: a candidate that passes or fails another check costs two runs. One
+/// that fails `check` costs two for the first run and, for each of the
+/// three confirming runs, two more.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // daemon_runner.shrink(12345, "replay/equal-catalogue-rows", budget: 6)
+/// ```
+pub fn shrink(
+  seed: Int,
+  check: String,
+  budget budget: Int,
+) -> #(Schedule, Failure) {
+  let #(script, schedule) = plan(seed)
+  let base = execute(seed, script, daemon_fault.none())
+  runner.minimize(
+    from: schedule,
+    failing: Failure(check, ""),
+    candidates: fn(candidate) {
+      daemon_fault.shrink(candidate, daemon_script.coordinates(script))
+    },
+    probe: fn(candidate) {
+      use base <- result.try(base)
+      against(base, seed, script, candidate)
+    },
+    reprobe: fn(candidate) { judged(seed, script, candidate) },
+    budget:,
+  )
 }
 
 /// Draws the script and the schedule a seed stands for, without running

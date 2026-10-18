@@ -54,6 +54,7 @@ import client/workspace_policy
 import core/clock
 import core/json.{type JsonValue}
 import core/message
+import envoy
 import gleam/erlang/process
 import gleam/int
 import gleam/io
@@ -1237,7 +1238,7 @@ fn go_places(go: String) -> Result(GoPlaces, String) {
 
 // An environment variable that holds an absolute path, or nothing.
 fn absolute_env(name: String) -> Result(String, Nil) {
-  case ffi_shell.get_env(name) {
+  case envoy.get(name) {
     Ok("/" <> _ as value) -> Ok(value)
     Ok(_) | Error(Nil) -> Error(Nil)
   }

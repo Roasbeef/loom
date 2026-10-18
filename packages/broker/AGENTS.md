@@ -50,8 +50,8 @@ protocol (spec Part 1.4). WP-G.
   (`ExecOutput`, `ExecExited`, `ExecFailed`, `CancelRequested`, `CallerDown`,
   `HelperDown`, `DeadlineReached`, `GraceExpired`) and answers effects
   (`Deliver`, `SendCancel`, `EnterDraining`, `Settle`). It imports no
-  process library, so `execution_test` runs 600 seeded random sequences
-  against it. `Core.settled` is absorbing: after `Settle` every event
+  process library, so `execution_test` runs 600 qcheck-drawn random sequences
+  (fixed seed, shrinking) against it. `Core.settled` is absorbing: after `Settle` every event
   answers `[]`, which is what makes at-most-one settlement a property of
   the function. `CancelRequested` is the broker's cancel, which the service
   has already forwarded to the helper, so the core records it, sends
@@ -537,23 +537,48 @@ protocol (spec Part 1.4). WP-G.
   and it answers `RetirementOwnerGone`, as `close_pool` does after a clean `close_pool`.
   Worst-case blocking of `close_instance`: 8 s (`close` above), pinned in
   `executor_test`.
-- **Executor service: seeded interleavings hold the same invariants.**
-  `executor_property_test` draws plans from `support/seeded` (the generator
-  `machine` and `execution_test` use): a pool size and a list of steps
-  (starts of four kinds, broker and caller cancels, caller death, helper
-  crash, pause, a close mid-run), performed in order by a driver against a
-  real broker over fake helpers. Every plan keeps: each live caller hears
-  exactly one settlement and no trailing events; the inventory drains and every
-  relay dies; with the service open nothing is borrowed and held slots are
-  bounded by the faults; a quiet plan (no crash, no cancel-ignoring start)
-  closes `Ok`; a second `close` replays the stored verdict. A seed reproduces
-  the plan, printed whole in every failure, and not the schedule.
-  `LOOM_EXECUTOR_PROPERTY_SEEDS` (default 12) and
-  `LOOM_EXECUTOR_PROPERTY_ONLY=<seed>` size and replay a run;
-  `leak_census_test` takes `LOOM_LEAK_CENSUS_SEEDS` and
-  `LOOM_LEAK_CENSUS_ONLY`. Mutation checks recorded in the commit: releasing a
-  row without checking its helper in, replaying a recomputed instead of the
-  stored close verdict, and leaving a released row on the books each fail it.
+- **Executor service: random interleavings hold the same invariants.**
+  `executor_property_test` is a `statem` spec on a fixed seed (4 plans for
+  each of pool sizes 3, 4 and 5, per test): a plan is a list of commands (starts of
+  four kinds, broker and caller cancels, caller death, helper crash, pause, a
+  close mid-run), performed by `execute` against a real broker over fake
+  helpers; `finish` reads the invariants. The `sut` is the plane plus the
+  driver's record of what it started (the oracle lives there); the model is
+  only how many starts the plan has made, so a command that names an
+  execution is not admitted before the first start. A pick is resolved modulo
+  the executions started. Every plan keeps, each under its own violation tag:
+  each live caller hears exactly one settlement and no trailing events
+  (`settlements`, `trailing`, `never_heard`); the inventory drains and every
+  relay dies (`row_kept`, `row_after_close`, `relay_outlived`); with the
+  service open nothing is borrowed and held slots are bounded by the faults
+  (`pool_borrowed`, `pool_slots`, `pool_quiet_slots`); a quiet plan (no crash,
+  no cancel-ignoring start) closes `Ok` (`quiet_close`); a second `close`
+  replays the stored verdict (`second_close`). A failure is reported shrunk by
+  deleting commands from anywhere in the plan, then pulling each toward a quick
+  start. What is reproducible is the plan, not the schedule, so each shrink
+  candidate runs twice (`with_shrink_retries`) and counts as failing if either
+  run fails with the original tag. `new_sut` builds a plane and `teardown`
+  (`planes.dismantle`) closes the service, stops the plane and reaps the pool
+  on every path, so a failed case and its shrink candidates leak nothing and
+  no case needs a process of its own. Shrinking has two bounds because an
+  execution count is not a measure of time: `max_shrinks` (8) by executions,
+  and `statem.with_shrink_stop` with `planes.shrink_stop_after(15_000)`, a
+  monotonic deadline read when the test starts and checked before each
+  candidate, so the shrunk-so-far plan is reported before gleeunit's fifty
+  second kill. A failing execution can wait out `await_heard` (12 s),
+  `close_hang` (8 s) or up to three 4 s polls, and each candidate runs twice,
+  so the figure is not four seconds a candidate; a candidate already running is
+  not interrupted; fifteen seconds leaves thirty-five for that one candidate,
+  and a pathological one that waits out several bounds can still overrun.
+  A third test asserts the generators reach every kind of command
+  (`statem.commands`).
+  `leak_census_test` is a `statem` spec over a drawn mix of up to 100 endings
+  (four mixes, with the same two bounds, and a census test that the mixes draw
+  at least 200 endings between them, the old census's total; the model counts
+  faults against the cap, the census is `finish`). There are no seed or replay environment variables. Mutation
+  checks: leaving a released row on the books fails the executor tests with a
+  one-command plan (`Start(Quick, NoDeadline)`); re-sending the cancel while
+  draining fails `execution_test`'s at-most-once property.
   `fake_helper.ByArgv` gained `flood` (two hundred chunks, then runs until
   cancelled) for it.
 - **Executor service: the failure matrix is pinned, case by case.**

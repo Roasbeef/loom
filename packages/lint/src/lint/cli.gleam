@@ -3,8 +3,8 @@
 ////
 //// This is the only module in the package that does I/O. It also applies
 //// the staging decision: **every rule warns except the ones
-//// `finding.error_by_default` names** — R0, R2, R4, R6, R10, R13, R14, R15
-//// and R16, each with its census and its argument in that function.
+//// `finding.error_by_default` names** — R0, R2, R4, R6, R10, R13, R14, R15,
+//// R16, R19 and R20, each with its census and its argument in that function.
 //// `scripts/lint.sh` reads the trailing `# <errors> <warnings>` line to
 //// decide its exit code, exactly as `scripts/doc_check.sh` does. Promoting
 //// one of the rest is `--error=R5` and nothing else; the census is what
@@ -35,7 +35,8 @@ import gleam/result
 import gleam/string
 import lint
 import lint/finding.{type Finding, type Rule}
-import lint/policy.{type Eager, type Policy}
+import lint/policy.{type Eager, type Policy, type Wall}
+import lint/test_imports
 import simplifile
 
 /// Parsed command line.
@@ -57,13 +58,14 @@ const usage: String =
 usage: gleam run -m lint/cli -- [options] <path>...
 
   --depth=N       R2 fires above this `case` nesting depth (default 3)
-  --error=R1,R5   promote these rules (R0, R2, R4, R6, R10, R13-R16 are)
-  --tests         also lint test/ sources (R4 and R7 are off for them)
+  --error=R1,R5   promote these rules (R0, R2, R4, R6, R10, R13-R16, R19, R20 are)
+  --tests         also lint test/ sources with every rule (R4 and R7 are off
+                  for them); R19 and R20 read test/ in every run
   --limit=N       list at most N findings per rule (default 25; 0 = all)
   --quiet         print the census only
   --help          this
 
-R0, R2, R4, R6, R10 and R13-R16 gate by default and their censuses must stay
+R0, R2, R4, R6, R10, R13-R16, R19 and R20 gate by default and their censuses must stay
 zero; every other rule warns unless named by --error. The last line of output
 is `# <errors> <warnings>`, which is what the wrapper script reads.
 "
@@ -147,7 +149,7 @@ fn run(options: Options) -> Nil {
   let files =
     options.paths
     |> list.flat_map(sources)
-    |> list.filter(fn(path) { options.include_tests || !is_test(path) })
+    |> list.unique
     |> list.sort(string.compare)
 
   // Read once, lint twice. R1's structural half needs a table of every
@@ -161,20 +163,92 @@ fn run(options: Options) -> Nil {
     files
     |> list.filter_map(contents)
     |> list.filter(fn(source) { !lint.is_generated(source.1) })
+
+  // The sources a test directory contributes are linted by the test-scoped
+  // rules only (R19, R20) unless `--tests` asks for every rule: the other
+  // rules keep the scope they were swept at, `src/`.
+  let #(tests, sources) = list.partition(read, fn(source) { is_test(source.0) })
+  let ruled = case options.include_tests {
+    True -> read
+    False -> sources
+  }
   let combinators =
-    list.flat_map(read, fn(source) {
+    list.flat_map(ruled, fn(source) {
       lint.exported_combinators(display(source.0), source.1)
     })
   let findings =
-    read
+    ruled
     |> list.flat_map(fn(source) { lint_source(source, options, combinators) })
-    |> list.append(list.flat_map(manifests_of(files), lint_manifest))
+    |> list.append(
+      list.flat_map(tests, fn(source) { lint_test(source, options) }),
+    )
+    |> list.append(import_wall_findings(tests))
+    |> list.append(list.flat_map(
+      manifests_of(list.map(ruled, pair.first)),
+      lint_manifest,
+    ))
   case options.quiet {
     True -> Nil
     False -> print_findings(findings, options.limit)
   }
   print_census(findings, files)
   print_summary(findings, options.errors)
+}
+
+/// The test-scoped rules over one test source (R19). Under `--tests` the
+/// full rule set already reported an unparseable file as R0, so the test pass
+/// repeats only what the full set does not say.
+fn lint_test(source: #(String, String), options: Options) -> List(Finding) {
+  let found = lint.check_tests(display(source.0), source.1)
+  case options.include_tests {
+    True -> list.filter(found, fn(f) { f.rule != finding.Unparseable })
+    False -> found
+  }
+}
+
+/// R20 for every walled package that has tests in the run. The walk needs the
+/// package's `src/` as well as its tests, and a run pointed at `test/` alone
+/// still has to read it, so the sources are fetched here rather than assumed
+/// to be among the files the run was given.
+fn import_wall_findings(tests: List(#(String, String))) -> List(Finding) {
+  list.flat_map(policy.import_walls(), fn(wall) {
+    let own =
+      list.filter(tests, fn(source) {
+        lint.package_of(display(source.0)) == option.Some(wall.package)
+      })
+    case own {
+      [] -> []
+      [first, ..] ->
+        case wall_root(wall, first.0) {
+          Error(Nil) -> []
+          Ok(root) ->
+            test_imports.findings(
+              wall,
+              list.map(own, fn(source) { #(display(source.0), source.1) }),
+              own_modules(root),
+            )
+        }
+    }
+  })
+}
+
+/// The package directory of a walled package, read off one of its test paths.
+fn wall_root(wall: Wall, test_path: String) -> Result(String, Nil) {
+  let marker = "/packages/" <> wall.package <> "/test/"
+  string.split_once(test_path, marker)
+  |> result.map(fn(split) { split.0 <> "/packages/" <> wall.package })
+}
+
+/// Every module under a package's `src/`, keyed by its module path.
+fn own_modules(root: String) -> Dict(String, #(String, String)) {
+  let prefix = root <> "/src/"
+  sources(root <> "/src")
+  |> list.filter_map(fn(path) {
+    use #(_, rest) <- result.try(string.split_once(path, prefix))
+    use read <- result.try(contents(path))
+    Ok(#(string.drop_end(rest, 6), #(display(path), read.1)))
+  })
+  |> dict.from_list
 }
 
 /// A source and its text, or nothing when it cannot be read. A file that

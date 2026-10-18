@@ -121,6 +121,23 @@ or close; there is no transaction, lease or authorization cache.
   and is never read as `Resident`. The table's foreign key to
   `catalogue_sessions` means a registration cannot be removed while its row
   stands.
+  `test/storage/catalogue_model_test.gleam` states this machine, with the
+  deletion marks and the delegate states, as a pure model (rows by session
+  slot: custody, mark, delegate binding, plus a revision counter) and runs
+  random command sequences against a real catalogue file with `statem`. It
+  compares every answer, then reads back custody, marks, delegate rows, the
+  listings and the revision after every step, so a refused or repeated
+  transition that wrote anything fails even when its answer was right. Ops come
+  from a pool of three, so a stale op is as common as the right one, and the
+  generator aims some draws at the states the refusals are about (finish a
+  `Moving` session, delete a tombstone). Tags: `custody-answer`, `delete-answer`,
+  `mark-answer`, `claim-answer`, `delegate-state-answer`, `registration-answer`
+  for answers, and `custody-state`, `mark-state`, `delegate-state`,
+  `moving-list`, `deleting-list`, `delegate-count`, `revision` for what is read
+  back. A claim for an unregistered session is drawn and answers `Missing`
+  (checked before the pair, so it wins over a `Conflict`); a claim is never
+  drawn for a session already bound to another pair, whose unique key answers
+  a `Database` error the machine does not specify.
 - `catalogue.Deletion` (`NotDeleting | Deleting`) marks a remote session whose
   deletion has begun on a session directory member (protocol-change/083).
   Version 14 adds `catalogue_session_deletions(session_id)`, one row per
@@ -154,8 +171,8 @@ or close; there is no transaction, lease or authorization cache.
   transaction it answers the pair's existing row and moves its contact time, or
   records the pair for the given session unless the spawner already holds
   `limit` rows, which answers `AtLimit(held)` and writes nothing, so two callers
-  cannot both pass `max_sessions`. A pair already bound to another session is
-  `Conflict`. `delegate_for` reads by pair and refuses a malformed pair as `Invalid` before anything else, so the registry's first step fails before it creates a session, `delegate_of` reads by session and is
+  cannot both pass `max_sessions`. A session with no registration is `Missing`,
+  checked first; a pair already bound to another session is `Conflict`. `delegate_for` reads by pair and refuses a malformed pair as `Invalid` before anything else, so the registry's first step fails before it creates a session, `delegate_of` reads by session and is
   the marker the manager refuses a move on, `delegates_held` counts a
   spawner's rows, and `delegates` lists every row in session identity order for
   the boot sweep that applies `retain_s`. A stored row that is duplicated or breaks its grammar fails the
@@ -700,7 +717,25 @@ or close; there is no transaction, lease or authorization cache.
   close and failed-open lease cleanup use the binding's busy-total exec
   path, with the owner quoted as a literal and the fence matched exactly.
 - **Stats equal the ledger sum after every commit** — the conformance suite
-  asserts it at each transaction, not just at the end.
+  asserts it at each transaction, not just at the end. `store_model_test`
+  asserts it again after every command of a random sequence.
+- **Memory is the model for SQLite, and a `statem` property holds them to it.**
+  `test/storage/store_model_test.gleam` generates command sequences (commits of
+  entries, usage rows, register writes and CAS guards, deliberately failing
+  commits, every scan, register reads, close-and-reopen of the file) and runs
+  each against a fresh SQLite file with the pure `MemoryState` threaded beside
+  it, so every answer must equal the model's. Commands name entries by an index
+  modulo the committed count and bounds by `SeqOf(index, shift)`, which lands a
+  scan cursor or range on a real entry's seq, where an off-by-one lives. The
+  `statem` model is only the committed-entry count; the oracle is in the system
+  under test. Violation tags say which family broke: `commit-diverges`,
+  `commit-rule`, `cas-order` (a stale guard must be named before a bad write),
+  `seq-order`, `register-last-write`, `stats-diverge`, `stats-ledger`,
+  `entries-diverge`, `usage-diverge`, `register-diverge`, `scan-diverges`,
+  `heads-project-entries`, `branch-chain` (an unfiltered scan from a tip is its
+  ancestor chain, computed from the test's own parent table). A census test
+  asserts the generator draws every family. When a change makes memory and
+  SQLite disagree, read the shrunk sequence before touching either side.
 - **A version is migrated or refused, never misread — and a refusal writes
   nothing.** Open runs in refuse-before-write order: one `BEGIN IMMEDIATE`
   admission transaction reads the stored version, refuses a newer file or
@@ -742,7 +777,9 @@ or close; there is no transaction, lease or authorization cache.
   inside the transaction that inserts the call row. A stale runtime's `Run`
   is therefore refused by content whatever order the network delivered it
   in, and two connections racing one key produce exactly one `Fresh`. Remove
-  the token comparison and the stale-token test fails.
+  the token comparison and the stale-token test fails, as does the `statem`
+  sequence property in `exec_ledger_test` (tag `stale-admitted`), which checks
+  every random operation against a model of scopes, tokens and call rows.
 - **`query_or_fence` settles a missing row in the transaction that finds it.**
   The recovery of a call that must not run twice calls it instead of `query`:
   an existing row is returned as `Standing`, and no row becomes a `terminal`

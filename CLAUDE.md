@@ -111,7 +111,9 @@ literate register", gives the complete conventions and examples.
   `session_view` is held to the same rule for a different reason: it is
   the client's session lane and transcript projection, which the terminal
   and the daemon's web view both drive, and R6 is what keeps either host
-  out of it (`lint/portable`).
+  out of it (`lint/portable`). `statem`, the stateful model-based testing
+  layer over qcheck, is held to it because the portable packages' tests are
+  written with it and must keep running on both targets.
 - **No naked `Bool`** in a function parameter or a record field. `Bool`
   carries no domain meaning, so `render(document, True)` names nothing at
   the call site and a field typed `Bool` makes every reader carry the
@@ -174,11 +176,11 @@ independently of uncommitted work, add a git worktree — but **not under
 replaces `/tmp` with the scratch tmpfs. `docs/execution.md` §4 has the rest.
 
 `make lint` is Loom's own house-rule lint over the Gleam sources, and it
-runs at the end of `make check`. Nineteen rules: R0 unparseable source, R1
+runs at the end of `make check`. Twenty-one rules: R0 unparseable source, R1
 eager fallbacks, R2 `case` nesting depth, R3 catch-all patterns, R4
 `panic` and `let assert` in `src`, R5 O(n) answers to bounded questions,
-R6 the portable subset `core`, `machine`, `prompt` and `session_view` are held to, R7 a
-`let assert` carrying no `as "message"`, R8 a one-caller function wide
+R6 the portable subset `core`, `machine`, `prompt`, `statem` and
+`session_view` are held to, R7 a `let assert` carrying no `as "message"`, R8 a one-caller function wide
 enough to be a moved pyramid, R9 a naked `Bool` in a parameter or field,
 R10 a comment with no blank line above it, R11 a body written as one
 undivided block, R12 a closure that captures a whole outer value only to
@@ -191,8 +193,13 @@ type's constructors, R15 a state-machine module whose state, message or
 effect types sit below its first function, R16 an unqualified import of a
 function from a Loom module, R17 a module whose helpers sit above their
 callers, and R18 a short one-caller helper the module doc never names.
-**R0, R2, R4, R6, R10, R13, R14, R15 and R16 fail the build**; the other
-ten warn and cost nothing. R3, R8, R17 and R18 are censuses and will never
+Two more read `test/` rather than `src/`, and are the only rules that do:
+R19 a `SKIP` diagnostic printed to stdout from a test, where EUnit discards
+it and the skip census never sees it (use `io.println_error`), and R20 a
+`web_client` test whose import graph reaches `lustre` or
+`web_client/internal`, which throws at load on the signoff container's
+Node. **R0, R2, R4, R6, R10, R13, R14, R15, R16, R19 and R20 fail the
+build**; the other ten warn and cost nothing. R3, R8, R17 and R18 are censuses and will never
 gate: they over-report by construction, which is the point of measuring
 rather than refusing. A spine is prose that names code, so a renamed
 function fails the build until the spine is told.

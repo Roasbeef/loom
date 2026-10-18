@@ -1,7 +1,9 @@
 import core/msgpack
 import gleam/bit_array
 import gleam/list
-import support/generate
+import qcheck
+import support/gen
+import support/sequence
 
 // --- golden vectors -----------------------------------------------------
 //
@@ -105,7 +107,7 @@ pub fn golden_fixarray_test() {
 
 pub fn golden_array16_test() {
   // 16 elements: one past the fixarray limit.
-  let items = list.map(generate.range(0, 15), msgpack.IntValue)
+  let items = list.map(sequence.range(0, 15), msgpack.IntValue)
   golden(msgpack.ArrayValue(items), <<
     0xdc, 0x00, 0x10, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09,
     0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
@@ -148,7 +150,7 @@ pub fn str16_and_bin16_roundtrip_test() {
     msgpack.encode(msgpack.StringValue(text))
   roundtrip(msgpack.StringValue(text))
 
-  let #(bytes, _seed) = generate.byte_array(generate.seed(1), 256)
+  let bytes = ascending_bytes(256)
   let assert Ok(<<0xc5, 0x01, 0x00, _:bytes>>) =
     msgpack.encode(msgpack.BinaryValue(bytes))
   roundtrip(msgpack.BinaryValue(bytes))
@@ -157,7 +159,7 @@ pub fn str16_and_bin16_roundtrip_test() {
 pub fn map16_roundtrip_test() {
   // 16 entries: one past the fixmap limit.
   let entries =
-    list.map(generate.range(0, 15), fn(n) {
+    list.map(sequence.range(0, 15), fn(n) {
       #(msgpack.IntValue(n), msgpack.IntValue(n))
     })
   let assert Ok(<<0xde, 0x00, 0x10, _:bytes>>) =
@@ -165,8 +167,16 @@ pub fn map16_roundtrip_test() {
   roundtrip(msgpack.MapValue(entries))
 }
 
+// `count` bytes counting up from zero and wrapping at 256: a payload with
+// no repeated run for the length header to be mistaken about.
+fn ascending_bytes(count: Int) -> BitArray {
+  list.fold(sequence.range(0, count - 1), from: <<>>, with: fn(acc, n) {
+    bit_array.append(acc, <<{ n % 256 }:size(8)>>)
+  })
+}
+
 fn repeat_string(char: String, times: Int) -> String {
-  list.fold(generate.range(1, times), from: "", with: fn(acc, _) { acc <> char })
+  list.fold(sequence.range(1, times), from: "", with: fn(acc, _) { acc <> char })
 }
 
 // --- encode errors ------------------------------------------------------
@@ -211,7 +221,7 @@ pub fn decode_rejects_duplicate_map_keys_test() {
 // `count` one-element array headers wrapping an empty array: nesting
 // depth `count + 1`.
 fn nested_arrays(count: Int) -> BitArray {
-  list.fold(generate.range(1, count), from: <<0x90>>, with: fn(inner, _) {
+  list.fold(sequence.range(1, count), from: <<0x90>>, with: fn(inner, _) {
     <<0x91, inner:bits>>
   })
 }
@@ -221,7 +231,7 @@ pub fn decode_depth_at_bound_still_decodes_test() {
   // Maps at the bound too: {"k": {"k": ... {}}}.
   let nested_maps =
     list.fold(
-      generate.range(1, msgpack.max_depth - 1),
+      sequence.range(1, msgpack.max_depth - 1),
       from: <<0x80>>,
       with: fn(inner, _) { <<0x81, 0xa1, "k":utf8, inner:bits>> },
     )
@@ -232,7 +242,7 @@ pub fn decode_depth_past_bound_rejected_test() {
   let assert Error(_report) = msgpack.decode(nested_arrays(msgpack.max_depth))
   let nested_maps =
     list.fold(
-      generate.range(1, msgpack.max_depth),
+      sequence.range(1, msgpack.max_depth),
       from: <<0x80>>,
       with: fn(inner, _) { <<0x81, 0xa1, "k":utf8, inner:bits>> },
     )
@@ -252,25 +262,28 @@ fn roundtrip(value: msgpack.MsgPackValue) -> Nil {
   Nil
 }
 
-pub fn roundtrip_property_test() {
-  roundtrip_loop(generate.seed(31), 200)
+/// How many values each roundtrip property is checked over, and the qcheck
+/// seed they are drawn from. The seed is fixed so the gate is deterministic.
+const roundtrip_count = 200
+
+const roundtrip_seed = 31
+
+fn roundtrip_config() -> qcheck.Config {
+  qcheck.default_config()
+  |> qcheck.with_test_count(roundtrip_count)
+  |> qcheck.with_seed(qcheck.seed(roundtrip_seed))
 }
 
-fn roundtrip_loop(seed: generate.Seed, remaining: Int) -> Nil {
-  case remaining <= 0 {
-    True -> Nil
-    False -> {
-      let #(value, seed) = generate.msgpack_value(seed, 4)
-      roundtrip(value)
-      roundtrip_loop(seed, remaining - 1)
-    }
-  }
+// A value shrinks toward `NilValue` and then toward empty containers, so a
+// failing roundtrip is reported as the smallest document that still fails.
+pub fn roundtrip_property_test() {
+  qcheck.run(roundtrip_config(), gen.msgpack_value(4), roundtrip)
 }
 
 pub fn roundtrip_unicode_strings_test() {
-  let seed = generate.seed(32)
-  let #(texts, _seed) = generate.list_of(seed, 100, generate.small_string)
-  list.each(texts, fn(text) { roundtrip(msgpack.StringValue(text)) })
+  qcheck.run(roundtrip_config(), gen.small_string(), fn(text) {
+    roundtrip(msgpack.StringValue(text))
+  })
 }
 
 // --- adversarial inputs -------------------------------------------------

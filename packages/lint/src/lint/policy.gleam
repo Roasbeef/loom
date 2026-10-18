@@ -255,7 +255,7 @@ fn is_harness(package: Option(String)) -> Bool {
 /// than trusting that it covers anything. `lint/portable` argues what the
 /// membership protects, and why `session_view` is on the list.
 pub fn portable_packages() -> List(String) {
-  ["core", "machine", "prompt", "session_view"]
+  ["core", "machine", "prompt", "session_view", "statem"]
 }
 
 /// A dependency that exists only on the BEAM, named from both sides.
@@ -280,4 +280,27 @@ pub fn beam_only_dependencies() -> List(BeamOnly) {
     BeamOnly("gleam_erlang", "gleam/erlang"),
     BeamOnly("gleam_otp", "gleam/otp"),
   ]
+}
+
+/// A package whose tests must not reach certain modules through their import
+/// graph (R20), and what they must not reach.
+pub type Wall {
+  Wall(
+    /// The package, which is also the root of its own module paths: a module
+    /// path equal to it or beneath it is one the walk reads from `src/`.
+    package: String,
+    /// Module-path prefixes no test may reach, each matching itself and
+    /// everything beneath it as a path segment.
+    forbidden: List(String),
+  )
+}
+
+/// The walled packages. `web_client` is the one: its tests run on Node, Bun
+/// or Deno, and anything that loads `lustre`'s client runtime or the
+/// package's DOM bindings (`web_client/internal`) throws on a Node without a
+/// global `CustomEvent` before the first test runs. `lint/test_imports`
+/// carries the argument. Data rather than a `case` for the reason
+/// `portable_packages` is: the tests can enumerate it.
+pub fn import_walls() -> List(Wall) {
+  [Wall(package: "web_client", forbidden: ["lustre", "web_client/internal"])]
 }
