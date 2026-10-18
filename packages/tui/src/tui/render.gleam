@@ -1416,18 +1416,6 @@ fn agent_detail_content(model: Model, inspector: agents.Inspector) {
   }
 }
 
-fn agent_message_content(
-  model: Model,
-  selected: String,
-  message: Option(String),
-  scroll: Int,
-  area: Rect,
-) -> span.Text {
-  model.shared.agent_messages
-  |> agent_messages.for_strand(selected)
-  |> agent_message_panel.render(message, scroll, area)
-}
-
 fn notes_content(model: Model, area: Rect, target: String) -> span.Text {
   let rows = prepared_notes(model, target, area)
   let context = note_context(model, target)

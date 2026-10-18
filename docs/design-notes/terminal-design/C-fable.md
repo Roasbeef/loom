@@ -388,7 +388,7 @@ when a strand needs a decision (`needing`,
 `session_view/strand_card.gleam:69`). The panel has keyboard focus or the
 composer does; the panel's border is drawn in the signal colour while it has
 focus, and the composer's top rule says what the keys do, as it does for the
-strip today (`input_title_keys`, `tui/render.gleam:2110`).
+strip today (`input_title_keys`, `tui/render.gleam:2098`).
 
 | Key, panel focused | Does |
 |---|---|
