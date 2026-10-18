@@ -276,7 +276,8 @@ pub opaque type Gateway {
 type Phase {
   /// Nothing has resolved a route, read a secret, or opened a socket. The
   /// guard is waiting for the begin permit which publishes its custodian.
-  Parked
+  /// Only this phase owns request inputs; the pump takes them at begin.
+  Parked(gateway: Gateway, request: ProviderRequest, now: Int)
 
   /// The pump has been spawned parked and its ready handshake is
   /// outstanding. Entering this state arms the start deadline.
@@ -384,9 +385,6 @@ type ActiveExit {
 /// an ordinary registration cancel the cancellation grace.
 type Guard {
   Guard(
-    gateway: Gateway,
-    request: ProviderRequest,
-    now: Int,
     events: process.Subject(StreamEvent),
     pump_ready: process.Subject(
       #(process.Subject(Control), process.Subject(Nil)),
@@ -855,9 +853,6 @@ fn start_guard(
       let consumer_watch = process.monitor(consumer)
       let guard =
         Guard(
-          gateway:,
-          request:,
-          now:,
           events:,
           pump_ready:,
           pump_events:,
@@ -869,7 +864,7 @@ fn start_guard(
           report: accounting.empty(),
           pending_usage: None,
         )
-      sm.initialised(Parked, guard)
+      sm.initialised(Parked(gateway:, request:, now:), guard)
       |> sm.selecting(guard_selector(
         control,
         begin,
@@ -1029,7 +1024,7 @@ fn entered(
         sending: Told(ReapExpired),
       )
 
-    Parked
+    Parked(..)
     | Requesting
     | Settling(..)
     | ClosingPump
@@ -1047,7 +1042,7 @@ fn step(phase: Phase, guard: Guard, event: Event) -> Step {
   case phase, event {
     // Replacing a report never renews a phase deadline. A later registration
     // reopens the frontier only after this sender-ordered update was retained.
-    Parked, AccountingUpdated(report)
+    Parked(..), AccountingUpdated(report)
     | Starting, AccountingUpdated(report)
     | Requesting, AccountingUpdated(report)
     | Cancelling, AccountingUpdated(report)
@@ -1060,12 +1055,13 @@ fn step(phase: Phase, guard: Guard, event: Event) -> Step {
 
     // The permit publishes the custodian, so the pump can be spawned,
     // adopted, and only then released.
-    Parked, Begin(custodian:) -> begin_request(guard, custodian)
+    Parked(gateway:, request:, now:), Begin(custodian:) ->
+      begin_request(gateway, request, now, guard, custodian)
 
     // Cancellation before the permit retires the parked request without
     // reading a secret or opening a socket, and a consumer nobody can
     // deliver to is the same fact arriving from the other side.
-    Parked, CancelAsked | Parked, ConsumerExited -> sm.stop()
+    Parked(..), CancelAsked | Parked(..), ConsumerExited -> sm.stop()
 
     Starting, PumpAdmitted(control:, begin:) ->
       release_pump(guard, control, begin)
@@ -1165,7 +1161,7 @@ fn step(phase: Phase, guard: Guard, event: Event) -> Step {
     // An attempt owner's exit is recorded wherever it lands. The phase that
     // was going to wait for it may not have been reached yet, and an exit
     // seen early must mean what an exit seen late would have meant.
-    Parked, AttemptExited(exit:)
+    Parked(..), AttemptExited(exit:)
     | Starting, AttemptExited(exit:)
     | Requesting, AttemptExited(exit:)
     | Cancelling, AttemptExited(exit:)
@@ -1193,7 +1189,7 @@ fn step(phase: Phase, guard: Guard, event: Event) -> Step {
     // The ready handshake and its deadline belong to `Starting` alone; the
     // deadline is a state timeout, so a fire that raced the move out of
     // `Starting` is dropped by weft's timer book before it arrives here.
-    Parked, PumpAdmitted(..)
+    Parked(..), PumpAdmitted(..)
     | Requesting, PumpAdmitted(..)
     | Cancelling, PumpAdmitted(..)
     | Settling(..), PumpAdmitted(..)
@@ -1201,7 +1197,7 @@ fn step(phase: Phase, guard: Guard, event: Event) -> Step {
     | ClosingPump, PumpAdmitted(..)
     | Abandoning, PumpAdmitted(..)
     | ClosingActive, PumpAdmitted(..)
-    | Parked, PumpStartExpired
+    | Parked(..), PumpStartExpired
     | Requesting, PumpStartExpired
     | Cancelling, PumpStartExpired
     | Settling(..), PumpStartExpired
@@ -1214,7 +1210,7 @@ fn step(phase: Phase, guard: Guard, event: Event) -> Step {
     // Outside the response window nothing the pump streams can be
     // published: before the permit it has not begun, and after the terminal
     // the stream law forbids a second one.
-    Parked, FromPump(..)
+    Parked(..), FromPump(..)
     | Starting, FromPump(..)
     | Settling(..), FromPump(..)
     | Reaping(..), FromPump(..)
@@ -1226,7 +1222,7 @@ fn step(phase: Phase, guard: Guard, event: Event) -> Step {
     // A registration in one of these phases has no permit to be given: the
     // pump has not begun, or it has already authored its terminal, or it is
     // gone and nothing is blocked behind an answer.
-    Parked, Registered(..)
+    Parked(..), Registered(..)
     | Starting, Registered(..)
     | Settling(..), Registered(..)
     | Reaping(..), Registered(..)
@@ -1244,7 +1240,7 @@ fn step(phase: Phase, guard: Guard, event: Event) -> Step {
 
     // No pump has been spawned, or its exit is what put the machine in this
     // phase to begin with.
-    Parked, PumpExited | Reaping(..), PumpExited -> sm.keep(guard)
+    Parked(..), PumpExited | Reaping(..), PumpExited -> sm.keep(guard)
 
     // Cancellation after a terminal has been decided is a no-op: the first
     // terminal-class event already won the race.
@@ -1259,7 +1255,7 @@ fn step(phase: Phase, guard: Guard, event: Event) -> Step {
     // the state that armed it is stale and weft's timer book has already
     // dropped it. These arms exist because the matrix is exhaustive, not
     // because the case can arise.
-    Parked, CancelExpired
+    Parked(..), CancelExpired
     | Starting, CancelExpired
     | Requesting, CancelExpired
     | Settling(..), CancelExpired
@@ -1267,7 +1263,7 @@ fn step(phase: Phase, guard: Guard, event: Event) -> Step {
     | ClosingPump, CancelExpired
     | Abandoning, CancelExpired
     | ClosingActive, CancelExpired
-    | Parked, ReapExpired
+    | Parked(..), ReapExpired
     | Starting, ReapExpired
     | Requesting, ReapExpired
     | Cancelling, ReapExpired
@@ -1279,7 +1275,7 @@ fn step(phase: Phase, guard: Guard, event: Event) -> Step {
 
     // A `Down` from none of the guard's three monitors. Demonitoring
     // flushes, so a superseded attempt's exit never arrives at all.
-    Parked, StrayExited
+    Parked(..), StrayExited
     | Starting, StrayExited
     | Requesting, StrayExited
     | Cancelling, StrayExited
@@ -1298,15 +1294,22 @@ fn step(phase: Phase, guard: Guard, event: Event) -> Step {
 //
 // The pump is not the guard: a crash in the route walk must not erase the
 // guard's ability to author a terminal, which is the whole reason there are
-// two processes here.
-fn begin_request(guard: Guard, custodian: custodian.Custodian) -> Step {
+// two processes here. The guard drops the request and gateway when it leaves
+// Parked; its remaining work needs only monitors, subjects and accounting.
+fn begin_request(
+  gateway: Gateway,
+  request: ProviderRequest,
+  now: Int,
+  guard: Guard,
+  custodian: custodian.Custodian,
+) -> Step {
   let self = process.self()
   let owner =
     process.spawn_unlinked(fn() {
       parked_pump(
-        guard.gateway,
-        guard.request,
-        guard.now,
+        gateway,
+        request,
+        now,
         guard.pump_ready,
         guard.pump_events,
         guard.pump_attempts,

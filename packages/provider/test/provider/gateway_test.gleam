@@ -26,6 +26,11 @@ import provider/stream
 
 const secret_value = "sk-super-secret-123"
 
+// No Gleam API exposes the guard's system-state pair. This test-only probe
+// measures that pair without returning request contents or forcing collection.
+@external(erlang, "provider_http_test_ffi", "request_guard_words")
+fn request_guard_words() -> Result(Int, Nil)
+
 // --- fixtures -------------------------------------------------------------
 
 fn target(provider: String, model_id: String) -> model.ResolvedModel {
@@ -598,6 +603,51 @@ pub fn cancellation_before_begin_starts_no_provider_work_test() {
 
   assert process.receive(started, within: 50) == Error(Nil)
   assert stream.next(handle, within: 50) == Error(Nil)
+}
+
+pub fn a_started_guard_releases_its_request_inputs_test() {
+  let started = process.new_subject()
+  let transport =
+    fixture.routing_transport(fn(request) {
+      assert list.length(string.split(request.body, "memory probe")) == 5001
+        as "the pump must still receive the complete request"
+      let release = process.new_subject()
+      process.send(started, release)
+      let assert Ok(Nil) = process.receive(release, within: 2000)
+        as "the synthetic transport waits for the state observation"
+      fixture.ok_response(happy_transcript("done"))
+    })
+  let request =
+    model.ProviderRequest(
+      ..main_request(),
+      messages: list.repeat(
+        message.UserMessage([message.UserText("memory probe", None)], 0, None),
+        5000,
+      ),
+    )
+  let stream.PreparedStream(handle:, begin:) =
+    gateway.prepare(two_provider_gateway(transport), request)
+  let witness = stream.watch_drain(handle)
+  let assert Ok(parked) = request_guard_words()
+    as "the prepared guard must own its request before begin"
+  begin()
+  let assert Ok(release) = process.receive(started, within: 2000)
+    as "the pump must begin its transport after adoption"
+  let measured = request_guard_words()
+  process.send(release, Nil)
+
+  // Complete and drain before judging retention, so even a failed assertion
+  // cannot leave this test's transport waiting for a permit.
+  let terminal = stream.await_terminal(handle, within: 2000)
+  assert stream.await_drain_forever(witness) == stream.Drained
+  let assert Ok(#(_, stream.Settled(..))) = terminal
+    as "dropping the guard's inputs must preserve request completion"
+  let assert Ok(active) = measured
+    as "the active guard must remain observable until settlement"
+  assert parked > 50_000
+    as "the fixture must actually place a large request in the parked guard"
+  assert active < 1000
+    as "an active guard must retain control and accounting, not request inputs"
 }
 
 pub fn cancellation_after_settlement_is_a_noop_test() {

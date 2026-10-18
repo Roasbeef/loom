@@ -242,7 +242,10 @@ not split the batch. These are transient wire projections.
   `Settling(terminal)`, `Reaping(cause)`, `ClosingPump`, `Abandoning`,
   `ClosingActive` — and everything per-request (the custodian, the pump,
   the active attempt and its monitor, the consumer monitor) is the `Guard`
-  data record beside it. All three of its deadlines are **state timeouts**:
+  data record beside it. The gateway, request and dispatch timestamp belong
+  only to the `Parked` phase. Beginning transfers them to the private pump;
+  the active guard keeps control and accounting without a second request
+  inventory. All three of its deadlines are **state timeouts**:
   the pump's ready handshake on `Starting`, the fixed cancellation grace on
   `Cancelling`, and the same grace again on `Reaping` when the pump died
   without authoring a terminal. Each therefore dies with the state that
