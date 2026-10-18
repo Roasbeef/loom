@@ -343,9 +343,7 @@ pub fn agent_request(
     Some(asked) if asked <= 0 ->
       Error(InvalidArgument(reason: "within_ms must be positive"))
     Some(asked) if asked > terms.max_within_ms ->
-      Error(InvalidArgument(
-        reason: "within_ms is above this spawner's max_within_s",
-      ))
+      Error(InvalidArgument(reason: over_cap(asked, terms.max_within_ms)))
     Some(asked) -> Ok(asked)
   })
   use Nil <- result.try(case request.tools {
@@ -370,6 +368,29 @@ pub fn agent_request(
     },
     on: None,
   ))
+}
+
+/// The refusal of a deadline above the spawner's cap, naming both figures.
+///
+/// A parent on a deeper orchestrator that names no deadline is sent what its
+/// own deadline leaves (protocol-change/084, phase 4), which this spawner's cap
+/// may be below. The model that reads the refusal then needs both numbers to ask
+/// again with a budget that fits, in one step.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert remote_spawn.over_cap(90_000, 60_000)
+///   == "within_ms 90000 is above this spawner's max_within_s of 60000 ms; ask for 60000 or less"
+/// ```
+pub fn over_cap(asked: Int, max_within_ms: Int) -> String {
+  "within_ms "
+  <> int.to_string(asked)
+  <> " is above this spawner's max_within_s of "
+  <> int.to_string(max_within_ms)
+  <> " ms; ask for "
+  <> int.to_string(max_within_ms)
+  <> " or less"
 }
 
 /// The parent's tools that the ceiling also holds. A child's tools are narrowed

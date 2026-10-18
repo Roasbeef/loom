@@ -5203,9 +5203,12 @@ pub fn a_remote_spawn_is_judged_by_the_spawners_deadlines_test() {
         within_ms: Some(terms.max_within_ms + 1),
       ),
     )
-    == Error(remote_spawn.InvalidArgument(
-      reason: "within_ms is above this spawner's max_within_s",
-    ))
+    == Error(
+      remote_spawn.InvalidArgument(reason: remote_spawn.over_cap(
+        terms.max_within_ms + 1,
+        terms.max_within_ms,
+      )),
+    )
   assert agency.delegate_spawn(
       harness.config,
       delegation,
@@ -6007,9 +6010,12 @@ pub fn the_port_refuses_a_spawn_the_spawners_table_forbids_test() {
       ),
     )
     == Ok(
-      Error(remote_spawn.InvalidArgument(
-        reason: "within_ms is above this spawner's max_within_s",
-      )),
+      Error(
+        remote_spawn.InvalidArgument(reason: remote_spawn.over_cap(
+          1_000_000_000,
+          spawners.default_max_within_s * 1000,
+        )),
+      ),
     )
   assert orchestrator_port.ask_spawn(
       port,

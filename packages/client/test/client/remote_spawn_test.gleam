@@ -54,7 +54,7 @@ pub fn a_deadline_is_kept_up_to_the_cap_and_refused_beyond_it_test() {
   // Refused and not clamped: a sender that believed a child could run longer
   // than it can would wait on nothing.
   let assert Error(InvalidArgument(reason: over)) = at(60_001)
-  assert over == "within_ms is above this spawner's max_within_s"
+  assert over == remote_spawn.over_cap(60_001, 60_000)
   assert at(0) == Error(InvalidArgument(reason: "within_ms must be positive"))
   assert at(-1) == Error(InvalidArgument(reason: "within_ms must be positive"))
 }
