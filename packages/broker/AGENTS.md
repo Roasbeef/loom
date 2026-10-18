@@ -581,6 +581,27 @@ protocol (spec Part 1.4). WP-G.
   draining fails `execution_test`'s at-most-once property.
   `fake_helper.ByArgv` gained `flood` (two hundred chunks, then runs until
   cancelled) for it.
+- **Executor service: concurrent callers are linearizable.**
+  `executor_parallel_test` is a `statem_parallel` spec (seeded, 40 cases of
+  three runs each, for two and for three branches; about ten seconds a test):
+  a prefix, then branches that start, cancel, await, kill the caller of, and
+  close, against one shared plane. The `sut` is the plane plus a registry
+  actor, because a shared handle cannot thread driver bookkeeping through
+  `execute`. The model is the accepted runs (kind, cancelled, caller killed)
+  and open or shut, and every answer is predicted from it: a start is
+  `Started(n)` or, once shut, `Refused`; picks resolve modulo the runs; an
+  await is `Settled` for a run that must end, `StillRunning` for a held run
+  left alone, `CallerKilled`. Two design rulings keep the model free of
+  symbolic variables: a run takes its position when the service has decided
+  on it, with starts asked of the service one at a time (positions taken at
+  request time put a refusal before a close that preceded it, a false alarm),
+  and each await poll re-resolves its pick so the run and the finding are one
+  instant. The pool exceeds the most starts a case can make, so a refusal
+  means a closed service. `finish` reads what only a quiet system shows
+  (`never_heard`, `settlements`, `trailing`, `row_kept`, `pool_borrowed`,
+  `pool_slots`, `quiet_close`, `relay_outlived`, `second_close`). A census
+  test asserts that generation puts a close beside a start, a cancel beside an
+  await, and so on, in different branches.
 - **Executor service: the failure matrix is pinned, case by case.**
   `test/broker/failure_matrix_test.gleam` runs each fault through a real
   broker over fake helpers and asserts one settlement (or one refusal), the
