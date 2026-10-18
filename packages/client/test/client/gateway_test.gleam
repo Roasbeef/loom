@@ -7079,6 +7079,7 @@ fn profile_harness(
         saving
       },
       restart: fn() { process.send(reported, Restarted) },
+      watch: None,
     )
   let harness =
     start_harness_adjusted(
@@ -7288,6 +7289,41 @@ pub fn profile_set_is_refused_while_a_strand_runs_test() {
     as "a running strand refuses the switch"
   assert process.receive(reported, within: 50) == Error(Nil)
     as "a request in flight is not interrupted by a switch"
+}
+
+// A configuration that changed under an idle session reopens it at once, and a
+// second notice before the reopen has stopped the hub starts nothing more.
+pub fn a_changed_configuration_reopens_an_idle_session_test() {
+  let #(harness, reported) =
+    profile_harness(None, entering_fallback, Ok(Nil), SettlingProvider)
+  subscribe(harness)
+  gateway.configuration_changed(harness.hub.name)
+  assert process.receive(reported, within: 2000) == Ok(Restarted)
+  gateway.configuration_changed(harness.hub.name)
+  assert process.receive(reported, within: 100) == Error(Nil)
+    as "a reopen already begun is not begun twice"
+}
+
+// A running strand defers the reopen until the pull that sees its run end: the
+// reload never interrupts a request in flight.
+pub fn a_changed_configuration_waits_for_the_running_strand_test() {
+  let gate = start_gate()
+  let #(harness, reported) =
+    profile_harness(
+      None,
+      entering_fallback,
+      Ok(Nil),
+      ScriptedProvider(parked_provider(gate)),
+    )
+  subscribe(harness)
+  send(harness, 2, protocol.Prompt(strand: "main", text: "work"))
+  let _admitted = next_reply(harness, 2, 8)
+  gateway.configuration_changed(harness.hub.name)
+  assert process.receive(reported, within: 200) == Error(Nil)
+    as "a run in flight holds the reopen"
+  release_gate(gate)
+  assert process.receive(reported, within: 5000) == Ok(Restarted)
+    as "the run's end pays the reload it owed"
 }
 
 pub fn a_member_may_not_switch_the_profile_test() {

@@ -25,6 +25,10 @@
 ////    once: the work runs in a process the session does not own, because the
 ////    stop ends the session.
 ////
+//// The same `restart` is how a session takes a configuration file that changed
+//// under it: `watch` names the file, the session's `client/config_watch` reads
+//// it, and the hub restarts once no strand is running.
+////
 //// ## Why a restart
 ////
 //// Everything that reads a role is built once when a session opens: the
@@ -36,6 +40,7 @@
 //// profile, by the one path that already resolves a profile.
 
 import client/catalog
+import client/config_watch
 import gleam/option.{type Option}
 
 /// What a hub needs from the daemon to read and switch its session's profile.
@@ -62,5 +67,9 @@ pub type Desk {
     save: fn(Option(String)) -> Result(Nil, String),
     /// Starts stopping and reopening the session, and returns at once.
     restart: fn() -> Nil,
+    /// The configuration file the session loaded, which the session's
+    /// watcher reads for changes that reopen it through `restart`, or `None`
+    /// for a session with no file.
+    watch: Option(config_watch.Source),
   )
 }
