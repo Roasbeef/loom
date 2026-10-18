@@ -57,6 +57,7 @@
 //// that are already durable, and the structural anti-feedback exclusion
 //// belongs to memory stage M2 rather than here.
 
+import broker/internal/call
 import client/internal/history_bridge
 import client/internal/shared_history
 import core/codec
@@ -732,27 +733,12 @@ fn ask(
   case address.lookup(name) {
     Error(Nil) -> Error(no_holder)
     Ok(subject) -> {
-      use pid <- result.try(
+      use _pid <- result.try(
         process.subject_owner(subject)
         |> result.replace_error(no_holder),
       )
-      let reply = process.new_subject()
-      let monitor = process.monitor(pid)
-
-      // Send to the PID the monitor describes. Re-resolving the name here could
-      // panic during a restart or ask a replacement while watching its
-      // predecessor.
-      process.send(subject, message(reply))
-      let answered =
-        process.new_selector()
-        |> process.select_map(reply, Some)
-        |> process.select_specific_monitor(monitor, fn(_down) { None })
-        |> process.selector_receive(within: timeout_ms)
-      process.demonitor_process(monitor)
-      case answered {
-        Ok(Some(value)) -> Ok(value)
-        Ok(None) | Error(Nil) -> Error(wedged)
-      }
+      call.try_call(subject, waiting: timeout_ms, sending: message)
+      |> result.replace_error(wedged)
     }
   }
 }

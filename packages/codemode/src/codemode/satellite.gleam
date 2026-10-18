@@ -559,8 +559,16 @@ pub type Precheck =
 
 // --- the host actor -------------------------------------------------------
 
+// The single-shot host's phase: waiting for the launcher's connection, or
+// serving the connected node under its wall deadline (a state timeout on
+// `ConnectedPhase`).
+type RunPhase {
+  AwaitingConnection
+  ConnectedPhase
+}
+
 // The started single-shot host: `commands` for internal messages, `wire`
-// for the launcher's inbound bytes, and the actor's pid, which
+// for the launcher's inbound bytes, and the machine's pid, which
 // `run_launched` monitors so a host that stopped before taking the
 // connection does not leave the node unreaped.
 //
@@ -882,7 +890,7 @@ fn start_host(
   result_subject: Subject(Run),
 ) -> Result(RunHost, actor.StartError) {
   let #(started, clock) = clock.read(config.clock)
-  actor.new_with_initialiser(host_init_timeout_ms, fn(commands) {
+  sm.new_with_initialiser(host_init_timeout_ms, fn(commands) {
     let wire = process.new_subject()
     let selector =
       process.new_selector()
@@ -922,32 +930,45 @@ fn start_host(
         last_failure: None,
         result: result_subject,
       )
-    actor.initialised(state)
-    |> actor.selecting(selector)
-    |> actor.returning(#(commands, wire))
+    sm.initialised(AwaitingConnection, state)
+    |> sm.selecting(selector)
+    |> sm.returning(#(commands, wire))
     |> Ok
   })
-  |> actor.on_message(handle)
-  |> actor.start
+  |> sm.on_event(handle)
+  |> sm.start
   |> result.map(fn(started) {
     let #(commands, wire) = started.data
     RunHost(pid: started.pid, commands:, wire:)
   })
 }
 
-fn handle(state: State, msg: Msg) -> actor.Next(State, Msg) {
-  case msg {
-    Connected(send:, destroy:, ack:) ->
-      handle_connected(state, send, destroy, ack)
-    FromWire(WireBytes(data:)) -> handle_bytes(state, data)
-    FromWire(WireClosed(reason:)) ->
-      terminate(state, Error(SatelliteGone(reason)))
-    CapStarted(id:, handle:) -> handle_cap_started(state, id, handle)
-    CapDone(id:, outcome:) -> handle_cap_done(state, id, outcome)
-    Deadline -> terminate(state, Error(DeadlineExceeded))
-    Stop -> {
+fn handle(
+  phase: RunPhase,
+  state: State,
+  msg: Msg,
+) -> sm.Next(RunPhase, State, Msg) {
+  case phase, msg {
+    AwaitingConnection, Connected(send:, destroy:, ack:)
+    | ConnectedPhase, Connected(send:, destroy:, ack:)
+    -> handle_connected(state, send, destroy, ack)
+    AwaitingConnection, FromWire(WireBytes(data:))
+    | ConnectedPhase, FromWire(WireBytes(data:))
+    -> handle_bytes(state, data)
+    AwaitingConnection, FromWire(WireClosed(reason:))
+    | ConnectedPhase, FromWire(WireClosed(reason:))
+    -> terminate(state, Error(SatelliteGone(reason)))
+    AwaitingConnection, CapStarted(id:, handle:)
+    | ConnectedPhase, CapStarted(id:, handle:)
+    -> handle_cap_started(state, id, handle)
+    AwaitingConnection, CapDone(id:, outcome:)
+    | ConnectedPhase, CapDone(id:, outcome:)
+    -> handle_cap_done(state, id, outcome)
+    AwaitingConnection, Deadline | ConnectedPhase, Deadline ->
+      terminate(state, Error(DeadlineExceeded))
+    AwaitingConnection, Stop | ConnectedPhase, Stop -> {
       let _node = cleanup(state)
-      actor.stop()
+      sm.stop()
     }
   }
 }
@@ -957,21 +978,22 @@ fn handle_connected(
   send: fn(BitArray) -> Nil,
   destroy: fn() -> Report,
   ack: Subject(Nil),
-) -> actor.Next(State, Msg) {
+) -> sm.Next(RunPhase, State, Msg) {
   // Flush anything buffered before the launcher connected.
   list.each(list.reverse(state.pending_out), send)
 
-  // The node exists from here, so the wall deadline starts here: after it,
-  // the node dies as a unit (`broker.abort_step` plus `destroy`).
+  // The node exists from here, so the wall deadline starts here as a state
+  // timeout on `ConnectedPhase`: after it, the node dies as a unit
+  // (`broker.abort_step` plus `destroy`).
   let #(now, clock) = clock.read(state.clock)
   let delay = int.max(pooled(state).deadline_ms - now, 0)
-  let _ = process.send_after(state.commands, delay, Deadline)
 
   // The host now owns `destroy`. Telling `run_launched` so is what lets it
   // distinguish this from a host that stopped first (CH-F3).
   process.send(ack, Nil)
-  actor.continue(
-    State(
+  sm.transition(
+    to: ConnectedPhase,
+    data: State(
       ..state,
       clock:,
       send: Some(send),
@@ -979,16 +1001,17 @@ fn handle_connected(
       pending_out: [],
     ),
   )
+  |> sm.with_state_timeout(after: delay, sending: Deadline)
 }
 
 fn handle_cap_started(
   state: State,
   id: Int,
   handle: broker.CallHandle,
-) -> actor.Next(State, Msg) {
+) -> sm.Next(RunPhase, State, Msg) {
   case dict.get(state.inflight, id) {
     // Already settled and removed: nothing to track.
-    Error(Nil) -> actor.continue(state)
+    Error(Nil) -> sm.keep(state)
     Ok(entry) -> {
       // A cancel that raced ahead of the clearance fires now.
       case entry.cancelled {
@@ -997,7 +1020,7 @@ fn handle_cap_started(
       }
       let inflight =
         dict.insert(state.inflight, id, InFlight(..entry, handle: Some(handle)))
-      actor.continue(State(..state, inflight:))
+      sm.keep(State(..state, inflight:))
     }
   }
 }
@@ -1006,13 +1029,13 @@ fn handle_cap_done(
   state: State,
   id: Int,
   outcome: CapOutcome,
-) -> actor.Next(State, Msg) {
+) -> sm.Next(RunPhase, State, Msg) {
   case dict.get(state.inflight, id) {
-    Error(Nil) -> actor.continue(state)
+    Error(Nil) -> sm.keep(state)
     Ok(entry) -> {
       let state = close_call(state, id, entry, outcome)
       let state = emit(state, id, outcome)
-      actor.continue(State(..state, inflight: dict.delete(state.inflight, id)))
+      sm.keep(State(..state, inflight: dict.delete(state.inflight, id)))
     }
   }
 }
@@ -1023,7 +1046,7 @@ type FrameStep {
   FrameDone(state: State, result: Result(Outcome, RunError))
 }
 
-fn handle_bytes(state: State, data: BitArray) -> actor.Next(State, Msg) {
+fn handle_bytes(state: State, data: BitArray) -> sm.Next(RunPhase, State, Msg) {
   let buffer = bit_array.append(state.buffer, data)
   let Deframed(payloads:, buffer:, fault:) = deframe(buffer)
   let state = State(..state, buffer:)
@@ -1031,7 +1054,7 @@ fn handle_bytes(state: State, data: BitArray) -> actor.Next(State, Msg) {
     Error(#(state, result)) -> terminate(state, result)
     Ok(state) ->
       case fault {
-        None -> actor.continue(state)
+        None -> sm.keep(state)
         Some(reason) -> terminate(state, Error(ChannelFaulted(reason)))
       }
   }
@@ -1643,7 +1666,7 @@ fn handle_cancel(state: State, id: Int) -> State {
 fn terminate(
   state: State,
   outcome_result: Result(Outcome, RunError),
-) -> actor.Next(State, Msg) {
+) -> sm.Next(RunPhase, State, Msg) {
   // The execution settles here, so the calls still in flight are closed
   // at this instant, before teardown, whose own latency is not the
   // program's.
@@ -1659,7 +1682,7 @@ fn terminate(
       last_failure: state.last_failure,
     ),
   )
-  actor.stop()
+  sm.stop()
 }
 
 // Destroys the satellite as a unit and unlinks the token file, returning

@@ -56,6 +56,7 @@
 //// permits and this doc says out loud rather than leaving to be
 //// discovered.
 
+import broker/internal/call
 import codemode/workspace.{type KvRefusal, EntryTooLarge, StoreUnavailable}
 import gleam/bit_array
 import gleam/erlang/process.{type Subject}
@@ -312,26 +313,12 @@ fn ask(
   case address.lookup(name) {
     Error(Nil) -> Error(no_store())
     Ok(subject) -> {
-      use pid <- result.try(
+      use _pid <- result.try(
         process.subject_owner(subject)
         |> result.map_error(fn(_) { no_store() }),
       )
-      let reply = process.new_subject()
-      let monitor = process.monitor(pid)
-
-      // Keep delivery on the same process the failure selector monitors. A
-      // second name lookup would turn an ordinary restart into a caller crash.
-      process.send(subject, message(reply))
-      let answered =
-        process.new_selector()
-        |> process.select_map(reply, Some)
-        |> process.select_specific_monitor(monitor, fn(_down) { None })
-        |> process.selector_receive(within: timeout_ms)
-      process.demonitor_process(monitor)
-      case answered {
-        Ok(Some(value)) -> Ok(value)
-        Ok(None) | Error(Nil) -> Error(wedged())
-      }
+      call.try_call(subject, waiting: timeout_ms, sending: message)
+      |> result.map_error(fn(_) { wedged() })
     }
   }
 }
