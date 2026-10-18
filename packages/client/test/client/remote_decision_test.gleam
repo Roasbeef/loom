@@ -473,3 +473,41 @@ pub fn forget_withdraws_only_a_grant_this_spawner_approved_test() {
     admit(runtime, Some(ceiling_over(root)), "", Forget(from_spawner), 0)
   let assert Ok(Nil) = api.close(runtime)
 }
+
+pub fn a_symlink_under_the_ceiling_that_leads_outside_it_is_refused_test() {
+  let root = workspace("symlink")
+  let runtime = session(root)
+  child_of(runtime, "^main")
+  let assert Ok(Nil) = simplifile.create_directory_all(root <> "/outside")
+    as "the target outside the ceiling exists"
+  let assert Ok(Nil) =
+    simplifile.create_symlink(root <> "/outside", root <> "/work/link")
+    as "a symlink under the ceiling leads outside it"
+
+  // The text is under the ceiling's root, and the place it names is not.
+  let wanted = [policy.GrantWritableRoot(root <> "/work/link")]
+  assert approval_ceiling.admits_all(ceiling_over(root), wanted)
+  let seq = raise(runtime, "policy-1", wanted)
+  assert admit(
+      runtime,
+      Some(ceiling_over(root)),
+      "policy-1",
+      Approve(grants: wanted, action:, scope: Once),
+      seq,
+    )
+    == Refused(reason: remote_escalation.outside_the_ceiling)
+  assert status_of(runtime, "policy-1") == durable.Pending
+
+  // A real directory under the ceiling is still approved.
+  let real = [policy.GrantWritableRoot(root <> "/work")]
+  let other = raise(runtime, "policy-2", real)
+  let assert Decided(_) =
+    admit(
+      runtime,
+      Some(ceiling_over(root)),
+      "policy-2",
+      Approve(grants: real, action:, scope: Once),
+      other,
+    )
+  let assert Ok(Nil) = api.close(runtime)
+}

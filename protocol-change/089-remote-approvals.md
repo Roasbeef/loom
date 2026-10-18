@@ -161,6 +161,14 @@ judges it on its own turn (`client/remote_decision`), in this order:
    approval commits through `api.approve_escalation_with_fact_at`, so the
    approval and the remembered grant land together or not at all.
 
+`Resolve.child` is carried for the laptop's own bookkeeping and is unused on the
+box, which judges the record's scope against the parent alone.
+
+The paths of an approval's grants must be their own canonical paths on the box
+(the rule `permissions.revalidate` applies to a remembered grant) before the
+ceiling is asked, because the ceiling compares text and a symlink under a root
+can lead outside it.
+
 `Forget(grant)` is admitted only for a grant that carries `Spawner` provenance
 from the same spawner, and removes it in one guarded transaction.
 

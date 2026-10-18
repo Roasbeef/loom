@@ -15,17 +15,20 @@
 ////
 //// 1. The spawner has a ceiling. A spawner with none is unattended, and a
 ////    decision from it is refused as outside the ceiling.
-//// 2. The record exists, is pending, and is at the `seq` the operator was shown.
+//// 2. The record exists and was raised by a descendant of the parent the message
+////    names. The message arrives on a connection that proves only that it came
+////    from the spawner's node, and the delegate session serves the children of
+////    one parent. Otherwise the answer is `Refused`.
+//// 3. The record is at the `seq` the operator was shown, and is pending.
 ////    Otherwise the answer is `Stale` with the record as it is now, so the
 ////    operator sees the current question and not an error.
-//// 3. The record was raised by a descendant of the parent the message names. The
-////    message arrives on a connection that proves only that it came from the
-////    spawner's node, and the delegate session serves the children of one parent.
 //// 4. For an approval: the echoed action is the record's, and every grant is in
 ////    the record's wanted list (`Stale` otherwise, as for a local operator), and
-////    every grant is inside the ceiling (`Refused`, and the record stays pending
-////    for the owner of this machine).
-//// 5. The commit is one compare-and-set at the `seq` read in step 2. A session
+////    every grant names a canonical path that is inside the ceiling (`Refused`,
+////    and the record stays pending for the owner of this machine). A path is
+////    canonical when resolving it on this machine gives the same path, so a
+////    symlink under the ceiling that leads outside it is not inside it.
+//// 5. The commit is one compare-and-set at the `seq` read in step 3. A session
 ////    approval commits the remembered grant in the same transaction, with the
 ////    spawner's provenance.
 ////
@@ -38,7 +41,8 @@
 ////
 //// 1. `admit` applies the ceiling check and routes by decision.
 //// 2. `forget` withdraws a remembered grant this spawner approved.
-//// 3. `decide` reads the record and applies steps 2 and 3 above.
+//// 3. `decide` reads the record and applies steps 2 and 3 above, and `canonical`
+////    is the path test of step 4.
 //// 4. `approve` and `deny` commit the two decisions on the record that `decide`
 ////    read, and `answered` reads the record back as the box now has it.
 
@@ -60,6 +64,7 @@ import gleam/result
 import runtime/api
 import runtime/escalation as durable
 import runtime/lineage
+import tools/fs
 
 /// The longest chain of lineage cells the descent test follows. A child's chain
 /// ends at a reference after a few hops, and the bound only keeps a damaged
@@ -242,7 +247,9 @@ fn approve(
     },
   )
   use <- bool.lazy_guard(
-    when: approved == [] || !approval_ceiling.admits_all(ceiling, approved),
+    when: approved == []
+      || !canonical(approved)
+      || !approval_ceiling.admits_all(ceiling, approved),
     return: fn() { Refused(reason: remote_escalation.outside_the_ceiling) },
   )
   let origin = Some(remote_escalation.origin_of(decider))
@@ -274,6 +281,27 @@ fn approve(
       }
   }
   |> answered(runtime, cell)
+}
+
+// Whether every path a grant names is already its own canonical path on this
+// machine. The ceiling compares text, and a path under the ceiling can be a
+// symlink whose target is outside it, so a grant that is not canonical is not
+// judged inside the ceiling. This is the rule `permissions.revalidate` applies
+// to a remembered grant. A path that cannot be resolved is not canonical.
+fn canonical(approved: List(Grant)) -> Bool {
+  let filesystem = fs.real_filesystem()
+  list.all(approved, fn(grant) {
+    case grant {
+      policy.GrantWritableRoot(path:)
+      | policy.GrantReadableRoot(path:)
+      | policy.GrantScratch(policy.ScratchPath(path:)) ->
+        fs.resolve_real(filesystem, "/", path) == Ok(path)
+      policy.GrantNetwork(_)
+      | policy.GrantEnv(_)
+      | policy.GrantLimit(..)
+      | policy.GrantScratch(policy.ScratchTmpfs) -> True
+    }
+  })
 }
 
 fn wanted_of(record: durable.Escalation) -> Result(List(Grant), String) {

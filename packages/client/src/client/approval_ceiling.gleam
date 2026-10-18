@@ -124,7 +124,10 @@ pub fn nothing() -> Ceiling {
 /// A grant that names a path is judged on a segment boundary, so a root of
 /// `/srv/work` admits `/srv/work/a` and not `/srv/workshop`. A path with a `..`
 /// segment is never admitted: the ceiling compares text, and a `..` would let the
-/// text say one place while the path is another. Reading is implied by writing,
+/// text say one place while the path is another. The text is not the whole test:
+/// a symlink under a root leads somewhere else, so the box's door for a decision
+/// (`client/remote_decision`) also requires each path to be its own canonical path
+/// before it asks the ceiling. Reading is implied by writing,
 /// so a readable root is also admitted under a writable root.
 ///
 /// ## Examples
