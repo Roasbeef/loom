@@ -895,7 +895,9 @@ entry for a status bar and sits apart from `remote_usage` because it needs
 `remote_agent.RemoteAgent` is one child on another orchestrator as the
 `remote_children` snapshot carries it: id (its strand name there), parent,
 orchestrator, `Standing`, title, summary, tokens, model and `age_ms`.
-`decode_all` is bounded (64 entries, 2048 bytes a string) and total.
+`decode_all` is bounded (64 entries, 256 bytes for a row's words and 512 for
+its names) and total, and `within_bound` cuts a list to the 60,000 bytes one
+pushed frame may carry.
 `protocol.RemoteChildrenSnapshot` is pushed and lane-routed as `Auxiliary`, and
 `event_fold` folds it into the roster with `agent_roster.observe_remote`, which
 keeps the list and the host clock at its arrival. `agent_roster.remote_rows`
@@ -906,7 +908,8 @@ orchestrator (`remote_row`); a placed `Line` carries the glance's tokens and
 `remote_named` finds a child by its short or whole name.
 
 `remote_transcript` is a page of a remote child's branch: `page_of` (the box
-cuts it, at most 50 entries and 256 KiB of encoded entries, an oversized entry
+cuts it after `without_reasoning`, at most 50 entries and 49,152 bytes of
+encoded entries, under the gateway's 64 KiB push bound, an oversized entry
 omitted, `next` the cursor), `encode` and `decode` (total, both hops),
 `decode_observation` for the `child_history` board, the host's one peek
 (`State`: `Closed`, `Loading`, `Shown`, `Unavailable`; `open`, `sent`,

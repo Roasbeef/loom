@@ -105,9 +105,13 @@ a connection when it subscribes (and only when the list is not empty), and to
 every subscriber when the session's bus carries `RemoteChildrenChanged`, which
 `remote_child` publishes after every stub write lands. The event carries no
 data; the stubs in the store are the truth, and the gateway reads them again. A
-lost publication leaves a strip stale until the next stub change. The list is
-bounded to 64 entries and every string to 2048 bytes, and the client decodes it
-totally: a malformed entry refuses the whole snapshot.
+lost publication leaves a strip stale until the next stub change. The list
+reaches a client as one pushed frame, which the gateway bounds at 64 KiB, so it
+is bounded to fit: the daemon clips a row's title, summary and model to 256
+bytes, the names (the child, the parent, the orchestrator) are at most 512
+bytes, and `remote_agent.within_bound` keeps the longest head of at most 64 rows
+whose encoded list is within 60,000 bytes. The client decodes it totally: a
+malformed entry, or a string over its bound, refuses the whole snapshot.
 
 `agent_view.Row` gains `placement: Option(String)`, the orchestrator, `None` for
 a strand of the session. `session_view/agent_roster` keeps the newest list and
@@ -141,13 +145,19 @@ and `Reach.history` carry it through. The box's spawn host:
    entry more than `limit` to say whether older ones exist.
 
 The page (`session_view/remote_transcript.Page`) is the child's name, at most
-`max_entries` (50) entries oldest first, at most `page_bytes_limit` (256 KiB) of
-encoded entries, `omitted`, the count of entries in the page's span that were
+`max_entries` (50) entries oldest first, at most `page_bytes_limit` (49,152
+bytes) of encoded entries, `omitted`, the count of entries in the page's span that were
 too large to send alone, and `next`, the sequence the next older page reads
 below, or null at the child's first entry. An entry over the byte bound alone is
 counted and skipped, so one large tool result cannot stall the paging, and a
-page always takes or omits at least one entry. Entries are encoded with the
-shared core codec. The laptop decodes the page totally (`remote_transcript.decode`):
+page always takes or omits at least one entry. The byte bound is the gateway's:
+the page reaches the client in one pushed observation, which is bounded at 64
+KiB encoded, and the entries leave room under it for the board and the
+envelope. Before an entry is measured its reasoning blocks are taken out
+(`remote_transcript.without_reasoning`), in assistant messages and in a
+compaction's retained tail: no host draws them, and the provider's reasoning is
+not part of the child's working to ship. Entries are encoded with the shared
+core codec. The laptop decodes the page totally (`remote_transcript.decode`):
 more than 50 entries, an entry the codec cannot read, or a cursor that is not a
 positive sequence refuses the page.
 
@@ -168,7 +178,8 @@ page's fields, or `failed` with `message`. It shares the observation worker
 slots, the fourteen-second deadline and the socket cancellation, so the box's
 answer never holds the session's hub, and the box is asked by the stub's
 orchestrator through `Reach.history` with a ten-second bound. A board is bounded
-to 300,000 encoded bytes. A gateway with no reach answers `unavailable`.
+to 65,536 encoded bytes, the gateway's bound on a push. A gateway with no reach
+answers `unavailable`.
 
 ### Drawing it
 
@@ -178,7 +189,8 @@ never passed through either host's Markdown renderer, never an attribute, class
 or key. The page is framed by two lines the harness writes and the text cannot
 supply, `strand_framing.transcript_head(child, orchestrator)` and
 `transcript_foot`, in the manner of the framing the Agency puts around a message
-between strands. Reasoning blocks and image bytes are not drawn; a brief or a
+between strands. Reasoning blocks never reach the laptop, and image bytes are
+not drawn; a brief or a
 message the parent sent loses the Agency's framing, as it does locally.
 
 - **The terminal.** `/peek <name>` opens a peek at a remote child, named as the

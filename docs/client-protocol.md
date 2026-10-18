@@ -2942,10 +2942,11 @@ request_id}`, and the outcome is pushed with the same `board.request_id` and no
 `reply_to`. It shares `context`'s worker slots, fourteen-second deadline and
 socket cancellation. A ready board adds the page: `child`, `entries` (at most 50
 durable entries in the shared entry shape of section 5.7, oldest first, within
-256 KiB of encoded entries), `omitted` (entries too large to send alone) and
+49,152 bytes of encoded entries, with every reasoning block taken out on the
+orchestrator that runs the child), `omitted` (entries too large to send alone) and
 `next` (the `before` of the next older page, or null at the child's first
-entry). A failed board carries `message`. The whole board is bounded to 300,000
-encoded bytes. The orchestrator that runs the child answers only when its
+entry). A failed board carries `message`. The whole board is bounded to 65,536
+encoded bytes, the bound on any pushed observation. The orchestrator that runs the child answers only when its
 `[spawners.<name>] transcript` is `"visible"`; otherwise the board fails with
 the orchestrator's refusal. A daemon that reaches no other orchestrator answers
 `unavailable`. The page is model text from another machine and a client draws it
@@ -3018,8 +3019,10 @@ to every subscriber whenever a stub changes. Each entry:
 | `model` | string | required | The catalogue name of the child's model, empty while the spawn is unanswered. |
 | `age_ms` | integer or null | required | How long before the push, on the daemon's clock, the newest glance reached it; null before the first. |
 
-Every string is at most 2,048 bytes, and a client decodes the list whole or
-refuses it. The entries are model text and configuration from another machine
+`title`, `summary` and `model` are at most 256 bytes, the daemon clipping them,
+and the names `id`, `parent` and `orchestrator` at most 512. The daemon sends
+the longest head of the list whose encoding is within 60,000 bytes, so the push
+fits the 64 KiB frame bound. A client decodes the list whole or refuses it. The entries are model text and configuration from another machine
 and a client draws them as text.
 Source: (`client/protocol.gleam:1036-1073`).
 
