@@ -129,6 +129,10 @@ pub fn labels(lines: List(agent_roster.Line)) -> Dict(String, String) {
       Ok(count) if count > 1 -> with_digest(line)
       Ok(_) | Error(Nil) -> line.name
     }
+
+    // A child on another orchestrator is named with where it runs, the
+    // `<child> @ <orchestrator>` both hosts draw (protocol-change/090).
+    let name = agent_roster.placed_name(line, name)
     dict.insert(names, line.id, text_hygiene.single_line(name))
   })
 }
@@ -272,13 +276,24 @@ fn row(
       style.new(theme.paper, background, weight),
     ),
     span.span_styled(
-      text.pad_right(cut(line.text, int.max(0, room - 1)), int.max(0, room))
+      text.pad_right(cut(action(line), int.max(0, room - 1)), int.max(0, room))
         <> " ",
       action_style,
     ),
     span.span_styled(meter, style.new(theme.quiet, background, style.none())),
   ]
   pad(span.line_new(spans), width, background)
+}
+
+// What a row says the agent is doing. A remote child whose glance has not
+// changed for a while says how long, ahead of the glance, so a strip whose
+// daemon cannot reach the orchestrator does not pass the last glance off as
+// current.
+fn action(line: agent_roster.Line) -> String {
+  case agent_roster.seen_words(line) {
+    Some(seen) -> seen <> " · " <> line.text
+    None -> line.text
+  }
 }
 
 // The figures at the end of a row, with the margin cell after them.
