@@ -106,9 +106,10 @@
 ////    `fs_refused`, `kv_refused`, `schedule_refused` or `job_refused`, which
 ////    turn a typed refusal into an in-band outcome.
 //// 5. `fs_denial`, `kv_denial`, `schedule_denial` and `job_denial` are the
-////    public forms of those mappings, and `edit_denial` names the edit-specific
-////    refusals; `apply_replacements` is the pure whole-file find and replace
-////    the `fs.edit` closure uses.
+////    public forms of those mappings, and `edit_denial` (`ambiguous_lines_note`)
+////    names the edit-specific refusals; `apply_replacements` (`match_lines`,
+////    `newline_count`) is the pure whole-file find and replace the `fs.edit`
+////    closure uses.
 //// 6. `ceilings` reports the quota the seam asks the host to enforce on
 ////    the report emitter.
 
@@ -352,8 +353,8 @@ pub type EditRefusal {
 
   /// A `find` matched more than once. A `Replacement` carries no
   /// position, so which occurrence was meant is unknowable; refused
-  /// rather than guessed.
-  AmbiguousFind(find: String, count: Int)
+  /// rather than guessed, with the 1-based starting line of each match.
+  AmbiguousFind(find: String, count: Int, lines: List(Int))
 
   /// A `find` was empty, which matches everywhere and means nothing.
   EmptyFind
@@ -389,16 +390,40 @@ pub fn apply_replacements(
   list.try_fold(edits, text, fn(current, edit) {
     let Replacement(find:, replace_with:) = edit
     use <- bool.guard(when: find == "", return: Error(EmptyFind))
+    let parts = string.split(current, find)
+    let lines = match_lines(parts, newline_count(find), 1, [])
 
     // Occurrences counted by splitting: n parts means n - 1 matches.
     // Non-overlapping, which is also `string.replace`'s reading, so the
     // count and the replacement agree about what a match is.
-    case list.length(string.split(current, find)) - 1 {
-      0 -> Error(StaleFind(find:))
-      1 -> Ok(string.replace(current, each: find, with: replace_with))
-      count -> Error(AmbiguousFind(find:, count:))
+    case lines {
+      [] -> Error(StaleFind(find:))
+      [_only] -> Ok(string.replace(current, each: find, with: replace_with))
+      _ -> Error(AmbiguousFind(find:, count: list.length(lines), lines:))
     }
   })
+}
+
+fn match_lines(
+  parts: List(String),
+  find_newlines: Int,
+  current_line: Int,
+  acc: List(Int),
+) -> List(Int) {
+  case parts {
+    [] | [_after_last_match] -> list.reverse(acc)
+    [before, ..rest] -> {
+      let match_line = current_line + newline_count(before)
+      match_lines(rest, find_newlines, match_line + find_newlines, [
+        match_line,
+        ..acc
+      ])
+    }
+  }
+}
+
+fn newline_count(text: String) -> Int {
+  list.length(string.split(text, "\n")) - 1
 }
 
 /// Why a scratch-store call could not be answered.
@@ -1053,14 +1078,16 @@ fn edit_denial(refusal: EditRefusal) -> CapDenial {
           <> excerpt(find)
           <> "`; re-read it and edit against what is there now",
       )
-    AmbiguousFind(find:, count:) ->
+    AmbiguousFind(find:, count:, lines:) ->
       CapDenial(
         code: invalid_argument_code,
         message: "`"
           <> excerpt(find)
           <> "` matches "
           <> int.to_string(count)
-          <> " times and a replacement carries no position; include enough "
+          <> " times"
+          <> ambiguous_lines_note(lines)
+          <> " and a replacement carries no position; include enough "
           <> "surrounding text to match exactly once",
       )
     EmptyFind ->
@@ -1068,6 +1095,26 @@ fn edit_denial(refusal: EditRefusal) -> CapDenial {
         code: invalid_argument_code,
         message: "a replacement's `find` must not be empty",
       )
+  }
+}
+
+const max_reported_match_lines = 10
+
+fn ambiguous_lines_note(lines: List(Int)) -> String {
+  case lines {
+    [] -> ""
+    _ -> {
+      let shown =
+        lines
+        |> list.take(max_reported_match_lines)
+        |> list.map(int.to_string)
+        |> string.join(", ")
+      let suffix = case list.drop(lines, max_reported_match_lines) {
+        [] -> ""
+        _ -> ", …"
+      }
+      " (at lines " <> shown <> suffix <> ")"
+    }
   }
 }
 

@@ -29,12 +29,15 @@
 ////
 //// `read_tool` → `run_read` → `resolve_invocation` → `resolve_real` → `walk` → `check_under`
 ////
-//// 1. `read_tool_with` registers any virtual `Scheme`s; `run_read` decodes the
+//// 1. `read_tool_with` registers any virtual `Scheme`s (with `blob_scheme` and
+////    `read_blob_scheme` built in for `blob://`); `run_read` decodes the
 ////    window, then sends a `scheme://` reference to `scheme_outcome` and
 ////    every other path to `file_outcome`.
 //// 2. `resolve_invocation` asks for approval of the exact target when it lies
 ////    outside the workspace, then resolves through `resolve_readable` or
-////    `resolve_writable`.
+////    `resolve_writable` (`carved_blob_roots`, `entry_covers_carved`, and
+////    `refuse_protected_except` carve out the blob root under a protected state
+////    directory, while `resolve_blob_uri` expands `blob://` references).
 //// 3. `resolve_real` is the path discipline: `walk` follows symlinks one
 ////    component at a time and `check_under` refuses a result outside the root.
 //// 4. A read goes on through `read_outcome` (text windows) or `image_outcome`.
@@ -330,6 +333,7 @@ pub fn resolve_readable(
     workspace,
     base.readable_roots,
     base.protected,
+    carved_blob_roots(base),
     policy.jail_replaced_roots,
     path,
   )
@@ -345,6 +349,42 @@ pub fn resolve_readable(
 /// ```
 pub fn resolve_for_read(ctx: Ctx, path: String) -> Result(String, PathError) {
   resolve_readable(ctx.filesystem, ctx.workspace, readable_policy(ctx), path)
+}
+
+/// Expands a `blob://<ref>` URI to its path under `blob_root`, leaving
+/// ordinary filesystem paths unchanged and refusing malformed blob
+/// references or unknown URI schemes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert fs.resolve_blob_uri("/blobs", "blob://sha256-ab")
+///   == Ok("/blobs/sha256-ab")
+/// assert fs.resolve_blob_uri("/blobs", "src/main.gleam")
+///   == Ok("src/main.gleam")
+/// ```
+///
+pub fn resolve_blob_uri(
+  blob_root: String,
+  path: String,
+) -> Result(String, PathError) {
+  case string.split_once(path, on: "://") {
+    Error(Nil) -> Ok(path)
+    Ok(#("blob", reference)) ->
+      case blob.valid_ref(reference) {
+        True -> Ok(blob.ref_path(normalize(blob_root), reference))
+        False ->
+          Error(Unresolvable(
+            path:,
+            reason: "blob reference must be a sha256-<hex> content address",
+          ))
+      }
+    Ok(#(scheme, _)) ->
+      Error(Unresolvable(
+        path:,
+        reason: "unsupported scheme `" <> scheme <> "://`",
+      ))
+  }
 }
 
 // The policy a native read is judged against. The widening is idempotent, so
@@ -365,12 +405,7 @@ fn readable_policy(ctx: Ctx) -> policy.SandboxPolicy {
       ctx.base_policy,
       directory_access.approved(ctx.directory_access, ctx.grants),
     )
-  let reads = exempting_blob_root(widened, ctx.blob_root)
-
-  policy.SandboxPolicy(..reads, readable_roots: [
-    ctx.blob_root,
-    ..reads.readable_roots
-  ])
+  exempting_blob_root(widened, ctx.blob_root)
 }
 
 /// The read policy with the session's blob root taken off the protected
@@ -393,11 +428,19 @@ pub fn exempting_blob_root(
   blob_root: String,
 ) -> policy.SandboxPolicy {
   let blobs = normalize(blob_root)
+  let mount =
+    policy.Mount(
+      path: blobs,
+      access: policy.MountReadOnly,
+      requirement: policy.MountOptional,
+    )
   policy.SandboxPolicy(
     ..base,
+    readable_roots: list.unique([blobs, ..base.readable_roots]),
     protected: list.filter(base.protected, fn(entry) {
       normalize(entry) != blobs
     }),
+    mounts: [mount, ..base.mounts],
   )
 }
 
@@ -415,7 +458,7 @@ pub fn resolve_writable_roots(
   protected: List(String),
   path: String,
 ) -> Result(String, PathError) {
-  resolve_contained(filesystem, workspace, roots, protected, [], path)
+  resolve_contained(filesystem, workspace, roots, protected, [], [], path)
 }
 
 // The one containment check behind reads and writes: the protected list must
@@ -427,11 +470,20 @@ fn resolve_contained(
   workspace: String,
   roots: List(String),
   protected: List(String),
+  carved: List(String),
   replaced: List(String),
   path: String,
 ) -> Result(String, PathError) {
   use _ <- result.try(all_absolute(protected, path))
-  resolve_within(filesystem, workspace, roots, protected, replaced, path)
+  resolve_within(
+    filesystem,
+    workspace,
+    roots,
+    protected,
+    carved,
+    replaced,
+    path,
+  )
 }
 
 // Resolves a path against the real filesystem, refuses it if a protected
@@ -447,6 +499,7 @@ fn resolve_within(
   workspace: String,
   roots: List(String),
   protected: List(String),
+  carved: List(String),
   replaced: List(String),
   path: String,
 ) -> Result(String, PathError) {
@@ -464,7 +517,13 @@ fn resolve_within(
     |> result.map_error(Unresolvable(path:, reason: _)),
   )
 
-  use _ <- result.try(refuse_protected(filesystem, protected, path, resolved))
+  use _ <- result.try(refuse_protected_except(
+    filesystem,
+    protected,
+    carved,
+    path,
+    resolved,
+  ))
   use _ <- result.try(refuse_replaced(
     filesystem,
     replaced,
@@ -523,7 +582,31 @@ pub fn refuse_protected_read(
   resolved: String,
 ) -> Result(String, PathError) {
   use _ <- result.try(all_absolute(protected, path))
-  refuse_protected(filesystem, protected, path, resolved)
+  refuse_protected_except(filesystem, protected, [], path, resolved)
+}
+
+/// Refuses a resolved read target under `reads.protected`, honouring any
+/// carved-out blob roots recorded on `reads` by `exempting_blob_root`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fs.refuse_protected_read_in(filesystem, reads, "a", "/state/workspaces/s1/blobs/a")
+/// ```
+pub fn refuse_protected_read_in(
+  filesystem: FileSystem,
+  reads: policy.SandboxPolicy,
+  path: String,
+  resolved: String,
+) -> Result(String, PathError) {
+  use _ <- result.try(all_absolute(reads.protected, path))
+  refuse_protected_except(
+    filesystem,
+    reads.protected,
+    carved_blob_roots(reads),
+    path,
+    resolved,
+  )
 }
 
 // Refuses a resolved read target under a root the jail replaces, unless it is
@@ -548,10 +631,11 @@ fn refuse_replaced(
   }
 }
 
-/// The entries a directory walk must not enter: the protected list, plus the
+/// The entries a directory walk must not enter: the protected entries and
 /// jail-replaced roots that do not cover the walk's own (already resolved)
-/// root. A walk rooted inside a workspace that lives under `/tmp` keeps
-/// working; a walk from `/` skips `/proc`, `/dev` and `/tmp`.
+/// root. A walk rooted inside a workspace that lives under `/tmp` or inside a
+/// carved-out blob root keeps working; a walk from `/` skips `/proc`, `/dev`,
+/// `/tmp`, and every protected entry.
 ///
 /// ## Examples
 ///
@@ -564,7 +648,9 @@ pub fn walk_exclusions(
   search_root: String,
 ) -> List(String) {
   list.append(
-    protected,
+    list.filter(protected, fn(entry) {
+      !covers_target(filesystem, entry, search_root)
+    }),
     list.filter(policy.jail_replaced_roots, fn(root) {
       !covers_target(filesystem, root, search_root)
     }),
@@ -578,10 +664,7 @@ fn refuse_protected(
   path: String,
   resolved: String,
 ) -> Result(String, PathError) {
-  case list.find(protected, covers_target(filesystem, _, resolved)) {
-    Error(Nil) -> Ok(resolved)
-    Ok(entry) -> Error(ProtectedPath(path:, protected: entry))
-  }
+  refuse_protected_except(filesystem, protected, [], path, resolved)
 }
 
 // Resolves an absolute path against the real filesystem, component by
@@ -899,6 +982,7 @@ fn resolve_target_for_read(
     "/",
     [],
     reads.protected,
+    carved_blob_roots(reads),
     [],
     absolute,
   ))
@@ -925,6 +1009,59 @@ pub fn resolve_writable(
   use _ <- result.try(all_absolute(protected, path))
   use resolved <- result.try(resolve_real(filesystem:, workspace:, path:))
   refuse_protected(filesystem, protected, path, resolved)
+}
+
+// Extracts the blob roots `exempting_blob_root` recorded in `mounts` that sit
+// strictly under a protected parent entry (such as `<state_root>/workspaces`).
+fn carved_blob_roots(base: policy.SandboxPolicy) -> List(String) {
+  list.filter_map(base.mounts, fn(mount) {
+    case mount.access, mount.requirement {
+      policy.MountReadOnly, policy.MountOptional -> {
+        let candidate = normalize(mount.path)
+        case list.any(base.protected, entry_covers_carved(_, candidate)) {
+          True -> Ok(candidate)
+          False -> Error(Nil)
+        }
+      }
+      _, _ -> Error(Nil)
+    }
+  })
+}
+
+// Whether a protected entry is a strict ancestor of `candidate`. An entry that
+// is not absolute is skipped here because `all_absolute` refuses it first.
+fn entry_covers_carved(entry: String, candidate: String) -> Bool {
+  case string.starts_with(entry, "/") {
+    False -> False
+    True -> {
+      let normalized = normalize(entry)
+      normalized != candidate
+      && policy.covers(root: normalized, path: candidate)
+    }
+  }
+}
+
+// Refuses a resolved target covered by `protected`, unless the target lies
+// inside a carved-out `blob_root` that sits strictly under that protected entry.
+fn refuse_protected_except(
+  filesystem: FileSystem,
+  protected: List(String),
+  carved: List(String),
+  path: String,
+  resolved: String,
+) -> Result(String, PathError) {
+  let blocking =
+    list.find(protected, fn(entry) {
+      covers_target(filesystem, entry, resolved)
+      && !list.any(carved, fn(exempt) {
+        covers_target(filesystem, entry, exempt)
+        && covers_target(filesystem, exempt, resolved)
+      })
+    })
+  case blocking {
+    Error(Nil) -> Ok(resolved)
+    Ok(entry) -> Error(ProtectedPath(path:, protected: entry))
+  }
 }
 
 // The `protected` list is checked for absoluteness *before* the target is
@@ -1152,15 +1289,61 @@ fn scheme_outcome(
   offset: Int,
   limit: Int,
 ) -> ToolOutcome {
-  use scheme <- tool.or_outcome(
-    list.find(schemes, fn(scheme) { scheme.name == name }),
-    fn(_missing) { unknown_scheme_outcome(schemes, name) },
-  )
+  let matched = case list.find(schemes, fn(scheme) { scheme.name == name }) {
+    Ok(scheme) -> Ok(scheme)
+    Error(Nil) if name == "blob" -> Ok(blob_scheme())
+    Error(Nil) -> Error(Nil)
+  }
+  use scheme <- tool.or_outcome(matched, fn(_missing) {
+    unknown_scheme_outcome(schemes, name)
+  })
   use body <- tool.or_outcome(
     scheme.read(ctx, reference),
     scheme_refusal_outcome,
   )
   scheme_read_outcome(scheme.name, body, offset, limit)
+}
+
+/// Virtual `blob://<ref>` namespace for reading overflowed tool outputs and
+/// emitted artifacts from the calling session's blob store.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert fs.blob_scheme().name == "blob"
+/// ```
+///
+pub fn blob_scheme() -> Scheme {
+  Scheme(
+    name: "blob",
+    summary: "`blob://<ref>` reads an overflowed tool output or emitted artifact from this session's blob store.",
+    read: read_blob_scheme,
+  )
+}
+
+fn read_blob_scheme(
+  ctx: Ctx,
+  reference: String,
+) -> Result(String, SchemeRefusal) {
+  use <- bool.guard(
+    when: !blob.valid_ref(reference),
+    return: Error(Malformed(
+      reason: "blob reference must be a sha256-<hex> content address",
+    )),
+  )
+  let resolved = blob.ref_path(normalize(ctx.blob_root), reference)
+  case read_text_file(filesystem: ctx.filesystem, resolved:) {
+    Ok(content) -> Ok(content)
+    Error(ReadFailed(tool.FsNotFound(..))) ->
+      Error(NotFound(what: "blob `" <> reference <> "`"))
+    Error(ReadFailed(tool.FsPermissionDenied(path:))) ->
+      Error(Unavailable(reason: "permission denied: " <> path))
+    Error(ReadFailed(tool.FsFailure(path:, reason:))) ->
+      Error(Unavailable(reason: reason <> ": " <> path))
+    Error(TooLarge(..)) ->
+      Error(Unavailable(reason: "blob is larger than max_read_bytes"))
+    Error(NotText) -> Error(Unavailable(reason: "blob is not valid UTF-8 text"))
+  }
 }
 
 fn unknown_scheme_outcome(schemes: List(Scheme), name: String) -> ToolOutcome {
@@ -1394,6 +1577,9 @@ pub type ReadError {
 /// ```
 ///
 pub fn read_text(ctx: Ctx, path: String) -> Result(String, ToolOutcome) {
+  use path <- result.try(
+    resolve_blob_uri(ctx.blob_root, path) |> result.map_error(read_path_outcome),
+  )
   use resolved <- result.try(resolve_invocation(ctx, path, Reading))
   read_text_file(ctx.filesystem, resolved)
   |> result.map_error(read_error_outcome)

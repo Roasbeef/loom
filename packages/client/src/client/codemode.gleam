@@ -900,13 +900,13 @@ pub const default_accept_timeout_ms = 30_000
 /// so the capability's own bound is the one that fires and the program
 /// reads that answer rather than silence. Two are pinned by tests in this
 /// package: `client/mcp.default_call_timeout_ms` (60 s), and
-/// `client/agency.default_config`'s `max_wait_ms` (30 s), the ceiling a
+/// `client/agency.default_config`'s `max_wait_ms` (300 s), the ceiling a
 /// `strand.wait` is clamped to. Invert either and the host gives up
 /// first — a `ServedHere` call it abandons is answered `unsettled` and
 /// its worker killed, so every `wait` would trade a real answer for that
 /// refusal, and the work behind it would be stopped half-done rather
 /// than finished for nobody.
-pub const default_call_timeout_ms = 120_000
+pub const default_call_timeout_ms = 600_000
 
 /// Where an execution's directories are created, relative to the
 /// workspace. Inside it, so the session base already makes it writable.
@@ -1573,13 +1573,15 @@ fn seed_remedy(reason: String) -> String {
 /// ```
 ///
 pub fn toolchain_path(toolchain: Toolchain) -> String {
-  [
-    directory_of(toolchain.gleam_path),
-    directory_of(toolchain.erl_path),
-    "/usr/local/bin",
-    "/usr/bin",
-    "/bin",
-  ]
+  let prefix_bin = case toolchain.gleam_binary {
+    GleamSymlink -> [toolchain.gleam_prefix <> "/bin"]
+    GleamPlainFile -> []
+  }
+  list.flatten([
+    [directory_of(toolchain.gleam_path)],
+    prefix_bin,
+    [directory_of(toolchain.erl_path), "/usr/local/bin", "/usr/bin", "/bin"],
+  ])
   |> list.unique
   |> string.join(":")
 }
@@ -3147,7 +3149,9 @@ pub fn workspace_seam_with_access(
       config.blob_root,
     )
   workspace.Workspace(
-    fs_read: fn(path) { read_in(filesystem, root, reads, path) },
+    fs_read: fn(path) {
+      read_in(filesystem, root, reads, config.blob_root, path)
+    },
     fs_list: fn(path) { list_in(filesystem, root, reads, path) },
     fs_write: fn(path, contents) {
       write_in(filesystem, root, access.writable, protected, path, contents)
@@ -3258,9 +3262,9 @@ pub fn search_seam_with_access(
   search_router.Search(
     glob: fn(under, query) { glob_in(filesystem, root, reads, under, query) },
     grep: fn(under, query) { grep_in(filesystem, root, reads, under, query) },
-    stat: fn(path) { stat_in(filesystem, root, reads, path) },
+    stat: fn(path) { stat_in(filesystem, root, reads, blob_root, path) },
     read_lines: fn(path, first, last) {
-      read_lines_in(filesystem, root, reads, path, first, last)
+      read_lines_in(filesystem, root, reads, blob_root, path, first, last)
     },
   )
 }
@@ -3341,8 +3345,13 @@ fn stat_in(
   filesystem: tool.FileSystem,
   root: String,
   reads: policy.SandboxPolicy,
+  blob_root: String,
   path: String,
 ) -> Result(search.Entry, search_router.SearchRefusal) {
+  use path <- result.try(
+    fs.resolve_blob_uri(blob_root, path)
+    |> result.map_error(search_router.PathRefused),
+  )
   use workspace_root <- result.try(
     resolved_workspace(filesystem, root)
     |> result.map_error(search_router.PathRefused),
@@ -3362,10 +3371,15 @@ fn read_lines_in(
   filesystem: tool.FileSystem,
   root: String,
   reads: policy.SandboxPolicy,
+  blob_root: String,
   path: String,
   first: Int,
   last: Int,
 ) -> Result(search.Lines, search_router.SearchRefusal) {
+  use path <- result.try(
+    fs.resolve_blob_uri(blob_root, path)
+    |> result.map_error(search_router.PathRefused),
+  )
   use resolved <- result.try(
     fs.resolve_readable(filesystem, root, reads, path)
     |> result.map_error(search_router.PathRefused),
@@ -3436,9 +3450,9 @@ fn resolved_leaf(
 
       // The leaf is not resolved, so the protected list is asked about it
       // here: `stat` of a masked file would otherwise report its size.
-      fs.refuse_protected_read(
+      fs.refuse_protected_read_in(
         filesystem,
-        reads.protected,
+        reads,
         path,
         directory <> "/" <> name,
       )
@@ -3621,8 +3635,13 @@ fn read_in(
   filesystem: tool.FileSystem,
   root: String,
   reads: policy.SandboxPolicy,
+  blob_root: String,
   path: String,
 ) -> Result(String, workspace.FsRefusal) {
+  use path <- result.try(
+    fs.resolve_blob_uri(blob_root, path)
+    |> result.map_error(workspace.ReadPathRefused),
+  )
   use resolved <- result.try(
     fs.resolve_readable(filesystem, root, reads, path)
     |> result.map_error(workspace.ReadPathRefused),

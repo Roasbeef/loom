@@ -103,6 +103,23 @@ pub fn ref_for(bytes: BitArray) -> String {
   "sha256-" <> string_lowercase_hex(ffi_hash.sha256(bytes))
 }
 
+/// Whether `ref` has the shape of a content address (`sha256-<hex>`) with no
+/// path separator or parent traversal segment.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert blob.valid_ref("sha256-abcdef")
+/// assert !blob.valid_ref("sha256-../etc/passwd")
+/// ```
+///
+pub fn valid_ref(ref: String) -> Bool {
+  string.starts_with(ref, "sha256-")
+  && string.length(ref) > 7
+  && !string.contains(ref, "/")
+  && !string.contains(ref, "..")
+}
+
 /// Where a ref's bytes live under a blob root.
 ///
 /// ## Examples
@@ -204,7 +221,11 @@ pub fn bounded_text(blob_root: String, bounded: Bounded) -> String {
       <> int.to_string(size)
       <> " bytes saved to "
       <> ref_path(blob_root, ref)
-      <> "; read it with grep or bash head -c / tail -c, not by re-running "
+      <> "; read it with fs_read (path: \"blob://"
+      <> ref
+      <> "\" or \""
+      <> ref_path(blob_root, ref)
+      <> "\") or search.read_lines, not by re-running "
       <> "the call ...]\n"
       <> tail_excerpt
   }
