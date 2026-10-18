@@ -209,7 +209,7 @@ one-row footer. The detail scrolls with PgUp and PgDn, as today.
 Data: `agent_view.Row` (`packages/session_view/src/session_view/agent_view.gleam:79`)
 has the task, activity, update, pending receipt, approvals, model, recent
 tools and decision preview. Elapsed time and context size are on
-`agent_roster.Line` (`agent_roster.gleam:84`, fields `elapsed_s` and
+`agent_roster.Line` (`agent_roster.gleam:103`, fields `elapsed_s` and
 `tokens`), which the strip already reads. Messages in and out are
 `agent_messages.Item` (`agent_messages.gleam:52`, projected by `observe` at
 99 and filtered by `for_strand` at 167), with the state (`SendPending`,
@@ -631,7 +631,7 @@ checked before the keys are fixed (open question 3).
 
 | Region | Source | In `session_view` today | New wire fields |
 |---|---|---|---|
-| Strand cards, status line, needs-input count | `agent_roster.Line` (`packages/session_view/src/session_view/agent_roster.gleam:84`), `strand_card.status_line` (`packages/session_view/src/session_view/strand_card.gleam:45`), `strand_card.needing` (69) | Yes | No |
+| Strand cards, status line, needs-input count | `agent_roster.Line` (`packages/session_view/src/session_view/agent_roster.gleam:103`), `strand_card.status_line` (`packages/session_view/src/session_view/strand_card.gleam:45`), `strand_card.needing` (69) | Yes | No |
 | Strand detail: model, context, running, recent tools | roster line, `strand_card.context_words` (83), `agent_view` | Yes | No |
 | Cache outlook | `cache_watch.outlook` (`packages/session_view/src/session_view/cache_watch.gleam:120`) | Yes | No |
 | Strand filter counts | counts over `agent_view.Status` (`packages/session_view/src/session_view/agent_view.gleam:52`) | Yes | No |
