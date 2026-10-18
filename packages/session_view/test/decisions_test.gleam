@@ -26,6 +26,7 @@ fn review(
     who,
     approval.Unavailable("this decision is already resolved"),
     strand: None,
+    remote: option.None,
   )
 }
 

@@ -33,6 +33,7 @@ fn review() -> approval.Review {
       ]),
     ]),
     strand: None,
+    remote: option.None,
   )
 }
 
@@ -173,4 +174,59 @@ pub fn the_rail_steps_aside_while_an_approval_is_open_test() {
       view: view_set.overlay(sized.view, tui_model.NoOverlay),
     )
   assert layout.rail_columns(closed) == 57
+}
+
+// A child's request on another orchestrator names the child and where it runs,
+// and the grants its spawner's ceiling does not admit are drawn quiet with the
+// reason (protocol-change/089). Only the admitted grant is what Enter confirms.
+fn remote_review() -> approval.Review {
+  approval.Review(
+    ..review(),
+    id: "box/policy-ab",
+    seq: 9,
+    remote: Some(
+      approval.Remote(
+        orchestrator: "box",
+        child: "sub:^main/run-tests-0123456789abcdef",
+        outside: [
+          json.Object([
+            #("type", json.String("env")),
+            #("name", json.String("AWS_SECRET")),
+          ]),
+        ],
+      ),
+    ),
+  )
+}
+
+pub fn a_remote_request_names_the_child_and_what_the_ceiling_withholds_test() {
+  list.each([#(120, 40), #(80, 24)], fn(size) {
+    let lines =
+      frame_scene.screen(
+        deciding(approval_panel.new(remote_review())),
+        size.0,
+        size.1,
+      )
+      |> frame.buffer_to_lines
+    let text = string.join(lines, "\n")
+    assert string.contains(text, "run-tests @ box")
+    assert string.contains(text, "AWS_SECRET")
+    assert string.contains(text, "outside the")
+    assert string.contains(text, "ceiling")
+    assert list.all(lines, fn(line) { string.length(line) <= size.0 })
+  })
+}
+
+pub fn a_remote_approval_echoes_the_other_orchestrators_seq_and_id_test() {
+  let assert approval_panel.Continue(selected) =
+    approval_panel.update(keys.Char("1"), approval_panel.new(remote_review()))
+    as "a number selects without deciding"
+  let assert approval_panel.Decide(captured, approval_panel.AllowOnce) =
+    approval_panel.update(keys.Enter, selected)
+    as "Enter decides the selected choice"
+  assert captured.id == "box/policy-ab"
+  assert captured.seq == 9
+  let assert Ok(command) = approval.approve(3, captured)
+  assert string.contains(command, "\"escalation_id\":\"box/policy-ab\"")
+  assert !string.contains(command, "AWS_SECRET")
 }

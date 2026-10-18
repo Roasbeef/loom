@@ -1432,6 +1432,9 @@
   .approval-question{margin:0 0 6px 0;color:var(--color-fg-quiet);font:13px/1.4 var(--font-sans);}
   pre.approval-action{margin:0 0 6px 0;padding:6px 8px;background:var(--color-bg);white-space:pre-wrap; overflow-wrap:anywhere;font:13px/1.4 var(--font-mono);}
   ul.approval-authority{margin:0 0 8px 0;padding-left:20px;color:var(--color-fg-quiet);font:12px/1.4 var(--font-mono);}
+  /* Grants a child's request asked for that its spawner's approval ceiling does
+     not admit: listed with the reason, greyed, and not part of what Allow carries. */
+  ul.approval-outside{margin:0 0 8px 0;padding-left:20px;color:var(--color-fg-quiet);font:12px/1.4 var(--font-mono);opacity:.6;}
   .approval-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px;}
   /* The arming note: shown for the 600 ms the row refuses clicks, and
      hidden after, so the delay is visible as words and not only as a dim. */

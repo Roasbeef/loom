@@ -35,6 +35,7 @@ pub fn a_bash_request_is_the_command_and_its_grants_are_authority_lines_test() {
         ]),
       ]),
       strand: None,
+      remote: option.None,
     )
   let assert Ok(shown) = approval.presentation(record)
   assert shown.action == "Run \"printf hi > /w/out.txt\""
