@@ -124,7 +124,7 @@
 ////    `next_run_seed`; `check_run` and `commands` reach the same seed through
 ////    `run_seed` alone.
 //// 2. `run_with` calls `draw`, whose `sequence_generator` threads the model
-////    through `grow`, keeping each command's tree.
+////    through the public `grow`, keeping each command's tree.
 //// 3. `execute_list` builds a system, `drive`s the list through `guarded`
 ////    callbacks (a crash becomes `crashed`), and tears the system down.
 //// 4. A failure goes to `shrink`, which offers the whole list once and then
@@ -615,13 +615,51 @@ pub fn report(
   )
 }
 
+/// How one candidate fared under the retry policy: the first failure the
+/// caller's test accepted, if any (`accepted`), and the executions performed
+/// (`executions`). An alias of the policy's own type, so a caller can name it
+/// and read its fields without importing the internal module.
+pub type Attempted(failure) =
+  retry.Attempted(failure)
+
+/// The retry policy `check` applies to one shrink candidate, public for a
+/// layer whose candidates are not command lists. `run` is executed up to
+/// `attempts` times, stopping at the first failure `wanted` accepts or when
+/// `budget` executions are spent; the result's `accepted` field is that
+/// failure and `executions` is what the caller charges to its own budget.
+/// The first attempt always runs.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let tried =
+///   statem.first_failure(3, 10, fn(attempt) { Error(attempt) }, fn(n) { n == 1 })
+/// // tried.accepted == Some(1), tried.executions == 2
+/// ```
+pub fn first_failure(
+  attempts: Int,
+  budget: Int,
+  run: fn(Int) -> Result(Nil, failure),
+  wanted: fn(failure) -> Bool,
+) -> Attempted(failure) {
+  retry.first_failure(attempts, budget, run, wanted)
+}
+
 // --- generation -----------------------------------------------------------
 
 /// The seed for run `run`: the `run`th draw of a stream seeded with `seed`.
 /// Walking the stream costs one draw per skipped run, which is cheap beside
 /// executing one, and it keeps every run's seed a function of `(seed, run)`
-/// alone.
-fn run_seed(seed: Int, run: Int) -> qcheck.Seed {
+/// alone. Public so a layer built on this one, such as the parallel runner
+/// in `statem_parallel`, derives its runs' seeds the same way and a
+/// `(seed, run)` pair names the same stream in both.
+///
+/// ## Examples
+///
+/// ```gleam
+/// statem.run_seed(7, 3) == statem.run_seed(7, 3)
+/// ```
+pub fn run_seed(seed: Int, run: Int) -> qcheck.Seed {
   skip_seeds(qcheck.seed(seed), int.max(run, 0))
 }
 
@@ -636,8 +674,16 @@ fn skip_seeds(stream: qcheck.Seed, count: Int) -> qcheck.Seed {
 }
 
 /// One run's seed and the stream that follows it. A full 32-bit draw is
-/// integer arithmetic below 2^53, so it is exact on both targets.
-fn next_run_seed(stream: qcheck.Seed) -> #(qcheck.Seed, qcheck.Seed) {
+/// integer arithmetic below 2^53, so it is exact on both targets. Public for
+/// the same reason as `run_seed`: a layer that walks the runs of a check
+/// threads the stream instead of recomputing it for every run.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let #(first, stream) = statem.next_run_seed(qcheck.seed(7))
+/// ```
+pub fn next_run_seed(stream: qcheck.Seed) -> #(qcheck.Seed, qcheck.Seed) {
   let #(drawn, stream) =
     qcheck.generate_tree(qcheck.bounded_int(from: 0, to: seed_ceiling), stream)
   let Tree(value, _) = drawn
@@ -667,42 +713,109 @@ fn sequence_generator(
   max_commands: Int,
 ) -> qcheck.Generator(List(Tree(cmd))) {
   let length = qcheck.bounded_int(from: 0, to: max_commands)
+  let Spec(initial:, command:, precondition:, next_model:, ..) = spec
 
   qcheck.Generator(fn(seed) {
     let #(length_tree, seed) = qcheck.generate_tree(length, seed)
     let Tree(target, _) = length_tree
-    let #(trees, seed) = grow(spec, target, spec.initial, seed, [], 0)
+    let Grown(trees, _, seed) =
+      grow(
+        command,
+        precondition,
+        next_model,
+        length: target,
+        from: initial,
+        seed: seed,
+      )
 
     #(tree.return(trees), seed)
   })
 }
 
-/// Draw commands one at a time, advancing the model after each admitted one.
-/// A rejected draw is retried with the advanced seed, and
-/// `max_rejections` consecutive rejections end the list.
-fn grow(
-  spec: Spec(model, cmd, sut),
+/// What `grow` produced: the admitted commands with their shrink trees, the
+/// model after the last of them, and the seed to continue drawing from.
+pub type Grown(model, cmd) {
+  Grown(
+    /// The admitted commands in order, each with its own shrink tree.
+    trees: List(Tree(cmd)),
+    /// The model after the last admitted command, or the model `grow` was
+    /// given when nothing was admitted. A caller that draws a second stage
+    /// from where the first ended starts from it.
+    model: model,
+    /// The seed after the last draw, admitted or rejected.
+    seed: qcheck.Seed,
+  )
+}
+
+/// Draw up to `length` admissible commands, advancing the model after each
+/// admitted one: the generator behind every command list `check` runs,
+/// public so a layer with its own notion of a case draws its sequential
+/// stretches the same way. A rejected draw is retried with the advanced
+/// seed, and eight consecutive rejections end the list early.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let grown =
+///   statem.grow(
+///     spec.command,
+///     spec.precondition,
+///     spec.next_model,
+///     length: 5,
+///     from: spec.initial,
+///     seed: qcheck.seed(7),
+///   )
+/// ```
+pub fn grow(
+  command: fn(model) -> qcheck.Generator(cmd),
+  precondition: fn(model, cmd) -> Admission,
+  next_model: fn(model, cmd) -> model,
+  length length: Int,
+  from model: model,
+  seed seed: qcheck.Seed,
+) -> Grown(model, cmd) {
+  grow_loop(command, precondition, next_model, length, model, seed, [], 0)
+}
+
+/// The recursion behind `grow`, with the rejection streak and the reversed
+/// accumulator it threads.
+fn grow_loop(
+  command: fn(model) -> qcheck.Generator(cmd),
+  precondition: fn(model, cmd) -> Admission,
+  next_model: fn(model, cmd) -> model,
   remaining: Int,
   model: model,
   seed: qcheck.Seed,
   acc: List(Tree(cmd)),
   rejected: Int,
-) -> #(List(Tree(cmd)), qcheck.Seed) {
+) -> Grown(model, cmd) {
   case remaining <= 0 || rejected >= max_rejections {
-    True -> #(list.reverse(acc), seed)
+    True -> Grown(trees: list.reverse(acc), model: model, seed: seed)
 
     False -> {
-      let #(drawn, seed) = qcheck.generate_tree(spec.command(model), seed)
-      let Tree(command, _) = drawn
+      let #(drawn, seed) = qcheck.generate_tree(command(model), seed)
+      let Tree(chosen, _) = drawn
 
-      case spec.precondition(model, command) {
-        Reject -> grow(spec, remaining, model, seed, acc, rejected + 1)
+      case precondition(model, chosen) {
+        Reject ->
+          grow_loop(
+            command,
+            precondition,
+            next_model,
+            remaining,
+            model,
+            seed,
+            acc,
+            rejected + 1,
+          )
 
         Admit ->
-          grow(
-            spec,
+          grow_loop(
+            command,
+            precondition,
+            next_model,
             remaining - 1,
-            spec.next_model(model, command),
+            next_model(model, chosen),
             seed,
             [drawn, ..acc],
             0,
@@ -784,7 +897,19 @@ fn guarded(
 
 /// The violation for a crash. The tag is fixed so a crash shrinks to a crash
 /// whatever its message; the detail names the callback and what was raised.
-fn crashed(callback: String, crash: Exception) -> Violation {
+/// Public so a layer that rescues consumer callbacks on its own processes,
+/// as `statem_parallel` does for a call made inside a branch, reports a
+/// crash under the same tag.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let violation = case exception.rescue(fn() { run(sut, command) }) {
+///   Error(crash) -> statem.crashed("run", crash)
+///   Ok(_) -> statem.Violation(tag: "none", detail: "")
+/// }
+/// ```
+pub fn crashed(callback: String, crash: Exception) -> Violation {
   Violation(
     tag: "statem.crash",
     detail: callback <> " crashed: " <> string.inspect(crash),

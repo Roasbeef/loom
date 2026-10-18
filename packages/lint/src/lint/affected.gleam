@@ -88,9 +88,9 @@ pub const static_gates: List(String) = [
 /// to `scripts/check.sh` together.
 pub const check_order: List(String) = [
   "host", "core", "storage", "session", "machine", "prompt", "statem",
-  "session_view", "web_view", "web_client", "telemetry", "runtime", "provider",
-  "broker", "executor", "mcp", "lsp", "tools", "cap", "ext", "codemode",
-  "events", "client", "tui", "conformance", "lint", "sandbox",
+  "statem_parallel", "session_view", "web_view", "web_client", "telemetry",
+  "runtime", "provider", "broker", "executor", "mcp", "lsp", "tools", "cap",
+  "ext", "codemode", "events", "client", "tui", "conformance", "lint", "sandbox",
 ]
 
 /// Package lanes, taken from `scripts/signoff.sh` so that the packages which

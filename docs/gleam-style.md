@@ -1376,6 +1376,48 @@ pub fn the_board_keeps_its_rules_under_any_sequence_test() {
 }
 ```
 
+**A system whose callers overlap is a `statem_parallel` spec, and only
+then.** `statem` runs one caller at a time, so it cannot see a lost update
+or a check-then-act that two callers both pass. `statem_parallel`
+(`packages/statem_parallel`, BEAM-only) runs a sequential prefix and then two
+or three branches of commands at once, and asks `statem/linearize` whether
+the calls can be put in one order the sequential model agrees with. Reach
+for it when the system serializes its callers by design (an actor, a lock, a
+database transaction) and a test of that promise is worth the cost. Do not
+reach for it to test a single process's own logic, which `statem` covers
+exactly and cheaply. The rules differ from the sequential layer in these
+ways:
+
+- **`run` must be safe to call from several processes, and the `sut` is a
+  handle.** A subject or a pid-backed client is shared by every branch. A
+  plain value is copied into each branch process and nothing races.
+- **The seed fixes the case, never the interleaving.** A race that shows
+  up in one execution in ten shows up in none of the other nine, so
+  `repeat` runs a generated case several times and `shrink_retries` accepts
+  a candidate if any attempt fails with the original tag. Both default
+  above one, and both spend real time.
+- **Every command is admissible in every interleaving.** The generator
+  enumerates the interleavings (at most 10,000) and redraws or trims the
+  case until the precondition holds in all of them. A precondition that
+  depends on the model therefore yields shorter branches, which is the
+  price of never testing the harness's own guards.
+- **The bounds are small on purpose.** Two branches by default (three at
+  most), at most six commands per branch, a ten second deadline on the
+  parallel phase only (the prefix has none), and a checker node budget
+  whose exhaustion is a failure, `statem.undecided`, never a pass.
+  Instants are millisecond readings of one monotonic clock, so calls inside
+  one millisecond count as overlapping: coarseness can hide a bug, never
+  invent one.
+- **Fixed tags.** A history no order explains is `statem.not_linearizable`,
+  with the rules that blocked it named in the report; `statem.timeout`,
+  `statem.crash` and `statem.undecided` are fixed too, so a shrink stays on
+  the failure it found. A failure in the sequential prefix keeps the spec's
+  own tag.
+- **Prove it with a racy variant.** Beside the correct system, keep a
+  deliberately racy one (a read and a write as two messages) and assert the
+  check finds it and shrinks to two single-command branches. A harness that
+  cannot find a bug it was built to find passes everything.
+
 **A property that fails on unmodified code is never weakened until it
 passes.** It may be narrowed only when the narrower statement is the
 invariant, and only with a citation, written beside the narrowing, to
