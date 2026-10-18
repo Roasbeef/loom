@@ -2345,6 +2345,28 @@ Reply on success: `mutation_outcome` with status `committed`.
 Errors: `unknown_escalation`, `not_pending`, `stale_approval`,
 `conflict`, `internal`.
 
+**A request with a placement.** When the escalation record has a
+`placement`, the question was raised by a child on another orchestrator
+(protocol-change/089), and this session cannot commit the answer: the
+other orchestrator owns the record. The session sends the answer there and
+replies when it comes back. Everything above holds, with these
+differences:
+
+- `escalation_id` is the record's `escalation_id` as the event carried it,
+  `<placement>/<id there>`, and `expected_seq` is the `seq` that event
+  carried, which is the other orchestrator's sequence for the record.
+- `grants` MUST be drawn from the record's `admitted` list, a subset of
+  `denial.wanted`. A grant outside it is refused with `bad_request` and the
+  words `outside the spawner's approval ceiling`, without leaving this
+  session. The other orchestrator checks again against its own ceiling.
+- `approve_for_session` is allowed to the session's owner and remembers the
+  grants in the delegate session on the other orchestrator, not in this one.
+- A `stale_approval` reply carries the record as the other orchestrator now
+  holds it, under `details.escalation`, with the same `placement`.
+- A reply that says the other orchestrator did not answer (`internal`) does
+  not say whether the decision was applied. The client shows the record as
+  it next arrives.
+
 #### 4.9.7 `deny`
 
 | Field | Type | Presence | Meaning |
@@ -3316,6 +3338,8 @@ reusing `usage` would make them count the same row twice.
 | `preview` | string | optional | Bounded rendering of those arguments. Absent means the empty string. |
 | `asked` | integer | optional | How many questions this record has put to a human. Absent means `0`. |
 | `denial` | object | optional | Present when `status` is `pending`. |
+| `placement` | string | optional | The orchestrator the question was raised on, when it is not this one (protocol-change/089). Absent for this session's own questions. When present, `escalation_id` is `<placement>/<id there>` and `seq` is that orchestrator's. |
+| `admitted` | array | optional | With `placement`: the grants of `denial.wanted` that the other orchestrator's approval ceiling admits, which is all an `approve` may carry. Absent for this session's own questions. |
 
 Source: (`client/protocol.gleam:1135-1152`) and
 (`client/gateway.gleam:2442-2465`).

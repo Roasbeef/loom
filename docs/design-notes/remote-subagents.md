@@ -1294,7 +1294,11 @@ refuse with a sentence, and refused tool calls settle in band.
 ### Phase 3: the parent's operator approves
 
 `approval_ceiling`, `ChildEscalation` and `Resolve`, and their display in the
-laptop's terminal and web view.
+laptop's terminal and web view. Built in slices S10 and S11 and recorded in
+[protocol-change/089](../../protocol-change/089-remote-approvals.md), which
+differs from section 11 in the names it gives the pieces: the ceiling is a table
+of its own, the request is filed under `remote-escalation/`, and a decision
+carries a scope, once or for the session.
 
 ### Phase 4: observation and reach
 
