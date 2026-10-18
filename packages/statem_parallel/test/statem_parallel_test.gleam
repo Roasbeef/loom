@@ -651,6 +651,57 @@ pub fn teardown_runs_when_a_branch_crashes_test() {
   assert counter.count(tally, "torn down") == built
 }
 
+pub fn teardown_runs_when_next_model_crashes_in_the_prefix_test() {
+  // A pure model step that crashes would crash generation first, so the
+  // only one that reaches an execution is impure. This one crashes only
+  // while a system is live (built but not yet torn down), which is never
+  // true during generation or a shrink's admissibility replay. Unrescued in
+  // the prefix, that crash would unwind past teardown.
+  let tally = counter.start_tally()
+  let base =
+    counter.spec(
+      service: Atomic,
+      commands: [Increment],
+      step: 1,
+      guard: Unguarded,
+    )
+  let spec =
+    statem_parallel.Spec(
+      ..base,
+      new_sut: fn() {
+        counter.note(tally, "built")
+        base.new_sut()
+      },
+      next_model: fn(model, cmd) {
+        let live =
+          counter.count(tally, "built") - counter.count(tally, "torn down")
+
+        case live > 0 {
+          True -> panic as "model step"
+          False -> base.next_model(model, cmd)
+        }
+      },
+      teardown: fn(sut) {
+        counter.note(tally, "torn down")
+        base.teardown(sut)
+      },
+    )
+
+  let assert Error(failure) =
+    statem_parallel.check(
+      spec,
+      config()
+        |> statem_parallel.with_repeat(1)
+        |> statem_parallel.with_shrink_retries(1),
+    )
+
+  let built = counter.count(tally, "built")
+
+  assert failure.violation.tag == "statem.crash"
+  assert built > 0
+  assert counter.count(tally, "torn down") == built
+}
+
 pub fn teardown_runs_when_new_sut_crashes_after_a_good_system_test() {
   // A passing check builds and tears down once per run per repeat.
   let tally = counter.start_tally()

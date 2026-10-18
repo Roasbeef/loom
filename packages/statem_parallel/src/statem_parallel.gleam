@@ -934,16 +934,28 @@ fn run_prefix(
 
             Ok(Error(violation)) -> Error(Trial(violation, InPrefix(step)))
 
-            Ok(Ok(Nil)) ->
-              run_prefix(
-                spec,
-                sut,
-                spec.next_model(model, command),
-                rest,
-                step + 1,
-              )
+            Ok(Ok(Nil)) -> advance_prefix(spec, sut, model, command, rest, step)
           }
       }
+  }
+}
+
+/// Step the model past a prefix call that passed, then run the rest. The
+/// step is rescued like every other callback: an unrescued crash here would
+/// unwind past `execute` and skip the system's teardown.
+fn advance_prefix(
+  spec: Spec(model, cmd, sut, response),
+  sut: sut,
+  model: model,
+  command: cmd,
+  rest: List(cmd),
+  step: Int,
+) -> Result(model, Trial(cmd, response)) {
+  case exception.rescue(fn() { spec.next_model(model, command) }) {
+    Error(crash) ->
+      Error(Trial(statem.crashed("next_model", crash), InPrefix(step)))
+
+    Ok(next) -> run_prefix(spec, sut, next, rest, step + 1)
   }
 }
 

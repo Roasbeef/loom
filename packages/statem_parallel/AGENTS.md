@@ -21,8 +21,9 @@ reason.
   response`, `postcondition(model, cmd, response) -> Result(Nil,
   statem.Violation)`, `teardown`. `run` is called from several processes at
   once and must be safe for that; `sut` is a shared handle (subject, pid
-  client), never a value. `new_sut`, `run`, `postcondition` and `teardown`
-  are rescued: a crash is a `statem.crash` violation (teardown's is dropped).
+  client), never a value. `new_sut`, `run`, `postcondition`, `next_model`
+  and `teardown` are rescued: a crash is a `statem.crash` violation
+  (teardown's is dropped), so teardown runs on every path.
 - `Case(cmd)(prefix, branches)`.
 - `Config` via `default_config(seed:)` and `with_*`: `test_count` (100),
   `branches` (2, clamped 2..3), `max_prefix` (6), `max_branch` (4, clamped
