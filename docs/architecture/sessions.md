@@ -459,7 +459,10 @@ can be replaced while the session runs, by the owner's `profile_set` command
 saves it, moves the strands that followed the old profile, and the daemon stops
 and opens the session again in a process the session does not own
 (`daemon/restart`). The hub refuses the switch while any strand runs. The
-shared domain does not use it.
+shared domain does not use it. The same restart is how a session takes an edit
+to its configuration file: `client/config_watch` notices a settled change that
+loads, and the hub reopens the session once no strand is running
+([protocol 089](../../protocol-change/089-config-proposals.md)).
 
 It likewise stores the key of the `[models.<key>]` entry the session's `main`
 role was pinned to, or none ([protocol 080](../../protocol-change/080-session-model-choice.md)).
