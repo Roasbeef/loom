@@ -7942,14 +7942,6 @@ fn seeded_thinking(
   }
 }
 
-fn entry_in_force(
-  state: State,
-  provider: String,
-) -> Result(catalog.CatalogModel, Nil) {
-  use catalogue <- result.try(option.to_result(state.catalog, Nil))
-  catalog.find(catalogue, provider)
-}
-
 fn strands_snapshot(state: State) -> WireEvent {
   use <- bool.lazy_guard(state.delivery == Network, fn() {
     mutation_outcome("committed")
@@ -8337,7 +8329,7 @@ fn set_profile(
 fn retarget_moves(
   state: State,
   retargets: List(catalog.Retarget),
-) -> Result(List(#(String, machine_strand.ModelIdentity)), String) {
+) -> Result(List(#(String, catalog.CatalogModel)), String) {
   list.try_fold(strand_names(state), [], fn(moves, strand) {
     use cell <- result.try(
       session.strand_configuration(state.runtime.session, strand)
@@ -8347,17 +8339,7 @@ fn retarget_moves(
       None -> Ok(moves)
       Some(session.Cell(value:, ..)) ->
         case followed_head(retargets, value.model) {
-          Ok(entry) ->
-            Ok([
-              #(
-                strand,
-                machine_strand.ModelIdentity(
-                  provider: entry.name,
-                  model_id: entry.model_id,
-                ),
-              ),
-              ..moves
-            ])
+          Ok(entry) -> Ok([#(strand, entry), ..moves])
           Error(Nil) -> Ok(moves)
         }
     }
@@ -8380,20 +8362,18 @@ fn followed_head(
 }
 
 // Writes the moved strands' models in one commit, by the path `set_config`
-// uses, and leaves their thinking levels alone for the reason `model_name`
-// does: the level belongs to whoever is having the conversation.
+// uses, seeding the new entry's thinking level when a strand still holds its
+// previous entry's seed and leaving an operator-chosen level alone.
 fn apply_moves(
   state: State,
-  moves: List(#(String, machine_strand.ModelIdentity)),
+  moves: List(#(String, catalog.CatalogModel)),
   author: Option(message.Origin),
 ) -> Result(State, String) {
   use <- bool.guard(list.is_empty(moves), Ok(state))
   let change = fn(plan) {
     list.fold(moves, Ok(plan), fn(plan, move) {
       use plan <- result.try(plan)
-      update_configuration(plan, move.0, fn(configuration) {
-        machine_strand.StrandConfiguration(..configuration, model: move.1)
-      })
+      update_configuration(plan, move.0, switch_to_entry(state, _, move.1))
     })
   }
   apply_changes(state, None, [change], author)
@@ -8875,10 +8855,18 @@ fn apply_config(
   fields: List(#(String, JsonValue)),
   author: Option(message.Origin),
 ) -> Result(#(State, JsonValue), String) {
-  // Validate everything before applying anything: a refused key must
-  // leave no partial effect.
-  use changes <- result.try(
+  // Validate everything in the caller's order before applying anything: a
+  // refused key must leave no partial effect, and an explicit thinking_level
+  // runs after model_name so it always overrides the entry's seed.
+  use _ <- result.try(
     list.try_map(fields, fn(field) { validate_config_key(state, strand, field) }),
+  )
+  let #(thinking, others) =
+    list.partition(fields, fn(field) { field.0 == "thinking_level" })
+  use changes <- result.try(
+    list.try_map(list.append(others, thinking), fn(field) {
+      validate_config_key(state, strand, field)
+    }),
   )
   apply_changes(state, strand, changes, author)
 }
@@ -9129,11 +9117,11 @@ fn json_string_item(item: JsonValue) -> Result(String, String) {
 // `model_name`'s change: the catalogue entry's identity, applied to one
 // strand's configuration when named, or to every strand's otherwise.
 //
-// **It does not touch `thinking_level`,** even though the entry declares
-// one. A catalogue's `thinking` seeds a strand at creation; the per-turn
-// level afterwards belongs to whoever is having the conversation, and
-// switching model mid-run is not a request to un-raise a reasoning budget
-// somebody deliberately raised. A client that wants both sends both keys.
+// When the strand's `thinking_level` still matches the previous entry's seed,
+// it moves to the new entry's declared `thinking` level; a level the operator
+// raised or lowered away from the previous seed is left alone so switching
+// model mid-run does not un-raise a budget somebody deliberately chose. A
+// client that sends both keys gets its explicit `thinking_level`.
 fn model_name_change(
   state: State,
   strand: Option(String),
@@ -9148,15 +9136,45 @@ fn model_name_change(
       "unknown model name: " <> name
     }),
   )
-  let identity =
-    machine_strand.ModelIdentity(provider: entry.name, model_id: entry.model_id)
-  let change = fn(configuration) {
-    machine_strand.StrandConfiguration(..configuration, model: identity)
-  }
+  let change = switch_to_entry(state, _, entry)
   case strand {
     Some(strand) -> Ok(update_configuration(_, strand, change))
     None -> Ok(update_all_configurations(_, change))
   }
+}
+
+// Switches a strand's model to `entry`, seeding `thinking_level` from `entry`
+// when the strand still holds its previous model's seeded level (or `off` when
+// the previous model is not in the catalogue) and leaving an operator-chosen
+// level untouched.
+fn switch_to_entry(
+  state: State,
+  configuration: machine_strand.StrandConfiguration,
+  entry: catalog.CatalogModel,
+) -> machine_strand.StrandConfiguration {
+  let identity =
+    machine_strand.ModelIdentity(provider: entry.name, model_id: entry.model_id)
+  let previous_seed = case entry_in_force(state, configuration.model.provider) {
+    Ok(previous) -> wiring.strand_thinking_level(previous.thinking)
+    Error(Nil) -> machine_strand.ThinkingOff
+  }
+  let thinking_level = case configuration.thinking_level == previous_seed {
+    True -> wiring.strand_thinking_level(entry.thinking)
+    False -> configuration.thinking_level
+  }
+  machine_strand.StrandConfiguration(
+    ..configuration,
+    model: identity,
+    thinking_level:,
+  )
+}
+
+fn entry_in_force(
+  state: State,
+  provider: String,
+) -> Result(catalog.CatalogModel, Nil) {
+  use catalogue <- result.try(option.to_result(state.catalog, Nil))
+  catalog.find(catalogue, provider)
 }
 
 // The durable form of an active-tools list: every name checked against

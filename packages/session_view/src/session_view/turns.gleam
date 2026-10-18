@@ -1403,6 +1403,70 @@ pub fn reasoning_lines(block: Block) -> Dict(String, Int) {
   }
 }
 
+/// The full form of each reasoning row of a block that has more than its
+/// opening line to show, read from the response the block was drawn from and
+/// cut by `cap`.
+///
+/// A settled turn is sealed with `Skip`, so its `Plain` answer piece holds no
+/// `thoughts` map while still holding the response entry in `block.source`. A
+/// host that draws an answer's reasoning row expandable reads the body here when
+/// `thoughts` is empty.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert turns.reasoning_thoughts(block, fn(lines) { lines }) == dict.new()
+/// ```
+pub fn reasoning_thoughts(
+  block: Block,
+  cap: fn(List(Line)) -> List(Line),
+) -> Dict(String, List(Line)) {
+  case block.source {
+    transcript_lines.FromEntry(entry.MessageEntry(
+      message: message.AssistantMessage(content:, ..),
+      ..,
+    )) -> {
+      let full =
+        list.filter_map(content, fn(part) {
+          case part {
+            message.AssistantThinking(thinking:, redacted: False, ..) ->
+              case thinking == transcript_lines.reasoning_opening(thinking) {
+                True -> Ok(None)
+                False ->
+                  Ok(
+                    Some(
+                      cap(transcript_lines.assistant_block_lines(
+                        part,
+                        True,
+                        None,
+                      )),
+                    ),
+                  )
+              }
+            message.AssistantThinking(redacted: True, ..) -> Ok(None)
+            message.AssistantText(..) | message.AssistantToolCall(..) ->
+              Error(Nil)
+          }
+        })
+      block.rows
+      |> list.filter(fn(row) { reasoning_row(row.1.speaker) })
+      |> list.zip(full)
+      |> list.filter_map(fn(pair) {
+        case pair.1 {
+          Some(lines) -> Ok(#(pair.0.0, lines))
+          None -> Error(Nil)
+        }
+      })
+      |> dict.from_list
+    }
+    transcript_lines.FromEntry(..)
+    | transcript_lines.FromTools(..)
+    | transcript_lines.FromNotice
+    | transcript_lines.FromAdvisor
+    | transcript_lines.FromSpacer -> dict.new()
+  }
+}
+
 fn reasoning_row(speaker: transcript_line.Speaker) -> Bool {
   list.contains(
     [
