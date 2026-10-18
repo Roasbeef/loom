@@ -46,7 +46,7 @@ fun noRuns(): seq[int] {
 machine TestQuiet {
   start state Init {
     entry {
-      new Harness((sites = detached(), breaks = 0, crashes = 0, aborts = 0, ends = noRuns(), finishes = 0, pokes = 0, deletes = 0, drains = 0));
+      new Harness((sites = detached(), breaks = 0, crashes = 0, aborts = 0, ends = noRuns(), finishes = 0, pokes = 0, deletes = 0, drains = 0, upwards = 0, mailPasses = 0, closes = 0, runEnds = 0, reconnects = 0));
     }
   }
 }
@@ -55,7 +55,7 @@ machine TestQuiet {
 machine TestDrops {
   start state Init {
     entry {
-      new Harness((sites = detached(), breaks = 3, crashes = 0, aborts = 0, ends = noRuns(), finishes = 0, pokes = 2, deletes = 0, drains = 0));
+      new Harness((sites = detached(), breaks = 3, crashes = 0, aborts = 0, ends = noRuns(), finishes = 0, pokes = 2, deletes = 0, drains = 0, upwards = 0, mailPasses = 0, closes = 0, runEnds = 0, reconnects = 0));
     }
   }
 }
@@ -65,7 +65,7 @@ machine TestDrops {
 machine TestAbort {
   start state Init {
     entry {
-      new Harness((sites = detached(), breaks = 0, crashes = 0, aborts = 1, ends = noRuns(), finishes = 0, pokes = 2, deletes = 0, drains = 0));
+      new Harness((sites = detached(), breaks = 0, crashes = 0, aborts = 1, ends = noRuns(), finishes = 0, pokes = 2, deletes = 0, drains = 0, upwards = 0, mailPasses = 0, closes = 0, runEnds = 0, reconnects = 0));
     }
   }
 }
@@ -74,7 +74,7 @@ machine TestAbort {
 machine TestRestart {
   start state Init {
     entry {
-      new Harness((sites = detached(), breaks = 1, crashes = 2, aborts = 0, ends = noRuns(), finishes = 1, pokes = 2, deletes = 0, drains = 0));
+      new Harness((sites = detached(), breaks = 1, crashes = 2, aborts = 0, ends = noRuns(), finishes = 1, pokes = 2, deletes = 0, drains = 0, upwards = 0, mailPasses = 0, closes = 0, runEnds = 0, reconnects = 0));
     }
   }
 }
@@ -83,7 +83,7 @@ machine TestRestart {
 machine TestAll {
   start state Init {
     entry {
-      new Harness((sites = detached(), breaks = 2, crashes = 1, aborts = 1, ends = noRuns(), finishes = 1, pokes = 2, deletes = 0, drains = 0));
+      new Harness((sites = detached(), breaks = 2, crashes = 1, aborts = 1, ends = noRuns(), finishes = 1, pokes = 2, deletes = 0, drains = 0, upwards = 0, mailPasses = 0, closes = 0, runEnds = 0, reconnects = 0));
     }
   }
 }
@@ -93,7 +93,7 @@ machine TestAll {
 machine TestRunEnd {
   start state Init {
     entry {
-      new Harness((sites = attached(), breaks = 1, crashes = 0, aborts = 1, ends = bothRuns(), finishes = 0, pokes = 2, deletes = 0, drains = 0));
+      new Harness((sites = attached(), breaks = 1, crashes = 0, aborts = 1, ends = bothRuns(), finishes = 0, pokes = 2, deletes = 0, drains = 0, upwards = 0, mailPasses = 0, closes = 0, runEnds = 0, reconnects = 0));
     }
   }
 }
@@ -105,7 +105,28 @@ machine TestRunEnd {
 machine TestRelease {
   start state Init {
     entry {
-      new Harness((sites = detached(), breaks = 2, crashes = 1, aborts = 1, ends = noRuns(), finishes = 1, pokes = 2, deletes = 1, drains = 1));
+      new Harness((sites = detached(), breaks = 2, crashes = 1, aborts = 1, ends = noRuns(), finishes = 1, pokes = 2, deletes = 1, drains = 1, upwards = 0, mailPasses = 0, closes = 0, runEnds = 0, reconnects = 0));
+    }
+  }
+}
+
+// Phase 2 mail: running children mail their parent while the connection breaks
+// and the remote restarts, the laptop's parent session closes and its run ends,
+// and the remote's drainer passes at any point. Spawn answers are lost to the
+// breaks, so mail can reach a stub that is still `Requested`.
+machine TestUpward {
+  start state Init {
+    entry {
+      new Harness((sites = detached(), breaks = 2, crashes = 1, aborts = 1, ends = noRuns(), finishes = 1, pokes = 2, deletes = 0, drains = 0, upwards = 3, mailPasses = 3, closes = 1, runEnds = 1, reconnects = 1));
+    }
+  }
+}
+
+// Mail and nothing else that stops children: the cases that single out a rule.
+machine TestUpwardOnly {
+  start state Init {
+    entry {
+      new Harness((sites = detached(), breaks = 3, crashes = 0, aborts = 1, ends = noRuns(), finishes = 0, pokes = 2, deletes = 0, drains = 0, upwards = 3, mailPasses = 4, closes = 1, runEnds = 1, reconnects = 1));
     }
   }
 }
@@ -199,3 +220,34 @@ test tcProbeReleaseFoundNoSession [main = TestRelease]:
 
 test tcProbeSessionDeleted [main = TestRelease]:
   assert ProbeSessionDeleted in (union System, { TestRelease });
+
+test tcUpward [main = TestUpward]:
+  assert AtMostOneChildPerSite, OwnChildOnly, AnswerIsStable, JoinReportsOwnChild, TerminalOnce, UpwardAtMostOnce, UpwardOnlyIntoOpenRun, EveryMailAnswered, MailFindsItsStub, EveryStubAnswered, EveryChildTerminal in
+  (union System, { TestUpward });
+
+test tcOnlyUpwardAtMostOnce [main = TestUpwardOnly]:
+  assert UpwardAtMostOnce in (union System, { TestUpwardOnly });
+
+test tcOnlyUpwardOnlyIntoOpenRun [main = TestUpwardOnly]:
+  assert UpwardOnlyIntoOpenRun in (union System, { TestUpwardOnly });
+
+test tcOnlyEveryMailAnswered [main = TestUpwardOnly]:
+  assert EveryMailAnswered in (union System, { TestUpwardOnly });
+
+test tcOnlyMailFindsItsStub [main = TestUpwardOnly]:
+  assert MailFindsItsStub in (union System, { TestUpwardOnly });
+
+test tcProbeMailDelivered [main = TestUpward]:
+  assert ProbeMailDelivered in (union System, { TestUpward });
+
+test tcProbeMailDeclined [main = TestUpward]:
+  assert ProbeMailDeclined in (union System, { TestUpward });
+
+test tcProbeMailNotOpen [main = TestUpward]:
+  assert ProbeMailNotOpen in (union System, { TestUpward });
+
+test tcProbeMailRepeated [main = TestUpward]:
+  assert ProbeMailRepeated in (union System, { TestUpward });
+
+test tcProbeMailForRequested [main = TestUpward]:
+  assert ProbeMailForRequested in (union System, { TestUpward });

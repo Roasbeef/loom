@@ -98,3 +98,48 @@ spec ProbeSessionDeleted observes eSessionDeleted {
     }
   }
 }
+
+// A mail steered the parent.
+spec ProbeMailDelivered observes eSteered {
+  start state Watching {
+    on eSteered do (id: int) {
+      assert false, "witness: a mail steered the parent";
+    }
+  }
+}
+
+// A mail found the parent idle and was declined.
+spec ProbeMailDeclined observes eMailDeclined {
+  start state Watching {
+    on eMailDeclined do {
+      assert false, "witness: a mail was declined by an idle parent";
+    }
+  }
+}
+
+// A mail found the parent session closed and was asked about again.
+spec ProbeMailNotOpen observes eMailNotOpen {
+  start state Watching {
+    on eMailNotOpen do {
+      assert false, "witness: a mail found the parent session closed";
+    }
+  }
+}
+
+// A mail that had a receipt was sent again and answered from the receipt.
+spec ProbeMailRepeated observes eMailRepeated {
+  start state Watching {
+    on eMailRepeated do {
+      assert false, "witness: a resent mail was answered from its receipt";
+    }
+  }
+}
+
+// A mail arrived while the parent's stub for its child was still `Requested`.
+spec ProbeMailForRequested observes eMailForRequested {
+  start state Watching {
+    on eMailForRequested do {
+      assert false, "witness: a mail arrived before the answer to its spawn";
+    }
+  }
+}

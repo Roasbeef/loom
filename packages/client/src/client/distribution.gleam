@@ -41,6 +41,7 @@
 //// cookie from there when it opens its listener.
 
 import client/internal/ffi_distribution.{Live}
+import client/internal/ffi_nodes
 import gleam/bit_array
 import gleam/dict.{type Dict}
 import gleam/erlang/node.{type Node}
@@ -522,6 +523,24 @@ pub fn connect(peer: Peer, within_ms: Int) -> Result(Nil, Fault) {
       }
     }
   }
+}
+
+/// Whether this VM is connected to the peer now, hidden connections included.
+///
+/// This reads the connection set and dials nothing, which is the question a
+/// sender asks when it must never dial: a remote that cannot reach its spawner
+/// until the spawner connects asks it before each message and skips the
+/// message when the answer is no. The answer is a moment's observation, so a
+/// send that follows it can still find the link down and must treat that as an
+/// unanswered message.
+///
+/// ## Examples
+///
+/// ```gleam
+/// distribution.is_connected(peer) // -> False before any connect
+/// ```
+pub fn is_connected(peer: Peer) -> Bool {
+  list.contains(ffi_nodes.connected(), peer.node)
 }
 
 /// An operator-facing sentence for a fault, with the remedy where there is one.

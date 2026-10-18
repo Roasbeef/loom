@@ -19,6 +19,22 @@
 // 8.2). A `Joined` answer that reports a terminal state settles the stub; the
 // drainer does not store the report.
 //
+// Mail from a child (`K_MAIL`) is admitted by the child's call site, which is the
+// stub's name: the stub is written before the first `Spawn` leaves, so the stub
+// exists in every state, `ST_REQUESTED` included, and the mail never needs the
+// handle. The laptop answers in this order:
+//
+// | The laptop holds | It answers |
+// |---|---|
+// | the parent session closed | `MAIL_NOT_OPEN`, which the remote asks again about |
+// | no stub for the child | `MAIL_UNKNOWN` |
+// | a receipt for the mail's id | the receipt, and steers nothing |
+// | the parent's run open | steers the parent and stores `MAIL_DELIVERED` |
+// | the parent's run ended | stores `MAIL_DECLINED`: a finished parent is not woken |
+//
+// The steer and the receipt are one commit, so a mail steers the parent at most
+// once however often the remote resends it.
+//
 // Deleting the parent session (`eDelete`) writes one release row for the remote
 // when some stub is not refused, and then removes the stubs and kills the effect
 // processes with the session. The row is the catalogue's
@@ -35,11 +51,16 @@ machine Laptop {
   var calls: map[tSite, machine];
   var releaseOwed: bool;
   var watchingRelease: bool;
+  var open: bool;
+  var runOpen: bool;
+  var receipts: map[int, tMailCode];
 
   start state Up {
     entry (p: (wire: machine, port: machine)) {
       wire = p.wire;
       port = p.port;
+      open = true;
+      runOpen = true;
     }
 
     on eBegin do (s: tPlanSite) {
@@ -65,6 +86,24 @@ machine Laptop {
         joined(m);
       } else if (m.kind == K_RELEASED) {
         released();
+      } else if (m.kind == K_MAIL) {
+        mail(m);
+      }
+    }
+
+    on eParentClose do {
+      open = false;
+    }
+
+    on eParentOpen do {
+      open = true;
+      send port, eMailPass;
+    }
+
+    on eParentRunEnds do {
+      if (runOpen) {
+        runOpen = false;
+        announce eRunClosed;
       }
     }
 
@@ -118,6 +157,41 @@ machine Laptop {
     }
   }
 
+  // A child's mail. The answer is the receipt, and a receipt is final.
+  fun mail(m: tMsg) {
+    if (!open) {
+      announce eMailNotOpen;
+      reply(m, MAIL_NOT_OPEN);
+      return;
+    }
+    if (!(m.site in stubs)) {
+      announce eUnknownAnswered, (site = m.site, hasStub = (m.site in stubs));
+      reply(m, MAIL_UNKNOWN);
+      return;
+    }
+    if (m.id in receipts) {
+      announce eMailRepeated;
+      reply(m, receipts[m.id]);
+      return;
+    }
+    if (stubs[m.site].st == ST_REQUESTED) {
+      announce eMailForRequested;
+    }
+    if (runOpen) {
+      receipts[m.id] = MAIL_DELIVERED;
+      announce eSteered, m.id;
+      reply(m, MAIL_DELIVERED);
+    } else {
+      receipts[m.id] = MAIL_DECLINED;
+      announce eMailDeclined;
+      reply(m, MAIL_DECLINED);
+    }
+  }
+
+  fun reply(m: tMsg, code: tMailCode) {
+    send wire, eSend, (sender = this, msg = (kind = K_MAILED, src = this, dest = m.src, site = m.site, child = m.child, st = CS_RUNNING, run = 0, owner = -1, id = m.id, code = code));
+  }
+
   // The remote answered a release. Only an answer settles the row.
   fun released() {
     if (releaseOwed) {
@@ -161,14 +235,14 @@ machine Laptop {
     if (releaseOwed) {
       send wire, eWatch, this;
       watchingRelease = true;
-      send wire, eSend, (sender = this, msg = (kind = K_RELEASE, src = this, dest = port, site = 0, child = 0, st = CS_RUNNING, run = 0, owner = -1));
+      send wire, eSend, (sender = this, msg = (kind = K_RELEASE, src = this, dest = port, site = 0, child = 0, st = CS_RUNNING, run = 0, owner = -1, id = 0, code = MAIL_DELIVERED));
     }
     ss = keys(stubs);
     foreach (s in ss) {
       if (stubs[s].st == ST_REQUESTED) {
-        send wire, eSend, (sender = this, msg = (kind = K_SPAWN, src = this, dest = port, site = s, child = 0, st = CS_RUNNING, run = stubs[s].run, owner = stubs[s].owner));
+        send wire, eSend, (sender = this, msg = (kind = K_SPAWN, src = this, dest = port, site = s, child = 0, st = CS_RUNNING, run = stubs[s].run, owner = stubs[s].owner, id = 0, code = MAIL_DELIVERED));
       } else if (stubs[s].st == ST_SPAWNED) {
-        send wire, eSend, (sender = this, msg = (kind = K_JOIN, src = this, dest = port, site = s, child = stubs[s].child, st = CS_RUNNING, run = stubs[s].run, owner = stubs[s].owner));
+        send wire, eSend, (sender = this, msg = (kind = K_JOIN, src = this, dest = port, site = s, child = stubs[s].child, st = CS_RUNNING, run = stubs[s].run, owner = stubs[s].owner, id = 0, code = MAIL_DELIVERED));
       }
     }
   }

@@ -7668,7 +7668,7 @@ The laptop's side (slice S3):
   Some(orchestrator))`, a refused one `RemoteRefused`, and a `Ready` entry moves the
   stub to `Settled`. `roster` lists local cells and then `remote_peers` from the
   stubs, with a `Spawned` stub whose deadline has passed shown as `PastDeadline`.
-  `send` to a remote child is refused by `refuse_remote_child`.
+  `send` to a remote child is `send_remote` (slice S9, below).
 - `remote_drain.pass` is the second `peer_outbox_drain` instance's pass, in two
   steps over one read of the stubs, and the orchestrators the spawn step found
   silent are skipped by the join step. `spawn_pass` resends each `Requested` stub,
@@ -7792,6 +7792,41 @@ The box's deadline and retention (slice S4):
   Tests: `spawners_test`, `delegate_host_test` (the caps, the day rolling),
   `agency_test` (the hand-off stop), `advisor_test` (counted once),
   `goalstate_test`, `protocol_test`, `remote_child_test`.
+
+- Messaging and `with_on` (slice S9). `remote/link_keeper` is a daemon-level
+  `weft/state_machine` per `[orchestrators.<name>]` (`main.start_link_keepers`,
+  `Config.keepers`): `Idle`/`Holding`, votes (`hold`/`drop`) in the data, a
+  monitor on each voter, and a 2 s periodic that calls `Link.connect` only when
+  `Link.connected` (`distribution.is_connected`) is false. `remote_drain.pass`
+  votes through `Reach.keep` each pass (`vote`) and has a third step, `send_pass`,
+  that resends `remote_send` rows (`remote-send/{id}`) and removes a row on any
+  answer. `orchestrator_port.Message` gains `ChildSend` (served by
+  `SpawnHost.send`, then `DelegateEndpoint.send`, then `agency.delegate_send`,
+  which stores `delegate/receipt/{id}` in the delivering commit) and the box to
+  laptop `ChildMail` and `ChildProgress`, served by `ChildHost`
+  (`main.child_host`, `refusing_children()`), each `detached` with an `Origin`
+  the host judges. The Agency side is `agency.ChildInbox` (`child_inbox`,
+  projected as `serve.Resident.inbox`): `AdmitChildMail` runs in the holder,
+  finds the stub by `remote_child.find_named` (name and parent strand, any
+  state, never the handle), asks `admits(orchestrator)`, and steers the parent
+  with `api.steer_marking` writing `remote-mail/{id}`; no open run writes a
+  `Declined` receipt instead. `Stub.glance` is kept by `remote_child.progressed`.
+  `remote_mail` is the vocabulary (`Receipt`, `ChildRefusal`, `Landing`) and
+  `remote_send` the row. On the box, `Config.spawner`
+  (`main.spawner_link_of`) makes `queue_upward` write a
+  `delegate_outbox` mail row and answer `Queued`; `serve.with_upward_drain`
+  runs `delegate_drain.pass`, which sends only while
+  `remote_spawner.laptop_over(..).connected()` and never dials. A run
+  a send starts on a delegate child gets the child's absolute spawn deadline
+  (`api.run_deadline_for`) and is refused after it; `Joined.Ready.owed` and
+  `Stub.owed` keep the link voted while a settled child's mail is undelivered;
+  `peer_outbox_drain.ring` runs a pass at once; `ChildRefusal.Busy` is retryable.
+  Remote handles belong to a stub by strand. `ChildEscalation` is phase 3.
+  Tests: `remote/link_keeper_test`, `remote_mail_test`, `delegate_outbox_test`,
+  `remote/orchestrator_port_test`, `agency_test` (mail on a `Requested` stub,
+  declined into an idle parent, origin mismatch, glances, upward row, sends and
+  the resend row, the vote, `delegate_send`), `daemon_spawn_host_test`,
+  `support/fake_orchestrators` (`deliver_to_laptop`, `voting`), and the P model.
 
 Tests: `spawners_test` (a valid table, defaults, every refusal, the catalogue
 parser, `standing`), `orchestrators_test` (the `@` and `#` refusal),

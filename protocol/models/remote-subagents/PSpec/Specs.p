@@ -228,3 +228,77 @@ spec EveryReleaseIsTold observes eReleaseWritten, eReleaseTold {
     }
   }
 }
+
+// A mail steers the parent at most once, however often the remote sends it. The
+// laptop stores the receipt in the commit that steers (`remote-mail/{id}`), so a
+// resend after a lost reply, a break or a restart is answered from the receipt.
+spec UpwardAtMostOnce observes eSteered {
+  var steered: set[int];
+
+  start state Watching {
+    on eSteered do (id: int) {
+      assert !(id in steered), format("mail {0} steered the parent twice", id);
+      steered += (id);
+    }
+  }
+}
+
+// A mail steers only a parent that has a run open. A finished parent is never
+// woken for a child's message, so a delivery that finds it idle is declined and
+// the refusal is the receipt (`BusyOnly`, not `MayWake`).
+spec UpwardOnlyIntoOpenRun observes eRunClosed, eSteered {
+  var closed: bool;
+
+  start state Watching {
+    on eRunClosed do {
+      closed = true;
+    }
+
+    on eSteered do (id: int) {
+      assert !closed, format("mail {0} steered a parent whose run had ended", id);
+    }
+  }
+}
+
+// Every mail the remote writes is eventually answered, or discarded with the
+// session that held it. Only an answer settles a row, and `MAIL_NOT_OPEN` is not
+// one, so a connection that breaks or a parent session that is closed delays the
+// answer and cannot lose it. This holds under the fair reconnection the link
+// keeper assumes and a parent session that is eventually opened; without them no
+// remote could promise it. P reports a violation when a run ends in the hot
+// state.
+spec EveryMailAnswered observes eMailQueued, eMailSettled {
+  var pending: set[int];
+
+  start cold state Quiet {
+    on eMailQueued do (id: int) {
+      pending += (id);
+      goto Waiting;
+    }
+  }
+
+  hot state Waiting {
+    on eMailQueued do (id: int) {
+      pending += (id);
+    }
+
+    on eMailSettled do (id: int) {
+      pending -= (id);
+      if (sizeof(pending) == 0) {
+        goto Quiet;
+      }
+    }
+  }
+}
+
+// A mail about a child the parent holds a stub for is never answered unknown.
+// The stub is written before the first `Spawn` leaves and records the child's
+// name, so mail finds it in any state, `Requested` included, and the host keys on
+// the name and never on a handle that exists only after the `Spawn` is answered.
+spec MailFindsItsStub observes eUnknownAnswered {
+  start state Watching {
+    on eUnknownAnswered do (p: (site: tSite, hasStub: bool)) {
+      assert !p.hasStub, format("mail from call site {0} was answered unknown while the parent holds its stub", p.site);
+    }
+  }
+}

@@ -6,7 +6,7 @@
 //// the parent can crash between the stub and the message it implies, so something
 //// has to keep attempting what is recorded. That is a second instance of the
 //// outbox drainer (`client/peer_outbox_drain`), given this pass instead of peer
-//// mail's. The pass owes two things.
+//// mail's. The pass owes three things, and it casts one vote.
 ////
 //// ## A spawn that has not been answered
 ////
@@ -47,13 +47,32 @@
 //// already free by the clock, and an orchestrator that is down would otherwise
 //// keep the drainer ticking for a child that cannot be running.
 ////
+//// ## A message that has not been answered
+////
+//// A model's `agent_send` to a remote child is attempted at once, and an
+//// orchestrator that did not answer leaves a row (`client/remote_send`). The
+//// third step resends each row, and an answer of any kind removes it: the
+//// orchestrator stores a receipt under the message id, so a resend after a lost
+//// reply delivers nothing twice.
+////
+//// ## The vote
+////
+//// An orchestrator sends mail and progress of its own, and it can only do so
+//// over a connection the laptop made. At each pass the drainer tells the link
+//// keeper (`client/remote/link_keeper`) which orchestrators this session has a
+//// stub for that is `Requested` or running, and which it has none for. The vote
+//// is cast every pass, so a daemon that restarted has its votes again within one
+//// pass, and a vote for an orchestrator with no keeper is dropped.
+////
 //// ## Flow
 ////
-//// `pass` → `spawn_pass` → `attempt_spawn` → `join_pass` → `join_group`
+//// `pass` → `vote` → `spawn_pass` → `attempt_spawn` → `join_pass` →
+//// `join_group` → `send_pass` → `attempt_send`
 ////
 //// 1. `pass` reads the stubs once through the session's runtime, which it
 ////    fetches afresh each time because the drainer outlives a restart of the
-////    runtime, and hands the same list to both steps.
+////    runtime, and hands the same list to every step. `vote` comes first and
+////    needs no network.
 //// 2. `spawn_pass` walks the stubs that are `Requested`, and `attempt_spawn`
 ////    sends one and records the answer. A child it starts is owed a look, so the
 ////    pass reports `Owed` and the next one asks after it.
@@ -63,13 +82,17 @@
 //// 4. An orchestrator that did not answer is not asked again in the same pass,
 ////    the way the peer-mail pass skips a silent session: every record owed to it
 ////    would wait out the same deadline to learn the same thing. The silent
-////    orchestrators pass from the spawn step to the join step, so a down
-////    orchestrator costs one connect timeout per pass, not two.
+////    orchestrators pass from the spawn step to the join step and on to the send
+////    step, so a down orchestrator costs one connect timeout per pass, not
+////    three.
+//// 5. `send_pass` walks the rows of sends owed, and `attempt_send` resends one
+////    and removes the row when the orchestrator answers.
 
 import client/peer_mail
 import client/peer_outbox_drain.{type Backlog, Clear, Owed, Quick}
 import client/remote_child.{type Kept}
 import client/remote_reach.{type Reach}
+import client/remote_send
 import client/remote_spawn.{type ChildUsage, type Joined}
 import core/clock.{type Clock}
 import gleam/dict
@@ -85,8 +108,10 @@ import tools/agent.{type Handle, type Outcome}
 // tick, and a running child ends at no moment this side can predict.
 const owed = Owed(Quick)
 
-/// The pass of the second drainer instance: attempts every spawn that is owed,
-/// asks after every child that is running, and says whether anything still is.
+/// The pass of the second drainer instance: votes which orchestrators this
+/// session needs a connection to, attempts every spawn that is owed, asks after
+/// every child that is running, resends every send that was not answered, and
+/// says whether anything still is.
 ///
 /// `runtime` is asked at each pass, and a session whose runtime is not up yet
 /// has nothing to read and reports `Owed`, so the drainer tries again at its
@@ -115,9 +140,12 @@ pub fn pass(
             owed
           }
           Ok(kept) -> {
+            vote(reach, kept, time)
             let #(spawns, silent) = spawn_pass(open, reach, time, logger, kept)
-            let running = join_pass(open, reach, time, logger, kept, silent)
-            owed_if_either(spawns, running)
+            let #(running, silent) =
+              join_pass(open, reach, time, logger, kept, silent)
+            let #(sends, _silent) = send_pass(open, reach, logger, silent)
+            owed_if_either(owed_if_either(spawns, running), sends)
           }
         }
     }
@@ -129,6 +157,31 @@ fn owed_if_either(first: Backlog, second: Backlog) -> Backlog {
     Clear, Clear -> Clear
     Owed(_), _ | _, Owed(_) -> owed
   }
+}
+
+// --- the vote ------------------------------------------------------------------
+
+// Tells the link keeper, for each orchestrator the session knows, whether a stub
+// needs the connection kept up: `Requested`, or `Spawned` with the child's
+// deadline not yet passed. A `Settled` or `Refused` stub, or one past its
+// deadline, sends the box nothing more to say. An orchestrator that a stub names
+// and the roster no longer lists is voted for as well, so a vote is never
+// withheld from a child that may still be running.
+fn vote(reach: Reach, kept: List(Kept), time: Clock) -> Nil {
+  let #(now, _clock) = clock.read(time)
+  let holding =
+    kept
+    |> list.filter(fn(entry) { remote_child.needs_link(entry.stub, now) })
+    |> list.map(fn(entry) { entry.stub.orchestrator })
+    |> list.unique
+  list.append(reach.orchestrators, holding)
+  |> list.unique
+  |> list.each(fn(name) {
+    case list.contains(holding, name) {
+      True -> reach.keep(name, remote_reach.Hold)
+      False -> reach.keep(name, remote_reach.Drop)
+    }
+  })
 }
 
 // --- spawns that have not been answered --------------------------------------
@@ -240,7 +293,8 @@ fn recorded(
 // --- children that are running ------------------------------------------------
 
 // Asks after every child whose stub says it is running, and settles the ones
-// that finished. The stubs are the pass's one read, so a child the spawn step
+// that finished. It answers the orchestrators that did not answer as well, for
+// the step that follows. The stubs are the pass's one read, so a child the spawn step
 // started in this pass is not among them: that step reported `Owed`, and the
 // next pass asks after it. The orchestrators the spawn step found silent are not
 // asked again. A pass that leaves any child running is `Owed`, which is what
@@ -252,16 +306,14 @@ fn join_pass(
   logger: Logger,
   kept: List(Kept),
   silent: List(String),
-) -> Backlog {
+) -> #(Backlog, List(String)) {
   let #(now, _clock) = clock.read(time)
-  let #(backlog, _silent) =
-    kept
-    |> list.filter_map(fn(entry) { running(entry, now) })
-    |> by_parent
-    |> list.fold(#(Clear, silent), fn(so_far, group) {
-      join_group(runtime, reach, logger, group, so_far)
-    })
-  backlog
+  kept
+  |> list.filter_map(fn(entry) { running(entry, now) })
+  |> by_parent
+  |> list.fold(#(Clear, silent), fn(so_far, group) {
+    join_group(runtime, reach, logger, group, so_far)
+  })
 }
 
 // The stub with its child's handle, when the stub is `Spawned` and the child's
@@ -275,9 +327,15 @@ fn running(entry: Kept, now: Int) -> Result(#(Kept, Handle), Nil) {
         True -> Ok(#(entry, placed.handle))
         False -> Error(Nil)
       }
-    remote_child.Requested
-    | remote_child.Settled(..)
-    | remote_child.Refused(..) -> Error(Nil)
+
+    // A child that finished and whose orchestrator still holds mail it sent is
+    // asked about again, to learn when the mail has been delivered.
+    remote_child.Settled(placed:, ..) ->
+      case remote_child.owes_mail(entry.stub, now) {
+        True -> Ok(#(entry, placed.handle))
+        False -> Error(Nil)
+      }
+    remote_child.Requested | remote_child.Refused(..) -> Error(Nil)
   }
 }
 
@@ -350,15 +408,26 @@ fn settle_all(
   list.fold(children, Clear, fn(backlog, child) {
     let #(entry, handle) = child
     case finished(joined, handle) {
-      Ok(#(outcome, usage)) ->
+      // A finished child whose orchestrator still holds mail it sent keeps the
+      // pass owed, so the next pass asks again and the connection stays up.
+      Ok(#(outcome, usage, undelivered)) ->
         owed_if_either(
           backlog,
           recorded(
-            remote_child.settled(runtime, entry.key, outcome, usage),
+            remote_child.settled(
+              runtime,
+              entry.key,
+              outcome,
+              usage,
+              undelivered,
+            ),
             logger,
             "remote_drain.settled",
             entry,
-            Clear,
+            case undelivered > 0 {
+              True -> owed
+              False -> Clear
+            },
           ),
         )
       Error(Nil) -> owed
@@ -366,20 +435,112 @@ fn settle_all(
   })
 }
 
-// The outcome and cost a join reports for one handle, when it reports that child
-// finished.
+// The outcome, the cost and the count of undelivered messages a join reports for
+// one handle, when it reports that child finished.
 fn finished(
   joined: List(Joined),
   handle: Handle,
-) -> Result(#(Outcome, ChildUsage), Nil) {
+) -> Result(#(Outcome, ChildUsage, Int), Nil) {
   list.find_map(joined, fn(entry) {
     case entry {
-      remote_spawn.Ready(handle: found, outcome:, usage:, ..)
+      remote_spawn.Ready(handle: found, outcome:, usage:, owed:, ..)
         if found == handle
-      -> Ok(#(outcome, usage))
+      -> Ok(#(outcome, usage, owed))
       remote_spawn.Ready(..) | remote_spawn.Pending(..) -> Error(Nil)
     }
   })
+}
+
+// --- sends that have not been answered ---------------------------------------
+
+// Resends each row of a send the orchestrator did not answer, and removes the
+// rows it answered. The orchestrators the earlier steps found silent are not
+// asked again, and one that goes silent here is passed on. A row that cannot be
+// read leaves the pass owed: the rows may exist, and the next pass reads again.
+fn send_pass(
+  runtime: api.Runtime,
+  reach: Reach,
+  logger: Logger,
+  silent: List(String),
+) -> #(Backlog, List(String)) {
+  case remote_send.all(runtime) {
+    Error(reason) -> {
+      log.warn(logger, "remote_drain.sends_unreadable", [
+        field.text("reason", reason),
+      ])
+      #(owed, silent)
+    }
+    Ok(rows) ->
+      list.fold(rows, #(Clear, silent), fn(so_far, row) {
+        attempt_send(runtime, reach, logger, row, so_far)
+      })
+  }
+}
+
+// One row. Any answer removes it: a landing says the child has the message, a
+// repeat says an earlier attempt delivered it, and a refusal says the
+// orchestrator will not deliver it, which is definitive. Silence leaves the row
+// and marks the orchestrator silent for the rest of the pass. A row that cannot
+// be removed stays, and the next pass sends again and is answered from the
+// receipt.
+fn attempt_send(
+  runtime: api.Runtime,
+  reach: Reach,
+  logger: Logger,
+  row: remote_send.Row,
+  so_far: #(Backlog, List(String)),
+) -> #(Backlog, List(String)) {
+  let #(backlog, silent) = so_far
+  case list.contains(silent, row.orchestrator) {
+    True -> #(owed, silent)
+    False ->
+      case
+        reach.send(
+          row.orchestrator,
+          remote_reach.parent(reach, row.parent_strand),
+          row.child,
+          row.id,
+          row.text,
+        )
+      {
+        Ok(_landing) -> #(settled_send(runtime, logger, row, backlog), silent)
+        Error(peer_mail.Refused(reason)) -> {
+          log.info(logger, "remote_drain.send_refused", [
+            field.text("reason", reason),
+            field.text("orchestrator", row.orchestrator),
+          ])
+          #(settled_send(runtime, logger, row, backlog), silent)
+        }
+        Error(peer_mail.Unreachable) | Error(peer_mail.NotOpen) -> #(owed, [
+          row.orchestrator,
+          ..silent
+        ])
+      }
+  }
+}
+
+fn settled_send(
+  runtime: api.Runtime,
+  logger: Logger,
+  row: remote_send.Row,
+  backlog: Backlog,
+) -> Backlog {
+  case remote_send.settle(runtime, row.id) {
+    Ok(Nil) -> {
+      log.info(logger, "remote_drain.sent", [
+        field.text("orchestrator", row.orchestrator),
+        field.text("message_id", row.id),
+      ])
+      backlog
+    }
+    Error(reason) -> {
+      log.warn(logger, "remote_drain.send_unrecorded", [
+        field.text("reason", reason),
+        field.text("message_id", row.id),
+      ])
+      owed
+    }
+  }
 }
 
 fn where(entry: Kept) -> List(field.Field) {

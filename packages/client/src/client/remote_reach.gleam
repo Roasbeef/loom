@@ -1,13 +1,18 @@
 //// The other orchestrators a session may start children on, as a record of
 //// functions (protocol-change/084, slice S3).
 ////
-//// The Agency asks two questions of another orchestrator: start a child, and
-//// report on children. It must not know how they are sent. The orchestrator port
-//// and its addresses sit above the Agency in the module graph (the owner port
-//// reaches the Agency through the notice module), so the Agency depends on this
-//// record and the daemon fills it from the sending end
-//// (`client/remote/remote_spawner`). A test fills it with two closures that play
+//// The Agency asks three questions of another orchestrator: start a child,
+//// report on children, and deliver a message into one. It must not know how they
+//// are sent. The orchestrator port and its addresses sit above the Agency in the
+//// module graph (the owner port reaches the Agency through the notice module),
+//// so the Agency depends on this record and the daemon fills it from the sending
+//// end (`client/remote/remote_spawner`). A test fills it with closures that play
 //// the other orchestrator.
+////
+//// A fourth function, `keep`, is not a question. The drainer of a session that
+//// has a child there votes through it to the daemon's link keeper, which keeps
+//// the connection up so that the orchestrator can send mail and progress of its
+//// own (`client/remote/link_keeper`).
 ////
 //// The port also takes a `RunEnded` message, which stops the children a finished
 //// run owns, and the sending end does not use it: a remote child is always
@@ -33,6 +38,7 @@
 //// is already a sentence for the parent's model (`remote_spawn.describe_refusal`).
 
 import client/peer_mail.{type Failure}
+import client/remote_mail.{type Landing}
 import client/remote_spawn.{
   type CallSite, type Joined, type Parent, type Request, type Spawned,
 }
@@ -76,7 +82,30 @@ pub type Reach {
     /// answers how many children it stopped. The arguments are the orchestrator
     /// and the parent. A parent the orchestrator holds nothing for answers zero.
     release: fn(String, Parent) -> Result(Int, Failure),
+    /// Delivers a message into a child, once. The arguments are the
+    /// orchestrator, the parent, the child's handle, the message's identity and
+    /// its text. The identity is the sending call site's digest, and the
+    /// orchestrator stores a receipt under it, so asking again after an
+    /// `Unreachable` delivers nothing twice and answers `Admitted`. An idle child
+    /// starts a detached run, bounded by the deadline the child already has.
+    send: fn(String, Parent, Handle, String, String) -> Result(Landing, Failure),
+    /// Votes whether this session needs the connection to an orchestrator kept
+    /// up (`client/remote/link_keeper`). The drainer votes `Hold` on every pass
+    /// that finds a spawn unanswered or a child running there, and `Drop` when a
+    /// pass finds nothing owed. It never waits: a vote to a keeper that is not
+    /// running is lost, and the next pass votes again.
+    keep: fn(String, Vote) -> Nil,
   )
+}
+
+/// A session's vote to the keeper of one orchestrator's connection.
+pub type Vote {
+  /// A child may be running there, or a spawn is waiting for an answer: keep the
+  /// connection up, because the orchestrator sends messages of its own.
+  Hold
+
+  /// Nothing is owed there any more.
+  Drop
 }
 
 /// The reach of a session that has nowhere to start a child: no orchestrators
@@ -100,6 +129,10 @@ pub fn none(session: String) -> Reach {
       Error(not_configured(name))
     },
     release: fn(name, _parent) { Error(not_configured(name)) },
+    send: fn(name, _parent, _child, _message_id, _text) {
+      Error(not_configured(name))
+    },
+    keep: fn(_name, _vote) { Nil },
   )
 }
 

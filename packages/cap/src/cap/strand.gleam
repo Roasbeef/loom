@@ -339,6 +339,11 @@ pub type Delivery {
     /// The newly admitted durable run.
     operation: OpId,
   )
+
+  /// The message was recorded and will be delivered when the other
+  /// orchestrator can be reached. Nothing says yet whether it reached an open
+  /// run.
+  Queued
 }
 
 /// How a peer stands in relation to the calling strand.
@@ -463,6 +468,7 @@ pub opaque type Assignment {
     context: Provenance,
     tools: Option(List(String)),
     result_schema: List(Field),
+    on: Option(String),
   )
 }
 
@@ -488,6 +494,7 @@ pub fn assignment(purpose purpose: String, brief brief: String) -> Assignment {
     context: Fresh,
     tools: None,
     result_schema: [],
+    on: None,
   )
 }
 
@@ -529,6 +536,24 @@ pub fn from_my_conversation(assignment: Assignment) -> Assignment {
 /// `UnknownTool`.
 pub fn with_tools(assignment: Assignment, names: List(String)) -> Assignment {
   Assignment(..assignment, tools: Some(names))
+}
+
+/// Starts the child on the configured orchestrator `name` instead of in this
+/// session. A child there runs detached, in a session that exists to serve it,
+/// and bounded by its own deadline. It is offered only in a session that its
+/// owner holds alone, and only from a program that waits for it: a program that
+/// runs in the background cannot place a child elsewhere, and the host refuses
+/// the spawn in words that say why.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // strand.assignment(purpose: "build", brief: "run the suite")
+/// // |> strand.with_on("box")
+/// // |> strand.spawn
+/// ```
+pub fn with_on(assignment: Assignment, orchestrator: String) -> Assignment {
+  Assignment(..assignment, on: Some(orchestrator))
 }
 
 /// Demands a result shape of the child, which the harness holds it to on
@@ -1027,6 +1052,7 @@ fn decode_delivery(value: Value) -> Result(Delivery, String) {
       use operation <- result.try(parse_op_id(operation_text))
       Ok(Started(operation:))
     }
+    "queued" -> Ok(Queued)
     other -> Error("unknown delivery kind " <> other)
   }
 }
@@ -1204,6 +1230,7 @@ pub fn assignment_value(assignment: Assignment) -> Value {
     #("context", wire.string(provenance_name(assignment.context))),
     #("tools", optional_strings(assignment.tools)),
     #("result_schema", encode_schema(assignment.result_schema)),
+    #("on", optional_string(assignment.on)),
   ])
 }
 

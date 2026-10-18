@@ -12,12 +12,14 @@ import client/listed_sessions.{Further, Last}
 import client/node_report
 import client/remote/address.{type Address}
 import client/remote/orchestrator_port.{type Message, NotOwned, Owned}
+import client/remote_mail
 import client/remote_spawn.{
   Attached, CallSite, ChildUsage, Parent, Ready, Request, Spawned,
 }
 import client/roster
 import client/session_move
 import core/clock
+import core/glance
 import core/ids
 import core/json
 import gleam/erlang/atom
@@ -26,6 +28,7 @@ import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
 import gleam/string
 import host/bootstrap
 import storage/catalogue
@@ -93,6 +96,7 @@ fn describing() -> Address(Message) {
       },
       orchestrator_port.declining(),
       orchestrator_port.refusing_spawns(),
+      orchestrator_port.refusing_children(),
       orchestrator_port.unheld,
       orchestrator_port.unreported(),
     )
@@ -123,6 +127,7 @@ fn holding(holder: orchestrator_port.Holder) -> Address(Message) {
       fn(_session) { Error("not_found") },
       orchestrator_port.declining(),
       orchestrator_port.refusing_spawns(),
+      orchestrator_port.refusing_children(),
       holder,
       orchestrator_port.unreported(),
     )
@@ -411,6 +416,7 @@ fn ready(handle: agent.Handle) -> remote_spawn.Joined {
       cache_write: 4,
       cost: 0.5,
     ),
+    owed: 0,
   )
 }
 
@@ -478,6 +484,23 @@ fn hosting(
       process.sleep(pause_ms)
       Ok(3)
     },
+    send: fn(origin, child, message_id, text) {
+      process.send(
+        seen,
+        "send "
+          <> origin.node
+          <> " "
+          <> origin.parent.strand
+          <> " "
+          <> child.strand
+          <> " "
+          <> message_id
+          <> " "
+          <> text,
+      )
+      process.sleep(pause_ms)
+      Ok(remote_mail.encode_landing(remote_mail.Admitted))
+    },
   )
 }
 
@@ -492,6 +515,7 @@ fn spawning(host: orchestrator_port.SpawnHost) -> Address(Message) {
       fn(_session) { Error("not_found") },
       orchestrator_port.declining(),
       host,
+      orchestrator_port.refusing_children(),
       orchestrator_port.unheld,
       orchestrator_port.unreported(),
     )
@@ -593,6 +617,9 @@ pub fn a_refusal_from_the_host_is_the_answer_to_each_message_test() {
       release: fn(_origin) {
         Error(remote_spawn.StoreFailure(reason: "the store failed"))
       },
+      send: fn(_origin, _child, _id, _text) {
+        Error(remote_spawn.StoreFailure(reason: "the store failed"))
+      },
     )
   let port = spawning(refusing)
   assert orchestrator_port.ask_spawn(
@@ -678,6 +705,7 @@ pub fn a_crashing_host_is_silence_and_the_port_serves_on_test() {
       join: fn(_origin, _handles, _within_ms) { panic as "the spawn host fails" },
       run_ended: fn(_origin, _ended) { panic as "the spawn host fails" },
       release: fn(_origin) { panic as "the spawn host fails" },
+      send: fn(_origin, _child, _id, _text) { panic as "the spawn host fails" },
     )
   let port = spawning(crashing)
 
@@ -704,6 +732,218 @@ pub fn a_crashing_host_is_silence_and_the_port_serves_on_test() {
   assert orchestrator_port.ask(port, "owned-1", answers_within_ms) == Ok(Owned)
 }
 
+// --- what a child sends its parent, and a send into a child (phase 2) ---------
+
+// A child host that records what it was asked, with the origin, and admits
+// everything from the node `trusted`.
+fn receiving(
+  seen: process.Subject(String),
+  trusted: String,
+  pause_ms: Int,
+) -> orchestrator_port.ChildHost {
+  orchestrator_port.ChildHost(
+    mail: fn(origin, child, message_id, text) {
+      process.send(
+        seen,
+        "mail "
+          <> origin.node
+          <> " "
+          <> origin.parent.session
+          <> "/"
+          <> origin.parent.strand
+          <> " "
+          <> child.strand
+          <> " "
+          <> message_id
+          <> " "
+          <> text,
+      )
+      process.sleep(pause_ms)
+      case origin.node == trusted {
+        True -> Ok(remote_mail.Delivered)
+        False -> Error(remote_mail.OriginMismatch)
+      }
+    },
+    progress: fn(origin, child, glance) {
+      process.send(
+        seen,
+        "progress " <> origin.node <> " " <> child.strand <> " " <> glance.title,
+      )
+      process.sleep(pause_ms)
+      case origin.node == trusted {
+        True -> Ok(Nil)
+        False -> Error(remote_mail.OriginMismatch)
+      }
+    },
+  )
+}
+
+// A port under a private name that serves a child's messages with `host`.
+fn receiving_port(host: orchestrator_port.ChildHost) -> Address(Message) {
+  let name = process.new_name("orchestrator_port")
+  let assert Ok(_) =
+    orchestrator_port.start_with(
+      name,
+      held,
+      fn(_session, _command) { Error(orchestrator_port.peer_unserved) },
+      fn(_session) { Error("not_found") },
+      orchestrator_port.declining(),
+      orchestrator_port.refusing_spawns(),
+      host,
+      orchestrator_port.unheld,
+      orchestrator_port.unreported(),
+    )
+    as "the port starts under its name"
+  address.Address(node: node.self(), name:)
+}
+
+fn a_glance() -> glance.Glance {
+  glance.Glance(
+    operation: ids.op_id_to_string(operation()),
+    title: "running the suite",
+    summary: "",
+    at: 1000,
+    tokens: 0,
+  )
+}
+
+pub fn a_send_reaches_the_host_with_its_origin_and_answers_the_landing_test() {
+  let seen = process.new_subject()
+  let port = spawning(hosting(seen, 0))
+  assert orchestrator_port.ask_send(
+      port,
+      parent(),
+      handle(),
+      "m1",
+      "also the tests",
+      1000,
+    )
+    == Ok(Ok(remote_mail.encode_landing(remote_mail.Admitted)))
+  assert process.receive(seen, 0)
+    == Ok(
+      "send "
+      <> own_node()
+      <> " main sub:^main/run-the-suite-1 m1 also the tests",
+    )
+}
+
+pub fn a_daemon_with_no_orchestrators_refuses_a_childs_mail_and_progress_test() {
+  let port = started()
+  assert orchestrator_port.ask_mail(
+      port,
+      parent(),
+      handle(),
+      "m1",
+      "done",
+      1000,
+    )
+    == Ok(Error(remote_mail.OriginMismatch))
+  assert orchestrator_port.ask_progress(
+      port,
+      parent(),
+      handle(),
+      a_glance(),
+      1000,
+    )
+    == Ok(Error(remote_mail.OriginMismatch))
+
+  // It still answers the question it always answered.
+  assert orchestrator_port.ask(port, "owned-1", answers_within_ms) == Ok(Owned)
+}
+
+pub fn a_childs_mail_and_progress_reach_the_host_with_their_origin_test() {
+  let seen = process.new_subject()
+  let port = receiving_port(receiving(seen, own_node(), 0))
+  assert orchestrator_port.ask_mail(
+      port,
+      parent(),
+      handle(),
+      "m1",
+      "found it",
+      1000,
+    )
+    == Ok(Ok(remote_mail.Delivered))
+  assert process.receive(seen, 0)
+    == Ok(
+      "mail " <> own_node() <> " s1/main sub:^main/run-the-suite-1 m1 found it",
+    )
+  assert orchestrator_port.ask_progress(
+      port,
+      parent(),
+      handle(),
+      a_glance(),
+      1000,
+    )
+    == Ok(Ok(Nil))
+  assert process.receive(seen, 0)
+    == Ok(
+      "progress "
+      <> own_node()
+      <> " sub:^main/run-the-suite-1 running the suite",
+    )
+}
+
+pub fn a_message_from_an_untrusted_node_is_refused_as_an_origin_mismatch_test() {
+  let seen = process.new_subject()
+  let port = receiving_port(receiving(seen, "somebody@else", 0))
+  assert orchestrator_port.ask_mail(
+      port,
+      parent(),
+      handle(),
+      "m1",
+      "found it",
+      1000,
+    )
+    == Ok(Error(remote_mail.OriginMismatch))
+  assert orchestrator_port.ask_progress(
+      port,
+      parent(),
+      handle(),
+      a_glance(),
+      1000,
+    )
+    == Ok(Error(remote_mail.OriginMismatch))
+}
+
+pub fn a_slow_child_host_does_not_keep_a_lookup_waiting_test() {
+  let seen = process.new_subject()
+  let port = receiving_port(receiving(seen, own_node(), 1500))
+
+  // The mail is still being admitted when the lookup is asked, and the lookup is
+  // answered at once: each runs apart from the port.
+  let late = process.new_subject()
+  let _asker =
+    process.spawn(fn() {
+      process.send(
+        late,
+        orchestrator_port.ask_mail(port, parent(), handle(), "m1", "slow", 5000),
+      )
+    })
+  assert process.receive(seen, 1000) |> result.is_ok
+  assert orchestrator_port.ask(port, "owned-1", answers_within_ms) == Ok(Owned)
+  assert process.receive(late, 5000) == Ok(Ok(Ok(remote_mail.Delivered)))
+}
+
+pub fn a_crashing_child_host_is_silence_and_the_port_serves_on_test() {
+  let crashing =
+    orchestrator_port.ChildHost(
+      mail: fn(_origin, _child, _id, _text) { panic as "the child host fails" },
+      progress: fn(_origin, _child, _glance) { panic as "the child host fails" },
+    )
+  let port = receiving_port(crashing)
+  assert orchestrator_port.ask_mail(port, parent(), handle(), "m1", "x", 200)
+    == Error(Nil)
+  assert orchestrator_port.ask_progress(
+      port,
+      parent(),
+      handle(),
+      a_glance(),
+      200,
+    )
+    == Error(Nil)
+  assert orchestrator_port.ask(port, "owned-1", answers_within_ms) == Ok(Owned)
+}
+
 // --- report ------------------------------------------------------------------
 
 // A port whose daemon reports what `reads` says.
@@ -717,6 +957,7 @@ fn reporting(reads: orchestrator_port.Reads) -> Address(Message) {
       fn(_session) { Error("not_found") },
       orchestrator_port.declining(),
       orchestrator_port.refusing_spawns(),
+      orchestrator_port.refusing_children(),
       orchestrator_port.unheld,
       reads,
     )

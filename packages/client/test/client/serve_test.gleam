@@ -181,6 +181,8 @@ fn settings_under(root: String) -> serve.Settings {
     remote_reach: None,
     deadline_tick_ms: None,
     metering: None,
+    spawner: None,
+    laptop: None,
     first_prompt: None,
     profile_desk: None,
     codemode_sockets: None,

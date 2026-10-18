@@ -544,6 +544,12 @@ pub type Delivery {
 
   /// The target was idle: the message was accepted as a fresh run.
   Started(operation: OpId, deadline_ms: Option(Int))
+
+  /// The message was recorded and will be delivered when the other
+  /// orchestrator can be reached (protocol-change/084). Nothing says yet
+  /// whether the target had an open run, and a delivery that finds a parent
+  /// idle is refused after the fact, so the sender is not told it landed.
+  Queued
 }
 
 /// How a peer stands in relation to the caller.
@@ -2195,7 +2201,19 @@ fn run_send(
     Steered(entry:) -> steered_outcome(to, entry)
     Started(operation:, deadline_ms:) ->
       started_outcome(to, operation, deadline_ms)
+    Queued -> queued_outcome(to)
   }
+}
+
+fn queued_outcome(to: String) -> ToolOutcome {
+  tool.success(
+    "recorded for `"
+    <> to
+    <> "`. It is delivered when the other orchestrator can be reached, and "
+    <> "it reaches a run only if one is open then; nothing here says "
+    <> "whether it did.",
+  )
+  |> tool.with_details(json.Object([#("delivery", json.String("queued"))]))
 }
 
 fn steered_outcome(to: String, entry: EntryId) -> ToolOutcome {

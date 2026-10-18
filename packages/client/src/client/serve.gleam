@@ -72,6 +72,8 @@ import client/codex/transport as codex_transport
 import client/context_view
 import client/contributions
 import client/daemon/domain as domain_service
+import client/delegate_drain
+import client/delegate_outbox
 import client/directories
 import client/effect_abort
 import client/escalate
@@ -406,6 +408,13 @@ pub type Settings {
     /// budget it enforces on one child (protocol-change/084, phase 2). `None`
     /// for every session but the delegate session of a metered spawner.
     metering: Option(agency.Metering),
+    /// Where a delegate session's parent is, and how the session reaches it
+    /// (protocol-change/084, phase 2): the link names the parent session and the
+    /// spawner's node, the laptop is the sender that never dials. Both are `None`
+    /// for every session but a delegate session, which then runs no instance of
+    /// the drainer that sends its children's mail and progress.
+    spawner: Option(delegate_outbox.SpawnerLink),
+    laptop: Option(delegate_outbox.Laptop),
     /// Told the first human prompt the session accepts on its main strand,
     /// once, so the daemon can seed the catalogue's subtitle
     /// (`protocol-change/067`). `None` for a host with no catalogue.
@@ -591,6 +600,10 @@ pub type Instance {
     /// The questions another orchestrator's subagent messages put to this
     /// session's Agency, projected into the daemon registry the same way.
     spawns: agency.DelegateEndpoint,
+    /// The questions another orchestrator's children put to this session's
+    /// Agency about the mail and progress they send their parent
+    /// (protocol-change/084, phase 2), projected the same way.
+    inbox: agency.ChildInbox,
     /// The sole conversation writer and its supervised strands.
     runtime: api.Runtime,
     /// The original storage actor, monitored before another writer call.
@@ -1418,6 +1431,8 @@ fn resolve(flags: Flags, placement: Placement) -> Result(Settings, String) {
       remote_reach: None,
       deadline_tick_ms: None,
       metering: None,
+      spawner: None,
+      laptop: None,
       first_prompt: None,
       profile_desk: None,
       codemode_sockets: None,
@@ -2173,6 +2188,9 @@ pub type Resident {
     /// Address-only delegate questions for a parent on another orchestrator:
     /// closures over the Agency holder's name and a trimmed configuration.
     spawns: agency.DelegateEndpoint,
+    /// Address-only questions about what this session's children on other
+    /// orchestrators send it: closures over the Agency holder's name.
+    inbox: agency.ChildInbox,
     /// The hub's stable address, which is all an attaching socket reads.
     gateway: hub.Gateway,
     /// The session's worktree observation (`Instance.worktree`), for the web
@@ -2201,6 +2219,7 @@ pub fn resident(instance: Instance) -> Resident {
   Resident(
     peer: instance.peer,
     spawns: instance.spawns,
+    inbox: instance.inbox,
     gateway: instance.gateway,
     worktree: instance.worktree,
     children: instance_children(instance),
@@ -3435,6 +3454,11 @@ fn assemble_in(
   // rings it when it leaves a record pending, before any drainer exists.
   let remote_drain_name = address.new_address(namespace)
 
+  // The delegate session's instance, over what its children send their parent,
+  // is reached by name for the same reason: the Agency rings it when a child
+  // writes mail, before any drainer exists.
+  let upward_drain_name = address.new_address(namespace)
+
   // The Agency's holder cannot exist yet: `api.open` takes the effects
   // and returns the runtime, and the runtime contains the effects, so a
   // closure over the live runtime is a value cycle rather than an
@@ -3467,6 +3491,8 @@ fn assemble_in(
       deadline_tick_ms: settings.deadline_tick_ms,
       abort_effects: effect_abort.abort(effect_abort_name),
       claim: option.then(settings.metering, fn(metering) { metering.claim }),
+      spawner: settings.spawner,
+      upward_queued: fn() { peer_outbox_drain.ring(upward_drain_name) },
       models: list.map(settings.catalog.models, fn(entry) {
         #(
           machine_strand.ModelIdentity(
@@ -4503,6 +4529,17 @@ fn assemble_in(
     // run-end rows it resends are facts in the session's own store, so a
     // replacement begins with a pass that reads them again.
     |> with_remote_drain(agency_config, runtime, remote_drain_name, logger)
+    // A delegate session's instance for what its children send their parent is
+    // in this tier for the same reason: the mail rows it sends are facts in the
+    // session's own store, so a replacement begins with a pass that reads them
+    // again.
+    |> with_upward_drain(
+      settings,
+      agency_config,
+      runtime,
+      upward_drain_name,
+      logger,
+    )
     // The commit forwarder is in this tier for the reason everything else
     // here is: it is reached by name and holds nothing. It carries no
     // state at all, in fact — one writer publication in, one hub hint out
@@ -4611,6 +4648,7 @@ fn assemble_in(
   Ok(Instance(
     peer: peer_endpoint,
     spawns: agency.delegate_endpoint(agency_config),
+    inbox: agency.child_inbox(agency_config),
     runtime:,
     storage_owner:,
     broker: broker_actor,
@@ -4977,6 +5015,42 @@ fn with_remote_drain(
       name,
     ),
   )
+}
+
+// The instance that sends what a delegate session's children owe their parent
+// (protocol-change/084, phase 2). Only a delegate session has a spawner link, so
+// every other session starts none. Its first pass at session open is what sends
+// a message that was owed when the daemon last stopped.
+fn with_upward_drain(
+  builder: sup.Builder,
+  settings: Settings,
+  agency_config: agency.Config,
+  runtime: api.Runtime,
+  name: address.Address(peer_outbox_drain.Message),
+  logger: Logger,
+) -> sup.Builder {
+  case settings.spawner {
+    None -> builder
+    Some(link) ->
+      sup.add(
+        builder,
+        peer_outbox_drain.supervised(
+          peer_outbox_drain.over(
+            delegate_drain.pass(
+              agency.runtime_supplier(agency_config),
+              fn() {
+                agency.delegate_occupancy(agency_config) == agency.Occupied
+              },
+              link,
+              option.unwrap(settings.laptop, delegate_outbox.absent()),
+              logger,
+            ),
+            runtime.effects.timers.after,
+          ),
+          name,
+        ),
+      )
+  }
 }
 
 // The scheduled-heartbeat scanner, and the decision not to start one —

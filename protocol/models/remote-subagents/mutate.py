@@ -109,6 +109,38 @@ MUTATIONS = {
     ("PSrc/Port.p",
      "    if (phase == SS_NONE) {\n      announce eReleaseNoSession;\n      answer(m, K_RELEASED, 0, CS_RUNNING);\n      return;\n    }\n",
      "    if (phase == SS_NONE) {\n      makeSession(K_RELEASE);\n    }\n")]),
+
+  # The laptop steers the parent and stores the receipt in one commit, so a mail
+  # the remote sends again is answered from the receipt. Here the receipt is
+  # never stored, and a resend after a lost reply steers the parent a second
+  # time.
+  "M12-mail-admitted-without-a-receipt": ("tcOnlyUpwardAtMostOnce", 20000, r"steered the parent twice", [
+    ("PSrc/Laptop.p",
+     "      receipts[m.id] = MAIL_DELIVERED;\n",
+     "")]),
+
+  # Mail is steered into a run that is open and declined otherwise, because a
+  # finished parent is not woken for a child's message (`BusyOnly`). Here the
+  # steer does not look at the run, as a policy that may wake would not.
+  "M13-mail-may-wake-the-parent": ("tcOnlyUpwardOnlyIntoOpenRun", 20000, r"whose run had ended", [
+    ("PSrc/Laptop.p",
+     "    if (runOpen) {\n      receipts[m.id] = MAIL_DELIVERED;",
+     "    if (true) {\n      receipts[m.id] = MAIL_DELIVERED;")]),
+
+  # A row settles only on the laptop's answer. Here the remote settles it when it
+  # sends, so a mail the connection lost is never sent again.
+  "M14-mail-row-settled-without-an-answer": ("tcOnlyEveryMailAnswered", 20000, r"hot state", [
+    ("PSrc/Port.p",
+     "id = id, code = MAIL_DELIVERED));\n",
+     "id = id, code = MAIL_DELIVERED));\n        outbox[id].answered = true;\n")]),
+
+  # The laptop finds the stub by the child's name, which the stub records before
+  # the first `Spawn` leaves. Here it finds it by the handle, which exists only
+  # once the spawn is answered, so mail that arrives first is answered unknown.
+  "M15-mail-host-keys-on-the-handle": ("tcOnlyMailFindsItsStub", 20000, r"while the parent holds its stub", [
+    ("PSrc/Laptop.p",
+     "    if (!(m.site in stubs)) {\n      announce eUnknownAnswered,",
+     "    if (!(m.site in stubs && stubs[m.site].st == ST_SPAWNED)) {\n      announce eUnknownAnswered,")]),
 }
 
 

@@ -6,8 +6,10 @@ A small [P](https://p-org.github.io/P/) model of the phase 1 spawn protocol of
 orchestrator by writing a stub, sending `Spawn` and resending it from a drainer,
 against a remote that adopts the child its call site already made. Phase 2 adds
 `Release`: the laptop deletes the parent session and tells the remote, which
-stops the children and deletes the session that held them. It is run by `make
-model-check`.
+stops the children and deletes the session that held them. Phase 2 also adds a
+child's mail to its parent (slice S9): a row in the delegate session's outbox, sent
+over a connection the laptop keeps up, and answered with a receipt. It is run by
+`make model-check`.
 
 The code is the specification. The model follows the slices S1 to S4 and S6 as
 built, and where the design note and the code differ, the model follows the
@@ -22,6 +24,40 @@ code.
 | `Port` (`PSrc/Port.p`) | `loom_orchestrator` with the delegate session's Agency holder and its store: admission with adoption on `minted_by`, the ended fence, `Join`, `RunEnded`, `Release` with its fence and the deletion of the session, the deadline tick and a restart. |
 | `Wire` (`PSrc/Wire.p`) | The network. One queue per sender and receiver pair, delivered in any interleaving across pairs, lost whole when the connection breaks. |
 | `Chaos`, `Harness` (`PTst/Chaos.p`) | The environment: connection drops, remote restarts, aborts of the parent's effect processes, a parent run ending, a child finishing, extra drainer passes, the parent session being deleted, the remote's slot draining, and at the end two drainer passes on a quiet network, the slot draining and every deadline passing. |
+
+### The mail (phase 2, slice S9)
+
+`eUpward` makes a running child mail its parent: the `Port` writes a row in the
+session's outbox (`outbox`, stored with the session, so a restart keeps it and a
+deletion discards it) and rings its drainer. A pass (`eMailPass`) sends every row
+with no answer as `K_MAIL`, through `eSendUp`, which the `Wire` delivers only
+while the connection is up and otherwise does not produce at all: the remote never
+dials. A send from the laptop dials, so it brings the connection up, a break takes
+it down, and `eReconnect` brings it back and rings the drainer. The environment
+sends `eReconnect` and `eParentOpen` before the run ends, which is the model's
+stated assumption: the link keeper's reconnection is fair, and a parent session
+that is closed is eventually opened.
+
+The laptop answers a `K_MAIL` in this order:
+
+| The laptop holds | It answers |
+|---|---|
+| the parent session closed (`eParentClose`) | `MAIL_NOT_OPEN`, and the row stays |
+| no stub for the child's call site | `MAIL_UNKNOWN` |
+| a receipt for the mail's id | the receipt, steering nothing |
+| the parent's run open | steers the parent and stores `MAIL_DELIVERED` |
+| the parent's run ended (`eParentRunEnds`) | stores `MAIL_DECLINED` |
+
+The stub is looked up by call site, which stands for the child's name, in any state:
+the stub is written before the first `Spawn` leaves, so mail that arrives before the
+answer to the spawn finds a `ST_REQUESTED` stub. Only an answer other than
+`MAIL_NOT_OPEN` settles a row.
+
+`UpwardOnlyIntoOpenRun` holds because the modelled parent run never reopens once
+it has ended; a parent that starts a new run later would make a declined mail a
+delivery only for mail not yet sent. The model also leaves the keeper's vote
+abstract: the fair reconnection stands for the laptop holding the link while a
+stub is `Requested`, running, or settled with mail still owed.
 
 ### The spawn
 
@@ -107,6 +143,10 @@ bound the child.
 | `ReleaseMakesNoSession` | A `Release` never makes a delegate session. |
 | `EveryStubAnswered` | Liveness: every stub written is eventually answered by a handle or a refusal. |
 | `EveryReleaseIsTold` | Liveness: every release row the laptop writes is eventually answered. |
+| `UpwardAtMostOnce` | A mail steers the parent at most once, however often it is sent. |
+| `UpwardOnlyIntoOpenRun` | A mail steers only a parent whose run is open. |
+| `MailFindsItsStub` | Mail about a child the parent holds a stub for is never answered unknown. |
+| `EveryMailAnswered` | Liveness: every mail row is eventually answered, under fair reconnection and a parent session that is eventually opened. |
 | `EveryChildTerminal` | Liveness: every child the remote created reaches a terminal state once the deadlines pass, with no message from the laptop. |
 
 P reports a violation of a liveness spec when a run ends with its monitor in
@@ -139,6 +179,10 @@ model-check` runs it.
 | `Release` reaps without writing the released fence | `ReleasedSessionHasNoRunningChild` |
 | An unreachable call settles the release row | `EveryReleaseIsTold` |
 | `Release` makes a delegate session when the parent has none | `ReleaseMakesNoSession` |
+| The laptop steers a mail without storing its receipt | `UpwardAtMostOnce` |
+| The laptop steers a mail into a parent whose run ended (a policy that may wake) | `UpwardOnlyIntoOpenRun` |
+| The remote settles a mail row when it sends, without an answer | `EveryMailAnswered` |
+| The laptop finds the stub by the handle, which a `Requested` stub lacks | `MailFindsItsStub` |
 
 ## What is not modelled
 
@@ -163,6 +207,13 @@ model-check` runs it.
 - The result a join carries. A join reports a state, and the specs check that
   it is the child's own.
 - Usage and the token budget.
+- Progress. A glance is a view, sent without a row, and the specs say nothing
+  about it. `ChildEscalation` belongs to phase 3.
+- The keeper's two second cadence. The model has a connection that is up or down
+  and a fair reconnection, which is the assumption the keeper's liveness needs.
+- The first `ChildSend` direction. A send is a request the laptop resends until
+  it is answered, as a `Spawn` is, and the receipt rule is the one `Spawn`'s
+  adoption already exercises.
 
 ## Running it
 
