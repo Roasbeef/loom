@@ -4830,30 +4830,62 @@ fn begin_history(
 // decides reads it.
 fn remote_children_event(state: State) -> WireEvent {
   protocol.SnapshotEvent(
-    protocol.RemoteChildrenSnapshot(children: remote_agents(state)),
+    protocol.RemoteChildrenSnapshot(children: remote_agents(state.runtime)),
   )
 }
 
 // The session's clock, the one the Agency stamps a glance's arrival and a
 // child's deadline with, so the ages and the liveness here are read on it.
-fn remote_agents(state: State) -> List(remote_agent.RemoteAgent) {
-  case remote_child.all(state.runtime) {
+fn remote_agents(runtime: api.Runtime) -> List(remote_agent.RemoteAgent) {
+  case remote_child.all(runtime) {
     Ok(kept) -> {
-      let #(now, _clock) = clock.read(state.runtime.effects.clock)
+      let #(now, _clock) = clock.read(runtime.effects.clock)
       remote_child.agents(kept, now)
     }
     Error(_) -> []
   }
 }
 
+// How long the push to a new subscriber may spend reading the stubs, in
+// milliseconds. The read is a display, so a store slow enough to pass it costs
+// the strip until the next stub change and nothing else.
+const remote_children_push_ms = 5000
+
 // Pushes the session's remote children to one connection that has just
 // subscribed, so its strip lists them before any stub changes. A session with
 // no remote child pushes nothing, which a client reads as none. The push is
 // order-free with the subscription's own reply.
+//
+// The stubs are read in a weft run and not on the hub's turn. The read goes to
+// the session's store with no deadline of its own, and the subscription's
+// capture is answered by a later message to this mailbox: a stalled store held
+// here would keep the capture's in-band refusal from reaching the socket before
+// it gave up. The run delivers through `deliver`, which checks the binding as
+// every push does. A push read before a stub changed may land after the push
+// that change caused, and the next change corrects the strip.
 fn push_remote_children(state: State, connection: Int) -> Nil {
-  case remote_agents(state), dict.get(state.connections, connection) {
-    [], _ | _, Error(Nil) -> Nil
-    children, Ok(link) -> {
+  case dict.get(state.connections, connection) {
+    Error(Nil) -> Nil
+    Ok(link) -> {
+      let runtime = state.runtime
+      let run =
+        weft.new([fn() { Ok(deliver_remote_children(runtime, link)) }])
+        |> weft.deadline(remote_children_push_ms)
+      let run = case link.consumer {
+        Some(socket) -> weft.cancel_when_exits(run, socket)
+        None -> run
+      }
+      let _witnessed: weft.Witnessed = weft.start_witnessed(run)
+      Nil
+    }
+  }
+}
+
+// The body of the subscriber's push, run apart from the hub.
+fn deliver_remote_children(runtime: api.Runtime, link: Connection) -> Nil {
+  case remote_agents(runtime) {
+    [] -> Nil
+    children -> {
       let event =
         protocol.SnapshotEvent(protocol.RemoteChildrenSnapshot(children:))
       deliver(
