@@ -443,22 +443,24 @@ These are what the code does today, recorded so that a change to one is a
 decision and not a surprise.
 
 **The protocol version tag.** Every `Attach` carries the sender's
-`protocol.version`, an integer that is 2 today (`pub const version`,
-`client/remote/protocol.gleam:65`; the field is `Attach.version`,
-`client/remote/protocol.gleam:223`, and the surface fills it in,
-`client/remote/surface.gleam:202`). The host compares it with its own for
+`protocol.version`, an integer that is 3 today (`pub const version`,
+`client/remote/protocol.gleam:107`; the field is `Attach.version`,
+`client/remote/protocol.gleam:324`, and the surface fills it in,
+`client/remote/surface.gleam:212`). It was 2 until remote code mode and MCP
+facades (protocol-change/078, the addendum on background code mode) changed the
+messages. The host compares it with its own for
 equality and for nothing else (`version == protocol.version`,
-`client/remote/host.gleam:402`). A different value gets
+`client/remote/host.gleam:569`). A different value gets
 `Error(VersionMismatch(supported))` carrying the host's own version, and the
 host creates no scope and changes no state
-(`client/remote/host.gleam:416`). The orchestrator's open then stops the
+(`client/remote/host.gleam:580`). The orchestrator's open then stops the
 session's owner port and fails with `executor_unavailable: the executor speaks
 protocol version N and this orchestrator does not`
-(`client/remote/workspace.gleam:640`; the wording is
-`client/remote/protocol.gleam:390`). There is no negotiation and no accepted
+(`refused`, `client/remote/workspace.gleam:716`; the wording is
+`client/remote/protocol.gleam:573`). There is no negotiation and no accepted
 range. `Run`, `Query` and the other messages carry no version of their own,
 because each session open begins with an `Attach`. The constant's doc comment
-(`client/remote/protocol.gleam:56`) says to change it whenever a constructor or
+(`client/remote/protocol.gleam:84`) says to change it whenever a constructor or
 field of `HostMessage`, `OwnerMessage` or a reply changes.
 
 **The executor host's death halts the executor daemon.** The daemon starts the

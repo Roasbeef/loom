@@ -892,8 +892,9 @@ negative. `session_directory.decide` is the policy: the first holder in
 configuration order wins over any silence; with no holder, any silence is
 `Unreachable`; only a full set of "not held" answers is `Unknown`. Nothing is
 cached, registered or retried. The interface is shaped so that a replicated
-store could later replace the backing (Khepri is planned as a follow-up), and
-phase 5 added its write half, `activate`.
+store could replace the backing, and the Khepri directory of
+protocol-change/083 now does ([the directory page](directory.md)). Phase 5 added
+the interface's write half, `activate`.
 
 The control commands use the directory only on a miss. When `sessions.get` or
 `sessions.open` finds no session in the daemon's catalogue and the principal is
@@ -904,7 +905,9 @@ carrying the names that did not answer. A member principal always gets
 `not_found`, because a member's standing is the owning daemon's to judge.
 Nothing follows a redirect: neither first-party client holds a credential for a
 second daemon, so the terminal prints the launch line for the owner and stops.
-There is no merged session list.
+There is no merged session list in one reply: `sessions.list` is this daemon's, and
+`sessions.elsewhere` returns the other orchestrators' rows grouped by owner, with
+the launch line for each.
 
 ## Peer mail across orchestrators
 
@@ -1402,22 +1405,24 @@ other, so the whole is as long as the longest, with each join's window cut to 25
 seconds. A join that is `Unreachable` is not queued: its handles come back
 `Pending` naming the orchestrator that did not answer, and the model may wait
 again. A `Ready` entry moves the stub to `Settled` with the child's usage, which
-is recorded and not yet metered or counted against a goal.
+is shown in the status bar and counted against a goal's token budget.
 
 **The roster** lists remote children from the stubs with the orchestrator and how
 the record stands: unknown (no answer yet), running, past its deadline (nothing
-has read how it ended), settled with its outcome, or refused with the reason. A message to a remote child is refused with a sentence
-saying it reports through its answer and notes, and a remote child's message to
-its parent reads that its parent runs on another orchestrator. `context:
-my_conversation` is refused with `on`.
+has read how it ended), settled with its outcome, or refused with the reason. Messages go both ways since phase 2 (slice S9): a
+message to a remote child is sent as `ChildSend` with a receipt, and a child's
+message upward arrives as `ChildMail` over a connection the laptop keeps up
+(`client/remote/link_keeper`, protocol-change/084). `context: my_conversation`
+is refused with `on`.
 
 **The end of a run.** A remote child is always detached, and the laptop sends
 nothing when a run ends. The run-end hook spawns `reap_run` off the strand driver
 as before and it aborts the local children only. The remote child runs on to its
 deadline on the box, which the retention sweep follows, and a later `agent_wait`
-reads its result. `agent_spawn` says so in the `on` description. Phase 1 has no
-remote token metering, so a child nobody waits on spends what it spends until its
-deadline, at most `max_within_s`. The port's `RunEnded` and the box's ended fence
+reads its result. `agent_spawn` says so in the `on` description. A child nobody
+waits on runs until its deadline, at most `max_within_s`, and the box bounds what
+it spends with the spawner's `token_budget_per_day`, `max_per_day` and
+`child_token_budget` when they are set (phase 2, slice S8). The port's `RunEnded` and the box's ended fence
 are built and nothing sends them. A deleted parent session ends its remote
 children through `Release`, below.
 
@@ -1437,6 +1442,15 @@ session, so it is safe to send to an orchestrator that never held a child, safe
 to send twice, and safe when it overtakes the `Spawn` it concerns. A session with
 a stub that is `Requested` or live is not moved to a third orchestrator, because
 its child reports to this one by name.
+
+**Later phases.** Phase 2 added `Release`, retention, metering and messaging. Phase
+3 lets a child's request for approval reach the parent's operator on the laptop,
+bounded by the spawner's `approval_ceiling` (protocol-change/089). Phase 4 lets a
+parent list its remote children and read a child's transcript when the spawner
+allows it (protocol-change/090), and lets a remote child spawn on a third
+orchestrator below the policy's depth cap. The sections of the design note
+[remote-subagents.md](../design-notes/remote-subagents.md) are the reasoning; the
+addenda of protocol-change/084 are the spellings.
 
 ## Failures
 
@@ -1531,8 +1545,9 @@ The directory holds no state of its own, so it has no model.
 
 - **No failover, and no moving a session between executors.** A session keeps
   the executor its first open chose. If that executor is down the session waits.
-  A replicated store behind `session_directory` (Khepri) is planned for a
-  follow-up PR and is the prerequisite for failover.
+  The replicated store behind `session_directory` (Khepri) is built
+  and is the prerequisite for failover, which is not: [the directory
+  page](directory.md#what-failover-would-add) lists the five pieces it needs.
 - **Remote sessions refuse** extension tools and operator-added directories.
 - **Background code mode on a remote session** answers the model's `check`,
   `send` and `cancel` through the executor, because `code_mode` is placed there
@@ -1559,27 +1574,32 @@ The directory holds no state of its own, so it has no model.
   opens it. A message queued while the drainer is backed off for older messages
   waits for the same tick. Default links (`[peers] default_links`) join sessions
   of one daemon only, so they do not reach a session on another orchestrator.
-- **Remote children** (phase 1) report their usage on the parent's stub and are
-  not metered: the usage is not yet counted against a goal's token budget or shown
-  in a status bar. A message to a remote child is refused, and a remote child's
-  message upward reads that its parent is elsewhere. A parent session that holds a
-  live stub is not yet refused by `sessions.move`, and a parent session's deletion
-  leaves its children until their deadlines on the box. The box enforces those
-  deadlines with a periodic tick on each delegate session's Agency (15 s), and a
-  sweep, at boot and hourly, deletes delegate sessions idle past the spawner's
-  `retain_s` or whose spawner was removed, and closes resident ones idle past
-  `idle_close_s`.
+- **Remote children** (protocol-change/084, phases 1 to 4) are bounded by the
+  spawner's policy on the box and by each child's deadline. A parent's deletion
+  sends `Release`, which stops the children and deletes the delegate session
+  after a drain, and the box's sweep, at boot and hourly, deletes delegate
+  sessions idle past the spawner's `retain_s` or whose spawner was removed and
+  closes resident ones idle past `idle_close_s`. Messages go both ways, a
+  child's request for approval reaches the parent's operator, and the parent
+  lists and peeks at its remote children (protocol-change/089 and 090). A
+  remote child may spawn on a third orchestrator below the policy's depth cap.
+  A running child is not stopped by its parent's turn ending: it runs to its
+  deadline. `sessions.move` refuses a parent that holds a live stub, in the
+  session mover. An orchestrator enrolled after the daemon started has no link
+  keeper until the next start, and its calls dial on demand.
 - **Moves** do not resume inside a file, carry running processes, the memory
   domain, memberships or claims. `sessions.list` records carry the `moving` and
   `moved` members; the terminal, the web home and the Admin drawer draw a moving session with its
-  destination and leave a moved one out, and the receiver's row is listed only
-  on the receiver until the elsewhere group lands.
+  destination and leave a moved one out. The receiver's row is listed on the
+  receiver, and the source daemon's `sessions.elsewhere` lists it under its
+  owner.
 - **Membership changes are eventual, and some are not checked.** `enroll`,
   `revoke` and `renew` change a running deployment without reprovisioning, and
   a member that is off learns an entry when it next connects to one that has it.
-  A revoke does not check that the member owns no sessions, a revoked
-  directory voter still counts toward Ra's majority until the leader's removal
-  commits, and rotating the authority or the cookie means provisioning again. A node that was down across its own revoke
+  A revoke checks the link graph, the sessions the member holds
+  (`ledger.holdings`) and, for a directory voter, the voter count, and `--force`
+  passes the checks. A revoked directory voter still counts toward Ra's majority
+  until the leader's removal commits, and rotating the authority or the cookie means provisioning again. A node that was down across its own revoke
   and re-enrolment, and receives the revoke at the end of one pull batch and the
   re-enrolment in the next, self-revokes until `import` or a new bundle. The
   design is in [the membership ledger note](../design-notes/membership-ledger.md)

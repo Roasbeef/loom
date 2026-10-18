@@ -64,6 +64,57 @@ The separate [request gzip experiment PR](https://github.com/Roasbeef/loom/pull/
 contains real TUI/browser experiments and native transport measurements;
 it changes no production request-encoding default.
 
+## Distributed runtime — October 17
+
+The distributed runtime is complete through remote subagents phase 4
+(protocol-change/084, with 089 and 090) and the operator surface of
+protocol-change/085, on main `3c6f53c4c` (PR #1006). The runtime itself is #923.
+The Khepri session directory (083, `docs/architecture/directory.md`) and the
+membership ledger (086) are merged. `protocol.version` of the executor host is 3.
+
+What shipped, by document, so that the next reader does not look for a plan:
+
+- **085, the operator surface:** node reports, `deployment.status`,
+  `sessions.elsewhere`, the Admin page's machines list and read-only machine
+  pages, Move with candidates, Abandon, and the executor and pool cards in the web
+  form (#957, #995, #996, #999). The status addendum at the end of
+  `protocol-change/085-distributed-admin-surface.md` lists what was deferred.
+- **084, remote subagents:** phase 1 (#960, #969); `Release` and retention (#998),
+  metering (#999), messaging with the link keeper, approvals on the
+  laptop (089), observation (090) and depth across machines (#1006).
+- **Not built, by design:** failover and moving a session between executors
+  (`docs/architecture/directory.md`, "What failover would add").
+
+Open follow-ups, none of which blocks a release:
+
+1. **Shared-history `Begin` bound.** The 5 s bound on `Begin` in the shared
+   history path equals SQLite's `busy_timeout`, and this is a suspected cause of
+   the flake in the restart drill. Separate the two values so that the bound
+   outlasts the lock wait. Reproduce with the restart drill, not with synthetic CPU
+   load.
+2. **Three decoders for `deployment.status`.** `tui/deployment_view`,
+   `web_view/machines` and `ledger_control.member_view` each decode it. One total
+   decoder in a package all three depend on replaces them.
+3. **`scripts/gen-sql.sh` output.** The dependency-fetch output of the script
+   pollutes the load order of the generated modules. Silence or separate the fetch
+   step.
+4. **One link keeper per daemon start.** `daemon/main.start_link_keepers` starts a
+   keeper for each `[orchestrators.<name>]` row that exists at start. An
+   orchestrator enrolled afterwards has none until the next start, a vote for it
+   is dropped, and its calls dial on demand
+   (`protocol-change/084`, the addendum on messaging). Start a keeper when the
+   ledger roster gains an orchestrator.
+5. **Forget for session-scope grants on the laptop.** `protocol-change/089`
+   documents `Resolve(.., Forget(grant))` and the box admits it, but no command or
+   card on the laptop sends it, because the laptop does not list what the box
+   remembers. The box owner's list (073) is the only way to withdraw one today.
+6. **The 085 topology SVG.** Optional. The machines list and the terminal's text
+   topology cover the need; the SVG of section 8 of the design note has no owner.
+7. **`RemoteChildrenChanged` reads stubs in the hub's turn.** The bus-hint arm of
+   the gateway (`client/gateway.gleam`, `BusHint` for `bus.RemoteChildrenChanged`)
+   reads the stubs and builds the push inside the gateway actor's turn, so the
+   turn is as long as the read. Move the read out of the turn.
+
 ## Previous handoff
 
 Baselined October 16, 2026 against main `1536934a4` and the rebased `/btw`

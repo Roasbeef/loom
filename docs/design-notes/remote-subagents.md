@@ -2,10 +2,13 @@
 
 Status: **direction ruled by the owner, 2026-10-09; phase 1 simplified after
 review, 2026-10-11; what ending a turn does to remote children ruled by the
-owner, 2026-10-11 (section 6A). Slices S1 to S3 of phase 1 (the policy and the port
-messages, the delegate session and the box's Agency, then the laptop's stubs,
-drainer and tools) are built; the rest is design. Where S3 had to differ from
-what follows, the section says so under "As built in S3".** The wire and durable
+owner, 2026-10-11 (section 6A). Built through phase 4 as of 2026-10-17: phase 1
+(slices S1 to S5) in #960 and #969, phase 2 (`Release`, retention, metering,
+messaging) in #998 and #999, and phases 3 and 4 (approvals, observation, depth
+across machines) in #1006. The body below is the design as written before the
+build; where a slice had to differ, the section says so under "As built", and the
+dated addenda of protocol-change/084, 089 and 090 are the record of the
+spellings.** The wire and durable
 formats it adds are drafted in
 [protocol-change/084](../../protocol-change/084-remote-subagents.md). It
 builds on the distributed runtime of PR #923
@@ -1023,9 +1026,12 @@ settles it.
   is not involved. A remote child's own `code_mode` runs on the remote's
   executor, and its `strand.*` calls reach the remote orchestrator, where
   `max_depth` decides whether it may spawn.
-- **Provisioning.** `loom distribution provision` is one-shot: adding a node
-  means provisioning again and reinstalling every bundle. A laptop added as a
-  spawner to an existing deployment pays that cost today.
+- **Provisioning.** When this note was written, `loom distribution provision`
+  was one-shot, and a laptop added as a spawner paid for a reprovision. The
+  membership ledger (protocol-change/086) replaced that: `loom distribution
+  enroll NAME --node NODE --role orchestrator --links ...` adds a node to a
+  running deployment, and the other nodes learn it without a restart. The
+  laptop's `[spawners.<name>]` table on the box is still configuration.
 - **Rule Zero and the two channels.** Unchanged. A remote child is an
   ordinary strand in the remote harness, and model-influenced code still runs
   only in jailed satellites.
@@ -1180,9 +1186,11 @@ Five slices. Each lands on `origin/main` alone, and none needs #934.
     (`remote_refused`, `remote_silent`).
   - **Usage is recorded on the stub and not yet used.** A `Ready` entry stores the
     child's usage on its `Settled` stub. Counting it against a goal's token budget
-    and showing it in the status bar, from section 10, are not built.
-  - **`sessions.move` does not yet refuse a parent that holds a live stub** (section
-    12). It is not in the slice's list.
+    and showing it in the status bar, from section 10, were not built in S3; the
+    goal's accounting and the status bar read `remote_child.settled_tokens` and
+    `usage_by_orchestrator` since the metering work of 2026-10-16.
+  - **`sessions.move` did not yet refuse a parent that holds a live stub** (section
+    12) in S3. The session mover refuses it since S6.
   - The tools' model-facing descriptions changed (the `on` argument and the
     `agent_wait` handle text). `make prelude-check` is unaffected, because the
     generated prelude is rendered from `packages/cap`, not from these.
@@ -1395,7 +1403,7 @@ spawning on a third orchestrator.
 
 The question has a recommendation and does not block a slice.
 
-2. **Enrolling a laptop.** Provisioning is one-shot, so adding a laptop as a
-   spawner reprovisions every bundle in the deployment. (a) Accept that for
-   phase 1. (b) Build incremental node enrollment first. **Recommendation:
-   (a)**, with enrollment as its own piece of work if laptops come and go.
+2. **Enrolling a laptop.** Settled by the build. Provisioning was one-shot when
+   this question was written, and phase 1 accepted that (option (a)). The
+   membership ledger (protocol-change/086) then added incremental enrollment,
+   so a laptop joins a running deployment with `loom distribution enroll`.
