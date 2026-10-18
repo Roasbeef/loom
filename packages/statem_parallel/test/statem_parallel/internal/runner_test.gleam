@@ -8,25 +8,26 @@ import gleam/yielder
 import statem/linearize.{type Event}
 import statem_parallel/internal/runner
 import support/counter
+import weft/poll
 
 /// A call that waits until `parties` calls have arrived. If the branches ran
 /// one after another the first would wait forever, so this answers only when
 /// they are concurrent.
 fn rendezvous(tally: counter.Tally, parties: Int, cmd: Int) -> Int {
   counter.note(tally, "arrived")
-  wait_for(tally, parties, 600)
+
+  // An expired wait is not reported here: a branch that gave up returns
+  // early, and the overlap assertion in the test is what notices that the
+  // branches did not all meet.
+  let _ =
+    poll.until(within: 3000, every: 5, attempt: fn() {
+      case counter.count(tally, "arrived") >= parties {
+        True -> poll.Done(Nil)
+        False -> poll.Retry
+      }
+    })
+
   cmd
-}
-
-fn wait_for(tally: counter.Tally, parties: Int, patience: Int) -> Nil {
-  case counter.count(tally, "arrived") >= parties || patience <= 0 {
-    True -> Nil
-
-    False -> {
-      process.sleep(5)
-      wait_for(tally, parties, patience - 1)
-    }
-  }
 }
 
 /// More branches than any machine has schedulers, so a run whose slot limit
