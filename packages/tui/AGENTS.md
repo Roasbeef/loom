@@ -333,7 +333,7 @@ composer; image bytes must be reattached by the operator.
 
 ## Web view link (`loom ui`)
 
-`loom ui [--session <id>] [--operate | --observe] [--no-remember] [--open]` (`tui.run_view`) resolves the daemon through
+`loom ui [--session <id>] [--operate | --observe] [--no-remember] [--device] [--origin <https-origin>] [--open]` (`tui.run_view`) resolves the daemon through
 `bootstrap.resolve_viewing_daemon`, which adds `--ui` to the launch
 arguments only when it starts one. A running daemon whose `hello` has
 `view: NoWebView` is refused by `view_served` with status 1 and never
@@ -362,8 +362,22 @@ through `ffi_terminal.run_forwarding` inside a five-second weft deadline;
 an opener still running then counts as a started browser. A note is built
 only from the opener's name and status, so it never carries the ticket
 (051 addendum "opening the browser"). `daemon/protocol.Hello.view` is `NoWebView`
-or `WebViewAt(path)` from the optional `ui` field
-(`protocol-change/051`). `projection.record_projection` names the call the
+or `WebViewAt(path, origins)` from the optional `ui` field
+(`protocol-change/051`); `origins` is the optional `ui.origins` array of
+`https` strings (protocol-change/052), empty when absent, and a malformed one
+refuses the hello.
+
+`ViewRequest` also carries `origin` (`LoopbackOrigin | ListedOrigin(asked)`)
+and `ticket` (`PageTicket | DeviceTicket`). `--origin <origin>` builds the
+link on a listed origin, and `--device` sends `UiDeviceLink(page)` (`ui.link`
+with `"device": true`, a ten-minute home ticket that always signs in) on the
+only listed origin or the one `--origin` names; `--device` refuses
+`--session` and `--no-remember`. `tui.listed_origin` picks the origin before
+anything is minted and refuses with a message naming `[daemon] ui_origins`
+when none is listed. `run_view` prints the link on stdout as before and, for
+a device link, `tui/device_code.render`'s QR code (qrkit 0.6.0's encoding,
+drawn in half blocks, black on white with ANSI colours) and the lifetime
+(`device_lifetime`, from the reply's `expires_in_ms`) on stderr. `projection.record_projection` names the call the
 record cache makes for durable lines, so the web view's parity test can
 compare against it.
 

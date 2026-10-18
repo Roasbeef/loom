@@ -240,7 +240,7 @@ sequenceDiagram
    `Origin`, the nonce, the cookie under the key, the credential and the
    membership, then resolves the resident session exactly as a terminal's
    socket does, with the role capped by the page's ceiling
-   (`web_socket` at `packages/client/src/client/daemon/server.gleam:483`).
+   (`web_socket` at `packages/client/src/client/daemon/server.gleam:495`).
    The parser permit it reserves counts the page against the daemon's
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
@@ -1699,6 +1699,100 @@ notice while the client runtime retries, because nothing in the browser
 tells the two apart. Protocol-change/051's addendum on an ended page lists
 what was considered and why a client element was not added.
 
+## Remote origins
+
+[Protocol-change/052](../../protocol-change/052-web-view-remote-origin.md),
+as built in its addendum, lets a browser on another machine open the view
+through a TLS-terminating proxy on the daemon's own host. The daemon still
+binds loopback only and terminates no TLS; the proxy holds the certificate
+and forwards to the loopback listener. The owner lists the proxy's origin in
+the daemon's configuration, and the daemon admits a request whose `Host`
+names it.
+
+### Setting it up with Tailscale Serve
+
+On the machine that runs the daemon, pick a fixed loopback port for the
+listener and list the origin Serve will present:
+
+```toml
+# loom.toml, read by loomd at startup
+[daemon]
+ui = true
+ui_origins = ["https://obelisk.tail0a99b.ts.net:8443"]
+```
+
+```sh
+loomd --config loom.toml --bind 127.0.0.1:4100 &
+tailscale serve --bg --https=8443 http://127.0.0.1:4100
+```
+
+The origin is the node's MagicDNS name on the tailnet with the port Serve
+listens on; `tailscale serve status` prints it. Port 443 is the default and
+is written without a port (`https://obelisk.tail0a99b.ts.net`). `loom ui`
+finds a running daemon through its state directory, so give it the same
+`--state-dir` when the daemon was started with one.
+
+Then, on the same machine:
+
+```sh
+loom ui --device
+```
+
+prints a link on the listed origin and, on standard error, a QR code of it.
+Scan the code with the phone's camera, or open the link on the other device,
+within ten minutes. The exchange opens the home page and signs that browser
+in for thirty days, so its bookmark works without `loom` afterwards. With
+several listed origins, `--origin https://…` picks one; with none listed the
+command refuses and names `ui_origins`. `loom ui --origin https://…` without
+`--device` prints an ordinary sixty-second link on a listed origin.
+
+The proxy must forward the browser's `Host`, `Origin`, `Cookie` and
+`Sec-Fetch-*` headers unchanged and forward WebSocket upgrades on every path.
+Tailscale Serve forwards `Host` as the browser sent it. A proxy that rewrites
+`Host` to the loopback address (nginx's `proxy_pass` default; set
+`proxy_set_header Host $host` there) gets a page whose socket the daemon
+refuses, because the upgrade's `Origin` is the `https` origin and not
+`http://127.0.0.1:<port>`.
+
+### How a request is admitted
+
+`ui_http.page_origin` is the first check on every `/ui` request, as the
+loopback check was. It answers `Loopback(host)` for a `Host` that is
+`127.0.0.1`, `[::1]` or `localhost` with any port, exactly as before;
+`Remote(origin)` for a `Host` that names a listed origin, compared lowercased
+and with the port required to match; and `403` for anything else. The
+daemon never reads `X-Forwarded-Host`, `Forwarded` or any other forwarded
+header: they arrive on the same loopback listener as a header any local
+process could write. A DNS rebinding page still presents its own name, which
+is neither loopback nor listed, so the list keeps that defence whole.
+
+Every rule after the host check is a function of that one answer, handed to
+each handler by `server.web_view`:
+
+| Rule | `Loopback(host)` | `Remote(origin)` |
+|---|---|---|
+| Socket `Origin` | `http://` and the `Host` | the listed origin, byte for byte |
+| Page cookie | `loom_ui`, `HttpOnly; SameSite=Strict; Path=/ui/p/<key>` | `__Secure-loom_ui`, the same and `Secure` |
+| Login cookie | `loom_login`, `Path=/ui/l/<key>`, `Max-Age` | `__Secure-loom_login`, the same and `Secure` |
+| Policy `connect-src` | `'self' ws://<Host>` | `'self' wss://<listed host>` |
+| Links a page mints | `http://<Host>` | the listed origin |
+
+A request is read only by the cookie name its origin implies, so a cookie
+set on one kind of origin is never accepted on the other. The cookies keep
+their keyed paths rather than taking the `__Host-` prefix, which requires
+`Path=/`: browsers do not scope a cookie by port, so a cookie at `/` would
+reach every other service Serve offers on the same name, and one cookie at
+`/` would let a second page overwrite the first. The 052 addendum gives the
+whole argument, including what a sibling subdomain can and cannot do with a
+planted `__Secure-` cookie.
+
+The listed origins appear in the control `hello` as `ui.origins`, which is
+how `loom ui` checks an `--origin` before minting anything. A device link is
+`ui.link` with `"device": true`: the home's ticket, `Remembered` and `Fresh`,
+redeemable for ten minutes (`ui_sessions.mint_carried`). It is minted for
+the credential that asked, like any `ui.link`, and the QR code is drawn by
+`tui/device_code` from `qrkit`'s encoding.
+
 ## Security layers
 
 The page is served from loopback, and loopback does not protect a page:
@@ -1714,17 +1808,17 @@ keeps a page from acting.
 | Layer | What it stops | Where |
 |---|---|---|
 | `--ui` flag | Any `/ui` surface on a daemon that did not ask for one. | `client/daemon/main`, `server.handle` |
-| Loopback `Host` | DNS rebinding: an attacker's page reaches the listener under its own host name and gets `403`. | `ui_http.loopback_host` |
+| Loopback or listed `Host` | DNS rebinding: an attacker's page reaches the listener under its own host name and gets `403`. A `Host` that names an origin in `[daemon] ui_origins` is admitted as that origin, and forwarded headers are never read (protocol-change/052). | `ui_http.page_origin`, `ui_http.loopback_host` |
 | Single-use ticket | A replayed or forwarded link. 60 s, redeemed once inside one actor, digest stored, minted only for a member. | `ui_sessions.mint`, `ui_sessions.redeem` |
 | `Sec-Fetch-Site` | Another site, or another loopback port, driving the exchange or navigating to the keyed page. Only `none` and `same-origin` pass. | `ui_http.navigation_allowed` |
-| Cookie attributes | Script reading the cookie (`HttpOnly`) and cross-site requests sending it (`SameSite=Strict`). No `Max-Age`; the UI session lives 8 hours. The login cookie has the same attributes and a `Max-Age` to its token's expiry. | `ui_http.set_cookie`, `ui_http.set_login_cookie` |
+| Cookie attributes | Script reading the cookie (`HttpOnly`) and cross-site requests sending it (`SameSite=Strict`). No `Max-Age`; the UI session lives 8 hours. The login cookie has the same attributes and a `Max-Age` to its token's expiry. On a listed origin both are `__Secure-` and `Secure`, so neither travels over `http`. | `ui_http.set_cookie`, `ui_http.set_login_cookie` |
 | Login chain | A forged, altered or narrowed-past token. Verified from the root key before the catalogue is asked; every comparison is constant time. | `host/login`, `ui_login.resume` |
 | Login nonce, key and sender | A cookie planted by another port or copied alone. The nonce stays in `localStorage` and is posted by the daemon's own page; the key is in the path; `Sec-Fetch-Site: same-origin` is required. | `web_view_resume.js`, `ui_http.same_origin_post`, `ui_login.resume` |
 | Credential kind | A login's public identifier presented as a bearer. Every lookup names the kind its digest was made as, and a presented bearer is exactly 64 lowercase hex. | `storage/access`, `server.credential` |
 | Fresh and resumed | A stolen bookmark making a second credential. Only a `Fresh` home mints a device link, and a chain carries its origin. | `ui_socket.device_link_for`, `ui_sessions.Origin` |
 | Page key | The cookie reaching other ports. Its `Path=/ui/p/<key>` means a browser sends it only to a path holding the key. The unkeyed page route is `404`. | `ui_http.route`, `page_grant` |
 | Page nonce | A server on another port that learned the key. The nonce is delivered once, in the exchange body, and kept in `sessionStorage`, which is scoped by port. The socket compares its digest in constant time. | `page.enter`, `ui_sessions.admits` |
-| `Origin` on upgrade | A page on another origin, including another loopback port, opening the socket. It must equal `http://` and the request's `Host`. | `ui_http.origin_matches` |
+| `Origin` on upgrade | A page on another origin, including another loopback port, opening the socket. It must equal `http://` and the request's `Host`, or, on a listed origin, that `https` origin exactly. | `ui_http.origin_matches` |
 | Credential and membership | A page outliving its authority. Every page request re-authenticates the minting credential and its membership, and the gateway re-checks at every frame. | `page_grant`, `ui_relay.while_open` |
 | Role ceiling | An operator's power by default. A page is an observer's unless minted with `--operate`, and never above Operator. | `ui_relay.capped` |
 | Component type | An observer's page sending a command. Its `Msg` has no command and its view three kinds of handler, the "Load older" read, a chip's focus and a settled turn's divider (read or drop that turn's steps); the socket admits only those clicks at their fixed paths and drops every other frame. | `web_view/component`, `ui_socket.observer_accepts` |
@@ -1880,11 +1974,11 @@ browser goes away, because a runtime outlives its last client.
 
 ## What is not built yet
 
-- **Remote access.** A page reached through a TLS proxy at a listed
-  origin, with a `__Host-` cookie and a `wss:` policy, is
-  [protocol-change/052](../../protocol-change/052-web-view-remote-origin.md),
-  proposed and not implemented. Today a remote person reaches the page
-  through `ssh -L`, which presents a loopback `Host`.
+- **A teammate's remote launch.** [Remote origins](#remote-origins) serve
+  the page through a proxy on the daemon's host, and `loom ui --device`
+  signs in another device of the person who runs it. A teammate on another
+  machine minting their own ticket with `loom --ui --addr wss://…`
+  (protocol-change/052) is not built.
 - **Accepting or dismissing an advisor nudge.** The card shows the queue and
   offers no action. The wire has one operation on it, the read-only
   `advisor_pending`, and the primary's next run start is the drain, so an
