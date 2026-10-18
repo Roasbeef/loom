@@ -61,33 +61,33 @@ const sequence_seed = 8831
 
 /// How a command names a delegate state. The three words in order, so a
 /// smaller index is an earlier state.
-type Word {
+pub type Word {
   Opened
   Releasing
   Released
 }
 
 /// Whether a session carries a deletion mark.
-type Marking {
+pub type Marking {
   Marked
   Unmarked
 }
 
 /// A delegate session row as the model holds it: which spawner and parent
 /// pair it serves, when it was last touched and how far its release has got.
-type Binding {
+pub type Binding {
   Binding(spawner: Int, parent: Int, contact: Int, state: Word)
 }
 
 /// What the model holds for one registered session.
-type Row {
+pub type Row {
   Row(custody: catalogue.Custody, marking: Marking, binding: Option(Binding))
 }
 
 /// One catalogue operation, symbolic. A `slot` is a session out of three, an
 /// `op` one of three move operations, a `peer` one of two orchestrators, a
 /// `spawner` one of two spawners and a `parent` one of three parent sessions.
-type Command {
+pub type Command {
   Register(slot: Int)
   Delete(slot: Int)
   BeginMove(slot: Int, op: Int, peer: Int)
@@ -105,12 +105,12 @@ type Command {
 
 /// The expected catalogue: the registered sessions and how many times the
 /// revision has moved since the empty file.
-type Model {
+pub type Model {
   Model(rows: Dict(Int, Row), revision: Int)
 }
 
 /// An operation's answer reduced to what the machine specifies.
-type Answer {
+pub type Answer {
   Registered(Result(String, catalogue.Error))
   Deleted(Result(String, catalogue.Error))
   Custody(Result(catalogue.Custody, catalogue.Error))
@@ -125,11 +125,13 @@ type Sut {
   Sut(store: Catalogue, path: String, base: Int)
 }
 
-fn fail(tag: String, detail: String) -> Result(a, statem.Violation) {
+/// A violation under `tag`, as a failed result.
+pub fn fail(tag: String, detail: String) -> Result(a, statem.Violation) {
   Error(statem.Violation(tag:, detail:))
 }
 
-fn agree(
+/// Whether the catalogue answered what the model expected, or the violation that says how it did not.
+pub fn agree(
   tag: String,
   label: String,
   expected: a,
@@ -173,11 +175,13 @@ fn registration(slot: Int) -> catalogue.Registration {
   )
 }
 
-fn session(slot: Int) -> String {
+/// The canonical identity of session slot `slot`, from a fixed pool of three.
+pub fn session(slot: Int) -> String {
   registration(slot).id
 }
 
-fn parent(index: Int) -> String {
+/// The canonical identity of parent session `index`, from a fixed pool of three.
+pub fn parent(index: Int) -> String {
   let generator =
     ids.generator(clock.fixed(at: 1_700_000_000_000), seed: 600 + index % 3)
   let #(id, _) = ids.mint_session(generator)
@@ -195,7 +199,8 @@ fn peer_name(peer: Int) -> String {
   }
 }
 
-fn spawner_name(spawner: Int) -> String {
+/// The spawner name a spawner index stands for, from a pool of two.
+pub fn spawner_name(spawner: Int) -> String {
   peer_name(spawner)
 }
 
@@ -263,7 +268,9 @@ fn moved_to(
   #(Custody(Ok(custody)), bump(put(model, slot, Row(..row, custody:))))
 }
 
-fn step(model: Model, command: Command) -> #(Answer, Model) {
+/// The machine: the answer a command must return in `model`, and the model it
+/// leaves. Pure, so a sequential run and a parallel one share it.
+pub fn step(model: Model, command: Command) -> #(Answer, Model) {
   case command {
     Register(slot:) ->
       case dict.get(model.rows, slot % 3) {
@@ -485,12 +492,14 @@ fn held_by(model: Model, spawner: Int) -> Int {
 
 // --- the catalogue ----------------------------------------------------------
 
-fn open_store(path: String) -> Catalogue {
+/// Open the catalogue file at `path`; a refusal is a test setup failure.
+pub fn open_store(path: String) -> Catalogue {
   let assert Ok(store) = catalogue.open(path) as "the catalogue opens"
   store
 }
 
-fn revision_of(store: Catalogue) -> Result(Int, statem.Violation) {
+/// The catalogue revision a page read reports.
+pub fn revision_of(store: Catalogue) -> Result(Int, statem.Violation) {
   case catalogue.page(store, after: "") {
     Ok(page) -> Ok(page.revision)
     Error(error) -> fail("read", "page: " <> string.inspect(error))
@@ -501,7 +510,8 @@ fn id_of(record: catalogue.Registration) -> String {
   record.id
 }
 
-fn perform(store: Catalogue, command: Command) -> Answer {
+/// Run `command` on the catalogue and reduce its result to an `Answer`.
+pub fn perform(store: Catalogue, command: Command) -> Answer {
   case command {
     Register(slot:) ->
       Registered(
@@ -554,9 +564,9 @@ fn perform(store: Catalogue, command: Command) -> Answer {
   }
 }
 
-// The family a command belongs to, which names the violation when its answer
-// is wrong, so shrinking a bad custody answer never slides into a bad mark.
-fn family(command: Command) -> String {
+/// The family a command belongs to, which names the violation when its answer
+/// is wrong, so shrinking a bad custody answer never slides into a bad mark.
+pub fn family(command: Command) -> String {
   case command {
     Register(..) -> "registration-answer"
     Delete(..) -> "delete-answer"
@@ -571,7 +581,8 @@ fn family(command: Command) -> String {
 
 // --- reading the whole catalogue back ----------------------------------------
 
-fn slots() -> List(Int) {
+/// Every session slot the machine names.
+pub fn slots() -> List(Int) {
   [0, 1, 2]
 }
 
@@ -872,10 +883,10 @@ fn aimed(model: Model) -> List(#(Int, qcheck.Generator(Command))) {
   ])
 }
 
-// Weights favour the custody transitions, whose compare-and-set rules are the
-// densest, and register first so that something exists to move. A command
-// names only indices, so any sub-sequence stays a sequence.
-fn command(model: Model) -> qcheck.Generator(Command) {
+/// Weights favour the custody transitions, whose compare-and-set rules are the
+/// densest, and register first so that something exists to move. A command
+/// names only indices, so any sub-sequence stays a sequence.
+pub fn command(model: Model) -> qcheck.Generator(Command) {
   let registering = case dict.size(model.rows) {
     3 -> 1
     _ -> 10
@@ -907,13 +918,13 @@ fn command(model: Model) -> qcheck.Generator(Command) {
   )
 }
 
-// A claim binds a session to one pair for good, so a session that already
-// serves another pair has no meaningful claim for this one: the catalogue's
-// unique key on the session would answer a database error the machine does
-// not specify. The precondition keeps such a draw out; a shrink candidate that
-// reaches it has deleted the command it depended on. A claim for a session
-// with no registration is drawn, because the machine specifies it: `Missing`.
-fn admit(model: Model, command: Command) -> statem.Admission {
+/// A claim binds a session to one pair for good, so a session that already
+/// serves another pair has no meaningful claim for this one: the catalogue's
+/// unique key on the session would answer a database error the machine does
+/// not specify. The precondition keeps such a draw out; a shrink candidate that
+/// reaches it has deleted the command it depended on. A claim for a session
+/// with no registration is drawn, because the machine specifies it: `Missing`.
+pub fn admit(model: Model, command: Command) -> statem.Admission {
   case command {
     Claim(slot:, spawner:, parent:, ..) ->
       case dict.get(model.rows, slot % 3) {
@@ -1012,12 +1023,12 @@ fn drawn_commands() -> List(Seen) {
   })
 }
 
-// A property that cannot reach a case proves nothing about it, so the
-// generator is asked whether the runs it checks draw each transition and
-// refusal the machine specifies: a delete refused on a moving session and on
-// a tombstone, a stale op, an import over a tombstone, an onward move, a
-// repeat that writes nothing, a late abort, a backward delegate state and a
-// claim at its limit and a claim for a session never registered.
+/// A property that cannot reach a case proves nothing about it, so the
+/// generator is asked whether the runs it checks draw each transition and
+/// refusal the machine specifies: a delete refused on a moving session and on
+/// a tombstone, a stale op, an import over a tombstone, an onward move, a
+/// repeat that writes nothing, a late abort, a backward delegate state and a
+/// claim at its limit and a claim for a session never registered.
 pub fn the_generator_reaches_the_refusals_test() {
   let drawn = drawn_commands()
   assert list.any(drawn, fn(seen) {

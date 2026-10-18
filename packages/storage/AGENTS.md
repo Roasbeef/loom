@@ -138,6 +138,16 @@ or close; there is no transaction, lease or authorization cache.
   (checked before the pair, so it wins over a `Conflict`); a claim is never
   drawn for a session already bound to another pair, whose unique key answers
   a `Database` error the machine does not specify.
+  `test/storage/catalogue_parallel_test.gleam` reuses that machine's `step`,
+  generator and admission under `statem_parallel`: two branches of commands
+  race, each call on a connection of its own to one file, because a single
+  `Catalogue` connection cannot be driven from several processes (interleaved
+  `BEGIN IMMEDIATE`s fail with "cannot start a transaction within a
+  transaction"; the daemon avoids this by having one owner process). It
+  generates the contested claims on purpose (one pair from two sessions, one
+  spawner's last slot) and its `finish` checks only model-free agreement
+  between the listings and the per-session reads, since `finish` is not given
+  the model.
 - `catalogue.Deletion` (`NotDeleting | Deleting`) marks a remote session whose
   deletion has begun on a session directory member (protocol-change/083).
   Version 14 adds `catalogue_session_deletions(session_id)`, one row per
