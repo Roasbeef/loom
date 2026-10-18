@@ -269,7 +269,6 @@ pub fn voting(
         AskResolve(escalation_id:, expected_seq:, reply:)
       })
     },
-
     // A transcript is not part of the table a fake orchestrator keeps, so a
     // read of one answers an empty last page from any orchestrator the reach
     // names, and the refusal for a name it does not.
