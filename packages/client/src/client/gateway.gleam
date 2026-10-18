@@ -4626,9 +4626,14 @@ fn remote_children_event(state: State) -> WireEvent {
   )
 }
 
+// The session's clock, the one the Agency stamps a glance's arrival and a
+// child's deadline with, so the ages and the liveness here are read on it.
 fn remote_agents(state: State) -> List(remote_agent.RemoteAgent) {
   case remote_child.all(state.runtime) {
-    Ok(kept) -> remote_child.agents(kept, bootstrap.system_time_ms())
+    Ok(kept) -> {
+      let #(now, _clock) = clock.read(state.runtime.effects.clock)
+      remote_child.agents(kept, now)
+    }
     Error(_) -> []
   }
 }
