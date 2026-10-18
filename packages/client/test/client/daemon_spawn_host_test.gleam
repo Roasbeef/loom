@@ -123,6 +123,7 @@ pub fn a_node_no_spawner_names_is_an_unknown_spawner_for_all_five_test() {
       configured(),
       fn(_, _) { panic as "an unknown node must not reach a session" },
       fn(_, _) { panic as "an unknown node must not release a session" },
+      fn(_, _) { panic as "an unknown node must not look for a session" },
     )
   let stranger = origin("stranger@10.0.0.9")
   let refusal = remote_spawn.UnknownSpawner(node: "stranger@10.0.0.9")
@@ -139,6 +140,7 @@ pub fn a_daemon_with_no_spawners_refuses_every_node_test() {
       [],
       fn(_, _) { panic as "a daemon with no spawners must not reach a session" },
       fn(_, _) { panic as "a daemon with no spawners must not release one" },
+      fn(_, _) { panic as "a daemon with no spawners must not look for one" },
     )
   let laptop = origin("laptop@100.64.0.5")
   let refusal = remote_spawn.UnknownSpawner(node: "laptop@100.64.0.5")
@@ -167,6 +169,10 @@ pub fn a_configured_spawner_is_served_by_its_delegate_agency_test() {
       fn(spawner, parent) {
         process.send(released, #(spawner.name, parent))
         Ok(4)
+      },
+      fn(spawner, parent) {
+        process.send(asked, #(spawner.name, parent))
+        Ok(option.Some(recording(heard)))
       },
     )
   let laptop = origin("laptop@100.64.0.5")
@@ -219,9 +225,12 @@ pub fn a_configured_spawner_is_served_by_its_delegate_agency_test() {
 pub fn a_refusal_to_find_the_session_is_the_answer_to_each_message_test() {
   let refusal = remote_spawn.CapReached(cap: remote_spawn.MaxSessions, limit: 4)
   let host =
-    main.spawn_host(configured(), fn(_, _) { Error(refusal) }, fn(_, _) {
-      Error(refusal)
-    })
+    main.spawn_host(
+      configured(),
+      fn(_, _) { Error(refusal) },
+      fn(_, _) { Error(refusal) },
+      fn(_, _) { Error(refusal) },
+    )
   let laptop = origin("laptop@100.64.0.5")
   assert host.spawn(laptop, call_site(), 0, [], request()) == Error(refusal)
   assert host.join(laptop, [], 1000) == Error(refusal)

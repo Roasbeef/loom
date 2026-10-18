@@ -5867,6 +5867,9 @@ fn serving(harness: Harness) -> address.Address(orchestrator_port.Message) {
         fn(_spawner, _parent) {
           agency.delegate_endpoint(harness.config).release()
         },
+        fn(_spawner, _parent) {
+          Ok(option.Some(agency.delegate_endpoint(harness.config)))
+        },
       ),
       orchestrator_port.refusing_children(),
       orchestrator_port.unheld,

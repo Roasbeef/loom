@@ -13,6 +13,7 @@ import client/daemon/main as daemon_main
 import client/daemon/manager
 import client/delegate_host
 import client/internal/ffi_os
+import client/remote_escalation
 import client/remote_spawn.{Parent}
 import client/spawners
 import core/clock
@@ -27,6 +28,7 @@ import simplifile
 import sqlight
 import storage/catalogue
 import storage/domain
+import tools/agent
 import weft/poll
 
 fn configuration(placement: String) -> String {
@@ -953,5 +955,55 @@ pub fn a_registry_that_does_not_answer_a_claim_is_a_store_failure_test() {
   // spawner retries. It is never a cap.
   let assert Error(remote_spawn.StoreFailure(_)) =
     claim(registry, None, Some(1), 4242)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+// A message about a child that exists (a send into it, a decision about its
+// request) is served by the pair's session if one is open, and never makes one.
+// A stale card answered after the child finished and its session was deleted
+// must not open a fresh session only to refuse the message.
+pub fn a_send_or_a_decision_for_a_pair_with_no_session_creates_none_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let registry = started(store, fn(built) { Ok(tagged(built)) })
+  let here = context(registry, "/delegate-host/sessions")
+  let laptop = spawner("executor = \"runner\"\nworkspace = \"loom\"\n")
+  let remote = parent(90)
+  assert delegate_host.existing_endpoint(here)(laptop, remote) == Ok(None)
+
+  let host =
+    daemon_main.spawn_host(
+      [laptop],
+      delegate_host.resolver(here),
+      delegate_host.releaser(here),
+      delegate_host.existing_endpoint(here),
+    )
+  let origin = remote_spawn.Origin(node: "laptop@100.64.0.5", parent: remote)
+  let child =
+    agent.Handle(
+      strand: "sub:^main/run-the-suite-1",
+      operation: ids.mint_op(ids.generator(clock.fixed(at: 0), seed: 5)).0,
+    )
+  let held =
+    remote_spawn.InvalidArgument(
+      reason: "this orchestrator holds no such child for that parent",
+    )
+  assert host.send(origin, child, "m1", "hello") == Error(held)
+  assert host.resolve(
+      origin,
+      child,
+      "policy-ab",
+      remote_escalation.Deny,
+      3,
+      remote_escalation.Decider(principal: "ab12", name: "Ola"),
+    )
+    == Error(held)
+
+  // Neither the registry nor the catalogue holds a row for the pair, and no
+  // session was made.
+  assert manager.delegate_pair(registry, "laptop", remote.session) == Ok(None)
+  assert catalogue.delegates_held(store, "laptop") == Ok(0)
+  assert catalogue.by_request_key(store, "delegate:laptop:" <> remote.session)
+    == Error(catalogue.Missing)
+  stop(registry)
   assert catalogue.close(store) == Ok(Nil)
 }
