@@ -20,7 +20,9 @@ in a consumer callback is caught).
 
 ## Key types
 
-One module, `statem`.
+Two modules: `statem`, the sequential layer, and `statem/linearize`, the
+pure linearizability checker the parallel layer (`packages/statem_parallel`)
+uses as its oracle.
 
 - `Spec(model, cmd, sut)` is a record of functions: `initial`, `command`,
   `precondition` (returns `Admission`, `Admit | Reject`), `next_model`
@@ -46,6 +48,30 @@ One module, `statem`.
   `Failure.original`), `replay` (one
   exact list; an inadmissible list is a `statem.precondition` violation),
   `report` (multi-line text for a `panic as`).
+
+## `statem/linearize`
+
+`check(machine, initial, branches, budget)` decides whether the per-branch
+histories of a concurrent run (`Event(cmd, response, invoked_at,
+returned_at)`, instants in any one monotonic unit) merge into one order that
+keeps each branch's order, respects real time (a call that returned
+strictly before another was invoked goes first; equal instants overlap, the
+safe reading for a coarse clock) and satisfies `Machine.postcondition`
+against the model at every position. The answer is `Linearizable(order)`,
+`NotLinearizable(Explanation)` (the deepest dead end: the longest placed
+prefix and, for each branch's next call, `Violated(violation)` or
+`Overtaken(branch, index)`) or `Undecided(nodes)` once `budget`
+postcondition evaluations are spent. `Undecided` is a failure, never a
+pass. The search is depth-first over each branch's next call, with a
+memory of failed states keyed by branch positions and model (sound because
+nothing else decides the future), so models must be comparable data. It is
+pure, tested on both targets, and R6-clean like the rest of the package.
+
+`statem` also exposes, for that layer and not to be built on lightly:
+`run_seed`/`next_run_seed` (the per-run seed derivation), `grow` (the
+model-threading command generator, returning `Grown(trees, model, seed)`),
+`first_failure` and `Attempted` (the retry policy), and `crashed` (the
+`statem.crash` violation).
 
 ## How it works
 
@@ -91,6 +117,7 @@ frame per candidate on JavaScript and overflowed on wide trees.
   step counter instead. The retry policy lives in `statem/internal/retry`,
   a pure function taking an injected `run(attempt_index)`, so tests drive it
   with a `run` that fails on chosen attempts; no test needs FFI.
-- Not built, deliberately: parallel runs and linearizability, symbolic
-  result variables, statistics, env-var seed overrides, a `qcheck.run`
+- Not built, deliberately: running anything in parallel (that is
+  `statem_parallel`, which needs processes and so cannot live here),
+  symbolic result variables, statistics, env-var seed overrides, a `qcheck.run`
   adapter, a `shrink_cmd` hook.

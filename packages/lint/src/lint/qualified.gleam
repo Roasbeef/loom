@@ -62,6 +62,7 @@ pub fn loom_roots() -> List(String) {
     "session",
     "session_view",
     "statem",
+    "statem_parallel",
     "storage",
     "telemetry",
     "tools",
