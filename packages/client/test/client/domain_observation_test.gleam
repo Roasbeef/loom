@@ -7,11 +7,14 @@ import client/gateway_test
 import client/protocol
 import client/remote_child
 import core/clock
+import core/entry
 import core/glance
 import core/ids
 import core/json
+import core/message
 import events/bus
 import gleam/erlang/process.{type Subject}
+import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
@@ -490,6 +493,60 @@ pub fn remote_children_are_pushed_on_subscribe_and_when_a_stub_changes_test() {
   let assert [later] = pushed_children(owner)
   assert later.summary == "compiling the tests"
   assert later.tokens == 900
+}
+
+// A tool result read from the box, as an entry of the child's branch.
+fn result_entry(seq: Int, text: String) -> entry.Entry {
+  let #(id, _) = ids.mint_entry(ids.generator(clock.fixed(at: 0), seed: seq))
+  entry.MessageEntry(
+    id:,
+    parent: None,
+    seq:,
+    ts: 0,
+    message: message.ToolResultMessage(
+      tool_call_id: "call-" <> int.to_string(seq),
+      tool_name: "bash",
+      content: [message.ToolResultText(text:, text_signature: None)],
+      details: None,
+      usage: None,
+      added_tool_names: None,
+      is_error: False,
+      timestamp: 0,
+    ),
+    terminate: False,
+  )
+}
+
+// A page cut from a branch whose newest entry is a 70 KB tool result and whose
+// next is a 30 KB one reaches the client whole as a pushed observation: the
+// large entry is counted as omitted on the box, and what is kept fits the
+// gateway's 64 KiB bound on a push, which a page at the old 256 KiB bound did
+// not.
+pub fn a_page_with_a_large_entry_is_pushed_within_the_bound_test() {
+  let runtime = runtime()
+  let branch = [
+    result_entry(3, string.repeat("a", 70_000)),
+    result_entry(2, string.repeat("b", 30_000)),
+    result_entry(1, "small"),
+  ]
+  let page = remote_transcript.page_of("sub:^main/build-1a2b3c", branch, 50)
+  assert page.omitted == 1
+  let options =
+    gateway.default_options("large-page", runtime)
+    |> gateway.with_child_history(fn(_child, _before) {
+      Ok(remote_transcript.encode(page))
+    })
+  let assert Ok(hub) = gateway.start(options, addresses.new())
+    as "the gateway starts"
+  let owner = attach(hub.data, runtime, "large-page-owner", access.Owner)
+  let assert protocol.SnapshotEvent(protocol.ChildHistorySnapshot(_)) =
+    request(owner, 42, protocol.ChildHistoryGet("sub:^main/build-1a2b3c", 0))
+  let ready = final_frame(owner, 42)
+  assert field(ready, "status") == json.String("ready")
+  assert field(ready, "omitted") == json.Int(1)
+  let assert Ok(event) = remote_transcript.decode_observation(ready)
+  let assert remote_transcript.Ready(_, decoded) = event
+  assert list.length(decoded.entries) == 2
 }
 
 // A gateway with no reader answers the read as unavailable, as a daemon with

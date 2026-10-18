@@ -12,7 +12,9 @@
 //// `child_history` observation, which the client decodes here again.
 ////
 //// The page is built on the orchestrator that runs the child, from the
-//// entries its store returns newest first (`page_of`). An entry whose
+//// entries its store returns newest first (`page_of`). Reasoning blocks are
+//// taken out first (`without_reasoning`): no host draws them, and the
+//// provider's reasoning is not the child's working to ship. An entry whose
 //// encoding alone is over the byte bound is not sent and is counted as
 //// omitted, so one large tool result cannot stall the paging. `next` is the
 //// sequence below which the next older page starts, and is `None` once the
@@ -29,7 +31,7 @@
 //// `page_of` → `encode` → `decode` → `decode_observation` → `receive` → `said`
 ////
 //// 1. `page_of` cuts a page from the entries a store returned, on the
-////    orchestrator that runs the child.
+////    orchestrator that runs the child, after `without_reasoning`.
 //// 2. `encode` and `decode` are the page's wire form on both hops.
 //// 3. `decode_observation` reads the board of a transcript observation,
 ////    and `open`, `sent` and `receive` keep a host's one pending peek.
@@ -51,12 +53,15 @@ import session_view/text_hygiene
 /// The most entries one page carries, and the most a request may ask for.
 pub const max_entries = 50
 
-/// The most bytes of encoded entries one page carries.
-pub const page_bytes_limit = 262_144
+/// The most bytes of encoded entries one page carries. The page reaches the
+/// client as one pushed observation, which the gateway bounds at 64 KiB
+/// encoded, so the entries leave room under it for the board's own fields and
+/// the envelope.
+pub const page_bytes_limit = 49_152
 
-/// The most bytes one `child_history` board may be on the client's hop: a page
-/// at its bound and the observation's own fields.
-pub const board_bytes_limit = 300_000
+/// The most bytes one `child_history` board may be on the client's hop: the
+/// gateway's bound on a pushed observation.
+pub const board_bytes_limit = 65_536
 
 /// The most characters of one entry a host draws. The page is bounded by bytes
 /// already; this keeps one long answer from filling a drawer.
@@ -96,8 +101,8 @@ pub type Page {
 pub fn page_of(child: String, scanned: List(Entry), limit: Int) -> Page {
   let limit = int.clamp(limit, min: 1, max: max_entries)
   let more = list.length(scanned) > limit
-  let #(kept, omitted, oldest, full) =
-    take(list.take(scanned, limit), [], 0, None, 0)
+  let scanned = list.map(list.take(scanned, limit), without_reasoning)
+  let #(kept, omitted, oldest, full) = take(scanned, [], 0, None, 0)
   let next = case more || full {
     True -> oldest
     False -> None
@@ -126,6 +131,49 @@ fn take(
           take(rest, [record, ..kept], omitted, Some(record.seq), bytes + size)
       }
     }
+  }
+}
+
+/// An entry with every reasoning block taken out of its assistant messages,
+/// including those a compaction retained. What the model said, the tools it
+/// called and what they returned are kept as recorded.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_transcript.without_reasoning(answer_with_thinking)
+/// // == the same entry with only its text and tool calls
+/// ```
+pub fn without_reasoning(record: Entry) -> Entry {
+  case record {
+    entry.MessageEntry(message:, ..) ->
+      entry.MessageEntry(..record, message: message_without_reasoning(message))
+    entry.CompactionEntry(retained_tail:, ..) ->
+      entry.CompactionEntry(
+        ..record,
+        retained_tail: list.map(retained_tail, message_without_reasoning),
+      )
+    entry.BranchSummaryEntry(..) | entry.CustomEntry(..) -> record
+  }
+}
+
+fn message_without_reasoning(
+  sent: message.AgentMessage,
+) -> message.AgentMessage {
+  case sent {
+    message.AssistantMessage(content:, ..) ->
+      message.AssistantMessage(
+        ..sent,
+        content: list.filter(content, fn(block) {
+          case block {
+            message.AssistantThinking(..) -> False
+            message.AssistantText(..) | message.AssistantToolCall(..) -> True
+          }
+        }),
+      )
+    message.UserMessage(..)
+    | message.ToolResultMessage(..)
+    | message.CustomMessage(..) -> sent
   }
 }
 

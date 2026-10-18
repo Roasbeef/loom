@@ -3,6 +3,7 @@
 //// the page's bounds, its cursor, its total decoder and the words a host draws,
 //// including that markup in a model's text stays text.
 
+import core/accounting
 import core/clock
 import core/entry.{type Entry}
 import core/ids
@@ -131,6 +132,47 @@ pub fn markup_in_a_transcript_is_kept_as_text_test() {
     ]
   assert strand_framing.transcript_head(child, "box")
     == "[transcript of sub:^main/build-turn-1-0 on box]"
+}
+
+// The provider's reasoning never leaves the box: a page keeps what the model
+// said and the tools it called, and no reasoning block.
+pub fn a_page_carries_no_reasoning_test() {
+  let assert [entry.MessageEntry(..) as record] = entries([1], fn(_) { "x" })
+  let thought =
+    entry.MessageEntry(
+      ..record,
+      message: assistant([
+        message.AssistantThinking(
+          thinking: "private chain of thought",
+          thinking_signature: None,
+          redacted: False,
+        ),
+        message.AssistantText(text: "the answer", text_signature: None),
+      ]),
+    )
+  let page = remote_transcript.page_of(child, [thought], 5)
+  let encoded = json.to_string(remote_transcript.encode(page))
+  assert !string.contains(encoded, "private chain of thought")
+  assert string.contains(encoded, "the answer")
+}
+
+fn assistant(content: List(message.AssistantBlock)) -> message.AgentMessage {
+  message.AssistantMessage(
+    content:,
+    api: "",
+    provider: "",
+    model: "",
+    response_model: None,
+    response_id: None,
+    diagnostics: None,
+    usage: accounting.zero_usage(),
+    stop_reason: message.Stop,
+    deferred: None,
+    error_message: None,
+    raw_stop_reason: None,
+    end_turn: None,
+    timestamp: 0,
+  )
 }
 
 // A peek applies only the answer to the request it was sent as, and only a
