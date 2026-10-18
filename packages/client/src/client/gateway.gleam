@@ -2123,13 +2123,17 @@ fn continue(state: State) -> actor.Next(State, Message) {
 }
 
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
+  continue(dispatch_message(state, message))
+}
+
+fn dispatch_message(state: State, message: Message) -> State {
   case message {
     ObservationReported(connection:, pulled:) ->
-      continue(observation_reported(state, connection, pulled))
+      observation_reported(state, connection, pulled)
     CaptureReported(capture:, pulled:) ->
-      continue(capture_reported(state, capture, pulled))
+      capture_reported(state, capture, pulled)
     ResolveReported(resolve:, pulled:) ->
-      continue(resolve_reported(state, resolve, pulled))
+      resolve_reported(state, resolve, pulled)
     DecideForSpawner(
       parent:,
       escalation_id:,
@@ -2149,55 +2153,45 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           decided_by,
         ),
       )
-      continue(state)
+      state
     }
     LeasePreview(pid, expires, reply) ->
-      continue(lease_preview(state, pid, expires, reply))
+      lease_preview(state, pid, expires, reply)
     Preview(source, operation, generation, kind, text, reply) ->
-      continue(record_preview(
-        state,
-        source,
-        operation,
-        generation,
-        kind,
-        text,
-        reply,
-      ))
+      record_preview(state, source, operation, generation, kind, text, reply)
     ReleasePreview(source, reply) -> {
       let state = forget_preview(state, source)
       process.send(reply, Nil)
-      continue(state)
+      state
     }
     Request(connection, text, reply) ->
-      continue(request_frame(state, connection, text, reply))
+      request_frame(state, connection, text, reply)
 
     // Idle maintenance owns retention only. Authority is checked at command
     // admission and delivery, where failure must refuse the operation; asking
     // here would let registry latency close an attachment doing no work.
-    MaintainTransfers -> continue(expire_transfers(state))
+    MaintainTransfers -> expire_transfers(state)
     Attach(sink:, reply:) -> {
       let id = state.next_connection
       process.send(reply, id)
-      continue(
-        State(
-          ..state,
-          connections: dict.insert(
-            state.connections,
-            id,
-            Connection(
-              sink:,
-              flush: fn(reply) { process.send(reply, Nil) },
-              consumer: None,
-              subscription: Unsubscribed,
-              authentication: HostFixture,
-              origin: None,
-              transfer: None,
-              response: None,
-              read_failed: fn() { Nil },
-            ),
+      State(
+        ..state,
+        connections: dict.insert(
+          state.connections,
+          id,
+          Connection(
+            sink:,
+            flush: fn(reply) { process.send(reply, Nil) },
+            consumer: None,
+            subscription: Unsubscribed,
+            authentication: HostFixture,
+            origin: None,
+            transfer: None,
+            response: None,
+            read_failed: fn() { Nil },
           ),
-          next_connection: id + 1,
         ),
+        next_connection: id + 1,
       )
     }
     AttachAuthenticated(
@@ -2221,7 +2215,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       case admitted {
         Error(reason) -> {
           process.send(reply, Error(reason))
-          continue(state)
+          state
         }
         Ok(principal) -> {
           let id = state.next_connection
@@ -2252,33 +2246,32 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
             reply,
             Ok(ConnectionHandle(state.subject, id, process.self())),
           )
-          continue(state)
+          state
         }
       }
     }
-    SocketDown(down) -> continue(remove_socket(state, down))
+    SocketDown(down) -> remove_socket(state, down)
     Attached(reply:) -> {
       process.send(reply, dict.size(state.connections))
-      continue(state)
+      state
     }
-    Detach(connection:) -> continue(remove_connection(state, connection))
+    Detach(connection:) -> remove_connection(state, connection)
     FromClient(connection:, text:) ->
       case state.delivery {
-        HostOnly ->
-          continue(dispatch(revalidate(state, connection), connection, text))
-        Network -> continue(remove_connection(state, connection))
+        HostOnly -> dispatch(revalidate(state, connection), connection, text)
+        Network -> remove_connection(state, connection)
       }
-    CommitHint -> continue(pull_and_broadcast(revalidate_all(state)))
+    CommitHint -> pull_and_broadcast(revalidate_all(state))
 
     // The pull that follows decides: an idle session reopens now, and a busy
     // one when the pull that sees its last run end comes round.
     ConfigChanged ->
-      continue(pull_and_broadcast(
+      pull_and_broadcast(
         State(..state, reload: case state.reload {
           Current -> Owed
           owed -> owed
         }),
-      ))
+      )
 
     // A running command's tail is display state and not a hint: nothing
     // in the store moved, so there is nothing to pull, and the frame
@@ -2307,7 +2300,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         tail,
         total_bytes,
       )
-      continue(state)
+      state
     }
 
     // A summarizer label is display text on the same feed, and like a tail
@@ -2321,7 +2314,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         state,
         protocol.BlockSummaryEvent(subject: summary_subject(subject), text:),
       )
-      continue(state)
+      state
     }
 
     // Goal reads are auxiliary: a capture cannot refresh this reserved cell.
@@ -2329,7 +2322,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     // a data-free push through deliver, which rechecks its binding at emission.
     BusHint(published: bus.Published(event: bus.GoalChanged, ..)) -> {
       push_to_subscribed(state, protocol.GoalChanged)
-      continue(state)
+      state
     }
 
     // The proposal queue moved: a model queued a suggestion or a person
@@ -2337,7 +2330,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     // the queue again through the same bounded command.
     BusHint(published: bus.Published(event: bus.ProposalsChanged, ..)) -> {
       push_to_subscribed(state, protocol.ProposalsChanged)
-      continue(state)
+      state
     }
 
     // A remote child's stub changed. The stubs are read again in a weft run
@@ -2347,20 +2340,20 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     // carries.
     BusHint(published: bus.Published(event: bus.RemoteChildrenChanged, ..)) -> {
       broadcast_remote_children(state)
-      continue(state)
+      state
     }
-    BusHint(published: _) -> continue(pull_and_broadcast(revalidate_all(state)))
+    BusHint(published: _) -> pull_and_broadcast(revalidate_all(state))
 
     // No `revalidate_all` ahead of a delta: `deliver` re-checks each peer
     // as the frame leaves, and a second check on the same evidence in the
     // same turn would only double the registry calls per token per peer.
     ProviderDelta(operation:, generation:, delta:) -> {
       broadcast_delta(state, operation, generation, Some(delta))
-      continue(state)
+      state
     }
     ProviderEnded(operation:, generation:) -> {
       broadcast_delta(state, operation, generation, None)
-      continue(state)
+      state
     }
 
     // The ack follows the walk rather than preceding it, so a caller whose
@@ -2377,7 +2370,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         connection.flush(flushed)
       })
       process.send(reply, dict.size(state.connections))
-      continue(state)
+      state
     }
   }
 }
