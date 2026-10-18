@@ -63,6 +63,7 @@
 //// 4. `usage_by_orchestrator` and `settled_tokens` read what the settled stubs
 ////    cost, for the status bar and for a goal's budget.
 
+import client/remote_escalation_store
 import client/remote_spawn.{type ChildUsage, type Parent}
 import core/corruption
 import core/glance.{type Glance}
@@ -532,6 +533,23 @@ pub fn refused(
       Spawned(..) | Settled(..) | Refused(..) -> None
     }
   })
+  |> result.map(clear_requests(runtime, _))
+}
+
+// A child that is settled or refused has no call left to answer for, so the
+// requests the box sent for it are removed and their cards clear
+// (protocol-change/089). A failure to remove them leaves a card that answers
+// `Stale`, which is the harm already accepted for a card that outlives its
+// window, so it does not fail the write of the stub.
+fn clear_requests(runtime: api.Runtime, stub: Stub) -> Stub {
+  case stub.state {
+    Settled(..) | Refused(..) -> {
+      let _ =
+        remote_escalation_store.clear(runtime, stub.orchestrator, stub.name)
+      stub
+    }
+    Requested | Spawned(..) -> stub
+  }
 }
 
 /// Records a join's report that a child finished, with what it cost. The cost is
@@ -560,6 +578,7 @@ pub fn settled(
       Requested | Settled(..) | Refused(..) -> None
     }
   })
+  |> result.map(clear_requests(runtime, _))
 }
 
 /// How long after a child's deadline a settled child that still owes mail is

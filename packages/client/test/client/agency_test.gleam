@@ -7635,6 +7635,60 @@ pub fn a_request_from_the_wrong_node_or_about_an_unknown_child_is_refused_test()
   close(harness)
 }
 
+pub fn a_finished_child_takes_its_filed_requests_with_it_test() {
+  let #(harness, box, child) = requested_parent()
+  let inbox = agency.child_inbox(harness.config)
+  assert inbox.escalation(
+      parent_of_remote_child(),
+      child,
+      protocol.EscalationRecord(..a_request(3, "pending"), strand: child.strand),
+      only_box(box.name),
+    )
+    == Ok(Nil)
+  let assert Some(_) = filed_request(harness)
+
+  // The child is started and then finishes: the join's report settles the stub,
+  // and the card for a call that can no longer be answered clears.
+  fake_orchestrators.set_mode(box, fake_orchestrators.Up)
+  let _backlog = drain(harness)
+  assert option.is_some(filed_request(harness))
+  let assert Ok([kept]) = remote_child.all(harness.runtime)
+  let assert Ok(_) =
+    remote_child.settled(
+      harness.runtime,
+      kept.key,
+      agent.Completed,
+      remote_spawn.ChildUsage(
+        input: 0,
+        output: 0,
+        cache_read: 0,
+        cache_write: 0,
+        cost: 0.0,
+      ),
+      0,
+    )
+  assert filed_request(harness) == None
+  close(harness)
+}
+
+pub fn a_refused_spawn_takes_its_filed_requests_with_it_test() {
+  let #(harness, box, child) = requested_parent()
+  let inbox = agency.child_inbox(harness.config)
+  assert inbox.escalation(
+      parent_of_remote_child(),
+      child,
+      protocol.EscalationRecord(..a_request(3, "pending"), strand: child.strand),
+      only_box(box.name),
+    )
+    == Ok(Nil)
+  fake_orchestrators.set_mode(box, fake_orchestrators.Refuses(reason: "no"))
+  let _backlog = drain(harness)
+  let assert [stub] = stubs_of(harness)
+  assert stub.state == remote_child.Refused("no")
+  assert filed_request(harness) == None
+  close(harness)
+}
+
 fn spawner_link() -> delegate_outbox.SpawnerLink {
   delegate_outbox.SpawnerLink(
     parent_session:,

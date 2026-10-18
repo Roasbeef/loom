@@ -27,11 +27,13 @@
 ////
 //// ## Flow
 ////
-//// `keep` → `find` → `all`
+//// `keep` → `find` → `all` → `clear`
 ////
 //// 1. `keep` files a record the box sent, if it is newer than the filed one.
 //// 2. `find` reads one request by the identity its clients were shown, and `all`
 ////    reads every request of the session.
+//// 3. `clear` removes the requests of a child that is finished, so a card whose
+////    child is gone does not wait for an answer nobody can use.
 
 import client/protocol.{type EscalationRecord}
 import client/remote_escalation
@@ -121,6 +123,42 @@ fn keep_loop(
         Error(error) -> Error(string.inspect(error))
       }
   }
+}
+
+/// Removes every request filed for one child of an orchestrator, and answers how
+/// many there were. The session calls it when a child's stub is recorded as
+/// settled or refused: the child is gone, so its parked calls are too, and an
+/// operator answering the card afterwards could only be told the question moved.
+/// A request is the child's when its record names the child's strand.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_escalation_store.clear(runtime, "box", "sub:^main/build-0123") == Ok(1)
+/// ```
+pub fn clear(
+  runtime: api.Runtime,
+  orchestrator: String,
+  child: String,
+) -> Result(Int, String) {
+  use cells <- result.try(
+    api.reserved_facts(runtime, prefix: remote_escalation.key(orchestrator, ""))
+    |> result.map_error(string.inspect),
+  )
+  let ours =
+    list.filter(cells, fn(cell) {
+      case protocol.decode_escalation(cell.1) {
+        Ok(record) -> record.strand == child
+        Error(_) -> False
+      }
+    })
+  use Nil <- result.map(
+    list.try_each(ours, fn(cell) {
+      api.delete_reserved_fact(runtime, cell.0)
+      |> result.map_error(string.inspect)
+    }),
+  )
+  list.length(ours)
 }
 
 /// Reads one filed request by the identity its clients were shown
