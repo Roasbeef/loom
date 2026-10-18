@@ -411,7 +411,9 @@ fn add_usage(total: ChildUsage, more: ChildUsage) -> ChildUsage {
 
 /// The session's remote children as an agent strip lists them
 /// (protocol-change/090), in the order the stubs are kept, at most
-/// `remote_agent.max_children` of them.
+/// `remote_agent.max_children` of them and within the list's byte bound
+/// (`remote_agent.within_bound`), with each row's words clipped to a strip's
+/// line (`remote_agent.max_text_bytes`).
 ///
 /// The standing is the stub's state, with a `Spawned` stub past its deadline
 /// shown as expired, since `is_live` no longer counts it and no join has said
@@ -432,6 +434,7 @@ pub fn agents(kept: List(Kept), now: Int) -> List(RemoteAgent) {
   kept
   |> list.take(remote_agent.max_children)
   |> list.map(fn(entry) { agent_of(entry.stub, now) })
+  |> remote_agent.within_bound
 }
 
 fn agent_of(stub: Stub, now: Int) -> RemoteAgent {

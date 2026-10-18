@@ -5,8 +5,10 @@
 //// settled strands listed in reverse row order.
 
 import core/json
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/string
 import session_view/agent_roster
 import session_view/agent_view
 import session_view/remote_agent
@@ -222,6 +224,37 @@ pub fn a_remote_childs_standing_is_worded_when_it_has_no_summary_test() {
     )
   assert ids(chips.listed) == ["main"]
   assert ids(chips.settled) == ["sub:^main/build-turn-1-0"]
+}
+
+// The worst list a session can push, every name and word at its bound and made
+// of a character the encoding escapes, is cut to what one pushed frame can
+// carry, and what is kept still decodes.
+pub fn the_widest_remote_children_list_fits_one_frame_test() {
+  let words = string.repeat("\"", remote_agent.max_text_bytes)
+  let agents =
+    int.range(from: 0, to: remote_agent.max_children, with: [], run: fn(acc, n) {
+      [
+        remote_agent.RemoteAgent(
+          id: int.to_string(n)
+            <> string.repeat("x", remote_agent.max_name_bytes - 2),
+          parent: string.repeat("p", remote_agent.max_name_bytes),
+          orchestrator: string.repeat("o", remote_agent.max_name_bytes),
+          standing: remote_agent.Running,
+          title: words,
+          summary: words,
+          tokens: 1_000_000,
+          model: words,
+          age_ms: Some(1_000_000),
+        ),
+        ..acc
+      ]
+    })
+  let kept = remote_agent.within_bound(agents)
+  let encoded = json.Array(list.map(kept, remote_agent.encode))
+  assert string.byte_size(json.to_string(encoded))
+    <= remote_agent.list_bytes_limit
+  assert kept != []
+  assert remote_agent.decode_all([#("remote_children", encoded)]) == Ok(kept)
 }
 
 // The list's wire form is total and bounded: what the daemon encodes decodes to
