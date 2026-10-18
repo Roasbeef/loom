@@ -33,6 +33,7 @@ import gleam/result
 import gleam/string
 import simplifile
 import support/fake_helper
+import support/internal/ffi_peer
 import support/satellite_peer.{type PeerCtx}
 import tools/call_record
 import tools/proc_failure
@@ -624,6 +625,76 @@ fn cancel_peer(ctx: PeerCtx) -> Nil {
 }
 
 // --- the precheck runs in the worker, before the plan ----------------------
+
+pub fn a_call_worker_does_not_copy_unrelated_host_limits_test() {
+  let small = worker_memory_with_limits(0)
+  let large = worker_memory_with_limits(5000)
+  assert large.0 <= small.0 + 65_536
+    as "host-only ceilings must not grow the call worker's initial heap"
+  assert large.1 <= small.1 + 65_536
+    as "host-only ceilings must not grow the call worker's collected heap"
+}
+
+// Both runs take the same call and precheck path. The extra ceilings remain
+// owned by the host, whose one-call limit must still refuse a second call.
+fn worker_memory_with_limits(extra: Int) -> #(Int, Int) {
+  let dir = fresh_dir("worker-memory-" <> int.to_string(extra))
+  let broker = start_broker(echoing())
+  let measured = process.new_subject()
+  let ran = process.new_subject()
+  let ceilings = [
+    satellite.CapCeiling("strand.wait", 1, "once"),
+    ..list.repeat(satellite.CapCeiling("unused", 1, "unused"), extra)
+  ]
+  let cfg =
+    satellite.SatelliteConfig(
+      ..config(dir),
+      router: serving_router(ran),
+      ceilings:,
+      precheck: fn(_request) {
+        process.send(measured, ffi_peer.worker_memory())
+        Ok(Nil)
+      },
+    )
+  let outcome =
+    satellite.run(
+      artifact(),
+      run_phase(budget.Budget(max_outstanding: 8, deadline_ms: t + 20_000)),
+      broker,
+      cfg,
+      satellite_peer.launcher(worker_memory_peer),
+    ).outcome
+  broker.stop(broker)
+  let assert Ok(bytes) = process.receive(measured, 1000)
+    as "the admitted worker must run its precheck"
+  assert bytes.0 > 0 && bytes.1 > 0
+  assert outcome == Ok(satellite.Completed(msgpack.StringValue("served,once")))
+    as "the host must serve once and preserve its admission ceiling"
+  assert process.receive(ran, 1000) == Ok(Nil) as "the admitted plan must run"
+  bytes
+}
+
+fn worker_memory_peer(ctx: PeerCtx) -> Nil {
+  let answers =
+    list.map([1, 2], fn(id) {
+      satellite_peer.send_cap_call(
+        ctx,
+        ctx.token,
+        id,
+        "strand.wait",
+        msgpack.MapValue([]),
+      )
+      case satellite_peer.collect_results(ctx, 1, 3000) {
+        [#(_, framing.CapOk(msgpack.StringValue(value)))] -> value
+        [#(_, framing.CapErr(code:, message: _))] -> code
+        _ -> "missing"
+      }
+    })
+  satellite_peer.send_outcome(
+    ctx,
+    msgpack.StringValue(string.join(answers, ",")),
+  )
+}
 
 pub fn a_refused_precheck_settles_the_call_before_the_plan_runs_test() {
   // The precheck is the host's one question before a call is served or

@@ -12,7 +12,8 @@
     peer_close/1,
     find_executable/1,
     now_ms/0,
-    get_env/1
+    get_env/1,
+    worker_memory/0
 ]).
 
 %% The same connect the real satellite makes (cap_ffi:connect_unix/1):
@@ -66,3 +67,11 @@ get_env(Name) ->
         false -> {error, nil};
         Value -> {ok, unicode:characters_to_binary(Value)}
     end.
+
+%% Collect only the synthetic worker making this call. Heap capacity is not
+%% reachable-state size, but unrelated host inputs must not grow this heap.
+worker_memory() ->
+    {memory, Before} = process_info(self(), memory),
+    erlang:garbage_collect(),
+    {memory, After} = process_info(self(), memory),
+    {Before, After}.
