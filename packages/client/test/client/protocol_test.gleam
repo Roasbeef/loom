@@ -10,6 +10,7 @@
 
 import broker/policy
 import client/protocol
+import core/accounting
 import core/json
 import core/message
 import gleam/int
@@ -17,6 +18,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
+import session_view/remote_usage
 
 fn network_grant() -> policy.Grant {
   policy.GrantNetwork(network: policy.NetworkProxy(
@@ -797,6 +799,49 @@ pub fn a_profile_snapshot_round_trips_and_omits_the_default_test() {
   assert !string.contains(encoded, "\"profile\":")
     as "the default roles are the absence of the field"
   assert string.contains(encoded, "\"moved\":1")
+}
+
+pub fn a_full_snapshot_carries_remote_usage_only_when_there_is_some_test() {
+  let snapshot = fn(remote_usage) {
+    protocol.SnapshotEvent(protocol.FullSnapshot(
+      session: "sess-01",
+      next_seq: 3,
+      strands: [],
+      entries: [],
+      escalations: [],
+      usage: accounting.zero_usage(),
+      remote_usage:,
+    ))
+  }
+  let round_trip = fn(event) {
+    let envelope = protocol.EventEnvelope(reply_to: Some(5), seq: None, event:)
+    #(
+      protocol.encode_event(envelope),
+      protocol.decode_event(protocol.encode_event(envelope)),
+      envelope,
+    )
+  }
+
+  // With entries the field is on the wire and survives the trip.
+  let entries = [
+    remote_usage.RemoteUsage(
+      orchestrator: "box",
+      input: 100,
+      output: 20,
+      cache_read: 5,
+      cache_write: 7,
+      cost: 0.5,
+    ),
+  ]
+  let #(text, decoded, envelope) = round_trip(snapshot(entries))
+  assert string.contains(text, "\"remote_usage\"")
+  assert decoded == Ok(envelope)
+
+  // Without any the field is absent, so an older client sees the snapshot it
+  // always saw, and a snapshot from an older daemon decodes to none.
+  let #(text, decoded, envelope) = round_trip(snapshot([]))
+  assert !string.contains(text, "remote_usage")
+  assert decoded == Ok(envelope)
 }
 
 // --- proposed rules (protocol-change/086) ----------------------------------

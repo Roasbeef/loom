@@ -60,11 +60,14 @@
 //// 2. `spawned` and `refused` apply the orchestrator's answer to a `Requested`
 ////    stub, whoever heard it.
 //// 3. `settled` records a join's report on a `Spawned` stub.
+//// 4. `usage_by_orchestrator` and `settled_tokens` read what the settled stubs
+////    cost, for the status bar and for a goal's budget.
 
 import client/remote_spawn.{type ChildUsage, type Parent}
 import core/corruption
 import core/ids.{type OpId}
 import core/json.{type JsonValue}
+import gleam/dict
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -307,6 +310,74 @@ pub fn holders(kept: List(Kept)) -> List(String) {
   })
   |> list.unique
   |> list.sort(string.compare)
+}
+
+/// What the settled children of the session cost, one entry for each
+/// orchestrator that ran one, in name order.
+///
+/// A stub keeps the usage its join reported when the child settled and nothing
+/// before then, so a child that is still running adds nothing and a settled one
+/// adds the same figure however often this is read. That is what lets a
+/// total built from it be recomputed without counting a child twice.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_child.usage_by_orchestrator([settled_on_box]) == [#("box", usage)]
+/// ```
+pub fn usage_by_orchestrator(kept: List(Kept)) -> List(#(String, ChildUsage)) {
+  kept
+  |> list.filter_map(fn(entry) {
+    case entry.stub.state {
+      Settled(usage:, ..) -> Ok(#(entry.stub.orchestrator, usage))
+      Requested | Spawned(..) | Refused(..) -> Error(Nil)
+    }
+  })
+  |> list.group(fn(pair) { pair.0 })
+  |> dict.to_list
+  |> list.map(fn(group) {
+    #(
+      group.0,
+      list.fold(group.1, no_usage(), fn(total, pair) {
+        add_usage(total, pair.1)
+      }),
+    )
+  })
+  |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
+}
+
+/// The tokens the settled children used, input plus output, over every
+/// orchestrator. This is the figure a goal's budget counts, as the usage ledger's
+/// rows count for the children that ran here.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_child.settled_tokens([settled_on_box, settled_on_desk]) == 1_300
+/// ```
+pub fn settled_tokens(kept: List(Kept)) -> Int {
+  usage_by_orchestrator(kept)
+  |> list.fold(0, fn(total, pair) { total + pair.1.input + pair.1.output })
+}
+
+fn no_usage() -> ChildUsage {
+  remote_spawn.ChildUsage(
+    input: 0,
+    output: 0,
+    cache_read: 0,
+    cache_write: 0,
+    cost: 0.0,
+  )
+}
+
+fn add_usage(total: ChildUsage, more: ChildUsage) -> ChildUsage {
+  remote_spawn.ChildUsage(
+    input: total.input + more.input,
+    output: total.output + more.output,
+    cache_read: total.cache_read + more.cache_read,
+    cache_write: total.cache_write + more.cache_write,
+    cost: total.cost +. more.cost,
+  )
 }
 
 /// The first orchestrator, in name order, that holds a child of the session which
@@ -645,6 +716,7 @@ fn encode_outcome(outcome: Outcome) -> JsonValue {
     agent.BudgetExpired -> [#("kind", json.String("budget_expired"))]
     agent.ParentFinished -> [#("kind", json.String("parent_finished"))]
     agent.Released -> [#("kind", json.String("released"))]
+    agent.TokenBudgetSpent -> [#("kind", json.String("token_budget_spent"))]
   })
 }
 
@@ -808,6 +880,7 @@ fn decode_outcome(value: JsonValue) -> Result(Outcome, String) {
     "budget_expired" -> Ok(agent.BudgetExpired)
     "parent_finished" -> Ok(agent.ParentFinished)
     "released" -> Ok(agent.Released)
+    "token_budget_spent" -> Ok(agent.TokenBudgetSpent)
     other -> Error("unknown outcome `" <> other <> "`")
   }
 }

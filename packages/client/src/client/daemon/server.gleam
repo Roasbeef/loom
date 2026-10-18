@@ -39,7 +39,17 @@
 ////    `web_document` for the page, the ticket exchange and images, each
 ////    re-checking cookie, grant and credential through `page_grant`. The
 ////    home's socket and page take `home_socket` and `home_grant` instead, and
-////    the admin page's take `admin_socket` and `admin_grant`.
+////    the admin page's take `admin_socket` and `admin_grant`. The admin page's
+////    machines are read by `admin_deployment`, which makes the control
+////    command's own `deployment_status` read and decodes it with the page's
+////    decoder, and the other orchestrators' sessions by `heard_elsewhere`,
+////    which the home shares.
+//// 7. Moving a session is one function for the terminal and the pages.
+////    `move_session` and `abandon_move` are what the control command for a
+////    move runs with and without its abandon member, and the home's Move
+////    (`moves_for`, which also reads `move_candidates_for`) and the Admin
+////    page's Abandon call the same two, so the checks cannot differ.
+////    `move_refusal_code` words a refusal for the control socket.
 
 import broker/token
 import client/daemon/manager
@@ -56,6 +66,7 @@ import client/daemon/upgrade_log
 import client/deployment
 import client/directory/deletion
 import client/directory/store
+import client/elsewhere
 import client/executors
 import client/ledger_control
 import client/orchestrators
@@ -83,13 +94,16 @@ import host/build_identity
 import host/claim
 import host/login
 import mist
+import session_view/move_candidates
 import session_view/transcript_image
 import storage/access
 import storage/catalogue
 import storage/domain
 import storage/snapshot as storage_snapshot
+import web_view/elsewhere as page_elsewhere
 import web_view/ending.{type Ending}
 import web_view/image
+import web_view/machines
 import web_view/page
 import web_view/placements
 import web_view/sessions as listed_sessions
@@ -223,6 +237,23 @@ pub type AdminAttachment(instance) {
     /// marks in the owner's own sign-ins. A page a `loom ui` exchange opened
     /// has none.
     login: Option(ui_sessions.Issuer),
+    /// The deployment as the page's machines list draws it: the same
+    /// `deployment.status` read the control command runs, with the ledger's
+    /// members, for the whole deployment or for the one node a configuration key
+    /// names (protocol-change/085, the addendum of 2026-10-16). It dials the
+    /// nodes the daemon is configured with and nothing the page names, and waits
+    /// up to the read's own deadline, so the page never calls it from its runtime
+    /// (`ui_socket.admin_deployment_task`).
+    deployment: fn(Option(String)) -> machines.Reading,
+    /// What the other orchestrators list, for the Sessions tab of a machine's
+    /// page: the first page of every configured orchestrator, as the home reads
+    /// it. It blocks for up to the fan-out's deadline.
+    elsewhere: fn() -> page_elsewhere.Read,
+    /// Gives up the move of a session now (`abandon_move`), for the Activity
+    /// tab's Abandon: the daemon's own function, closed over its configuration.
+    /// It answers `NotAMember` on a daemon that is not a directory member, and
+    /// the page asks it only for a move the machine's report lists.
+    abandon: fn(String) -> Result(String, MoveRefusal),
   )
 }
 
@@ -316,6 +347,21 @@ pub type HomeAttachment(instance) {
     /// calls it from its runtime (`ui_socket.read_task`), and it is asked each
     /// time the panel opens and not cached.
     placements: fn() -> placements.Read,
+    /// Reads the sessions the daemon's other orchestrators list
+    /// (protocol-change/085), for the owner's home: the first page of every
+    /// configured orchestrator, or with a key and the identity a page ended with
+    /// the next page of that one. It asks over the connections of the daemon's own
+    /// configuration, which takes up to three seconds, so the page never calls it
+    /// from its runtime (`ui_socket.read_task`). A key outside the configuration
+    /// is `Unread`, and nothing is dialled for it.
+    elsewhere: fn(Option(String), Option(String)) -> page_elsewhere.Read,
+    /// What the owner's home may ask about moving a session: which
+    /// orchestrators could take it, and the move itself
+    /// (protocol-change/085, the addendum on Move and Abandon). They are the
+    /// control command's own functions, so a page reaches the checks the
+    /// terminal does, and only an owner's fresh home may reach them
+    /// (`ui_socket.manage_for`).
+    moves: Moves,
   )
 }
 
@@ -647,6 +693,10 @@ fn home_upgrade(
               |> deployment.for_page
               |> placements.Reported
             },
+            elsewhere: fn(orchestrator, after) {
+              heard_elsewhere(config, orchestrator, after)
+            },
+            moves: moves_for(config, state.registry, grant.credential),
           ),
           open,
           seen,
@@ -739,6 +789,11 @@ fn admin_upgrade(
             registry: state.registry,
             state_root: state.state_root,
             login:,
+            deployment: fn(node) { admin_deployment(config, node) },
+            elsewhere: fn() { heard_elsewhere(config, None, None) },
+            abandon: fn(session) {
+              abandon_move(config, state.registry, session)
+            },
           ),
           open,
           grant.ceiling,
@@ -747,6 +802,51 @@ fn admin_upgrade(
       response
     }
   }
+}
+
+// What the other orchestrators list, for a page that draws it: the first page of
+// each, or the page after `after` of the one `orchestrator` names. A read that
+// could not be made is `Unread`.
+fn heard_elsewhere(
+  config: Config(instance),
+  orchestrator: Option(String),
+  after: Option(String),
+) -> page_elsewhere.Read {
+  elsewhere.heard(
+    config.deployment,
+    roster.rows(config.movers.orchestrators),
+    orchestrator,
+    after,
+  )
+  |> result.map(elsewhere.for_page)
+  |> result.unwrap(page_elsewhere.Unread)
+}
+
+// The deployment read the Admin page's machines list draws, made as the
+// `deployment.status` control command makes it (`deployment_status`) and read
+// back through the page's own total decoder. A key that names nothing, a reply
+// the decoder refuses and a read that failed are all `Unread`, and the page
+// keeps what it has.
+fn admin_deployment(
+  config: Config(instance),
+  node: Option(String),
+) -> machines.Reading {
+  let read = {
+    use #(_, body) <- result.try(
+      deployment_status(config, node) |> result.replace_error(Nil),
+    )
+    case node {
+      None ->
+        machines.decode_overview(body)
+        |> result.map(machines.Heard)
+        |> result.replace_error(Nil)
+      Some(_) ->
+        machines.decode_detail(body)
+        |> result.map(machines.HeardOne)
+        |> result.replace_error(Nil)
+    }
+  }
+  result.unwrap(read, machines.Unread)
 }
 
 fn web_document(
@@ -2267,6 +2367,7 @@ fn control(
             protocol.Shutdown(_) -> DrainDaemon
             protocol.DirectoryStatus -> KeepServing
             protocol.DeploymentStatus(_) -> KeepServing
+            protocol.SessionsElsewhere(..) -> KeepServing
             protocol.LedgerAppend(..)
             | protocol.LedgerEntries(..)
             | protocol.LedgerStatus
@@ -2335,6 +2436,7 @@ fn control_use(command: protocol.Command) {
     | protocol.WorkspaceDefault(_)
     | protocol.DirectoryStatus
     | protocol.DeploymentStatus(_)
+    | protocol.SessionsElsewhere(..)
     | protocol.LedgerEntries(..)
     | protocol.LedgerStatus
     | protocol.LedgerHoldings
@@ -3284,80 +3386,35 @@ fn dispatch_class(
     protocol.AbandonMove(id, supplied) -> {
       use Nil <- result.try(owner(principal))
       use Nil <- result.try(epoch(state, supplied))
-      use Nil <- result.try(case config.directory.ownership {
-        Some(_) -> Ok(Nil)
-        None ->
-          Error(
-            admin_error_code(manager.AdminNotMovable(
-              "only a directory member can abandon a move",
-            )),
-          )
+      abandon_move(config, state.registry, id)
+      |> result.map(fn(op) {
+        #(
+          "sessions.move",
+          json.Object([
+            #("session_id", json.String(id)),
+            #("op", json.String(op)),
+            #("state", json.String("abandoning")),
+          ]),
+        )
       })
-      case manager.custody(state.registry, id) {
-        Ok(catalogue.Moving(op:, ..)) -> {
-          config.movers.abandon(id)
-          Ok(#(
-            "sessions.move",
-            json.Object([
-              #("session_id", json.String(id)),
-              #("op", json.String(op)),
-              #("state", json.String("abandoning")),
-            ]),
-          ))
-        }
-        Ok(_) -> Error("conflict")
-        Error(error) -> Error(error_code(error))
-      }
+      |> result.map_error(move_refusal_code)
     }
     protocol.MoveSession(id, to, supplied) -> {
       use Nil <- result.try(owner(principal))
       use Nil <- result.try(epoch(state, supplied))
-      use _destination <- result.try(
-        orchestrators.find(roster.rows(config.movers.orchestrators), to)
-        |> result.replace_error(orchestrator_unknown_code),
-      )
-
-      use Nil <- result.try(
-        inbound_settled(config, state.registry, id)
-        |> result.replace_error(
-          admin_error_code(manager.AdminNotMovable(
-            "the move in from the session's origin has not finished",
-          )),
-        ),
-      )
-
-      // Each asker mints an operation of its own, and the registry keeps the
-      // first: a second request toward the same orchestrator answers the stored
-      // one, so two owners asking at once start one move.
-      let #(minted, _) = ids.mint_op(config.generator())
-      use custody <- result.try(
-        manager.begin_move(
-          state.registry,
-          digest,
-          supplied,
-          id,
-          to:,
-          op: ids.op_id_to_string(minted),
+      move_session(config, state.registry, digest, supplied, id, to)
+      |> result.map(fn(begun) {
+        #(
+          "sessions.move",
+          json.Object([
+            #("session_id", json.String(id)),
+            #("op", json.String(begun.op)),
+            #("to", json.String(begun.to)),
+            #("state", json.String("moving")),
+          ]),
         )
-        |> result.map_error(admin_error_code),
-      )
-      case custody {
-        catalogue.Moving(op:, to: heading) -> {
-          config.movers.begin(catalogue.Pending(session: id, op:, to: heading))
-          Ok(#(
-            "sessions.move",
-            json.Object([
-              #("session_id", json.String(id)),
-              #("op", json.String(op)),
-              #("to", json.String(heading)),
-              #("state", json.String("moving")),
-            ]),
-          ))
-        }
-        catalogue.Moved(to: owner, ..) ->
-          Error(admin_error_code(manager.AdminMoved(to: owner)))
-        catalogue.Resident | catalogue.Imported(..) -> Error("unavailable")
-      }
+      })
+      |> result.map_error(move_refusal_code)
     }
     protocol.DeleteSession(id, supplied) -> {
       // A session imported from an orchestrator that has not retired its move is
@@ -3427,6 +3484,21 @@ fn dispatch_class(
     protocol.DeploymentStatus(node) -> {
       use Nil <- result.try(owner(principal))
       deployment_status(config, node)
+    }
+
+    // The other orchestrators' sessions, asked at the connection layer of the
+    // daemon's own configuration. The key is resolved against the configured
+    // orchestrators inside `elsewhere.read`, before anything is dialled.
+    protocol.SessionsElsewhere(orchestrator, after) -> {
+      use Nil <- result.try(owner(principal))
+      elsewhere.read(
+        config.deployment,
+        roster.rows(config.movers.orchestrators),
+        orchestrator,
+        after,
+      )
+      |> result.replace_error("not_found")
+      |> result.map(fn(body) { #("sessions.elsewhere", body) })
     }
 
     // Served by `ledger_command` in `dispatch`, because a refusal there names
@@ -3548,6 +3620,259 @@ fn deletion_code(refusal: deletion.Refusal) -> String {
 // value of its own so each command can name the refusal its contract has.
 type Unsettled {
   Unsettled
+}
+
+/// Why a move or an abandon did not happen. The control commands word each as
+/// a code (`move_refusal_code`), and the pages word each in their own fixed
+/// sentences, so no text the daemon produced reaches a browser.
+pub type MoveRefusal {
+  /// The destination is not an `[orchestrators.<name>]` of this daemon.
+  UnknownDestination
+
+  /// The registry or the daemon's own checks refused, for the reason given:
+  /// the session cannot move, is moving, has moved, or its origin has not
+  /// finished moving it here.
+  Declined(error: manager.AdminError)
+
+  /// The registry did not answer, or the session is at rest here and has no
+  /// move to begin.
+  Unanswered
+
+  /// Only a directory member can abandon a move, and this daemon is not one.
+  NotAMember
+
+  /// The session has no move in flight.
+  NotMoving
+
+  /// The registry could not read the session.
+  Unreadable(error: manager.Error)
+}
+
+/// The move a daemon accepted: its identity and where it goes.
+pub type MoveBegun {
+  MoveBegun(
+    /// The move's identity, which a repeat of the request answers again.
+    op: String,
+    /// The orchestrator the session is going to.
+    to: String,
+  )
+}
+
+/// What a home page may ask about moving a session: who could take it, and the
+/// move itself. They are the control commands' own functions (`move_session`
+/// and the read `deployment.candidates` judges), closed over the daemon's
+/// configuration and the credential the page was admitted under, so a page
+/// reaches the same checks the terminal does.
+pub type Moves {
+  Moves(
+    /// The orchestrators the session could move to, judged from a read of the
+    /// deployment that dials the nodes of this daemon's configuration and waits
+    /// up to the read's own deadline. A session with no executor has none.
+    candidates: fn(String) ->
+      Result(List(move_candidates.Candidate), MoveRefusal),
+    /// Begins the move of a session to the named orchestrator under the given
+    /// epoch, as `sessions.move` does.
+    begin: fn(String, String, String) -> Result(MoveBegun, MoveRefusal),
+  )
+}
+
+/// The page's moves, closed over what the control command uses.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // server.moves_for(config, registry, digest)
+/// ```
+pub fn moves_for(
+  config: Config(instance),
+  registry: manager.Manager(instance),
+  digest: access.Digest,
+) -> Moves {
+  Moves(
+    candidates: fn(id) { move_candidates_for(config, registry, id) },
+    begin: fn(supplied, id, to) {
+      move_session(config, registry, digest, supplied, id, to)
+    },
+  )
+}
+
+/// Moves that refuse everything, for a page that is never offered Move, such as
+/// a session page whose sidebar only archives. The page does not draw a control,
+/// and this is the second layer if a frame names one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert server.no_moves().candidates("s") == Error(server.Declined(manager.AdminForbidden))
+/// ```
+pub fn no_moves() -> Moves {
+  Moves(
+    candidates: fn(_) { Error(Declined(manager.AdminForbidden)) },
+    begin: fn(_, _, _) { Error(Declined(manager.AdminForbidden)) },
+  )
+}
+
+// The orchestrators a session could move to. The session's executor is the one
+// its registration names, resolved to the node this daemon's configuration gives
+// that name; the deployment is then read as `deployment.status` reads it and the
+// orchestrators it lists are judged against that node. A session that names no
+// executor has nowhere to go (`movable` refuses it in the registry too), so the
+// read is not made for it.
+fn move_candidates_for(
+  config: Config(instance),
+  registry: manager.Manager(instance),
+  id: String,
+) -> Result(List(move_candidates.Candidate), MoveRefusal) {
+  use view <- result.try(
+    manager.get(registry, id) |> result.map_error(Unreadable),
+  )
+  use executor <- result.try(case view.registration.executor {
+    "" ->
+      Error(
+        Declined(manager.AdminNotMovable(
+          "only a session on an executor can move; this one has no executor yet",
+        )),
+      )
+    name ->
+      executors.find(roster.rows(config.executors), name)
+      |> result.replace_error(Unanswered)
+  })
+  let roles = case config.directory.standing {
+    session_directory.Member(..) -> [
+      deployment.OrchestratorRole,
+      deployment.MemberRole,
+    ]
+    session_directory.NotMember -> [deployment.OrchestratorRole]
+  }
+  case
+    deployment.status(
+      config.deployment,
+      roles,
+      roster.rows(config.movers.orchestrators),
+      roster.rows(config.executors),
+      config.pools,
+      None,
+    )
+  {
+    Ok(deployment.Overview(self:, others:, ..)) ->
+      Ok(deployment.candidates(others, self.node, Some(executor.node)))
+    Ok(deployment.Selected(..)) | Error(Nil) -> Error(Unanswered)
+  }
+}
+
+/// Begins handing the session `id` to the orchestrator `to`, as the control
+/// command `sessions.move` does and as the home page's Move does. The caller has
+/// already established that the asker is the owner; the registry decides the
+/// epoch and the credential again inside its own turn. The answer is the move's
+/// identity and destination, or why nothing began.
+///
+/// Each asker mints an operation of its own and the registry keeps the first, so
+/// a second request toward the same orchestrator answers the stored one and two
+/// owners asking at once start one move.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // server.move_session(config, registry, digest, epoch, session, "bravo")
+/// ```
+pub fn move_session(
+  config: Config(instance),
+  registry: manager.Manager(instance),
+  digest: access.Digest,
+  supplied: String,
+  id: String,
+  to: String,
+) -> Result(MoveBegun, MoveRefusal) {
+  use _destination <- result.try(
+    orchestrators.find(roster.rows(config.movers.orchestrators), to)
+    |> result.replace_error(UnknownDestination),
+  )
+  use Nil <- result.try(
+    inbound_settled(config, registry, id)
+    |> result.replace_error(
+      Declined(manager.AdminNotMovable(
+        "the move in from the session's origin has not finished",
+      )),
+    ),
+  )
+  let #(minted, _) = ids.mint_op(config.generator())
+  use custody <- result.try(
+    manager.begin_move(
+      registry,
+      digest,
+      supplied,
+      id,
+      to:,
+      op: ids.op_id_to_string(minted),
+    )
+    |> result.map_error(Declined),
+  )
+  case custody {
+    catalogue.Moving(op:, to: heading) -> {
+      config.movers.begin(catalogue.Pending(session: id, op:, to: heading))
+      Ok(MoveBegun(op:, to: heading))
+    }
+    catalogue.Moved(to: owner, ..) ->
+      Error(Declined(manager.AdminMoved(to: owner)))
+    catalogue.Resident | catalogue.Imported(..) -> Error(Unanswered)
+  }
+}
+
+/// Gives up the move of the session `id` now, as the control command
+/// `sessions.move` with `abandon` does and as the Admin page's Abandon does, and
+/// answers the move's identity. Only a directory member can: the abandon is a
+/// compare-and-set that fails if the receiver already activated the session, so
+/// it is safe only where the record that decides it exists (protocol-change/083).
+/// The movers act at once, and the answer says the abandon began, not that it
+/// ended; if the receiver has taken the session the move finishes instead.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // server.abandon_move(config, registry, session)
+/// ```
+pub fn abandon_move(
+  config: Config(instance),
+  registry: manager.Manager(instance),
+  id: String,
+) -> Result(String, MoveRefusal) {
+  use Nil <- result.try(case config.directory.ownership {
+    Some(_) -> Ok(Nil)
+    None -> Error(NotAMember)
+  })
+  case manager.custody(registry, id) {
+    Ok(catalogue.Moving(op:, ..)) -> {
+      config.movers.abandon(id)
+      Ok(op)
+    }
+    Ok(catalogue.Resident)
+    | Ok(catalogue.Imported(..))
+    | Ok(catalogue.Moved(..)) -> Error(NotMoving)
+    Error(error) -> Error(Unreadable(error))
+  }
+}
+
+/// The control code for a refused move or abandon, as the commands have always
+/// answered them.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert server.move_refusal_code(server.UnknownDestination)
+///   == server.orchestrator_unknown_code
+/// ```
+pub fn move_refusal_code(refusal: MoveRefusal) -> String {
+  case refusal {
+    UnknownDestination -> orchestrator_unknown_code
+    Declined(error:) -> admin_error_code(error)
+    Unanswered -> "unavailable"
+    NotAMember ->
+      admin_error_code(manager.AdminNotMovable(
+        "only a directory member can abandon a move",
+      ))
+    NotMoving -> "conflict"
+    Unreadable(error:) -> error_code(error)
+  }
 }
 
 /// The control command `sessions.create`, as a function of what it needs, so

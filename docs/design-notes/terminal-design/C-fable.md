@@ -98,7 +98,7 @@ two-line preview of the highlighted row sits above the help line. An empty
 filter says what to press next and keeps the counts.
 
 **Data.** Everything drawn exists today except one figure. Rows come from
-`Session` (`tui/daemon/protocol.gleam:483`) and the page from `Page`
+`Session` (`tui/daemon/protocol.gleam:505`) and the page from `Page`
 (`tui/daemon/protocol.gleam:412`). The state phrase, counts, last message,
 model and the strand rows come from `Activity`
 (`tui/daemon/protocol.gleam:300`) with its `ActivityState`
@@ -388,7 +388,7 @@ when a strand needs a decision (`needing`,
 `session_view/strand_card.gleam:69`). The panel has keyboard focus or the
 composer does; the panel's border is drawn in the signal colour while it has
 focus, and the composer's top rule says what the keys do, as it does for the
-strip today (`input_title_keys`, `tui/render.gleam:2071`).
+strip today (`input_title_keys`, `tui/render.gleam:2097`).
 
 | Key, panel focused | Does |
 |---|---|
@@ -742,7 +742,7 @@ No single key sends a decision.
 | Trace tab, code-mode box | the capability call list | no | protocol change (section 9.1, with #656) |
 | Session tab: goal | the goal board | yes | `row` (`session_view/goal_view.gleam:553`), `goal` (`session_view/model.gleam:277`) |
 | Session tab: jobs | the live jobs board | yes | `jobs` (`session_view/session_summary.gleam:99`), `lines` (`session_view/live_jobs.gleam:107`) |
-| Session tab: schedules | the schedule rows | partly | `append_schedules` (`session_view/event_fold.gleam:652`) turns the `SchedulesSnapshot` rows into transcript lines and keeps no board; a `Shared.schedules` fold of the same `ScheduleRow` (`session_view/protocol.gleam:83`) is a `session_view` change, no wire change |
+| Session tab: schedules | the schedule rows | partly | `append_schedules` (`session_view/event_fold.gleam:652`) turns the `SchedulesSnapshot` rows into transcript lines and keeps no board; a `Shared.schedules` fold of the same `ScheduleRow` (`session_view/protocol.gleam:90`) is a `session_view` change, no wire change |
 | Session tab: viewers | the presence roster | yes | `viewers` (`session_view/session_summary.gleam:122`) |
 | Session tab: cost, context | usage, context estimate | yes | `usage` (`session_view/model.gleam:394`), `money` (`session_view/transcript_lines.gleam:4458`), `footer` (`session_view/context_view.gleam:414`) |
 | Session tab: last completion | completion evidence | yes | `lines` (`session_view/completion_summary.gleam:514`) |

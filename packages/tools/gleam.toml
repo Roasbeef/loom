@@ -12,6 +12,10 @@ simplifile = ">= 2.0.0 and < 3.0.0"
 lsp = { path = "../lsp" }
 
 [dev_dependencies]
+# The prelude generator in dev/ reads the package interface as JSON and takes
+# its paths from the command line. Neither reaches the shipped package.
+gleam_json = ">= 3.0.0 and < 4.0.0"
+argv = ">= 1.1.0 and < 2.0.0"
 # The redaction tests drive the real `cap` encoders, so the allowlist and the
 # keys the program-side library writes are checked against each other.
 cap = { path = "../cap" }

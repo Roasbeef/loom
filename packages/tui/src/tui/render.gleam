@@ -81,6 +81,8 @@ import session_view/model as session_model
 import session_view/notes_view
 import session_view/protocol
 import session_view/queued_input
+import session_view/remote_usage
+import session_view/remote_usage_words
 import session_view/snapshot_view
 import session_view/strand_card
 import session_view/text_hygiene
@@ -1665,6 +1667,7 @@ fn render_compact_footer(
       text_hygiene.single_line(model.shared.current_model),
       context_view.footer(model.shared.context),
       transcript_lines.cost_words(model.shared.usage),
+      remote_usage_words.line(model.shared.remote_usage),
       sessions_hint(
         text_area.value(model.view.input),
         model.shared.attachments,
@@ -1811,7 +1814,10 @@ fn footer_sections(
           [
             cache,
             context_view.footer(model.shared.context),
-            ..list.append(spend, rate)
+            ..list.append(
+              after_cost(spend, remote_pieces(model.shared.remote_usage)),
+              rate,
+            )
           ],
           footer_usage_limit(layout.column_width(model)),
         )
@@ -1835,6 +1841,26 @@ fn footer_sections(
       ),
     ])
   #(project, model_name, usage, status, combined)
+}
+
+// Pieces of the spend row with `extra` placed straight after the cost, which is
+// the first of them. The row keeps whole pieces in priority order and drops from
+// the right, so spend elsewhere outranks the in and out counts that fill the
+// remaining cells.
+fn after_cost(spend: List(String), extra: List(String)) -> List(String) {
+  case spend {
+    [cost, ..rest] -> [cost, ..list.append(extra, rest)]
+    [] -> extra
+  }
+}
+
+// The spend of children on other orchestrators as footer pieces: none for a
+// session without such a child, so the row is what it was.
+fn remote_pieces(entries: List(remote_usage.RemoteUsage)) -> List(String) {
+  case remote_usage_words.line(entries) {
+    "" -> []
+    words -> ["remote " <> words]
+  }
 }
 
 // The same roster summary the compact footer shows, so expanding details

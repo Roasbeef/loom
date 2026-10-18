@@ -14,6 +14,7 @@ import client/directory/member
 import client/directory/store
 import client/executors
 import client/internal/ffi_khepri
+import client/listed_sessions
 import client/node_report.{type NodeReport}
 import client/orchestrators
 import client/pools
@@ -26,6 +27,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import session_view/move_candidates.{Eligible, Ineligible}
 import web_view/placements as page
 
 const self = "alpha@10.0.0.1"
@@ -185,6 +187,7 @@ fn reach(
       list.key_find(reports, node)
       |> result.replace_error(orchestrator_port.PortGone)
     },
+    sessions: listed_sessions.unlisted,
     own: fn() { own },
   )
 }
@@ -323,6 +326,7 @@ pub fn a_connected_node_that_waits_out_its_bound_reads_as_a_timeout_test() {
         process.sleep(within_ms)
         Error(orchestrator_port.AskTimedOut)
       },
+      sessions: listed_sessions.unlisted,
       own: fn() { bare(self) },
     )
   let probed = deployment.probe(waiting, deployment.targets([], [box()]))
@@ -354,6 +358,7 @@ pub fn slow_targets_do_not_starve_the_fast_ones_test() {
         }
       },
       ask: fn(node, _within_ms) { Ok(bare(node)) },
+      sessions: listed_sessions.unlisted,
       own: fn() { bare(self) },
     )
   let probed =
@@ -385,6 +390,7 @@ pub fn a_node_that_is_not_connected_is_not_asked_test() {
           process.send(told, node)
           Ok(bare(node))
         },
+        sessions: listed_sessions.unlisted,
         own: fn() { bare(self) },
       ),
       deployment.targets([], [box()]),
@@ -404,6 +410,7 @@ pub fn a_connection_that_never_settles_reads_as_down_by_the_deadline_test() {
         Ok(Nil)
       },
       ask: fn(_node, _within_ms) { Error(orchestrator_port.PortGone) },
+      sessions: listed_sessions.unlisted,
       own: fn() { bare(self) },
     )
   let probed = deployment.probe(stuck, deployment.targets([], [box()]))
@@ -419,6 +426,7 @@ pub fn a_report_that_never_arrives_reads_as_down_by_the_deadline_test() {
         process.sleep(60_000)
         Error(orchestrator_port.AskTimedOut)
       },
+      sessions: listed_sessions.unlisted,
       own: fn() { bare(self) },
     )
   let probed = deployment.probe(stuck, deployment.targets([], [box()]))
@@ -431,6 +439,7 @@ pub fn a_connection_that_crashes_reads_as_down_test() {
       self:,
       dial: fn(_node, _within_ms) { panic as "boom" },
       ask: fn(_node, _within_ms) { Error(orchestrator_port.PortGone) },
+      sessions: listed_sessions.unlisted,
       own: fn() { bare(self) },
     )
   let probed = deployment.probe(crashing, deployment.targets([], [box()]))
@@ -1994,4 +2003,118 @@ pub fn a_move_is_spelled_one_way_test() {
   let one = deployment.to_json(deployment.selected(self, [asker]), 1)
   let assert json.Array([node]) = field(one, "nodes")
   assert field(field(node, "orchestrator"), "moves") == json.Array([expected])
+}
+
+// --- move candidates -----------------------------------------------------------------
+
+fn orchestrator_node(
+  name: String,
+  node: String,
+  health: deployment.Health,
+  report: Option(NodeReport),
+) -> deployment.Node {
+  deployment.Node(
+    node:,
+    name:,
+    roles: [OrchestratorRole],
+    health:,
+    report:,
+    declared: None,
+  )
+}
+
+fn accepting(
+  node: String,
+  imports: node_report.Imports,
+  serves: List(String),
+) -> NodeReport {
+  let base = orchestrating(node, serves, [], [])
+  case base.orchestrator {
+    Some(facts) ->
+      node_report.NodeReport(
+        ..base,
+        orchestrator: Some(node_report.OrchestratorFacts(..facts, imports:)),
+      )
+    None -> base
+  }
+}
+
+fn move_candidate(name: String, eligibility: move_candidates.Eligibility) {
+  move_candidates.Candidate(name, eligibility)
+}
+
+pub fn a_receiving_orchestrator_that_serves_the_executor_is_a_candidate_test() {
+  let nodes = [
+    orchestrator_node(
+      "bravo",
+      "bravo@10.0.0.4",
+      Reachable,
+      Some(
+        accepting("bravo@10.0.0.4", node_report.Receiving, [
+          "box@10.0.0.2",
+        ]),
+      ),
+    ),
+  ]
+  assert deployment.candidates(nodes, self, Some("box@10.0.0.2"))
+    == [move_candidate("bravo", Eligible)]
+}
+
+pub fn an_unreachable_closed_or_unserving_orchestrator_is_listed_with_its_reason_test() {
+  let nodes = [
+    orchestrator_node("down", "down@10.0.0.5", Down(Unreachable), None),
+    orchestrator_node(
+      "closed",
+      "closed@10.0.0.6",
+      Reachable,
+      Some(
+        accepting("closed@10.0.0.6", node_report.NotReceiving, [
+          "box@10.0.0.2",
+        ]),
+      ),
+    ),
+    orchestrator_node(
+      "elsewhere",
+      "elsewhere@10.0.0.7",
+      Impaired([deployment.BuildDiffers]),
+      Some(
+        accepting("elsewhere@10.0.0.7", node_report.Receiving, [
+          "exec2@10.0.0.9",
+        ]),
+      ),
+    ),
+    orchestrator_node(
+      "old",
+      "old@10.0.0.8",
+      Reachable,
+      Some(bare("old@10.0.0.8")),
+    ),
+  ]
+  assert deployment.candidates(nodes, self, Some("box@10.0.0.2"))
+    == [
+      move_candidate("down", Ineligible(move_candidates.Unreachable)),
+      move_candidate("closed", Ineligible(move_candidates.NotAccepting)),
+      move_candidate("elsewhere", Ineligible(move_candidates.NotServing)),
+      move_candidate("old", Ineligible(move_candidates.NoReport)),
+    ]
+}
+
+pub fn the_asking_daemon_and_executors_are_never_candidates_test() {
+  let nodes = [
+    orchestrator_node(
+      "alpha",
+      self,
+      Reachable,
+      Some(accepting(self, node_report.Receiving, ["box@10.0.0.2"])),
+    ),
+    deployment.Node(
+      node: "box@10.0.0.2",
+      name: "box",
+      roles: [ExecutorRole],
+      health: Reachable,
+      report: None,
+      declared: Some(box()),
+    ),
+  ]
+  assert deployment.candidates(nodes, self, Some("box@10.0.0.2")) == []
 }

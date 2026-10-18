@@ -10,6 +10,7 @@ import client/daemon/limits
 import client/daemon/root
 import client/daemon_server_test as wire
 import client/deployment
+import client/listed_sessions
 import client/node_report.{type NodeReport}
 import client/orchestrators
 import client/remote/orchestrator_port
@@ -154,6 +155,7 @@ fn reporting(
         }
       },
       ask:,
+      sessions: listed_sessions.unlisted,
       own: fn() { bare(self) },
     )
   let movers =

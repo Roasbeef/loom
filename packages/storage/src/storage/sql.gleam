@@ -1390,6 +1390,60 @@ pub fn delete_remote_release(
   #(sql, [dev.ParamString(parent_session), dev.ParamString(orchestrator)])
 }
 
+pub fn add_spawner_spend(
+  spawner spawner: String,
+  hour_bucket hour_bucket: Int,
+  tokens tokens: Int,
+  spawns spawns: Int,
+) {
+  let sql =
+    "INSERT INTO catalogue_spawner_spend (spawner, hour_bucket, tokens, spawns)
+VALUES (?, ?, ?, ?)
+ON CONFLICT (spawner, hour_bucket) DO UPDATE
+SET tokens = tokens + excluded.tokens, spawns = spawns + excluded.spawns"
+  #(sql, [
+    dev.ParamString(spawner),
+    dev.ParamInt(hour_bucket),
+    dev.ParamInt(tokens),
+    dev.ParamInt(spawns),
+  ])
+}
+
+pub type SpawnerSpendSince {
+  SpawnerSpendSince(hour_bucket: Int, tokens: Int, spawns: Int)
+}
+
+pub fn spawner_spend_since(
+  spawner spawner: String,
+  hour_bucket hour_bucket: Int,
+) {
+  let sql =
+    "SELECT hour_bucket, tokens, spawns FROM catalogue_spawner_spend
+WHERE spawner = ? AND hour_bucket >= ?
+ORDER BY hour_bucket"
+  #(
+    sql,
+    [dev.ParamString(spawner), dev.ParamInt(hour_bucket)],
+    spawner_spend_since_decoder(),
+  )
+}
+
+pub fn spawner_spend_since_decoder() -> decode.Decoder(SpawnerSpendSince) {
+  use hour_bucket <- decode.field(0, decode.int)
+  use tokens <- decode.field(1, decode.int)
+  use spawns <- decode.field(2, decode.int)
+  decode.success(SpawnerSpendSince(hour_bucket:, tokens:, spawns:))
+}
+
+pub fn prune_spawner_spend(
+  spawner spawner: String,
+  hour_bucket hour_bucket: Int,
+) {
+  let sql =
+    "DELETE FROM catalogue_spawner_spend WHERE spawner = ? AND hour_bucket < ?"
+  #(sql, [dev.ParamString(spawner), dev.ParamInt(hour_bucket)])
+}
+
 pub type DomainById {
   DomainById(
     domain_id: String,

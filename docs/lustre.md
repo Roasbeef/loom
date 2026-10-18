@@ -648,10 +648,17 @@ keeps these rules, which `packages/web_client/CLAUDE.md` repeats:
 - **`<loom-copy>` is the one element that holds a secret.** An owner's page
   draws an invitation's command and claim token in it (protocol-change/051,
   the addendum on inviting from the session page). Its two attributes are a
-  fixed word, `command` or `token`, and the value, and it draws and copies the
-  value only when `copy_rule.text` finds exactly the shape the daemon writes
-  for that subject: `loom claim --addr ` and an address of address characters,
-  or `loomclaim_` and 64 hexadecimal digits. A value with a newline or any
+  fixed word and the value, and it draws and copies the value only when
+  `copy_rule.text` finds exactly the shape the daemon writes for that subject.
+  The subjects are `command` (`loom claim --addr ` and an address of address
+  characters), `token` (`loomclaim_` and 64 hexadecimal digits), `link` (`loom
+  ui`, alone or with `--session` and an identity), `device` (a loopback
+  `/ui/home?ticket=` address and 64 lowercase hexadecimal digits),
+  `claim-address` (a loopback `/ui/claim` address), `bookmark` (a loopback
+  `/ui/l/` address, 32 lowercase hexadecimal digits and `/home`) and `launch`
+  (protocol-change/085: `loom --addr`, an address or `<its control address>`,
+  `--session`, an identity of hexadecimal digits and hyphens, and the fixed
+  ` --token-file <owner token file on that host>`). A value with a newline or any
   other character is no value, because what it copies is pasted into a chat
   window or a terminal. It copies in the press's own turn, listens for no key,
   takes no focus and sends the server nothing.

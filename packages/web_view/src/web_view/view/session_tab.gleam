@@ -55,8 +55,10 @@
 //// objective, are session and principal text: each is drawn as a text node,
 //// never as an attribute, a class or a key, and every class is a literal. The
 //// workspace is the catalogue's validated directory, drawn as a text node and
-//// also as a `title`, as the top bar does. The rows carry no handler; the
-//// controls' are their own.
+//// also as a `title`, as the top bar does. Under it, a session that runs on an
+//// executor says so in one quiet line, `runs on box (pool builders)`
+//// (`runs_on`), from the catalogue's executor and pool keys, as text and never
+//// an attribute. The rows carry no handler; the controls' are their own.
 
 import gleam/int
 import gleam/list
@@ -103,7 +105,7 @@ import session_view/session_summary.{
 /// ## Examples
 ///
 /// ```gleam
-/// // session_tab.view([], "$0.12", component.jobs(model), Some(component.viewers(model)), Some("/src/loom"), element.none(), element.none(), element.none(), element.none(), element.none(), element.none(), element.none())
+/// // session_tab.view([], "$0.12", component.jobs(model), Some(component.viewers(model)), Some("/src/loom"), "box", "builders", element.none(), element.none(), element.none(), element.none(), element.none(), element.none(), element.none())
 /// ```
 pub fn view(
   goal: List(String),
@@ -111,6 +113,8 @@ pub fn view(
   jobs: Jobs,
   viewers: Option(Viewers),
   workspace: Option(String),
+  executor: String,
+  pool: String,
   share: Element(message),
   controls: Element(message),
   rename: Element(message),
@@ -127,7 +131,7 @@ pub fn view(
     ],
     [
       html.h2([attribute.class("panel-title")], [html.text("Session")]),
-      rows(goal, cost, jobs, viewers, workspace),
+      rows(goal, cost, jobs, viewers, workspace, executor, pool),
       share,
       controls,
       rename,
@@ -148,6 +152,8 @@ fn rows(
   jobs: Jobs,
   viewers: Option(Viewers),
   workspace: Option(String),
+  executor: String,
+  pool: String,
 ) -> Element(message) {
   use <- element.memo([
     element.ref(goal),
@@ -155,11 +161,13 @@ fn rows(
     element.ref(jobs),
     element.ref(viewers),
     element.ref(workspace),
+    element.ref(executor),
+    element.ref(pool),
   ])
   html.div(
     [attribute.class("session-rows")],
     list.flatten([
-      workspace_group(workspace),
+      workspace_group(workspace, runs_on(executor, pool)),
       people_group(viewers),
       [
         group("goal", Some("Goal"), goal_rows(goal)),
@@ -199,7 +207,10 @@ fn group(
 // The workspace of the Session group, or nothing when the label was not read.
 // The name and its Rename control are the pane's last child, which the
 // stylesheet draws first in the group.
-fn workspace_group(workspace: Option(String)) -> List(Element(message)) {
+fn workspace_group(
+  workspace: Option(String),
+  runs_on: Option(String),
+) -> List(Element(message)) {
   case workspace {
     None -> []
     Some(path) -> [
@@ -207,8 +218,42 @@ fn workspace_group(workspace: Option(String)) -> List(Element(message)) {
         html.p([attribute.class("session-workspace"), attribute.title(path)], [
           html.text(path),
         ]),
+        ..where_line(runs_on)
       ]),
     ]
+  }
+}
+
+// The line that says where the session runs: text only, in the quiet style,
+// and nothing for a session that runs on this host. It follows the path inside
+// the Session group, so it moves no child of the pane.
+fn where_line(runs_on: Option(String)) -> List(Element(message)) {
+  case runs_on {
+    None -> []
+    Some(words) -> [
+      html.p([attribute.class("session-quiet")], [html.text(words)]),
+    ]
+  }
+}
+
+/// The words for where a session runs, or `None` for one that runs on this
+/// host: `runs on box` for a session on an executor, `runs on box (pool
+/// builders)` for one a pool placed there, and `runs in pool builders` for a
+/// pooled session no attach has placed yet. The executor and the pool are the
+/// daemon's configuration keys, drawn as text.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert session_tab.runs_on("box", "builders")
+///   == Some("runs on box (pool builders)")
+/// ```
+pub fn runs_on(executor: String, pool: String) -> Option(String) {
+  case executor, pool {
+    "", "" -> None
+    "", pool -> Some("runs in pool " <> pool)
+    executor, "" -> Some("runs on " <> executor)
+    executor, pool -> Some("runs on " <> executor <> " (pool " <> pool <> ")")
   }
 }
 

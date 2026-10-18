@@ -586,7 +586,14 @@ was asked.
   `conformance` (the wiring/e2e suites drive the same adapter).
 - **Generated from**: `packages/cap`, at build time and not as a
   dependency edge — `scripts/gen-prelude.sh` runs `gleam export
-  package-interface` there and writes `tools/prelude`. Nothing in this
+  package-interface` there, hands the JSON to the dev module
+  `dev/gen_prelude.gleam` (with `dev/gen_prelude/interface.gleam`, a total
+  decoder for the slice of the interface it reads, and `dev/gen_prelude/wrap.gleam`,
+  a port of Python's `textwrap.wrap` so the wrapped prose keeps its breaks),
+  and writes `tools/prelude`. The generator uses `gleam_json` and `argv` as
+  dev-dependencies and no `@external`; its tests are
+  `test/tools/gen_prelude_test.gleam`, and the three files are inputs the
+  artifact's header digests, so editing one means `make gen-prelude`. Nothing in this
   package imports `cap`, and nothing at runtime shells out; the artifact
   is committed and `scripts/gen-prelude.sh --check` (inside `make check`)
   fails the build when it and its inputs part company.
@@ -1051,8 +1058,9 @@ named constants; a failure prints the shrunk command list.
 contains the new operation and optional absolute deadline; the tool receipt
 also renders a waitable handle. Spawn and roster expose `deadline_ms`, and
 wait/roster keep wire outcome `aborted` while reporting a recorded
-`abort_reason` separately. `BudgetExpired`, `ParentFinished` and `Released` (the
-parent session on another orchestrator was deleted, protocol-change/084) are
+`abort_reason` separately. `BudgetExpired`, `ParentFinished`, `Released` (the
+parent session on another orchestrator was deleted, protocol-change/084) and
+`TokenBudgetSpent` (the child used its spawner's `child_token_budget`) are
 internal outcome variants; unknown aborts remain `Aborted`. Tool guidance distinguishes
 continuing a strand with `agent_send` from observing one operation with
 `agent_wait`, and makes clear that the old handle remains historical.

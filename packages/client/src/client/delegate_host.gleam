@@ -345,13 +345,28 @@ fn resident(
   }
 }
 
-fn refused(error: manager.DelegateError) -> SpawnRefusal {
+/// What a registry refusal is to a spawner: a cap is `CapReached` with the
+/// cap's own limit, a released pair is `ParentRunEnded`, and anything the
+/// registry could not do is a `StoreFailure` with its account. The Agency's
+/// spawn claim uses it too, so a day cap reads the same wherever it is met.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert delegate_host.refused(manager.DelegateAtLimit(held: 4))
+///   == remote_spawn.CapReached(cap: remote_spawn.MaxSessions, limit: 4)
+/// ```
+pub fn refused(error: manager.DelegateError) -> SpawnRefusal {
   case error {
     // The parent session was deleted, so there is no one for a child to report
     // to: the refusal a spawn under an ended run gets.
     manager.DelegateReleased -> remote_spawn.ParentRunEnded
     manager.DelegateAtLimit(held:) ->
       remote_spawn.CapReached(cap: remote_spawn.MaxSessions, limit: held)
+    manager.DelegateDayCap(cap: manager.DayTokens, limit:) ->
+      remote_spawn.CapReached(cap: remote_spawn.TokensPerDay, limit:)
+    manager.DelegateDayCap(cap: manager.DaySpawns, limit:) ->
+      remote_spawn.CapReached(cap: remote_spawn.SpawnsPerDay, limit:)
     manager.DelegateFailed(manager.Catalogue(catalogue.Invalid(_))) ->
       remote_spawn.InvalidArgument(
         reason: "the parent session is not a session identity",

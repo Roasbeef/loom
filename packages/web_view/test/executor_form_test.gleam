@@ -73,6 +73,7 @@ fn page(
     manage: None,
     create:,
     folders: None,
+    elsewhere: None,
     profiles: [],
     models: [],
     signins: fn(deliver) { deliver(signins.Listed([])) },

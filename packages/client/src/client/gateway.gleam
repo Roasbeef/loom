@@ -204,6 +204,7 @@ import client/protocol.{
   EntryRecord, EventEnvelope, LiveOp, Strand,
 }
 import client/provider_relay
+import client/remote_child
 import client/schedule
 import client/scheduleadmin
 import client/skills
@@ -247,6 +248,7 @@ import runtime/writer
 import session/session
 import session_view/btw as btw_view
 import session_view/protocol as session_wire
+import session_view/remote_usage
 import storage/access
 import storage/snapshot
 import storage/storage.{type EntryHead}
@@ -5635,7 +5637,30 @@ fn full_snapshot(state: State) -> WireEvent {
     entries:,
     escalations:,
     usage:,
+    remote_usage: remote_usage_of(state.runtime),
   ))
+}
+
+// What the settled children on other orchestrators used, from the stubs of this
+// session, for the snapshot's `remote_usage`. Stubs that cannot be read give no
+// entries, which a client draws as no remote spend: the field is a display, and
+// the budgets that depend on the figure read the stubs themselves.
+fn remote_usage_of(runtime: api.Runtime) -> List(remote_usage.RemoteUsage) {
+  case remote_child.all(runtime) {
+    Ok(kept) ->
+      remote_child.usage_by_orchestrator(kept)
+      |> list.map(fn(entry) {
+        remote_usage.RemoteUsage(
+          orchestrator: entry.0,
+          input: entry.1.input,
+          output: entry.1.output,
+          cache_read: entry.1.cache_read,
+          cache_write: entry.1.cache_write,
+          cost: entry.1.cost,
+        )
+      })
+    Error(_) -> []
+  }
 }
 
 // One strand's snapshot row: its leaf (as text) and its live operation,

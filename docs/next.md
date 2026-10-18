@@ -188,6 +188,10 @@ absent from durable entries. They are prior-head evidence for the next rebase.
 
 ## Verification and next steps
 
+Three separate total decoders read `deployment.status` (`tui/deployment_view`,
+`web_view/machines` and `ledger_control.member_view`); one in a pure package could
+replace them.
+
 Earlier personal E2E drove both real UIs during a continuing main stream,
 proved frozen follow-ups and refresh through captured requests, checked private
 attachment histories and main-only durable entries, and verified cancellation,

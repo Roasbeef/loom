@@ -43,6 +43,9 @@
 ////     and released, and `write_remote_releases`, `remote_releases` and
 ////     `settle_remote_release` keep the releases a deleted parent session still
 ////     owes the orchestrators that may hold its children.
+//// 12. `add_spawner_spend` adds tokens and spawns to the hour a clock reading
+////     falls in, and `spawner_spend` sums the rolling day of 24 hours that
+////     ends at a reading. A spawner's day caps are judged against that sum.
 
 import core/ids
 import gleam/bit_array
@@ -68,6 +71,7 @@ import storage/catalogue_pools_schema
 import storage/catalogue_profiles_schema
 import storage/catalogue_recent_folders_schema
 import storage/catalogue_releases_schema
+import storage/catalogue_spend_schema
 import storage/catalogue_subtitles_schema
 import storage/sql
 import storage/sql_schema
@@ -276,7 +280,7 @@ fn initialize_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
 /// raise this fails `migrations_end_at_the_current_version_test` rather than
 /// leaving a catalogue that claims a version whose migration never ran.
 @internal
-pub const current_version = 16
+pub const current_version = 17
 
 /// The migration schemas in version order, each applied to a catalogue that
 /// lacks its version.
@@ -298,6 +302,7 @@ pub fn migrations() -> List(#(Int, String)) {
     #(14, catalogue_deletions_schema.schema),
     #(15, catalogue_delegates_schema.schema),
     #(16, catalogue_releases_schema.schema),
+    #(17, catalogue_spend_schema.schema),
   ]
 }
 
@@ -1959,6 +1964,116 @@ pub fn delegates_held(
     [row] -> Ok(row.count)
     [] | [_, _, ..] -> Error(Invalid("expected one delegate count row"))
   }
+}
+
+/// How long one spend bucket is, in milliseconds.
+pub const spend_bucket_ms = 3_600_000
+
+/// How many buckets make the rolling day a spawner's caps are judged over.
+pub const spend_day_buckets = 24
+
+/// What a spawner has used over a rolling day (catalogue version 17).
+pub type Spend {
+  Spend(
+    /// Tokens its children used: input plus output.
+    tokens: Int,
+    /// Spawns admitted for it.
+    spawns: Int,
+  )
+}
+
+/// The bucket a clock reading falls in: the reading divided by the bucket
+/// length, so a bucket is an hour of Unix time and not an hour since the
+/// daemon started.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert catalogue.spend_bucket(7_199_999) == 1
+/// ```
+pub fn spend_bucket(now_ms: Int) -> Int {
+  now_ms / spend_bucket_ms
+}
+
+/// Adds tokens and spawns to the bucket `now_ms` falls in, and removes the
+/// spawner's buckets that have left the rolling day, in one immediate
+/// transaction.
+///
+/// The prune is in the write so the table stays bounded without a sweep: a
+/// spawner has at most one row per bucket of the day it is judged over, and the
+/// next write after a bucket expires removes it. A name outside the profile-name
+/// grammar, a negative time and a negative amount are `Invalid`, and nothing is
+/// written.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.add_spawner_spend(store, "laptop", now_ms: 1_000, tokens: 512, spawns: 0)
+/// // == Ok(Nil)
+/// ```
+pub fn add_spawner_spend(
+  catalogue: Catalogue,
+  spawner: String,
+  now_ms now_ms: Int,
+  tokens tokens: Int,
+  spawns spawns: Int,
+) -> Result(Nil, Error) {
+  use Nil <- result.try(
+    case is_profile_name(spawner) && now_ms >= 0 && tokens >= 0 && spawns >= 0 {
+      True -> Ok(Nil)
+      False -> Error(Invalid("invalid spawner spend metadata"))
+    },
+  )
+  let bucket = spend_bucket(now_ms)
+  transaction(catalogue.connection, fn() {
+    use Nil <- result.try(statement(
+      catalogue,
+      sql.add_spawner_spend(spawner, bucket, tokens, spawns),
+    ))
+    statement(
+      catalogue,
+      sql.prune_spawner_spend(spawner, bucket - spend_day_buckets + 1),
+    )
+  })
+}
+
+/// What a spawner has used over the rolling day that ends at `now_ms`: the
+/// sum of its buckets from `spend_day_buckets - 1` before the reading's bucket
+/// up to and including it. A spawner with no rows has used nothing.
+///
+/// This is one bounded read of at most `spend_day_buckets` rows. A bucket after
+/// the reading's (a clock that stepped back) counts too, which errs toward
+/// refusing; a stored amount outside its range makes the read `Invalid`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.spawner_spend(store, "laptop", now_ms: 1_000) == Ok(Spend(tokens: 0, spawns: 0))
+/// ```
+pub fn spawner_spend(
+  catalogue: Catalogue,
+  spawner: String,
+  now_ms now_ms: Int,
+) -> Result(Spend, Error) {
+  use Nil <- result.try(case is_profile_name(spawner) && now_ms >= 0 {
+    True -> Ok(Nil)
+    False -> Error(Invalid("invalid spawner spend metadata"))
+  })
+  let first = spend_bucket(now_ms) - spend_day_buckets + 1
+  use rows <- result.try(query(
+    catalogue,
+    sql.spawner_spend_since(spawner, first),
+  ))
+  list.try_fold(rows, Spend(tokens: 0, spawns: 0), fn(total, row) {
+    case row.tokens >= 0 && row.spawns >= 0 {
+      True ->
+        Ok(Spend(
+          tokens: total.tokens + row.tokens,
+          spawns: total.spawns + row.spawns,
+        ))
+      False -> Error(Invalid("invalid spawner spend metadata"))
+    }
+  })
 }
 
 /// Removes one registration and every catalogue row that refers to it.

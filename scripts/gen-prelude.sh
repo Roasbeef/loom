@@ -2,7 +2,7 @@
 # gen-prelude.sh — generate and gate `tools/prelude`, the capability
 # prelude's public surface as the `code_mode` description renders it.
 #
-#   scripts/gen-prelude.sh              regenerate it (needs gleam, python3)
+#   scripts/gen-prelude.sh              regenerate it (needs gleam)
 #   scripts/gen-prelude.sh --check      fail if it has drifted (needs nothing)
 #   scripts/gen-prelude.sh --self-test  prove the gate catches every drift
 #
@@ -32,9 +32,9 @@
 # The gate is therefore digest comparison and nothing else, in the shape
 # `scripts/doc_check.sh` already uses for the AGENTS.md mirror: the
 # artifact records the sha256 of every input it was rendered from, and
-# `--check` recomputes them. Regeneration — which does need gleam and
-# python3, the way `make gen-sql` needs sqlite3 — is a developer step run
-# when `packages/cap` changes.
+# `--check` recomputes them. Regeneration — which does need gleam, the way
+# `make gen-sql` needs sqlite3 — is a developer step run when
+# `packages/cap` changes.
 #
 # Two digests, because there are two ways to drift and they need different
 # fixes. The input digests catch "cap moved, the artifact did not" and
@@ -65,7 +65,8 @@ self=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")
 cd "$(dirname "$0")/.."
 
 artifact="packages/tools/src/tools/prelude.gleam"
-renderer="scripts/gen-prelude.py"
+renderer="packages/tools/dev/gen_prelude.gleam"
+renderer_modules="packages/tools/dev/gen_prelude/*.gleam"
 marker="// --- generated body: the digests above cover every line below this one ---"
 placeholder="0000000000000000000000000000000000000000000000000000000000000000"
 
@@ -74,12 +75,17 @@ placeholder="0000000000000000000000000000000000000000000000000000000000000000"
 # modules cannot reach a public signature — a leak is a build warning and
 # this tree builds with --warnings-as-errors), and the renderer is the
 # other half: a change to how a signature is drawn stales the artifact
-# exactly as a change to the signature does. This script is not an input;
-# it decides nothing about what is rendered, and stamping it would turn
-# every comment fix here into a regenerated artifact.
+# exactly as a change to the signature does. The renderer is the Gleam
+# generator and the modules beside it (the interface decoder and the
+# line wrapper). This script is not an input; it decides nothing about
+# what is rendered, and stamping it would turn every comment fix here
+# into a regenerated artifact. Nor are the generator's tests.
 inputs() {
 	ls packages/cap/src/cap/*.gleam | LC_ALL=C sort
-	echo "$renderer"
+
+	# $renderer_modules is a glob, so it is left unquoted on purpose.
+	# shellcheck disable=SC2086
+	ls "$renderer" $renderer_modules | LC_ALL=C sort
 }
 
 # sha256 of one file, on whatever the platform gives us. Linux runners
@@ -403,10 +409,6 @@ fi
 
 # ------------------------------------------------------------- regenerate
 
-command -v python3 >/dev/null 2>&1 || {
-	echo "gen-prelude: python3 is required to render the artifact (the --check gate is not)" >&2
-	exit 1
-}
 command -v gleam >/dev/null 2>&1 || {
 	echo "gen-prelude: gleam is required to export packages/cap's interface" >&2
 	exit 1
@@ -419,7 +421,7 @@ echo "==> exporting packages/cap's package interface"
 (cd packages/cap && gleam export package-interface --out "$work/interface.json" >/dev/null)
 
 echo "==> rendering $artifact"
-python3 "$renderer" "$work/interface.json" >"$work/body.gleam"
+(cd packages/tools && gleam run -m gen_prelude -- "$work/interface.json" "$work/body.gleam")
 
 if grep -qF -- "$marker" "$work/body.gleam"; then
 	echo "gen-prelude: the rendered body contains the marker line; the digest boundary" >&2
@@ -444,7 +446,7 @@ fi
 //// oracle, and the oracle was reachable only by being wrong first. This
 //// is that oracle, moved in front of the writing (issue #36).
 ////
-//// Rendered by `scripts/gen-prelude.py` from `gleam export
+//// Rendered by `packages/tools/dev/gen_prelude.gleam` from `gleam export
 //// package-interface` over `packages/cap` — the compiler's own account
 //// of what it will accept, so the description cannot describe a prelude
 //// the build would reject. `scripts/gen-prelude.sh --check` gates the

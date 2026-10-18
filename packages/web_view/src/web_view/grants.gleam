@@ -246,6 +246,14 @@ pub type Action {
   /// making a session shareable). The session is the one the server drew into the
   /// tree. It gives no one access, so it costs no allowance.
   MakeShareable(session: String)
+
+  /// Give up the move of a session now (protocol-change/085, the addendum on
+  /// Move and Abandon). The session is the one a machine page lists as moving.
+  /// Only a directory member can: the daemon gives the move up by a
+  /// compare-and-set that fails if the receiver already took the session, and
+  /// then the move finishes instead. It grants no one anything and costs no
+  /// allowance.
+  AbandonMove(session: String)
 }
 
 /// What a claim was made for, which the page words.
@@ -333,6 +341,13 @@ pub type Reason {
   /// The session is shareable now and did not resume. It is stopped.
   NotResumed
 
+  /// This daemon is not a directory member, so it cannot give a move up.
+  NotMember
+
+  /// The session has no move in flight now: it finished or was given up since
+  /// the page drew it.
+  NotMoving
+
   /// The suggested name, or the name a rename was asked for, is empty after
   /// trimming, longer than 256 bytes, or holds a control, zero-width or
   /// direction-changing character.
@@ -367,6 +382,8 @@ pub fn reason_words(reason: Reason) -> String {
       "The session could not be made shareable, and it is stopped. Resume it from the home page, then try again."
     NotResumed ->
       "The session is shareable now but did not start again. Resume it from the home page."
+    NotMember -> "Only a directory member can give a move up."
+    NotMoving -> "That session is no longer moving. The page reloads."
     InvalidName ->
       "Use a name of up to 256 bytes with no control or invisible characters."
     Unavailable -> "The daemon could not make that change. Try again."
@@ -482,6 +499,7 @@ pub fn changed_words(action: Action) -> String {
     RevokeSignin(..) -> "Sign-in ended."
     Rename(..) -> "Renamed."
     MakeShareable(..) -> "This session is shareable now."
+    AbandonMove(..) -> "Asked to give the move up."
     Invite(..) | Rotate(..) -> "Done."
   }
 }

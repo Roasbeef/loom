@@ -24,7 +24,9 @@
 //// 5. `decode_body` dispatches by event name to a decoder per event, and an
 ////    unknown name becomes `Ignored` so a newer daemon cannot close the socket.
 //// 6. `decode_snapshot` dispatches by snapshot mode in the same way, reaching
-////    `decode_strands`, `decode_entries` and `decode_models` for the full state.
+////    `decode_strands`, `decode_entries` and `decode_models` for the full state,
+////    and `remote_usage.decode_all` for the optional per-orchestrator spend of
+////    children that ran elsewhere.
 //// 7. `required_string`, `required_int` and `object_fields` make every field
 ////    total: a missing or mistyped one is an `Error`, never a panic.
 ////
@@ -52,6 +54,7 @@ import session_view/notes_view
 import session_view/proposals
 import session_view/queued_input
 import session_view/remembered
+import session_view/remote_usage.{type RemoteUsage}
 import session_view/skills
 import session_view/worktree_view
 
@@ -137,6 +140,10 @@ pub type Event {
     entries: List(EntryRecord),
     /// Session usage accumulated before the live subscription began.
     usage: Usage,
+    /// What the settled children on other orchestrators used, one entry for
+    /// each orchestrator, empty when there are none or when the daemon predates
+    /// the field (protocol-change/084, phase 2).
+    remote_usage: List(RemoteUsage),
   )
 
   /// An authoritative replacement for the visible strand set.
@@ -977,7 +984,8 @@ fn decode_snapshot(body: JsonValue) -> Result(Event, String) {
         codec.decode_usage(usage_value)
         |> result.map_error(fn(report) { report.expected }),
       )
-      Ok(FullSnapshot(session:, strands:, entries:, usage:))
+      use remote_usage <- result.try(remote_usage.decode_all(fields))
+      Ok(FullSnapshot(session:, strands:, entries:, usage:, remote_usage:))
     }
     "strands" -> result.map(decode_strands(fields), StrandsSnapshot)
     "models" -> result.map(decode_models(fields), ModelsSnapshot)

@@ -29,11 +29,33 @@
 //// confirmation that names what it will do. Both are the home's own Archive
 //// and Stop, asked of the same daemon function under the same checks.
 ////
+//// Move (protocol-change/085, the addendum on Move and Abandon) is the one
+//// action that reads before it asks. The first press (`Destinations`) changes
+//// nothing: the daemon reads the deployment and answers which orchestrators
+//// could take the session (`Heard`, by `session_view/move_candidates`), and the
+//// row offers a button for each that could and names, with its reason, each
+//// that could not (`Choosing`). Choosing one opens the confirmation Delete has,
+//// for `Move(to)`, and only the second press asks the daemon to move. The
+//// daemon checks only that the destination is one of its configured
+//// orchestrators, and does not judge eligibility again: the candidates are a
+//// convenience to the person choosing and decide nothing.
+////
 //// The words a page shows for a refusal are fixed here, so no text the daemon
 //// or the catalogue produced reaches a browser.
 
+import session_view/move_candidates.{type Candidate}
+
 /// What the owner can ask of a session's row.
 pub type Action {
+  /// Ask which orchestrators could take the session. It changes nothing, and
+  /// the daemon answers `Heard`.
+  Destinations
+
+  /// Hand the session to the orchestrator `to` names, as the daemon's
+  /// `[orchestrators.<name>]` table names it. The session's executor stays
+  /// where it is; the orchestrator takes over the conversation.
+  Move(to: String)
+
   /// End the process that runs the session. The session stays on disk and
   /// shows as saved.
   Stop
@@ -59,6 +81,10 @@ pub type Answer {
   /// The daemon did it.
   Done(action: Action)
 
+  /// The daemon read which orchestrators could take the session, answering
+  /// `Destinations`.
+  Heard(candidates: List(Candidate))
+
   /// The daemon did nothing, and the reason says why in fixed words.
   Declined(reason: Reason)
 }
@@ -76,6 +102,11 @@ pub type Reason {
   /// first.
   Running
 
+  /// The session cannot be moved now: it has no executor, it is archived or
+  /// already moving, its origin has not finished moving it here, or the
+  /// destination is not one the daemon lists.
+  NotMovable
+
   /// The daemon could not answer: it was starting, stopping or slow, or the
   /// registry refused the change.
   Unavailable
@@ -92,6 +123,11 @@ pub type Stage {
   /// confirmation is for, so a press that confirms a Stop can never act as a
   /// Delete.
   Confirming(session: String, action: Action)
+
+  /// The daemon said which orchestrators could take this row's session, and
+  /// the row shows them for the owner to choose from. Anything else the page
+  /// does replaces it.
+  Choosing(session: String, candidates: List(Candidate))
 
   /// A request for this row is with the daemon. A press meanwhile asks
   /// nothing, so one press acts at most once.
@@ -111,6 +147,7 @@ pub fn reason_words(reason: Reason) -> String {
   case reason {
     NotOwner -> "Only the owner can do that from a page."
     Running -> "That session is still running. Stop it first."
+    NotMovable -> "That session cannot be moved now."
     Unavailable -> "The daemon could not do that. Try again."
   }
 }
@@ -124,6 +161,8 @@ pub fn reason_words(reason: Reason) -> String {
 /// ```
 pub fn done_words(action: Action) -> String {
   case action {
+    Destinations -> "Read."
+    Move(to:) -> "Moving to " <> to <> "."
     Stop -> "Stopped."
     Archive -> "Archived."
     Delete -> "Deleted."

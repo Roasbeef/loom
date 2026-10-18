@@ -104,7 +104,8 @@ pub fn action(entry: Entry) -> Action {
 pub fn confirms(action: Action) -> Bool {
   case action {
     actions.Archive | actions.StopArchive -> True
-    actions.Stop | actions.Delete -> False
+    actions.Stop | actions.Delete | actions.Destinations | actions.Move(..) ->
+      False
   }
 }
 
@@ -124,7 +125,10 @@ pub fn confirmed(stage: Stage, session: String) -> Result(Action, Nil) {
         True -> Ok(action)
         False -> Error(Nil)
       }
-    actions.Confirming(..) | actions.Calm | actions.Working(..) -> Error(Nil)
+    actions.Confirming(..)
+    | actions.Choosing(..)
+    | actions.Calm
+    | actions.Working(..) -> Error(Nil)
   }
 }
 
@@ -182,7 +186,10 @@ pub fn button(
         actions.Working(session:, ..) if session == entry.id -> [
           attribute.disabled(True),
         ]
-        actions.Working(..) | actions.Calm | actions.Confirming(..) -> []
+        actions.Working(..)
+        | actions.Calm
+        | actions.Confirming(..)
+        | actions.Choosing(..) -> []
       }
       [
         html.button(
@@ -266,7 +273,11 @@ fn asking(
     )
 
     // `Stop` and `Delete` are unreachable here: `confirms` filters them first.
-    actions.Archive | actions.Stop | actions.Delete -> #(
+    actions.Archive
+    | actions.Stop
+    | actions.Delete
+    | actions.Destinations
+    | actions.Move(..) -> #(
       "Archive this session",
       "Archive this session?",
       "Archive",

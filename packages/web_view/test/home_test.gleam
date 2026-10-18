@@ -16,8 +16,10 @@ import gleam/option.{None, Some}
 import gleam/string
 import lustre/effect
 import lustre/element.{type Element}
+import session_view/move_candidates
 import web_view/actions
 import web_view/creations
+import web_view/elsewhere
 import web_view/ending
 import web_view/home
 import web_view/page
@@ -78,6 +80,7 @@ fn start_with(ceiling: home.Ceiling, read: fn() -> home.Listing) -> home.Start {
     manage: None,
     create: None,
     folders: None,
+    elsewhere: None,
     profiles: [],
     models: [],
     signins: fn(deliver) { deliver(signins.Listed([])) },
@@ -1757,7 +1760,7 @@ pub fn the_owners_fresh_home_draws_the_actions_that_fit_each_row_test() {
   let #(plain, _) = opened(start())
   let with = handlers(home.view(owner))
   let without = handlers(home.view(plain))
-  assert list.length(with) == list.length(without) + 10
+  assert list.length(with) == list.length(without) + 12
   assert list.all(with, beneath_the_two_regions)
   assert list.all(without, fn(key) { list.contains(with, key) })
 
@@ -2813,4 +2816,427 @@ pub fn a_moving_row_offers_no_rename_test() {
   let html = drawn(owner)
   assert string.contains(html, "moving to bravo")
   assert list.length(string.split(html, "class=\"home-rename\"")) == 2
+}
+
+// ---------------------------------------------------------------------------
+// Sessions on the owner's other orchestrators (protocol-change/085).
+// ---------------------------------------------------------------------------
+
+fn elsewhere_row(id: String, name: String, workspace: String) -> elsewhere.Row {
+  elsewhere.Row(
+    session_id: id,
+    workspace:,
+    name:,
+    status: elsewhere.Saved,
+    executor: Some("box"),
+    executor_node: Some("loom@box.example.net"),
+  )
+}
+
+fn desk(rows: List(elsewhere.Row), more: elsewhere.More) -> elsewhere.Group {
+  elsewhere.Group(
+    name: "desk",
+    address: Some("ws://10.0.0.8:7000"),
+    hearing: elsewhere.Answered(rows:, more:),
+  )
+}
+
+fn laptop() -> elsewhere.Group {
+  elsewhere.Group(name: "laptop", address: None, hearing: elsewhere.Silent)
+}
+
+// A page that may create and reads `first` as the other orchestrators' first
+// pages. `next` hears each request for a page and answers with `later`.
+fn elsewhere_reader(
+  first: elsewhere.Read,
+  asked: Subject(#(String, String)),
+  later: elsewhere.Read,
+) -> home.Start {
+  home.Start(
+    ..start(),
+    create: Some(fn(_, _, _, _, _) { Nil }),
+    elsewhere: Some(
+      home.Elsewhere(
+        groups: fn(deliver) { deliver(first) },
+        next: fn(group, after, deliver) {
+          process.send(asked, #(group, after))
+          deliver(later)
+        },
+      ),
+    ),
+  )
+}
+
+fn two_groups() -> elsewhere.Read {
+  elsewhere.Heard([
+    desk(
+      [
+        elsewhere_row("0198-a", "docs pass", "/src/loom"),
+        elsewhere_row("0198-b", "ui", "/src/web"),
+      ],
+      elsewhere.Further,
+    ),
+    laptop(),
+  ])
+}
+
+// The group exists only on a page the daemon handed the capability. Any other
+// page draws nothing, and the messages change nothing and ask nothing.
+pub fn only_a_page_with_the_capability_draws_the_other_orchestrators_test() {
+  let #(plain, _) = opened(start())
+  let html = drawn(plain)
+  assert !string.contains(html, "On other orchestrators")
+  let model = run(plain, home.ElsewhereRead(home.reads(plain), two_groups()))
+  let model = run(model, home.Locating("desk", "0198-a"))
+  let model = run(model, home.ShowingMore("desk"))
+  assert drawn(model) == html
+}
+
+// The group follows "Other folders", lists each orchestrator by its key with
+// its rows, and says in one line that a silent one did not answer, which is not
+// the same as having no sessions.
+pub fn the_group_lists_what_each_orchestrator_said_test() {
+  let asked = process.new_subject()
+  let #(model, _) =
+    opened(elsewhere_reader(two_groups(), asked, elsewhere.Unread))
+  let html = drawn(model)
+  assert string.contains(html, "On other orchestrators")
+  assert string.contains(html, "docs pass")
+  assert string.contains(html, "/src/web")
+  assert string.contains(html, "ws://10.0.0.8:7000")
+  assert string.contains(html, "No answer in time from this orchestrator.")
+  assert !string.contains(html, "No sessions on this orchestrator.")
+  let assert Ok(#(before, _)) =
+    string.split_once(html, "On other orchestrators")
+  assert string.contains(before, "Other folders")
+}
+
+// A one-line strip says the daemon lists a peer, names each, marks the silent
+// one, and carries no handler, so the table keeps its path.
+pub fn a_strip_under_the_bar_names_the_peer_orchestrators_test() {
+  let asked = process.new_subject()
+  let #(model, _) =
+    opened(elsewhere_reader(two_groups(), asked, elsewhere.Unread))
+  let html = drawn(model)
+  assert string.contains(
+    html,
+    "Other orchestrators: desk, laptop (no answer). Their machines are on the Admin page.",
+  )
+  assert list.length(string.split(html, "home-peers")) == 2
+
+  // A page with no other orchestrator draws no strip.
+  let #(plain, _) = opened(start())
+  assert !string.contains(drawn(plain), "home-peers")
+}
+
+pub fn an_orchestrator_with_no_sessions_says_so_and_is_not_silent_test() {
+  let asked = process.new_subject()
+  let #(model, _) =
+    opened(elsewhere_reader(
+      elsewhere.Heard([desk([], elsewhere.Last)]),
+      asked,
+      elsewhere.Unread,
+    ))
+  let html = drawn(model)
+  assert string.contains(html, "No sessions on this orchestrator.")
+  assert !string.contains(html, "No answer in time from this orchestrator.")
+}
+
+// "Where" opens the launch under its row in a copy box of the one subject that
+// takes it. A press for a row the page does not hold opens nothing, "Close"
+// closes it, and a read that no longer lists the row closes it too.
+pub fn where_opens_the_launch_line_for_a_row_the_page_holds_test() {
+  let asked = process.new_subject()
+  let #(model, _) =
+    opened(elsewhere_reader(two_groups(), asked, elsewhere.Unread))
+  assert !string.contains(drawn(model), "loom-copy")
+
+  let held = run(model, home.Locating("desk", "0198-a"))
+  let html = drawn(held)
+  assert string.contains(html, "subject=\"launch\"")
+  assert string.contains(
+    html,
+    "text=\"loom --addr ws://10.0.0.8:7000 --session 0198-a --token-file &lt;owner token file on that host&gt;\"",
+  )
+  assert string.contains(html, "on the orchestrator desk")
+
+  // Pressing a row the page does not hold changes nothing.
+  assert drawn(run(held, home.Locating("desk", "ghost"))) == html
+  assert drawn(run(held, home.Locating("ghost", "0198-a"))) == html
+  assert drawn(run(held, home.Locating("laptop", "0198-a"))) == html
+  assert !string.contains(drawn(run(held, home.Located)), "loom-copy")
+
+  // A read that no longer lists the row closes its detail.
+  let serial = home.reads(held)
+  let gone =
+    run(
+      held,
+      home.ElsewhereRead(serial, elsewhere.Heard([desk([], elsewhere.Last)])),
+    )
+  assert !string.contains(drawn(gone), "loom-copy")
+}
+
+// "Show more" asks for the page after the last row the page holds, names the
+// group it was drawn for, and joins what arrives. A group with no more has no
+// button.
+pub fn show_more_asks_after_the_last_row_and_joins_the_page_test() {
+  let asked = process.new_subject()
+  let later =
+    elsewhere.Heard([
+      desk([elsewhere_row("0198-c", "third", "/src/c")], elsewhere.Last),
+    ])
+  let #(model, _) = opened(elsewhere_reader(two_groups(), asked, later))
+  assert string.contains(drawn(model), "Show more")
+  let model = run(model, home.ShowingMore("desk"))
+  assert process.receive(asked, 0) == Ok(#("desk", "0198-b"))
+  assert process.receive(asked, 0) == Error(Nil)
+  let html = drawn(model)
+  assert string.contains(html, "third")
+  assert string.contains(html, "docs pass")
+  assert !string.contains(html, "Show more")
+
+  // Nothing more is asked for a group that has none, or that is not held.
+  let _ = run(model, home.ShowingMore("desk"))
+  let _ = run(model, home.ShowingMore("laptop"))
+  let _ = run(model, home.ShowingMore("ghost"))
+  assert process.receive(asked, 0) == Error(Nil)
+}
+
+// A page that arrives after a newer first-page read replaced the rows is dropped
+// rather than joined to rows it did not follow.
+pub fn a_page_that_a_newer_read_overtook_is_dropped_test() {
+  let asked = process.new_subject()
+  let #(model, _) =
+    opened(elsewhere_reader(two_groups(), asked, elsewhere.Unread))
+  let stale =
+    elsewhere.Heard([
+      desk([elsewhere_row("0198-z", "stale row", "/src/z")], elsewhere.Last),
+    ])
+  let model = run(model, home.MoreRead("desk", 0, stale))
+  assert !string.contains(drawn(model), "stale row")
+}
+
+// Another daemon's text is drawn as escaped text, and no class, attribute or key
+// is built from it: the handlers all lie beneath the table the socket admits.
+pub fn another_orchestrators_text_is_escaped_and_builds_nothing_test() {
+  let asked = process.new_subject()
+  let hostile = "<img src=x>"
+  let #(model, _) =
+    opened(elsewhere_reader(
+      elsewhere.Heard([
+        elsewhere.Group(
+          name: "desk",
+          address: Some("ws://x\" y=\"z"),
+          hearing: elsewhere.Answered(
+            rows: [elsewhere_row("0198-a", hostile, hostile)],
+            more: elsewhere.Last,
+          ),
+        ),
+      ]),
+      asked,
+      elsewhere.Unread,
+    ))
+  let html = drawn(model)
+  assert !string.contains(html, hostile)
+  assert string.contains(html, "&lt;img src=x&gt;")
+  assert !string.contains(html, "y=\"z")
+  let keys = handlers(home.view(run(model, home.Locating("desk", "0198-a"))))
+  assert list.all(keys, fn(key) {
+    string.starts_with(key, "0\t1\t") || string.starts_with(key, "0\t2\t1\t")
+  })
+}
+
+// A refresh whose first page is unchanged keeps the pages "Show more" fetched,
+// and only updates the rows of that first page. One whose first page changed
+// resets the group.
+pub fn a_refresh_keeps_the_pages_show_more_fetched_when_the_first_page_is_unchanged_test() {
+  let asked = process.new_subject()
+  let later =
+    elsewhere.Heard([
+      desk([elsewhere_row("0198-c", "third", "/src/c")], elsewhere.Last),
+    ])
+  let #(model, _) = opened(elsewhere_reader(two_groups(), asked, later))
+  let model = run(model, home.ShowingMore("desk"))
+  assert string.contains(drawn(model), "third")
+
+  // The same first page, with a row renamed.
+  let renamed =
+    elsewhere.Heard([
+      desk(
+        [
+          elsewhere_row("0198-a", "docs pass renamed", "/src/loom"),
+          elsewhere_row("0198-b", "ui", "/src/web"),
+        ],
+        elsewhere.Further,
+      ),
+      laptop(),
+    ])
+  let model =
+    run(model, home.ElsewhereRead(home.elsewhere_reads(model), renamed))
+  let html = drawn(model)
+  assert string.contains(html, "third")
+  assert string.contains(html, "docs pass renamed")
+  assert !string.contains(html, "Show more")
+
+  // A first page that differs resets the group to what it lists.
+  let changed =
+    elsewhere.Heard([
+      desk([elsewhere_row("0198-z", "new head", "/src/z")], elsewhere.Further),
+      laptop(),
+    ])
+  let model =
+    run(model, home.ElsewhereRead(home.elsewhere_reads(model), changed))
+  let html = drawn(model)
+  assert string.contains(html, "new head")
+  assert !string.contains(html, "third")
+  assert string.contains(html, "Show more")
+}
+
+// A "Show more" answer is joined only while its press is the page out, so one
+// taken from rows a refresh has since replaced is dropped.
+pub fn a_page_taken_from_replaced_rows_is_not_joined_test() {
+  let asked = process.new_subject()
+  let #(model, _) =
+    opened(elsewhere_reader(two_groups(), asked, elsewhere.Unread))
+  let late =
+    elsewhere.Heard([
+      desk([elsewhere_row("0198-c", "stale tail", "/src/c")], elsewhere.Last),
+    ])
+  let serial = home.elsewhere_reads(model)
+
+  // No press is out, so the answer is dropped.
+  let dropped = run(model, home.MoreRead("desk", serial, late))
+  assert !string.contains(drawn(dropped), "stale tail")
+
+  // A press that a refresh overtook: the refresh clears it, and the late answer
+  // is dropped as well.
+  let model = run(model, home.ShowingMore("desk"))
+  let model = run(model, home.ElsewhereRead(serial, two_groups()))
+  let model = run(model, home.MoreRead("desk", serial, late))
+  assert !string.contains(drawn(model), "stale tail")
+}
+
+// --- Move (protocol-change/085, the addendum on Move and Abandon) -------------
+
+fn movable() -> List(Entry) {
+  [
+    Entry(
+      ..entry("E", "box job", "/work", 100_000, Saved),
+      executor: Some("box"),
+    ),
+    entry("D", "", "/src/notes", 500_000, Saved),
+  ]
+}
+
+fn move_candidates_heard() -> List(move_candidates.Candidate) {
+  [
+    move_candidates.Candidate("bravo", move_candidates.Eligible),
+    move_candidates.Candidate(
+      "charlie",
+      move_candidates.Ineligible(move_candidates.Unreachable),
+    ),
+  ]
+}
+
+fn moving_home(asked: Subject(#(actions.Action, String))) {
+  let ask = fn(action, session, deliver) {
+    process.send(asked, #(action, session))
+    case action {
+      actions.Destinations -> deliver(actions.Heard(move_candidates_heard()))
+      actions.Move(..)
+      | actions.Stop
+      | actions.Archive
+      | actions.Delete
+      | actions.StopArchive -> deliver(actions.Done(action))
+    }
+  }
+  let #(owner, _) =
+    opened(
+      home.Start(..start(), manage: Some(ask), sessions: fn(deliver) {
+        deliver(home.Listed(movable()))
+      }),
+    )
+  owner
+}
+
+// A saved row on an executor has Move; one with no executor has it disabled,
+// and its title says why.
+pub fn a_saved_row_offers_move_and_one_without_an_executor_says_why_test() {
+  let owner = moving_home(process.new_subject())
+  let html = drawn(owner)
+  assert list.length(string.split(html, ">Move<")) == 3
+  assert string.contains(html, "Only a session on an executor can move.")
+  assert string.contains(html, "disabled")
+}
+
+// Move reads, then asks twice. The first press asks only which orchestrators
+// could take the session and replaces the row's words with the answer; a
+// destination opens the confirmation; only the confirmation moves.
+pub fn a_move_reads_chooses_confirms_and_then_asks_test() {
+  let asked = process.new_subject()
+  let model = run(moving_home(asked), home.MoveRequested("E"))
+  assert process.receive(asked, 0) == Ok(#(actions.Destinations, "E"))
+  let html = drawn(model)
+  assert string.contains(html, "Move this session to:")
+  assert string.contains(html, ">bravo<")
+  assert string.contains(html, "charlie is not reachable")
+
+  // A destination the row was not offered opens nothing, and a confirmation
+  // with none open asks nothing.
+  let forged = run(model, home.MoveChosen("E", "charlie"))
+  let forged = run(forged, home.MoveConfirmed("E"))
+  let forged = run(forged, home.MoveChosen("E", "elsewhere"))
+  let forged = run(forged, home.MoveConfirmed("E"))
+  assert process.receive(asked, 0) == Error(Nil)
+  assert string.contains(drawn(forged), "Move this session to:")
+
+  let model = run(model, home.MoveChosen("E", "bravo"))
+  assert string.contains(drawn(model), "Move this session to bravo?")
+  assert process.receive(asked, 0) == Error(Nil)
+
+  // A confirmation for another row asks nothing; Cancel puts the row back.
+  let other = run(model, home.MoveConfirmed("D"))
+  assert process.receive(asked, 0) == Error(Nil)
+  let cancelled = run(other, home.ConfirmCancelled)
+  assert !string.contains(drawn(cancelled), "Move this session to bravo?")
+
+  let model = run(model, home.MoveConfirmed("E"))
+  assert process.receive(asked, 0) == Ok(#(actions.Move("bravo"), "E"))
+  assert string.contains(drawn(model), "Moving to bravo.")
+}
+
+// A page the daemon handed no capability ignores every message of the move.
+pub fn a_page_without_the_capability_ignores_move_test() {
+  let #(member, _) = opened(start())
+  let model = run(member, home.MoveRequested("C"))
+  let model = run(model, home.MoveChosen("C", "bravo"))
+  let model = run(model, home.MoveConfirmed("C"))
+  let model =
+    run(model, home.ActionAnswered(actions.Heard(move_candidates_heard())))
+  assert drawn(model) == drawn(member)
+}
+
+// When no orchestrator could take the session, the row says so and offers only
+// Cancel.
+pub fn a_move_with_no_destination_says_so_test() {
+  let ask = fn(_action, _session, deliver) {
+    deliver(
+      actions.Heard([
+        move_candidates.Candidate(
+          "charlie",
+          move_candidates.Ineligible(move_candidates.NotAccepting),
+        ),
+      ]),
+    )
+  }
+  let #(owner, _) =
+    opened(
+      home.Start(..start(), manage: Some(ask), sessions: fn(deliver) {
+        deliver(home.Listed(movable()))
+      }),
+    )
+  let model = run(owner, home.MoveRequested("E"))
+  let html = drawn(model)
+  assert string.contains(html, "No orchestrator can take this session now.")
+  assert string.contains(html, "charlie does not accept moved sessions")
 }

@@ -245,9 +245,9 @@ pub fn the_stored_form_is_the_documented_object_test() {
   assert list.map(fields, fn(field) { field.0 })
     == [
       "objective", "status", "reason", "phase", "token_budget", "tokens_used",
-      "accounted_through_seq", "cost_used", "cost_evidence", "continuations",
-      "zero_progress", "unanswered_feeds", "created_ms", "updated_ms",
-      "reviewer_note", "check", "last_check",
+      "accounted_through_seq", "remote_tokens", "cost_used", "cost_evidence",
+      "continuations", "zero_progress", "unanswered_feeds", "created_ms",
+      "updated_ms", "reviewer_note", "check", "last_check",
     ]
   assert list.key_find(fields, "status") == Ok(json.String("active"))
   assert list.key_find(fields, "reason") == Ok(json.Null)
@@ -1105,4 +1105,17 @@ pub fn goal_cost_evidence_round_trips_test() {
     )
   let goal = goalstate.Goal(..working_goal(), cost_evidence: evidence)
   assert goalstate.decode(goalstate.encode(goal)) == Ok(goal)
+}
+
+// A cell written before remote children counted against a goal has no
+// `remote_tokens`, and reads as none counted rather than as a refusal.
+pub fn a_cell_without_remote_tokens_reads_as_zero_test() {
+  let assert json.Object(fields) = goalstate.encode(working_goal())
+  let older =
+    json.Object(list.filter(fields, fn(field) { field.0 != "remote_tokens" }))
+  let assert Ok(goal) = goalstate.decode(older)
+  assert goal.remote_tokens == 0
+  let assert json.Object(fields) =
+    goalstate.encode(goalstate.Goal(..goal, remote_tokens: 9))
+  assert list.key_find(fields, "remote_tokens") == Ok(json.Int(9))
 }

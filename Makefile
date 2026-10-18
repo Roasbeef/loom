@@ -580,7 +580,7 @@ gen-sql: ## Regenerate parrot-generated SQL modules (needs sqlite3; ADR-004)
 	@scripts/gen-sql.sh
 
 .PHONY: gen-prelude
-gen-prelude: ## Regenerate tools/prelude from packages/cap (needs gleam, python3)
+gen-prelude: ## Regenerate tools/prelude from packages/cap (needs gleam)
 	@scripts/gen-prelude.sh
 
 .PHONY: prelude-check

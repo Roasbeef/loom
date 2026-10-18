@@ -913,6 +913,16 @@ states that this consent permits only the captured action on its strand; the
 wire still echoes the exact action, grant subset, and displayed sequence.
 The client gateway owns persistence and matching; this pure UI grants nothing.
 
+## Remote spend (protocol-change/084)
+
+`remote_usage.RemoteUsage` is the spend of the settled children of one other
+orchestrator, as the full snapshot's optional `remote_usage` list carries it.
+`decode_all` reads an absent field as no entries and refuses a malformed one;
+`protocol.FullSnapshot` and `model.Shared` keep the list beside `usage`, and
+`event_fold` replaces it with each full snapshot. `remote_usage_words` words an
+entry for a status bar and sits apart from `remote_usage` because it needs
+`agent_roster.count_label`, which is above the protocol in the import graph.
+
 ## Usage projection (protocol 081)
 
 `protocol.UsageChanged` separates aggregate usage from `last_usage`. The
@@ -982,6 +992,29 @@ polls a running request at most once per second through the ready lane, and
 `btw_due` supplies the web host's timer deadline. Connection changes clear the
 old board. Refusals retire its pending correlation without closing the lane.
 Both hosts draw `btw.lines`, which sanitizes terminal control characters.
+
+## Launch words (protocol-change/085)
+
+`launch_words.launch_line(address, session)` is the command that reaches a session
+on another orchestrator: `loom --addr <address> --session <id> --token-file <owner
+token file on that host>`, with `unknown_address` when the configuration gives none.
+The terminal's `not_owner` words and the web home's "Where" detail both use it, so
+the two say one thing. It is pure and names the token file with a placeholder, since
+the file is on the other machine.
+
+## Move candidates (protocol-change/085)
+
+`move_candidates.choose(offers, executor)` is the rule for which orchestrators a
+session on `executor` can move to: the asking daemon reached it (`Silent` is not),
+it gave a report (`Unreported` is not), it accepts moved sessions (`Receiving`), and
+the executors it serves include the session's. Each offer comes back as a
+`Candidate(name, Eligible | Ineligible(Reason))`, with the first reason that applies
+(`Unreachable | NoReport | NotAccepting | NotServing`) and fixed words for it
+(`reason_words`, `no_executor_words`, `none_words`). `eligible` lists the names that can
+be asked for. The module is pure, and `client/deployment.candidates`, the terminal's
+`tui/deployment_view.candidates` and the web home's chooser all use it, so the three say
+one thing. The caller gives `serves` and `executor` in one vocabulary, keys or node
+names.
 
 ## Memory overview (protocol 087)
 

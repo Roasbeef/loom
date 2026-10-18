@@ -92,6 +92,7 @@ import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import lustre
 import lustre/attribute
 import lustre/effect.{type Effect}
@@ -100,10 +101,14 @@ import lustre/element/html
 import lustre/event
 import lustre/server_component
 import web_view/creations
+import web_view/elsewhere as peers
 import web_view/ending.{type Ending}
 import web_view/grants.{type Action, type Answer, type Claim, type Reading}
 import web_view/invites
+import web_view/machines
 import web_view/view/admin_buttons.{type Busy, type Presses}
+import web_view/view/admin_machine
+import web_view/view/admin_machines
 import web_view/view/admin_people
 import web_view/view/admin_sessions
 import web_view/view/ended
@@ -158,6 +163,16 @@ pub type Start {
     /// body has to say when the page ends. It is an in-daemon value and no
     /// browser supplies it.
     ends_at: Int,
+    /// Asks the daemon to read the deployment and returns at once: the whole
+    /// deployment for `None`, or the one machine a key names, whose long lists
+    /// the reply then carries. The answer goes to the function it is given, from
+    /// the daemon's own task, as `Deployed`'s message. The daemon makes the read
+    /// as the page's principal and answers `Unread` for a page that may not have
+    /// it.
+    deployment: fn(Option(String), fn(machines.Reading) -> Nil) -> Nil,
+    /// Asks the daemon what the other orchestrators list and returns at once. The
+    /// answer goes to the function it is given as `Peered`'s message.
+    elsewhere: fn(fn(peers.Read) -> Nil) -> Nil,
   )
 }
 
@@ -243,6 +258,27 @@ pub opaque type Model {
     /// time, and an answer that made the change, or a read that no longer lists
     /// the principal, closes it.
     editing: Option(String),
+    /// What the page holds of the deployment.
+    held: machines.Held,
+    /// How many deployment reads have been asked for, which numbers the next. An
+    /// answer whose number is not the latest was overtaken and is dropped. Unlike
+    /// the people read, the deployment read is not held to one at a time: a press
+    /// starts the read it needs and the answers of the ones it overtook are
+    /// dropped by their number.
+    deployed: Int,
+    /// How many reads of the other orchestrators have been asked for. It numbers
+    /// apart from `deployed`, so a read of the other orchestrators and a read of a
+    /// machine each overtake only their own kind: choosing the Sessions tab while
+    /// the machine's read is out must not drop that read.
+    peered: Int,
+    /// The node of the machine the owner chose, if one.
+    machine: Option(String),
+    /// The tab of the chosen machine's page.
+    tab: machines.Tab,
+    /// What the page holds of the chosen machine's long lists.
+    detail: machines.Detailed,
+    /// What the other orchestrators listed, once the Sessions tab has asked.
+    listed: Option(List(peers.Group)),
   )
 }
 
@@ -291,6 +327,26 @@ pub type Msg {
 
   /// The open rename form's Cancel was pressed: close it.
   EditCancelled
+
+  /// A machine's name was pressed: read it and open its page. The identity is
+  /// the node the server drew into the tree, and the page honours only a node
+  /// its deployment lists.
+  MachineChosen(node: String)
+
+  /// A tab of the chosen machine's page was pressed.
+  TabChosen(tab: machines.Tab)
+
+  /// The chosen machine's Close was pressed.
+  MachineClosed
+
+  /// The answer to a deployment read, with the number it was asked under and the
+  /// key it was for (none for the whole deployment). It is the effect's own
+  /// message, dispatched from the daemon's task, and no handler carries it.
+  Deployed(serial: Int, asked: Option(String), reading: machines.Reading)
+
+  /// The answer to a read of the other orchestrators, with its number. It is the
+  /// effect's own message and no handler carries it.
+  Peered(serial: Int, read: peers.Read)
 }
 
 /// The application the daemon's socket starts, one per admin page.
@@ -329,6 +385,13 @@ pub fn new(start: Start) -> Model {
     invited: 0,
     spent: None,
     editing: None,
+    held: machines.NothingYet,
+    deployed: 0,
+    peered: 0,
+    machine: None,
+    tab: machines.OverviewTab,
+    detail: machines.Withheld,
+    listed: None,
   )
 }
 
@@ -366,13 +429,13 @@ fn wire() -> Effect(Msg) {
 /// ```
 pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
   case message {
-    TimerReady(timer:) -> reading(Model(..model, timer: Some(timer)), Rearm)
+    TimerReady(timer:) -> refreshing(Model(..model, timer: Some(timer)))
 
     // An ended page is not read again, so its timer is left to lapse.
     Ticked ->
       case model.status {
         Ended(_) -> #(model, effect.none())
-        Connecting | Connected -> reading(model, Rearm)
+        Connecting | Connected -> refreshing(model)
       }
 
     Answered(serial:, reading:) ->
@@ -462,7 +525,203 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       }
 
     EditCancelled -> #(Model(..model, editing: None), effect.none())
+
+    MachineChosen(node:) ->
+      case model.status {
+        Connected -> choosing(model, node)
+        Connecting | Ended(_) -> #(model, effect.none())
+      }
+
+    TabChosen(tab:) ->
+      case model.status, model.machine {
+        Connected, Some(_) -> tabbing(Model(..model, tab:))
+        Connected, None | Connecting, _ | Ended(_), _ -> #(model, effect.none())
+      }
+
+    // Closing drops what was read for the machine and overtakes any read still
+    // out for it.
+    MachineClosed -> #(
+      Model(
+        ..model,
+        machine: None,
+        tab: machines.OverviewTab,
+        detail: machines.Withheld,
+        listed: None,
+        deployed: model.deployed + 1,
+        peered: model.peered + 1,
+      ),
+      effect.none(),
+    )
+
+    Deployed(serial:, asked:, reading:) ->
+      case serial == model.deployed {
+        True -> deployment_landed(model, asked, reading)
+        False -> #(model, effect.none())
+      }
+
+    Peered(serial:, read:) ->
+      case serial == model.peered, read {
+        True, peers.Heard(groups:) -> #(
+          Model(..model, listed: Some(groups)),
+          effect.none(),
+        )
+        True, peers.Unread | False, _ -> #(model, effect.none())
+      }
   }
+}
+
+// Asks for the people and for the deployment together, which is what the timer
+// does. The two are separate tasks, so a slow fan-out to the machines never holds
+// up the catalogue.
+fn refreshing(model: Model) -> #(Model, Effect(Msg)) {
+  let #(model, people) = reading(model, Rearm)
+  let #(model, fleet) = deploying(model, None)
+  #(model, effect.batch([people, fleet]))
+}
+
+// Asks the daemon to read the deployment, or the one machine `node` names, under
+// the next number. A read still out under the number before is overtaken.
+fn deploying(model: Model, node: Option(String)) -> #(Model, Effect(Msg)) {
+  let serial = model.deployed + 1
+  #(Model(..model, deployed: serial), {
+    use dispatch <- effect.from
+    model.start.deployment(node, fn(reading) {
+      dispatch(Deployed(serial, node, reading))
+    })
+  })
+}
+
+// Asks the daemon what the other orchestrators list, under the next number.
+fn peering(model: Model) -> #(Model, Effect(Msg)) {
+  let serial = model.peered + 1
+  #(Model(..model, peered: serial), {
+    use dispatch <- effect.from
+    model.start.elsewhere(fn(read) { dispatch(Peered(serial, read)) })
+  })
+}
+
+// A machine's name was pressed: the page opens on its Overview, forgetting what
+// it held of the one before, and the daemon reads the machine. A machine the
+// daemon does not dial, and the asking daemon itself, have no long lists to read.
+fn choosing(model: Model, node: String) -> #(Model, Effect(Msg)) {
+  case machines.snapshot_of(model.held) |> option.map(machines.find(_, node)) {
+    Some(Ok(machine)) -> {
+      let opened =
+        Model(
+          ..model,
+          machine: Some(node),
+          tab: machines.OverviewTab,
+          detail: machines.Awaiting,
+          listed: None,
+          peered: model.peered + 1,
+        )
+      case reads_long_lists(machine) {
+        True -> deploying(opened, Some(machine.name))
+        False -> #(
+          Model(
+            ..opened,
+            detail: machines.Withheld,
+            deployed: model.deployed + 1,
+          ),
+          effect.none(),
+        )
+      }
+    }
+    Some(Error(Nil)) | None -> #(model, effect.none())
+  }
+}
+
+// Whether the daemon reads this machine's long lists: only a node it dials, and
+// not itself, for it resolves the key against its own configuration.
+fn reads_long_lists(machine: machines.Machine) -> Bool {
+  case machine.here, machine.whose {
+    machines.Dialled(..), machines.Other -> True
+    machines.Dialled(..), machines.This | machines.NotLinkedFromHere, _ -> False
+  }
+}
+
+// A tab was chosen. The Sessions tab asks the other orchestrators, because only
+// it draws what they list.
+fn tabbing(model: Model) -> #(Model, Effect(Msg)) {
+  case model.tab {
+    machines.SessionsTab -> peering(model)
+    machines.OverviewTab | machines.AccessTab | machines.ActivityTab -> #(
+      model,
+      effect.none(),
+    )
+  }
+}
+
+// A deployment read landed. A whole deployment replaces what the page holds and
+// carries on to read the chosen machine again, so its page follows the refresh. A
+// machine's lists belong to the page only while that machine is the chosen one. A
+// read that failed leaves what the page holds; a whole-deployment read that
+// failed says so.
+fn deployment_landed(
+  model: Model,
+  asked: Option(String),
+  reading: machines.Reading,
+) -> #(Model, Effect(Msg)) {
+  case reading, asked {
+    machines.Heard(snapshot:), _ ->
+      following(
+        Model(
+          ..model,
+          held: machines.Known(snapshot),
+          machine: still_listed(model.machine, snapshot),
+        ),
+      )
+    machines.HeardOne(detail:), Some(_) ->
+      case model.machine == Some(detail.node) {
+        True -> tabbing(Model(..model, detail: machines.Detailed(detail)))
+        False -> #(model, effect.none())
+      }
+    machines.HeardOne(..), None -> #(model, effect.none())
+    machines.Unread, None -> #(
+      Model(..model, held: machines.Failed(machines.snapshot_of(model.held))),
+      effect.none(),
+    )
+    machines.Unread, Some(_) -> #(
+      Model(..model, detail: machines.Withheld),
+      effect.none(),
+    )
+  }
+}
+
+// After a whole deployment landed: read the chosen machine again, or forget it if
+// the deployment no longer lists it.
+fn following(model: Model) -> #(Model, Effect(Msg)) {
+  case
+    option.then(model.machine, fn(node) {
+      machines.snapshot_of(model.held)
+      |> option.then(fn(snapshot) {
+        machines.find(snapshot, node) |> option.from_result
+      })
+    })
+  {
+    Some(machine) ->
+      case reads_long_lists(machine) {
+        True -> deploying(model, Some(machine.name))
+        False -> tabbing(model)
+      }
+    None -> #(
+      Model(..model, machine: None, detail: machines.Withheld, listed: None),
+      effect.none(),
+    )
+  }
+}
+
+// The chosen node survives a read that still lists it.
+fn still_listed(
+  chosen: Option(String),
+  snapshot: machines.Snapshot,
+) -> Option(String) {
+  option.then(chosen, fn(node) {
+    case machines.find(snapshot, node) {
+      Ok(_) -> chosen
+      Error(Nil) -> None
+    }
+  })
 }
 
 // Whether an ask may be sent now. Every change but one is sent by the press
@@ -471,7 +730,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
 // does.
 fn confirmed(action: Action, armed: Option(Action)) -> Bool {
   case action {
-    grants.MakeShareable(..) -> armed == Some(action)
+    grants.MakeShareable(..) | grants.AbandonMove(..) -> armed == Some(action)
     grants.Invite(..)
     | grants.SetRole(..)
     | grants.RevokeMembership(..)
@@ -544,6 +803,8 @@ fn refusal(reason: grants.Reason) -> notice.Notice {
     | grants.NotMoved
     | grants.Stranded
     | grants.NotResumed
+    | grants.NotMember
+    | grants.NotMoving
     | grants.InvalidName
     | grants.Unavailable -> notice.Refused(grants.reason_words(reason))
   }
@@ -566,6 +827,8 @@ fn spent_by(
     | grants.NotMoved
     | grants.Stranded
     | grants.NotResumed
+    | grants.NotMember
+    | grants.NotMoving
     | grants.InvalidName
     | grants.Unavailable -> before
   }
@@ -733,6 +996,10 @@ fn still_armed(
           }
         None -> None
       }
+
+    // A move to give up is listed by the deployment read, not by this one, so
+    // this read has nothing to say about it; the daemon decides again.
+    Some(grants.AbandonMove(..)) -> armed
     Some(grants.Invite(..))
     | Some(grants.SetRole(..))
     | Some(grants.Rename(..))
@@ -897,9 +1164,49 @@ fn body(model: Model) -> Element(Msg) {
           presses,
           busy,
         ),
+        admin_machines.view(admin_machines.Section(
+          held: model.held,
+          chosen: model.machine,
+          choose: MachineChosen,
+          page: machine_page(model, snapshot),
+        )),
       ]
     }
   ])
+}
+
+// The chosen machine's page, or nothing when none is chosen or the deployment no
+// longer lists it.
+fn machine_page(model: Model, snapshot: grants.Snapshot) -> Element(Msg) {
+  let found =
+    option.then(model.machine, fn(node) {
+      machines.snapshot_of(model.held)
+      |> option.then(fn(held) {
+        machines.find(held, node)
+        |> result.map(fn(machine) { #(held, machine) })
+        |> option.from_result
+      })
+    })
+  case found {
+    Some(#(held, machine)) ->
+      admin_machine.view(admin_machine.Page(
+        machine:,
+        snapshot: held,
+        detail: model.detail,
+        tab: model.tab,
+        entries: snapshot.sessions,
+        peers: model.listed,
+        pick: TabChosen,
+        close: MachineClosed,
+        arm: Arming,
+        ask: Asking,
+        disarm: Disarming,
+        armed: model.armed,
+        waiting: model.waiting,
+        notice: model.notice,
+      ))
+    None -> element.none()
+  }
 }
 
 // Whether a button may be pressed: not while an ask is out.

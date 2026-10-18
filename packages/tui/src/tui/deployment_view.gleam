@@ -32,6 +32,9 @@
 ////    pools of them.
 //// 3. Both end in `table`, which pads each column to its widest cell, so two
 ////    runs against one deployment print identical rows.
+//// 4. `candidates` reads the same document's orchestrators member for
+////    `loom sessions move <id>` with no destination, and `candidates_text`
+////    prints which of them could take the session and why the others cannot.
 
 import core/json.{type JsonValue}
 import gleam/int
@@ -39,6 +42,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import session_view/move_candidates
 import session_view/text_hygiene
 
 /// The longest text the decoder accepts for any member, in bytes.
@@ -1595,4 +1599,110 @@ fn aligned(rows: List(List(String))) -> String {
     |> string.trim_end
   })
   |> string.join("\n")
+}
+
+/// The orchestrators a session placed on `executor` could move to, read from
+/// the `orchestrators` member of a `deployment.status` reply and judged by the
+/// rule the web home shares (`session_view/move_candidates`). The reply names an
+/// orchestrator, whether the asking daemon reached it (`state`), whether it
+/// accepts moved sessions (`imports`) and the executors it serves, by the asking
+/// daemon's keys, which is how a session's executor is named too.
+///
+/// An orchestrator whose reply leaves out `imports` or `serves` gave no report
+/// the rule can judge, as does a reply trimmed to fit one frame. A reply with no
+/// `orchestrators` member at all comes from a daemon built before the member
+/// existed, and is an `Error` so the terminal says so and not that nothing could
+/// take the session.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Error(_) = deployment_view.candidates(json.Object([]), Some("box"))
+/// ```
+pub fn candidates(
+  document: JsonValue,
+  executor: Option(String),
+) -> Result(List(move_candidates.Candidate), String) {
+  use self <- result.try(text_at(document, "self"))
+  use found <- result.map(
+    required_list(document, "orchestrators", offer(_, self)),
+  )
+  move_candidates.choose(option.values(found), executor)
+}
+
+// One orchestrator of the reply as an offer, or none for the asking daemon: a
+// session does not move to the orchestrator it is on. The daemon leaves itself
+// out of the member already, so this is the client holding the daemon to it.
+fn offer(
+  value: JsonValue,
+  self: String,
+) -> Result(Option(move_candidates.Offer), String) {
+  use node <- result.try(text_at(value, "node"))
+  case node == self {
+    True -> Ok(None)
+    False -> offer_of(value) |> result.map(Some)
+  }
+}
+
+fn offer_of(value: JsonValue) -> Result(move_candidates.Offer, String) {
+  use name <- result.try(text_at(value, "name"))
+  use state <- result.try(text_at(value, "state"))
+  let facts = case
+    state,
+    optional_text(value, "imports"),
+    field(value, "serves")
+  {
+    "down", _, _ -> move_candidates.Silent
+    _, None, _ | _, _, Error(_) -> move_candidates.Unreported
+    _, Some(imports), Ok(_) ->
+      move_candidates.Reported(
+        receives: case imports {
+          "receiving" -> move_candidates.Receiving
+          _ -> move_candidates.NotReceiving
+        },
+        serves: optional_list(value, "serves", text),
+      )
+  }
+  Ok(move_candidates.Offer(name, facts))
+}
+
+/// The candidates as the lines `loom sessions move <id>` prints when it is given
+/// no destination: the command that moves the session to the first orchestrator
+/// that could take it, or the words that none could, and then each orchestrator
+/// with the reason it cannot when it cannot. Every name is drawn through
+/// `text_hygiene.single_line`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert deployment_view.candidates_text("0198", [])
+///   == "no orchestrator is configured to move 0198 to"
+/// ```
+pub fn candidates_text(
+  session: String,
+  candidates: List(move_candidates.Candidate),
+) -> String {
+  case candidates {
+    [] -> "no orchestrator is configured to move " <> session <> " to"
+    _ -> {
+      let lead = case move_candidates.eligible(candidates) {
+        [] -> move_candidates.none_words()
+        [first, ..] ->
+          "move with: loom sessions move "
+          <> session
+          <> " --to "
+          <> text_hygiene.single_line(first)
+      }
+      let lines =
+        list.map(candidates, fn(candidate) {
+          let name = text_hygiene.single_line(candidate.name)
+          case candidate.eligibility {
+            move_candidates.Eligible -> "  " <> name <> "  can take it"
+            move_candidates.Ineligible(reason:) ->
+              "  " <> name <> "  " <> move_candidates.reason_words(reason)
+          }
+        })
+      string.join([lead, "orchestrators:", ..lines], "\n")
+    }
+  }
 }

@@ -42,7 +42,9 @@
 ////    and lets `parse_launch` classify what is left into a `Launch`.
 //// 2. Launches that are not a terminal (version, update, ext, distribution,
 ////    `replay`, sessions, claim, enroll, access, view) run to completion in
-////    their own functions.
+////    their own functions. `loom sessions list` is `list_registrations`, which
+////    ends with the other orchestrators' sessions unless `--local` is given,
+////    and `loom sessions elsewhere` is `elsewhere_registrations`.
 //// 3. `interactive_terminal` refuses a detached stdin, then `interactive` builds
 ////    the model with `new_model` and connects it: `attach_daemon` for a local
 ////    daemon, `connect_remote` for a remote address.
@@ -95,6 +97,7 @@ import session_view/history_view
 import session_view/model.{
   Disconnected, HoldGoalReport, Preview, Replaying, Shared,
 } as session_model
+import session_view/move_candidates
 import session_view/msg as session_msg
 import session_view/queue_request
 import session_view/session_channel
@@ -121,6 +124,7 @@ import tui/demo_image
 import tui/deployment_view
 import tui/directory_view
 import tui/effect
+import tui/elsewhere_view
 import tui/frame
 import tui/image_plan
 import tui/image_shown
@@ -243,12 +247,41 @@ type Launch {
 // from flags either.
 @internal
 pub type SessionsCommand {
-  ListRegistrations(showing: Showing)
+  ListRegistrations(showing: Showing, reach: Reach)
   RemoveRegistration(session_id: String, consent: Consent)
 
   // Hands a session to the orchestrator the daemon's `[orchestrators.<name>]`
   // table calls `to` (protocol-change/078, phase 5).
   MoveRegistration(session_id: String, to: String)
+
+  // Says which orchestrators could take a session, for `move` given no
+  // destination (protocol-change/085, the addendum on Move and Abandon). It
+  // moves nothing and exits nonzero, since the command the person meant has not
+  // run.
+  ListDestinations(session_id: String)
+
+  // Gives up the move of a session now, with `--abandon`. Only a directory
+  // member accepts it.
+  AbandonRegistration(session_id: String)
+
+  // Reads the sessions the daemon's other orchestrators list, a page of each,
+  // or with a key and a cursor the next page of one (protocol-change/085).
+  ListElsewhere(
+    orchestrator: Option(String),
+    after: Option(String),
+    output: Output,
+  )
+}
+
+/// Whose sessions `loom sessions list` prints.
+@internal
+pub type Reach {
+  /// The daemon's own, followed by the sessions its other orchestrators list.
+  AllOrchestrators
+
+  /// The daemon's own and nothing else, which is what `--local` selects and
+  /// what a script that parses the lines wants.
+  ThisDaemonOnly
 }
 
 /// The two views of `deployment.status` the launcher prints.
@@ -724,6 +757,7 @@ pub fn new_model_with_clock(
       replay_error: None,
       next_id: 1,
       usage: accounting.zero_usage(),
+      remote_usage: [],
       generation_rates: generation_rate.new(),
       details_expanded: False,
       activity_started_ms: None,
@@ -1170,10 +1204,10 @@ pub fn launch_options(
 /// ## Examples
 ///
 /// ```gleam
-/// let assert Ok(tui.ListRegistrations(tui.Every)) =
+/// let assert Ok(tui.ListRegistrations(tui.Every, tui.AllOrchestrators)) =
 ///   tui.launch_sessions(["list", "--all"])
-/// let assert Ok(tui.ListRegistrations(tui.ResidentOnly)) =
-///   tui.launch_sessions(["list"])
+/// let assert Ok(tui.ListRegistrations(tui.ResidentOnly, tui.ThisDaemonOnly)) =
+///   tui.launch_sessions(["list", "--local"])
 /// ```
 @internal
 pub fn launch_sessions(
@@ -1277,8 +1311,14 @@ fn parse_sessions(arguments: List(String)) -> Launch {
         True -> Every
         False -> ResidentOnly
       }
-      sessions_launch(remaining, ListRegistrations(showing))
+      let #(local, remaining) = take_switch(remaining, "--local")
+      let reach = case local {
+        True -> ThisDaemonOnly
+        False -> AllOrchestrators
+      }
+      sessions_launch(remaining, ListRegistrations(showing, reach))
     }
+    ["elsewhere", ..flags] -> parse_elsewhere(flags)
     ["rm", id, ..flags] ->
       sessions_launch(flags, RemoveRegistration(id, consent))
     ["rm"] -> Invalid("sessions rm needs a session id\n" <> sessions_usage())
@@ -1289,15 +1329,65 @@ fn parse_sessions(arguments: List(String)) -> Launch {
   }
 }
 
+// `loom sessions elsewhere [--orchestrator <key> [--after <id>]] [--json]`. A
+// cursor follows one orchestrator's rows, so it is refused without the key it
+// belongs to, and the key is checked against the grammar of a configuration key
+// here, before any daemon is started or asked.
+fn parse_elsewhere(arguments: List(String)) -> Launch {
+  let #(as_json, rest) = take_switch(arguments, "--json")
+  let output = case as_json {
+    True -> AsJson
+    False -> AsText
+  }
+  let parsed = {
+    use #(key, rest) <- result.try(take_value(rest, "--orchestrator"))
+    use #(after, rest) <- result.try(take_value(rest, "--after"))
+    use Nil <- result.map(elsewhere_names(key, after))
+    #(key, after, rest)
+  }
+  case parsed {
+    Error(reason) -> Invalid(reason <> "\n" <> sessions_usage())
+    Ok(#(key, after, flags)) ->
+      sessions_launch(flags, ListElsewhere(key, after, output))
+  }
+}
+
+fn elsewhere_names(
+  key: Option(String),
+  after: Option(String),
+) -> Result(Nil, String) {
+  case key, after {
+    None, Some(_) -> Error("--after needs --orchestrator")
+    None, None -> Ok(Nil)
+    Some(name), _ ->
+      case placement.is_orchestrator_name(name) {
+        True -> Ok(Nil)
+        False ->
+          Error(
+            "--orchestrator must be the name of an orchestrator in the daemon's configuration, got "
+            <> name,
+          )
+      }
+  }
+}
+
 // `loom sessions move <id> --to <orchestrator>`. The destination is required and
 // is a name from the daemon's configuration, not an address, so it is refused here
 // if it is not the shape of one, before any daemon is started or asked.
 fn parse_move(id: String, flags: List(String)) -> Launch {
-  case take_value(flags, "--to") {
-    Error(reason) -> Invalid(reason <> "\n" <> sessions_usage())
-    Ok(#(None, _)) ->
-      Invalid("sessions move needs --to <orchestrator>\n" <> sessions_usage())
-    Ok(#(Some(to), rest)) ->
+  let #(abandoning, flags) = take_switch(flags, "--abandon")
+  case abandoning, take_value(flags, "--to") {
+    _, Error(reason) -> Invalid(reason <> "\n" <> sessions_usage())
+    True, Ok(#(Some(_), _)) ->
+      Invalid(
+        "--abandon and --to cannot be used together\n" <> sessions_usage(),
+      )
+    True, Ok(#(None, rest)) -> sessions_launch(rest, AbandonRegistration(id))
+
+    // With no destination the command moves nothing: it says which
+    // orchestrators could take the session.
+    False, Ok(#(None, rest)) -> sessions_launch(rest, ListDestinations(id))
+    False, Ok(#(Some(to), rest)) ->
       case placement.is_orchestrator_name(to) {
         True -> sessions_launch(rest, MoveRegistration(id, to))
         False ->
@@ -1336,11 +1426,17 @@ fn take_switch(arguments: List(String), flag: String) -> #(Bool, List(String)) {
 }
 
 fn sessions_usage() -> String {
-  "usage: loom sessions list [--all] [--state-dir <path>] [--server <path>]\n"
+  "usage: loom sessions list [--all] [--local] [--state-dir <path>] [--server <path>]\n"
+  <> "       loom sessions elsewhere [--orchestrator <key> [--after <session-id>]] [--json]\n"
   <> "       loom sessions rm <session-id> [--yes] [--state-dir <path>]\n"
-  <> "       loom sessions move <session-id> --to <orchestrator> [--state-dir <path>]\n"
+  <> "       loom sessions move <session-id> [--to <orchestrator> | --abandon] [--state-dir <path>]\n"
   <> "  list shows the resident track by default; --all adds every saved\n"
-  <> "  registration and reservation\n"
+  <> "  registration and reservation. When the daemon has other orchestrators it\n"
+  <> "  ends with the sessions they list, one section for each, and says so when\n"
+  <> "  one did not answer; --local leaves that section out, which a script that\n"
+  <> "  parses the lines wants\n"
+  <> "  elsewhere shows only those sessions: a page of each orchestrator, or with\n"
+  <> "  --orchestrator the next page of one, after the last session you saw\n"
   <> "  resident: running in the daemon now\n"
   <> "  saved: has a database, not running; opens when selected\n"
   <> "  reserved: a creation that never finished, an id with no database\n"
@@ -1351,7 +1447,10 @@ fn sessions_usage() -> String {
   <> "  [orchestrators.<name>] table calls <orchestrator>. It returns once the\n"
   <> "  daemon has accepted the move, which it then carries out; the session\n"
   <> "  cannot be opened here until the move ends, and afterward it is opened on\n"
-  <> "  the other orchestrator"
+  <> "  the other orchestrator. Without --to it moves nothing and lists which\n"
+  <> "  orchestrators could take the session and why the others cannot, and exits\n"
+  <> "  nonzero. --abandon gives up a move in flight, on a directory member only;\n"
+  <> "  if the receiver has already taken the session the move finishes instead"
 }
 
 // `loom deployment status [--node <key>]|executors [--json]` and the shared
@@ -1861,11 +1960,17 @@ fn run_sessions(options: bootstrap.Options, command: SessionsCommand) -> Nil {
     Error(reason) -> sessions_failed(reason)
     Ok(#(control, host)) -> {
       let outcome = case command {
-        ListRegistrations(showing:) -> list_registrations(host, showing)
+        ListRegistrations(showing:, reach:) ->
+          list_registrations(host, showing, reach)
+        ListElsewhere(orchestrator:, after:, output:) ->
+          elsewhere_registrations(host, orchestrator, after, output)
         RemoveRegistration(session_id:, consent:) ->
           remove_registration(host, session_id, consent)
         MoveRegistration(session_id:, to:) ->
           move_registration(host, session_id, to)
+        ListDestinations(session_id:) -> list_destinations(host, session_id)
+        AbandonRegistration(session_id:) ->
+          abandon_registration(host, session_id)
       }
       daemon.close(control)
       print_outcome("sessions", outcome)
@@ -1926,9 +2031,83 @@ fn sessions_host(options: bootstrap.Options) {
 fn list_registrations(
   host: daemon_selection.Host,
   showing: Showing,
+  reach: Reach,
 ) -> Result(String, String) {
   use rows <- result.map(registration_rows(host, "", [], 100))
-  format_listing(rows, showing, ffi_terminal.require_terminal())
+  let listing = format_listing(rows, showing, ffi_terminal.require_terminal())
+  case reach {
+    ThisDaemonOnly -> listing
+    AllOrchestrators -> listing <> other_orchestrators(host)
+  }
+}
+
+// The section the other orchestrators add to a listing: nothing for a daemon
+// that has none to ask or predates the command, a blank line and the section
+// when it has, and a line saying so when the read failed, because the listing
+// above it is still true and a missing section would read as "none".
+fn other_orchestrators(host: daemon_selection.Host) -> String {
+  case daemon_selection.elsewhere(host, None, None) {
+    Error(daemon_selection.NoElsewhereViews) -> ""
+    Error(daemon_selection.ElsewhereFailed(reason)) ->
+      "\n\nother orchestrators were not read: "
+      <> text_hygiene.single_line(reason)
+    Ok(document) ->
+      case elsewhere_view.decode(document) {
+        Ok([]) -> ""
+        Ok(groups) -> "\n\n" <> elsewhere_view.section_text(groups)
+        Error(reason) ->
+          "\n\nother orchestrators were not read: "
+          <> text_hygiene.single_line(reason)
+      }
+  }
+}
+
+// One read of the other orchestrators' sessions, printed as text or as the
+// daemon's reply body.
+fn elsewhere_registrations(
+  host: daemon_selection.Host,
+  orchestrator: Option(String),
+  after: Option(String),
+  output: Output,
+) -> Result(String, String) {
+  use document <- result.try(
+    daemon_selection.elsewhere(host, orchestrator, after)
+    |> result.map_error(fn(failure) {
+      case failure {
+        daemon_selection.NoElsewhereViews ->
+          "this daemon does not have views of other orchestrators"
+        daemon_selection.ElsewhereFailed(reason) -> reason
+      }
+    }),
+  )
+  format_elsewhere(document, output)
+}
+
+/// Renders a `sessions.elsewhere` reply body: the daemon's own document for
+/// `--json`, and for text the section `tui/elsewhere_view` draws. A body that is
+/// not shaped as the protocol says is an `Error` naming what was wrong, and is
+/// never drawn partly.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Error(_) = tui.format_elsewhere(json.Object([]), tui.AsText)
+/// ```
+@internal
+pub fn format_elsewhere(
+  document: json.JsonValue,
+  output: Output,
+) -> Result(String, String) {
+  case output {
+    AsJson -> Ok(json.to_string(document))
+    AsText ->
+      elsewhere_view.decode(document)
+      |> result.map(elsewhere_view.section_text)
+      |> result.map_error(fn(reason) {
+        "the daemon's reply about other orchestrators was not understood: "
+        <> text_hygiene.single_line(reason)
+      })
+  }
 }
 
 /// Renders `loom sessions list` exactly as it would print, given the
@@ -2103,6 +2282,39 @@ fn move_registration(
   <> " (operation "
   <> op
   <> ")"
+}
+
+// `move` given no destination. It reads the session's executor and the
+// deployment, judges each configured orchestrator by the rule the web home
+// uses, and fails with the list, since the move the person meant has not run.
+// A session with no executor has nowhere to go, and says so.
+fn list_destinations(
+  host: daemon_selection.Host,
+  session_id: String,
+) -> Result(String, String) {
+  use executor <- result.try(daemon_selection.executor_of(host, session_id))
+  use document <- result.try(daemon_selection.deployment(host, None))
+  use found <- result.try(deployment_view.candidates(document, executor))
+  case executor {
+    None -> Error(session_id <> ": " <> move_candidates.no_executor_words())
+    Some(_) ->
+      Error(
+        "choose a destination with --to\n"
+        <> deployment_view.candidates_text(session_id, found),
+      )
+  }
+}
+
+fn abandon_registration(
+  host: daemon_selection.Host,
+  session_id: String,
+) -> Result(String, String) {
+  use op <- result.map(daemon_selection.abandon(host, session_id))
+  "giving up the move of "
+  <> session_id
+  <> " (operation "
+  <> op
+  <> "); if the receiver has taken the session, the move finishes instead"
 }
 
 // Anything but an explicit yes cancels, including an empty line, so the

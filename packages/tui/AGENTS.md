@@ -286,6 +286,13 @@ A successor request or exact operation result also retires it. Legacy and
 summary observations retain their old completion behavior. See
 `protocol-change/036-stream-response-handoff.md`.
 
+## Remote spend
+
+`shared.remote_usage` (from the full snapshot) shows as `remote box in 12k out
+678` in the detailed footer row and the compact footer, and as a `Remote` row in
+the session tab, through `remote_usage_words`. A session with no remote child
+draws neither.
+
 ## Build identity and daemon updates
 
 `loom version` (also `loom --version`) reports the invoked client's launcher
@@ -3422,6 +3429,47 @@ gutters, and the long-answer tail with the rail shown or hidden. Side paging
 wraps at `layout.transcript_width`, the width both reading rectangles share.
 `image_draw_test` pins the shared image window against the painted
 main rectangle while the side panel is visible.
+
+## Other orchestrators' sessions (protocol-change/085)
+
+`loom sessions list` ends with a section of the sessions the daemon's other
+orchestrators list, and `loom sessions elsewhere` prints that section alone.
+
+- `protocol.SessionsElsewhere(orchestrator, after)` is a read; the cursor is sent
+  only with its orchestrator, and both are checked before they reach the wire.
+  `ElsewhereReply` keeps the daemon's document whole, so `--json` prints what the
+  daemon sent (`tui.format_elsewhere`).
+- `selection.elsewhere` returns `ElsewhereFailure`: `NoElsewhereViews` for a daemon
+  built before the command (the listing then has no section, as for a daemon with
+  no orchestrators) and `ElsewhereFailed(words)` otherwise. `selection` is past a
+  thousand lines and has a Flow spine. `redirect_words` uses
+  `session_view/launch_words`, the words the web home's "Where" also says.
+- `tui/elsewhere_view` is the terminal's reading of the document, with a decoder of
+  its own: `orchestrators` is required, and a group needs `name`, `node`, `state`
+  (`answered | silent`), `more` and `sessions`. Text (4096 bytes) and lists (128) are
+  bounded, a state outside the protocol's is an `Error`, and every string is drawn
+  through `text_hygiene.single_line`. A silent group is the line "no answer", an
+  answered group with no rows says so, and a group with `more` names the command
+  for its next page.
+- `SessionsCommand` gains `ListElsewhere(orchestrator, after, output)`, and
+  `ListRegistrations` gains `reach` (`AllOrchestrators | ThisDaemonOnly`, from
+  `--local`). The section is appended to both the table and the plain lines after a
+  blank line, so a script that parses the lines uses `--local`. A failed read adds one
+  line saying the other orchestrators were not read, and the listing above is kept.
+- Tests: `elsewhere_command_test` (the parse, the wire, the failure words, the text for
+  an answered, silent and empty group, the hostile text, the malformed documents) and
+  `sessions_list_test`.
+
+## Move candidates and abandon (protocol-change/085)
+
+`loom sessions move ID` with no `--to` is `ListDestinations`: it reads the session's
+executor (`selection.executor_of`), the deployment (`selection.deployment`), and prints
+`deployment_view.candidates_text`, then exits nonzero because nothing moved.
+`deployment_view.candidates` reads the reply's `orchestrators` member (`name`, `state`,
+`imports`, `serves`) into `session_view/move_candidates` offers; a reply without the
+member is an `Error`. `--abandon` is `AbandonRegistration`, which sends `sessions.move`
+with `abandon: true` (`protocol.AbandonMove`) and reads `AbandonedReply`; it does not
+combine with `--to`.
 
 ## Memory overview (protocol 087)
 

@@ -165,7 +165,7 @@ specifies them and [the web view](architecture/web-view.md) describes them.
 Without `--ui`, every `/ui/` path returns HTTP 404.
 
 Any other path returns HTTP 404.
-Source: `handle` (`client/daemon/server.gleam:405-187`).
+Source: `handle` (`client/daemon/server.gleam:454-187`).
 
 `<session-id>` MUST be the canonical session identifier the control
 endpoint reported. A path segment that is not a canonical session id is
@@ -401,7 +401,7 @@ carries the daemon epoch that most control commands must echo.
 | `ui.path` | string | optional | Present only when the daemon was started with `--ui`: the web view's route prefix, `"/ui"`. A client that does not know the field ignores it. |
 
 Source: (`client/daemon/server.gleam:577-617`); the `ui` field is
-`hello_view` (`client/daemon/server.gleam:1932`).
+`hello_view` (`client/daemon/server.gleam:2030`).
 
 The epoch changes when the daemon restarts. A client MUST discard
 ephemeral state and re-select a session on reconnecting to a different
@@ -546,7 +546,7 @@ Source: (`client/daemon/server.gleam:839-860`).
 A page stops on an authorized record boundary once its encoded size
 would exceed 60000 bytes. The next request resumes after the last
 emitted id. A single record too large for that budget is refused with
-`metadata_too_large`. Source: (`client/daemon/server.gleam:3216`).
+`metadata_too_large`. Source: (`client/daemon/server.gleam:3314`).
 
 Errors: `revision_changed` when `revision` was supplied and differs from
 the catalogue's current one; `metadata_too_large`; `unavailable`.
@@ -1058,7 +1058,7 @@ While the daemon is draining, an existing control socket may still issue
 the read commands `status`, `sessions.list`, `sessions.get`,
 `sessions.default`, `operations.get`, `peers.inspect`, `sessions.activity`,
 `principals.list`, `principals.memberships`, and `ui.link`. Every mutating control command is refused. Source:
-`control_use` (`client/daemon/server.gleam:2251-1130`).
+`control_use` (`client/daemon/server.gleam:2349-1130`).
 
 That includes `sessions.delete`, which is a mutation like any other.
 
@@ -1228,7 +1228,7 @@ the `hello` states with its `ui` field. The request carries the canonical
 
 `page` is the page's ceiling: `"observer"`, which is also the value when
 the field is absent, or `"operator"`. Any other value is refused with
-`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:1138`). The
+`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:1179`). The
 ceiling caps the page's role and never grants one: the page acts with the
 smallest of the principal's membership role, the ceiling, and Operator.
 
@@ -1512,7 +1512,9 @@ owner record decides the move. Three things differ for a client:
   in the daemon's mover: when it commits, `sessions.get` drops the `moving`
   member; when the destination took the session first, the daemon keeps the
   move, asks the destination again, and finishes the move on its answer, after
-  which `sessions.get` reports `moved`. A session with no move in flight
+  which `sessions.get` reports `moved`. A mover that is running when the request
+  arrives is not interrupted: the daemon keeps the request and gives the move up
+  as that run ends, by the same rule. A session with no move in flight
   is refused `conflict`, and a daemon that is not a member refuses `not_movable`,
   because without the record a move cannot be abandoned safely.
 
@@ -1688,13 +1690,16 @@ caller continues from the last line it received.
 `ledger.status` takes `{}` and replies
 
 ```json
-{"v":2,"reply_to":3,"event":"ledger.status","body":{"deployment":"3f9c...","state":"ok","head":{"seq":9,"id":"4c1e..."},"self":{"name":"hub","enrolled":true},"members":[{"name":"hub","node":"hub@10.0.0.1","role":"orchestrator","directory":"none","reported_seq":9,"ms_since_report":0},{"name":"laptop2","node":"loom@laptop2.example.net","role":"orchestrator","directory":"none"}],"last_refusal":null}}
+{"v":2,"reply_to":3,"event":"ledger.status","body":{"deployment":"3f9c...","state":"ok","head":{"seq":9,"id":"4c1e..."},"self":{"name":"hub","enrolled":true},"members":[{"name":"hub","node":"hub@10.0.0.1","role":"orchestrator","directory":"none","links":[],"pin":"1c7e...","reported_seq":9,"ms_since_report":0},{"name":"laptop2","node":"loom@laptop2.example.net","role":"orchestrator","directory":"none","links":["hub"],"pin":"9d2f..."}],"last_refusal":null}}
 ```
 
 `state` is `ok`, `revoked` or `not_enrolled`. `reported_seq` is the newest
 sequence number the member reported to the answering daemon and is absent for a
 member that has not reported; `ms_since_report` is the answering daemon's own
-elapsed time. The daemon reports itself at its own head. `last_refusal` is `null`
+elapsed time. The daemon reports itself at its own head. `links` is the plan
+names the member is linked to and `pin` is the lower-case hexadecimal SHA-256 of
+its leaf certificate (the 2026-10-16 addendum to protocol-change/086); a daemon
+that predates them omits both. `last_refusal` is `null`
 or `{"seq": 7, "step": "fork", "ours": "<hex>", "theirs": "<hex>"}`, where `seq`
 is `null` when the line had none and `ours` and `theirs` appear only for a fork.
 `loom distribution enroll`, `revoke`, `renew`, `log` and `import` are the clients.
@@ -1719,6 +1724,58 @@ a count cut short would read as the whole. An orchestrator answers any pinned pe
 answer reveals two counts and executor nodes, no session identity. `loom distribution
 revoke` is the client: it refuses while the member owns sessions or has sessions
 placed on it, or cannot be told, unless `--force`.
+
+### 3.31 `sessions.elsewhere`
+
+Owner-only (a member is refused `forbidden`, before anything is dialled). Lists the
+sessions the daemon's other orchestrators hold, a page of each, so that an owner
+who runs several orchestrators can find a session that is not in this daemon's
+`sessions.list` (protocol-change/085). It needs no epoch. The request body is `{}`
+for the first page of every group, or `{"orchestrator": <key>, "after": <session
+id>}` for one group's next page, where `after` is the identity of the last row of
+that group's previous page and `orchestrator` alone is that group's first page. `after`
+without `orchestrator` is `bad_request`, because identities are not ordered across
+orchestrators and there is no cursor across groups.
+
+`orchestrator` is a key of the daemon's `[orchestrators.<name>]` table. The key is
+looked up in the configuration before any connection is made, and a key the
+configuration lacks is `not_found` and connects to nobody; a value that is not shaped
+like a key, such as a node name, is `bad_request`. The daemon connects to the
+orchestrators it asks at once, each connection bounded at one second and each ask at
+one second more, and the whole read at three seconds. It asks each for at most 20 rows.
+
+```json
+{"v":2,"id":22,"cmd":"sessions.elsewhere","body":{}}
+{"v":2,"reply_to":22,"event":"sessions.elsewhere","body":{"orchestrators":[{"name":"bravo","node":"bravo@10.0.0.4","state":"answered","address":"ws://10.0.0.4:7000","more":false,"sessions":[{"session_id":"0198c1aa-0000-7000-8000-000000000002","workspace":"/src/loom","name":"docs pass","created_at":1756000100000,"status":{"state":"saved"},"executor":"box","executor_node":"box@10.0.0.9"}]},{"name":"laptop","node":"laptop@10.0.0.7","state":"silent","more":false,"sessions":[]}]}}
+```
+
+| Member | Type | Presence | Meaning |
+|---|---|---|---|
+| `orchestrators` | array | always | One entry for each orchestrator asked, in table order. A daemon with no other orchestrators answers an empty array. |
+| `name`, `node` | string | always | The orchestrator's key in the answering daemon's configuration, and its node. |
+| `state` | string | always | `answered` when a page arrived, and `silent` when none did: the daemon could not connect, the orchestrator did not answer in time, or its catalogue could not be read. Silent is never the same as having no sessions. An orchestrator with none answers an empty page. |
+| `address` | string | when configured | The control address the answering daemon's configuration holds for the orchestrator, as `not_owner` carries it. |
+| `more` | boolean | always | Whether rows follow the ones shown. The next page is asked with the key and the identity of the last row shown. A silent group has `false`. |
+| `sessions` | array | always | The rows, in identity order. A silent group has none. |
+
+A row has the members of a `sessions.list` record (§3.4) in the same meaning, and one
+more, `executor_node`. A row's `executor` is a key of the *answering orchestrator's*
+`[executors]` table, and two orchestrators need not call one executor by one name, so
+`executor_node` gives the executor's node, from that orchestrator's table, when it lists
+the executor. It is optional, as `executor` and `pool` are.
+
+An orchestrator lists the sessions its catalogue would list to its own owner and leaves
+out archived sessions and every session whose custody is `moving` or `moved`, so no
+identity is listed by two orchestrators. Rows show the answering machine's workspace
+paths to the asking owner, who is the same operator.
+
+The reply is kept at or under 60,000 bytes, the bound `sessions.list` uses. When the
+rows would pass it the daemon removes the last row of whichever group has the most rows,
+one at a time, so a group of long names does not leave the others empty, and a group that
+lost a row has `more: true`. An older daemon answers the command `bad_request` with
+`unsupported control command`, and a client hides the view. `loom sessions list` ends
+with this reply as a section (`--local` leaves it out), and `loom sessions elsewhere`
+prints it, as text or, with `--json`, as the daemon sent it.
 
 ---
 
@@ -2258,7 +2315,7 @@ See [protocol 022](../protocol-change/022-human-input-priority.md).
 
 #### 4.9.4 `follow_up`
 
-Body is identical to `steer`. Source: (`client/protocol.gleam:1387`).
+Body is identical to `steer`. Source: (`client/protocol.gleam:1393`).
 
 ```json
 {"v":2,"id":5,"cmd":"follow_up","body":{"strand":"main","text":"now add tests"}}
@@ -2320,7 +2377,7 @@ Source: (`client/gateway.gleam:3883-3915`).
 Three checks, in order:
 
 1. `expected_seq` MUST equal the record's current sequence. A mismatch
-   is `stale_approval`. Source: (`client/gateway.gleam:6748`).
+   is `stale_approval`. Source: (`client/gateway.gleam:6773`).
 2. The record MUST still be pending. Otherwise the code is
    `not_pending`.
    Source: (`client/gateway.gleam:3941-3952`).
@@ -4262,7 +4319,7 @@ below have not been edited.
    `docs/loom-implementation-spec.md` §1.6 names ten control commands.
    The code implements six more: `sessions.isolate`, `sessions.invite`,
    `sessions.set_role`, `sessions.revoke`, `credentials.rotate` and
-   `credentials.revoke` (`client/daemon/protocol.gleam:507`). The
+   `credentials.revoke` (`client/daemon/protocol.gleam:522`). The
    six are specified in `protocol-change/015`'s addenda, so the gap is
    in the spec's summary rather than in the decision record.
    `protocol-change/053` adds a third route, `/v2/claim`, with its one

@@ -941,8 +941,13 @@ fn admit(model: Model, command: Command) -> statem.Admission {
   }
 }
 
+// The directory is named for this module, outside the `catalogue-<name>`
+// directories `catalogue_test` makes. Under LOOM_TEST_PARALLEL the two modules
+// run at once, and the name `catalogue-model` was also the directory of
+// `catalogue_test`'s model-key test: each deleted and recreated the other's
+// catalogue mid-run, so a reopen found a file the model never wrote.
 fn new_sut() -> Sut {
-  let path = fixtures.scratch("catalogue-model") <> "/catalogue.db"
+  let path = fixtures.scratch("catalogue_model_test") <> "/catalogue.db"
   let store = open_store(path)
   let assert Ok(base) = revision_of(store) as "the empty catalogue has a page"
   Sut(store:, path:, base:)

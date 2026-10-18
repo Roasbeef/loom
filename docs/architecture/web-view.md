@@ -240,12 +240,12 @@ sequenceDiagram
    `Origin`, the nonce, the cookie under the key, the credential and the
    membership, then resolves the resident session exactly as a terminal's
    socket does, with the role capped by the page's ceiling
-   (`web_socket` at `packages/client/src/client/daemon/server.gleam:434`).
+   (`web_socket` at `packages/client/src/client/daemon/server.gleam:483`).
    The parser permit it reserves counts the page against the daemon's
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:4716`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:4894`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -1190,6 +1190,45 @@ daemon makes either session-only, checks the executor or pool against its
 configuration again (`executor_unknown`, `pool_unknown`), and for a pool picks the
 executor when the session first opens, in the pool's order.
 
+#### Sessions on other orchestrators
+
+A deployment with more than one orchestrator adds a group, "On other orchestrators",
+after "Other folders" (`view/elsewhere`, protocol-change/085). A session is served by
+the orchestrator that created it, so this daemon lists only its own; the group lists,
+for each other orchestrator the daemon is configured to ask, the rows that orchestrator
+reports, drawn under its configuration key and address as text. It is given on the
+creation capability's condition (`Start.elsewhere`, from
+`ui_socket.home_elsewhere_capability`): the owner's operating page, and no other.
+
+Each list read starts one read of the first page of every other orchestrator
+(`client/elsewhere.heard`, which dials only the orchestrators of the daemon's own
+configuration, each connection bounded at one second and each ask at one second more,
+under a three second deadline). It runs in a weft task (`ui_socket.read_task`), so the
+page's runtime never waits on a connection, behind the same owner check as a creation
+(`elsewhere_for`). The answer is numbered by `Model.elsewhere_reads`, and an answer a
+newer read overtook is dropped, as a placement read's is. The page is given the key, the
+address and, for each row, a fixed state and text (`web_view/elsewhere`); it is given no
+node. An orchestrator that did not answer is one line, "No answer in time from
+this orchestrator.", and is never drawn as an empty group.
+
+A row is information and not a door: this daemon cannot open another daemon's session
+for a browser. Its "Where" button (`Locating`) opens a detail under the row with the
+launch line that reaches the session on the machine that has it, in a `<loom-copy>` box
+of the subject `launch` (`web_client/copy_rule` copies exactly `loom --addr`, an address,
+`--session`, an identity and the fixed `--token-file` ending), and the words are those the
+terminal prints for a `not_owner` answer (`session_view/launch_words`). A group that has
+more rows than the page holds has "Show more" (`ShowingMore`), which asks for the page after
+the last row the page holds for that group, and `MoreRead` joins it only if no newer
+first-page read has replaced the rows, up to `elsewhere.max_rows`.
+
+Both buttons are clicks beneath the sessions' region (`home.table_path`), where the home
+already admits clicks, so the socket admits no new event class, scope, route or content
+security policy change (`ui_socket_test` pins the admission and the near misses). A press
+names the orchestrator and the session the server drew into the tree, and the page honours it
+only for a group and a row it holds. Every name, address and path is a text node, no class,
+attribute or key is built from one, and the group reuses the page's existing tinted boxes and
+hairline borders.
+
 ### The admin page
 
 The fifth pull request of 065 gives the owner a page to see and change who has
@@ -1293,6 +1332,66 @@ words in its own zone with the UTC time in the element's `title`. Each session's
 row says its people and scope after its path, from `Snapshot.summaries`, one
 `session_member_page` call for each listed session.
 
+#### Deployment: the machines list and a page for each machine
+
+Below People and Sessions the admin page draws a Deployment section
+(protocol-change/085, the addendum of 2026-10-16). Its first line is the verdict
+(`machines.verdict_words`, for example "Deployment · 5 nodes · 1 degraded · 1 down"),
+then a line when this daemon's copy of the session directory is unconfirmed and one
+when the daemon left something out of the reply to fit a frame, then a table with a
+row for each machine: name, roles, state pill, platform, enforcement, toolchains,
+capacity, standing in the ledger and the age of its last report
+(`view/admin_machines`). The pill is one of the three tints the page already has
+(`machines.pill_class`).
+
+A machine is a node the daemon dials or a member of the membership ledger that it
+does not (`web_view/machines`). The second kind is listed because the ledger is the
+deployment's membership and an owner who revokes a member must see the ones this
+daemon cannot reach. It is marked "not linked from here", shows no state, and is never
+dialled: its row has no read, and choosing it opens a page whose Overview says so. The
+two kinds are merged by node name when the document is decoded.
+
+The read is `deployment.status` made by the daemon as the control command makes it,
+with the ledger's members (`server.admin_deployment`), decoded by the page's total
+decoder (`machines.decode_overview`, `machines.decode_detail`: only the members the
+protocol requires are required, every text and list is bounded, a state it does not
+know is refused). It runs in a weft task of its own (`ui_socket.admin_deployment_task`)
+behind the owner check (`admin_deployment_for`), apart from the people read, so a
+fan-out that waits seconds on a node never delays the catalogue. The page numbers its
+deployment reads (`Model.deployed`) and drops an answer a newer press overtook, rather
+than holding to one read at a time. Pressing a machine's name (`MachineChosen`) reads
+that one node, which returns its long lists, and opens its page under the table. The
+asking daemon is listed and is not read, because the daemon resolves a key against its
+configuration and it is no key of it.
+
+A machine's page has four tabs (`TabChosen`): Overview (health and the daemon's fixed
+reasons, build, protocol, uptime, the link from this daemon and the relations it
+reported), Sessions (the catalogue's rows on the machine, the counts the orchestrators
+report, and the rows other orchestrators list as placed on the machine, matched by the
+executor node a row names and grouped under the orchestrator; this tab reads the other
+orchestrators through `ui_socket.admin_elsewhere_task`), Access (the ledger row, the
+directory seat, the head the member reported and when, its links, the certificate pin
+and the commands) and Activity (scope counts, the scopes that block a reopen, and the
+moves with phase, stall time and reason).
+
+The page runs nothing. There is no terminal and no enroll, renew, revoke or release
+button: those sign ledger entries with a key that lives on the operator's machine or
+open an executor's ledger with its daemon stopped. The Access tab states the exact
+command in a `<loom-copy subject="operate">` box (`web_view/operator_commands`): `loom
+distribution renew NAME` and `loom distribution revoke NAME --reason 'REASON'` for a
+member, `loom distribution enroll NAME --node NODE --role ROLE --links THIS` for a node
+the ledger does not list, and `loomd executor release SESSION` for each stuck scope.
+Each name is one shell word, single-quoted with escaped quotes when it is not plain,
+and a name that cannot be made safe gets no command; the copy box checks the same
+grammar in the browser (`web_client/copy_rule`).
+
+Every control is a click beneath `admin.body_path`, which `admin_accepts` already
+admits, so there is no new scope, route, ticket, event class or content security policy
+change. Every name is a text node, no class, attribute or key is built from one, and the
+style is a tinted block with a hairline border and no accent bar or shadow. The owner's
+operating home draws a one-line strip under the bar naming the peer orchestrators
+(`view/elsewhere.strip`), as text with no handler.
+
 ### Stopping, archiving and deleting from the home
 
 The home offers the owner the three session operations the daemon already has
@@ -1345,6 +1444,35 @@ are handed the same capability by `home_manage_capability` (the session page's i
 `Transport.manage`, dispatched as `ManageAnswered`), so a bookmark's page, a member's
 page, a read-only link and a page of one session draw nothing. The session on screen
 has no button, with the reason in its `title`. `sidebar_archive_test` reads it.
+
+#### Moving a session, and giving a move up
+
+Move (protocol-change/085, the addendum on Move and Abandon) rides the same path and
+reads before it asks. A saved row on an executor has a `Move` beside `Archive` and
+`Delete` (a row with no executor has it disabled, and its `title` says why). The first
+press is `actions.Destinations`: it changes nothing, the daemon reads the deployment in a
+`manage_task` (up to its four-second bound) and answers `actions.Heard`, and the page's
+stage becomes `actions.Choosing`. The row's words are replaced by a button for each
+orchestrator that could take the session and a line for each that could not, with the
+reason in fixed words (`session_view/move_candidates`). A button is `MoveChosen`, which
+the page honours only for a destination it was offered; it opens the question Delete
+uses, `Move this session to bravo?`, and its button, `MoveConfirmed`, asks for
+`actions.Move(to)`. `ui_socket.manage_for` runs the daemon's own `server.move_session`
+under its usual `fresh_home` and `owner_operating` checks, so a resumed home, a member
+and a read-only page reach nothing, and the daemon checks only that the destination is one of its configured orchestrators, not that it is still eligible. The
+row then reads `moving to bravo` from its residency. `home_test` and `ui_route_test`
+drive each step and each refusal.
+
+The session page's Session tab says where the session runs, under the workspace:
+`runs on box (pool builders)`, as text, from the registration. Only the owner's page
+says it.
+
+Abandon is on the Admin page, not on the home row. A machine's Activity tab lists the
+moves the asking daemon has in flight, and when that daemon is a directory member each
+has an `Abandon` (`grants.AbandonMove`, run by `ui_socket.admin_for` through the
+Admin page's `administering` re-check). It is two presses, and the question says that if
+the receiver has already taken the session the move finishes instead. A daemon that is
+not a member answers `NotMember`, and the page draws no button.
 
 ### The browser login and the home's sign-ins
 

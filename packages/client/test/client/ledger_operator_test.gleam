@@ -338,6 +338,8 @@ fn view(name: String, reported: option.Option(Int)) {
     directory: "none",
     reported_seq: reported,
     ms_since_report: None,
+    links: [],
+    pin: None,
   )
 }
 

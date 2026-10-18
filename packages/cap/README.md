@@ -477,7 +477,7 @@ The package's public surface is also gated from outside it.
 top-level `src/cap/*.gleam` module, which the `code_mode` tool description
 carries. It stamps the sha256 of each of those files, so any edit to one,
 a comment included, stales it. After changing them, run `make
-gen-prelude` (needs `gleam` and `python3`) and commit the result. `make
+gen-prelude` (needs `gleam`) and commit the result. `make
 prelude-check` is the toolchain-free digest comparison; it runs in `make
 check` and `make check-tools`, not in `make check-cap`. The same check
 fails when a `cap/*` module appears on no seam allowlist in

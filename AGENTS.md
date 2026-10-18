@@ -213,10 +213,13 @@ Two committed artifacts are generated and gated rather than regenerated
 by the build. `make gen-prelude` re-renders
 `packages/tools/src/tools/prelude.gleam` — the capability prelude's public
 surface, which the `code_mode` description carries — from `packages/cap`,
-and needs `gleam` and `python3`;
+and needs `gleam`;
 `make prelude-check` is the digest comparison `make check` runs and needs
-neither. `make gen-sql` is the same arrangement for the generated SQL
-modules. Change `packages/cap`'s public surface and you must regenerate,
+no toolchain. `make gen-sql` is the same arrangement for the generated SQL
+modules and needs `gleam` and `sqlite3`. Both generators are Gleam dev
+modules run with `gleam run -m` (`packages/tools/dev/gen_prelude.gleam`
+and `packages/storage/dev/embed_schema.gleam`), so neither needs Python.
+Change `packages/cap`'s public surface and you must regenerate,
 or the gate fails naming the file that moved.
 
 Gleam ships godoc-style documentation tooling of its own. Run inside a
