@@ -22,6 +22,10 @@ import simplifile
 /// takes the siblings with the file, and the absence check is what turns a
 /// failed delete into a failed test rather than a confusing lock error later.
 ///
+/// The name must be unique across the whole package, not just its module.
+/// With LOOM_TEST_PARALLEL above 1 the package's modules run at once, and two
+/// tests sharing a name delete each other's database mid-run.
+///
 /// ## Examples
 ///
 /// ```gleam
