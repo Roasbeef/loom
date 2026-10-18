@@ -53,7 +53,8 @@
 //// `start` obtains the shared process-group scope.
 //// `publish` pairs the session with `topic_of` and sends a `Published` value.
 //// `subscribe` joins that exact group; `select_published` unwraps its messages.
-//// `GoalChanged` belongs to `Outputs`, independently of `hint_topics`.
+//// `GoalChanged` and `ProposalsChanged` belong to `Outputs`, independently of
+//// `hint_topics`.
 //// The publisher owns commit ordering; this bus owns only best-effort delivery.
 
 import core/ids.{type EntryId, type OpId, type Seq, type SessionId, type UsageId}
@@ -98,7 +99,8 @@ pub type Topic {
 
   /// Display feeds: rolling output tails of running tool calls
   /// (`ToolOutput`), summarizer labels (`BlockSummary`) and data-free goal
-  /// invalidation (`GoalChanged`). This is not the commit-hint topic.
+  /// invalidation (`GoalChanged`, `ProposalsChanged`). This is not the
+  /// commit-hint topic.
   Outputs
 }
 
@@ -195,6 +197,13 @@ pub type Event {
   /// A successful goal write or deletion invalidated its auxiliary board.
   /// The reserved cell remains authoritative (protocol 056).
   GoalChanged
+
+  /// The proposal queue gained a proposal or a proposal was decided. Like
+  /// `GoalChanged` it carries no data: the `proposal/` cells in the domain's
+  /// memory store remain authoritative and a subscriber asks the bounded
+  /// reader again. It is published under a key shared by every session of
+  /// the domain, not under one session's id (protocol-change/086).
+  ProposalsChanged
 }
 
 /// One delivered event: the session it belongs to plus the event, so a
@@ -283,7 +292,7 @@ pub fn topic_of(event: Event) -> Topic {
     Escalation(..) -> Escalations
     Committed(..) -> Commits
     ToolOutput(..) -> Outputs
-    BlockSummary(..) | GoalChanged -> Outputs
+    BlockSummary(..) | GoalChanged | ProposalsChanged -> Outputs
   }
 }
 

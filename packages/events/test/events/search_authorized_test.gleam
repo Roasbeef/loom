@@ -28,7 +28,7 @@ pub fn authorization_filters_before_rank_limit_test() {
   // Retained source locators do not authorize either indexed text or snippets.
   let assert Ok(Nil) = search.register_source(index, a, "/retained/a.db")
     as "source locator must register"
-  let assert Ok(all) = search.query(index, "migration", 50)
+  let assert Ok(all) = search.query(index, search.words("migration", 50))
     as "global reference query must succeed"
   assert list.length(all) == 3
   let scopes = [[], [a], [b], [c], [a, b], [a, c], [b, c], [a, b, c]]
@@ -41,16 +41,17 @@ pub fn authorization_filters_before_rank_limit_test() {
       list.filter(all, fn(hit) { list.contains(names, hit.session) })
     list.each([1, 2, 50], fn(limit) {
       let assert Ok(actual) =
-        search.query_authorized(index, scope, "migration", limit)
+        search.query_authorized(index, scope, search.words("migration", limit))
         as "authorized query must succeed"
       assert actual == list.take(permitted, limit)
     })
   })
 
-  let assert Ok(once) = search.query_authorized(index, [a, c], "migration", 50)
+  let assert Ok(once) =
+    search.query_authorized(index, [a, c], search.words("migration", 50))
     as "set query must succeed"
   let assert Ok(repeated) =
-    search.query_authorized(index, [c, a, c, a], "migration", 50)
+    search.query_authorized(index, [c, a, c, a], search.words("migration", 50))
     as "repeated identities must remain a set"
   assert repeated == once
   let assert Ok(Nil) = search.close(index) as "index must close"
@@ -69,17 +70,25 @@ pub fn authorization_query_enforces_inventory_and_result_bounds_test() {
 
   list.each([-1, 0, 51], fn(limit) {
     let assert Error(search.IndexFault(_)) =
-      search.query_authorized(index, [session], "migration", limit)
+      search.query_authorized(
+        index,
+        [session],
+        search.words("migration", limit),
+      )
       as "invalid result limits must be refused"
   })
 
   let full_scope = list.repeat(session, 512)
   let assert Ok([hit]) =
-    search.query_authorized(index, full_scope, "migration", 50)
+    search.query_authorized(index, full_scope, search.words("migration", 50))
     as "the exact inventory cap must remain usable"
   assert hit.session == ids.session_id_to_string(session)
   let assert Error(search.IndexFault(_)) =
-    search.query_authorized(index, [session, ..full_scope], "migration", 50)
+    search.query_authorized(
+      index,
+      [session, ..full_scope],
+      search.words("migration", 50),
+    )
     as "an oversized inventory must be refused, never truncated"
   let assert Ok(Nil) = search.close(index) as "index must close"
 }

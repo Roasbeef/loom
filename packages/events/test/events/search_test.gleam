@@ -4,14 +4,17 @@
 import core/clock
 import core/entry as core_entry
 import core/ids
+import core/json
 import core/message
 import events/search
+import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import simplifile
+import sqlight
 import storage/sqlite
 import storage/storage
 import support/fixtures
@@ -106,7 +109,7 @@ pub fn sync_then_query_returns_known_entries_test() {
   let service = open_search()
   let assert Ok(Nil) =
     search.sync(service, store, session: sid(1), generation: 0)
-  let assert Ok([hit]) = search.query(service, text: "migration", limit: 10)
+  let assert Ok([hit]) = search.query(service, search.words("migration", 10))
   assert hit.session == ids.session_id_to_string(sid(1))
   assert hit.entry == ids.entry_id_to_string(first.id)
   assert string.contains(hit.snippet, "[migration]")
@@ -125,7 +128,7 @@ pub fn repeated_sync_does_not_duplicate_test() {
     search.sync(service, store, session: sid(1), generation: 0)
   let assert Ok(Nil) =
     search.sync(service, store, session: sid(1), generation: 0)
-  let assert Ok(hits) = search.query(service, text: "singular", limit: 10)
+  let assert Ok(hits) = search.query(service, search.words("singular", 10))
   assert list.length(hits) == 1
 }
 
@@ -214,7 +217,7 @@ pub fn concurrent_sync_does_not_duplicate_rows_test() {
   let assert Ok(slow_result) = process.receive(done, 20_000)
   let assert Ok(Nil) = slow_result
 
-  let assert Ok(hits) = search.query(fast_service, text: "second", limit: 100)
+  let assert Ok(hits) = search.query(fast_service, search.words("second", 100))
   assert list.length(hits) == 5
 }
 
@@ -231,7 +234,7 @@ pub fn incremental_sync_indexes_new_entries_test() {
   fixtures.commit_entries(store, [second])
   let assert Ok(Nil) =
     search.notify(service, store, session: sid(1), generation: 0)
-  let assert Ok(hits) = search.query(service, text: "chapter", limit: 10)
+  let assert Ok(hits) = search.query(service, search.words("chapter", 10))
   assert list.length(hits) == 2
 }
 
@@ -248,7 +251,8 @@ pub fn generation_bump_invalidates_and_reindexes_test() {
   let service = open_search()
   let assert Ok(Nil) =
     search.sync(service, old_store, session: sid(1), generation: 0)
-  let assert Ok(before) = search.query(service, text: "confidential", limit: 10)
+  let assert Ok(before) =
+    search.query(service, search.words("confidential", 10))
   assert list.length(before) == 1
 
   // The rewrite: a fresh store (fresh seq numbering) without the erased
@@ -260,9 +264,9 @@ pub fn generation_bump_invalidates_and_reindexes_test() {
   let assert Ok(Nil) =
     search.sync(service, new_store, session: sid(1), generation: 1)
 
-  let assert Ok(after) = search.query(service, text: "confidential", limit: 10)
+  let assert Ok(after) = search.query(service, search.words("confidential", 10))
   assert after == []
-  let assert Ok(retained) = search.query(service, text: "retained", limit: 10)
+  let assert Ok(retained) = search.query(service, search.words("retained", 10))
   assert list.length(retained) == 1
 }
 
@@ -281,7 +285,7 @@ pub fn same_generation_keeps_cursor_test() {
   let empty_store = fixtures.open_store()
   let assert Ok(Nil) =
     search.sync(service, empty_store, session: sid(1), generation: 0)
-  let assert Ok(hits) = search.query(service, text: "anchor", limit: 10)
+  let assert Ok(hits) = search.query(service, search.words("anchor", 10))
   assert list.length(hits) == 1
 }
 
@@ -294,12 +298,12 @@ pub fn remove_drops_session_test() {
   let assert Ok(Nil) =
     search.sync(service, store, session: sid(1), generation: 0)
   let assert Ok(Nil) = search.remove(service, session: sid(1))
-  let assert Ok(hits) = search.query(service, text: "ephemeral", limit: 10)
+  let assert Ok(hits) = search.query(service, search.words("ephemeral", 10))
   assert hits == []
   // After removal a sync re-indexes from zero (the cursor is gone too).
   let assert Ok(Nil) =
     search.sync(service, store, session: sid(1), generation: 0)
-  let assert Ok(back) = search.query(service, text: "ephemeral", limit: 10)
+  let assert Ok(back) = search.query(service, search.words("ephemeral", 10))
   assert list.length(back) == 1
 }
 
@@ -318,7 +322,7 @@ pub fn sessions_are_distinguished_in_hits_test() {
     search.sync(service, store_a, session: sid(3), generation: 0)
   let assert Ok(Nil) =
     search.sync(service, store_b, session: sid(4), generation: 0)
-  let assert Ok(hits) = search.query(service, text: "shared", limit: 10)
+  let assert Ok(hits) = search.query(service, search.words("shared", 10))
   let sessions = list.map(hits, fn(hit) { hit.session })
   assert list.sort(sessions, string.compare)
     == list.sort(
@@ -345,16 +349,24 @@ pub fn query_in_session_scopes_to_one_session_test() {
     search.sync(service, store_b, session: sid(7), generation: 0)
 
   // Unscoped: both sessions answer.
-  let assert Ok(both) = search.query(service, text: "scoped", limit: 10)
+  let assert Ok(both) = search.query(service, search.words("scoped", 10))
   assert list.length(both) == 2
 
   // Scoped: the other session's entry is excluded, ids and all.
   let assert Ok([hit]) =
-    search.query_in_session(service, session: sid(6), text: "scoped", limit: 10)
+    search.query_in_session(
+      service,
+      session: sid(6),
+      query: search.words("scoped", 10),
+    )
   assert hit.session == ids.session_id_to_string(sid(6))
   assert hit.entry == ids.entry_id_to_string(mine.id)
   let assert Ok([other]) =
-    search.query_in_session(service, session: sid(7), text: "scoped", limit: 10)
+    search.query_in_session(
+      service,
+      session: sid(7),
+      query: search.words("scoped", 10),
+    )
   assert other.entry == ids.entry_id_to_string(theirs.id)
 
   // A session with nothing indexed answers with nothing rather than with
@@ -362,8 +374,7 @@ pub fn query_in_session_scopes_to_one_session_test() {
   assert search.query_in_session(
       service,
       session: sid(8),
-      text: "scoped",
-      limit: 10,
+      query: search.words("scoped", 10),
     )
     == Ok([])
 }
@@ -417,7 +428,7 @@ pub fn limit_caps_hits_test() {
   let service = open_search()
   let assert Ok(Nil) =
     search.sync(service, store, session: sid(1), generation: 0)
-  let assert Ok(hits) = search.query(service, text: "repeated", limit: 2)
+  let assert Ok(hits) = search.query(service, search.words("repeated", 2))
   assert list.length(hits) == 2
 }
 
@@ -431,14 +442,85 @@ pub fn summaries_are_indexed_and_customs_skipped_test() {
   let service = open_search()
   let assert Ok(Nil) =
     search.sync(service, store, session: sid(1), generation: 0)
-  let assert Ok(hits) = search.query(service, text: "recap", limit: 10)
+  let assert Ok(hits) = search.query(service, search.words("recap", 10))
   assert list.length(hits) == 1
   // The custom entry contributed no text, but its seq advanced the
   // cursor: a re-sync finds nothing new to do.
   let assert Ok(Nil) =
     search.sync(service, store, session: sid(1), generation: 0)
-  let assert Ok(still) = search.query(service, text: "recap", limit: 10)
+  let assert Ok(still) = search.query(service, search.words("recap", 10))
   assert list.length(still) == 1
+}
+
+fn with_data(
+  item: core_entry.Entry,
+  ts: Int,
+  data: json.JsonValue,
+) -> core_entry.Entry {
+  case item {
+    core_entry.CustomEntry(..) as custom ->
+      core_entry.CustomEntry(..custom, ts:, data: Some(data))
+    core_entry.MessageEntry(..)
+    | core_entry.CompactionEntry(..)
+    | core_entry.BranchSummaryEntry(..) -> item
+  }
+}
+
+// A `memory/note` is the one custom entry the index reads: it is found by
+// its title, its description or its text, under kind `note`, and a note
+// written before notes were typed (text only) is found by its text.
+pub fn a_note_is_indexed_under_its_own_kind_test() {
+  let store = fixtures.open_store()
+  let ctx = fixtures.new_ctx()
+  let #(typed, ctx) = fixtures.custom_entry(ctx, None, search.note_entry_type)
+  let #(legacy, ctx) =
+    fixtures.custom_entry(ctx, Some(typed.id), search.note_entry_type)
+  let #(other, _ctx) =
+    fixtures.custom_entry(ctx, Some(legacy.id), "memory/fact")
+  let typed =
+    with_data(
+      typed,
+      1_700_000_000_000,
+      json.Object([
+        #("title", json.String("Gate order")),
+        #("description", json.String("run lint last")),
+        #("text", json.String("Because lint needs the build.")),
+      ]),
+    )
+  let legacy =
+    with_data(
+      legacy,
+      0,
+      json.Object([#("text", json.String("prefer tabs always"))]),
+    )
+  let other =
+    with_data(
+      other,
+      0,
+      json.Object([#("text", json.String("distilled tabs fact"))]),
+    )
+  fixtures.commit_entries(store, [typed, legacy, other])
+  let service = open_search()
+  let assert Ok(Nil) =
+    search.sync(service, store, session: sid(1), generation: 0)
+
+  let assert Ok(by_title) = search.query(service, search.words("gate", 10))
+  assert list.map(by_title, fn(hit) { hit.kind }) == ["note"]
+  let assert Ok(by_text) = search.query(service, search.words("build", 10))
+  assert list.length(by_text) == 1
+  let assert Ok(by_description) =
+    search.query(service, search.words("lint", 10))
+  assert list.length(by_description) == 1
+
+  // Only notes are read: the distilled fact's words are not indexed.
+  let assert Ok(tabs) =
+    search.query(
+      service,
+      search.Query(..search.words("tabs", 10), kind: Some("note")),
+    )
+  assert list.length(tabs) == 1
+  let assert Ok(everything) = search.query(service, search.words("tabs", 10))
+  assert list.length(everything) == 1
 }
 
 /// The full invalidation loop against the real thing: a SQLite session
@@ -462,7 +544,7 @@ pub fn sqlite_rewrite_invalidates_index_test() {
   let assert Ok(generation) = sqlite.generation(path:)
   let assert Ok(Nil) =
     search.sync(service, store, session: sid(5), generation: generation)
-  let assert Ok(before) = search.query(service, text: "passphrase", limit: 10)
+  let assert Ok(before) = search.query(service, search.words("passphrase", 10))
   assert list.length(before) == 1
 
   // Rewrite offline: erase the secret entry's payload, keep the rest.
@@ -507,9 +589,9 @@ pub fn sqlite_rewrite_invalidates_index_test() {
     sqlite.open(sqlite.config(path:, owner: "search-test"), clock)
   let assert Ok(Nil) =
     search.sync(service, reopened, session: sid(5), generation: bumped)
-  let assert Ok(gone) = search.query(service, text: "passphrase", limit: 10)
+  let assert Ok(gone) = search.query(service, search.words("passphrase", 10))
   assert gone == []
-  let assert Ok(still) = search.query(service, text: "surviving", limit: 10)
+  let assert Ok(still) = search.query(service, search.words("surviving", 10))
   assert list.length(still) == 1
   let assert Ok(Nil) = storage.close(reopened)
 }
@@ -531,7 +613,7 @@ pub fn a_directory_in_the_index_place_is_refused_before_the_open_test() {
 pub fn malformed_query_is_an_error_not_a_crash_test() {
   let service = open_search()
   let assert Error(search.IndexFault(..)) =
-    search.query(service, text: "\"unbalanced", limit: 10)
+    search.query(service, search.raw("\"unbalanced", 10))
 }
 
 pub fn source_locator_registration_and_replacement_test() {
@@ -580,7 +662,7 @@ pub fn bounded_batches_cover_entries_once_and_advance_invisible_rows_test() {
       limit: 2,
     )
     == Ok(search.Advanced(3, 0, search.CaughtUp))
-  let assert Ok(hits) = search.query(service, text: "batch", limit: 10)
+  let assert Ok(hits) = search.query(service, search.words("batch", 10))
     as "indexed entries must be queryable"
   assert list.length(hits) == 2
   assert search.close(service) == Ok(Nil)
@@ -626,7 +708,7 @@ pub fn bounded_batch_source_read_holds_no_writer_and_stale_cannot_publish_test()
       limit: 1,
     )
     == Ok(search.Advanced(2, 0, search.CaughtUp))
-  let assert Ok(hits) = search.query(slow, text: "racing", limit: 10)
+  let assert Ok(hits) = search.query(slow, search.words("racing", 10))
     as "racing rows must be queryable"
   assert list.length(hits) == 2
   assert search.close(fast) == Ok(Nil)
@@ -663,8 +745,8 @@ pub fn bounded_batch_generation_race_preserves_rewritten_rows_test() {
       limit: 1,
     )
     == Ok(search.Stale)
-  assert search.query(slow, text: "secret", limit: 10) == Ok([])
-  let assert Ok([_]) = search.query(slow, text: "public", limit: 10)
+  assert search.query(slow, search.words("secret", 10)) == Ok([])
+  let assert Ok([_]) = search.query(slow, search.words("public", 10))
     as "the newer generation must survive"
   assert search.close(fast) == Ok(Nil)
   assert search.close(slow) == Ok(Nil)
@@ -697,8 +779,8 @@ pub fn bounded_batch_generation_invalidation_and_invalid_limit_test() {
       limit: 2,
     )
     == Ok(search.Advanced(1, 1, search.CaughtUp))
-  assert search.query(service, text: "secret", limit: 10) == Ok([])
-  let assert Ok([_]) = search.query(service, text: "public", limit: 10)
+  assert search.query(service, search.words("secret", 10)) == Ok([])
+  let assert Ok([_]) = search.query(service, search.words("public", 10))
     as "replacement must be indexed"
   let refused_reads = process.new_subject()
   let guarded =
@@ -719,4 +801,167 @@ pub fn bounded_batch_generation_invalidation_and_invalid_limit_test() {
   })
   assert process.receive(refused_reads, within: 0) == Error(Nil)
   assert search.close(service) == Ok(Nil)
+}
+
+// The version-0 index: no `kind` or `ts` column and no `user_version`, exactly
+// what a file written before the schema moved up holds.
+fn write_legacy_index(
+  path: String,
+  session: ids.SessionId,
+  entry: ids.EntryId,
+) -> Nil {
+  let session = ids.session_id_to_string(session)
+  let entry = ids.entry_id_to_string(entry)
+  let assert Ok(db) = sqlight.open(path)
+  let assert Ok(Nil) =
+    sqlight.exec(
+      "CREATE VIRTUAL TABLE entry_fts USING fts5(session_id UNINDEXED, entry_id UNINDEXED, text);
+       CREATE TABLE search_cursor (session_id TEXT NOT NULL PRIMARY KEY, generation INTEGER NOT NULL, high_water INTEGER NOT NULL) WITHOUT ROWID;
+       CREATE TABLE search_source (session_id TEXT NOT NULL PRIMARY KEY, path TEXT NOT NULL) WITHOUT ROWID;
+       INSERT INTO entry_fts (session_id, entry_id, text) VALUES ('"
+        <> session
+        <> "', '"
+        <> entry
+        <> "', 'legacy anchor text');
+       INSERT INTO search_cursor VALUES ('"
+        <> session
+        <> "', 0, 1);",
+      on: db,
+    )
+  let assert Ok(Nil) = sqlight.close(db)
+  Nil
+}
+
+/// The notes index and the digest are committed to every session as user
+/// messages. Indexed, they would put a copy of each note title in every
+/// session and bury the real hits, so they are skipped. Only the lead paired
+/// with its own fence counts: a person's text that merely begins with a lead,
+/// or a crossed pairing, is still indexed.
+pub fn injected_memory_context_is_not_indexed_test() {
+  let store = fixtures.open_store()
+  let ctx = fixtures.new_ctx()
+  let notes =
+    search.notes_attribution_lead
+    <> "sessions.\n\n"
+    <> search.notes_fence
+    <> "\n- (fact, 2026-10-11) zorblax setup\n```"
+  let digest =
+    search.digest_attribution_lead
+    <> "sessions.\n\n"
+    <> search.digest_fence
+    <> "\n- (fact) zorblax tuning\n```"
+  let crossed =
+    search.notes_attribution_lead
+    <> "sessions.\n\n"
+    <> search.digest_fence
+    <> "\n- zorblax crossed\n```"
+  let typed = search.notes_attribution_lead <> "typed by a person, zorblax"
+  let #(first, ctx) = fixtures.message_entry(ctx, None, notes)
+  let #(second, ctx) = fixtures.message_entry(ctx, Some(first.id), digest)
+  let #(third, ctx) = fixtures.message_entry(ctx, Some(second.id), crossed)
+  let #(fourth, ctx) = fixtures.message_entry(ctx, Some(third.id), typed)
+  let #(real, _ctx) =
+    fixtures.assistant_entry(ctx, Some(fourth.id), "the zorblax answer")
+  fixtures.commit_entries(store, [first, second, third, fourth, real])
+  let service = open_search()
+  let assert Ok(Nil) =
+    search.sync(service, store, session: sid(81), generation: 0)
+
+  let assert Ok(hits) = search.query(service, search.words("zorblax", 10))
+  let found = list.map(hits, fn(hit) { hit.entry })
+  assert list.length(found) == 3
+  assert list.contains(found, ids.entry_id_to_string(real.id))
+  assert list.contains(found, ids.entry_id_to_string(third.id))
+  assert list.contains(found, ids.entry_id_to_string(fourth.id))
+  assert !list.contains(found, ids.entry_id_to_string(first.id))
+  assert !list.contains(found, ids.entry_id_to_string(second.id))
+}
+
+/// A row an older binary inserted into a version-1 index has NULL `kind` and
+/// `ts`: an operator who rolled back to a release before the columns existed
+/// and forward again leaves such rows, and `migrate` does nothing at version 1.
+/// Every query must read them as legacy rows, kind `""` and ts 0, rather than
+/// fail the whole search.
+pub fn null_kind_and_ts_rows_read_as_legacy_rows_test() {
+  let path = fresh_index_path("null-columns")
+  let assert Ok(first) = search.open(path)
+  let assert Ok(Nil) = search.close(first)
+
+  let session = ids.session_id_to_string(sid(71))
+  let assert Ok(db) = sqlight.open(path)
+  let assert Ok(Nil) =
+    sqlight.exec(
+      "INSERT INTO entry_fts (session_id, entry_id, text) VALUES ('"
+        <> session
+        <> "', 'entry-null', 'rolledback anchor text');",
+      on: db,
+    )
+  let assert Ok(Nil) = sqlight.close(db)
+
+  let assert Ok(service) = search.open(path)
+  let assert Ok([ranked]) =
+    search.query(service, search.words("rolledback", 10))
+  assert ranked.entry == "entry-null"
+  assert ranked.kind == ""
+  assert ranked.ts == 0
+  let assert Ok([scoped]) =
+    search.query_in_session(
+      service,
+      session: sid(71),
+      query: search.words("rolledback", 10),
+    )
+  assert scoped.kind == ""
+  assert scoped.ts == 0
+  let assert Ok([browsed]) =
+    search.recent_in_session(service, session: sid(71), limit: 10)
+  assert browsed.kind == ""
+  assert browsed.ts == 0
+  let assert Ok(Nil) = search.close(service)
+}
+
+/// An index written before `kind` and `ts` existed is migrated in place: its
+/// rows keep answering, its version marker moves up, its cursors are
+/// invalidated so a session reindexes with the new columns when next read, and
+/// opening it again changes nothing.
+pub fn legacy_index_migrates_in_place_and_resyncs_test() {
+  let path = fresh_index_path("migrate")
+  let store = fixtures.open_store()
+  let ctx = fixtures.new_ctx()
+  let #(first, _ctx) = fixtures.message_entry(ctx, None, "legacy anchor text")
+  fixtures.commit_entries(store, [first])
+  write_legacy_index(path, sid(61), first.id)
+
+  let assert Ok(service) = search.open(path)
+
+  // The copied row survives, with the columns the old file never recorded.
+  let assert Ok([legacy]) =
+    search.query(service, search.words("legacy anchor", 10))
+  assert legacy.entry == ids.entry_id_to_string(first.id)
+  assert legacy.kind == ""
+  assert legacy.ts == 0
+
+  // The cursor no longer matches any store generation, so the first sync of
+  // the session replaces the copied row rather than adding a second one.
+  let assert Ok(Nil) =
+    search.sync(service, store, session: sid(61), generation: 0)
+  let assert Ok([healed]) =
+    search.query(service, search.words("legacy anchor", 10))
+  assert healed.kind == "user"
+  assert healed.ts > 0
+  let assert Ok(Nil) = search.close(service)
+
+  // A second open finds the marker and leaves everything alone.
+  let assert Ok(again) = search.open(path)
+  let assert Ok([_]) = search.query(again, search.words("legacy anchor", 10))
+  let assert Ok(Nil) = search.close(again)
+  let assert Ok(db) = sqlight.open(path)
+  let assert Ok([version]) =
+    sqlight.query(
+      "PRAGMA user_version",
+      on: db,
+      with: [],
+      expecting: decode.at([0], decode.int),
+    )
+  assert version == 1
+  let assert Ok(Nil) = sqlight.close(db)
 }

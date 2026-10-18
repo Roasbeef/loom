@@ -1482,6 +1482,12 @@ the refreshed goal through the shared step. `component_test` proves the
 observer stays Connected after that read, so adding a terminal
 surface does not leave the second host with an incompatible reducer path.
 
+The proposals review is the Session pane's eighth child
+(`component.proposals_path`). It is drawn and read only where
+`may_review_proposals` holds, Approve asks first, and `confirm_approval`
+re-checks the held board before it sends. A `history_search` step needs no
+component of its own: it is the generic step row plus `recall_view` rows.
+
 ## Deep Docs
 
 - `docs/architecture/web-view.md`: the architecture map: the request path
@@ -1808,3 +1814,29 @@ machine") is the account.
   reads "If bravo has already taken the session, the move finishes instead." It reuses
   the Admin page's `Arming`, `Asking` and `confirmed`, which treat it as an armed action
   like making a session shareable.
+
+## Memory overview (protocol 087)
+
+`view/memory` is the Session pane's ninth child, drawn on the owner's page only.
+It has no handler, so no path is admitted beneath it. `component.want_memory`
+owes the first read.
+
+## Model test of paging and turn sealing
+
+`test/paging_model_test.gleam` is a `statem` model-based test (dev
+dependencies `statem` and `qcheck`) that drives `component.update` through
+`page_fixture`/`lane_fixture` with a generated sequence of events: appended,
+running, settled and resumed turns, "Load older" (alone, or with the gateway's
+answers), "Jump to latest", a divider press, a tick, and the gateway answering
+or refusing the page's reads. It checks, under one `Violation` tag each, the
+drawn-row bound (`paging.rows`), one request out at a time
+(`paging.one_read`), the lane saying it is loading while a press is owed its
+rows (`paging.loading`), a press on a `Full` or `Crowded` page entering
+`Browsing` (`paging.full`), the direction of the paging state
+(`paging.moves`), and, in `finish`, that a second page opened on the settled
+history draws the same dividers as the page that watched it
+(`paging.divider`). A second test replays the generator and fails if it stops
+reaching every paging state, an open fold, or a divider after a resumed turn.
+It needs no Lustre runtime: the frames the page writes go to a subject the
+test owns. The fixture's conversation continues only once, so a resume ends the
+history.

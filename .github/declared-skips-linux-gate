@@ -9,6 +9,7 @@ declared|linux|SKIP shipped multiplayer live tool: platform enforcement unavaila
 # delegated jail job runs this exact fixture with an empty declaration set;
 # the ordinary runner may lack the required helper enforcement.
 declared|linux|SKIP shipped deployment status: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the delegated Linux jail job runs the deployment-status up/down scenario with no skip allowance.
+declared|linux|SKIP shipped deployment status scope: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the same delegated deployment-status step runs the scope scenario with an empty skip allowance.
 
 # The shipped background-jobs fixture runs unattended jailed processes and
 # asks the same measured question through the same probe. On a runner whose
@@ -54,6 +55,11 @@ declared|linux|SKIP shipped remote pool: platform enforcement unavailable|The or
 # the local Linux sign-off gate run every scenario for real.
 declared|linux|SKIP shipped remote tools: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the macOS gate and the local Linux sign-off gate run the search, working-directory, jobs, hooks, goal and git scenarios for real.
 declared|linux|SKIP shipped remote strand: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the macOS gate and the local Linux sign-off gate run the spawned-strand scenario for real.
+
+# Remote subagents share the shipped daemons' enforcement prerequisite. The
+# dedicated delegated-jail step must execute the children, deadline and release
+# scenarios with an empty skip allowance.
+declared|linux|SKIP shipped remote subagents: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the delegated Linux jail job runs the remote-subagent fixture with an empty skip allowance.
 declared|linux|SKIP shipped remote owner loss: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the macOS gate and the local Linux sign-off gate run the owner-loss scenario for real.
 declared|linux|SKIP shipped remote directory: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the macOS gate and the local Linux sign-off gate run the two-orchestrator directory scenarios for real.
 declared|linux|SKIP shipped remote peer mail: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the macOS gate and the local Linux sign-off gate run the cross-orchestrator peer mail scenarios for real.

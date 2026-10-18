@@ -194,9 +194,11 @@ import client/goal_pending
 import client/goalcommand
 import client/grants
 import client/internal/session_owner
+import client/memory_overview
 import client/notes_view
 import client/permissions
 import client/profile_switch
+import client/proposals
 import client/protocol.{
   type Command, type EntryRecord, type Event as WireEvent, type EventEnvelope,
   EntryRecord, EventEnvelope, LiveOp, Strand,
@@ -367,6 +369,10 @@ pub type Options {
     /// Bounded startup refusals for installed extensions, shared by all peers.
     extension_refusals: List(String),
     schedules: Option(scheduleadmin.Admin),
+    /// The operator's half of the proposal queue, when this host has one.
+    proposals: Option(proposals.Admin),
+    /// The operator's read of the memory overview, when this host has one.
+    memory_overview: Option(memory_overview.Admin),
     /// Operator-owned additions to this session's filesystem authority.
     directories: Option(directories.Admin),
     /// The effect plane's own sweep of an aborted operation, called by
@@ -528,6 +534,10 @@ type State {
     extension_refusals: List(String),
     // The operator's scheduling door, when this host has one.
     schedules: Option(scheduleadmin.Admin),
+    // The operator's half of the proposal queue, when this host has one.
+    proposals: Option(proposals.Admin),
+    // The operator's read of the memory overview, when this host has one.
+    memory_overview: Option(memory_overview.Admin),
     /// Operator-owned additions to this session's filesystem authority.
     directories: Option(directories.Admin),
   )
@@ -555,6 +565,8 @@ pub fn default_options(session_id: String, runtime: api.Runtime) -> Options {
     code_mode_issue: None,
     extension_refusals: [],
     schedules: None,
+    proposals: None,
+    memory_overview: None,
     directories: None,
     effect_abort: None,
     goal_control: None,
@@ -778,6 +790,42 @@ pub fn with_code_mode_issue(
 ///
 pub fn with_schedules(options: Options, admin: scheduleadmin.Admin) -> Options {
   Options(..options, schedules: Some(admin))
+}
+
+/// Supplies the operator's half of the proposal queue, which the
+/// `proposals_get` and `proposal_decide` commands answer from. Pass the admin
+/// built over the very `proposals.Wiring` the model's `propose` tool uses, so
+/// a listing and the tool cannot disagree about what is queued
+/// (protocol-change/086).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.default_options("sess-01", runtime)
+/// // |> gateway.with_proposals(proposals.admin(wiring))
+/// ```
+///
+pub fn with_proposals(options: Options, admin: proposals.Admin) -> Options {
+  Options(..options, proposals: Some(admin))
+}
+
+/// Supplies the operator's read of the memory overview, which the
+/// `memory_get` command answers from. Pass the admin built over the files
+/// this host already reads for its runs, so the overview cannot describe a
+/// file the runs do not (protocol-change/087).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.default_options("sess-01", runtime)
+/// // |> gateway.with_memory_overview(memory_overview.admin(wiring))
+/// ```
+///
+pub fn with_memory_overview(
+  options: Options,
+  admin: memory_overview.Admin,
+) -> Options {
+  Options(..options, memory_overview: Some(admin))
 }
 
 /// Supplies the effect plane's sweep of an aborted operation — in
@@ -1161,6 +1209,19 @@ fn start_with_delivery(
           HostOnly -> bus.subscribe_all(events_bus, session: key)
           Network -> bus.subscribe(events_bus, session: key, topic: bus.Outputs)
         }
+
+        // The proposal queue belongs to the domain, not to this session, so
+        // its changes arrive on the domain's own key: a proposal filed or
+        // decided in a sibling session reaches this hub's open pages too.
+        case options.proposals {
+          Some(admin) ->
+            bus.subscribe(
+              events_bus,
+              session: admin.channel,
+              topic: bus.Outputs,
+            )
+          None -> Nil
+        }
         process.new_selector()
         |> process.select(subject)
         |> bus.select_published(BusHint)
@@ -1213,6 +1274,8 @@ fn start_with_delivery(
         code_mode_issue: options.code_mode_issue,
         extension_refusals: options.extension_refusals,
         schedules: options.schedules,
+        proposals: options.proposals,
+        memory_overview: options.memory_overview,
         directories: options.directories,
       )
 
@@ -2029,6 +2092,14 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       push_to_subscribed(state, protocol.GoalChanged)
       continue(state)
     }
+
+    // The proposal queue moved: a model queued a suggestion or a person
+    // decided one. The push carries nothing, and each subscribed owner reads
+    // the queue again through the same bounded command.
+    BusHint(published: bus.Published(event: bus.ProposalsChanged, ..)) -> {
+      push_to_subscribed(state, protocol.ProposalsChanged)
+      continue(state)
+    }
     BusHint(published: _) -> continue(pull_and_broadcast(revalidate_all(state)))
 
     // No `revalidate_all` ahead of a delta: `deliver` re-checks each peer
@@ -2273,6 +2344,9 @@ fn network_command(
     | protocol.CancelSchedule(..)
     | protocol.PermissionsGet
     | protocol.PermissionForget(..)
+    | protocol.ProposalsGet
+    | protocol.ProposalDecide(..)
+    | protocol.MemoryGet
     | protocol.ProfileGet
     | protocol.ProfileSet(..)
     | protocol.UnknownCommand(..) -> run_command(state, connection, id, command)
@@ -3185,6 +3259,10 @@ fn owner_only(command: Command) -> Option(String) {
       Some("only the session owner may remember permissions for the session")
     protocol.ProfileSet(..) ->
       Some("only the session owner may switch the session's model profile")
+    protocol.ProposalsGet | protocol.ProposalDecide(..) ->
+      Some("only the session owner may review proposed rules")
+    protocol.MemoryGet ->
+      Some("only the session owner may read the memory overview")
     _ -> None
   }
 }
@@ -3266,6 +3344,9 @@ fn read_only(command: Command) {
     | protocol.CancelSchedule(..)
     | protocol.PermissionsGet
     | protocol.PermissionForget(..)
+    | protocol.ProposalsGet
+    | protocol.ProposalDecide(..)
+    | protocol.MemoryGet
     | protocol.ProfileSet(..)
     | protocol.UnknownCommand(..) -> False
   }
@@ -3366,6 +3447,7 @@ fn notice_strand(state: State, event: WireEvent) -> String {
     | protocol.ToolOutputEvent(..)
     | protocol.BlockSummaryEvent(..)
     | protocol.GoalChanged
+    | protocol.ProposalsChanged
     | protocol.CommittedEvent(..)
     | protocol.ErrorEvent(..)
     | protocol.UnknownEvent(..) -> single_live_strand(state)
@@ -5156,6 +5238,10 @@ fn run_command(
       list_permissions(state, connection, id)
     protocol.PermissionForget(target:, expected_seq:), Subscribed ->
       forget_permissions(state, connection, id, target, expected_seq)
+    protocol.ProposalsGet, Subscribed -> list_proposals(state, connection, id)
+    protocol.MemoryGet, Subscribed -> read_memory(state, connection, id)
+    protocol.ProposalDecide(id: proposal, decision:), Subscribed ->
+      decide_proposal(state, connection, id, proposal, decision)
   }
 }
 
@@ -7672,6 +7758,150 @@ fn cancel_schedule(
   }
 }
 
+// --- proposed rules (protocol-change/086) -----------------------------------
+
+// `proposals_get`: the queue's newest proposals and the pending count, as the
+// board `client/proposals` renders. An owner's read; a session on a host with
+// no queue answers unsupported rather than an empty list, because a person
+// asked to review proposals and there is nothing that could ever hold one.
+fn list_proposals(state: State, connection: Int, id: Int) -> State {
+  case state.proposals {
+    None -> unsupported_proposals(state, connection, id)
+    Some(admin) ->
+      case admin.list() {
+        Ok(listing) -> {
+          reply(
+            state,
+            connection,
+            id,
+            protocol.SnapshotEvent(
+              protocol.ProposalsSnapshot(board: proposals.board(listing)),
+            ),
+          )
+          state
+        }
+        Error(reason) -> {
+          reply_error(state, connection, id, protocol.code_internal, reason)
+          state
+        }
+      }
+  }
+}
+
+// `proposal_decide`: settle one pending proposal and answer with the queue as
+// it now stands. A proposal the file has moved away from is not an error: it
+// comes back `stale` in the board, with nothing written. A proposal that was
+// decided already is a conflict, so a second approval of one proposal applies
+// nothing twice, and so is a queue another writer holds right now: the answer
+// says to decide again, and nothing was read or written.
+fn decide_proposal(
+  state: State,
+  connection: Int,
+  id: Int,
+  proposal: String,
+  decision: protocol.ProposalDecision,
+) -> State {
+  case state.proposals {
+    None -> unsupported_proposals(state, connection, id)
+    Some(admin) ->
+      case admin.decide(proposal, proposal_verdict(decision)) {
+        Ok(_settled) -> list_proposals(state, connection, id)
+        Error(proposals.NoSuchProposal) -> {
+          reply_error(
+            state,
+            connection,
+            id,
+            protocol.code_bad_request,
+            "no proposal has the id " <> proposal,
+          )
+          state
+        }
+        Error(proposals.AlreadyDecided(state: decided)) -> {
+          reply_error(
+            state,
+            connection,
+            id,
+            protocol.code_conflict,
+            "the proposal was already decided: "
+              <> proposals.state_name(decided),
+          )
+          state
+        }
+        Error(proposals.Busy(owner:)) -> {
+          reply_error(
+            state,
+            connection,
+            id,
+            protocol.code_conflict,
+            "the proposal queue is in use by "
+              <> owner
+              <> "; decide again in a moment",
+          )
+          state
+        }
+        Error(proposals.CannotApply(reason:)) -> {
+          reply_error(state, connection, id, protocol.code_internal, reason)
+          state
+        }
+        Error(proposals.Unavailable(reason:)) -> {
+          reply_error(state, connection, id, protocol.code_internal, reason)
+          state
+        }
+      }
+  }
+}
+
+fn proposal_verdict(decision: protocol.ProposalDecision) -> proposals.Decision {
+  case decision {
+    protocol.ProposalApprove -> proposals.Approve
+    protocol.ProposalReject -> proposals.Reject
+  }
+}
+
+fn unsupported_proposals(state: State, connection: Int, id: Int) -> State {
+  reply_error(
+    state,
+    connection,
+    id,
+    protocol.code_unsupported,
+    "this server has no proposal queue",
+  )
+  state
+}
+
+// --- the memory overview (protocol-change/087) ------------------------------
+
+// `memory_get`: the overview as `client/memory_overview` reads it, one
+// snapshot. An owner's read. A host with no overview answers unsupported
+// rather than an empty board, because an empty board would read as "no notes".
+// The read takes no lease and never waits on a writer, so answering it here
+// cannot hold up the strand.
+fn read_memory(state: State, connection: Int, id: Int) -> State {
+  case state.memory_overview {
+    None -> {
+      reply_error(
+        state,
+        connection,
+        id,
+        protocol.code_unsupported,
+        "this server keeps no memory overview",
+      )
+      state
+    }
+    Some(admin) -> {
+      reply(
+        state,
+        connection,
+        id,
+        protocol.SnapshotEvent(
+          protocol.MemorySnapshot(board: memory_overview.board(admin.read())),
+        ),
+      )
+      state
+    }
+  }
+}
+
 // --- remembered permissions (protocol-change/073) --------------------------
 
 // `permissions`: everything the session remembers, with who approved it. An
@@ -8547,7 +8777,7 @@ fn last_row_usage(row: UsageRow) -> Option(message.Usage) {
   |> option.then(accounting.observed_usage)
 }
 
-// The auxiliary writers in `client/distill` commit a row with no entry and
+// The auxiliary writers in `client/auxiliary` commit a row with no entry and
 // name the work in a top-level `phase` detail. The planner's own
 // summary-request rows also carry no entry, but they are the strand's
 // requests and name no phase, so they keep their observation.

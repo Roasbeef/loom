@@ -23,3 +23,5 @@ gun = ">= 2.6.0 and < 3.0.0"
 [dev_dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"
 gleamy_bench = ">= 0.6.0 and < 1.0.0"
+statem = { path = "../statem" }
+qcheck = ">= 1.0.5 and < 2.0.0"

@@ -611,7 +611,8 @@ session-scoped cursors and bounded sync jobs. Large indexing work must
 not block all lifecycle requests. Runtime hooks retain session context;
 a shared coordinator does not turn cancellation into a global action.
 
-Distillation's once-per-server-boot cadence changes meaning under a
+*Superseded: the distillation pass was removed, so this recommendation no
+longer applies.* Distillation's once-per-server-boot cadence changes meaning under a
 daemon that may live for weeks. Recommend one bounded pass per memory
 domain at daemon startup, plus coalesced triggers after a session in
 that domain closes cleanly. The pass still skips live leased sources,

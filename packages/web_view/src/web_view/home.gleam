@@ -2472,6 +2472,7 @@ pub fn view(model: Model) -> Element(Msg) {
     ],
     element.none(),
     0,
+    0,
     "",
   )
 }

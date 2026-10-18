@@ -1213,8 +1213,17 @@ boundaries and the split's measurements under Invariants.
   from the existing `Closed` marker for the current lane, not a candidate.
   [ADR-010](../../docs/adr/010-retain-one-unsent-terminal-command.md) records
   the waiting-state and cancellation rules.
-- `test/session_channel_property_test.gleam` drives the real channel over 500
-  seeded schedules of submissions, well-formed and faulty replies, pushes,
+- `test/queue_editor_property_test.gleam` drives `queue_request` and `queue_editor`
+  together through `statem` over host schedules (select, issue, receive, type,
+  save, refetch, acknowledge, refuse, lose, drop) and holds a draft's custody to
+  the rules in its module doc: a reply is admitted only for the exact outstanding
+  read, an admitted reply keeps the operator's text for its own input and
+  replaces it for another, uncertainty is only lifted by an authoritative read,
+  and no refusal or dropped read touches the text.
+- `test/session_channel_property_test.gleam` drives the real channel through `statem` over 500
+  generated schedules (450 operator, 50 observer, one `statem.check` per role;
+  the lane, oracle and stand-in socket are the system under test, the model is
+  empty and the final retirement is `finish`) of submissions, well-formed and faulty replies, pushes,
   ticks, retirement and close, built on `start` and a stand-in socket, with
   time passed to every transition from the oracle's own `now`. After every step an oracle rebuilt from the written frames checks
   one request in flight, increasing identities, credits, no mutation resend,
@@ -1222,7 +1231,8 @@ boundaries and the split's measurements under Invariants.
   replies, inert pushes, deadlines, the idle refresh at the interval the
   lane's pushes select, and that `next_due` names exactly the first reading
   a tick acts at (N1). A failure prints
-  its seed and a shrunk event list. Its first run found that `close` and a
+  its seed, run and a shrunk event list; shrinking deletes events and shrinks
+  inside them, and keeps the broken invariant's tag. Its first run found that `close` and a
   transport `Closed` on an already closed lane each queued a second `Shut`
   (and the transport case a second `Failed`); both now leave a `Closed`
   lane untouched, and the property holds every event on a closed lane to
@@ -1901,8 +1911,10 @@ untouched.
 - **The live tail draws what a full render draws.** `live_tail.rows` must
   return exactly `render.render_line` for the whole answer on every frame,
   since replay goldens compare frames byte for byte;
-  `test/live_tail_test.gleam` checks it over generated streams, resizes and
-  resets. It settles a block only at a blank line followed by a line
+  `test/live_tail_test.gleam` checks it with `statem` over 300 generated
+  streams (a stream is a command list of deltas, resizes, collapses and
+  restarts; deleting a middle command leaves a valid stream, so a failure
+  shrinks), from fixed seeds, reproduced by `statem.check_run`'s (seed, run). It settles a block only at a blank line followed by a line
   starting with a letter, and only after rendering the halves and the whole
   to confirm the cut; a paragraph checkpoint sits only after lines free of
   Markdown punctuation, `&`, hard breaks and blank lines, before a line
@@ -2543,6 +2555,12 @@ untouched.
   birth identity: nothing about a passthrough wants any of that.
   `stderr_to_stdout` because a passthrough that reordered the two streams
   would be worse than one that interleaves them as the child did.
+- **The proposals review keeps only the reader's place.** `proposal_panel`
+  holds the list, one open proposal and the approval question. The board lives
+  in `Shared.proposals`, so a decision's reply redraws the open row. `Alt+p`
+  opens it, and the footer badge is `input_frame.Status.proposals`. A
+  collapsed `history_search` result keeps 3 hits (`recall_view.excerpt_hits`)
+  and `Ctrl+g` shows all.
 
 ## V2 integration evidence
 
@@ -3452,3 +3470,9 @@ executor (`selection.executor_of`), the deployment (`selection.deployment`), and
 member is an `Error`. `--abandon` is `AbandonRegistration`, which sends `sessions.move`
 with `abandon: true` (`protocol.AbandonMove`) and reads `AbandonedReply`; it does not
 combine with `--to`.
+
+## Memory overview (protocol 087)
+
+`tui/memory_panel` is the read-only Alt+m overlay. `tick.watch_memory` derives
+`memory_watch` from the open overlay, so any way of leaving the overlay stops
+the reads.

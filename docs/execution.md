@@ -188,9 +188,10 @@ their own ten-minute timeout and run under the outer process deadline too.
 EUnit captures a passing test's stdout, even with verbose progress. Emit
 prerequisite `SKIP` diagnostics through `io.println_error`, as the native TUI
 fixture does. Otherwise the skip census cannot distinguish an executed test
-from a skipped one. `scripts/test_skip_reporting.py` checks those emitters and
-runs a real passing EUnit fixture through the census: undeclared skips fail,
-declared skips pass, and unused declarations fail. A stale-declaration error
+from a skipped one. Lint rule R19 refuses a `SKIP` printed to stdout from a
+test source, and `scripts/test_skip_reporting.py` runs a real passing EUnit
+fixture through the census: undeclared skips fail, declared skips pass, and
+unused declarations fail. A stale-declaration error
 does not justify deleting its waiver until the actual prerequisite and output
 path have been checked.
 
@@ -246,6 +247,20 @@ This is not ceremony. It has repeatedly produced the actual finding:
   false positive — which is what forced the rule's definition to become
   exact instead of broad.
 
+Property and model-based tests are held to the same standard, and to
+three rules of their own. These are stated in `docs/gleam-style.md` Part
+III, "Property and model-based tests". First, every randomized test runs
+on a fixed qcheck seed with a name, and no environment variable changes
+it, so a red property is the same red property on every machine. You can
+re-run it as it stands; there is no seed to find and pass back in.
+Second, the proof is one mutation for each invariant family. Each
+mutation must fail under its own violation tag, and the shrunk
+counterexample it prints should be a few commands long. Third, a
+property that fails on unmodified code is a finding. Do not weaken it to
+make the gate pass. The conformance simulation is the exception to the
+seed rule: it keeps its own seeds, and `make replay-simulation
+SIM_SEED=<n>` re-runs one of them (`docs/architecture/simulation.md`).
+
 ### Run the gates a change affects
 
 `make check-affected` runs the part of the full gate that a change can
@@ -253,8 +268,14 @@ affect; `make affected` prints that selection and the reason for each
 gate without running anything. Both take `BASE=<rev>` (default
 `origin/main`). The change is everything between the merge base of
 `BASE` and HEAD, together with the working tree's uncommitted and
-untracked files. `scripts/affected.py` makes the selection and
-`scripts/check_affected.sh` runs it.
+untracked files. `lint/affected` (in `packages/lint`, run as `gleam run -m
+lint/affected_cli`) makes the selection and `scripts/check_affected.sh` runs
+it. Git stays in the script: it runs `git ls-files` and the merge-base diff
+and hands both to the selector as files, so the selector is a pure function
+of them and `bash scripts/check_affected.sh --changed [BASE]` prints exactly
+the paths it will be given. The first `make affected` after a change to
+`packages/lint` compiles it, which is a few seconds; warm, the selection takes
+about a second.
 
 The selection:
 

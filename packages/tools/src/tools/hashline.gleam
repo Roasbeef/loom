@@ -449,7 +449,11 @@ type Placed {
 /// stale reference (or a digest mismatch) rejects the whole edit with
 /// fresh anchors for replanning; partial application never happens. On
 /// success the result is byte-exact: untouched lines, line endings, and
-/// the trailing-newline state are preserved.
+/// the trailing-newline state are preserved. That last clause has one
+/// visible edge: deleting every line of a newline-terminated file leaves
+/// `"\n"`, so deleting the sole blank line of `"\n"` succeeds as the
+/// identity (see `Unplannable`; the empty file is reachable only by
+/// growing from it).
 ///
 /// Applying is deterministic: equal content and plan always produce the
 /// same result. And the digest binding makes application *at most

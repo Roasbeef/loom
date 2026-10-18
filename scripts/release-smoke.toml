@@ -10,6 +10,3 @@ max_output_tokens = 4096
 
 [roles]
 main = ["smoke"]
-
-[memory]
-distill = "on-boot"

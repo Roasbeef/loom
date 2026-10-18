@@ -31,6 +31,21 @@
 ////
 //// This module is test infrastructure, so `let assert` appears in it under
 //// the exemption `packages/conformance/CLAUDE.md` records.
+////
+//// ## Flow
+////
+//// `run` → `restart_converges` → `revocation_converges` → `converges_under` →
+//// `restart_script` → `revocation_script` → `compare` → `shrink`
+////
+//// 1. `run` asks each script in turn whether it converges under the fault its
+////    seed drew; `restart_converges` and `revocation_converges` are those two
+////    questions, and both are `converges_under` with the drawn fault.
+//// 2. `converges_under` runs a script fault-free through `restart_script` or
+////    `revocation_script`, runs it again under a fault, and `compare`s the
+////    durable rows and the catalogue revision.
+//// 3. On a reproducible failure the soak calls `shrink`, which asks
+////    `converges_under` the same question of the one simpler fault there is,
+////    the fault-free run, under the rules `runner.minimize` states.
 
 import broker/token
 import client/daemon/manager
@@ -45,7 +60,7 @@ import conformance/simulation/vclock.{type Clockwork}
 import gleam/bit_array
 import gleam/int
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import storage/access
@@ -118,11 +133,7 @@ pub fn run(seed seed: Int) -> Verdict {
 /// // lifecycle_runner.restart_converges(4471)
 /// ```
 pub fn restart_converges(seed: Int) -> Result(Nil, Failure) {
-  let pending = lifecycle_faults.pending_for(seed)
-  let kill = KillDaemonWithPending(session: restart_key, request: pending)
-  use base <- result.try(restart_script(seed, FaultFree, pending))
-  use faulted <- result.try(restart_script(seed, kill, pending))
-  compare("lifecycle/converges-with-baseline", base, faulted)
+  converges_under(seed, RestartScript, drawn_fault(seed, RestartScript))
 }
 
 /// Runs the revocation script fault-free and then under the revocation the
@@ -134,11 +145,122 @@ pub fn restart_converges(seed: Int) -> Result(Nil, Failure) {
 /// // lifecycle_runner.revocation_converges(4471)
 /// ```
 pub fn revocation_converges(seed: Int) -> Result(Nil, Failure) {
-  let at = lifecycle_faults.coordinate_for(seed)
-  let revoke = RevokeAt(principal: member_id, at:)
-  use base <- result.try(revocation_script(seed, FaultFree))
-  use faulted <- result.try(revocation_script(seed, revoke))
-  compare("revocation/converges-with-baseline", base, faulted)
+  converges_under(seed, RevocationScript, drawn_fault(seed, RevocationScript))
+}
+
+/// The two scripts this module runs.
+pub type Script {
+  /// A daemon killed with a lifecycle request in flight, then restarted.
+  RestartScript
+
+  /// An owner's revocation landing on a command already through admission.
+  RevocationScript
+}
+
+/// Runs one script fault-free and then under `fault`, and compares the two.
+///
+/// This is `restart_converges` and `revocation_converges` with the fault
+/// supplied rather than drawn, which is what a shrinker needs: it asks the
+/// same question of a simpler fault. `FaultFree` is a legal answer, and
+/// then both runs are fault-free.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // lifecycle_runner.converges_under(4471, RestartScript, FaultFree)
+/// ```
+pub fn converges_under(
+  seed: Int,
+  script: Script,
+  fault: Fault,
+) -> Result(Nil, Failure) {
+  case script {
+    RestartScript -> {
+      let pending = lifecycle_faults.pending_for(seed)
+      use base <- result.try(restart_script(seed, FaultFree, pending))
+      use faulted <- result.try(restart_script(seed, fault, pending))
+      compare("lifecycle/converges-with-baseline", base, faulted)
+    }
+    RevocationScript -> {
+      use base <- result.try(revocation_script(seed, FaultFree))
+      use faulted <- result.try(revocation_script(seed, fault))
+      compare("revocation/converges-with-baseline", base, faulted)
+    }
+  }
+}
+
+/// The fault a seed draws for a script.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // lifecycle_runner.drawn_fault(4471, RevocationScript)
+/// ```
+pub fn drawn_fault(seed: Int, script: Script) -> Fault {
+  case script {
+    RestartScript ->
+      KillDaemonWithPending(
+        session: restart_key,
+        request: lifecycle_faults.pending_for(seed),
+      )
+    RevocationScript ->
+      RevokeAt(principal: member_id, at: lifecycle_faults.coordinate_for(seed))
+  }
+}
+
+/// The script a failing check belongs to, read from the check's name, or
+/// `None` for a failure outside both scripts (the harness failing to start or
+/// stop a daemon), which has no fault to simplify.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert lifecycle_runner.script_of("revocation/silence-after-close")
+///   == option.Some(RevocationScript)
+/// ```
+pub fn script_of(check: String) -> Option(Script) {
+  case
+    string.starts_with(check, "lifecycle/"),
+    string.starts_with(check, "revocation/")
+  {
+    True, _ -> Some(RestartScript)
+    False, True -> Some(RevocationScript)
+    False, False -> None
+  }
+}
+
+/// Searches for a simpler fault that still fails `check`, under the rules
+/// `runner.minimize` states: the same check, on the first run and on every
+/// one of `runner.corroboration_runs` further runs. Returns the fault the
+/// failure was reduced to, which is the drawn fault when nothing simpler
+/// reproduces it. Only the single candidate `lifecycle_faults.shrink`
+/// offers, the fault-free run, exists, so this costs one run on the usual
+/// outcome and the corroboration's four if the failure never needed the
+/// fault.
+///
+/// A failure outside both scripts returns `None`: there is no fault to
+/// simplify.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // lifecycle_runner.shrink(4471, "lifecycle/no-resend", budget: 4)
+/// ```
+pub fn shrink(
+  seed: Int,
+  check: String,
+  budget budget: Int,
+) -> Option(#(Fault, Failure)) {
+  use script <- option.map(script_of(check))
+  let run = fn(fault) { converges_under(seed, script, fault) }
+  runner.minimize(
+    from: drawn_fault(seed, script),
+    failing: Failure(check, ""),
+    candidates: lifecycle_faults.shrink,
+    probe: run,
+    reprobe: run,
+    budget:,
+  )
 }
 
 /// Runs the restart script once under the named schedule and reports the

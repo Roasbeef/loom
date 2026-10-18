@@ -331,8 +331,9 @@ fn insert_domain(store: Catalogue, domain: Domain) -> Result(Domain, Error) {
 }
 
 // The destination check and the insert are one step on purpose: memory, index
-// and the derived digest sidecar are compared against every destination column
-// already stored, so two domains can never share a file.
+// and the directory guard (`digest_beside`) are compared against every
+// destination column already stored, so two domains can never share a file, nor
+// a directory holding the memory sidecars.
 fn insert_absent(store: Catalogue, domain: Domain) -> Result(Domain, Error) {
   use conflicts <- result.try(catalogue.query(
     store,
@@ -381,8 +382,8 @@ fn matches(
 }
 
 // Everything a stored domain must satisfy on the way in and on the way out:
-// canonical absolute destinations, three distinct files once the digest sidecar
-// is derived, and an identity that matches its own scope.
+// canonical absolute destinations, three distinct files once the directory
+// guard is derived, and an identity that matches its own scope.
 fn validate(domain: Domain) -> Result(Nil, Error) {
   use Nil <- result.try(case domain.scope {
     WorkspacePrivate -> absolute(domain.workspace)
@@ -445,10 +446,16 @@ fn absolute(path: String) -> Result(Nil, Error) {
   }
 }
 
-/// Derives the existing fixed sidecar destination beside a memory database.
+/// Derives the directory guard for a memory database: the path
+/// `loom-memory.digest` beside it.
 ///
-/// The derived path is persisted and collision-checked with every database
-/// destination. Distinct imported filenames cannot silently share a sidecar.
+/// Nothing writes that file any more; the distillation pass that did was
+/// removed. The path stays in the catalogue column, the conflict query and the
+/// distinctness check because it is a pure function of the memory file's
+/// directory, so no two domains can register memory files in one directory.
+/// That is what stops them sharing the fixed-name sidecars written there,
+/// `loom-memory.notes` and `loom-rules.md`. Dropping it would need a catalogue
+/// migration and a replacement check.
 ///
 /// ## Examples
 ///
@@ -494,7 +501,7 @@ type Row {
 }
 
 // Turns a stored row into a validated domain, or refuses it. Persisted scope
-// strings are decoded totally, and the derived digest sidecar and scope key are
+// strings are decoded totally, and the derived directory guard and scope key are
 // re-checked against the identity so a hand-edited catalogue cannot widen what
 // this record points at.
 fn decode(row: Row) -> Result(Domain, Error) {

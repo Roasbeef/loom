@@ -8,10 +8,12 @@
 //// nobody had enumerated — an Active goal, an idle primary, an idle
 //// reviewer, and nothing to do.
 ////
-//// The generator is a seeded SplitMix64 threaded by hand, the idiom
-//// `packages/core/test/support/generate.gleam` established: a failing
-//// property reproduces from its seed alone, and the walk is a pure
-//// function so it needs no process.
+//// The walk is drawn from qcheck generators, each property on its own fixed
+//// seed, so the gate is deterministic and a failing state arrives already
+//// shrunk: every enum is drawn as an index with the plainest variant first,
+//// so a counterexample is pulled toward an idle phase, no runs, a level
+//// read and zeroed counters. The walk is a pure function so it needs no
+//// process.
 
 import client/advisorslice
 import client/goalloop
@@ -20,9 +22,9 @@ import core/clock
 import core/entry
 import core/ids.{type OpId}
 import core/message
-import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import qcheck
 
 // --- fixtures ---------------------------------------------------------------
 
@@ -878,7 +880,7 @@ fn a_failing_check() -> goalstate.CheckResult {
 // can produce: an Active goal that owes nothing, with both strands idle,
 // never rests. This is the one invariant the whole rework exists for.
 pub fn the_loop_never_rests_in_the_stalled_combination_test() {
-  walk(seed(41), 400, fn(reached) {
+  walk(41, fn(reached) {
     let #(goal, observed) = reached
     let #(moved, action) = goalloop.next_action(goal, observed)
 
@@ -920,7 +922,7 @@ pub fn the_loop_never_rests_in_the_stalled_combination_test() {
 // reason the feed's own repair is: a notification is about the thing that
 // happened, and repairing a state it says nothing about is the tick's job.
 pub fn a_level_read_never_leaves_a_check_past_its_deadline_test() {
-  walk(seed(47), 400, fn(reached) {
+  walk(47, fn(reached) {
     let #(goal, observed) = reached
     let level = goalloop.Observed(..observed, event: goalloop.Level)
     let #(moved, _action) = goalloop.next_action(goal, level)
@@ -950,7 +952,7 @@ pub fn a_level_read_never_leaves_a_check_past_its_deadline_test() {
 // a busy primary returns the phase to `Idle` instead. What is left over is a
 // run this loop never observed at all, and no property can speak for that.
 pub fn a_check_never_outlives_a_busy_primary_test() {
-  walk(seed(48), 400, fn(reached) {
+  walk(48, fn(reached) {
     let #(goal, observed) = reached
     let #(moved, _action) = goalloop.next_action(goal, observed)
 
@@ -980,7 +982,7 @@ fn holds_no_check(phase: goalstate.Phase) -> Bool {
 // both a matching deadline and one it never used, so this covers the late
 // report of a check the operator cleared or paused out from under.
 pub fn a_stale_check_result_is_inert_test() {
-  walk(seed(46), 400, fn(reached) {
+  walk(46, fn(reached) {
     let #(goal, observed) = reached
 
     case observed.event, goal.phase {
@@ -1004,7 +1006,7 @@ pub fn a_stale_check_result_is_inert_test() {
 // leaves a goal past its cap, past its zero-progress limit, or past its
 // unanswered-feed limit.
 pub fn the_bounds_are_never_exceeded_test() {
-  walk(seed(42), 400, fn(reached) {
+  walk(42, fn(reached) {
     let #(goal, observed) = reached
     let #(moved, _action) = goalloop.next_action(goal, observed)
 
@@ -1032,7 +1034,7 @@ pub fn the_bounds_are_never_exceeded_test() {
 // should stop. The token budget is the bound no event clears, so it is the
 // one this property can state unconditionally.
 pub fn an_exhausted_budget_always_stops_the_loop_test() {
-  walk(seed(43), 400, fn(reached) {
+  walk(43, fn(reached) {
     let #(goal, observed) = reached
     let #(moved, action) = goalloop.next_action(goal, observed)
 
@@ -1052,7 +1054,7 @@ pub fn an_exhausted_budget_always_stops_the_loop_test() {
 // `Complete` is terminal. No event moves a complete goal's status, and
 // no action is asked for one.
 pub fn complete_is_terminal_test() {
-  walk(seed(44), 400, fn(reached) {
+  walk(44, fn(reached) {
     let #(goal, observed) = reached
     let done = goalstate.Goal(..goal, status: goalstate.Complete)
     let #(moved, action) = goalloop.next_action(done, observed)
@@ -1066,7 +1068,7 @@ pub fn complete_is_terminal_test() {
 // commands are the caller's. No event this function sees ever moves a
 // paused or limited goal back to active.
 pub fn only_the_operator_leaves_a_stopped_status_test() {
-  walk(seed(45), 400, fn(reached) {
+  walk(45, fn(reached) {
     let #(goal, observed) = reached
 
     list.each(stopped_statuses(), fn(status) {
@@ -1109,34 +1111,42 @@ fn stopped_statuses() -> List(goalstate.Status) {
 type Reached =
   #(goalstate.Goal, goalloop.Observed)
 
-fn walk(from: Seed, remaining: Int, check: fn(Reached) -> a) -> Nil {
-  case remaining <= 0 {
-    True -> Nil
+/// How many states each property is checked over. Every property draws the
+/// same number, from its own seed, so a state a failure names is one the
+/// other properties were not necessarily run on.
+const walk_count = 400
 
-    False -> {
-      let #(reached, next_seed) = draw(from)
-      let _checked = check(reached)
-      walk(next_seed, remaining - 1, check)
-    }
-  }
+fn walk(seed: Int, check: fn(Reached) -> a) -> Nil {
+  let config =
+    qcheck.default_config()
+    |> qcheck.with_test_count(walk_count)
+    |> qcheck.with_seed(qcheck.seed(seed))
+
+  qcheck.run(config, reached_generator(), fn(reached) {
+    let _checked = check(reached)
+    Nil
+  })
 }
 
-fn draw(from: Seed) -> #(Reached, Seed) {
-  let #(goal, from) = draw_goal(from)
-  let #(observed, from) = draw_observed(from, goal)
-
-  #(#(goal, observed), from)
+// A goal and an observation drawn independently. The observation never
+// reads the goal, so the two shrink on their own and a counterexample is
+// reduced on both sides.
+fn reached_generator() -> qcheck.Generator(Reached) {
+  qcheck.tuple2(goal_generator(), observed_generator())
 }
 
-fn draw_goal(from: Seed) -> #(goalstate.Goal, Seed) {
-  let #(phase, from) = draw_phase(from)
-  let #(budget, from) = between(from, 1, 200)
-  let #(used, from) = between(from, 0, 300)
-  // The continuation cap is drawn up to and including its limit, because a
-  // goal *does* sit at it: reaching the cap is read on the next evaluation
-  // rather than applied at the increment, which is what lets the bound trip
-  // before a continuation rather than after one.
-  let #(continuations, from) = between(from, 0, goalloop.continuation_cap)
+fn goal_generator() -> qcheck.Generator(goalstate.Goal) {
+  let bounds =
+    qcheck.tuple4(
+      phase_generator(),
+      qcheck.bounded_int(from: 1, to: 200),
+      qcheck.bounded_int(from: 0, to: 300),
+      // The continuation cap is drawn up to and including its limit, because a
+      // goal *does* sit at it: reaching the cap is read on the next evaluation
+      // rather than applied at the increment, which is what lets the bound trip
+      // before a continuation rather than after one.
+      qcheck.bounded_int(from: 0, to: goalloop.continuation_cap),
+    )
 
   // The two counters that pause the goal on reaching their limit are drawn
   // strictly below it, because a goal at either limit is not a reachable
@@ -1145,11 +1155,17 @@ fn draw_goal(from: Seed) -> #(goalstate.Goal, Seed) {
   // the way back. Drawing one at its limit would assert against a state no
   // sequence of events produces, which is what the first draft of this
   // generator did.
-  let #(zeros, from) = between(from, 0, goalloop.zero_progress_limit - 1)
-  let #(unanswered, from) = between(from, 0, goalloop.unanswered_feed_limit - 1)
-  let #(check, from) = draw_check(from)
+  let counters =
+    qcheck.tuple3(
+      qcheck.bounded_int(from: 0, to: goalloop.zero_progress_limit - 1),
+      qcheck.bounded_int(from: 0, to: goalloop.unanswered_feed_limit - 1),
+      check_generator(),
+    )
 
-  #(
+  qcheck.map2(bounds, counters, fn(bounds, counters) {
+    let #(phase, budget, used, continuations) = bounds
+    let #(zeros, unanswered, check) = counters
+
     goalstate.Goal(
       ..a_goal(),
       phase:,
@@ -1159,41 +1175,35 @@ fn draw_goal(from: Seed) -> #(goalstate.Goal, Seed) {
       continuations:,
       zero_progress: zeros,
       unanswered_feeds: unanswered,
-    ),
-    from,
-  )
+    )
+  })
 }
 
-fn draw_phase(from: Seed) -> #(goalstate.Phase, Seed) {
-  let #(which, from) = between(from, 0, 4)
-
-  case which {
-    0 -> #(goalstate.Idle, from)
-    1 -> #(goalstate.AwaitingVerdict(feed: walked_review()), from)
+fn phase_generator() -> qcheck.Generator(goalstate.Phase) {
+  qcheck.from_generators(qcheck.return(goalstate.Idle), [
+    qcheck.return(goalstate.AwaitingVerdict(feed: walked_review())),
 
     // Both sides of the check's deadline are drawn, because they are two
     // different states: one rests and one must not. The walk's clock reads
     // 5,000, so 4,000 is a deadline already passed and 6,000 is one in the
     // future.
-    2 -> #(goalstate.Checking(deadline_ms: 4000), from)
-    3 -> #(goalstate.ReadyToFeed, from)
-    _continuing -> #(
-      goalstate.Continuing(woken: walked_woken(), since_seq: 0),
-      from,
-    )
-  }
+    qcheck.return(goalstate.Checking(deadline_ms: 4000)),
+    qcheck.return(goalstate.ReadyToFeed),
+    qcheck.return(goalstate.Continuing(woken: walked_woken(), since_seq: 0)),
+  ])
 }
 
 // Whether the walked goal carries a check. Drawn, because the check changes
 // which action the un-stalled combination answers with and a walk that never
 // pinned one would leave `RunCheck` out of every property below.
-fn draw_check(from: Seed) -> #(Option(String), Seed) {
-  let #(which, from) = between(from, 0, 1)
-
-  case which {
-    0 -> #(None, from)
-    _pinned -> #(Some("make check"), from)
-  }
+fn check_generator() -> qcheck.Generator(Option(String)) {
+  qcheck.bounded_int(from: 0, to: 1)
+  |> qcheck.map(fn(which) {
+    case which {
+      0 -> None
+      _pinned -> Some("make check")
+    }
+  })
 }
 
 // The walk draws from three named operations rather than fresh ones,
@@ -1212,17 +1222,19 @@ fn walked_other() -> OpId {
   an_op(303)
 }
 
-fn draw_observed(
-  from: Seed,
-  goal: goalstate.Goal,
-) -> #(goalloop.Observed, Seed) {
-  let #(primary, from) = draw_run(from, walked_woken())
-  let #(advisor, from) = draw_run(from, walked_review())
-  let #(progressed, from) = between(from, 0, 1)
-  let #(cancelled, from) = between(from, 0, 1)
-  let #(event, from) = draw_event(from, goal)
+fn observed_generator() -> qcheck.Generator(goalloop.Observed) {
+  let runs =
+    qcheck.tuple2(run_generator(walked_woken()), run_generator(walked_review()))
+  let endings =
+    qcheck.tuple2(
+      qcheck.bounded_int(from: 0, to: 1),
+      qcheck.bounded_int(from: 0, to: 1),
+    )
 
-  #(
+  qcheck.map3(runs, endings, event_generator(), fn(runs, endings, event) {
+    let #(primary, advisor) = runs
+    let #(progressed, cancelled) = endings
+
     goalloop.Observed(
       primary:,
       advisor:,
@@ -1241,55 +1253,45 @@ fn draw_observed(
       event:,
       now_ms: 5000,
       check_timeout_ms: a_short_wall,
-    ),
-    from,
-  )
+    )
+  })
 }
 
-fn draw_run(from: Seed, named: OpId) -> #(Option(OpId), Seed) {
-  let #(which, from) = between(from, 0, 2)
-
-  case which {
-    0 -> #(None, from)
-    1 -> #(Some(named), from)
-    _other -> #(Some(walked_other()), from)
-  }
-}
-
-fn draw_event(from: Seed, _goal: goalstate.Goal) -> #(goalloop.Event, Seed) {
-  let #(which, from) = between(from, 0, 8)
-
-  case which {
-    0 -> #(goalloop.Level, from)
-    1 -> {
-      let #(harness, from) = between(from, 0, 1)
-
-      #(
-        goalloop.PrimaryStarted(
-          operation: walked_woken(),
-          origin: case harness {
-            0 -> goalloop.Foreign
-            _opened -> goalloop.Harness
-          },
-        ),
-        from,
-      )
+fn run_generator(named: OpId) -> qcheck.Generator(Option(OpId)) {
+  qcheck.bounded_int(from: 0, to: 2)
+  |> qcheck.map(fn(which) {
+    case which {
+      0 -> None
+      1 -> Some(named)
+      _other -> Some(walked_other())
     }
-    2 -> #(goalloop.PrimaryEnded(operation: walked_woken()), from)
-    3 -> #(goalloop.AdvisorEnded(operation: walked_review()), from)
-    4 -> #(goalloop.Aborted(operation: walked_woken()), from)
-    5 -> #(goalloop.Answered(answer: goalloop.Continued(text: "on")), from)
+  })
+}
+
+fn event_generator() -> qcheck.Generator(goalloop.Event) {
+  let started =
+    qcheck.bounded_int(from: 0, to: 1)
+    |> qcheck.map(fn(harness) {
+      goalloop.PrimaryStarted(operation: walked_woken(), origin: case harness {
+        0 -> goalloop.Foreign
+        _opened -> goalloop.Harness
+      })
+    })
+
+  qcheck.from_generators(qcheck.return(goalloop.Level), [
+    started,
+    qcheck.return(goalloop.PrimaryEnded(operation: walked_woken())),
+    qcheck.return(goalloop.AdvisorEnded(operation: walked_review())),
+    qcheck.return(goalloop.Aborted(operation: walked_woken())),
+    qcheck.return(goalloop.Answered(answer: goalloop.Continued(text: "on"))),
 
     // A result for the phase the walk draws, and one for a deadline it
     // never drew. The second is the stale report — a check the loop stopped
     // waiting for, reporting after the fact — and it must move nothing.
-    6 -> #(goalloop.Checked(deadline_ms: 4000, result: walked_check()), from)
-    7 -> #(goalloop.Checked(deadline_ms: 99_000, result: walked_check()), from)
-    _completed -> #(
-      goalloop.Answered(answer: goalloop.Completed(text: "done")),
-      from,
-    )
-  }
+    qcheck.return(goalloop.Checked(deadline_ms: 4000, result: walked_check())),
+    qcheck.return(goalloop.Checked(deadline_ms: 99_000, result: walked_check())),
+    qcheck.return(goalloop.Answered(answer: goalloop.Completed(text: "done"))),
+  ])
 }
 
 fn walked_check() -> goalstate.CheckResult {
@@ -1299,45 +1301,4 @@ fn walked_check() -> goalstate.CheckResult {
     output: "one test failed",
     ran_at_ms: 4900,
   )
-}
-
-// --- the generator ----------------------------------------------------------
-
-// A seeded SplitMix64, the shape `core`'s own property support uses, so
-// a failing property reproduces from its seed alone.
-type Seed {
-  Seed(state: Int)
-}
-
-const mask_64 = 0xFFFFFFFFFFFFFFFF
-
-fn seed(n: Int) -> Seed {
-  Seed(state: int.bitwise_and(n, mask_64))
-}
-
-fn next(from: Seed) -> #(Int, Seed) {
-  let state = int.bitwise_and(from.state + 0x9E3779B97F4A7C15, mask_64)
-  let z = state
-  let z =
-    int.bitwise_and(
-      int.bitwise_exclusive_or(z, int.bitwise_shift_right(z, 30))
-        * 0xBF58476D1CE4E5B9,
-      mask_64,
-    )
-  let z =
-    int.bitwise_and(
-      int.bitwise_exclusive_or(z, int.bitwise_shift_right(z, 27))
-        * 0x94D049BB133111EB,
-      mask_64,
-    )
-  let z = int.bitwise_exclusive_or(z, int.bitwise_shift_right(z, 31))
-
-  #(z, Seed(state:))
-}
-
-fn between(from: Seed, low: Int, high: Int) -> #(Int, Seed) {
-  let #(drawn, later) = next(from)
-  let span = high - low + 1
-
-  #(low + drawn % span, later)
 }

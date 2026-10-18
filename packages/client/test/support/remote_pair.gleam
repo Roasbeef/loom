@@ -276,7 +276,7 @@ pub fn models(url: String, advisor_url: Option(String)) -> String {
       <> "[models.adviser]\ndialect = \"anthropic\"\napi_key_env = \"LOOM_TEST_PROVIDER_KEY\"\nbase_url = \""
       <> advisor
       <> "\"\nmodel_id = \"fixture\"\ncontext_window = 100000\nmax_output_tokens = 4096\n"
-      <> "[roles]\nmain = [\"fixture\"]\nadvisor = [\"adviser\"]\n[memory]\ndistill = \"off\"\n"
+      <> "[roles]\nmain = [\"fixture\"]\nadvisor = [\"adviser\"]\n"
   }
 }
 
@@ -301,7 +301,7 @@ pub fn models_without_glance(url: String) -> String {
   <> url
   <> "\"\nmodel_id = \"fixture\"\ncontext_window = 100000\nmax_output_tokens = 4096\n"
   <> "[models.sink]\ndialect = \"anthropic\"\napi_key_env = \"LOOM_TEST_PROVIDER_KEY\"\nbase_url = \"http://127.0.0.1:9\"\nmodel_id = \"fixture\"\ncontext_window = 100000\nmax_output_tokens = 4096\n"
-  <> "[roles]\nmain = [\"fixture\"]\nsummarize = [\"sink\"]\n[memory]\ndistill = \"off\"\n"
+  <> "[roles]\nmain = [\"fixture\"]\nsummarize = [\"sink\"]\n"
 }
 
 /// Tables with the orchestrator's models for `url` and nothing else.

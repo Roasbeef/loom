@@ -67,9 +67,10 @@ import tui/job
 import tui/layout
 import tui/model.{
   type Model, type Reconnect, type StrandWorkspace, AccessManager,
-  AgentInspector, ApprovalInspector, DaemonSelector, GoalInspector, Model,
-  ModelSelector, NoOverlay, PeerLinkManager, PromptNext, ReconnectAttempting,
-  ReconnectIdle, ReconnectSpent, StrandWorkspace, View,
+  AgentInspector, ApprovalInspector, DaemonSelector, GoalInspector,
+  MemoryOverview, Model, ModelSelector, NoOverlay, PeerLinkManager, PromptNext,
+  ProposalReview, ReconnectAttempting, ReconnectIdle, ReconnectSpent,
+  StrandWorkspace, View,
 } as tui_model
 import tui/model_selector
 import tui/note_panel
@@ -233,7 +234,9 @@ pub fn surroundings(model: Model) -> lane_fold.Surroundings {
       | GoalInspector(_)
       | DaemonSelector(_)
       | PeerLinkManager(_)
-      | AccessManager(_) -> None
+      | AccessManager(_)
+      | ProposalReview(_)
+      | MemoryOverview(_) -> None
     },
     wanted: model.view.inspecting_approval,
   )
@@ -564,6 +567,8 @@ fn show_surface(
         DaemonSelector(selector) -> DaemonSelector(selector)
         PeerLinkManager(state) -> PeerLinkManager(state)
         AccessManager(state) -> AccessManager(state)
+        ProposalReview(state) -> ProposalReview(state)
+        MemoryOverview(state) -> MemoryOverview(state)
         ApprovalInspector(panel) -> ApprovalInspector(panel)
       }
       Model(..model, view: view_set.overlay(model.view, overlay))

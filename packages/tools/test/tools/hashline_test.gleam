@@ -1,11 +1,36 @@
+import gleam/bool
 import gleam/int
 import gleam/list
 import gleam/string
-import support/generate
+import qcheck
+import support/gen
 import tools/hashline.{
   type Ref, AnchoredLine, Delete, InsertAfter, InsertAtStart, MalformedPlan,
   OverlappingHunks, Plan, Ref, Region, Replace, Split, StaleAnchors,
   StaleContent, UnreachableEnding,
+}
+
+// --- generated properties --------------------------------------------------
+//
+// Every property below draws its inputs from `support/gen` through qcheck on
+// a fixed seed, so the gate is deterministic and a failure arrives already
+// shrunk: fewer and emptier lines, positions pulled toward the first line.
+
+/// How many cases each property is checked over, and the qcheck seed they
+/// are drawn from. The cheap properties share both; the two sweeps below
+/// set their own counts.
+const property_count = 100
+
+const property_seed = 53
+
+fn property_config(count: Int) -> qcheck.Config {
+  qcheck.default_config()
+  |> qcheck.with_test_count(count)
+  |> qcheck.with_seed(qcheck.seed(property_seed))
+}
+
+fn property(generator: qcheck.Generator(a), check: fn(a) -> Nil) -> Nil {
+  qcheck.run(property_config(property_count), generator, check)
 }
 
 // --- golden anchor vectors ----------------------------------------------
@@ -74,13 +99,7 @@ pub fn join_roundtrip_fixed_cases_test() {
 }
 
 pub fn join_roundtrip_property_test() {
-  let seeds = generate.seed(11)
-  let #(contents, _seed) =
-    generate.list_of(seeds, 50, fn(seed) {
-      let #(count, seed) = generate.int_between(seed, 0, 12)
-      generate.content(seed, count)
-    })
-  list.each(contents, fn(content) {
+  property(gen.content(min_lines: 0, max_lines: 12), fn(content) {
     assert hashline.join_lines(hashline.split_lines(content)) == content
   })
 }
@@ -339,118 +358,98 @@ pub fn apply_empty_plan_is_identity_test() {
 
 // A plan built from a document's real anchors applies, deterministically.
 pub fn apply_deterministic_property_test() {
-  list.each(generate.list_of(generate.seed(23), 30, generate.next).0, fn(n) {
-    let #(content, seed) = generate.content(generate.seed(n), 8)
-    let total = list.length(hashline.split_lines(content).lines)
-    case total >= 4 {
-      False -> Nil
-      True -> {
-        let #(replacement, _seed) = generate.line(seed)
-        let plan =
-          plan(content, [
-            Replace(ref_to(content, 2), ref_to(content, 2), [replacement]),
-            Delete(ref_to(content, 4), ref_to(content, 4)),
-          ])
-        let first = hashline.apply(content, plan)
-        let second = hashline.apply(content, plan)
-        let assert Ok(_) = first as "a plan from real anchors must apply"
-        assert first == second
-      }
-    }
-  })
+  property(
+    qcheck.tuple2(gen.content(min_lines: 4, max_lines: 8), gen.line()),
+    fn(drawn) {
+      let #(content, replacement) = drawn
+      let plan =
+        plan(content, [
+          Replace(ref_to(content, 2), ref_to(content, 2), [replacement]),
+          Delete(ref_to(content, 4), ref_to(content, 4)),
+        ])
+      let first = hashline.apply(content, plan)
+      let second = hashline.apply(content, plan)
+      let assert Ok(_) = first as "a plan from real anchors must apply"
+      assert first == second
+    },
+  )
 }
 
 // Editing after a concurrent modification of a referenced line is
 // always rejected.
 pub fn apply_concurrent_modification_property_test() {
-  list.each(generate.list_of(generate.seed(31), 30, generate.next).0, fn(n) {
-    let #(content, _seed) = generate.content(generate.seed(n), 6)
+  property(gen.content(min_lines: 3, max_lines: 6), fn(content) {
     let split = hashline.split_lines(content)
-    case list.length(split.lines) >= 3 {
-      False -> Nil
-      True -> {
-        let plan =
-          plan(content, [
-            Replace(ref_to(content, 2), ref_to(content, 2), ["edited"]),
-          ])
-        // Mutate exactly the referenced line.
-        let modified_lines =
-          list.index_map(split.lines, fn(line, index) {
-            case index == 1 {
-              True -> line <> "!concurrent!"
-              False -> line
-            }
-          })
-        let modified =
-          hashline.join_lines(Split(..split, lines: modified_lines))
-        let assert Error(StaleAnchors(stale: [stale])) =
-          hashline.apply(modified, plan)
-        assert stale.line == 2
-      }
-    }
+    let plan =
+      plan(content, [
+        Replace(ref_to(content, 2), ref_to(content, 2), ["edited"]),
+      ])
+    // Mutate exactly the referenced line.
+    let modified_lines =
+      list.index_map(split.lines, fn(line, index) {
+        case index == 1 {
+          True -> line <> "!concurrent!"
+          False -> line
+        }
+      })
+    let modified = hashline.join_lines(Split(..split, lines: modified_lines))
+    let assert Error(StaleAnchors(stale: [stale])) =
+      hashline.apply(modified, plan)
+    assert stale.line == 2
   })
 }
 
 // Anchors are content hashes: editing some lines never changes the
 // anchors of untouched lines.
 pub fn anchors_stable_under_unrelated_edits_property_test() {
-  list.each(generate.list_of(generate.seed(47), 30, generate.next).0, fn(n) {
-    let #(content, _seed) = generate.content(generate.seed(n), 6)
-    let total = list.length(hashline.split_lines(content).lines)
-    case total >= 3 {
-      False -> Nil
-      True -> {
-        let plan =
-          plan(content, [
-            Replace(ref_to(content, 1), ref_to(content, 1), ["changed"]),
-          ])
-        let assert Ok(edited) = hashline.apply(content, plan)
-        let before = hashline.annotate(content)
-        let after = hashline.annotate(edited)
-        // Every line except the first keeps its anchor (its line number
-        // is unchanged here because the replacement is 1-for-1).
-        list.each(list.drop(before, 1), fn(anchored) {
-          let assert Ok(same_line) =
-            list.find(after, fn(candidate) { candidate.line == anchored.line })
-          assert same_line.anchor == anchored.anchor
-          assert same_line.text == anchored.text
-        })
-      }
-    }
+  property(gen.content(min_lines: 3, max_lines: 6), fn(content) {
+    let plan =
+      plan(content, [
+        Replace(ref_to(content, 1), ref_to(content, 1), ["changed"]),
+      ])
+    let assert Ok(edited) = hashline.apply(content, plan)
+    let before = hashline.annotate(content)
+    let after = hashline.annotate(edited)
+    // Every line except the first keeps its anchor (its line number
+    // is unchanged here because the replacement is 1-for-1).
+    list.each(list.drop(before, 1), fn(anchored) {
+      let assert Ok(same_line) =
+        list.find(after, fn(candidate) { candidate.line == anchored.line })
+      assert same_line.anchor == anchored.anchor
+      assert same_line.text == anchored.text
+    })
   })
 }
 
 // Applied edits are byte-exact: reconstructing the expected output by
 // hand equals the applied output.
 pub fn apply_byte_exact_property_test() {
-  list.each(generate.list_of(generate.seed(59), 30, generate.next).0, fn(n) {
-    let #(content, seed) = generate.content(generate.seed(n), 7)
-    let split = hashline.split_lines(content)
-    let total = list.length(split.lines)
-    case total >= 2 {
-      False -> Nil
-      True -> {
-        let #(index, seed) = generate.int_between(seed, 1, total)
-        let #(replacement, _seed) = generate.line(seed)
-        let plan =
-          plan(content, [
-            Replace(ref_to(content, index), ref_to(content, index), [
-              replacement,
-            ]),
-          ])
-        let expected_lines =
-          list.index_map(split.lines, fn(line, position) {
-            case position == index - 1 {
-              True -> replacement
-              False -> line
-            }
-          })
-        let expected =
-          hashline.join_lines(Split(..split, lines: expected_lines))
-        assert hashline.apply(content, plan) == Ok(expected)
-      }
-    }
-  })
+  property(
+    qcheck.tuple3(
+      gen.content(min_lines: 2, max_lines: 7),
+      gen.pick(),
+      gen.line(),
+    ),
+    fn(drawn) {
+      let #(content, pick, replacement) = drawn
+      let split = hashline.split_lines(content)
+      let total = list.length(split.lines)
+      let index = 1 + gen.wrap(pick, total)
+      let plan =
+        plan(content, [
+          Replace(ref_to(content, index), ref_to(content, index), [replacement]),
+        ])
+      let expected_lines =
+        list.index_map(split.lines, fn(line, position) {
+          case position == index - 1 {
+            True -> replacement
+            False -> line
+          }
+        })
+      let expected = hashline.join_lines(Split(..split, lines: expected_lines))
+      assert hashline.apply(content, plan) == Ok(expected)
+    },
+  )
 }
 
 pub fn reapply_after_success_is_rejected_test() {
@@ -474,8 +473,10 @@ pub fn identical_lines_disambiguated_by_line_number_test() {
 
 pub fn fresh_context_constant_is_reported_width_test() {
   let content =
-    generate.list_of(generate.seed(3), 9, generate.line).0
-    |> string.join(with: "\n")
+    string.join(
+      ["let", "case", "fn", "->", "münchen", "日本語", "🦀", "___", "x = y"],
+      with: "\n",
+    )
   let plan =
     plan(content, [
       Replace(
@@ -552,6 +553,20 @@ pub fn duplicate_shift_defeats_anchors_alone_test() {
   assert hashline.apply(once, plan(once, [Delete(ref, ref)])) == Ok("\n")
 }
 
+pub fn deleting_every_line_of_a_terminated_file_leaves_its_newline_test() {
+  // The documented consequence of the line model, not a lost edit: `apply`
+  // keeps the file's final-newline state, so a terminated file with every
+  // line removed is `"\n"` (`Unplannable`'s doc). For `"\n"`, whose one
+  // line is blank, that is the identity; `"x\n"` lands on the same text. The
+  // empty file is not a result of deleting, only of never having had lines.
+  let blank = Ref(line: 1, anchor: hashline.anchor(""))
+  let x = Ref(line: 1, anchor: hashline.anchor("x"))
+  assert hashline.apply("\n", plan("\n", [Delete(blank, blank)])) == Ok("\n")
+  assert hashline.apply("x\n", plan("x\n", [Delete(x, x)])) == Ok("\n")
+  assert hashline.plan_between(base: "x\n", edited: "")
+    == Error(hashline.UnreachableEnding)
+}
+
 pub fn mid_range_concurrent_modification_rejected_test() {
   // M1: a range hunk carries anchors only for its endpoints; a
   // concurrent edit strictly inside the range must still reject, and
@@ -574,44 +589,53 @@ pub fn mid_range_replace_concurrent_modification_rejected_test() {
     hashline.apply(modified, plan)
 }
 
-// For random contents — plain and duplicate/blank-heavy — and random
+// What the at-most-once property does to the chosen line: delete it, or
+// replace it with its own text plus a mark, so the edit always changes the
+// content. Deletion first, since a shrunk counterexample reads best as the
+// plainer edit.
+type LineEdit {
+  RemoveLine
+  MarkLine
+}
+
+// For generated contents — plain and duplicate/blank-heavy — and
 // content-changing plans, a plan never applies twice: the second apply
 // against the first apply's output is always an error.
 pub fn at_most_once_property_test() {
-  list.each(generate.list_of(generate.seed(67), 60, generate.next).0, fn(n) {
-    let seed = generate.seed(n)
-    let #(heavy, seed) = generate.bool(seed)
-    let #(content, seed) = case heavy {
-      True -> generate.duplicate_heavy_content(seed, 8)
-      False -> generate.content(seed, 8)
-    }
-    let total = list.length(hashline.split_lines(content).lines)
-    case total >= 2 {
-      False -> Nil
-      True -> {
-        let #(index, seed) = generate.int_between(seed, 1, total)
-        let #(delete, _seed) = generate.bool(seed)
-        let hunk = case delete {
-          True -> Delete(ref_to(content, index), ref_to(content, index))
-          False -> {
-            // A replacement that always differs from the original line.
-            let assert Ok(anchored) =
-              list.find(hashline.annotate(content), fn(anchored) {
-                anchored.line == index
-              })
-            Replace(ref_to(content, index), ref_to(content, index), [
-              anchored.text <> "!",
-            ])
-          }
-        }
-        let plan = plan(content, [hunk])
-        let assert Ok(once) = hashline.apply(content, plan)
-        assert once != content
-        let assert Error(_) = hashline.apply(once, plan)
-        Nil
+  property(
+    qcheck.tuple3(
+      gen.either_content(min_lines: 2, max_lines: 8),
+      gen.pick(),
+      qcheck.bounded_int(from: 0, to: 1),
+    ),
+    fn(drawn) {
+      let #(content, pick, edit_kind) = drawn
+      let total = list.length(hashline.split_lines(content).lines)
+      let index = 1 + gen.wrap(pick, total)
+      let edit = case edit_kind {
+        0 -> RemoveLine
+        _ -> MarkLine
       }
-    }
-  })
+      let hunk = case edit {
+        RemoveLine -> Delete(ref_to(content, index), ref_to(content, index))
+        MarkLine -> {
+          // A replacement that always differs from the original line.
+          let assert Ok(anchored) =
+            list.find(hashline.annotate(content), fn(anchored) {
+              anchored.line == index
+            })
+          Replace(ref_to(content, index), ref_to(content, index), [
+            anchored.text <> "!",
+          ])
+        }
+      }
+      let plan = plan(content, [hunk])
+      let assert Ok(once) = hashline.apply(content, plan)
+      assert once != content
+      let assert Error(_) = hashline.apply(once, plan)
+      Nil
+    },
+  )
 }
 
 pub fn anchor_version_is_one_test() {
@@ -763,14 +787,15 @@ pub fn applied_regions_handles_content_without_a_trailing_newline_test() {
 // --- applied_regions, swept ----------------------------------------------
 //
 // The three properties that make the ranges usable as anchors, over a
-// generated sweep of non-overlapping hunk sets. `support/generate` is the
-// package's own seeded generator, so no property-testing dependency is
-// introduced for this.
+// generated sweep of non-overlapping hunk sets.
+
+/// How many files the sweep is run over; the one property that draws files
+/// of up to forty lines, so it gets its own count.
+const sweep_count = 200
 
 pub fn applied_regions_sweep_holds_its_invariants_test() {
-  upto(200)
-  |> list.each(fn(n) {
-    let #(hunks, edited, total) = sweep_case(n)
+  qcheck.run(property_config(sweep_count), sweep_generator(), fn(drawn) {
+    let #(hunks, edited, total) = sweep_case(drawn)
     let result = regions(hunks, edited)
 
     // Every range lies inside the file that was written.
@@ -815,20 +840,37 @@ pub fn applied_regions_sweep_holds_its_invariants_test() {
   })
 }
 
+// A file of four to forty lines and one `#(take, width)` slot for every
+// third line, which is the most slots a file that long can use. A slot
+// shrinks toward "skip this line", and a taken one toward width zero, a
+// deletion, so a failing sweep is reported as a short file with the fewest
+// hunks that still break the arithmetic.
+fn sweep_generator() -> qcheck.Generator(#(String, List(#(Int, Int)))) {
+  let slot =
+    qcheck.tuple2(
+      qcheck.bounded_int(from: 0, to: 1),
+      qcheck.bounded_int(from: 0, to: 3),
+    )
+  qcheck.tuple2(
+    gen.content(min_lines: 4, max_lines: 40),
+    qcheck.fixed_length_list_from(slot, 14),
+  )
+}
+
 // One generated case: a file, a set of non-overlapping single-line hunks
 // over it whose replacement lengths vary, and the content applying them
 // produces. `apply` does the splicing, so the sweep checks the arithmetic
 // against the real post-image rather than a second prediction of it.
-fn sweep_case(n: Int) -> #(List(hashline.Hunk), String, Int) {
-  let seed = generate.seed(n)
-  let #(requested, seed) = generate.int_between(seed, 4, 40)
-  let #(content, seed) = generate.content(seed, requested)
+fn sweep_case(
+  drawn: #(String, List(#(Int, Int))),
+) -> #(List(hashline.Hunk), String, Int) {
+  let #(content, slots) = drawn
 
   // The generator's line count is what it was asked for, not necessarily
   // what the content splits into, and a reference past the end would be a
   // bug in the sweep rather than in what it measures.
   let line_count = list.length(hashline.split_lines(content).lines)
-  let #(hunks, _seed) = sweep_hunks(content, line_count, seed, 1, [])
+  let hunks = sweep_hunks(content, line_count, slots, 1, [])
   let assert Ok(edited) =
     hashline.apply(content, Plan(digest: hashline.digest(content), hunks:))
     as "the sweep built a plan that did not apply"
@@ -837,33 +879,32 @@ fn sweep_case(n: Int) -> #(List(hashline.Hunk), String, Int) {
 
 // The prefix every generated replacement line carries, so the coverage
 // check can find the written lines in the post-image. No fragment in
-// `support/generate`'s alphabet can produce it.
+// `support/gen`'s alphabet can produce it.
 const sweep_marker = "SWEEPWROTE"
 
 // Walks the file forwards taking at most every third line, so the hunks
-// cannot overlap however the coin lands.
+// cannot overlap however the slots fall. Each slot decides one line.
 //
 // Line 1 is always a replacement of at least one line. That is what keeps
 // the coverage assertion from being vacuous: a case whose every hunk was a
-// deletion, or whose every coin came up tails, would write nothing and
-// have nothing to cover.
+// deletion, or whose every slot said skip, would write nothing and have
+// nothing to cover.
 fn sweep_hunks(
   content: String,
   line_count: Int,
-  seed: generate.Seed,
+  slots: List(#(Int, Int)),
   line: Int,
   built: List(hashline.Hunk),
-) -> #(List(hashline.Hunk), generate.Seed) {
-  case line > line_count {
-    True -> #(built, seed)
-    False -> {
-      let #(take, seed) = generate.bool(seed)
-      let #(width, seed) = generate.int_between(seed, 0, 3)
-      let hunks = case line == 1 || take {
+) -> List(hashline.Hunk) {
+  use <- bool.guard(line > line_count, built)
+  case slots {
+    [] -> built
+    [#(take, width), ..rest] -> {
+      let hunks = case line == 1 || take == 1 {
         False -> built
         True -> [sweep_hunk(content, line, forced_width(line, width)), ..built]
       }
-      sweep_hunks(content, line_count, seed, line + 3, hunks)
+      sweep_hunks(content, line_count, rest, line + 3, hunks)
     }
   }
 }
@@ -1014,44 +1055,87 @@ pub fn plan_between_binds_to_base_not_edited_test() {
   assert digest == hashline.digest(other)
 }
 
-// A random edit of `base`: splice a random run of fresh lines over a random
+// How a generated pair's edited text is made from its base. The splice
+// kinds come first so shrinking prefers the ordinary edit.
+type EditKind {
+  SpliceLines
+  FlipFinalNewline
+  Unrelated
+}
+
+// The recipe for an edit of some base not yet known: positions are picks
+// wrapped once the base's length is, a run of fresh lines, and a whole
+// unrelated file for the `Unrelated` kind.
+type EditRecipe {
+  EditRecipe(
+    kind: EditKind,
+    from_pick: Int,
+    span_pick: Int,
+    fresh: List(String),
+    unrelated: String,
+  )
+}
+
+fn edit_recipe_generator() -> qcheck.Generator(EditRecipe) {
+  let kind =
+    qcheck.bounded_int(from: 0, to: 5)
+    |> qcheck.map(fn(n) {
+      case n {
+        4 -> FlipFinalNewline
+        5 -> Unrelated
+        _ -> SpliceLines
+      }
+    })
+  let fresh =
+    qcheck.generic_list(
+      elements_from: gen.line(),
+      length_from: qcheck.bounded_int(from: 0, to: 3),
+    )
+  qcheck.map5(
+    kind,
+    gen.pick(),
+    gen.pick(),
+    fresh,
+    gen.content(min_lines: 2, max_lines: 5),
+    fn(kind, from_pick, span_pick, fresh, unrelated) {
+      EditRecipe(kind:, from_pick:, span_pick:, fresh:, unrelated:)
+    },
+  )
+}
+
+// An edit of `base` by the recipe: splice a run of fresh lines over a
 // range, sometimes flip the final newline, and sometimes throw the whole
 // text away for an unrelated one.
-fn edit_of(base: String, seed: generate.Seed) -> #(String, generate.Seed) {
+fn edit_of(base: String, recipe: EditRecipe) -> String {
   let split = hashline.split_lines(base)
   let total = list.length(split.lines)
-  let #(mode, seed) = generate.int_between(seed, 0, 5)
-  let #(from, seed) = generate.int_between(seed, 0, total)
-  let #(to, seed) = generate.int_between(seed, from, total)
-  let #(count, seed) = generate.int_between(seed, 0, 3)
-  let #(fresh, seed) = generate.list_of(seed, count, generate.line)
+  let from = gen.wrap(recipe.from_pick, total + 1)
+  let to = from + gen.wrap(recipe.span_pick, total - from + 1)
   let spliced =
     list.flatten([
       list.take(split.lines, from),
-      fresh,
+      recipe.fresh,
       list.drop(split.lines, to),
     ])
 
-  case mode {
-    0 -> generate.content(seed, count + 2)
-    1 -> #(
+  case recipe.kind {
+    Unrelated -> recipe.unrelated
+    FlipFinalNewline ->
       hashline.join_lines(Split(
         lines: spliced,
         trailing_newline: !split.trailing_newline,
-      )),
-      seed,
-    )
-    _ -> #(hashline.join_lines(Split(..split, lines: spliced)), seed)
+      ))
+    SpliceLines -> hashline.join_lines(Split(..split, lines: spliced))
   }
 }
 
 // A concurrent modification of `base`: one line changed, gained, or lost.
-fn disturb(base: String, seed: generate.Seed) -> #(String, generate.Seed) {
+// The kinds are picked by index and the position by a wrapped pick.
+fn disturb(base: String, kind: Int, at_pick: Int) -> String {
   let split = hashline.split_lines(base)
   let total = list.length(split.lines)
-  let #(mode, seed) = generate.int_between(seed, 0, 2)
-  let #(at, seed) = generate.int_between(seed, 0, int.max(total - 1, 0))
-  let lines = case mode, split.lines {
+  let at = gen.wrap(at_pick, int.max(total, 1))
+  let lines = case kind, split.lines {
     0, [_, ..] ->
       list.index_map(split.lines, fn(line, index) {
         case index == at {
@@ -1068,7 +1152,7 @@ fn disturb(base: String, seed: generate.Seed) -> #(String, generate.Seed) {
         list.drop(split.lines, at),
       ])
   }
-  #(hashline.join_lines(Split(..split, lines:)), seed)
+  hashline.join_lines(Split(..split, lines:))
 }
 
 // A staleness rejection, as opposed to one about the plan's own shape.
@@ -1079,36 +1163,80 @@ fn is_stale(rejection: hashline.ApplyError) -> Bool {
   }
 }
 
-// For many generated pairs — CRLF lines, astral characters, blank runs,
-// with and without a final newline, edits at every position — the plan
-// lands exactly on the base and on nothing else.
-pub fn plan_between_round_trip_property_test() {
-  let seeds = generate.list_of(generate.seed(71), 400, generate.next).0
-  let planned =
-    list.fold(seeds, 0, fn(planned, n) {
-      let #(size, seed) = generate.int_between(generate.seed(n), 0, 8)
-      let #(heavy, seed) = generate.bool(seed)
-      let #(base, seed) = case heavy {
-        True -> generate.duplicate_heavy_content(seed, size)
-        False -> generate.content(seed, size)
-      }
-      let #(edited, seed) = edit_of(base, seed)
-      assert_lands(base, edited)
+// One generated pair, and the concurrent modification of its base that a
+// plan for the pair must refuse to land on.
+type PlanCase {
+  PlanCase(base: String, edited: String, other: String)
+}
 
-      case hashline.plan_between(base:, edited:) {
-        Error(UnreachableEnding) -> planned
-        Ok(plan) -> {
-          let #(other, _seed) = disturb(base, seed)
-          assert other != base
-          let assert Error(rejection) = hashline.apply(other, plan)
-            as "a plan must never land on text it was not planned against"
-          assert is_stale(rejection)
-          planned + 1
-        }
+// CRLF lines, astral characters, blank runs, with and without a final
+// newline, edits at every position. Shrinks toward an empty or one-line
+// base, spliced at its first line.
+fn plan_case_generator() -> qcheck.Generator(PlanCase) {
+  qcheck.map4(
+    gen.either_content(min_lines: 0, max_lines: 8),
+    edit_recipe_generator(),
+    qcheck.bounded_int(from: 0, to: 2),
+    gen.pick(),
+    fn(base, recipe, disturbance, at_pick) {
+      PlanCase(
+        base:,
+        edited: edit_of(base, recipe),
+        other: modified(base, disturbance, at_pick),
+      )
+    },
+  )
+}
+
+// A concurrent modification that really modifies. Deleting the only line of
+// "\n", a single blank one, leaves "\n" behind, because zero blank lines and
+// one terminate the same way; that is not "one line changed, gained, or
+// lost", so it is replaced by the insertion, which always changes the text.
+fn modified(base: String, kind: Int, at_pick: Int) -> String {
+  case disturb(base, kind, at_pick) == base {
+    True -> disturb(base, 2, at_pick)
+    False -> disturb(base, kind, at_pick)
+  }
+}
+
+/// How many pairs the plan round trip is checked over.
+const plan_case_count = 400
+
+// For many generated pairs the plan lands exactly on the base and on
+// nothing else.
+pub fn plan_between_round_trip_property_test() {
+  qcheck.run(property_config(plan_case_count), plan_case_generator(), fn(drawn) {
+    let PlanCase(base:, edited:, other:) = drawn
+    assert_lands(base, edited)
+
+    case hashline.plan_between(base:, edited:) {
+      Error(UnreachableEnding) -> Nil
+      Ok(plan) -> {
+        assert other != base
+        let assert Error(rejection) = hashline.apply(other, plan)
+          as "a plan must never land on text it was not planned against"
+        assert is_stale(rejection)
+      }
+    }
+  })
+}
+
+// The generator must mostly produce plannable pairs, or the property
+// above is checking refusals and little else. `qcheck.run` cannot count
+// across cases, so the same draw is made here and tallied directly.
+pub fn plan_between_generator_mostly_plans_test() {
+  let #(cases, _seed) =
+    qcheck.generate(
+      plan_case_generator(),
+      plan_case_count,
+      qcheck.seed(property_seed),
+    )
+  let planned =
+    list.count(cases, fn(drawn) {
+      case hashline.plan_between(base: drawn.base, edited: drawn.edited) {
+        Ok(_) -> True
+        Error(UnreachableEnding) -> False
       }
     })
-
-  // The generator must mostly produce plannable pairs, or the property
-  // above is checking refusals and little else.
-  assert planned > 300
+  assert planned > plan_case_count * 3 / 4
 }

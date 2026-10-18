@@ -124,8 +124,7 @@ entries can share one login profile, or select different profiles. An
 operator can keep a Baseten entry at the head of `main`, route `subagent`
 to a ChatGPT worker entry and route `summarize` to another ChatGPT entry.
 The selected `summarize` route serves block summaries and activity
-descriptions. Shared workspace-domain maintenance uses the default roles,
-including its memory distillation route. Current compaction builds local note
+descriptions. Current compaction builds local note
 checkpoints without a summarizer request.
 
 ### Keys and the secret store
@@ -331,8 +330,7 @@ daemon-wide, and sessions on different profiles under one daemon share no role
 table. Every open resolves the name again, so a resume follows the file as it
 stands, and a profile the file no longer defines refuses the open with the
 file's own message; the session never opens on the default roles in its place.
-The one exception is the shared workspace domain's note distillation, which uses
-the default roles because several sessions share it. Everything outside the role
+Everything outside the role
 table (models, tools, MCP, language servers, mounts) is shared by all profiles.
 [Protocol 076](../../protocol-change/076-config-profiles.md) records the
 decision.
@@ -453,13 +451,13 @@ a strand an Agency spawned: `client/agency` *seeds* a child with
 `resolve(subagent)`'s identity at creation, and the derivation then
 recognises that identity as subagent's head.
 
-`summarize` is dispatched on by three harness-side callers, none of them a
+`summarize` is dispatched on by two harness-side callers, neither of them a
 strand's own turn. Structural summaries go out `ForRole(Summarize, None)`:
 as a role, chain walk included, with no thinking overlay, so the
-summarization entry's own declared level applies. Memory distillation
-(`client/distill.target`) asks for the same route and falls back to the
-resolved `main` identity when none is routed. The glance loop, below, falls
-back further and turns thinking off. Each publishes text rather than a
+summarization entry's own declared level applies. They resolve the route with
+`client/auxiliary.target`, which falls back to the resolved `main` identity
+when none is routed. The glance loop, below, falls back further and turns
+thinking off. Each publishes text rather than a
 response attributed to a model. There is no durable identity contract to
 honour, so a cheaper fallback costs nothing.
 
@@ -506,7 +504,7 @@ cell stands.
 
 The route is `summarize` when the catalogue has one, then `subagent`,
 then `main`, always `ForRole(role, Some(ThinkingOff))` with the answer
-capped at 160 tokens (`distill.capped_gateway_distiller`). Every
+capped at 160 tokens (`auxiliary.capped_gateway_summarizer`). Every
 catalogue routes `main`, so a new user with no role table gets a working
 glance. Only a catalogue that routes nothing leaves the loop unstarted,
 and that boot logs `glance.unavailable` once. There is no switch to turn

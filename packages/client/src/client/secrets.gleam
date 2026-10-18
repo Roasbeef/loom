@@ -170,7 +170,22 @@ pub fn parse(text: String) -> Result(List(Entry), String) {
       "the configuration is not valid TOML: " <> string.inspect(error)
     }),
   )
+  from_document(document)
+}
 
+/// Reads secret command declarations from the catalogue's already parsed document.
+/// The standalone `parse` retains its TOML error wording; both doors use
+/// the same table validation and defaults.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert secrets.from_document(dict.new()) == Ok([])
+/// ```
+@internal
+pub fn from_document(
+  document: Dict(String, tom.Toml),
+) -> Result(List(Entry), String) {
   // An absent table is the whole of the old behaviour, written down: no
   // entry resolves, and every name still falls through to the process
   // environment.

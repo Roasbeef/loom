@@ -1,0 +1,2674 @@
+{
+  "description": "Local daemon discovery overlaps original-terminal workspace/model preparation; selected saved-session measurements",
+  "date_utc": "2026-10-17",
+  "environment": {
+    "platform": "Linux x86-64",
+    "gleam": "1.19.0 stock",
+    "otp": "29",
+    "erts": "17.0.5",
+    "container_cpu_quota": 4,
+    "available_logical_processors": 5,
+    "daemon_schedulers": 5,
+    "client_schedulers": 4,
+    "enforcement": "explicit best-effort",
+    "page_cache": "warm"
+  },
+  "source_revisions": {
+    "baseline_client_build": "9896b0bda37afd759680570bbf53a7c5cfa3762d",
+    "baseline_client_source_unchanged_through": "e1460e1d995cc359219da55a15c595b8868dadca",
+    "candidate_source": "32227fb14dde7e79fab3eed36674b4590111fd0c",
+    "candidate_build": "b5808a3dc02a89b296c42760944f14fbbc5b2b2c",
+    "identical_server_build": "f4d68de100096b3f1494fe8fe7e4f656c88602ee"
+  },
+  "driver": {
+    "path": "docs/review/async-startup-2026-10-17.py",
+    "sha256": "4c3cc4ab60cea47a8b78b78041b9832410b6cc3451528ef7195076290ab6f294",
+    "commands": [
+      "env -u ERL_FLAGS -u ERL_AFLAGS -u ERL_ZFLAGS python3 -B docs/review/async-startup-2026-10-17.py --runs 7 --label client-overlap-final",
+      "env -u ERL_FLAGS -u ERL_AFLAGS -u ERL_ZFLAGS python3 -B docs/review/async-startup-2026-10-17.py --runs 3 --configs smoke --label client-overlap-independent"
+    ]
+  },
+  "limits": [
+    "Selected saved-session warm attachment/cold automatic daemon startup, not interactive picker-to-New",
+    "Large scheduling variation; observed paired savings are not purely causal overlap attribution",
+    "Client RSS is whole-fixture peak including post-timing durable input and possible provider refusal",
+    "No server memory saving inferred from changed observation timing",
+    "Synthetic loopback and best-effort enforcement; no full-enforcement deployment latency claim"
+  ],
+  "artifact_audit": {
+    "changed": [
+      "SHA256SUMS",
+      "bin/loom",
+      "bin/start.boot",
+      "lib/tui-0.3.2/ebin/tui.app",
+      "lib/tui-0.3.2/ebin/tui.beam",
+      "releases/0.3.2/start.boot",
+      "releases/0.3.2/start.script",
+      "releases/0.3.2/start_clean.boot"
+    ],
+    "added": [
+      "lib/tui-0.3.2/ebin/tui@startup.beam",
+      "lib/tui-0.3.2/include/tui@startup_Pending.hrl"
+    ],
+    "removed": [],
+    "common_beams": 827,
+    "common_beams_unchanged": 826,
+    "boot_terms": "Three changed .boot terms equal the baseline after removing only tui@startup from module inventories",
+    "launcher": "Only embedded build commit differs",
+    "script_and_app": "Only tui@startup added to module inventories",
+    "retirement_check": {
+      "trials": 80,
+      "unique_native_pid_birth_identities": 120,
+      "remaining_proc_entries": 0
+    }
+  },
+  "main_comparison": {
+    "provenance": {
+      "artifacts": {
+        "baseline": {
+          "loom": {
+            "sha256": "2efb850275a41fb976bac7345758176c6db47757bbc41dcbcc5aa8ed5910a33b",
+            "files": 6397
+          },
+          "loom-client": {
+            "sha256": "a0cf8708b48f353201ea18d0715a15d07b5ad0efa1e15bd03270cd22d0628c9a",
+            "files": 2057
+          }
+        },
+        "candidate": {
+          "loom": {
+            "sha256": "2efb850275a41fb976bac7345758176c6db47757bbc41dcbcc5aa8ed5910a33b",
+            "files": 6397
+          },
+          "loom-client": {
+            "sha256": "c12f9d8b02d4b44002e722d5b2688beba839c9b1446c3fbaf9a194b2cd1732f6",
+            "files": 2059
+          }
+        }
+      },
+      "baseline": "/work/build/bench-startup-memory/releases/startup-overlap-baseline",
+      "candidate": "/work/build/release",
+      "runs": 7,
+      "best_effort": true,
+      "cold_fixture": "real saved session and catalogue; fixture daemon stopped before timed client autostart",
+      "endpoint": "real selected-session attached composer; first frame recorded separately",
+      "input_admission": "PTY prompt committed as new durable user-turn entry after timer; unreachable synthetic provider",
+      "configs": {
+        "smoke": {
+          "path": "/work/scripts/release-smoke.toml",
+          "sha256": "d9fe7d7de59d5d8f8ae2941ad221eee13e8597b5a63b07d95b7793cf1588e120",
+          "size_bytes": 368
+        },
+        "models32": {
+          "path": "/work/build/startup/models32.toml",
+          "sha256": "43f05e57d0a538947828ad770a270e4548b16eba4575c4b752e62495ef0b2ede",
+          "size_bytes": 5858
+        }
+      }
+    },
+    "rows": [
+      {
+        "mode": "baseline",
+        "pair": "warmup",
+        "fixture": "smoke",
+        "workload": "warm-attach",
+        "warmup": true,
+        "first_frame_ms": 517.1936739990488,
+        "composer_ms": 620.5703990003094,
+        "native_identity": {
+          "pid": 6489,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:829217",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "25671e77b984908854e8e43c2ef467d868e9be544563e9257dac07017df00270"
+        },
+        "daemon_rss_kib": 103756.0,
+        "session_id": "01a14b74-0356-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-smoke-warm-attach-warmup-baseline",
+        "seed_identity": {
+          "pid": 6489,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:829217",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "25671e77b984908854e8e43c2ef467d868e9be544563e9257dac07017df00270"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 9,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 68632.0,
+        "daemon_peak_rss_kib": 107288.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "candidate",
+        "pair": "warmup",
+        "fixture": "smoke",
+        "workload": "warm-attach",
+        "warmup": true,
+        "first_frame_ms": 1415.26110499911,
+        "composer_ms": 1612.6671069990844,
+        "native_identity": {
+          "pid": 6630,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:829875",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "a48075b4d709b2d1d0baa0a3ba5cfbdb739a2311bffb7d8178f2967c515cb347"
+        },
+        "daemon_rss_kib": 103964.0,
+        "session_id": "01a14b74-1cd4-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-smoke-warm-attach-warmup-candidate",
+        "seed_identity": {
+          "pid": 6630,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:829875",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "a48075b4d709b2d1d0baa0a3ba5cfbdb739a2311bffb7d8178f2967c515cb347"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 9,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 71088.0,
+        "daemon_peak_rss_kib": 107288.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "baseline",
+        "pair": 0,
+        "fixture": "smoke",
+        "workload": "warm-attach",
+        "warmup": false,
+        "first_frame_ms": 662.3693479998037,
+        "composer_ms": 785.2328759999946,
+        "native_identity": {
+          "pid": 6774,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:830634",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "537b6ee8779bede758fae62ebe0149bbd66ed46fb0dd8fb1dc1fef6c044bc459"
+        },
+        "daemon_rss_kib": 103696.0,
+        "session_id": "01a14b74-3aad-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-smoke-warm-attach-0-baseline",
+        "seed_identity": {
+          "pid": 6774,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:830634",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "537b6ee8779bede758fae62ebe0149bbd66ed46fb0dd8fb1dc1fef6c044bc459"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 9,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 69368.0,
+        "daemon_peak_rss_kib": 107288.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "candidate",
+        "pair": 0,
+        "fixture": "smoke",
+        "workload": "warm-attach",
+        "warmup": false,
+        "first_frame_ms": 466.9674659995362,
+        "composer_ms": 571.8937769997865,
+        "native_identity": {
+          "pid": 6917,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:830973",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "631c2a424e7157628c109a1760fe3ce02d991551238fe4da728e24e255e434e7"
+        },
+        "daemon_rss_kib": 101976.0,
+        "session_id": "01a14b74-4896-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-smoke-warm-attach-0-candidate",
+        "seed_identity": {
+          "pid": 6917,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:830973",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "631c2a424e7157628c109a1760fe3ce02d991551238fe4da728e24e255e434e7"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 9,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 67568.0,
+        "daemon_peak_rss_kib": 107288.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "candidate",
+        "pair": 1,
+        "fixture": "smoke",
+        "workload": "warm-attach",
+        "warmup": false,
+        "first_frame_ms": 772.7229749998078,
+        "composer_ms": 879.3988590007648,
+        "native_identity": {
+          "pid": 7059,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:831310",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "6aa920d0851e211a031e48224a134aae7e4a3312e0dda6dbb88592eb06eb96e3"
+        },
+        "daemon_rss_kib": 98516.0,
+        "session_id": "01a14b74-57e6-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-smoke-warm-attach-1-candidate",
+        "seed_identity": {
+          "pid": 7059,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:831310",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "6aa920d0851e211a031e48224a134aae7e4a3312e0dda6dbb88592eb06eb96e3"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 9,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 70092.0,
+        "daemon_peak_rss_kib": 107288.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "baseline",
+        "pair": 1,
+        "fixture": "smoke",
+        "workload": "warm-attach",
+        "warmup": false,
+        "first_frame_ms": 521.9064800003543,
+        "composer_ms": 625.7595370011404,
+        "native_identity": {
+          "pid": 7202,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:831780",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "9c566aa5cbfe666360dfd94cd1fad84ca6eac6180cc9d3cd2a142b4e0306d636"
+        },
+        "daemon_rss_kib": 104688.0,
+        "session_id": "01a14b74-6764-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-smoke-warm-attach-1-baseline",
+        "seed_identity": {
+          "pid": 7202,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:831780",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "9c566aa5cbfe666360dfd94cd1fad84ca6eac6180cc9d3cd2a142b4e0306d636"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 9,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 71964.0,
+        "daemon_peak_rss_kib": 107288.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "baseline",
+        "pair": 2,
+        "fixture": "smoke",
+        "workload": "warm-attach",
+        "warmup": false,
+        "first_frame_ms": 715.7830830002204,
+        "composer_ms": 821.4782070014626,
+        "native_identity": {
+          "pid": 7344,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:831941",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "b4135f74c6a4917c7cd705db72b9707bfdacd088e9d807c7c4c335c94866b2e9"
+        },
+        "daemon_rss_kib": 103268.0,
+        "session_id": "01a14b74-6f14-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-smoke-warm-attach-2-baseline",
+        "seed_identity": {
+          "pid": 7344,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:831941",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "b4135f74c6a4917c7cd705db72b9707bfdacd088e9d807c7c4c335c94866b2e9"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 9,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 66764.0,
+        "daemon_peak_rss_kib": 107288.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "candidate",
+        "pair": 2,
+        "fixture": "smoke",
+        "workload": "warm-attach",
+        "warmup": false,
+        "first_frame_ms": 488.8308569993824,
+        "composer_ms": 592.901792999357,
+        "native_identity": {
+          "pid": 7485,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:832204",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "88b69dfa6817eab30488234e6d5428b614f7d537987442b63272eedf1d72bd42"
+        },
+        "daemon_rss_kib": 101460.0,
+        "session_id": "01a14b74-7813-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-smoke-warm-attach-2-candidate",
+        "seed_identity": {
+          "pid": 7485,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:832204",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "88b69dfa6817eab30488234e6d5428b614f7d537987442b63272eedf1d72bd42"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 9,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 66660.0,
+        "daemon_peak_rss_kib": 107288.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "candidate",
+        "pair": 3,
+        "fixture": "smoke",
+        "workload": "warm-attach",
+        "warmup": false,
+        "first_frame_ms": 512.2475699996576,
+        "composer_ms": 610.0452349986881,
+        "native_identity": {
+          "pid": 7627,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:832585",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "62d097c6085bacdcc54f10778a1d5c7b86ed2f9c5f5d7320054107a1d9be68e3"
+        },
+        "daemon_rss_kib": 101992.0,
+        "session_id": "01a14b74-8961-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-smoke-warm-attach-3-candidate",
+        "seed_identity": {
+          "pid": 7627,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:832585",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "62d097c6085bacdcc54f10778a1d5c7b86ed2f9c5f5d7320054107a1d9be68e3"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 9,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 65980.0,
+        "daemon_peak_rss_kib": 107288.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "baseline",
+        "pair": 3,
+        "fixture": "smoke",
+        "workload": "warm-attach",
+        "warmup": false,
+        "first_frame_ms": 681.5620210003108,
+        "composer_ms": 837.8752179993317,
+        "native_identity": {
+          "pid": 7767,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:833036",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "84a2ec059f31f7ed00c72b596aa7fc921f8092435f8d882988fc34487d5ec760"
+        },
+        "daemon_rss_kib": 103956.0,
+        "session_id": "01a14b74-9861-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-smoke-warm-attach-3-baseline",
+        "seed_identity": {
+          "pid": 7767,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:833036",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "84a2ec059f31f7ed00c72b596aa7fc921f8092435f8d882988fc34487d5ec760"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 9,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 69528.0,
+        "daemon_peak_rss_kib": 107288.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "baseline",
+        "pair": 4,
+        "fixture": "smoke",
+        "workload": "warm-attach",
+        "warmup": false,
+        "first_frame_ms": 552.2039890000597,
+        "composer_ms": 680.5081849992275,
+        "native_identity": {
+          "pid": 7911,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:833423",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "ff342374e8e0dcd5e19686e6be1bd4de679ae4bb8e96ec86b41854db1c87fda6"
+        },
+        "daemon_rss_kib": 102600.0,
+        "session_id": "01a14b74-a775-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-smoke-warm-attach-4-baseline",
+        "seed_identity": {
+          "pid": 7911,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:833423",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "ff342374e8e0dcd5e19686e6be1bd4de679ae4bb8e96ec86b41854db1c87fda6"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 9,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 67896.0,
+        "daemon_peak_rss_kib": 107288.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "candidate",
+        "pair": 4,
+        "fixture": "smoke",
+        "workload": "warm-attach",
+        "warmup": false,
+        "first_frame_ms": 499.58800200000405,
+        "composer_ms": 601.8933659996837,
+        "native_identity": {
+          "pid": 8056,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:833793",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "422138277ed0c1800f693a0d3da5d7921523efc08b957ce759d58f646b9f452e"
+        },
+        "daemon_rss_kib": 99656.0,
+        "session_id": "01a14b74-b837-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-smoke-warm-attach-4-candidate",
+        "seed_identity": {
+          "pid": 8056,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:833793",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "422138277ed0c1800f693a0d3da5d7921523efc08b957ce759d58f646b9f452e"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 9,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 66444.0,
+        "daemon_peak_rss_kib": 107288.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "candidate",
+        "pair": 5,
+        "fixture": "smoke",
+        "workload": "warm-attach",
+        "warmup": false,
+        "first_frame_ms": 503.0366259999573,
+        "composer_ms": 600.0494240010157,
+        "native_identity": {
+          "pid": 8196,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:834162",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "78240a3f85cc3a7f212ba0c090f35ce20e3c48fd3032495197d14b59096800db"
+        },
+        "daemon_rss_kib": 103728.0,
+        "session_id": "01a14b74-c458-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-smoke-warm-attach-5-candidate",
+        "seed_identity": {
+          "pid": 8196,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:834162",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "78240a3f85cc3a7f212ba0c090f35ce20e3c48fd3032495197d14b59096800db"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 9,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 68228.0,
+        "daemon_peak_rss_kib": 107288.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "baseline",
+        "pair": 5,
+        "fixture": "smoke",
+        "workload": "warm-attach",
+        "warmup": false,
+        "first_frame_ms": 529.141346000135,
+        "composer_ms": 628.0317089986056,
+        "native_identity": {
+          "pid": 8338,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:834525",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "74743426d107bd3fc011ec276c52252838027e6ff406bb0ce084ec3f148faf1c"
+        },
+        "daemon_rss_kib": 103308.0,
+        "session_id": "01a14b74-d394-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-smoke-warm-attach-5-baseline",
+        "seed_identity": {
+          "pid": 8338,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:834525",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "74743426d107bd3fc011ec276c52252838027e6ff406bb0ce084ec3f148faf1c"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 9,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 67320.0,
+        "daemon_peak_rss_kib": 107288.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "baseline",
+        "pair": 6,
+        "fixture": "smoke",
+        "workload": "warm-attach",
+        "warmup": false,
+        "first_frame_ms": 761.0150330001488,
+        "composer_ms": 861.0961100002751,
+        "native_identity": {
+          "pid": 8480,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:834930",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "e998412a2541bb9af1c6a097c8645c69e20c5a2ff286c694e1290003308ee537"
+        },
+        "daemon_rss_kib": 102908.0,
+        "session_id": "01a14b74-e42c-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-smoke-warm-attach-6-baseline",
+        "seed_identity": {
+          "pid": 8480,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:834930",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "e998412a2541bb9af1c6a097c8645c69e20c5a2ff286c694e1290003308ee537"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 9,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 67420.0,
+        "daemon_peak_rss_kib": 107288.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "candidate",
+        "pair": 6,
+        "fixture": "smoke",
+        "workload": "warm-attach",
+        "warmup": false,
+        "first_frame_ms": 480.2091770004481,
+        "composer_ms": 579.2642180006951,
+        "native_identity": {
+          "pid": 8620,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:835673",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "0c58e7796950d0a7e760bfac8bc0cafc7050e2ef3ed277ee5695c1349266dcd0"
+        },
+        "daemon_rss_kib": 100560.0,
+        "session_id": "01a14b75-0063-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-smoke-warm-attach-6-candidate",
+        "seed_identity": {
+          "pid": 8620,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:835673",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "0c58e7796950d0a7e760bfac8bc0cafc7050e2ef3ed277ee5695c1349266dcd0"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 9,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 67260.0,
+        "daemon_peak_rss_kib": 107288.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "baseline",
+        "pair": "warmup",
+        "fixture": "smoke",
+        "workload": "cold-autostart",
+        "warmup": true,
+        "first_frame_ms": 1431.1702659996226,
+        "composer_ms": 1726.9566539991647,
+        "native_identity": {
+          "pid": 8882,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:836328",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "331a8cb6932b43820a61dff7f3340cde743a0b0c17ddb937313ea9c5c602c255"
+        },
+        "daemon_rss_kib": 102560.0,
+        "session_id": "01a14b75-125a-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-smoke-cold-autostart-warmup-baseline",
+        "seed_identity": {
+          "pid": 8763,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:836076",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "5951e37a17090fc33524389af2a5cb47660b4e9223fb3dbd019bd00fc7c1df34"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 10,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 67780.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "candidate",
+        "pair": "warmup",
+        "fixture": "smoke",
+        "workload": "cold-autostart",
+        "warmup": true,
+        "first_frame_ms": 1053.425968999043,
+        "composer_ms": 1390.8313840003684,
+        "native_identity": {
+          "pid": 9129,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:836562",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "07c32a88b39e34f8769969951c6358a9f798fa80cd21866ae8317bbbe3c18037"
+        },
+        "daemon_rss_kib": 99836.0,
+        "session_id": "01a14b75-1d73-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-smoke-cold-autostart-warmup-candidate",
+        "seed_identity": {
+          "pid": 9008,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:836443",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "21d22d3a84e8c777bf9b77dc92ce44ba6d06258b80217995ca2e888457e0602a"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 10,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 66836.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "baseline",
+        "pair": 0,
+        "fixture": "smoke",
+        "workload": "cold-autostart",
+        "warmup": false,
+        "first_frame_ms": 1966.1000689994544,
+        "composer_ms": 2249.4208539994434,
+        "native_identity": {
+          "pid": 9376,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:836885",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "8be9504677160e0bbe25d3977b42affe4cbb1171be922d83788c449187b6ed16"
+        },
+        "daemon_rss_kib": 104940.0,
+        "session_id": "01a14b75-2716-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-smoke-cold-autostart-0-baseline",
+        "seed_identity": {
+          "pid": 9255,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:836682",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "6c49b862b2eff9056c386d9b714322e622b537cc1082eb7ccf760bb519a7df00"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 10,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 66476.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "candidate",
+        "pair": 0,
+        "fixture": "smoke",
+        "workload": "cold-autostart",
+        "warmup": false,
+        "first_frame_ms": 1797.815139000304,
+        "composer_ms": 2187.1010440010577,
+        "native_identity": {
+          "pid": 9628,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:837187",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "85e0e8f6fea01121347b211f21d2ca0651b65f60f62a03f406b10fc6a609fc21"
+        },
+        "daemon_rss_kib": 99472.0,
+        "session_id": "01a14b75-356a-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-smoke-cold-autostart-0-candidate",
+        "seed_identity": {
+          "pid": 9507,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:837057",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "9519640acf77c35a46cde1f700ca2c95d0057c8146655bd8bb5d4bcdd98db145"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 10,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 67588.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "candidate",
+        "pair": 1,
+        "fixture": "smoke",
+        "workload": "cold-autostart",
+        "warmup": false,
+        "first_frame_ms": 1092.619793000631,
+        "composer_ms": 1483.0749239996076,
+        "native_identity": {
+          "pid": 9886,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:837594",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "5249e4bfc5a5c887400e8019d6e99fe77e592671aded5b522a6b39ae03a3117f"
+        },
+        "daemon_rss_kib": 100744.0,
+        "session_id": "01a14b75-4507-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-smoke-cold-autostart-1-candidate",
+        "seed_identity": {
+          "pid": 9767,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:837397",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "a69523b41082aa74d1a2f7f6f1987a6298b875be0448b0a476e7b2ad6111a56b"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 10,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 66988.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "baseline",
+        "pair": 1,
+        "fixture": "smoke",
+        "workload": "cold-autostart",
+        "warmup": false,
+        "first_frame_ms": 1678.90171799995,
+        "composer_ms": 2017.2185599999502,
+        "native_identity": {
+          "pid": 10134,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:838166",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "75e9f953ea6c2fd4de0cc54201e222b4d10539d1fb7bd29cc788ef72cdf69443"
+        },
+        "daemon_rss_kib": 101832.0,
+        "session_id": "01a14b75-5896-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-smoke-cold-autostart-1-baseline",
+        "seed_identity": {
+          "pid": 10012,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:837920",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "9c40a636b8e3ce65501af160f20f4f05d3651a46f4d9647a42f0f2e53bcaa25d"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 10,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 65860.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "baseline",
+        "pair": 2,
+        "fixture": "smoke",
+        "workload": "cold-autostart",
+        "warmup": false,
+        "first_frame_ms": 2185.8152400003746,
+        "composer_ms": 2602.446338999085,
+        "native_identity": {
+          "pid": 10391,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:838523",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "d3ffdebde7e627584958b1dc1f29b7013ec4e5d33192395e6135c0a7001100e1"
+        },
+        "daemon_rss_kib": 101728.0,
+        "session_id": "01a14b75-6721-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-smoke-cold-autostart-2-baseline",
+        "seed_identity": {
+          "pid": 10270,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:838318",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "f885a8a0924410193f82adf5c05aaad7620e3ce801b57362d2ca18b8b9e6e1bc"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 10,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 65556.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "candidate",
+        "pair": 2,
+        "fixture": "smoke",
+        "workload": "cold-autostart",
+        "warmup": false,
+        "first_frame_ms": 1075.1316170012578,
+        "composer_ms": 1384.625607999973,
+        "native_identity": {
+          "pid": 10652,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:838837",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "35c6e0812cb0f86511bd1702cc48a557546c391de2918b9bba689c20ded47a6c"
+        },
+        "daemon_rss_kib": 99456.0,
+        "session_id": "01a14b75-763b-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-smoke-cold-autostart-2-candidate",
+        "seed_identity": {
+          "pid": 10531,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:838711",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "ceb967794282a552e4bf4e7958278ca219e8855f12634dd113ad0f8a0b9c6d94"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 10,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 65664.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "candidate",
+        "pair": 3,
+        "fixture": "smoke",
+        "workload": "cold-autostart",
+        "warmup": false,
+        "first_frame_ms": 1539.356351999566,
+        "composer_ms": 1870.6336229983717,
+        "native_identity": {
+          "pid": 10899,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:839382",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "d84de0c0e7a60441842ad92a2b4d51b49152994f9c2a5a3c7dca19436ecae236"
+        },
+        "daemon_rss_kib": 99788.0,
+        "session_id": "01a14b75-88d3-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-smoke-cold-autostart-3-candidate",
+        "seed_identity": {
+          "pid": 10778,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:839160",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "630622e3df0af96207f6d533eef8e191d6c9e4dbfd262ec74c51b63322958863"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 10,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 68780.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "baseline",
+        "pair": 3,
+        "fixture": "smoke",
+        "workload": "cold-autostart",
+        "warmup": false,
+        "first_frame_ms": 2453.9028179980814,
+        "composer_ms": 2983.941713998094,
+        "native_identity": {
+          "pid": 11148,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:839763",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "d890db1cbcc49f58d7338bb4ee9ec729b7176aec695a70ed48830410b324dd82"
+        },
+        "daemon_rss_kib": 102840.0,
+        "session_id": "01a14b75-95a0-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-smoke-cold-autostart-3-baseline",
+        "seed_identity": {
+          "pid": 11027,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:839510",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "b384a921362a5b0f03a1bfb3442bdbb4a75a407c931e854253e1f2fb3b2bacae"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 10,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 65552.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "baseline",
+        "pair": 4,
+        "fixture": "smoke",
+        "workload": "cold-autostart",
+        "warmup": false,
+        "first_frame_ms": 1118.2442909982055,
+        "composer_ms": 1511.9276479985565,
+        "native_identity": {
+          "pid": 11419,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:840265",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "83b532b8b1f1f7c47e445e122884fc58adc46575b26cfa1fae0725cf419b4a22"
+        },
+        "daemon_rss_kib": 100760.0,
+        "session_id": "01a14b75-addd-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-smoke-cold-autostart-4-baseline",
+        "seed_identity": {
+          "pid": 11298,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:840133",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "88bc1eed6c3df026f219201c13581b9c0f622c63d504a3bf571c2942711ed563"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 10,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 68940.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "candidate",
+        "pair": 4,
+        "fixture": "smoke",
+        "workload": "cold-autostart",
+        "warmup": false,
+        "first_frame_ms": 1881.442585999146,
+        "composer_ms": 2784.5657889992,
+        "native_identity": {
+          "pid": 11668,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:840734",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "4301b2553a503344ff229f84b67e84ce3eddb0a70975564a7acd7f4da8bd43e2"
+        },
+        "daemon_rss_kib": 99848.0,
+        "session_id": "01a14b75-c073-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-smoke-cold-autostart-4-candidate",
+        "seed_identity": {
+          "pid": 11548,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:840605",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "a5f5194d6cbe5343d9d58a29ecc001865108c28d9f83dc64263e27aa8ffd3f5a"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 10,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 68480.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "candidate",
+        "pair": 5,
+        "fixture": "smoke",
+        "workload": "cold-autostart",
+        "warmup": false,
+        "first_frame_ms": 1363.7980200015008,
+        "composer_ms": 1938.9119300022721,
+        "native_identity": {
+          "pid": 11946,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:841204",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "f1bce9d8aeecad80cb732ca320cfc32bc80232fffbe3812f03ed6633b1fce412"
+        },
+        "daemon_rss_kib": 100360.0,
+        "session_id": "01a14b75-d1ca-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-smoke-cold-autostart-5-candidate",
+        "seed_identity": {
+          "pid": 11825,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:841006",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "92caa92fcd0637824e90e39b2a0f564882c816489d5dcee9d12854833e1af65f"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 10,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 67320.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "baseline",
+        "pair": 5,
+        "fixture": "smoke",
+        "workload": "cold-autostart",
+        "warmup": false,
+        "first_frame_ms": 2077.4524850007147,
+        "composer_ms": 2379.4228420015424,
+        "native_identity": {
+          "pid": 12202,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:841537",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "76760feee0d430278d0d4a26af9ec22aec4f15b051365750c180d30d03fbf37f"
+        },
+        "daemon_rss_kib": 101760.0,
+        "session_id": "01a14b75-dee6-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-smoke-cold-autostart-5-baseline",
+        "seed_identity": {
+          "pid": 12081,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:841375",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "8dffb747abb51b7e08ffaf72be838f47682d20e731dbb7e97b39c1f988c6c911"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 10,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 66484.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "baseline",
+        "pair": 6,
+        "fixture": "smoke",
+        "workload": "cold-autostart",
+        "warmup": false,
+        "first_frame_ms": 2048.1841299999505,
+        "composer_ms": 2511.1272260006517,
+        "native_identity": {
+          "pid": 12466,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:841938",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "cc9b5f75f69397853da0bd538e8c9e4574067939529bb6e8023e80e9e54d1462"
+        },
+        "daemon_rss_kib": 101796.0,
+        "session_id": "01a14b75-eed8-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-smoke-cold-autostart-6-baseline",
+        "seed_identity": {
+          "pid": 12345,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:841749",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "a97ada535b82cf17bfa2df50c92efd5f91863dc94e9b2f088aed28df1fb6ccf8"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 10,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 68176.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "candidate",
+        "pair": 6,
+        "fixture": "smoke",
+        "workload": "cold-autostart",
+        "warmup": false,
+        "first_frame_ms": 1072.358117999509,
+        "composer_ms": 1421.2721730004996,
+        "native_identity": {
+          "pid": 12729,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:842354",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "906c4731c3d162b8226028dd6b78ec4442177c12cb4744935ff122b27f375c14"
+        },
+        "daemon_rss_kib": 99416.0,
+        "session_id": "01a14b75-ff1a-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-smoke-cold-autostart-6-candidate",
+        "seed_identity": {
+          "pid": 12608,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:842168",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "40516697db809c23f8ee26ce7acc969aeff6b088d84cb403762c782f6a298b30"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 10,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 65920.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "baseline",
+        "pair": "warmup",
+        "fixture": "models32",
+        "workload": "warm-attach",
+        "warmup": true,
+        "first_frame_ms": 534.2033469993621,
+        "composer_ms": 636.9469959996641,
+        "native_identity": {
+          "pid": 12855,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:842478",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "d28d49bf8de641183e7aba9810e06f900a28ece49cd55035a5498a6b08bc6681"
+        },
+        "daemon_rss_kib": 114436.0,
+        "session_id": "01a14b76-0933-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-models32-warm-attach-warmup-baseline",
+        "seed_identity": {
+          "pid": 12855,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:842478",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "d28d49bf8de641183e7aba9810e06f900a28ece49cd55035a5498a6b08bc6681"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 9,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 67164.0,
+        "daemon_peak_rss_kib": 117220.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "candidate",
+        "pair": "warmup",
+        "fixture": "models32",
+        "workload": "warm-attach",
+        "warmup": true,
+        "first_frame_ms": 622.6361839994788,
+        "composer_ms": 780.664019998163,
+        "native_identity": {
+          "pid": 12997,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:842640",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "4494bebda25f7a349d151286a82582deb8202befbd1b1416989e6c1de213c5b8"
+        },
+        "daemon_rss_kib": 110084.0,
+        "session_id": "01a14b76-0f7e-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-models32-warm-attach-warmup-candidate",
+        "seed_identity": {
+          "pid": 12997,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:842640",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "4494bebda25f7a349d151286a82582deb8202befbd1b1416989e6c1de213c5b8"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 9,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 70340.0,
+        "daemon_peak_rss_kib": 114664.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "baseline",
+        "pair": 0,
+        "fixture": "models32",
+        "workload": "warm-attach",
+        "warmup": false,
+        "first_frame_ms": 785.984227001667,
+        "composer_ms": 891.1829700022936,
+        "native_identity": {
+          "pid": 13141,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:842827",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "dc06f065760c996f766b86c78a774dc43ce37e3d28999d88cc516b64708a00a5"
+        },
+        "daemon_rss_kib": 113576.0,
+        "session_id": "01a14b76-187c-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-models32-warm-attach-0-baseline",
+        "seed_identity": {
+          "pid": 13141,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:842827",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "dc06f065760c996f766b86c78a774dc43ce37e3d28999d88cc516b64708a00a5"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 9,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 67176.0,
+        "daemon_peak_rss_kib": 119872.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "candidate",
+        "pair": 0,
+        "fixture": "models32",
+        "workload": "warm-attach",
+        "warmup": false,
+        "first_frame_ms": 548.0501579996198,
+        "composer_ms": 654.0825329981744,
+        "native_identity": {
+          "pid": 13283,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:843572",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "905a9bc21f68c953daedbfac12966d23a028b6bccd38bde2b15075c184e6940f"
+        },
+        "daemon_rss_kib": 111964.0,
+        "session_id": "01a14b76-3409-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-models32-warm-attach-0-candidate",
+        "seed_identity": {
+          "pid": 13283,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:843572",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "905a9bc21f68c953daedbfac12966d23a028b6bccd38bde2b15075c184e6940f"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 9,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 70608.0,
+        "daemon_peak_rss_kib": 118816.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "candidate",
+        "pair": 1,
+        "fixture": "models32",
+        "workload": "warm-attach",
+        "warmup": false,
+        "first_frame_ms": 865.4126709979028,
+        "composer_ms": 969.7899559997022,
+        "native_identity": {
+          "pid": 13425,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:843941",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "35861bf3b4d0acb6f4e84a2f797b82f8e086b3b94a2d4946ef7b79b3a7c587c1"
+        },
+        "daemon_rss_kib": 112868.0,
+        "session_id": "01a14b76-436d-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-models32-warm-attach-1-candidate",
+        "seed_identity": {
+          "pid": 13425,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:843941",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "35861bf3b4d0acb6f4e84a2f797b82f8e086b3b94a2d4946ef7b79b3a7c587c1"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 9,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 67932.0,
+        "daemon_peak_rss_kib": 117592.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "baseline",
+        "pair": 1,
+        "fixture": "models32",
+        "workload": "warm-attach",
+        "warmup": false,
+        "first_frame_ms": 1125.697699001059,
+        "composer_ms": 1236.7829589992762,
+        "native_identity": {
+          "pid": 13569,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:844415",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "5742f943f902950e9dcec5e182f2edf3acf756463ee674020cd314a28e9a93f1"
+        },
+        "daemon_rss_kib": 118796.0,
+        "session_id": "01a14b76-5793-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-models32-warm-attach-1-baseline",
+        "seed_identity": {
+          "pid": 13569,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:844415",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "5742f943f902950e9dcec5e182f2edf3acf756463ee674020cd314a28e9a93f1"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 9,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 69220.0,
+        "daemon_peak_rss_kib": 123088.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "baseline",
+        "pair": 2,
+        "fixture": "models32",
+        "workload": "warm-attach",
+        "warmup": false,
+        "first_frame_ms": 520.5166689995676,
+        "composer_ms": 623.023327998817,
+        "native_identity": {
+          "pid": 13710,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:844785",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "72ee50d37b088afdc4d8c24d2d7807902be0ba3b4410f19de0c878bb48f40447"
+        },
+        "daemon_rss_kib": 113556.0,
+        "session_id": "01a14b76-6385-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-models32-warm-attach-2-baseline",
+        "seed_identity": {
+          "pid": 13710,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:844785",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "72ee50d37b088afdc4d8c24d2d7807902be0ba3b4410f19de0c878bb48f40447"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 9,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 67220.0,
+        "daemon_peak_rss_kib": 116672.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "candidate",
+        "pair": 2,
+        "fixture": "models32",
+        "workload": "warm-attach",
+        "warmup": false,
+        "first_frame_ms": 551.6341160014272,
+        "composer_ms": 666.6138829998672,
+        "native_identity": {
+          "pid": 13853,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:844952",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "ce0080129e2897e0514db6cd0e86c0374f4c2a612ce2229784cd3b91d9199bd6"
+        },
+        "daemon_rss_kib": 109700.0,
+        "session_id": "01a14b76-69d5-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-models32-warm-attach-2-candidate",
+        "seed_identity": {
+          "pid": 13853,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:844952",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "ce0080129e2897e0514db6cd0e86c0374f4c2a612ce2229784cd3b91d9199bd6"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 9,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 68244.0,
+        "daemon_peak_rss_kib": 113560.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "candidate",
+        "pair": 3,
+        "fixture": "models32",
+        "workload": "warm-attach",
+        "warmup": false,
+        "first_frame_ms": 935.6109939999878,
+        "composer_ms": 1128.5161240007728,
+        "native_identity": {
+          "pid": 13995,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:845118",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "7cd4b82424810a7f462329dacc11e16c95a50a506e31952622babdeff7a6ffd0"
+        },
+        "daemon_rss_kib": 118256.0,
+        "session_id": "01a14b76-70f2-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-models32-warm-attach-3-candidate",
+        "seed_identity": {
+          "pid": 13995,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:845118",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "7cd4b82424810a7f462329dacc11e16c95a50a506e31952622babdeff7a6ffd0"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 9,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 65868.0,
+        "daemon_peak_rss_kib": 121616.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "baseline",
+        "pair": 3,
+        "fixture": "models32",
+        "workload": "warm-attach",
+        "warmup": false,
+        "first_frame_ms": 524.1130419988185,
+        "composer_ms": 663.4858689978719,
+        "native_identity": {
+          "pid": 14139,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:845390",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "b6fe32149ced7db6f2b1831b72314ed98b65098f53a186cc9fdc27f8701d9f23"
+        },
+        "daemon_rss_kib": 114708.0,
+        "session_id": "01a14b76-7b77-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-models32-warm-attach-3-baseline",
+        "seed_identity": {
+          "pid": 14139,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:845390",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "b6fe32149ced7db6f2b1831b72314ed98b65098f53a186cc9fdc27f8701d9f23"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 9,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 69744.0,
+        "daemon_peak_rss_kib": 119548.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "baseline",
+        "pair": 4,
+        "fixture": "models32",
+        "workload": "warm-attach",
+        "warmup": false,
+        "first_frame_ms": 1273.1893580015749,
+        "composer_ms": 1389.2673599999398,
+        "native_identity": {
+          "pid": 14283,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:845579",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "a67fa03a77de761687eefcf6111bd2f8cb6355d9acf205f874a0cde2052f1b7e"
+        },
+        "daemon_rss_kib": 118164.0,
+        "session_id": "01a14b76-8534-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-models32-warm-attach-4-baseline",
+        "seed_identity": {
+          "pid": 14283,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:845579",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "a67fa03a77de761687eefcf6111bd2f8cb6355d9acf205f874a0cde2052f1b7e"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 9,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 67496.0,
+        "daemon_peak_rss_kib": 120880.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "candidate",
+        "pair": 4,
+        "fixture": "models32",
+        "workload": "warm-attach",
+        "warmup": false,
+        "first_frame_ms": 595.2336550001055,
+        "composer_ms": 698.6982580013573,
+        "native_identity": {
+          "pid": 14426,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:846131",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "3aa86116e980e6ff81462eb5ea70ec564261a8dc725ca68e35b4272906ce36c7"
+        },
+        "daemon_rss_kib": 112116.0,
+        "session_id": "01a14b76-983c-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-models32-warm-attach-4-candidate",
+        "seed_identity": {
+          "pid": 14426,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:846131",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "3aa86116e980e6ff81462eb5ea70ec564261a8dc725ca68e35b4272906ce36c7"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 9,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 68276.0,
+        "daemon_peak_rss_kib": 120432.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "candidate",
+        "pair": 5,
+        "fixture": "models32",
+        "workload": "warm-attach",
+        "warmup": false,
+        "first_frame_ms": 522.8091930001974,
+        "composer_ms": 623.8361910004169,
+        "native_identity": {
+          "pid": 14567,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:846523",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "ecfa2e6d2d3d9fa3402a348125699122ca02dae0ede6dc11db429f24dcd79b28"
+        },
+        "daemon_rss_kib": 114012.0,
+        "session_id": "01a14b76-a8cf-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-models32-warm-attach-5-candidate",
+        "seed_identity": {
+          "pid": 14567,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:846523",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "ecfa2e6d2d3d9fa3402a348125699122ca02dae0ede6dc11db429f24dcd79b28"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 9,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 69476.0,
+        "daemon_peak_rss_kib": 116400.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "baseline",
+        "pair": 5,
+        "fixture": "models32",
+        "workload": "warm-attach",
+        "warmup": false,
+        "first_frame_ms": 1182.1418390013278,
+        "composer_ms": 1430.866617001593,
+        "native_identity": {
+          "pid": 14710,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:846724",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "81368de4ee829b648f0539565f69fa269dd3a43ecea449729aee3bae0aecc6ce"
+        },
+        "daemon_rss_kib": 115684.0,
+        "session_id": "01a14b76-afc1-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-models32-warm-attach-5-baseline",
+        "seed_identity": {
+          "pid": 14710,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:846724",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "81368de4ee829b648f0539565f69fa269dd3a43ecea449729aee3bae0aecc6ce"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 9,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 71404.0,
+        "daemon_peak_rss_kib": 118236.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "baseline",
+        "pair": 6,
+        "fixture": "models32",
+        "workload": "warm-attach",
+        "warmup": false,
+        "first_frame_ms": 1004.05873000063,
+        "composer_ms": 1150.933663001284,
+        "native_identity": {
+          "pid": 14856,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:847510",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "05468641050e1ed6854d150f5f92967e4994709050ae1e4c4392c1d505c109e3"
+        },
+        "daemon_rss_kib": 118064.0,
+        "session_id": "01a14b76-ce51-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-models32-warm-attach-6-baseline",
+        "seed_identity": {
+          "pid": 14856,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:847510",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "05468641050e1ed6854d150f5f92967e4994709050ae1e4c4392c1d505c109e3"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 9,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 68492.0,
+        "daemon_peak_rss_kib": 118220.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "candidate",
+        "pair": 6,
+        "fixture": "models32",
+        "workload": "warm-attach",
+        "warmup": false,
+        "first_frame_ms": 1022.4677650015801,
+        "composer_ms": 1142.8126989994198,
+        "native_identity": {
+          "pid": 15000,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:847975",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "ea2270115cc4300a5dec990d0dccc1a134bae80ffd70ffc477db07e23f897694"
+        },
+        "daemon_rss_kib": 117868.0,
+        "session_id": "01a14b76-e37c-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-models32-warm-attach-6-candidate",
+        "seed_identity": {
+          "pid": 15000,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:847975",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "ea2270115cc4300a5dec990d0dccc1a134bae80ffd70ffc477db07e23f897694"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 9,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 69488.0,
+        "daemon_peak_rss_kib": 119096.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "baseline",
+        "pair": "warmup",
+        "fixture": "models32",
+        "workload": "cold-autostart",
+        "warmup": true,
+        "first_frame_ms": 1293.7212239988148,
+        "composer_ms": 1902.5747810006142,
+        "native_identity": {
+          "pid": 15264,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:849051",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "fc37b47b601079cda110f6d5fa7b2cbd2b4f9be194fdcdb8c697af37c9ec9c95"
+        },
+        "daemon_rss_kib": 114636.0,
+        "session_id": "01a14b77-0266-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-models32-cold-autostart-warmup-baseline",
+        "seed_identity": {
+          "pid": 15143,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:848810",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "f25a893eb4a2ccdc839115560beabaf0c605b568e35cee27ffb8402620ec885f"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 10,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 69564.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "candidate",
+        "pair": "warmup",
+        "fixture": "models32",
+        "workload": "cold-autostart",
+        "warmup": true,
+        "first_frame_ms": 1402.2229150012136,
+        "composer_ms": 1788.6531080007553,
+        "native_identity": {
+          "pid": 15517,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:849441",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "19c15356ad66f6e3aa5bc505112dec4877e383125408d391ce23be5286523d4b"
+        },
+        "daemon_rss_kib": 109436.0,
+        "session_id": "01a14b77-1260-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-models32-cold-autostart-warmup-candidate",
+        "seed_identity": {
+          "pid": 15396,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:849217",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "2d6c34cfbe767bafe6ae148ee0fb423897fff7fa1ac15a54da88f71e4b9dec4c"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 10,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 67592.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "baseline",
+        "pair": 0,
+        "fixture": "models32",
+        "workload": "cold-autostart",
+        "warmup": false,
+        "first_frame_ms": 1412.0088669992983,
+        "composer_ms": 1761.338701998815,
+        "native_identity": {
+          "pid": 15769,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:849746",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "00db62933f5b796b64999857cb6ff673e6c050df4be0c3d5d24ac1dc980719ab"
+        },
+        "daemon_rss_kib": 113532.0,
+        "session_id": "01a14b77-1fb7-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-models32-cold-autostart-0-baseline",
+        "seed_identity": {
+          "pid": 15648,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:849597",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "aec857ed4993263ba83b09ba971df7d19cd77d5a69888aecb1c3c7113df5294e"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 10,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 64220.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "candidate",
+        "pair": 0,
+        "fixture": "models32",
+        "workload": "cold-autostart",
+        "warmup": false,
+        "first_frame_ms": 1021.6852529998869,
+        "composer_ms": 1384.1951480004936,
+        "native_identity": {
+          "pid": 16023,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:850255",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "15d8e9b3d8b846df3230923e04e5f32905cfd338bff499009e21e0a658caf46e"
+        },
+        "daemon_rss_kib": 109716.0,
+        "session_id": "01a14b77-3421-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-models32-cold-autostart-0-candidate",
+        "seed_identity": {
+          "pid": 15902,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:850094",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "873370d7add7c9c9092de000d3dd54209a5ec0475b4852654746bc061336b209"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 10,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 67764.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "candidate",
+        "pair": 1,
+        "fixture": "models32",
+        "workload": "cold-autostart",
+        "warmup": false,
+        "first_frame_ms": 1055.937547000125,
+        "composer_ms": 1371.2296649999917,
+        "native_identity": {
+          "pid": 16271,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:850697",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "dfbb0334e469eb224c0271eb62b9409618cf7cf2cbcdedbc207af149c4405966"
+        },
+        "daemon_rss_kib": 108524.0,
+        "session_id": "01a14b77-45a5-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-models32-cold-autostart-1-candidate",
+        "seed_identity": {
+          "pid": 16150,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:850583",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "2f77c4e465e0504861fb8bdee761a106fc1787799f2fb352dd12f007783fa8e1"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 10,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 66476.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "baseline",
+        "pair": 1,
+        "fixture": "models32",
+        "workload": "cold-autostart",
+        "warmup": false,
+        "first_frame_ms": 1040.5508479997516,
+        "composer_ms": 1393.1309290006757,
+        "native_identity": {
+          "pid": 16518,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:850940",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "709372e1727c5c67023172f615439d762696309f1e928c3f8730e89646939dd8"
+        },
+        "daemon_rss_kib": 113308.0,
+        "session_id": "01a14b77-4eec-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-models32-cold-autostart-1-baseline",
+        "seed_identity": {
+          "pid": 16397,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:850816",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "ba2594619f4f46d6a09883366a400b3ae93a323736cdd1bbb8ee7e0bc75fa5ac"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 10,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 70220.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "baseline",
+        "pair": 2,
+        "fixture": "models32",
+        "workload": "cold-autostart",
+        "warmup": false,
+        "first_frame_ms": 1106.9186700005084,
+        "composer_ms": 1501.5823880005628,
+        "native_identity": {
+          "pid": 16766,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:851457",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "fe230554d4ce29f7a3300b9e98085f5491ec479debce5f8b1365d3e165a8dacd"
+        },
+        "daemon_rss_kib": 112592.0,
+        "session_id": "01a14b77-619e-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-models32-cold-autostart-2-baseline",
+        "seed_identity": {
+          "pid": 16645,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:851262",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "d7ae5887ef77093578f7d5baf27a40bfd30d868bf7164509089703bb5cd41f68"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 10,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 65564.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "candidate",
+        "pair": 2,
+        "fixture": "models32",
+        "workload": "cold-autostart",
+        "warmup": false,
+        "first_frame_ms": 1381.0436199977994,
+        "composer_ms": 1672.042083999142,
+        "native_identity": {
+          "pid": 17015,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:851772",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "a08c6fb52b824981688fada7d382809ea7abd70f5ced0bea015db6cf43f2ada8"
+        },
+        "daemon_rss_kib": 113056.0,
+        "session_id": "01a14b77-6dd6-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-models32-cold-autostart-2-candidate",
+        "seed_identity": {
+          "pid": 16893,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:851589",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "e349e4b323decd2e10f07019744f3c7a0fe0debb2e7eca02417f156d586bf8ac"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 10,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 66512.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "candidate",
+        "pair": 3,
+        "fixture": "models32",
+        "workload": "cold-autostart",
+        "warmup": false,
+        "first_frame_ms": 1095.2980919983238,
+        "composer_ms": 1399.2807790003717,
+        "native_identity": {
+          "pid": 17264,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:852024",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "ffe733c7dc8e7b6430e3c715bb24d11226509fee9ba2010e5e30035288fe677a"
+        },
+        "daemon_rss_kib": 111032.0,
+        "session_id": "01a14b77-7955-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-models32-cold-autostart-3-candidate",
+        "seed_identity": {
+          "pid": 17144,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:851906",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "ad78b5946519dd7de75406ac98a16fde6f33e8c360dc7b2137eca17c300a87a3"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 10,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 68208.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "baseline",
+        "pair": 3,
+        "fixture": "models32",
+        "workload": "cold-autostart",
+        "warmup": false,
+        "first_frame_ms": 1299.2502810005099,
+        "composer_ms": 1714.8345020003617,
+        "native_identity": {
+          "pid": 17512,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:852278",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "63b5d8719e1b7845bcae9e958c02e61e43c4d4a628b95c84a4cbde572c5655ec"
+        },
+        "daemon_rss_kib": 112588.0,
+        "session_id": "01a14b77-8311-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-models32-cold-autostart-3-baseline",
+        "seed_identity": {
+          "pid": 17391,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:852144",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "a1830a933317533de4aea28d5e579d6e9113c5b070efd6951748dc6b2fa94b4d"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 10,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 68468.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "baseline",
+        "pair": 4,
+        "fixture": "models32",
+        "workload": "cold-autostart",
+        "warmup": false,
+        "first_frame_ms": 1172.2255259994417,
+        "composer_ms": 1520.1373379994184,
+        "native_identity": {
+          "pid": 17768,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:852638",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "178be07f7bd28076cc15c45be43c3bd1e200cb1f408f6ff07c69ddadf46f0448"
+        },
+        "daemon_rss_kib": 110312.0,
+        "session_id": "01a14b77-9011-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-models32-cold-autostart-4-baseline",
+        "seed_identity": {
+          "pid": 17646,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:852438",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "acee27d977f83d26f2f781b29eff5bbd6e5efd7077eed6a969caa53c2b6df57d"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 10,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 68360.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "candidate",
+        "pair": 4,
+        "fixture": "models32",
+        "workload": "cold-autostart",
+        "warmup": false,
+        "first_frame_ms": 1028.1221800018102,
+        "composer_ms": 1389.4775710012764,
+        "native_identity": {
+          "pid": 18017,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:853386",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "fba8d23c58cf18fe43a8e3a690919454ba76532caed8aa139ad40bc252b06a2f"
+        },
+        "daemon_rss_kib": 109900.0,
+        "session_id": "01a14b77-ae91-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-models32-cold-autostart-4-candidate",
+        "seed_identity": {
+          "pid": 17896,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:853266",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "d272cbb9d2e89fb7539754a616b2ef49e4871740a9f0a9ce752d5530824cabdd"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 10,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 68792.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "candidate",
+        "pair": 5,
+        "fixture": "models32",
+        "workload": "cold-autostart",
+        "warmup": false,
+        "first_frame_ms": 1720.167561000213,
+        "composer_ms": 2074.426570000127,
+        "native_identity": {
+          "pid": 18265,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:853684",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "b697f41b4d5b9b3a131061ef571e50e12bd4cf3fd7cfcf3db1d1657bf83dca80"
+        },
+        "daemon_rss_kib": 108148.0,
+        "session_id": "01a14b77-b83d-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-models32-cold-autostart-5-candidate",
+        "seed_identity": {
+          "pid": 18143,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:853505",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "e1d21c6b07620258d2c5467910c554cda3e9b8f4cde24df13407bfa66fee795a"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 10,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 66592.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "baseline",
+        "pair": 5,
+        "fixture": "models32",
+        "workload": "cold-autostart",
+        "warmup": false,
+        "first_frame_ms": 1178.3902190010995,
+        "composer_ms": 1536.0193380005658,
+        "native_identity": {
+          "pid": 18521,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:854010",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "960066860d31cbe0bcf596a5ac544cf03fc73f947325e82e8c07deb86fb1b289"
+        },
+        "daemon_rss_kib": 114576.0,
+        "session_id": "01a14b77-c615-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-models32-cold-autostart-5-baseline",
+        "seed_identity": {
+          "pid": 18398,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:853859",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "8a1bf3a58cd526475da4d7ad6db225c13fea462ba72c82ac8b19af3ae6f9edb9"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 10,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 68056.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "baseline",
+        "pair": 6,
+        "fixture": "models32",
+        "workload": "cold-autostart",
+        "warmup": false,
+        "first_frame_ms": 1066.9671640004963,
+        "composer_ms": 1395.7827129997313,
+        "native_identity": {
+          "pid": 18769,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:854473",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "ae71c6b7eaabc6b06924498e265732e0d93022497a309ae66c96139d13af5e29"
+        },
+        "daemon_rss_kib": 109728.0,
+        "session_id": "01a14b77-d8e5-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-models32-cold-autostart-6-baseline",
+        "seed_identity": {
+          "pid": 18649,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:854342",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "feffcd598532390e3288068b6d787bebe0686438207901e03195f1ca1eb5b6ec"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 10,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 67708.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "candidate",
+        "pair": 6,
+        "fixture": "models32",
+        "workload": "cold-autostart",
+        "warmup": false,
+        "first_frame_ms": 1290.7351939994842,
+        "composer_ms": 1800.1381449997425,
+        "native_identity": {
+          "pid": 19016,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:854710",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "86df159ea10c7ba9b3221f7c1cf45fe44df09d32ae6093e541a6d87cc690fe65"
+        },
+        "daemon_rss_kib": 110544.0,
+        "session_id": "01a14b77-e25a-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-final-models32-cold-autostart-6-candidate",
+        "seed_identity": {
+          "pid": 18895,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:854592",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "aa2b5a76485beba991eafb7bb0fa1e5fc20a3f0df40f8652f780abdcebf707c1"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 10,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 68504.0,
+        "normal_daemon_shutdown": true
+      }
+    ]
+  },
+  "independent_repeat": {
+    "provenance": {
+      "artifacts": {
+        "baseline": {
+          "loom": {
+            "sha256": "2efb850275a41fb976bac7345758176c6db47757bbc41dcbcc5aa8ed5910a33b",
+            "files": 6397
+          },
+          "loom-client": {
+            "sha256": "a0cf8708b48f353201ea18d0715a15d07b5ad0efa1e15bd03270cd22d0628c9a",
+            "files": 2057
+          }
+        },
+        "candidate": {
+          "loom": {
+            "sha256": "2efb850275a41fb976bac7345758176c6db47757bbc41dcbcc5aa8ed5910a33b",
+            "files": 6397
+          },
+          "loom-client": {
+            "sha256": "c12f9d8b02d4b44002e722d5b2688beba839c9b1446c3fbaf9a194b2cd1732f6",
+            "files": 2059
+          }
+        }
+      },
+      "baseline": "/work/build/bench-startup-memory/releases/startup-overlap-baseline",
+      "candidate": "/work/build/release",
+      "runs": 3,
+      "best_effort": true,
+      "cold_fixture": "real saved session and catalogue; fixture daemon stopped before timed client autostart",
+      "endpoint": "real selected-session attached composer; first frame recorded separately",
+      "input_admission": "PTY prompt committed as new durable user-turn entry after timer; unreachable synthetic provider",
+      "configs": {
+        "smoke": {
+          "path": "/work/scripts/release-smoke.toml",
+          "sha256": "d9fe7d7de59d5d8f8ae2941ad221eee13e8597b5a63b07d95b7793cf1588e120",
+          "size_bytes": 368
+        }
+      }
+    },
+    "rows": [
+      {
+        "mode": "baseline",
+        "pair": "warmup",
+        "fixture": "smoke",
+        "workload": "warm-attach",
+        "warmup": true,
+        "first_frame_ms": 466.04785799980164,
+        "composer_ms": 560.1663100011647,
+        "native_identity": {
+          "pid": 19169,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:858863",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "339dbfb6c537d6811d4e2a49b31da0c5fe2d5e8d59b2221007233c9bab6589fe"
+        },
+        "daemon_rss_kib": 103476.0,
+        "session_id": "01a14b78-8924-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-independent-smoke-warm-attach-warmup-baseline",
+        "seed_identity": {
+          "pid": 19169,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:858863",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "339dbfb6c537d6811d4e2a49b31da0c5fe2d5e8d59b2221007233c9bab6589fe"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 9,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 67560.0,
+        "daemon_peak_rss_kib": 107380.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "candidate",
+        "pair": "warmup",
+        "fixture": "smoke",
+        "workload": "warm-attach",
+        "warmup": true,
+        "first_frame_ms": 430.00381600111723,
+        "composer_ms": 526.0454000011086,
+        "native_identity": {
+          "pid": 19311,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:859009",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "26238264e50fddb3b04feee297a92951b5437c71b06cfbb44d05df2c25757294"
+        },
+        "daemon_rss_kib": 102988.0,
+        "session_id": "01a14b78-8eb3-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-independent-smoke-warm-attach-warmup-candidate",
+        "seed_identity": {
+          "pid": 19311,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:859009",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "26238264e50fddb3b04feee297a92951b5437c71b06cfbb44d05df2c25757294"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 9,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 67644.0,
+        "daemon_peak_rss_kib": 107380.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "baseline",
+        "pair": 0,
+        "fixture": "smoke",
+        "workload": "warm-attach",
+        "warmup": false,
+        "first_frame_ms": 454.05099499970675,
+        "composer_ms": 548.6128299981356,
+        "native_identity": {
+          "pid": 19452,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:859148",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "af7809422f68a68a7449a893ea127de021f224865eabd2d84904d7107e670c65"
+        },
+        "daemon_rss_kib": 102516.0,
+        "session_id": "01a14b78-9450-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-independent-smoke-warm-attach-0-baseline",
+        "seed_identity": {
+          "pid": 19452,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:859148",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "af7809422f68a68a7449a893ea127de021f224865eabd2d84904d7107e670c65"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 9,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 68164.0,
+        "daemon_peak_rss_kib": 107380.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "candidate",
+        "pair": 0,
+        "fixture": "smoke",
+        "workload": "warm-attach",
+        "warmup": false,
+        "first_frame_ms": 462.7619519997388,
+        "composer_ms": 555.1143319997936,
+        "native_identity": {
+          "pid": 19593,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:859294",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "beef403869d0321a42cefbb1b613848c50c935eade12209fb5c08c20e1fc667e"
+        },
+        "daemon_rss_kib": 100840.0,
+        "session_id": "01a14b78-99ef-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-independent-smoke-warm-attach-0-candidate",
+        "seed_identity": {
+          "pid": 19593,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:859294",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "beef403869d0321a42cefbb1b613848c50c935eade12209fb5c08c20e1fc667e"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 9,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 66924.0,
+        "daemon_peak_rss_kib": 107380.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "candidate",
+        "pair": 1,
+        "fixture": "smoke",
+        "workload": "warm-attach",
+        "warmup": false,
+        "first_frame_ms": 447.0591070000082,
+        "composer_ms": 539.3371290005744,
+        "native_identity": {
+          "pid": 19734,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:859437",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "7846c271e60b877495b597bc0ffef7646f2ba04ab10bf857eaeed63cca2bafe5"
+        },
+        "daemon_rss_kib": 102736.0,
+        "session_id": "01a14b78-9f74-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-independent-smoke-warm-attach-1-candidate",
+        "seed_identity": {
+          "pid": 19734,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:859437",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "7846c271e60b877495b597bc0ffef7646f2ba04ab10bf857eaeed63cca2bafe5"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 9,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 68348.0,
+        "daemon_peak_rss_kib": 107380.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "baseline",
+        "pair": 1,
+        "fixture": "smoke",
+        "workload": "warm-attach",
+        "warmup": false,
+        "first_frame_ms": 486.1015939991921,
+        "composer_ms": 591.7133380006999,
+        "native_identity": {
+          "pid": 19874,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:859726",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "9ca35de22bcab0cea6ea03aeb7d705c09d3fac4aad7e77a8a9454f2d3353467c"
+        },
+        "daemon_rss_kib": 105092.0,
+        "session_id": "01a14b78-aad2-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-independent-smoke-warm-attach-1-baseline",
+        "seed_identity": {
+          "pid": 19874,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:859726",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "9ca35de22bcab0cea6ea03aeb7d705c09d3fac4aad7e77a8a9454f2d3353467c"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 9,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 68456.0,
+        "daemon_peak_rss_kib": 107380.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "baseline",
+        "pair": 2,
+        "fixture": "smoke",
+        "workload": "warm-attach",
+        "warmup": false,
+        "first_frame_ms": 502.0228229984641,
+        "composer_ms": 600.1522339992225,
+        "native_identity": {
+          "pid": 20016,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:860027",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "469a59d0bcde4e335ca43b498bbfc9da8018bbacd260c615b4297371d5390c10"
+        },
+        "daemon_rss_kib": 106076.0,
+        "session_id": "01a14b78-b695-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-independent-smoke-warm-attach-2-baseline",
+        "seed_identity": {
+          "pid": 20016,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:860027",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "469a59d0bcde4e335ca43b498bbfc9da8018bbacd260c615b4297371d5390c10"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 9,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 70740.0,
+        "daemon_peak_rss_kib": 107532.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "candidate",
+        "pair": 2,
+        "fixture": "smoke",
+        "workload": "warm-attach",
+        "warmup": false,
+        "first_frame_ms": 456.34699700027704,
+        "composer_ms": 549.9943800009787,
+        "native_identity": {
+          "pid": 20158,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:860177",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "2e84a61dcf82ceeb3ca6db446a9b97aeffdfea46aff5156d8d3a8a255d0a2765"
+        },
+        "daemon_rss_kib": 101728.0,
+        "session_id": "01a14b78-bc6f-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-independent-smoke-warm-attach-2-candidate",
+        "seed_identity": {
+          "pid": 20158,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:860177",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "2e84a61dcf82ceeb3ca6db446a9b97aeffdfea46aff5156d8d3a8a255d0a2765"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 9,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 68420.0,
+        "daemon_peak_rss_kib": 107380.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "baseline",
+        "pair": "warmup",
+        "fixture": "smoke",
+        "workload": "cold-autostart",
+        "warmup": true,
+        "first_frame_ms": 982.3978920001537,
+        "composer_ms": 1253.1270020008087,
+        "native_identity": {
+          "pid": 20421,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:860432",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "07d793e2d68340ad1112e880ffe7e48a0e15d7fbdf92dd923eafa7766e6b69b8"
+        },
+        "daemon_rss_kib": 103564.0,
+        "session_id": "01a14b78-c200-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-independent-smoke-cold-autostart-warmup-baseline",
+        "seed_identity": {
+          "pid": 20300,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:860320",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "8f28d4e19da07a0c2af8943e561a7d05ac3d0f07b8b05f0bcd17a8cbf207cb90"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 10,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 68236.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "candidate",
+        "pair": "warmup",
+        "fixture": "smoke",
+        "workload": "cold-autostart",
+        "warmup": true,
+        "first_frame_ms": 931.6141079999506,
+        "composer_ms": 1190.9039970003068,
+        "native_identity": {
+          "pid": 20667,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:860645",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "db7163b4e9d8142c6d7ec0d91c18082c7d2bb0e44f42918284ad3e24d944a744"
+        },
+        "daemon_rss_kib": 101676.0,
+        "session_id": "01a14b78-ca7f-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-independent-smoke-cold-autostart-warmup-candidate",
+        "seed_identity": {
+          "pid": 20546,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:860538",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "0a162e5886ad17d38ddb90382b6455fcabc66415d91e16afca47b69cebfa5379"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 10,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 66416.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "baseline",
+        "pair": 0,
+        "fixture": "smoke",
+        "workload": "cold-autostart",
+        "warmup": false,
+        "first_frame_ms": 988.8965719994158,
+        "composer_ms": 1303.4132049996406,
+        "native_identity": {
+          "pid": 20910,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:860861",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "398d0666cf97d50a674dab6c2b57b1de6a97fa96eddd36b618579b21a1873a70"
+        },
+        "daemon_rss_kib": 103384.0,
+        "session_id": "01a14b78-d2bb-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-independent-smoke-cold-autostart-0-baseline",
+        "seed_identity": {
+          "pid": 20789,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:860749",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "ff97211e395297b8936bbd1c61c9ef049a0a0fab82731083b145aded1f9dc6a6"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 10,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 68436.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "candidate",
+        "pair": 0,
+        "fixture": "smoke",
+        "workload": "cold-autostart",
+        "warmup": false,
+        "first_frame_ms": 964.1847540009767,
+        "composer_ms": 1243.6684499997646,
+        "native_identity": {
+          "pid": 21157,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:861289",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "a17f0999868d14e33e6ba8790a934fd3c20ae93873479399da5af1742d1ef825"
+        },
+        "daemon_rss_kib": 101620.0,
+        "session_id": "01a14b78-e36f-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-independent-smoke-cold-autostart-0-candidate",
+        "seed_identity": {
+          "pid": 21035,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:861174",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "3d00cd25ee144887def3cf536f9ac7db9bfd4b006ced0959aea06657e089bebd"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 10,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 69864.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "candidate",
+        "pair": 1,
+        "fixture": "smoke",
+        "workload": "cold-autostart",
+        "warmup": false,
+        "first_frame_ms": 940.084638999775,
+        "composer_ms": 1290.183235000819,
+        "native_identity": {
+          "pid": 21402,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:861656",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "77d78aa8c61d73366230f941dd6d3e872c3edc8529b2892fbcbd7127f95ebd4c"
+        },
+        "daemon_rss_kib": 100024.0,
+        "session_id": "01a14b78-f1e6-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-independent-smoke-cold-autostart-1-candidate",
+        "seed_identity": {
+          "pid": 21281,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:861547",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "d00131d9af0678d7b95f23ef09b14b9a0e009850d0cfa4fe52a03c337cc8f489"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 10,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 65536.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "baseline",
+        "pair": 1,
+        "fixture": "smoke",
+        "workload": "cold-autostart",
+        "warmup": false,
+        "first_frame_ms": 1007.0493319984525,
+        "composer_ms": 1335.4663429986686,
+        "native_identity": {
+          "pid": 21649,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:861888",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "c101f2e5b10ba4c7678cd4b9e78e7b1f66a96570b14cd871734f1fcfc799f946"
+        },
+        "daemon_rss_kib": 104236.0,
+        "session_id": "01a14b78-fabe-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-independent-smoke-cold-autostart-1-baseline",
+        "seed_identity": {
+          "pid": 21527,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:861771",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "f7a70995bbbcff4c790350434444f37c3231f23896b38f023c2630c09964478e"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 10,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 65704.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "baseline",
+        "pair": 2,
+        "fixture": "smoke",
+        "workload": "cold-autostart",
+        "warmup": false,
+        "first_frame_ms": 1019.8159349989146,
+        "composer_ms": 1347.2371169999242,
+        "native_identity": {
+          "pid": 21895,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:862113",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "637cf7c9df5a2bc030293338f22783f8d0982cf78abfa13ff220f5e0c23d3427"
+        },
+        "daemon_rss_kib": 103972.0,
+        "session_id": "01a14b79-03a1-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-independent-smoke-cold-autostart-2-baseline",
+        "seed_identity": {
+          "pid": 21774,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:861999",
+          "executable": "/work/build/bench-startup-memory/releases/startup-overlap-baseline/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "f8851552ad152f31476ba4ea83091f95d802bc7326c7cd4cac56db47c7d71400"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 10,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 70776.0,
+        "normal_daemon_shutdown": true
+      },
+      {
+        "mode": "candidate",
+        "pair": 2,
+        "fixture": "smoke",
+        "workload": "cold-autostart",
+        "warmup": false,
+        "first_frame_ms": 999.1398750003427,
+        "composer_ms": 1303.826011000201,
+        "native_identity": {
+          "pid": 22143,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:862346",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "e885fe1ce15716f715b2ac6a586c5f61b8327921c1d300b4208f08f569cf51c1"
+        },
+        "daemon_rss_kib": 99496.0,
+        "session_id": "01a14b79-0cc0-7cc1-beeb-8da1658eec67",
+        "profile_root": "/work/build/bench-startup-memory/runs/client-overlap-independent-smoke-cold-autostart-2-candidate",
+        "seed_identity": {
+          "pid": 22022,
+          "birth": "linux:7e4dd25d-bdfd-458b-a236-2350db0ba73c:862229",
+          "executable": "/work/build/release/loom/erts-17.0.5/bin/beam.smp",
+          "epoch": "21b11236a4918206f73f78d0a81521fdeb41c898a21a1772d942244801f5b1db"
+        },
+        "input_admission": {
+          "before_seq": 0,
+          "admitted_seq": 10,
+          "durable_user_turn": true
+        },
+        "client_peak_rss_kib": 67552.0,
+        "normal_daemon_shutdown": true
+      }
+    ]
+  }
+}

@@ -1565,7 +1565,9 @@ pub type DelegateClaim {
 /// `session_id` unless the spawner already holds `limit` sessions, which answers
 /// `AtLimit` and writes nothing. The count and the insert share one immediate
 /// transaction, so two callers cannot both pass the cap. The session's
-/// registration must exist (`reserve`). A spawner outside the profile-name
+/// registration must exist (`reserve`): a session with none is `Missing`,
+/// checked before the pair is read, so it is the answer even for a pair
+/// another session already holds. A spawner outside the profile-name
 /// grammar, a parent or a session that is not a canonical session identity, and
 /// a negative time are `Invalid`. A pair already recorded for another session
 /// is `Conflict`: one pair has one delegate session.
@@ -1591,6 +1593,15 @@ pub fn claim_delegate(
     now_ms,
   ))
   transaction(catalogue.connection, fn() {
+    // The delegate row's foreign key would refuse an unregistered session as
+    // a bare `Database` error; naming it here is what keeps the refusal a
+    // domain answer, and it runs inside the transaction so a concurrent
+    // `delete` cannot slip between the check and the insert.
+    use registered <- result.try(find(catalogue, session_id, "", ""))
+    use Nil <- result.try(case registered {
+      [] -> Error(Missing)
+      [_, ..] -> Ok(Nil)
+    })
     use held <- result.try(delegate_for(catalogue, spawner, parent_session))
     case held {
       Some(found) if found.session_id != session_id -> Error(Conflict)
@@ -2070,7 +2081,7 @@ pub fn spawner_spend(
 /// The registration, its memberships, its display name and subtitle, a workspace default
 /// naming it, its domain mapping and the provenance of an import are removed in one immediate transaction, so no reader can
 /// observe a catalogue whose foreign keys point at a session that is half
-/// gone. The domain record itself survives: a domain owns distilled memory
+/// gone. The domain record itself survives: a domain owns remembered notes
 /// for a workspace and outlives any one conversation that fed it.
 ///
 /// A session that is moving or has moved is `Conflict`: its move row is the only

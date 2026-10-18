@@ -1,8 +1,11 @@
-"""Keep prerequisite skips visible to the strict CI census under EUnit."""
+"""Keep prerequisite skips visible to the strict CI census under EUnit.
+
+The guard against stdout skip emitters in Gleam test sources is lint rule R19;
+this file proves the EUnit behaviour that rule protects against.
+"""
 
 from pathlib import Path
 import os
-import re
 import subprocess
 import tempfile
 import unittest
@@ -10,48 +13,14 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 CENSUS = ROOT / ".github/scripts/skip_census.sh"
-STDOUT_SKIP = re.compile(r'\bio\.println\s*\((?:\s|//[^\n]*)*"SKIP(?:\s|")')
-QUOTED_OR_COMMENT = re.compile(r'//[^\n]*|"(?:\\.|[^"\\])*"', re.DOTALL)
-
-
-def stdout_skip_sites(source):
-    # A call written in a Gleam string or // comment is documentation, not an
-    # emitter. Token spans also keep // inside a quoted URL from hiding code.
-    excluded = [match.span() for match in QUOTED_OR_COMMENT.finditer(source)]
-    return [match for match in STDOUT_SKIP.finditer(source)
-            if not any(start <= match.start() < end for start, end in excluded)]
 
 
 class SkipReportingTest(unittest.TestCase):
-    def test_skip_emitter_guard_recognizes_multiline_and_shared_helpers(self):
-        for source in ['io.println("SKIP example: absent")',
-                       'io.println(\n  "SKIP " <> name <> ": " <> reason,\n)',
-                       'io.println( // Prerequisite absent.\n "SKIP example")']:
-            with self.subTest(source=source):
-                self.assertEqual(len(stdout_skip_sites(source)), 1)
-        for source in ['io.println_error("SKIP example")',
-                       'io.println("ordinary output mentioning SKIP")',
-                       '// io.println("SKIP example")',
-                       'let x = 1 // io.println("SKIP example")',
-                       'let example = "io.println(\\"SKIP example\\")"']:
-            with self.subTest(source=source):
-                self.assertEqual(stdout_skip_sites(source), [])
-        self.assertEqual(len(stdout_skip_sites(
-            'let url = "https://example.invalid"\nio.println("SKIP example")'
-        )), 1)
-
-    def test_gleam_prerequisite_skips_bypass_captured_stdout(self):
-        # Existing suites use a leading SKIP literal, including shared helpers.
-        # Keep that convention on stderr: EUnit hides successful stdout even
-        # with verbose progress, so a green census could otherwise miss a skip.
-        hidden = []
-        for path in sorted((ROOT / "packages").glob("*/test/**/*.gleam")):
-            source = path.read_text()
-            for match in stdout_skip_sites(source):
-                line = source.count("\n", 0, match.start()) + 1
-                hidden.append(f"{path.relative_to(ROOT)}:{line}")
-        self.assertEqual(hidden, [], "Use io.println_error for SKIP diagnostics")
-
+    # The static half of this contract -- no `io.println("SKIP ...")` in any
+    # test source -- is lint rule R19 (packages/lint, lint/skip_stdout), which
+    # `make lint` runs over every package's test/ directory. What a lint rule
+    # cannot show is the premise it rests on, that EUnit really discards a
+    # passing test's stdout, so that is what remains here.
     def test_passing_eunit_skip_reaches_the_census(self):
         # Run stock EUnit rather than fabricating a log. Its stdout control
         # demonstrates the capture behavior that made the declaration appear

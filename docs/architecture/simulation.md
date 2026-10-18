@@ -369,7 +369,36 @@ and keeps the smallest one that *still fails*. Nothing is inferred: a
 reported minimal schedule is one that was observed to fail, so the worst
 shrinking can do is fail to shrink. The shrinker has been exercised
 against the defect it was built for: with the orphaned-poll fix reverted,
-a three-fault schedule reduces to the one fault that still fails.
+a three-fault schedule reduces to the one fault that still fails. That
+check was run by hand against the reverted fix. What the suite pins is
+the same reduction over a staged probe, plus the two acceptance rules
+below (`simulation_shrink_test`).
+
+A candidate replaces the current case only if it meets two rules, both
+enforced in `runner.minimize`, which the session runner and the daemon
+runners share:
+
+- **Same check.** It fails the check the original failed, by name. A
+  smaller schedule that breaks a different check is another bug. Taking it
+  would let shrinking slip from one named check to another and report a
+  minimal case for a failure nobody asked about.
+- **Corroborated.** It fails that check on its first run and on every one of
+  `runner.corroboration_runs` further runs, the same three the original
+  failure had to survive. The runs drive real processes, so a racy
+  candidate fails by chance, and one run would accept it. The confirming
+  runs of a session candidate replan the fault-free baseline, as the
+  original's corroboration does; the first run reuses the baseline the
+  failing run was judged against.
+
+The cost is asymmetric. A candidate that passes, or fails another check,
+costs one run. One that fails the same check costs `1 + corroboration_runs`
+runs, plus a fresh fault-free run for each confirming run in the session
+runner. The shrink budget (12) counts candidates tried, not runs, so a
+shrink that keeps finding reproducible failures spends about four times as
+many runs per step as it did before corroboration, and one that finds
+nothing costs what it always did. The original corroboration is held to the
+same-check rule too: a re-run that fails a different check, like one that
+passes, makes the seed unstable rather than reproducible.
 
 Two things are never shrunk:
 
@@ -380,6 +409,19 @@ Two things are never shrunk:
   settlement is chosen by the phase its predecessors produced. Dropping a
   turn produces a different session rather than a simpler one, so a
   "minimal script" found that way would not be a real minimal case either.
+
+That is why the runner does not draw from qcheck or run as a `statem`
+spec, although every other randomized test in the tree does
+(`docs/gleam-style.md` Part III, "Property and model-based tests"). A
+qcheck shrink tree would shrink the script along with the schedule.
+`statem` shrinks command lists against a model, but this runner has no
+model: its oracle compares a fault-free run with a faulted one. An
+accepted shrink must also fail on every one of several runs of real
+processes. `statem`'s retries go the other way: they accept a candidate
+if any one run fails. The split SplitMix64 seed in
+`conformance/simulation/random.gleam` keeps the script fixed while the
+schedule changes. The two acceptance rules above are the simulation's own
+equivalent of `statem`'s rule that a shrink must keep the same tag.
 
 ## Running it
 
@@ -399,18 +441,21 @@ outside the seed's control.
 `SOAK_FROM` (default 1), with shrinking. Budget roughly a second per seed.
 The soak is enabled through the environment rather than through a
 separate target, so `LOOM_SOAK_SEEDS=500 gleam test` inside
-`packages/conformance` does the same thing, with one caveat that the
-target handles for you.
+`packages/conformance` does the same thing; the target adds the outer
+watchdog deadline and the `conformance@simulation_test:soak_test`
+selection.
 
-The caveat is the test framework's per-test timeout of about a minute. A
-run that exceeds it is reported as a timeout rather than as a result.
-Because per-seed cost varies, a single invocation of more than a few dozen
-seeds can trip the timeout and look like a hang in whatever the runner
-happened to be doing. `make soak` therefore runs in chunks of `SOAK_CHUNK`
-seeds (default 50). It advances the starting seed and stops at the first
-chunk that fails, which is why it echoes the seed range before each chunk.
-Driving the environment variables directly means choosing a count that
-fits inside the timeout yourself.
+The test framework's per-test timeout is about a minute, and a run that
+exceeds it is reported as a timeout rather than as a result. The soak
+therefore does not run as one test. `simulation_test:soak_test_` is an
+eunit generator that yields one test per chunk of `LOOM_SOAK_CHUNK` seeds
+(`SOAK_CHUNK`, default 50), each wrapped in its own deadline of twenty
+seconds a seed and titled with its range, for example `soak seeds
+1851..1900`. A failing chunk panics with that range in its text, ahead of
+the shrunk report and the reproduction line. Chunks run in order within one
+invocation; a failing chunk does not stop the ones after it, so the output
+may name several ranges. An unset or zero `LOOM_SOAK_SEEDS` yields no
+tests.
 
 A soak failure prints the same reproduction line as any other. Re-run
 that seed alone with `make replay-simulation SIM_SEED=<seed>`; the failing
@@ -469,6 +514,34 @@ dropped rather than deferred: there is one gateway actor per resident
 session, and the property it would have checked is already
 `gateway_test`'s. The design note's amendments of 2026-09-08 carry the
 argument and the kill model in full.
+
+A failing daemon seed is shrunk the way a session seed is: the soak
+corroborates first, shrinks only a reproducible failure, and prints a
+`[shrunk]` line beneath the `[verdict]` line, under the same two rules
+(same check, corroborated). What a candidate is depends on the scenario:
+
+- **Creation key.** `daemon_fault.shrink` offers dropping the kill, moving
+  it to an earlier step of the same creation, and moving it to the creation
+  before it at the same step. It offers a step only where the generator
+  could have drawn it, because an unreachable step parks no builder and the
+  run would wait out its real arrival backstop before failing a different
+  check. A schedule holds at most one kill, so no candidate can break a
+  pairing another fault relied on. If the fault-free run itself fails the
+  check, the empty schedule is accepted, and the line says no fault was
+  needed.
+- **Lifecycle and revocation.** The schedule is one fault drawn from the
+  seed, and its coordinates are unordered alternatives: an interrupted open
+  against an interrupted stop, a revocation before admission against one
+  between admission and delivery. Neither is simpler than the other, and
+  treating one as earlier would swap one scenario for another. The only
+  candidate is the fault-free run, which answers whether the failure ever
+  needed the fault. A failure outside both scripts (the harness failing to
+  start a daemon) has no fault to simplify and prints no line.
+- **Domain retirement.** The schedule is the held open compared with the
+  baseline open. Neither is a simpler form of the other, so the line says it
+  was not shrunk.
+
+Scripts are not shrunk in the daemon simulation either.
 
 `make check-conformance` runs a small pinned corpus of daemon seeds.
 `make soak-daemon-sim` runs the long sweep, bounded by
@@ -650,15 +723,16 @@ rather than tested, and a clock that jumps backwards is not simulated.
 | `conformance/simulation/random.gleam` | The splittable SplitMix64 generator every choice is drawn from |
 | `conformance/simulation/vclock.gleam` | The logical clock and its timer wheel |
 | `conformance/simulation/script.gleam` | The operation DSL and its generator |
-| `conformance/simulation/fault.gleam` | The fault taxonomy, schedule generation, and shrinking |
+| `conformance/simulation/fault.gleam` | The fault taxonomy, schedule generation, and shrink candidates |
 | `conformance/simulation/control.gleam` | The counters, one-shot claims, and runtime handle that outlive the tree |
 | `conformance/simulation/store.gleam` | The instrumented session: commit counting, stale refusals, read faults, the stealable lease |
 | `conformance/simulation/surface.gleam` | The scripted provider, tools, and hooks; the tools open an execution through the plane |
 | `conformance/simulation/plane.gleam` | The effect plane: a broker over the executor over fake helpers, and the two `effects/` checks |
 | `conformance/simulation/fake_jail.gleam` | The fake helper the plane's pool runs |
 | `conformance/simulation/invariant.gleam` | The named per-run checks |
-| `conformance/simulation/runner.gleam` | Seed to verdict: execute, compare, shrink, report |
+| `conformance/simulation/runner.gleam` | Seed to verdict: execute, compare, report, and `minimize`, the shrink search every runner shares |
 | `conformance/simulation/wire.gleam` | The framing properties |
+| `conformance/test/conformance/simulation_shrink_test.gleam` | The two acceptance rules over staged probes, and the daemon shrink candidates |
 | `conformance/test/conformance/simulation_test.gleam` | The fast sweep, the coverage assertion, the pinned corpus, the soak gate |
 
 Each path is relative to its package's source root. The plane these tests

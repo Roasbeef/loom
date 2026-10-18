@@ -500,10 +500,9 @@ pub type Hooks {
     /// held to.
     ///
     /// What it covers is the conversation session's ledger and nothing
-    /// else. Memory distillation commits its usage rows through
-    /// `storage` directly, against the memory session's own ledger, so
-    /// those turns never reach this slot — by design, since they belong
-    /// to a command rather than to a run.
+    /// else. Auxiliary requests such as block summaries commit
+    /// their usage rows through `storage` directly, so those turns never
+    /// reach this slot — by design, since they do not belong to a run.
     usage: fn(OpId, UsageRow) -> Nil,
   )
 }

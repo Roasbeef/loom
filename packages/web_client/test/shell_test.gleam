@@ -4,6 +4,7 @@
 
 import gleam/list
 import gleam/option.{None, Some}
+import web_client/proposals_rule
 import web_client/shell_rule.{
   Changes, Closed, Layout, Listed, Notes, Open, Panel, Reachable, Session,
   Sidebar, Strands, Trace, Unlisted, Unreachable,
@@ -158,6 +159,19 @@ pub fn the_strands_tab_names_how_many_strands_wait_test() {
   assert shell_rule.strands_words(1) == "Strands, 1 needs approval"
   assert shell_rule.strands_words(2) == "Strands, 2 need approval"
   assert shell_rule.strands_words(-1) == "Strands"
+}
+
+// The Session tab holds the owner's proposals review, so its badge is the
+// pending count and its label says it, as the Strands tab does for strands. The
+// `proposals` attribute decodes as `needing` does, so a hostile value is none.
+pub fn the_session_tab_names_how_many_proposals_wait_test() {
+  assert proposals_rule.session_words(0) == "Session"
+  assert proposals_rule.session_words(1) == "Session, 1 proposal to review"
+  assert proposals_rule.session_words(3) == "Session, 3 proposals to review"
+  assert proposals_rule.session_words(-1) == "Session"
+  assert shell_rule.badge(shell_rule.needing("3")) == Some("3")
+  assert shell_rule.badge(shell_rule.needing("<b>3</b>")) == None
+  assert shell_rule.badge(shell_rule.needing("")) == None
 }
 
 // The marker on a control with no handler is the server's number, a card's

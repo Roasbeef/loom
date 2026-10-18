@@ -67,7 +67,7 @@
 //// its `operation` is still the strand's current one.
 
 import client/advisor
-import client/distill.{type Distiller}
+import client/auxiliary.{type Summarizer}
 import client/glancepace
 import client/glanceslice
 import client/internal/session_owner
@@ -144,7 +144,7 @@ pub type Wiring {
     runtime: fn() -> Result(Runtime, Nil),
     /// The model seam. Production fills it with `summarizer`; a test fills
     /// it with a script.
-    summarizer: Distiller,
+    summarizer: Summarizer,
     /// The time source for `glance.at` and the pacing arithmetic.
     clock: Clock,
     /// The pacing knobs, `glancepace.default_pace` in production.
@@ -226,8 +226,8 @@ type Landing {
 /// glance: every catalogue routes `main`. It is dispatched as a role, so a
 /// rate-limited head still falls to its own tail, and there is no durable
 /// identity to honour because a glance is published as text rather than
-/// as a response attributed to a model — the argument `distill.target`
-/// makes for memory.
+/// as a response attributed to a model, the argument `auxiliary.target`
+/// makes for its summaries.
 ///
 /// ## Examples
 ///
@@ -260,9 +260,9 @@ pub fn target(
 /// ```
 pub fn summarizer(
   gateway: provider_gateway.Gateway,
-) -> Result(Distiller, String) {
+) -> Result(Summarizer, String) {
   use dispatch <- result.map(target(gateway))
-  distill.capped_gateway_distiller(
+  auxiliary.capped_gateway_summarizer(
     gateway,
     dispatch,
     timeout_ms: request_timeout_ms,
@@ -621,7 +621,7 @@ fn summarize(
   use answer <- result.try(
     case wiring.summarizer.ask(glanceslice.request(material)) {
       Ok(answer) -> {
-        use Nil <- result.try(distill.record_request(
+        use Nil <- result.try(auxiliary.record_request(
           wiring.session,
           answer.accounting,
           "glance",
@@ -629,7 +629,7 @@ fn summarize(
         Ok(answer)
       }
       Error(failure) -> {
-        use Nil <- result.try(distill.record_request(
+        use Nil <- result.try(auxiliary.record_request(
           wiring.session,
           failure.accounting,
           "glance",

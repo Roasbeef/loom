@@ -31,6 +31,23 @@
 //// dropped and the session re-indexes from zero in the same
 //// transaction.
 ////
+//// **What a row records.** Besides the session and entry ids and the text,
+//// each row stores the entry's `kind` (`user`, `assistant`, `tool`,
+//// `summary`) and its commit time `ts`, both read from the entry at index
+//// time. Queries filter on `kind` and page with `before`, an entry id whose
+//// UUIDv7 text order is commit-time order. The schema version is kept in
+//// `PRAGMA user_version`; `initialize` migrates an older file in place rather
+//// than deleting it (see `migrate`).
+////
+//// **What is not indexed.** The notes index, and the digest a past release
+//// attached, are committed to a session as user messages, and `index_row` skips them
+//// (`is_memory_injection`): a copy of every note title in every session would
+//// bury the real hits for a note's topic. This is not a schema change and the
+//// version is not bumped. A session indexed before the rule still holds its old
+//// injected rows, which are harmless noise until the session is re-synced, and
+//// a re-sync of a session (a generation bump) drops its rows and rebuilds
+//// them without the injections.
+////
 //// **Sessions are named by their canonical id.** `sync`, `notify`,
 //// `remove` and `query_in_session` take a `core/ids.SessionId`
 //// (`protocol-change/008`), with no caller-supplied-string form: this is
@@ -45,6 +62,24 @@
 //// regenerate with `scripts/gen-sql.sh`). Schema DDL and pragmas stay
 //// hand-written below, mirrored byte-for-byte from `sql/schema.sql`
 //// (a test pins the two together).
+////
+//// ## Flow
+////
+//// `open` → `initialize` → `migrate` → `sync` → `index_row` → `write_index` →
+//// `query` → `match_text`
+////
+//// 1. `open` acquires the connection and calls `initialize`, which applies the
+////    shared SQLite policy and then `migrate`.
+//// 2. `migrate` reads `PRAGMA user_version` and, for an older file, rebuilds
+////    the FTS table in place inside one transaction (`upgrade_entry_fts`).
+//// 3. `sync` reads a session's entries past its cursor under the write lock
+////    and turns each into a row with `index_row`, which extracts the text, the
+////    kind and the commit time.
+//// 4. `write_index` drops stale rows, inserts the new ones and advances the
+////    cursor in that same transaction.
+//// 5. `query` (and `query_in_session`, `query_authorized`) turns a `Query`
+////    into a match expression with `match_text`, filters by kind and
+////    the anchor, and returns ranked or newest-first `Hit`s.
 
 import core/entry.{type Entry}
 import core/ids.{type SessionId}
@@ -91,10 +126,42 @@ pub type SearchError {
 /// a hit may be stale (the entry deleted by a rewrite since indexing).
 ///
 /// Constructor invariants: `session` and `entry` are the ids the entry
-/// was indexed under; `snippet` is FTS5 `snippet()` output with `[`/`]`
-/// marking matched terms.
+/// was indexed under; `kind` is `user`, `assistant`, `tool` or `summary`, or
+/// empty for a row indexed before the column existed; `ts` is the entry's
+/// commit time in milliseconds since the epoch, or 0 for the same legacy
+/// rows; `snippet` is FTS5 `snippet()` output with `[`/`]` marking matched
+/// terms.
 pub type Hit {
-  Hit(session: String, entry: String, snippet: String)
+  Hit(session: String, entry: String, kind: String, ts: Int, snippet: String)
+}
+
+/// How a query's text is read.
+pub type Syntax {
+  /// Whitespace-separated words, each quoted for FTS5 and ANDed. No input
+  /// can be a syntax error: `foo-bar`, `a:b` and a stray quote are text.
+  Words
+
+  /// FTS5 query syntax passed through unchanged: bare words, quoted phrases,
+  /// `AND`/`OR`/`NOT`, column filters. A malformed query is an `IndexFault`.
+  Raw
+}
+
+/// One ranked full-text question, shared by every scope.
+///
+/// Constructor invariants: `limit` is positive and already bounded by the
+/// caller, because SQLite reads a negative `LIMIT` as unbounded; `kind` is
+/// matched exactly against the indexed kind, so an unknown kind matches
+/// nothing; `before` is a canonical entry id, and only hits whose id text sorts
+/// below it are returned. Entry ids are UUIDv7, so that order is commit-time
+/// order across sessions and `before` is a keyset over history.
+pub type Query {
+  Query(
+    text: String,
+    syntax: Syntax,
+    kind: Option(String),
+    before: Option(String),
+    limit: Int,
+  )
 }
 
 /// Whether another bounded read may find more entries.
@@ -233,6 +300,8 @@ const create_entry_fts =
   "CREATE VIRTUAL TABLE IF NOT EXISTS entry_fts USING fts5(
   session_id UNINDEXED,
   entry_id UNINDEXED,
+  kind UNINDEXED,
+  ts UNINDEXED,
   text
 );"
 
@@ -331,19 +400,83 @@ pub fn initialize(search: Search) -> Result(Nil, SearchError) {
     sqlite_policy.configure_database(db, options)
     |> result.map_error(index_fault),
   )
-  use Nil <- result.try(
-    sqlight.exec(create_entry_fts, on: db)
-    |> result.map_error(index_fault),
+  migrate(search)
+}
+
+/// The schema version this build writes, kept in `PRAGMA user_version`. A file
+/// that predates versioning reads 0; version 1 adds the `kind` and `ts`
+/// columns to `entry_fts`.
+const schema_version = 1
+
+// An FTS5 table cannot be altered, so reaching the current version rebuilds
+// `entry_fts` beside the old one and copies the rows across. The file is never
+// deleted: the copied rows keep answering queries while their sessions are
+// re-read, and a failed migration rolls back to the old table intact.
+fn migrate(search: Search) -> Result(Nil, SearchError) {
+  use version <- result.try(user_version(search))
+  use <- bool.guard(when: version >= schema_version, return: Ok(Nil))
+  use <- in_transaction(search)
+
+  // The version is read again under the write lock. Two processes opening the
+  // same old file would otherwise both rename the table, and the second would
+  // copy rows out of the empty replacement the first had just created.
+  use version <- result.try(user_version(search))
+  use <- bool.guard(when: version >= schema_version, return: Ok(Nil))
+  use Nil <- result.try(exec(search, create_search_cursor))
+  use Nil <- result.try(exec(search, create_search_source))
+  use legacy <- result.try(has_table(search, "entry_fts"))
+  use Nil <- result.try(case legacy {
+    True -> upgrade_entry_fts(search)
+    False -> exec(search, create_entry_fts)
+  })
+  exec(search, "PRAGMA user_version = " <> int.to_string(schema_version))
+}
+
+// Copies every row of the version-0 index into the current shape. A copied row
+// has no kind and no time, because the index never recorded them. Forcing every
+// cursor to a generation no store has (they count up from zero) makes the next
+// sync of each session drop its rows and index them again with both columns, so
+// a session heals as soon as it is read. Sessions that are never read again keep
+// their copied rows, which a `kind` filter will not match.
+fn upgrade_entry_fts(search: Search) -> Result(Nil, SearchError) {
+  use Nil <- result.try(exec(
+    search,
+    "ALTER TABLE entry_fts RENAME TO entry_fts_v0",
+  ))
+  use Nil <- result.try(exec(search, create_entry_fts))
+  use Nil <- result.try(exec(
+    search,
+    "INSERT INTO entry_fts (session_id, entry_id, kind, ts, text)
+SELECT session_id, entry_id, '', 0, text FROM entry_fts_v0 ORDER BY rowid",
+  ))
+  use Nil <- result.try(exec(search, "DROP TABLE entry_fts_v0"))
+  exec(search, "UPDATE search_cursor SET generation = -1")
+}
+
+fn exec(search: Search, statement: String) -> Result(Nil, SearchError) {
+  sqlight.exec(statement, on: search.db) |> result.map_error(index_fault)
+}
+
+fn user_version(search: Search) -> Result(Int, SearchError) {
+  sqlight.query(
+    "PRAGMA user_version",
+    on: search.db,
+    with: [],
+    expecting: decode.at([0], decode.int),
   )
-  use Nil <- result.try(
-    sqlight.exec(create_search_cursor, on: db)
-    |> result.map_error(index_fault),
+  |> result.map_error(index_fault)
+  |> result.map(fn(rows) { result.unwrap(list.first(rows), 0) })
+}
+
+fn has_table(search: Search, name: String) -> Result(Bool, SearchError) {
+  sqlight.query(
+    "SELECT count(*) FROM sqlite_master WHERE name = ?1",
+    on: search.db,
+    with: [sqlight.text(name)],
+    expecting: decode.at([0], decode.int),
   )
-  use Nil <- result.try(
-    sqlight.exec(create_search_source, on: db)
-    |> result.map_error(index_fault),
-  )
-  Ok(Nil)
+  |> result.map_error(index_fault)
+  |> result.map(fn(rows) { result.unwrap(list.first(rows), 0) > 0 })
 }
 
 /// Registers a host-owned source path for exact reads by canonical identity.
@@ -527,13 +660,87 @@ pub fn sync_batch(
   commit_batch(search, plan, entries, requested: limit)
 }
 
-/// The text an entry contributes to the index, or `Error(Nil)` for one
-/// that indexes to nothing (its seq still advances the cursor).
-fn index_row(entry: Entry) -> Result(#(String, String), Nil) {
+/// One entry as the index stores it. `kind` and `ts` are read from the entry at
+/// index time, so a query filters and dates a hit without opening any session.
+type Row {
+  Row(entry_id: String, kind: String, ts: Int, text: String)
+}
+
+/// What an entry contributes to the index, or `Error(Nil)` for one that
+/// indexes to nothing (its seq still advances the cursor).
+fn index_row(entry: Entry) -> Result(Row, Nil) {
   let text = entry_text(entry)
   use <- bool.guard(when: text == "", return: Error(Nil))
-  Ok(#(ids.entry_id_to_string(entry.id), text))
+  let kind = entry_kind(entry)
+
+  // The harness commits the notes index, and a past release the digest, to
+  // every session as a user message. Indexed, each session would hold a copy
+  // of every note title and bury the real hits for a note's topic.
+  use <- bool.guard(
+    when: kind == "user" && is_memory_injection(text),
+    return: Error(Nil),
+  )
+  Ok(Row(entry_id: ids.entry_id_to_string(entry.id), kind:, ts: entry.ts, text:))
 }
+
+// The kind a `history_search` caller filters on. A custom message and every
+// custom entry but a note index no text, so their empty kind is never stored.
+fn entry_kind(entry: Entry) -> String {
+  case entry {
+    entry.MessageEntry(message:, ..) ->
+      case message {
+        message.UserMessage(..) -> "user"
+        message.AssistantMessage(..) -> "assistant"
+        message.ToolResultMessage(..) -> "tool"
+        message.CustomMessage(..) -> ""
+      }
+    entry.CompactionEntry(..) | entry.BranchSummaryEntry(..) -> "summary"
+    entry.CustomEntry(custom_type:, ..) if custom_type == note_entry_type ->
+      "note"
+    entry.CustomEntry(..) -> ""
+  }
+}
+
+/// How the digest a past release attached to a run begins, and its fence.
+/// Sessions saved by that release still hold it. These mirror `session_view/composer.memory_attribution_lead` and `memory_fence`,
+/// which this package cannot import; a test in `client` pins them equal.
+pub const digest_attribution_lead =
+  "Distilled memory from this repository's earlier "
+
+/// The fence of the digest message. See `digest_attribution_lead`.
+pub const digest_fence = "```loom-memory"
+
+/// How the notes index the daemon attaches to a run begins, and its fence.
+/// These mirror `composer.notes_attribution_lead` and `notes_fence`; a test in
+/// `client` pins them equal.
+pub const notes_attribution_lead = "Notes saved in this repository by earlier "
+
+/// The fence of the notes index message. See `notes_attribution_lead`.
+pub const notes_fence = "```loom-notes"
+
+// Whether a user message's text is a memory context the harness injected: it
+// begins with one injector's lead and carries that same injector's fence. The
+// pairing is the one `composer.memory_context_lines` uses, so a lead with the
+// other injector's fence is not an injection, and neither is a person's text
+// that merely begins with a lead.
+fn is_memory_injection(text: String) -> Bool {
+  injected_by(text, digest_attribution_lead, digest_fence)
+  || injected_by(text, notes_attribution_lead, notes_fence)
+}
+
+fn injected_by(text: String, lead: String, fence: String) -> Bool {
+  string.starts_with(text, lead) && string.contains(text, fence <> "\n")
+}
+
+/// The custom entry type `remember` writes a note under. It is the one
+/// custom entry the index reads: a note is text a model wrote deliberately,
+/// through a capability-checked door, to be found again. Every other custom
+/// entry stays out, including the distillate rows (`memory/fact`,
+/// `memory/lesson`, `memory/preference`) an older store may still hold.
+///
+/// This is the same string as `tools/remember.note_type`, which this package
+/// cannot import; a test in `client` pins the two equal.
+pub const note_entry_type = "memory/note"
 
 /// The write side of `sync`: drop the session's rows if the cursor was
 /// stale, insert the freshly-scanned rows, and advance the cursor —
@@ -543,7 +750,7 @@ fn write_index(
   session_id: String,
   generation: Int,
   stale: Bool,
-  rows: List(#(String, String)),
+  rows: List(Row),
   new_high_water: Int,
 ) -> Result(Nil, SearchError) {
   use Nil <- result.try(delete_if_stale(search, session_id, stale))
@@ -579,12 +786,17 @@ fn delete_if_stale(
 fn insert_row(
   search: Search,
   session_id: String,
-  row: #(String, String),
+  row: Row,
 ) -> Result(Nil, SearchError) {
-  let #(entry_id, text) = row
   run_statement(
     search,
-    sql.insert_entry_text(session_id: session_id, entry_id: entry_id, text:),
+    sql.insert_entry_text(
+      session_id: session_id,
+      entry_id: row.entry_id,
+      kind: row.kind,
+      ts: row.ts,
+      text: row.text,
+    ),
   )
 }
 
@@ -633,24 +845,125 @@ pub fn remove(
   })
 }
 
-/// Runs a full-text query and returns hits ranked best-first (FTS5
-/// `rank`). `text` uses FTS5 query syntax — bare words, quoted phrases,
-/// `AND`/`OR`/`NOT` — and a malformed query is an `IndexFault`, not a
-/// crash. `limit` caps the hits returned.
+/// A `Words` query with no kind or `before` filter, the common case.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // search.query(search, "auth migration", limit: 10)
-/// // -> Ok([Hit(session: "s1", entry: "018f...", snippet: "the [auth] [migration]")])
+/// assert search.words("auth", 10).syntax == search.Words
 /// ```
 ///
-pub fn query(
+pub fn words(text: String, limit: Int) -> Query {
+  Query(text:, syntax: Words, kind: None, before: None, limit:)
+}
+
+/// The same query in FTS5 syntax, passed through unchanged.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert search.raw("auth OR login", 10).syntax == search.Raw
+/// ```
+///
+pub fn raw(text: String, limit: Int) -> Query {
+  Query(text:, syntax: Raw, kind: None, before: None, limit:)
+}
+
+/// Runs a full-text query and returns hits ranked best-first (FTS5
+/// `rank`). In `Words` syntax every input is valid text; in `Raw` syntax a
+/// malformed query is an `IndexFault`, not a crash. `kind` and `before` narrow
+/// the hits before `limit` is applied.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // search.query(search, search.Query("auth migration", search.Words, None, None, 10))
+/// // -> Ok([Hit(session: "s1", entry: "018f...", kind: "user", ts: 1760000000000,
+/// //            snippet: "the [auth] [migration]")])
+/// ```
+///
+pub fn query(search: Search, query: Query) -> Result(List(Hit), SearchError) {
+  let #(statement, params, decoder) =
+    sql.search_entries(
+      query: match_text(query),
+      kind: option.unwrap(query.kind, ""),
+      before: option.unwrap(query.before, ""),
+      max_hits: query.limit,
+    )
+  run_hits(search, statement, params, decoder, fn(row) {
+    let sql.SearchEntries(session_id:, entry_id:, kind:, ts:, snippet:) = row
+    Hit(session: session_id, entry: entry_id, kind:, ts:, snippet:)
+  })
+}
+
+/// The text FTS5 is asked to match. `Raw` is the caller's own syntax. `Words`
+/// turns each whitespace-separated token into a quoted prefix term, so
+/// punctuation is text and `deploy` also finds `deployment`; terms are ANDed,
+/// and a bare `OR` between two words stays the OR operator. An `OR` at either
+/// end, or next to another `OR`, has no word to join and is dropped.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert search.match_text(search.Query("foo-bar x", search.Words, None, None, 5))
+///   == "\"foo-bar\"* \"x\"*"
+/// ```
+///
+pub fn match_text(query: Query) -> String {
+  case query.syntax {
+    Raw -> query.text
+    Words ->
+      query.text
+      |> string.replace(each: "\n", with: " ")
+      |> string.replace(each: "\r", with: " ")
+      |> string.replace(each: "\t", with: " ")
+      |> string.split(on: " ")
+      |> list.filter(fn(token) { token != "" })
+      |> joinable_ors
+      |> list.map(fn(token) {
+        case token {
+          "OR" -> token
+          _ -> "\"" <> string.replace(token, each: "\"", with: "\"\"") <> "\"*"
+        }
+      })
+      |> string.join(" ")
+      |> empty_matches_nothing
+  }
+}
+
+// FTS5 refuses an empty expression, and a query of nothing but `OR` tokens
+// reduces to one. An empty phrase is valid and matches no row.
+fn empty_matches_nothing(expression: String) -> String {
+  case expression {
+    "" -> "\"\""
+    _ -> expression
+  }
+}
+
+// Leaves an `OR` only where a word stands on both sides of it.
+fn joinable_ors(tokens: List(String)) -> List(String) {
+  let trimmed =
+    tokens
+    |> list.drop_while(fn(token) { token == "OR" })
+    |> list.reverse
+    |> list.drop_while(fn(token) { token == "OR" })
+    |> list.reverse
+  list.fold(trimmed, [], fn(kept, token) {
+    case token, kept {
+      "OR", ["OR", ..] -> kept
+      _, _ -> [token, ..kept]
+    }
+  })
+  |> list.reverse
+}
+
+fn run_hits(
   search: Search,
-  text text: String,
-  limit limit: Int,
+  statement: String,
+  params: List(dev.Param),
+  decoder: decode.Decoder(row),
+  to_hit: fn(row) -> Hit,
 ) -> Result(List(Hit), SearchError) {
-  let #(statement, params, decoder) = sql.search_entries(text:, limit:)
   sqlight.query(
     statement,
     on: search.db,
@@ -658,12 +971,7 @@ pub fn query(
     expecting: decoder,
   )
   |> result.map_error(index_fault)
-  |> result.map(
-    list.map(_, fn(row) {
-      let sql.SearchEntries(session_id:, entry_id:, snippet:) = row
-      Hit(session: session_id, entry: entry_id, snippet:)
-    }),
-  )
+  |> result.map(list.map(_, to_hit))
 }
 
 /// Returns hits only from the current authorized sessions, and spends the whole
@@ -680,17 +988,18 @@ pub fn query(
 /// ## Examples
 ///
 /// ```gleam
-/// // search.query_authorized(index, [session_id], "migration", 10)
+/// // search.query_authorized(index, [session_id], query)
 /// ```
 @internal
 pub fn query_authorized(
   search: Search,
   sessions: List(SessionId),
-  text: String,
-  limit: Int,
+  query: Query,
 ) -> Result(List(Hit), SearchError) {
   use <- bool.guard(
-    when: limit < 1 || limit > 50 || list.length(list.take(sessions, 513)) > 512,
+    when: query.limit < 1
+      || query.limit > 50
+      || list.length(list.take(sessions, 513)) > 512,
     return: Error(IndexFault("authorized search bounds exceeded")),
   )
   let sessions =
@@ -699,24 +1008,24 @@ pub fn query_authorized(
     |> json.Array
     |> json.to_string
   let #(statement, params, decoder) =
-    sql.search_authorized_entries(text, sessions, limit)
-  sqlight.query(
-    statement,
-    search.db,
-    list.map(params, param_to_sqlight),
-    decoder,
-  )
-  |> result.map_error(index_fault)
-  |> result.map(
-    list.map(_, fn(row) { Hit(row.session_id, row.entry_id, row.snippet) }),
-  )
+    sql.search_authorized_entries(
+      query: match_text(query),
+      sessions:,
+      kind: option.unwrap(query.kind, ""),
+      before: option.unwrap(query.before, ""),
+      max_hits: query.limit,
+    )
+  run_hits(search, statement, params, decoder, fn(row) {
+    Hit(row.session_id, row.entry_id, row.kind, row.ts, row.snippet)
+  })
 }
 
 /// The searchable text of an entry, as indexed: user text, assistant
 /// text, and tool-result text blocks of a message entry (thinking and
 /// tool-call arguments are not indexed); compaction and branch-summary
-/// text; nothing for custom entries. Blocks join with newlines; an
-/// empty result means the entry is skipped (its seq still advances the
+/// text; for a `memory/note` entry its title, description and text, one
+/// per line; nothing for any other custom entry. Blocks join with newlines;
+/// an empty result means the entry is skipped (its seq still advances the
 /// cursor).
 ///
 /// ## Examples
@@ -730,7 +1039,33 @@ pub fn entry_text(entry: Entry) -> String {
     entry.MessageEntry(message:, ..) -> message_text(message)
     entry.CompactionEntry(summary:, ..) -> summary
     entry.BranchSummaryEntry(summary:, ..) -> summary
+    entry.CustomEntry(custom_type:, data:, ..)
+      if custom_type == note_entry_type
+    -> note_text(data)
     entry.CustomEntry(..) -> ""
+  }
+}
+
+// A note's searchable words: the fields a typed note carries, in reading
+// order. A note written before notes were typed has only `text`, and the
+// absent fields contribute nothing.
+fn note_text(data: Option(json.JsonValue)) -> String {
+  case data {
+    Some(json.Object(fields)) ->
+      ["title", "description", "text"]
+      |> list.filter_map(fn(key) { non_empty_text(fields, key) })
+      |> string.join("\n")
+    Some(_other) | None -> ""
+  }
+}
+
+fn non_empty_text(
+  fields: List(#(String, json.JsonValue)),
+  key: String,
+) -> Result(String, Nil) {
+  case list.key_find(fields, key) {
+    Ok(json.String(text)) if text != "" -> Ok(text)
+    Ok(_other) | Error(Nil) -> Error(Nil)
   }
 }
 
@@ -778,34 +1113,27 @@ fn tool_result_block_text(
 /// ## Examples
 ///
 /// ```gleam
-/// // search.query_in_session(search, session: id, text: "auth", limit: 10)
+/// // search.query_in_session(search, session: id, query: query)
 /// ```
 ///
 pub fn query_in_session(
   search: Search,
   session session: SessionId,
-  text text: String,
-  limit limit: Int,
+  query query: Query,
 ) -> Result(List(Hit), SearchError) {
   let #(statement, params, decoder) =
     sql.search_entries_in_session(
-      text:,
-      session_id: ids.session_id_to_string(session),
-      limit:,
+      query: match_text(query),
+      session: ids.session_id_to_string(session),
+      kind: option.unwrap(query.kind, ""),
+      before: option.unwrap(query.before, ""),
+      max_hits: query.limit,
     )
-  sqlight.query(
-    statement,
-    on: search.db,
-    with: list.map(params, param_to_sqlight),
-    expecting: decoder,
-  )
-  |> result.map_error(index_fault)
-  |> result.map(
-    list.map(_, fn(row) {
-      let sql.SearchEntriesInSession(session_id:, entry_id:, snippet:) = row
-      Hit(session: session_id, entry: entry_id, snippet:)
-    }),
-  )
+  run_hits(search, statement, params, decoder, fn(row) {
+    let sql.SearchEntriesInSession(session_id:, entry_id:, kind:, ts:, snippet:) =
+      row
+    Hit(session: session_id, entry: entry_id, kind:, ts:, snippet:)
+  })
 }
 
 /// The newest entries one session has indexed, newest first, with no
@@ -843,8 +1171,14 @@ pub fn recent_in_session(
   |> result.map_error(index_fault)
   |> result.map(
     list.map(_, fn(row) {
-      let sql.RecentEntriesInSession(session_id:, entry_id:, snippet:) = row
-      Hit(session: session_id, entry: entry_id, snippet:)
+      let sql.RecentEntriesInSession(
+        session_id:,
+        entry_id:,
+        kind:,
+        ts:,
+        snippet:,
+      ) = row
+      Hit(session: session_id, entry: entry_id, kind:, ts:, snippet:)
     }),
   )
 }

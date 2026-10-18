@@ -565,6 +565,10 @@ even wired would be construction for its own sake.
 
 ## Distilled knowledge: a memory session, written by a pipeline
 
+*Superseded: the distillation pipeline this section designs was built and
+then removed (`docs/design-notes/memory-recall.md`, "What happens to
+distillation"). Memory is now recall over the log plus typed notes.*
+
 For cross-session distillates Loom needs a durable home that is none of:
 the workspace (models edit files there; memory must not be silently
 model-writable), the pinned prompt (cache), or a new store (the last

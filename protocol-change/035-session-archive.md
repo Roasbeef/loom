@@ -46,7 +46,7 @@ add path migrations and failure recovery without helping this metadata operation
 An independent archive table retains both existing invariants. It costs one
 small schema migration and three additive control commands. Older clients keep
 their existing commands; older daemons reject the new commands without deleting
-anything. Domain history and distilled memory remain available after archival.
+anything. Domain history and remembered memory remain available after archival.
 
 ## Acceptance
 

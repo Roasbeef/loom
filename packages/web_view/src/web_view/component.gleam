@@ -168,12 +168,14 @@ import session_view/goal_view
 import session_view/history_view
 import session_view/inbox
 import session_view/lane_fold
+import session_view/memory_overview as memory_words
 import session_view/model.{type Shared, Shared} as session_model
 import session_view/msg
 import session_view/notice_words
 import session_view/operator
 import session_view/outbound
 import session_view/pasted_image
+import session_view/proposals as board_words
 import session_view/protocol
 import session_view/remembered as kept
 import session_view/reviewer_status
@@ -207,6 +209,7 @@ import web_view/image as web_image
 import web_view/invites
 import web_view/notes
 import web_view/peer_links
+import web_view/proposals as proposing
 import web_view/remembered as holding
 import web_view/renames
 import web_view/sessions
@@ -384,6 +387,17 @@ pub const notes_path = "0\t3\t5"
 
 /// The search input’s exact path, admitted for input events only.
 pub const notes_search_path = "0\t3\t5\t2\t0"
+
+/// The Lustre event path of the owner's proposals review: the eighth and last
+/// child of the Session pane (`view/session_tab`), after the peer-link section
+/// (`peers_path`), so that placing it there moved no path the socket admits.
+/// Every handler beneath it is one proposal's Approve or Reject button or its
+/// question's two (`view/proposals`, protocol-change/086). The operator's
+/// socket admits them like any click that is not an owner's control, and an
+/// observer's socket admits none, the page drawing nothing there and the daemon
+/// refusing both commands to anyone but its owner on its own account.
+/// `proposals_test` fails if the view moves the section.
+pub const proposals_path = "0\t3\t2\t7"
 
 /// How long the peer links a page read stand before it reads them again, in
 /// milliseconds of the transport's clock. A link changes when the owner or a
@@ -1118,6 +1132,10 @@ type View(socket) {
     /// board itself: when it last wanted it, the question that is open and the
     /// sign-ins the daemon said have ended (`web_view/remembered`).
     holding: holding.State,
+    /// What the page holds about the proposals review beyond the board itself:
+    /// when it last wanted it and the approval being asked about
+    /// (`web_view/proposals`).
+    proposing: proposing.State,
     /// What the page refused to send, until the operator's next input.
     refusal: Option(String),
     /// How many composer submits were refused with the draft kept, by the
@@ -1447,6 +1465,7 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       jobs_asked_at: None,
       decided: Owed,
       holding: holding.new(),
+      proposing: proposing.new(),
       refusal: None,
       refusals: 0,
       outcome: "",
@@ -4487,6 +4506,290 @@ pub fn confirm_forget(
   }
 }
 
+/// Whether this page may review proposed standing rules: only the daemon's
+/// owner's page may (protocol-change/086). The page reads it from the standing
+/// the daemon derived from the authenticated principal when the page opened,
+/// and the daemon refuses the same commands from a member or an observer
+/// whatever a page sends, so this is the offer and not the gate.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.may_review_proposals(model)
+/// ```
+pub fn may_review_proposals(model: Model(socket)) -> Bool {
+  case model.view.reader {
+    DaemonOwner -> True
+    Participant -> False
+  }
+}
+
+/// Marks the memory overview as wanted and watched on the owner's page.
+///
+/// The page calls this after every message it takes, and it is the owner's
+/// page alone that does: the daemon refuses the read to anyone else. The
+/// first call owes the first read, which the shared step sends once the lane
+/// is ready (`surfaces.service_memory_read`); once a read has been sent, the
+/// page is marked as watching, and the shared step reads again whenever the
+/// board is `memory_overview.backstop_ms` old, because a change to memory
+/// pushes nothing (protocol-change/087).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.want_memory(model)
+/// ```
+pub fn want_memory(model: Model(socket)) -> Model(socket) {
+  case may_review_proposals(model) {
+    False -> model
+    True ->
+      case model.shared.memory_read_ms, model.shared.memory_refresh {
+        None, worktree_view.Settled ->
+          Model(
+            ..model,
+            shared: Shared(
+              ..model.shared,
+              memory_refresh: worktree_view.Requested,
+              memory_watch: session_model.WatchingMemory,
+            ),
+          )
+        _, _ ->
+          Model(
+            ..model,
+            shared: Shared(
+              ..model.shared,
+              memory_watch: session_model.WatchingMemory,
+            ),
+          )
+      }
+  }
+}
+
+/// The memory overview as the daemon last gave it, or `None` while the page
+/// has not read it, or may not.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.memory_kept(model)
+/// ```
+pub fn memory_kept(model: Model(socket)) -> Option(memory_words.Board) {
+  case may_review_proposals(model) {
+    True -> model.shared.memory
+    False -> None
+  }
+}
+
+/// The words of the last refusal of a memory read, empty when there is none or
+/// the page may not read it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.memory_notice(model)
+/// ```
+pub fn memory_notice(model: Model(socket)) -> String {
+  case may_review_proposals(model) {
+    True -> model.shared.memory_notice
+    False -> ""
+  }
+}
+
+/// Marks the proposals board as wanted when the page has never read it, or last
+/// wanted it `proposing.refresh_ms` or more ago.
+///
+/// The operator's page calls this after every message it takes, and it is the
+/// owner's page alone that does: the daemon refuses the read to anyone else.
+/// The daemon's `proposals_changed` push keeps the board current between
+/// reads; this is the first read and the backstop for a push the page missed.
+/// The shared step sends the read once the lane is ready
+/// (`surfaces.service_proposals_read`), so this only says that one is owed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.want_proposals(model)
+/// ```
+pub fn want_proposals(model: Model(socket)) -> Model(socket) {
+  let at = model.view.transport.now()
+  case
+    may_review_proposals(model),
+    proposing.due(model.view.proposing, at),
+    model.shared.proposals_refresh
+  {
+    False, _, _ -> model
+    True, True, worktree_view.Settled ->
+      Model(
+        shared: Shared(
+          ..model.shared,
+          proposals_refresh: worktree_view.Requested,
+        ),
+        view: View(
+          ..model.view,
+          proposing: proposing.wanted(model.view.proposing, at),
+        ),
+      )
+    True, True, worktree_view.Requested | True, False, _ -> model
+  }
+}
+
+/// The proposals board as the daemon last gave it, or `None` while the page has
+/// not read it, or may not.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.proposals_kept(model)
+/// ```
+pub fn proposals_kept(model: Model(socket)) -> Option(board_words.Board) {
+  case may_review_proposals(model) {
+    True -> model.shared.proposals
+    False -> None
+  }
+}
+
+/// What the page holds about the proposals review: the approval being asked
+/// about.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.proposals_state(model)
+/// ```
+pub fn proposals_state(model: Model(socket)) -> proposing.State {
+  model.view.proposing
+}
+
+/// The words of the last refusal of a proposals command, empty when there is
+/// none or the page may not review.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.proposals_notice(model)
+/// ```
+pub fn proposals_notice(model: Model(socket)) -> String {
+  case may_review_proposals(model) {
+    True -> model.shared.proposals_notice
+    False -> ""
+  }
+}
+
+/// How many proposals wait for the owner, for the tab's badge: none on a page
+/// that may not review, or that has no board.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.proposals_pending(model) == 0
+/// ```
+pub fn proposals_pending(model: Model(socket)) -> Int {
+  case board_words.badge(proposals_kept(model)) {
+    Some(count) -> count
+    None -> 0
+  }
+}
+
+/// Opens the question for one proposal's approval, which sends nothing. Only
+/// one question is open at a time, so asking another replaces it. A proposal
+/// the page's board does not list as pending opens no question.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.ask_approval(model, "prop-0123456789")
+/// ```
+pub fn ask_approval(model: Model(socket), id: String) -> Model(socket) {
+  case pending_proposal(model, id) {
+    True ->
+      Model(
+        ..model,
+        view: View(
+          ..model.view,
+          proposing: proposing.arm(model.view.proposing, id),
+        ),
+      )
+    False -> model
+  }
+}
+
+/// Closes the question without sending anything.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.cancel_approval(model)
+/// ```
+pub fn cancel_approval(model: Model(socket)) -> Model(socket) {
+  Model(
+    ..model,
+    view: View(..model.view, proposing: proposing.disarm(model.view.proposing)),
+  )
+}
+
+/// Sends the approval the open question armed, through the shared step like
+/// any other command, and closes the question. With no question open, or for a
+/// proposal the board no longer lists as pending, it sends nothing, so a
+/// confirm the page did not draw changes nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.confirm_approval(model)
+/// ```
+pub fn confirm_approval(
+  model: Model(socket),
+) -> #(Model(socket), Effect(Msg(socket))) {
+  case model.view.proposing.approving {
+    Some(id) ->
+      case pending_proposal(model, id) {
+        True ->
+          commanded(
+            cancel_approval(model),
+            msg.DecideProposal(id:, decision: board_words.Approve),
+          )
+        False -> #(cancel_approval(model), effect.none())
+      }
+    None -> #(model, effect.none())
+  }
+}
+
+/// Rejects one pending proposal, through the shared step. A rejection writes
+/// nothing, so it asks no question. A proposal the board does not list as
+/// pending is not decided, and an open question for it is closed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.reject_proposal(model, "prop-0123456789")
+/// ```
+pub fn reject_proposal(
+  model: Model(socket),
+  id: String,
+) -> #(Model(socket), Effect(Msg(socket))) {
+  case pending_proposal(model, id) {
+    True ->
+      commanded(
+        cancel_approval(model),
+        msg.DecideProposal(id:, decision: board_words.Reject),
+      )
+    False -> #(model, effect.none())
+  }
+}
+
+// Whether this page may decide the proposal and its own board lists it as
+// pending. The decision is the owner's, and the daemon checks again.
+fn pending_proposal(model: Model(socket), id: String) -> Bool {
+  case may_review_proposals(model), model.shared.proposals {
+    True, Some(board) ->
+      case board_words.find(board, id) {
+        Ok(row) -> board_words.decidable(row)
+        Error(Nil) -> False
+      }
+    False, _ | True, None -> False
+  }
+}
+
 /// Runs one of the page's controls through the shared step's command arm.
 ///
 /// The goal's three buttons are `/goal pause`, `/goal resume` and
@@ -7073,8 +7376,11 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
       element.none(),
       element.none(),
       element.none(),
+      element.none(),
+      element.none(),
     ),
     needing(model),
+    proposals_pending(model),
     workspace_digest(model),
   )
 }
@@ -7131,12 +7437,15 @@ pub fn switch(model: Model(socket)) -> Element(message) {
 /// fork form, and `rename` the owner's rename control (`rename_form`), which
 /// every other page passes as `element.none()`, and `remembered` the operator's
 /// list of remembered permissions (`view/remembered`), likewise, and `peers` the
-/// owner's peer-link section (`peer_links_section`), likewise.
+/// owner's peer-link section (`peer_links_section`), likewise, and `proposals` the
+/// owner's review of proposed standing rules (`view/proposals`), likewise, and
+/// `memory` the owner's read-only overview of the daemon's memory
+/// (`view/memory`), likewise.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // component.panel(model, FocusRequested, None, element.none(), element.none(), element.none(), element.none(), element.none())
+/// // component.panel(model, FocusRequested, None, element.none(), element.none(), element.none(), element.none(), element.none(), element.none(), element.none())
 /// ```
 pub fn panel(
   model: Model(socket),
@@ -7148,6 +7457,8 @@ pub fn panel(
   rename: Element(message),
   remembered: Element(message),
   peers: Element(message),
+  proposals: Element(message),
+  memory: Element(message),
 ) -> Element(message) {
   panel.view(
     strip.count(model.view.strip),
@@ -7180,6 +7491,8 @@ pub fn panel(
       rename,
       remembered,
       peers,
+      proposals,
+      memory,
     ),
     trace.view(trace(model)),
     nudges.view(pending_nudges(model)),

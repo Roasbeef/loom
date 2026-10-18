@@ -1108,6 +1108,11 @@ spec supplies none.
 
 ## From memory stage M2 (`client`, `tools`) — issue #29
 
+*Superseded: the distillation pipeline these items record (`client/distill`,
+`client/distillpass`, the cascade and the cursors) was removed. The items
+stay as the history of why it was built that way; the surviving memory design
+is in `docs/architecture/memory.md`.*
+
 Spec Part 5 track 8 names the memory→skill promotion path and nothing
 about the memory session itself; the design note
 (`docs/design-notes/compaction-and-memory.md`, Part 3 and Part 5 stage

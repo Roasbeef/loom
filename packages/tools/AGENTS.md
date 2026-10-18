@@ -163,8 +163,9 @@ durable counter — are things this package can neither perform nor read.
 So the tool is a shell over a **Memory** record of one closure, and the
 constants it states in its description (`max_note_chars`, `max_notes`)
 are the single definition the far side enforces. There is no tool to read
-memory back: recall of memory is a digest the host injects at run start,
-so there is no read door to poison and no argument that could name one.
+memory back: recall of memory is the bounded notes index the host injects at
+run start, plus `history_search` with `kind=note`, so there is no read door
+to poison and no argument that could name one.
 
 And `code_mode`, through which a model submits a *program* instead of a
 call. It has the same shape as the agent family and the same reason for
@@ -374,11 +375,13 @@ was asked.
   public type declarations. `code_mode` renders these smaller blocks in its
   description; `cap://<module>` returns the matching whole block from
   `surfaces`.
-- `tools/history.{History, Hit, Scope, Refusal, tool, tool_name,
-  clamp_limit, min_limit, max_limit, default_limit, fence}` — the recall
+- `tools/history.{History, Hit, Query, Syntax, Scope, Refusal, tool,
+  tool_name, query, clamp_limit, min_limit, max_limit, max_around,
+  default_limit, utc_date, fence}` — the recall
   seam and the `history_search` tool over it. `History.search` takes a
-  trimmed query, an already-clamped limit and a `Scope`
-  (`Repository` | `ThisSession`) and answers hits or a `Refusal`
+  `Query` (trimmed text, `Words` or `Raw` syntax, optional kind, optional
+  `before` entry id, an already-clamped limit and a `Scope`
+  (`Repository` | `ThisSession`)) and answers hits or a `Refusal`
   (`IndexUnavailable` | `IndexRefused` | `IndexNotReady` | `IndexBusy`).
   The last two are transient and their rendered text says the request was
   fine and to send the same call again; only `IndexRefused` tells the model
@@ -517,17 +520,20 @@ was asked.
   in a tool result and a program in a denial. `unavailable()` is the
   `tools`-side twin of `jobseam.none()`, for a host with no jobs actor.
   All three are `Never`/`Concurrent`.
-- `tools/remember.{Memory, Refusal, tool, tool_name, note_type,
-  entry_types, max_note_chars, max_notes, refusal_outcome,
+- `tools/remember.{Memory, Note, Kind, Refusal, tool, tool_name, note_type,
+  kinds, kind_name, kind_named, max_note_chars, max_notes,
+  max_title_chars, max_description_chars, check_line, refusal_outcome,
   says_something}` — the memory door and the `remember` tool over it.
+  `remember` takes required `title` (80), one-line `description` (160), `note`
+  and `kind` (`feedback`, `fact`, `decision`). The seam receives a
+  `remember.Note`, and `check_line` judges the single-line fields after
+  redaction. A note never asks the user.
   `Memory.remember` takes the model's text untrimmed and answers `Nil` or
   a `Refusal` (`MemoryBusy` | `MemoryUnavailable` | `NoteTooLong` |
-  `CeilingReached` | `NothingToRemember`); `MemoryBusy` is what a caller
-  gets while a distillation run holds the memory session's writer lease,
-  and it is a refusal to say again later, not a fault. `note_type` is the
-  only type this door can produce and `entry_types` exists so the
-  disjointness test against `client/memory.pipeline_types` intersects two
-  lists rather than comparing two spellings.
+  `CeilingReached` | `NothingToRemember` | `FieldInvalid`); `MemoryBusy` is what a caller
+  gets while another writer holds the memory session's lease, and it is a
+  refusal to say again later, not a fault. `note_type` is the only type this
+  door can produce.
 - `tools/tool.ToolOutcome` — text plus `is_error` plus optional typed
   `details`, mirroring pi's `ToolResultMessage.isError` (pi §3.8), plus
   `terminate`.
@@ -558,7 +564,8 @@ was asked.
 
 ## Relationships
 
-- **Depends on**: `core` (json, messages, ids, clock), `broker` (policy
+- **Depends on** (tests also use `qcheck` and `statem`; `test/support/gen` holds the
+  hashline line and file-content generators): `core` (json, messages, ids, clock), `broker` (policy
   vocabulary, `clear_call`, `exec` failure shapes, framing output streams —
   the spec DAG's `I → G`), `simplifile` (the production `FileSystem`),
   `gleam_erlang` (subjects for streamed call events), `lsp` (only
@@ -834,11 +841,20 @@ was asked.
   addressed to the reader, and breaks any backtick run in a snippet that
   could close the fence early. A snippet that could close it would make
   everything after it read as the harness talking.
-- **A model cannot choose what memory it writes.** `remember` takes one
-  string and no type: the host writes `memory/note` and nothing else,
-  which is half of the disjointness the distillation pipeline's own types
-  rest on. A model can never forge a "consolidated" fact, and the
-  pipeline's parser refuses `note:` from the other direction.
+- **A model cannot choose what memory it writes.** `remember` takes a title,
+  a description, a note and a kind from a closed list, and no entry type: the
+  host writes `memory/note` and nothing else.
+- **`propose` is a seam over `client/proposals` with no path or target
+  argument.** It validates argument bounds only; the host validates against
+  the rules file and the queue depth (64).
+- **`history_search` takes `syntax`, `kind`, `before` and `around`.** `syntax`
+  is `words` (the default) or `raw`; `kind` filters; `before` pages; and, for
+  `read`, `around` (0-5) is clamped here and in storage. The seam is
+  `search: fn(Query)` and `read: fn(session, entry, around) ->
+  List(JsonValue)`, and the tool answers a bare object when `around` is 0 and
+  an oldest-first array otherwise. Each hit renders its kind and UTC date, a
+  zero-hit answer echoes the query and filters and advises OR variants, and
+  the tool description carries the prefix, no-stemming and OR guidance.
 - **The limit clamp is the tool's, not the index's.** A limit reaches SQL
   `LIMIT ?`, and SQLite reads a *negative* limit as unbounded — the
   opposite of `storage`'s convention, where a non-positive limit returns
@@ -999,6 +1015,22 @@ was asked.
   mints a fresh entry id per admission, so a replay would deliver twice;
   a spawn's name derives from persisted coordinates, so a replay
   reconciles onto the same child.
+
+## Model-based tests
+
+`test/tools/todos_model_test.gleam` and `test/tools/tail_model_test.gleam` run
+`statem` sequences beside the example tests. The todo test drives
+`todos.apply` with commands that name tasks and phases by index modulo the
+model's size (or by a loose spelling of the text), checks each answered board
+(`todos.valid`, `single_active`, `promotion`, `distinct`, `replay`, `step`,
+`codec`, `view`) and then compares it with an independent reference
+(`todos.model`). The tail test keeps the whole stream as the model and the
+cursors earlier answers returned inside the system, and checks `received`,
+`cursor`, `span` (dropped plus returned bytes equal the stream suffix),
+`bounded`, `boundary` (exactly an incomplete final character is held back),
+`front` and `decodes` at capacities 8, 11 and 24. Each file also asserts that
+its generator reaches the states the rules are about. Seeds and counts are
+named constants; a failure prints the shrunk command list.
 
 ## Deep Docs
 

@@ -7,11 +7,11 @@ import broker/exec
 import broker/executor
 import client/catalog
 import client/codemode
-import client/distillpass
 import client/internal/ffi_os
 import client/internal/instance_host as host
 import client/internal/instance_owner as custody
 import client/jobs
+import client/memory_config
 import client/retryconf
 import client/schedule
 import client/serve
@@ -118,7 +118,7 @@ pub fn settings() -> serve.Settings {
     jobs_policy: jobs.default_policy,
     retry_policy: retryconf.default_policy,
     deactivated_tools: [],
-    memory: distillpass.no_pass(),
+    memory: memory_config.default_options(),
     tools: catalog.default_tools(),
     advisor: None,
     go_caches: None,

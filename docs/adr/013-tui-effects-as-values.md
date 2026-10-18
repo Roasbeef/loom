@@ -368,16 +368,16 @@ The survey of mailbox reads, at the commit this slice started from:
   which read through `connection.receive`, and the four places that call it:
   the wheel and drag arms of `apply_input`
   (`packages/tui/src/tui.gleam:1500`, `packages/tui/src/tui.gleam:1520`), the
-  key drain (`tui/interaction.gleam:1777` (`drain_connection`)) and the tick
+  key drain (`tui/interaction.gleam:1882` (`drain_connection`)) and the tick
   (`tui/tick.gleam:146` (`drain_connection`)). The attachment's reads:
   `tui/attachment.gleam:492` (`prepare`),
   `tui/attachment.gleam:537` (`drain`) and
   `tui/attachment.gleam:597` (`settle`). The replay drain:
-  `tui/tick.gleam:223` (`drain_replay`).
+  `tui/tick.gleam:254` (`drain_replay`).
 - **Left for S4 and S5.** The reconnect outcome
   (`tui/tick.gleam:143` (`drain_reconnect`)), the control reply
   (`tui/tick.gleam:142` (`drain_control`)), the picker's activity reply
-  (`tui/session_control.gleam:1470` (`drain_activity`)), and the session
+  (`tui/session_control.gleam:1489` (`drain_activity`)), and the session
   switch, which read through `sessions.receive` and `weft.pull` in
   `tui/sessions`, a module S5 deleted with the unreachable local switch.
   Each answers a job the step started, and they move when job starts

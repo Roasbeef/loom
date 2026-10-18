@@ -1,7 +1,7 @@
-//// The memory plane's own rows: the disjointness the two writers rest
-//// on, the caps at each door, the digest's byte bound and its
-//// fence-and-attribution wrapper, and the `remember` door end to end
-//// against a real memory session file.
+//// The memory plane's own rows: where the store and its sidecar live, the
+//// caps at the `remember` door, the lease-free read of the notes, and the
+//// notes index rebuilt from the store, each against a real memory session
+//// file.
 ////
 //// Everything that touches a store here touches a real SQLite file. The
 //// only thing faked anywhere in this file is the clock.
@@ -10,7 +10,6 @@ import broker/broker
 import broker/exec
 import broker/policy
 import client/memory
-import client/notes
 import core/clock
 import core/entry
 import core/ids
@@ -18,249 +17,29 @@ import core/json
 import core/message
 import core/register
 import core/tx.{Expect, SetRegister, Tx}
-import gleam/erlang/process
+import gleam/erlang/atom.{type Atom}
+import gleam/erlang/process.{type Pid}
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/set
 import gleam/string
-import runtime/effects
 import simplifile
 import storage/storage
 import support/tool_registry
-import telemetry/level
 import telemetry/log
 import tools/directory_access
 import tools/remember
 import tools/tool
 
-// --- R7: the two writers are disjoint --------------------------------------
-
-/// The pipeline's types and the `remember` door's types share nothing.
-///
-/// Pinned by a test rather than by a registry because there are exactly
-/// two writers and both are harness-side: a model never chooses a type
-/// string, so a registry would be machinery with no threat to answer.
-/// What could actually drift is somebody adding `memory/note` to the
-/// pipeline's list, and this is what notices.
-pub fn the_two_memory_writers_use_disjoint_types_test() {
-  let shared =
-    list.filter(memory.pipeline_types, list.contains(remember.entry_types, _))
-  assert shared == []
-  // And neither list is empty, or the intersection would be trivially
-  // empty and this test would prove nothing.
-  assert memory.pipeline_types != []
-  assert remember.entry_types != []
-}
-
-/// A short name the pipeline does not own produces no type at all —
-/// which is what stops a model answer inventing `note:` from writing a
-/// row under the door reserved for `remember`.
-pub fn a_model_answer_cannot_name_the_remember_type_test() {
-  assert memory.type_named("fact") == Ok(memory.fact_type)
-  assert memory.type_named("lesson") == Ok(memory.lesson_type)
-  assert memory.type_named("preference") == Ok(memory.preference_type)
-  assert memory.type_named("note") == Error(Nil)
-  assert memory.type_named("memory/fact") == Error(Nil)
-}
-
 // --- the fold ---------------------------------------------------------------
 
 pub fn memory_folds_on_the_session_directory_test() {
   assert memory.store_beside("/data/review.db") == "/data/loom-memory.db"
-  assert memory.digest_beside("/data/review.db") == "/data/loom-memory.digest"
+  assert memory.notes_beside("/data/loom-memory.db")
+    == "/data/loom-memory.notes"
   assert memory.store_beside("review.db") == "loom-memory.db"
   assert memory.directory_of("/data/review.db") == "/data"
   assert memory.directory_of("review.db") == "."
-}
-
-// --- the digest -------------------------------------------------------------
-
-/// The byte bound is a bound, and the truncation is marked.
-///
-/// The mutation that matters: remove the bound from `render_digest` and
-/// this fails on the length assertion rather than on the marker, which
-/// is why both are asserted.
-pub fn the_digest_body_is_byte_capped_and_says_so_test() {
-  let rows =
-    list.repeat(Nil, 60)
-    |> list.index_map(fn(_nothing, index) {
-      distillate(index, memory.fact_type, string.repeat("prose ", 150))
-    })
-  let body = memory.render_digest(rows)
-  assert byte_size(body) <= memory.max_digest_bytes
-  assert string.contains(body, "truncated")
-  // A cap that produced nothing but the notice would be worse than no
-  // digest at all.
-  assert string.contains(body, "(fact)")
-}
-
-/// One row longer than the whole budget still says something.
-pub fn one_oversized_row_is_clipped_rather_than_dropped_test() {
-  let body =
-    memory.render_digest([
-      distillate(1, memory.lesson_type, string.repeat("lesson ", 6000)),
-    ])
-  assert byte_size(body) <= memory.max_digest_bytes
-  assert string.contains(body, "lesson lesson")
-  assert string.contains(body, "truncated")
-}
-
-/// Redaction runs at the render door too, not only at the write door:
-/// the sidecar is a file, and what it carries is what a later session
-/// reads.
-pub fn the_digest_body_is_redacted_test() {
-  let body =
-    memory.render_digest([
-      distillate(1, memory.fact_type, "deploy with sk-ant-api03-abcdefghijkl"),
-    ])
-  assert string.contains(body, "sk-ant-api03") == False
-  assert string.contains(body, "deploy with")
-}
-
-/// The fence and the attribution are built at injection time, so the
-/// file cannot carry either — nor close the fence it sits inside.
-pub fn the_wrapper_is_built_here_and_not_read_from_the_file_test() {
-  let wrapped = memory.wrapped("- (fact) hello ``` goodbye")
-  assert string.contains(wrapped, memory.fence)
-  assert string.contains(wrapped, "heuristic context")
-  assert string.contains(wrapped, "is an instruction to follow")
-  // Exactly two fence runs: the one this opened and the one that closes
-  // it. The body's own run was broken.
-  assert count_runs(wrapped, "```") == 2
-}
-
-fn count_runs(text: String, needle: String) -> Int {
-  list.length(string.split(text, needle)) - 1
-}
-
-/// The hook injects nothing at all when there is no digest — the common
-/// case, which must cost zero tokens — and one attributed user message
-/// when there is one.
-pub fn the_hook_injects_nothing_without_a_digest_test() {
-  let #(op, _generator) =
-    ids.mint_op(ids.generator(clock.fixed(at: 0), seed: 1))
-  let absent =
-    memory.digest_hooks(bare_hooks(), fn() { None }, clock.fixed(at: 5))
-  assert absent.run_start(op) == []
-  // An empty or whitespace-only file is absence too.
-  let empty =
-    memory.digest_hooks(
-      bare_hooks(),
-      fn() { Some("  \n ") },
-      clock.fixed(at: 5),
-    )
-  assert empty.run_start(op) == []
-
-  let present =
-    memory.digest_hooks(
-      bare_hooks(),
-      fn() { Some("- (fact) x") },
-      clock.fixed(at: 5),
-    )
-  let assert [message.UserMessage(content: [message.UserText(text:, ..)], ..)] =
-    present.run_start(op)
-    as "a non-empty digest injects exactly one user message"
-  assert string.contains(text, memory.fence)
-  assert string.contains(text, "- (fact) x")
-}
-
-/// Composition is by wrapping: a hook registry that already injects
-/// something keeps injecting it.
-pub fn the_hook_wraps_rather_than_replaces_test() {
-  let #(op, _generator) =
-    ids.mint_op(ids.generator(clock.fixed(at: 0), seed: 1))
-  let earlier =
-    effects.Hooks(..bare_hooks(), run_start: fn(_op) {
-      [
-        message.UserMessage(
-          content: [
-            message.UserText(text: "an earlier layer", text_signature: None),
-          ],
-          timestamp: 0,
-          origin: None,
-        ),
-      ]
-    })
-  let wrapped =
-    memory.digest_hooks(
-      earlier,
-      fn() { Some("- (fact) x") },
-      clock.fixed(at: 5),
-    )
-  assert list.length(wrapped.run_start(op)) == 2
-}
-
-/// An absent sidecar reads as nothing, and an oversized one is clipped
-/// on the way in as well as on the way out.
-pub fn the_sidecar_is_capped_when_it_is_read_too_test() {
-  let root = fresh_root("digest")
-  assert memory.read_digest(root <> "/loom-memory.digest") == None
-  let assert Ok(Nil) =
-    simplifile.write(
-      to: root <> "/loom-memory.digest",
-      contents: string.repeat("z", memory.max_digest_bytes * 2),
-    )
-    as "the oversized sidecar must be writable"
-  let assert Some(read) = memory.read_digest(root <> "/loom-memory.digest")
-    as "a present sidecar must read"
-  assert byte_size(read) <= memory.max_digest_bytes
-}
-
-/// A sidecar too large to be a digest is refused at the door rather
-/// than read and clipped, and the run start it feeds injects nothing.
-///
-/// The distinction is the whole point of the bound. A file whose first
-/// twenty kilobytes are a perfectly good digest would *clip* to
-/// something injectable if the read happened first; refusing on the
-/// file's size means it is never read at all — which is what keeps an
-/// absurd sidecar from stalling every run of every session, since this
-/// read is on the strand driver's own process now.
-pub fn an_oversized_sidecar_is_refused_before_it_is_read_test() {
-  let root = fresh_root("oversize")
-  let path = root <> "/loom-memory.digest"
-  let assert Ok(Nil) =
-    simplifile.write(
-      to: path,
-      contents: "- (fact) the readable head\n"
-        <> string.repeat("z", memory.max_sidecar_bytes + 1),
-    )
-    as "the absurd sidecar must be writable"
-
-  // Not clipped to its readable prefix: refused whole.
-  assert memory.read_digest(path) == None
-
-  let #(op, _generator) =
-    ids.mint_op(ids.generator(clock.fixed(at: 0), seed: 1))
-  let hooked =
-    memory.digest_hooks(
-      bare_hooks(),
-      memory.digest_reader(path, log.discard()),
-      clock.fixed(at: 5),
-    )
-  assert hooked.run_start(op) == []
-
-  // And the refusal is said out loud, once for the run that met it.
-  let records = process.new_subject()
-  let reader =
-    memory.digest_reader(
-      path,
-      log.new(sink: log.to_subject(records), threshold: level.Debug),
-    )
-  assert reader() == None
-  let assert Ok(record) = process.receive(records, within: 100)
-    as "an oversized sidecar must log its refusal"
-  assert record.event == "memory.digest_oversize"
-
-  // A file merely over the render cap is still clipped and injected,
-  // which is the case the pipeline itself can produce.
-  let assert Ok(Nil) =
-    simplifile.write(
-      to: path,
-      contents: string.repeat("z", memory.max_digest_bytes * 2),
-    )
-    as "the merely oversized sidecar must be writable"
-  let assert Some(read) = memory.read_digest(path)
-    as "a plausible sidecar must still read"
-  assert byte_size(read) <= memory.max_digest_bytes
 }
 
 // --- the `remember` door ----------------------------------------------------
@@ -275,9 +54,12 @@ pub fn remember_writes_one_redacted_note_test() {
   assert outcome.is_error == False
 
   let assert [row] = notes_in(root) as "exactly one note must have landed"
-  assert string.contains(row.text, "prefer tabs")
-  assert string.contains(row.text, "sk-ant-api03") == False
-  assert row.kind == remember.note_type
+  let assert entry.CustomEntry(custom_type:, ..) = row
+    as "a note is a custom entry"
+  assert custom_type == remember.note_type
+  let assert Ok(note) = memory.note_of(row) as "the row must decode as a note"
+  assert string.contains(note.text, "prefer tabs")
+  assert string.contains(note.text, "sk-ant-api03") == False
 }
 
 /// The tool is registered only where the memory plane is — the same gate
@@ -349,289 +131,146 @@ pub fn the_lifetime_ceiling_refuses_the_next_note_test() {
   assert notes_in(root) == []
 }
 
-/// A distillation run holds the memory session's writer lease, and a
-/// `remember` call landing during one is refused in band — never a
-/// crash, never a wait.
+/// Another writer holds the memory session's lease, and a `remember` call
+/// landing meanwhile is refused in band — never a crash, never a wait.
 pub fn a_held_memory_session_refuses_the_note_in_band_test() {
   let root = fresh_root("held")
   let assert Ok(holder) = open_memory(root) as "the holder must open"
-  let outcome = dispatch(root, "written while consolidation runs")
+  let outcome = dispatch(root, "written while the lease is held")
   memory.close(holder)
 
   assert outcome.is_error
-  assert string.contains(text_of(outcome), "being consolidated")
+  assert string.contains(text_of(outcome), "another call")
   // And once the lease is released the same note lands.
-  let again = dispatch(root, "written while consolidation runs")
+  let again = dispatch(root, "written while the lease is held")
   assert again.is_error == False
   assert list.length(notes_in(root)) == 1
 }
 
-// --- the head ---------------------------------------------------------------
+// --- the lease-free read and the rebuilt index -------------------------------
 
-/// The head is a pointer with a CAS, and the CAS is what makes a
-/// consolidation atomic against a concurrent one.
-pub fn the_head_moves_only_from_the_seq_it_was_read_at_test() {
-  let root = fresh_root("head")
-  let assert Ok(opened) = open_memory(root) as "the memory session must open"
-  let assert Ok(#([], None)) = memory.head(opened)
-    as "a fresh memory session has no head"
-
-  let assert Ok(#(first, _generator)) =
-    memory.append_distillates(
-      opened,
-      [#(memory.fact_type, "the gate is make check")],
-      memory.Provenance(sources: [], derived_from: []),
-      clock.fixed(at: 10),
-    )
-    as "rows must append"
-  let assert Ok(Nil) =
-    memory.advance_head(opened, ids: first, expected: None, cursors: [])
-    as "the first head must land"
-
-  let assert Ok(#(named, Some(seq))) = memory.head(opened)
-    as "the head must read back"
-  assert list.length(named) == 1
-
-  // The stale expectation loses: this is the concurrent-consolidation
-  // case, and losing is correct.
-  let assert Error(memory.MemoryFailed(..)) =
-    memory.advance_head(opened, ids: [], expected: None, cursors: [])
-    as "a head CAS against `absent` must fail once a head exists"
-  // The right expectation wins.
-  let assert Ok(Nil) =
-    memory.advance_head(opened, ids: first, expected: Some(seq), cursors: [])
-    as "a head CAS at the read seq must land"
-  memory.close(opened)
+/// A store that does not exist yet holds no notes, and rebuilding its index
+/// writes nothing: an empty repository gets no empty sidecar.
+pub fn an_absent_store_holds_no_notes_and_gets_no_index_test() {
+  let root = fresh_root("absent")
+  let store = root <> "/loom-memory.db"
+  let index = memory.notes_beside(store)
+  assert memory.read_note_entries(store) == Ok([])
+  assert rebuild_index(store, index) == Ok(Nil)
+  assert simplifile.is_file(index) == Ok(False)
+  assert simplifile.is_file(store) == Ok(False)
 }
 
-// --- provenance, and the cascade's match -------------------------------------
+/// Overview reads stay available under a held writer lease, but rebuilding
+/// cannot publish a snapshot while that writer may publish a newer one.
+pub fn a_held_writer_allows_reads_but_refuses_index_publication_test() {
+  let root = fresh_root("leased")
+  let store = root <> "/loom-memory.db"
+  let index = memory.notes_beside(store)
+  assert !dispatch(root, "a note").is_error
+  let assert Ok(current) = simplifile.read(index) as "the writer published"
 
-/// Provenance round-trips through the payload the pipeline stores: what
-/// `distillate_data` writes, `provenance_of` reads back.
-///
-/// The mutation this is here to catch: drop the `sources` field from
-/// `distillate_data`, or read it under another name in `provenance_of`.
-/// Either makes an erasure cascade match nothing, silently.
-pub fn provenance_round_trips_through_the_stored_payload_test() {
-  let recorded =
-    memory.Provenance(
-      sources: [
-        memory.SourceRef(session: "alpha", entries: ["e1", "e2"]),
-        memory.SourceRef(session: "beta", entries: []),
-      ],
-      derived_from: ["older-row"],
-    )
-  let stored = memory.distillate_data("the gate is make check", recorded)
-  assert memory.provenance_of(a_row(stored)) == recorded
+  let assert Ok(holder) = open_memory(root) as "the holder must open"
+  assert list.length(notes_in(root)) == 1
+  let assert Error(reason) = rebuild_index(store, index)
+    as "a held writer excludes rebuild publication"
+  assert string.contains(reason, "memory-test")
+  assert simplifile.read(index) == Ok(current)
+  memory.close(holder)
 
-  // A note carries the empty provenance, and it survives the trip too.
-  assert memory.provenance_of(
-      a_row(memory.distillate_data("a note", memory.no_provenance)),
-    )
-    == memory.no_provenance
-}
-
-/// Every shape that is not what this module writes decodes to
-/// `no_provenance` rather than failing — which is the safe direction,
-/// because a row a cascade cannot read is a row it keeps.
-pub fn an_unreadable_payload_has_no_provenance_test() {
-  // No payload at all, and a payload that is not an object.
-  assert memory.provenance_of(entry.CustomEntry(
-      id: an_id(1),
-      parent: None,
-      seq: 1,
-      ts: 0,
-      custom_type: memory.fact_type,
-      data: None,
+  let assert Ok(Nil) =
+    a_seam(store).remember(remember.Note(
+      remember.Fact,
+      "Newer note",
+      "Published after the held lease",
+      "The latest note remains in the index.",
     ))
-    == memory.no_provenance
-  assert memory.provenance_of(a_row(json.String("?"))) == memory.no_provenance
-
-  // The right fields carrying the wrong shapes: sources that is not an
-  // array, a source that is not an object, a source with no session, and
-  // entries that are not strings. Each contributes nothing; none crash.
-  assert memory.provenance_of(
-      a_row(
-        json.Object([
-          #("sources", json.String("not an array")),
-          #("derived_from", json.Int(3)),
-        ]),
-      ),
-    )
-    == memory.no_provenance
-  assert memory.provenance_of(
-      a_row(
-        json.Object([
-          #(
-            "sources",
-            json.Array([
-              json.String("bare"),
-              json.Object([#("entries", json.Array([]))]),
-              json.Object([
-                #("session", json.String("alpha")),
-                #("entries", json.Array([json.String("e1"), json.Int(2)])),
-              ]),
-            ]),
-          ),
-        ]),
-      ),
-    )
-    == memory.Provenance(
-      sources: [memory.SourceRef(session: "alpha", entries: ["e1"])],
-      derived_from: [],
-    )
+    as "the writer can publish after release"
+  assert rebuild_index(store, index) == Ok(Nil)
+  let assert Ok(body) = simplifile.read(index) as "the index stays current"
+  assert string.contains(body, "Newer note: Published after the held lease")
 }
 
-/// **The cascade's whole match, and its grain.** A row is selected by the
-/// *session* its provenance names, never by the entry ids under it:
-/// provenance is batch-level, so entry narrowing would claim a precision
-/// the pipeline never recorded.
-///
-/// The mutation this is here to catch: invert the comparison in
-/// `names_source`, or make it match on entries. The first makes a cascade
-/// drop every row but the ones it should; the second makes it drop
-/// nothing.
-pub fn the_cascade_matches_provenance_at_session_grain_test() {
-  let named =
-    memory.Provenance(
-      sources: [memory.SourceRef(session: "alpha", entries: ["e1"])],
-      derived_from: ["older-row"],
-    )
-  assert memory.names_source(named, "alpha")
-  assert memory.names_source(named, "beta") == False
-  // The entry ids are not the grain: naming one of them is not naming the
-  // session, and a session named with no entries at all still matches.
-  assert memory.names_source(named, "e1") == False
-  assert memory.names_source(
-    memory.Provenance(
-      sources: [memory.SourceRef(session: "beta", entries: [])],
-      derived_from: [],
-    ),
-    "beta",
-  )
-  // A row that records no provenance names nothing, so a cascade keeps
-  // it — including every `remember` note, which has no source session.
-  assert memory.names_source(memory.no_provenance, "alpha") == False
-  // And `derived_from` is not a source: the second order is not chased.
-  assert memory.names_source(
-      memory.Provenance(sources: [], derived_from: ["alpha"]),
-      "alpha",
-    )
-    == False
+/// A stale index is replaced by the one the store renders, and a current one
+/// is left as it is.
+pub fn rebuilding_replaces_a_stale_index_and_keeps_a_current_one_test() {
+  let root = fresh_root("stale")
+  let store = root <> "/loom-memory.db"
+  let index = memory.notes_beside(store)
+  assert !dispatch(root, "a note").is_error
+  let assert Ok(current) = simplifile.read(index) as "the door writes an index"
+
+  let assert Ok(Nil) = simplifile.write(to: index, contents: "- stale")
+  assert rebuild_index(store, index) == Ok(Nil)
+  assert simplifile.read(index) == Ok(current)
+
+  assert rebuild_index(store, index) == Ok(Nil)
+  assert simplifile.read(index) == Ok(current)
+  assert no_temp_files(root)
 }
 
-/// The head's ids, paired with the provenance their rows carry — one pair
-/// per id, including ids the store cannot resolve.
-///
-/// That last part is the finding: a head id whose row is missing pairs
-/// with `no_provenance` and therefore survives a cascade. Pairing per
-/// found row instead would silently drop it from the rewritten head.
-pub fn provenance_pairs_with_every_head_id_including_the_missing_test() {
-  let root = fresh_root("provenance")
+/// A publication error releases both the lease and the linked storage actor,
+/// so the next note can still be committed and published.
+pub fn a_failed_index_publication_releases_its_writer_test() {
+  let root = fresh_root("rebuild-failure")
+  let store = root <> "/loom-memory.db"
+  assert !dispatch(root, "a note").is_error
+  let blocked_index = root <> "/blocked-index"
+  let assert Ok(Nil) = simplifile.create_directory_all(blocked_index)
+    as "a directory refuses replacement by an index file"
+  let before = set.from_list(links())
+
+  let assert Error(_reason) = rebuild_index(store, blocked_index)
+    as "the index cannot replace a directory"
+  assert set.from_list(links()) == before
+  assert !dispatch(root, "a note after the failure").is_error
+  assert list.length(notes_in(root)) == 2
+}
+
+/// A store that is not a readable session is an error, never an empty list,
+/// and the sidecar it would have rendered is left alone.
+pub fn a_damaged_store_is_an_error_and_leaves_the_index_alone_test() {
+  let root = fresh_root("damaged")
+  let store = root <> "/loom-memory.db"
+  let index = memory.notes_beside(store)
+  let assert Ok(Nil) = simplifile.write(to: store, contents: "not a database")
+  let assert Ok(Nil) = simplifile.write(to: index, contents: "- kept")
+
+  let assert Error(_reason) = memory.read_note_entries(store)
+    as "a damaged store must not read as empty"
+  let assert Error(_reason) = rebuild_index(store, index)
+    as "a damaged store must not rebuild"
+  assert simplifile.read(index) == Ok("- kept")
+}
+
+/// `open` links a storage actor to its caller, and a long-lived caller (the
+/// gateway deciding proposals) opens once per decision, so `close` must stop
+/// the actor or each decision leaks a process. The actor is found as the one
+/// new link of this process, which no concurrent test can disturb.
+pub fn closing_the_memory_session_stops_its_storage_actor_test() {
+  let root = fresh_root("retire")
+  let before = links()
   let assert Ok(opened) = open_memory(root) as "the memory session must open"
-  let assert Ok(#(written, _generator)) =
-    memory.append_distillates(
-      opened,
-      [#(memory.fact_type, "the gate is make check")],
-      memory.Provenance(
-        sources: [memory.SourceRef(session: "alpha", entries: ["e1"])],
-        derived_from: [],
-      ),
-      clock.fixed(at: 10),
-    )
-    as "the row must append"
-  let assert [only] = written as "exactly one row was written"
-  let stored = ids.entry_id_to_string(only)
+  let started = list.filter(links(), fn(pid) { !list.contains(before, pid) })
+  assert list.length(started) == 1
+  assert list.all(started, process.is_alive)
 
-  let assert Ok(pairs) =
-    memory.provenance_by_id(opened, [stored, "not-an-id", "01924000000000000"])
-    as "provenance must read"
-  assert list.length(pairs) == 3
-  let assert [#(first, found), #(_second, absent), #(_third, unparsed)] = pairs
-    as "the pairs come back in the order asked for"
-  assert first == stored
-  assert memory.names_source(found, "alpha")
-  // Neither an unresolvable id nor an unparseable one names anything.
-  assert absent == memory.no_provenance
-  assert unparsed == memory.no_provenance
   memory.close(opened)
+  assert list.all(started, fn(pid) { !process.is_alive(pid) })
+
+  // The link list carries no order, so the same links can come back in a
+  // different one; compare them as sets.
+  assert set.from_list(links()) == set.from_list(before)
 }
 
-/// `replace_head` under `no_rewind` moves the head and nothing else — no
-/// cursor, no row — and it moves only from the seq it was read at.
-pub fn replace_head_moves_the_pointer_and_nothing_else_test() {
-  let root = fresh_root("replace")
-  let assert Ok(opened) = open_memory(root) as "the memory session must open"
-  let assert Ok(#(written, _generator)) =
-    memory.append_distillates(
-      opened,
-      [
-        #(memory.fact_type, "the gate is make check"),
-        #(memory.lesson_type, "do not force push"),
-      ],
-      memory.no_provenance,
-      clock.fixed(at: 10),
-    )
-    as "the rows must append"
-  let assert Ok(Nil) =
-    memory.advance_head(opened, ids: written, expected: None, cursors: [])
-    as "the head must land"
-  let assert Ok(#([kept, dropped], Some(seq))) = memory.head(opened)
-    as "the head must read back"
-
-  // A stale expectation loses, exactly as `advance_head`'s does.
-  let assert Error(memory.MemoryFailed(..)) =
-    memory.replace_head(
-      opened,
-      named: [kept],
-      expected: None,
-      rewind: memory.no_rewind,
-    )
-    as "a replacement against `absent` must fail once a head exists"
-  // The right one wins, and the surviving id is written back verbatim.
-  let assert Ok(Nil) =
-    memory.replace_head(
-      opened,
-      named: [kept],
-      expected: Some(seq),
-      rewind: memory.no_rewind,
-    )
-    as "a replacement at the read seq must land"
-  let assert Ok(#(now, Some(moved))) = memory.head(opened)
-    as "the head must read back again"
-  assert now == [kept]
-  assert moved > seq
-
-  // The dropped row is still in the store: rows are write-once, and a
-  // cascade removes them from the head rather than deleting them.
-  let assert Ok(rows) = memory.head_rows(opened) as "the head's rows must read"
-  assert list.length(rows) == 1
-  let assert Ok(orphans) = memory.provenance_by_id(opened, [dropped])
-    as "the dropped row must still be readable by id"
-  assert list.length(orphans) == 1
-  memory.close(opened)
+fn links() -> List(Pid) {
+  process_info(process.self(), atom.create("links")).1
 }
+
+@external(erlang, "erlang", "process_info")
+fn process_info(pid: Pid, item: Atom) -> #(Atom, List(Pid))
 
 // --- the rig ----------------------------------------------------------------
-
-// One `memory/*` entry carrying `payload`, which is where provenance
-// lives.
-fn a_row(payload: json.JsonValue) -> entry.Entry {
-  entry.CustomEntry(
-    id: an_id(0),
-    parent: None,
-    seq: 0,
-    ts: 0,
-    custom_type: memory.fact_type,
-    data: Some(payload),
-  )
-}
-
-fn an_id(seed: Int) -> ids.EntryId {
-  let #(id, _generator) =
-    ids.mint_entry(ids.generator(clock.fixed(at: 1000 + seed), seed: seed + 1))
-  id
-}
 
 fn open_memory(root: String) -> Result(memory.Opened, memory.MemoryFault) {
   memory.open(
@@ -643,8 +282,22 @@ fn open_memory(root: String) -> Result(memory.Opened, memory.MemoryFault) {
   )
 }
 
+fn rebuild_index(store: String, index: String) -> Result(Nil, String) {
+  memory.rebuild_notes_index(
+    store,
+    index,
+    clock: a_clock(),
+    generator: ids.generator(a_clock(), seed: 17),
+  )
+}
+
 fn a_seam(path: String) -> remember.Memory {
-  memory.remember_seam(path, clock: a_clock(), entropy: fn() { 4242 })
+  memory.remember_seam(
+    path,
+    clock: a_clock(),
+    entropy: fn() { 4242 },
+    logger: log.discard(),
+  )
 }
 
 // One `remember` call, dispatched through the production registry —
@@ -662,31 +315,13 @@ fn dispatch(root: String, note: String) -> tool.ToolOutcome {
     registry,
     a_ctx(),
     remember.tool_name,
-    json.Object([#("note", json.String(note))]),
+    json.Object([
+      #("title", json.String("a note")),
+      #("description", json.String("for the tests")),
+      #("kind", json.String("fact")),
+      #("note", json.String(note)),
+    ]),
   )
-}
-
-fn notes_in(root: String) -> List(memory.Distillate) {
-  let assert Ok(opened) = open_memory(root)
-    as "the memory session must open for reading"
-  let assert Ok(found) = memory.notes_after(opened, 0, limit: 512)
-    as "the notes must read"
-  memory.close(opened)
-  found
-}
-
-fn distillate(index: Int, kind: String, text: String) -> memory.Distillate {
-  let #(id, _generator) =
-    ids.mint_entry(ids.generator(clock.fixed(at: 1000 + index), seed: index))
-  memory.Distillate(id:, seq: index, kind:, text:)
-}
-
-fn bare_hooks() -> effects.Hooks {
-  effects.default_hooks()
-}
-
-fn byte_size(text: String) -> Int {
-  notes.byte_size(text)
 }
 
 fn text_of(outcome: tool.ToolOutcome) -> String {
@@ -752,4 +387,18 @@ fn dead_filesystem() -> tool.FileSystem {
     read_link: fn(_path) { Ok(tool.LinkMissing) },
     rename: fn(from, _to) { Error(tool.FsNotFound(path: from)) },
   )
+}
+
+fn notes_in(root: String) -> List(entry.Entry) {
+  let assert Ok(found) = memory.read_note_entries(root <> "/loom-memory.db")
+    as "the notes must read without a lease"
+  found
+}
+
+// Each index write names its own temp file, so the check is that the
+// directory holds none after the rename.
+fn no_temp_files(directory: String) -> Bool {
+  let assert Ok(names) = simplifile.read_directory(directory)
+    as "the root must be readable"
+  !list.any(names, string.ends_with(_, ".tmp"))
 }

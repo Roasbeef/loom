@@ -23,6 +23,7 @@ import session_view/attempt
 import session_view/command
 import session_view/connection_event
 import session_view/operator
+import session_view/proposals
 import session_view/remembered
 
 /// The clock readings one event is applied at.
@@ -82,6 +83,11 @@ pub type Command {
   /// (protocol-change/073). It is refused to an attachment that may not
   /// approve, and the daemon refuses it again to an observer.
   Forget(forget: remembered.Forget)
+
+  /// Decide one pending standing-rule proposal, as the host listed it
+  /// (protocol-change/086). It is refused to an attachment that may not
+  /// approve, and the daemon refuses it again to anyone but the owner.
+  DecideProposal(id: String, decision: proposals.Decision)
 
   /// Switch the active strand to the catalogue model `name`.
   SelectModel(name: String)

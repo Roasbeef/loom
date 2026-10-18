@@ -6,9 +6,9 @@ import client/daemon/domain as domain_service
 import client/daemon/lifetime
 import client/daemon/manager
 import client/daemon/server
-import client/distill
 import client/internal/ffi_os
 import client/internal/instance_owner as custody
+import client/internal/shared_history
 import client/remote_child
 import client/remote_spawn
 import core/clock
@@ -1543,7 +1543,7 @@ pub fn domain_sources_are_enumerated_across_pages_test() {
     as "the domain builder resolves its own sources"
   assert list.length(sources) == 120
   assert list.contains(
-    list.map(sources, fn(source: distill.Source) { source.path }),
+    list.map(sources, fn(source: shared_history.Source) { source.path }),
     first.path,
   )
   await_status(registry, first.id, manager.Resident(operation))

@@ -1630,6 +1630,12 @@ render, and no piece holds the uncapped text. A step reads as one line
 in one marked `slot="body"`. The element draws the row's one chevron, so a
 turn of ten steps has ten chevrons and no "Expand" buttons, and a row with
 nothing behind it has none. The body is the full form when the page holds one.
+A `history_search` step is the one such row that reads its result's `details`
+(`session_view/recall_view`): its line says `Searched history for "deploy" · 3
+hits`, and its body is one literal row with a hit to a line (session, entry,
+kind, UTC date, snippet), so a snippet, which is old session text, is never
+parsed as Markdown. The page adds no component for it; a record that is not the
+tool's shape leaves the line with its query and the body with the tool's prose.
 A button in the element's shadow root shows or hides the body. That choice is
 the browser's alone, as a fold's is: no read, no page event and no new entry
 in the socket's accepted list, so it works on an observer's page, and the
@@ -1769,6 +1775,42 @@ would try to trick the person into approving:
   and reads nothing, every name and strand is a text node, and a refusal is one of
   seven fixed sentences. The page reads on open, on a focus change, after its own
   change and every 15 seconds.
+- **Proposals** (protocol-change/086). The Session pane's eighth and last child
+  (`component.proposals_path`, `view/proposals`) is the daemon owner's review of
+  the standing rules a model has proposed with its `propose` tool. Each row
+  shows the proposal's identity, its time in UTC, its state and the first line
+  of why; a native drawer opens onto the whole rationale, the proposing session
+  and the edit as the page's one diff drawer, removed text in red and added
+  text in green. A pending row has **Approve**, which asks its question in
+  place (what it writes, that only sessions opened afterwards read it, that
+  `AGENTS.md` is never edited) before it sends, and **Reject**, which sends at
+  once. A `stale` row says that `loom-rules.md` moved and nothing was written; an
+  approved or rejected row, and a row of a kind or state the page does not
+  know, has no button. The board is `Shared.proposals`, read with
+  `proposals_get` when the page opens and again on the daemon's
+  `proposals_changed` push, with a 60 second backstop. The Session tab's badge
+  is the pending count (`loom-shell`'s `proposals` attribute, written on the
+  owner's page alone, which the tab press follows to the pane). The page
+  draws the pane, reads and sends only where `component.may_review_proposals`
+  holds, which is the daemon owner's page; the daemon refuses `proposals_get`
+  and `proposal_decide` to a member and to an observer on its own. The
+  operator socket admits clicks beneath the path like any click that is not an
+  owner's control, so the daemon's refusal is the gate there, as it is for the
+  remembered permissions. Every id, rationale, rule and session identity is a text
+  node, and a refusal is worded from the code, not echoed.
+- **Memory** (protocol-change/087). The Session pane's ninth and last child
+  (`view/memory`) is the daemon owner's read-only overview of what the daemon
+  remembers: four counts (notes, approved rules, pending proposals, bytes a run
+  is handed), the `[memory] inject` mode with the size of each file a run may
+  read, the newest typed notes with their kind and date and a `legacy` mark for
+  an untyped one, and the approved rules with their date, source session and
+  first line. A note's body is not in the board; the section says the agent
+  reads one with `history_search kind=note`. The board is `Shared.memory`, read
+  with `memory_get` when the owner's page opens and again whenever it is a
+  minute old (`surfaces.service_memory_read`), because a change to memory pushes
+  nothing. The section has no handler, so the socket admits no path beneath it;
+  it is drawn and read only where `component.may_review_proposals` holds, and
+  the daemon refuses `memory_get` to a member and an observer on its own.
 - Cards are keyed by the record's sequence, so a click in flight while the
   list shifts reaches the same card or none.
 
@@ -1873,6 +1915,8 @@ browser goes away, because a runtime outlives its last client.
 | `packages/web_view/src/web_view/view/share.gleam` | The invitation control in the Session pane: two buttons, or the invitation with a `<loom-copy>` box for the command and for the token. Drawn on an owner's page only; the messages its buttons send are values handed in. |
 | `packages/web_view/src/web_view/remembered.gleam` | The page's own part of the remembered-permissions list: `State` (when it was last wanted, the open question, the sign-ins the daemon said have ended), `Armed` (one forget as the list looked when its button was drawn), `Login`, the row identities, and `refresh_ms` (30 s). |
 | `packages/web_view/src/web_view/view/remembered.gleam` | The Session pane's list of what "Allow for this session" kept: each permission and remembered command, who allowed it, from which sign-in or terminal and when, a two-step Forget for each row and for all of them, and a note under a permission whose browser sign-in has ended. The pane's sixth child. Every path, command and name is a text node. |
+| `packages/web_view/src/web_view/proposals.gleam` | The page's own part of the proposals review: `State` (when the board was last wanted, the approval being asked about), `refresh_ms` (60 s), and the labels and the question an approval asks. |
+| `packages/web_view/src/web_view/view/proposals.gleam` | The Session pane's proposals section on the owner's page: a row for each proposal, its drawer with the rationale, source and the red and green diff, Approve behind an in-place question, Reject, and the settled words for a row that cannot change. The pane's eighth child. Every string a model wrote is a text node. |
 | `packages/web_view/src/web_view/view/nudges.gleam` | The advisor's pending nudges, read-only, every body received as a text node and the count the server left out. It is drawn under the strand panel's panes on both pages and has no handler. |
 | `packages/web_view/src/web_view/view/commentary.gleam` | The advisor's settled commentary, read-only: the request labels and full bodies of the reviews, drawn in the Strands pane under the strand cards as one closed `details` whose summary is `Advisor · N reviews · last: …`, the bodies as Markdown, newest three then a count, with the board's not-loaded line. No handler, and nothing while the advisor itself is on screen. |
 | `packages/web_view/src/web_view/view/controls.gleam` | The operator's session controls: the goal row with its buttons and the Fork form (`session`, in the Session pane), and the dock's one goal line while a goal runs or is held (`dock`). It takes the messages its buttons send and the form's submit handler as values. |

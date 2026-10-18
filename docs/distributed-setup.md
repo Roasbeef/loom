@@ -1369,7 +1369,7 @@ A daemon that restarts resumes every move it had in flight. A receiver that is
 restarted in the middle holds at most a partial file, which is never taken for a
 copy, so the source sends the file again from the start.
 
-**What does not move.** The memory the session distilled stays with the source's
+**What does not move.** The memory the session remembered stays with the source's
 workspace. Members and their grants stay on the source, which still lists them for
 a session it no longer serves; the receiver's owner grants access on the receiver.
 Nothing follows a client from the source to the receiver, so a client that held

@@ -4,14 +4,20 @@
 //// vouches for and runs the pass over the rest only, so the property it
 //// states must hold for every text: the pass over the whole equals the
 //// prefix followed by the pass over the rest. The texts here are built from
-//// a seeded sequence of pieces that the pass keeps, rewrites or removes —
+//// a qcheck sequence of pieces that the pass keeps, rewrites or removes —
 //// every UTF-8 width, carriage returns, tabs, escape sequences that complete
 //// and ones that do not, C1 controls and the direction and format marks.
+////
+//// A piece is drawn as an index into the table, so a failing text shrinks
+//// toward fewer pieces, each pulled toward the first, the plain word. The
+//// run uses a fixed qcheck seed, so a red run is the same red run on every
+//// machine.
 
 import gleam/bit_array
 import gleam/list
 import gleam/result
 import gleam/string
+import qcheck
 import session_view/text_hygiene
 
 const pieces = [
@@ -21,18 +27,29 @@ const pieces = [
   "\u{fe0f}", "\u{feff}", "\u{e0041}", "\u{7f}", "\u{0}", "\u{61c}", "\u{2028}",
 ]
 
-fn text(seed: Int, count: Int, acc: List(String)) -> String {
-  case count {
-    0 -> string.concat(acc)
-    _ -> {
-      let seed = { seed * 1_103_515_245 + 12_345 } % 2_147_483_648
-      let index = { seed / 65_536 } % list.length(pieces)
-      let piece = case list.drop(pieces, index) {
-        [piece, ..] -> piece
-        [] -> ""
-      }
-      text(seed, count - 1, [piece, ..acc])
-    }
+/// The number of texts checked and the seed they are drawn from.
+const text_count = 2000
+
+const text_seed = 1
+
+/// Up to eleven pieces joined. Each piece is an index, so shrinking moves it
+/// toward the plain word at index zero and drops pieces from the list.
+fn text_generator() -> qcheck.Generator(String) {
+  let piece =
+    qcheck.bounded_int(from: 0, to: list.length(pieces) - 1)
+    |> qcheck.map(piece_at)
+
+  qcheck.generic_list(
+    elements_from: piece,
+    length_from: qcheck.bounded_int(from: 0, to: 11),
+  )
+  |> qcheck.map(string.concat)
+}
+
+fn piece_at(index: Int) -> String {
+  case list.drop(pieces, index) {
+    [piece, ..] -> piece
+    [] -> ""
   }
 }
 
@@ -48,24 +65,19 @@ fn split_at(value: String, bytes: Int) -> #(String, String) {
   #(head, rest)
 }
 
-fn check(seed: Int) -> Nil {
-  case seed > 2000 {
-    True -> Nil
-    False -> {
-      let value = text(seed, seed % 12, [])
-      let #(head, rest) = split_at(value, text_hygiene.unchanged_prefix(value))
-      assert text_hygiene.multiline(value)
-        == head <> text_hygiene.multiline(rest)
-        as "the pass over the text is the prefix and the pass over the rest"
-      assert text_hygiene.multiline(head) == head
-        as "the pass leaves the prefix as it is"
-      check(seed + 1)
-    }
-  }
-}
-
 pub fn the_unchanged_prefix_splits_the_pass_test() {
-  check(1)
+  let config =
+    qcheck.default_config()
+    |> qcheck.with_test_count(text_count)
+    |> qcheck.with_seed(qcheck.seed(text_seed))
+
+  qcheck.run(config, text_generator(), fn(value) {
+    let #(head, rest) = split_at(value, text_hygiene.unchanged_prefix(value))
+    assert text_hygiene.multiline(value) == head <> text_hygiene.multiline(rest)
+      as "the pass over the text is the prefix and the pass over the rest"
+    assert text_hygiene.multiline(head) == head
+      as "the pass leaves the prefix as it is"
+  })
 }
 
 pub fn clean_text_is_unchanged_whole_and_a_rewrite_ends_the_prefix_test() {

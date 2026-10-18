@@ -14,14 +14,17 @@
 # R14 a transition table checked against its type, R15 state-machine types
 # before the first function, R16 an unqualified import of a Loom function,
 # and the censuses R17 (call-flow order) and R18 (short helpers the module doc
-# never names); `packages/lint/CLAUDE.md` says what each is for.
+# never names); `packages/lint/CLAUDE.md` says what each is for. Two rules
+# read `test/` rather than `src/`: R19 a SKIP diagnostic printed to stdout,
+# which EUnit discards on a green run, and R20 a web_client test whose import
+# graph reaches `lustre` or `web_client/internal`.
 #
-# R0, R2, R4, R6, R10, R13, R14, R15 and R16 are at ERROR level and this
-# script exits non-zero on any of them; every other rule warns and costs
+# R0, R2, R4, R6, R10, R13, R14, R15, R16, R19 and R20 are at ERROR level and
+# this script exits non-zero on any of them; every other rule warns and costs
 # nothing. A rule earns the error tier by a census that is zero, decidable
 # and argued — the staging scripts/doc_check.sh went through (D2,
 # docs/design-notes/four-decisions.md) — and the argument for each of the
-# nine is in `finding.error_by_default`. R3, R8, R17 and R18 can never be
+# eleven is in `finding.error_by_default`. R3, R8, R17 and R18 can never be
 # promoted: they over-report by construction.
 # Promoting one of the rest is a decision its census has to argue for, and
 # costs one flag:
@@ -50,6 +53,25 @@ if [ ${#paths[@]} -eq 0 ]; then
 		[ -d "$directory" ] && paths+=("$root/$directory")
 	done
 fi
+
+# R19 and R20 read test sources, so every `src` directory in the run brings
+# its package's `test` directory along (`make lint` and `make lint-<pkg>` name
+# only `src`). The other rules are scoped to `src` by `lint/cli`, which lints
+# a test file with the test-scoped rules alone unless `--tests` is given. A
+# test directory the caller already named is not added twice.
+for path in "${paths[@]}"; do
+	case $path in
+	*/src)
+		sibling="${path%/src}/test"
+		if [ -d "$sibling" ]; then
+			case " ${paths[*]} " in
+			*" $sibling "*) ;;
+			*) paths+=("$sibling") ;;
+			esac
+		fi
+		;;
+	esac
+done
 
 # The lint reads Gleam. The browser package's one JavaScript file is held to
 # its own textual gate whenever that package's sources are in the run, which

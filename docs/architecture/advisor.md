@@ -702,28 +702,28 @@ effect is the seam, and it asks the broker for nothing at all.
 
 **The operator** sees everything, because the daemon builds its strand
 list from the `StrandConfig` registers rather than from the lineage
-ledger (`strand_names`, `client/gateway.gleam:3376`). The advisor has
+ledger (`strand_names`, `client/gateway.gleam:3460`). The advisor has
 such a register, so it appears in the agent rail and its branch is one
 strand switch away. That visibility is deliberate: the isolation is
 between the two models, not between the harness and the person running
 it.
 
-**Extensions and the memory digest** reach the advisor's runs too. The
+**Extensions and the memory index** reach the advisor's runs too. The
 extension hook bus is composed over the advisor's four slots. An
 extension's `context` fold therefore receives and may rewrite the
 advisor's brief, its tool gate is consulted on the `advise` call, and
 `AgentEnd` and usage fire for the advisor's runs beside the primary's.
 (That last point is the same fact the step counter has to filter on,
-seen from the other side.) The memory digest is not strand-scoped either:
-`memory.digest_hooks` runs at every strand's run start, so the operator's
-distilled memory is appended to the advisor's branch as well.
+seen from the other side.) The memory context is not strand-scoped either:
+`memory.notes_hooks` runs at every strand's run start, so the notes index is
+appended to the advisor's branch as well.
 
 Neither is an accident. An extension is installed by the operator and
 runs with the operator's authority, which is the whole extension trust
 model. A configured extension can already rewrite the primary's context
 and gate the primary's tools, and an advisor it could not touch would be
 a plane outside the operator's control rather than a safer one. The
-memory digest is the operator's own standing text, and a reviewer reading
+notes index is the operator's own standing text, and a reviewer reading
 what the operator wants remembered is a feature. Neither changes the
 isolation the design rests on, which is between the two *models*:
 nothing here lets the primary address the advisor or read its cells. One
@@ -740,8 +740,8 @@ supplies. Drawn as user turns they would claim the operator typed them,
 which is the same reason the run-start notes digest is already
 suppressed.
 
-`advisor_payload` (`session_view/transcript_lines.gleam:2771`) extracts one of five
-`AdvisorMessage` variants and `advisor_lines` (`session_view/transcript_lines.gleam:3251`) renders
+`advisor_payload` (`session_view/transcript_lines.gleam:2807`) extracts one of five
+`AdvisorMessage` variants and `advisor_lines` (`session_view/transcript_lines.gleam:3287`) renders
 them. Delivered advice and nudges shorter than 512 bytes show their
 complete bodies even in compact mode, with a delivery label. A longer one
 collapses in compact mode to its heading and, beneath it as dim text of
@@ -847,7 +847,7 @@ cases an operator could not otherwise tell apart. A catalogue with no
 catalogue that routes the role to a chain this host cannot serve would
 otherwise show only a reviewer that never speaks.
 
-`parse_advisor` (`client/catalog.gleam:2157`) reads the `[advisor]`
+`parse_advisor` (`client/catalog.gleam:2215`) reads the `[advisor]`
 table, and is strict for the reason `parse_tools` is. An unknown key, a
 non-string tool name and a negative cooldown are each a worded error the
 boot halts on, because a mistyped key that silently kept the default

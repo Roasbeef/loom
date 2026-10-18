@@ -294,6 +294,35 @@ pub fn page(
   list.try_map(rows, fn(row) { descriptor(row.id, row.seq, row.payload_bytes) })
 }
 
+/// Returns at most `limit` descriptors strictly below `below`, oldest first.
+///
+/// This is the cut's own recent-entries query pointed at an arbitrary
+/// sequence instead of the high-water, so a reader that already holds one
+/// entry can ask what was committed just before it without a second query
+/// shape to keep in step. Like `page`, it moves no payload bytes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // snapshot_sqlite.before(conn, 12, 3) == Ok([seq 9, seq 10, seq 11])
+/// ```
+pub fn before(
+  conn: sqlight.Connection,
+  below: Int,
+  limit: Int,
+) -> Result(List(snapshot.Descriptor), Error) {
+  use <- bool.guard(
+    when: below < 0 || limit < 1 || limit > snapshot.page_limit,
+    return: Error(snapshot.InvalidRequest),
+  )
+  use rows <- result.try(query(
+    conn,
+    sql.snapshot_recent_entries(Some(below), limit),
+  ))
+  list.try_map(rows, fn(row) { descriptor(row.id, row.seq, row.payload_bytes) })
+  |> result.map(list.reverse)
+}
+
 /// Returns one entry's ancestry, oldest first, without entry payloads.
 ///
 /// The walk is one primary-key probe per record (`snapshot.lineage`), so its

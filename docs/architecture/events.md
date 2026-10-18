@@ -355,17 +355,49 @@ per repository, never inside a session file. The index carries no
 authority: an indexing failure cannot affect a commit, and deleting the
 database costs a re-sync and nothing more.
 
-The schema is two tables:
+The schema is three tables:
 
 ```sql
-entry_fts(session_id UNINDEXED, entry_id UNINDEXED, text)   -- FTS5 virtual
+entry_fts(session_id UNINDEXED, entry_id UNINDEXED,
+          kind UNINDEXED, ts UNINDEXED, text)                -- FTS5 virtual
 search_cursor(session_id PK, generation, high_water) WITHOUT ROWID
+search_source(session_id PK, path) WITHOUT ROWID
 ```
 
 `entry_fts` is a content-carrying FTS5 table, so the index holds a verbatim
 copy of the text it indexes. The session and entry ids are stored but not
 tokenized. They let a hit name where it came from, and a caller joins back
-through the repository it already holds.
+through the repository it already holds. `kind` and `ts` are read from the
+entry at index time and stored the same way. `kind` is `user`, `assistant`,
+`tool` (a tool result), or `summary` (a compaction or branch summary), and
+`ts` is the entry's commit time in milliseconds since the epoch. Filtering
+on an `UNINDEXED` column is a filter over rows the `MATCH` already produced,
+as `session_id` is, so a narrow filter bounds the result and not the work.
+
+### Schema version and migration
+
+The schema version lives in `PRAGMA user_version`. A file written before
+`kind` and `ts` existed reads 0, and the current version is 1. FTS5 tables
+cannot be altered, so `initialize` migrates in place inside one `BEGIN
+IMMEDIATE` transaction, re-reading the version under the lock so two
+processes opening the same old file do not both migrate it:
+
+1. rename `entry_fts` to a scratch name and create the new table;
+2. copy every row across in `rowid` order, with an empty `kind` and a `ts`
+   of 0, because the old index never recorded them;
+3. drop the scratch table and set every `search_cursor.generation` to -1;
+4. set `user_version`.
+
+The file is never deleted and a failure rolls the whole step back. Setting
+the generation to -1, which no store has (they count up from zero), makes
+the next `sync` of each session see a generation mismatch, drop that
+session's copied rows, and index them again with the real columns. A
+session heals the first time it is read. A session that is never read again
+keeps its copied rows, which still answer searches and show as `unknown
+kind` and `unknown date`, and which a `kind` filter does not match. The
+migration was run against a copy of a 16 MB production index
+(5,755 rows, 12 sessions): every row survived, every cursor was invalidated,
+and queries answered immediately.
 
 ### What gets indexed
 
@@ -429,12 +461,42 @@ as a mismatch and repairs.
 
 ### Querying
 
-`query(text, limit)` runs an FTS5 `MATCH` and returns hits ranked
-best-first. Each hit has the session id, the entry id, and a `snippet()`
-excerpt in which `[` and `]` mark the matched terms. The query text is
-bound as a parameter, so the caller can use FTS5 query syntax (bare words,
-quoted phrases, `AND`/`OR`/`NOT`) without an injection path. A malformed
-query is an `IndexFault`, not a crash.
+`query(Query)` runs an FTS5 `MATCH` and returns hits ranked best-first.
+A `Query` carries the text, a `Syntax`, an optional `kind`, an optional
+`before` entry id, and the limit. Each hit has the session id, the entry id,
+its `kind`, its `ts`, and a `snippet()` excerpt in which `[` and `]` mark the
+matched terms. The match expression is bound as a parameter, so there is no
+injection path in either syntax.
+
+`Words` is the default. `match_text` splits the text on whitespace, quotes
+each token with embedded quotes doubled, appends `*` so the token is a
+prefix term, and joins the terms with spaces, which FTS5 reads as AND. A
+bare `OR` token between two words is kept as the operator, and an `OR` with
+no word on one side is dropped. Nothing a user types is then a syntax error:
+`foo-bar`, `a:b`, a stray quote and a lone `NOT` are all text, and a query
+with no terms becomes the empty phrase, which matches nothing. Prefix terms
+mean `deploy` finds `deployment`; there is no stemming, so `deploying` does
+not find `deploy`. `Raw` passes the text through, and a malformed query is
+an `IndexFault`, not a crash.
+
+`kind` is an exact match on the stored kind, so an unknown kind matches
+nothing. `before` is an entry id, and only rows whose `entry_id` text sorts
+below it are returned: it answers hits older than the id, newest first, and
+it does not continue a ranked first page. A ranked first page followed by
+`before` set to its oldest hit never returns a match that is newer than that
+hit and was not on the first page. A caller that needs every match narrows the
+query or adds a `kind` filter instead of paging past the first page, and the
+`history_search` description tells the model so. Entry ids are UUIDv7, so that order is commit-time
+order across sessions and the comparison is a keyset with no anchor lookup.
+Without `before` the order is `rank`. With it the order is `entry_id`
+descending, so passing the oldest entry of a page as the next `before`
+visits every older match exactly once. Ranked order cannot page this way,
+because `rank` is a bm25 score that moves as the corpus grows, and a page
+boundary in score order is not stable across calls. The cost is that the
+first ranked page and the chronological pages after it are different
+orderings: a match that is newer than the first page's oldest hit and ranked
+below it is not revisited. The retrieval test under `events/test` plants
+thirteen facts among filler and checks all of this offline.
 
 We ran twenty hostile probes through the real API: injection attempts,
 unbalanced quotes, bare operators, two thousand nested parentheses, and a
@@ -445,16 +507,16 @@ A hit may be stale. It names an entry as it was when indexed, and a later
 rewrite reaches the index only when someone syncs that session under the
 bumped generation.
 
-`query_in_session(session, text, limit)` has the same ranking and syntax,
-filtered to one session's rows. The scope is **in the SQL**: `AND
+`query_in_session(session, query)` has the same ranking, syntax and filters,
+restricted to one session's rows. The scope is **in the SQL**: `AND
 session_id = ?` sits beside the `MATCH`, before `ORDER BY rank` and
 `LIMIT`. Filtering afterwards would not give correct scoping, because a
 ten-hit request narrowed to one session can come back empty while that
 session has matches. It takes a `SessionId` rather than a string for the
 reason given under "Naming a session" below.
 
-`recent_in_session(session, limit)` takes no query. It returns one
-session's rows by descending `rowid`, which FTS5 assigns in insertion
+`recent_in_session(session, limit)` takes no query and returns hits with the
+same `kind` and `ts`. It returns one session's rows by descending `rowid`, which FTS5 assigns in insertion
 order. `sync` inserts a session's entries in log order and a resync
 reinserts them the same way, so the highest rowids are the newest entries.
 With no `MATCH`, `snippet()` has nothing to anchor on, so each hit's
@@ -500,8 +562,8 @@ exist, so a deleted session's text stays searchable until someone calls
 `LIMIT ?`, and SQL reads `LIMIT -1` as unbounded. Storage's own convention
 is the opposite (a limit of zero or below returns no rows), so a caller
 computing a limit by subtraction gets the whole index instead of nothing.
-Separately, an empty query string is an `IndexFault` rather than an empty
-result, which a search-as-you-type caller meets on the first backspace.
+Separately, an empty query string in `Raw` syntax is an `IndexFault` rather
+than an empty result (in `Words` syntax it matches nothing), which a search-as-you-type caller meets on the first backspace.
 
 Both are the caller's to handle, and `tools/history` handles them. It
 clamps the limit to `[1, 50]` and never sends an empty query: in the
@@ -555,6 +617,14 @@ snippets are read back into *future* sessions' contexts, so an index a
 model can write is a channel from one execution's output into a later
 execution's input: prompt injection that persists. Writing is the only
 poisoning path, so `protected` bars writes and leaves reads alone.
+
+**Recall is counted, not recorded.** Both hosts of the seam, the holder and
+the shared domain owner, wrap it in `history_bridge.counted`, which writes
+one `memory.search_called` info line per `search` or `recent` call that was
+answered: the scope, the hit count (`hits`) and how many hits were notes
+(`note_hits`, zero until notes are indexed). The query text is never logged.
+`read` is a lookup by identity and is not counted; with `around` it returns
+the same window on either host.
 
 An index that will not open registers no `history_search` tool and logs
 one worded line; it never refuses the boot. Recall is a projection with no
@@ -671,7 +741,7 @@ nothing here but the member list.
 |---|---|
 | `events/bus.gleam` | The seven topics and events, `publish`, idempotent `subscribe`, `select_published`, and the unlinked writer `bridge`. |
 | `events/projection.gleam` | `Projection`, `Change`, `Checkpoint`, `catch_up` and its frontier, `rebuild`, `stats_projection`, and the driver actor with its generation guard. |
-| `events/search.gleam` | `open`/`close`, the transactional `sync`/`notify`, `query`, `query_in_session`, `recent_in_session`, `remove`, `entry_text`, the hand-written DDL, and the parrot parameter bridge. |
+| `events/search.gleam` | `open`/`close` and the schema migration, the transactional `sync`/`notify`, `query`, `query_in_session`, `recent_in_session`, `Query`, `Syntax`, `match_text`, `remove`, `entry_text`, the hand-written DDL, and the parrot parameter bridge. |
 | `events/sql.gleam` | The twelve generated statement functions and their decoders. Produced by parrot from `events/sql/search.sql`; regenerate, never edit. |
 | `events/sql/search.sql` | The twelve named static queries — the source of truth for the generated module. |
 | `sql/schema.sql` | The search database DDL, pinned to the copy in `events/search` by a test. |

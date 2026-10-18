@@ -321,12 +321,12 @@ fn unused_code_mode() -> codemode.CodeMode {
 
 fn unused_history() -> history.History {
   history.History(
-    read: fn(_, _) {
+    read: fn(_, _, _) {
       Error(history.IndexUnavailable(
         reason: "read not configured in this fixture",
       ))
     },
-    search: fn(_text, _limit, _scope) {
+    search: fn(_query) {
       Error(history.IndexUnavailable(reason: unused_refusal()))
     },
     recent: fn(_limit) {

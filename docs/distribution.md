@@ -397,7 +397,7 @@ session, including creation through an already-running daemon. Explicit relative
 paths resolve from the terminal's working directory. If no trusted file exists,
 an empty session configuration retains the daemon's session defaults.
 
-Reusing a daemon does not reconfigure its shared maintenance services, and
+Reusing a daemon does not reconfigure its shared domain services, and
 opening an existing session preserves its recorded configuration reference.
 Nothing is linked or bundled together: a remote
 client still carries no server runtime, a headless server still carries no
@@ -845,76 +845,32 @@ on `PATH`; a host that refuses that namespace reports this build check as
 unverified, not passed. A `DIST_CODEMODE=0` release is held to the mirror image: no
 `code_mode`, and a stated reason.
 
-## Memory distils on the release's own lifecycle
+## Memory needs nothing beyond the release
 
-A release ships both the memory consumer and producer. One daemon can serve
-many sessions, but memory maintenance belongs to their persisted domain, not
-to each session or to daemon startup. Catalogue restoration opens neither
-conversations nor domain resources. See [sessions](architecture/sessions.md)
-and [multiplayer](architecture/multiplayer.md) for domain ownership and access.
+A release ships both sides of memory that remains: the `remember` door that
+writes typed notes and the run-start hook that injects their index. Both live
+in a domain's own directory, so one daemon can serve many sessions without a
+per-session memory service or a startup task. Catalogue restoration opens
+neither conversations nor domain resources. See
+[sessions](architecture/sessions.md) and
+[multiplayer](architecture/multiplayer.md) for domain ownership and access.
 
-**The cadence follows domain admission and confirmed session closure.** The
-first explicitly opened session starts the shared domain owner and its initial
-pass. A successfully closed session requests another pass. At most one pass
-runs at a time, with at most one coalesced follow-up; there is no periodic
-timer. Before retiring the last domain owner, shutdown waits for its current
-and already coalesced work. Source identities and paths come from current
-catalogue mappings, never a directory scan. Maintenance skips a source with a
-live writer lease; shared read-only history search has a separate contract.
+The notes index is rebuilt from the store when a session opens, without a
+writer lease, so notes written by an earlier release reach the first run. A
+release no longer ships the distillation pass that older releases ran, and
+`[memory] distill` and `distill_wall_ms` (any value) and `inject = "digest"`
+are accepted, ignored and warned about, so that a configuration written for
+them still loads. Their leftover `loom-memory.digest` file and any
+distillate rows in `loom-memory.db` stay on disk and are never read.
 
-**Maintenance uses the domain's captured owner configuration:**
-
-```toml
-[memory]
-distill = "on-boot"      # domain admission and closure cadence; or "off"
-distill_wall_ms = 600000 # how long one whole pass may take; also the ceiling
-```
-
-`distill_wall_ms` cannot be raised above its default, because that is
-how long the memory session's writer lease lasts and nothing renews a
-lease but a commit — a pass that outlived it would fail at its next
-commit instead of being cut cleanly, so a larger value is refused at
-domain admission with an error. `distill = "off"` starts no maintenance
-worker; it does not disable shared history search. Each session retains its
-own runtime configuration, even when it shares the domain's memory and index
-paths. A malformed maintenance configuration refuses domain admission rather
-than silently enabling maintenance.
-
-**The model cost is unchanged by shipping it:** one extraction request
-per eligible closed session plus one consolidation request, routed to
-the catalogue's `summarize` role when it declares one and to the
-resolved main model when it does not. Both turns' usage rows land in the
-memory session's own ledger. A pass with nothing new to read dispatches
-**no** request at all, which is why a fresh install costs nothing until
-there is something to distil.
-
-**Failure does not trigger an automatic retry.** A refused or expired pass
-retains any progress already committed and discards its already coalesced
-follow-up. A later authorized closure trigger or fresh domain admission can
-retry. Lost cleanup proof is different: the original owner remains blocked
-and consumes domain capacity. A timeout or closed port is not permission to
-open a replacement owner over the same files.
-
-**A new digest becomes visible at the next run start** for sessions sharing
-that memory domain, including later runs of the session whose closure
-triggered the pass. It is injected as a fenced, attributed user message and never into
-the pinned system prompt, so a changed digest costs a rolling tail write
-rather than a cache-head rewrite.
-
-**What ran is in the log**, under `memory.distill.started`,
-`memory.distill.completed` (with `sources`, `skipped`, `candidates`,
-`rows` and whether the digest was written, emptied or unchanged),
-`memory.distill.failed` and `memory.distill.expired`.
-
-`make release-smoke` holds the artifact to the first of those: booted
+`make release-smoke` holds the artifact to the daemon lifecycle: booted
 with `env -i PATH=/usr/bin:/bin` in a directory of its own, the release
 must first restore metadata without assembling a session. The test probe
 explicitly creates two empty sessions, confirms both become resident, and
-closes one while the other remains available. A domain pass must complete
-with zero candidates and rows before shutdown. Empty transcripts require no
-provider request; the test needs no API key and does not claim extraction
-quality. SIGTERM must then retire the remaining session and shared domain,
-with both `daemon.stopped` and a successful native process exit.
+closes one while the other remains available. Empty transcripts require no
+provider request; the test needs no API key. SIGTERM must then retire the
+remaining session and shared domain, with both `daemon.stopped` and a
+successful native process exit.
 
 ## What is still wanted from the source
 

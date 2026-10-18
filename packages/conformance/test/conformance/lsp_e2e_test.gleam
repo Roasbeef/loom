@@ -45,8 +45,8 @@
 import broker/exec
 import client/catalog
 import client/codemode
-import client/distillpass
 import client/jobs
+import client/memory_config
 import client/retryconf
 import client/schedule
 import client/serve
@@ -54,6 +54,7 @@ import client/workspace_policy
 import core/clock
 import core/json.{type JsonValue}
 import core/message
+import envoy
 import gleam/erlang/process
 import gleam/int
 import gleam/io
@@ -1107,7 +1108,7 @@ fn settings(
     jobs_policy: jobs.default_policy,
     retry_policy: retryconf.default_policy,
     deactivated_tools: [],
-    memory: distillpass.no_pass(),
+    memory: memory_config.default_options(),
     tools: catalog.default_tools(),
     advisor: None,
     go_caches: None,
@@ -1238,7 +1239,7 @@ fn go_places(go: String) -> Result(GoPlaces, String) {
 
 // An environment variable that holds an absolute path, or nothing.
 fn absolute_env(name: String) -> Result(String, Nil) {
-  case ffi_shell.get_env(name) {
+  case envoy.get(name) {
     Ok("/" <> _ as value) -> Ok(value)
     Ok(_) | Error(Nil) -> Error(Nil)
   }

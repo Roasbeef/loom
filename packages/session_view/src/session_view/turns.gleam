@@ -213,7 +213,7 @@ pub type Item {
   Memory(
     /// The row's key: the message block's key and the row's index.
     key: String,
-    /// How many lines the memory digest holds (`composer.memory_context_lines`).
+    /// How many lines the memory context holds (`composer.memory_context_lines`).
     lines: Int,
     /// The message in full, cut by the host's `Expansion`.
     full: List(Line),

@@ -82,12 +82,14 @@ import session_view/command
 import session_view/context_view
 import session_view/goal_view
 import session_view/live_jobs
+import session_view/memory_overview
 import session_view/model.{
   type Shared, Attached, ConfirmGoal, Disconnected, GoalObserved,
   GoalUnavailable, HoldGoalReport, OverlaySubmission, Preview, Replaying,
   ReportGoal, Shared,
 } as session_model
 import session_view/outbound
+import session_view/proposals
 import session_view/protocol
 import session_view/queue_request
 import session_view/remembered
@@ -402,6 +404,118 @@ pub fn forget_remembered(
       outbound.send_frame(
         shared,
         protocol.permission_forget(shared.next_id, forget),
+      )
+  }
+}
+
+// --- the standing-rule proposals --------------------------------------------
+
+/// Sends a requested read of the proposals once the channel is ready for it.
+///
+/// Over the shared record alone. A host sets `proposals_refresh` when it first
+/// wants the board, when a `proposals_changed` push arrives
+/// (`event_fold`), and after a decision the daemon refused. Only an owner's
+/// host asks: the daemon refuses the read to anyone else
+/// (protocol-change/086). A read that cannot be sent now stays requested for
+/// the next tick.
+///
+/// ## Examples
+///
+/// ```gleam
+/// surfaces.service_proposals_read(model.shared)
+/// ```
+@internal
+pub fn service_proposals_read(
+  shared: Shared(socket, recorder, source, replay_source),
+) -> Shared(socket, recorder, source, replay_source) {
+  case shared.channel, shared.proposals_refresh, shared.peer {
+    Some(channel), worktree_view.Requested, Attached ->
+      case session_channel.ready_for_read(channel) {
+        True ->
+          outbound.send_frame(
+            shared_set.proposals_refresh(shared, worktree_view.Settled),
+            protocol.proposals_get(shared.next_id),
+          )
+        False -> shared
+      }
+    _, worktree_view.Requested, _ | _, worktree_view.Settled, _ -> shared
+  }
+}
+
+/// Sends the memory-overview read when one is owed and the channel is ready.
+///
+/// A read is owed when a host asked for it (`memory_refresh`), or when a host
+/// is showing the overview and its board is older than
+/// `memory_overview.backstop_ms`, since nothing pushes a change to memory.
+/// The read is stamped as it is sent, so a slow reply is not asked for twice.
+/// A read that cannot be sent now stays owed for the next tick.
+///
+/// ## Examples
+///
+/// ```gleam
+/// surfaces.service_memory_read(model.shared)
+/// ```
+@internal
+pub fn service_memory_read(
+  shared: Shared(socket, recorder, source, replay_source),
+) -> Shared(socket, recorder, source, replay_source) {
+  case shared.channel, memory_read_owed(shared), shared.peer {
+    Some(channel), Owed, Attached ->
+      case session_channel.ready_for_read(channel) {
+        True ->
+          outbound.send_frame(
+            shared
+              |> shared_set.memory_refresh(worktree_view.Settled)
+              |> shared_set.memory_read_ms(Some(shared.stamp.now_ms)),
+            protocol.memory_get(shared.next_id),
+          )
+        False -> shared
+      }
+    _, Owed, _ | _, NotOwed, _ -> shared
+  }
+}
+
+// Whether a read of the overview is due, and nothing more: the lane's
+// readiness is asked after, so a due read waits for a free slot.
+type MemoryRead {
+  Owed
+  NotOwed
+}
+
+fn memory_read_owed(
+  shared: Shared(socket, recorder, source, replay_source),
+) -> MemoryRead {
+  case shared.memory_refresh, shared.memory_watch, shared.memory_read_ms {
+    worktree_view.Requested, _, _ -> Owed
+    worktree_view.Settled, session_model.WatchingMemory, Some(at)
+      if shared.stamp.now_ms - at >= memory_overview.backstop_ms
+    -> Owed
+    worktree_view.Settled, _, _ -> NotOwed
+  }
+}
+
+/// Decides one pending proposal, as the host listed it.
+///
+/// A decision needs what an approval needs: a live attachment that may
+/// mutate. The reply is the board as it now stands, so nothing else is read.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let shared = surfaces.decide_proposal(shared, "prop-0123456789", proposals.Approve)
+/// ```
+@internal
+pub fn decide_proposal(
+  shared: Shared(socket, recorder, source, replay_source),
+  id: String,
+  decision: proposals.Decision,
+) -> Shared(socket, recorder, source, replay_source) {
+  case outbound.mutation_refusal(shared, command.Approve("")) {
+    Some(reason) -> shared_set.proposals_notice(shared, reason)
+    None ->
+      outbound.send_frame(
+        shared_set.proposals_notice(shared, ""),
+        protocol.proposal_decide(shared.next_id, id, decision),
       )
   }
 }

@@ -7,15 +7,19 @@ import parrot/dev
 pub fn insert_entry_text(
   session_id session_id: String,
   entry_id entry_id: String,
+  kind kind: String,
+  ts ts: Int,
   text text: String,
 ) {
   let sql =
     "
-INSERT INTO entry_fts (session_id, entry_id, text)
-VALUES (?, ?, ?)"
+INSERT INTO entry_fts (session_id, entry_id, kind, ts, text)
+VALUES (?1, ?2, ?3, CAST(?4 AS INTEGER), ?5)"
   #(sql, [
     dev.ParamString(session_id),
     dev.ParamString(entry_id),
+    dev.ParamString(kind),
+    dev.ParamInt(ts),
     dev.ParamString(text),
   ])
 }
@@ -26,51 +30,95 @@ pub fn delete_session_index(session_id session_id: String) {
 }
 
 pub type SearchEntries {
-  SearchEntries(session_id: String, entry_id: String, snippet: String)
+  SearchEntries(
+    session_id: String,
+    entry_id: String,
+    kind: String,
+    ts: Int,
+    snippet: String,
+  )
 }
 
-pub fn search_entries(text text: String, limit limit: Int) {
-  let sql =
-    "SELECT
-  session_id,
-  entry_id,
-  snippet(entry_fts, 2, '[', ']', '...', 12) AS snippet
-FROM entry_fts
-WHERE entry_fts.text MATCH ?
-ORDER BY rank
-LIMIT ?"
-  #(sql, [dev.ParamString(text), dev.ParamInt(limit)], search_entries_decoder())
-}
-
-pub fn search_entries_decoder() -> decode.Decoder(SearchEntries) {
-  use session_id <- decode.field(0, decode.string)
-  use entry_id <- decode.field(1, decode.string)
-  use snippet <- decode.field(2, decode.string)
-  decode.success(SearchEntries(session_id:, entry_id:, snippet:))
-}
-
-pub type SearchEntriesInSession {
-  SearchEntriesInSession(session_id: String, entry_id: String, snippet: String)
-}
-
-pub fn search_entries_in_session(
-  text text: String,
-  session_id session_id: String,
-  limit limit: Int,
+pub fn search_entries(
+  query query: String,
+  kind kind: String,
+  before before: String,
+  max_hits max_hits: Int,
 ) {
   let sql =
     "SELECT
   session_id,
   entry_id,
-  snippet(entry_fts, 2, '[', ']', '...', 12) AS snippet
+  COALESCE(kind, '') AS kind,
+  CAST(COALESCE(ts, 0) AS INTEGER) AS ts,
+  snippet(entry_fts, 4, '[', ']', '...', 12) AS snippet
 FROM entry_fts
-WHERE entry_fts.text MATCH ?
-  AND session_id = ?
-ORDER BY rank
-LIMIT ?"
+WHERE entry_fts.text MATCH ?1
+  AND (CAST(?2 AS TEXT) = '' OR entry_fts.kind = CAST(?2 AS TEXT))
+  AND (CAST(?3 AS TEXT) = '' OR entry_fts.entry_id < CAST(?3 AS TEXT))
+ORDER BY CASE WHEN CAST(?3 AS TEXT) = '' THEN rank END, entry_fts.entry_id DESC
+LIMIT ?4"
   #(
     sql,
-    [dev.ParamString(text), dev.ParamString(session_id), dev.ParamInt(limit)],
+    [
+      dev.ParamString(query),
+      dev.ParamString(kind),
+      dev.ParamString(before),
+      dev.ParamInt(max_hits),
+    ],
+    search_entries_decoder(),
+  )
+}
+
+pub fn search_entries_decoder() -> decode.Decoder(SearchEntries) {
+  use session_id <- decode.field(0, decode.string)
+  use entry_id <- decode.field(1, decode.string)
+  use kind <- decode.field(2, decode.string)
+  use ts <- decode.field(3, decode.int)
+  use snippet <- decode.field(4, decode.string)
+  decode.success(SearchEntries(session_id:, entry_id:, kind:, ts:, snippet:))
+}
+
+pub type SearchEntriesInSession {
+  SearchEntriesInSession(
+    session_id: String,
+    entry_id: String,
+    kind: String,
+    ts: Int,
+    snippet: String,
+  )
+}
+
+pub fn search_entries_in_session(
+  query query: String,
+  session session: String,
+  kind kind: String,
+  before before: String,
+  max_hits max_hits: Int,
+) {
+  let sql =
+    "SELECT
+  session_id,
+  entry_id,
+  COALESCE(kind, '') AS kind,
+  CAST(COALESCE(ts, 0) AS INTEGER) AS ts,
+  snippet(entry_fts, 4, '[', ']', '...', 12) AS snippet
+FROM entry_fts
+WHERE entry_fts.text MATCH ?1
+  AND session_id = ?2
+  AND (CAST(?3 AS TEXT) = '' OR entry_fts.kind = CAST(?3 AS TEXT))
+  AND (CAST(?4 AS TEXT) = '' OR entry_fts.entry_id < CAST(?4 AS TEXT))
+ORDER BY CASE WHEN CAST(?4 AS TEXT) = '' THEN rank END, entry_fts.entry_id DESC
+LIMIT ?5"
+  #(
+    sql,
+    [
+      dev.ParamString(query),
+      dev.ParamString(session),
+      dev.ParamString(kind),
+      dev.ParamString(before),
+      dev.ParamInt(max_hits),
+    ],
     search_entries_in_session_decoder(),
   )
 }
@@ -80,12 +128,26 @@ pub fn search_entries_in_session_decoder() -> decode.Decoder(
 ) {
   use session_id <- decode.field(0, decode.string)
   use entry_id <- decode.field(1, decode.string)
-  use snippet <- decode.field(2, decode.string)
-  decode.success(SearchEntriesInSession(session_id:, entry_id:, snippet:))
+  use kind <- decode.field(2, decode.string)
+  use ts <- decode.field(3, decode.int)
+  use snippet <- decode.field(4, decode.string)
+  decode.success(SearchEntriesInSession(
+    session_id:,
+    entry_id:,
+    kind:,
+    ts:,
+    snippet:,
+  ))
 }
 
 pub type RecentEntriesInSession {
-  RecentEntriesInSession(session_id: String, entry_id: String, snippet: String)
+  RecentEntriesInSession(
+    session_id: String,
+    entry_id: String,
+    kind: String,
+    ts: Int,
+    snippet: String,
+  )
 }
 
 pub fn recent_entries_in_session(
@@ -96,6 +158,8 @@ pub fn recent_entries_in_session(
     "SELECT
   session_id,
   entry_id,
+  COALESCE(kind, '') AS kind,
+  CAST(COALESCE(ts, 0) AS INTEGER) AS ts,
   substr(text, 1, 160) AS snippet
 FROM entry_fts
 WHERE session_id = ?
@@ -113,8 +177,16 @@ pub fn recent_entries_in_session_decoder() -> decode.Decoder(
 ) {
   use session_id <- decode.field(0, decode.string)
   use entry_id <- decode.field(1, decode.string)
-  use snippet <- decode.field(2, decode.string)
-  decode.success(RecentEntriesInSession(session_id:, entry_id:, snippet:))
+  use kind <- decode.field(2, decode.string)
+  use ts <- decode.field(3, decode.int)
+  use snippet <- decode.field(4, decode.string)
+  decode.success(RecentEntriesInSession(
+    session_id:,
+    entry_id:,
+    kind:,
+    ts:,
+    snippet:,
+  ))
 }
 
 pub type GetCursor {
@@ -136,24 +208,42 @@ pub fn get_cursor_decoder() -> decode.Decoder(GetCursor) {
 }
 
 pub type SearchAuthorizedEntries {
-  SearchAuthorizedEntries(session_id: String, entry_id: String, snippet: String)
+  SearchAuthorizedEntries(
+    session_id: String,
+    entry_id: String,
+    kind: String,
+    ts: Int,
+    snippet: String,
+  )
 }
 
 pub fn search_authorized_entries(
   query query: String,
   sessions sessions: String,
+  kind kind: String,
+  before before: String,
   max_hits max_hits: Int,
 ) {
   let sql =
-    "SELECT session_id, entry_id,
-  snippet(entry_fts, 2, '[', ']', '...', 12) AS snippet
+    "SELECT session_id, entry_id, COALESCE(kind, '') AS kind,
+  CAST(COALESCE(ts, 0) AS INTEGER) AS ts,
+  snippet(entry_fts, 4, '[', ']', '...', 12) AS snippet
 FROM entry_fts
 WHERE entry_fts.text MATCH ?1
   AND session_id IN (SELECT value FROM json_each(CAST(?2 AS TEXT)))
-ORDER BY rank LIMIT ?3"
+  AND (CAST(?3 AS TEXT) = '' OR entry_fts.kind = CAST(?3 AS TEXT))
+  AND (CAST(?4 AS TEXT) = '' OR entry_fts.entry_id < CAST(?4 AS TEXT))
+ORDER BY CASE WHEN CAST(?4 AS TEXT) = '' THEN rank END, entry_fts.entry_id DESC
+LIMIT ?5"
   #(
     sql,
-    [dev.ParamString(query), dev.ParamString(sessions), dev.ParamInt(max_hits)],
+    [
+      dev.ParamString(query),
+      dev.ParamString(sessions),
+      dev.ParamString(kind),
+      dev.ParamString(before),
+      dev.ParamInt(max_hits),
+    ],
     search_authorized_entries_decoder(),
   )
 }
@@ -163,8 +253,16 @@ pub fn search_authorized_entries_decoder() -> decode.Decoder(
 ) {
   use session_id <- decode.field(0, decode.string)
   use entry_id <- decode.field(1, decode.string)
-  use snippet <- decode.field(2, decode.string)
-  decode.success(SearchAuthorizedEntries(session_id:, entry_id:, snippet:))
+  use kind <- decode.field(2, decode.string)
+  use ts <- decode.field(3, decode.int)
+  use snippet <- decode.field(4, decode.string)
+  decode.success(SearchAuthorizedEntries(
+    session_id:,
+    entry_id:,
+    kind:,
+    ts:,
+    snippet:,
+  ))
 }
 
 pub fn set_cursor(

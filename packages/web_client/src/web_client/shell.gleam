@@ -72,7 +72,10 @@
 ////
 //// The attributes are fixed words and numbers the server writes: `sidebar`
 //// is `listed` or `none`, saying whether the page has a sidebar, and
-//// `needing` is how many strands wait on a decision, the number on the
+//// `proposals` is how many proposed standing rules wait for the daemon's owner
+//// (protocol-change/086), the number on the Session tab, which holds the
+//// review; the server writes it on the owner's page alone, and it decodes as
+//// `needing` does. `needing` is how many strands wait on a decision, the number on the
 //// Strands tab. An observer's page has no sidebar, and the bar draws no
 //// button for it. The element renders no session text, takes no focus, and
 //// sends the server nothing. Its buttons and tabs are real buttons, so a
@@ -169,6 +172,7 @@ import lustre/event
 import web_client/grip_rule
 import web_client/internal/ffi_dom.{type Listener}
 import web_client/layout_rule.{type Theme, type Workspace}
+import web_client/proposals_rule
 import web_client/shell_rule.{
   type Frame, type Intent, type Layout, type Motion, type Presence, type Region,
   type Relay, type State, type Tab,
@@ -185,6 +189,9 @@ pub type Model {
     layout: Layout,
     sidebar: Presence,
     needing: Int,
+    /// How many proposed standing rules wait for the owner, the number on the
+    /// Session tab. Zero on every page but the owner's.
+    proposals: Int,
     /// The workspace the layout is kept for, known once the stored layout has
     /// been read. Until then, and for a page with no digest, it is
     /// `Anonymous` and nothing is written.
@@ -245,6 +252,9 @@ pub type Msg {
 
   /// The server set the `needing` attribute.
   NeedingChanged(count: Int)
+
+  /// The server set the `proposals` attribute.
+  ProposalsChanged(count: Int)
 
   /// A click reached the centre or the panel on a control that carries a
   /// strand marker, and asks for the strand card at that position to be
@@ -324,6 +334,7 @@ pub fn register() -> Result(Nil, lustre.Error) {
   lustre.component(init, update, view, [
     component.on_attribute_change("sidebar", sidebar),
     component.on_attribute_change("needing", needing),
+    component.on_attribute_change("proposals", proposals),
     component.on_connect(Connected),
     component.on_disconnect(Disconnected),
   ])
@@ -341,6 +352,12 @@ fn needing(value: String) -> Result(Msg, Nil) {
   Ok(NeedingChanged(shell_rule.needing(value)))
 }
 
+// The proposals count, decoded as the strand count is: anything but a small
+// plain number is none.
+fn proposals(value: String) -> Result(Msg, Nil) {
+  Ok(ProposalsChanged(shell_rule.needing(value)))
+}
+
 // A page starts with both columns open on the first tab, no sidebar and no
 // strand waiting. The sidebar's button appears when the server's attribute
 // arrives, which is at once for a page that has one; assuming the opposite
@@ -354,6 +371,7 @@ fn init(_: Nil) -> #(Model, Effect(Msg)) {
       layout:,
       sidebar: shell_rule.Unlisted,
       needing: 0,
+      proposals: 0,
       workspace: layout_rule.Anonymous,
       theme: layout_rule.System,
       keys: None,
@@ -397,6 +415,10 @@ fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       effect.none(),
     )
     NeedingChanged(count:) -> #(Model(..model, needing: count), effect.none())
+    ProposalsChanged(count:) -> #(
+      Model(..model, proposals: count),
+      effect.none(),
+    )
 
     // One listener per connection: moving the element stops the old one
     // before it starts another, so a page that replaced the element leaves
@@ -1431,16 +1453,35 @@ fn tab_button(model: Model, tab: Tab) -> Element(Msg) {
     True -> "true"
     False -> "false"
   }
-  let badge = case tab, shell_rule.badge(model.needing) {
-    shell_rule.Strands, Some(count) -> [
+  let badge = case
+    tab,
+    shell_rule.badge(model.needing),
+    shell_rule.badge(model.proposals)
+  {
+    shell_rule.Strands, Some(count), _ -> [
       html.span([attribute.class("tab-badge"), attribute.aria_hidden(True)], [
         html.text(count),
       ]),
     ]
-    _, _ -> []
+
+    // The Session tab holds the proposals review, so its badge is the pending
+    // count and the tab press is the link to it. It is drawn in the quiet
+    // signal colour, not the danger colour of a strand that needs a decision.
+    shell_rule.Session, _, Some(count) -> [
+      html.span(
+        [
+          attribute.class("tab-badge"),
+          attribute.class("tab-badge-proposals"),
+          attribute.aria_hidden(True),
+        ],
+        [html.text(count)],
+      ),
+    ]
+    _, _, _ -> []
   }
   let words = case tab {
     shell_rule.Strands -> shell_rule.strands_words(model.needing)
+    shell_rule.Session -> proposals_rule.session_words(model.proposals)
     _ -> shell_rule.tab_label(tab)
   }
   html.button(

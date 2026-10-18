@@ -1,16 +1,25 @@
 #!/usr/bin/env bash
 # check_affected.sh — run the gates a change can affect, and no others.
 #
-# Usage: scripts/check_affected.sh [base]   (default: origin/main)
+# Usage: scripts/check_affected.sh [--select | --changed] [base]
+#        (base defaults to origin/main)
 #
-# scripts/affected.py decides the gates from the diff between the merge
-# base of <base> and the working tree, and prints them as a preparation
-# step and lanes; this script runs them and reports each. It runs no test
+# lint/affected (packages/lint) decides the gates from the diff between the
+# merge base of <base> and the working tree, and prints them as a
+# preparation step and lanes; this script runs them and reports each. It
+# runs no test
 # itself: a lane is `make <static gates>`, `make model-check`, the helper's
 # `--self-test`, or `scripts/check.sh <packages>`, which is the body of
 # `make check-<pkg>` and `make check`. When the selector chooses the full
 # check, the one package lane is `scripts/check.sh` with no arguments,
 # which is exactly `make check`.
+#
+# Git lives here and nowhere in the selector. This script runs `git ls-files`
+# and the merge-base diff and hands both to `lint/affected_cli` as files, so
+# the selector is a pure function of them. `--select` stops after printing
+# the selection and its reasons, which is `make affected`; `--changed`
+# prints only the changed paths, which is what the scratch-repository test
+# of the diff drives.
 #
 # Order. The static lane runs first and alone. `make lint` builds and runs
 # packages/lint, and a `lint` package lane would compile the same tree at
@@ -21,14 +30,14 @@
 #
 # Preparation follows, serially, with the targets scripts/signoff.sh's
 # preparation uses, narrowed to what the selected lanes need
-# (scripts/affected.py, prep): `binaries` for the helper and the tui
+# (lint/affected, prep): `binaries` for the helper and the tui
 # shipment, `codemode-seed` when a code-mode suite is selected, and
 # `server-shipment` (bin/loomd) when `client` or `tui` is. Several suites
 # feature-detect those prerequisites and print SKIP without them, so
 # without the preparation they would pass having run nothing.
 #
 # The remaining lanes then run concurrently. Their package grouping is the
-# signoff's (scripts/affected.py, LANES), so no two lanes compile the same
+# signoff's (lint/affected, lane_groups), so no two lanes compile the same
 # package tree, and packages that the signoff runs concurrently are the
 # only ones run concurrently here. The environment is the signoff's:
 # LOOM_BOOTSTRAP_E2E_SERVER names bin/loomd for the shipped fixtures and
@@ -55,11 +64,58 @@ set -uo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
+mode=run
+case ${1:-} in
+--select | --changed)
+	mode=${1#--}
+	shift
+	;;
+esac
 base="${1:-origin/main}"
 retry=.github/scripts/hex_retry.sh
 
-python3 scripts/affected.py --base "$base" || exit $?
-plan="$(python3 scripts/affected.py --base "$base" --format lanes)" || exit $?
+# The paths changed since the merge base of <base> and HEAD, one per line,
+# sorted and unique. The diff is against the working tree, so staged,
+# unstaged and untracked files count as well as commits. Renames are split
+# into a deletion and an addition so that both packages are seen.
+changed_paths() {
+	local merge_base
+	merge_base="$(git merge-base "$base" HEAD)" || return $?
+	{
+		git diff --name-only --no-renames "$merge_base" || return $?
+		git ls-files --others --exclude-standard || return $?
+	} | LC_ALL=C sort -u
+}
+
+if [ "$mode" = changed ]; then
+	changed_paths
+	exit $?
+fi
+
+# Run the selector over git's answers. The last line of its output is
+# `# ok` or `# error <why>` (a Gleam program run with `gleam run` cannot set
+# an exit status), so the report is everything above an `# ok` line.
+inputs="$(mktemp -d)"
+trap 'rm -rf "$inputs"' EXIT
+select_gates() {
+	local format=$1 output last
+	git ls-files >"$inputs/tracked" || return $?
+	changed_paths >"$inputs/paths" || return $?
+	output="$(cd packages/lint && gleam run -m lint/affected_cli -- \
+		--root "$root" --tracked "$inputs/tracked" --paths "$inputs/paths" \
+		--format "$format" 2>"$inputs/stderr")"
+	last=${output##*$'\n'}
+	if [ "$last" != "# ok" ]; then
+		cat "$inputs/stderr" >&2
+		printf 'affected selection failed: %s\n' "$last" >&2
+		return 1
+	fi
+	printf '%s\n' "${output%$'\n'"$last"}"
+}
+
+select_gates text || exit $?
+[ "$mode" = select ] && exit 0
+plan="$(select_gates lanes)" || exit $?
 
 logs="$root/build/affected"
 rm -rf "$logs"

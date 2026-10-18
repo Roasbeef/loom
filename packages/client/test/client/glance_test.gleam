@@ -9,7 +9,7 @@
 //// live for the length of a test, and the summarizer is a script that
 //// records each request it is sent.
 
-import client/distill
+import client/auxiliary
 import client/glance
 import client/glancepace
 import core/accounting
@@ -188,9 +188,9 @@ pub fn a_failed_glance_retains_one_request_row_without_a_fact_test() {
   let report = accounting.from_usage(first) |> accounting.append(final)
   let assert Ok(rig) =
     a_rig_with_summarizer(glancepace.default_pace, fixed_clock(), fn(asked) {
-      distill.Distiller(ask: fn(request) {
+      auxiliary.Summarizer(ask: fn(request) {
         process.send(asked, request)
-        Error(distill.Failure("failed", report))
+        Error(auxiliary.Failure("failed", report))
       })
     })
     as "The glance rig must boot."
@@ -236,7 +236,7 @@ fn a_rig(
 fn a_rig_with_summarizer(
   pace: glancepace.Pace,
   loop_clock: clock.Clock,
-  summarize: fn(Subject(String)) -> distill.Distiller,
+  summarize: fn(Subject(String)) -> auxiliary.Summarizer,
 ) -> Result(Rig, String) {
   use opened <- result.try(
     session.open_memory(fixed_clock())
@@ -292,8 +292,8 @@ fn a_rig_with_summarizer(
 
 // Titles the task on a first request and says something new on each later
 // one, so a test can tell a refresh from the first answer.
-fn scripted(asked: Subject(String)) -> distill.Distiller {
-  distill.Distiller(ask: fn(request) {
+fn scripted(asked: Subject(String)) -> auxiliary.Summarizer {
+  auxiliary.Summarizer(ask: fn(request) {
     process.send(asked, request)
     let text = case string.contains(request, "TITLE:") {
       True ->
@@ -301,7 +301,7 @@ fn scripted(asked: Subject(String)) -> distill.Distiller {
         <> "NOW: Reading fundeeProcessOpenChannel in manager.go"
       False -> "NOW: Editing funding.go"
     }
-    Ok(distill.Answer(
+    Ok(auxiliary.Answer(
       text:,
       usage: accounting.unknown_usage(usage_evidence.Other),
       accounting: accounting.from_usage(accounting.unknown_usage(

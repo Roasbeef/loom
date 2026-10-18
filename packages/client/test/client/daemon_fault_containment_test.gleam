@@ -111,10 +111,12 @@ fn assembly(
         ))
         as "the independent projection directory exists"
       domain_service.build(
-        domain_service.Config(
-          history: history.SharedConfig(selected.index_path, sources, 5000, 100),
-          maintenance: fn(_) { Ok(None) },
-        ),
+        domain_service.Config(history: history.SharedConfig(
+          selected.index_path,
+          sources,
+          5000,
+          100,
+        )),
         owner,
       )
     },

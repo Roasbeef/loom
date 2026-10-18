@@ -340,7 +340,7 @@ fn write_configuration(path, escript, script, marker, release) -> Nil {
   let assert Ok(Nil) =
     simplifile.write(
       path,
-      "[models.fixture]\ndialect = \"anthropic\"\napi_key_env = \"UNUSED\"\nmodel_id = \"fixture\"\ncontext_window = 100000\nmax_output_tokens = 4096\n[roles]\nmain = [\"fixture\"]\n[memory]\ndistill = \"off\"\n[mcp.identity_barrier]\ncommand = ["
+      "[models.fixture]\ndialect = \"anthropic\"\napi_key_env = \"UNUSED\"\nmodel_id = \"fixture\"\ncontext_window = 100000\nmax_output_tokens = 4096\n[roles]\nmain = [\"fixture\"]\n[mcp.identity_barrier]\ncommand = ["
         <> command
         <> "]\n",
     )

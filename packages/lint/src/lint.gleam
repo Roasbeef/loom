@@ -21,16 +21,25 @@
 //// measure before gating on it — the same staging `scripts/doc_check.sh`
 //// went through, and for the same reason
 //// (docs/design-notes/four-decisions.md, D2). R0, R2, R4, R6, R10, R13, R14,
-//// R15 and R16 have made that argument and gate; R1, R5, R9 and R11 have a
+//// R15, R16, R19 and R20 have made that argument and gate; R1, R5, R9 and R11 have a
 //// census to clear first; R3, R8, R17 and R18 over-report by construction
 //// and warn forever. The
 //// decision is data, in `finding.error_by_default`, which is where each
 //// argument is written down; `lint/cli`'s `--error` promotes one for a
 //// single run.
 ////
+//// # Two rules read `test/`
+////
+//// Every rule above R19 is about a package's `src/`, and `lint/cli` still
+//// skips `test/` for them unless `--tests` is given. R19 (a SKIP printed to
+//// stdout, `check_tests`) and R20 (a test reaching `lustre` through its
+//// import graph, `lint/test_imports`) are the exception: they are about what
+//// a test does, so they run over `test/` in every default run and nowhere
+//// else.
+////
 //// # Layout is not in the tree
 ////
-//// Three of the nineteen rules are not questions about the AST. R9 reads
+//// Three of the twenty-one rules are not questions about the AST. R9 reads
 //// annotations, which `glance` does carry; R10 and R11 ask where the blank
 //// lines and comments *are*, which it throws away entirely. `lint/layout`
 //// is that half: it reads the tree for where each sibling begins and the
@@ -65,6 +74,7 @@ import lint/policy.{type Eager, type Policy}
 import lint/portable
 import lint/qualified
 import lint/scan.{type Raw, Raw}
+import lint/skip_stdout
 import lint/source
 import lint/spine
 import lint/state_first
@@ -166,6 +176,41 @@ pub fn check_with(
         |> list.append(orientation)
       locate(path, lines.starts, all)
     }
+  }
+}
+
+/// Lint one *test* source with the rules that are scoped to `test/`: today R19,
+/// a SKIP diagnostic printed to stdout. Every other rule keeps the scope it
+/// had, so `check_with` does not run this and `lint/cli` decides which of the
+/// two a path gets (R20 is a whole-package walk, `lint/test_imports`).
+///
+/// A test that will not parse is one R0: the test-scoped rules cannot judge
+/// it, and silence about a file nothing could read is the failure R0 exists
+/// to prevent.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let code = "import gleam/io
+/// pub fn f_test() { io.println(\"SKIP f: no helper\") }
+/// "
+/// let assert [found] = lint.check_tests("packages/x/test/f_test.gleam", code)
+/// assert found.rule == finding.StdoutSkip
+/// ```
+///
+pub fn check_tests(path: String, code: String) -> List(Finding) {
+  // R19 can only fire on a source that contains the marker, and nine hundred
+  // test files read the rule is wrong about almost none of them: a text
+  // search is a cheap proof that parsing would find nothing, and it spares
+  // every other test the parse.
+  case string.contains(code, "SKIP") {
+    False -> []
+    True ->
+      case glance.module(code) {
+        Error(error) -> [parse_finding(path, code, error)]
+        Ok(module) ->
+          locate(path, source.line_starts(code), skip_stdout.findings(module))
+      }
   }
 }
 

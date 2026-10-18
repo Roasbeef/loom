@@ -94,8 +94,8 @@ numeric gap does not by itself mean an event was lost.
 Source: (`client/gateway.gleam:129-134`).
 
 `snapshot`, `snapshot_begin`, `snapshot_chunk`, `snapshot_end`,
-`stream_delta`, `tool_output`, `block_summary`, `goal_changed`, `mutation_outcome`,
-`presence` and `error` carry no `seq`.
+`stream_delta`, `tool_output`, `block_summary`, `goal_changed`, `proposals_changed`,
+`mutation_outcome`, `presence` and `error` carry no `seq`.
 
 ### 1.5 Forward compatibility
 
@@ -1041,7 +1041,7 @@ not an error. The durable rows are removed before the files, so an
 interrupted delete leaves files that nothing refers to rather than a
 registration whose database is gone.
 
-Distilled memory is not removed. The memory store, its index and any
+Remembered memory is not removed. The memory store, its index and any
 shared-history rows derived from the session belong to the domain, which
 is the workspace's and outlives any one conversation that fed it. A
 client MUST NOT describe this command as erasing what the session
@@ -2037,7 +2037,7 @@ single strand's chain. Source: (`client/gateway.gleam:1378-1381`) and
 (`storage/snapshot.gleam:42`).
 
 A `session` that is not this attachment's own is refused with the code
-`wrong_session`. Source: (`client/gateway.gleam:2200`).
+`wrong_session`. Source: (`client/gateway.gleam:2271`).
 
 `from_seq` exists in the command's decoder for the in-process host
 fixture, where it selects a resume reply. Over the authenticated
@@ -2983,6 +2983,129 @@ cancels and forgets the attachment's history. See
 limits and lifecycle, and [side queries](architecture/side-queries.md) for the
 implementation boundary.
 
+#### 4.9.32 `proposals_get` and `proposal_decide`
+
+The standing rules a model has suggested with its `propose` tool, and a
+person's decisions on them. A proposal is queued and waits; nothing is written
+until a person approves it, and what an approval writes is `loom-rules.md`, a
+file the host owns beside the domain's memory store, which later sessions carry
+in their system prompt. The model never names the file and the workspace's
+`AGENTS.md` and `CLAUDE.md` are never written. See
+[protocol 086](../protocol-change/086-memory-proposals.md).
+
+Both commands are the daemon owner's alone and neither is a read an observer
+may make: the proposals are model-authored text a person is about to turn into
+a rule, so an observer attachment or an authenticated member is refused with
+`forbidden`.
+
+```json
+{"v":2,"id":66,"cmd":"proposals_get","body":{}}
+{"v":2,"reply_to":66,"event":"snapshot","body":{"mode":"proposals","board":{"proposals":[{"id":"prop-0123456789","kind":"rule","target":"loom-rules.md","base_digest":"cbf29ce484222325-0","old":"","new":"Run make check before pushing.","rationale":"it failed twice","source":{"session":"sess-01","entry":"0198c0de-0000-7000-8000-000000000003"},"created_ms":1790000000000,"state":"pending"}],"pending":1,"limit":64}}}
+```
+
+The board holds the proposals the host keeps, newest first (at most 64 pending
+and the newest 100 decided), the number of all proposals that are `pending`, and
+`limit`, the most that may be pending at once. The encoded board is kept within
+48,000 bytes by leaving out the oldest decided rows first and then the oldest
+pending ones. `omitted`, an integer, counts the rows left out; it is absent when
+none were, and a client that does not know it MAY ignore it. A client that shows
+the list SHOULD say that `omitted` older proposals are not shown when it is
+positive. The queue is a reserved fact prefix outside the snapshot's captures, so
+a full queue never prevents an attach. A row is:
+
+| Field | Type | Presence | Meaning |
+|---|---|---|---|
+| `id` | string | required | `prop-` and ten lower-case hexadecimal digits. |
+| `kind` | string | required | `rule`. A client MUST show a kind it does not know as unknown rather than refuse the board. |
+| `target` | string | required | The rules file's name, `loom-rules.md`. It is a name and never a path; the host owns where the file is. |
+| `base_digest` | string | required | The digest of the rules file's exact text when the proposal was judged. An approval is applied only to a file that still has it. |
+| `old` | string | required | Existing rule text to replace, which matched the file exactly once when proposed. Empty means the proposal appends `new` as a new rule. |
+| `new` | string | required | The rule text, at most 2048 bytes. |
+| `rationale` | string | required | Why, in the model's words, for the reviewer. |
+| `source` | object | required | `{session, entry}`: the proposing session's id, and `entry`, the id of the entry that prompted the proposal, which is absent when the model named none. |
+| `created_ms` | integer | required | Milliseconds since the epoch. |
+| `state` | string | required | `pending`, `approved`, `rejected` or `stale`. Only `pending` can change. |
+
+```json
+{"v":2,"id":67,"cmd":"proposal_decide","body":{"id":"prop-0123456789","decision":"approve"}}
+```
+
+| Field | Type | Presence | Meaning |
+|---|---|---|---|
+| `id` | string | required | A proposal's `id`. |
+| `decision` | string | required | `approve` or `reject`. Anything else is `bad_request`. |
+
+The reply is the `proposals` snapshot as it now stands, so one round trip both
+acts and redraws. A rejection records the decision and writes nothing. An
+approval applies the exact edit to the rules file atomically if, and only if,
+the file still has the proposal's `base_digest` and `old` still matches exactly
+once; otherwise nothing is written and the proposal comes back `stale`. A stale
+proposal is an answer, not an error. Errors: `bad_request` for an id that names
+no proposal, `conflict` when the proposal was decided already or another
+decision settled it first (so a second approval applies nothing twice),
+`internal` when the rules file could not be read or written, in which case the
+proposal stays pending, and `unsupported` for a host with no proposal queue.
+
+An approved rule reaches sessions opened afterwards and not the running one,
+because a session's system prompt is pinned for its life.
+
+#### 4.9.33 `memory_get`
+
+A read-only snapshot of what the daemon remembers for the session's workspace
+and what each run receives of it: the effective `[memory] inject` mode, the
+size of each file a run may read, the newest typed notes, the approved rules,
+and how many proposals wait. Nothing here changes anything. A note's body is
+not in the board; the model reads one with `history_search kind=note`. See
+[protocol 087](../protocol-change/087-memory-overview.md).
+
+The command is the daemon owner's alone and is not a read an observer may
+make: the rows are model-authored text and the rules are standing instructions,
+so an observer attachment or an authenticated member is refused with
+`forbidden`. A host with no overview answers `unsupported`.
+
+```json
+{"v":2,"id":68,"cmd":"memory_get","body":{}}
+{"v":2,"reply_to":68,"event":"snapshot","body":{"mode":"memory","board":{"inject":"notes","receives":[{"file":"loom-rules.md","state":"injected","bytes":512},{"file":"loom-memory.notes","state":"injected","bytes":380}],"notes":{"state":"ok","total":2,"omitted":0,"rows":[{"kind":"decision","date":"2026-10-11","title":"Use CBOR","description":"wire format choice","legacy":false},{"kind":"fact","date":"2026-10-02","title":"the retry ladder lives in serve","description":"","legacy":true}]},"rules":{"state":"ok","total":1,"omitted":0,"rows":[{"id":"prop-0123456789","approved":"2026-10-11","session":"0198c0de-0000-7000-8000-000000000001","line":"Run make check before pushing."}]},"proposals":{"state":"ok","pending":1}}}}
+```
+
+| Field | Type | Presence | Meaning |
+|---|---|---|---|
+| `inject` | string | required | What `[memory] inject` selects: `off` or `notes`. A client MUST show a value it does not know as unknown. |
+| `receives` | array | required | The files a run may read: `loom-rules.md` and `loom-memory.notes`, in that order. |
+| `notes` | object | required | A section: the newest typed notes. |
+| `rules` | object | required | A section: the approved rules, newest first. |
+| `proposals` | object | required | `{state, pending}`, or `{state:"unavailable", reason}` when the queue could not be read. |
+
+A `receives` row is `{file, state, bytes}` and, for `unavailable`, a `reason`.
+`file` is a name and never a path. `bytes` is the file's size on disk, `0` when
+it does not exist. `state` is `injected` (every run reads it), `off` (it exists
+and `inject` is `off`), `missing` (not written yet) or
+`unavailable` (it exists and a run leaves it out, because it is over the size
+its reader refuses above or cannot be read).
+
+A section is `{state:"ok", total, omitted, rows}` or `{state:"unavailable",
+reason}`. A fault is never an empty section, so a client MUST NOT draw
+`unavailable` as "no rows". `total` counts what the store holds, `rows` is at
+most 50, and `omitted` is `total` less the rows listed; it is never absent and
+never silent. The board as a whole is at most 48,000 bytes, and rows are cut
+from the end of the longer list until it fits, each cut counted in `omitted`.
+
+A note row is `{kind, date, title, description, legacy}`. `date` is the UTC date
+the note was written. `legacy` is `true` for a note written before notes were
+typed: its title is its first words, its kind is `fact` and its description is
+empty. `title` is cut to 80 characters, `description` to 160, each on one line.
+A rule row is `{id, approved, session, line}`, read from the `### Rule <id>
+(approved <date>, from session <sid>)` headers the proposal queue writes;
+`line` is the rule's first line, cut to 200 characters. Text in the rules file
+outside any header is counted in its `bytes` and listed nowhere.
+
+The notes are counted up to the store's lifetime ceiling of 256, which is the
+most a read scans. The read takes no lease on the memory store, so it never
+waits on a `remember` call.
+
+No push announces a change to memory. A client that is showing the overview
+reads it when it opens and again no more than once a minute.
+
 ## 5. Events
 
 ### 5.1 Which events reach which client
@@ -2995,7 +3118,7 @@ Over the authenticated session transport a client sees:
   `permissions`, `queued_input`, `live_jobs`, `block_summaries`, `btw`, or pending `worktree_diff` /
   `context`;
 - pushed frames: `committed`, `stream_delta`, `tool_output`, `block_summary`, `goal_changed`,
-  `presence`, `snapshot` with mode `config` or final `worktree_diff` /
+  `proposals_changed`, `presence`, `snapshot` with mode `config` or final `worktree_diff` /
   `context`, and `error`;
 - refusals: `error` with `reply_to`.
 
@@ -3706,6 +3829,20 @@ edge is required to display a paused, limited or satisfied outcome.
 
 ---
 
+### 5.21 `proposals_changed`
+
+```json
+{"v":2,"event":"proposals_changed","body":{}}
+```
+
+The host pushes this to subscribed, authorized peers after a proposal is queued
+or decided (protocol-change/086). It carries no board, `reply_to` or `seq`;
+`proposals_get` remains the authoritative observation. A client that is showing
+the proposals SHOULD read them again, and repeated notifications may coalesce.
+A client with no proposals view MAY ignore it.
+
+---
+
 ## 6. Pushed frames and client obligations
 
 ### 6.1 What may arrive uncorrelated
@@ -4175,7 +4312,7 @@ below have not been edited.
 
 8. **Two operation phases are missing from the documented label set.**
    `packages/client/protocol.md` lists eight labels. The code also emits
-   `checkpoint` (`client/gateway.gleam:4092`) and `navigating`
+   `checkpoint` (`client/gateway.gleam:4176`) and `navigating`
    (`client/gateway.gleam:3052`).
 
 9. **The spec's control command list is incomplete.**

@@ -341,8 +341,18 @@ pub fn landed(
       Book(..book, streams: dict.delete(book.streams, generation)),
       [],
     )
-    Ok(Live(ending: Open, ..) as live) ->
-      consider(book, pace, generation, Live(..live, flight: Idle))
+    Ok(Live(ending: Open, ..) as live) -> {
+      let idle = Live(..live, flight: Idle)
+
+      // The ended request gives its slot back before the relaunch is
+      // weighed. `consider` counts slots from the book, so a book that still
+      // held this stream as asking would count the slot it just freed, and
+      // with every slot out the growth that arrived meanwhile would wait for
+      // the next fragment instead of coalescing into one relaunch here.
+      let book =
+        Book(..book, streams: dict.insert(book.streams, generation, idle))
+      consider(book, pace, generation, idle)
+    }
   }
 }
 

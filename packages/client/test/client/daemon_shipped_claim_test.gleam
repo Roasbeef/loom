@@ -96,10 +96,7 @@ fn exercise(server: String, directory: String, paths: endpoint.Paths) -> Nil {
   let assert Ok(Nil) = simplifile.create_directory_all(workspace)
 
   // A provider this drive never calls, so the daemon does not fall back to
-  // whatever model the environment names. Memory maintenance stays at its
-  // default on purpose: the reopen below builds a fresh domain whose first
-  // distillation pass harvests this very session, and the open must wait
-  // that harvest out rather than fail.
+  // whatever model the environment names.
   let configuration = directory <> "/fixture.toml"
   let assert Ok(Nil) =
     simplifile.write(

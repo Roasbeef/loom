@@ -103,6 +103,7 @@ written as a shell over a record of closures that `tools` declares and
 | `Jobs` | `tools/job` | `client/jobtools` | `job_*`, and `bash` with `mode: "background"` |
 | `History` | `tools/history` | `client/history` | `history_search` |
 | `Memory` | `tools/remember` | `client/memory` | `remember` |
+| `Proposals` | `tools/propose` | `client/proposals` | `propose` |
 | `Schedules` | `tools/schedule` | `client/scheduleseam` | `schedule_*` |
 | `Context` | `tools/context` | `client/checkpoint` | `context_remaining` |
 | `Advice` | `tools/advise` | `client/advisor` | `advise` |
@@ -228,7 +229,7 @@ pool). Each built-in tool belongs to one of them, and
 workspace runs `bash`, `grep`, `fs_read`, `fs_write`, `fs_edit`,
 `code_mode`, the three `job_*` tools and `working_directory`. The owner runs
 the agent family (with `todo`), `history_search`, `remember`, the three
-`schedule_*` tools, `context_remaining`, `load_skill`, the `peer_*` tools and
+`schedule_*` tools, `propose`, `context_remaining`, `load_skill`, the `peer_*` tools and
 `advise`. An extension's tool is in neither list: a session whose workspace
 shares the owner's VM runs it on the owner, as it always has.
 
@@ -477,8 +478,9 @@ model-authored code runs there, which is what Rule Zero requires.
 | `code_mode` | Submit a Gleam program; runs, launches, or interacts with a code-mode execution. | Shell in the harness; build and program jailed (hermetic build, satellite node) | `code-mode.md` |
 | `agent_spawn`, `agent_wait`, `agent_send`, `agent_note`, `agent_notes`, `agent_roster` | Spawn child strands, wait on them, message them, and read and write the blackboard. | Harness VM | `messaging.md` |
 | `job_poll`, `job_kill`, `job_send` | Read a background job's output, stop it, or write to its stdin. | Harness VM; the job's command runs jailed | `effects.md` §"Background jobs" |
-| `history_search` | Search the repository's full-text index of past sessions, or read one entry. | Harness VM | `events.md` §"Search" |
-| `remember` | Write one note into the repository's durable memory. | Harness VM | `memory.md` §"The `remember` door" |
+| `history_search` | Search the repository's full-text index of past sessions, or read one entry with up to five neighbours each side (`around`). Plain-words prefix queries by default (`syntax`: `raw` for FTS5), narrowed by `kind` and paged to older hits by `before`. Each hit names its session, entry, kind and UTC date; a search with no hits echoes the query and advises OR variants. | Harness VM | `events.md` §"Search" |
+| `remember` | Write one typed note (`title`, one-line `description`, `note`, `kind` of `feedback`, `fact` or `decision`) into the repository's durable memory; never asks the user. | Harness VM | `memory.md` §"The `remember` door" |
+| `propose` | Queue a suggested standing rule for a person to approve. Never blocks, never raises an approval, never writes a file. | Harness VM | `approvals.md` §"Proposals are not approvals" |
 | `context_remaining` | Report the calling strand's context window, usage, and next compaction boundary. | Harness VM | `compaction.md` §"Triggers and context introspection" |
 | `schedule_create`, `schedule_list`, `schedule_cancel` | Create, list, and cancel the model's scheduled heartbeats. | Harness VM | `automation.md` §"Scheduled heartbeats" |
 | `advise` | The advisor strand's verdict: `quiet`, `nudge`, or `block`, plus `continue` and `complete` for a goal feed. Active on the advisor strand only. | Harness VM | `advisor.md` |

@@ -195,8 +195,7 @@ Paths are relative to `src/`; `client/escalate` is
 - `client/system_prompt` assembles, renders and pins the system prompt.
 - `client/agency`, `client/codemode`, `client/history` and `client/memory`
   are the seams that give a model other agents, code mode, recall over the
-  repository's history, and memory that outlives a session;
-  `client/distill` is the pipeline that fills that memory.
+  repository's history, and memory that outlives a session.
 - `client/extension/*` is `loom ext`: installing, recording and dispatching
   extensions.
 - `client/daemon/ui_sessions`, `ui_http`, `ui_socket` and `ui_relay` are

@@ -80,7 +80,9 @@ The `sqlight` module is supplied by the `sqlight_loom` Hex package, whose
 The module API is unchanged; the upstream packages must not coexist with
 these forks because they define the same modules.
 
-- **Depends on**: `core` (ids, entries, registers, tx), `storage` (both
+- **Depends on** (tests also use `qcheck`, with the generators written
+  beside each property, and `statem` for the append-only projection
+  invariant in `projection_test`, whose turns shrink by deletion): `core` (ids, entries, registers, tx), `storage` (both
   backends and the handle), `machine` (register payload types and the total
   codecs), `gleam_erlang` (the owned connection's PID type). Note that the
   spec's DAG (§0.1) writes `C → A,B`; the machine

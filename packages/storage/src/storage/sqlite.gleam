@@ -1026,6 +1026,128 @@ pub fn read_entry(
   session session: ids.SessionId,
   entry entry: EntryId,
 ) -> Result(Entry, StorageError) {
+  use conn <- with_identified_source(path, session)
+  read_stored_entry(conn, entry)
+}
+
+/// Scans a session file's entries without acquiring or renewing a writer
+/// lease, after proving the file is the session the caller named.
+///
+/// It is `read_entry`'s read-only, identity-checked open with the entry scan
+/// in place of one lookup, so a reader that wants a bounded listing (the
+/// memory overview's newest notes) never delays a writer holding the lease.
+/// The scan is bounded by the query's own `limit`; the caller must set one.
+/// The host supplies the path; callers must never accept it from a model.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // sqlite.scan_entries_at(path: store, session: id, query: storage.entry_scan()
+/// //   |> storage.entry_limit(50))
+/// ```
+pub fn scan_entries_at(
+  path path: String,
+  session session: ids.SessionId,
+  query query: EntryScan,
+) -> Result(List(Entry), StorageError) {
+  use conn <- with_identified_source(path, session)
+  do_scan_entries(conn, query)
+}
+
+/// Lists a session file's register cells under one prefix without acquiring
+/// or renewing a writer lease, after proving the file is the session the
+/// caller named.
+///
+/// It is `scan_entries_at` for registers: the read-only, identity-checked
+/// open with `list_registers` in place of the entry scan, so a reader of a
+/// small keyed namespace (the proposal queue's listing) never delays or is
+/// delayed by the writer. A read can land between two commits of a writer, so
+/// it sees each cell as of some committed state and never part of one. The
+/// host supplies the path; callers must never accept it from a model.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // sqlite.list_registers_at(path: store, session: id,
+/// //   ns: register.FactCustom, prefix: Some("proposal/"))
+/// ```
+pub fn list_registers_at(
+  path path: String,
+  session session: ids.SessionId,
+  ns ns: RegisterNs,
+  prefix prefix: Option(String),
+) -> Result(List(#(String, Register)), StorageError) {
+  use conn <- with_identified_source(path, session)
+
+  // This connection owns no actor state, so its decode cache lasts only for
+  // this read and is discarded with the connection.
+  do_list_registers(conn, ns, prefix, register_cache.new())
+  |> result.map(fn(answer) { answer.0 })
+}
+
+/// The most neighbours `read_entries_around` returns on each side.
+pub const max_around = 5
+
+/// Reads one entry and up to `around` entries on each side of it in log
+/// (`seq`) order, under the same lease-free, identity-checked read as
+/// `read_entry`. The result is oldest first and includes the requested entry.
+/// `around` is clamped to `0..max_around`, so a negative request cannot
+/// become an unbounded SQL `LIMIT`. Neighbours are whatever the session
+/// committed next to the entry, on any branch, because the question is what
+/// was said around it rather than what its ancestors said.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // sqlite.read_entries_around(path: source, session: id, entry: entry_id, around: 2)
+/// ```
+pub fn read_entries_around(
+  path path: String,
+  session session: ids.SessionId,
+  entry entry: EntryId,
+  around around: Int,
+) -> Result(List(Entry), StorageError) {
+  use conn <- with_identified_source(path, session)
+  use centre <- result.try(read_stored_entry(conn, entry))
+  let width = int.clamp(around, min: 0, max: max_around)
+  use before <- result.try(neighbours(conn, centre.seq, "<", "DESC", width))
+  use after <- result.try(neighbours(conn, centre.seq, ">", "ASC", width))
+  Ok(list.append(list.reverse(before), [centre, ..after]))
+}
+
+// The entries on one side of `seq`, nearest first.
+fn neighbours(
+  conn: Connection,
+  seq: Int,
+  comparison: String,
+  direction: String,
+  width: Int,
+) -> Result(List(Entry), StorageError) {
+  use payloads <- result.try(
+    run(
+      conn,
+      "SELECT payload FROM entries WHERE seq "
+        <> comparison
+        <> " ?1 ORDER BY seq "
+        <> direction
+        <> " LIMIT ?2",
+      [sqlight.int(seq), sqlight.int(width)],
+      decode.at([0], decode.bit_array),
+    )
+    |> result.map_error(fail_to_storage_error),
+  )
+  list.try_map(payloads, fn(payload) {
+    entry_of_blob(payload) |> result.map_error(CorruptRow)
+  })
+}
+
+// Opens the host-supplied source read-only, proves it is the named session,
+// runs `body`, and closes the connection whatever `body` answers.
+fn with_identified_source(
+  path: String,
+  session: ids.SessionId,
+  body: fn(Connection) -> Result(value, StorageError),
+) -> Result(value, StorageError) {
   use Nil <- result.try(
     sqlite_policy.refusing_unreadable_path(path)
     |> result.map_error(BackendFault),
@@ -1040,26 +1162,32 @@ pub fn read_entry(
     sqlight.open("file:" <> encoded_path <> "?mode=ro&cache=private")
     |> result.map_error(fn(error) { BackendFault(describe_sqlight(error)) }),
   )
-  let outcome = read_identified_entry(conn, session, entry)
+  let outcome = {
+    use Nil <- result.try(check_identity(conn, session))
+    body(conn)
+  }
   let _closed = sqlight.close(conn)
   outcome
 }
 
-fn read_identified_entry(
+fn check_identity(
   conn: Connection,
   session: ids.SessionId,
-  entry: EntryId,
-) -> Result(Entry, StorageError) {
+) -> Result(Nil, StorageError) {
   use #(identity, _parent) <- result.try(
     read_identity(conn)
     |> result.map_error(fn(error) { BackendFault(string.inspect(error)) }),
   )
-  use Nil <- result.try(
-    case identity == Some(ids.session_id_to_string(session)) {
-      True -> Ok(Nil)
-      False -> Error(BackendFault("history source session identity mismatch"))
-    },
-  )
+  case identity == Some(ids.session_id_to_string(session)) {
+    True -> Ok(Nil)
+    False -> Error(BackendFault("history source session identity mismatch"))
+  }
+}
+
+fn read_stored_entry(
+  conn: Connection,
+  entry: EntryId,
+) -> Result(Entry, StorageError) {
   use entries <- result.try(do_get_entries(conn, [entry]))
   dict.get(entries, entry) |> result.map_error(fn(_) { UnknownEntry(entry) })
 }

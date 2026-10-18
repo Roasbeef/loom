@@ -103,7 +103,7 @@ credits or account charges. Actual allowance remains on ChatGPT's usage
 surface; Loom does not invent a credit conversion.
 
 Runtime persists one reserved usage row with terminal settlement or failure.
-Auxiliary distillation, glance, and block summaries record their aggregate
+Auxiliary requests such as the glance loop and block summaries record their aggregate
 report before using the result, including paid failures. Goals count uncached
 input plus output and fold cost evidence alongside their accounting cursor.
 Context and cache projections use the final observation rather than fallback

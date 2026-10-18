@@ -835,6 +835,39 @@ refusal settle that report only on its own correlated command reply.
 excluding a prompt already submitting or a running strand. The terminal
 wrapper calls this shared decision.
 
+`recall_view` is the single reader of a `history_search` result's `details`.
+The decoder is total, a malformed hit voids the record, and the hit text is
+drawn with the result speaker, never the Markdown detail speaker. `step_words`
+and `transcript_lines` both consume it.
+
+`composer.memory_context_lines` recognises two injectors, the notes index
+(`notes_attribution_lead` with `notes_fence`) and the digest a past release
+attached (`memory_attribution_lead` with `memory_fence`), which nothing writes
+now but sessions saved by that release still hold. A lead and a fence must be
+from the same injector.
+
+`proposals` decodes the `proposals_get` and `proposal_decide` board totally.
+The push `proposals_changed` only sets `Shared.proposals_refresh`, and
+`surfaces.service_proposals_read` sends the read on the next tick. A refusal is
+`proposals_notice`, never a transcript row.
+
+## Model test of the history window
+
+`test/history_view_property_test.gleam` drives `history_view` through `statem`
+over a store of one strand's records among other strands' (long runs of foreign
+sequences, so a page can find none of the strand's records). The model is the
+window and the scan as runs of sequences, advanced by a pure prediction; each
+primitive step is checked against it field by field and against laws read from
+the real states alone (a frozen reader's capture changes nothing, a late reply
+changes nothing, an accepted page lowers `before_seq`, a scan never touches the
+window, the real bounds of 600 records, 16 MiB, 4,096 records and 32 MiB hold).
+A light world reaches the record bounds and a heavy one the byte bounds, and
+scripted witnesses show that each bound is reached. `statem` is a dev
+dependency here; the source stays portable (`gleam build --target javascript`
+succeeds), but tests that mint entry ids with `core/ids` already fail under
+`--target javascript` (70 failures before this test, which fails there too; the
+cause was not investigated).
+
 ## Goal and held-input source navigation
 
 The scoped modules' `## Flow` comments name the local entrypoints and helper
@@ -982,3 +1015,11 @@ be asked for. The module is pure, and `client/deployment.candidates`, the termin
 `tui/deployment_view.candidates` and the web home's chooser all use it, so the three say
 one thing. The caller gives `serves` and `executor` in one vocabulary, keys or node
 names.
+
+## Memory overview (protocol 087)
+
+`session_view/memory_overview` is the total board decoder and the words both
+hosts share. `Shared` carries `memory`, `memory_refresh`, `memory_notice`,
+`memory_read_ms` and `memory_watch`. `surfaces.service_memory_read` is the 11th
+read in `service_reads` and re-reads a watched board once it is `backstop_ms`
+old.

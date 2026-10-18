@@ -162,11 +162,11 @@ pub fn accounting_details_keep_the_callers_fields_test() {
   let report = accounting.from_usage(first()) |> accounting.append(last())
   let details =
     accounting.details(report, [
-      #("phase", json.String("distillation")),
+      #("phase", json.String("glance")),
       #("other", json.Int(1)),
     ])
   let assert json.Object(fields) = details
-  assert list.key_find(fields, "phase") == Ok(json.String("distillation"))
+  assert list.key_find(fields, "phase") == Ok(json.String("glance"))
   assert list.key_find(fields, "other") == Ok(json.Int(1))
   let usage_row = row(accounting.total(report), Some(details))
   assert accounting.decode_row(usage_row) == Ok(report)

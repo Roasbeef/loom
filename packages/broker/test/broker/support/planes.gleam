@@ -6,17 +6,27 @@
 //// service, and a clock. This module builds them, and the small amount of
 //// scaffolding every such test wants: a call spec, a collector for a call's
 //// events, and a record of every helper the service borrowed.
+////
+//// A plane is also what a property test must not leak. A stateful property
+//// builds one per execution of a command list and again per shrink candidate,
+//// and a failing run stops partway through, so a test that builds a plane
+//// inline and stops it on the last line leaves one running for every failure.
+//// The shape that cannot is `statem`'s: `new_sut` builds the plane and
+//// `teardown` calls `stop` on every path, a failed or crashed execution
+//// included (`executor_property_test`, `leak_census_test`).
 
 import broker/broker.{type CallEvent}
 import broker/budget
 import broker/exec.{type Helper}
 import broker/executor
 import broker/policy
+import broker/support/bench_host
 import broker/token
 import core/clock.{type Clock}
 import core/ids
 import gleam/erlang/process.{type Subject}
 import gleam/list
+import statem
 import telemetry/log.{type Logger}
 
 /// One plane's parts.
@@ -180,10 +190,63 @@ pub fn start_scripted(size size: Int, script script: fn() -> Helper) -> Plane {
   start(size:, spawn: fn() { Ok(script()) }, clock: clock.fixed(at: 1000))
 }
 
+/// A `statem` shrink stop that says `StopShrinking` once `within_ms`
+/// milliseconds of monotonic time have passed since this call.
+///
+/// A stateful property shrinks by running real processes, and one failing
+/// candidate can wait out several poll deadlines, so shrinking by a count of
+/// executions cannot promise to finish before gleeunit kills the test. Call
+/// this when the test starts, so the deadline is the test's and not a
+/// candidate's, and pass the result to `statem.with_shrink_stop`. It is read
+/// between candidates, so a candidate already running is not interrupted and
+/// the total can exceed `within_ms` by that candidate's own cost.
+///
+/// ## Examples
+///
+/// ```gleam
+/// statem.default_config(seed: 7)
+/// |> statem.with_shrink_stop(planes.shrink_stop_after(within_ms: 30_000))
+/// ```
+pub fn shrink_stop_after(
+  within_ms within_ms: Int,
+) -> fn() -> statem.ShrinkStop {
+  let deadline_us = bench_host.now_us() + within_ms * 1000
+
+  fn() {
+    case bench_host.now_us() >= deadline_us {
+      True -> statem.StopShrinking
+      False -> statem.KeepShrinking
+    }
+  }
+}
+
 /// Stops the broker and asks the pool to retire every helper.
 pub fn stop(plane: Plane) -> Nil {
   broker.stop(plane.broker)
   exec.stop_pool(plane.pool)
+}
+
+/// Closes the service, stops the plane, and then reaps the pool.
+///
+/// `stop` only asks the pool to retire its helpers, and a pool holding a
+/// helper a fake cannot attest to a kill of waits for its owner to exit
+/// before it will. A property builds its plane in the test's own process,
+/// which outlives every execution, so without this each faulty execution
+/// would leave its pool, and the helpers linked to it, running until the
+/// test ends. The pool is unlinked first so that killing it does not take
+/// the test process with it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// planes.dismantle(plane)
+/// ```
+pub fn dismantle(plane: Plane) -> Nil {
+  let _verdict = executor.close(plane.service, draining: 400, helpers: 800)
+  stop(plane)
+  let pool = exec.pool_pid(plane.pool)
+  process.unlink(pool)
+  process.kill(pool)
 }
 
 /// Reads a call's events up to and including its settlement, waiting up to

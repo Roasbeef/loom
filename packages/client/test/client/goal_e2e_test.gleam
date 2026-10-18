@@ -33,13 +33,13 @@ import client/advisor
 import client/advisorslice
 import client/catalog
 import client/codemode
-import client/distillpass
 import client/gateway
 import client/goal_pending
 import client/goalloop
 import client/goalstate
 import client/internal/ffi_os
 import client/jobs
+import client/memory_config
 import client/protocol
 import client/retryconf
 import client/schedule
@@ -1172,7 +1172,7 @@ fn settings(root: String, script: Subject(ScriptMessage)) -> serve.Settings {
     jobs_policy: jobs.default_policy,
     retry_policy: retryconf.default_policy,
     deactivated_tools: [],
-    memory: distillpass.no_pass(),
+    memory: memory_config.default_options(),
     tools: catalog.default_tools(),
     advisor: Some(advisor.Settings(
       model: machine_strand.ModelIdentity(
