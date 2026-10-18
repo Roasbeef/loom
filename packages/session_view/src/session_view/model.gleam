@@ -87,6 +87,7 @@ import session_view/notes_view
 import session_view/protocol
 import session_view/queue_request
 import session_view/remembered
+import session_view/remote_transcript
 import session_view/remote_usage
 import session_view/reviewer_status
 import session_view/session_channel
@@ -212,6 +213,10 @@ pub type Shared(socket, recorder, source, replay_source) {
     clock_offset: Option(Int),
     /// Server-observed current context and independent inspector state.
     context: context_view.State,
+    /// The one open peek at a remote child's transcript (protocol-change/090),
+    /// `Closed` when there is none. It is attachment state: the page is read
+    /// for whoever asked and is never part of a capture.
+    peek: remote_transcript.State,
     /// Attachment-local side answers, excluded from transcript projection.
     btw: btw.State,
     /// Attachment-local terminal result provenance.

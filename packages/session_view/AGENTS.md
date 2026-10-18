@@ -890,6 +890,33 @@ orchestrator, as the full snapshot's optional `remote_usage` list carries it.
 entry for a status bar and sits apart from `remote_usage` because it needs
 `agent_roster.count_label`, which is above the protocol in the import graph.
 
+## Remote children on the strip, and their transcripts (protocol-change/090)
+
+`remote_agent.RemoteAgent` is one child on another orchestrator as the
+`remote_children` snapshot carries it: id (its strand name there), parent,
+orchestrator, `Standing`, title, summary, tokens, model and `age_ms`.
+`decode_all` is bounded (64 entries, 2048 bytes a string) and total.
+`protocol.RemoteChildrenSnapshot` is pushed and lane-routed as `Auxiliary`, and
+`event_fold` folds it into the roster with `agent_roster.observe_remote`, which
+keeps the list and the host clock at its arrival. `agent_roster.remote_rows`
+turns each entry into an `agent_view.Row` whose new `placement` is the
+orchestrator (`remote_row`); a placed `Line` carries the glance's tokens and
+`age_s`, and `placed_name` and `seen_words` are the words both hosts draw
+(`<child> @ <orchestrator>`, `seen 2m 05s ago` from `stale_after_s`).
+`remote_named` finds a child by its short or whole name.
+
+`remote_transcript` is a page of a remote child's branch: `page_of` (the box
+cuts it, at most 50 entries and 256 KiB of encoded entries, an oversized entry
+omitted, `next` the cursor), `encode` and `decode` (total, both hops),
+`decode_observation` for the `child_history` board, the host's one peek
+(`State`: `Closed`, `Loading`, `Shown`, `Unavailable`; `open`, `sent`,
+`receive`, kept as `Shared.peek`), and `said`/`lines`, the words drawn as plain
+text. `strand_framing.transcript_head`/`transcript_foot` frame a page.
+`command.Peek(child)`/`PeekClose` (`/peek`, `/peek close`) and
+`commands.peek` open one and send `protocol.child_history`; `session_channel`
+treats `child_history` as a read. Tests: `agent_roster_test`,
+`remote_transcript_test`.
+
 ## Usage projection (protocol 081)
 
 `protocol.UsageChanged` separates aggregate usage from `last_usage`. The

@@ -17,6 +17,8 @@ fn line(status: agent_view.Status, text: String, elapsed: Option(Int)) -> Line {
     title: "",
     elapsed_s: elapsed,
     tokens: None,
+    placement: None,
+    age_s: None,
   )
 }
 

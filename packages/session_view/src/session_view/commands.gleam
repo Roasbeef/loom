@@ -52,6 +52,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import session_view/agent_roster
 import session_view/approval
 import session_view/btw
 import session_view/command
@@ -69,6 +70,7 @@ import session_view/operator
 import session_view/outbound
 import session_view/pasted_image
 import session_view/protocol
+import session_view/remote_transcript
 import session_view/session_channel
 import session_view/shared_set
 import session_view/surfaces
@@ -414,6 +416,40 @@ pub fn control(
   }
 }
 
+/// Opens a peek at a remote child's transcript and asks for its newest page
+/// (protocol-change/090).
+///
+/// The child is found in the roster's list of remote children, by the name
+/// the strip shows or by its whole strand name, so a name that is no remote
+/// child of this session sends nothing and says so. The page is a read: an
+/// observer's attachment may ask for it, and the daemon asks the other
+/// orchestrator, whose spawner table decides whether it is answered.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // commands.peek(shared, "build-turn-1")
+/// ```
+pub fn peek(
+  shared: Shared(socket, recorder, source, replay_source),
+  child: String,
+) -> Shared(socket, recorder, source, replay_source) {
+  case agent_roster.remote_named(shared.roster, child) {
+    Error(Nil) ->
+      session_model.append_error(
+        shared,
+        "no child of this session on another orchestrator is named " <> child,
+      )
+    Ok(agent) ->
+      Shared(
+        ..shared,
+        peek: remote_transcript.open(agent.id, agent.orchestrator),
+      )
+      |> outbound.send_frame(protocol.child_history(shared.next_id, agent.id, 0))
+      |> session_model.invalidate_frame
+  }
+}
+
 /// Submits a draft that parsed as a session command.
 ///
 /// A mutation the attachment cannot accept is refused before encoding, and
@@ -512,6 +548,10 @@ fn dispatch(
   case command {
     command.BtwClose ->
       Shared(..cleared, btw: btw.State(..cleared.btw, visibility: btw.Hidden))
+      |> session_model.invalidate_frame
+    command.Peek(child) -> peek(cleared, child)
+    command.PeekClose ->
+      Shared(..cleared, peek: remote_transcript.Closed)
       |> session_model.invalidate_frame
     command.Btw(action) -> {
       let owner = session_model.queue_owner(cleared)
@@ -737,6 +777,8 @@ fn submit_with_images(
     command.Empty | command.Prompt(_) -> send_image_prompt(shared, draft)
     command.Btw(_)
     | command.BtwClose
+    | command.Peek(_)
+    | command.PeekClose
     | command.Model(_)
     | command.ProfileShow
     | command.ProfileSelect(_)

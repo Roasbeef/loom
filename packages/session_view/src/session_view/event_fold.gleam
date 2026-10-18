@@ -86,6 +86,7 @@ import session_view/operator
 import session_view/outbound
 import session_view/protocol.{Strand}
 import session_view/queue_request
+import session_view/remote_transcript
 import session_view/shared_set
 import session_view/stream_identity
 import session_view/surfaces
@@ -257,6 +258,20 @@ pub fn apply_event(
         ),
       )
       |> session_model.invalidate_frame
+    protocol.RemoteChildrenSnapshot(children:) ->
+      shared_set.roster(
+        shared,
+        agent_roster.observe_remote(
+          shared.roster,
+          children,
+          shared.stamp.now_ms,
+        ),
+      )
+    protocol.ChildHistorySnapshot(observation) ->
+      Shared(
+        ..shared,
+        peek: remote_transcript.receive(shared.peek, observation),
+      )
     protocol.ContextSnapshot(observation) ->
       shared_set.context(
         shared,
@@ -515,6 +530,8 @@ pub fn apply_event(
     | protocol.NotesSnapshot(..)
     | protocol.QueuedInputSnapshot(..)
     | protocol.ContextSnapshot(..)
+    | protocol.RemoteChildrenSnapshot(..)
+    | protocol.ChildHistorySnapshot(..)
     | protocol.BtwSnapshot(..)
     | protocol.WorktreeSnapshot(..)
     | protocol.LiveJobsSnapshot(..)

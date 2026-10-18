@@ -47,6 +47,7 @@ fn agent(id: String, status: agent_view.Status, activity: String) {
     model: "moonshotai/Kimi-K3",
     recent: [],
     decision: "",
+    placement: None,
   )
 }
 
@@ -92,6 +93,8 @@ fn roster() -> agent_roster.Roster {
       list.map(figures, fn(entry) { #(entry.0, #("op-" <> entry.0, entry.2)) }),
     ),
     now_ms: now,
+    remote: [],
+    remote_at_ms: 0,
   )
 }
 
@@ -263,7 +266,7 @@ pub fn navigation_follows_the_drawn_order_test() {
 
 fn strip_lines() -> List(agent_roster.Line) {
   let line = fn(id, name, status, text, elapsed, tokens) {
-    agent_roster.Line(id, name, status, text, "", elapsed, tokens)
+    agent_roster.Line(id, name, status, text, "", elapsed, tokens, None, None)
   }
   [
     line(
