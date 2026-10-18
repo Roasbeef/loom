@@ -813,6 +813,7 @@ still be running.
 | `token_budget_per_day` | integer | none (unmetered) | at least 1 | The tokens, input plus output, that every child of this spawner may use over a rolling day of 24 hours. A spawn is refused with `token_budget_per_day` named once the day's total has reached it. Children already running are not stopped by it. |
 | `child_token_budget` | integer | none (unmetered) | at least 1 | The tokens one child may use. A child is stopped, with its outcome recorded as spent, after the request that takes it to the budget, so it can overshoot by one request. |
 | `max_per_day` | integer | none (unmetered) | at least 1 | The spawns admitted for this spawner over a rolling day. A new spawn is refused with `max_per_day` named once the day's count has reached it. A resent spawn that finds its child already started is answered with that child and is not counted. |
+| `transcript` | string | `"hidden"` | `"visible"` or `"hidden"` | Whether the spawning orchestrator may read its children's transcripts here, one bounded page at a time (protocol-change/090). With `"hidden"` a request for one is refused and the spawner sees a child's result, notes and glances and nothing of its working. The transcript is recorded on this machine and may hold what its tools returned, so it is this daemon's owner who allows it. |
 
 ## Provisioning a deployment
 
