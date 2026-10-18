@@ -71,8 +71,28 @@ pub fn findings(
   policy: Policy,
   own_path: String,
 ) -> List(Raw) {
+  findings_with_doc(
+    module,
+    code,
+    module_doc.lines(code),
+    lines,
+    policy,
+    own_path,
+  )
+}
+
+/// `findings`, taking the already-lexed module doc lines so a caller running
+/// several orientation rules over one file lexes `////` comments once.
+pub fn findings_with_doc(
+  module: glance.Module,
+  code: String,
+  doc: List(DocLine),
+  lines: Lines,
+  policy: Policy,
+  own_path: String,
+) -> List(Raw) {
   let _ = own_path
-  case module_doc.section(module_doc.lines(code), heading) {
+  case module_doc.section(doc, heading) {
     Ok(section) -> check_section(module, section)
     Error(Nil) -> missing(code, lines, policy)
   }
