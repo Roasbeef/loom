@@ -1505,6 +1505,18 @@ one row for each orchestrator (`remote_usage_words.entry`, text nodes). `panel`
 is `panel_with_remote` with no entries, and `component.heading` passes
 `model.shared.remote_usage`.
 
+## Remote children and the peek (protocol-change/090)
+
+`component.strip_of` lists `agent_roster.remote_rows` after the session's rows,
+and `view/strip` names a placed card `<child> @ <orchestrator>` with a quiet
+`chip-seen` line once its glance is a minute old. `focus_at` sends a remote
+child's card to `peek_at`, which runs `command.Peek` through `commanded` as a
+control (`msg.Control`), and every other card to `focus_strand_at` after
+closing any peek. `detail` draws `view/peek` while `shared.peek` is open: the
+strand view's back link, the framing lines, and each entry's speaker and words
+as text nodes (`peek-*` classes). No new event class, path, scope or CSP change.
+Tests: `remote_peek_test`.
+
 ## Model profiles in the new-session forms (protocol 076)
 
 `Start.profiles` is the list of profile names the daemon's configuration defines,

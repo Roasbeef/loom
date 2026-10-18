@@ -115,7 +115,9 @@
 ////    then `open` starts the transport and `arm` the deadline timer.
 //// 2. `update` receives one `Msg`. `Opened` starts the lane through
 ////    `session_channel.start`, `Arrived` and `Ticked` run the shared step, and
-////    `OlderRequested` and `FocusRequested` go to `older_at` and `focus_at`.
+////    `OlderRequested` and `FocusRequested` go to `older_at` and `focus_at`,
+////    which hands a remote child's card to `peek_at` (protocol-change/090)
+////    and every other card to `focus_strand_at`.
 //// 3. `stepping` folds the messages through `step.update` and collects the
 ////    effects each decided, then calls `finished`.
 //// 4. `finished` ends every message: `settled` takes what the step left,
@@ -176,6 +178,7 @@ import session_view/outbound
 import session_view/pasted_image
 import session_view/protocol
 import session_view/remembered as kept
+import session_view/remote_transcript
 import session_view/reviewer_status
 import session_view/session_channel
 import session_view/session_summary
@@ -224,6 +227,7 @@ import web_view/view/live
 import web_view/view/notes as notes_panel
 import web_view/view/nudges
 import web_view/view/panel
+import web_view/view/peek
 import web_view/view/peer_links as peer_links_view
 import web_view/view/queue_input
 import web_view/view/rename as rename_view
@@ -3906,8 +3910,11 @@ fn restripped(model: Model(socket)) -> Model(socket) {
 }
 
 fn strip_of(shared: Session(socket)) -> strip.Strip {
-  let chips =
-    agent_roster.chips(shared.roster, shared.agent_rows, shared.active_strand)
+  // Children on other orchestrators follow the session's own strands, from
+  // the daemon's list of the session's stubs (protocol-change/090).
+  let rows =
+    list.append(shared.agent_rows, agent_roster.remote_rows(shared.roster))
+  let chips = agent_roster.chips(shared.roster, rows, shared.active_strand)
   let chip = fn(line: agent_roster.Line) {
     let row = agent_row(shared, line.id)
     strip.Chip(
@@ -5744,7 +5751,42 @@ pub fn focus(
 }
 
 // `focus` at the reading `update` took at its top.
+// A card names a strand of the session or a child on another orchestrator. A
+// remote child has no strand here, so its card opens a peek at its transcript
+// and leaves the strand on screen where it is. Any other card closes an open
+// peek first, which is how the peek's back link, the marker relay's click on
+// `main`'s card, closes it with no event of its own.
 fn focus_at(
+  model: Model(socket),
+  strand: String,
+  at: Int,
+) -> #(Model(socket), Effect(Msg(socket))) {
+  case list.any(model.shared.roster.remote, fn(agent) { agent.id == strand }) {
+    True -> peek_at(model, strand)
+    False ->
+      focus_strand_at(
+        Model(
+          ..model,
+          shared: Shared(..model.shared, peek: remote_transcript.Closed),
+        ),
+        strand,
+        at,
+      )
+  }
+}
+
+// Opens a peek at a remote child's transcript through the shared step, as a
+// control and not a draft, so the composer's text is left alone. The page is
+// a read the daemon asks the other orchestrator for, so an observer's page may
+// open one as an operator's does.
+fn peek_at(
+  model: Model(socket),
+  child: String,
+) -> #(Model(socket), Effect(Msg(socket))) {
+  commanded(model, msg.Control(command.Peek(child)))
+}
+
+fn focus_strand_at(
   model: Model(socket),
   strand: String,
   at: Int,
@@ -7175,6 +7217,9 @@ pub fn panel(
 /// // component.detail(model) == None
 /// ```
 pub fn detail(model: Model(socket)) -> Option(Element(message)) {
+  // An open peek at a remote child's transcript takes the tab, whichever
+  // strand is on screen (protocol-change/090).
+  use <- option.lazy_or(peek.view(model.shared.peek))
   case model.shared.active_strand == primary {
     True -> None
     False ->
