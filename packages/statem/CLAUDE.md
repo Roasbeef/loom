@@ -33,9 +33,10 @@ uses as its oracle.
   `statem.crash`, which shrinks like any other (same-tag rule).
 - `Violation(tag, detail)`. Shrinking accepts a candidate only if it fails
   with the original tag, so two bugs need two tags.
-- `Config(test_count, seed, max_commands, max_shrinks, shrink_retries,
-  shrink_stop)` via
-  `default_config(seed:)` and `with_*` (`with_shrink_retries(n)`, default 1:
+- `Config(test_count, seed, min_commands, max_commands, max_shrinks,
+  shrink_retries, shrink_stop)` via
+  `default_config(seed:)` and `with_*` (`with_min_commands(n)`, default 0;
+  `with_shrink_retries(n)`, default 1:
   a candidate still fails if any of n executions fails with the original
   tag; retries spend `max_shrinks`; `with_shrink_stop(fn() -> ShrinkStop)`,
   `KeepShrinking | StopShrinking`, default always keep). There is no random

@@ -7,11 +7,15 @@
 
 import client/scratch
 import codemode/workspace
+import gleam/bit_array
 import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import qcheck
+import statem
+import statem_parallel
 import support/addresses
 import weft/registry as address
 
@@ -19,171 +23,27 @@ pub fn stopping_a_missing_store_is_a_no_op_test() {
   scratch.stop(addresses.new())
 }
 
-// --- a round trip -------------------------------------------------------------
+// --- bounds & least-recently-written eviction smoke --------------------------
 
-pub fn a_set_then_get_returns_the_bytes_test() {
-  let store = started(scratch.default_bounds())
-  assert store.seam.set("k", <<"value":utf8>>) == Ok(Nil)
-  assert store.seam.get("k") == Ok(Some(<<"value":utf8>>))
-  stop(store)
-}
-
-pub fn an_absent_key_is_none_and_not_an_error_test() {
-  // `cap/kv.get` answers `Ok(None)` for an absent key and every caller
-  // must handle it, so an absent key must never come back as a refusal —
-  // a program that read one as an error would treat a cold cache as a
-  // broken host.
-  let store = started(scratch.default_bounds())
-  assert store.seam.get("never-written") == Ok(None)
-  stop(store)
-}
-
-pub fn a_set_replaces_the_prior_value_and_its_bytes_test() {
-  // Two properties in one: the value a program reads back, and the
-  // *accounting* underneath it. An overwrite that added the new bytes
-  // without subtracting the old would evict under a pressure that is not
-  // there, and nothing a program can see would say why.
-  let store = started(scratch.default_bounds())
-  assert store.seam.set("k", <<"0123456789":utf8>>) == Ok(Nil)
-  assert store.seam.set("k", <<"ab":utf8>>) == Ok(Nil)
-  assert store.seam.get("k") == Ok(Some(<<"ab":utf8>>))
-  assert scratch.stat(store.name, timeout_ms: 1000) == #(1, 2)
-  stop(store)
-}
-
-pub fn a_delete_removes_the_key_and_is_idempotent_test() {
-  let store = started(scratch.default_bounds())
-  assert store.seam.set("k", <<"value":utf8>>) == Ok(Nil)
-  assert store.seam.delete("k") == Ok(Nil)
-  assert store.seam.get("k") == Ok(None)
-  // Deleting an absent key succeeds: `cap/kv.delete` says so, and a
-  // program tidying up after a partial run must not have to know whether
-  // it got as far as writing.
-  assert store.seam.delete("k") == Ok(Nil)
-  assert store.seam.delete("never-written") == Ok(Nil)
-  assert scratch.stat(store.name, timeout_ms: 1000) == #(0, 0)
-  stop(store)
-}
-
-// --- the bounds ---------------------------------------------------------------
-
-pub fn a_value_over_the_entry_bound_is_refused_test() {
-  // Refused, not evicted: a single value too large for the cache is a
-  // program's mistake about what a cache is for, and silently dropping it
-  // would have it read back `None` forever.
-  let store =
-    started(scratch.Bounds(
-      max_entry_bytes: 8,
-      max_total_bytes: 64,
-      max_entries: 8,
-    ))
-  let assert Error(workspace.EntryTooLarge(bytes:, limit:)) =
-    store.seam.set("k", <<"nine byte":utf8>>)
-    as "a value over the entry bound is refused"
-  assert bytes == 9
-  assert limit == 8
-  // And nothing was stored: a refused write must not half-land.
-  assert store.seam.get("k") == Ok(None)
-  assert scratch.stat(store.name, timeout_ms: 1000) == #(0, 0)
-  stop(store)
-}
-
-pub fn a_value_at_the_entry_bound_is_admitted_test() {
-  let store =
-    started(scratch.Bounds(
-      max_entry_bytes: 8,
-      max_total_bytes: 64,
-      max_entries: 8,
-    ))
-  assert store.seam.set("k", <<"12345678":utf8>>) == Ok(Nil)
-  assert store.seam.get("k") == Ok(Some(<<"12345678":utf8>>))
-  stop(store)
-}
-
-pub fn byte_pressure_evicts_the_oldest_written_test() {
-  // The eviction rule, pinned by its consequence rather than by reading
-  // the state: three entries fill a store that holds two, and it is the
-  // *first written* that is gone. An LRU would have kept it, because it
-  // was read most recently — which is exactly the distinction this
-  // asserts.
+pub fn least_recently_written_eviction_and_entry_bound_smoke_test() {
   let store =
     started(scratch.Bounds(
       max_entry_bytes: 8,
       max_total_bytes: 8,
       max_entries: 8,
     ))
+  let assert Error(workspace.EntryTooLarge(bytes: 9, limit: 8)) =
+    store.seam.set("oversize", <<"nine byte":utf8>>)
+    as "a value over the entry bound is refused"
   assert store.seam.set("first", <<"aaaa":utf8>>) == Ok(Nil)
   assert store.seam.set("second", <<"bbbb":utf8>>) == Ok(Nil)
-  // Reading the oldest does not save it: this is least-recently-written.
+  // Reading `first` does not refresh its write position; re-setting does.
   assert store.seam.get("first") == Ok(Some(<<"aaaa":utf8>>))
   assert store.seam.set("third", <<"cccc":utf8>>) == Ok(Nil)
   assert store.seam.get("first") == Ok(None)
   assert store.seam.get("second") == Ok(Some(<<"bbbb":utf8>>))
   assert store.seam.get("third") == Ok(Some(<<"cccc":utf8>>))
-  // The bound holds after the eviction, which is the thing eviction is
-  // for: two four-byte entries, exactly at the total.
   assert scratch.stat(store.name, timeout_ms: 1000) == #(2, 8)
-  stop(store)
-}
-
-pub fn a_rewrite_moves_an_entry_to_the_back_of_the_queue_test() {
-  // A program that wants a value kept re-sets it, which the module doc
-  // promises. So an overwrite must refresh the write order, or the
-  // promise is empty.
-  let store =
-    started(scratch.Bounds(
-      max_entry_bytes: 8,
-      max_total_bytes: 8,
-      max_entries: 8,
-    ))
-  assert store.seam.set("first", <<"aaaa":utf8>>) == Ok(Nil)
-  assert store.seam.set("second", <<"bbbb":utf8>>) == Ok(Nil)
-  assert store.seam.set("first", <<"AAAA":utf8>>) == Ok(Nil)
-  assert store.seam.set("third", <<"cccc":utf8>>) == Ok(Nil)
-  // `second` is now the oldest written and is the one that went.
-  assert store.seam.get("second") == Ok(None)
-  assert store.seam.get("first") == Ok(Some(<<"AAAA":utf8>>))
-  assert store.seam.get("third") == Ok(Some(<<"cccc":utf8>>))
-  stop(store)
-}
-
-pub fn count_pressure_evicts_even_when_the_bytes_fit_test() {
-  // The count bound is not redundant with the byte bound: eight megabytes
-  // of one-byte values is eight million entries, and every operation
-  // walks the list. Two tiny entries in a store that holds one is the
-  // same shape at a size a test can hold.
-  let store =
-    started(scratch.Bounds(
-      max_entry_bytes: 64,
-      max_total_bytes: 64,
-      max_entries: 1,
-    ))
-  assert store.seam.set("first", <<"a":utf8>>) == Ok(Nil)
-  assert store.seam.set("second", <<"b":utf8>>) == Ok(Nil)
-  assert store.seam.get("first") == Ok(None)
-  assert store.seam.get("second") == Ok(Some(<<"b":utf8>>))
-  assert scratch.stat(store.name, timeout_ms: 1000) == #(1, 1)
-  stop(store)
-}
-
-pub fn the_store_stays_inside_its_bounds_under_a_write_loop_test() {
-  // The property the two bounds exist for, driven rather than reasoned
-  // about: a program looping on `set` with distinct keys — the shape that
-  // grows a cache without bound — never gets the store past either
-  // number.
-  let bounds =
-    scratch.Bounds(max_entry_bytes: 16, max_total_bytes: 64, max_entries: 8)
-  let store = started(bounds)
-  list.each(counting(200), fn(nth) {
-    assert store.seam.set("k" <> int.to_string(nth), <<"12345678":utf8>>)
-      == Ok(Nil)
-    let #(count, bytes) = scratch.stat(store.name, timeout_ms: 1000)
-    assert count <= bounds.max_entries
-    assert bytes <= bounds.max_total_bytes
-  })
-  // And the most recent write survived, which is what makes the store
-  // worth having at all.
-  assert store.seam.get("k200") == Ok(Some(<<"12345678":utf8>>))
   stop(store)
 }
 
@@ -308,8 +168,227 @@ fn wait_gone(name: address.Address(scratch.Message), polls: Int) -> Nil {
   }
 }
 
-// `[1, …, count]`. `int.range` counts towards `to` without reaching it,
-// so counting down and prepending yields the ascending list.
-fn counting(count: Int) -> List(Int) {
-  int.range(from: count, to: 0, with: [], run: list.prepend)
+// --- stateful model & parallel linearizability specs -------------------------
+
+const model_bounds =
+  scratch.Bounds(max_entry_bytes: 8, max_total_bytes: 16, max_entries: 3)
+
+type ModelEntry {
+  ModelEntry(key: String, value: BitArray, bytes: Int)
+}
+
+type ScratchModel {
+  ScratchModel(entries: List(ModelEntry), total_bytes: Int, count: Int)
+}
+
+type ScratchCmd {
+  CmdGet(key: String)
+  CmdSet(key: String, value: BitArray)
+  CmdDelete(key: String)
+  CmdStat
+}
+
+type ScratchReply {
+  ReplyGet(Result(option.Option(BitArray), workspace.KvRefusal))
+  ReplySet(Result(Nil, workspace.KvRefusal))
+  ReplyDelete(Result(Nil, workspace.KvRefusal))
+  ReplyStat(#(Int, Int))
+}
+
+fn initial_model() -> ScratchModel {
+  ScratchModel(entries: [], total_bytes: 0, count: 0)
+}
+
+fn key_gen() -> qcheck.Generator(String) {
+  qcheck.bounded_int(from: 0, to: 4)
+  |> qcheck.map(fn(i) { "k" <> int.to_string(i) })
+}
+
+fn value_gen() -> qcheck.Generator(BitArray) {
+  qcheck.bounded_int(from: 0, to: 10)
+  |> qcheck.map(fn(len) { bit_array.from_string(string.repeat("x", len)) })
+}
+
+fn cmd_gen(_model: ScratchModel) -> qcheck.Generator(ScratchCmd) {
+  qcheck.from_weighted_generators(
+    #(40, qcheck.map2(key_gen(), value_gen(), CmdSet)),
+    [
+      #(30, qcheck.map(key_gen(), CmdGet)),
+      #(20, qcheck.map(key_gen(), CmdDelete)),
+      #(10, qcheck.constant(CmdStat)),
+    ],
+  )
+}
+
+fn model_remove(model: ScratchModel, key: String) -> ScratchModel {
+  case list.find(model.entries, fn(e) { e.key == key }) {
+    Error(Nil) -> model
+    Ok(found) ->
+      ScratchModel(
+        entries: list.filter(model.entries, fn(e) { e.key != key }),
+        total_bytes: model.total_bytes - found.bytes,
+        count: model.count - 1,
+      )
+  }
+}
+
+fn model_evict(model: ScratchModel) -> ScratchModel {
+  case
+    model.total_bytes > model_bounds.max_total_bytes
+    || model.count > model_bounds.max_entries
+  {
+    False -> model
+    True ->
+      case list.reverse(model.entries) {
+        [] -> model
+        [oldest, ..newer] ->
+          model_evict(ScratchModel(
+            entries: list.reverse(newer),
+            total_bytes: model.total_bytes - oldest.bytes,
+            count: model.count - 1,
+          ))
+      }
+  }
+}
+
+fn model_step(
+  model: ScratchModel,
+  cmd: ScratchCmd,
+) -> #(ScratchModel, ScratchReply) {
+  case cmd {
+    CmdGet(key:) -> {
+      let found =
+        list.find(model.entries, fn(e) { e.key == key })
+        |> option.from_result
+        |> option.map(fn(e) { e.value })
+      #(model, ReplyGet(Ok(found)))
+    }
+    CmdSet(key:, value:) -> {
+      let bytes = bit_array.byte_size(value)
+      case bytes > model_bounds.max_entry_bytes {
+        True -> #(
+          model,
+          ReplySet(
+            Error(workspace.EntryTooLarge(
+              bytes:,
+              limit: model_bounds.max_entry_bytes,
+            )),
+          ),
+        )
+        False -> {
+          let cleared = model_remove(model, key)
+          let admitted =
+            ScratchModel(
+              entries: [ModelEntry(key:, value:, bytes:), ..cleared.entries],
+              total_bytes: cleared.total_bytes + bytes,
+              count: cleared.count + 1,
+            )
+          #(model_evict(admitted), ReplySet(Ok(Nil)))
+        }
+      }
+    }
+    CmdDelete(key:) -> #(model_remove(model, key), ReplyDelete(Ok(Nil)))
+    CmdStat -> #(model, ReplyStat(#(model.count, model.total_bytes)))
+  }
+}
+
+fn run_cmd(store: Store, cmd: ScratchCmd) -> ScratchReply {
+  case cmd {
+    CmdGet(key:) -> ReplyGet(store.seam.get(key))
+    CmdSet(key:, value:) -> ReplySet(store.seam.set(key, value))
+    CmdDelete(key:) -> ReplyDelete(store.seam.delete(key))
+    CmdStat -> ReplyStat(scratch.stat(store.name, timeout_ms: 1000))
+  }
+}
+
+fn scratch_statem_spec() -> statem.Spec(ScratchModel, ScratchCmd, Store) {
+  statem.Spec(
+    initial: initial_model(),
+    command: cmd_gen,
+    precondition: fn(_, _) { statem.Admit },
+    next_model: fn(model, cmd) { model_step(model, cmd).0 },
+    new_sut: fn() { started(model_bounds) },
+    execute: fn(store, model, cmd) {
+      let expected = model_step(model, cmd).1
+      let actual = run_cmd(store, cmd)
+      case actual == expected {
+        True -> Ok(store)
+        False ->
+          Error(statem.Violation(
+            tag: "scratch_postcondition",
+            detail: string.inspect(#(cmd, expected, actual)),
+          ))
+      }
+    },
+    finish: fn(store, model) {
+      let actual = scratch.stat(store.name, timeout_ms: 1000)
+      case actual == #(model.count, model.total_bytes) {
+        True -> Ok(Nil)
+        False ->
+          Error(statem.Violation(
+            tag: "scratch_finish_stat",
+            detail: string.inspect(#(model, actual)),
+          ))
+      }
+    },
+    teardown: stop,
+  )
+}
+
+pub fn scratch_matches_reference_model_under_statem_test() {
+  let config =
+    statem.default_config(seed: 20_261_018)
+    |> statem.with_test_count(100)
+    |> statem.with_min_commands(10)
+    |> statem.with_max_commands(40)
+  case statem.check(scratch_statem_spec(), config) {
+    Ok(Nil) -> Nil
+    Error(failure) -> panic as statem.report(failure, string.inspect)
+  }
+}
+
+pub fn scratch_is_linearizable_under_concurrent_callers_test() {
+  let spec =
+    statem_parallel.Spec(
+      initial: initial_model(),
+      command: cmd_gen,
+      precondition: fn(_, _) { statem.Admit },
+      next_model: fn(model, cmd) { model_step(model, cmd).0 },
+      new_sut: fn() { started(model_bounds) },
+      run: run_cmd,
+      postcondition: fn(model, cmd, actual) {
+        let expected = model_step(model, cmd).1
+        case actual == expected {
+          True -> Ok(Nil)
+          False ->
+            Error(statem.Violation(
+              tag: "scratch_parallel_postcondition",
+              detail: string.inspect(#(cmd, expected, actual)),
+            ))
+        }
+      },
+      finish: fn(store) {
+        let #(count, bytes) = scratch.stat(store.name, timeout_ms: 1000)
+        case
+          count <= model_bounds.max_entries
+          && bytes <= model_bounds.max_total_bytes
+        {
+          True -> Ok(Nil)
+          False ->
+            Error(statem.Violation(
+              tag: "scratch_parallel_bounds",
+              detail: string.inspect(#(count, bytes)),
+            ))
+        }
+      },
+      teardown: stop,
+    )
+  let config =
+    statem_parallel.default_config(seed: 20_261_019)
+    |> statem_parallel.with_test_count(40)
+    |> statem_parallel.with_repeat(2)
+  case statem_parallel.check(spec, config) {
+    Ok(Nil) -> Nil
+    Error(failure) -> panic as statem_parallel.report(failure, string.inspect)
+  }
 }
